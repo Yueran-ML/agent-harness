@@ -1474,7 +1474,7 @@ export const en = {
         append: 'Puts the source after the last clip of the timeline.',
         rippleOverwrite: 'Replaces the clip at the playhead with the source, and moves what follows by the difference in length.',
         placeOnTop: 'Puts the source at the playhead on the first free track above.',
-        sourceOverwrite: 'Puts the source on the track above, in sync by timecode. Media without timecode is lined up by its In point at the playhead.',
+        sourceOverwrite: 'Puts the source on the track above, in sync by timecode. The studio does not read the timecode of media yet, so there is nothing to line up by: as in DaVinci Resolve without overlapping timecode, this edit does nothing.',
         transition: 'Adds the transition at the edit point nearest the playhead.',
         emptyBin: 'This bin has no media for the source tape.',
         noTimeline: 'Create a timeline on the Edit page to begin.',

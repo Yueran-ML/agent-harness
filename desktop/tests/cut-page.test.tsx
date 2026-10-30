@@ -257,16 +257,21 @@ describe('the Cut page', () => {
     expect(await press('Append')).toEqual([{ revision: 2, ops: [{ edit: 'append', timeline: 't1', source: whole, ...targets }] }]);
     expect(await press('Ripple overwrite')).toEqual([{ revision: 3, ops: [{ edit: 'ripple_overwrite', timeline: 't1', source: whole, at: 125, ...targets }] }]);
     expect(await press('Place on top')).toEqual([{ revision: 4, ops: [{ edit: 'place_on_top', timeline: 't1', source: whole, at: 125 }] }]);
-    // Media whose timecode is not known is lined up by its In at the playhead, on top.
-    expect(await press('Source overwrite')).toEqual([{ revision: 5, ops: [{ edit: 'place_on_top', timeline: 't1', source: whole, at: 125 }] }]);
+    // Source Overwrite syncs by timecode, which the engine does not read: as DaVinci Resolve without
+    // overlapping timecode, it does nothing (Reference Manual 20, p. 563), so it is disabled and says why.
+    const sourceOverwrite = screen.getByRole('button', { name: 'Source overwrite' }) as HTMLButtonElement;
+    expect(sourceOverwrite.disabled).toBe(true);
+    expect(document.querySelector<HTMLElement>('[data-test="cut-sourceOverwrite-why"]')!.title).toMatch(/does not read the timecode.*does nothing/);
+    expect(await press('Source overwrite')).toEqual([]);
     // The viewer still shows the tape, in the same medium.
     expect(page().dataset.mode).toBe('tape');
     expect(calls(bridge, 'transport.load')).toEqual([]);
     expect(tape.querySelector('[data-tape-media="m2"]')!.hasAttribute('data-current')).toBe(true);
-    // The keys of the Cut page do the same: F9 Smart Insert, F10 Source Overwrite, Shift+F10 Ripple Overwrite, F12, Shift+F12.
+    // The keys of the Cut page do the same: F9 Smart Insert, F10 Overwrite (Reference Manual 20, p. 565), Shift+F10 Ripple Overwrite, F12, Shift+F12.
     bridge.call.mockClear();
     for (const [value, fields] of [['F9', {}], ['F10', {}], ['F10', { shiftKey: true }], ['F12', {}], ['F12', { shiftKey: true }]] as const) { key(value, fields); await settle(); }
-    expect(sent(bridge).map(each => (each.ops[0] as { edit: string }).edit)).toEqual(['smart_insert', 'place_on_top', 'ripple_overwrite', 'place_on_top', 'append']);
+    expect(sent(bridge).map(each => (each.ops[0] as { edit: string }).edit)).toEqual(['smart_insert', 'overwrite', 'ripple_overwrite', 'place_on_top', 'append']);
+    expect(sent(bridge)[1].ops[0]).toEqual({ edit: 'overwrite', timeline: 't1', source: whole, at: 125, ...targets });
   });
 
   it('finds the edit point that Smart Insert goes in at as the engine does', () => {
@@ -372,7 +377,7 @@ describe('the Cut page', () => {
     expect(within(screen.getByRole('toolbar', { name: '转场' })).getAllByRole('button').map(each => each.getAttribute('aria-label')))
       .toEqual(['叠化', '淡入淡出至黑场']);
     expect(within(screen.getByRole('group', { name: '检视器模式' })).getAllByRole('button').map(each => each.textContent)).toEqual(['源片段', '源磁带', '时间线']);
-    expect(screen.getByRole('button', { name: '源覆盖' }).title).toContain('没有时间码的素材按入点对齐播放头');
+    expect(screen.getByRole('button', { name: '源覆盖' }).title).toContain('这个编辑不做任何事');
   });
 
   it('narrows to buttons without names, and hides its native views under what lies over the page', async () => {

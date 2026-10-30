@@ -32,6 +32,12 @@ describe('DaVinci editing keys', () => {
     expect(command('F11')).toMatchObject({ transaction: { ops: [{ source: { kind: 'media', media: 'm1', from: { ticks: 30, scale: 25 } } }] } });
     expect(command('F12', { shift: true })).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [{ edit: 'append', timeline: 't1', source: { kind: 'media', media: 'm1' }, video_track: 'v1', audio_track: null }] } });
   });
+  it('keeps F10 an overwrite on the Cut page, and Source Overwrite, with no timecode to sync by, does nothing', () => {
+    // Reference Manual 20, p. 565: F10 overwrites on the Cut page; p. 563: no overlapping timecode, no edit.
+    expect(command('F10', {}, context({ cut: true }))).toMatchObject({ transaction: { ops: [{ edit: 'overwrite', at: 100, video_track: 'v1' }] } });
+    expect(command('F9', {}, context({ cut: true }))).toMatchObject({ transaction: { ops: [{ edit: 'smart_insert' }] } });
+    expect(editCommand({ kind: 'place', edit: 'source_overwrite' }, context({ cut: true }))).toBeNull();
+  });
   it('uses the marked timeline range for a three-point edit, with an exclusive out frame', () => {
     const ctx = context({ marks: { in: 50, out: 90 } });
     expect(command('F9', {}, ctx)).toMatchObject({ transaction: { ops: [{ edit: 'insert', at: 50, source: { length: 40 } }] } });

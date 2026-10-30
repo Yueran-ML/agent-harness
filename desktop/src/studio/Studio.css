@@ -798,6 +798,11 @@
   font-size: var(--text-caption);
 }
 
+/* A button that cannot be pressed here, held so that its hint still shows on hover. */
+.cut-button-off {
+  display: inline-flex;
+}
+
 /* Narrow, the buttons keep their icons and give their names to their tooltips. */
 .cut-page[data-narrow] .cut-button span {
   display: none;

@@ -11,7 +11,9 @@ import { effectTransaction } from '../effects/drop';
 /**
  * The edits that put the source on the timeline. Those of the Cut page: `smart_insert` (at the
  * edit point nearest the playhead), `ripple_overwrite` (in place of the clip at the playhead, the
- * rest rippled by the difference) and `source_overwrite` (on top, lined up with the timeline).
+ * rest rippled by the difference) and `source_overwrite` (on top, in sync by timecode: as the
+ * engine reads no timecode of media, it does nothing, as DaVinci Resolve does without overlapping
+ * timecode, Reference Manual 20, p. 563).
  */
 export type PlaceEdit = 'insert' | 'overwrite' | 'replace' | 'place_on_top' | 'append' | 'smart_insert' | 'ripple_overwrite' | 'source_overwrite';
 export type QuickTransition = 'dissolve' | 'dip_black';
@@ -82,8 +84,8 @@ export interface EditContext {
   targets: Targets; marks: Marks; frame: number; focus: Monitor;
   source: { media: Media; frame: number; rate: Rate } | null;
   /**
-   * Whether the keys are those of the Cut page: there F9 is Smart Insert and F10 Source Overwrite,
-   * and Ctrl+T puts a dissolve at the edit point nearest the playhead.
+   * Whether the keys are those of the Cut page: there F9 is Smart Insert (F10 stays Overwrite,
+   * Reference Manual 20, p. 565), and Ctrl+T puts a dissolve at the edit point nearest the playhead.
    */
   cut?: boolean;
 }
@@ -239,17 +241,17 @@ export function editCommand(action: EditAction | null, context: EditContext): Ed
   }
   if (action.kind === 'place') {
     if (!source) return null;
-    const edit = context.cut && action.edit === 'insert' ? 'smart_insert' : context.cut && action.edit === 'overwrite' ? 'source_overwrite' : action.edit;
+    const edit = context.cut && action.edit === 'insert' ? 'smart_insert' : action.edit;
+    // Source Overwrite lines the source up with the timeline by its timecode. The engine reads no
+    // timecode of media, so there is never any to overlap, and, as DaVinci Resolve says of that
+    // case, "this edit does nothing" (Reference Manual 20, p. 563): its button is disabled.
+    if (edit === 'source_overwrite') return null;
     const whole: Material = { kind: 'media', media: source.media.id };
     if (edit === 'append') return transaction([{ edit: 'append', timeline: timeline.id, source: whole, ...targets }]);
     // Smart Insert goes in at the edit point nearest the playhead, which the page shows; it is sent
     // as that point, and the engine, which finds the nearest one again, keeps it.
     if (edit === 'smart_insert') return transaction([{ edit, timeline: timeline.id, source: whole, at: nearestCut(timeline, frame), ...targets }]);
     if (edit === 'ripple_overwrite') return transaction([{ edit, timeline: timeline.id, source: whole, at: frame, ...targets }]);
-    // Source Overwrite lines the source up with the timeline by its timecode; media of which the
-    // timecode is not known (all of it, until the engine reads timecode) has its In at the playhead,
-    // on top of what is there.
-    if (edit === 'source_overwrite') return transaction([{ edit: 'place_on_top', timeline: timeline.id, source: whole, at: frame }]);
     const placed = threePoint(timeline, source, marks, frame, edit === 'replace');
     const command: Edit = edit === 'place_on_top' ? { edit, timeline: timeline.id, source: placed.material, at: placed.at }
       : { edit, timeline: timeline.id, source: placed.material, at: placed.at, ...targets };

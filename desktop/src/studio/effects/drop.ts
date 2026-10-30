@@ -1,5 +1,6 @@
 import type { Alignment, Timeline, Transition } from '../engine';
 import type { Material, Transaction } from '../timeline/commands';
+import type { Preview } from '../timeline/interact';
 import { KINDS } from '../inspector/TransitionPanel';
 import { isTransition, type Effect } from './drag';
 
@@ -12,7 +13,8 @@ export const GENERATOR_SECONDS = 5;
 
 export type EffectTarget =
   | { kind: 'cut'; track: string; left: string; right: string; cut: number; align: Alignment; existing: Transition | null }
-  | { kind: 'place'; track: string; at: number; length: number };
+  /** A title or a solid colour, and the parts of the clips there that it overwrites. */
+  | { kind: 'place'; track: string; at: number; length: number; covered: Preview[] };
 
 const framesIn = (seconds: number, timeline: Timeline) => Math.max(1, Math.round(seconds * timeline.rate.num / timeline.rate.den));
 
@@ -22,7 +24,9 @@ const framesIn = (seconds: number, timeline: Timeline) => Math.max(1, Math.round
  * A transition goes to the cut nearest `position` (in frames, not rounded) within a few pixels, on
  * a track of its kind: dropped just before the cut it ends on it, just after it starts on it, and
  * on it it is centred, as DaVinci Resolve aligns a transition dropped on an edit. A title or a solid
- * colour goes at `frame` on a video track where nothing is, for 5 seconds or until the next clip.
+ * colour goes at `frame` on a video track for the standard 5 seconds, as an overwrite edit: what
+ * lies there of other clips is overwritten, as in DaVinci Resolve, and is told in `covered` for the
+ * drag to show.
  */
 export function effectTarget(timeline: Timeline, effect: Effect, trackId: string, position: number, frame: number, scale: number): EffectTarget | null {
   const track = timeline.tracks.find(each => each.id === trackId);
@@ -45,15 +49,19 @@ export function effectTarget(timeline: Timeline, effect: Effect, trackId: string
   }
   if (track.kind !== 'video') return null;
   const at = Math.max(0, Math.round(frame));
-  if (track.clips.some(clip => clip.start <= at && at < clip.start + clip.length)) return null;
-  const next = Math.min(Infinity, ...track.clips.filter(clip => clip.start > at).map(clip => clip.start));
-  const length = Math.min(framesIn(GENERATOR_SECONDS, timeline), next - at);
-  return length >= 1 ? { kind: 'place', track: track.id, at, length } : null;
+  const length = framesIn(GENERATOR_SECONDS, timeline);
+  const end = at + length;
+  const covered = track.clips.filter(clip => clip.start < end && clip.start + clip.length > at).map(clip => {
+    const start = Math.max(clip.start, at);
+    return { id: clip.id, track: track.id, start, length: Math.min(clip.start + clip.length, end) - start };
+  });
+  return { kind: 'place', track: track.id, at, length, covered };
 }
 
 /**
  * The transaction of a drop: a transition added at the cut (or the kind of the one there changed,
- * as a transition dropped on another replaces it), or a title or a solid colour put on the track.
+ * as a transition dropped on another replaces it), or a title or a solid colour overwritten onto
+ * the track. One transaction, so one step to undo.
  */
 export function effectTransaction(timeline: Timeline, revision: number, effect: Effect, target: EffectTarget, titleText: string): Transaction {
   if (target.kind === 'cut') {

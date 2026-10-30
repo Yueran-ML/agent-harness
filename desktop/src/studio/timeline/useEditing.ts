@@ -7,7 +7,7 @@ import { callEngine, type Media, type Monitor, type Op, type Timeline } from '..
 import { editCommand, editKey, type EditContext } from './editKeys';
 import type { Targets, Transaction } from './commands';
 import { frameAt, HEADER_WIDTH } from './geometry';
-import { beginDrag, dragTo, finishDrag, hitClip, type Dragged, type Gesture, type Hit, type Tool } from './interact';
+import { beginDrag, dragTo, finishDrag, hitClip, type Dragged, type Gesture, type Hit, type Preview, type Tool } from './interact';
 import { clipLocations, EMPTY_SELECTION, selectClips, type Selection } from './selection';
 import { snap, snapCandidates, type Marks } from './snap';
 import { draggedMedia, MEDIA_DRAG } from '../media/drag';
@@ -51,6 +51,8 @@ export function useEditing(options: Options) {
   const [marks, setMarks] = useState<Marks>({ in: null, out: null });
   const [preview, setPreview] = useState<Dragged | null>(null);
   const [dropAt, setDropAt] = useState<number | null>(null);
+  // A title or a solid colour dragged over a track: where it would go, and what of the clips there it would overwrite.
+  const [effectDrop, setEffectDrop] = useState<{ preview: Preview[]; covered: Preview[] } | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const busy = useRef(false);
@@ -63,7 +65,7 @@ export function useEditing(options: Options) {
   const selected = useMemo(() => new Set(selection.ids), [selection]);
   const cancel = useCallback(() => {
     const pointer = active.current?.pointer;
-    active.current = null; setPreview(null); setDropAt(null);
+    active.current = null; setPreview(null); setDropAt(null); setEffectDrop(null);
     const root = now.current.root.current;
     if (pointer !== undefined && root?.hasPointerCapture?.(pointer)) root.releasePointerCapture(pointer);
   }, []);
@@ -261,18 +263,23 @@ export function useEditing(options: Options) {
   };
   const dragOver = (event: DragEvent) => {
     const track = dropTarget(event);
-    if (!track) { setDropAt(null); return; }
+    if (!track) { setDropAt(null); setEffectDrop(null); return; }
     if (!event.dataTransfer.types.includes(MEDIA_DRAG)) {
       const found = effectAt(event, track);
-      if (!found) { setDropAt(null); return; }
+      if (!found) { setDropAt(null); setEffectDrop(null); return; }
       event.preventDefault(); event.dataTransfer.dropEffect = 'copy';
-      setDropAt(found.target.kind === 'cut' ? found.target.cut : found.target.at);
+      const target = found.target;
+      setDropAt(target.kind === 'cut' ? target.cut : target.at);
+      if (target.kind === 'cut') { setEffectDrop(null); return; }
+      // Drawn again only where it would go somewhere else: a drag tells of itself many times a second.
+      setEffectDrop(old => old && old.preview[0].track === target.track && old.preview[0].start === target.at && old.preview[0].length === target.length ? old
+        : { preview: [{ id: 'effect', track: target.track, start: target.at, length: target.length }], covered: target.covered });
       return;
     }
     event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setDropAt(dropFrame(event));
   };
   const drop = (event: DragEvent) => {
-    setDropAt(null);
+    setDropAt(null); setEffectDrop(null);
     const track = dropTarget(event);
     if (!track) return;
     const context = now.current;
@@ -290,8 +297,8 @@ export function useEditing(options: Options) {
     if (transaction) void apply(transaction);
   };
   const dragLeave = (event: DragEvent) => {
-    if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setDropAt(null);
+    if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) { setDropAt(null); setEffectDrop(null); }
   };
-  return { tool, chooseTool, snapping, setSnapping, linked, setLinked, selected, transition, targets, target, marks, preview, dropAt, problem, setProblem, pending,
+  return { tool, chooseTool, snapping, setSnapping, linked, setLinked, selected, transition, targets, target, marks, preview, dropAt, effectDrop, problem, setProblem, pending,
     edit, apply, keyDown, pointerDown, pointerMove, pointerUp, cancel, dragOver, drop, dragLeave };
 }

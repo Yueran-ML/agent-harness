@@ -1417,7 +1417,7 @@ export const en = {
         fadeAtTransition: 'A transition is at this edge, so a fade cannot be set here.',
         speedMedia: 'Only clips of media can change speed.',
         speedRange: 'The speed is from 1% to 10000%.',
-        library: 'Drag a transition onto a cut on the timeline, or a title or a solid color onto empty space on a video track.',
+        library: 'Drag a transition onto an edit point on the timeline, or a title or a solid color onto a video track, where it overwrites 5 seconds.',
       },
       cut: 'The Cut page is not ready yet. Edit timelines on the Edit page.',
       windowsOnly: 'The editing studio runs only on Windows for now. macOS will come later.',

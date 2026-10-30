@@ -1233,7 +1233,7 @@ export const zhCN: Messages = {
         fadeAtTransition: '这一端有转场，不能设置淡入淡出。',
         speedMedia: '只有素材片段可以变速。',
         speedRange: '速度范围为 1% 到 10000%。',
-        library: '把转场拖到时间线的剪辑点上，把标题或纯色拖到视频轨的空处。',
+        library: '把转场拖到时间线的剪辑点上，把标题或纯色拖到视频轨上，它会覆盖 5 秒。',
       },
       cut: '快编页还没有做好，请在剪辑页编辑时间线。',
       windowsOnly: '剪辑工作室目前只支持 Windows，macOS 之后会加入。',

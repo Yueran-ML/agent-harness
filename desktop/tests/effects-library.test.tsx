@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 /**
  * The effects library, and what the timeline does with an effect dropped on it: a transition at the
- * cut it is dropped on, aligned by the side of the cut; a title or a solid colour in an empty place
- * of a video track; nothing elsewhere. And a transition chosen on the timeline, for the inspector.
+ * cut it is dropped on, aligned by the side of the cut; a title or a solid colour overwriting 5
+ * seconds of a video track; nothing elsewhere. And a transition chosen on the timeline, for the inspector.
  */
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -113,23 +113,77 @@ describe('an effect dropped on the timeline', () => {
     expect(await drop(locked.call, 'dissolve', 70)).toEqual({ taken: false, sent: [] });
   });
 
-  it('puts a title or a solid colour in an empty place of a video track, for 5 seconds or until the next clip', async () => {
+  it('overwrites 5 seconds of a video track with a title or a solid colour, over clips or not, in one transaction', async () => {
     const { call } = mount();
     const title = { kind: 'title', text: 'Title', style: { font: '', size: 70, color: '#ffffffff', x: 0.5, y: 0.5, align: 'center' } };
     expect(await drop(call, 'title', 250)).toEqual({ taken: true, sent: [{ revision: 17, ops: [
       { edit: 'overwrite', timeline: 't1', source: { ...title, length: 125 }, at: 250, video_track: 'v1', audio_track: null }] }] });
+    // Before the next clip, it runs over it: the standard duration, not the room that is left.
     expect((await drop(call, 'color', 140)).sent).toEqual([{ revision: 17, ops: [
-      { edit: 'overwrite', timeline: 't1', source: { kind: 'color', color: '#000000ff', length: 20 }, at: 140, video_track: 'v1', audio_track: null }] }]);
-    expect(await drop(call, 'title', 30)).toEqual({ taken: false, sent: [] });
-    expect(await drop(call, 'title', 250, 'a1')).toEqual({ taken: false, sent: [] });
+      { edit: 'overwrite', timeline: 't1', source: { kind: 'color', color: '#000000ff', length: 125 }, at: 140, video_track: 'v1', audio_track: null }] }]);
+    // Dropped on clips, as in DaVinci Resolve: it overwrites them from the frame it is dropped at.
+    expect(await drop(call, 'title', 30)).toEqual({ taken: true, sent: [{ revision: 17, ops: [
+      { edit: 'overwrite', timeline: 't1', source: { ...title, length: 125 }, at: 30, video_track: 'v1', audio_track: null }] }] });
+  });
+
+  it('shows while it is dragged where it goes and what of the clips it overwrites, and nothing once dropped or gone', async () => {
+    mount();
+    const covered = () => [...document.querySelectorAll<HTMLElement>('[data-covered]')].map(each => [each.dataset.covered, each.style.left, each.style.width]);
+    const footprint = () => document.querySelector<HTMLElement>('[data-preview="effect"]');
+    const dataTransfer = dragged('title');
+    fireEvent.dragOver(lane(), { ...at(30), dataTransfer });
+    expect([footprint()!.style.left, footprint()!.style.width]).toEqual([`${HEADER_WIDTH + 30 * 4}px`, `${125 * 4}px`]);
+    expect(covered()).toEqual([['c1', `${HEADER_WIDTH + 30 * 4}px`, `${40 * 4}px`], ['c2', `${HEADER_WIDTH + 70 * 4}px`, `${60 * 4}px`]]);
+    // Moved on: it goes elsewhere, and overwrites only the end of c3 there.
+    fireEvent.dragOver(lane(), { ...at(180), dataTransfer });
+    expect(covered()).toEqual([['c3', `${HEADER_WIDTH + 180 * 4}px`, `${20 * 4}px`]]);
+    fireEvent.dragLeave(lane(), { ...at(180), dataTransfer, relatedTarget: document.body });
+    expect(footprint()).toBeNull();
+    expect(covered()).toEqual([]);
+    fireEvent.dragOver(lane(), { ...at(250), dataTransfer });
+    expect(footprint()).not.toBeNull();
+    expect(covered()).toEqual([]);
+    // Over a track it cannot go on, nothing is shown.
+    fireEvent.dragOver(lane('a1'), { ...at(30), dataTransfer });
+    expect(footprint()).toBeNull();
+    fireEvent.dragOver(lane(), { ...at(30), dataTransfer });
+    fireEvent.drop(lane(), { ...at(30), dataTransfer });
+    await settle();
+    expect(footprint()).toBeNull();
+    expect(covered()).toEqual([]);
+  });
+
+  it('takes no title or solid colour on an audio track, on a locked track, or from another session', async () => {
+    const { call } = mount();
+    expect(await drop(call, 'title', 30, 'a1')).toEqual({ taken: false, sent: [] });
+    expect(await drop(call, 'color', 250, 'a1')).toEqual({ taken: false, sent: [] });
+    expect((await drop(call, 'title', 30, 'v1', 2)).sent).toEqual([]);
+    expect(document.querySelector('[data-preview="effect"]')).toBeNull();
+    cleanup();
+    const locked = mount(make([], true));
+    expect(await drop(locked.call, 'title', 30)).toEqual({ taken: false, sent: [] });
+    expect(await drop(locked.call, 'color', 250)).toEqual({ taken: false, sent: [] });
+    expect(document.querySelectorAll('[data-covered]')).toHaveLength(0);
+  });
+
+  it('says why the engine refused a title it overwrote with', async () => {
+    const { call } = mount();
+    call.mockResolvedValueOnce({ ok: false, error: { code: -32001, message: 'refused: locked', data: { reason: 'locked' } } });
+    await drop(call, 'title', 30);
+    expect(screen.getByRole('alert').textContent).toContain('A track affected by this edit is locked.');
   });
 
   it('finds its place without the drop, from the types of the drag and the pointer alone', () => {
     const t = make();
     expect(effectTarget(t, 'dip_black', 'v1', 70.5, 70, 4)).toEqual({ kind: 'cut', track: 'v1', left: 'c1', right: 'c2', cut: 70, align: 'center', existing: null });
     expect(effectTarget(t, 'dip_black', 'v1', 70.5, 70, 0.5)).toEqual({ kind: 'cut', track: 'v1', left: 'c1', right: 'c2', cut: 70, align: 'center', existing: null });
-    expect(effectTarget(t, 'title', 'v1', 0, 0, 4)).toEqual({ kind: 'place', track: 'v1', at: 0, length: 10 });
-    expect(effectTarget(t, 'color', 'v1', 70, 70, 4)).toBeNull();
+    expect(effectTarget(t, 'title', 'v1', 0, 0, 4)).toEqual({ kind: 'place', track: 'v1', at: 0, length: 125, covered: [
+      { id: 'c1', track: 'v1', start: 10, length: 60 }, { id: 'c2', track: 'v1', start: 70, length: 55 }] });
+    expect(effectTarget(t, 'color', 'v1', 70, 70, 4)).toEqual({ kind: 'place', track: 'v1', at: 70, length: 125, covered: [
+      { id: 'c2', track: 'v1', start: 70, length: 60 }, { id: 'c3', track: 'v1', start: 160, length: 35 }] });
+    expect(effectTarget(t, 'title', 'v1', -3, -3, 4)).toMatchObject({ at: 0 });
+    expect(effectTarget(t, 'title', 'a1', 0, 0, 4)).toBeNull();
+    expect(effectTarget(make([], true), 'color', 'v1', 0, 0, 4)).toBeNull();
   });
 });
 

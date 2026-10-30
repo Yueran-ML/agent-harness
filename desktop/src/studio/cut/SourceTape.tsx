@@ -48,13 +48,27 @@ export function tapeOf(media: readonly Media[], timelines: readonly { rate: Rate
  * every bin, so its tape is all the media.
  */
 export function tapeMedia(media: readonly Media[], bins: readonly Bin[], bin: string | null): Media[] {
-  const of = (parent: string | null): Media[] => [
-    ...media.filter(each => each.bin === parent),
-    ...bins.filter(each => each.parent === parent).flatMap(each => of(each.id)),
-  ];
-  const all = of(bin);
-  // Media of a bin that is not among the bins (an orphan) is still on the master bin's tape.
-  return bin === null ? [...all, ...media.filter(each => !all.includes(each))] : all;
+  const group = <T,>(items: readonly T[], key: (item: T) => string | null) => {
+    const groups = new Map<string | null, T[]>();
+    for (const item of items) { const list = groups.get(key(item)); if (list) list.push(item); else groups.set(key(item), [item]); }
+    return groups;
+  };
+  const mediaIn = group(media, each => each.bin);
+  const binsIn = group(bins, each => each.parent);
+  // Each bin once: a project whose bins hold each other (which the engine refuses) does not go round.
+  const seen = new Set<string | null>();
+  const all: Media[] = [];
+  const take = (parent: string | null) => {
+    if (seen.has(parent)) return;
+    seen.add(parent);
+    all.push(...mediaIn.get(parent) ?? []);
+    for (const child of binsIn.get(parent) ?? []) take(child.id);
+  };
+  take(bin);
+  if (bin !== null) return all;
+  // Media of a bin that is not among the bins (an orphan), or of bins that hold each other, is still on the master bin's tape.
+  const taken = new Set(all);
+  return [...all, ...media.filter(each => !taken.has(each))];
 }
 
 /** The medium and its frame at a frame of the tape, which is never between two media: a frame is of one of them. */

@@ -290,6 +290,11 @@ describe('the Cut page', () => {
     expect(tapeMedia([m1, m4, m3, m2], bins, 'b1').map(each => each.id)).toEqual(['m3', 'm4']);
     expect(tapeMedia([m1, m4, m3, m2], bins, null).map(each => each.id)).toEqual(['m1', 'm2', 'm3', 'm4']);
     expect(tapeMedia([m1, m4, m3, m2], bins, 'b2').map(each => each.id)).toEqual(['m4']);
+    // Bins that hold each other (the engine refuses them) are each taken once, and their media stay on the master tape.
+    const round = [{ id: 'x1', name: 'X1', parent: 'x2' }, { id: 'x2', name: 'X2', parent: 'x1' }];
+    const mx = { ...m3, id: 'mx', bin: 'x1' };
+    expect(tapeMedia([mx, m1], round, 'x1').map(each => each.id)).toEqual(['mx']);
+    expect(tapeMedia([mx, m1], round, null).map(each => each.id)).toEqual(['m1', 'mx']);
     const { notify } = await mount({ pool: { media: [m1, m2, m3, m4], bins } });
     fireEvent.click(screen.getByRole('button', { name: 'Source tape' })); await settle();
     // The master bin's tape is all the media.

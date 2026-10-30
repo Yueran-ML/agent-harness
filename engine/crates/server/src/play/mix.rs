@@ -715,7 +715,7 @@ mod tests {
     #[allow(
         clippy::cast_precision_loss,
         clippy::float_cmp,
-        reason = "taps and samples far within the range of an f64; the one case that is given as                   it is"
+        reason = "taps and samples far within an f64; the case that is given back as it is"
     )]
     fn a_sample_between_samples_is_a_windowed_sinc_of_those_about_it() {
         use std::f64::consts::PI;

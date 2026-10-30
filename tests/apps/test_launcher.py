@@ -401,6 +401,7 @@ def test_the_composition_can_be_printed_instead_of_run(
         "config": {
             "enabled": "${COLUMBINA_VIDEO:-0}",
             "whisper_model": "${COLUMBINA_WHISPER_MODEL:-}",
+            "engine": "${COLUMBINA_ENGINE:-}",
         },
     }
     assert entries["spill"] == {

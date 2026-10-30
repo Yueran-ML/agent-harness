@@ -95,17 +95,41 @@ describe('the timeline display', () => {
     expect(document.querySelector<HTMLElement>('[data-track="v1"]')?.style.height).toBe('80px');
     expect(call).toHaveBeenCalledTimes(before);
   });
-  it('zooms at the pointer, fits the film with Shift+Z and follows playback', () => {
-    const { props, rerender } = mount(timeline(Array.from({ length: 20 }, (_, i) => clip(`c${i}`, i * 100))));
+  it('takes the wheel and the keys of zoom as DaVinci Resolve, around the playhead, and follows playback', () => {
+    const t = timeline(Array.from({ length: 20 }, (_, i) => clip(`c${i}`, i * 100)));
+    t.tracks.push({ id: 'a1', name: 'A1', kind: 'audio', enabled: true, locked: false, clips: [], transitions: [] });
+    const { props, rerender } = mount(t);
+    rerender(<Timeline {...props} frame={150} />);
     const root = screen.getByRole('region', { name: 'Timeline' });
     const scroll = document.querySelector<HTMLElement>('.timeline-scroll')!;
+    const scale = () => Number(root.dataset.scale);
     scroll.scrollLeft = 400; fireEvent.scroll(scroll); draw();
-    fireEvent.wheel(scroll, { ctrlKey: true, deltaY: -100, clientX: HEADER_WIDTH + 200 });
-    expect(Number(root.dataset.scale)).toBeGreaterThan(4);
-    expect((scroll.scrollLeft + 200) / Number(root.dataset.scale)).toBeCloseTo(150);
+    // Reference Manual 20, p. 712: Alt with the wheel zooms, centred on the playhead (p. 711), which stays where it is.
+    fireEvent.wheel(scroll, { altKey: true, deltaY: -100, clientX: HEADER_WIDTH + 20 });
+    expect(scale()).toBeGreaterThan(4);
+    expect((scroll.scrollLeft + 200) / scale()).toBeCloseTo(150);
+    // Ctrl with the wheel goes forward and back in time, at the same zoom.
+    const zoomed = scale(); const left = scroll.scrollLeft;
+    fireEvent.wheel(scroll, { ctrlKey: true, deltaY: 120 });
+    expect(scroll.scrollLeft).toBe(left + 120);
+    expect(scale()).toBe(zoomed);
+    // Shift with the wheel makes the tracks of the part under the pointer higher or lower; told as sideways too.
+    const height = (id: string) => document.querySelector<HTMLElement>(`[data-track="${id}"]`)!.style.height;
+    fireEvent.wheel(document.querySelector('[data-track="a1"] .timeline-lane')!, { shiftKey: true, deltaY: -100 });
+    expect([height('v1'), height('a1')]).toEqual(['72px', '80px']);
+    fireEvent.wheel(document.querySelector('[data-track="v1"] .timeline-lane')!, { shiftKey: true, deltaX: 100 });
+    expect([height('v1'), height('a1')]).toEqual(['64px', '80px']);
+    // Shift+Z fits the whole timeline, and pressed again goes back to the zoom before, around the playhead.
     fireEvent.keyDown(root, { key: 'z', shiftKey: true });
-    expect(Number(root.dataset.scale)).toBeCloseTo(760 / 2000);
+    expect(scale()).toBeCloseTo(760 / 2000);
+    rerender(<Timeline {...props} frame={1000} />);
+    fireEvent.keyDown(root, { key: 'z', shiftKey: true });
+    expect(scale()).toBe(zoomed);
+    expect(scroll.scrollLeft).toBe(Math.round(1000 * zoomed - 400));
+    // Ctrl+= zooms in around the playhead too.
     fireEvent.keyDown(root, { key: '=', ctrlKey: true });
+    expect(scale()).toBeCloseTo(zoomed * 1.25);
+    expect((scroll.scrollLeft + 400) / scale()).toBeCloseTo(1000, 0);
     rerender(<Timeline {...props} frame={1900} playing />);
     expect(scroll.scrollLeft).toBeGreaterThan(0);
   });

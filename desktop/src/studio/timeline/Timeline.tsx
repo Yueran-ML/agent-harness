@@ -69,8 +69,8 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   const closeMenu = useCallback(() => setMenu(null), []);
   const [held, setHeld] = useState<{ frame: number; dragging: boolean } | null>(null);
   const drag = useRef<{ frame: number } | null>(null);
-  const now = useRef({ view, onSeek, overview });
-  now.current = { view, onSeek, overview };
+  const now = useRef({ view, onSeek, overview, frame, heights, trackHeight });
+  now.current = { view, onSeek, overview, frame, heights, trackHeight };
   const scrub = useMemo(() => new Scrub((to, scrubbing) => now.current.onSeek(to, scrubbing)), []);
   const waves = useMemo(() => new Waveforms(bridge, session), [bridge, session]);
   useEffect(() => { waves.connect(); return () => waves.disconnect(); }, [waves]);
@@ -118,14 +118,38 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
     });
   }, [frame, playing, follow]);
 
-  const zoom = useCallback((factor: number, anchor?: number) => now.current.overview ? undefined : setView(old => {
-    const next = zoomAt(old.scale, old.left, anchor ?? old.width / 2, factor);
-    return { ...old, scale: next.scale, left: next.scroll };
+  /**
+   * Zoom by `factor`, centred on the playhead as DaVinci Resolve zooms (Reference Manual 20, p. 711):
+   * the playhead stays where it is in the view, and one out of the view is brought to its middle.
+   */
+  const zoom = useCallback((factor: number) => now.current.overview ? undefined : setView(old => {
+    const playhead = now.current.frame * old.scale - old.left;
+    if (playhead >= 0 && playhead <= old.width) {
+      const next = zoomAt(old.scale, old.left, playhead, factor);
+      return { ...old, scale: next.scale, left: next.scroll };
+    }
+    const scale = zoomAt(old.scale, old.left, 0, factor).scale;
+    return { ...old, scale, left: Math.max(0, Math.round(now.current.frame * scale - old.width / 2)) };
   }), []);
   // Fitting reads the end when it is asked for, so that the bar is not drawn again as the timeline changes.
   const ends = useRef(end);
   ends.current = end;
-  const fit = useCallback(() => setView(old => ({ ...old, scale: fitZoom(ends.current, old.width), left: 0 })), []);
+  // The zoom that fitting left, and the one it was at before, which Shift+Z goes back to.
+  const unfit = useRef<{ fitted: number; scale: number } | null>(null);
+  /**
+   * Shift+Z, as DaVinci Resolve has it: the whole timeline fitted to the view; pressed again, the
+   * zoom that was before, around the playhead where it is now (Reference Manual 20, p. 711).
+   */
+  const fit = useCallback(() => setView(old => {
+    const was = unfit.current;
+    if (was && was.fitted === old.scale) {
+      unfit.current = null;
+      return { ...old, scale: was.scale, left: Math.max(0, Math.round(now.current.frame * was.scale - old.width / 2)) };
+    }
+    const scale = fitZoom(ends.current, old.width);
+    unfit.current = { fitted: scale, scale: old.scale };
+    return { ...old, scale, left: 0 };
+  }), []);
   // The whole timeline is always shown in an overview, as it grows and as the view is made wider.
   useEffect(() => {
     if (!overview) return;
@@ -143,15 +167,33 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   useEffect(() => {
     const element = scroll.current;
     if (!element) return;
+    // The wheel as DaVinci Resolve takes it on the timeline (Reference Manual 20, p. 712): with Alt
+    // it zooms, with Ctrl it goes back and forward in time, with Shift it makes the tracks of the
+    // part under the pointer (picture and subtitles, or sound) higher or lower; alone it scrolls the
+    // tracks. A wheel turned with Shift may be told as a sideways one.
     const wheel = (event: WheelEvent) => {
-      if (event.ctrlKey || event.metaKey) {
+      const by = event.deltaY !== 0 ? event.deltaY : event.deltaX;
+      if (by === 0) return;
+      if (event.altKey && !event.ctrlKey && !event.metaKey) {
         event.preventDefault();
-        const anchor = Math.max(0, Math.min(now.current.view.width, event.clientX - element.getBoundingClientRect().left - HEADER_WIDTH));
-        zoom(Math.exp(-event.deltaY * 0.002), anchor);
-      } else if (event.shiftKey && event.deltaX === 0) {
+        zoom(Math.exp(-by * 0.002));
+      } else if ((event.ctrlKey || event.metaKey) && !event.altKey) {
         event.preventDefault();
-        element.scrollLeft = Math.max(0, element.scrollLeft + event.deltaY);
+        element.scrollLeft = Math.max(0, element.scrollLeft + by);
         setView(old => ({ ...old, left: element.scrollLeft }));
+      } else if (event.shiftKey) {
+        event.preventDefault();
+        const pointed = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-track]')?.dataset.kind : undefined;
+        const sound = pointed === 'audio';
+        const { heights: old, trackHeight: base } = now.current;
+        const step = by < 0 ? 8 : -8;
+        const changed: Record<string, number> = {};
+        for (const each of element.querySelectorAll<HTMLElement>('[data-track]')) {
+          if ((each.dataset.kind === 'audio') !== sound) continue;
+          const id = each.dataset.track!;
+          changed[id] = Math.max(40, Math.min(240, (old[id] ?? base) + step));
+        }
+        setHeights(was => ({ ...was, ...changed }));
       }
     };
     element.addEventListener('wheel', wheel, { passive: false });

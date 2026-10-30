@@ -1,3 +1,4 @@
+import { useId } from 'react';
 import { useWords } from '../../app/locale';
 import type { Op, Rate, Timeline } from '../engine';
 import { rateText } from '../timecode';
@@ -19,9 +20,10 @@ const rateKey = (rate: Rate) => `${rate.num}/${rate.den}`;
 
 /**
  * The settings of the timeline: its name, the size of its picture, its frame rate and the rate of
- * its sound, each sent as one change. Where the timeline has clips, the frame rate says what
- * changing it does, and a change that would take a clip past its media is refused with a sentence
- * of its own.
+ * its sound, each sent as one change. As in DaVinci Resolve, the frame rate is locked once the
+ * timeline has a clip or a subtitle, and says that a new timeline can take another; the other
+ * settings stay open. Should the engine still refuse a rate (content came meanwhile), it is said
+ * in a sentence of its own.
  */
 export function TimelineSettings({ timeline, commit }: { timeline: Timeline; commit: Commit }) {
   const words = useWords();
@@ -29,6 +31,7 @@ export function TimelineSettings({ timeline, commit }: { timeline: Timeline; com
   const hints = words.hint.studio.inspector;
   const set = (change: Omit<Extract<Op, { op: 'set_timeline' }>, 'op' | 'id'>) =>
     void commit(() => [{ op: 'set_timeline', id: timeline.id, ...change }], { overrides: { out_of_source: hints.rateRefused } });
+  const rateNote = useId();
   const hasClips = timeline.tracks.some(track => track.kind === 'subtitle' ? track.cues.length > 0 : track.clips.length > 0);
   const size = SIZES.find(([width, height]) => width === timeline.width && height === timeline.height);
   const rates = RATES.some(rate => rateKey(rate) === rateKey(timeline.rate)) ? RATES : [...RATES, timeline.rate];
@@ -45,13 +48,13 @@ export function TimelineSettings({ timeline, commit }: { timeline: Timeline; com
       onCommit={width => set({ width })} />
     <NumberField name="height" label={labels.height} value={timeline.height} fallback={1080} unit="px" min={16} max={16384} digits={0} scrub={2} fit={even}
       onCommit={height => set({ height })} />
-    <ChoiceField name="rate" label={labels.frameRate} value={rateKey(timeline.rate)}
+    <ChoiceField name="rate" label={labels.frameRate} value={rateKey(timeline.rate)} disabled={hasClips} describedBy={hasClips ? rateNote : undefined}
       options={rates.map(rate => ({ value: rateKey(rate), label: words.label.studio.fps(rateText(rate)) }))}
       onCommit={value => {
         const [num, den] = value.split('/').map(Number);
         set({ rate: { num, den } });
       }} />
-    {hasClips && <p className="caption inspector-note">{hints.rate}</p>}
+    {hasClips && <p id={rateNote} className="caption inspector-note" data-test="rate-locked">{hints.rate}</p>}
     <ChoiceField name="sample_rate" label={labels.sampleRate} value={String(timeline.sample_rate)}
       options={SAMPLE_RATES.map(rate => ({ value: String(rate), label: `${rate / 1000} kHz` }))}
       onCommit={value => set({ sample_rate: Number(value) })} />

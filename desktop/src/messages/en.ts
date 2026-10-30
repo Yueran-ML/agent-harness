@@ -1412,7 +1412,7 @@ export const en = {
       inspectorEmpty: 'Select a clip on the timeline.',
       inspector: {
         longest: (frames: number) => `The longest that fits is ${frames === 1 ? '1 frame' : `${frames} frames`}.`,
-        rate: 'A clip keeps its number of frames at another frame rate, so it lasts longer or shorter. A change that would take a clip past the end of its media is refused.',
+        rate: 'The frame rate is locked because the timeline has content. A new timeline can use another rate.',
         rateRefused: 'At this frame rate, a clip would run past the end of its media.',
         fadeAtTransition: 'A transition is at this edge, so a fade cannot be set here.',
         speedMedia: 'Only clips of media can change speed.',

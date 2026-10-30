@@ -240,13 +240,16 @@ export function ColorField({ label, name, value, onCommit }: { label: string; na
 }
 
 /** One of a few choices, sent as it is chosen. */
-export function ChoiceField<T extends string>({ label, name, value, options, disabled, onCommit }: {
-  label: string; name: string; value: T | null; options: readonly { value: T; label: string }[]; disabled?: boolean; onCommit: (value: T) => void;
+export function ChoiceField<T extends string>({ label, name, value, options, disabled, describedBy, onCommit }: {
+  label: string; name: string; value: T | null; options: readonly { value: T; label: string }[]; disabled?: boolean;
+  /** The id of words that say more of it: why it cannot be chosen, say. */
+  describedBy?: string;
+  onCommit: (value: T) => void;
 }) {
   const id = useId();
   return <div className="inspector-row" data-field={name} data-mixed={value === null || undefined}>
     <label htmlFor={id} className="inspector-label">{label}</label>
-    <select id={id} className="field inspector-select" value={value ?? ''} disabled={disabled}
+    <select id={id} className="field inspector-select" value={value ?? ''} disabled={disabled} aria-describedby={describedBy}
       onChange={event => { if (event.target.value) onCommit(event.target.value as T); }}>
       {value === null && <option value="">{MIXED}</option>}
       {options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}

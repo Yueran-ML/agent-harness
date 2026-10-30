@@ -275,14 +275,17 @@ describe('the panels', () => {
     expect([...kind.options].map(option => option.value)).toEqual(['crossfade']);
   });
 
-  it('set the timeline where nothing is chosen, and say what a frame rate that does not fit does', async () => {
-    const call = vi.fn().mockResolvedValueOnce(refused('out_of_source', { media: 'm1', why: 'past_end' })).mockResolvedValue({ ok: true, result: {} });
+  it('set the timeline where nothing is chosen, with its frame rate locked while it has content', async () => {
+    const call = vi.fn().mockResolvedValue({ ok: true, result: {} });
     mount({ call });
     expect(screen.getByText('Select a clip on the timeline.')).toBeDefined();
-    expect(screen.getByText(/A clip keeps its number of frames at another frame rate/)).toBeDefined();
-    fireEvent.change(row('rate').querySelector('select')!, { target: { value: '30000/1001' } });
-    await settle();
-    expect(screen.getByRole('alert').textContent).toContain('At this frame rate, a clip would run past the end of its media.');
+    const rate = row('rate').querySelector('select')!;
+    expect(rate.disabled).toBe(true);
+    const note = screen.getByText('The frame rate is locked because the timeline has content. A new timeline can use another rate.');
+    expect(rate.getAttribute('aria-describedby')).toBe(note.id);
+    // The other settings stay open.
+    for (const name of ['resolution', 'sample_rate']) expect(row(name).querySelector('select')!.disabled).toBe(false);
+    expect(box('width').disabled).toBe(false);
     type(box('width'), '1281');
     fireEvent.change(row('resolution').querySelector('select')!, { target: { value: '3840x2160' } });
     fireEvent.change(row('sample_rate').querySelector('select')!, { target: { value: '96000' } });
@@ -291,11 +294,35 @@ describe('the panels', () => {
     type(name, 'Final cut');
     await settle();
     expect(applied(call).map(each => (each as { ops: unknown[] }).ops[0])).toEqual([
-      { op: 'set_timeline', id: 't1', rate: { num: 30000, den: 1001 } },
       { op: 'set_timeline', id: 't1', width: 1280 },
       { op: 'set_timeline', id: 't1', width: 3840, height: 2160 },
       { op: 'set_timeline', id: 't1', sample_rate: 96000 },
       { op: 'set_timeline', id: 't1', name: 'Final cut' },
+    ]);
+  });
+
+  it('lock the frame rate for a subtitle alone, and free it on a timeline with empty tracks', async () => {
+    const subtitles = (cues: { id: string; start: number; length: number; text: string }[]) =>
+      ({ id: 's1', kind: 'subtitle' as const, name: 'ST1', language: 'en', enabled: true, locked: false, cues });
+    const empty = make([track('v1', 'video', []), track('a1', 'audio', [])]);
+    const withCue = { ...empty, tracks: [...empty.tracks, subtitles([{ id: 'q1', start: 0, length: 50, text: 'Hi' }])] };
+    const call = vi.fn().mockResolvedValueOnce(refused('out_of_source', { media: 'm1', why: 'past_end' })).mockResolvedValue({ ok: true, result: {} });
+    const { rerender } = mount({ call, timeline: withCue as Timeline });
+    expect(row('rate').querySelector('select')!.disabled).toBe(true);
+    rerender({ timeline: { ...empty, tracks: [...empty.tracks, subtitles([])] } as Timeline });
+    const rate = row('rate').querySelector('select')!;
+    expect(rate.disabled).toBe(false);
+    expect(rate.getAttribute('aria-describedby')).toBeNull();
+    expect(screen.queryByText(/The frame rate is locked/)).toBeNull();
+    // Content that came meanwhile: the engine refuses, and says so in a sentence of its own.
+    fireEvent.change(rate, { target: { value: '30000/1001' } });
+    await settle();
+    expect(screen.getByRole('alert').textContent).toContain('At this frame rate, a clip would run past the end of its media.');
+    fireEvent.change(rate, { target: { value: '50/1' } });
+    await settle();
+    expect(applied(call).map(each => (each as { ops: unknown[] }).ops[0])).toEqual([
+      { op: 'set_timeline', id: 't1', rate: { num: 30000, den: 1001 } },
+      { op: 'set_timeline', id: 't1', rate: { num: 50, den: 1 } },
     ]);
   });
 });

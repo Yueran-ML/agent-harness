@@ -1228,7 +1228,7 @@ export const zhCN: Messages = {
       inspectorEmpty: '在时间线上选择一个片段。',
       inspector: {
         longest: (frames: number) => `最长可用 ${frames} 帧。`,
-        rate: '改帧率时片段保持帧数，所占时长随之改变。会让片段超出素材末尾的修改将被拒绝。',
+        rate: '时间线已有内容，帧率已锁定。新建时间线时可以选用其他帧率。',
         rateRefused: '在这个帧率下，有片段会超出素材末尾。',
         fadeAtTransition: '这一端有转场，不能设置淡入淡出。',
         speedMedia: '只有素材片段可以变速。',

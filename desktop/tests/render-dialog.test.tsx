@@ -275,11 +275,18 @@ describe('the progress of the export', () => {
     expect(strip.dataset.state).toBe('running');
     expect(strip.textContent).toContain('Exporting');
     expect(strip.textContent).toContain('Main');
+    // Before the engine tells how many frames, the bar is of one frame, not of none.
+    expect(one('render-bar')!.getAttribute('aria-valuemax')).toBe('1');
+    // A screen reader is told that it started, and not of each frame.
+    expect(one('render-announced')!.textContent).toBe('Exporting Main');
+    expect(strip.getAttribute('role')).toBe('group');
     progress({ frame: 50, frames: 200, fps: 48.25, encoder: 'h264_nvenc', path: 'F:\\film\\Main.mp4' });
     expect(one('render-numbers')!.textContent).toBe('50 of 200 frames · 48.3 fps · h264_nvenc');
     expect(one('render-bar')!.getAttribute('aria-valuenow')).toBe('50');
     expect((one('render-bar')!.firstChild as HTMLElement).style.width).toBe('25%');
     expect(strip.textContent).toContain('Main.mp4');
+    expect(one('render-bar')!.getAttribute('aria-valuemax')).toBe('200');
+    expect(one('render-announced')!.textContent).toBe('Exporting Main');
     // It lies over nothing: the views stay shown, and the page goes on taking its keys.
     expect(document.body.dataset.overlay).toBeUndefined();
     expect(dialog()).toBeNull();
@@ -330,6 +337,7 @@ describe('the progress of the export', () => {
     const strip = one('render-progress')!;
     expect(strip.dataset.state).toBe('done');
     expect(strip.textContent).toContain('The export is finished.');
+    expect(one('render-announced')!.textContent).toBe('The export is finished. Main.mp4');
     expect(one('render-fallback')).toBeNull();
     fireEvent.click(one('render-reveal')!); await settle();
     expect(bridge.reveal).toHaveBeenCalledWith('render-1');

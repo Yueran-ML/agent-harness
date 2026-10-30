@@ -1353,7 +1353,7 @@ export const ja: Messages = {
         },
       },
       migration: {
-        done: (names: readonly string[]) => `古いプロジェクト ${names.length} 件（${names.join('、')}）をタイムラインに変換しました。元のファイルはそのまま残しています。`,
+        done: (names: readonly string[], count: number) => `古いプロジェクト ${count} 件（${names.join('、')}${count > names.length ? ` ほか ${count - names.length} 件` : ''}）をタイムラインに変換しました。元のファイルはそのまま残しています。`,
         failed: (count: number) => `古いプロジェクト ${count} 件を移行できませんでした。それらのファイルは変更していません。`,
         checkFailed: 'このフォルダーの古いプロジェクトを確認できませんでした。',
       },

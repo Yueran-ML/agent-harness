@@ -144,7 +144,7 @@ const samples: Record<string, unknown[][]> = {
   'label.studio.inspector.useLongest': [[1], [24]],
   'hint.studio.inspector.longest': [[1], [24]],
   'label.studio.render.frames': [[0, 250], [36, 250]],
-  'hint.studio.migration.done': [[['film']], [['film', 'trip', 'talk']], [['旅行', '会议']]],
+  'hint.studio.migration.done': [[['film'], 1], [['film', 'trip', 'talk'], 3], [['旅行', '会议'], 2], [['film', 'trip', 'talk'], 12]],
   'hint.studio.migration.failed': [[1], [3]],
 };
 

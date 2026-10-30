@@ -1463,9 +1463,10 @@ export const en = {
         },
       },
       migration: {
-        done: (names: readonly string[]) => (names.length === 1
+        /** `names` are those of the first few of `count`; the rest are counted. */
+        done: (names: readonly string[], count: number) => (count === 1
           ? `An old project became a timeline: ${names[0]}. Its files are kept as they were.`
-          : `${names.length} old projects became timelines: ${names.join(', ')}. Their files are kept as they were.`),
+          : `${count} old projects became timelines: ${names.join(', ')}${count > names.length ? `, and ${count - names.length} more` : ''}. Their files are kept as they were.`),
         failed: (count: number) => (count === 1
           ? 'An old project could not be migrated. Its files are untouched.'
           : `${count} old projects could not be migrated. Their files are untouched.`),

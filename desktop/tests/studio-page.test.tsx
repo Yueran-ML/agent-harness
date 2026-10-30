@@ -428,6 +428,17 @@ describe('the old projects of the folder, as the studio opens', () => {
     expect(marked('migration-failed')).toEqual([]);
   });
 
+  it('names three timelines in its sentence and counts the rest, and tells apart two reports of one folder', async () => {
+    const failing = vi.spyOn(console, 'error');
+    await opened();
+    const many = ['a', 'b', 'c', 'd', 'e'].map(name => ({ source: `F:/work/${name}`, dropped: [], warnings: [] }));
+    engine.tell(migrated([...many, { source: 'F:/work/x', error: 'first' }, { source: 'F:/work/x', error: 'again' }]));
+    expect(one('migration-done').textContent).toBe('5 old projects became timelines: a, b, c, and 2 more. Their files are kept as they were.');
+    fireEvent.click(one('migration-toggle'));
+    expect(one('migration-details').querySelectorAll('li[data-source]')).toHaveLength(7);
+    expect(failing.mock.calls.filter(([said]) => String(said).includes('same key'))).toEqual([]);
+  });
+
   it('says nothing where there was nothing to say, or of an engine that was open before', async () => {
     await opened();
     engine.tell(migrated([]));

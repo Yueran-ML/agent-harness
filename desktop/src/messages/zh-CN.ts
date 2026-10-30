@@ -1276,7 +1276,7 @@ export const zhCN: Messages = {
         },
       },
       migration: {
-        done: (names: readonly string[]) => `已把 ${names.length} 个旧工程转成时间线：${names.join('、')}。旧文件原样保留。`,
+        done: (names: readonly string[], count: number) => `已把 ${count} 个旧工程转成时间线：${names.join('、')}${count > names.length ? `，以及另外 ${count - names.length} 个` : ''}。旧文件原样保留。`,
         failed: (count: number) => `有 ${count} 个旧工程没能迁移，它们的文件没有改动。`,
         checkFailed: '没能检查这个文件夹里的旧工程。',
       },

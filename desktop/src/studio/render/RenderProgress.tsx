@@ -39,14 +39,20 @@ export function RenderProgress({ job, onCancel, onReveal, onDismiss }: {
       : job.state === 'cancelled' ? hints.cancelled
         : job.state === 'stopped' ? hints.stopped : null;
   const detail = job.state === 'failed' && job.message ? sentenceOf(job.message) : null;
-  return <div className="render-progress" role="status" aria-label={labels.exporting} data-state={job.state} data-test="render-progress">
+  const name = job.path ? fileName(job.path) : job.name;
+  // What a screen reader is told: that the export started, is being cancelled, or how it ended; not
+  // each frame, which the bar shows.
+  const announced = going ? `${job.state === 'cancelling' ? labels.cancelling : labels.exporting} ${job.name}` : `${said ?? ''} ${name}`;
+  return <div className="render-progress" role="group" aria-label={labels.exporting} data-state={job.state} data-test="render-progress">
+    <p className="sr-only" role="status" data-test="render-announced">{announced}</p>
     <div className="render-progress-words">
       <p>
         <strong>{going ? (job.state === 'cancelling' ? labels.cancelling : labels.exporting) : said}</strong>
-        <span className="render-progress-name" title={job.path ?? undefined}>{job.path ? fileName(job.path) : job.name}</span>
+        <span className="render-progress-name" title={job.path ?? undefined}>{name}</span>
       </p>
       {going && <>
-        <div className="render-bar" role="progressbar" aria-valuemin={0} aria-valuemax={job.frames} aria-valuenow={job.frame} data-test="render-bar">
+        <div className="render-bar" role="progressbar" aria-label={name} aria-valuemin={0} aria-valuemax={Math.max(1, job.frames)}
+          aria-valuenow={Math.min(job.frame, Math.max(1, job.frames))} data-test="render-bar">
           <span style={{ width: `${(part * 100).toFixed(1)}%` }} />
         </div>
         <p className="mono caption" data-test="render-numbers">

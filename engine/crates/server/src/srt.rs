@@ -289,9 +289,10 @@ mod tests {
             third,
             subtitles("S4", "fr"),
             subtitles("S5", "de"),
+            subtitles("S6", "en"),
         ];
         // In the order of the tracks, whatever the order they are chosen in; S5 is not chosen.
-        let chosen = ["S4", "S3", "S1", "S2", "V1"].map(String::from);
+        let chosen = ["S4", "S3", "S1", "S2", "S6", "V1"].map(String::from);
         let got = files(&timeline, &chosen, Path::new("out/cut.mov"), 0..100);
         assert_eq!(
             got.iter().map(|(path, _)| path.clone()).collect::<Vec<_>>(),
@@ -299,7 +300,8 @@ mod tests {
                 "out/cut.en.srt",
                 "out/cut.EN-2.srt",
                 "out/cut._中文_字幕_.srt",
-                "out/cut.fr.srt"
+                "out/cut.fr.srt",
+                "out/cut.en-3.srt"
             ]
             .map(PathBuf::from)
         );

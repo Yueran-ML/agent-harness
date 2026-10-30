@@ -703,4 +703,187 @@ mod tests {
         assert!((43..=45).contains(&rises), "{rises} cycles in 100 ms");
         assert!(left.iter().any(|value| value.abs() > 0.08));
     }
+
+    #[test]
+    #[allow(clippy::float_cmp, reason = "a hard pan drops the other side exactly")]
+    fn a_hard_pan_drops_the_other_side_exactly() {
+        assert_eq!(pan(-1.0), [std::f32::consts::SQRT_2, 0.0]);
+        assert_eq!(pan(1.0), [0.0, std::f32::consts::SQRT_2]);
+    }
+
+    #[test]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::float_cmp,
+        reason = "taps and samples far within the range of an f64; the one case that is given as                   it is"
+    )]
+    fn a_sample_between_samples_is_a_windowed_sinc_of_those_about_it() {
+        use std::f64::consts::PI;
+        let pcm: Vec<Stereo> = (0..2048_i32)
+            .map(|n| {
+                let n = f64::from(n);
+                #[allow(clippy::cast_possible_truncation)]
+                let pair = [
+                    (0.4 * (n * 0.37).sin()) as f32,
+                    (0.3 * (n * 1.91).cos()) as f32,
+                ];
+                pair
+            })
+            .collect();
+        for cutoff in [1.0, 0.91875, 0.5, 1.0 / 16.0] {
+            for phase in [0.0, 0.25, 0.5, 0.875] {
+                if phase == 0.0 && cutoff == 1.0 {
+                    continue;
+                }
+                let index = 1000;
+                let reach = radius(cutoff);
+                let (mut sum, mut weights) = ([0.0; 2], 0.0);
+                for tap in 1 - reach..=reach {
+                    let x = tap as f64 - phase;
+                    let angle = PI * cutoff * x;
+                    let sinc = if angle.abs() < 1e-12 {
+                        1.0
+                    } else {
+                        angle.sin() / angle
+                    };
+                    let weight = sinc * (0.5 + 0.5 * (PI * x / reach as f64).cos());
+                    let at = usize::try_from(index + tap).unwrap();
+                    sum[0] += f64::from(pcm[at][0]) * weight;
+                    sum[1] += f64::from(pcm[at][1]) * weight;
+                    weights += weight;
+                }
+                let got = resampled(&pcm, 1000, phase, cutoff);
+                for side in 0..2 {
+                    let want = sum[side] / weights;
+                    assert!(
+                        (f64::from(got[side]) - want).abs() < 1e-5,
+                        "{cutoff} at {phase}: {} != {want}",
+                        got[side]
+                    );
+                }
+            }
+        }
+    }
+
+    /// The blocks that a mix of the sound of `project` played on a device of `format` from
+    /// sample `from` gives, at most `most` of them, until it ends.
+    fn played(
+        project: &Arc<Project>,
+        format: AudioFormat,
+        from: i64,
+        most: usize,
+    ) -> Vec<Vec<f32>> {
+        let mut source = Mixer::new(Arc::clone(project), 0).source(format, from);
+        let mut blocks = vec![];
+        while let Some(block) = source.next().unwrap() {
+            blocks.push(block);
+            if blocks.len() == most {
+                break;
+            }
+        }
+        blocks
+    }
+
+    #[test]
+    fn a_real_mix_goes_on_from_block_to_block_and_ends_with_the_timeline() {
+        let Some(project) = real_project(crate::test_media::Sample::Wav) else {
+            return;
+        };
+        let project = Arc::new(project);
+        let stereo = AudioFormat {
+            rate: 44100,
+            channels: 2,
+        };
+        // Blocks of 882 frames, 960 samples of the timeline: the second from 0 is the first from
+        // 960.
+        let from_start = played(&project, stereo, 0, 2);
+        let from_second = played(&project, stereo, 960, 1);
+        assert_eq!(from_start[1], from_second[0]);
+        assert_ne!(from_start[0], from_start[1]);
+        // A second from its end, of two, the timeline ends after 50 blocks.
+        assert_eq!(played(&project, stereo, 48000, 60).len(), 50);
+        // 59 frames at 30000/1001 a second end at sample 94494; from 48000, blocks start 960
+        // samples apart.
+        let mut ntsc = (*project).clone();
+        ntsc.timelines[0].rate = columbina_model::Rate {
+            num: 30000,
+            den: 1001,
+        };
+        ntsc.timelines[0].tracks[0].clips[0].length = 59;
+        assert_eq!(played(&Arc::new(ntsc), stereo, 48000, 60).len(), 49);
+        // For one speaker, the two sides at equal power.
+        let one = AudioFormat {
+            rate: 44100,
+            channels: 1,
+        };
+        let mono = played(&project, one, 0, 2);
+        for (mono, stereo) in mono.iter().zip(&from_start) {
+            assert_eq!(mono.len() * 2, stereo.len());
+            for (one, pair) in mono.iter().zip(stereo.as_chunks::<2>().0) {
+                let want = ((pair[0] + pair[1]) * std::f32::consts::FRAC_1_SQRT_2).clamp(-1.0, 1.0);
+                assert!((one - want).abs() < 1e-6, "{one} != {want}");
+            }
+        }
+        assert!(mono[0].iter().any(|value| value.abs() > 0.1));
+        assert!(mono[0].iter().any(|value| *value < -0.1));
+    }
+
+    /// A WAV of 16 bits, stereo, at 48 kHz, of `frames` frames that `sample` gives.
+    fn wav(path: &std::path::Path, frames: u32, sample: impl Fn(u32) -> i16) {
+        let data = frames * 4;
+        let mut bytes = Vec::with_capacity(44 + data as usize);
+        bytes.extend(b"RIFF");
+        bytes.extend((36 + data).to_le_bytes());
+        bytes.extend(b"WAVEfmt ");
+        bytes.extend(16_u32.to_le_bytes());
+        bytes.extend(1_u16.to_le_bytes());
+        bytes.extend(2_u16.to_le_bytes());
+        bytes.extend(48000_u32.to_le_bytes());
+        bytes.extend((48000_u32 * 4).to_le_bytes());
+        bytes.extend(4_u16.to_le_bytes());
+        bytes.extend(16_u16.to_le_bytes());
+        bytes.extend(b"data");
+        bytes.extend(data.to_le_bytes());
+        for n in 0..frames {
+            let value = sample(n).to_le_bytes();
+            bytes.extend(value);
+            bytes.extend(value);
+        }
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn a_mix_played_on_a_device_of_a_lower_rate_drops_what_is_above_its_nyquist_frequency() {
+        if crate::test_media::media(crate::test_media::Sample::Wav).is_none() {
+            return;
+        }
+        // A tone at 24 kHz, the most that 48 kHz holds, is above the 22.05 kHz of 44.1 kHz.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("high.wav");
+        wav(&path, 96000, |n| if n % 2 == 0 { 16000 } else { -16000 });
+        let mut project = real_project(crate::test_media::Sample::Wav).unwrap();
+        let facts = columbina_media::probe(&path).unwrap();
+        project.media[0].path = path.to_string_lossy().into_owned();
+        project.media[0].facts = facts;
+        let project = Arc::new(project);
+        let format = AudioFormat {
+            rate: 44100,
+            channels: 2,
+        };
+        let blocks = played(&project, format, 24000, 10);
+        let left: Vec<f64> = blocks
+            .iter()
+            .flat_map(|block| {
+                block
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|pair| f64::from(pair[0]))
+            })
+            .collect();
+        #[allow(clippy::cast_precision_loss)]
+        let loudness =
+            (left.iter().map(|value| value * value).sum::<f64>() / left.len() as f64).sqrt();
+        assert!(loudness < 0.05, "{loudness}");
+    }
 }

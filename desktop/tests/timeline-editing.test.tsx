@@ -92,6 +92,26 @@ describe('timeline editing by pointer and keys', () => {
     fireEvent.keyDown(root(), { key: 'n' });
     expect(snapping()).toBe('false');
   });
+  it('copies a clip dragged with Alt, overwriting what the copy covers and keeping every setting, as one transaction', async () => {
+    // Reference Manual 20, p. 811: Option-drag duplicates the selected clips; Alt is held until the button is let go.
+    const t = timeline([clip('c1', 10, 60, { speed: { num: 2, den: 1 }, reverse: true, gain_db: -6, fade_in: 5 }), clip('c2', 100, 60)]);
+    const { call } = mount(t);
+    fireEvent.pointerDown(node(), pointer(30, { altKey: true })); fireEvent.pointerMove(root(), pointer(80, { altKey: true }));
+    // The copy overwrites the end of c1 and the start of c2, which are marked so as it is dragged.
+    expect([...document.querySelectorAll<HTMLElement>('[data-covered]')].map(each => each.dataset.covered)).toEqual(['c1', 'c2']);
+    fireEvent.pointerUp(root(), pointer(80, { altKey: true })); await settle();
+    const copy = { ...t.tracks[0].kind !== 'subtitle' ? t.tracks[0].clips[0] : null!, id: '', start: 60, link: null };
+    expect(call.mock.calls).toEqual([['transaction.apply', { revision: 17, ops: [
+      { edit: 'trim', timeline: 't1', clip: 'c1', edge: 'out', delta: -10, ripple: false, linked: false },
+      { edit: 'trim', timeline: 't1', clip: 'c2', edge: 'in', delta: 20, ripple: false, linked: false },
+      { op: 'insert_clip', timeline: 't1', track: 'v1', clip: copy },
+    ] }]]);
+    // Let go without Alt, it is a move.
+    call.mockClear();
+    fireEvent.pointerDown(node(), pointer(30, { altKey: true })); fireEvent.pointerMove(root(), pointer(80, { altKey: true }));
+    fireEvent.pointerUp(root(), pointer(80)); await settle();
+    expect(call.mock.calls[0][1].ops[0]).toMatchObject({ edit: 'move', clips: ['c1'], delta: 50 });
+  });
   it.each(['Escape', 'pointerCancel', 'blur'])('cancels a drag with %s without editing', async how => {
     const { call } = mount();
     fireEvent.pointerDown(node(), pointer(30)); fireEvent.pointerMove(root(), pointer(50));

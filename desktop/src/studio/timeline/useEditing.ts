@@ -326,6 +326,8 @@ export function useEditing(options: Options) {
       media: context.media, track: track?.dataset.track, overwrite: true, ripple: (event.ctrlKey || event.metaKey) && event.shiftKey,
       vertical: event.shiftKey && !event.ctrlKey && !event.metaKey,
       candidates: context.snapping !== (pointer.flip === true) ? pointer.candidates ??= snapCandidates(pointer.gesture.timeline, pointer.gesture.ids, context.frame, context.marks) : undefined, scale: context.view.scale,
+      // Alt held as it is let go copies the clips there, and they stay (Reference Manual 20, p. 811).
+      duplicate: event.altKey && !event.ctrlKey && !event.metaKey,
       // Track 1 of the Cut page is magnetic: a clip moved leaves no gap there (Reference Manual 20, pp. 584–588).
       magnetic: context.cut && context.tool === 'select' ? primaryTrack(pointer.gesture.timeline) : null,
     });

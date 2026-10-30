@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { selectClips, linkedClips, clipLocations, primaryTrack } from '../src/studio/timeline/selection';
 import { snap, snapCandidates } from '../src/studio/timeline/snap';
-import { beginDrag, dragTo, finishDrag, hitClip } from '../src/studio/timeline/interact';
+import { beginDrag, clearing, dragTo, finishDrag, hitClip } from '../src/studio/timeline/interact';
 import { clip, media, timeline } from './timeline-fixture';
 
 const scene = () => {
@@ -41,6 +41,30 @@ describe('Track 1 of the Cut page', () => {
     ]);
     // Not on Track 1, or with no magnetic track, it is a move as on the Edit page.
     expect(dragTo(beginDrag(t, 3, ['c2'], 'c2', 'move', 150, true)!, 120, { media: [media], scale: 1 }).then).toBeUndefined();
+  });
+});
+describe('clips copied with Alt', () => {
+  it('copy a linked pair into a new group, clear what the copies cover from the last span, and refuse a locked track', () => {
+    const t = scene();
+    t.tracks[1] = { ...t.tracks[1], clips: [clip('a2', 100, 100, { link: 'av' }), clip('long', 250, 400)] } as typeof t.tracks[1];
+    const dragged = dragTo(beginDrag(t, 3, ['c2'], 'c2', 'move', 150, true)!, 450, { media: [media], scale: 1, duplicate: true });
+    expect(dragged.command).toBeNull();
+    expect(finishDrag(dragged)?.ops).toEqual([
+      // On V1 nothing lies at 400–500; on A1 the long clip is split at 500, and its first part trimmed to 400.
+      { edit: 'blade', timeline: 't1', at: 500, tracks: ['a1'], linked: false },
+      { edit: 'trim', timeline: 't1', clip: 'long', edge: 'out', delta: -100, ripple: false, linked: false },
+      { op: 'insert_clip', timeline: 't1', track: 'v1', clip: { ...clip('c2', 400, 100, { source: { kind: 'media', media: 'm1', in: { ticks: 100, scale: 25 } } }), id: '', link: '$copy1' } },
+      { op: 'insert_clip', timeline: 't1', track: 'a1', clip: { ...clip('a2', 400, 100), id: '', link: '$copy1' } },
+    ]);
+    // Two spans over one clip: the later is cleared first, so each edit names the clip it finds.
+    expect(clearing('t1', [clip('x', 0, 100)], [[10, 20], [50, 60]], 'v1')).toEqual([
+      { edit: 'blade', timeline: 't1', at: 60, tracks: ['v1'], linked: false },
+      { edit: 'trim', timeline: 't1', clip: 'x', edge: 'out', delta: -10, ripple: false, linked: false },
+      { edit: 'blade', timeline: 't1', at: 20, tracks: ['v1'], linked: false },
+      { edit: 'trim', timeline: 't1', clip: 'x', edge: 'out', delta: -10, ripple: false, linked: false },
+    ]);
+    t.tracks[1] = { ...t.tracks[1], locked: true } as typeof t.tracks[1];
+    expect(finishDrag(dragTo(beginDrag(t, 3, ['c2'], 'c2', 'move', 150, true)!, 450, { media: [media], scale: 1, duplicate: true }))).toBeNull();
   });
 });
 describe('timeline selection and snapping', () => {

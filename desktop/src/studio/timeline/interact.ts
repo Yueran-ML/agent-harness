@@ -1,5 +1,5 @@
 import type { Clip, Media, Timeline } from '../engine';
-import type { Edit, Transaction } from './commands';
+import type { Change, Edit, Transaction } from './commands';
 import { clipLocations, linkedClips, type Located } from './selection';
 import { snap } from './snap';
 
@@ -16,6 +16,8 @@ export interface Dragged {
   covered: Preview[];
   /** Edits done after the command, in the same transaction: the gaps that a move leaves on Track 1 of the Cut page, closed. */
   then?: Edit[];
+  /** A move with Alt held: copies put where the clips would go, the clips staying (instead of the command). */
+  duplicate?: Change[];
 }
 
 /** A two-pixel seam rolls; the adjoining six-pixel edge trims. Body halves select slip or slide. */
@@ -94,11 +96,14 @@ function room(here: Located, moving: ReadonlySet<string>): { before: number; aft
 export function dragTo(gesture: Gesture, frame: number, options: {
   media: readonly Media[]; track?: string; overwrite?: boolean; ripple?: boolean; vertical?: boolean; candidates?: readonly number[]; scale?: number;
   magnetic?: { track: string; clips: ReadonlySet<string> } | null;
+  /** Alt held: the clips are copied there, and stay where they are (Reference Manual 20, p. 811). */
+  duplicate?: boolean;
 }): Dragged {
   const { timeline, locations, action, ids, linked } = gesture;
   const here = locations.get(gesture.clip)!;
   const moving = ids.map(id => locations.get(id)!);
-  const magnetic = options.magnetic && action === 'move' && !options.ripple && !options.vertical && options.magnetic.clips.has(gesture.clip) ? options.magnetic : null;
+  const copying = options.duplicate === true && action === 'move' && !options.ripple;
+  const magnetic = !copying && options.magnetic && action === 'move' && !options.ripple && !options.vertical && options.magnetic.clips.has(gesture.clip) ? options.magnetic : null;
   // The pointer on an edit point of Track 1 between two clips that stay: the clips go in there.
   if (magnetic && (options.track === undefined || options.track === magnetic.track)) {
     const cut = swapPoint(timeline, magnetic.track, new Set(ids), frame, options.scale ?? 1);
@@ -175,6 +180,11 @@ export function dragTo(gesture: Gesture, frame: number, options: {
     command = { edit: 'roll', ...common, left: action.left, right: action.right };
   }
   const changedTrack = command.edit === 'move' && command.to_track !== undefined;
+  if (copying) {
+    // The copies overwrite what they cover, the clips they are copied from too.
+    const ops = delta !== 0 || changedTrack ? duplicated(timeline, locations, preview) : null;
+    return { gesture, delta, point, clamped: delta !== requested, preview, covered: ops ? overwritten(timeline, preview, new Set()) : [], command: null, ...(ops ? { duplicate: ops } : {}) };
+  }
   const covered = command.edit === 'move' && command.overwrite ? overwritten(timeline, preview, together) : [];
   let done = delta !== 0 || changedTrack ? command : null;
   const gaps = magnetic && done ? closeLeft(timeline, magnetic.track, moving, preview) : [];
@@ -266,6 +276,60 @@ function overwritten(timeline: Timeline, preview: readonly Preview[], moving: Re
   return covered;
 }
 
+/**
+ * The edits that copy clips to where `preview` puts them, as DaVinci Resolve duplicates clips that
+ * are Option-dragged (Reference Manual 20, p. 811), in one transaction: what lies where the copies go
+ * is cleared as an overwrite clears it (see `clearing`), and each copy is put there with all the
+ * settings of its clip (speed, reverse, transform, gain, pan, fades, whether it is enabled); copies
+ * of clips linked together are linked together, in a new group. Transitions are not copied. Null
+ * where a copy would go on a track that is locked.
+ */
+function duplicated(timeline: Timeline, locations: ReadonlyMap<string, Located>, preview: readonly Preview[]): Change[] | null {
+  const byTrack = new Map<string, [number, number][]>();
+  for (const item of preview) byTrack.set(item.track, [...byTrack.get(item.track) ?? [], [item.start, item.start + item.length]]);
+  const ops: Change[] = [];
+  for (const [track, spans] of byTrack) {
+    const lane = timeline.tracks.find(each => each.id === track);
+    if (!lane || lane.kind === 'subtitle' || lane.locked) return null;
+    ops.push(...clearing(timeline.id, lane.clips, spans, track));
+  }
+  // A group of which two or more clips are copied is copied as a new group; a copy alone is in none.
+  const groups = new Map<string, number>();
+  for (const item of preview) { const link = locations.get(item.id)!.clip.link; if (link) groups.set(link, (groups.get(link) ?? 0) + 1); }
+  const names = new Map([...groups].filter(([, count]) => count > 1).map(([link], at) => [link, `$copy${at + 1}`]));
+  for (const item of preview) {
+    const { clip } = locations.get(item.id)!;
+    ops.push({ op: 'insert_clip', timeline: timeline.id, track: item.track, clip: { ...clip, id: '', start: item.start, link: clip.link ? names.get(clip.link) ?? null : null } });
+  }
+  return ops;
+}
+
+/**
+ * The edits that empty the frames `spans` of a track as an overwrite does, the rest staying: a clip
+ * inside is lifted, one across an end is trimmed back to it, one across both is split at the end
+ * and its first part trimmed to the start. The spans are done from the last to the first, so that
+ * each edit names a clip by the id it has then (a split keeps the id on its first part).
+ */
+export function clearing(timeline: string, clips: readonly Clip[], spans: readonly [number, number][], track: string): Edit[] {
+  const left = clips.map(clip => ({ id: clip.id, start: clip.start, end: clip.start + clip.length, gone: false }));
+  const lifted: string[] = [];
+  const edits: Edit[] = [];
+  for (const [from, to] of union(spans).reverse()) {
+    for (const clip of left) {
+      if (clip.gone || clip.end <= from || clip.start >= to) continue;
+      if (clip.start >= from && clip.end <= to) { lifted.push(clip.id); clip.gone = true; }
+      else if (clip.start < from && clip.end > to) {
+        edits.push({ edit: 'blade', timeline, at: to, tracks: [track], linked: false });
+        edits.push({ edit: 'trim', timeline, clip: clip.id, edge: 'out', delta: from - to, ripple: false, linked: false });
+        clip.end = from;
+      } else if (clip.start < from) { edits.push({ edit: 'trim', timeline, clip: clip.id, edge: 'out', delta: from - clip.end, ripple: false, linked: false }); clip.end = from; }
+      else { edits.push({ edit: 'trim', timeline, clip: clip.id, edge: 'in', delta: to - clip.start, ripple: false, linked: false }); clip.start = to; }
+    }
+  }
+  return lifted.length > 0 ? [{ edit: 'lift', timeline, clips: lifted, linked: false }, ...edits] : edits;
+}
+
 export function finishDrag(dragged: Dragged): Transaction | null {
+  if (dragged.duplicate) return { revision: dragged.gesture.revision, ops: dragged.duplicate };
   return dragged.command ? { revision: dragged.gesture.revision, ops: [dragged.command, ...(dragged.then ?? [])] } : null;
 }

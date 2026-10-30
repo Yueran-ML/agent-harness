@@ -2,7 +2,7 @@ import type { Key } from '../../app/keys';
 import type { Media, Monitor, Op, Rate, Time, Timeline, Transition } from '../engine';
 import { duration, snapPoints } from './geometry';
 import type { Change, Edit, Material, Targets, Transaction } from './commands';
-import type { Tool } from './interact';
+import { clearing, type Tool } from './interact';
 import { clipLocations, linkedClips, primaryTrack } from './selection';
 import type { Marks } from './snap';
 import { materialLength } from './drop';
@@ -217,22 +217,7 @@ export function nearestEditPoint(timeline: Timeline, frame: number): { at: numbe
  * the start. Each edit names clips as they are before it: a split keeps its id on the first part.
  */
 export function liftRange(timeline: Timeline, from: number, to: number): Edit[] {
-  const inside: string[] = [];
-  const edits: Edit[] = [];
-  for (const track of timeline.tracks) {
-    if (track.kind === 'subtitle' || track.locked) continue;
-    for (const clip of track.clips) {
-      const end = clip.start + clip.length;
-      if (end <= from || clip.start >= to) continue;
-      if (clip.start >= from && end <= to) inside.push(clip.id);
-      else if (clip.start < from && end > to) {
-        edits.push({ edit: 'blade', timeline: timeline.id, at: to, tracks: [track.id], linked: false });
-        edits.push({ edit: 'trim', timeline: timeline.id, clip: clip.id, edge: 'out', delta: from - to, ripple: false, linked: false });
-      } else if (clip.start < from) edits.push({ edit: 'trim', timeline: timeline.id, clip: clip.id, edge: 'out', delta: from - end, ripple: false, linked: false });
-      else edits.push({ edit: 'trim', timeline: timeline.id, clip: clip.id, edge: 'in', delta: to - clip.start, ripple: false, linked: false });
-    }
-  }
-  return inside.length > 0 ? [{ edit: 'lift', timeline: timeline.id, clips: inside, linked: false }, ...edits] : edits;
+  return timeline.tracks.flatMap(track => track.kind === 'subtitle' || track.locked ? [] : clearing(timeline.id, track.clips, [[from, to]], track.id));
 }
 
 export function editCommand(action: EditAction | null, context: EditContext): EditResult | null {

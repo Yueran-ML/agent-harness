@@ -91,7 +91,8 @@ function room(here: Located, moving: ReadonlySet<string>): { before: number; aft
  * gap there, as on DaVinci Resolve's Cut page (Reference Manual 20, pp. 584–588). Dropped with the
  * pointer on an edit point between two of its clips, it is put in there and the rest move aside
  * (a shuffle insert, "swapping clips"); dropped elsewhere it overwrites what it covers, and the gap
- * that it leaves on Track 1 is closed, the rest of the timeline moving back.
+ * that it leaves on Track 1 is closed, the rest of the timeline moving back; clips of other tracks
+ * across that gap stay where they are (`close_gap` with `straddling: 'stay'`).
  */
 export function dragTo(gesture: Gesture, frame: number, options: {
   media: readonly Media[]; track?: string; overwrite?: boolean; ripple?: boolean; vertical?: boolean; candidates?: readonly number[]; scale?: number;
@@ -196,7 +197,10 @@ export function dragTo(gesture: Gesture, frame: number, options: {
     done = null;
     gaps.length = 0;
   }
-  const then: Edit[] = gaps.map(({ at }) => ({ edit: 'close_gap', timeline: timeline.id, track: magnetic!.track, at }));
+  // Only Track 1 is closed up: clips of the tracks above or of sound that lie across the gap, as a
+  // bed of music or the clip just moved up off it does, stay where they are, and those after it move
+  // back with Track 1, superimposed clips "kept in sync" (Reference Manual 20, pp. 586, 588).
+  const then: Edit[] = gaps.map(({ at }) => ({ edit: 'close_gap', timeline: timeline.id, track: magnetic!.track, at, straddling: 'stay' }));
   return { gesture, delta, point, clamped: delta !== requested, preview, covered, command: done, ...(then.length > 0 ? { then } : {}) };
 }
 

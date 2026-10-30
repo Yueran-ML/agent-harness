@@ -25,19 +25,19 @@ describe('Track 1 of the Cut page', () => {
     // c2 (with its sound a2) 30 frames back over c1: its last 30 frames are left, and closed.
     expect(move(['c2'], 'c2', -30)).toEqual([
       { edit: 'move', timeline: 't1', delta: -30, linked: true, clips: ['c2', 'a2'], overwrite: true },
-      { edit: 'close_gap', timeline: 't1', track: 'v1', at: 170 },
+      { edit: 'close_gap', timeline: 't1', track: 'v1', at: 170, straddling: 'stay' },
     ]);
     // c3, the last, moved later into empty room: the gap it leaves would close and bring it back, so nothing is done.
     expect(move(['c3'], 'c3', 40)).toBeUndefined();
     // c1 moved later than c3: the gap at 0 closes, c2 and c3 moving back, and c1 with them.
     expect(move(['c1'], 'c1', 300)).toEqual([
       { edit: 'move', timeline: 't1', delta: 300, linked: true, clips: ['c1'], overwrite: true },
-      { edit: 'close_gap', timeline: 't1', track: 'v1', at: 0 },
+      { edit: 'close_gap', timeline: 't1', track: 'v1', at: 0, straddling: 'stay' },
     ]);
     // c1 and c3 later by 150 (c1 over the end of c2): the gap at 0 and the one c3 leaves after c1 are closed, the later first.
     expect(move(['c1', 'c3'], 'c1', 150)?.slice(1)).toEqual([
-      { edit: 'close_gap', timeline: 't1', track: 'v1', at: 250 },
-      { edit: 'close_gap', timeline: 't1', track: 'v1', at: 0 },
+      { edit: 'close_gap', timeline: 't1', track: 'v1', at: 250, straddling: 'stay' },
+      { edit: 'close_gap', timeline: 't1', track: 'v1', at: 0, straddling: 'stay' },
     ]);
     // Not on Track 1, or with no magnetic track, it is a move as on the Edit page.
     expect(dragTo(beginDrag(t, 3, ['c2'], 'c2', 'move', 150, true)!, 120, { media: [media], scale: 1 }).then).toBeUndefined();

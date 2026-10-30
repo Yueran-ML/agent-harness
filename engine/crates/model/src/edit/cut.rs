@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 
 use super::work::{union, Work};
-use super::EditError;
+use super::{EditError, Straddling};
 use crate::ops::{Op, OpError};
 use crate::project::{Clip, Cue, Id, Track, TrackKind};
 
@@ -77,9 +77,44 @@ pub(super) fn ripple_delete_range(
     work.shift(&tracks, to, from - to, &HashSet::new())
 }
 
-pub(super) fn close_gap(work: &mut Work, track: &str, at: i64) -> Result<(), EditError> {
+pub(super) fn close_gap(
+    work: &mut Work,
+    track: &str,
+    at: i64,
+    straddling: Straddling,
+) -> Result<(), EditError> {
     let (from, to) = gap_of(work.open(track)?, at).ok_or(EditError::EmptyRange)?;
-    work.close(&[(from, to)])
+    match straddling {
+        Straddling::Refuse => work.close(&[(from, to)]),
+        Straddling::Stay => close_around(work, from, to),
+    }
+}
+
+/// Close the frames `from` to `to` on every track that is not locked, leaving the clips that lie
+/// across them, in some of their frames, where they are: what starts at `to` or later moves back
+/// by the gap, and subtitles in it are cut out as every ripple cuts them. Refused with
+/// `ripple_blocked`, naming the clip that stays, where that would run a clip into it.
+fn close_around(work: &mut Work, from: i64, to: i64) -> Result<(), EditError> {
+    let by = from - to;
+    let tracks = work.all_unlocked();
+    for id in &tracks {
+        let clips = &work.track(id)?.clips;
+        let first = clips.iter().map(|c| c.start).filter(|&s| s >= to).min();
+        let stays = clips
+            .iter()
+            .filter(|c| c.start < to && from < c.end())
+            .max_by_key(|c| c.end());
+        if let (Some(first), Some(stays)) = (first, stays) {
+            if first + by < stays.end() {
+                return Err(EditError::RippleBlocked {
+                    track: id.clone(),
+                    clip: stays.id.clone(),
+                });
+            }
+        }
+    }
+    work.cut_cues(&tracks, from, to)?;
+    work.move_after(&tracks, to, by, &HashSet::new())
 }
 
 /// The gap of a track that `at` is in: from the end of what is before it, or the start of the
@@ -325,7 +360,7 @@ fn lift_cues(work: &mut Work, spans: &[(i64, i64)]) -> Result<Vec<(Id, Cue, i64)
 #[cfg(test)]
 mod tests {
     use super::super::fixture::*;
-    use super::super::{Edit, EditError};
+    use super::super::{Edit, EditError, Straddling};
     use crate::project::Alignment;
 
     fn ripple_delete(clips: &[&str]) -> Edit {
@@ -479,6 +514,7 @@ mod tests {
                 timeline: "t1".into(),
                 track: "V2".into(),
                 at: 30,
+                straddling: Straddling::Refuse,
             },
         );
         assert_eq!(cues(&project, "S1"), [("q7".into(), 0, 20)]);
@@ -539,6 +575,7 @@ mod tests {
             timeline: "t1".into(),
             track: "V2".into(),
             at,
+            straddling: Straddling::Refuse,
         };
         edit(&mut project, close(30));
         assert_eq!(clips(&project, "V2"), rows(&[("c5", 0, 50, 50)]));
@@ -918,6 +955,7 @@ mod tests {
             timeline: "t1".into(),
             track: "S1".into(),
             at: 50,
+            straddling: Straddling::Refuse,
         };
         // The gap is [40, 110): c1 on V1 is in it.
         let error = refused(project(), close.clone());
@@ -982,5 +1020,162 @@ mod tests {
                 clip: "c5".into()
             }
         );
+    }
+
+    /// The project with c1 and c2 lifted, leaving a gap on V1 and A1 from 0 to 100, and what is
+    /// given added: a gap that the Cut page closes on its first track.
+    fn lifted(ops: Vec<crate::Op>) -> crate::Project {
+        let mut project = with(project(), ops);
+        let lift = Edit::Lift {
+            timeline: "t1".into(),
+            clips: vec!["c1".into()],
+            linked: true,
+        };
+        edit(&mut project, lift);
+        project
+    }
+
+    fn close_v1(straddling: Straddling) -> Edit {
+        Edit::CloseGap {
+            timeline: "t1".into(),
+            track: "V1".into(),
+            at: 50,
+            straddling,
+        }
+    }
+
+    /// A bed of music on A2, across the gap.
+    fn bed() -> crate::Op {
+        crate::Op::InsertClip {
+            timeline: "t1".into(),
+            track: "A2".into(),
+            clip: clip("bed", 0, 200, 0, None),
+        }
+    }
+
+    #[test]
+    fn a_gap_closed_with_what_lies_across_it_staying_moves_what_follows_and_leaves_the_rest() {
+        let before = lifted(vec![bed()]);
+        // Every ripple refuses a clip across what it closes.
+        assert_eq!(
+            refused(before.clone(), close_v1(Straddling::Refuse)),
+            EditError::RippleBlocked {
+                track: "A2".into(),
+                clip: "bed".into()
+            }
+        );
+        let mut history = crate::History::new(before.clone());
+        history
+            .edit(vec![close_v1(Straddling::Stay)], "test")
+            .unwrap();
+        let after = history.project().clone();
+        assert_eq!(clips(&after, "V1"), rows(&[("c3", 0, 50, 150)]));
+        assert_eq!(clips(&after, "A1"), rows(&[("c4", 0, 50, 150)]));
+        // The bed stays as it was; c5 above V1 keeps in step with c3 under it.
+        assert_eq!(clips(&after, "A2"), clips(&before, "A2"));
+        assert_eq!(clips(&after, "V2"), rows(&[("c5", 20, 50, 50)]));
+        // The subtitle in the gap is cut out with it, and the one after moves back.
+        assert_eq!(cues(&after, "S1"), [("q7".into(), 10, 30)]);
+        history.undo("test").unwrap().unwrap();
+        assert_eq!(
+            history.project(),
+            &crate::Project {
+                next_id: after.next_id,
+                ..before
+            }
+        );
+        history.redo("test").unwrap().unwrap();
+        assert_eq!(history.project(), &after);
+    }
+
+    #[test]
+    fn a_clip_moved_straight_up_off_the_gap_stays_above_it() {
+        // c1 alone goes up to V2 where it was; c5 there is moved away first, out of its way.
+        let mut project = with(project(), vec![bed()]);
+        edit(
+            &mut project,
+            Edit::Lift {
+                timeline: "t1".into(),
+                clips: vec!["c5".into(), "c2".into()],
+                linked: false,
+            },
+        );
+        edit(
+            &mut project,
+            Edit::Move {
+                timeline: "t1".into(),
+                clips: vec!["c1".into()],
+                delta: 0,
+                to_track: Some("V2".into()),
+                overwrite: true,
+                linked: false,
+            },
+        );
+        assert!(matches!(
+            refused(project.clone(), close_v1(Straddling::Refuse)),
+            EditError::RippleBlocked { .. }
+        ));
+        edit(&mut project, close_v1(Straddling::Stay));
+        assert_eq!(clips(&project, "V1"), rows(&[("c3", 0, 50, 150)]));
+        assert_eq!(clips(&project, "A1"), rows(&[("c4", 0, 50, 150)]));
+        assert_eq!(clips(&project, "V2"), rows(&[("c1", 0, 100, 0)]));
+        assert_eq!(clips(&project, "A2"), rows(&[("bed", 0, 200, 0)]));
+    }
+
+    #[test]
+    fn a_clip_that_would_run_into_one_that_stays_is_refused_naming_it() {
+        // The sound of c1 stays on A1 while c1 goes up: c4 after it cannot move back into it.
+        let mut project = project();
+        edit(
+            &mut project,
+            Edit::Lift {
+                timeline: "t1".into(),
+                clips: vec!["c5".into()],
+                linked: false,
+            },
+        );
+        edit(
+            &mut project,
+            Edit::Move {
+                timeline: "t1".into(),
+                clips: vec!["c1".into()],
+                delta: 0,
+                to_track: Some("V2".into()),
+                overwrite: true,
+                linked: false,
+            },
+        );
+        assert_eq!(
+            refused(project.clone(), close_v1(Straddling::Stay)),
+            EditError::RippleBlocked {
+                track: "A1".into(),
+                clip: "c2".into()
+            }
+        );
+        // A locked track is left as it is, and nothing on it is in the way.
+        let mut project = with(project, vec![lock("A1")]);
+        edit(&mut project, close_v1(Straddling::Stay));
+        assert_eq!(clips(&project, "V1"), rows(&[("c3", 0, 50, 150)]));
+        assert_eq!(
+            clips(&project, "A1"),
+            rows(&[("c2", 0, 100, 0), ("c4", 100, 50, 150)])
+        );
+    }
+
+    #[test]
+    fn straddling_is_written_only_when_the_clips_across_stay() {
+        let written = serde_json::to_value(close_v1(Straddling::Refuse)).unwrap();
+        assert_eq!(
+            written,
+            serde_json::json!({"edit": "close_gap", "timeline": "t1", "track": "V1", "at": 50})
+        );
+        let written = serde_json::to_value(close_v1(Straddling::Stay)).unwrap();
+        assert_eq!(written["straddling"], "stay");
+        let read: Edit = serde_json::from_value(written).unwrap();
+        assert_eq!(read, close_v1(Straddling::Stay));
+        let unknown = serde_json::json!({
+            "edit": "close_gap", "timeline": "t1", "track": "V1", "at": 50, "straddling": "trim"
+        });
+        assert!(serde_json::from_value::<Edit>(unknown).is_err());
     }
 }

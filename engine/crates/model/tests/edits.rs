@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use columbina_model::resolve::duration;
 use columbina_model::span::source_span;
-use columbina_model::{expand, Clip, Edit, EditError, History, Project, Track};
+use columbina_model::{expand, Clip, Edit, EditError, History, Project, Straddling, Track};
 use gen::{check, clips_of, edit_of, making, making_of, project_of, recipe, Making, Recipe};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
@@ -510,6 +510,64 @@ proptest! {
                 }
             }
             prop_assert!(cut > 0, "{:?} cut nothing", edit);
+            Ok(())
+        })?;
+    }
+
+    #[test]
+    fn a_gap_closed_with_clips_across_it_staying_closes_the_gap_and_leaves_them_alone(
+        recipe in recipe(),
+        makings in prop::collection::vec(
+            prop_oneof![3 => making_of(Just(10usize)), 1 => making()],
+            1..6,
+        )
+    ) {
+        each_edit(&recipe, &makings, |before, edit, after| {
+            let Edit::CloseGap { track, at, straddling: Straddling::Stay, .. } = edit else {
+                return Ok(());
+            };
+            let Some(gap) = track_in(before, track) else { return Ok(()) };
+            let spans: Vec<(i64, i64)> = gap.clips.iter().map(|c| (c.start, c.end()))
+                .chain(gap.cues.iter().map(|q| (q.start, q.start + q.length))).collect();
+            let from = spans.iter().map(|&(_, e)| e).filter(|e| e <= at).max().unwrap_or(0);
+            let Some(to) = spans.iter().map(|&(s, _)| s).filter(|s| s > at).min() else {
+                return Ok(());
+            };
+            let across = |r: &Track| -> Vec<Clip> {
+                r.clips.iter().filter(|c| c.start < to && from < c.end()).cloned().collect()
+            };
+            match after {
+                Ok(after) => {
+                    // What lies across the gap is as it was, every clip of it.
+                    for r in &before.timelines[0].tracks {
+                        let now = track_in(after, &r.id).unwrap();
+                        for c in across(r) {
+                            prop_assert_eq!(
+                                serde_json::to_value(now.clips.iter().find(|n| n.id == c.id)).unwrap(),
+                                serde_json::to_value(Some(&c)).unwrap(),
+                                "{} in {:?}", c.id, edit
+                            );
+                        }
+                    }
+                    // On the track of the gap, what was after it now starts where it began.
+                    let now = track_in(after, track).unwrap();
+                    let first = now.clips.iter().map(|c| c.start)
+                        .chain(now.cues.iter().map(|q| q.start)).filter(|&s| s >= from).min();
+                    prop_assert_eq!(first, Some(from), "{:?}", edit);
+                }
+                Err(error) => {
+                    // Refused only where a clip after the gap would run into one across it.
+                    let EditError::RippleBlocked { track: blocked, clip: stays } = error else {
+                        return Ok(());
+                    };
+                    let r = track_in(before, blocked).unwrap();
+                    prop_assert!(!r.locked);
+                    let stays = r.clips.iter().find(|c| &c.id == stays).unwrap();
+                    prop_assert!(stays.start < to && from < stays.end());
+                    let first = r.clips.iter().map(|c| c.start).filter(|&s| s >= to).min();
+                    prop_assert!(first.is_some_and(|f| f - (to - from) < stays.end()), "{:?}", edit);
+                }
+            }
             Ok(())
         })?;
     }

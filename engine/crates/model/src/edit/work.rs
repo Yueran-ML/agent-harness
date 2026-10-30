@@ -392,7 +392,7 @@ impl<'a> Work<'a> {
 
     /// Cut a gap out of subtitles before moving what follows it. A subtitle across both
     /// ends keeps its two remaining parts together, at its original start.
-    fn cut_cues(&mut self, tracks: &[Id], from: i64, to: i64) -> Result<(), EditError> {
+    pub fn cut_cues(&mut self, tracks: &[Id], from: i64, to: i64) -> Result<(), EditError> {
         for track in tracks {
             let cues = self.track(track)?.cues.clone();
             for cue in cues {
@@ -486,6 +486,18 @@ impl<'a> Work<'a> {
         } else {
             self.split_cues(tracks, from)?;
         }
+        self.move_after(tracks, from, by, skip)
+    }
+
+    /// Move what starts at `from` or later on `tracks` by `by` frames, but for `skip`, as it is:
+    /// nothing in the way is looked for, and no subtitle is cut.
+    pub fn move_after(
+        &mut self,
+        tracks: &[Id],
+        from: i64,
+        by: i64,
+        skip: &HashSet<Id>,
+    ) -> Result<(), EditError> {
         for id in tracks {
             let track = self.track(id)?;
             let clips: Vec<Id> = track

@@ -12,7 +12,11 @@ export type Edit = { timeline: string } & (
   | { edit: 'place_on_top'; source: Material; at: number }
   | { edit: 'lift' | 'ripple_delete'; clips: string[]; linked: boolean }
   | { edit: 'ripple_delete_range'; from: number; to: number; tracks?: string[] }
-  | { edit: 'close_gap'; track: string; at: number }
+  /**
+   * `straddling: 'stay'` leaves clips of other tracks across the gap where they are (as Track 1 of
+   * the Cut page closes its gaps), instead of refusing; what starts after the gap still moves back.
+   */
+  | { edit: 'close_gap'; track: string; at: number; straddling?: 'refuse' | 'stay' }
   | { edit: 'blade'; at: number; tracks?: string[]; linked: boolean }
   | { edit: 'move'; clips: string[]; delta: number; to_track?: string; overwrite: boolean; linked: boolean }
   | { edit: 'insert_move'; clips: string[]; at: number; linked: boolean }

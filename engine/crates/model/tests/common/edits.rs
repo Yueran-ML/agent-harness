@@ -11,8 +11,8 @@
 
 use columbina_model::{
     apply, apply_done, Alignment, AudioFacts, Clip, CueItem, Edge, Edit, Facts, Identity, Material,
-    Media, Op, Project, Rate, Rgba, Source, Speed, TextAlign, Time, Timeline, TitleStyle, Track,
-    TrackKind, Transition, TransitionKind, VideoFacts,
+    Media, Op, Project, Rate, Rgba, Source, Speed, Straddling, TextAlign, Time, Timeline,
+    TitleStyle, Track, TrackKind, Transition, TransitionKind, VideoFacts,
 };
 use proptest::prelude::*;
 
@@ -703,6 +703,11 @@ pub fn edit_of(project: &Project, making: &Making) -> Edit {
                 timeline,
                 track,
                 at,
+                straddling: if m.flag(1) {
+                    Straddling::Stay
+                } else {
+                    Straddling::Refuse
+                },
             }
         }
         11 => Edit::Blade {

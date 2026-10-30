@@ -26,7 +26,8 @@
 //! the frames that it adds or takes away, so that what was in step stays in step. Where it takes
 //! frames away, and another track has a clip in them that the edit does not take away, the
 //! edit is refused with `ripple_blocked`, naming the track and the thing: lock that track, or cut
-//! the frames out of every track with `ripple_delete_range`.
+//! the frames out of every track with `ripple_delete_range`. A `close_gap` given
+//! `"straddling": "stay"` leaves such a clip where it is instead (see [`Straddling`]).
 //! Subtitles are cut with the frames taken away, and those after them move with the picture.
 //! An insert through a subtitle cuts it into two with the same text, leaving the new frames
 //! between them. Locked subtitle tracks stay as they were.
@@ -248,6 +249,9 @@ pub enum Edit {
         track: Id,
         /// A frame of the gap.
         at: i64,
+        /// What to do with what lies across the gap on the other tracks.
+        #[serde(default, skip_serializing_if = "Straddling::is_refuse")]
+        straddling: Straddling,
     },
     /// Cut the clips across `at` in two, on the tracks given or on every track that is not
     /// locked, and the clips linked to them.
@@ -539,6 +543,32 @@ pub enum Edge {
     Out,
 }
 
+/// What [`Edit::CloseGap`] does with a clip or subtitle of another track that lies across the
+/// gap, in some of its frames.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Straddling {
+    /// Refuse the edit with `ripple_blocked`, as every ripple does.
+    #[default]
+    Refuse,
+    /// Leave the clip where it is, as the Cut page of `DaVinci` Resolve closes the gaps of its
+    /// first track: what starts after the gap still moves back with the gap, so that
+    /// superimposed clips stay in step with what is under them, and subtitles in the gap are cut
+    /// out with it as every ripple cuts them. Where that would run a clip into one that stays,
+    /// on its track, the edit is refused with `ripple_blocked` naming the one that stays.
+    Stay,
+}
+
+impl Straddling {
+    #[allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde passes a reference"
+    )]
+    fn is_refuse(&self) -> bool {
+        *self == Self::Refuse
+    }
+}
+
 /// A subtitle of [`Edit::CuesFrom`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -772,7 +802,12 @@ pub(crate) fn run(project: &mut Project, edit: Edit) -> Result<Expansion, EditEr
         Edit::RippleDeleteRange {
             from, to, tracks, ..
         } => cut::ripple_delete_range(&mut work, from, to, tracks.as_deref()),
-        Edit::CloseGap { track, at, .. } => cut::close_gap(&mut work, &track, at),
+        Edit::CloseGap {
+            track,
+            at,
+            straddling,
+            ..
+        } => cut::close_gap(&mut work, &track, at, straddling),
         Edit::Blade {
             at, tracks, linked, ..
         } => cut::blade(&mut work, at, tracks.as_deref(), linked),

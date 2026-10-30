@@ -66,6 +66,60 @@ const cuts = (): Timeline => ({
   ],
 });
 
+/**
+ * Where a transaction's moves put the clips, and whether a `close_gap` after them is refused, as the
+ * engine refuses it: with `ripple_blocked` where a clip of another track that is not locked lies
+ * across the gap (unless `straddling` is 'stay'), or, with 'stay', where a clip after the gap would
+ * run into one that stays. Other edits are not followed.
+ */
+function rippleBlocked(project: Project, ops: readonly Record<string, unknown>[]): { track: string; clip: string } | null {
+  type Lane = { id: string; kind: string; locked: boolean; clips: { id: string; start: number; end: number }[] };
+  const lanes = new Map<string, Lane[]>(project.timelines.map(timeline => [timeline.id, timeline.tracks.map(track => ({
+    id: track.id, kind: track.kind, locked: track.locked,
+    clips: track.kind === 'subtitle' ? [] : track.clips.map(each => ({ id: each.id, start: each.start, end: each.start + each.length })),
+  }))]));
+  for (const op of ops) {
+    const tracks = lanes.get(op.timeline as string);
+    if (!tracks) continue;
+    if (op.edit === 'move') {
+      // Those of the kind of `to_track` go to tracks as far from theirs as it is from the track of the first clip.
+      const ids = op.clips as string[];
+      const laneOf = (id: string) => tracks.find(track => track.clips.some(each => each.id === id))!;
+      const destination = tracks.find(track => track.id === op.to_track);
+      const peers = (kind: string) => tracks.filter(track => track.kind === kind);
+      const first = laneOf(ids[0]);
+      const offset = destination ? peers(destination.kind).indexOf(destination) - peers(destination.kind).indexOf(first) : 0;
+      const moved = ids.map(id => {
+        const from = laneOf(id);
+        const clip = from.clips.find(each => each.id === id)!;
+        from.clips = from.clips.filter(each => each !== clip);
+        const to = destination?.kind === from.kind ? peers(from.kind)[peers(from.kind).indexOf(from) + offset] : from;
+        return { clip: { ...clip, start: clip.start + (op.delta as number), end: clip.end + (op.delta as number) }, to };
+      });
+      for (const { clip, to } of moved) {
+        // Overwritten: what it covers is taken away or cut back.
+        to.clips = to.clips.flatMap(each => each.end <= clip.start || each.start >= clip.end ? [each]
+          : each.start < clip.start ? [{ ...each, end: clip.start }] : each.end > clip.end ? [{ ...each, start: clip.end }] : []);
+        to.clips.push(clip);
+      }
+    }
+    if (op.edit === 'close_gap') {
+      const lane = tracks.find(track => track.id === op.track)!;
+      const at = op.at as number;
+      const from = Math.max(0, ...lane.clips.map(each => each.end).filter(end => end <= at));
+      const to = Math.min(...lane.clips.map(each => each.start).filter(start => start > at));
+      for (const track of tracks.filter(each => !each.locked)) {
+        const across = track.clips.filter(each => each.start < to && from < each.end).sort((a, b) => b.end - a.end)[0];
+        if (!across) continue;
+        const first = Math.min(...track.clips.filter(each => each.start >= to).map(each => each.start));
+        if (op.straddling !== 'stay' || first - (to - from) < across.end) return { track: track.id, clip: across.id };
+      }
+      for (const track of tracks.filter(each => !each.locked)) for (const each of track.clips) if (each.start >= to) { each.start -= to - from; each.end -= to - from; }
+    }
+  }
+  return null;
+}
+
 /** An engine that keeps a project and the two transports, and tells what changed as the real one does. */
 function fakeEngine(timelines: Timeline[] = [cuts()], pool: { media: Media[]; bins: Project['bins'] } = { media: [m1, m2, m3], bins: [{ id: 'b1', name: 'B-roll', parent: null }] }) {
   let project: Project = { schema: 2, next_id: 10, bins: pool.bins, media: pool.media, timelines };
@@ -94,7 +148,10 @@ function fakeEngine(timelines: Timeline[] = [cuts()], pool: { media: Media[]; bi
         tell('transport.state', states[monitor]); return { ok: true, result: states[monitor] };
       }
       if (method === 'transaction.apply') {
-        // Editing commands are expanded by the engine alone; here they change nothing but the revision.
+        // Editing commands are expanded by the engine alone; here they change nothing but the revision,
+        // but a gap closed through a clip of another track is refused, as the engine refuses it.
+        const blocked = rippleBlocked(project, params!.ops as Record<string, unknown>[]);
+        if (blocked) return { ok: false, error: { code: -32001, message: 'refused: ripple_blocked', data: { reason: 'ripple_blocked', ...blocked } } };
         const done = (params!.ops as Op[]).filter(op => 'op' in op);
         for (const op of done) project = applyOp(project, op);
         revision++;
@@ -365,7 +422,7 @@ describe('the Cut page', () => {
       .toEqual([[{ edit: 'trim', timeline: 't1', delta: -10, linked: true, clip: 'c3', edge: 'out', ripple: true }]]);
     // Moved on Track 1, c2 overwrites the start of c3, and the gap that it leaves at 100 is closed (Reference Manual 20, pp. 585–586).
     expect(await drag(upper, 'c2', at(upper, 150), at(upper, 150) + 10 * scale))
-      .toEqual([[{ edit: 'move', timeline: 't1', delta: 10, linked: true, clips: ['c2'], overwrite: true }, { edit: 'close_gap', timeline: 't1', track: 'v1', at: 100 }]]);
+      .toEqual([[{ edit: 'move', timeline: 't1', delta: 10, linked: true, clips: ['c2'], overwrite: true }, { edit: 'close_gap', timeline: 't1', track: 'v1', at: 100, straddling: 'stay' }]]);
   });
 
   it('keeps Track 1 magnetic: a clip dropped on an edit point goes in there, one deleted leaves no gap, and the tracks above only resize', async () => {
@@ -409,6 +466,48 @@ describe('the Cut page', () => {
       [{ edit: 'lift', timeline: 't1', clips: ['b1'], linked: true }],
       [{ edit: 'lift', timeline: 't1', clips: ['b1'], linked: false }, { edit: 'ripple_delete', timeline: 't1', clips: ['c2'], linked: true }],
     ]);
+  });
+
+  it('closes up Track 1 alone: a bed of music across the gap and a clip moved straight up off it stay where they are', async () => {
+    const withBed = cuts();
+    withBed.tracks.splice(1, 0, { id: 'v2', kind: 'video', name: 'V2', enabled: true, locked: false, clips: [clip('b1', 20, 40)], transitions: [] });
+    // The bed of music on A2 is not locked: it lies across every gap that Track 1 leaves before 130, as 'ca' on A1 does before 150.
+    withBed.tracks.find(track => track.id === 'a2')!.locked = false;
+    const { bridge } = await mount({ timelines: [withBed] });
+    const lower = detail();
+    const at = (frame: number) => HEADER_WIDTH + frame * Number(lower.dataset.scale);
+    const y = (id: string) => lower.querySelector<HTMLElement>(`[data-clip="${id}"]`)!.getBoundingClientRect().top + 10;
+    const answered = async () => {
+      const index = bridge.call.mock.calls.findLastIndex(([method]) => method === 'transaction.apply');
+      return index < 0 ? null : await bridge.call.mock.results[index].value;
+    };
+    const drag = async (id: string, from: number, to: number, fromY: number, toY: number) => {
+      bridge.call.mockClear();
+      fireEvent.pointerDown(lower.querySelector(`[data-clip="${id}"]`)!, { button: 0, clientX: from, clientY: fromY, pointerId: 1 });
+      fireEvent.pointerMove(lower, { clientX: (from + to) / 2, clientY: (fromY + toY) / 2, pointerId: 1 });
+      fireEvent.pointerMove(lower, { clientX: to, clientY: toY, pointerId: 1 });
+      fireEvent.pointerUp(lower, { clientX: to, clientY: toY, pointerId: 1 });
+      await settle();
+      return sent(bridge).map(each => each.ops);
+    };
+    // The engine refuses to close a gap that the bed lies across, unless what lies across it stays.
+    expect(await bridge.call('transaction.apply', { revision: 0, ops: [
+      { edit: 'move', timeline: 't1', delta: 10, linked: true, clips: ['c2'], overwrite: true },
+      { edit: 'close_gap', timeline: 't1', track: 'v1', at: 100 },
+    ] })).toMatchObject({ ok: false, error: { data: { reason: 'ripple_blocked', track: 'a1', clip: 'ca' } } });
+    // c2 moved on Track 1 over the start of c3: the gap at 100 is closed, the bed and 'ca' staying.
+    expect(await drag('c2', at(150), at(150) + 40, y('c2'), y('c2'))).toEqual([[
+      { edit: 'move', timeline: 't1', delta: 10, linked: true, clips: ['c2'], overwrite: true },
+      { edit: 'close_gap', timeline: 't1', track: 'v1', at: 100, straddling: 'stay' },
+    ]]);
+    expect(await answered()).toMatchObject({ ok: true });
+    // c2 moved straight up to V2: it stays above the gap that it leaves, which is closed under it.
+    expect(await drag('c2', at(150), at(150), y('c2'), y('b1'))).toEqual([[
+      { edit: 'move', timeline: 't1', delta: 0, linked: true, clips: ['c2'], to_track: 'v2', overwrite: true },
+      { edit: 'close_gap', timeline: 't1', track: 'v1', at: 100, straddling: 'stay' },
+    ]]);
+    expect(await answered()).toMatchObject({ ok: true });
+    expect(document.querySelector('[data-test="studio-problem"]')).toBeNull();
   });
 
   it('puts a dissolve or a dip to black at the edit point nearest the playhead, the earlier of two as near', async () => {

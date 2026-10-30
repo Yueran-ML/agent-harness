@@ -12,7 +12,7 @@ pub mod span;
 pub mod time;
 pub mod upgrade;
 
-pub use edit::{expand, Change, CueItem, Edge, Edit, EditError, Expansion, Material};
+pub use edit::{expand, Change, CueItem, Edge, Edit, EditError, Expansion, Material, Straddling};
 pub use history::{Applied, Changed, History, Step, TransactionError, HISTORY_MOST};
 pub use ops::{apply, apply_done, Invalid, Op, OpError, LARGEST};
 pub use project::{

@@ -114,8 +114,11 @@ describe('DaVinci editing keys', () => {
     expect(command('Delete')).toMatchObject({ transaction: { ops: [{ edit: 'ripple_delete', clips: ['c1'], linked: true }] } });
     expect(command('Delete', { shift: true })).toMatchObject({ transaction: { ops: [{ edit: 'ripple_delete' }] } });
     expect(command('Backspace', { shift: true })).toMatchObject({ transaction: { ops: [{ edit: 'ripple_delete' }] } });
-    expect(command('Delete', {}, context({ marks: { in: 20, out: 80 } }))).toMatchObject({ transaction: { ops: [{ edit: 'ripple_delete_range', from: 20, to: 80 }] } });
-    expect(command('Delete', { shift: true }, context({ marks: { in: 20, out: 80 } }))).toMatchObject({ transaction: { ops: [{ edit: 'ripple_delete_range', from: 20, to: 80 }] } });
+    // With timeline In and Out and no clip chosen, the range; a clip chosen by hand comes first (Reference Manual 20, p. 760).
+    expect(command('Delete', {}, context({ selected: [], marks: { in: 20, out: 80 } }))).toMatchObject({ transaction: { ops: [{ edit: 'ripple_delete_range', from: 20, to: 80 }] } });
+    expect(command('Delete', { shift: true }, context({ selected: [], marks: { in: 20, out: 80 } }))).toMatchObject({ transaction: { ops: [{ edit: 'ripple_delete_range', from: 20, to: 80 }] } });
+    expect(command('Delete', {}, context({ marks: { in: 20, out: 80 } }))).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [{ edit: 'ripple_delete', timeline: 't1', clips: ['c1'], linked: true }] } });
+    expect(command('Backspace', {}, context({ marks: { in: 20, out: 80 } }))).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [{ edit: 'lift', timeline: 't1', clips: ['c1'], linked: true }] } });
     expect(command('Delete', { repeat: true })).toBeNull();
     expect(command('Delete', {}, context({ selected: [] }))).toBeNull();
   });
@@ -169,7 +172,7 @@ describe('DaVinci editing keys', () => {
     const t = timeline([clip('c1', 0, 30), clip('c2', 30, 20), clip('c3', 50, 100)]);
     t.tracks.push({ id: 'a1', kind: 'audio', name: 'A1', enabled: true, locked: false, clips: [clip('a1c', 0, 200)], transitions: [] });
     t.tracks.push({ id: 'a2', kind: 'audio', name: 'A2', enabled: true, locked: true, clips: [clip('a2c', 0, 200)], transitions: [] });
-    expect(command('Backspace', {}, context({ timeline: t, marks: { in: 20, out: 80 } }))).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [
+    expect(command('Backspace', {}, context({ timeline: t, selected: [], marks: { in: 20, out: 80 } }))).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [
       { edit: 'lift', timeline: 't1', clips: ['c2'], linked: false },
       { edit: 'trim', timeline: 't1', clip: 'c1', edge: 'out', delta: -10, ripple: false, linked: false },
       { edit: 'trim', timeline: 't1', clip: 'c3', edge: 'in', delta: 30, ripple: false, linked: false },
@@ -177,7 +180,7 @@ describe('DaVinci editing keys', () => {
       { edit: 'trim', timeline: 't1', clip: 'a1c', edge: 'out', delta: -60, ripple: false, linked: false },
     ] } });
     expect(liftRange(t, 300, 400)).toEqual([]);
-    expect(command('Backspace', {}, context({ timeline: t, marks: { in: 300, out: 400 } }))).toBeNull();
+    expect(command('Backspace', {}, context({ timeline: t, selected: [], marks: { in: 300, out: 400 } }))).toBeNull();
   });
   it('does nothing when a timeline or source needed by the command is absent', () => {
     expect(command('F9', {}, context({ timeline: null }))).toBeNull();

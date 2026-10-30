@@ -295,9 +295,11 @@ export function editCommand(action: EditAction | null, context: EditContext): Ed
     return transaction([command]);
   }
   if (action.kind === 'delete') {
-    if (marks.in !== null && marks.out !== null && marks.out > marks.in) {
-      // With timeline In and Out points, the keys of deleting take the range on the tracks that are
-      // not locked: Delete closes it, Backspace leaves it empty (Reference Manual 20, p. 765).
+    if (!selected.length && marks.in !== null && marks.out !== null && marks.out > marks.in) {
+      // With timeline In and Out points and no clip chosen, the keys of deleting take the range on
+      // the tracks that are not locked: Delete closes it, Backspace leaves it empty (Reference
+      // Manual 20, p. 765). Clips chosen by hand come first: "manual selections almost always take
+      // precedence over automatic selections you define using the In and Out points" (p. 760).
       return action.ripple ? transaction([{ edit: 'ripple_delete_range', timeline: timeline.id, from: marks.in, to: marks.out }])
         : transaction(liftRange(timeline, marks.in, marks.out));
     }

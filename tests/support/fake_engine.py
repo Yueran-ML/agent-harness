@@ -374,6 +374,9 @@ class Fake:
     def render_start(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
         self.rendered.append(copy.deepcopy(params))
         timeline = self._timeline(str(params.get("timeline")), 0, code=-32602)
+        if params.get("revision", self.revision) != self.revision:
+            told = {"reason": "stale_revision", "expected": params["revision"]}
+            raise RefusedError(-32001, "the project changed", {**told, "actual": self.revision})
         path = Path(str(params.get("path")))
         if not path.is_absolute():
             message = f"render.start takes an absolute path, and {path} is not one"

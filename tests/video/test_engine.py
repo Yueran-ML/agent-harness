@@ -669,7 +669,14 @@ async def test_a_render_that_is_refused_is_followed_no_further(tmp_path: Path) -
             await connected.render(timeline, tmp_path / "there.mp4")
         with pytest.raises(EngineError) as relative:
             await connected.render(timeline, Path("film.mp4"))
-        replaced = await connected.render(timeline, tmp_path / "there.mp4", replace=True)
+        revision, _ = await connected.project()
+        with pytest.raises(EngineError) as stale:
+            await connected.render(
+                timeline, tmp_path / "there.mp4", replace=True, revision=revision - 1
+            )
+        replaced = await connected.render(
+            timeline, tmp_path / "there.mp4", replace=True, revision=revision
+        )
         done = await asyncio.wait_for(replaced.finished(), 5)
         fake.render_hold = True
         lost = await connected.render(timeline, tmp_path / "lost.mp4")
@@ -687,6 +694,11 @@ async def test_a_render_that_is_refused_is_followed_no_further(tmp_path: Path) -
             {"path": str(tmp_path / "there.mp4"), "reason": "exists"},
         )
         assert relative.value.code == -32602
+        assert (stale.value.code, stale.value.data) == (
+            -32001,
+            {"reason": "stale_revision", "expected": revision - 1, "actual": revision},
+        )
+        assert fake.rendered[-3]["revision"] == revision - 1
         assert done.state == "done"
         assert gone.value.code == UNREACHABLE
         assert list(connected._readers) == []  # pyright: ignore[reportPrivateUsage]
@@ -1175,9 +1187,20 @@ async def test_the_engine_renders_a_timeline_and_tells_how_far_it_has_come(
         timeline = (await one.apply([ADD, edits.add_track("$t", "video")])).names["$t"]
         await one.apply([edits.append(timeline, edits.of_media(added[0], length=25))])
         heard: list[Progress] = []
-        rendering = await one.render(timeline, film, codec="prores", quality="small")
+        # Held to a revision, it is refused where the project is not at it, and taken where it is.
+        revision, _ = await one.project()
+        with pytest.raises(EngineError) as stale:
+            await one.render(timeline, film, codec="prores", quality="small", revision=revision + 1)
+        rendering = await one.render(
+            timeline, film, codec="prores", quality="small", revision=revision
+        )
         ended = await asyncio.wait_for(rendering.finished(heard.append), 120)
 
+    assert stale.value.data == {
+        "reason": "stale_revision",
+        "expected": revision + 1,
+        "actual": revision,
+    }
     assert (ended.state, ended.frames, ended.path) == ("done", 25, str(film)), ended.message
     assert ended.encoder
     assert all(one.job == rendering.job for one in heard)

@@ -1037,19 +1037,26 @@ function srtNamesOf(timeline, chosen, stem) {
   });
 }
 /**
- * The SRT files an export to `chosen` writes, by the timeline in the project of the engine; null
- * where the engine does not tell it, and then every `<stem>.*.srt` is taken to be one.
+ * The SRT files an export to `chosen` writes, by the timeline in the project of the engine (`names`;
+ * null where the engine does not tell it, and then every `<stem>.*.srt` is taken to be one), and the
+ * revision of the project that they were worked out at (`revision`, null where none was read), which
+ * render.start is held to.
  */
 async function srtFilesOf(open, chosen, options) {
-  if (options.subtitle_tracks.length === 0) return [];
+  if (options.subtitle_tracks.length === 0) return { names: [], revision: null };
   try {
     const got = await open.session.call('project.get');
     const timeline = got?.project?.timelines?.find?.((each) => each?.id === options.timeline);
-    return timeline ? srtNamesOf(timeline, options.subtitle_tracks, path.parse(chosen).name) : null;
+    const revision = Number.isSafeInteger(got?.revision) && got.revision >= 0 ? got.revision : null;
+    return timeline
+      ? { names: srtNamesOf(timeline, options.subtitle_tracks, path.parse(chosen).name), revision }
+      : { names: null, revision: null };
   } catch {
-    return null;
+    return { names: null, revision: null };
   }
 }
+/** How many times an export whose SRT names went stale before the engine took it is prepared again. */
+const RENDER_TRIES = 3;
 /**
  * The files in the folder of `chosen`, read without holding up the main process, where `chosen` is
  * there (Save As asked whether to replace it); null where it is not, or the folder cannot be read,
@@ -2026,23 +2033,26 @@ function installHandlers() {
     // one, unless it may replace them. Only the shell decides that, from what the user confirmed
     // in Save As (see `replacing`); the page never can.
     const closed = { ok: false, error: { code: null, message: 'The project of the studio was closed meanwhile.', data: null } };
-    const there = await besideOf(chosen.filePath);
-    if (studio !== open) return closed;
-    // The names of the SRT files are asked for last, so that what the engine has changes as little
-    // as can be before it is asked to start: nothing else is awaited between. (Another client may
-    // still rename a subtitle track in that moment; render.start takes no revision to hold it to.)
-    const srts = there === null ? [] : await srtFilesOf(open, chosen.filePath, options);
-    if (studio !== open) return closed;
-    const { replace, blocking } = replacing(chosen.filePath, options, there, srts);
-    // A file beside the film that Save As did not ask of: refused naming that file, not the film
-    // that the user just confirmed, as the engine would refuse it.
-    if (blocking !== null) {
-      const reason = blocking.toLowerCase().endsWith('.part') ? 'part_exists' : 'exists';
-      return { ok: false, error: { code: -32001, message: `${blocking} is there already.`, data: { reason, path: blocking } } };
+    for (let tries = 1; ; tries += 1) {
+      const there = await besideOf(chosen.filePath);
+      if (studio !== open) return closed;
+      // The names of the SRT files are asked for last, at a revision of the project that render.start
+      // is held to: where another client renamed a subtitle track meanwhile, the engine refuses it as
+      // stale_revision before it writes or replaces anything, and the export is prepared again.
+      const { names: srts, revision } = there === null ? { names: [], revision: null } : await srtFilesOf(open, chosen.filePath, options);
+      if (studio !== open) return closed;
+      const { replace, blocking } = replacing(chosen.filePath, options, there, srts);
+      // A file beside the film that Save As did not ask of: refused naming that file, not the film
+      // that the user just confirmed, as the engine would refuse it.
+      if (blocking !== null) {
+        const reason = blocking.toLowerCase().endsWith('.part') ? 'part_exists' : 'exists';
+        return { ok: false, error: { code: -32001, message: `${blocking} is there already.`, data: { reason, path: blocking } } };
+      }
+      const started = await answered(open.session.call('render.start', { ...options, path: chosen.filePath, replace, ...(revision === null ? {} : { revision }) }));
+      if (!started.ok && started.error.data?.reason === 'stale_revision' && revision !== null && tries < RENDER_TRIES && studio === open) continue;
+      if (started.ok && typeof started.result?.job === 'string' && !open.jobs.has(started.result.job)) open.jobs.set(started.result.job, { path: chosen.filePath });
+      return started;
     }
-    const started = await answered(open.session.call('render.start', { ...options, path: chosen.filePath, replace }));
-    if (started.ok && typeof started.result?.job === 'string' && !open.jobs.has(started.result.job)) open.jobs.set(started.result.job, { path: chosen.filePath });
-    return started;
   });
   ipcMain.handle('columbina:engine-reveal', async (event, asked) => {
     checkSender(event);

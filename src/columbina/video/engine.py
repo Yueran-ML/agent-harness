@@ -964,6 +964,7 @@ class Engine:
         frames: tuple[int, int] | None = None,
         subtitle_tracks: Sequence[str] = (),
         replace: bool = False,
+        revision: int | None = None,
     ) -> Rendering:
         """Have the engine render a timeline into a file, in the background.
 
@@ -981,11 +982,14 @@ class Engine:
             subtitle_tracks: The subtitle tracks of the timeline whose subtitles are written
                 beside the film, each as an SRT, whether it is shown or hidden; none if empty.
             replace: Whether a file that is there already is written over.
+            revision: The revision of the project that the render was prepared at, such as the
+                names of its SRT files; the engine refuses it where the project is not at that
+                revision any more (``stale_revision``). Not held to any if it is not given.
 
         Raises:
-            EngineError: The engine refused: no such timeline, a relative path, a file that is
-                there already, nothing to render, or a subtitle track that is not one of the
-                timeline's (``subtitle_track``).
+            EngineError: The engine refused: no such timeline (``missing``), a relative path, a
+                file that is there already, nothing to render, a subtitle track that is not one of
+                the timeline's (``subtitle_track``), or a revision that is not the project's.
         """
         params: dict[str, Any] = {
             "timeline": timeline,
@@ -997,6 +1001,8 @@ class Engine:
         }
         if frames is not None:
             params["range"] = {"from": frames[0], "to": frames[1]}
+        if revision is not None:
+            params["revision"] = revision
         heard = self.changes()
         try:
             wire = await self._ensure()

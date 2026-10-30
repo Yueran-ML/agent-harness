@@ -3998,6 +3998,38 @@ describe('the engine of the studio', () => {
     expect(await render(['film.mp4', 'film.EN-2.srt'], { subtitle_tracks: ['S1', 'S4'] })).toBe('exists film.EN-2.srt');
     expect(await render(['film.mp4', 'film.fr.srt'], { subtitle_tracks: ['S2'] })).toBe(true);
     expect(await render(['film.mp4', 'film.srt'], { subtitle_tracks: ['S2'] })).toBe('exists film.srt');
+    // render.start is held to the revision that the names were worked out at.
+    expect(await render(['film.mp4'], { subtitle_tracks: ['S3', 'S1'] })).toBe(true);
+    expect(main.written.at(-1)!.params.revision).toBe(3);
+    // Another client changed the language of S1 meanwhile: the engine refuses the export as stale,
+    // and it is prepared again by the project as it is now, whose SRT is in the way.
+    const server = shell.engines.servers.get(main.address)!;
+    let revision = 3;
+    const timelines = (language: string) => [{ id: 't1', tracks: [subtitle('S1', language), subtitle('S3', '', 'Notes: draft')] }];
+    server.answers.set('project.get', () => ({ result: { revision, project: { timelines: timelines(revision === 3 ? 'en' : 'fr') } } }));
+    server.answers.set('render.start', (params: { revision?: number }) => {
+      if (params.revision !== 4) { revision = 4; return { error: { code: -32001, message: 'stale', data: { reason: 'stale_revision', expected: params.revision, actual: 4 } } }; }
+      return { result: { job: `render-${++jobs}` } };
+    });
+    shell.listed.set(exports, ['film.mp4', 'film.fr.srt']);
+    shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: chosen });
+    const fr = path.join(exports, 'film.fr.srt');
+    expect(await shell.invoke('engine-render', { ...options, subtitle_tracks: ['S3', 'S1'] }))
+      .toEqual({ ok: false, error: { code: -32001, message: `${fr} is there already.`, data: { reason: 'exists', path: fr } } });
+    // Asked once, at revision 3, which the engine refused.
+    expect(main.written.filter(each => each.method === 'render.start').at(-1)!.params).toMatchObject({ revision: 3, replace: true });
+    // Where nothing is in the way of the names at the new revision, it is started at that one.
+    revision = 3;
+    expect(await render(['film.mp4'], { subtitle_tracks: ['S3', 'S1'] })).toBe(true);
+    expect(main.written.filter(each => each.method === 'render.start').slice(-2).map(each => each.params.revision)).toEqual([3, 4]);
+    // An engine that stays stale is not asked without end: its refusal is handed on.
+    server.answers.set('render.start', (params: { revision?: number }) => ({ error: { code: -32001, message: 'stale', data: { reason: 'stale_revision', expected: params.revision, actual: 9 } } }));
+    const asked = main.written.filter(each => each.method === 'render.start').length;
+    shell.listed.set(exports, ['film.mp4']);
+    shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: chosen });
+    expect(await shell.invoke('engine-render', { ...options, subtitle_tracks: ['S3', 'S1'] })).toMatchObject({ ok: false, error: { data: { reason: 'stale_revision' } } });
+    expect(main.written.filter(each => each.method === 'render.start').length - asked).toBe(3);
+    server.answers.set('render.start', () => ({ result: { job: `render-${++jobs}` } }));
     // A file that is not there replaces nothing.
     shell.absent.add(chosen);
     expect(await render([])).toBe(false);

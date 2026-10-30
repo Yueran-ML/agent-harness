@@ -298,3 +298,29 @@ fn measure_inserting_before_a_long_chain_of_transitions() {
         );
     }
 }
+
+#[test]
+fn a_shift_goes_as_far_as_the_largest_frame_and_no_further() {
+    // The clips end at 200 and the subtitles at 195.
+    let clips = ["clip-0", "clip-1", "clip-2", "clip-3"];
+    let cues = ["cue-0", "cue-1", "cue-2", "cue-3"];
+    let mut project = with_cues(4);
+    apply(&mut project, shift(&clips, LARGEST - 200)).unwrap();
+    apply(&mut project, shift_cues(&cues, LARGEST - 195)).unwrap();
+    let track = &project.timelines[0].tracks[0];
+    assert_eq!(track.clips[3].start + track.clips[3].length, LARGEST);
+    let track = &project.timelines[0].tracks[1];
+    assert_eq!(track.cues[3].start + track.cues[3].length, LARGEST);
+    let before = with_cues(4);
+    for op in [
+        shift(&clips, LARGEST - 199),
+        shift_cues(&cues, LARGEST - 194),
+    ] {
+        let mut project = before.clone();
+        assert_eq!(
+            apply(&mut project, op),
+            Err(OpError::TooLarge { what: "end" })
+        );
+        assert_eq!(project, before);
+    }
+}

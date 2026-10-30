@@ -3380,6 +3380,13 @@ mod tests {
             index: None,
         };
         assert_eq!(refused(nested), reserved("c4"));
+        let mut grouped = clip("", "m1", 0, 10);
+        grouped.link = Some("g7".into());
+        let nested = Op::AddTimeline {
+            timeline: timeline("", vec![track("", TrackKind::Video, vec![grouped])]),
+            index: None,
+        };
+        assert_eq!(refused(nested), reserved("g7"));
 
         // An id that the engine made before, which its inverse carries, may be given again, and
         // ids of other shapes, or with numbers that the engine never makes, are free.
@@ -3656,8 +3663,8 @@ mod tests {
             },
         )
         .unwrap();
-        let slow = |ticks| {
-            let mut clip = Clip::of_media("", "m2", Time { ticks, scale: 1000 }, 150, 2);
+        let slow = |ticks, length| {
+            let mut clip = Clip::of_media("", "m2", Time { ticks, scale: 1000 }, 150, length);
             clip.speed = Speed { num: 1, den: 100 };
             insert("V1", clip)
         };
@@ -3665,8 +3672,11 @@ mod tests {
             media: "m2".into(),
             why: "past_end",
         };
-        assert_eq!(refused_in(project.clone(), slow(10_000)), past_end);
-        apply(&mut project, slow(9_999)).unwrap();
+        assert_eq!(refused_in(project.clone(), slow(10_000, 2)), past_end);
+        // Four frames from a tick before the end end at its end, and the last of them shows it.
+        assert_eq!(refused_in(project.clone(), slow(9_999, 4)), past_end);
+        apply(&mut project.clone(), slow(9_998, 4)).unwrap();
+        apply(&mut project, slow(9_999, 2)).unwrap();
     }
 
     #[test]
@@ -4880,6 +4890,10 @@ mod tests {
         for change in fine {
             apply(&mut Project::sample(), at_150(change)).unwrap();
         }
+        // Two frames at 100 times show 200 of the 250 frames of m1.
+        let mut fastest = clip("", "m1", 150, 2);
+        fastest.speed = Speed { num: 100, den: 1 };
+        apply(&mut Project::sample(), insert("V1", fastest)).unwrap();
     }
 
     #[test]
@@ -4990,6 +5004,11 @@ mod tests {
         // A group with no id in a project that is read is refused.
         let error = invalid(|v| c1(v)["link"] = "".into());
         assert_eq!(error, wrong("clip", "c1", OpError::NoId));
+        let error = invalid(|v| c1(v)["link"] = "$g".into());
+        assert_eq!(
+            error,
+            wrong("clip", "c1", OpError::Dollar { id: "$g".into() })
+        );
         let project = read(|v| c1(v)["link"] = "g40".into()).unwrap();
         assert_eq!(project.next_id, 41);
     }
@@ -5210,6 +5229,14 @@ mod tests {
             refused(add(vec![cue("", LARGEST, 5, "a")])),
             OpError::TooLarge { what: "end" }
         );
+        // As long a text as may be, and a subtitle that ends at the largest frame, are taken.
+        let longest = "あ".repeat(1000);
+        apply(&mut Project::sample(), add(vec![cue("", 0, 10, &longest)])).unwrap();
+        apply(
+            &mut Project::sample(),
+            add(vec![cue("", LARGEST - 5, 5, "a")]),
+        )
+        .unwrap();
 
         let mut project = Project::sample();
         let op = add(vec![cue("", 20, 10, "b"), cue("q1", 0, 10, "a")]);
@@ -6389,5 +6416,40 @@ mod tests {
             panic!("{read:?}")
         };
         assert_eq!((link, speed), (Some(None), None));
+    }
+
+    #[test]
+    fn every_value_out_of_range_and_every_frame_out_of_its_source_has_a_message_of_its_own() {
+        let whats = [
+            "width",
+            "height",
+            "sample_rate",
+            "start",
+            "length",
+            "speed",
+            "transform",
+            "gain_db",
+            "pan",
+            "fade",
+            "text",
+            "size",
+            "position",
+            "language",
+            "by",
+            "clips",
+            "cues",
+            "digest",
+        ];
+        let messages: HashSet<String> = whats.iter().map(|what| range_message(what)).collect();
+        assert_eq!(messages.len(), whats.len());
+        for what in whats {
+            assert_ne!(
+                range_message(what),
+                format!("the {what} is out of its range")
+            );
+        }
+        let whys = ["length", "before_start", "handles", "marks", "end"];
+        let messages: HashSet<String> = whys.iter().map(|why| source_message("m1", why)).collect();
+        assert_eq!(messages.len(), whys.len());
     }
 }

@@ -687,9 +687,63 @@ mod tests {
             at(52),
             [
                 ("c2".into(), c1(62668), 1.0),
-                ("x4".into(), black, 6.0 / 11.0)
+                ("x4".into(), black.clone(), 6.0 / 11.0)
             ]
         );
+        // A dip of five frames from the cut is all black at its middle frame, over the clip
+        // after it.
+        let x = &mut project.timelines[0].tracks[0].transitions[0];
+        (x.length, x.align) = (5, Alignment::Start);
+        project.validate().unwrap();
+        let middle: Vec<_> = video_at(&project.timelines[0], &project, 52)
+            .into_iter()
+            .map(|l| (l.clip, l.content, l.opacity))
+            .collect();
+        assert_eq!(
+            middle,
+            [("c2".into(), c1(62668), 1.0), ("x4".into(), black, 1.0)]
+        );
+    }
+
+    #[test]
+    fn a_clip_of_sound_rises_through_its_fade_and_its_crossfade_is_drawn_at_its_eighths() {
+        let project = project();
+        let pieces = audio_between(&project.timelines[0], &project, 0, 192_000);
+        let c6 = &pieces[0].gain;
+        let half = 10f32.powf(-6.0 / 20.0);
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-5;
+        // c6 fades in over its first 10 frames, 19200 samples.
+        assert!(near(c6.at(0), 0.0));
+        assert!(near(c6.at(9600), half / 2.0));
+        assert!(near(c6.at(19_200), half));
+        // The crossfade lies over frames [45, 55), samples [86400, 105600).
+        let drawn: Vec<i64> = c6
+            .points
+            .iter()
+            .map(|&(sample, _)| sample)
+            .filter(|sample| (86_400..=105_600).contains(sample))
+            .collect();
+        let eighths: Vec<i64> = (0..=8).map(|eighth| 86_400 + 2400 * eighth).collect();
+        assert_eq!(drawn, eighths);
+    }
+
+    #[test]
+    fn the_gain_before_and_after_the_points_is_that_of_the_first_and_the_last() {
+        let project = project();
+        // From halfway through the fade in of c6.
+        let pieces = audio_between(&project.timelines[0], &project, 9600, 192_000);
+        let c6 = &pieces[0].gain;
+        assert_eq!(c6.points[0].0, 9600);
+        assert_eq!(c6.at(0), c6.at(9600));
+        assert!(c6.at(9600) > 0.0);
+    }
+
+    #[test]
+    fn a_frame_too_far_starts_at_the_most_or_the_least_sample() {
+        let rate = Rate { num: 25, den: 1 };
+        assert_eq!(samples_at(i64::MAX, rate, 48000), i64::MAX);
+        assert_eq!(samples_at(i64::MIN, rate, 48000), i64::MIN);
+        assert_eq!(samples_at(-1, rate, 48000), -1920);
     }
 
     #[test]

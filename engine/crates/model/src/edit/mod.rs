@@ -1125,4 +1125,50 @@ mod tests {
             })
         );
     }
+
+    #[test]
+    fn an_edit_of_clips_takes_the_linked_clips_too_unless_it_is_told_not_to() {
+        let read = |json| serde_json::from_value::<Edit>(json).unwrap();
+        let edit = read(serde_json::json!({ "edit": "lift", "timeline": "t1", "clips": ["c1"] }));
+        assert!(matches!(edit, Edit::Lift { linked: true, .. }));
+        let edit = read(serde_json::json!({
+            "edit": "lift", "timeline": "t1", "clips": ["c1"], "linked": false,
+        }));
+        assert!(matches!(edit, Edit::Lift { linked: false, .. }));
+    }
+
+    #[test]
+    fn a_track_of_an_edit_is_told_apart_as_left_out_null_or_named() {
+        let read = |track: Option<serde_json::Value>| {
+            let mut json = serde_json::json!({
+                "edit": "overwrite", "timeline": "t1", "at": 0,
+                "source": { "kind": "media", "media": "m1" },
+            });
+            if let Some(track) = track {
+                json["video_track"] = track;
+            }
+            match serde_json::from_value::<Edit>(json).unwrap() {
+                Edit::Overwrite { video_track, .. } => video_track,
+                edit => panic!("{edit:?}"),
+            }
+        };
+        assert_eq!(read(None), None);
+        assert_eq!(read(Some(serde_json::Value::Null)), Some(None));
+        assert_eq!(read(Some("V2".into())), Some(Some("V2".into())));
+    }
+
+    #[test]
+    fn an_edit_with_no_track_to_go_on_names_the_kind_of_track() {
+        for (kind, name) in [
+            (TrackKind::Video, "video"),
+            (TrackKind::Audio, "audio"),
+            (TrackKind::Subtitle, "subtitle"),
+        ] {
+            let written = serde_json::to_value(EditError::NoTrack { kind }).unwrap();
+            assert_eq!(
+                written["message"],
+                format!("there is no {name} track to put it on")
+            );
+        }
+    }
 }

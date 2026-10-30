@@ -184,6 +184,39 @@ proptest! {
             prop_assert!((seconds_in - read_in).abs() <= 1);
         }
     }
+
+    #[test]
+    fn a_clip_reads_the_sample_that_its_place_in_its_source_falls_in(
+        rate in rate(),
+        scale in scale(),
+        speed in speed(),
+        reverse in any::<bool>(),
+        ticks in 0i64..10_000_000,
+        start in 0i64..1000,
+        length in 1i64..500,
+        sample_rate in prop::sample::select(vec![44100u32, 48000, 96000]),
+        media_rate in prop::sample::select(vec![22050u32, 44100, 48000]),
+        at in 0i64..1_000_000,
+    ) {
+        let mut clip = clip(ticks, scale, length, speed, reverse);
+        clip.start = start;
+        let first = samples(start, rate, sample_rate);
+        let end = samples(start + length, rate, sample_rate);
+        let sample = first + at % (end - first);
+        // d samples into the clip, or from its end backward, is read at
+        // ticks / scale + d * speed / sample_rate seconds into its media.
+        let into = if reverse { end - 1 - sample } else { sample - first };
+        let (scale, per) = (
+            i128::from(scale),
+            i128::from(speed.den) * i128::from(sample_rate),
+        );
+        let exact = (i128::from(ticks) * per
+            + i128::from(into) * i128::from(speed.num) * scale)
+            * i128::from(media_rate);
+        let expected = exact.div_euclid(scale * per);
+        let read = source_sample(&clip, rate, sample, sample_rate, media_rate);
+        prop_assert_eq!(i128::from(read), expected);
+    }
 }
 
 /// The sample of the timeline that frame `frame` starts at, rounded down.

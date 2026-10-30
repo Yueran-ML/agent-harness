@@ -235,4 +235,45 @@ mod tests {
         assert_eq!(read(48000 + 96000 - 1), 88200);
         assert_eq!(read(48000), 88200 + 4 * 44100 - 2);
     }
+
+    #[test]
+    fn a_span_of_no_tick_holds_the_frames_that_show_less_than_a_tick() {
+        // At 1/100 of the speed, a frame of 25 a second is 0.4 of a tick of 1/1000.
+        let slowest = Speed { num: 1, den: 100 };
+        assert_eq!(frames_for_span(0, slowest, PAL, 1000), 2);
+        assert_eq!(frames_for_span(-1, slowest, PAL, 1000), 0);
+    }
+
+    #[test]
+    fn a_sample_too_far_from_where_a_clip_begins_is_the_most_or_the_least_there_is() {
+        let fastest = Speed {
+            num: u32::MAX,
+            den: 1,
+        };
+        let rate = Rate { num: 25, den: 1 };
+        let at = |ticks: i64, start: i64, speed: Speed| {
+            let mut sound = Clip::of_media("c1", "m1", Time { ticks, scale: 1 }, start, 1);
+            sound.speed = speed;
+            sound
+        };
+        // So far that the product of the samples, the speed and the rate of the media does not
+        // fit in 128 bits.
+        let read = |clip: &Clip, sample| source_sample(clip, rate, sample, 48000, u32::MAX);
+        assert_eq!(read(&at(0, i64::MIN / 2, fastest), i64::MAX), i64::MAX);
+        assert_eq!(read(&at(0, i64::MAX / 2, fastest), i64::MIN), i64::MIN);
+        // So far that the product fits, and the sum with where the clip begins does not.
+        let product = i128::from(u32::MAX) * i128::from(u32::MAX);
+        let along = i128::MAX / product;
+        let read = |clip: &Clip, sample| source_sample(clip, rate, sample, 1, u32::MAX);
+        let first = i128::from(i64::MAX) - along;
+        let start = i64::try_from(first * 25).unwrap();
+        assert_eq!(read(&at(i64::MAX, start, fastest), i64::MAX), i64::MAX);
+        let first = i128::from(i64::MIN) + along;
+        let start = i64::try_from(first * 25).unwrap();
+        assert_eq!(read(&at(i64::MIN, start, fastest), i64::MIN), i64::MIN);
+        // So far that the sum fits in 128 bits, and not in 64.
+        let twice = |clip: &Clip, sample| source_sample(clip, PAL, sample, 48000, 96000);
+        assert_eq!(twice(&at(0, 0, Speed::ONE), i64::MIN), i64::MIN);
+        assert_eq!(twice(&at(0, 0, Speed::ONE), i64::MAX), i64::MAX);
+    }
 }

@@ -837,6 +837,48 @@ mod tests {
     }
 
     #[test]
+    fn a_change_keeps_as_many_as_the_most_steps_and_lets_the_oldest_go() {
+        let mut history = History::with_most(Project::sample(), 2);
+        for start in [100, 110, 120] {
+            let change = Change::Op(insert("V1", start, 10));
+            history
+                .change(vec![change], "agent", |change, _| change)
+                .unwrap();
+        }
+        history.undo("agent").unwrap().unwrap();
+        history.undo("agent").unwrap().unwrap();
+        assert_eq!(history.undo("agent"), None);
+        // The first step was let go, so its clip is still there.
+        assert_eq!(history.project().timelines[0].tracks[0].clips.len(), 2);
+    }
+
+    #[test]
+    fn a_change_that_sets_media_to_something_new_is_a_step_and_one_that_sets_it_as_it_is_none() {
+        let mut history = History::new(Project::sample());
+        let rename = |name: &str| {
+            Change::Op(Op::SetMedia {
+                id: "m1".into(),
+                still: None,
+                name: Some(name.into()),
+                bin: None,
+                mark_in: None,
+                mark_out: None,
+            })
+        };
+        let named = history.project().media[0].name.clone();
+        history
+            .change(vec![rename("Beach")], "agent", |change, _| change)
+            .unwrap();
+        assert_eq!(history.project().media[0].name, "Beach");
+        assert_eq!(
+            history.change(vec![rename("Beach")], "agent", |change, _| change),
+            Err(TransactionError::Empty)
+        );
+        history.undo("agent").unwrap().unwrap();
+        assert_eq!(history.project().media[0].name, named);
+    }
+
+    #[test]
     fn undo_all_the_way_back_and_then_nothing() {
         let mut history = History::new(Project::sample());
         assert_eq!(history.undo("agent"), None);

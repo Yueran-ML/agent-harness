@@ -3,8 +3,10 @@ import { useEffect, useId, useRef, useState, type KeyboardEvent, type PointerEve
 /**
  * The fields of the inspector, as DaVinci Resolve's: what is typed, dragged or slid is shown at
  * once, and sent once, as one step to take back, when it is let go or Enter is pressed. Escape puts
- * back what was there. A label dragged sideways changes its number; a label double-clicked puts the
- * default back. A field of several clips that differ shows a dash, and sets them all alike.
+ * back what was there. A number box dragged sideways is a virtual slider, as DaVinci Resolve's
+ * (Reference Manual 20, p. 67), and so is its label; pressed without dragging, the box is written
+ * in. A label double-clicked puts the default back (p. 68). A field of several clips that differ
+ * shows a dash, and sets them all alike.
  */
 
 /** What a field shows where the clips it sets differ. */
@@ -130,12 +132,25 @@ export function NumberField(props: NumberFieldProps) {
       revert();
     }
   };
-  const labelDown = (event: PointerEvent<HTMLLabelElement>) => {
+  const labelDown = (event: PointerEvent<HTMLElement>) => {
     if (props.disabled || event.button !== 0) return;
     scrub.current = { x: event.clientX, start: props.value ?? props.fallback, pointer: event.pointerId, moved: false };
     event.currentTarget.setPointerCapture?.(event.pointerId);
   };
-  const labelMove = (event: PointerEvent<HTMLLabelElement>) => {
+  // The number box is a virtual slider until it is written in: a press that does not drag goes in to write.
+  const boxDown = (event: PointerEvent<HTMLInputElement>) => {
+    if (props.disabled || event.button !== 0 || document.activeElement === event.currentTarget) return;
+    event.preventDefault();
+    labelDown(event);
+  };
+  const boxUp = (event: PointerEvent<HTMLInputElement>) => {
+    const drag = scrub.current;
+    if (!drag || drag.pointer !== event.pointerId) return;
+    const element = event.currentTarget;
+    labelUp(event);
+    if (!drag.moved) { element.focus(); element.select(); }
+  };
+  const labelMove = (event: PointerEvent<HTMLElement>) => {
     const drag = scrub.current;
     if (!drag || drag.pointer !== event.pointerId) return;
     const by = event.clientX - drag.x;
@@ -143,7 +158,7 @@ export function NumberField(props: NumberFieldProps) {
     if (!drag.moved) { drag.moved = true; setScrubbing(true); }
     show(shape(drag.start + by * props.scrub * (event.shiftKey ? 10 : 1), props));
   };
-  const labelUp = (event: PointerEvent<HTMLLabelElement>) => {
+  const labelUp = (event: PointerEvent<HTMLElement>) => {
     const drag = scrub.current;
     if (!drag || drag.pointer !== event.pointerId) return;
     scrub.current = null; setScrubbing(false);
@@ -157,6 +172,7 @@ export function NumberField(props: NumberFieldProps) {
     <span className="inspector-value">
       <input id={id} className="field inspector-number" type="text" inputMode="decimal" autoComplete="off" spellCheck={false}
         value={text} placeholder={shown === null ? MIXED : undefined} disabled={props.disabled}
+        onPointerDown={boxDown} onPointerMove={labelMove} onPointerUp={boxUp} onPointerCancel={revert}
         onChange={event => setDraft(event.target.value)} onKeyDown={fieldKey}
         onBlur={() => { if (draft !== null) send(parse(draft)); }} />
       {props.unit && <span className="inspector-unit" aria-hidden="true">{props.unit}</span>}

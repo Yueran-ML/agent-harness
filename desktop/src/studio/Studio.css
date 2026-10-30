@@ -1111,6 +1111,11 @@ span.inspector-label,
   resize: vertical;
 }
 
+/* A number box not being written in is a virtual slider: dragged sideways, it changes its number. */
+.inspector-number:not(:focus):not(:disabled) {
+  cursor: ew-resize;
+}
+
 .inspector-unit {
   flex: none;
   color: var(--moon-3);

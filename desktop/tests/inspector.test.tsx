@@ -101,6 +101,38 @@ describe('the fields of the inspector', () => {
     ]);
   });
 
+  it('takes a number box dragged sideways as a virtual slider, and a press that does not drag as one to write in, as DaVinci Resolve', async () => {
+    // Reference Manual 20, p. 67: number fields are virtual sliders, dragged right to raise the value and left to lower it.
+    const { call } = mount({ clips: ['c1'] });
+    fireEvent.pointerDown(box('rotation'), { button: 0, pointerId: 5, clientX: 100 });
+    fireEvent.pointerMove(box('rotation'), { pointerId: 5, clientX: 90 });
+    fireEvent.pointerMove(box('rotation'), { pointerId: 5, clientX: 80 });
+    expect(call).not.toHaveBeenCalled();
+    const lowered = box('rotation').value;
+    expect(Number(lowered)).toBeLessThan(0);
+    fireEvent.pointerUp(box('rotation'), { pointerId: 5, clientX: 80 });
+    await settle();
+    expect(applied(call)).toEqual([{ revision: 17, ops: [{ op: 'set_clip', timeline: 't1', id: 'c1', transform: transform({ rotation: Number(lowered) }) }] }]);
+    expect(document.activeElement).not.toBe(box('rotation'));
+    // Escape while it is dragged puts the value back, and nothing is sent.
+    fireEvent.pointerDown(box('x'), { button: 0, pointerId: 6, clientX: 100 });
+    fireEvent.pointerMove(box('x'), { pointerId: 6, clientX: 160 });
+    expect(box('x').value).toBe('60.0');
+    fireEvent.keyDown(window, { key: 'Escape' });
+    fireEvent.pointerUp(box('x'), { pointerId: 6, clientX: 160 });
+    expect(box('x').value).toBe('0.0');
+    // A press without a drag goes in to write, with the number chosen; then the box is written, not dragged.
+    fireEvent.pointerDown(box('y'), { button: 0, pointerId: 7, clientX: 100 });
+    fireEvent.pointerUp(box('y'), { pointerId: 7, clientX: 101 });
+    expect(document.activeElement).toBe(box('y'));
+    fireEvent.pointerDown(box('y'), { button: 0, pointerId: 8, clientX: 100 });
+    fireEvent.pointerMove(box('y'), { pointerId: 8, clientX: 160 });
+    expect(box('y').value).toBe('0.0');
+    type(box('y'), '54');
+    await settle();
+    expect(applied(call).at(-1)).toEqual({ revision: 17, ops: [{ op: 'set_clip', timeline: 't1', id: 'c1', transform: transform({ y: 54 / 1080 }) }] });
+  });
+
   it('puts the default back at a double click on the label', async () => {
     const t = basic();
     (t.tracks[0] as ClipTrack).clips[0].transform = transform({ scale: 2 });

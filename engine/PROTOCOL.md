@@ -138,7 +138,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `view.place` | `{"monitor":"source" \| "timeline", "x": x, "y": y, "width": w, "height": h}` | `{}` |
 | `view.show` | `{"monitor":"source" \| "timeline", "shown": true \| false}` | `{}` |
 | `view.detach` | `{"monitor":"source" \| "timeline"}` | `{"detached": true \| false}` |
-| `render.start` | `{"timeline":"t1", "path":"<file>", "codec":"h264", "quality":"high", "range"?:{"from":0,"to":250}, "subtitle_tracks"?:["S1"], "replace"?:false}` | `{"job": "render-1"}` (see Rendering a timeline) |
+| `render.start` | `{"timeline":"t1", "path":"<file>", "codec":"h264", "quality":"high", "range"?:{"from":0,"to":250}, "subtitle_tracks"?:["S1"], "replace"?:false, "revision"?:n}` | `{"job": "render-1"}` (see Rendering a timeline) |
 | `render.cancel` | `{"job": "render-1"}` | `{}` |
 | `transport.frame_digest` | `{"monitor": m}` | test hook only, with `--test-hooks` (see The transport); `-32601` otherwise |
 | `transport.*` | see The transport | |
@@ -360,8 +360,9 @@ item may have `proxy`, which is left out when it has none:
 (`hevc`, `prores`); `digest_of_source` the `identity.digest` of the media it was made from. A
 project written before proxies has none, and is read as it is. A proxy whose (absolute) `path` is
 not of the engine's own is taken away as the project is read (logged `proxy_dropped`), and the
-rest of the project is read as it is. A proxy `path` that is not absolute is not taken away:
-the project is refused as it is read (`not_absolute`), and the engine does not start.
+rest of the project is read as it is. So is a proxy whose `path` is not absolute: it is taken
+away before the project is checked, so the project is read without it and the engine starts.
+(Such a proxy in an operation, `set_proxy` or `add_media`, is still refused as `not_absolute`.)
 
 ### Schema 2
 
@@ -852,9 +853,9 @@ id targets that track. Both picture and sound placed together get a new link gro
 | `lift` | `clips`, `linked?` | Remove selected clips and leave their gaps. |
 | `ripple_delete` | `clips`, `linked?` | Remove selected clips and close their occupied ranges on unlocked tracks. |
 | `ripple_delete_range` | `from`, `to`, `tracks?` | Cut out `[from,to)` and close it, on all unlocked tracks or the given tracks. |
-| `close_gap` | `track`, `at` | Close the gap at `at` and ripple unlocked tracks. |
+| `close_gap` | `track`, `at`, `straddling?:"refuse"\|"stay"` | Close the gap at `at` and ripple unlocked tracks. With `straddling:"stay"`, clips of other tracks across the gap stay where they are instead of refusing (see below). |
 | `blade` | `at`, `tracks?`, `linked?` | Split crossing clips; original ids stay with first halves, second halves get new ids and link groups. |
-| `move` | `clips`, `delta`, `to_track?`, `overwrite?`, `linked?` | Move clips; default refuses occupied destinations, `overwrite:true` clears them. |
+| `move` | `clips`, `delta`, `to_track?`, `overwrite?`, `linked?` | Move clips; default refuses occupied destinations, `overwrite:true` clears them. With `to_track`, every clip that moves, the linked ones too, goes as many tracks up or down among the tracks of its own kind as `to_track` is from the track of the first clip (see below). |
 | `insert_move` | `clips`, `at`, `linked?` | Lift and close original ranges, then insert at the original timeline coordinate. Noncontiguous selections pack their occupied interval union, not the gaps between it. Subtitles on unlocked tracks within a moved range go with it, keeping their ids and their place on the clips; one across an end of a range is cut there, and only its part inside goes along. |
 | `trim` | `clip`, `edge:in|out`, `delta`, `ripple?`, `linked?` | Move one edge; ripple defaults false. |
 | `roll` | `left`, `right`, `delta`, `linked?` | Move a shared cut, keeping outer endpoints. |
@@ -881,6 +882,26 @@ remain unchanged. A ripple trim or `set_speed` ripple of a split edit (J/L cut) 
 `ripple_blocked` when a clip starts between the end of one of the group's clips and the end of
 the whole group on that clip's track: it would stay while what follows moves, parting the
 picture of the next group from its sound.
+
+`close_gap` takes `"straddling"`: `"refuse"` (the default, omitted when written) refuses with
+`ripple_blocked` where a clip of another unlocked track covers a frame of the gap, as every
+ripple does. `"stay"` (Track 1 of the Cut page; DaVinci Resolve Reference Manual 20, pp.
+584–588) leaves such clips where they are: what starts at the end of the gap or later still
+moves back by the gap on every unlocked track, so superimposed clips stay in sync, and subtitles
+in the gap are cut out with it as in every ripple. Where a clip after the gap would then run into
+a clip that stays on its track, the edit is refused with `ripple_blocked` naming that track and
+the clip that stays. Any other value makes the edit unreadable (`-32602`).
+
+`move` with `to_track` moves clips across tracks as Linked Move Across Tracks does in DaVinci
+Resolve (Reference Manual 20, p. 769, on by default there): the offset is that of `to_track`
+from the track of the first clip, among the tracks of its kind, and every clip that moves goes
+by that offset among the tracks of its own kind. A picture moved from V1 to V2 takes its linked
+sound from A1 to A2, and a sound moved from A1 to A2 takes its picture from V1 to V2. With
+`linked:false` only the clips named move, each still within its own kind. A clip linked to one
+named that is on a locked track stays where it is. No track is made: a clip with no track of
+its kind that far up or down is refused with `no_track` (`kind`), and one whose track to go to
+is locked with `locked` (`track`). `to_track` must be of the kind of the first clip
+(`wrong_kind`). Without `to_track`, clips stay on their tracks.
 
 Trims, rolls, slips and slides clamp to available handles and space, reporting their input
 index in `clamped`; zero delta or an impossible movement is refused. Editing through a
@@ -999,8 +1020,8 @@ commits to it; and any client may send transactions. So:
 | `-32700` | the line is not JSON (id `null`) | |
 | `-32600` | not a request object, `jsonrpc` is not `"2.0"`, no `method`, a bad `id` (answered with id `null`), a request before `hello`, a second `hello`, a `hello` of another protocol, a line over 16 MiB, `view.*` or `engine.yield` from a client that is not the desktop | `{"reason": "protocol", "supported": [2]}` for a `hello` of another protocol |
 | `-32601` | no such method; `view.*` and `transport.*` in a `--headless` engine; `media.make_proxy` in an engine that makes no proxies; `engine.yield` in an engine that is not headless | |
-| `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name`; a speed of `transport.play` out of −8…8 or 0; `transport.load` of media or a timeline not in the project; `timeline.duration` of a timeline not there; `media.import` or `media.inspect` with no paths or a relative path; `media.thumbnail`, `media.waveform` or `media.make_proxy` of media not there; `media.thumbnail` of a frame outside the media, a height outside 1…270 or a width over 16384; a bad parent or rectangle of `view.*`; `render.start` with a bad path, codec, quality, timeline, range (an empty timeline has none, so it cannot be exported) or `subtitle_tracks`, and `render.cancel` of a job that is not there | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above; `{"reason": "speed"}`; `{"index": i, "path": "...", "reason": "relative"}`; `{"reason": "parent"}` or `{"reason": "rect"}` (`view.*`); `{"reason": "missing", "media": "..."}` or `{"reason": "missing", "timeline": "..."}` (not for `render.start`, whose missing timeline has no `data`); `{"reason": "out_of_range", "frame": n}`; `{"reason": "subtitle_track", "track": "..."}` for a `subtitle_tracks` entry that is not a subtitle track of the timeline, or is named twice |
-| `-32001` | a transaction, undo or redo was refused; the project is exactly as it was; or `render.start` was refused before anything was written (also, with no `data`, while the engine is stopping or when the export could not be started) | the refusal, below |
+| `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name`; a speed of `transport.play` out of −8…8 or 0; `transport.load` of media or a timeline not in the project; `timeline.duration` of a timeline not there; `media.import` or `media.inspect` with no paths or a relative path; `media.thumbnail`, `media.waveform` or `media.make_proxy` of media not there; `media.thumbnail` of a frame outside the media, a height outside 1…270 or a width over 16384; a bad parent or rectangle of `view.*`; `render.start` with a bad path, codec, quality, timeline, range (an empty timeline has none, so it cannot be exported) or `subtitle_tracks`, and `render.cancel` of a job that is not there | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above; `{"reason": "speed"}`; `{"index": i, "path": "...", "reason": "relative"}`; `{"reason": "parent"}` or `{"reason": "rect"}` (`view.*`); `{"reason": "missing", "media": "..."}` or `{"reason": "missing", "timeline": "..."}` (`render.start` too); `{"reason": "out_of_range", "frame": n}`; `{"reason": "subtitle_track", "track": "..."}` for a `subtitle_tracks` entry that is not a subtitle track of the timeline, or is named twice |
+| `-32001` | a transaction, undo or redo was refused; the project is exactly as it was; or `render.start` was refused before anything was written or taken away (with `{"reason":"stopping"}` while the engine is stopping; with no `data` when the export could not be started) | the refusal, below |
 | `-32002` | `media.import` or `media.inspect`: a file cannot be read; nothing was added. `transport.load`, `media.thumbnail`, `media.waveform`: the file of the media cannot be opened or decoded. The analysis of the engine stopped (no `data`) | `{"path": "<as sent>", "reason": "...", "message": "..."}`, below |
 | `-32003` | `view.*`: the view cannot be made, there is none, or its window is gone | `{"reason": "..."}`, see The view |
 | `-32004` | `transport.*`: no media is loaded, the transport has stopped, or the test hook could not draw | `{"reason": "..."}`, see The transport |
@@ -1022,7 +1043,7 @@ transaction, undo or redo, with
 `"index": i` (the place of the refused operation in `ops`) when an operation was refused, and
 `{"reason": "empty", "message": ...}` for a transaction with no operations. An undo or a redo is
 refused only through a bug of the engine. The refusals that are not of a transaction
-(`stale_revision`, and `busy`, `exists`, `part_exists` and `source` of `render.start`) carry no
+(`stale_revision`, and `busy`, `exists`, `part_exists`, `source` and `stopping` of `render.start`) carry no
 `message` in `data`: it is the `message` of the error. Each `reason` and its fields:
 
 | reason | fields | meaning |
@@ -1047,11 +1068,12 @@ refused only through a bug of the engine. The refusals that are not of a transac
 | `not_absolute` | `path` | the `path` of a proxy is not absolute (`C:\…`, `\\server\…` or `/…`) |
 | `not_a_proxy_path` | `path` | the `path` of a proxy is not a file of the engine's own: `<id>-<12 hex digits>.mov` directly in `<project>/cache/proxies` (see Security) |
 | `empty` | | the transaction has no operations |
-| `stale_revision` | `expected`, `actual` | `transaction.apply` with a `revision` that is not the project's (see Methods) |
+| `stale_revision` | `expected`, `actual` | `transaction.apply` or `render.start` with a `revision` that is not the project's (see Methods, and Rendering a timeline) |
 | `busy` | | `render.start` while an export is running |
 | `exists` | `path` | `render.start` without `replace` onto an existing movie or SRT |
 | `part_exists` | `path` | `render.start` where the partial file `<path>.part` of the movie or an SRT is there (see Rendering a timeline) |
 | `source` | `path`, `media` | `render.start` onto the file of media of the project, or of its proxy |
+| `stopping` | | `render.start` while the engine is stopping |
 
 ### Additional schema 2 and edit refusals
 
@@ -1063,11 +1085,11 @@ refused only through a bug of the engine. The refusals that are not of a transac
 | `no_handles` | `clip`, `need`, `have`, `longest?` | insufficient source/coverage; `longest` is the maximum possible transition length |
 | `empty_range` | | zero-length range/delta or an edit that cannot move |
 | `nothing_at` | `track` (nullable), `frame` | no target clip at the requested frame |
-| `no_track` | `kind` | no track for the requested source |
+| `no_track` | `kind` | no track for the requested source, or, for a `move` with `to_track`, no track of `kind` for a clip that moves to go to |
 | `wrong_track` | `what`, `kind` | content or settings on an incompatible track kind |
 | `cue_overlap` | `with` | subtitles overlap on one track |
 | `subtitle_shown` | `track` | a subtitle track would be enabled (by `set_track`, `add_track` or `add_timeline`) while subtitle track `track` of its timeline is enabled; a timeline shows one at a time |
-| `out_of_range` | `what` | an invalid setting: `width`, `height`, `sample_rate`, `start`, `length`, `speed`, `transform`, `gain_db`, `pan`, `fade`, `text`, `size`, `position`, `language`, `still`; `digest` for media whose `identity.digest` is not 64 lowercase hex digits; `by`, `clips` or `cues` for a shift that would change nothing |
+| `out_of_range` | `what` | an invalid setting: `width`, `height`, `sample_rate`, `start`, `length`, `speed`, `transform`, `gain_db`, `pan`, `fade`, `text`, `size`, `position`, `language`, `still`; `rotation` for media whose `facts.video.rotation` is not 0, 90, 180 or 270; `digest` for media whose `identity.digest` is not 64 lowercase hex digits; `by`, `clips` or `cues` for a shift that would change nothing |
 | `has_transition` | `transition` | `remove_clip`, `move_clip` or `trim_clip` of a clip that has a transition (remove it first), a `set_clip` that its transition cannot follow, or a `shift_clips` that moves just one end of a transition |
 | `not_adjacent` | `left`, `right` | transition endpoints do not meet |
 | `cut_taken` | `with` | a transition is already at this cut |
@@ -1085,7 +1107,7 @@ the expanded operation list. Refusal emits no `project.changed` and adds no hist
 `render.start` is available to every greeted client, including a headless engine:
 
 ```json
-{"timeline":"t1","path":"C:/Exports/film.mp4","codec":"h264","quality":"high","range":{"from":0,"to":250},"subtitle_tracks":["S1","S2"],"replace":false}
+{"timeline":"t1","path":"C:/Exports/film.mp4","codec":"h264","quality":"high","range":{"from":0,"to":250},"subtitle_tracks":["S1","S2"],"replace":false,"revision":42}
 ```
 
 `codec` is `h264`, `hevc`, or `prores`; `quality` is `high`, `medium`, or `small`.
@@ -1096,7 +1118,12 @@ as the checkboxes of DaVinci Resolve's Deliver page choose them; it defaults to 
 be a subtitle track of the timeline, named once, shown or hidden: a hidden track is exported
 too. Otherwise `render.start` is refused with `-32602` and
 `{"reason":"subtitle_track","track":"S9"}` before anything is written. `replace` defaults to
-false. Unknown fields are refused, including the `subtitles` of earlier drafts.
+false. `revision` is optional: a client that prepared the export by the project at a revision
+(for example the names of the SRT files, which it read with `project.get`, to tell what
+`replace` would replace) gives it, and the export is refused with `-32001` and
+`{"reason":"stale_revision","expected":n,"actual":k}`, as `transaction.apply` is, where the
+project is at another revision, before anything is written or taken away. Unknown fields are
+refused, including the `subtitles` of earlier drafts.
 
 The path must be absolute, its parent directory must exist, and its extension must be `.mp4`
 (H.264/HEVC) or `.mov` (any codec), in either letter case. Export cannot write inside the project's cache, including
@@ -1105,8 +1132,10 @@ SRT with `replace: false` is refused with `-32001` and `{reason:"exists",path}`.
 (movie or SRT, or the `.mov` of a ProRes fallback) that is the file of any media of the project
 or of its proxy, compared as the system resolves the paths (case-insensitively on Windows), is
 refused before anything is written with `-32001` and `{reason:"source",path,media}`. Invalid path,
-codec, quality, timeline or range is `-32602`. One export runs at a time; a second start is
-refused with `-32001` and `{reason:"busy"}`.
+codec, quality, timeline or range is `-32602`; a timeline that is not there is
+`{"reason":"missing","timeline":"..."}`, as for `timeline.duration`. One export runs at a time;
+a second start is refused with `-32001` and `{reason:"busy"}`, and one asked for while the engine
+is stopping with `{reason:"stopping"}`.
 
 The answer is `{job:"render-1"}` and is queued before that job's first `render.progress`:
 
@@ -1164,8 +1193,9 @@ The movie and SRTs are first written beside their destinations as `<path>.part`.
 partial files are not overwritten: one that is there when an export starts (left by an engine
 that ended while it exported, or by another program) is refused before anything is written
 with `-32001` and `{reason:"part_exists",path}`, `path` naming the partial file. With
-`replace: true` it is deleted first, unless a program still has it open (as ffmpeg has the file
-it writes; Windows then refuses to delete it) or it is not a file: then it is refused so too.
+`replace: true` it is deleted once every other check of the export has passed (a refused export
+deletes nothing), unless a program still has it open (as ffmpeg has the file it writes; Windows
+then refuses to delete it) or it is not a file: then it is refused so too.
 On cancellation or failure these owned partials are
 removed. At publication, sidecars are renamed first and the movie last; previous destinations
 are retained in temporary backups until all renames succeed, then removed. A publication

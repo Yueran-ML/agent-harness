@@ -61,7 +61,10 @@ size and frame rate, by default those of the first video in the pool) and opens 
   every track with Shift.
 - **Dragging.** A clip dragged onto others overwrites them, and the frames it will cover are
   hatched in red while it moves. Shift keeps its time and only changes its track; Ctrl+Shift
-  shuffles it in (the others make way); Alt leaves a copy where it is dropped. Media dragged from
+  shuffles it in (the others make way); Alt leaves a copy where it is dropped. A clip moved to
+  another track takes its linked clips as many tracks along their own kind, as Resolve's Linked
+  Move Across Tracks does: a picture moved from V1 to V2 takes its sound from A1 to A2. No track
+  is added for it: where there is none, nothing moves and the studio says why. Media dragged from
   the pool overwrites; with Ctrl+Shift it is inserted, with Shift only its sound is placed and
   with Alt only its picture. N during a drag turns snapping on or off for that drag alone.
 - **Three-point edits.** F9 to F12 and Shift+F10, Shift+F12 put what the source viewer shows on
@@ -101,7 +104,9 @@ not read timecode yet, it is disabled and says so, as Resolve does nothing where
 overlaps. Two timelines lie below: the whole film above, the part around the playhead below,
 both editable. As on Resolve's Cut page, Track 1 is magnetic: moving or deleting a clip there
 closes its gap, a clip let go on an edit point is inserted there, and its edges ripple, while
-clips on the tracks above only move or resize.
+clips on the tracks above only move or resize. Clips of other tracks that lie across the gap,
+such as a bed of music or a clip moved straight up off Track 1 with its sound, stay where they
+are, and what follows the gap moves back on every track.
 
 **Subtitles.** A right-click on a track header adds a subtitle track, and the *+* above the
 headers adds one in a chosen language. A right-click on a subtitle track, or a double-click in an
@@ -194,7 +199,10 @@ protocol, such as `add_timeline`, `add_bin`, `set_clip` (transform, gain, pan, f
 `set_track`, `set_media` and `set_timeline`. The engine decides track locks, links and available
 handles. Timeline positions are integer frames; source times use ticks and their scale. `null`
 means an explicitly cleared field or disabled destination, while an omitted field keeps its
-documented default. The tool's description lists the fields of each command.
+documented default. The tool's description lists the fields of each command. `move` with
+`to_track` takes the linked clips as many tracks along their own kind (Linked Move Across
+Tracks), and `close_gap` with `straddling="stay"` leaves the clips of other tracks across the
+gap where they are, as the Cut page closes up Track 1.
 
 When a range is removed, subtitles in that range are trimmed or deleted and following cues move
 with the picture. Inserting through a cue splits it into two cues with the same text; the latter

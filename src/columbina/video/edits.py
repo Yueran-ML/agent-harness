@@ -435,9 +435,25 @@ def ripple_delete_range(
     return written
 
 
-def close_gap(timeline: str, track: str, at: int) -> dict[str, Any]:
-    """The gap that frame ``at`` of ``track`` is in is closed, on every unlocked track."""
-    return {"edit": "close_gap", "timeline": timeline, "track": track, "at": at}
+def close_gap(
+    timeline: str,
+    track: str,
+    at: int,
+    *,
+    straddling: Literal["refuse", "stay"] | None = None,
+) -> dict[str, Any]:
+    """The gap that frame ``at`` of ``track`` is in is closed, on every unlocked track.
+
+    Where a clip of another unlocked track lies across a frame of the gap, the engine refuses
+    with ``ripple_blocked`` (``straddling="refuse"``, the default, which is not written). With
+    ``straddling="stay"`` such clips stay where they are, as the Cut page closes up its Track 1:
+    what starts at the end of the gap or later still moves back on every unlocked track, and the
+    edit is refused with ``ripple_blocked`` only where a clip would then run into one that stays.
+    """
+    written: dict[str, Any] = {"edit": "close_gap", "timeline": timeline, "track": track, "at": at}
+    if straddling == "stay":
+        written["straddling"] = straddling
+    return written
 
 
 def blade(

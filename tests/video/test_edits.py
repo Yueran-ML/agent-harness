@@ -84,6 +84,9 @@ def test_clips_are_taken_away_cut_and_moved_with_what_is_linked_to_them() -> Non
     assert edits.close_gap("t1", "V1", 30) == {
         "edit": "close_gap", "timeline": "t1", "track": "V1", "at": 30,
     }  # fmt: skip
+    # Refusing is what the engine does unless told, and is not written, as the engine writes it.
+    assert edits.close_gap("t1", "V1", 30, straddling="refuse") == edits.close_gap("t1", "V1", 30)
+    assert edits.close_gap("t1", "V1", 30, straddling="stay")["straddling"] == "stay"
     assert edits.blade("t1", 12) == {"edit": "blade", "timeline": "t1", "at": 12, "linked": True}
     assert edits.blade("t1", 12, tracks=["V2"], linked=False)["tracks"] == ["V2"]
     assert edits.move("t1", ["c4"], -5) == {

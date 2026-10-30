@@ -581,7 +581,12 @@ video_info, and either length in timeline frames or to:{ticks,scale}. A title so
 {kind:"title",text:"Title",length:50,style:{font:"",size:48,color:"#ffffffff",x:0.5,y:0.5,
 align:"center"}}; a color is {kind:"color",color:"#000000ff",length:50}.
 lift/ripple_delete: clips:[ids], linked?; ripple_delete_range: from,to,tracks?;
-close_gap: track,at; blade: at,tracks?,linked?; move: clips,delta,to_track?,overwrite?,linked?;
+close_gap: track,at,straddling?:"refuse"|"stay" (default "refuse": a clip of another unlocked
+track lying across the gap refuses it as ripple_blocked; "stay" keeps such superimposed clips in
+place while what follows the gap moves back, as the Cut page's Track 1 does);
+blade: at,tracks?,linked?; move: clips,delta,to_track?,overwrite?,linked?; with to_track, linked
+partners move as many tracks along their own kind, to the corresponding track (V1 to V2 takes
+A1 to A2, Linked Move Across Tracks), refused as no_track where there is none;
 insert_move: clips,at,linked?; trim: clip,edge:"in"|"out",delta,ripple?,linked?;
 roll: left,right,delta,linked?; slip/slide: clip,delta,linked?;
 add_transition: left,right,length,kind?,align:"start"|"center"|"end";

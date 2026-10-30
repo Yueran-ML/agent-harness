@@ -19,7 +19,9 @@ export type PlaceEdit = 'insert' | 'overwrite' | 'replace' | 'place_on_top' | 'a
 export type QuickTransition = 'dissolve' | 'dip_black';
 export type EditAction =
   | { kind: 'tool'; tool: Tool }
-  | { kind: 'snap' | 'linked' | 'fit' | 'cancel' | 'speed' | 'enabled' | 'lock' | 'transition' | 'blade' }
+  | { kind: 'snap' | 'linked' | 'fit' | 'cancel' | 'speed' | 'enabled' | 'link' | 'transition' | 'blade' }
+  /** Lock or unlock a track by its number among those of its kind (V1 is 1), or all video tracks (`number` null). */
+  | { kind: 'lock'; tracks: 'video' | 'audio'; number: number | null }
   | { kind: 'history'; method: 'history.undo' | 'history.redo' }
   | { kind: 'mark'; edge: 'in' | 'out' | 'clear' }
   | { kind: 'place'; edit: PlaceEdit }
@@ -35,7 +37,8 @@ export function editKey(key: Key): EditAction | null {
   const value = key.key.length === 1 ? key.key.toLowerCase() : key.key;
   const control = key.ctrl || key.meta;
   if (control) {
-    if (value === 'l' && key.alt && !key.shift) return { kind: 'lock' };
+    // Ctrl+Alt+L links the clips chosen, or unlinks them (Linked Clips, Reference Manual 20, pp. 771, 1097).
+    if (value === 'l' && key.alt && !key.shift) return { kind: 'link' };
     if (key.alt) return null;
     // Ctrl with plus or minus zooms the timeline, as in DaVinci Resolve; plus is often typed with Shift.
     if (value === '=' || value === '+') return { kind: 'zoom', direction: 1 };
@@ -47,7 +50,15 @@ export function editKey(key: Key): EditAction | null {
     if (value === 't') return { kind: 'transition' };
     return null;
   }
-  if (key.alt) return value === 'x' && !key.shift ? { kind: 'mark', edge: 'clear' } : null;
+  if (key.alt && key.shift) {
+    // Alt+Shift+1 to 8 lock or unlock V1 to V8, Alt+Shift+9 all video tracks, Alt+Shift+F1 to F8
+    // A1 to A8 (Reference Manual 20, p. 762). A digit is known by where it lies: with Shift it types another sign.
+    const digit = /^Digit([1-9])$/.exec(key.code ?? '')?.[1] ?? (/^[1-9]$/.test(value) ? value : null);
+    if (digit !== null) return { kind: 'lock', tracks: 'video', number: digit === '9' ? null : Number(digit) };
+    const f = /^F([1-8])$/.exec(value)?.[1];
+    return f ? { kind: 'lock', tracks: 'audio', number: Number(f) } : null;
+  }
+  if (key.alt) return value === 'x' ? { kind: 'mark', edge: 'clear' } : null;
   if (key.shift) {
     if (value === 'z') return { kind: 'fit' };
     if (value === 'F12') return { kind: 'place', edit: 'append' };
@@ -288,10 +299,18 @@ export function editCommand(action: EditAction | null, context: EditContext): Ed
     return transaction(selected.map(id => ({ op: 'set_clip', timeline: timeline.id, id, enabled })));
   }
   if (action.kind === 'lock') {
-    const ids = chosenTracks.length ? chosenTracks : activeTracks;
-    const tracks = timeline.tracks.filter(track => ids.includes(track.id));
+    const ofKind = timeline.tracks.filter(track => track.kind === action.tracks);
+    const tracks = action.number === null ? ofKind : ofKind.slice(action.number - 1, action.number);
     const locked = !tracks.every(track => track.locked);
     return transaction(tracks.map(track => ({ op: 'set_track', timeline: timeline.id, id: track.id, locked })));
+  }
+  if (action.kind === 'link') {
+    // Clips chosen that are one group already are unlinked; else they are linked into a new one.
+    const chosen = selected.map(id => locations.get(id)!.clip);
+    const groups = new Set(chosen.map(clip => clip.link));
+    if (groups.size === 1 && !groups.has(null)) return transaction(chosen.map(clip => ({ op: 'set_clip', timeline: timeline.id, id: clip.id, link: null })));
+    // The first names the new group, and the others join it (an empty link would make a group for each).
+    return chosen.length >= 2 ? transaction(chosen.map(clip => ({ op: 'set_clip', timeline: timeline.id, id: clip.id, link: '$link' }))) : null;
   }
   if (action.kind === 'transition') {
     if (context.cut) return editCommand({ kind: 'quick', transition: 'dissolve' }, context);

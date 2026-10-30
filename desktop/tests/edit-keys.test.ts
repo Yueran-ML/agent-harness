@@ -120,9 +120,34 @@ describe('DaVinci editing keys', () => {
   it('adds one default transition per selected cut and toggles selected clips and target locks', () => {
     expect(command('t', { ctrl: true })).toMatchObject({ transaction: { ops: [{ edit: 'add_transition', left: 'c1', right: 'c2', length: 25, kind: 'dissolve', align: 'center' }] } });
     expect(command('d')).toMatchObject({ transaction: { ops: [{ op: 'set_clip', id: 'c1', enabled: false }] } });
-    expect(command('l', { ctrl: true, alt: true })).toMatchObject({ transaction: { ops: [{ op: 'set_track', id: 'v1', locked: true }] } });
     const t = timeline([clip('c1', 0, 100, { enabled: false })]);
     expect(command('d', {}, context({ timeline: t }))).toMatchObject({ transaction: { ops: [{ op: 'set_clip', enabled: true }] } });
+  });
+  it('links or unlinks the clips chosen with Ctrl+Alt+L, and locks tracks by number with Alt+Shift, as DaVinci Resolve', () => {
+    const t = timeline([clip('c1', 0, 100, { link: 'g1' }), clip('c2', 100, 100), clip('c3', 200, 100)]);
+    t.tracks.push({ id: 'a1', kind: 'audio', name: 'A1', enabled: true, locked: false, clips: [clip('a1c', 0, 100, { link: 'g1' })], transitions: [] });
+    t.tracks.push({ id: 'v2', kind: 'video', name: 'V2', enabled: true, locked: true, clips: [], transitions: [] });
+    // Reference Manual 20, pp. 771, 1097: Linked Clips (Option-Command-L) unlinks a linked clip, and links clips that are not.
+    expect(command('l', { ctrl: true, alt: true }, context({ timeline: t, selected: ['c1'] }))).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [
+      { op: 'set_clip', timeline: 't1', id: 'c1', link: null }, { op: 'set_clip', timeline: 't1', id: 'a1c', link: null },
+    ] } });
+    expect(command('l', { ctrl: true, alt: true }, context({ timeline: t, selected: ['c2', 'c3'] }))).toMatchObject({ transaction: { ops: [
+      { op: 'set_clip', id: 'c2', link: '$link' }, { op: 'set_clip', id: 'c3', link: '$link' },
+    ] } });
+    expect(command('l', { ctrl: true, alt: true }, context({ timeline: t, selected: ['c1', 'c2'] }))).toMatchObject({ transaction: { ops: [
+      { id: 'c1', link: '$link' }, { id: 'c2', link: '$link' }, { id: 'a1c', link: '$link' },
+    ] } });
+    expect(command('l', { ctrl: true, alt: true }, context({ timeline: t, selected: ['c2'] }))).toBeNull();
+    // P. 762: Option-Shift-1 to 8 lock V1 to V8, Option-Shift-9 all video tracks, Option-Shift-F1 to F8 A1 to A8.
+    // A digit typed with Shift is another sign: it is known by where it lies.
+    expect(command('!', { alt: true, shift: true, code: 'Digit1' }, context({ timeline: t }))).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [{ op: 'set_track', timeline: 't1', id: 'v1', locked: true }] } });
+    expect(command('2', { alt: true, shift: true }, context({ timeline: t }))).toMatchObject({ transaction: { ops: [{ op: 'set_track', id: 'v2', locked: false }] } });
+    expect(command('(', { alt: true, shift: true, code: 'Digit9' }, context({ timeline: t }))).toMatchObject({ transaction: { ops: [
+      { id: 'v1', locked: true }, { id: 'v2', locked: true },
+    ] } });
+    expect(command('F1', { alt: true, shift: true }, context({ timeline: t }))).toMatchObject({ transaction: { ops: [{ op: 'set_track', id: 'a1', locked: true }] } });
+    expect(command('#', { alt: true, shift: true, code: 'Digit3' }, context({ timeline: t }))).toBeNull();
+    expect(command('F9', { alt: true, shift: true })).toBeNull();
   });
   it('does nothing when a timeline or source needed by the command is absent', () => {
     expect(command('F9', {}, context({ timeline: null }))).toBeNull();

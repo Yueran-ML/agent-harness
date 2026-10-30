@@ -14,6 +14,11 @@ export interface Key {
   repeat: boolean;
   /** Whether the key belongs to an input method that is putting characters together. */
   composing: boolean;
+  /**
+   * The key where it lies on the keyboard (`Digit1`), whatever it types: with Shift or Alt, a digit
+   * types something else on many layouts. Left out where the event does not say.
+   */
+  code?: string;
 }
 
 /** An event of the keyboard, as the browser or React hands it over. */
@@ -25,6 +30,7 @@ interface KeyEvent {
   metaKey: boolean;
   repeat: boolean;
   keyCode: number;
+  code?: string;
   isComposing?: boolean;
   nativeEvent?: { isComposing?: boolean };
 }
@@ -39,6 +45,7 @@ export function keyOf(event: KeyEvent): Key {
     repeat: event.repeat,
     // Some input methods tell of the key that ends a composition as key 229 and nothing more.
     composing: (event.isComposing ?? event.nativeEvent?.isComposing ?? false) || event.keyCode === 229,
+    ...(event.code ? { code: event.code } : {}),
   };
 }
 

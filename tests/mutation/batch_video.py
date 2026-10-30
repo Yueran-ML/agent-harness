@@ -445,8 +445,8 @@ _VIDEO_PLUGIN = (
     mutant(
         "subtitles beside an export are written without asking the file seam",
         VIDEO_PLUGIN,
-        "                        for sidecar in sidecars(target, path):",
-        "                        for sidecar in []:",
+        "                    for sidecar in sidecars(target, path, chosen):",
+        "                    for sidecar in []:",
     ),
     mutant(
         "every call migrates again",

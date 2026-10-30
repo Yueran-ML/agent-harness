@@ -257,14 +257,14 @@ describe('timeline editing by pointer and keys', () => {
       { edit: 'overwrite', timeline: 't1', at: 120, source: { kind: 'media', media: 'm2' }, video_track: 'v1', audio_track: null },
     ] });
   });
-  it('inserts on Shift-drop and ignores media drags from a different project session or onto locked tracks', async () => {
+  it('inserts on Ctrl+Shift-drop and ignores media drags from a different project session or onto locked tracks', async () => {
     const { props, rerender, call } = mount();
     const lane = document.querySelector('.timeline-lane')!;
     const dataTransfer = { types: [MEDIA_DRAG], getData: () => JSON.stringify({ session: 2, media: ['m1'] }) };
     fireEvent.drop(lane, { clientX: HEADER_WIDTH + 80, clientY: 45, dataTransfer }); await settle();
     expect(call).not.toHaveBeenCalled();
     dataTransfer.getData = () => JSON.stringify({ session: 1, media: ['m1'] });
-    fireEvent.drop(lane, { clientX: HEADER_WIDTH + 80, clientY: 45, dataTransfer, shiftKey: true }); await settle();
+    fireEvent.drop(lane, { clientX: HEADER_WIDTH + 80, clientY: 45, dataTransfer, ctrlKey: true, shiftKey: true }); await settle();
     expect(call).toHaveBeenLastCalledWith('transaction.apply', { revision: 17, ops: [{ edit: 'insert', timeline: 't1', at: 20, source: { kind: 'media', media: 'm1' }, video_track: 'v1', audio_track: null }] });
     call.mockClear();
     rerender(<Timeline {...props} timeline={{ ...props.timeline, tracks: props.timeline.tracks.map(t => ({ ...t, locked: true })) }} />);

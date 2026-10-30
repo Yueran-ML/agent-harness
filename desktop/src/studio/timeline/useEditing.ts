@@ -11,7 +11,7 @@ import { beginDrag, dragTo, finishDrag, hitClip, type Dragged, type Gesture, typ
 import { clipLocations, EMPTY_SELECTION, primaryTrack, selectClips, type Selection } from './selection';
 import { snap, snapCandidates, type Marks } from './snap';
 import { draggedMedia, MEDIA_DRAG } from '../media/drag';
-import { dropMedia } from './drop';
+import { dropMedia, dropMode } from './drop';
 import { droppedEffect, effectOfTypes } from '../effects/drag';
 import { effectTarget, effectTransaction } from '../effects/drop';
 import { refusalText } from '../inspector/refusal';
@@ -458,7 +458,7 @@ export function useEditing(options: Options) {
     }
     event.preventDefault();
     const ids = draggedMedia(event.dataTransfer, context.session);
-    const transaction = dropMedia(context.timeline!, context.revision, context.media, ids, track, context.targets, dropFrame(event), event.shiftKey);
+    const transaction = dropMedia(context.timeline!, context.revision, context.media, ids, track, context.targets, dropFrame(event), dropMode(event));
     if (transaction) void apply(transaction);
   };
   const dragLeave = (event: DragEvent) => {

@@ -20,7 +20,7 @@ export type QuickTransition = 'dissolve' | 'dip_black';
 export type EditAction =
   | { kind: 'tool'; tool: Tool }
   | { kind: 'snap' | 'linked' | 'fit' | 'cancel' | 'speed' | 'enabled' | 'link' | 'transition' | 'blade' }
-  /** Lock or unlock a track by its number among those of its kind (V1 is 1), or all video tracks (`number` null). */
+  /** Lock or unlock a track by its number among those of its kind (V1 is 1), or all tracks of that kind (`number` null). */
   | { kind: 'lock'; tracks: 'video' | 'audio'; number: number | null }
   | { kind: 'history'; method: 'history.undo' | 'history.redo' }
   | { kind: 'mark'; edge: 'in' | 'out' | 'clear' }
@@ -52,11 +52,12 @@ export function editKey(key: Key): EditAction | null {
   }
   if (key.alt && key.shift) {
     // Alt+Shift+1 to 8 lock or unlock V1 to V8, Alt+Shift+9 all video tracks, Alt+Shift+F1 to F8
-    // A1 to A8 (Reference Manual 20, p. 762). A digit is known by where it lies: with Shift it types another sign.
+    // A1 to A8, Alt+Shift+F9 all audio tracks (Reference Manual 20, p. 762). A digit is known by
+    // where it lies: with Shift it types another sign.
     const digit = /^Digit([1-9])$/.exec(key.code ?? '')?.[1] ?? (/^[1-9]$/.test(value) ? value : null);
     if (digit !== null) return { kind: 'lock', tracks: 'video', number: digit === '9' ? null : Number(digit) };
-    const f = /^F([1-8])$/.exec(value)?.[1];
-    return f ? { kind: 'lock', tracks: 'audio', number: Number(f) } : null;
+    const f = /^F([1-9])$/.exec(value)?.[1];
+    return f ? { kind: 'lock', tracks: 'audio', number: f === '9' ? null : Number(f) } : null;
   }
   if (key.alt) return value === 'x' ? { kind: 'mark', edge: 'clear' } : null;
   if (key.shift) {

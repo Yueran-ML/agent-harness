@@ -159,7 +159,12 @@ describe('DaVinci editing keys', () => {
     ] } });
     expect(command('F1', { alt: true, shift: true }, context({ timeline: t }))).toMatchObject({ transaction: { ops: [{ op: 'set_track', id: 'a1', locked: true }] } });
     expect(command('#', { alt: true, shift: true, code: 'Digit3' }, context({ timeline: t }))).toBeNull();
-    expect(command('F9', { alt: true, shift: true })).toBeNull();
+    // Option-Shift-F9 locks or unlocks all audio tracks; with all of them locked, it unlocks them.
+    t.tracks.push({ id: 'a2', kind: 'audio', name: 'A2', enabled: true, locked: true, clips: [], transitions: [] });
+    expect(command('F9', { alt: true, shift: true }, context({ timeline: t }))).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [
+      { op: 'set_track', timeline: 't1', id: 'a1', locked: true }, { op: 'set_track', timeline: 't1', id: 'a2', locked: true },
+    ] } });
+    expect(editKey(key('F10', { alt: true, shift: true }))).toBeNull();
   });
   it('leaves clips on locked tracks out of D, R and Ctrl+Alt+L, linked or not', () => {
     // Reference Manual 20, p. 762: clips on locked tracks cannot be otherwise affected, nor their parameters edited.

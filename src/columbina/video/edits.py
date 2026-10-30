@@ -462,7 +462,11 @@ def move(
 ) -> dict[str, Any]:
     """The clips move ``delta`` frames later, and to ``to_track`` with the first of them.
 
-    Where something is in the way the engine refuses with ``no_room``, unless ``overwrite``.
+    Every clip that moves, the linked ones too, goes as many tracks along its own kind as
+    ``to_track`` is from the track of the first: the sound of a picture moved from V1 to V2 goes
+    from A1 to A2. No track is made: the engine refuses with ``no_track`` where a clip has no track
+    to go to, and with ``locked`` where it would go on a locked one. Where something is in the way
+    it refuses with ``no_room``, unless ``overwrite``.
     """
     written: dict[str, Any] = {
         "edit": "move",

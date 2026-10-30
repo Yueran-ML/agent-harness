@@ -203,6 +203,37 @@ describe('timeline editing by pointer and keys', () => {
     fireEvent.pointerMove(root(), pointer(40)); fireEvent.pointerUp(root(), pointer(40)); await settle();
     expect(call).toHaveBeenLastCalledWith('transaction.apply', { revision: 17, ops: [{ edit: 'move', timeline: 't1', clips: ['c1', 'c2'], delta: 10, to_track: 'v2', overwrite: true, linked: true }] });
   });
+  it('moves the linked sound as many tracks up as its picture, and says why where there is no track for it', async () => {
+    // Linked Move Across Tracks (Reference Manual 20, p. 769): c1 from V1 to V2 takes its sound from A1 to A2.
+    const linked = (withA2: boolean) => {
+      const t = timeline([clip('c1', 10, 60, { link: 'g1' }), clip('c2', 100, 60)]);
+      t.tracks.push({ id: 'v2', kind: 'video', name: 'V2', enabled: true, locked: false, clips: [], transitions: [] });
+      t.tracks.push({ id: 'a1', kind: 'audio', name: 'A1', enabled: true, locked: false, clips: [clip('s1', 10, 60, { link: 'g1' })], transitions: [] });
+      if (withA2) t.tracks.push({ id: 'a2', kind: 'audio', name: 'A2', enabled: true, locked: false, clips: [], transitions: [] });
+      return t;
+    };
+    const drag = () => {
+      const tops: Record<string, number> = { v2: 30, v1: 102, a1: 174, a2: 246 };
+      for (const lane of document.querySelectorAll<HTMLElement>('[data-track]')) vi.spyOn(lane, 'getBoundingClientRect').mockReturnValue(rect(0, tops[lane.dataset.track!] ?? 400, 956, 72));
+      fireEvent.pointerDown(node(), pointer(30));
+      fireEvent.pointerMove(root(), pointer(40));
+      const top = (id: string) => document.querySelector<HTMLElement>(`[data-preview="${id}"]`)?.style.top;
+      const preview = [top('c1'), top('s1')];
+      fireEvent.pointerUp(root(), pointer(40));
+      return preview;
+    };
+    const { call, unmount } = mount(linked(true));
+    // Rows of 72 pixels under the ruler, V2, V1, A1 and A2: the picture is shown on V2, its sound on A2.
+    expect(drag()).toEqual(['34px', '250px']);
+    await settle();
+    expect(call).toHaveBeenLastCalledWith('transaction.apply', { revision: 17, ops: [{ edit: 'move', timeline: 't1', clips: ['c1', 's1'], delta: 10, to_track: 'v2', overwrite: true, linked: true }] });
+    unmount();
+    // No A2: the engine makes no track and would refuse, so nothing is sent.
+    const without = mount(linked(false));
+    drag(); await settle();
+    expect(without.call.mock.calls.filter(([method]) => method === 'transaction.apply')).toEqual([]);
+    expect(screen.getByRole('alert').textContent).toBe('There is no track there for every clip and its linked clips, so nothing was moved.');
+  });
   it('blades the clicked track or all tracks with Shift without a drag', async () => {
     const { call } = mount();
     fireEvent.keyDown(root(), { key: 'b' });

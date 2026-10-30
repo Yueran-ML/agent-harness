@@ -181,7 +181,7 @@ pub(super) fn move_clips(
         return Err(EditError::EmptyRange);
     };
     let (first_track, _) = work.owned(first)?;
-    let (kind, offset) = match to_track {
+    let offset = match to_track {
         Some(to) => {
             let kind = work.track(to)?.kind;
             if work.track(&first_track)?.kind != kind {
@@ -191,24 +191,24 @@ pub(super) fn move_clips(
                 }));
             }
             let place = |id: &str| place_among(work, kind, id);
-            (Some(kind), place(to) - place(&first_track))
+            place(to) - place(&first_track)
         }
-        None => (None, 0),
+        None => 0,
     };
+    // Every clip goes as many tracks up or down among those of its kind: the sound linked to a
+    // picture goes with it (Linked Move Across Tracks, Reference Manual 20, p. 769).
     let mut moved: Vec<(Id, Clip)> = vec![];
     for id in &all {
         let (track, clip) = work.owned(id)?;
-        let track = match kind {
-            Some(kind) if work.track(&track)?.kind == kind => {
-                let to = place_among(work, kind, &track) + offset;
-                let to = usize::try_from(to)
-                    .ok()
-                    .and_then(|to| of_kind(work, kind).get(to).cloned());
-                to.ok_or_else(|| EditError::NoRoom {
-                    track: to_track.unwrap_or_default().into(),
-                })?
-            }
-            _ => track,
+        let track = if offset == 0 {
+            track
+        } else {
+            let kind = work.track(&track)?.kind;
+            let to = place_among(work, kind, &track) + offset;
+            let to = usize::try_from(to)
+                .ok()
+                .and_then(|to| of_kind(work, kind).get(to).cloned());
+            to.ok_or(EditError::NoTrack { kind })?
         };
         work.open(&track)?;
         moved.push((track, clip));
@@ -361,7 +361,7 @@ fn lift_cues(work: &mut Work, spans: &[(i64, i64)]) -> Result<Vec<(Id, Cue, i64)
 mod tests {
     use super::super::fixture::*;
     use super::super::{Edit, EditError, Straddling};
-    use crate::project::Alignment;
+    use crate::project::{Alignment, TrackKind};
 
     fn ripple_delete(clips: &[&str]) -> Edit {
         Edit::RippleDelete {
@@ -695,13 +695,103 @@ mod tests {
     fn a_move_to_another_track_overwrites_what_is_there_if_asked() {
         let mut project = project();
         edit(&mut project, move_by(&["c3"], 0, Some("V2"), true));
-        // c3 lands on V2 over [100, 150): c5 keeps [150, 170). The sound stays on A1.
+        // c3 lands on V2 over [100, 150): c5 keeps [150, 170). Its sound goes up a track too.
         assert_eq!(
             clips(&project, "V2"),
             rows(&[("c3", 100, 50, 150), ("c10", 150, 20, 80)])
         );
         assert_eq!(clips(&project, "V1"), rows(&[("c1", 0, 100, 0)]));
-        assert_eq!(clips(&project, "A1")[1], ("c4".into(), 100, 50, 150));
+        assert_eq!(clips(&project, "A1"), rows(&[("c2", 0, 100, 0)]));
+        assert_eq!(clips(&project, "A2"), rows(&[("c4", 100, 50, 150)]));
+    }
+
+    #[test]
+    fn a_move_to_another_track_takes_the_linked_clips_as_many_tracks_along_their_kind() {
+        // c1 up from V1 to V2: c2, its sound, goes up from A1 to A2 (Linked Move Across Tracks).
+        let mut up = project();
+        edit(&mut up, move_by(&["c1"], 0, Some("V2"), false));
+        assert_eq!(clips(&up, "V1"), rows(&[("c3", 100, 50, 150)]));
+        assert_eq!(
+            clips(&up, "V2"),
+            rows(&[("c1", 0, 100, 0), ("c5", 120, 50, 50)])
+        );
+        assert_eq!(clips(&up, "A1"), rows(&[("c4", 100, 50, 150)]));
+        assert_eq!(clips(&up, "A2"), rows(&[("c2", 0, 100, 0)]));
+        // The sound moved up from A1 to A2 takes the picture up from V1 to V2 the same way.
+        let mut from_sound = project();
+        edit(&mut from_sound, move_by(&["c2"], 0, Some("A2"), false));
+        assert_eq!(from_sound, up);
+        // And back down.
+        edit(&mut up, move_by(&["c1"], 0, Some("V1"), false));
+        assert_eq!(up, project());
+        // Unlinked, the picture goes alone.
+        let mut alone = project();
+        let mut unlinked = move_by(&["c1"], 0, Some("V2"), false);
+        if let Edit::Move { linked, .. } = &mut unlinked {
+            *linked = false;
+        }
+        edit(&mut alone, unlinked);
+        assert_eq!(clips(&alone, "A1")[0], ("c2".into(), 0, 100, 0));
+        assert_eq!(clips(&alone, "A2"), rows(&[]));
+    }
+
+    #[test]
+    fn a_move_whose_linked_clip_has_no_open_track_to_go_to_is_refused() {
+        // No track is made: without A2 the sound of c1 has nowhere to go.
+        let without_a2 = with(
+            project(),
+            vec![crate::Op::RemoveTrack {
+                timeline: "t1".into(),
+                id: "A2".into(),
+            }],
+        );
+        assert_eq!(
+            refused(without_a2, move_by(&["c1"], 0, Some("V2"), false)),
+            EditError::NoTrack {
+                kind: TrackKind::Audio
+            }
+        );
+        // Past the last track of its own kind too.
+        assert_eq!(
+            refused(project(), move_by(&["c2", "c5"], 0, Some("A2"), false)),
+            EditError::NoTrack {
+                kind: TrackKind::Video
+            }
+        );
+        // A locked track to go to is not changed.
+        assert_eq!(
+            refused(
+                with(project(), vec![lock("A2")]),
+                move_by(&["c1"], 0, Some("V2"), false)
+            ),
+            EditError::Locked { track: "A2".into() }
+        );
+        // A sound on a locked track is left where it is, and the picture goes alone.
+        let mut kept = with(project(), vec![lock("A1")]);
+        edit(&mut kept, move_by(&["c1"], 0, Some("V2"), false));
+        assert_eq!(clips(&kept, "A1")[0], ("c2".into(), 0, 100, 0));
+        assert_eq!(clips(&kept, "V2")[0], ("c1".into(), 0, 100, 0));
+    }
+
+    #[test]
+    fn a_clip_moved_up_with_its_sound_leaves_track_1_a_gap_that_closes() {
+        // The Cut page moves c1 up from Track 1 and closes the gap it leaves: its sound went up
+        // with it, so nothing after the gap on A1 runs into it.
+        let mut project = project();
+        edit(
+            &mut project,
+            Edit::Lift {
+                timeline: "t1".into(),
+                clips: vec!["c5".into()],
+                linked: false,
+            },
+        );
+        edit(&mut project, move_by(&["c1"], 0, Some("V2"), true));
+        edit(&mut project, close_v1(Straddling::Stay));
+        assert_eq!(clips(&project, "V1"), rows(&[("c3", 0, 50, 150)]));
+        assert_eq!(clips(&project, "A1"), rows(&[("c4", 0, 50, 150)]));
+        assert_eq!(clips(&project, "V2"), rows(&[("c1", 0, 100, 0)]));
+        assert_eq!(clips(&project, "A2"), rows(&[("c2", 0, 100, 0)]));
     }
 
     #[test]

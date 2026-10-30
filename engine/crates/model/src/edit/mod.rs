@@ -267,9 +267,13 @@ pub enum Edit {
         #[serde(default = "yes")]
         linked: bool,
     },
-    /// Move clips by `delta` frames, and those of the kind of `to_track` to tracks as far from
-    /// theirs as `to_track` is from the track of the first clip. Refused with `no_room` where
-    /// there is something in the way, unless `overwrite`, which overwrites it.
+    /// Move clips by `delta` frames and, given `to_track`, each to the track as far from its own,
+    /// among the tracks of its kind, as `to_track` is from the track of the first clip: the
+    /// sound linked to a picture moved from V1 to V2 goes from A1 to A2 with it, as the Linked
+    /// Move Across Tracks of `DaVinci Resolve` does (Reference Manual 20, p. 769). No track is
+    /// made: a clip with no track to go to is refused with `no_track`, and one whose track to go
+    /// to is locked with `locked`. Refused with `no_room` where there is something in the way,
+    /// unless `overwrite`, which overwrites it.
     Move {
         /// The timeline.
         timeline: Id,

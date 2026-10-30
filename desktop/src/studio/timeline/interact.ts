@@ -19,7 +19,7 @@ export interface Dragged {
   /** A move with Alt held: copies put where the clips would go, the clips staying (instead of the command). */
   duplicate?: Change[];
   /** Why a move with Alt held copies nothing: a copy would go on a locked track, or where there is no track for it. */
-  refused?: 'copy_locked' | 'copy_no_track';
+  refused?: 'copy_locked' | 'copy_no_track' | 'move_no_track';
 }
 
 /** A two-pixel seam rolls; the adjoining six-pixel edge trims. Body halves select slip or slide. */
@@ -158,13 +158,16 @@ export function dragTo(gesture: Gesture, frame: number, options: {
   const common = { timeline: timeline.id, delta, linked };
   if (action === 'move') {
     const destination = options.ripple ? undefined : timeline.tracks.find(track => track.id === options.track && track.kind === here.track.kind);
-    const peers = timeline.tracks.filter(track => track.kind === here.track.kind);
-    const shift = destination ? peers.findIndex(track => track.id === destination.id) - peers.findIndex(track => track.id === here.track.id) : 0;
+    const peers = (kind: string) => timeline.tracks.filter(track => track.kind === kind);
+    const place = (track: Timeline['tracks'][number]) => peers(track.kind).findIndex(each => each.id === track.id);
+    const shift = destination ? place(destination) - place(here.track) : 0;
     for (const item of preview) {
       item.start += delta;
+      if (shift === 0) continue;
+      // Every clip goes as many tracks along its own kind: the sound linked to a picture moved
+      // from V1 to V2 goes from A1 to A2 (Linked Move Across Tracks, Reference Manual 20, p. 769).
       const original = locations.get(item.id)!;
-      if (original.track.kind !== here.track.kind) continue;
-      const to = peers[peers.findIndex(track => track.id === original.track.id) + shift];
+      const to = peers(original.track.kind)[place(original.track) + shift];
       if (to) item.track = to.id; else trackless = true;
     }
     command = options.ripple ? { edit: 'insert_move', timeline: timeline.id, clips: ids, at: Math.max(0, Math.min(...moving.map(({ clip }) => clip.start)) + delta), linked }
@@ -194,6 +197,9 @@ export function dragTo(gesture: Gesture, frame: number, options: {
     return { gesture, delta, point, clamped: delta !== requested, preview, covered: ops ? overwritten(timeline, preview, new Set()) : [], command: null,
       ...(ops ? { duplicate: ops } : typeof copied === 'string' ? { refused: copied } : {}) };
   }
+  // A clip, or a clip linked to it, with no track of its kind to go to: the engine makes no track
+  // and refuses the move (`no_track`), so it is not sent, and the studio says why.
+  if (changedTrack && trackless) return { gesture, delta, point, clamped: delta !== requested, preview, covered: [], command: null, refused: 'move_no_track' };
   const covered = command.edit === 'move' && command.overwrite ? overwritten(timeline, preview, together) : [];
   let done = delta !== 0 || changedTrack ? command : null;
   const gaps = magnetic && done ? closeLeft(timeline, magnetic.track, moving, preview) : [];

@@ -1,8 +1,9 @@
 //! Random edits of random timelines: each is refused and changes nothing, or is applied whole and
 //! leaves a project that the operations could have made; it is undone and redone exactly; it
 //! leaves locked tracks alone; a ripple keeps what follows it in step; a roll and an interior
-//! slide keep how long the timeline lasts, and a slip where its clips are; and a blade leaves two halves
-//! that meet on the timeline and in their source.
+//! slide keep how long the timeline lasts, and a slip where its clips are; a blade leaves two halves
+//! that meet on the timeline and in their source; and a move to another track takes every clip as
+//! many tracks along its own kind.
 
 #[path = "common/edits.rs"]
 mod gen;
@@ -11,7 +12,9 @@ use std::collections::{BTreeMap, HashSet};
 
 use columbina_model::resolve::duration;
 use columbina_model::span::source_span;
-use columbina_model::{expand, Clip, Edit, EditError, History, Project, Straddling, Track};
+use columbina_model::{
+    expand, Clip, Edit, EditError, History, Project, Straddling, Track, TrackKind,
+};
 use gen::{check, clips_of, edit_of, making, making_of, project_of, recipe, Making, Recipe};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
@@ -44,20 +47,41 @@ fn track_in<'p>(project: &'p Project, id: &str) -> Option<&'p Track> {
     project.timelines[0].tracks.iter().find(|r| r.id == id)
 }
 
+/// The ids of the tracks of `kind`, the first at the bottom.
+fn of_kind(project: &Project, kind: TrackKind) -> Vec<&str> {
+    let tracks = project.timelines[0].tracks.iter();
+    tracks
+        .filter(|r| r.kind == kind)
+        .map(|r| r.id.as_str())
+        .collect()
+}
+
+/// The track that a clip on `track` goes to, `offset` tracks along its kind, if there is one.
+fn along(project: &Project, track: &Track, offset: i64) -> Option<String> {
+    let tracks = of_kind(project, track.kind);
+    let here = tracks.iter().position(|id| *id == track.id)?;
+    let to = i64::try_from(here).ok()? + offset;
+    let to = tracks.get(usize::try_from(to).ok()?)?;
+    Some((*to).to_string())
+}
+
 fn clip<'p>(project: &'p Project, id: &str) -> Option<&'p Clip> {
     clips_of(project).into_iter().find(|c| c.id == id)
 }
 
-/// The clips that an edit of `clips` works on with the clips linked to them, wherever they are.
+/// The clips that an edit of `clips` works on with the clips linked to them: a clip linked to one
+/// of them on a locked track is left alone.
 fn group(project: &Project, clips: &[String], linked: bool) -> HashSet<String> {
     let given: Vec<&Clip> = clips.iter().filter_map(|id| clip(project, id)).collect();
     let groups: HashSet<&String> = given.iter().filter_map(|c| c.link.as_ref()).collect();
-    clips_of(project)
-        .into_iter()
-        .filter(|c| {
-            clips.contains(&c.id) || (linked && c.link.as_ref().is_some_and(|g| groups.contains(g)))
+    let tracks = project.timelines[0].tracks.iter();
+    tracks
+        .flat_map(|r| r.clips.iter().map(move |c| (r, c)))
+        .filter(|(r, c)| {
+            clips.contains(&c.id)
+                || (linked && !r.locked && c.link.as_ref().is_some_and(|g| groups.contains(g)))
         })
-        .map(|c| c.id.clone())
+        .map(|(_, c)| c.id.clone())
         .collect()
 }
 
@@ -567,6 +591,62 @@ proptest! {
                     let first = r.clips.iter().map(|c| c.start).filter(|&s| s >= to).min();
                     prop_assert!(first.is_some_and(|f| f - (to - from) < stays.end()), "{:?}", edit);
                 }
+            }
+            Ok(())
+        })?;
+    }
+
+    #[test]
+    fn a_move_to_another_track_takes_every_clip_as_many_tracks_along_its_kind(
+        recipe in recipe(),
+        makings in prop::collection::vec(
+            prop_oneof![3 => making_of(Just(12usize)), 1 => making()],
+            1..6,
+        )
+    ) {
+        each_edit(&recipe, &makings, |before, edit, after| {
+            let Edit::Move { clips, to_track: Some(to), linked, .. } = edit else {
+                return Ok(());
+            };
+            let tracks = &before.timelines[0].tracks;
+            let on = |id: &str| tracks.iter().find(|r| r.clips.iter().any(|c| c.id == id));
+            let (Some(first), Some(to)) = (clips.first().and_then(|c| on(c)), track_in(before, to))
+            else {
+                return Ok(());
+            };
+            if first.kind != to.kind {
+                return Ok(());
+            }
+            let place = |r: &Track| of_kind(before, r.kind).iter().position(|id| *id == r.id);
+            let offset = i64::try_from(place(to).unwrap()).unwrap()
+                - i64::try_from(place(first).unwrap()).unwrap();
+            // What moves: the clips named, and those linked to them on tracks that are open.
+            let moved: Vec<(String, &Track)> = group(before, clips, *linked)
+                .into_iter()
+                .filter_map(|id| on(&id).map(|r| (id, r)))
+                .collect();
+            match after {
+                Ok(after) => {
+                    for (id, from) in &moved {
+                        let went = along(before, from, offset).unwrap();
+                        let now = after.timelines[0].tracks.iter()
+                            .find(|r| r.clips.iter().any(|c| &c.id == id)).unwrap();
+                        prop_assert_eq!(&now.id, &went, "{} in {:?}", id, edit);
+                    }
+                }
+                Err(EditError::NoTrack { kind }) => {
+                    // Refused only where a clip that moves has no track of its kind to go to.
+                    prop_assert!(
+                        moved.iter().any(|(_, r)| r.kind == *kind && along(before, r, offset).is_none()),
+                        "{:?}", edit
+                    );
+                }
+                Err(EditError::Locked { track }) => {
+                    let goes = moved.iter().any(|(_, r)| along(before, r, offset).as_ref() == Some(track));
+                    let named = clips.iter().any(|id| on(id).is_some_and(|r| &r.id == track));
+                    prop_assert!(goes || named, "{:?}", edit);
+                }
+                Err(_) => {}
             }
             Ok(())
         })?;

@@ -67,40 +67,49 @@ const cuts = (): Timeline => ({
 });
 
 /**
- * Where a transaction's moves put the clips, and whether a `close_gap` after them is refused, as the
- * engine refuses it: with `ripple_blocked` where a clip of another track that is not locked lies
- * across the gap (unless `straddling` is 'stay'), or, with 'stay', where a clip after the gap would
- * run into one that stays. Other edits are not followed.
+ * Where a transaction's moves put the clips, and whether the engine refuses it: a move whose clip
+ * has no track of its kind to go to (`no_track`) or would go on a locked one (`locked`); and a
+ * `close_gap` with `ripple_blocked` where a clip of another track that is not locked lies across
+ * the gap (unless `straddling` is 'stay'), or, with 'stay', where a clip after the gap would run
+ * into one that stays. Other edits are not followed.
  */
-function rippleBlocked(project: Project, ops: readonly Record<string, unknown>[]): { track: string; clip: string } | null {
-  type Lane = { id: string; kind: string; locked: boolean; clips: { id: string; start: number; end: number }[] };
+function refusalOf(project: Project, ops: readonly Record<string, unknown>[]): Record<string, unknown> | null {
+  type Lane = { id: string; kind: string; locked: boolean; clips: { id: string; start: number; end: number; link: string | null }[] };
   const lanes = new Map<string, Lane[]>(project.timelines.map(timeline => [timeline.id, timeline.tracks.map(track => ({
     id: track.id, kind: track.kind, locked: track.locked,
-    clips: track.kind === 'subtitle' ? [] : track.clips.map(each => ({ id: each.id, start: each.start, end: each.start + each.length })),
+    clips: track.kind === 'subtitle' ? [] : track.clips.map(each => ({ id: each.id, start: each.start, end: each.start + each.length, link: each.link })),
   }))]));
   for (const op of ops) {
     const tracks = lanes.get(op.timeline as string);
     if (!tracks) continue;
     if (op.edit === 'move') {
-      // Those of the kind of `to_track` go to tracks as far from theirs as it is from the track of the first clip.
-      const ids = op.clips as string[];
+      // The clips named and, linked, those linked to them on open tracks, each going as many tracks
+      // along its own kind as `to_track` is from the track of the first clip (Linked Move Across Tracks).
       const laneOf = (id: string) => tracks.find(track => track.clips.some(each => each.id === id))!;
+      const named = op.clips as string[];
+      const groups = new Set(named.map(id => laneOf(id).clips.find(each => each.id === id)!.link).filter(link => link !== null));
+      const partners = op.linked === false ? [] : tracks.filter(track => !track.locked)
+        .flatMap(track => track.clips.filter(each => each.link !== null && groups.has(each.link) && !named.includes(each.id)).map(each => each.id));
+      const ids = [...named, ...partners];
       const destination = tracks.find(track => track.id === op.to_track);
       const peers = (kind: string) => tracks.filter(track => track.kind === kind);
       const first = laneOf(ids[0]);
       const offset = destination ? peers(destination.kind).indexOf(destination) - peers(destination.kind).indexOf(first) : 0;
-      const moved = ids.map(id => {
+      const moved = [];
+      for (const id of ids) {
         const from = laneOf(id);
-        const clip = from.clips.find(each => each.id === id)!;
+        const to = peers(from.kind)[peers(from.kind).indexOf(from) + offset];
+        if (!to) return { reason: 'no_track', kind: from.kind };
+        if (to.locked) return { reason: 'locked', track: to.id };
+        moved.push({ clip: from.clips.find(each => each.id === id)!, from, to });
+      }
+      for (const { clip, from, to } of moved) {
         from.clips = from.clips.filter(each => each !== clip);
-        const to = destination?.kind === from.kind ? peers(from.kind)[peers(from.kind).indexOf(from) + offset] : from;
-        return { clip: { ...clip, start: clip.start + (op.delta as number), end: clip.end + (op.delta as number) }, to };
-      });
-      for (const { clip, to } of moved) {
+        const placed = { ...clip, start: clip.start + (op.delta as number), end: clip.end + (op.delta as number) };
         // Overwritten: what it covers is taken away or cut back.
-        to.clips = to.clips.flatMap(each => each.end <= clip.start || each.start >= clip.end ? [each]
-          : each.start < clip.start ? [{ ...each, end: clip.start }] : each.end > clip.end ? [{ ...each, start: clip.end }] : []);
-        to.clips.push(clip);
+        to.clips = to.clips.flatMap(each => each.end <= placed.start || each.start >= placed.end ? [each]
+          : each.start < placed.start ? [{ ...each, end: placed.start }] : each.end > placed.end ? [{ ...each, start: placed.end }] : []);
+        to.clips.push(placed);
       }
     }
     if (op.edit === 'close_gap') {
@@ -112,7 +121,7 @@ function rippleBlocked(project: Project, ops: readonly Record<string, unknown>[]
         const across = track.clips.filter(each => each.start < to && from < each.end).sort((a, b) => b.end - a.end)[0];
         if (!across) continue;
         const first = Math.min(...track.clips.filter(each => each.start >= to).map(each => each.start));
-        if (op.straddling !== 'stay' || first - (to - from) < across.end) return { track: track.id, clip: across.id };
+        if (op.straddling !== 'stay' || first - (to - from) < across.end) return { reason: 'ripple_blocked', track: track.id, clip: across.id };
       }
       for (const track of tracks.filter(each => !each.locked)) for (const each of track.clips) if (each.start >= to) { each.start -= to - from; each.end -= to - from; }
     }
@@ -149,9 +158,9 @@ function fakeEngine(timelines: Timeline[] = [cuts()], pool: { media: Media[]; bi
       }
       if (method === 'transaction.apply') {
         // Editing commands are expanded by the engine alone; here they change nothing but the revision,
-        // but a gap closed through a clip of another track is refused, as the engine refuses it.
-        const blocked = rippleBlocked(project, params!.ops as Record<string, unknown>[]);
-        if (blocked) return { ok: false, error: { code: -32001, message: 'refused: ripple_blocked', data: { reason: 'ripple_blocked', ...blocked } } };
+        // but a move with nowhere to go and a gap closed through a clip of another track are refused, as the engine refuses them.
+        const refused = refusalOf(project, params!.ops as Record<string, unknown>[]);
+        if (refused) return { ok: false, error: { code: -32001, message: `refused: ${String(refused.reason)}`, data: refused } };
         const done = (params!.ops as Op[]).filter(op => 'op' in op);
         for (const op of done) project = applyOp(project, op);
         revision++;
@@ -513,6 +522,41 @@ describe('the Cut page', () => {
     ]]);
     expect(await answered()).toMatchObject({ ok: true });
     expect(document.querySelector('[data-test="studio-problem"]')).toBeNull();
+  });
+
+  it('moves a clip of Track 1 straight up with its sound, which goes from A1 to A2, and closes the gap it leaves', async () => {
+    // Linked Move Across Tracks (Reference Manual 20, p. 769): the sound of c2 goes up a track with
+    // it, so the sound after it on A1 moves back with Track 1 instead of running into it.
+    const linked = cuts();
+    linked.tracks = [
+      { id: 'v1', kind: 'video', name: 'V1', enabled: true, locked: false, clips: [clip('c1', 0, 100, { link: 'g1' }), clip('c2', 100, 100, { link: 'g2' }), clip('c3', 200, 100, { link: 'g3' })], transitions: [] },
+      { id: 'v2', kind: 'video', name: 'V2', enabled: true, locked: false, clips: [], transitions: [] },
+      { id: 'a1', kind: 'audio', name: 'A1', enabled: true, locked: false, clips: [clip('s1', 0, 100, { link: 'g1' }), clip('s2', 100, 100, { link: 'g2' }), clip('s3', 200, 100, { link: 'g3' })], transitions: [] },
+      { id: 'a2', kind: 'audio', name: 'A2', enabled: true, locked: false, clips: [], transitions: [] },
+    ];
+    const { bridge } = await mount({ timelines: [linked] });
+    const lower = detail();
+    const at = (frame: number) => HEADER_WIDTH + frame * Number(lower.dataset.scale);
+    const top = (track: string) => lower.querySelector<HTMLElement>(`[data-track="${track}"]`)!.getBoundingClientRect().top + 10;
+    bridge.call.mockClear();
+    fireEvent.pointerDown(lower.querySelector('[data-clip="c2"]')!, { button: 0, clientX: at(150), clientY: top('v1'), pointerId: 1 });
+    fireEvent.pointerMove(lower, { clientX: at(150), clientY: (top('v1') + top('v2')) / 2, pointerId: 1 });
+    fireEvent.pointerMove(lower, { clientX: at(150), clientY: top('v2'), pointerId: 1 });
+    fireEvent.pointerUp(lower, { clientX: at(150), clientY: top('v2'), pointerId: 1 });
+    await settle();
+    expect(sent(bridge).map(each => each.ops)).toEqual([[
+      { edit: 'move', timeline: 't1', delta: 0, linked: true, clips: ['c2', 's2'], to_track: 'v2', overwrite: true },
+      { edit: 'close_gap', timeline: 't1', track: 'v1', at: 100, straddling: 'stay' },
+    ]]);
+    // The engine takes it: s2 went up to A2, out of the way of s3.
+    const answer = await bridge.call.mock.results.at(-1)!.value;
+    expect(answer).toMatchObject({ ok: true });
+    expect(document.querySelector('[data-test="studio-problem"]')).toBeNull();
+    // Had s2 stayed on A1, s3 would have run into it.
+    expect(await bridge.call('transaction.apply', { revision: 0, ops: [
+      { edit: 'move', timeline: 't1', delta: 0, linked: false, clips: ['c2'], to_track: 'v2', overwrite: true },
+      { edit: 'close_gap', timeline: 't1', track: 'v1', at: 100, straddling: 'stay' },
+    ] })).toMatchObject({ ok: false, error: { data: { reason: 'ripple_blocked', track: 'a1', clip: 's2' } } });
   });
 
   it('puts a dissolve or a dip to black at the edit point nearest the playhead, the earlier of two as near', async () => {

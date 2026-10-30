@@ -114,14 +114,28 @@ describe('timeline gestures', () => {
   });
   it('emits no transaction for a click and one revision-bound command for a move', () => {
     const t = scene();
+    t.tracks.push({ id: 'au2', name: 'A2', kind: 'audio', enabled: true, locked: false, transitions: [], clips: [] });
     const gesture = beginDrag(t, 7, ['c2'], 'c2', 'move', 120, true)!;
     expect(finishDrag(dragTo(gesture, 120, { media: [media] }))).toBeNull();
     const moved = dragTo(gesture, 140, { media: [media], track: 'v2' });
     expect(moved.preview.find(p => p.id === 'c2')).toMatchObject({ start: 120, length: 100, track: 'v2' });
+    // Its sound goes as many tracks up, from A1 to A2 (Linked Move Across Tracks).
+    expect(moved.preview.find(p => p.id === 'a2')).toMatchObject({ start: 120, length: 100, track: 'au2' });
     expect(finishDrag(moved)).toEqual({ revision: 7, ops: [{ edit: 'move', timeline: 't1', clips: ['c2', 'a2'], delta: 20, to_track: 'v2', overwrite: true, linked: true }] });
     // Nothing stays where it goes: nothing is overwritten.
     expect(moved.covered).toEqual([]);
     expect(t.tracks[0].kind !== 'subtitle' && t.tracks[0].clips[1].start).toBe(100);
+  });
+  it('refuses a move to another track where a linked clip has no track of its kind to go to', () => {
+    // No A2 for the sound of c2: nothing is sent, and the studio says why.
+    const gesture = beginDrag(scene(), 7, ['c2'], 'c2', 'move', 120, true)!;
+    const moved = dragTo(gesture, 140, { media: [media], track: 'v2' });
+    expect(finishDrag(moved)).toBeNull();
+    expect(moved.refused).toBe('move_no_track');
+    // Unlinked, the picture goes up alone; in time alone, both stay on their tracks.
+    expect(finishDrag(dragTo(beginDrag(scene(), 7, ['c2'], 'c2', 'move', 120, false)!, 140, { media: [media], track: 'v2' }))?.ops[0])
+      .toMatchObject({ clips: ['c2'], to_track: 'v2' });
+    expect(dragTo(gesture, 160, { media: [media] }).refused).toBeUndefined();
   });
   it('overwrites by default, shuffles in with ripple, and with vertical only changes tracks, as DaVinci Resolve drags', () => {
     const g = beginDrag(scene(), 9, ['c2'], 'c2', 'move', 120, false)!;

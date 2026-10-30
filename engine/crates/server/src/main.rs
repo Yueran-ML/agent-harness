@@ -317,13 +317,15 @@ enum Ending {
 /// Open the project of a directory whose lock is held, and serve it until the engine is
 /// stopped.
 fn start(options: &Options, dir: &Path, address: &Address) -> Ending {
-    let (store, project) = match Store::open(dir) {
-        Ok(opened) => opened,
-        Err(error) => return Ending::Failed(error.to_string()),
-    };
     // A proxy that is not where the engine keeps them is not taken: the engine reads, and
-    // deletes, only its own.
-    let project = proxy::owned_only(project, &proxy::proxy_dir(dir));
+    // deletes, only its own. It is taken away before the project is read, so that one at a path
+    // that is not absolute does not keep the project from being read.
+    let proxies = proxy::proxy_dir(dir);
+    let (store, project) =
+        match Store::open_with(dir, |project| proxy::owned_only(project, &proxies)) {
+            Ok(opened) => opened,
+            Err(error) => return Ending::Failed(error.to_string()),
+        };
     let (report, save_errors) = mpsc::unbounded_channel();
     let saver = Saver::new(store, move |error| {
         let _ = report.send(error.to_string());

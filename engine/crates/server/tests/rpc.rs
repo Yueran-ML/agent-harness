@@ -1041,6 +1041,35 @@ async fn a_project_that_cannot_be_read_ends_the_engine_with_2() {
 }
 
 #[tokio::test]
+async fn a_proxy_at_a_path_that_is_not_absolute_is_dropped_and_the_project_is_read() {
+    let dir = project_dir();
+    {
+        let args = ["--headless", "--no-proxies", "--idle-seconds", "1"];
+        let engine = engine(dir.path(), &args).await;
+        let mut agent = engine.client("agent").await;
+        agent.apply(add_media("C:/media/a.mp4")).await;
+        drop(agent);
+        assert_eq!(engine.ended().await, 0);
+    }
+    // Written by hand or by another program: the project could not be read with this proxy.
+    let mut written = saved(dir.path());
+    written["media"][0]["proxy"] = json!({
+        "path": "cache/proxies/m1-000000000000.mov", "width": 960, "height": 540,
+        "codec": "hevc", "digest_of_source": "0".repeat(64),
+    });
+    std::fs::write(
+        dir.path().join("project.json"),
+        serde_json::to_string_pretty(&written).unwrap(),
+    )
+    .unwrap();
+    let engine = engine(dir.path(), &["--headless", "--no-proxies"]).await;
+    let mut agent = engine.client("agent").await;
+    let read = project(&mut agent).await;
+    assert_eq!(read["project"]["media"][0]["proxy"], Value::Null, "{read}");
+    assert_eq!(read["project"]["media"][0]["id"], written["media"][0]["id"]);
+}
+
+#[tokio::test]
 async fn a_headless_engine_ends_once_no_one_has_been_connected_for_a_while() {
     let dir = project_dir();
     let engine = engine(dir.path(), &["--headless", "--idle-seconds", "1"]).await;

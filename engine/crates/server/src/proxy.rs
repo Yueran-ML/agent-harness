@@ -268,26 +268,38 @@ pub fn delete(dir: &Path, path: &Path) -> bool {
     std::fs::remove_file(path).is_ok()
 }
 
-/// A project as it is read, with every proxy that is not where the engine keeps proxies
-/// ([`owned`]) taken away, and logged: a project written by hand, or by another program, cannot
-/// have the engine read, or delete, a file elsewhere.
-pub fn owned_only(mut project: Project, dir: &Path) -> Project {
-    for media in &mut project.media {
-        if let Some(proxy) = media
-            .proxy
-            .take_if(|proxy| !owned(dir, Path::new(&proxy.path)))
-        {
-            log(
-                "proxy_dropped",
-                &json!({
-                    "media": media.id,
-                    "path": proxy.path,
-                    "message": "the proxy is not in the directory of the proxies of the project",
-                }),
-            );
+/// A project as it is read, as JSON, before it is read as a project: every proxy that is not
+/// where the engine keeps proxies ([`owned`]) is taken away, and logged. A project written by
+/// hand, or by another program, cannot have the engine read, or delete, a file elsewhere; and a
+/// proxy that names a path that is not absolute, which the project could not be read with, does
+/// not keep the engine from starting.
+pub fn owned_only(project: &mut serde_json::Value, dir: &Path) {
+    let Some(media) = project
+        .get_mut("media")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return;
+    };
+    for media in media {
+        let id = media.get("id").cloned().unwrap_or_default();
+        let Some(proxy) = media.get_mut("proxy").filter(|proxy| !proxy.is_null()) else {
+            continue;
+        };
+        let path = proxy.get("path").and_then(serde_json::Value::as_str);
+        if path.is_some_and(|path| owned(dir, Path::new(path))) {
+            continue;
         }
+        let path = path.map(str::to_owned);
+        *proxy = serde_json::Value::Null;
+        log(
+            "proxy_dropped",
+            &json!({
+                "media": id,
+                "path": path,
+                "message": "the proxy is not in the directory of the proxies of the project",
+            }),
+        );
     }
-    project
 }
 
 /// The proxy of media that may be used: one made from the file of its identity. Whether its file
@@ -1831,16 +1843,32 @@ mod tests {
         assert!(!owned(&link, &through_link));
         assert!(!delete(&link, &through_link));
         assert!(elsewhere.exists());
-        // A project read with a proxy elsewhere has it taken away.
+        // A project read with a proxy elsewhere, or at a path that is not absolute, has it
+        // taken away before it is read.
         let mut read = Project::sample();
-        read.media[0].proxy = Some(Proxy {
-            path: elsewhere.to_str().unwrap().to_owned(),
+        let proxy = |path: &str| Proxy {
+            path: path.to_owned(),
             width: 1,
             height: 1,
             codec: "hevc".into(),
             digest_of_source: "0".repeat(64),
-        });
-        assert_eq!(owned_only(read, &dir).media[0].proxy, None);
+        };
+        read.media[0].proxy = Some(proxy(elsewhere.to_str().unwrap()));
+        let mut value = serde_json::to_value(&read).unwrap();
+        value["media"][0]["proxy"]["path"] = json!("cache/proxies/relative.mov");
+        let mut two = value["media"][0].clone();
+        two["id"] = json!("m2");
+        two["proxy"]["path"] = json!(elsewhere.to_str().unwrap());
+        value["media"].as_array_mut().unwrap().push(two);
+        owned_only(&mut value, &dir);
+        assert_eq!(value["media"][0]["proxy"], serde_json::Value::Null);
+        assert_eq!(value["media"][1]["proxy"], serde_json::Value::Null);
+        // One of its own is kept.
+        let mut kept = serde_json::to_value(&read).unwrap();
+        kept["media"][0]["proxy"]["path"] = json!(dir.join(name).to_str().unwrap());
+        let before = kept.clone();
+        owned_only(&mut kept, &dir);
+        assert_eq!(kept, before);
         let _ = std::fs::remove_dir(&link);
         let _ = std::fs::remove_dir_all(&root);
     }

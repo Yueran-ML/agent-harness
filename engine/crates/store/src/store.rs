@@ -165,11 +165,25 @@ impl Store {
     /// a project that this engine can open, or a project of schema 1 cannot be kept. Each error
     /// names the file.
     pub fn open(dir: impl Into<PathBuf>) -> Result<(Store, Project), StoreError> {
+        Self::open_with(dir, |_| {})
+    }
+
+    /// Open a store as [`Store::open`] does, letting `prepare` change what the file holds, as
+    /// JSON, before it is read as a project: the engine takes away there what it does not take
+    /// from a project written by hand or by another program, before that could make the project
+    /// one that cannot be read.
+    ///
+    /// # Errors
+    /// As [`Store::open`].
+    pub fn open_with(
+        dir: impl Into<PathBuf>,
+        prepare: impl FnOnce(&mut serde_json::Value),
+    ) -> Result<(Store, Project), StoreError> {
         let store = Store { dir: dir.into() };
         for path in [store.dir.clone(), store.cache_dir()] {
             fs::create_dir_all(&path).map_err(|source| StoreError::CreateDir { path, source })?;
         }
-        let (project, schema_1) = store.read()?;
+        let (project, schema_1) = store.read(prepare)?;
         if let Some(bytes) = schema_1 {
             store.keep_schema_1(&bytes)?;
         }
@@ -183,7 +197,10 @@ impl Store {
 
     /// Read the project from its file, or make a new one where there is no file. Gives back the
     /// file too where the project was of schema 1.
-    fn read(&self) -> Result<(Project, Option<Vec<u8>>), StoreError> {
+    fn read(
+        &self,
+        prepare: impl FnOnce(&mut serde_json::Value),
+    ) -> Result<(Project, Option<Vec<u8>>), StoreError> {
         let path = self.project_path();
         let bytes = match fs::read(&path) {
             Ok(bytes) => bytes,
@@ -197,10 +214,11 @@ impl Store {
             let tmp = tmp.is_file().then_some(tmp);
             return Err(StoreError::Empty { path, tmp });
         }
-        let value = match serde_json::from_slice::<serde_json::Value>(&bytes) {
+        let mut value = match serde_json::from_slice::<serde_json::Value>(&bytes) {
             Ok(value) => value,
             Err(source) => return Err(StoreError::NotJson { path, source }),
         };
+        prepare(&mut value);
         match Project::from_value_upgrading(value) {
             Ok((project, upgraded)) => Ok((project, upgraded.then_some(bytes))),
             Err(source) => Err(StoreError::NotAProject {

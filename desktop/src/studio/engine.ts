@@ -237,7 +237,11 @@ export interface RenderOptions {
   codec: 'h264' | 'hevc' | 'prores';
   quality: 'high' | 'medium' | 'small';
   range?: { from: number; to: number };
-  subtitles: boolean;
+  /**
+   * The subtitle tracks of the timeline whose SRT is saved beside the film, shown or hidden, as the
+   * checkboxes of DaVinci Resolve's Deliver page choose them (Reference Manual 20, p. 1102).
+   */
+  subtitle_tracks: string[];
   language?: string;
   /** The name of the timeline, which Save As suggests to name the file after. */
   name?: string;

@@ -682,7 +682,7 @@ export const zhCN: Messages = {
         color: '纯色', wavePending: '正在生成波形…', waveFailed: '波形不可用',
         dissolve: '叠化', dip_black: '淡入淡出至黑场', dip_white: '淡入淡出至白场', crossfade: '音频交叉淡变',
         addTrack: '添加轨道', addSubtitleTrack: '添加字幕轨道', language: '语言', noLanguage: '未指定',
-        hideSubtitles: '在检视器和导出中隐藏', showSubtitles: '在检视器和导出中显示', newCue: '字幕',
+        hideSubtitles: '在检视器中隐藏', showSubtitles: '在检视器中显示，替换正在显示的字幕轨', newCue: '字幕',
       },
       media: {
         bins: '素材箱', master: '主素材箱', newBin: '新建素材箱', name: '名称', rename: '重命名', remove: '从媒体池移除', removeBin: '移除空素材箱',
@@ -700,7 +700,7 @@ export const zhCN: Messages = {
       editPage: { inspector: '检查器', newTimeline: '新建时间线', create: '创建', noTimeline: '无时间线' },
       render: {
         quickExport: '快速导出', title: '导出时间线', timeline: '时间线', range: '范围', whole: '整条时间线', marked: '入点到出点',
-        codec: '编码', quality: '质量', high: '高', medium: '中', low: '低', subtitles: '同时把字幕另存为 SRT',
+        codec: '编码', quality: '质量', high: '高', medium: '中', low: '低', subtitles: '另存为 SRT 的字幕轨',
         exportTo: '导出到…', exporting: '正在导出', cancelling: '正在取消', encoder: '编码器', reveal: '打开所在文件夹',
         frames: (done: number, total: number) => `${done} / ${total} 帧`,
       },
@@ -1217,6 +1217,7 @@ export const zhCN: Messages = {
         scale: "无法转换源素材的时间单位。",
         overlap: "这些帧已被其他片段占用。",
         cue_overlap: "这些帧已被其他字幕占用。",
+        subtitle_shown: "另一条字幕轨正在显示。一条时间线同一时间只显示一条字幕轨。",
         out_of_timeline: "片段不能从时间线起点之前开始。",
         in_use: "工程仍在使用这项内容。",
         too_large: "这次编辑超出了支持的大小。",
@@ -1256,7 +1257,7 @@ export const zhCN: Messages = {
       render: {
         marks: '在时间线上打入点和出点，就能只导出两点之间的部分。',
         codec: 'H.264 和 HEVC 用显卡编码。显卡没有对应的编码器时，会改为把 ProRes 写进 .mov 文件。',
-        subtitles: '每条显示中的字幕轨都会在影片旁另存一份 SRT 文件。',
+        subtitles: '勾选的每条字幕轨，无论是否在检视器中显示，都会在影片旁另存一份 SRT 文件。',
         running: '正在导出。等它完成，或者先取消它。',
         noTimeline: '还没有可以导出的时间线。',
         done: '导出完成。',

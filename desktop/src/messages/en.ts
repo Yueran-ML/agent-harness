@@ -796,7 +796,7 @@ export const en = {
         color: 'Solid color', wavePending: 'Preparing waveform…', waveFailed: 'Waveform unavailable',
         dissolve: 'Dissolve', dip_black: 'Dip to black', dip_white: 'Dip to white', crossfade: 'Crossfade',
         addTrack: 'Add track', addSubtitleTrack: 'Add subtitle track', language: 'Language', noLanguage: 'Unspecified',
-        hideSubtitles: 'Hide in the viewer and export', showSubtitles: 'Show in the viewer and export', newCue: 'Subtitle',
+        hideSubtitles: 'Hide in the viewer', showSubtitles: 'Show in the viewer, in place of the subtitle track shown', newCue: 'Subtitle',
       },
       media: {
         bins: 'Bins', master: 'Master', newBin: 'New bin', name: 'Name', rename: 'Rename', remove: 'Remove from pool', removeBin: 'Remove empty bin',
@@ -817,7 +817,7 @@ export const en = {
       /** Exporting a timeline: DaVinci Resolve's Quick Export, with the settings of its render. */
       render: {
         quickExport: 'Quick export', title: 'Export timeline', timeline: 'Timeline', range: 'Range', whole: 'Entire timeline', marked: 'In to out',
-        codec: 'Codec', quality: 'Quality', high: 'High', medium: 'Medium', low: 'Low', subtitles: 'Also save the subtitles as SRT',
+        codec: 'Codec', quality: 'Quality', high: 'High', medium: 'Medium', low: 'Low', subtitles: 'Subtitle tracks to save as SRT',
         exportTo: 'Export to…', exporting: 'Exporting', cancelling: 'Cancelling', encoder: 'Encoder', reveal: 'Show in folder',
         frames: (done: number, total: number) => `${done} of ${total} frames`,
       },
@@ -1404,6 +1404,7 @@ export const en = {
         scale: "The source time could not be converted.",
         overlap: "Another clip occupies these frames.",
         cue_overlap: "Another subtitle occupies these frames.",
+        subtitle_shown: "Another subtitle track is shown. A timeline shows one subtitle track at a time.",
         out_of_timeline: "A clip cannot start before the timeline.",
         in_use: "This item is still used by the project.",
         too_large: "This edit exceeds the supported size.",
@@ -1443,7 +1444,7 @@ export const en = {
       render: {
         marks: 'Mark an In and an Out point on the timeline to export only the part between them.',
         codec: 'H.264 and HEVC are encoded on the graphics card. Where it has no encoder for them, ProRes is written into a .mov file instead.',
-        subtitles: 'Each subtitle track that is shown is saved beside the film as an SRT file.',
+        subtitles: 'Each subtitle track checked, shown in the viewer or not, is saved beside the film as an SRT file.',
         running: 'An export is running. Wait for it to finish, or cancel it.',
         noTimeline: 'There is no timeline to export yet.',
         done: 'The export is finished.',

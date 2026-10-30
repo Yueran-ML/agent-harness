@@ -3858,7 +3858,7 @@ describe('the engine of the studio', () => {
 
   it('renders only to the file chosen in Save As, and never takes a path or overwrite permission from the page', async () => {
     const shell = await shellHarness();
-    const options = { timeline: 't1', codec: 'hevc', quality: 'high', subtitles: true, range: { from: 10, to: 50 }, language: 'zh-CN' };
+    const options = { timeline: 't1', codec: 'hevc', quality: 'high', subtitle_tracks: ['S2', 'S1', 'S2'], range: { from: 10, to: 50 }, language: 'zh-CN' };
     expect(await shell.invoke('engine-render', options)).toMatchObject({ ok: false });
     expect(shell.dialog.showSaveDialog).not.toHaveBeenCalled();
     await openIn(shell);
@@ -3871,9 +3871,10 @@ describe('the engine of the studio', () => {
     expect(await shell.invoke('engine-render', { ...options, path: '/unselected/precious.mp4', replace: true }))
       .toEqual({ ok: true, result: { job: 'render-1' } });
     expect(main.written.at(-1)).toMatchObject({ method: 'render.start', params: {
-      timeline: 't1', path: chosen, codec: 'hevc', quality: 'high', subtitles: true, range: { from: 10, to: 50 }, replace: false,
+      timeline: 't1', path: chosen, codec: 'hevc', quality: 'high', subtitle_tracks: ['S2', 'S1'], range: { from: 10, to: 50 }, replace: false,
     } });
-    expect(Object.keys(main.written.at(-1)!.params).sort()).toEqual(['codec', 'path', 'quality', 'range', 'replace', 'subtitles', 'timeline']);
+    // The SRT of each subtitle track named once, and no `subtitles` of earlier drafts, which the engine refuses.
+    expect(Object.keys(main.written.at(-1)!.params).sort()).toEqual(['codec', 'path', 'quality', 'range', 'replace', 'subtitle_tracks', 'timeline']);
     expect(shell.dialog.showSaveDialog.mock.calls.at(-1)).toEqual([shell.window, expect.objectContaining({
       title: '导出时间线', filters: [{ name: 'MP4 / MOV', extensions: ['mp4', 'mov'] }],
     })]);
@@ -3921,8 +3922,9 @@ describe('the engine of the studio', () => {
   it('validates export settings before the dialog and keeps a refusal from the engine intact', async () => {
     const shell = await shellHarness();
     await openIn(shell);
-    const options = { timeline: 't1', codec: 'prores', quality: 'medium', subtitles: false };
-    for (const patch of [{ timeline: '' }, { codec: 'gif' }, { quality: 'lossless' }, { subtitles: 1 },
+    const options = { timeline: 't1', codec: 'prores', quality: 'medium', subtitle_tracks: [] };
+    for (const patch of [{ timeline: '' }, { codec: 'gif' }, { quality: 'lossless' }, { subtitle_tracks: true }, { subtitle_tracks: 'S1' },
+      { subtitle_tracks: ['S1', 2] }, { subtitle_tracks: [''] }, { subtitle_tracks: Array.from({ length: 65 }, (_, at) => `S${at}`) },
       { range: null }, { range: { from: -1, to: 10 } }, { range: { from: 1, to: 1 } }, { range: { from: 0.5, to: 10 } }]) {
       await expect(shell.invoke('engine-render', { ...options, ...patch })).rejects.toThrow();
     }
@@ -3939,7 +3941,7 @@ describe('the engine of the studio', () => {
     shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: chosen });
     expect(await shell.invoke('engine-render', options)).toEqual({ ok: false, error });
     expect(shell.dialog.showSaveDialog.mock.calls.at(-1)![1].filters).toEqual([{ name: 'MOV', extensions: ['mov'] }]);
-    expect(main.written.at(-1)!.params).toEqual({ timeline: 't1', codec: 'prores', quality: 'medium', subtitles: false, path: chosen, replace: false });
+    expect(main.written.at(-1)!.params).toEqual({ timeline: 't1', codec: 'prores', quality: 'medium', subtitle_tracks: [], path: chosen, replace: false });
   });
 
   it('opens Save As in the project folder named after the timeline, and replaces only what Save As confirmed', async () => {
@@ -3948,7 +3950,7 @@ describe('the engine of the studio', () => {
     const [main] = connections(shell);
     let jobs = 0;
     shell.engines.servers.get(main.address)!.answers.set('render.start', () => ({ result: { job: `render-${++jobs}` } }));
-    const options = { timeline: 't1', codec: 'h264', quality: 'high', subtitles: true, name: 'Cut: "final"?' };
+    const options = { timeline: 't1', codec: 'h264', quality: 'high', subtitle_tracks: ['S1'], name: 'Cut: "final"?' };
     const exports = path.resolve('/exports');
     const chosen = path.join(exports, 'film.mp4');
     const render = async (listing: string[], patch = {}) => {
@@ -3965,9 +3967,21 @@ describe('the engine of the studio', () => {
     expect(await render(['film.mp4', 'film.en.srt'])).toBe(false);
     expect(await render(['film.mp4', 'film.mov'])).toBe(false);
     expect(await render(['film.mp4', 'film.mp4.part'])).toBe(false);
-    // Without subtitles an SRT is not written, and ProRes has no fallback.
-    expect(await render(['film.mp4', 'film.srt'], { subtitles: false })).toBe(true);
+    // Without subtitle tracks an SRT is not written, and ProRes has no fallback.
+    expect(await render(['film.mp4', 'film.srt'], { subtitle_tracks: [] })).toBe(true);
     expect(await render(['film.mp4', 'film.mov'], { codec: 'prores' })).toBe(true);
+    // Where the engine tells the timeline, the SRT files are named as it names them: one track is
+    // `<stem>.srt`, more are `<stem>.<language, else name>.srt`; another SRT beside it is not in the way.
+    const subtitle = (id: string, language: string, name = id) => ({ id, kind: 'subtitle', name, language, enabled: id === 'S1', locked: false, cues: [] });
+    shell.engines.servers.get(main.address)!.answers.set('project.get', () => ({ result: { revision: 3, project: { timelines: [
+      { id: 't1', tracks: [{ id: 'v1', kind: 'video' }, subtitle('S1', 'en'), subtitle('S2', 'fr'), subtitle('S3', '', 'Notes: draft'), subtitle('S4', 'EN')] },
+    ] } } }));
+    expect(await render(['film.mp4', 'film.fr.srt', 'film.srt'], { subtitle_tracks: ['S3', 'S1'] })).toBe(true);
+    expect(await render(['film.mp4', 'film.en.srt'], { subtitle_tracks: ['S3', 'S1'] })).toBe(false);
+    expect(await render(['film.mp4', 'FILM.Notes_ draft.srt.part'], { subtitle_tracks: ['S3', 'S1'] })).toBe(false);
+    expect(await render(['film.mp4', 'film.EN-2.srt'], { subtitle_tracks: ['S1', 'S4'] })).toBe(false);
+    expect(await render(['film.mp4', 'film.fr.srt'], { subtitle_tracks: ['S2'] })).toBe(true);
+    expect(await render(['film.mp4', 'film.srt'], { subtitle_tracks: ['S2'] })).toBe(false);
     // A file that is not there replaces nothing.
     shell.absent.add(chosen);
     expect(await render([])).toBe(false);
@@ -4127,7 +4141,7 @@ describe('the engine of the studio', () => {
     const chosen = path.resolve('/exports/film.mp4');
     shell.absent.add(chosen);
     shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: chosen });
-    await shell.invoke('engine-render', { timeline: 't1', codec: 'h264', quality: 'high', subtitles: false });
+    await shell.invoke('engine-render', { timeline: 't1', codec: 'h264', quality: 'high', subtitle_tracks: [] });
     shell.absent.delete(chosen);
     expect(await shell.invoke('engine-reveal', { job: 'render-1' })).toBe(true);
     expect(shell.system.showItemInFolder).toHaveBeenLastCalledWith(chosen);
@@ -4424,7 +4438,7 @@ describe('the engine of the studio', () => {
       for (const [name, asked] of [
         ['engine-call', { method: 'project.get' }],
         ['engine-import', {}],
-        ['engine-render', { timeline: 't1', codec: 'hevc', quality: 'high', subtitles: false }],
+        ['engine-render', { timeline: 't1', codec: 'hevc', quality: 'high', subtitle_tracks: [] }],
         ['engine-view-rect', { monitor: 'source', x: 0, y: 0, width: 400, height: 180 }],
         ['engine-view-show', { monitor: 'source', shown: true }],
       ] as const) {

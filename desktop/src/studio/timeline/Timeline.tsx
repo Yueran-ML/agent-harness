@@ -178,6 +178,7 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   // The tracks and the ruler draw a window that moves by half a view, not at every pixel of a scroll.
   const { from, to } = scrollWindow(view.left, view.width, view.scale);
   // An overview is as wide as its view; another goes on half a view past the end.
+  const shownSubtitles = timeline?.tracks.find(track => track.kind === 'subtitle' && track.enabled)?.id ?? null;
   const total = HEADER_WIDTH + (overview ? view.width : Math.max(view.width, end * view.scale + view.width / 2));
   let rowTop = RULER_HEIGHT;
   const rows = new Map(tracks.map(track => { const height = heights[track.id] ?? trackHeight; const row = { top: rowTop, height }; rowTop += height; return [track.id, row]; }));
@@ -211,7 +212,8 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
           from={from} to={to} height={heights[track.id] ?? trackHeight} waves={waves} onEdit={editing.edit} onHeight={onHeight}
           selected={editing.selected} targeted={editing.targets.video_track === track.id || editing.targets.audio_track === track.id} onTarget={editing.target}
           chosen={editing.transition !== null && track.kind !== 'subtitle' && track.transitions.some(each => each.id === editing.transition) ? editing.transition : null}
-          chosenCue={editing.cue !== null && track.kind === 'subtitle' && track.cues.some(each => each.id === editing.cue) ? editing.cue : null} />)}
+          chosenCue={editing.cue !== null && track.kind === 'subtitle' && track.cues.some(each => each.id === editing.cue) ? editing.cue : null}
+          shownSubtitles={track.kind === 'subtitle' ? shownSubtitles : null} />)}
         {editing.preview?.preview.map(item => { const row = rows.get(item.track); return row && <div key={item.id} className="timeline-preview" data-preview={item.id} data-clamped={editing.preview!.clamped}
           style={{ left: HEADER_WIDTH + item.start * view.scale, width: item.length * view.scale, top: row.top + 4, height: row.height - 8 }} />; })}
         {editing.preview?.covered.map(item => { const row = rows.get(item.track); return row && <div key={`covered-${item.id}`} className="timeline-covered" data-covered={item.id}

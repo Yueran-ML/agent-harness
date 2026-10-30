@@ -70,7 +70,9 @@ function fakeEngine(tracks: SubtitleTrack[]) {
     switch (change.edit) {
       case 'add_track': {
         const id = `S${project.timelines[0].tracks.filter(each => each.kind === 'subtitle').length + 1}`;
-        return { op: 'add_track', timeline: change.timeline, track: subtitles(id, [], { language: change.language ?? '' }), index: null };
+        // Added hidden while another is shown: a timeline shows one subtitle track at a time.
+        const shown = project.timelines[0].tracks.some(each => each.kind === 'subtitle' && each.enabled);
+        return { op: 'add_track', timeline: change.timeline, track: subtitles(id, [], { language: change.language ?? '', enabled: !shown }), index: null };
       }
       case 'add_cue': {
         const track = trackOf(change.track);
@@ -107,6 +109,9 @@ function fakeEngine(tracks: SubtitleTrack[]) {
         for (const change of params!.ops as Change[]) {
           const op = expand(change);
           if (typeof op === 'string') return refused(op);
+          // As the engine: a subtitle track is shown only where no other of the timeline is.
+          if (op.op === 'set_track' && op.enabled === true && next.timelines[0].tracks.some(each => each.kind === 'subtitle' && each.enabled && each.id !== op.id)
+            && next.timelines[0].tracks.some(each => each.id === op.id && each.kind === 'subtitle')) return refused('subtitle_shown');
           next = applyOp(next, op); done.push(op);
           project = next;
         }
@@ -171,15 +176,35 @@ describe('a track of subtitles', () => {
     expect(lane('S1').title).toBe('Double-click empty space on a subtitle track to add a subtitle at the playhead.');
   });
 
-  it('is turned off for the timeline viewer and the export from its header', async () => {
-    const engine = await mount([subtitles('S1', [cue('q1', 100, 50)])]);
-    fireEvent.click(screen.getByRole('button', { name: 'Hide in the viewer and export: S1' }));
+  it('is shown one at a time from its header, as DaVinci Resolve shows subtitle tracks', async () => {
+    const engine = await mount([subtitles('S1', [cue('q1', 100, 50)]), subtitles('S2', [], { enabled: false })]);
+    const shown = () => [...document.querySelectorAll<HTMLElement>('[data-kind="subtitle"]')].filter(each => each.dataset.enabled === 'true').map(each => each.dataset.track);
+    // Reference Manual 20, p. 1084: enabling one subtitle track disables the others, in one transaction (the shown one first, as the engine takes them).
+    fireEvent.click(screen.getByRole('button', { name: 'Show in the viewer, in place of the subtitle track shown: S2' }));
     await settle();
-    expect(sent(engine.bridge)).toEqual([{ revision: 0, ops: [{ op: 'set_track', timeline: 't1', id: 'S1', enabled: false }] }]);
-    expect(document.querySelector<HTMLElement>('[data-track="S1"]')!.dataset.enabled).toBe('false');
-    fireEvent.click(screen.getByRole('button', { name: 'Show in the viewer and export: S1' }));
+    expect(sent(engine.bridge)).toEqual([{ revision: 0, ops: [
+      { op: 'set_track', timeline: 't1', id: 'S1', enabled: false }, { op: 'set_track', timeline: 't1', id: 'S2', enabled: true },
+    ] }]);
+    expect(shown()).toEqual(['S2']);
+    // Hidden, none is shown; shown again, nothing else is to hide.
+    fireEvent.click(screen.getByRole('button', { name: 'Hide in the viewer: S2' }));
     await settle();
-    expect(sent(engine.bridge).at(-1)).toEqual({ revision: 1, ops: [{ op: 'set_track', timeline: 't1', id: 'S1', enabled: true }] });
+    expect(sent(engine.bridge).at(-1)).toEqual({ revision: 1, ops: [{ op: 'set_track', timeline: 't1', id: 'S2', enabled: false }] });
+    expect(shown()).toEqual([]);
+    fireEvent.click(screen.getByRole('button', { name: 'Show in the viewer, in place of the subtitle track shown: S1' }));
+    await settle();
+    expect(sent(engine.bridge).at(-1)).toEqual({ revision: 2, ops: [{ op: 'set_track', timeline: 't1', id: 'S1', enabled: true }] });
+    // A track added while one is shown comes hidden.
+    fireEvent.click(screen.getByRole('button', { name: 'Add track' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add subtitle track' }));
+    await settle();
+    expect(shown()).toEqual(['S1']);
+    expect(document.querySelector<HTMLElement>('[data-track="S3"]')!.dataset.enabled).toBe('false');
+    // What the engine refuses so (another client showed one meanwhile) is said in a sentence of its own.
+    engine.bridge.call.mockImplementationOnce(async () => ({ ok: false, error: { code: -32001, message: 'subtitle track S1 is shown, and a timeline shows one subtitle track at a time', data: { reason: 'subtitle_shown', track: 'S1', index: 0 } } }));
+    fireEvent.click(screen.getByRole('button', { name: 'Show in the viewer, in place of the subtitle track shown: S3' }));
+    await settle();
+    expect(screen.getByRole('alert').textContent).toContain('Another subtitle track is shown. A timeline shows one subtitle track at a time.');
   });
 });
 
@@ -322,7 +347,7 @@ describe('a subtitle', () => {
 
   it('is said in Chinese as DaVinci Resolve says it', async () => {
     await mount([subtitles('S1', [cue('q1', 100, 50)])], zhCN);
-    expect(screen.getByRole('button', { name: '在检视器和导出中隐藏: S1' })).toBeDefined();
+    expect(screen.getByRole('button', { name: '在检视器中隐藏: S1' })).toBeDefined();
     fireEvent.click(screen.getByRole('button', { name: '添加轨道' }));
     expect(screen.getByRole('dialog', { name: '添加字幕轨道' })).toBeDefined();
     expect(lane('S1').title).toBe('在字幕轨道的空处双击，就会在播放头处添加一条字幕。');

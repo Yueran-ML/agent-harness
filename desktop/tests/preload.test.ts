@@ -220,10 +220,10 @@ describe('the bridge of the main window', () => {
     // Shown only where the page says so in so many words.
     expect(handed('viewShow', true, 'source')).toEqual(['columbina:engine-view-show', { monitor: 'source', shown: true }]);
     for (const asked of ['true', 1, {}, undefined]) expect(handed('viewShow', asked, 'timeline')).toEqual(['columbina:engine-view-show', { monitor: 'timeline', shown: false }]);
-    expect(handed('render', { timeline: 't1', codec: 'prores', quality: 'high', subtitles: true, range: { from: 0, to: 25, path: 'secret' }, path: 'secret', replace: true, ...more }))
-      .toEqual(['columbina:engine-render', { timeline: 't1', codec: 'prores', quality: 'high', subtitles: true, range: { from: 0, to: 25 }, language: 'ja' }]);
+    expect(handed('render', { timeline: 't1', codec: 'prores', quality: 'high', subtitle_tracks: ['S2', 'S1'], subtitles: true, range: { from: 0, to: 25, path: 'secret' }, path: 'secret', replace: true, ...more }))
+      .toEqual(['columbina:engine-render', { timeline: 't1', codec: 'prores', quality: 'high', subtitle_tracks: ['S2', 'S1'], range: { from: 0, to: 25 }, language: 'ja' }]);
     // The name of the timeline goes over, for Save As to suggest a file named after it.
-    expect(handed('render', { timeline: 't1', codec: 'h264', quality: 'high', subtitles: false, name: 'Main', ...more })![1]).toMatchObject({ name: 'Main' });
+    expect(handed('render', { timeline: 't1', codec: 'h264', quality: 'high', subtitle_tracks: [], name: 'Main', ...more })![1]).toMatchObject({ name: 'Main' });
     // The page names the job of an export to have its file shown, and no path.
     expect(handed('reveal', 'render-1', more)).toEqual(['columbina:engine-reveal', { job: 'render-1' }]);
     expect(handed('close', more)).toEqual(['columbina:engine-close']);

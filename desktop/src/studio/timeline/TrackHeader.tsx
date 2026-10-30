@@ -4,15 +4,19 @@ import { useWords } from '../../app/locale';
 import type { Op, Track } from '../engine';
 import { NameField } from '../media/NameField';
 
-export const TrackHeader = memo(function TrackHeader({ timeline, track, height, onHeight, onEdit, targeted = false, onTarget }: {
+export const TrackHeader = memo(function TrackHeader({ timeline, track, height, onHeight, onEdit, targeted = false, onTarget, shownSubtitles = null }: {
   timeline: string; track: Track; height: number; onHeight: (id: string, height: number) => void; onEdit: (ops: Op[]) => Promise<boolean>;
   targeted?: boolean; onTarget?: (id: string) => void;
+  /** The subtitle track of the timeline that is shown, where one is. */
+  shownSubtitles?: string | null;
 }) {
   const words = useWords().label.studio.timeline;
   const [renaming, setRenaming] = useState(false);
   const resizing = useRef<{ y: number; height: number } | null>(null);
   const lock = track.locked ? words.unlock : words.lock;
-  // A track of subtitles that is off is neither drawn in the timeline viewer nor written beside an export.
+  // A track of subtitles that is off is not drawn in the timeline viewer. As in DaVinci Resolve, one
+  // is shown at a time (Reference Manual 20, p. 1084): showing one hides the one shown, in the same
+  // transaction, which the engine takes in that order. Which are saved as SRT is chosen in the export.
   const enabled = track.kind === 'audio' ? track.enabled ? words.mute : words.unmute
     : track.kind === 'subtitle' ? track.enabled ? words.hideSubtitles : words.showSubtitles : track.enabled ? words.hide : words.show;
   const Visible = track.kind === 'audio' ? track.enabled ? Volume2 : VolumeX : track.enabled ? Eye : EyeOff;
@@ -28,7 +32,11 @@ export const TrackHeader = memo(function TrackHeader({ timeline, track, height, 
       <button type="button" className="icon-btn" aria-label={`${lock}: ${track.name}`} title={lock} aria-pressed={track.locked}
         onClick={() => void onEdit([{ op: 'set_track', timeline, id: track.id, locked: !track.locked }])}>{track.locked ? <Lock size={13} /> : <Unlock size={13} />}</button>
       <button type="button" className="icon-btn" aria-label={`${enabled}: ${track.name}`} title={enabled} aria-pressed={track.enabled}
-        onClick={() => void onEdit([{ op: 'set_track', timeline, id: track.id, enabled: !track.enabled }])}><Visible size={14} /></button>
+        onClick={() => void onEdit([
+          ...(track.kind === 'subtitle' && !track.enabled && shownSubtitles !== null && shownSubtitles !== track.id
+            ? [{ op: 'set_track' as const, timeline, id: shownSubtitles, enabled: false }] : []),
+          { op: 'set_track', timeline, id: track.id, enabled: !track.enabled },
+        ])}><Visible size={14} /></button>
     </div>
     <div className="timeline-track-resize" role="separator" tabIndex={0} aria-label={`${words.height}: ${track.name}`}
       aria-orientation="horizontal" aria-valuemin={40} aria-valuemax={240} aria-valuenow={height}

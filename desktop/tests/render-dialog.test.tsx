@@ -2,7 +2,7 @@
 /**
  * The export of a timeline: Quick Export on the Edit and Cut pages and Ctrl+M open its dialog over
  * the page (the views of both monitors hidden); the dialog asks for the range, the codec, the
- * quality and the SRT of the subtitles, and the shell asks where in Save As; what the engine
+ * quality and the subtitle tracks saved as SRT, and the shell asks where in Save As; what the engine
  * refuses is said in the dialog. The strip of its progress lies over nothing, so the user edits on
  * while it runs; it tells how far it is, cancels it, shows the file in its folder, says why it
  * failed, and that ProRes was written where the computer had no encoder for H.264 or HEVC.
@@ -14,7 +14,7 @@ import { ja } from '../src/messages/ja';
 import { zhCN } from '../src/messages/zh-CN';
 import { Studio } from '../src/studio/Studio';
 import { ProjectCopy, type EngineAnswer, type EngineEvent, type Project, type RenderOptions, type RenderProgress, type TransportState } from '../src/studio/engine';
-import { hasSubtitles, markedRange } from '../src/studio/render/RenderDialog';
+import { markedRange, shownSubtitleTracks, subtitleTracksOf } from '../src/studio/render/RenderDialog';
 import { fellBack, isExportKey, refusalOf } from '../src/studio/render/renders';
 import type { EngineBridge } from '../src/bridge';
 import { clip, media, timeline } from './timeline-fixture';
@@ -36,10 +36,11 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); delete document.body.dataset.overlay; });
 
-/** A timeline of 200 frames with a subtitle track that is shown, and one of 100 frames without subtitles. */
+/** A timeline of 200 frames with a subtitle track that is shown and one that is hidden, and one of 100 frames without subtitles. */
 function project(): Project {
   const main = timeline();
   main.tracks.push({ id: 's1', kind: 'subtitle', name: 'S1', enabled: true, locked: false, language: 'en', cues: [{ id: 'q1', start: 0, length: 50, text: 'Hello' }] });
+  main.tracks.push({ id: 's2', kind: 'subtitle', name: 'S2', enabled: false, locked: false, language: 'fr', cues: [{ id: 'q2', start: 0, length: 50, text: 'Bonjour' }] });
   return { schema: 2, next_id: 10, bins: [], media: [media], timelines: [main, { ...timeline([clip('c3')]), id: 't2', name: 'Alternate' }] };
 }
 
@@ -177,7 +178,7 @@ describe('the dialog of the export', () => {
     fireEvent.change(one('render-quality')!, { target: { value: 'small' } });
     await exportTo();
     expect(bridge.render).toHaveBeenCalledWith({
-      timeline: 't1', name: 'Main', codec: 'hevc', quality: 'small', subtitles: true, range: { from: 50, to: 150 }, language: 'zh-CN',
+      timeline: 't1', name: 'Main', codec: 'hevc', quality: 'small', subtitle_tracks: ['s1'], range: { from: 50, to: 150 }, language: 'zh-CN',
     });
     // The marks are the page's: In alone goes to the end, Out alone from the start.
     expect(markedRange({ in: 50, out: null }, 200)).toEqual({ from: 50, to: 200 });
@@ -188,22 +189,27 @@ describe('the dialog of the export', () => {
     expect(markedRange(null, 200)).toBeNull();
   });
 
-  it('offers the SRT only where the timeline has a subtitle track that is shown, and sends none otherwise', async () => {
+  it('offers each subtitle track as SRT, shown or hidden, the shown one checked, as the Deliver page of DaVinci Resolve', async () => {
     const { bridge } = await mount();
     ctrlM(); await settle();
-    expect((one('render-subtitles') as HTMLInputElement).checked).toBe(true);
-    fireEvent.click(one('render-subtitles')!);
+    // Reference Manual 20, p. 1102: a checkbox for each subtitle track to output as a separate file.
+    expect(one('render-subtitles')!.querySelectorAll('input[type="checkbox"]')).toHaveLength(2);
+    expect((one('render-subtitle-s1') as HTMLInputElement).checked).toBe(true);
+    expect((one('render-subtitle-s2') as HTMLInputElement).checked).toBe(false);
+    expect(one('render-subtitles')!.textContent).toContain('S2 · fr');
+    // Both, sent in the order of the tracks of the timeline whatever the order they were checked in.
+    fireEvent.click(one('render-subtitle-s1')!);
+    fireEvent.click(one('render-subtitle-s2')!);
+    fireEvent.click(one('render-subtitle-s1')!);
     fireEvent.click(one('codec-prores')!);
     await exportTo();
-    expect(bridge.render).toHaveBeenLastCalledWith(expect.objectContaining({ timeline: 't1', codec: 'prores', subtitles: false }));
+    expect(bridge.render).toHaveBeenLastCalledWith(expect.objectContaining({ timeline: 't1', codec: 'prores', subtitle_tracks: ['s1', 's2'] }));
     expect(bridge.render.mock.calls.at(-1)![0]).not.toHaveProperty('range');
-    // A timeline without a subtitle track that is shown is offered no SRT.
-    expect(hasSubtitles(project().timelines[1])).toBe(false);
-    const hidden = project().timelines[0];
-    hidden.tracks = hidden.tracks.map(track => (track.kind === 'subtitle' ? { ...track, enabled: false } : track));
-    expect(hasSubtitles(hidden)).toBe(false);
-    expect(hasSubtitles(project().timelines[0])).toBe(true);
-    expect(hasSubtitles(null)).toBe(false);
+    expect(bridge.render.mock.calls.at(-1)![0]).not.toHaveProperty('subtitles');
+    expect(subtitleTracksOf(project().timelines[0]).map(track => track.id)).toEqual(['s1', 's2']);
+    expect(shownSubtitleTracks(project().timelines[0])).toEqual(['s1']);
+    expect(subtitleTracksOf(project().timelines[1])).toEqual([]);
+    expect(subtitleTracksOf(null)).toEqual([]);
   });
 
   it('stays open where Save As was cancelled, and closes as the export starts', async () => {
@@ -215,7 +221,7 @@ describe('the dialog of the export', () => {
     await exportTo();
     expect(dialog()).not.toBeNull();
     expect(one('render-refused')).toBeNull();
-    expect(bridge.render).toHaveBeenLastCalledWith(expect.objectContaining({ timeline: 't2', name: 'Alternate', subtitles: false }));
+    expect(bridge.render).toHaveBeenLastCalledWith(expect.objectContaining({ timeline: 't2', name: 'Alternate', subtitle_tracks: [] }));
     await exportTo();
     expect(dialog()).toBeNull();
     expect(one('render-progress')).not.toBeNull();
@@ -255,7 +261,7 @@ describe('the dialog of the export', () => {
     ctrlM(); await settle();
     expect(dialog()!.getAttribute('aria-label')).toBe('导出时间线');
     expect(within(dialog()!).getByRole('button', { name: '导出到…' })).toBeDefined();
-    expect(within(dialog()!).getByText('同时把字幕另存为 SRT')).toBeDefined();
+    expect(within(dialog()!).getByText('另存为 SRT 的字幕轨')).toBeDefined();
     cleanup();
     const engine = fakeEngine();
     render(<Words.Provider value={ja}><Studio cwd="F:/film" engine={{ bridge: engine.bridge as unknown as EngineBridge, copy: engine.copy, native: true }} language="ja" onClose={() => {}} /></Words.Provider>);

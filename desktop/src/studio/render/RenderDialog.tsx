@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { useWords } from '../../app/locale';
 import { Sheet } from '../../app/Sheet';
-import type { RenderOptions, Timeline } from '../engine';
+import type { RenderOptions, SubtitleTrack, Timeline } from '../engine';
 import { timecode } from '../timecode';
 import { duration } from '../timeline/geometry';
 import type { Marks } from '../timeline/snap';
@@ -15,9 +15,13 @@ export const CODECS: readonly { id: RenderOptions['codec']; name: string }[] = [
 ];
 const QUALITIES = ['high', 'medium', 'small'] as const;
 
-/** Whether a timeline has a subtitle track that is shown: those are what an SRT is saved of. */
-export function hasSubtitles(timeline: Timeline | null): boolean {
-  return timeline?.tracks.some(track => track.kind === 'subtitle' && track.enabled) ?? false;
+/** The subtitle tracks of a timeline, in its order: each can be saved as an SRT, shown or hidden. */
+export function subtitleTracksOf(timeline: Timeline | null): SubtitleTrack[] {
+  return timeline?.tracks.filter((track): track is SubtitleTrack => track.kind === 'subtitle') ?? [];
+}
+/** The subtitle tracks checked at first: the one shown in the viewer, as a timeline shows one at a time. */
+export function shownSubtitleTracks(timeline: Timeline | null): string[] {
+  return subtitleTracksOf(timeline).filter(track => track.enabled).map(track => track.id);
 }
 
 /**
@@ -35,7 +39,9 @@ export function markedRange(marks: Marks | null, frames: number): { from: number
 /**
  * The export of a timeline, as DaVinci Resolve's Quick Export with the settings of its render page
  * that phase 1 has: the timeline, the whole of it or between its In and Out points, the codec, the
- * quality, and whether its subtitles are saved beside the film. The file is chosen in Save As, which
+ * quality, and which of its subtitle tracks are saved beside the film as SRT: a checkbox for each,
+ * shown in the viewer or not, as the Deliver page of DaVinci Resolve has them (Reference Manual 20,
+ * p. 1102); the one shown is checked at first. The file is chosen in Save As, which
  * the shell opens: the page names no path. It lies over the page, so the views of both monitors are
  * hidden while it is open.
  *
@@ -64,10 +70,13 @@ export function RenderDialog({ timelines, chosen, marks, running, onStart, onClo
   const [part, setPart] = useState<'whole' | 'marked'>(() => (range !== null ? 'marked' : 'whole'));
   const [codec, setCodec] = useState<RenderOptions['codec']>('h264');
   const [quality, setQuality] = useState<RenderOptions['quality']>('high');
-  const [subtitles, setSubtitles] = useState(true);
+  // The subtitle tracks checked, for the timeline chosen: another timeline starts from its shown one.
+  const [subtitles, setSubtitles] = useState<{ timeline: string; tracks: string[] }>(() => ({ timeline: timelineId, tracks: shownSubtitleTracks(timeline) }));
+  const tracks = subtitleTracksOf(timeline);
+  const checked = subtitles.timeline === timelineId ? subtitles.tracks : shownSubtitleTracks(timeline);
+  const check = (id: string, on: boolean) => setSubtitles({ timeline: timelineId, tracks: on ? [...checked.filter(each => each !== id), id] : checked.filter(each => each !== id) });
   const [pending, setPending] = useState(false);
   const [refused, setRefused] = useState<{ reason: RenderRefusal; detail: string } | null>(null);
-  const shownSubtitles = hasSubtitles(timeline);
   const marked = part === 'marked' && range !== null;
   const empty = timeline === null || duration(timeline) === 0;
 
@@ -77,7 +86,8 @@ export function RenderDialog({ timelines, chosen, marks, running, onStart, onClo
     setPending(true);
     setRefused(null);
     const started = await onStart({
-      timeline: timeline.id, name: timeline.name, codec, quality, subtitles: shownSubtitles && subtitles,
+      // In the order of the tracks of the timeline, as the engine writes them.
+      timeline: timeline.id, name: timeline.name, codec, quality, subtitle_tracks: tracks.filter(track => checked.includes(track.id)).map(track => track.id),
       ...(marked ? { range } : {}),
     });
     setPending(false);
@@ -120,10 +130,14 @@ export function RenderDialog({ timelines, chosen, marks, running, onStart, onClo
         {QUALITIES.map(each => <option key={each} value={each}>{labels[each === 'small' ? 'low' : each]}</option>)}
       </select>
 
-      {shownSubtitles && <>
-        <label className="render-check"><input type="checkbox" checked={subtitles} onChange={event => setSubtitles(event.target.checked)} data-test="render-subtitles" />{labels.subtitles}</label>
+      {tracks.length > 0 && <fieldset className="render-choice" data-test="render-subtitles">
+        <legend className="setting-name">{labels.subtitles}</legend>
+        {tracks.map(track => <label key={track.id} className="render-check">
+          <input type="checkbox" checked={checked.includes(track.id)} onChange={event => check(track.id, event.target.checked)} data-test={`render-subtitle-${track.id}`} />
+          {track.name}{track.language && <span className="caption"> · {track.language}</span>}
+        </label>)}
         <p className="caption">{hints.subtitles}</p>
-      </>}
+      </fieldset>}
 
       {running && <p className="caption" role="status" data-test="render-running">{hints.running}</p>}
       {refused && <p className="render-problem" role="alert" data-test="render-refused">

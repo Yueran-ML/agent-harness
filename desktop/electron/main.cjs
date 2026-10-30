@@ -980,12 +980,24 @@ function takeViewShown(given) {
   if (viewer.state === 'none') void attachView(monitor);
   else showView(monitor);
 }
-/** Export settings contain no paths. The engine validates timeline and range against its snapshot. */
+/** The most subtitle tracks that an export may save as SRT. */
+const MOST_SUBTITLE_TRACKS = 64;
+/**
+ * Export settings contain no paths. The engine validates timeline, range and subtitle tracks
+ * against its snapshot. `subtitle_tracks` names the subtitle tracks saved beside the film as SRT
+ * (none where it is left out): ids, each once.
+ */
 function renderOptionsOf(given) {
   if (!given || typeof given.timeline !== 'string' || given.timeline.length === 0
-    || !['h264', 'hevc', 'prores'].includes(given.codec) || !['high', 'medium', 'small'].includes(given.quality)
-    || typeof given.subtitles !== 'boolean') throw new Error('Name a timeline, codec, quality and subtitle choice for export.');
-  const options = { timeline: given.timeline, codec: given.codec, quality: given.quality, subtitles: given.subtitles };
+    || !['h264', 'hevc', 'prores'].includes(given.codec) || !['high', 'medium', 'small'].includes(given.quality)) {
+    throw new Error('Name a timeline, codec and quality for export.');
+  }
+  const tracks = given.subtitle_tracks ?? [];
+  if (!Array.isArray(tracks) || tracks.length > MOST_SUBTITLE_TRACKS
+    || !tracks.every((id) => typeof id === 'string' && id.length > 0 && id.length <= 256)) {
+    throw new Error('Subtitle tracks for export are a list of track ids.');
+  }
+  const options = { timeline: given.timeline, codec: given.codec, quality: given.quality, subtitle_tracks: [...new Set(tracks)] };
   // The name of the timeline is only what the dialog suggests to name the file after.
   if (given.range !== undefined) {
     const { from, to } = given.range ?? {};
@@ -1001,13 +1013,52 @@ function fileNameOf(name) {
   return !cleaned ? 'export' : /^(con|prn|aux|nul|com\d|lpt\d)$/i.test(cleaned) ? `_${cleaned}` : cleaned;
 }
 /**
+ * The names of the SRT files that an export of `timeline` to a film named `stem` writes for the
+ * subtitle tracks `chosen`, as the engine names them (`srt.rs`): in the order of the tracks, one is
+ * `<stem>.srt`, more are `<stem>.<language, else name>.srt`, made safe and told apart by `-2`, `-3`.
+ */
+function srtNamesOf(timeline, chosen, stem) {
+  const tracks = (Array.isArray(timeline?.tracks) ? timeline.tracks : [])
+    .filter((track) => track?.kind === 'subtitle' && chosen.includes(track.id));
+  if (tracks.length === 1) return [`${stem}.srt`];
+  const safe = (label) => {
+    const name = Array.from(String(label)).slice(0, 80)
+      .map((ch) => (/[\u0000-\u001f\u007f-\u009f]/.test(ch) || '<>:"/\\|?*'.includes(ch) ? '_' : ch)).join('')
+      .replace(/^[. ]+|[. ]+$/g, '');
+    return name || 'subtitles';
+  };
+  const taken = new Set();
+  return tracks.map((track) => {
+    const label = safe(typeof track.language === 'string' && track.language ? track.language : track.name ?? '');
+    let name = label;
+    for (let suffix = 2; taken.has(name.toLowerCase()); suffix += 1) name = `${label}-${suffix}`;
+    taken.add(name.toLowerCase());
+    return `${stem}.${name}.srt`;
+  });
+}
+/**
+ * The SRT files an export to `chosen` writes, by the timeline in the project of the engine; null
+ * where the engine does not tell it, and then every `<stem>.*.srt` is taken to be one.
+ */
+async function srtFilesOf(open, chosen, options) {
+  if (options.subtitle_tracks.length === 0) return [];
+  try {
+    const got = await open.session.call('project.get');
+    const timeline = got?.project?.timelines?.find?.((each) => each?.id === options.timeline);
+    return timeline ? srtNamesOf(timeline, options.subtitle_tracks, path.parse(chosen).name) : null;
+  } catch {
+    return null;
+  }
+}
+/**
  * Whether an export to `chosen` may replace what is there. Save As asked the user whether to
  * replace the file that they chose (Windows asks it of a file that is there), so a file that is
- * there was confirmed. What the export would write beside it was not asked of: an SRT, the .mov of
- * a ProRes fallback, or a partial file. Where any of those is there, nothing is replaced, and the
- * engine refuses as it would without the dialog.
+ * there was confirmed. What the export would write beside it was not asked of: an SRT of a
+ * subtitle track chosen (`srts`, the names that it writes; null where they are not known, and any
+ * SRT of the film's name counts), the .mov of a ProRes fallback, or a partial file. Where any of
+ * those is there, nothing is replaced, and the engine refuses as it would without the dialog.
  */
-function replacing(chosen, options) {
+function replacing(chosen, options, srts = null) {
   if (!existsSync(chosen)) return false;
   const { dir, name, ext } = path.parse(chosen);
   const same = process.platform === 'win32' ? (text) => text.toLowerCase() : (text) => text;
@@ -1015,7 +1066,9 @@ function replacing(chosen, options) {
   try { there = readdirSync(dir).map((file) => same(String(file))); } catch { return false; }
   const stem = same(name);
   const beside = (file) => file === same(`${name}${ext}.part`)
-    || (options.subtitles && file.startsWith(`${stem}.`) && (file.endsWith('.srt') || file.endsWith('.srt.part')))
+    || (srts === null
+      ? options.subtitle_tracks.length > 0 && file.startsWith(`${stem}.`) && (file.endsWith('.srt') || file.endsWith('.srt.part'))
+      : srts.some((srt) => file === same(srt) || file === same(`${srt}.part`)))
     || (options.codec !== 'prores' && same(ext) === '.mp4' && (file === `${stem}.mov` || file === `${stem}.mov.part`));
   return !there.some(beside);
 }
@@ -1963,7 +2016,9 @@ function installHandlers() {
     // The engine checks its output paths (including fallback MOV and SRT) and refuses an existing
     // one, unless it may replace them. Only the shell decides that, from what the user confirmed
     // in Save As (see `replacing`); the page never can.
-    const started = await answered(open.session.call('render.start', { ...options, path: chosen.filePath, replace: replacing(chosen.filePath, options) }));
+    const srts = existsSync(chosen.filePath) ? await srtFilesOf(open, chosen.filePath, options) : [];
+    if (studio !== open) return { ok: false, error: { code: null, message: 'The project of the studio was closed meanwhile.', data: null } };
+    const started = await answered(open.session.call('render.start', { ...options, path: chosen.filePath, replace: replacing(chosen.filePath, options, srts) }));
     if (started.ok && typeof started.result?.job === 'string' && !open.jobs.has(started.result.job)) open.jobs.set(started.result.job, { path: chosen.filePath });
     return started;
   });

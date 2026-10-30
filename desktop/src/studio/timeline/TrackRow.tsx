@@ -12,7 +12,7 @@ import type { Waveforms } from './waveforms';
  * whole steps as the timeline scrolls (see `scrollWindow`), so a row is drawn again only where the
  * scroll crosses a step, or what it shows changes; not as the playhead moves.
  */
-export const TrackRow = memo(function TrackRow({ timeline, track, media, rate, scale, from, to, height, waves, onEdit, onHeight, selected, targeted, onTarget, chosen = null, chosenCue = null }: {
+export const TrackRow = memo(function TrackRow({ timeline, track, media, rate, scale, from, to, height, waves, onEdit, onHeight, selected, targeted, onTarget, chosen = null, chosenCue = null, shownSubtitles = null }: {
   timeline: string; track: Track; media: ReadonlyMap<string, Media>; rate: Rate; scale: number; from: number; to: number;
   height: number; waves: Waveforms; onEdit: (ops: Op[]) => Promise<boolean>; onHeight: (id: string, height: number) => void;
   selected: ReadonlySet<string>; targeted: boolean; onTarget: (id: string) => void;
@@ -20,6 +20,8 @@ export const TrackRow = memo(function TrackRow({ timeline, track, media, rate, s
   chosen?: string | null;
   /** The subtitle chosen, where it is on this track. */
   chosenCue?: string | null;
+  /** The subtitle track of the timeline that is shown, for a track of subtitles. */
+  shownSubtitles?: string | null;
 }) {
   const all = useWords();
   const words = all.label.studio.timeline;
@@ -29,7 +31,8 @@ export const TrackRow = memo(function TrackRow({ timeline, track, media, rate, s
     return track.transitions.map(transition => ({ transition, ...transitionSpan(transition, starts.get(transition.right)!) }));
   }, [track]);
   return <div className="timeline-track" data-track={track.id} data-kind={track.kind} data-enabled={track.enabled} data-locked={track.locked} style={{ height }}>
-    <TrackHeader timeline={timeline} track={track} height={height} onEdit={onEdit} onHeight={onHeight} targeted={targeted} onTarget={onTarget} />
+    <TrackHeader timeline={timeline} track={track} height={height} onEdit={onEdit} onHeight={onHeight} targeted={targeted} onTarget={onTarget}
+      shownSubtitles={shownSubtitles} />
     <div className="timeline-lane" role="listbox" aria-label={track.name} title={track.kind === 'subtitle' && !track.locked ? all.hint.studio.inspector.addCue : undefined} aria-multiselectable={track.kind === 'subtitle' ? undefined : true}>
       {track.kind === 'subtitle' ? <SubtitleCues track={track} from={from} to={to} chosen={chosenCue} />
         // A clip of video is given its own span, which does not change as the window moves; one of

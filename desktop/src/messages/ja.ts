@@ -731,7 +731,7 @@ export const ja: Messages = {
         color: '単色', wavePending: '波形を準備中…', waveFailed: '波形を表示できません',
         dissolve: 'ディゾルブ', dip_black: '黒にディップ', dip_white: '白にディップ', crossfade: 'クロスフェード',
         addTrack: 'トラックを追加', addSubtitleTrack: '字幕トラックを追加', language: '言語', noLanguage: '指定なし',
-        hideSubtitles: 'ビューアと書き出しで非表示', showSubtitles: 'ビューアと書き出しで表示', newCue: '字幕',
+        hideSubtitles: 'ビューアで非表示', showSubtitles: 'ビューアで表示（表示中の字幕トラックと入れ替え）', newCue: '字幕',
       },
       media: {
         bins: 'ビン', master: 'マスター', newBin: '新規ビン', name: '名前', rename: '名前を変更', remove: 'メディアプールから削除', removeBin: '空のビンを削除',
@@ -749,7 +749,7 @@ export const ja: Messages = {
       editPage: { inspector: 'インスペクタ', newTimeline: '新規タイムライン', create: '作成', noTimeline: 'タイムラインなし' },
       render: {
         quickExport: 'クイックエクスポート', title: 'タイムラインを書き出す', timeline: 'タイムライン', range: '範囲', whole: 'タイムライン全体', marked: 'イン点からアウト点まで',
-        codec: 'コーデック', quality: '品質', high: '高', medium: '中', low: '低', subtitles: '字幕を SRT としても保存',
+        codec: 'コーデック', quality: '品質', high: '高', medium: '中', low: '低', subtitles: 'SRT として保存する字幕トラック',
         exportTo: '書き出し先…', exporting: '書き出し中', cancelling: 'キャンセル中', encoder: 'エンコーダー', reveal: 'フォルダーに表示',
         frames: (done: number, total: number) => `${done} / ${total} フレーム`,
       },
@@ -1294,6 +1294,7 @@ export const ja: Messages = {
         scale: "ソースの時間単位を変換できませんでした。",
         overlap: "この範囲には別のクリップがあります。",
         cue_overlap: "この範囲には別の字幕があります。",
+        subtitle_shown: "別の字幕トラックが表示中です。タイムラインに表示できる字幕トラックは一度に 1 本です。",
         out_of_timeline: "クリップはタイムラインの開始前に配置できません。",
         in_use: "この項目はまだプロジェクトで使用されています。",
         too_large: "この編集は対応するサイズを超えています。",
@@ -1333,7 +1334,7 @@ export const ja: Messages = {
       render: {
         marks: 'タイムラインにイン点とアウト点を打つと、その間だけを書き出せます。',
         codec: 'H.264 と HEVC はグラフィックカードでエンコードします。対応するエンコーダーがない場合は、代わりに ProRes を .mov ファイルに書き出します。',
-        subtitles: '表示中の字幕トラックごとに、動画の横に SRT ファイルを保存します。',
+        subtitles: 'チェックした字幕トラックごとに、ビューアでの表示に関係なく、動画の横に SRT ファイルを保存します。',
         running: '書き出し中です。終わるまで待つか、キャンセルしてください。',
         noTimeline: '書き出せるタイムラインがまだありません。',
         done: '書き出しが終わりました。',

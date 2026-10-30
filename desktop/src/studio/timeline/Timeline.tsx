@@ -9,7 +9,7 @@ import { LET_GO_HOLD_MS } from '../Transport';
 import { duration, fitZoom, frameAt, HEADER_WIDTH, RULER_HEIGHT, scrollWindow, zoomAt } from './geometry';
 import { Ruler } from './Ruler';
 import { Scrub } from './scrub';
-import { AddSubtitleTrack } from './SubtitleTrack';
+import { AddSubtitleTrack, pageLanguage, TimelineMenu, type TrackMenu } from './SubtitleTrack';
 import { Toolbar } from './Toolbar';
 import { TrackRow } from './TrackRow';
 import { Waveforms } from './waveforms';
@@ -64,6 +64,9 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   const [view, setView] = useState({ scale: 4, left: 0, width: 800 });
   const [heights, setHeights] = useState<Record<string, number>>({});
   const [follow, setFollow] = useState(true);
+  // The menu of a right-click, where one is open.
+  const [menu, setMenu] = useState<TrackMenu | null>(null);
+  const closeMenu = useCallback(() => setMenu(null), []);
   const [held, setHeld] = useState<{ frame: number; dragging: boolean } | null>(null);
   const drag = useRef<{ frame: number } | null>(null);
   const now = useRef({ view, onSeek, overview });
@@ -195,10 +198,23 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
       else editing.pointerDown(event);
     }}
     onDragOver={editing.dragOver} onDrop={editing.drop} onDragLeave={editing.dragLeave} onDoubleClick={editing.doubleClick}
+    onContextMenu={event => {
+      // As DaVinci Resolve: a track header offers Add Subtitle Track, a track of subtitles Add Subtitle (Reference Manual 20, pp. 1088–1089).
+      const track = !overview && timeline && event.target instanceof Element ? event.target.closest<HTMLElement>('[data-track]') : null;
+      if (!track || !(event.target instanceof Element)) return;
+      const items: TrackMenu['items'] = event.target.closest('.timeline-track-header')
+        ? [{ id: 'add-subtitle-track', label: labels.addSubtitleTrack, disabled: editing.pending, run: () => editing.addSubtitleTrack(pageLanguage()) }]
+        : track.dataset.kind === 'subtitle' ? [{ id: 'add-subtitle', label: labels.addCue, disabled: track.dataset.locked === 'true' || editing.pending, run: () => editing.addCue(track.dataset.track!) }] : [];
+      if (items.length === 0) return;
+      event.preventDefault();
+      const box = root.current!.getBoundingClientRect();
+      setMenu({ x: event.clientX - box.left, y: event.clientY - box.top, items });
+    }}
     onPointerMove={event => { if (drag.current) { const frame = at(event); drag.current.frame = frame; setHeld({ frame, dragging: true }); scrub.drag(frame); } else editing.pointerMove(event); }}
     onPointerUp={event => { release(event); editing.pointerUp(event); }} onPointerCancel={event => { release(event, true); editing.cancel(); }} onLostPointerCapture={editing.cancel}>
     {!overview && <Toolbar name={timeline?.name ?? labels.title} tool={editing.tool} snapping={editing.snapping} linked={editing.linked} follow={follow}
       onTool={editing.chooseTool} onSnapping={editing.setSnapping} onLinked={editing.setLinked} onZoom={zoom} onFit={fit} onFollow={setFollow} />}
+    {menu && <TimelineMenu menu={menu} onClose={closeMenu} />}
     {editing.problem && <div className="timeline-problem" role="alert"><span>{editing.problem}</span><button type="button" className="icon-btn" aria-label={words.label.close} onClick={() => editing.setProblem(null)}><X size={14} /></button></div>}
     {!timeline ? <p className="caption timeline-empty">{words.hint.studio.timeline.empty}</p> : <div ref={scroll} className="timeline-scroll" onScroll={onScroll}>
       <div className="timeline-content" style={{ width: total, minHeight: RULER_HEIGHT + tracks.reduce((sum, track) => sum + (heights[track.id] ?? trackHeight), 0), '--scale': view.scale } as CSSProperties}>

@@ -681,7 +681,7 @@ export const zhCN: Messages = {
         lock: '锁定', unlock: '解锁', mute: '静音', unmute: '取消静音', hide: '隐藏轨道', show: '显示轨道', height: '轨道高度',
         color: '纯色', wavePending: '正在生成波形…', waveFailed: '波形不可用',
         dissolve: '叠化', dip_black: '淡入淡出至黑场', dip_white: '淡入淡出至白场', crossfade: '音频交叉淡变',
-        addTrack: '添加轨道', addSubtitleTrack: '添加字幕轨道', language: '语言', noLanguage: '未指定',
+        addTrack: '添加轨道', addSubtitleTrack: '添加字幕轨道', addCue: '添加字幕', trackMenu: '轨道菜单', language: '语言', noLanguage: '未指定',
         hideSubtitles: '在检视器中隐藏', showSubtitles: '在检视器中显示，替换正在显示的字幕轨', newCue: '字幕',
       },
       media: {
@@ -1252,7 +1252,7 @@ export const zhCN: Messages = {
         speedMedia: '只有素材片段可以变速。',
         speedRange: '速度范围为 1% 到 10000%。',
         library: '把转场拖到时间线的剪辑点上，把标题或纯色拖到视频轨上，它会覆盖 5 秒。',
-        addCue: '在字幕轨道的空处双击，就会在播放头处添加一条字幕。',
+        addCue: '在字幕轨道的空处双击，或右键选择“添加字幕”，就会在播放头处添加一条字幕。',
       },
       render: {
         marks: '在时间线上打入点和出点，就能只导出两点之间的部分。',

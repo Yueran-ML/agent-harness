@@ -464,6 +464,6 @@ export function useEditing(options: Options) {
   const dragLeave = (event: DragEvent) => {
     if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) { setDropAt(null); setEffectDrop(null); }
   };
-  return { tool, chooseTool, snapping, setSnapping, linked, setLinked, selected, transition, targets, target, marks, preview, dropAt, effectDrop, cue, cuePreview, chooseCue, addSubtitleTrack, doubleClick, problem, setProblem, pending,
+  return { tool, chooseTool, snapping, setSnapping, linked, setLinked, selected, transition, targets, target, marks, preview, dropAt, effectDrop, cue, cuePreview, chooseCue, addSubtitleTrack, addCue, doubleClick, problem, setProblem, pending,
     edit, apply, keyDown, perform, pointerDown, pointerMove, pointerUp, cancel, dragOver, drop, dragLeave };
 }

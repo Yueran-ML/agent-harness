@@ -730,7 +730,7 @@ export const ja: Messages = {
         lock: 'ロック', unlock: 'ロック解除', mute: 'ミュート', unmute: 'ミュート解除', hide: 'トラックを非表示', show: 'トラックを表示', height: 'トラックの高さ',
         color: '単色', wavePending: '波形を準備中…', waveFailed: '波形を表示できません',
         dissolve: 'ディゾルブ', dip_black: '黒にディップ', dip_white: '白にディップ', crossfade: 'クロスフェード',
-        addTrack: 'トラックを追加', addSubtitleTrack: '字幕トラックを追加', language: '言語', noLanguage: '指定なし',
+        addTrack: 'トラックを追加', addSubtitleTrack: '字幕トラックを追加', addCue: '字幕を追加', trackMenu: 'トラックのメニュー', language: '言語', noLanguage: '指定なし',
         hideSubtitles: 'ビューアで非表示', showSubtitles: 'ビューアで表示（表示中の字幕トラックと入れ替え）', newCue: '字幕',
       },
       media: {
@@ -1329,7 +1329,7 @@ export const ja: Messages = {
         speedMedia: '速度を変えられるのは素材のクリップだけです。',
         speedRange: '速度は 1% から 10000% までです。',
         library: 'トランジションはタイムラインの編集点に、タイトルや単色はビデオトラックにドラッグしてください。5 秒分を上書きします。',
-        addCue: '字幕トラックの空いている所をダブルクリックすると、再生ヘッドの位置に字幕を追加します。',
+        addCue: '字幕トラックの空いている所をダブルクリックするか、右クリックして「字幕を追加」を選ぶと、再生ヘッドの位置に字幕を追加します。',
       },
       render: {
         marks: 'タイムラインにイン点とアウト点を打つと、その間だけを書き出せます。',

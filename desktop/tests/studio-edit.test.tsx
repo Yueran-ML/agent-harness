@@ -131,7 +131,7 @@ describe('the Edit page', () => {
     expect(tabs()).toEqual([['Media', 0], ['Cut', -1], ['Edit', -1]]);
     fireEvent.keyDown(document.activeElement!, { key: 'ArrowRight' });
     expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'Cut' }));
-    expect(screen.getByText('The Cut page is not ready yet. Edit timelines on the Edit page.')).toBeDefined();
+    expect(document.querySelector('[data-test="cut-page"]')).not.toBeNull();
     fireEvent.keyDown(document.activeElement!, { key: 'ArrowLeft' });
     fireEvent.keyDown(document.activeElement!, { key: 'ArrowLeft' });
     expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'Edit' }));

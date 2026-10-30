@@ -4,7 +4,7 @@ import { overlayOpen } from '../../app/overlay';
 import { useWords } from '../../app/locale';
 import type { EngineBridge } from '../../bridge';
 import { callEngine, type Applied, type Media, type Monitor, type Op, type SubtitleTrack, type Timeline } from '../engine';
-import { editCommand, editKey, type EditContext } from './editKeys';
+import { editCommand, editKey, type EditAction, type EditContext } from './editKeys';
 import type { Targets, Transaction } from './commands';
 import { frameAt, HEADER_WIDTH } from './geometry';
 import { beginDrag, dragTo, finishDrag, hitClip, type Dragged, type Gesture, type Hit, type Preview, type Tool } from './interact';
@@ -26,6 +26,12 @@ interface Options {
   onTransition?: (transition: string | null) => void;
   /** The subtitle chosen on the timeline, for the inspector; `open` where it was just added or double-clicked, to be written in. */
   onCue?: (cue: string | null, open: boolean) => void;
+  /**
+   * Whether the timeline is one of the Cut page: there an edge of a clip dragged with the selection
+   * tool is always trimmed with ripple (the seam between two clips still rolls), and the keys of
+   * editing are those of the Cut page (see `EditContext.cut`).
+   */
+  cut?: boolean;
 }
 /** How long a subtitle added at the playhead is, unless the next one starts sooner: 3 seconds, as in DaVinci Resolve. */
 export const CUE_SECONDS = 3;
@@ -196,6 +202,10 @@ export function useEditing(options: Options) {
     if (overlayOpen() || document.querySelector('dialog[open]')) return false;
     const action = editKey(key);
     if (!action) return false;
+    return perform(action);
+  };
+  /** Do what a key, or a button of the page, asks: the same edit, whichever asked for it. */
+  const perform = (action: EditAction): boolean => {
     if ((active.current || cueDrag.current) && action.kind !== 'cancel' && action.kind !== 'snap') return true;
     const context = now.current;
     // Delete with a transition chosen, and no clip, takes the transition away, as in DaVinci Resolve.
@@ -210,7 +220,8 @@ export function useEditing(options: Options) {
       return true;
     }
     const result = editCommand(action, { ...context, selected: context.selection.ids });
-    if (!result) return true;
+    // A quick transition with no two clips meeting on a track of picture: it says so.
+    if (!result) { if (action.kind === 'quick' || (action.kind === 'transition' && context.cut)) setProblem(context.words.no_edit_point); return true; }
     switch (result.kind) {
       case 'transaction': void apply(result.transaction); break;
       case 'history': void run(result.method); break;
@@ -269,7 +280,7 @@ export function useEditing(options: Options) {
     if (clickSelection) selection = context.selection;
     setSelection(selection);
     if (!selection.ids.includes(id)) return;
-    const gesture = beginDrag(context.timeline, context.revision, selection.ids, id, action, at(event.clientX), context.linked, context.tool === 'trim');
+    const gesture = beginDrag(context.timeline, context.revision, selection.ids, id, action, at(event.clientX), context.linked, context.tool === 'trim' || (context.cut === true && context.tool === 'select'));
     if (!gesture) return;
     active.current = { gesture, x: event.clientX, y: event.clientY, pointer: event.pointerId, moved: false, clickSelection };
     context.root.current?.setPointerCapture?.(event.pointerId);
@@ -439,5 +450,5 @@ export function useEditing(options: Options) {
     if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) { setDropAt(null); setEffectDrop(null); }
   };
   return { tool, chooseTool, snapping, setSnapping, linked, setLinked, selected, transition, targets, target, marks, preview, dropAt, effectDrop, cue, cuePreview, chooseCue, addSubtitleTrack, doubleClick, problem, setProblem, pending,
-    edit, apply, keyDown, pointerDown, pointerMove, pointerUp, cancel, dragOver, drop, dragLeave };
+    edit, apply, keyDown, perform, pointerDown, pointerMove, pointerUp, cancel, dragOver, drop, dragLeave };
 }

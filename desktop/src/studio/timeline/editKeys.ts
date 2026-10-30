@@ -1,18 +1,28 @@
 import type { Key } from '../../app/keys';
-import type { Media, Monitor, Op, Rate, Time, Timeline } from '../engine';
+import type { Media, Monitor, Op, Rate, Time, Timeline, Transition } from '../engine';
 import { duration, snapPoints } from './geometry';
 import type { Change, Edit, Material, Targets, Transaction } from './commands';
 import type { Tool } from './interact';
 import { clipLocations, linkedClips } from './selection';
 import type { Marks } from './snap';
 import { materialLength } from './drop';
+import { effectTransaction } from '../effects/drop';
 
+/**
+ * The edits that put the source on the timeline. Those of the Cut page: `smart_insert` (at the
+ * edit point nearest the playhead), `ripple_overwrite` (in place of the clip at the playhead, the
+ * rest rippled by the difference) and `source_overwrite` (on top, lined up with the timeline).
+ */
+export type PlaceEdit = 'insert' | 'overwrite' | 'replace' | 'place_on_top' | 'append' | 'smart_insert' | 'ripple_overwrite' | 'source_overwrite';
+export type QuickTransition = 'dissolve' | 'dip_black';
 export type EditAction =
   | { kind: 'tool'; tool: Tool }
   | { kind: 'snap' | 'linked' | 'fit' | 'cancel' | 'speed' | 'enabled' | 'lock' | 'transition' | 'blade' }
   | { kind: 'history'; method: 'history.undo' | 'history.redo' }
   | { kind: 'mark'; edge: 'in' | 'out' | 'clear' }
-  | { kind: 'place'; edit: 'insert' | 'overwrite' | 'replace' | 'place_on_top' | 'append' }
+  | { kind: 'place'; edit: PlaceEdit }
+  /** A transition of picture at the edit point nearest the playhead, as the Cut page's buttons add one. */
+  | { kind: 'quick'; transition: QuickTransition }
   | { kind: 'delete'; ripple: boolean }
   | { kind: 'cut'; direction: -1 | 1 }
   | { kind: 'zoom'; direction: -1 | 1 };
@@ -39,6 +49,7 @@ export function editKey(key: Key): EditAction | null {
   if (key.shift) {
     if (value === 'z') return { kind: 'fit' };
     if (value === 'F12') return { kind: 'place', edit: 'append' };
+    if (value === 'F10') return { kind: 'place', edit: 'ripple_overwrite' };
     if (value === 'Delete' || value === 'Backspace') return { kind: 'delete', ripple: true };
     return null;
   }
@@ -70,6 +81,11 @@ export interface EditContext {
   timeline: Timeline | null; revision: number; selected: readonly string[]; linked: boolean;
   targets: Targets; marks: Marks; frame: number; focus: Monitor;
   source: { media: Media; frame: number; rate: Rate } | null;
+  /**
+   * Whether the keys are those of the Cut page: there F9 is Smart Insert and F10 Source Overwrite,
+   * and Ctrl+T puts a dissolve at the edit point nearest the playhead.
+   */
+  cut?: boolean;
 }
 export type EditResult =
   | { kind: 'transaction'; transaction: Transaction }
@@ -135,6 +151,49 @@ export function threePoint(timeline: Timeline, source: NonNullable<EditContext['
 
 const compare = (a: Time, b: Time) => BigInt(a.ticks) * BigInt(b.scale) - BigInt(b.ticks) * BigInt(a.scale);
 
+/**
+ * The edit point nearest `frame` that Smart Insert goes in at, as the engine finds it: the starts
+ * and ends of the clips on the tracks of picture and sound that are not locked, and the start of
+ * the timeline; of two as near, the earlier.
+ */
+export function nearestCut(timeline: Timeline, frame: number): number {
+  let best = 0;
+  for (const track of timeline.tracks) {
+    if (track.kind === 'subtitle' || track.locked) continue;
+    for (const clip of track.clips) for (const cut of [clip.start, clip.start + clip.length]) {
+      const distance = Math.abs(cut - frame);
+      const old = Math.abs(best - frame);
+      if (distance < old || (distance === old && cut < best)) best = cut;
+    }
+  }
+  return best;
+}
+
+/** Two clips that meet at an edit point on a track of picture, and the transition already there. */
+export interface Meeting { track: string; left: string; right: string; existing: Transition | null }
+
+/**
+ * The edit point nearest `frame` where two clips meet on a track of picture that is not locked (of
+ * two as near, the earlier), and the clips that meet there on each such track; null where none do.
+ */
+export function nearestEditPoint(timeline: Timeline, frame: number): { at: number; meetings: Meeting[] } | null {
+  let at: number | null = null;
+  const meetings: (Meeting & { at: number })[] = [];
+  for (const track of timeline.tracks) {
+    if (track.kind !== 'video' || track.locked) continue;
+    for (let i = 1; i < track.clips.length; i++) {
+      const left = track.clips[i - 1];
+      const right = track.clips[i];
+      if (left.start + left.length !== right.start) continue;
+      const existing = track.transitions.find(each => each.left === left.id && each.right === right.id) ?? null;
+      meetings.push({ track: track.id, left: left.id, right: right.id, existing, at: right.start });
+      const distance = Math.abs(right.start - frame);
+      if (at === null || distance < Math.abs(at - frame) || (distance === Math.abs(at - frame) && right.start < at)) at = right.start;
+    }
+  }
+  return at === null ? null : { at, meetings: meetings.filter(each => each.at === at).map(({ at: _, ...meeting }) => meeting) };
+}
+
 export function editCommand(action: EditAction | null, context: EditContext): EditResult | null {
   if (!action) return null;
   const { timeline, source, revision, linked, marks, frame, targets } = context;
@@ -170,12 +229,30 @@ export function editCommand(action: EditAction | null, context: EditContext): Ed
   const selected = linkedClips(timeline, context.selected, linked);
   const chosenTracks = [...new Set(selected.map(id => locations.get(id)!.track.id))];
   const activeTracks = Object.values(targets).filter((id): id is string => typeof id === 'string');
+  if (action.kind === 'quick') {
+    // One transition of the length and alignment that DaVinci Resolve gives a standard one, on each
+    // track of picture where clips meet at that edit point; one there already becomes of this kind.
+    const point = nearestEditPoint(timeline, frame);
+    if (!point) return null;
+    return transaction(point.meetings.flatMap(meeting => effectTransaction(timeline, revision, action.transition,
+      { kind: 'cut', track: meeting.track, left: meeting.left, right: meeting.right, cut: point.at, align: 'center', existing: meeting.existing }, '').ops));
+  }
   if (action.kind === 'place') {
     if (!source) return null;
-    if (action.edit === 'append') return transaction([{ edit: 'append', timeline: timeline.id, source: { kind: 'media', media: source.media.id }, ...targets }]);
-    const placed = threePoint(timeline, source, marks, frame, action.edit === 'replace');
-    const command: Edit = action.edit === 'place_on_top' ? { edit: action.edit, timeline: timeline.id, source: placed.material, at: placed.at }
-      : { edit: action.edit, timeline: timeline.id, source: placed.material, at: placed.at, ...targets };
+    const edit = context.cut && action.edit === 'insert' ? 'smart_insert' : context.cut && action.edit === 'overwrite' ? 'source_overwrite' : action.edit;
+    const whole: Material = { kind: 'media', media: source.media.id };
+    if (edit === 'append') return transaction([{ edit: 'append', timeline: timeline.id, source: whole, ...targets }]);
+    // Smart Insert goes in at the edit point nearest the playhead, which the page shows; it is sent
+    // as that point, and the engine, which finds the nearest one again, keeps it.
+    if (edit === 'smart_insert') return transaction([{ edit, timeline: timeline.id, source: whole, at: nearestCut(timeline, frame), ...targets }]);
+    if (edit === 'ripple_overwrite') return transaction([{ edit, timeline: timeline.id, source: whole, at: frame, ...targets }]);
+    // Source Overwrite lines the source up with the timeline by its timecode; media of which the
+    // timecode is not known (all of it, until the engine reads timecode) has its In at the playhead,
+    // on top of what is there.
+    if (edit === 'source_overwrite') return transaction([{ edit: 'place_on_top', timeline: timeline.id, source: whole, at: frame }]);
+    const placed = threePoint(timeline, source, marks, frame, edit === 'replace');
+    const command: Edit = edit === 'place_on_top' ? { edit, timeline: timeline.id, source: placed.material, at: placed.at }
+      : { edit, timeline: timeline.id, source: placed.material, at: placed.at, ...targets };
     return transaction([command]);
   }
   if (action.kind === 'delete') {
@@ -203,6 +280,7 @@ export function editCommand(action: EditAction | null, context: EditContext): Ed
     return transaction(tracks.map(track => ({ op: 'set_track', timeline: timeline.id, id: track.id, locked })));
   }
   if (action.kind === 'transition') {
+    if (context.cut) return editCommand({ kind: 'quick', transition: 'dissolve' }, context);
     const edits: Edit[] = [];
     for (const track of timeline.tracks) if (track.kind !== 'subtitle') for (let i = 1; i < track.clips.length; i++) {
       const left = track.clips[i - 1];

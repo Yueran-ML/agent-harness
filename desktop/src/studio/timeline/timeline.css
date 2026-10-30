@@ -65,3 +65,10 @@
 .timeline-mark-range { opacity: 0.5; }
 .timeline-transition { cursor: pointer; }
 .timeline-transition[data-selected='true'] { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+/* Where Smart Insert would go in, as DaVinci Resolve's smart indicator: a mark on the edit point nearest the playhead. */
+.timeline-indicator { position: absolute; top: 30px; bottom: 0; width: 0; border-left: 2px dashed #f9d77b; pointer-events: none; z-index: 3; }
+.timeline-indicator::before { content: ''; position: absolute; top: 0; left: -7px; border: 6px solid transparent; border-top: 8px solid #f9d77b; }
+/* In the upper timeline of the Cut page: the part that the lower one shows. */
+.timeline-window { position: absolute; top: 0; bottom: 0; border: 1px solid var(--accent); background: var(--accent-soft); opacity: 0.5; pointer-events: none; z-index: 1; box-sizing: border-box; }
+.timeline[data-overview] .timeline-scroll { overflow-x: hidden; }
+.timeline[data-overview] .timeline-clip span { font-size: 10px; }

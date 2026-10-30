@@ -814,6 +814,13 @@ export const en = {
         source: 'Source', timeline: 'Timeline', sourceTitle: 'Source viewer', timelineTitle: 'Timeline viewer', choose: 'Viewer shown',
       },
       editPage: { inspector: 'Inspector', newTimeline: 'New timeline', create: 'Create', noTimeline: 'No timeline' },
+      /** The Cut page, in DaVinci Resolve's words. */
+      cutPage: {
+        viewerMode: 'Viewer mode', source: 'Source clip', tape: 'Source tape', timeline: 'Timeline',
+        edits: 'Edits', smartInsert: 'Smart insert', append: 'Append', rippleOverwrite: 'Ripple overwrite', placeOnTop: 'Place on top',
+        sourceOverwrite: 'Source overwrite', transitions: 'Transitions', dissolve: 'Dissolve', dipBlack: 'Dip to black',
+        overview: 'Whole timeline', detail: 'Timeline around the playhead', tapeStrip: 'Source tape of the bin',
+      },
       /** The fields of the inspector, as DaVinci Resolve names them. */
       inspector: {
         video: 'Video', audio: 'Audio', title: 'Title', generator: 'Generator', transition: 'Transition', settings: 'Timeline settings',
@@ -1377,6 +1384,7 @@ export const en = {
         no_track: "Choose a track for this media.",
         stale_revision: "The project changed during this edit; try again.",
         pending: "The edit before is still being applied; try again in a moment.",
+        no_edit_point: "No two clips meet on a video track near the playhead.",
         missing: "An item used by this edit is no longer in the project.",
         taken: "Another item already uses this name.",
         out_of_list: "This position is outside the track list.",
@@ -1423,7 +1431,16 @@ export const en = {
         library: 'Drag a transition onto an edit point on the timeline, or a title or a solid color onto a video track, where it overwrites 5 seconds.',
         addCue: 'Double-click empty space on a subtitle track to add a subtitle at the playhead.',
       },
-      cut: 'The Cut page is not ready yet. Edit timelines on the Edit page.',
+      cutPage: {
+        smartInsert: 'Inserts the source at the edit point nearest the playhead, which the timeline marks.',
+        append: 'Puts the source after the last clip of the timeline.',
+        rippleOverwrite: 'Replaces the clip at the playhead with the source, and moves what follows by the difference in length.',
+        placeOnTop: 'Puts the source at the playhead on the first free track above.',
+        sourceOverwrite: 'Puts the source on the track above, in sync by timecode. Media without timecode is lined up by its In point at the playhead.',
+        transition: 'Adds the transition at the edit point nearest the playhead.',
+        emptyBin: 'This bin has no media for the source tape.',
+        noTimeline: 'Create a timeline on the Edit page to begin.',
+      },
       windowsOnly: 'The editing studio runs only on Windows for now. macOS will come later.',
       browser: 'The viewers appear only in the desktop app.',
       opening: 'The project is being opened in the studio.',

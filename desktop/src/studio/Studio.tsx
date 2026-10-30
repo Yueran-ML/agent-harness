@@ -53,8 +53,8 @@ interface Asked {
 }
 
 /**
- * The studio: the media of the project, a source monitor that plays one of them, and on the Edit
- * page a timeline monitor and the timeline beside it. It opens the project of the folder in the
+ * The studio: the media of the project, a source monitor that plays one of them, and on the Cut and
+ * Edit pages a timeline monitor and the timeline beside it. It opens the project of the folder in the
  * engine as it is shown (the engine is kept while the app is on the folder), and hides the
  * engine's views as it goes.
  *
@@ -89,6 +89,8 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
   // The monitor that the keys go to on the Edit page, and the timeline chosen there.
   const [focus, setFocus] = useState<Monitor>('timeline');
   const [chosenTimeline, setChosenTimeline] = useState<string | null>(null);
+  // The bin that the pool shows: the Cut page's source tape is made of its media.
+  const [bin, setBin] = useState<string | null>(null);
   const root = useRef<HTMLElement>(null);
   const tabs = useRef<HTMLElement>(null);
 
@@ -218,6 +220,8 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
     onImport={onImport}
     onLoad={onLoad}
     onMakeAgain={onMakeAgain}
+    initialGrid={page === 'cut'}
+    onBin={setBin}
   />;
   const conversationWords = conversationHidden ? words.label.studio.showConversation : words.label.studio.hideConversation;
   return <section ref={root} className="studio" tabIndex={-1} aria-label={words.label.studio.open} data-page={page} data-test="studio">
@@ -252,7 +256,26 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
     </div>}
     {page === 'media' && <MediaPage pool={pool} monitor={<MonitorPane controls={source} bridge={bridge} native={native} active
       notice={noticeOf('source')} onRetry={again} hint={words.hint.studio.load} />} />}
-    {page === 'cut' && <CutPage />}
+    {page === 'cut' && <CutPage
+      bridge={bridge}
+      native={native}
+      session={snapshot.session ?? 0}
+      revision={snapshot.revision ?? 0}
+      pool={pool}
+      media={project?.media ?? NO_MEDIA}
+      bin={bin}
+      timelines={timelines}
+      selected={selected}
+      onSelect={setChosenTimeline}
+      source={source}
+      sourceMedia={loaded}
+      timelineMonitor={timelineMonitor}
+      focus={focus}
+      onFocus={setFocus}
+      noticeOf={noticeOf}
+      onRetry={again}
+      onProblem={(said, failure) => fail(said)(failure)}
+    />}
     {page === 'edit' && <EditPage
       bridge={bridge}
       native={native}

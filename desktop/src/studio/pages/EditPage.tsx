@@ -10,6 +10,7 @@ import { Timeline, type TimelineHandle } from '../timeline/Timeline';
 import type { MonitorControls } from '../useMonitor';
 import type { ViewerNotice } from '../Viewer';
 import { NewTimeline } from './NewTimeline';
+import { useTimelineLoad } from './useTimelineLoad';
 import { Inspector } from '../inspector/Inspector';
 import { SpeedDialog } from '../inspector/SpeedDialog';
 import { Library } from '../effects/Library';
@@ -96,19 +97,7 @@ export function EditPage({
   }, []);
 
   // The timeline monitor plays the timeline shown: loaded once as it is chosen, not again at each edit of it.
-  const playing = timelineMonitor.state?.monitor === 'timeline' ? timelineMonitor.state.timeline : null;
-  const requested = useRef<{ session: number; timeline: string } | null>(null);
-  useEffect(() => {
-    if (selected === null) return;
-    const asked = requested.current;
-    if (playing === selected.id || (asked !== null && asked.session === session && asked.timeline === selected.id)) {
-      requested.current = { session, timeline: selected.id };
-      return;
-    }
-    requested.current = { session, timeline: selected.id };
-    void callEngine(bridge, 'transport.load', { monitor: 'timeline', timeline: selected.id })
-      .catch(failure => now.current.onProblem(now.current.words.hint.studio.failed, failure));
-  }, [bridge, selected?.id, playing, session]);
+  const playing = useTimelineLoad(bridge, selected, timelineMonitor, session, failure => now.current.onProblem(now.current.words.hint.studio.failed, failure));
 
   // The keys of the transport go to the monitor that has the focus; those of editing to the timeline.
   const focused = focus === 'source' ? source : timelineMonitor;

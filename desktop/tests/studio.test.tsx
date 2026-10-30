@@ -279,7 +279,7 @@ describe('the media pool', () => {
     expect(marked('pool-none')).toEqual([]);
   });
 
-  it('is beside the source monitor on the Media page, beside both monitors on the Edit page, and not on the Cut page', async () => {
+  it('is beside the source monitor on the Media page, beside both monitors on the Edit page, and beside the one viewer of the Cut page', async () => {
     await studio(engineWith(projectOf(mediaOf('m1'))));
     expect(one('page-media').getAttribute('aria-selected')).toBe('true');
     expect(marked('pool')).toHaveLength(1);
@@ -291,8 +291,11 @@ describe('the media pool', () => {
     expect(marked('viewer')).toHaveLength(2);
     expect(marked('transport')).toHaveLength(2);
     fireEvent.click(one('page-cut'));
-    expect(marked('pool')).toEqual([]);
-    expect(marked('viewer')).toEqual([]);
+    // The Cut page has the same pool, and one viewer that shows the source or the timeline: both
+    // monitors are there, and one of them is hidden.
+    expect(marked('pool')).toHaveLength(1);
+    expect(marked('viewer')).toHaveLength(2);
+    expect(document.querySelectorAll('.cut-viewer > .monitor:not([hidden])')).toHaveLength(1);
     expect(marked('studio-pages')).toEqual([]);
     expect([...document.querySelectorAll('[role="tab"]')].map(tab => tab.textContent)).toEqual(['Media', 'Cut', 'Edit']);
   });
@@ -783,7 +786,7 @@ describe('the studio as a keyboard and a reader know it', () => {
     fireEvent.keyDown(one('page-media'), { key: 'ArrowRight' });
     expect(tabs()).toEqual([['Media', -1], ['Cut', 0], ['Edit', -1]]);
     expect(document.activeElement).toBe(one('page-cut'));
-    expect(marked('pool')).toEqual([]);
+    expect(marked('cut-page')).toHaveLength(1);
     fireEvent.keyDown(one('page-cut'), { key: 'ArrowRight' });
     expect(tabs()).toEqual([['Media', -1], ['Cut', -1], ['Edit', 0]]);
     expect(document.activeElement).toBe(one('page-edit'));
@@ -792,8 +795,9 @@ describe('the studio as a keyboard and a reader know it', () => {
     fireEvent.keyDown(one('page-media'), { key: 'ArrowLeft' });
     expect(document.activeElement).toBe(one('page-edit'));
     await settle();
-    // The arrows of the tabs are not steps of the transport.
-    expect(engine.asked()).toEqual([]);
+    // The arrows of the tabs are not steps of the transport. (The pool of the Cut page, in its
+    // thumbnail view, asks for pictures of its media.)
+    expect(engine.asked().filter(([method]) => method !== 'media.thumbnail')).toEqual([]);
   });
 
   it('says where the playhead is in timecode, on a bar that the keyboard reaches', async () => {

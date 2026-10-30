@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Grid2X2, Import, List, RotateCw, Trash2, X } from 'lucide-react';
 import { useWords } from '../app/locale';
 import type { EngineBridge } from '../bridge';
@@ -11,19 +11,24 @@ import { Thumbnails } from './media/Thumbnails';
 export { factsOf, proxyStanding } from './media/facts';
 
 /** Media IDs and metadata are edited through one engine transaction; the original files stay where they are. */
-export const MediaPool = memo(function MediaPool({ media, bins, timelines, proxies, loaded, bridge, session, onImport, onLoad, onMakeAgain }: {
+export const MediaPool = memo(function MediaPool({ media, bins, timelines, proxies, loaded, bridge, session, onImport, onLoad, onMakeAgain, initialGrid = false, onBin }: {
   media: readonly Media[] | null; bins: readonly Bin[]; timelines: readonly { rate: Rate }[];
   proxies: Readonly<Record<string, ProxyEvent>>; loaded: string | null; bridge: Pick<EngineBridge, 'call'>; session: number;
   onImport: (bin: string | null) => void; onLoad: (id: string) => void; onMakeAgain: (id: string) => void;
+  /** Whether it opens in the thumbnail view, as the Cut page's pool does. */
+  initialGrid?: boolean;
+  /** Told of the bin shown (null for the master bin), whose media the source tape of the Cut page plays. */
+  onBin?: (bin: string | null) => void;
 }) {
   const words = useWords();
   const labels = words.label.studio.media;
   const [bin, setBin] = useState<string | null>(null);
   const [selection, setSelection] = useState<Selection>(EMPTY_SELECTION);
-  const [grid, setGrid] = useState(false);
+  const [grid, setGrid] = useState(initialGrid);
   const [problem, setProblem] = useState<{ said: string; detail: string } | null>(null);
   const pending = useRef(false);
   const selectedBin = bins.some(each => each.id === bin) ? bin : null;
+  useEffect(() => { onBin?.(selectedBin); }, [selectedBin, onBin]);
   const visible = useMemo(() => (media ?? []).filter(each => each.bin === selectedBin), [media, selectedBin]);
   const chosen = visible.filter(each => selection.ids.includes(each.id));
   const details = chosen.find(each => each.id === selection.focus) ?? chosen[0];

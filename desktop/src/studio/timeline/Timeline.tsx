@@ -14,18 +14,44 @@ import { Toolbar } from './Toolbar';
 import { TrackRow } from './TrackRow';
 import { Waveforms } from './waveforms';
 import { useEditing } from './useEditing';
-import type { EditContext } from './editKeys';
+import type { EditAction, EditContext } from './editKeys';
 import './timeline.css';
 
 /** A view of the accepted engine project. Scrolling, zoom and track height do not add undo steps. */
-export interface TimelineHandle { keyDown: (key: Key) => boolean }
-export function Timeline({ timeline, media, bridge, session, revision, frame, playing, onSeek, source = null, focus = 'timeline', onSpeed, onSelection, onTransition, onCue, ref }: {
+export interface TimelineHandle {
+  keyDown: (key: Key) => boolean;
+  /** Do an edit that a button of the page asks for, as its key would. */
+  perform: (action: EditAction) => boolean;
+}
+/** What of a timeline a view shows: the pixels of a frame, how far it is scrolled, and how wide it is. */
+export interface TimelineView { scale: number; left: number; width: number }
+export function Timeline({ timeline, media, bridge, session, revision, frame, playing, onSeek, source = null, focus = 'timeline', onSpeed, onSelection, onTransition, onCue, ref,
+  cut = false, overview = false, center = false, trackHeight = 72, indicator = null, detail = null, onView, label }: {
   timeline: TimelineModel | null; media: readonly Media[]; bridge: Pick<EngineBridge, 'call' | 'onEvent'>; session: number;
   revision: number; frame: number; playing: boolean; onSeek: (frame: number, scrubbing: boolean) => void;
   source?: EditContext['source']; focus?: Monitor; onSpeed?: (clips: string[]) => void; onSelection?: (clips: string[]) => void;
   onTransition?: (transition: string | null) => void;
   /** The subtitle chosen, for the inspector; `open` where it was added or double-clicked, to be written in. */
   onCue?: (cue: string | null, open: boolean) => void; ref?: Ref<TimelineHandle>;
+  /** A timeline of the Cut page: an edge dragged is trimmed with ripple, and the keys are those of the Cut page. */
+  cut?: boolean;
+  /**
+   * The whole timeline at once, as the upper timeline of the Cut page: it is always fitted to its
+   * width, has no tool bar, and a press on a track moves the playhead there.
+   */
+  overview?: boolean;
+  /** The playhead kept in the middle, as the lower timeline of the Cut page keeps it. */
+  center?: boolean;
+  /** How high a track is until it is made higher or lower. */
+  trackHeight?: number;
+  /** The edit point that Smart Insert would go in at, marked on the timeline. */
+  indicator?: number | null;
+  /** The frames that another view of this timeline shows, marked on this one. */
+  detail?: { from: number; to: number } | null;
+  /** Told of the view as it scrolls or zooms. */
+  onView?: (view: TimelineView) => void;
+  /** The name of the region, where a page shows more than one view of a timeline. */
+  label?: string;
 }) {
   const words = useWords();
   const labels = words.label.studio.timeline;
@@ -37,8 +63,8 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   const [follow, setFollow] = useState(true);
   const [held, setHeld] = useState<{ frame: number; dragging: boolean } | null>(null);
   const drag = useRef<{ frame: number } | null>(null);
-  const now = useRef({ view, onSeek });
-  now.current = { view, onSeek };
+  const now = useRef({ view, onSeek, overview });
+  now.current = { view, onSeek, overview };
   const scrub = useMemo(() => new Scrub((to, scrubbing) => now.current.onSeek(to, scrubbing)), []);
   const waves = useMemo(() => new Waveforms(bridge, session), [bridge, session]);
   useEffect(() => { waves.connect(); return () => waves.disconnect(); }, [waves]);
@@ -86,7 +112,7 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
     });
   }, [frame, playing, follow]);
 
-  const zoom = useCallback((factor: number, anchor?: number) => setView(old => {
+  const zoom = useCallback((factor: number, anchor?: number) => now.current.overview ? undefined : setView(old => {
     const next = zoomAt(old.scale, old.left, anchor ?? old.width / 2, factor);
     return { ...old, scale: next.scale, left: next.scroll };
   }), []);
@@ -94,8 +120,20 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   const ends = useRef(end);
   ends.current = end;
   const fit = useCallback(() => setView(old => ({ ...old, scale: fitZoom(ends.current, old.width), left: 0 })), []);
-  const editing = useEditing({ timeline, media, bridge, session, revision, frame, focus, source, root, scroll, view, onSeek, fit, zoom, onSpeed, onSelection, onTransition, onCue });
-  useImperativeHandle(ref, () => ({ keyDown: editing.keyDown }));
+  // The whole timeline is always shown in an overview, as it grows and as the view is made wider.
+  useEffect(() => {
+    if (!overview) return;
+    setView(old => { const scale = fitZoom(end, old.width); return old.scale === scale && old.left === 0 ? old : { ...old, scale, left: 0 }; });
+  }, [overview, end, view.width]);
+  // The playhead in the middle of a view that keeps it there, unless the playhead is being dragged.
+  const dragging = held?.dragging === true;
+  useEffect(() => {
+    if (!center || dragging) return;
+    setView(old => { const left = Math.max(0, Math.round(frame * old.scale - old.width / 2)); return old.left === left ? old : { ...old, left }; });
+  }, [center, dragging, frame, view.scale, view.width]);
+  useEffect(() => { onView?.(view); }, [view, onView]);
+  const editing = useEditing({ timeline, media, bridge, session, revision, frame, focus, source, root, scroll, view, onSeek, fit, zoom, onSpeed, onSelection, onTransition, onCue, cut });
+  useImperativeHandle(ref, () => ({ keyDown: editing.keyDown, perform: editing.perform }));
   useEffect(() => {
     const element = scroll.current;
     if (!element) return;
@@ -136,32 +174,38 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   };
   // The tracks and the ruler draw a window that moves by half a view, not at every pixel of a scroll.
   const { from, to } = scrollWindow(view.left, view.width, view.scale);
-  const total = HEADER_WIDTH + Math.max(view.width, end * view.scale + view.width / 2);
+  // An overview is as wide as its view; another goes on half a view past the end.
+  const total = HEADER_WIDTH + (overview ? view.width : Math.max(view.width, end * view.scale + view.width / 2));
   let rowTop = RULER_HEIGHT;
-  const rows = new Map(tracks.map(track => { const height = heights[track.id] ?? 72; const row = { top: rowTop, height }; rowTop += height; return [track.id, row]; }));
-  return <section ref={root} className="timeline" role="region" aria-label={labels.title} aria-busy={editing.pending} tabIndex={0} data-timeline={timeline?.id} data-scale={view.scale} data-tool={editing.tool}
+  const rows = new Map(tracks.map(track => { const height = heights[track.id] ?? trackHeight; const row = { top: rowTop, height }; rowTop += height; return [track.id, row]; }));
+  return <section ref={root} className="timeline" role="region" aria-label={label ?? labels.title} aria-busy={editing.pending} tabIndex={0} data-timeline={timeline?.id} data-scale={view.scale} data-tool={editing.tool}
+    data-overview={overview || undefined}
     onKeyDown={event => {
       const key = keyOf(event);
       if (!editingAllowed(event.target, key)) return;
       if (editing.keyDown(key)) { event.preventDefault(); event.stopPropagation(); }
     }}
-    onPointerDown={editing.pointerDown}
+    onPointerDown={event => {
+      // A press on a track of the overview, not on what lies on it, moves the playhead there.
+      if (overview && event.target instanceof Element && event.target.classList.contains('timeline-lane')) down(event);
+      else editing.pointerDown(event);
+    }}
     onDragOver={editing.dragOver} onDrop={editing.drop} onDragLeave={editing.dragLeave} onDoubleClick={editing.doubleClick}
     onPointerMove={event => { if (drag.current) { const frame = at(event); drag.current.frame = frame; setHeld({ frame, dragging: true }); scrub.drag(frame); } else editing.pointerMove(event); }}
     onPointerUp={event => { release(event); editing.pointerUp(event); }} onPointerCancel={event => { release(event, true); editing.cancel(); }} onLostPointerCapture={editing.cancel}>
-    <Toolbar name={timeline?.name ?? labels.title} tool={editing.tool} snapping={editing.snapping} linked={editing.linked} follow={follow}
-      onTool={editing.chooseTool} onSnapping={editing.setSnapping} onLinked={editing.setLinked} onZoom={zoom} onFit={fit} onFollow={setFollow} />
+    {!overview && <Toolbar name={timeline?.name ?? labels.title} tool={editing.tool} snapping={editing.snapping} linked={editing.linked} follow={follow}
+      onTool={editing.chooseTool} onSnapping={editing.setSnapping} onLinked={editing.setLinked} onZoom={zoom} onFit={fit} onFollow={setFollow} />}
     {editing.problem && <div className="timeline-problem" role="alert"><span>{editing.problem}</span><button type="button" className="icon-btn" aria-label={words.label.close} onClick={() => editing.setProblem(null)}><X size={14} /></button></div>}
     {!timeline ? <p className="caption timeline-empty">{words.hint.studio.timeline.empty}</p> : <div ref={scroll} className="timeline-scroll" onScroll={onScroll}>
-      <div className="timeline-content" style={{ width: total, minHeight: RULER_HEIGHT + tracks.reduce((sum, track) => sum + (heights[track.id] ?? 72), 0), '--scale': view.scale } as CSSProperties}>
+      <div className="timeline-content" style={{ width: total, minHeight: RULER_HEIGHT + tracks.reduce((sum, track) => sum + (heights[track.id] ?? trackHeight), 0), '--scale': view.scale } as CSSProperties}>
         <div className="timeline-ruler-row"><Ruler rate={timeline.rate} scale={view.scale} from={from} to={to}
           frame={shown} last={last} onDown={down} onSeek={onSeek} />
           {editing.marks.in !== null && <span className="timeline-mark" data-edge="in" style={{ left: HEADER_WIDTH + editing.marks.in * view.scale }} />}
           {editing.marks.out !== null && <span className="timeline-mark" data-edge="out" style={{ left: HEADER_WIDTH + editing.marks.out * view.scale }} />}
           {editing.marks.in !== null && editing.marks.out !== null && <span className="timeline-mark-range" style={{ left: HEADER_WIDTH + editing.marks.in * view.scale, width: (editing.marks.out - editing.marks.in) * view.scale }} />}
-          <div className="timeline-ruler-corner"><AddSubtitleTrack onAdd={editing.addSubtitleTrack} disabled={editing.pending} /></div></div>
+          <div className="timeline-ruler-corner">{!overview && <AddSubtitleTrack onAdd={editing.addSubtitleTrack} disabled={editing.pending} />}</div></div>
         {tracks.map(track => <TrackRow key={track.id} timeline={timeline.id} track={track} media={byId} rate={timeline.rate} scale={view.scale}
-          from={from} to={to} height={heights[track.id] ?? 72} waves={waves} onEdit={editing.edit} onHeight={onHeight}
+          from={from} to={to} height={heights[track.id] ?? trackHeight} waves={waves} onEdit={editing.edit} onHeight={onHeight}
           selected={editing.selected} targeted={editing.targets.video_track === track.id || editing.targets.audio_track === track.id} onTarget={editing.target}
           chosen={editing.transition !== null && track.kind !== 'subtitle' && track.transitions.some(each => each.id === editing.transition) ? editing.transition : null}
           chosenCue={editing.cue !== null && track.kind === 'subtitle' && track.cues.some(each => each.id === editing.cue) ? editing.cue : null} />)}
@@ -177,6 +221,10 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
         {editing.effectDrop?.covered.map(item => { const row = rows.get(item.track); return row && <div key={`effect-covered-${item.id}`} className="timeline-covered" data-covered={item.id}
           style={{ left: HEADER_WIDTH + item.start * view.scale, width: item.length * view.scale, top: row.top + 4, height: row.height - 8 }} />; })}
         {editing.dropAt !== null && <div className="timeline-snap" style={{ left: HEADER_WIDTH + editing.dropAt * view.scale }} />}
+        {detail && <div className="timeline-window" data-test="detail-window" data-from={detail.from} data-to={detail.to} aria-hidden="true"
+          style={{ left: HEADER_WIDTH + detail.from * view.scale, width: Math.max(1, (detail.to - detail.from) * view.scale) }} />}
+        {indicator !== null && <div className="timeline-indicator" data-test="smart-indicator" data-frame={indicator} aria-hidden="true"
+          style={{ left: HEADER_WIDTH + indicator * view.scale }} />}
         <div className="timeline-playhead" style={{ left: HEADER_WIDTH + shown * view.scale }} aria-hidden="true" onPointerDown={down} />
       </div>
     </div>}

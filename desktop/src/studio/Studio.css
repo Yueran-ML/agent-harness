@@ -723,11 +723,184 @@
   overflow-wrap: anywhere;
 }
 
-/* --- The Cut page, until it is made. */
+/* --- The Cut page: the pool and the one viewer with its edit buttons above, the two timelines beneath. */
 .cut-page {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(220px, 1.1fr) minmax(220px, 1fr);
+  grid-template-areas:
+    "bar bar"
+    "pool viewer"
+    "timelines timelines";
+}
+
+.cut-bar {
+  grid-area: bar;
+  min-height: 36px;
+  display: flex;
   align-items: center;
+  gap: var(--s2);
+  padding: 0 var(--s2);
+  background: var(--ink-1);
+}
+
+.cut-bar .icon-btn[aria-pressed='true'] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.cut-left {
+  grid-area: pool;
+  width: clamp(280px, 30cqi, 440px);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.cut-left > .pool {
+  flex: 1;
+  width: auto;
+  max-height: none;
+}
+
+.cut-viewer {
+  grid-area: viewer;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--ink-1);
+}
+
+.cut-viewer > .monitor {
+  flex: 1;
+  min-height: 0;
+}
+
+.cut-buttons {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
   justify-content: center;
+  gap: var(--s3);
+  padding: var(--s1) var(--s2);
+  box-shadow: inset 0 1px 0 var(--line);
+}
+
+.cut-button-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+
+.cut-button {
+  height: 28px;
+  font-size: var(--text-caption);
+}
+
+/* Narrow, the buttons keep their icons and give their names to their tooltips. */
+.cut-page[data-narrow] .cut-button span {
+  display: none;
+}
+
+.cut-page[data-narrow] .cut-left {
+  width: clamp(220px, 28cqi, 300px);
+}
+
+/* The source tape: the media of the bin end to end, each with its marks. */
+.source-tape {
+  position: relative;
+  flex: none;
+  height: 30px;
+  margin: var(--s1) var(--s2) 0;
+  border-radius: var(--r1);
   background: var(--ink-0);
+  cursor: ew-resize;
+  touch-action: none;
+  overflow: hidden;
+}
+
+.source-tape-media {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  box-shadow: inset -1px 0 0 var(--moon-3);
+  overflow: hidden;
+}
+
+.source-tape-media[data-current] {
+  background: var(--accent-soft);
+}
+
+.source-tape-name {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  top: 2px;
+  font-size: 11px;
+  color: var(--moon-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.source-tape-mark {
+  position: absolute;
+  bottom: 0;
+  width: 2px;
+  height: 10px;
+  background: var(--moon-0);
+  pointer-events: none;
+}
+
+.source-tape-range {
+  position: absolute;
+  bottom: 0;
+  height: 4px;
+  background: var(--accent);
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.source-tape-head {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--warn);
+  pointer-events: none;
+}
+
+.source-tape-none {
+  margin: var(--s1) var(--s2) 0;
+}
+
+.cut-timelines {
+  grid-area: timelines;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(90px, 0.8fr) minmax(140px, 1.2fr);
+  gap: 1px;
+}
+
+.cut-timelines > .timeline {
+  min-height: 0;
+}
+
+@container studio (max-width: 760px) {
+  .cut-page {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(220px, 1fr) minmax(220px, 1fr);
+    grid-template-areas: "bar" "pool" "viewer" "timelines";
+  }
+
+  .cut-left {
+    width: auto;
+    max-height: 200px;
+  }
 }
 
 /* --- The pages, at the foot. */

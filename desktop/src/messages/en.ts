@@ -1439,7 +1439,7 @@ export const en = {
         speedMedia: 'Only clips of media can change speed.',
         speedRange: 'The speed is from 1% to 10000%.',
         library: 'Drag a transition onto an edit point on the timeline, or a title or a solid color onto a video track, where it overwrites 5 seconds.',
-        addCue: 'Double-click empty space on a subtitle track, or right-click it and choose Add subtitle, to add a subtitle at the playhead.',
+        addCue: 'Double-click empty space on a subtitle track to add a subtitle at the playhead, or right-click it and choose Add subtitle to add one where you clicked.',
       },
       render: {
         marks: 'Mark an In and an Out point on the timeline to export only the part between them.',

@@ -173,10 +173,10 @@ describe('a track of subtitles', () => {
     expect(sent(engine.bridge)).toEqual([{ revision: 0, ops: [{ edit: 'add_track', timeline: 't1', kind: 'subtitle', language: 'ja' }] }]);
     expect(screen.queryByRole('dialog', { name: 'Add subtitle track' })).toBeNull();
     expect(document.querySelector('[data-track="S1"] [data-test="track-language"]')!.textContent).toBe(' · ja');
-    expect(lane('S1').title).toBe('Double-click empty space on a subtitle track, or right-click it and choose Add subtitle, to add a subtitle at the playhead.');
+    expect(lane('S1').title).toBe('Double-click empty space on a subtitle track to add a subtitle at the playhead, or right-click it and choose Add subtitle to add one where you clicked.');
   });
 
-  it('is added from the menu of a right-click on a track header, and a subtitle from that of a subtitle track, at the playhead', async () => {
+  it('is added from the menu of a right-click on a track header, and a subtitle from that of a subtitle track, where it was clicked', async () => {
     const engine = await mount([subtitles('S1', [cue('q1', 200, 50)]), subtitles('S2', [], { locked: true, enabled: false })]);
     // Reference Manual 20, p. 1088: right-click a track header and choose Add Subtitle Track.
     fireEvent.contextMenu(document.querySelector('[data-track="v1"] .timeline-track-header')!, { clientX: 40, clientY: 120 });
@@ -187,12 +187,13 @@ describe('a track of subtitles', () => {
     await settle();
     expect(screen.queryByRole('menu')).toBeNull();
     expect(sent(engine.bridge)).toEqual([{ revision: 0, ops: [{ edit: 'add_track', timeline: 't1', kind: 'subtitle', language: 'en' }] }]);
-    // P. 1089: right-click a subtitle track and choose Add Subtitle, which starts at the playhead.
+    // P. 1089: right-click a subtitle track and choose Add Subtitle. Resolve starts it at the playhead; here it
+    // starts where the track was clicked, as the author chose.
     engine.playhead(100);
     fireEvent.contextMenu(lane('S1'), { clientX: x(400), clientY: 60 });
     fireEvent.click(screen.getByRole('menuitem', { name: 'Add subtitle' }));
     await settle();
-    expect(sent(engine.bridge).at(-1)).toEqual({ revision: 1, ops: [{ edit: 'add_cue', timeline: 't1', track: 'S1', start: 100, length: 75, text: 'Subtitle' }] });
+    expect(sent(engine.bridge).at(-1)).toEqual({ revision: 1, ops: [{ edit: 'add_cue', timeline: 't1', track: 'S1', start: 400, length: 75, text: 'Subtitle' }] });
     // On a locked track it cannot be chosen; Escape puts the menu away; a track of picture offers none of it.
     fireEvent.contextMenu(lane('S2'), { clientX: x(400), clientY: 60 });
     expect((screen.getByRole('menuitem', { name: 'Add subtitle' }) as HTMLButtonElement).disabled).toBe(true);
@@ -376,7 +377,7 @@ describe('a subtitle', () => {
     expect(screen.getByRole('button', { name: '在检视器中隐藏: S1' })).toBeDefined();
     fireEvent.click(screen.getByRole('button', { name: '添加轨道' }));
     expect(screen.getByRole('dialog', { name: '添加字幕轨道' })).toBeDefined();
-    expect(lane('S1').title).toBe('在字幕轨道的空处双击，或右键选择“添加字幕”，就会在播放头处添加一条字幕。');
+    expect(lane('S1').title).toBe('在字幕轨道的空处双击，会在播放头处添加一条字幕；右键选择“添加字幕”，会在点击的位置添加。');
   });
 });
 

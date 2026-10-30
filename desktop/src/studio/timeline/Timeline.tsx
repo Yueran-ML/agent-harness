@@ -207,7 +207,9 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
     });
   };
   const onHeight = useCallback((id: string, height: number) => setHeights(old => ({ ...old, [id]: height })), []);
-  const at = (event: PointerEvent) => Math.min(last, frameAt(event.clientX - (scroll.current?.getBoundingClientRect().left ?? 0) - HEADER_WIDTH, view.scale, scroll.current?.scrollLeft ?? view.left));
+  // The frame under the pointer; the playhead is held to the last frame, but a subtitle may be added past it.
+  const under = (event: { clientX: number }) => frameAt(event.clientX - (scroll.current?.getBoundingClientRect().left ?? 0) - HEADER_WIDTH, view.scale, scroll.current?.scrollLeft ?? view.left);
+  const at = (event: { clientX: number }) => Math.min(last, under(event));
   const down = (event: PointerEvent) => {
     if (!timeline || end === 0 || event.button !== 0) return;
     event.preventDefault(); editing.cancel();
@@ -242,11 +244,13 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
     onDragOver={editing.dragOver} onDrop={editing.drop} onDragLeave={editing.dragLeave} onDoubleClick={editing.doubleClick}
     onContextMenu={event => {
       // As DaVinci Resolve: a track header offers Add Subtitle Track, a track of subtitles Add Subtitle (Reference Manual 20, pp. 1088–1089).
+      // Resolve adds the subtitle at the playhead; here it goes where the track was clicked, as the author chose.
       const track = !overview && timeline && event.target instanceof Element ? event.target.closest<HTMLElement>('[data-track]') : null;
       if (!track || !(event.target instanceof Element)) return;
+      const clicked = under(event);
       const items: TrackMenu['items'] = event.target.closest('.timeline-track-header')
         ? [{ id: 'add-subtitle-track', label: labels.addSubtitleTrack, disabled: editing.pending, run: () => editing.addSubtitleTrack(pageLanguage()) }]
-        : track.dataset.kind === 'subtitle' ? [{ id: 'add-subtitle', label: labels.addCue, disabled: track.dataset.locked === 'true' || editing.pending, run: () => editing.addCue(track.dataset.track!) }] : [];
+        : track.dataset.kind === 'subtitle' ? [{ id: 'add-subtitle', label: labels.addCue, disabled: track.dataset.locked === 'true' || editing.pending, run: () => editing.addCue(track.dataset.track!, clicked) }] : [];
       if (items.length === 0) return;
       event.preventDefault();
       const box = root.current!.getBoundingClientRect();

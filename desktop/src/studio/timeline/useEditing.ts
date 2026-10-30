@@ -184,11 +184,12 @@ export function useEditing(options: Options) {
    * Add a subtitle on `trackId` at the playhead, for three seconds or until the next subtitle, chosen
    * to be written in. Where a subtitle is shown at the playhead already, it is said, and nothing sent.
    */
-  const addCue = (trackId: string) => {
+  /** Add a subtitle at `at`, or at the playhead when no frame is given. */
+  const addCue = (trackId: string, at?: number) => {
     const context = now.current;
     const track = context.timeline?.tracks.find(each => each.id === trackId);
     if (!context.timeline || !track || track.kind !== 'subtitle' || track.locked) return;
-    const start = Math.max(0, context.frame);
+    const start = Math.max(0, at ?? context.frame);
     if (track.cues.some(each => each.start <= start && start < each.start + each.length)) { setProblem(context.words.cue_overlap); return; }
     const next = Math.min(Infinity, ...track.cues.filter(each => each.start > start).map(each => each.start));
     const length = Math.min(Math.max(1, Math.round(CUE_SECONDS * context.timeline.rate.num / context.timeline.rate.den)), next - start);

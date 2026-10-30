@@ -40,11 +40,20 @@ export const CUE_SECONDS = 3;
 interface CueDrag {
   id: string; track: string; part: 'move' | 'in' | 'out'; x: number; y: number; pointer: number; origin: number;
   start: number; length: number; low: number; high: number; revision: number; moved: boolean; candidates: number[];
+  /** Whether N was pressed during the drag, turning snapping the other way until it ends; and where the pointer was last. */
+  flip?: boolean; last?: number;
 }
+/** Where the pointer was, and the keys held, as a drag takes them. */
+interface Pointed { clientX: number; clientY: number; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean; altKey: boolean }
 interface PointerDrag {
   gesture: Gesture; x: number; y: number; pointer: number; moved: boolean; clickSelection?: Selection;
   /** The points to snap to, worked out once for the gesture: what it moves does not change them. */
   candidates?: number[];
+  /**
+   * Whether N was pressed during the drag, an odd number of times: snapping is the other way until
+   * the drag ends, and then as it was (Reference Manual 20, p. 711). And where the pointer was last.
+   */
+  flip?: boolean; last?: Pointed;
 }
 const cursor = (hit: Hit) => typeof hit === 'object' ? 'col-resize' : ({ move: 'grab', trim_in: 'w-resize', trim_out: 'e-resize', slip: 'ew-resize', slide: 'move', blade: 'crosshair' })[hit];
 const defaultTargets = (timeline: Timeline | null): Targets => ({
@@ -208,6 +217,15 @@ export function useEditing(options: Options) {
   /** Do what a key, or a button of the page, asks: the same edit, whichever asked for it. */
   const perform = (action: EditAction): boolean => {
     if ((active.current || cueDrag.current) && action.kind !== 'cancel' && action.kind !== 'snap') return true;
+    // N while a clip or a subtitle is dragged turns snapping on or off for that drag alone, as in
+    // DaVinci Resolve (Reference Manual 20, p. 711): it is as it was when the drag ends.
+    if (action.kind === 'snap' && (active.current || cueDrag.current)) {
+      const pointer = active.current;
+      const drag = cueDrag.current;
+      if (pointer) { pointer.flip = !pointer.flip; if (pointer.moved && pointer.last) setPreview(calculate(pointer.last, pointer)); }
+      if (drag) { drag.flip = !drag.flip; if (drag.moved && drag.last !== undefined) setCuePreview(cueAt(drag, drag.last)); }
+      return true;
+    }
     const context = now.current;
     // Delete with a transition chosen, and no clip, takes the transition away, as in DaVinci Resolve.
     if (action.kind === 'delete' && context.transition !== null && context.selection.ids.length === 0 && context.timeline) {
@@ -298,7 +316,7 @@ export function useEditing(options: Options) {
     active.current = { gesture, x: event.clientX, y: event.clientY, pointer: event.pointerId, moved: false, clickSelection };
     context.root.current?.setPointerCapture?.(event.pointerId);
   };
-  const calculate = (event: PointerEvent, pointer: PointerDrag) => {
+  const calculate = (event: Pointed, pointer: PointerDrag) => {
     const context = now.current;
     const track = [...context.root.current!.querySelectorAll<HTMLElement>('[data-track]')].find(element => {
       const box = element.getBoundingClientRect(); return event.clientY >= box.top && event.clientY < box.bottom;
@@ -307,7 +325,7 @@ export function useEditing(options: Options) {
       // As in DaVinci Resolve: a drag overwrites, Ctrl+Shift shuffles it in, Shift alone only changes tracks.
       media: context.media, track: track?.dataset.track, overwrite: true, ripple: (event.ctrlKey || event.metaKey) && event.shiftKey,
       vertical: event.shiftKey && !event.ctrlKey && !event.metaKey,
-      candidates: context.snapping ? pointer.candidates ??= snapCandidates(pointer.gesture.timeline, pointer.gesture.ids, context.frame, context.marks) : undefined, scale: context.view.scale,
+      candidates: context.snapping !== (pointer.flip === true) ? pointer.candidates ??= snapCandidates(pointer.gesture.timeline, pointer.gesture.ids, context.frame, context.marks) : undefined, scale: context.view.scale,
       // Track 1 of the Cut page is magnetic: a clip moved leaves no gap there (Reference Manual 20, pp. 584–588).
       magnetic: context.cut && context.tool === 'select' ? primaryTrack(pointer.gesture.timeline) : null,
     });
@@ -334,7 +352,7 @@ export function useEditing(options: Options) {
     cueDrag.current = {
       id, track: track.id, part: cuePart(element, event.clientX), x: event.clientX, y: event.clientY, pointer: event.pointerId, origin: at(event.clientX),
       start: here.start, length: here.length, low: before ? before.start + before.length : 0, high: after ? after.start : Infinity,
-      revision: context.revision, moved: false, candidates: context.snapping ? snapCandidates(context.timeline!, [id], context.frame, context.marks) : [],
+      revision: context.revision, moved: false, candidates: snapCandidates(context.timeline!, [id], context.frame, context.marks),
     };
     context.root.current?.setPointerCapture?.(event.pointerId);
   };
@@ -344,7 +362,7 @@ export function useEditing(options: Options) {
     const end = drag.start + drag.length;
     const anchors = drag.part === 'move' ? [drag.start, end] : drag.part === 'in' ? [drag.start] : [end];
     const raw = at(clientX) - drag.origin;
-    const delta = drag.candidates.length > 0 ? snap(raw, anchors, drag.candidates, view.scale).delta : raw;
+    const delta = now.current.snapping !== (drag.flip === true) ? snap(raw, anchors, drag.candidates, view.scale).delta : raw;
     let start = drag.start;
     let length = drag.length;
     if (drag.part === 'move') start = Math.min(Math.max(drag.start + delta, drag.low), drag.high - drag.length);
@@ -359,7 +377,7 @@ export function useEditing(options: Options) {
     if (drag) {
       if (drag.pointer !== event.pointerId) return;
       if (!drag.moved && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < 3) return;
-      drag.moved = true;
+      drag.moved = true; drag.last = event.clientX;
       const next = cueAt(drag, event.clientX);
       setCuePreview(old => old && old.start === next.start && old.length === next.length && old.clamped === next.clamped ? old : next);
       return;
@@ -378,7 +396,9 @@ export function useEditing(options: Options) {
     }
     if (pointer.pointer !== event.pointerId) return;
     if (!pointer.moved && Math.hypot(event.clientX - pointer.x, event.clientY - pointer.y) < 3) return;
-    pointer.moved = true; setPreview(calculate(event, pointer));
+    pointer.moved = true;
+    pointer.last = { clientX: event.clientX, clientY: event.clientY, ctrlKey: event.ctrlKey, metaKey: event.metaKey, shiftKey: event.shiftKey, altKey: event.altKey };
+    setPreview(calculate(pointer.last, pointer));
   };
   const pointerUp = (event: PointerEvent) => {
     const drag = cueDrag.current;

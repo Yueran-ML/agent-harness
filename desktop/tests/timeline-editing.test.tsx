@@ -71,13 +71,26 @@ describe('timeline editing by pointer and keys', () => {
     expect(call.mock.calls).toEqual([['transaction.apply', { revision: 17, ops: [{ edit: 'move', timeline: 't1', delta: 30, linked: true, clips: ['c1'], overwrite: true }] }]]);
     expect(document.querySelector('[data-preview]')).toBeNull();
   });
-  it('can disable snapping with N during a drag', async () => {
+  it('turns snapping off with N for one drag only, as DaVinci Resolve (it is as it was when the drag ends)', async () => {
+    // Reference Manual 20, p. 711: N while dragging turns snapping on or off for the operation; it reverts when it finishes.
     const { call } = mount();
+    const snapping = () => screen.getByRole('button', { name: 'Snapping' }).getAttribute('aria-pressed');
     fireEvent.pointerDown(node(), pointer(30)); fireEvent.pointerMove(root(), pointer(59));
+    expect(document.querySelector<HTMLElement>('[data-preview="c1"]')?.style.left).toBe(`${HEADER_WIDTH + 160}px`);
     fireEvent.keyDown(root(), { key: 'n' });
-    expect(screen.getByRole('button', { name: 'Snapping' }).getAttribute('aria-pressed')).toBe('false');
+    // The preview follows at once, unsnapped, and the button stays as it is.
+    expect(document.querySelector<HTMLElement>('[data-preview="c1"]')?.style.left).toBe(`${HEADER_WIDTH + 156}px`);
+    expect(snapping()).toBe('true');
     fireEvent.pointerMove(root(), pointer(59)); fireEvent.pointerUp(root(), pointer(59)); await settle();
     expect(call).toHaveBeenCalledWith('transaction.apply', { revision: 17, ops: [{ edit: 'move', timeline: 't1', delta: 29, linked: true, clips: ['c1'], overwrite: true }] });
+    // The next drag snaps again; N twice is as without it.
+    fireEvent.pointerDown(node(), pointer(30)); fireEvent.pointerMove(root(), pointer(59));
+    fireEvent.keyDown(root(), { key: 'n' }); fireEvent.keyDown(root(), { key: 'n' });
+    fireEvent.pointerUp(root(), pointer(59)); await settle();
+    expect(call).toHaveBeenLastCalledWith('transaction.apply', { revision: 17, ops: [{ edit: 'move', timeline: 't1', delta: 30, linked: true, clips: ['c1'], overwrite: true }] });
+    // Outside a drag, N turns snapping off and keeps it so.
+    fireEvent.keyDown(root(), { key: 'n' });
+    expect(snapping()).toBe('false');
   });
   it.each(['Escape', 'pointerCancel', 'blur'])('cancels a drag with %s without editing', async how => {
     const { call } = mount();

@@ -127,6 +127,10 @@ before one is started here."""
 _YIELD_LOOK_SECONDS = 0.1
 """How often ``engine.lock`` is read meanwhile."""
 
+_STOP_SECONDS = 5.0
+"""How long a render that its caller gave up on while it was being started may take to be told
+of, so that it is cancelled."""
+
 _LISTENED = 1024
 """How many things told a reader of :meth:`Engine.changes` may leave unread before the oldest
 are dropped."""
@@ -977,14 +981,36 @@ class Engine:
             params["range"] = {"from": frames[0], "to": frames[1]}
         heard = self.changes()
         try:
-            said = await self._call("render.start", params)
-            job = said.get("job")
+            wire = await self._ensure()
+            number, asked = self._sent(wire, "render.start", params)
+            try:
+                # The answer is shielded: once the engine was asked, a caller that gives up still
+                # learns which render it began, and stops it instead of leaving it running.
+                said: object = await asyncio.shield(asked.answer)
+            except asyncio.CancelledError:
+                await self._stopped(asked.answer)
+                raise
+            finally:
+                self._asked.pop(number, None)
+            job = cast("dict[str, Any]", said).get("job") if isinstance(said, dict) else None
             if not isinstance(job, str):
                 raise EngineError("the engine answered render.start with no job", code=UNEXPECTED)
         except BaseException:
             await heard.aclose()
             raise
         return Rendering(self, job, heard)
+
+    async def _stopped(self, answer: "asyncio.Future[object]") -> None:
+        """Cancel the render that a ``render.start`` given up on began, if the engine began one.
+
+        This waits for the answer a while, and fails silently: the caller is cancelled already.
+        """
+        with contextlib.suppress(EngineError, TimeoutError):
+            async with asyncio.timeout(_STOP_SECONDS):
+                said = await answer
+                job = cast("dict[str, Any]", said).get("job") if isinstance(said, dict) else None
+                if isinstance(job, str):
+                    await self._call("render.cancel", {"job": job})
 
     def changes(self) -> Changes:
         """What the engine tells from now on: every change of the project, and its other news."""

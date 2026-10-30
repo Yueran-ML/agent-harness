@@ -580,7 +580,40 @@ async def test_render_failure_and_cancellation_do_not_change_timeline(
     assert failed.error.code == "VIDEO_FAILED"
     fake.render_hold = True
     ready = asyncio.Event()
-    fake.then["render.start"] = ready.set
+    editor = await desk.ctx.use(VIDEOS).editor(
+        ToolRun("cancel", desk.work, desk.session), "video_render"
+    )
+    # Cancelled once the render is followed: its first progress has been heard.
+    pending = asyncio.create_task(
+        editor.rendered(
+            "t1",
+            desk.work / "out/stop.mp4",
+            codec="h264",
+            quality="small",
+            subtitles=False,
+            replace=False,
+            told=lambda _: ready.set(),
+        )
+    )
+    await asyncio.wait_for(ready.wait(), 5)
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+    assert "render.cancel" in fake.asked
+    assert "cancelled" in fake.jobs.values()
+    assert len(fake.steps) == 1
+
+
+async def test_a_render_given_up_on_before_its_start_is_answered_is_still_cancelled(
+    studio: tuple[Desk, Fake],
+) -> None:
+    import asyncio
+
+    from columbina.tools import ToolRun
+
+    desk, fake = studio
+    await seed_story(desk, fake)
+    fake.render_hold = True
     editor = await desk.ctx.use(VIDEOS).editor(
         ToolRun("cancel", desk.work, desk.session), "video_render"
     )
@@ -594,12 +627,17 @@ async def test_render_failure_and_cancellation_do_not_change_timeline(
             replace=False,
         )
     )
-    await asyncio.wait_for(ready.wait(), 5)
-    pending.cancel()
+
+    # The engine has begun the render and answered, and the answer is not yet read when the
+    # call is cancelled: the render it began is stopped all the same, not left running.
+    def given_up() -> None:
+        pending.cancel()
+
+    fake.then["render.start"] = given_up
     with pytest.raises(asyncio.CancelledError):
-        await pending
-    assert "render.cancel" in fake.asked
-    assert "cancelled" in fake.jobs.values()
+        await asyncio.wait_for(pending, 5)
+    assert fake.asked[-2:] == ["render.start", "render.cancel"]
+    assert list(fake.jobs.values()) == ["cancelled"]
     assert len(fake.steps) == 1
 
 

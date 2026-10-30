@@ -1241,7 +1241,7 @@ export const zhCN: Messages = {
       },
       timeline: { empty: '选择或创建一条时间线，开始剪辑。' },
       loadSource: '在媒体池里双击素材，就能在这里看到。',
-      newTimeline: '新时间线沿用媒体池中第一个视频的尺寸和帧率，带一条视频轨和一条音频轨。',
+      newTimeline: '新时间线沿用媒体池中第一个视频的尺寸，帧率也沿用它，除非在这里另选。时间线带一条视频轨和一条音频轨，有内容后帧率即锁定。',
       newTimelineFailed: '时间线没能创建。',
       inspectorEmpty: '在时间线上选择一个片段。',
       inspector: {

@@ -7,8 +7,8 @@ import type { Commit } from './useCommit';
 
 /** Sizes of picture to choose from, as DaVinci Resolve lists them; others are typed. */
 const SIZES: readonly [number, number][] = [[1280, 720], [1920, 1080], [2560, 1440], [3840, 2160], [4096, 2160], [1080, 1920], [1080, 1080]];
-/** Frame rates to choose from. */
-const RATES: readonly Rate[] = [
+/** Frame rates to choose from, here and for a new timeline. */
+export const RATES: readonly Rate[] = [
   { num: 24000, den: 1001 }, { num: 24, den: 1 }, { num: 25, den: 1 }, { num: 30000, den: 1001 }, { num: 30, den: 1 },
   { num: 48, den: 1 }, { num: 50, den: 1 }, { num: 60000, den: 1001 }, { num: 60, den: 1 },
 ];
@@ -16,7 +16,7 @@ const RATES: readonly Rate[] = [
 const SAMPLE_RATES = [44100, 48000, 96000] as const;
 /** A size that the engine takes: even, from 16 to 16384 pixels. */
 const even = (pixels: number) => Math.min(16384, Math.max(16, Math.floor(pixels / 2) * 2));
-const rateKey = (rate: Rate) => `${rate.num}/${rate.den}`;
+export const rateKey = (rate: Rate) => `${rate.num}/${rate.den}`;
 
 /**
  * The settings of the timeline: its name, the size of its picture, its frame rate and the rate of

@@ -1428,7 +1428,7 @@ export const en = {
       },
       timeline: { empty: 'Choose or create a timeline to begin editing.' },
       loadSource: 'Double-click media in the media pool to see it here.',
-      newTimeline: 'The timeline takes the size and frame rate of the first video in the media pool, and starts with one video track and one audio track.',
+      newTimeline: 'The timeline takes the size of the first video in the media pool, and its frame rate unless you choose another. It starts with one video track and one audio track. Once it has content, its frame rate is locked.',
       newTimelineFailed: 'The timeline could not be created.',
       inspectorEmpty: 'Select a clip on the timeline.',
       inspector: {

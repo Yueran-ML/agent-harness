@@ -249,10 +249,15 @@ describe('the Edit page', () => {
     const dialog = screen.getByRole('dialog', { name: 'New timeline' });
     expect((within(dialog).getByRole('textbox', { name: 'Name' }) as HTMLInputElement).value).toBe('Timeline 3');
     expect(within(dialog).getByText('1920 × 1080 · 25 fps · 48 kHz')).toBeDefined();
+    // A timeline can have a frame rate of its own as it is made (Reference Manual 20, p. 698).
+    const rate = within(dialog).getByRole('combobox', { name: 'Frame rate' }) as HTMLSelectElement;
+    expect(rate.value).toBe('25/1');
+    fireEvent.change(rate, { target: { value: '30000/1001' } });
+    expect(within(dialog).getByText('1920 × 1080 · 29.97 fps · 48 kHz')).toBeDefined();
     fireEvent.change(within(dialog).getByRole('textbox', { name: 'Name' }), { target: { value: 'My film' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create' })); await settle(); draw(); await settle();
     expect(calls(bridge, 'transaction.apply')).toEqual([{ ops: [{ op: 'add_timeline', timeline: {
-      id: '$timeline', name: 'My film', width: 1920, height: 1080, rate: { num: 25, den: 1 }, sample_rate: 48000,
+      id: '$timeline', name: 'My film', width: 1920, height: 1080, rate: { num: 30000, den: 1001 }, sample_rate: 48000,
       tracks: [
         { id: '', kind: 'video', name: 'V1', enabled: true, locked: false, clips: [], transitions: [] },
         { id: '', kind: 'audio', name: 'A1', enabled: true, locked: false, clips: [], transitions: [] },

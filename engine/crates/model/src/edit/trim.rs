@@ -943,4 +943,68 @@ mod tests {
         assert!(edit(&mut gap, slide("c5", 50)).clamped);
         assert_eq!(clips(&gap, "V2")[0], ("c5".into(), 150, 50, 50));
     }
+
+    #[test]
+    fn a_trim_to_its_limit_exactly_is_not_clamped() {
+        let put_v2 = |start, length| put("V2", clip("", start, length, 0, None));
+        // Up to c10 at 190.
+        let mut project = with(project(), vec![put_v2(190, 10)]);
+        assert!(!edit(&mut project, trim_alone("c5", Edge::Out, 20, false)).clamped);
+        assert_eq!(clips(&project, "V2")[0], ("c5".into(), 120, 70, 50));
+        // Back to c10 on [80, 100).
+        let mut project = with(super::super::fixture::project(), vec![put_v2(80, 20)]);
+        assert!(!edit(&mut project, trim_alone("c5", Edge::In, -20, false)).clamped);
+        assert_eq!(clips(&project, "V2")[1], ("c5".into(), 100, 70, 30));
+    }
+
+    #[test]
+    fn a_trim_that_can_go_nowhere_names_the_first_track_that_holds_it() {
+        let error = refused(project(), trim("c1", Edge::Out, 10, false));
+        assert_eq!(error, EditError::NoRoom { track: "V1".into() });
+    }
+
+    #[test]
+    fn the_end_of_a_clip_played_backward_shows_where_it_begins_in_its_media() {
+        let backward = Op::SetClip {
+            timeline: "t1".into(),
+            id: "c5".into(),
+            enabled: None,
+            speed: None,
+            reverse: Some(true),
+            link: None,
+            transform: None,
+            gain_db: None,
+            pan: None,
+            fade_in: None,
+            fade_out: None,
+            source: None,
+        };
+        let mut project = with(project(), vec![backward]);
+        edit(&mut project, trim_alone("c5", Edge::Out, 10, false));
+        assert_eq!(clips(&project, "V2"), rows(&[("c5", 120, 60, 40)]));
+    }
+
+    #[test]
+    fn the_fades_of_a_clip_trimmed_shorter_than_them_are_shortened_at_the_edge_first() {
+        let faded = |fade_in, fade_out| {
+            with(
+                project(),
+                vec![super::super::work::set_fades("t1", "c5", fade_in, fade_out)],
+            )
+        };
+        let fades = |project: &crate::Project| {
+            let c5 = the(project, "c5");
+            (c5.length, c5.fade_in, c5.fade_out)
+        };
+        let mut project = faded(20, 20);
+        edit(&mut project, trim_alone("c5", Edge::Out, -20, false));
+        assert_eq!(fades(&project), (30, 20, 10));
+        // Beyond the fade at the edge, the other is shortened too.
+        let mut project = faded(30, 5);
+        edit(&mut project, trim_alone("c5", Edge::Out, -25, false));
+        assert_eq!(fades(&project), (25, 25, 0));
+        let mut project = faded(5, 30);
+        edit(&mut project, trim_alone("c5", Edge::In, 25, false));
+        assert_eq!(fades(&project), (25, 0, 25));
+    }
 }

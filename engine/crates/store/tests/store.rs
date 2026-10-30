@@ -333,6 +333,21 @@ fn another_project_of_schema_1_is_kept_beside_the_one_kept_before() {
 }
 
 #[test]
+fn a_project_of_schema_1_is_kept_beside_what_cannot_be_read_in_the_place_of_its_file() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join(PROJECT_FILE), SCHEMA_1).unwrap();
+    // A directory in the place of the file that it is kept in.
+    let first = dir.path().join(SCHEMA_1_FILE);
+    fs::create_dir(&first).unwrap();
+
+    Store::open(dir.path()).unwrap();
+
+    assert!(first.is_dir());
+    let beside = dir.path().join(schema_1_file_of(SCHEMA_1.as_bytes()));
+    assert_eq!(fs::read_to_string(beside).unwrap(), SCHEMA_1);
+}
+
+#[test]
 fn a_project_of_schema_1_is_not_opened_where_it_cannot_be_kept() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join(PROJECT_FILE), SCHEMA_1).unwrap();

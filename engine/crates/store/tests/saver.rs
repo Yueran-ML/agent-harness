@@ -70,6 +70,23 @@ fn many_changes_in_a_moment_are_saved_a_few_times_and_the_latest_is_saved_last()
 }
 
 #[test]
+fn a_change_after_the_saver_has_had_nothing_to_save_is_saved_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, _) = Store::open(dir.path()).unwrap();
+    let saver = Saver::with_period(store, Duration::from_millis(50), ignore).unwrap();
+    for n in 0..2 {
+        saver.changed(version(n));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while saved(dir.path()) != version(n) {
+            assert!(Instant::now() < deadline, "version {n} was not saved");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // Long enough for the saver to wait with nothing to save.
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+#[test]
 fn a_flush_saves_the_latest_project_at_once() {
     let dir = tempfile::tempdir().unwrap();
     let (store, _) = Store::open(dir.path()).unwrap();

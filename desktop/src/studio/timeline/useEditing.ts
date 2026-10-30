@@ -27,8 +27,8 @@ interface Options {
   /** The subtitle chosen on the timeline, for the inspector; `open` where it was just added or double-clicked, to be written in. */
   onCue?: (cue: string | null, open: boolean) => void;
 }
-/** How long a subtitle added at the playhead is, unless the next one starts sooner. */
-export const CUE_SECONDS = 2;
+/** How long a subtitle added at the playhead is, unless the next one starts sooner: 3 seconds, as in DaVinci Resolve. */
+export const CUE_SECONDS = 3;
 /** A subtitle dragged by its middle or by an edge: where it was, and the room between its neighbours. */
 interface CueDrag {
   id: string; track: string; part: 'move' | 'in' | 'out'; x: number; y: number; pointer: number; origin: number;
@@ -165,7 +165,7 @@ export function useEditing(options: Options) {
     void apply({ revision, ops: [{ edit: 'add_track', timeline: timeline.id, kind: 'subtitle', ...(language ? { language } : {}) }] });
   }, [apply]);
   /**
-   * Add a subtitle on `trackId` at the playhead, for two seconds or until the next subtitle, chosen
+   * Add a subtitle on `trackId` at the playhead, for three seconds or until the next subtitle, chosen
    * to be written in. Where a subtitle is shown at the playhead already, it is said, and nothing sent.
    */
   const addCue = (trackId: string) => {

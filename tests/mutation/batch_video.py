@@ -14,6 +14,7 @@ WORDS = "src/columbina/video/words.py"
 EDITING = "src/columbina/video/editing.py"
 VIDEO_PLUGIN = "src/columbina/video/__init__.py"
 ENGINE = "src/columbina/video/engine.py"
+VIDEO_COMMAND = "src/columbina/apps/video_command.py"
 WORKTREES = "src/columbina/worktrees.py"
 WALK = "src/columbina/fs/walk.py"
 ACP = "src/columbina/apps/acp.py"
@@ -266,6 +267,24 @@ _ENGINE = (
         "        if session is not None and session != self._session:",
         "        if False:",
     ),
+    mutant(
+        "a render given up on while its start is answered goes on in the engine",
+        ENGINE,
+        "                await self._stopped(asked.answer)",
+        "                pass",
+    ),
+    mutant(
+        "the answer to a render's start goes with a caller that gives up",
+        ENGINE,
+        "await asyncio.shield(asked.answer)",
+        "await asked.answer",
+    ),
+    mutant(
+        "video editing is taken to run on every platform",
+        ENGINE,
+        "    return None if sys.platform in STUDIO_PLATFORMS else ONLY_WINDOWS",
+        "    return None",
+    ),
 )
 _EDITS = (
     mutant(
@@ -447,6 +466,32 @@ _VIDEO_PLUGIN = (
         "            async with asyncio.timeout(_MIGRATION_SECONDS):",
         "            async with asyncio.timeout(None):",
     ),
+    mutant(
+        "the tools are offered where the engine does not run",
+        VIDEO_PLUGIN,
+        "    if missing is not None:\n        # The engine is built",
+        "    if False:\n        # The engine is built",
+    ),
+    mutant(
+        "the model is not told why there are no video tools",
+        VIDEO_PLUGIN,
+        "        ctx.on(RUNTIME_FACTS, facts)\n        return",
+        "        return",
+    ),
+)
+_VIDEO_COMMAND = (
+    mutant(
+        "a command looks for an engine where none runs",
+        VIDEO_COMMAND,
+        "    if missing is not None:\n        # Before any engine",
+        "    if False:\n        # Before any engine",
+    ),
+    mutant(
+        "a command that answers in JSON says it needs Windows in words",
+        VIDEO_COMMAND,
+        'json.dumps({"error": missing})\n            if getattr(args, "json", False)',
+        'json.dumps({"error": missing})\n            if False',
+    ),
 )
 
 
@@ -580,6 +625,7 @@ VIDEO_SETS: dict[str, MutantSet] = {
             *_EDITING,
             *_ENGINE,
             *_VIDEO_PLUGIN,
+            *_VIDEO_COMMAND,
         ),
     ),
     "worktrees": MutantSet(

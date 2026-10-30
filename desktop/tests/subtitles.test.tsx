@@ -184,14 +184,14 @@ describe('a track of subtitles', () => {
 });
 
 describe('a subtitle', () => {
-  it('is added at the playhead by a double-click of empty space, for two seconds or until the next, and opened in the inspector', async () => {
+  it('is added at the playhead by a double-click of empty space, for three seconds or until the next, and opened in the inspector', async () => {
     const engine = await mount([subtitles('S1', [cue('q1', 200, 50)]), subtitles('S2', [], { locked: true })]);
     expect(document.querySelector('[data-test="inspector-slot"]')).toBeNull();
     engine.playhead(100);
     fireEvent.doubleClick(lane('S1'), { clientX: x(400), clientY: 60 });
     await settle();
-    expect(sent(engine.bridge)).toEqual([{ revision: 0, ops: [{ edit: 'add_cue', timeline: 't1', track: 'S1', start: 100, length: 50, text: 'Subtitle' }] }]);
-    expect(engine.cues('S1')).toEqual([['q101', 100, 50, 'Subtitle'], ['q1', 200, 50, 'q1']]);
+    expect(sent(engine.bridge)).toEqual([{ revision: 0, ops: [{ edit: 'add_cue', timeline: 't1', track: 'S1', start: 100, length: 75, text: 'Subtitle' }] }]);
+    expect(engine.cues('S1')).toEqual([['q101', 100, 75, 'Subtitle'], ['q1', 200, 50, 'q1']]);
     // The new one is chosen, and the inspector opens on it, to be written in.
     expect(cueElement('q101').dataset.selected).toBe('true');
     const inspector = document.querySelector<HTMLElement>('[data-test="inspector"]')!;

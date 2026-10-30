@@ -4,7 +4,6 @@
  * kept for as long as the page lives, not for as long as the studio shows: an export goes on while
  * the user edits, or leaves the studio, and is found as it is when the studio is shown again.
  */
-import type { Key } from '../../app/keys';
 import type { EngineBridge } from '../../bridge';
 import { callEngine, type EngineEvent, type RenderOptions, type RenderProgress } from '../engine';
 
@@ -205,12 +204,4 @@ export function rendersOf(bridge: Pick<EngineBridge, 'call' | 'onEvent' | 'rende
     made.set(bridge, renders);
   }
   return renders;
-}
-
-/**
- * Whether a key opens the export of the timeline: Ctrl+M. DaVinci Resolve has no Deliver page here
- * yet (phase 5); its key opens the dialog of the export until then.
- */
-export function isExportKey(key: Pick<Key, 'key' | 'ctrl' | 'shift' | 'alt' | 'meta'>): boolean {
-  return (key.ctrl || key.meta) && !(key.ctrl && key.meta) && !key.shift && !key.alt && key.key.toLowerCase() === 'm';
 }

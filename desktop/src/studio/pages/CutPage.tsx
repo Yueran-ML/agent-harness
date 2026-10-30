@@ -2,7 +2,6 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { PanelLeft, Upload } from 'lucide-react';
 import { keyOf } from '../../app/keys';
 import { useWords } from '../../app/locale';
-import { shortcut } from '../../app/system';
 import type { EngineBridge } from '../../bridge';
 import type { Media, Monitor, Timeline as TimelineModel } from '../engine';
 import { editingAllowed, inStudio, useStudioKeys } from '../keys';
@@ -14,7 +13,6 @@ import { Timeline, type TimelineHandle, type TimelineView } from '../timeline/Ti
 import type { MonitorControls } from '../useMonitor';
 import type { ViewerNotice } from '../Viewer';
 import { useTimelineLoad } from './useTimelineLoad';
-import { isExportKey } from '../render/renders';
 import type { Marks } from '../timeline/snap';
 
 /** Narrower than this, the Cut page has its buttons without their names, and its pool narrower. */
@@ -39,7 +37,8 @@ export type ViewerMode = 'source' | 'tape' | 'timeline';
  * The edits put what the viewer has as its source (its marks, its medium of the tape) on the
  * timeline: Smart Insert at the edit point nearest the playhead, which the lower timeline marks.
  * They leave the viewer as it was, so that the source tape is gone through edit after edit.
- * Quick Export, at the right of the bar, and Ctrl+M open the export of the timeline.
+ * Quick Export, at the right of the bar, opens the export of the timeline (Ctrl+M is DaVinci
+ * Resolve's key of markers, Reference Manual 20, p. 869, and is left unbound).
  */
 export function CutPage({
   bridge, native, session, revision, pool, media, bin, timelines, selected, onSelect, source, sourceMedia, timelineMonitor,
@@ -131,11 +130,6 @@ export function CutPage({
     const down = (event: KeyboardEvent) => {
       if (event.defaultPrevented || !inStudio(event.target)) return;
       const key = keyOf(event);
-      // Ctrl+M exports, wherever in the page the keyboard is, the timelines too.
-      if (isExportKey(key)) {
-        if (editingAllowed(event.target, key)) { event.preventDefault(); exportNow(); }
-        return;
-      }
       if (event.target instanceof Element && event.target.closest('.timeline')) return;
       if (!editingAllowed(event.target, key)) return;
       // On the source tape the arrows up and down go to the medium before or after, as they go from edit to edit on a timeline.
@@ -178,7 +172,7 @@ export function CutPage({
       {timelines.length === 0 && <span className="caption" data-test="cut-no-timeline">{words.hint.studio.cutPage.noTimeline}</span>}
       <span className="edit-bar-gap" />
       {onExport && <button type="button" className="icon-btn" aria-label={words.label.studio.render.quickExport}
-        title={`${words.label.studio.render.quickExport} (${shortcut('M')})`} disabled={selected === null} onClick={exportNow} data-test="quick-export">
+        title={words.label.studio.render.quickExport} disabled={selected === null} onClick={exportNow} data-test="quick-export">
         <Upload size={15} />
       </button>}
     </div>

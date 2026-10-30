@@ -2,7 +2,6 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { PanelLeft, Plus, SlidersHorizontal, Sparkles, Upload } from 'lucide-react';
 import { keyOf } from '../../app/keys';
 import { useWords } from '../../app/locale';
-import { shortcut } from '../../app/system';
 import type { EngineBridge } from '../../bridge';
 import { callEngine, type Media, type Monitor, type Timeline as TimelineModel } from '../engine';
 import { editingAllowed, inStudio, useStudioKeys } from '../keys';
@@ -15,7 +14,6 @@ import { useTimelineLoad } from './useTimelineLoad';
 import { Inspector } from '../inspector/Inspector';
 import { SpeedDialog } from '../inspector/SpeedDialog';
 import { Library } from '../effects/Library';
-import { isExportKey } from '../render/renders';
 import type { Marks } from '../timeline/snap';
 
 /**
@@ -41,8 +39,9 @@ export const TWO_MONITORS_PX = 1280;
  * of the timeline monitor or at the marks of the timeline. Where the page is narrow, one monitor is
  * shown, and the one it is switched to is the one the keys go to; the other keeps its place.
  *
- * Quick Export, at the right of the bar beside the inspector, and Ctrl+M open the export of the
- * timeline shown, with its In and Out points.
+ * Quick Export, at the right of the bar beside the inspector, opens the export of the timeline
+ * shown, with its In and Out points. Ctrl+M is left unbound: in DaVinci Resolve it adds a marker and
+ * opens its dialog (Reference Manual 20, p. 869), which the studio has not yet.
  */
 export function EditPage({
   bridge, native, session, revision, pool, media, timelines, selected, onSelect, source, sourceMedia, timelineMonitor,
@@ -118,11 +117,6 @@ export function EditPage({
     const down = (event: KeyboardEvent) => {
       if (event.defaultPrevented || !inStudio(event.target)) return;
       const key = keyOf(event);
-      // Ctrl+M exports, wherever in the page the keyboard is, the timeline too.
-      if (isExportKey(key)) {
-        if (editingAllowed(event.target, key)) { event.preventDefault(); exportNow(); }
-        return;
-      }
       // The timeline takes its keys itself where it has the keyboard; a list of the pool, those it uses.
       if (event.target instanceof Element && event.target.closest('.timeline')) return;
       if (!editingAllowed(event.target, key)) return;
@@ -182,7 +176,7 @@ export function EditPage({
         <Plus size={14} aria-hidden="true" />{labels.editPage.newTimeline}
       </button>
       <span className="edit-bar-gap" />
-      {onExport && <button type="button" className="icon-btn" aria-label={labels.render.quickExport} title={`${labels.render.quickExport} (${shortcut('M')})`}
+      {onExport && <button type="button" className="icon-btn" aria-label={labels.render.quickExport} title={labels.render.quickExport}
         disabled={selected === null} onClick={exportNow} data-test="quick-export"><Upload size={15} /></button>}
       <button type="button" className="icon-btn" aria-label={labels.editPage.inspector} title={labels.editPage.inspector} aria-pressed={inspectorOpen}
         onClick={() => setInspectorOpen(open => !open)} data-test="toggle-inspector"><SlidersHorizontal size={15} /></button>

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * The export of a timeline: Quick Export on the Edit and Cut pages and Ctrl+M open its dialog over
+ * The export of a timeline: Quick Export on the Edit and Cut pages opens its dialog over
  * the page (the views of both monitors hidden); the dialog asks for the range, the codec, the
  * quality and the subtitle tracks saved as SRT, and the shell asks where in Save As; what the engine
  * refuses is said in the dialog. The strip of its progress lies over nothing, so the user edits on
@@ -15,7 +15,7 @@ import { zhCN } from '../src/messages/zh-CN';
 import { Studio } from '../src/studio/Studio';
 import { ProjectCopy, type EngineAnswer, type EngineEvent, type Project, type RenderOptions, type RenderProgress, type TransportState } from '../src/studio/engine';
 import { markedRange, shownSubtitleTracks, subtitleTracksOf } from '../src/studio/render/RenderDialog';
-import { fellBack, isExportKey, refusalOf } from '../src/studio/render/renders';
+import { fellBack, refusalOf } from '../src/studio/render/renders';
 import type { EngineBridge } from '../src/bridge';
 import { clip, media, timeline } from './timeline-fixture';
 import { likeABrowser } from './mounted';
@@ -95,6 +95,8 @@ async function mount(pageName: 'Edit' | 'Cut' | 'Media' = 'Edit', words?: typeof
 const one = (name: string) => document.querySelector<HTMLElement>(`[data-test="${name}"]`);
 const dialog = () => screen.queryByRole('dialog');
 const ctrlM = (target: Element = document.body) => fireEvent.keyDown(target, { key: 'm', ctrlKey: true });
+/** Open the export from Quick Export, at the right of the bar of the page. */
+const openExport = () => fireEvent.click(one('quick-export')!);
 const exportTo = async () => { fireEvent.click(one('export-to')!); await settle(); };
 
 describe('the dialog of the export', () => {
@@ -103,7 +105,6 @@ describe('the dialog of the export', () => {
     const bar = document.querySelector('.edit-bar')!;
     const buttons = [...bar.querySelectorAll('button')].map(each => each.dataset.test);
     expect(buttons.slice(-2)).toEqual(['quick-export', 'toggle-inspector']);
-    expect(one('quick-export')!.title).toBe('Quick export (Ctrl+M)');
     bridge.viewShow.mockClear();
     fireEvent.click(one('quick-export')!); await settle();
     expect(dialog()?.getAttribute('aria-label')).toBe('Export timeline');
@@ -123,26 +124,14 @@ describe('the dialog of the export', () => {
     expect(bridge.viewShow).toHaveBeenLastCalledWith(true, expect.anything());
   });
 
-  it('opens at Ctrl+M wherever the keyboard is in the page, the timeline too, and not while it writes into a field', async () => {
+  it('leaves Ctrl+M to the markers of DaVinci Resolve: it opens no export, wherever the keyboard is', async () => {
+    // Reference Manual 20, p. 869: Command-M adds a marker and opens its edit dialog; the studio has no markers yet.
     await mount();
+    expect(one('quick-export')!.title).toBe('Quick export');
     ctrlM(); await settle();
-    expect(dialog()).not.toBeNull();
-    fireEvent.click(within(dialog()!).getByRole('button', { name: 'Cancel' })); await settle();
     ctrlM(document.querySelector('.timeline')!); await settle();
-    expect(dialog()).not.toBeNull();
-    // Another Ctrl+M while it is open opens no other.
-    ctrlM(); await settle();
-    expect(screen.getAllByRole('dialog')).toHaveLength(1);
-    fireEvent.click(within(dialog()!).getByRole('button', { name: 'Cancel' })); await settle();
-    const picker = one('timeline-picker')!; picker.focus();
-    ctrlM(picker); await settle();
+    fireEvent.keyDown(document.body, { key: 'M', ctrlKey: true, shiftKey: true }); await settle();
     expect(dialog()).toBeNull();
-    // Ctrl+Shift+M and M alone are no such key.
-    fireEvent.keyDown(document.body, { key: 'M', ctrlKey: true, shiftKey: true });
-    fireEvent.keyDown(document.body, { key: 'm' }); await settle();
-    expect(dialog()).toBeNull();
-    expect(isExportKey({ key: 'M', ctrl: true, shift: false, alt: false, meta: false })).toBe(true);
-    expect(isExportKey({ key: 'm', ctrl: true, shift: false, alt: true, meta: false })).toBe(false);
   });
 
   it('opens from Quick Export on the Cut page too, and not on the Media page', async () => {
@@ -152,7 +141,7 @@ describe('the dialog of the export', () => {
     expect(dialog()).not.toBeNull();
     fireEvent.click(within(dialog()!).getByRole('button', { name: 'Cancel' })); await settle();
     ctrlM(document.querySelectorAll('.timeline')[1]); await settle();
-    expect(dialog()).not.toBeNull();
+    expect(dialog()).toBeNull();
     cleanup();
     await mount('Media');
     expect(one('quick-export')).toBeNull();
@@ -165,7 +154,7 @@ describe('the dialog of the export', () => {
     fireEvent.pointerDown(screen.getByRole('region', { name: 'Timeline viewer' }));
     notify('timeline', { frame: 50, shown: 50 }); fireEvent.keyDown(document.body, { key: 'i' });
     notify('timeline', { frame: 149, shown: 149 }); fireEvent.keyDown(document.body, { key: 'o' });
-    ctrlM(); await settle();
+    openExport(); await settle();
     expect((one('range-marked') as HTMLInputElement).checked).toBe(true);
     expect(one('range-marks')!.textContent).toBe('00:00:02:00 – 00:00:06:00');
     expect(one('range-hint')).toBeNull();
@@ -191,7 +180,7 @@ describe('the dialog of the export', () => {
 
   it('offers each subtitle track as SRT, shown or hidden, the shown one checked, as the Deliver page of DaVinci Resolve', async () => {
     const { bridge } = await mount();
-    ctrlM(); await settle();
+    openExport(); await settle();
     // Reference Manual 20, p. 1102: a checkbox for each subtitle track to output as a separate file.
     expect(one('render-subtitles')!.querySelectorAll('input[type="checkbox"]')).toHaveLength(2);
     expect((one('render-subtitle-s1') as HTMLInputElement).checked).toBe(true);
@@ -215,7 +204,7 @@ describe('the dialog of the export', () => {
   it('stays open where Save As was cancelled, and closes as the export starts', async () => {
     const { bridge } = await mount();
     bridge.render.mockResolvedValueOnce({ ok: true, result: { cancelled: true } });
-    ctrlM(); await settle();
+    openExport(); await settle();
     fireEvent.change(one('render-timeline')!, { target: { value: 't2' } });
     expect(one('render-subtitles')).toBeNull();
     await exportTo();
@@ -230,7 +219,7 @@ describe('the dialog of the export', () => {
   it('says in the dialog why the engine would not start, whatever the reason, and stays open', async () => {
     const { bridge } = await mount();
     const refuse = (code: number | null, data: unknown, message = 'refused') => bridge.render.mockResolvedValueOnce({ ok: false, error: { code, message, data } });
-    ctrlM(); await settle();
+    openExport(); await settle();
     const cases: [number | null, unknown, string][] = [
       [-32001, { reason: 'busy' }, 'Another export of this project is running, maybe one that the agent started. Try again when it has finished.'],
       // Save As confirmed the file chosen; what it would write beside it was not asked of, and the shell did not replace it.
@@ -258,7 +247,7 @@ describe('the dialog of the export', () => {
   it('is said in Chinese and Japanese too', async () => {
     await mount('Edit', zhCN);
     expect(one('quick-export')!.getAttribute('aria-label')).toBe('快速导出');
-    ctrlM(); await settle();
+    openExport(); await settle();
     expect(dialog()!.getAttribute('aria-label')).toBe('导出时间线');
     expect(within(dialog()!).getByRole('button', { name: '导出到…' })).toBeDefined();
     expect(within(dialog()!).getByText('另存为 SRT 的字幕轨')).toBeDefined();
@@ -267,7 +256,7 @@ describe('the dialog of the export', () => {
     render(<Words.Provider value={ja}><Studio cwd="F:/film" engine={{ bridge: engine.bridge as unknown as EngineBridge, copy: engine.copy, native: true }} language="ja" onClose={() => {}} /></Words.Provider>);
     await settle();
     fireEvent.click(screen.getByRole('tab', { name: ja.label.studio.page.edit })); await settle();
-    ctrlM(); await settle();
+    openExport(); await settle();
     expect(dialog()!.getAttribute('aria-label')).toBe('タイムラインを書き出す');
   });
 });
@@ -275,7 +264,7 @@ describe('the dialog of the export', () => {
 describe('the progress of the export', () => {
   async function started() {
     const engine = await mount();
-    ctrlM(); await settle();
+    openExport(); await settle();
     await exportTo();
     return engine;
   }
@@ -301,7 +290,7 @@ describe('the progress of the export', () => {
     progress({ job: 'render-7', frame: 190 });
     expect(one('render-bar')!.getAttribute('aria-valuenow')).toBe('50');
     // One export at a time: the dialog says so, and starts none.
-    ctrlM(); await settle();
+    openExport(); await settle();
     expect(one('render-running')!.textContent).toBe('An export is running. Wait for it to finish, or cancel it.');
     expect((one('export-to') as HTMLButtonElement).disabled).toBe(true);
   });
@@ -362,7 +351,7 @@ describe('the progress of the export', () => {
     const engine = await mount();
     let answer!: (value: EngineAnswer) => void;
     engine.bridge.render.mockReturnValueOnce(new Promise(resolve => { answer = resolve; }));
-    ctrlM(); await settle();
+    openExport(); await settle();
     await exportTo();
     // While Save As is open and the engine starts, the button waits.
     expect((one('export-to') as HTMLButtonElement).disabled).toBe(true);
@@ -377,7 +366,7 @@ describe('the progress of the export', () => {
 
   it('is kept while the studio is left and shown again', async () => {
     const engine = await mount();
-    ctrlM(); await settle();
+    openExport(); await settle();
     await exportTo();
     engine.progress({ frame: 80 });
     engine.unmount();

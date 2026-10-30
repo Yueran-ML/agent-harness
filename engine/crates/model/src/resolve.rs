@@ -728,6 +728,20 @@ mod tests {
     }
 
     #[test]
+    fn a_clip_of_sound_falls_through_its_fade_out() {
+        let mut project = project();
+        project.timelines[0].tracks[2].clips[1].fade_out = 10;
+        project.validate().unwrap();
+        let pieces = audio_between(&project.timelines[0], &project, 0, 192_000);
+        let c7 = &pieces[1].gain;
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-5;
+        // c7 ends at frame 100, sample 192000, and fades out over its last 10 frames.
+        assert!(near(c7.at(172_800), 1.0));
+        assert!(near(c7.at(182_400), 0.5));
+        assert!(near(c7.at(192_000), 0.0));
+    }
+
+    #[test]
     fn the_gain_before_and_after_the_points_is_that_of_the_first_and_the_last() {
         let project = project();
         // From halfway through the fade in of c6.

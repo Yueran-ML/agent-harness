@@ -938,6 +938,10 @@ mod tests {
             clips(&on, "V1"),
             rows(&[("c1", 49, 100, 0), ("c3", 149, 1, 199)])
         );
+        // Back, into the gap before c5.
+        let mut gap = project();
+        edit(&mut gap, slide("c5", -10));
+        assert_eq!(clips(&gap, "V2")[0], ("c5".into(), 110, 50, 50));
         // On, up to the next clip across a gap.
         let mut gap = with(project(), vec![put("V2", clip("", 200, 10, 0, None))]);
         assert!(edit(&mut gap, slide("c5", 50)).clamped);

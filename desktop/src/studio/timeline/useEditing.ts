@@ -264,6 +264,7 @@ export function useEditing(options: Options) {
       case 'zoom': context.zoom(result.direction > 0 ? 1.25 : 0.8); break;
       case 'cancel': cancel(); setProblem(null); break;
       case 'none': break;
+      case 'refused': setProblem(context.words[result.reason]); break;
     }
     return true;
   };

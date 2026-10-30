@@ -283,6 +283,23 @@ describe('timeline editing by pointer and keys', () => {
     act(() => { ref.current!.keyDown(keyOf(new KeyboardEvent('keydown', { key: 'F9' }))); }); await settle();
     expect(call).toHaveBeenLastCalledWith('transaction.apply', { revision: 17, ops: [{ edit: 'insert', timeline: 't1', source: { kind: 'media', media: 'm1' }, at: 20, video_track: null, audio_track: null }] });
   });
+  it('deletes a clip whose sound is on a locked track without the sound, and says why where all the clips chosen are locked', async () => {
+    // Reference Manual 20, pp. 762, 769: the sound on the locked track stays; the engine would refuse an edit that named it.
+    const t = timeline([clip('c1', 10, 60, { link: 'g1' }), clip('c2', 100, 60)]);
+    t.tracks.push({ id: 'a1', kind: 'audio', name: 'A1', enabled: true, locked: true, clips: [clip('a1c', 10, 60, { link: 'g1' })], transitions: [] });
+    const { props, rerender, call, onSelection } = mount(t);
+    click();
+    expect(onSelection).toHaveBeenLastCalledWith(['c1', 'a1c']);
+    fireEvent.keyDown(root(), { key: 'Backspace' }); await settle();
+    const applied = () => call.mock.calls.filter(([method]) => method === 'transaction.apply');
+    expect(applied()).toEqual([['transaction.apply', { revision: 17, ops: [{ edit: 'lift', timeline: 't1', clips: ['c1'], linked: true }] }]]);
+    // V1 locked too: every clip chosen is on a locked track, so nothing is sent.
+    call.mockClear();
+    rerender(<Timeline {...props} timeline={{ ...t, tracks: t.tracks.map(track => ({ ...track, locked: true })) }} />);
+    fireEvent.keyDown(root(), { key: 'Delete' }); await settle();
+    expect(applied()).toEqual([]);
+    expect(screen.getByRole('alert').textContent).toBe('A track affected by this edit is locked.');
+  });
   it('does not start editing a locked clip or submit another transaction while one is pending', async () => {
     const { props, rerender, call } = mount();
     rerender(<Timeline {...props} timeline={{ ...props.timeline, tracks: props.timeline.tracks.map(t => ({ ...t, locked: true })) }} />);

@@ -175,7 +175,28 @@ describe('DaVinci editing keys', () => {
     expect(command('r', {}, ctx(['c1']))).toEqual({ kind: 'speed', clips: ['c1'] });
     expect(command('l', { ctrl: true, alt: true }, ctx(['c1']))).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [{ op: 'set_clip', timeline: 't1', id: 'c1', link: null }] } });
     expect(command('l', { ctrl: true, alt: true }, ctx(['c2', 'a1c'], false))).toBeNull();
-    for (const value of ['d', 'r']) expect(command(value, {}, ctx(['a1c'], false))).toBeNull();
+    // Only clips on locked tracks chosen: nothing is sent, and the page says why.
+    for (const value of ['d', 'r']) expect(command(value, {}, ctx(['a1c'], false))).toEqual({ kind: 'refused', reason: 'locked' });
+  });
+  it('leaves clips linked to those chosen on locked tracks out of deleting, blading and transitions, and says why where all are locked', () => {
+    // Reference Manual 20, pp. 762, 769: a clip on a locked track stays as it is, and the rest of its group changes.
+    // The engine refuses an edit that names one (`locked`), so none is named.
+    const t = timeline([clip('c1', 0, 100, { link: 'g1' }), clip('c2', 100, 100)]);
+    t.tracks.push({ id: 'a1', kind: 'audio', name: 'A1', enabled: true, locked: true, clips: [clip('a1c', 0, 100, { link: 'g1' })], transitions: [] });
+    const ctx = (selected: string[], fields: Partial<EditContext> = {}) => context({ timeline: t, selected, ...fields });
+    expect(command('Backspace', {}, ctx(['c1', 'a1c']))).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [{ edit: 'lift', timeline: 't1', clips: ['c1'], linked: true }] } });
+    expect(command('Delete', {}, ctx(['c1']))).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [{ edit: 'ripple_delete', timeline: 't1', clips: ['c1'], linked: true }] } });
+    // On the Cut page, c1 of Track 1 closes up; its sound on the locked track is not named.
+    expect(command('Backspace', {}, ctx(['c1'], { cut: true }))).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [{ edit: 'ripple_delete', timeline: 't1', clips: ['c1'], linked: true }] } });
+    expect(command('b', { ctrl: true }, ctx(['c1']))).toMatchObject({ transaction: { ops: [{ edit: 'blade', tracks: ['v1'] }] } });
+    expect(command('t', { ctrl: true }, ctx(['c1']))).toMatchObject({ transaction: { ops: [{ edit: 'add_transition', left: 'c1', right: 'c2' }] } });
+    // Every clip chosen on a locked track: no edit is sent, the range of In and Out not taken instead.
+    const locked = { ...t, tracks: t.tracks.map(track => ({ ...track, locked: true })) } as typeof t;
+    for (const [value, fields] of [['Backspace', {}], ['Delete', {}], ['b', { ctrl: true }], ['t', { ctrl: true }], ['d', {}], ['r', {}], ['l', { ctrl: true, alt: true }]] as const) {
+      expect(command(value, fields, ctx(['c1'], { timeline: locked, marks: { in: 20, out: 80 } }))).toEqual({ kind: 'refused', reason: 'locked' });
+    }
+    // Nothing chosen is not a refusal.
+    expect(command('Delete', {}, ctx([], { timeline: locked }))).toBeNull();
   });
   it('takes the range between timeline In and Out points for Shift+F10 and for Backspace, as DaVinci Resolve', () => {
     // Reference Manual 20, pp. 561, 842: with timeline In and Out, Ripple Overwrite replaces that range, the rest rippled.

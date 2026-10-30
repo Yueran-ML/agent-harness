@@ -89,7 +89,7 @@ try {
   const headless = spawn(engine, ['--project', path.join(work, 'headless'), '--headless', '--idle-seconds', '2'], { env, cwd: work, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   const headlessLog = logOf(headless);
   const said = await firstLine(headless, 30);
-  if (typeof said.listening !== 'string' || said.protocol !== 1) fail(`the headless engine said ${JSON.stringify(said)}`);
+  if (typeof said.listening !== 'string' || said.protocol !== 2) fail(`the headless engine said ${JSON.stringify(said)}`);
   const ending = setTimeout(() => headless.kill(), 30_000);
   const [code] = await once(headless, 'exit');
   clearTimeout(ending);
@@ -133,7 +133,7 @@ try {
       if (answer.error) fail(`${method} was answered with ${JSON.stringify(answer.error)}`);
       return answer.result;
     };
-    const hello = await ask('hello', { client: 'cli', protocol: 1 });
+    const hello = await ask('hello', { client: 'cli', protocol: 2 });
     if (hello.headless !== false) fail(`the engine of the desktop said hello with ${JSON.stringify(hello)}`);
     const { added: [media] } = await ask('media.import', { paths: [film] });
     const started = Date.now();

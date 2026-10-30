@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { selectClips, linkedClips, clipLocations } from '../src/studio/timeline/selection';
+import { selectClips, linkedClips, clipLocations, primaryTrack } from '../src/studio/timeline/selection';
 import { snap, snapCandidates } from '../src/studio/timeline/snap';
 import { beginDrag, dragTo, finishDrag, hitClip } from '../src/studio/timeline/interact';
 import { clip, media, timeline } from './timeline-fixture';
@@ -10,6 +10,39 @@ const scene = () => {
   t.tracks.push({ id: 'v2', name: 'V2', kind: 'video', enabled: true, locked: false, transitions: [], clips: [] });
   return t;
 };
+describe('Track 1 of the Cut page', () => {
+  it('is the first video track, with the clips linked to its own', () => {
+    expect(primaryTrack(scene())).toEqual({ track: 'v1', clips: new Set(['c1', 'c2', 'c3', 'a2']) });
+    expect(primaryTrack({ ...scene(), tracks: [] })).toBeNull();
+  });
+  it('closes the gaps that a move leaves on it, the latest first, and none where nothing follows', () => {
+    const t = scene();
+    const magnetic = primaryTrack(t);
+    const move = (ids: string[], id: string, by: number, track?: string) => {
+      const dragged = dragTo(beginDrag(t, 3, ids, id, 'move', 150, true)!, 150 + by, { media: [media], magnetic, track, scale: 1 });
+      return finishDrag(dragged)?.ops;
+    };
+    // c2 (with its sound a2) 30 frames back over c1: its last 30 frames are left, and closed.
+    expect(move(['c2'], 'c2', -30)).toEqual([
+      { edit: 'move', timeline: 't1', delta: -30, linked: true, clips: ['c2', 'a2'], overwrite: true },
+      { edit: 'close_gap', timeline: 't1', track: 'v1', at: 170 },
+    ]);
+    // c3, the last, moved later into empty room: the gap it leaves would close and bring it back, so nothing is done.
+    expect(move(['c3'], 'c3', 40)).toBeUndefined();
+    // c1 moved later than c3: the gap at 0 closes, c2 and c3 moving back, and c1 with them.
+    expect(move(['c1'], 'c1', 300)).toEqual([
+      { edit: 'move', timeline: 't1', delta: 300, linked: true, clips: ['c1'], overwrite: true },
+      { edit: 'close_gap', timeline: 't1', track: 'v1', at: 0 },
+    ]);
+    // c1 and c3 later by 150 (c1 over the end of c2): the gap at 0 and the one c3 leaves after c1 are closed, the later first.
+    expect(move(['c1', 'c3'], 'c1', 150)?.slice(1)).toEqual([
+      { edit: 'close_gap', timeline: 't1', track: 'v1', at: 250 },
+      { edit: 'close_gap', timeline: 't1', track: 'v1', at: 0 },
+    ]);
+    // Not on Track 1, or with no magnetic track, it is a move as on the Edit page.
+    expect(dragTo(beginDrag(t, 3, ['c2'], 'c2', 'move', 150, true)!, 120, { media: [media], scale: 1 }).then).toBeUndefined();
+  });
+});
 describe('timeline selection and snapping', () => {
   it('extends a range on one track and toggles a whole linked group', () => {
     const t = scene();

@@ -36,7 +36,7 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   onTransition?: (transition: string | null) => void;
   /** The subtitle chosen, for the inspector; `open` where it was added or double-clicked, to be written in. */
   onCue?: (cue: string | null, open: boolean) => void; ref?: Ref<TimelineHandle>;
-  /** A timeline of the Cut page: an edge dragged is trimmed with ripple, and the keys are those of the Cut page. */
+  /** A timeline of the Cut page: its Track 1 is magnetic, and the keys are those of the Cut page. */
   cut?: boolean;
   /**
    * The whole timeline at once, as the upper timeline of the Cut page: it is always fitted to its

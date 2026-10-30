@@ -3,7 +3,7 @@ import type { Media, Monitor, Op, Rate, Time, Timeline, Transition } from '../en
 import { duration, snapPoints } from './geometry';
 import type { Change, Edit, Material, Targets, Transaction } from './commands';
 import type { Tool } from './interact';
-import { clipLocations, linkedClips } from './selection';
+import { clipLocations, linkedClips, primaryTrack } from './selection';
 import type { Marks } from './snap';
 import { materialLength } from './drop';
 import { effectTransaction } from '../effects/drop';
@@ -259,7 +259,19 @@ export function editCommand(action: EditAction | null, context: EditContext): Ed
   }
   if (action.kind === 'delete') {
     if (action.ripple && marks.in !== null && marks.out !== null && marks.out > marks.in) return transaction([{ edit: 'ripple_delete_range', timeline: timeline.id, from: marks.in, to: marks.out }]);
-    return selected.length ? transaction([{ edit: action.ripple ? 'ripple_delete' : 'lift', timeline: timeline.id, clips: selected, linked }]) : null;
+    if (!selected.length) return null;
+    // On the Cut page, a clip of Track 1 deleted leaves no gap: "the Timeline will ripple to close
+    // the gap automatically" (Reference Manual 20, p. 588). The others go as on the Edit page.
+    const primary = context.cut && !action.ripple ? primaryTrack(timeline) : null;
+    const first = primary ? selected.filter(id => primary.clips.has(id)) : [];
+    if (first.length > 0) {
+      const rest = selected.filter(id => !first.includes(id));
+      return transaction([
+        ...(rest.length > 0 ? [{ edit: 'lift' as const, timeline: timeline.id, clips: rest, linked: false }] : []),
+        { edit: 'ripple_delete', timeline: timeline.id, clips: first, linked },
+      ]);
+    }
+    return transaction([{ edit: action.ripple ? 'ripple_delete' : 'lift', timeline: timeline.id, clips: selected, linked }]);
   }
   if (action.kind === 'blade') {
     const tracks = chosenTracks.length ? chosenTracks : activeTracks;

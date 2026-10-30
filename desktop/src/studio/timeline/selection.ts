@@ -28,6 +28,20 @@ export function linkedClips(timeline: Timeline, ids: readonly string[], linked: 
   return selected;
 }
 
+/**
+ * Track 1 of the Cut page, as DaVinci Resolve calls it: the first video track, which holds the
+ * primary shots and ripples by itself (Reference Manual 20, pp. 509, 584–590); and its clips, with
+ * the clips linked to them (their sound), which go with them. Null where there is no video track.
+ */
+export function primaryTrack(timeline: Timeline): { track: string; clips: ReadonlySet<string> } | null {
+  const track = timeline.tracks.find(each => each.kind === 'video');
+  if (!track || track.kind !== 'video') return null;
+  const ids = new Set(track.clips.map(clip => clip.id));
+  const groups = new Set(track.clips.flatMap(clip => clip.link ?? []));
+  for (const [id, { clip }] of clipLocations(timeline)) if (clip.link && groups.has(clip.link)) ids.add(id);
+  return { track: track.id, clips: ids };
+}
+
 export function selectClips(timeline: Timeline, before: Selection, id: string, options: { linked: boolean; toggle?: boolean; range?: boolean }): Selection {
   const locations = clipLocations(timeline);
   const clicked = locations.get(id);

@@ -31,8 +31,10 @@ export type ViewerMode = 'source' | 'tape' | 'timeline';
  * shown in the pool, end to end) or the timeline, the buttons of its edits beneath it, and two
  * timelines at the foot. The upper timeline shows all of it, the lower the part around the playhead;
  * both are views of the same timeline with the same playhead, and clips are moved and trimmed in
- * either. On the Cut page a dragged edge of a clip is always trimmed with ripple, and the seam
- * between two clips rolls.
+ * either. Track 1 (the first video track) is magnetic, as on DaVinci Resolve's Cut page
+ * (Reference Manual 20, pp. 509, 584–590): a dragged edge of its clips ripples, a clip moved or
+ * deleted leaves no gap, and one dropped on an edit point goes in there; on the tracks above, an
+ * edge only resizes its clip and a move only moves it. The seam between two clips rolls.
  *
  * The edits put what the viewer has as its source (its marks, its medium of the tape) on the
  * timeline: Smart Insert at the edit point nearest the playhead, which the lower timeline marks.

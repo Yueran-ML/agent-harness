@@ -8,7 +8,7 @@ import { editCommand, editKey, type EditAction, type EditContext } from './editK
 import type { Targets, Transaction } from './commands';
 import { frameAt, HEADER_WIDTH } from './geometry';
 import { beginDrag, dragTo, finishDrag, hitClip, type Dragged, type Gesture, type Hit, type Preview, type Tool } from './interact';
-import { clipLocations, EMPTY_SELECTION, selectClips, type Selection } from './selection';
+import { clipLocations, EMPTY_SELECTION, primaryTrack, selectClips, type Selection } from './selection';
 import { snap, snapCandidates, type Marks } from './snap';
 import { draggedMedia, MEDIA_DRAG } from '../media/drag';
 import { dropMedia } from './drop';
@@ -27,9 +27,10 @@ interface Options {
   /** The subtitle chosen on the timeline, for the inspector; `open` where it was just added or double-clicked, to be written in. */
   onCue?: (cue: string | null, open: boolean) => void;
   /**
-   * Whether the timeline is one of the Cut page: there an edge of a clip dragged with the selection
-   * tool is always trimmed with ripple (the seam between two clips still rolls), and the keys of
-   * editing are those of the Cut page (see `EditContext.cut`).
+   * Whether the timeline is one of the Cut page: there Track 1 is magnetic with the selection tool
+   * (an edge of its clips ripples, a move leaves no gap, an edit point takes a clip dropped on it;
+   * see `primaryTrack` and `dragTo`), and the keys of editing are those of the Cut page (see
+   * `EditContext.cut`).
    */
   cut?: boolean;
 }
@@ -289,7 +290,10 @@ export function useEditing(options: Options) {
     if (clickSelection) selection = context.selection;
     setSelection(selection);
     if (!selection.ids.includes(id)) return;
-    const gesture = beginDrag(context.timeline, context.revision, selection.ids, id, action, at(event.clientX), context.linked, context.tool === 'trim' || (context.cut === true && context.tool === 'select'));
+    // On the Cut page an edge of a clip of Track 1 ripples; on the tracks above it only that clip is
+    // made longer or shorter (Reference Manual 20, pp. 509, 590).
+    const rippleTrim = context.tool === 'trim' || (context.cut === true && context.tool === 'select' && primaryTrack(context.timeline)?.clips.has(id) === true);
+    const gesture = beginDrag(context.timeline, context.revision, selection.ids, id, action, at(event.clientX), context.linked, rippleTrim);
     if (!gesture) return;
     active.current = { gesture, x: event.clientX, y: event.clientY, pointer: event.pointerId, moved: false, clickSelection };
     context.root.current?.setPointerCapture?.(event.pointerId);
@@ -304,6 +308,8 @@ export function useEditing(options: Options) {
       media: context.media, track: track?.dataset.track, overwrite: true, ripple: (event.ctrlKey || event.metaKey) && event.shiftKey,
       vertical: event.shiftKey && !event.ctrlKey && !event.metaKey,
       candidates: context.snapping ? pointer.candidates ??= snapCandidates(pointer.gesture.timeline, pointer.gesture.ids, context.frame, context.marks) : undefined, scale: context.view.scale,
+      // Track 1 of the Cut page is magnetic: a clip moved leaves no gap there (Reference Manual 20, pp. 584–588).
+      magnetic: context.cut && context.tool === 'select' ? primaryTrack(pointer.gesture.timeline) : null,
     });
   };
   /** Which part of a subtitle is under the pointer: an edge within six pixels (a third of a short one), else its middle. */

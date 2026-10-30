@@ -25,6 +25,8 @@ let observers: ResizeObserverCallback[];
 const settle = () => act(async () => { for (let i = 0; i < 15; i++) await Promise.resolve(); });
 const draw = () => act(() => { const pending = frames; frames = []; pending.forEach(callback => callback(0)); });
 const rect = (left: number, top: number, w: number, h: number) => ({ left, top, width: w, height: h, right: left + w, bottom: top + h, x: left, y: top, toJSON() {} });
+/** Where the row of a track begins: under the ruler, 72 pixels for each row above it. */
+const row = (track: HTMLElement) => 30 + 72 * [...track.parentElement!.querySelectorAll(':scope > [data-track]')].indexOf(track);
 beforeEach(() => {
   likeABrowser(); width = 1500; frames = []; observers = [];
   vi.stubGlobal('PointerEvent', MouseEvent);
@@ -40,9 +42,9 @@ beforeEach(() => {
       const timeline = this.closest<HTMLElement>('.timeline')!;
       const scale = Number(timeline.dataset.scale);
       const scrolled = timeline.querySelector<HTMLElement>('.timeline-scroll')?.scrollLeft ?? 0;
-      return rect(HEADER_WIDTH + Number(this.style.getPropertyValue('--start')) * scale - scrolled, 34, Number(this.style.getPropertyValue('--length')) * scale, 64);
+      return rect(HEADER_WIDTH + Number(this.style.getPropertyValue('--start')) * scale - scrolled, row(this.closest<HTMLElement>('[data-track]')!) + 4, Number(this.style.getPropertyValue('--length')) * scale, 64);
     }
-    if (this.dataset.track) return rect(0, 30, 956, 72);
+    if (this.dataset.track) return rect(0, row(this), 956, 72);
     return rect(0, 0, 956, 400);
   });
 });
@@ -312,7 +314,7 @@ describe('the Cut page', () => {
     expect(calls(bridge, 'transaction.apply')).toEqual([]);
   });
 
-  it('trims an edge with ripple and rolls a seam, in either timeline, and moves clips in the upper one', async () => {
+  it('trims an edge of Track 1 with ripple and rolls a seam, in either timeline, and moves clips in the upper one, closing the gap they leave', async () => {
     const { bridge } = await mount();
     const at = (region: HTMLElement, frame: number) => HEADER_WIDTH + frame * Number(region.dataset.scale);
     const drag = async (region: HTMLElement, id: string, from: number, to: number) => {
@@ -324,7 +326,7 @@ describe('the Cut page', () => {
       return sent(bridge).map(each => each.ops);
     };
     const lower = detail();
-    // Four pixels in from the end of c1: its edge, trimmed with ripple as the Cut page always does.
+    // Four pixels in from the end of c1: its edge, trimmed with ripple as the Cut page does on Track 1.
     expect(await drag(lower, 'c1', at(lower, 100) - 4, at(lower, 100) - 4 + 40))
       .toEqual([[{ edit: 'trim', timeline: 't1', delta: 10, linked: true, clip: 'c1', edge: 'out', ripple: true }]]);
     expect(await drag(lower, 'c3', at(lower, 300) - 4, at(lower, 300) - 4 - 20))
@@ -336,8 +338,52 @@ describe('the Cut page', () => {
     const scale = Number(upper.dataset.scale);
     expect(await drag(upper, 'c3', at(upper, 300) - 4, at(upper, 300) - 4 - 10 * scale))
       .toEqual([[{ edit: 'trim', timeline: 't1', delta: -10, linked: true, clip: 'c3', edge: 'out', ripple: true }]]);
+    // Moved on Track 1, c2 overwrites the start of c3, and the gap that it leaves at 100 is closed (Reference Manual 20, pp. 585–586).
     expect(await drag(upper, 'c2', at(upper, 150), at(upper, 150) + 10 * scale))
-      .toEqual([[{ edit: 'move', timeline: 't1', delta: 10, linked: true, clips: ['c2'], overwrite: true }]]);
+      .toEqual([[{ edit: 'move', timeline: 't1', delta: 10, linked: true, clips: ['c2'], overwrite: true }, { edit: 'close_gap', timeline: 't1', track: 'v1', at: 100 }]]);
+  });
+
+  it('keeps Track 1 magnetic: a clip dropped on an edit point goes in there, one deleted leaves no gap, and the tracks above only resize', async () => {
+    const withAbove = cuts();
+    withAbove.tracks.splice(1, 0, { id: 'v2', kind: 'video', name: 'V2', enabled: true, locked: false, clips: [clip('b1', 20, 40), clip('b2', 60, 40)], transitions: [] });
+    const { bridge } = await mount({ timelines: [withAbove] });
+    const lower = detail();
+    const at = (frame: number) => HEADER_WIDTH + frame * Number(lower.dataset.scale);
+    // The pointer on the row of the clip pressed: V2 is drawn above V1.
+    const y = (id: string) => lower.querySelector<HTMLElement>(`[data-clip="${id}"]`)!.getBoundingClientRect().top + 10;
+    const drag = async (id: string, from: number, to: number) => {
+      bridge.call.mockClear();
+      const clientY = y(id);
+      fireEvent.pointerDown(lower.querySelector(`[data-clip="${id}"]`)!, { button: 0, clientX: from, clientY, pointerId: 1 });
+      fireEvent.pointerMove(lower, { clientX: (from + to) / 2, clientY, pointerId: 1 });
+      fireEvent.pointerMove(lower, { clientX: to, clientY, pointerId: 1 });
+      const swap = lower.querySelector<HTMLElement>('.timeline-snap');
+      fireEvent.pointerUp(lower, { clientX: to, clientY, pointerId: 1 });
+      await settle();
+      return { ops: sent(bridge).map(each => each.ops), marked: swap?.style.left ?? null };
+    };
+    // c1 dropped with the pointer on the edit point between c2 and c3: put in there, the rest moving aside (p. 586, "Swapping Clips").
+    const swapped = await drag('c1', at(50), at(201));
+    expect(swapped.ops).toEqual([[{ edit: 'insert_move', timeline: 't1', clips: ['c1'], at: 200, linked: true }]]);
+    expect(swapped.marked).toBe(`${at(200)}px`);
+    // An edge of a clip above Track 1 only resizes that clip, stopping at the one beside it (pp. 509, 590).
+    expect((await drag('b1', at(60) - 4, at(60) - 4 + 40)).ops).toEqual([]);
+    expect((await drag('b2', at(100) - 4, at(100) - 4 + 40)).ops).toEqual([[{ edit: 'trim', timeline: 't1', delta: 10, linked: true, clip: 'b2', edge: 'out', ripple: false }]]);
+    // A clip above Track 1, moved, leaves its gap.
+    expect((await drag('b2', at(80), at(80) + 40)).ops).toEqual([[{ edit: 'move', timeline: 't1', delta: 10, linked: true, clips: ['b2'], overwrite: true }]]);
+    // Deleted with Backspace, a clip of Track 1 ripples (p. 588); one above it is lifted.
+    const choose = (id: string, frame: number) => { fireEvent.pointerDown(lower.querySelector(`[data-clip="${id}"]`)!, { button: 0, clientX: at(frame), clientY: y(id), pointerId: 1 }); fireEvent.pointerUp(lower, { clientX: at(frame), clientY: y(id), pointerId: 1 }); };
+    bridge.call.mockClear();
+    choose('c2', 150); key('Backspace'); await settle();
+    choose('b1', 40); key('Backspace'); await settle();
+    choose('c2', 150); fireEvent.pointerDown(lower.querySelector('[data-clip="b1"]')!, { button: 0, clientX: at(40), clientY: y('b1'), pointerId: 1, ctrlKey: true });
+    fireEvent.pointerUp(lower, { clientX: at(40), clientY: y('b1'), pointerId: 1, ctrlKey: true });
+    key('Backspace'); await settle();
+    expect(sent(bridge).map(each => each.ops)).toEqual([
+      [{ edit: 'ripple_delete', timeline: 't1', clips: ['c2'], linked: true }],
+      [{ edit: 'lift', timeline: 't1', clips: ['b1'], linked: true }],
+      [{ edit: 'lift', timeline: 't1', clips: ['b1'], linked: false }, { edit: 'ripple_delete', timeline: 't1', clips: ['c2'], linked: true }],
+    ]);
   });
 
   it('puts a dissolve or a dip to black at the edit point nearest the playhead, the earlier of two as near', async () => {

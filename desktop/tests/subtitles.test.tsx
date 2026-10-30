@@ -3,7 +3,7 @@
  * Tracks of subtitles on the Edit page, as DaVinci Resolve edits them: a track added from the "+"
  * over the headers in a language; a subtitle added at the playhead by a double-click of empty space;
  * moved by its middle and made longer or shorter by its edges, held between its neighbours; its text
- * and timing set in the inspector; deleted with Delete or Backspace; a track turned off for the
+ * and timing set in the inspector; lifted with Backspace or ripple deleted with Delete; a track turned off for the
  * viewer and the export. Each gesture is one transaction with the revision it was worked out from;
  * what the engine refuses is said. And the copy of the project follows the cuts and shifts of
  * subtitles that a ripple brings.
@@ -293,7 +293,7 @@ describe('a subtitle', () => {
     expect(sent(engine.bridge)).toEqual([{ revision: 0, ops: [{ edit: 'set_cue', timeline: 't1', id: 'q1', text: '你好' }] }]);
   });
 
-  it('is deleted with Backspace or Delete, or from the inspector, leaving the others where they are', async () => {
+  it('is lifted with Backspace, ripple deleted with Delete (the later ones of its track moving back), or taken from the inspector', async () => {
     // Within the window that the timeline draws, 300 frames wide here.
     const engine = await mount([subtitles('S1', [cue('q1', 100, 40), cue('q2', 160, 40), cue('q3', 220, 40)])]);
     fireEvent.pointerDown(cueElement('q1'), { button: 0, clientX: x(120), clientY: 60 });
@@ -304,10 +304,12 @@ describe('a subtitle', () => {
     fireEvent.pointerUp(timelineRegion(), { clientX: x(180), clientY: 60 });
     fireEvent.keyDown(timelineRegion(), { key: 'Delete' });
     await settle();
+    // As DaVinci Resolve: Backspace leaves the gap; Delete closes it on the subtitle's track (Reference Manual 20, pp. 765, 1092).
     expect(sent(engine.bridge)).toEqual([
       { revision: 0, ops: [{ edit: 'remove_cue', timeline: 't1', id: 'q1' }] },
-      { revision: 1, ops: [{ edit: 'remove_cue', timeline: 't1', id: 'q2' }] },
+      { revision: 1, ops: [{ edit: 'remove_cue', timeline: 't1', id: 'q2' }, { op: 'shift_cues', timeline: 't1', track: 'S1', cues: ['q3'], by: -40 }] },
     ]);
+    expect(engine.cues('S1')).toEqual([['q3', 180, 40, 'q3']]);
     fireEvent.doubleClick(cueElement('q3'));
     await settle();
     fireEvent.click(document.querySelector('[data-test="remove-cue"]')!);

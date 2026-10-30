@@ -213,10 +213,19 @@ export function useEditing(options: Options) {
       void apply({ revision: context.revision, ops: [{ edit: 'remove_transition', timeline: context.timeline.id, id: context.transition }] });
       return true;
     }
-    // Delete or Backspace with a subtitle chosen, and no clip, takes the subtitle away. The others on
-    // its track stay where they are: they are timed to what is said, which does not move.
+    // With a subtitle chosen, and no clip, the keys of deleting take it as they take a clip, as DaVinci
+    // Resolve ripples subtitles "just like any other clip" (Reference Manual 20, pp. 765, 1092):
+    // Backspace lifts it and leaves its gap; Delete (or Shift with either) takes it out and moves the
+    // later subtitles of its track back by its length. The other tracks stay as they are.
     if (action.kind === 'delete' && context.cue !== null && context.selection.ids.length === 0 && context.timeline) {
-      void apply({ revision: context.revision, ops: [{ edit: 'remove_cue', timeline: context.timeline.id, id: context.cue }] });
+      const timeline = context.timeline;
+      const track = timeline.tracks.find(each => each.kind === 'subtitle' && each.cues.some(one => one.id === context.cue)) as SubtitleTrack | undefined;
+      const removed = track?.cues.find(each => each.id === context.cue);
+      const later = action.ripple && track && removed ? track.cues.filter(each => each.start >= removed.start + removed.length).map(each => each.id) : [];
+      void apply({ revision: context.revision, ops: [
+        { edit: 'remove_cue', timeline: timeline.id, id: context.cue },
+        ...(later.length > 0 ? [{ op: 'shift_cues' as const, timeline: timeline.id, track: track!.id, cues: later, by: -removed!.length }] : []),
+      ] });
       return true;
     }
     const result = editCommand(action, { ...context, selected: context.selection.ids });

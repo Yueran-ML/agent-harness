@@ -478,8 +478,8 @@ describe('the Cut page', () => {
     const at = (frame: number) => HEADER_WIDTH + frame * Number(lower.dataset.scale);
     const y = (id: string) => lower.querySelector<HTMLElement>(`[data-clip="${id}"]`)!.getBoundingClientRect().top + 10;
     const answered = async () => {
-      const index = bridge.call.mock.calls.findLastIndex(([method]) => method === 'transaction.apply');
-      return index < 0 ? null : await bridge.call.mock.results[index].value;
+      const indices = bridge.call.mock.calls.map(([method], index) => method === 'transaction.apply' ? index : -1).filter(index => index >= 0);
+      return indices.length === 0 ? null : await bridge.call.mock.results[indices.at(-1)!].value;
     };
     const drag = async (id: string, from: number, to: number, fromY: number, toY: number) => {
       bridge.call.mockClear();

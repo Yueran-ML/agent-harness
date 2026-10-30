@@ -165,6 +165,8 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
   // The runs of an assistant, `columbina feishu --json` or `columbina wecom --json`, which write their
   // lines through a reader of lines too, and end when the test says so.
   const bots: any[] = [];
+  // The runs of `columbina video migrate`, which end when the test says so.
+  const migrations: any[] = [];
   const lineReaders: any[] = [];
   const setup = {
     answer: ((): SetupRun => ({ out: '{"use": null, "services": []}\n', code: 0 })) as (args: string[], input: string) => SetupRun | null,
@@ -228,8 +230,22 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
       });
       return child;
     }
+    if (args.includes('video') && args.includes('migrate')) {
+      const child = Object.assign(new EventEmitter(), {
+        pid: 800 + migrations.length, exitCode: null as number | null, signalCode: null, executable: _executable, args, options,
+        stdout: new EventEmitter(), stderr: new EventEmitter(), killed: false,
+      });
+      migrations.push(child);
+      return child;
+    }
     if (args.includes('/pid')) {
-      engines.kill(Number(args[args.indexOf('/pid') + 1]));
+      const pid = Number(args[args.indexOf('/pid') + 1]);
+      const migration = migrations.find(each => each.pid === pid);
+      if (migration) {
+        migration.killed = true;
+        queueMicrotask(() => migration.emit('close', 1, null));
+      }
+      engines.kill(pid);
       return Object.assign(new EventEmitter(), { killed: args });
     }
     // The engine of the studio, which is started for a project and never headless.
@@ -424,7 +440,7 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
     dialog, files, gone, absent, listed, preferences, writeFileSync, notifications, Notification: TestNotification, system: world, net,
     partitions, trays, pictures,
     setups, setup, keyWindow, asKeyWindow, feishuWindow, asFeishuWindow, wecomWindow, asWecomWindow, menu, logins, signIns, bots,
-    lineReaders, engines,
+    lineReaders, engines, migrations,
     live: () => live, peakLive: () => peakLive,
   };
 }
@@ -3971,6 +3987,166 @@ describe('the engine of the studio', () => {
     expect(main.written.filter(request => request.method === 'render.cancel')).toHaveLength(1);
   });
 
+  describe('and the old projects of its folder', () => {
+    const service = { COLUMBINA_SERVICE_EXECUTABLE: python };
+    /** End a run of `video migrate`, with what it writes, and how it ends. */
+    const ended = async (run: any, out: unknown, code = 0, stderr = '') => {
+      if (stderr) run.stderr.emit('data', Buffer.from(stderr, 'utf8'));
+      if (out !== undefined) run.stdout.emit('data', Buffer.from(`warming up\n${typeof out === 'string' ? out : JSON.stringify(out)}\n`, 'utf8'));
+      run.exitCode = code;
+      run.emit('close', code, null);
+      await settledAll();
+    };
+    const migratedOf = (shell: Shell) => told(shell).filter(event => event.kind === 'migrated');
+    const film = path.resolve('/film/old-film');
+
+    it('are migrated once the engine is open, by the program of the service, beside the studio, and the page is told', async () => {
+      const shell = await shellHarness(undefined, service);
+      const { cwd, answer } = await openIn(shell);
+      // The studio was opened without waiting for the migration.
+      expect(answer).toMatchObject({ session: 1, owned: true });
+      expect(shell.migrations).toHaveLength(1);
+      const [run] = shell.migrations;
+      expect(run.executable).toBe(python);
+      expect(run.args).toEqual(['-m', 'columbina', 'video', 'migrate', '--workspace', cwd, '--json']);
+      // In the folder, with the engine of the window, which it reaches through the lock of the project.
+      expect(run.options.cwd).toBe(cwd);
+      expect(run.options.env.COLUMBINA_ENGINE).toBe(builtEngine());
+      expect(run.options.windowsHide).toBe(true);
+      expect(migratedOf(shell)).toEqual([]);
+      await ended(run, { migrations: [{ source: film, timeline: 't3', at: '2026-10-30T00:00:00Z', media: { a1: 'm4' }, dropped: ['duck: speech ducking comes in phase 3'] }] });
+      expect(migratedOf(shell)).toEqual([{
+        kind: 'migrated', session: 1, error: null,
+        migrations: [{ source: film, timeline: 't3', dropped: ['duck: speech ducking comes in phase 3'], warnings: [] }],
+      }]);
+      // Nothing is left to do in that folder: it is not looked at again while the application runs.
+      await shell.invoke('engine-close');
+      await shell.invoke('engine-open', { cwd });
+      await settledAll();
+      expect(shell.engines.children).toHaveLength(2);
+      expect(shell.migrations).toHaveLength(1);
+      // A page that is loaded again finds the engine as it was, and nothing is migrated anew.
+      await shell.invoke('engine-open', { cwd });
+      expect(shell.migrations).toHaveLength(1);
+    });
+
+    it('tell of each project that could not be migrated, with why, and are tried again the next time', async () => {
+      const shell = await shellHarness(undefined, service);
+      const { cwd } = await openIn(shell);
+      const talk = path.resolve('/film/talk');
+      await ended(shell.migrations[0], {
+        migrations: [
+          { source: film, timeline: 't3', dropped: [], warnings: ['migration committed as t3; marker: denied'] },
+          { source: talk, error: `cannot migrate ${talk}: legacy source a1 changed since import` },
+        ],
+      }, 1);
+      expect(migratedOf(shell).at(-1)).toEqual({
+        kind: 'migrated', session: 1, error: null, migrations: [
+          { source: film, timeline: 't3', dropped: [], warnings: ['migration committed as t3; marker: denied'] },
+          { source: talk, error: `cannot migrate ${talk}: legacy source a1 changed since import` },
+        ],
+      });
+      await shell.invoke('engine-close');
+      await openIn(shell, cwd);
+      expect(shell.migrations).toHaveLength(2);
+      // Where nothing was left to do, nothing is told.
+      await ended(shell.migrations[1], { migrations: [] });
+      expect(migratedOf(shell)).toHaveLength(1);
+      await shell.invoke('engine-close');
+      await openIn(shell, cwd);
+      expect(shell.migrations).toHaveLength(2);
+    });
+
+    it('say why they could not be looked at, and never hold up the studio', async () => {
+      const shell = await shellHarness(undefined, service);
+      const { cwd } = await openIn(shell);
+      await ended(shell.migrations[0], { error: 'another client is migrating this Studio project; try again later' }, 2);
+      expect(migratedOf(shell).at(-1)).toEqual({ kind: 'migrated', session: 1, migrations: [], error: 'another client is migrating this Studio project; try again later' });
+      expect(await shell.invoke('engine-call', { method: 'project.get' })).toMatchObject({ ok: true });
+      // A run that says nothing that is read is told of by the last line it wrote of itself.
+      await shell.invoke('engine-close');
+      await openIn(shell, cwd);
+      await ended(shell.migrations[1], undefined, 1, 'Traceback (most recent call last):\nModuleNotFoundError: No module named columbina\n');
+      expect(migratedOf(shell).at(-1)).toEqual({ kind: 'migrated', session: 2, migrations: [], error: 'ModuleNotFoundError: No module named columbina' });
+      // One that could not be started is told of too, and the studio is open all the same.
+      await shell.invoke('engine-close');
+      await openIn(shell, cwd);
+      shell.migrations[2].emit('error', new Error('spawn ENOENT'));
+      await settledAll();
+      expect(migratedOf(shell).at(-1)).toMatchObject({ session: 3, error: 'The old projects could not be looked at: spawn ENOENT' });
+      // What does not say what it is is passed over: a report is a document of known fields.
+      await shell.invoke('engine-close');
+      await openIn(shell, cwd);
+      await ended(shell.migrations[3], { migrations: [{ source: film, timeline: 7, dropped: 'all', error: null, secret: 'x' }, 'junk'] });
+      expect(migratedOf(shell).at(-1)!.migrations).toEqual([{ source: film, dropped: [], warnings: [] }, { source: '', dropped: [], warnings: [] }]);
+    });
+
+    it('are stopped with the studio, and told of no more', async () => {
+      const shell = await shellHarness(undefined, service);
+      await openIn(shell);
+      const [run] = shell.migrations;
+      await openIn(shell, '/another-film');
+      await settledAll();
+      expect(run.killed).toBe(true);
+      expect(shell.spawn.mock.calls.some(([program, args]) => program === 'taskkill.exe' && args.includes(String(run.pid)))).toBe(true);
+      expect(migratedOf(shell)).toEqual([]);
+      // The other folder is migrated in its turn, and the first is tried again when it is opened again.
+      expect(shell.migrations).toHaveLength(2);
+      await ended(shell.migrations[1], { migrations: [] });
+      await openIn(shell, '/film');
+      expect(shell.migrations).toHaveLength(3);
+    });
+
+    it('are not looked at without a service to look with, nor outside Windows', async () => {
+      // In development without a service, the shell replays: there is no program to migrate with.
+      const replay = await shellHarness();
+      await openIn(replay);
+      expect(replay.migrations).toEqual([]);
+      // A package that lost its Python has none either; the studio opens all the same.
+      const lost = await shellHarness(undefined, {}, { packaged: true });
+      lost.absent.add(path.join(resources, 'python', 'python.exe'));
+      await expect(openIn(lost)).resolves.toMatchObject({ answer: { session: 1 } });
+      expect(lost.migrations).toEqual([]);
+      for (const platform of ['darwin', 'linux'] as const) {
+        const elsewhere = await shellHarness(undefined, service, { platform });
+        const cwd = await elsewhere.select('/film');
+        await expect(elsewhere.invoke('engine-open', { cwd })).rejects.toThrow('only on Windows');
+        await settledAll();
+        expect(elsewhere.migrations).toEqual([]);
+      }
+    });
+  });
+
+  it('shows in its folder only the file of an export that the window started, where the engine said it wrote it', async () => {
+    const shell = await shellHarness();
+    await expect(shell.invoke('engine-reveal', { job: 'render-1' })).resolves.toBe(false);
+    await openIn(shell);
+    const [main] = connections(shell);
+    const server = shell.engines.servers.get(main.address)!;
+    server.answers.set('render.start', () => ({ result: { job: 'render-1' } }));
+    const chosen = path.resolve('/exports/film.mp4');
+    shell.absent.add(chosen);
+    shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: chosen });
+    await shell.invoke('engine-render', { timeline: 't1', codec: 'h264', quality: 'high', subtitles: false });
+    shell.absent.delete(chosen);
+    expect(await shell.invoke('engine-reveal', { job: 'render-1' })).toBe(true);
+    expect(shell.system.showItemInFolder).toHaveBeenLastCalledWith(chosen);
+    // Where the computer had no encoder for H.264, the engine wrote ProRes into a .mov, and says so.
+    const fallback = path.resolve('/exports/film.mov');
+    server.notify('render.progress', { job: 'render-1', state: 'done', frame: 10, frames: 10, fps: 30, path: fallback, encoder: 'prores_ks' });
+    await settledAll();
+    expect(await shell.invoke('engine-reveal', { job: 'render-1' })).toBe(true);
+    expect(shell.system.showItemInFolder).toHaveBeenLastCalledWith(fallback);
+    // A job of another (an agent's), a path that the page names, or a file that is gone: nothing is shown.
+    const count = shell.system.showItemInFolder.mock.calls.length;
+    server.notify('render.progress', { job: 'render-2', state: 'done', frame: 1, frames: 1, fps: 1, path: path.resolve('/agent/out.mp4') });
+    await settledAll();
+    for (const asked of [{ job: 'render-2' }, { job: fallback }, { path: fallback }, {}, null]) expect(await shell.invoke('engine-reveal', asked)).toBe(false);
+    shell.absent.add(fallback);
+    expect(await shell.invoke('engine-reveal', { job: 'render-1' })).toBe(false);
+    expect(shell.system.showItemInFolder.mock.calls.length).toBe(count);
+  });
+
   it('refuses a transaction of the page that says whether media is a still picture', async () => {
     const shell = await shellHarness();
     await openIn(shell);
@@ -4520,7 +4696,7 @@ describe('the engine of the studio', () => {
 
   it('answers only its own window', async () => {
     const shell = await shellHarness();
-    for (const name of ['engine-open', 'engine-call', 'engine-import', 'engine-render', 'engine-view-rect', 'engine-view-show', 'engine-close']) {
+    for (const name of ['engine-open', 'engine-call', 'engine-import', 'engine-render', 'engine-reveal', 'engine-view-rect', 'engine-view-show', 'engine-close']) {
       await expect(Promise.resolve().then(() => shell.handlers.get(`columbina:${name}`)!(shell.unrelated, { cwd: path.resolve('/film') })))
         .rejects.toThrow('IPC sender');
     }

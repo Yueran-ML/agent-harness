@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { PanelLeft, Plus, SlidersHorizontal, Sparkles } from 'lucide-react';
+import { PanelLeft, Plus, SlidersHorizontal, Sparkles, Upload } from 'lucide-react';
 import { keyOf } from '../../app/keys';
 import { useWords } from '../../app/locale';
+import { shortcut } from '../../app/system';
 import type { EngineBridge } from '../../bridge';
 import { callEngine, type Media, type Monitor, type Timeline as TimelineModel } from '../engine';
 import { editingAllowed, inStudio, useStudioKeys } from '../keys';
@@ -14,6 +15,8 @@ import { useTimelineLoad } from './useTimelineLoad';
 import { Inspector } from '../inspector/Inspector';
 import { SpeedDialog } from '../inspector/SpeedDialog';
 import { Library } from '../effects/Library';
+import { isExportKey } from '../render/renders';
+import type { Marks } from '../timeline/snap';
 
 /**
  * How wide the Edit page has to be for the two monitors side by side. Narrower (a small window, or
@@ -37,10 +40,13 @@ export const TWO_MONITORS_PX = 1280;
  * (F9 to F12 and the others) place what the source monitor has, between its marks, at the playhead
  * of the timeline monitor or at the marks of the timeline. Where the page is narrow, one monitor is
  * shown, and the one it is switched to is the one the keys go to; the other keeps its place.
+ *
+ * Quick Export, at the right of the bar beside the inspector, and Ctrl+M open the export of the
+ * timeline shown, with its In and Out points.
  */
 export function EditPage({
   bridge, native, session, revision, pool, media, timelines, selected, onSelect, source, sourceMedia, timelineMonitor,
-  focus, onFocus, noticeOf, onRetry, onProblem,
+  focus, onFocus, noticeOf, onRetry, onProblem, onExport,
 }: {
   bridge: Pick<EngineBridge, 'call' | 'onEvent' | 'viewRect' | 'viewShow'>;
   native: boolean;
@@ -62,6 +68,8 @@ export function EditPage({
   noticeOf: (monitor: Monitor) => ViewerNotice | null;
   onRetry: () => void;
   onProblem: (said: string, failure: unknown) => void;
+  /** Open the export of the timeline shown, with its In and Out points. */
+  onExport?: (marks: Marks | null) => void;
 }) {
   const words = useWords();
   const labels = words.label.studio;
@@ -78,8 +86,12 @@ export function EditPage({
   const [chosenCue, setChosenCue] = useState<string | null>(null);
   // A subtitle added or double-clicked is to be written in: the inspector opens on it, as DaVinci Resolve's does.
   const onCue = useCallback((cue: string | null, open: boolean) => { setChosenCue(cue); if (cue !== null && open) setInspectorOpen(true); }, []);
-  const now = useRef({ onProblem, words });
-  now.current = { onProblem, words };
+  const now = useRef({ onProblem, words, onExport, selected });
+  now.current = { onProblem, words, onExport, selected };
+  const exportNow = useCallback(() => {
+    const { onExport: open, selected: shown } = now.current;
+    if (open && shown !== null) open(timeline.current?.marks() ?? null);
+  }, []);
 
   // How wide the page is, whenever it may have changed. A page that is not laid out (0 wide) keeps how it was.
   useLayoutEffect(() => {
@@ -104,15 +116,21 @@ export function EditPage({
   useStudioKeys(focused.loaded, focused.context, focused.run);
   useEffect(() => {
     const down = (event: KeyboardEvent) => {
-      // The timeline takes its keys itself where it has the keyboard; a list of the pool, those it uses.
-      if (event.defaultPrevented || !inStudio(event.target) || (event.target instanceof Element && event.target.closest('.timeline'))) return;
+      if (event.defaultPrevented || !inStudio(event.target)) return;
       const key = keyOf(event);
+      // Ctrl+M exports, wherever in the page the keyboard is, the timeline too.
+      if (isExportKey(key)) {
+        if (editingAllowed(event.target, key)) { event.preventDefault(); exportNow(); }
+        return;
+      }
+      // The timeline takes its keys itself where it has the keyboard; a list of the pool, those it uses.
+      if (event.target instanceof Element && event.target.closest('.timeline')) return;
       if (!editingAllowed(event.target, key)) return;
       if (timeline.current?.keyDown(key)) event.preventDefault();
     };
     window.addEventListener('keydown', down);
     return () => window.removeEventListener('keydown', down);
-  }, []);
+  }, [exportNow]);
 
   const sourceState = source.state?.monitor === 'source' ? source.state : null;
   const sourceFrame = sourceState !== null && sourceMedia !== null && sourceState.media === sourceMedia.id ? sourceState.frame ?? 0 : null;
@@ -164,6 +182,8 @@ export function EditPage({
         <Plus size={14} aria-hidden="true" />{labels.editPage.newTimeline}
       </button>
       <span className="edit-bar-gap" />
+      {onExport && <button type="button" className="icon-btn" aria-label={labels.render.quickExport} title={`${labels.render.quickExport} (${shortcut('M')})`}
+        disabled={selected === null} onClick={exportNow} data-test="quick-export"><Upload size={15} /></button>}
       <button type="button" className="icon-btn" aria-label={labels.editPage.inspector} title={labels.editPage.inspector} aria-pressed={inspectorOpen}
         onClick={() => setInspectorOpen(open => !open)} data-test="toggle-inspector"><SlidersHorizontal size={15} /></button>
     </div>

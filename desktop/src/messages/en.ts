@@ -814,6 +814,15 @@ export const en = {
         source: 'Source', timeline: 'Timeline', sourceTitle: 'Source viewer', timelineTitle: 'Timeline viewer', choose: 'Viewer shown',
       },
       editPage: { inspector: 'Inspector', newTimeline: 'New timeline', create: 'Create', noTimeline: 'No timeline' },
+      /** Exporting a timeline: DaVinci Resolve's Quick Export, with the settings of its render. */
+      render: {
+        quickExport: 'Quick export', title: 'Export timeline', timeline: 'Timeline', range: 'Range', whole: 'Entire timeline', marked: 'In to out',
+        codec: 'Codec', quality: 'Quality', high: 'High', medium: 'Medium', low: 'Low', subtitles: 'Also save the subtitles as SRT',
+        exportTo: 'Export to…', exporting: 'Exporting', cancelling: 'Cancelling', encoder: 'Encoder', reveal: 'Show in folder',
+        frames: (done: number, total: number) => `${done} of ${total} frames`,
+      },
+      /** The old projects of the folder that became timelines as the studio was opened. */
+      migration: { details: 'Details', hideDetails: 'Hide details', timeline: 'Timeline', dropped: 'Left out', notes: 'Notes', failed: 'Not migrated' },
       /** The Cut page, in DaVinci Resolve's words. */
       cutPage: {
         viewerMode: 'Viewer mode', source: 'Source clip', tape: 'Source tape', timeline: 'Timeline',
@@ -1430,6 +1439,35 @@ export const en = {
         speedRange: 'The speed is from 1% to 10000%.',
         library: 'Drag a transition onto an edit point on the timeline, or a title or a solid color onto a video track, where it overwrites 5 seconds.',
         addCue: 'Double-click empty space on a subtitle track to add a subtitle at the playhead.',
+      },
+      render: {
+        marks: 'Mark an In and an Out point on the timeline to export only the part between them.',
+        codec: 'H.264 and HEVC are encoded on the graphics card. Where it has no encoder for them, ProRes is written into a .mov file instead.',
+        subtitles: 'Each subtitle track that is shown is saved beside the film as an SRT file.',
+        running: 'An export is running. Wait for it to finish, or cancel it.',
+        noTimeline: 'There is no timeline to export yet.',
+        done: 'The export is finished.',
+        failed: 'The export failed.',
+        cancelled: 'The export was cancelled, and nothing was written.',
+        stopped: 'The engine of the studio stopped during the export.',
+        fallback: 'This computer has no hardware encoder for H.264 or HEVC, so the film was written as ProRes into a .mov file.',
+        refused: {
+          busy: 'Another export of this project is running, maybe one that the agent started. Try again when it has finished.',
+          exists: 'Files that this export writes beside the film are there already, such as an SRT or a .mov file. Choose another name, or move them away.',
+          part_exists: 'A partial file of an export that did not finish is there. Delete it, or choose another name.',
+          source: 'That file is media of this project, and is not written over. Choose another name.',
+          invalid: 'The engine did not take these settings.',
+          other: 'The export could not start.',
+        },
+      },
+      migration: {
+        done: (names: readonly string[]) => (names.length === 1
+          ? `An old project became a timeline: ${names[0]}. Its files are kept as they were.`
+          : `${names.length} old projects became timelines: ${names.join(', ')}. Their files are kept as they were.`),
+        failed: (count: number) => (count === 1
+          ? 'An old project could not be migrated. Its files are untouched.'
+          : `${count} old projects could not be migrated. Their files are untouched.`),
+        checkFailed: 'The old projects in this folder could not be looked at.',
       },
       cutPage: {
         smartInsert: 'Inserts the source at the edit point nearest the playhead, which the timeline marks.',

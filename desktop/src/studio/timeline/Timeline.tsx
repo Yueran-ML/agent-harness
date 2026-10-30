@@ -15,6 +15,7 @@ import { TrackRow } from './TrackRow';
 import { Waveforms } from './waveforms';
 import { useEditing } from './useEditing';
 import type { EditAction, EditContext } from './editKeys';
+import type { Marks } from './snap';
 import './timeline.css';
 
 /** A view of the accepted engine project. Scrolling, zoom and track height do not add undo steps. */
@@ -22,6 +23,8 @@ export interface TimelineHandle {
   keyDown: (key: Key) => boolean;
   /** Do an edit that a button of the page asks for, as its key would. */
   perform: (action: EditAction) => boolean;
+  /** The In and Out points of the timeline, which exist only on the page: an export may be of the part between them. */
+  marks: () => Marks;
 }
 /** What of a timeline a view shows: the pixels of a frame, how far it is scrolled, and how wide it is. */
 export interface TimelineView { scale: number; left: number; width: number }
@@ -133,7 +136,7 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   }, [center, dragging, frame, view.scale, view.width]);
   useEffect(() => { onView?.(view); }, [view, onView]);
   const editing = useEditing({ timeline, media, bridge, session, revision, frame, focus, source, root, scroll, view, onSeek, fit, zoom, onSpeed, onSelection, onTransition, onCue, cut });
-  useImperativeHandle(ref, () => ({ keyDown: editing.keyDown, perform: editing.perform }));
+  useImperativeHandle(ref, () => ({ keyDown: editing.keyDown, perform: editing.perform, marks: () => editing.marks }));
   useEffect(() => {
     const element = scroll.current;
     if (!element) return;

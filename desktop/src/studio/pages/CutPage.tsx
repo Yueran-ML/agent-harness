@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { PanelLeft } from 'lucide-react';
+import { PanelLeft, Upload } from 'lucide-react';
 import { keyOf } from '../../app/keys';
 import { useWords } from '../../app/locale';
+import { shortcut } from '../../app/system';
 import type { EngineBridge } from '../../bridge';
 import type { Media, Monitor, Timeline as TimelineModel } from '../engine';
 import { editingAllowed, inStudio, useStudioKeys } from '../keys';
@@ -13,6 +14,8 @@ import { Timeline, type TimelineHandle, type TimelineView } from '../timeline/Ti
 import type { MonitorControls } from '../useMonitor';
 import type { ViewerNotice } from '../Viewer';
 import { useTimelineLoad } from './useTimelineLoad';
+import { isExportKey } from '../render/renders';
+import type { Marks } from '../timeline/snap';
 
 /** Narrower than this, the Cut page has its buttons without their names, and its pool narrower. */
 export const CUT_NARROW_PX = 1100;
@@ -34,10 +37,11 @@ export type ViewerMode = 'source' | 'tape' | 'timeline';
  * The edits put what the viewer has as its source (its marks, its medium of the tape) on the
  * timeline: Smart Insert at the edit point nearest the playhead, which the lower timeline marks.
  * They leave the viewer as it was, so that the source tape is gone through edit after edit.
+ * Quick Export, at the right of the bar, and Ctrl+M open the export of the timeline.
  */
 export function CutPage({
   bridge, native, session, revision, pool, media, bin, timelines, selected, onSelect, source, sourceMedia, timelineMonitor,
-  focus, onFocus, noticeOf, onRetry, onProblem,
+  focus, onFocus, noticeOf, onRetry, onProblem, onExport,
 }: {
   bridge: Pick<EngineBridge, 'call' | 'onEvent' | 'viewRect' | 'viewShow'>;
   native: boolean;
@@ -60,6 +64,8 @@ export function CutPage({
   noticeOf: (monitor: Monitor) => ViewerNotice | null;
   onRetry: () => void;
   onProblem: (said: string, failure: unknown) => void;
+  /** Open the export of the timeline, with the In and Out points of the lower timeline. */
+  onExport?: (marks: Marks | null) => void;
 }) {
   const words = useWords();
   const labels = words.label.studio.cutPage;
@@ -71,8 +77,13 @@ export function CutPage({
   const [tape, setTape] = useState(false);
   const [view, setView] = useState<TimelineView | null>(null);
   const mode: ViewerMode = focus === 'timeline' ? 'timeline' : tape ? 'tape' : 'source';
-  const now = useRef({ onProblem, words });
-  now.current = { onProblem, words };
+  const now = useRef({ onProblem, words, onExport, selected });
+  now.current = { onProblem, words, onExport, selected };
+  // The marks are those of the lower timeline, which takes the keys.
+  const exportNow = useCallback(() => {
+    const { onExport: open, selected: shown } = now.current;
+    if (open && shown !== null) open(detail.current?.marks() ?? null);
+  }, []);
   const failed = useCallback((failure: unknown) => now.current.onProblem(now.current.words.hint.studio.failed, failure), []);
 
   useLayoutEffect(() => {
@@ -116,8 +127,14 @@ export function CutPage({
   keys.current = { mode, reel, loaded: sourceState?.media ?? null, go };
   useEffect(() => {
     const down = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || !inStudio(event.target) || (event.target instanceof Element && event.target.closest('.timeline'))) return;
+      if (event.defaultPrevented || !inStudio(event.target)) return;
       const key = keyOf(event);
+      // Ctrl+M exports, wherever in the page the keyboard is, the timelines too.
+      if (isExportKey(key)) {
+        if (editingAllowed(event.target, key)) { event.preventDefault(); exportNow(); }
+        return;
+      }
+      if (event.target instanceof Element && event.target.closest('.timeline')) return;
       if (!editingAllowed(event.target, key)) return;
       // On the source tape the arrows up and down go to the medium before or after, as they go from edit to edit on a timeline.
       const { mode: shown, reel: strip, loaded, go: to } = keys.current;
@@ -131,7 +148,7 @@ export function CutPage({
     };
     window.addEventListener('keydown', down);
     return () => window.removeEventListener('keydown', down);
-  }, []);
+  }, [exportNow]);
 
   const switcher = <div className="monitor-switch" role="group" aria-label={labels.viewerMode}>
     {(['source', 'tape', 'timeline'] as const).map(each => <button key={each} type="button" aria-pressed={mode === each} onClick={() => choose(each)}
@@ -157,6 +174,11 @@ export function CutPage({
         {timelines.map(each => <option key={each.id} value={each.id}>{each.name}</option>)}
       </select>
       {timelines.length === 0 && <span className="caption" data-test="cut-no-timeline">{words.hint.studio.cutPage.noTimeline}</span>}
+      <span className="edit-bar-gap" />
+      {onExport && <button type="button" className="icon-btn" aria-label={words.label.studio.render.quickExport}
+        title={`${words.label.studio.render.quickExport} (${shortcut('M')})`} disabled={selected === null} onClick={exportNow} data-test="quick-export">
+        <Upload size={15} />
+      </button>}
     </div>
     {poolOpen && <div className="cut-left">{pool}</div>}
     <div className="cut-viewer">

@@ -7,11 +7,17 @@ import type { StudioEngine } from './connection';
 import { callEngine, type Monitor, type PageMethod, type SourceTransportState, type TimelineTransportState } from './engine';
 import { useStudioKeys } from './keys';
 import { MediaPool } from './MediaPool';
+import { MigrationBanner } from './MigrationBanner';
+import { migrationsOf } from './migration';
 import { MonitorPane } from './MonitorPane';
 import { CutPage } from './pages/CutPage';
 import { EditPage } from './pages/EditPage';
 import { MediaPage } from './pages/MediaPage';
+import { RenderDialog } from './render/RenderDialog';
+import { RenderProgress } from './render/RenderProgress';
+import { rendersOf } from './render/renders';
 import { duration } from './timeline/geometry';
+import type { Marks } from './timeline/snap';
 import { framesOf, rateOf } from './timecode';
 import { useMonitor } from './useMonitor';
 import type { ViewerNotice } from './Viewer';
@@ -91,6 +97,14 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
   const [chosenTimeline, setChosenTimeline] = useState<string | null>(null);
   // The bin that the pool shows: the Cut page's source tape is made of its media.
   const [bin, setBin] = useState<string | null>(null);
+  // The dialog of the export, with the In and Out points of the timeline shown where it was opened.
+  const [exporting, setExporting] = useState<{ marks: Marks | null } | null>(null);
+  // The export of the window, and what became of the old projects of the folder: both are kept
+  // while the page lives, also while the studio is left.
+  const renders = rendersOf(bridge);
+  const rendered = useSyncExternalStore(renders.subscribe, renders.getSnapshot, renders.getSnapshot);
+  const migrations = migrationsOf(bridge);
+  const migrated = useSyncExternalStore(migrations.subscribe, migrations.getSnapshot, migrations.getSnapshot);
   const root = useRef<HTMLElement>(null);
   const tabs = useRef<HTMLElement>(null);
 
@@ -223,6 +237,7 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
     initialGrid={page === 'cut'}
     onBin={setBin}
   />;
+  const onExport = useCallback((marks: Marks | null) => setExporting({ marks }), []);
   const conversationWords = conversationHidden ? words.label.studio.showConversation : words.label.studio.hideConversation;
   return <section ref={root} className="studio" tabIndex={-1} aria-label={words.label.studio.open} data-page={page} data-test="studio">
     <header className="studio-head">
@@ -254,6 +269,10 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
         <X size={14} />
       </button>
     </div>}
+    {migrated !== null && migrated.session === snapshot.session && <MigrationBanner migrated={migrated} timelines={timelines}
+      onDismiss={() => migrations.dismiss()} />}
+    {rendered.job !== null && <RenderProgress job={rendered.job} onCancel={() => void renders.cancel()} onReveal={() => renders.reveal()}
+      onDismiss={() => renders.dismiss()} />}
     {page === 'media' && <MediaPage pool={pool} monitor={<MonitorPane controls={source} bridge={bridge} native={native} active
       notice={noticeOf('source')} onRetry={again} hint={words.hint.studio.load} />} />}
     {page === 'cut' && <CutPage
@@ -275,6 +294,7 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
       noticeOf={noticeOf}
       onRetry={again}
       onProblem={(said, failure) => fail(said)(failure)}
+      onExport={onExport}
     />}
     {page === 'edit' && <EditPage
       bridge={bridge}
@@ -294,6 +314,15 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
       noticeOf={noticeOf}
       onRetry={again}
       onProblem={(said, failure) => fail(said)(failure)}
+      onExport={onExport}
+    />}
+    {exporting !== null && <RenderDialog
+      timelines={timelines}
+      chosen={selected?.id ?? null}
+      marks={exporting.marks}
+      running={rendered.job?.state === 'running' || rendered.job?.state === 'cancelling'}
+      onStart={options => renders.start({ ...options, language }, snapshot.session ?? 0)}
+      onClose={() => setExporting(null)}
     />}
     <nav ref={tabs} className="studio-pages" role="tablist" aria-label={words.label.studio.pages} onKeyDown={tabKey}>
       {pages.map((each) => {

@@ -1192,3 +1192,121 @@ span.inspector-label,
   margin: 0;
   color: var(--bad);
 }
+
+/* --- The export: its dialog, and the strip that tells how it goes while the user edits on. */
+.render-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.render-choice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.render-choice label,
+.render-check {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.render-choice label .caption {
+  margin-left: var(--s2);
+}
+
+.render-problem {
+  margin: 0;
+  color: var(--bad);
+}
+
+.render-problem .caption {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.render-progress,
+.studio-migration {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin: 0 var(--s3) var(--s2);
+  padding: var(--s1) var(--s1) var(--s1) var(--s3);
+  border-radius: var(--r1);
+  background: var(--ink-1);
+  color: var(--text);
+}
+
+.render-progress-words,
+.studio-migration-words {
+  flex: 1;
+  min-width: 0;
+}
+
+.render-progress-words p,
+.studio-migration-words p {
+  margin: 2px 0;
+}
+
+.render-progress-words .caption {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.render-progress-name {
+  margin-left: var(--s2);
+  color: var(--moon-2);
+}
+
+.render-progress[data-state='failed'],
+.render-progress[data-state='stopped'] {
+  background: var(--warn-wash);
+}
+
+.render-bar {
+  height: 4px;
+  margin: var(--s1) 0;
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.render-bar span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s linear;
+}
+
+.studio-migration {
+  align-items: flex-start;
+}
+
+.studio-migration-details {
+  max-height: 220px;
+  overflow: auto;
+  margin: var(--s1) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.studio-migration-details > li {
+  padding: var(--s1) 0;
+  border-top: 1px solid var(--line);
+}
+
+.studio-migration-details ul {
+  margin: 0;
+  padding-left: var(--s4);
+}
+
+.studio-migration-details .caption {
+  overflow-wrap: anywhere;
+}

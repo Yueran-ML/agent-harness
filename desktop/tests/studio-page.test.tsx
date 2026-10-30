@@ -8,7 +8,7 @@ import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App, { conversationKey, STUDIO_ROOMY_PX } from '../src/app/App';
 import { openingStorageKey } from '../src/app/opening';
-import type { EngineAnswer, EngineEvent } from '../src/studio/engine';
+import type { EngineAnswer, EngineEvent, MigrationReport } from '../src/studio/engine';
 import type { Updates } from '../src/useUpdates';
 import type { Workspace } from '../src/useWorkspace';
 import { gitHubWith, likeABrowser, log, reply, user, workspaceWith } from './mounted';
@@ -56,6 +56,8 @@ function shellEngine() {
     viewShow: vi.fn(async () => {}),
     close: vi.fn(async () => {}),
     onEvent: (listener: (event: EngineEvent) => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+    /** Tell the page something of the engine, as the shell does. */
+    tell: (event: EngineEvent) => act(() => { for (const listener of [...listeners]) listener(event); }),
   };
 }
 
@@ -364,5 +366,93 @@ describe('the studio in the page', () => {
     fireEvent.keyDown(one('composer'), { key: 'l' });
     await settle();
     expect(asked()).toEqual([]);
+  });
+});
+
+describe('the old projects of the folder, as the studio opens', () => {
+  const migrated = (migrations: MigrationReport[], error: string | null = null, session = 1): EngineEvent => ({ kind: 'migrated', session, migrations, error });
+  const reports: MigrationReport[] = [
+    { source: 'F:/work/film', timeline: 't3', dropped: ['speech ducking comes with Fairlight in phase 3'], warnings: [] },
+    { source: 'F:/work/trip', timeline: 't4', dropped: [], warnings: ['migration committed; analysis/story: no transcript'] },
+    { source: 'F:/work/talk', error: 'cannot migrate F:/work/talk: legacy source a1 changed since import' },
+  ];
+  async function opened() {
+    page(task());
+    fireEvent.click(one('open-studio'));
+    await settle();
+  }
+
+  it('says once which became timelines and that their files are kept, and what each left out in its details', async () => {
+    await opened();
+    expect(marked('migration-banner')).toEqual([]);
+    engine.tell(migrated(reports));
+    expect(one('migration-done').textContent).toBe('2 old projects became timelines: film, trip. Their files are kept as they were.');
+    expect(one('migration-failed').textContent).toBe('An old project could not be migrated. Its files are untouched.');
+    expect(marked('migration-details')).toEqual([]);
+    fireEvent.click(one('migration-toggle'));
+    const details = one('migration-details');
+    const film = details.querySelector<HTMLElement>('[data-source="F:/work/film"]')!;
+    expect(film.textContent).toContain('film');
+    expect(film.textContent).toContain('Left out');
+    expect(film.textContent).toContain('speech ducking comes with Fairlight in phase 3');
+    const trip = details.querySelector<HTMLElement>('[data-source="F:/work/trip"]')!;
+    expect(trip.textContent).not.toContain('Left out');
+    expect(trip.textContent).toContain('migration committed; analysis/story: no transcript');
+    const talk = details.querySelector<HTMLElement>('[data-failed="true"]')!;
+    expect(talk.textContent).toContain('Not migrated');
+    expect(talk.textContent).toContain('Cannot migrate F:/work/talk: legacy source a1 changed since import.');
+    expect(one('migration-toggle').getAttribute('aria-expanded')).toBe('true');
+    // It lies over nothing: the view of the source monitor stays shown.
+    expect(document.body.dataset.overlay).toBeUndefined();
+    // Put away, it is not said again, also when the studio is left and opened again.
+    fireEvent.click(one('migration-close'));
+    expect(marked('migration-banner')).toEqual([]);
+    fireEvent.click(one('close-studio'));
+    fireEvent.click(one('open-studio'));
+    await settle();
+    expect(marked('migration-banner')).toEqual([]);
+  });
+
+  it('names a timeline as the project has it, and is kept while the studio is left before it is told', async () => {
+    engine.call.mockImplementation(async (method: string): Promise<EngineAnswer> => (method === 'project.get'
+      ? { ok: true, result: { revision: 1, next_id: 5, project: { schema: 2, bins: [], next_id: 5, media: [film], timelines: [
+        { id: 't3', name: 'Film (old)', rate: { num: 25, den: 1 }, width: 1920, height: 1080, sample_rate: 48000, tracks: [] },
+      ] } } }
+      : { ok: true, result: {} }));
+    await opened();
+    fireEvent.click(one('close-studio'));
+    engine.tell(migrated([reports[0]]));
+    fireEvent.click(one('open-studio'));
+    await settle();
+    expect(one('migration-done').textContent).toBe('An old project became a timeline: Film (old). Its files are kept as they were.');
+    expect(marked('migration-failed')).toEqual([]);
+  });
+
+  it('says nothing where there was nothing to say, or of an engine that was open before', async () => {
+    await opened();
+    engine.tell(migrated([]));
+    expect(marked('migration-banner')).toEqual([]);
+    engine.tell(migrated(reports, null, 0));
+    expect(marked('migration-banner')).toEqual([]);
+  });
+
+  it('says where the old projects could not be looked at, and the studio works on', async () => {
+    await opened();
+    engine.tell(migrated([], 'another client is migrating this Studio project; try again later'));
+    expect(one('migration-error').textContent).toBe('The old projects in this folder could not be looked at.');
+    expect(one('migration-banner').textContent).toContain('Another client is migrating this Studio project; try again later.');
+    expect(marked('migration-toggle')).toEqual([]);
+    fireEvent.keyDown(document.body, { key: 'l' });
+    await settle();
+    expect(asked()).toEqual(['transport.play']);
+  });
+
+  it('is said in Chinese', async () => {
+    localStorage.setItem('columbina-language', 'zh');
+    await opened();
+    engine.tell(migrated(reports));
+    expect(one('migration-done').textContent).toBe('已把 2 个旧工程转成时间线：film、trip。旧文件原样保留。');
+    expect(one('migration-failed').textContent).toBe('有 1 个旧工程没能迁移，它们的文件没有改动。');
+    expect(one('migration-toggle').textContent).toBe('详情');
   });
 });

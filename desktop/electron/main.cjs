@@ -153,6 +153,18 @@ const MEDIA_ENDINGS = [
 ];
 /** Where the studio keeps its project in a project folder. */
 const STUDIO_FOLDER = ['.columbina', 'studio'];
+/** How long the migration of the old projects of a folder may take, and how much of what it writes is read. */
+const MIGRATE_MS = 10 * 60_000;
+const MIGRATE_OUTPUT_MOST = 1024 * 1024;
+/** How many old projects the page is told of, how many lines of each, and how long a line is. */
+const MIGRATIONS_TOLD_MOST = 200;
+const MIGRATION_LINES_MOST = 50;
+const MIGRATION_LINE_MOST = 2000;
+/**
+ * The folders whose old projects were looked at while the application runs, by their key: `running`,
+ * `done` where nothing was left to do, `again` where something failed and is tried the next time.
+ */
+const migrations = new Map();
 /** How far from the corner of the window a viewer may lie, and how large it may be, in pixels of the screen. */
 const VIEW_PLACE_MOST = 32_768;
 const VIEW_SIZE_MOST = 16_384;
@@ -671,9 +683,11 @@ async function openStudio(cwd) {
       program, project, env: engineEnvironment(program), logFile: engineLogPath(), kill: killTree,
       onEvent: (what) => {
         if (what.kind === 'exited' && studio?.number === number) {
+          stopMigration(studio);
           studio = null;
           forgetView();
         }
+        if (what.kind === 'notification' && what.method === 'render.progress' && studio?.number === number) heardRender(studio, what.params);
         tellStudio(number, what);
       },
     });
@@ -686,13 +700,125 @@ async function openStudio(cwd) {
     throw new Error('The application is closing.');
   }
   const opened = { session: number, project, owned: session.owned, pid: session.pid, revision: session.hello.revision };
-  // `jobs`: the exports that the window started; the page may cancel those, and no other (an agent's).
-  studio = { number, project, session, opened, jobs: new Set() };
+  // `jobs`: the exports that the window started, by their job, with the file that each writes; the
+  // page may cancel those, and no other (an agent's), and have the file of one shown in its folder.
+  // `migration`: the run of `video migrate` for the folder, while it runs.
+  studio = { number, project, session, opened, jobs: new Map(), migration: null };
   tellStudio(number, { kind: 'opened', ...opened });
   // A view is made anew for every engine, where the page has said where the viewer is.
   forgetView();
   for (const monitor of MONITORS) void attachView(monitor);
+  migrateIn(cwd, studio);
   return opened;
+}
+/** Keep where an export of the window writes its film: the engine says so as it goes, and where it fell back to ProRes. */
+function heardRender(open, params) {
+  const job = open.jobs.get(params?.job);
+  if (job && typeof params.path === 'string' && path.isAbsolute(params.path)) job.path = params.path;
+}
+/**
+ * Turn the old projects of the folder into timelines of its studio, once its engine is open, as
+ * the agent does the first time its tools work there: `video migrate` of the program of the service
+ * reaches this engine through the lock of the project, and makes each a transaction of its own,
+ * which the page sees as it is done. It runs beside the studio and holds up nothing, and whatever
+ * fails is only said. The page is told what became of the old projects where there were any, or
+ * why they could not be looked at. A folder where nothing was left to do is not looked at again
+ * while the application runs: the command would do nothing there, and it takes a start of Python
+ * to find that out.
+ */
+function migrateIn(cwd, open) {
+  if (process.platform !== 'win32') return;
+  const key = directoryKey(cwd);
+  if (migrations.get(key) === 'done' || migrations.get(key) === 'running') return;
+  let command = null;
+  // Without a service there is nothing to run it with: a replay, or a package that lost its Python.
+  try { command = programCommand(['video', 'migrate', '--workspace', cwd, '--json']); } catch { command = null; }
+  if (!command) return;
+  migrations.set(key, 'running');
+  let child;
+  try {
+    // In the folder, as the service works in it: the program of the engine is never looked for there.
+    child = spawn(command.executable, command.args, {
+      cwd, env: { ...command.env, ...engineOfTheService() }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (error) {
+    migrations.set(key, 'again');
+    tellStudio(open.number, { kind: 'migrated', migrations: [], error: `The old projects could not be looked at: ${error.message}` });
+    return;
+  }
+  open.migration = child;
+  const decoder = new StringDecoder('utf8');
+  let written = '';
+  let over = false;
+  let said = '';
+  let done = false;
+  let timer = null;
+  const finish = (document, failure) => {
+    if (done) return;
+    done = true;
+    clearTimeout(timer);
+    if (open.migration === child) open.migration = null;
+    const reports = Array.isArray(document?.migrations) ? document.migrations.slice(0, MIGRATIONS_TOLD_MOST).map(migrationOf) : [];
+    const error = failure ?? (typeof document?.error === 'string' ? short(document.error, MIGRATION_LINE_MOST) : null);
+    // Where something could not be migrated, it is tried again the next time the studio is opened.
+    migrations.set(key, error === null && reports.every((report) => report.error === undefined) ? 'done' : 'again');
+    if (studio === open && (reports.length > 0 || error !== null)) tellStudio(open.number, { kind: 'migrated', migrations: reports, error });
+  };
+  timer = setTimeout(() => {
+    killTree(child);
+    finish(null, 'Looking at the old projects did not end in time.');
+  }, MIGRATE_MS);
+  child.stdout.on('data', (chunk) => {
+    if (over) return;
+    written += decoder.write(chunk);
+    if (written.length > MIGRATE_OUTPUT_MOST) {
+      over = true;
+      written = '';
+    }
+  });
+  // What it says besides its answer is told only where it gives none.
+  child.stderr.on('data', (chunk) => { said = `${said}${chunk}`.slice(-MIGRATION_LINE_MOST); });
+  child.on('error', (error) => finish(null, `The old projects could not be looked at: ${error.message}`));
+  child.on('close', () => {
+    // A migration that was stopped with its studio is told of no more.
+    if (open.migration !== child && !done) {
+      done = true;
+      clearTimeout(timer);
+      migrations.set(key, 'again');
+      return;
+    }
+    if (over) {
+      finish(null, 'The migration of the old projects said more than is read.');
+      return;
+    }
+    let document = null;
+    try { document = JSON.parse((written + decoder.end()).trim().split('\n').at(-1)); } catch { /* It wrote no document. */ }
+    if (document === null || typeof document !== 'object' || Array.isArray(document)) {
+      const last = said.trim().split('\n').at(-1)?.trim();
+      finish(null, last ? short(last, MIGRATION_LINE_MOST) : 'The migration of the old projects ended without saying what it did.');
+    } else finish(document, null);
+  });
+}
+/** Stop the migration of a studio that is closed: what the engine took of it is found again by its notes the next time. */
+function stopMigration(open) {
+  const child = open?.migration;
+  if (!child) return;
+  open.migration = null;
+  killTree(child);
+}
+/** What the page is told of one old project: its folder, the timeline it became and what was left out, or why it was not migrated. */
+function migrationOf(report) {
+  const text = (value) => (typeof value === 'string' ? short(value, MIGRATION_LINE_MOST) : null);
+  const lines = (value) => (Array.isArray(value) ? value.map(text).filter((line) => line !== null).slice(0, MIGRATION_LINES_MOST) : []);
+  const told = { source: text(report?.source) ?? '' };
+  if (text(report?.error) !== null) {
+    told.error = text(report.error);
+    return told;
+  }
+  if (text(report?.timeline) !== null) told.timeline = text(report.timeline);
+  told.dropped = lines(report?.dropped);
+  told.warnings = lines(report?.warnings);
+  return told;
 }
 /**
  * Write a file into the project of the studio that keeps what the engine makes there of its own,
@@ -708,6 +834,7 @@ function keepOutOfHistory(project) {
 async function closeStudio() {
   const open = studio;
   if (!open) return;
+  stopMigration(open);
   studio = null;
   forgetView();
   await open.session.close();
@@ -1837,8 +1964,17 @@ function installHandlers() {
     // one, unless it may replace them. Only the shell decides that, from what the user confirmed
     // in Save As (see `replacing`); the page never can.
     const started = await answered(open.session.call('render.start', { ...options, path: chosen.filePath, replace: replacing(chosen.filePath, options) }));
-    if (started.ok && typeof started.result?.job === 'string') open.jobs.add(started.result.job);
+    if (started.ok && typeof started.result?.job === 'string' && !open.jobs.has(started.result.job)) open.jobs.set(started.result.job, { path: chosen.filePath });
     return started;
+  });
+  ipcMain.handle('columbina:engine-reveal', async (event, asked) => {
+    checkSender(event);
+    refuseStudioElsewhere();
+    // Only the file of an export that this window started, where the engine said it wrote it: the page names no path.
+    const job = typeof asked?.job === 'string' ? studio?.jobs.get(asked.job) : undefined;
+    if (!job || !existsSync(job.path)) return false;
+    shell.showItemInFolder(job.path);
+    return true;
   });
   ipcMain.handle('columbina:left-key', (event, asked) => {
     checkSender(event);
@@ -2376,6 +2512,6 @@ app.on('before-quit', (event) => { if ((service || anyAssistant() || pendingServ
 app.on('window-all-closed', endAll);
 // However the application ends, the stdin of its engine is closed, so that the engine saves the
 // project and ends rather than be left behind.
-app.on('will-quit', () => { studio?.session.abandon(); });
+app.on('will-quit', () => { stopMigration(studio); studio?.session.abandon(); });
 // On macOS a click on the icon in the Dock shows the window that was put away.
 app.on('activate', showWindow);

@@ -116,6 +116,7 @@ contextBridge.exposeInMainWorld('columbina', {
       range: options?.range === undefined ? undefined : { from: options.range?.from, to: options.range?.to },
       language: options?.language, name: options?.name,
     }),
+    reveal: (job) => ipcRenderer.invoke('columbina:engine-reveal', { job }),
     viewRect: (rect, monitor) => ipcRenderer.invoke('columbina:engine-view-rect', {
       monitor, x: rect?.x, y: rect?.y, width: rect?.width, height: rect?.height,
     }),

@@ -244,6 +244,35 @@ export interface RenderOptions {
 }
 export type RenderStarted = { job: string } | { cancelled: true };
 
+/** What the engine tells of an export as it goes, at most every 250 ms, and once at its end (`render.progress`). */
+export interface RenderProgress {
+  job: string;
+  state: 'running' | 'done' | 'failed' | 'cancelled';
+  /** Frames done, and of how many. */
+  frame: number;
+  frames: number;
+  fps: number;
+  /** Where the film is written: another file than the one chosen where ProRes was written instead. */
+  path?: string;
+  /** The encoder of libavcodec, once one is open, such as `h264_nvenc` or `prores_ks`. */
+  encoder?: string;
+  /** Why it failed, that it fell back to ProRes, or that the graphics device was made again. */
+  message?: string;
+}
+
+/**
+ * What became of one old project of the folder as the studio was opened: the timeline that it
+ * became and what of it was left out, or why it could not be migrated (`error`).
+ */
+export interface MigrationReport {
+  /** The folder of the old project. */
+  source: string;
+  timeline?: string;
+  dropped?: string[];
+  warnings?: string[];
+  error?: string;
+}
+
 /** The methods of the engine that the page may call, and what each answers. */
 export interface PageMethods {
   'project.get': ProjectGot;
@@ -297,6 +326,12 @@ export type EngineEvent =
   | { kind: 'unsupported'; session: number; monitor: Monitor; reason: 'unsupported' | 'headless'; message: string }
   /** A headless engine (an agent's) had the project, and was asked to yield it; `opened` follows. */
   | { kind: 'taking-over'; session: number; pid: number | null }
+  /**
+   * The old projects of the folder were looked at once the engine was open: those that became
+   * timelines and those that could not, or why none could be looked at (`error`). Told only where
+   * there was something to say.
+   */
+  | { kind: 'migrated'; session: number; migrations: MigrationReport[]; error: string | null }
   /**
    * The pixels of the screen that the viewer covers changed (the page was zoomed): the page
    * measures the viewer again and says where it is. Told with no session where none is open.

@@ -291,6 +291,11 @@ export interface EngineBridge {
   /** Choose an export destination in Save As and start rendering. Existing outputs are not replaced. */
   render(options: RenderOptions): Promise<EngineAnswer<RenderStarted>>;
   /**
+   * Show the file that an export of this window wrote in the folder that holds it, in the file
+   * manager of the system. False where the shell knows of no such file.
+   */
+  reveal(job: string): Promise<boolean>;
+  /**
    * Say where the viewer lies, in device pixels from the corner of the client area. The view is
    * made there once an engine is open, and moved there as it changes.
    */

@@ -197,7 +197,7 @@ describe('the bridge of the main window', () => {
     const { exposed } = bridgeOf('electron/preload.cjs');
     const engine = exposed.columbina.engine as unknown as Record<string, Call>;
     expect(Object.keys(engine).sort()).toEqual(declared('src/bridge.d.ts', 'EngineBridge').sort());
-    expect(Object.keys(engine)).toHaveLength(8);
+    expect(Object.keys(engine)).toHaveLength(9);
   });
 
   it('hands the engine what a call names, and nothing else that came with it', () => {
@@ -224,6 +224,8 @@ describe('the bridge of the main window', () => {
       .toEqual(['columbina:engine-render', { timeline: 't1', codec: 'prores', quality: 'high', subtitles: true, range: { from: 0, to: 25 }, language: 'ja' }]);
     // The name of the timeline goes over, for Save As to suggest a file named after it.
     expect(handed('render', { timeline: 't1', codec: 'h264', quality: 'high', subtitles: false, name: 'Main', ...more })![1]).toMatchObject({ name: 'Main' });
+    // The page names the job of an export to have its file shown, and no path.
+    expect(handed('reveal', 'render-1', more)).toEqual(['columbina:engine-reveal', { job: 'render-1' }]);
     expect(handed('close', more)).toEqual(['columbina:engine-close']);
   });
 

@@ -143,6 +143,9 @@ const samples: Record<string, unknown[][]> = {
   'label.studio.media.selected': [[1], [3], [1000]],
   'label.studio.inspector.useLongest': [[1], [24]],
   'hint.studio.inspector.longest': [[1], [24]],
+  'label.studio.render.frames': [[0, 250], [36, 250]],
+  'hint.studio.migration.done': [[['film']], [['film', 'trip', 'talk']], [['旅行', '会议']]],
+  'hint.studio.migration.failed': [[1], [3]],
 };
 
 type Said = { path: string; text: string };

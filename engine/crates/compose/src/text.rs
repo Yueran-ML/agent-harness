@@ -647,4 +647,80 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn the_outline_of_subtitles_covers_what_is_within_its_width_of_a_letter_and_nothing_else() {
+        // Letters of 56 pixels, outlined by 4; and of 7, outlined by 1, some a pixel thin.
+        for (text, size) in [("TL", 56.0), ("l-|.i", 7.0), ("-_.~", 5.0), ("-_=", 9.0)] {
+            let spec = Spec::subtitles(&[text.to_owned()], size);
+            let radius = spec.outline as usize;
+            let mut laid = lay_out(&spec);
+            let (width, height) = laid.full();
+            let raster = draw(&mut laid, [0, 0, width, height]);
+            let (columns, rows) = (width as usize, height as usize);
+            let at = |x: usize, y: usize| raster.pixels[raster.start + y * raster.row as usize + x];
+            let mut wrong = vec![];
+            for y in 0..rows {
+                for x in 0..columns {
+                    let near = (y.saturating_sub(radius)..=(y + radius).min(rows - 1)).any(|v| {
+                        (x.saturating_sub(radius)..=(x + radius).min(columns - 1))
+                            .any(|u| at(u, v)[0] > 0)
+                    });
+                    if near != (at(x, y)[3] > 0) {
+                        wrong.push((x, y));
+                    }
+                }
+            }
+            assert!(
+                wrong.is_empty(),
+                "{text}: {} pixels, first {:?}",
+                wrong.len(),
+                wrong.first()
+            );
+        }
+    }
+
+    #[test]
+    fn a_letter_in_colour_is_outlined_as_far_on_every_side_as_one_in_white() {
+        let spec = Spec::subtitles(&["\u{1F600}".to_owned()], 56.0);
+        let bare = Spec {
+            outline: 0,
+            ..spec.clone()
+        };
+        let drawn = |spec: &Spec| {
+            let mut laid = lay_out(spec);
+            let (width, height) = laid.full();
+            let raster = draw(&mut laid, [0, 0, width, height]);
+            let mut found = [u32::MAX, u32::MAX, 0, 0];
+            for y in 0..raster.height {
+                for x in 0..raster.width {
+                    if raster.pixels[raster.start + (y * raster.row + x) as usize][3] > 0 {
+                        found = [
+                            found[0].min(x),
+                            found[1].min(y),
+                            found[2].max(x + 1),
+                            found[3].max(y + 1),
+                        ];
+                    }
+                }
+            }
+            found
+        };
+        let (letter, outlined) = (drawn(&bare), drawn(&spec));
+        if letter[2] == 0 {
+            // No font of this system draws it, nor a box in its place.
+            return;
+        }
+        // The pad about the outlined one is as much larger as its outline.
+        let outline = spec.outline;
+        assert_eq!(
+            outlined,
+            [
+                letter[0],
+                letter[1],
+                letter[2] + 2 * outline,
+                letter[3] + 2 * outline
+            ]
+        );
+    }
 }

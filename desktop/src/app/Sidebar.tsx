@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Clapperboard, Folder, MessageCircle, PanelLeftClose, Search, Settings2, SquarePen } from 'lucide-react';
 import type { Workspace } from '../useWorkspace';
 import { useWords } from './locale';
-import { shortcut } from './system';
+import { shortcut, studioSupported } from './system';
 import { agoOf, folderName, standingOf, taskTitle } from './tell';
 import { Worktrees } from './Worktrees';
 
@@ -34,6 +34,9 @@ export function Sidebar({ workspace, title, onNewTask, onOpenTask, onOpenProject
   /** The way into the studio of the project, and out of it, where the project has one. */
   studio?: { open: boolean; onToggle: () => void };
 }) {
+  // Where the studio cannot run, its way in is shown greyed, and says why when it is chosen.
+  const [studioRefused, setStudioRefused] = useState(false);
+  const studioHere = studioSupported();
   const words = useWords();
   const now = useNow();
   const [search, setSearch] = useState('');
@@ -110,10 +113,27 @@ export function Sidebar({ workspace, title, onNewTask, onOpenTask, onOpenProject
     <Worktrees workspace={workspace} />
 
     <div className="sidebar-foot">
-      {studio && <button type="button" className="foot-row" aria-pressed={studio.open} onClick={studio.onToggle} data-test="open-studio">
+      {studio && studioHere && <button type="button" className="foot-row" aria-pressed={studio.open} onClick={studio.onToggle} data-test="open-studio">
         <Clapperboard size={15} aria-hidden="true" />
         <span>{words.label.studio.open}</span>
       </button>}
+      {/* Kept in the tab order, so that the keyboard reaches the reason as the mouse does. */}
+      {studio && !studioHere && <button
+        type="button"
+        className="foot-row"
+        aria-disabled="true"
+        title={words.hint.studio.windowsOnly}
+        aria-describedby={studioRefused ? 'studio-windows-only' : undefined}
+        onClick={() => setStudioRefused(true)}
+        onBlur={() => setStudioRefused(false)}
+        data-test="open-studio"
+      >
+        <Clapperboard size={15} aria-hidden="true" />
+        <span>{words.label.studio.open}</span>
+      </button>}
+      {studio && !studioHere && studioRefused && <p id="studio-windows-only" className="caption studio-elsewhere" role="status" data-test="studio-windows-only">
+        {words.hint.studio.windowsOnly}
+      </p>}
       {/* In a chat no project is open, and this is the way into one. */}
       <button type="button" className="foot-row" onClick={onOpenProject} title={workspace.chat ? words.label.openProject : hello?.cwd ?? words.label.otherProject} aria-label={workspace.chat ? words.label.openProject : words.label.otherProject} data-test="open-project">
         <Folder size={15} aria-hidden="true" />

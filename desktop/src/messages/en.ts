@@ -1420,6 +1420,7 @@ export const en = {
         library: 'Drag a transition onto a cut on the timeline, or a title or a solid color onto empty space on a video track.',
       },
       cut: 'The Cut page is not ready yet. Edit timelines on the Edit page.',
+      windowsOnly: 'The editing studio runs only on Windows for now. macOS will come later.',
       browser: 'The viewers appear only in the desktop app.',
       opening: 'The project is being opened in the studio.',
       takingOver: 'The project is being taken over from the agent.',

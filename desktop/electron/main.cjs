@@ -615,6 +615,13 @@ function engineOfTheService() {
   if (!app.isPackaged && process.env.FFMPEG_DIR) told.FFMPEG_DIR = process.env.FFMPEG_DIR;
   return told;
 }
+/**
+ * The editing studio runs only on Windows for now (the author's decision; macOS will come later).
+ * Elsewhere the shell starts no engine for the window, and every request for one is refused so.
+ */
+function refuseStudioElsewhere() {
+  if (process.platform !== 'win32') throw new Error('The editing studio runs only on Windows for now. macOS will come later.');
+}
 /** Do something with the engine of the studio once all that was asked before is done. */
 function inStudioTurn(operation) {
   const turn = studioOperation.then(operation);
@@ -632,6 +639,7 @@ function tellStudio(number, what) {
  * the process of the engine, and the revision that the engine said hello with.
  */
 async function openStudio(cwd) {
+  refuseStudioElsewhere();
   if (exiting) throw new Error('The application is closing.');
   const project = path.join(cwd, ...STUDIO_FOLDER);
   if (studio?.session.alive && directoryKey(studio.project) === directoryKey(project)) {
@@ -1764,6 +1772,7 @@ function installHandlers() {
   });
   ipcMain.handle('columbina:engine-open', async (event, asked) => {
     checkSender(event);
+    refuseStudioElsewhere();
     // A project of the studio lies in a folder that the user chose in the dialog, as a project does.
     // Checked before its turn, so that a request that is refused closes nothing that is open.
     approvedDirectory(asked, 'opening it in the studio');
@@ -1771,6 +1780,7 @@ function installHandlers() {
   });
   ipcMain.handle('columbina:engine-call', async (event, asked) => {
     checkSender(event);
+    refuseStudioElsewhere();
     const method = asked?.method;
     if (typeof method !== 'string' || !PAGE_METHODS.has(method)) throw new Error('That is no method of the engine that the page may call.');
     const params = asked?.params ?? null;
@@ -1790,6 +1800,7 @@ function installHandlers() {
   });
   ipcMain.handle('columbina:engine-import', async (event, asked) => {
     checkSender(event);
+    refuseStudioElsewhere();
     const open = studio;
     if (!open) return { ok: false, error: { code: null, message: 'No project is open in the studio.', data: null } };
     const bin = asked?.bin;
@@ -1807,6 +1818,7 @@ function installHandlers() {
   });
   ipcMain.handle('columbina:engine-render', async (event, asked) => {
     checkSender(event);
+    refuseStudioElsewhere();
     const open = studio;
     if (!open) return { ok: false, error: { code: null, message: 'No project is open in the studio.', data: null } };
     const options = renderOptionsOf(asked);
@@ -1836,10 +1848,12 @@ function installHandlers() {
   });
   ipcMain.handle('columbina:engine-view-rect', (event, rect) => {
     checkSender(event);
+    refuseStudioElsewhere();
     takeViewRect(rect);
   });
   ipcMain.handle('columbina:engine-view-show', (event, asked) => {
     checkSender(event);
+    refuseStudioElsewhere();
     takeViewShown(asked);
   });
   ipcMain.handle('columbina:engine-close', async (event) => {

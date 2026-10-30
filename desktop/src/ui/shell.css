@@ -341,6 +341,21 @@ button.task:hover:not(:disabled) {
   color: var(--moon-0);
 }
 
+.foot-row[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.foot-row[aria-disabled="true"]:hover {
+  background: none;
+  color: inherit;
+}
+
+.studio-elsewhere {
+  margin: 0;
+  padding: 0 var(--s3) var(--s2);
+}
+
 .foot-row span {
   min-width: 0;
   overflow: hidden;

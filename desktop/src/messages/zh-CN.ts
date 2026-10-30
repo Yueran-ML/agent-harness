@@ -1236,6 +1236,7 @@ export const zhCN: Messages = {
         library: '把转场拖到时间线的剪辑点上，把标题或纯色拖到视频轨的空处。',
       },
       cut: '快编页还没有做好，请在剪辑页编辑时间线。',
+      windowsOnly: '剪辑工作室目前只支持 Windows，macOS 之后会加入。',
       browser: '检视器只在桌面应用里显示。',
       opening: '正在工作室里打开这个项目。',
       takingOver: '正在从 Agent 那里接管这个项目。',

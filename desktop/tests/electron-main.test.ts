@@ -4238,29 +4238,35 @@ describe('the engine of the studio', () => {
     expect(view.written.at(-1)).toMatchObject({ params: { x: 5, y: 5 } });
   });
 
-  it('says on macOS that the engine makes no view there, and keeps the menu of the application', async () => {
-    const socket = '/tmp/columbina-0/0123456789abcdef.sock';
-    const mac = await shellHarness(undefined, {}, { platform: 'darwin' });
-    expect(mac.window.removeMenu).not.toHaveBeenCalled();
-    mac.engines.starts.push({ listen: socket });
-    const { answer } = await openIn(mac);
-    expect(answer.owned).toBe(true);
-    expect(mac.engines.children[0].program).toBe(builtEngine('columbina-engine'));
-    expect(mac.engines.children[0].options.detached).toBe(true);
-    const [, view] = connections(mac);
-    mac.engines.servers.get(socket)!.answers.set('view.attach', () => ({
-      error: { code: -32003, message: 'views are not made on this system', data: { reason: 'unsupported' } },
-    }));
-    await mac.invoke('engine-view-rect', { monitor: 'source', x: 0, y: 0, width: 400, height: 180 });
-    await settledAll();
-    expect(told(mac).at(-1)).toEqual({ kind: 'unsupported', session: 1, monitor: 'source', reason: 'unsupported', message: 'views are not made on this system' });
-    const sent = view.written.length;
-    await mac.invoke('engine-view-rect', { monitor: 'source', x: 0, y: 0, width: 500, height: 180 });
-    await mac.invoke('engine-view-show', { monitor: 'source', shown: false });
-    expect(view.written.length).toBe(sent);
-    // On Windows the window has no menu, which would take the top of its client area.
+  it('starts no engine outside Windows, refuses every request for one, and keeps the menu of macOS', async () => {
+    for (const platform of ['darwin', 'linux'] as const) {
+      const elsewhere = await shellHarness(undefined, {}, { platform });
+      if (platform === 'darwin') expect(elsewhere.window.removeMenu).not.toHaveBeenCalled();
+      elsewhere.engines.starts.push({ listen: '/tmp/columbina-0/0123456789abcdef.sock' });
+      const cwd = await elsewhere.select('/film');
+      await expect(elsewhere.invoke('engine-open', { cwd })).rejects.toThrow('only on Windows for now. macOS will come later.');
+      for (const [name, asked] of [
+        ['engine-call', { method: 'project.get' }],
+        ['engine-import', {}],
+        ['engine-render', { timeline: 't1', codec: 'hevc', quality: 'high', subtitles: false }],
+        ['engine-view-rect', { monitor: 'source', x: 0, y: 0, width: 400, height: 180 }],
+        ['engine-view-show', { monitor: 'source', shown: true }],
+      ] as const) {
+        await expect(Promise.resolve().then(() => elsewhere.invoke(name, asked))).rejects.toThrow('only on Windows for now');
+      }
+      await settledAll();
+      expect(elsewhere.engines.children).toEqual([]);
+      expect(connections(elsewhere)).toEqual([]);
+      expect(elsewhere.dialog.showOpenDialog).toHaveBeenCalledTimes(1);
+      expect(elsewhere.dialog.showSaveDialog).not.toHaveBeenCalled();
+      // Closing what is not open is nothing.
+      await expect(elsewhere.invoke('engine-close')).resolves.toBeUndefined();
+    }
+    // On Windows the window has no menu, which would take the top of its client area, and the studio opens.
     const windows = await shellHarness();
     expect(windows.window.removeMenu).toHaveBeenCalledOnce();
+    await expect(openIn(windows)).resolves.toMatchObject({ answer: { session: 1, owned: true } });
+    expect(windows.engines.children).toHaveLength(1);
   });
 
   it('reaches the engine of an agent that has the project open, and says that it has no view', async () => {

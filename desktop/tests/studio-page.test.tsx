@@ -119,6 +119,55 @@ describe('the studio in the page', () => {
     expect(engine.viewShow.mock.calls.at(-1)).toEqual([true, 'source']);
   });
 
+  it('is greyed outside Windows, says why when chosen by mouse or keyboard, and opens nothing', async () => {
+    const said = 'The editing studio runs only on Windows for now. macOS will come later.';
+    for (const platform of ['darwin', 'linux']) {
+      vi.stubGlobal('columbina', { setTheme: vi.fn(async () => {}), onFullScreen: () => () => {}, engine, platform });
+      page(task());
+      const way = one('open-studio');
+      expect(way.textContent).toBe('Studio');
+      expect(way.getAttribute('aria-disabled')).toBe('true');
+      expect(way.getAttribute('aria-pressed')).toBeNull();
+      expect(way.title).toBe(said);
+      expect(marked('studio-windows-only')).toEqual([]);
+      fireEvent.click(way);
+      await settle();
+      expect(one('studio-windows-only').textContent).toBe(said);
+      expect(way.getAttribute('aria-describedby')).toBe('studio-windows-only');
+      expect(marked('studio')).toEqual([]);
+      expect(shell().dataset.studio).toBeUndefined();
+      expect(engine.open).not.toHaveBeenCalled();
+      expect(engine.viewShow).not.toHaveBeenCalled();
+      // The keyboard reaches it, and is told the same; leaving it puts the words away.
+      fireEvent.blur(way);
+      expect(marked('studio-windows-only')).toEqual([]);
+      way.focus();
+      expect(document.activeElement).toBe(way);
+      fireEvent.keyDown(way, { key: 'Enter' });
+      fireEvent.click(way);
+      expect(one('studio-windows-only').textContent).toBe(said);
+      expect(engine.open).not.toHaveBeenCalled();
+      cleanup();
+    }
+    // On Windows the way in is the studio's, as ever.
+    vi.stubGlobal('columbina', { setTheme: vi.fn(async () => {}), engine, platform: 'win32' });
+    page(task());
+    expect(one('open-studio').getAttribute('aria-disabled')).toBeNull();
+    expect(one('open-studio').title).toBe('');
+    fireEvent.click(one('open-studio'));
+    await settle();
+    expect(engine.open).toHaveBeenCalledWith('F:\\work');
+    expect(marked('studio')).toHaveLength(1);
+  });
+
+  it('says outside Windows, in Chinese too, that the studio comes to macOS later', async () => {
+    vi.stubGlobal('columbina', { setTheme: vi.fn(async () => {}), onFullScreen: () => () => {}, engine, platform: 'darwin' });
+    localStorage.setItem('columbina-language', 'zh');
+    page(task());
+    fireEvent.click(one('open-studio'));
+    expect(one('studio-windows-only').textContent).toBe('剪辑工作室目前只支持 Windows，macOS 之后会加入。');
+  });
+
   it('hides the view while the settings lie over it, and as it is left, and keeps the engine open', async () => {
     page(task());
     fireEvent.click(one('open-studio'));

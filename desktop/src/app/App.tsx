@@ -39,7 +39,7 @@ import { effortStoredOf, keptLevel, type Effort } from './effort';
 import { shownLanguage, storedLanguage, storeLanguage, useWords, Words, wordsFor, type LanguageChoice } from './locale';
 import { reasoningLanguage, rememberTold, shellSkipped, storedReasoning, storeReasoning, toldReasoning, type ReasoningChoice } from './reasoning';
 import { storedOpening, storeOpening } from './opening';
-import { onMac, shortcut } from './system';
+import { onMac, shortcut, studioSupported } from './system';
 import {
   anotherServiceChosen, folderName, goneWords, joined, retryText, skillLine, STILL_STARTING_MS, taskTitle, waitingWords,
 } from './tell';
@@ -184,6 +184,8 @@ export default function App() {
   // Whether the conversation beside the studio is put away.
   const [conversationHidden, setConversationHidden] = useState(false);
   const openStudio = (folder: string) => {
+    // The studio runs only on Windows for now: elsewhere its way in says so, and nothing opens.
+    if (!studioSupported()) return;
     engineFor.current = folder;
     setConversationHidden(window.innerWidth < STUDIO_ROOMY_PX || storedConversationHidden());
     setStudioFor(folder);

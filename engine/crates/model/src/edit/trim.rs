@@ -992,19 +992,19 @@ mod tests {
                 vec![super::super::work::set_fades("t1", "c5", fade_in, fade_out)],
             )
         };
-        let fades = |project: &crate::Project| {
+        let lengths = |project: &crate::Project| {
             let c5 = the(project, "c5");
             (c5.length, c5.fade_in, c5.fade_out)
         };
         let mut project = faded(20, 20);
         edit(&mut project, trim_alone("c5", Edge::Out, -20, false));
-        assert_eq!(fades(&project), (30, 20, 10));
+        assert_eq!(lengths(&project), (30, 20, 10));
         // Beyond the fade at the edge, the other is shortened too.
         let mut project = faded(30, 5);
         edit(&mut project, trim_alone("c5", Edge::Out, -25, false));
-        assert_eq!(fades(&project), (25, 25, 0));
+        assert_eq!(lengths(&project), (25, 25, 0));
         let mut project = faded(5, 30);
         edit(&mut project, trim_alone("c5", Edge::In, 25, false));
-        assert_eq!(fades(&project), (25, 0, 25));
+        assert_eq!(lengths(&project), (25, 0, 25));
     }
 }

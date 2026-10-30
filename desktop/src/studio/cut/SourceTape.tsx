@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, type PointerEvent } from 'react';
 import { useWords } from '../../app/locale';
 import type { EngineBridge } from '../../bridge';
-import { callEngine, type Media, type Rate } from '../engine';
+import { callEngine, type Bin, type Media, type Rate } from '../engine';
 import { Scrub } from '../timeline/scrub';
 import { framesOf, rateOf } from '../timecode';
 
@@ -39,6 +39,22 @@ export function tapeOf(media: readonly Media[], timelines: readonly { rate: Rate
     start += segments.at(-1)!.seconds;
   }
   return { segments, frames: offset, seconds: start };
+}
+
+/**
+ * The media of the source tape of a bin, as DaVinci Resolve strings them out (Reference Manual 20,
+ * pp. 546, 560): those of the bin and of the bins inside it, the bin's own first and then each bin
+ * inside in the order of the pool, each in the order of the pool. The master bin (`null`) holds
+ * every bin, so its tape is all the media.
+ */
+export function tapeMedia(media: readonly Media[], bins: readonly Bin[], bin: string | null): Media[] {
+  const of = (parent: string | null): Media[] => [
+    ...media.filter(each => each.bin === parent),
+    ...bins.filter(each => each.parent === parent).flatMap(each => of(each.id)),
+  ];
+  const all = of(bin);
+  // Media of a bin that is not among the bins (an orphan) is still on the master bin's tape.
+  return bin === null ? [...all, ...media.filter(each => !all.includes(each))] : all;
 }
 
 /** The medium and its frame at a frame of the tape, which is never between two media: a frame is of one of them. */

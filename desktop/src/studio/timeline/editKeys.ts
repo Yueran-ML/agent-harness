@@ -162,6 +162,9 @@ export function threePoint(timeline: Timeline, source: NonNullable<EditContext['
   return { at: marks.in ?? frame, material };
 }
 
+/** How near the playhead is to an edit point, in frames, for Place On Top on the Cut page to go there (Reference Manual 20, p. 563). */
+export const PLACE_ON_TOP_FRAMES = 5;
+
 const compare = (a: Time, b: Time) => BigInt(a.ticks) * BigInt(b.scale) - BigInt(b.ticks) * BigInt(a.scale);
 
 /**
@@ -297,7 +300,11 @@ export function editCommand(action: EditAction | null, context: EditContext): Ed
       ]);
     }
     if (edit === 'ripple_overwrite') return transaction([{ edit, timeline: timeline.id, source: whole, at: frame, ...targets }]);
-    const placed = threePoint(timeline, source, marks, frame, edit === 'replace');
+    // Place On Top on the Cut page, without timeline In or Out points: a playhead within five frames
+    // of an edit point puts the source at that edit point, the one Smart Insert marks (Reference
+    // Manual 20, p. 563); else at the playhead.
+    const near = context.cut && edit === 'place_on_top' && marks.in === null && marks.out === null ? nearestCut(timeline, frame) : frame;
+    const placed = threePoint(timeline, source, marks, Math.abs(near - frame) <= PLACE_ON_TOP_FRAMES ? near : frame, edit === 'replace');
     const command: Edit = edit === 'place_on_top' ? { edit, timeline: timeline.id, source: placed.material, at: placed.at }
       : { edit, timeline: timeline.id, source: placed.material, at: placed.at, ...targets };
     return transaction([command]);

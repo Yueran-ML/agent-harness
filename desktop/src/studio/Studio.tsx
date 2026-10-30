@@ -97,6 +97,8 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
   const [chosenTimeline, setChosenTimeline] = useState<string | null>(null);
   // The bin that the pool shows: the Cut page's source tape is made of its media.
   const [bin, setBin] = useState<string | null>(null);
+  // Whether the Cut page's viewer shows the source tape: the pool then chooses the medium under its playhead.
+  const [onTape, setOnTape] = useState(false);
   // The dialog of the export, with the In and Out points of the timeline shown where it was opened.
   const [exporting, setExporting] = useState<{ marks: Marks | null } | null>(null);
   // The export of the window, and what became of the old projects of the folder: both are kept
@@ -236,6 +238,7 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
     onMakeAgain={onMakeAgain}
     initialGrid={page === 'cut'}
     onBin={setBin}
+    follow={page === 'cut' && onTape ? loaded?.id ?? null : null}
   />;
   const onExport = useCallback((marks: Marks | null) => setExporting({ marks }), []);
   const conversationWords = conversationHidden ? words.label.studio.showConversation : words.label.studio.hideConversation;
@@ -282,6 +285,7 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
       revision={snapshot.revision ?? 0}
       pool={pool}
       media={project?.media ?? NO_MEDIA}
+      bins={project?.bins ?? NO_BINS}
       bin={bin}
       timelines={timelines}
       selected={selected}
@@ -295,6 +299,7 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
       onRetry={again}
       onProblem={(said, failure) => fail(said)(failure)}
       onExport={onExport}
+      onTape={setOnTape}
     />}
     {page === 'edit' && <EditPage
       bridge={bridge}

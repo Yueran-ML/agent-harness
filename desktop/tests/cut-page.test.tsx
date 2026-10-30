@@ -13,7 +13,7 @@ import { Studio } from '../src/studio/Studio';
 import { CUT_NARROW_PX } from '../src/studio/pages/CutPage';
 import { nearestCut, nearestEditPoint } from '../src/studio/timeline/editKeys';
 import { fitZoom, HEADER_WIDTH } from '../src/studio/timeline/geometry';
-import { placeOnTape, tapeIndexAt, tapeOf, tapeStep } from '../src/studio/cut/SourceTape';
+import { placeOnTape, tapeIndexAt, tapeMedia, tapeOf, tapeStep } from '../src/studio/cut/SourceTape';
 import { applyOp, ProjectCopy, type EngineEvent, type Media, type Op, type Project, type Timeline, type TransportState } from '../src/studio/engine';
 import type { EngineBridge } from '../src/bridge';
 import { clip, media } from './timeline-fixture';
@@ -67,8 +67,8 @@ const cuts = (): Timeline => ({
 });
 
 /** An engine that keeps a project and the two transports, and tells what changed as the real one does. */
-function fakeEngine(timelines: Timeline[] = [cuts()]) {
-  let project: Project = { schema: 2, next_id: 10, bins: [{ id: 'b1', name: 'B-roll', parent: null }], media: [m1, m2, m3], timelines };
+function fakeEngine(timelines: Timeline[] = [cuts()], pool: { media: Media[]; bins: Project['bins'] } = { media: [m1, m2, m3], bins: [{ id: 'b1', name: 'B-roll', parent: null }] }) {
+  let project: Project = { schema: 2, next_id: 10, bins: pool.bins, media: pool.media, timelines };
   let revision = 0;
   const listeners = new Set<(event: EngineEvent) => void>();
   const tell = (method: string, params: unknown) => listeners.forEach(listener => listener({ kind: 'notification', session: 1, method, params }));
@@ -113,8 +113,8 @@ function fakeEngine(timelines: Timeline[] = [cuts()]) {
   };
 }
 function Lying() { useOverlay(); return null; }
-async function mount({ words, timelines }: { words?: typeof zhCN; timelines?: Timeline[] } = {}) {
-  const engine = fakeEngine(timelines);
+async function mount({ words, timelines, pool }: { words?: typeof zhCN; timelines?: Timeline[]; pool?: { media: Media[]; bins: Project['bins'] } } = {}) {
+  const engine = fakeEngine(timelines, pool);
   const tree = (lying: boolean) => <>{<Studio cwd="F:/film" engine={{ ...engine, native: true }} language="en" onClose={() => {}} />}{lying && <Lying />}</>;
   const view = render(words ? <Words.Provider value={words}>{tree(false)}</Words.Provider> : tree(false));
   await settle(); fireEvent.click(screen.getByRole('tab', { name: words ? '快编' : 'Cut' })); await settle(); draw(); await settle();
@@ -184,10 +184,10 @@ describe('the Cut page', () => {
   });
 
   it('plays the media of the bin as one tape, each medium with its own frames and marks, across their boundaries', async () => {
-    const { bridge } = await mount();
+    const { bridge } = await mount({ pool: { media: [m1, m2], bins: [] } });
     fireEvent.click(screen.getByRole('button', { name: 'Source tape' })); await settle();
     const tape = document.querySelector<HTMLElement>('[data-test="source-tape"]')!;
-    // The master bin's two media, in their order; the third is in another bin.
+    // The master bin's two media, in their order.
     expect([...tape.querySelectorAll<HTMLElement>('[data-tape-media]')].map(each => [each.dataset.tapeMedia, each.style.left, each.style.width]))
       .toEqual([['m1', '0%', `${10 / 30 * 100}%`], ['m2', `${10 / 30 * 100}%`, `${20 / 30 * 100}%`]]);
     // The marks of the second are drawn in it, at a quarter and three quarters of it; the first has none.
@@ -224,6 +224,31 @@ describe('the Cut page', () => {
     key('ArrowUp'); await settle();
     expect(calls(bridge, 'transport.load')).toEqual([{ monitor: 'source', media: 'm1' }]);
     expect(calls(bridge, 'transaction.apply')).toEqual([]);
+  });
+
+  it('strings out the media of the bin and of the bins in it, and chooses in the pool the medium under the playhead of the tape', async () => {
+    // Reference Manual 20, p. 546: every clip of the open bin and of its subfolders is on the tape, and the one the playhead is in is selected in the Media Pool.
+    const m4: Media = { ...m1, id: 'm4', name: 'Inner', bin: 'b2' };
+    const bins = [{ id: 'b1', name: 'B-roll', parent: null }, { id: 'b2', name: 'Inner', parent: 'b1' }];
+    expect(tapeMedia([m1, m4, m3, m2], bins, 'b1').map(each => each.id)).toEqual(['m3', 'm4']);
+    expect(tapeMedia([m1, m4, m3, m2], bins, null).map(each => each.id)).toEqual(['m1', 'm2', 'm3', 'm4']);
+    expect(tapeMedia([m1, m4, m3, m2], bins, 'b2').map(each => each.id)).toEqual(['m4']);
+    const { notify } = await mount({ pool: { media: [m1, m2, m3, m4], bins } });
+    fireEvent.click(screen.getByRole('button', { name: 'Source tape' })); await settle();
+    // The master bin's tape is all the media.
+    expect([...document.querySelectorAll<HTMLElement>('[data-tape-media]')].map(each => each.dataset.tapeMedia)).toEqual(['m1', 'm2', 'm3', 'm4']);
+    const chosen = () => [...document.querySelectorAll<HTMLElement>('[data-test="pool-item"][aria-selected="true"]')].map(each => each.dataset.media);
+    notify('source', { media: 'm2', frame: 3 }); await settle();
+    expect(chosen()).toEqual(['m2']);
+    // A bin's tape holds the media of the bins in it.
+    fireEvent.click(document.querySelector('[data-bin="b1"]')!); await settle();
+    expect([...document.querySelectorAll<HTMLElement>('[data-tape-media]')].map(each => each.dataset.tapeMedia)).toEqual(['m3', 'm4']);
+    notify('source', { media: 'm3', frame: 0 }); await settle();
+    expect(chosen()).toEqual(['m3']);
+    // Off the tape, the pool is chosen in by hand alone.
+    fireEvent.click(screen.getByRole('button', { name: 'Source clip' })); await settle();
+    notify('source', { media: 'm4', frame: 0 }); await settle();
+    expect(chosen()).toEqual(['m3']);
   });
 
   it('works out the tape as pure functions: frames of one medium, never a range across two', () => {

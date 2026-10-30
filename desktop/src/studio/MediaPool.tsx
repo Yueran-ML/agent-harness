@@ -11,7 +11,7 @@ import { Thumbnails } from './media/Thumbnails';
 export { factsOf, proxyStanding } from './media/facts';
 
 /** Media IDs and metadata are edited through one engine transaction; the original files stay where they are. */
-export const MediaPool = memo(function MediaPool({ media, bins, timelines, proxies, loaded, bridge, session, onImport, onLoad, onMakeAgain, initialGrid = false, onBin }: {
+export const MediaPool = memo(function MediaPool({ media, bins, timelines, proxies, loaded, bridge, session, onImport, onLoad, onMakeAgain, initialGrid = false, onBin, follow = null }: {
   media: readonly Media[] | null; bins: readonly Bin[]; timelines: readonly { rate: Rate }[];
   proxies: Readonly<Record<string, ProxyEvent>>; loaded: string | null; bridge: Pick<EngineBridge, 'call'>; session: number;
   onImport: (bin: string | null) => void; onLoad: (id: string) => void; onMakeAgain: (id: string) => void;
@@ -19,6 +19,8 @@ export const MediaPool = memo(function MediaPool({ media, bins, timelines, proxi
   initialGrid?: boolean;
   /** Told of the bin shown (null for the master bin), whose media the source tape of the Cut page plays. */
   onBin?: (bin: string | null) => void;
+  /** A medium to choose as it changes: the one under the playhead of the Cut page's source tape. */
+  follow?: string | null;
 }) {
   const words = useWords();
   const labels = words.label.studio.media;
@@ -29,6 +31,7 @@ export const MediaPool = memo(function MediaPool({ media, bins, timelines, proxi
   const pending = useRef(false);
   const selectedBin = bins.some(each => each.id === bin) ? bin : null;
   useEffect(() => { onBin?.(selectedBin); }, [selectedBin, onBin]);
+  useEffect(() => { if (follow !== null) setSelection({ ids: [follow], focus: follow, anchor: follow }); }, [follow]);
   const visible = useMemo(() => (media ?? []).filter(each => each.bin === selectedBin), [media, selectedBin]);
   const chosen = visible.filter(each => selection.ids.includes(each.id));
   const details = chosen.find(each => each.id === selection.focus) ?? chosen[0];

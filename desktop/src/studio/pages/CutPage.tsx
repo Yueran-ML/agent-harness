@@ -3,11 +3,11 @@ import { PanelLeft, Upload } from 'lucide-react';
 import { keyOf } from '../../app/keys';
 import { useWords } from '../../app/locale';
 import type { EngineBridge } from '../../bridge';
-import type { Media, Monitor, Timeline as TimelineModel } from '../engine';
+import type { Bin, Media, Monitor, Timeline as TimelineModel } from '../engine';
 import { editingAllowed, inStudio, useStudioKeys } from '../keys';
 import { MonitorPane } from '../MonitorPane';
 import { EditButtons } from '../cut/EditButtons';
-import { SourceTape, tapeOf, tapeStep, useTapeGo } from '../cut/SourceTape';
+import { SourceTape, tapeMedia, tapeOf, tapeStep, useTapeGo } from '../cut/SourceTape';
 import { nearestCut, type EditAction } from '../timeline/editKeys';
 import { Timeline, type TimelineHandle, type TimelineView } from '../timeline/Timeline';
 import type { MonitorControls } from '../useMonitor';
@@ -15,6 +15,7 @@ import type { ViewerNotice } from '../Viewer';
 import { useTimelineLoad } from './useTimelineLoad';
 import type { Marks } from '../timeline/snap';
 
+const NO_BINS: readonly Bin[] = [];
 /** Narrower than this, the Cut page has its buttons without their names, and its pool narrower. */
 export const CUT_NARROW_PX = 1100;
 /** How high a track is in the upper timeline of the Cut page, which shows the whole of it. */
@@ -41,8 +42,8 @@ export type ViewerMode = 'source' | 'tape' | 'timeline';
  * Resolve's key of markers, Reference Manual 20, p. 869, and is left unbound).
  */
 export function CutPage({
-  bridge, native, session, revision, pool, media, bin, timelines, selected, onSelect, source, sourceMedia, timelineMonitor,
-  focus, onFocus, noticeOf, onRetry, onProblem, onExport,
+  bridge, native, session, revision, pool, media, bins = NO_BINS, bin, timelines, selected, onSelect, source, sourceMedia, timelineMonitor,
+  focus, onFocus, noticeOf, onRetry, onProblem, onExport, onTape,
 }: {
   bridge: Pick<EngineBridge, 'call' | 'onEvent' | 'viewRect' | 'viewShow'>;
   native: boolean;
@@ -51,7 +52,8 @@ export function CutPage({
   /** The media pool, in its thumbnail view. */
   pool: ReactNode;
   media: readonly Media[];
-  /** The bin that the pool shows, whose media are the source tape (null for the master bin). */
+  /** The bins of the pool, and the one that it shows, whose media and those of its bins are the source tape (null for the master bin). */
+  bins?: readonly Bin[];
   bin: string | null;
   timelines: readonly TimelineModel[];
   selected: TimelineModel | null;
@@ -67,6 +69,8 @@ export function CutPage({
   onProblem: (said: string, failure: unknown) => void;
   /** Open the export of the timeline, with the In and Out points of the lower timeline. */
   onExport?: (marks: Marks | null) => void;
+  /** Told whether the viewer shows the source tape: the medium under its playhead is then chosen in the pool (Reference Manual 20, p. 546). */
+  onTape?: (shown: boolean) => void;
 }) {
   const words = useWords();
   const labels = words.label.studio.cutPage;
@@ -109,8 +113,10 @@ export function CutPage({
   const sourceContext = useMemo(() => (sourceMedia === null || sourceFrame === null ? null : { media: sourceMedia, frame: sourceFrame, rate: source.rate }),
     [sourceMedia, sourceFrame, source.rate]);
 
-  // The source tape: the media of the bin shown in the pool, in its order.
-  const binMedia = useMemo(() => media.filter(each => each.bin === bin), [media, bin]);
+  // The source tape: the media of the bin shown in the pool and of the bins in it, in its order.
+  const binMedia = useMemo(() => tapeMedia(media, bins, bin), [media, bins, bin]);
+  useEffect(() => { onTape?.(mode === 'tape'); }, [mode, onTape]);
+  useEffect(() => () => onTape?.(false), [onTape]);
   const reel = useMemo(() => tapeOf(binMedia, timelines), [binMedia, timelines]);
   const go = useTapeGo(bridge, sourceState?.media ?? null, failed);
   const choose = (next: ViewerMode) => {

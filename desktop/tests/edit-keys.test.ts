@@ -38,6 +38,15 @@ describe('DaVinci editing keys', () => {
     expect(command('F9', {}, context({ cut: true }))).toMatchObject({ transaction: { ops: [{ edit: 'smart_insert' }] } });
     expect(editCommand({ kind: 'place', edit: 'source_overwrite' }, context({ cut: true }))).toBeNull();
   });
+  it('places on top at the edit point within five frames of the playhead on the Cut page, as DaVinci Resolve', () => {
+    // Reference Manual 20, p. 563: near an edit point (within five frames), with no timeline In or Out, the clip aligns with it.
+    const at = (frame: number, fields: Partial<EditContext> = {}) => (command('F12', {}, context({ frame, cut: true, ...fields })) as { transaction: { ops: { at: number }[] } }).transaction.ops[0].at;
+    expect(at(103)).toBe(100);
+    expect(at(95)).toBe(100);
+    expect(at(106)).toBe(106);
+    expect(at(103, { cut: false })).toBe(103);
+    expect(at(103, { marks: { in: 40, out: null } })).toBe(40);
+  });
   it('uses the marked timeline range for a three-point edit, with an exclusive out frame', () => {
     const ctx = context({ marks: { in: 50, out: 90 } });
     expect(command('F9', {}, ctx)).toMatchObject({ transaction: { ops: [{ edit: 'insert', at: 50, source: { length: 40 } }] } });

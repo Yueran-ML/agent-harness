@@ -6,6 +6,10 @@ stories; it no longer builds an ffmpeg filter graph or renders a separate versio
 
 ## Requirements
 
+- Windows. The engine, and with it the video tools, `columbina video` and the editing studio of
+  the desktop application, runs on Windows only for now; macOS support will come later. On macOS
+  and Linux the tools are not offered and every `columbina video` command says so; the rest of
+  the agent works there as usual.
 - Set `COLUMBINA_ENGINE` to the absolute path of an installed engine, or put `columbina-engine`
   on PATH. It must be outside the working directory. The video plugin's `engine` setting also
   accepts this path. See [protocol 2](../engine/PROTOCOL.md). To build from source, run

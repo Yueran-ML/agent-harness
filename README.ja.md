@@ -158,7 +158,7 @@ columbina login github
 - **定期タスク。** `columbina schedules add` で、デスクトップアプリが開いている間、数分ごと、毎時、毎日、毎週にタスクを実行します。
 - **タスクごとのワークツリー。** `columbina worktrees add 名前` でタスクに専用ブランチのプロジェクトの写しを渡し、終わったらマージするか捨てます。
 - **エディターから会話。** `columbina acp` は Agent Client Protocol を話し、Zed などのエディターから使えます。
-- **動画。** `COLUMBINA_VIDEO=1` にすると、エージェントは ffmpeg で、話されたことばをもとに動画を切り、映像、音楽、タイトルを重ねます。[動画の編集](docs/video.ja.md)を参照してください。
+- **動画。** `COLUMBINA_VIDEO=1` にすると、エージェントは ffmpeg で、話されたことばをもとに動画を切り、映像、音楽、タイトルを重ねます。[動画の編集](docs/video.ja.md)を参照してください。動画編集（これらのツールとデスクトップアプリの編集スタジオ）は現在 Windows のみに対応しており、macOS には今後対応します。エージェントのほかの機能は Windows、macOS、Linux で使えます。
 
 ### Feishu アシスタント
 

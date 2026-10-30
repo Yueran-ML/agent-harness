@@ -231,7 +231,9 @@ columbina login github
 - **An editor holds the conversation.** `columbina acp` speaks the Agent Client Protocol, for an
   editor such as Zed.
 - **Video.** With `COLUMBINA_VIDEO=1` the agent cuts a film by what is said in it, with ffmpeg,
-  and lays pictures, music and titles over it. See [Editing video](docs/video.md).
+  and lays pictures, music and titles over it. See [Editing video](docs/video.md). Video
+  editing, here and in the editing studio of the desktop application, runs on Windows only for
+  now; macOS will have it later. The rest of Columbina runs on Windows, macOS and Linux.
 
 ### An assistant in Feishu
 

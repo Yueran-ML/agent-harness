@@ -6,6 +6,8 @@ Python は文字起こしと編集用の原稿を扱い、ffmpeg フィルター
 
 ## 準備
 
+- Windows。エンジンは現在 Windows のみに対応しており、動画ツール、`columbina video`、デスクトップアプリの編集スタジオも Windows でだけ使えます。
+  macOS には今後対応します。macOS と Linux ではツールを提供せず、`columbina video` の各コマンドはその旨を表示します。エージェントのほかの機能はそのまま使えます。
 - `COLUMBINA_ENGINE` にインストール済みエンジンの絶対パスを指定するか、`columbina-engine` を PATH に置きます。
   作業ディレクトリ内の実行ファイルは使いません。動画プラグインの `engine` 設定でも指定できます。
   [プロトコル 2](../engine/PROTOCOL.md)を参照してください。ソースからのビルドは FFmpeg 開発ライブラリを設定し、

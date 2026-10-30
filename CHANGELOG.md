@@ -6,6 +6,12 @@ change what was there before.
 
 ## Unreleased
 
+- Video editing runs on Windows only for now; macOS will have it later. On macOS and Linux the
+  video plugin offers no tools and tells the model why, and every `columbina video` command says
+  that video editing needs Windows instead of looking for an engine. The rest of the agent runs
+  on Windows, macOS and Linux as before.
+- A video export that is cancelled while the engine is still answering its start is now
+  cancelled in the engine too, instead of going on.
 - Video tools and the CLI now edit Studio through the shared engine (protocol 2). One edit
   batch is one undo step, shared with the desktop. Nine tools import media, apply timeline
   edits, transcribe, write and cut track stories, correct text, export, undo and inspect.

@@ -5,6 +5,8 @@ Python 负责转录分析和可编辑文稿，不再拼接 ffmpeg 滤镜图，�
 
 ## 准备
 
+- Windows。引擎目前只支持 Windows，视频工具、`columbina video` 和桌面应用的剪辑工作室也因此只能在 Windows 上使用，macOS 之后会加入。
+  在 macOS 和 Linux 上不提供这些工具，`columbina video` 的每个命令都会说明这一点；agent 的其他功能照常可用。
 - 将 `COLUMBINA_ENGINE` 设为已安装引擎的绝对路径，或将 `columbina-engine` 放入 PATH。
   引擎须位于工作目录之外；视频插件的 `engine` 配置也可指定它。
   参阅[协议 2](../engine/PROTOCOL.md)。源码构建需配置 FFmpeg 开发库，

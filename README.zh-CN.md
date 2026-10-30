@@ -158,7 +158,7 @@ columbina login github
 - **定时任务。** `columbina schedules add` 让任务在桌面端打开期间每隔几分钟、每小时、每天或每周运行。
 - **每个任务一个工作树。** `columbina worktrees add 名称` 给任务一份在独立分支上的项目副本，做完后合并进项目或丢弃。
 - **由编辑器来对话。** `columbina acp` 支持 Agent Client Protocol，可以接 Zed 这类编辑器。
-- **剪视频。** 设 `COLUMBINA_VIDEO=1` 后，Agent 可以用 ffmpeg 按视频里说的话剪片子，并叠加画面、配乐和标题。见[剪辑视频](docs/video.zh-CN.md)。
+- **剪视频。** 设 `COLUMBINA_VIDEO=1` 后，Agent 可以用 ffmpeg 按视频里说的话剪片子，并叠加画面、配乐和标题。见[剪辑视频](docs/video.zh-CN.md)。视频剪辑（这些工具和桌面应用的剪辑工作室）目前只支持 Windows，macOS 之后会加入；Agent 的其他功能在 Windows、macOS 和 Linux 上都能用。
 
 ### 飞书助手
 

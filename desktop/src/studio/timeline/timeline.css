@@ -30,6 +30,14 @@
 .timeline-clip[data-kind='title'] { border-color: #9275b3; background: #514267; }
 .timeline-clip[data-kind='color'] { border-color: #888b92; background: #484c55; }
 .timeline-cue { background: #6b5632; border-color: #ad925d; padding: 4px 6px; font-size: 11px; white-space: pre-wrap; }
+.timeline-cue[data-selected='true'] { border-color: #f9d77b; box-shadow: inset 0 0 0 1px #f9d77b; }
+.timeline-track-language { color: var(--moon-3); }
+/* The "+" over the headers of the tracks, and what it offers. */
+.timeline-ruler-corner { display: flex; align-items: center; justify-content: flex-end; padding: 0 6px; box-sizing: border-box; z-index: 5; }
+.timeline-add-track { position: relative; }
+.timeline-add-track .icon-btn { width: 24px; min-height: 24px; }
+.timeline-add-track-menu { position: absolute; top: 28px; left: 0; z-index: 6; display: flex; flex-direction: column; gap: 8px; min-width: 200px; padding: 10px; border: 1px solid var(--line); border-radius: var(--r1, 6px); background: var(--ink-1, var(--ink-2)); box-shadow: 0 8px 24px #0006; }
+.timeline-add-track-menu label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; }
 .timeline-clip[data-enabled='false'], .timeline-track[data-enabled='false'] .timeline-lane { opacity: 0.4; }
 .timeline-track[data-locked='true'] .timeline-lane { background-image: repeating-linear-gradient(135deg, transparent, transparent 9px, #ffffff05 9px, #ffffff05 11px); }
 .timeline-clip-name { position: relative; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 3px 5px; font-size: 11px; z-index: 1; }

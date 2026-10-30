@@ -795,6 +795,8 @@ export const en = {
         lock: 'Lock', unlock: 'Unlock', mute: 'Mute', unmute: 'Unmute', hide: 'Hide track', show: 'Show track', height: 'Track height',
         color: 'Solid color', wavePending: 'Preparing waveform…', waveFailed: 'Waveform unavailable',
         dissolve: 'Dissolve', dip_black: 'Dip to black', dip_white: 'Dip to white', crossfade: 'Crossfade',
+        addTrack: 'Add track', addSubtitleTrack: 'Add subtitle track', language: 'Language', noLanguage: 'Unspecified',
+        hideSubtitles: 'Hide in the viewer and export', showSubtitles: 'Show in the viewer and export', newCue: 'Subtitle',
       },
       media: {
         bins: 'Bins', master: 'Master', newBin: 'New bin', name: 'Name', rename: 'Rename', remove: 'Remove from pool', removeBin: 'Remove empty bin',
@@ -822,6 +824,7 @@ export const en = {
         kind: 'Type', length: 'Duration (frames)', start: 'Start on edit', middle: 'Center on edit', end: 'End on edit', removeTransition: 'Delete transition',
         name: 'Name', resolution: 'Resolution', width: 'Width', height: 'Height', custom: 'Custom', frameRate: 'Frame rate', sampleRate: 'Audio sample rate',
         changeSpeed: 'Change clip speed', titleText: 'Title', useLongest: (frames: number) => `Use ${frames} frames`,
+        subtitle: 'Subtitle', cueStart: 'Start (frame)', removeCue: 'Delete subtitle',
       },
       /** DaVinci Resolve's Change Clip Speed. */
       speed: { title: 'Change clip speed', percent: 'Speed', reverse: 'Reverse speed', ripple: 'Ripple sequence', duration: 'Duration', apply: 'Change' },
@@ -1418,6 +1421,7 @@ export const en = {
         speedMedia: 'Only clips of media can change speed.',
         speedRange: 'The speed is from 1% to 10000%.',
         library: 'Drag a transition onto an edit point on the timeline, or a title or a solid color onto a video track, where it overwrites 5 seconds.',
+        addCue: 'Double-click empty space on a subtitle track to add a subtitle at the playhead.',
       },
       cut: 'The Cut page is not ready yet. Edit timelines on the Edit page.',
       windowsOnly: 'The editing studio runs only on Windows for now. macOS will come later.',

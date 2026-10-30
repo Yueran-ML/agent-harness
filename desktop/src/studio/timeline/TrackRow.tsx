@@ -3,6 +3,7 @@ import { useWords } from '../../app/locale';
 import type { Media, Op, Rate, Track } from '../engine';
 import { ClipView } from './ClipView';
 import { spanStyle, transitionSpan, visible } from './geometry';
+import { SubtitleCues } from './SubtitleTrack';
 import { TrackHeader } from './TrackHeader';
 import type { Waveforms } from './waveforms';
 
@@ -11,14 +12,17 @@ import type { Waveforms } from './waveforms';
  * whole steps as the timeline scrolls (see `scrollWindow`), so a row is drawn again only where the
  * scroll crosses a step, or what it shows changes; not as the playhead moves.
  */
-export const TrackRow = memo(function TrackRow({ timeline, track, media, rate, scale, from, to, height, waves, onEdit, onHeight, selected, targeted, onTarget, chosen = null }: {
+export const TrackRow = memo(function TrackRow({ timeline, track, media, rate, scale, from, to, height, waves, onEdit, onHeight, selected, targeted, onTarget, chosen = null, chosenCue = null }: {
   timeline: string; track: Track; media: ReadonlyMap<string, Media>; rate: Rate; scale: number; from: number; to: number;
   height: number; waves: Waveforms; onEdit: (ops: Op[]) => Promise<boolean>; onHeight: (id: string, height: number) => void;
   selected: ReadonlySet<string>; targeted: boolean; onTarget: (id: string) => void;
   /** The transition chosen, where it is on this track. */
   chosen?: string | null;
+  /** The subtitle chosen, where it is on this track. */
+  chosenCue?: string | null;
 }) {
-  const words = useWords().label.studio.timeline;
+  const all = useWords();
+  const words = all.label.studio.timeline;
   const transitions = useMemo(() => {
     if (track.kind === 'subtitle') return [];
     const starts = new Map(track.clips.map(clip => [clip.id, clip.start]));
@@ -26,9 +30,8 @@ export const TrackRow = memo(function TrackRow({ timeline, track, media, rate, s
   }, [track]);
   return <div className="timeline-track" data-track={track.id} data-kind={track.kind} data-enabled={track.enabled} data-locked={track.locked} style={{ height }}>
     <TrackHeader timeline={timeline} track={track} height={height} onEdit={onEdit} onHeight={onHeight} targeted={targeted} onTarget={onTarget} />
-    <div className="timeline-lane" role={track.kind === 'subtitle' ? undefined : 'listbox'} aria-label={track.name} aria-multiselectable={track.kind === 'subtitle' ? undefined : true}>
-      {track.kind === 'subtitle' ? visible(track.cues, from, to).map(cue => <div key={cue.id} className="timeline-cue" data-cue={cue.id}
-        style={spanStyle(cue.start, cue.length)} title={cue.text}>{cue.text}</div>)
+    <div className="timeline-lane" role="listbox" aria-label={track.name} title={track.kind === 'subtitle' && !track.locked ? all.hint.studio.inspector.addCue : undefined} aria-multiselectable={track.kind === 'subtitle' ? undefined : true}>
+      {track.kind === 'subtitle' ? <SubtitleCues track={track} from={from} to={to} chosen={chosenCue} />
         // A clip of video is given its own span, which does not change as the window moves; one of
         // sound is given the window, of which its waveform draws the tiles that it covers.
         : visible(track.clips, from, to).map(clip => <ClipView key={clip.id} clip={clip} kind={track.kind} selected={selected.has(clip.id)}

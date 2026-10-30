@@ -12,13 +12,16 @@ export const TrackHeader = memo(function TrackHeader({ timeline, track, height, 
   const [renaming, setRenaming] = useState(false);
   const resizing = useRef<{ y: number; height: number } | null>(null);
   const lock = track.locked ? words.unlock : words.lock;
-  const enabled = track.kind === 'audio' ? track.enabled ? words.mute : words.unmute : track.enabled ? words.hide : words.show;
+  // A track of subtitles that is off is neither drawn in the timeline viewer nor written beside an export.
+  const enabled = track.kind === 'audio' ? track.enabled ? words.mute : words.unmute
+    : track.kind === 'subtitle' ? track.enabled ? words.hideSubtitles : words.showSubtitles : track.enabled ? words.hide : words.show;
   const Visible = track.kind === 'audio' ? track.enabled ? Volume2 : VolumeX : track.enabled ? Eye : EyeOff;
   const changeHeight = (value: number) => onHeight(track.id, Math.max(40, Math.min(240, value)));
   return <div className="timeline-track-header">
     {renaming ? <NameField name={track.name} onCommit={name => onEdit([{ op: 'set_track', timeline, id: track.id, name }])} onCancel={() => setRenaming(false)} />
       : <button type="button" className="timeline-track-name" title={track.name} onDoubleClick={() => setRenaming(true)}
-        onKeyDown={event => { if (event.key === 'F2') { event.preventDefault(); setRenaming(true); } }}>{track.name}</button>}
+        onKeyDown={event => { if (event.key === 'F2') { event.preventDefault(); setRenaming(true); } }}>{track.name}
+        {track.kind === 'subtitle' && track.language && <span className="timeline-track-language" data-test="track-language"> · {track.language}</span>}</button>}
     <div className="timeline-track-switches">
       {track.kind !== 'subtitle' && onTarget && <button type="button" className="icon-btn" aria-label={`${words.target}: ${track.name}`} title={words.target} aria-pressed={targeted}
         onClick={() => onTarget(track.id)}><Crosshair size={13} /></button>}

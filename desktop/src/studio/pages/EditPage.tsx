@@ -74,6 +74,9 @@ export function EditPage({
   const [narrow, setNarrow] = useState(false);
   const [creating, setCreating] = useState(false);
   const [chosenClips, setChosenClips] = useState<string[]>([]);
+  const [chosenCue, setChosenCue] = useState<string | null>(null);
+  // A subtitle added or double-clicked is to be written in: the inspector opens on it, as DaVinci Resolve's does.
+  const onCue = useCallback((cue: string | null, open: boolean) => { setChosenCue(cue); if (cue !== null && open) setInspectorOpen(true); }, []);
   const now = useRef({ onProblem, words });
   now.current = { onProblem, words };
 
@@ -186,7 +189,7 @@ export function EditPage({
     {inspectorOpen && <aside className="edit-inspector" aria-label={labels.editPage.inspector} data-test="inspector-slot">
       <h2 className="overline">{labels.editPage.inspector}</h2>
       <Inspector bridge={bridge} session={session} revision={revision} timeline={selected} media={media} clips={chosenClips} transition={chosenTransition}
-        onSpeed={setSpeedClips} />
+        cue={chosenCue} onSpeed={setSpeedClips} />
     </aside>}
     <div className="edit-timeline" onPointerDownCapture={() => onFocus('timeline')} onFocusCapture={() => onFocus('timeline')}>
       <Timeline
@@ -203,6 +206,7 @@ export function EditPage({
         focus={focus}
         onSelection={setChosenClips}
         onTransition={setChosenTransition}
+        onCue={onCue}
         onSpeed={setSpeedClips}
       />
     </div>

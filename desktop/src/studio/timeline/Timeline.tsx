@@ -9,6 +9,7 @@ import { LET_GO_HOLD_MS } from '../Transport';
 import { duration, fitZoom, frameAt, HEADER_WIDTH, RULER_HEIGHT, scrollWindow, zoomAt } from './geometry';
 import { Ruler } from './Ruler';
 import { Scrub } from './scrub';
+import { AddSubtitleTrack } from './SubtitleTrack';
 import { Toolbar } from './Toolbar';
 import { TrackRow } from './TrackRow';
 import { Waveforms } from './waveforms';
@@ -18,11 +19,13 @@ import './timeline.css';
 
 /** A view of the accepted engine project. Scrolling, zoom and track height do not add undo steps. */
 export interface TimelineHandle { keyDown: (key: Key) => boolean }
-export function Timeline({ timeline, media, bridge, session, revision, frame, playing, onSeek, source = null, focus = 'timeline', onSpeed, onSelection, onTransition, ref }: {
+export function Timeline({ timeline, media, bridge, session, revision, frame, playing, onSeek, source = null, focus = 'timeline', onSpeed, onSelection, onTransition, onCue, ref }: {
   timeline: TimelineModel | null; media: readonly Media[]; bridge: Pick<EngineBridge, 'call' | 'onEvent'>; session: number;
   revision: number; frame: number; playing: boolean; onSeek: (frame: number, scrubbing: boolean) => void;
   source?: EditContext['source']; focus?: Monitor; onSpeed?: (clips: string[]) => void; onSelection?: (clips: string[]) => void;
-  onTransition?: (transition: string | null) => void; ref?: Ref<TimelineHandle>;
+  onTransition?: (transition: string | null) => void;
+  /** The subtitle chosen, for the inspector; `open` where it was added or double-clicked, to be written in. */
+  onCue?: (cue: string | null, open: boolean) => void; ref?: Ref<TimelineHandle>;
 }) {
   const words = useWords();
   const labels = words.label.studio.timeline;
@@ -91,7 +94,7 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   const ends = useRef(end);
   ends.current = end;
   const fit = useCallback(() => setView(old => ({ ...old, scale: fitZoom(ends.current, old.width), left: 0 })), []);
-  const editing = useEditing({ timeline, media, bridge, session, revision, frame, focus, source, root, scroll, view, onSeek, fit, zoom, onSpeed, onSelection, onTransition });
+  const editing = useEditing({ timeline, media, bridge, session, revision, frame, focus, source, root, scroll, view, onSeek, fit, zoom, onSpeed, onSelection, onTransition, onCue });
   useImperativeHandle(ref, () => ({ keyDown: editing.keyDown }));
   useEffect(() => {
     const element = scroll.current;
@@ -143,7 +146,7 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
       if (editing.keyDown(key)) { event.preventDefault(); event.stopPropagation(); }
     }}
     onPointerDown={editing.pointerDown}
-    onDragOver={editing.dragOver} onDrop={editing.drop} onDragLeave={editing.dragLeave}
+    onDragOver={editing.dragOver} onDrop={editing.drop} onDragLeave={editing.dragLeave} onDoubleClick={editing.doubleClick}
     onPointerMove={event => { if (drag.current) { const frame = at(event); drag.current.frame = frame; setHeld({ frame, dragging: true }); scrub.drag(frame); } else editing.pointerMove(event); }}
     onPointerUp={event => { release(event); editing.pointerUp(event); }} onPointerCancel={event => { release(event, true); editing.cancel(); }} onLostPointerCapture={editing.cancel}>
     <Toolbar name={timeline?.name ?? labels.title} tool={editing.tool} snapping={editing.snapping} linked={editing.linked} follow={follow}
@@ -156,15 +159,18 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
           {editing.marks.in !== null && <span className="timeline-mark" data-edge="in" style={{ left: HEADER_WIDTH + editing.marks.in * view.scale }} />}
           {editing.marks.out !== null && <span className="timeline-mark" data-edge="out" style={{ left: HEADER_WIDTH + editing.marks.out * view.scale }} />}
           {editing.marks.in !== null && editing.marks.out !== null && <span className="timeline-mark-range" style={{ left: HEADER_WIDTH + editing.marks.in * view.scale, width: (editing.marks.out - editing.marks.in) * view.scale }} />}
-          <div className="timeline-ruler-corner" /></div>
+          <div className="timeline-ruler-corner"><AddSubtitleTrack onAdd={editing.addSubtitleTrack} disabled={editing.pending} /></div></div>
         {tracks.map(track => <TrackRow key={track.id} timeline={timeline.id} track={track} media={byId} rate={timeline.rate} scale={view.scale}
           from={from} to={to} height={heights[track.id] ?? 72} waves={waves} onEdit={editing.edit} onHeight={onHeight}
           selected={editing.selected} targeted={editing.targets.video_track === track.id || editing.targets.audio_track === track.id} onTarget={editing.target}
-          chosen={editing.transition !== null && track.kind !== 'subtitle' && track.transitions.some(each => each.id === editing.transition) ? editing.transition : null} />)}
+          chosen={editing.transition !== null && track.kind !== 'subtitle' && track.transitions.some(each => each.id === editing.transition) ? editing.transition : null}
+          chosenCue={editing.cue !== null && track.kind === 'subtitle' && track.cues.some(each => each.id === editing.cue) ? editing.cue : null} />)}
         {editing.preview?.preview.map(item => { const row = rows.get(item.track); return row && <div key={item.id} className="timeline-preview" data-preview={item.id} data-clamped={editing.preview!.clamped}
           style={{ left: HEADER_WIDTH + item.start * view.scale, width: item.length * view.scale, top: row.top + 4, height: row.height - 8 }} />; })}
         {editing.preview?.covered.map(item => { const row = rows.get(item.track); return row && <div key={`covered-${item.id}`} className="timeline-covered" data-covered={item.id}
           style={{ left: HEADER_WIDTH + item.start * view.scale, width: item.length * view.scale, top: row.top + 4, height: row.height - 8 }} />; })}
+        {editing.cuePreview && rows.get(editing.cuePreview.track) && (() => { const item = editing.cuePreview!; const row = rows.get(item.track)!; return <div className="timeline-preview" data-preview={item.id} data-clamped={item.clamped}
+          style={{ left: HEADER_WIDTH + item.start * view.scale, width: item.length * view.scale, top: row.top + 4, height: row.height - 8 }} />; })()}
         {editing.preview?.point != null && <div className="timeline-snap" style={{ left: HEADER_WIDTH + editing.preview.point * view.scale }} />}
         {editing.effectDrop?.preview.map(item => { const row = rows.get(item.track); return row && <div key="effect-preview" className="timeline-preview" data-preview="effect"
           style={{ left: HEADER_WIDTH + item.start * view.scale, width: item.length * view.scale, top: row.top + 4, height: row.height - 8 }} />; })}

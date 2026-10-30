@@ -3,7 +3,7 @@ import type { Key } from '../../app/keys';
 import { overlayOpen } from '../../app/overlay';
 import { useWords } from '../../app/locale';
 import type { EngineBridge } from '../../bridge';
-import { callEngine, type Media, type Monitor, type Op, type Timeline } from '../engine';
+import { callEngine, type Applied, type Media, type Monitor, type Op, type SubtitleTrack, type Timeline } from '../engine';
 import { editCommand, editKey, type EditContext } from './editKeys';
 import type { Targets, Transaction } from './commands';
 import { frameAt, HEADER_WIDTH } from './geometry';
@@ -24,6 +24,15 @@ interface Options {
   onSpeed?: (clips: string[]) => void; onSelection?: (clips: string[]) => void;
   /** The transition chosen on the timeline, for the inspector; null where none is. */
   onTransition?: (transition: string | null) => void;
+  /** The subtitle chosen on the timeline, for the inspector; `open` where it was just added or double-clicked, to be written in. */
+  onCue?: (cue: string | null, open: boolean) => void;
+}
+/** How long a subtitle added at the playhead is, unless the next one starts sooner. */
+export const CUE_SECONDS = 2;
+/** A subtitle dragged by its middle or by an edge: where it was, and the room between its neighbours. */
+interface CueDrag {
+  id: string; track: string; part: 'move' | 'in' | 'out'; x: number; y: number; pointer: number; origin: number;
+  start: number; length: number; low: number; high: number; revision: number; moved: boolean; candidates: number[];
 }
 interface PointerDrag {
   gesture: Gesture; x: number; y: number; pointer: number; moved: boolean; clickSelection?: Selection;
@@ -47,6 +56,10 @@ export function useEditing(options: Options) {
   const [linked, setLinked] = useState(true);
   const [selection, setSelection] = useState<Selection>(EMPTY_SELECTION);
   const [transition, setTransition] = useState<string | null>(null);
+  const [cue, setCue] = useState<string | null>(null);
+  // A subtitle being dragged, and where it would go: clamped at its neighbours, as the engine refuses overlaps.
+  const cueDrag = useRef<CueDrag | null>(null);
+  const [cuePreview, setCuePreview] = useState<(Preview & { clamped: boolean }) | null>(null);
   const [targets, setTargets] = useState<Targets>(() => defaultTargets(options.timeline));
   const [marks, setMarks] = useState<Marks>({ in: null, out: null });
   const [preview, setPreview] = useState<Dragged | null>(null);
@@ -60,12 +73,13 @@ export function useEditing(options: Options) {
   const queued = useRef<('history.undo' | 'history.redo')[]>([]);
   const active = useRef<PointerDrag | null>(null);
   const live = useRef(true);
-  const now = useRef({ ...options, words, studioWords, titleText, tool, snapping, linked, selection, transition, targets, marks });
-  now.current = { ...options, words, studioWords, titleText, tool, snapping, linked, selection, transition, targets, marks };
+  const cueText = all.label.studio.timeline.newCue;
+  const now = useRef({ ...options, words, studioWords, titleText, cueText, tool, snapping, linked, selection, transition, cue, targets, marks });
+  now.current = { ...options, words, studioWords, titleText, cueText, tool, snapping, linked, selection, transition, cue, targets, marks };
   const selected = useMemo(() => new Set(selection.ids), [selection]);
   const cancel = useCallback(() => {
-    const pointer = active.current?.pointer;
-    active.current = null; setPreview(null); setDropAt(null); setEffectDrop(null);
+    const pointer = active.current?.pointer ?? cueDrag.current?.pointer;
+    active.current = null; cueDrag.current = null; setPreview(null); setCuePreview(null); setDropAt(null); setEffectDrop(null);
     const root = now.current.root.current;
     if (pointer !== undefined && root?.hasPointerCapture?.(pointer)) root.releasePointerCapture(pointer);
   }, []);
@@ -73,14 +87,15 @@ export function useEditing(options: Options) {
     live.current = true;
     const away = () => cancel();
     window.addEventListener('blur', away);
-    return () => { live.current = false; active.current = null; window.removeEventListener('blur', away); };
+    return () => { live.current = false; active.current = null; cueDrag.current = null; window.removeEventListener('blur', away); };
   }, [cancel]);
   useEffect(() => {
-    cancel(); setSelection(EMPTY_SELECTION); setTransition(null); setMarks({ in: null, out: null });
+    cancel(); setSelection(EMPTY_SELECTION); setTransition(null); setCue(null); setMarks({ in: null, out: null });
     setTargets(defaultTargets(now.current.timeline)); setProblem(null);
   }, [options.timeline?.id, options.session, cancel]);
   useEffect(() => {
-    if (active.current && active.current.gesture.revision !== options.revision) { cancel(); setProblem(now.current.words.stale_revision); }
+    const revision = active.current?.gesture.revision ?? cueDrag.current?.revision;
+    if (revision !== undefined && revision !== options.revision) { cancel(); setProblem(now.current.words.stale_revision); }
   }, [options.revision, cancel]);
   useEffect(() => {
     const timeline = options.timeline;
@@ -88,6 +103,7 @@ export function useEditing(options: Options) {
     const locations = clipLocations(timeline);
     setSelection(old => old.ids.every(id => locations.has(id)) ? old : { ids: old.ids.filter(id => locations.has(id)), anchor: old.anchor && locations.has(old.anchor) ? old.anchor : null });
     setTransition(old => old !== null && timeline.tracks.some(track => track.kind !== 'subtitle' && track.transitions.some(each => each.id === old)) ? old : null);
+    setCue(old => old !== null && timeline.tracks.some(track => track.kind === 'subtitle' && track.cues.some(each => each.id === old)) ? old : null);
     setTargets(old => {
       const next = { ...old };
       for (const key of ['video_track', 'audio_track'] as const) if (old[key] && !timeline.tracks.some(t => t.id === old[key])) next[key] = null;
@@ -96,10 +112,13 @@ export function useEditing(options: Options) {
   }, [options.timeline]);
   useEffect(() => { options.onSelection?.(selection.ids); }, [selection.ids, options.onSelection]);
   useEffect(() => { options.onTransition?.(transition); }, [transition, options.onTransition]);
-  // A clip chosen leaves the transition, as only one kind of thing is chosen at a time.
-  useEffect(() => { if (selection.ids.length > 0) setTransition(null); }, [selection.ids]);
+  // The subtitle chosen is told as it changes; `opening` says that it was added or double-clicked.
+  const opening = useRef(false);
+  useEffect(() => { options.onCue?.(cue, opening.current); opening.current = false; }, [cue, options.onCue]);
+  // A clip chosen leaves the transition and the subtitle, as only one kind of thing is chosen at a time.
+  useEffect(() => { if (selection.ids.length > 0) { setTransition(null); setCue(null); } }, [selection.ids]);
 
-  const run = useCallback(async (method: 'transaction.apply' | 'history.undo' | 'history.redo', transaction?: Transaction): Promise<boolean> => {
+  const run = useCallback(async (method: 'transaction.apply' | 'history.undo' | 'history.redo', transaction?: Transaction, then?: (applied: unknown) => void): Promise<boolean> => {
     if (busy.current) {
       // Ctrl+Z pressed again while an edit is applied: it is not lost, but done after it.
       if (method !== 'transaction.apply') queued.current.push(method);
@@ -110,7 +129,10 @@ export function useEditing(options: Options) {
     const context = now.current;
     busy.current = true; setPending(true); setProblem(null);
     let done = false;
-    try { await callEngine(context.bridge, method, transaction ? { ...transaction } : undefined); done = true; }
+    try {
+      const applied = await callEngine(context.bridge, method, transaction ? { ...transaction } : undefined); done = true;
+      if (then && live.current && context.session === now.current.session) then(applied);
+    }
     catch (error) {
       queued.current = [];
       if (live.current && context.session === now.current.session && context.timeline?.id === now.current.timeline?.id) {
@@ -130,15 +152,61 @@ export function useEditing(options: Options) {
     setTargets(old => ({ ...old, [key]: old[key] === id ? null : id }));
   }, []);
   const chooseTool = useCallback((tool: Tool) => { cancel(); setTool(tool); }, [cancel]);
+  /** Choose a subtitle (or none), leaving the clips and the transition; `open` asks for it to be written in. */
+  const chooseCue = useCallback((id: string | null, open = false) => {
+    setSelection(old => (old.ids.length === 0 ? old : EMPTY_SELECTION)); setTransition(null);
+    if (open && id !== null && id === now.current.cue) { now.current.onCue?.(id, true); return; }
+    opening.current = open; setCue(id);
+  }, []);
+  /** Add a track of subtitles in `language` above the others, as DaVinci Resolve adds one: one transaction. */
+  const addSubtitleTrack = useCallback((language: string) => {
+    const { timeline, revision } = now.current;
+    if (!timeline) return;
+    void apply({ revision, ops: [{ edit: 'add_track', timeline: timeline.id, kind: 'subtitle', ...(language ? { language } : {}) }] });
+  }, [apply]);
+  /**
+   * Add a subtitle on `trackId` at the playhead, for two seconds or until the next subtitle, chosen
+   * to be written in. Where a subtitle is shown at the playhead already, it is said, and nothing sent.
+   */
+  const addCue = (trackId: string) => {
+    const context = now.current;
+    const track = context.timeline?.tracks.find(each => each.id === trackId);
+    if (!context.timeline || !track || track.kind !== 'subtitle' || track.locked) return;
+    const start = Math.max(0, context.frame);
+    if (track.cues.some(each => each.start <= start && start < each.start + each.length)) { setProblem(context.words.cue_overlap); return; }
+    const next = Math.min(Infinity, ...track.cues.filter(each => each.start > start).map(each => each.start));
+    const length = Math.min(Math.max(1, Math.round(CUE_SECONDS * context.timeline.rate.num / context.timeline.rate.den)), next - start);
+    void run('transaction.apply', { revision: context.revision, ops: [{ edit: 'add_cue', timeline: context.timeline.id, track: track.id, start, length, text: context.cueText }] },
+      applied => {
+        const added = (applied as Applied | null)?.done?.find(op => op.op === 'add_cue');
+        if (added && added.op === 'add_cue') chooseCue(added.cue.id, true);
+      });
+  };
+  const doubleClick = (event: { target: EventTarget | null }) => {
+    if (busy.current || active.current || cueDrag.current || overlayOpen() || !(event.target instanceof Element)) return;
+    const cueElement = event.target.closest<HTMLElement>('[data-cue]');
+    const track = event.target.closest<HTMLElement>('[data-track]');
+    if (!track || track.dataset.kind !== 'subtitle') return;
+    if (cueElement) { chooseCue(cueElement.dataset.cue!, true); return; }
+    if (!event.target.classList.contains('timeline-lane')) return;
+    if (track.dataset.locked === 'true') { setProblem(now.current.words.locked); return; }
+    addCue(track.dataset.track!);
+  };
   const keyDown = (key: Key): boolean => {
     if (overlayOpen() || document.querySelector('dialog[open]')) return false;
     const action = editKey(key);
     if (!action) return false;
-    if (active.current && action.kind !== 'cancel' && action.kind !== 'snap') return true;
+    if ((active.current || cueDrag.current) && action.kind !== 'cancel' && action.kind !== 'snap') return true;
     const context = now.current;
     // Delete with a transition chosen, and no clip, takes the transition away, as in DaVinci Resolve.
     if (action.kind === 'delete' && context.transition !== null && context.selection.ids.length === 0 && context.timeline) {
       void apply({ revision: context.revision, ops: [{ edit: 'remove_transition', timeline: context.timeline.id, id: context.transition }] });
+      return true;
+    }
+    // Delete or Backspace with a subtitle chosen, and no clip, takes the subtitle away. The others on
+    // its track stay where they are: they are timed to what is said, which does not move.
+    if (action.kind === 'delete' && context.cue !== null && context.selection.ids.length === 0 && context.timeline) {
+      void apply({ revision: context.revision, ops: [{ edit: 'remove_cue', timeline: context.timeline.id, id: context.cue }] });
       return true;
     }
     const result = editCommand(action, { ...context, selected: context.selection.ids });
@@ -168,16 +236,18 @@ export function useEditing(options: Options) {
   };
   const pointerDown = (event: PointerEvent) => {
     const context = now.current;
-    if (!context.timeline || event.button !== 0 || busy.current || active.current || overlayOpen()) return;
+    if (!context.timeline || event.button !== 0 || busy.current || active.current || cueDrag.current || overlayOpen()) return;
     const chosen = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-transition]') : null;
     if (chosen && context.tool !== 'blade' && chosen.closest<HTMLElement>('[data-track]')?.dataset.locked !== 'true') {
       event.preventDefault(); context.root.current?.focus();
-      setSelection(EMPTY_SELECTION); setTransition(chosen.dataset.transition!);
+      setSelection(EMPTY_SELECTION); setCue(null); setTransition(chosen.dataset.transition!);
       return;
     }
+    const cueElement = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-cue]') : null;
+    if (cueElement) { cueDown(event, cueElement); return; }
     const element = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-clip]') : null;
     if (!element) {
-      if (event.target instanceof Element && event.target.classList.contains('timeline-lane') && !event.ctrlKey && !event.metaKey && !event.shiftKey) { setSelection(EMPTY_SELECTION); setTransition(null); }
+      if (event.target instanceof Element && event.target.classList.contains('timeline-lane') && !event.ctrlKey && !event.metaKey && !event.shiftKey) { setSelection(EMPTY_SELECTION); setTransition(null); setCue(null); }
       return;
     }
     const id = element.dataset.clip!;
@@ -216,9 +286,66 @@ export function useEditing(options: Options) {
       candidates: context.snapping ? pointer.candidates ??= snapCandidates(pointer.gesture.timeline, pointer.gesture.ids, context.frame, context.marks) : undefined, scale: context.view.scale,
     });
   };
+  /** Which part of a subtitle is under the pointer: an edge within six pixels (a third of a short one), else its middle. */
+  const cuePart = (element: HTMLElement, clientX: number): CueDrag['part'] => {
+    const box = element.getBoundingClientRect();
+    const edge = Math.min(6, box.width / 3);
+    return clientX - box.left <= edge ? 'in' : box.right - clientX <= edge ? 'out' : 'move';
+  };
+  const cueDown = (event: PointerEvent, element: HTMLElement) => {
+    const context = now.current;
+    const trackElement = element.closest<HTMLElement>('[data-track]')!;
+    if (trackElement.dataset.locked === 'true' || context.tool === 'blade') return;
+    event.preventDefault(); context.root.current?.focus();
+    const id = element.dataset.cue!;
+    chooseCue(id);
+    const track = context.timeline!.tracks.find(each => each.id === trackElement.dataset.track) as SubtitleTrack | undefined;
+    const index = track?.cues.findIndex(each => each.id === id) ?? -1;
+    if (!track || index < 0) return;
+    const here = track.cues[index];
+    const before = track.cues[index - 1];
+    const after = track.cues[index + 1];
+    cueDrag.current = {
+      id, track: track.id, part: cuePart(element, event.clientX), x: event.clientX, y: event.clientY, pointer: event.pointerId, origin: at(event.clientX),
+      start: here.start, length: here.length, low: before ? before.start + before.length : 0, high: after ? after.start : Infinity,
+      revision: context.revision, moved: false, candidates: context.snapping ? snapCandidates(context.timeline!, [id], context.frame, context.marks) : [],
+    };
+    context.root.current?.setPointerCapture?.(event.pointerId);
+  };
+  /** Where a dragged subtitle goes: snapped, then held between its neighbours, never shorter than a frame. */
+  const cueAt = (drag: CueDrag, clientX: number): Preview & { clamped: boolean } => {
+    const { view } = now.current;
+    const end = drag.start + drag.length;
+    const anchors = drag.part === 'move' ? [drag.start, end] : drag.part === 'in' ? [drag.start] : [end];
+    const raw = at(clientX) - drag.origin;
+    const delta = drag.candidates.length > 0 ? snap(raw, anchors, drag.candidates, view.scale).delta : raw;
+    let start = drag.start;
+    let length = drag.length;
+    if (drag.part === 'move') start = Math.min(Math.max(drag.start + delta, drag.low), drag.high - drag.length);
+    else if (drag.part === 'in') { start = Math.min(Math.max(drag.start + delta, drag.low), end - 1); length = end - start; }
+    else length = Math.min(Math.max(end + delta, drag.start + 1), drag.high) - drag.start;
+    const wanted = drag.part === 'out' ? end + delta : drag.start + delta;
+    const got = drag.part === 'out' ? start + length : start;
+    return { id: drag.id, track: drag.track, start, length, clamped: got !== wanted };
+  };
   const pointerMove = (event: PointerEvent) => {
+    const drag = cueDrag.current;
+    if (drag) {
+      if (drag.pointer !== event.pointerId) return;
+      if (!drag.moved && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < 3) return;
+      drag.moved = true;
+      const next = cueAt(drag, event.clientX);
+      setCuePreview(old => old && old.start === next.start && old.length === next.length && old.clamped === next.clamped ? old : next);
+      return;
+    }
     const pointer = active.current;
     if (!pointer) {
+      const cueElement = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-cue]') : null;
+      if (cueElement) {
+        cueElement.style.cursor = cueElement.closest<HTMLElement>('[data-track]')?.dataset.locked === 'true' ? 'not-allowed'
+          : ({ move: 'grab', in: 'w-resize', out: 'e-resize' } as const)[cuePart(cueElement, event.clientX)];
+        return;
+      }
       const element = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-clip]') : null;
       if (element && now.current.timeline) element.style.cursor = element.closest<HTMLElement>('[data-track]')?.dataset.locked === 'true' ? 'not-allowed' : cursor(hit(element, event));
       return;
@@ -228,6 +355,18 @@ export function useEditing(options: Options) {
     pointer.moved = true; setPreview(calculate(event, pointer));
   };
   const pointerUp = (event: PointerEvent) => {
+    const drag = cueDrag.current;
+    if (drag) {
+      if (drag.pointer !== event.pointerId) return;
+      const timeline = now.current.timeline;
+      const next = drag.moved && drag.revision === now.current.revision ? cueAt(drag, event.clientX) : null;
+      cancel();
+      if (!next || !timeline) return;
+      // One gesture, one step to undo: where it starts and how long it is, as one change.
+      const change = { ...(next.start !== drag.start ? { start: next.start } : {}), ...(next.length !== drag.length ? { length: next.length } : {}) };
+      if (Object.keys(change).length > 0) void apply({ revision: drag.revision, ops: [{ edit: 'set_cue', timeline: timeline.id, id: drag.id, ...change }] });
+      return;
+    }
     const pointer = active.current;
     if (!pointer || pointer.pointer !== event.pointerId) return;
     const transaction = pointer.moved && pointer.gesture.revision === now.current.revision ? finishDrag(calculate(event, pointer)) : null;
@@ -299,6 +438,6 @@ export function useEditing(options: Options) {
   const dragLeave = (event: DragEvent) => {
     if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) { setDropAt(null); setEffectDrop(null); }
   };
-  return { tool, chooseTool, snapping, setSnapping, linked, setLinked, selected, transition, targets, target, marks, preview, dropAt, effectDrop, problem, setProblem, pending,
+  return { tool, chooseTool, snapping, setSnapping, linked, setLinked, selected, transition, targets, target, marks, preview, dropAt, effectDrop, cue, cuePreview, chooseCue, addSubtitleTrack, doubleClick, problem, setProblem, pending,
     edit, apply, keyDown, pointerDown, pointerMove, pointerUp, cancel, dragOver, drop, dragLeave };
 }

@@ -7,6 +7,7 @@ import { clipLocations } from '../timeline/selection';
 import { ClipAudio } from './ClipAudio';
 import { ClipColor, ClipTitle, isColor, isTitle } from './ClipTitle';
 import { ClipVideo } from './ClipVideo';
+import { CuePanel, cueOf } from './CuePanel';
 import { TimelineSettings } from './TimelineSettings';
 import { TransitionPanel } from './TransitionPanel';
 import { useCommit } from './useCommit';
@@ -16,16 +17,16 @@ type Tab = 'source' | 'video' | 'audio';
 /**
  * The inspector of the Edit page, as DaVinci Resolve's: what is chosen on the timeline, set here.
  *
- * A transition chosen shows its own panel. Clips chosen show tabs: Video for those on video tracks,
+ * A subtitle chosen shows its text and its timing; a transition chosen shows its own panel. Clips chosen show tabs: Video for those on video tracks,
  * Audio for those on audio tracks, and Title (or Generator) where every clip on a video track is a
  * title (or a solid colour). Several clips show only what they all have; a field where they differ
  * shows a dash, and a change sets them all, in one transaction. Nothing chosen shows the settings of
  * the timeline. Each change is one transaction, worked out from the timeline as the engine has it,
  * with its revision; what the engine refuses is said in a sentence at the top.
  */
-export function Inspector({ bridge, session, revision, timeline, media, clips: ids, transition: transitionId, onSpeed }: {
+export function Inspector({ bridge, session, revision, timeline, media, clips: ids, transition: transitionId, cue: cueId = null, onSpeed }: {
   bridge: Pick<EngineBridge, 'call'>; session: number; revision: number; timeline: Timeline | null; media: readonly Media[];
-  clips: readonly string[]; transition: string | null; onSpeed: (clips: string[]) => void;
+  clips: readonly string[]; transition: string | null; cue?: string | null; onSpeed: (clips: string[]) => void;
 }) {
   const words = useWords();
   const labels = words.label.studio.inspector;
@@ -49,6 +50,7 @@ export function Inspector({ bridge, session, revision, timeline, media, clips: i
     }
     return null;
   }, [timeline, transitionId]);
+  const cue = useMemo(() => (timeline && cueId !== null ? cueOf(timeline, cueId) : null), [timeline, cueId]);
   const titles = chosen.video.length > 0 && chosen.video.every(isTitle) ? chosen.video.filter(isTitle) : [];
   const colors = chosen.video.length > 0 && chosen.video.every(isColor) ? chosen.video.filter(isColor) : [];
   const tabs: Tab[] = [
@@ -69,7 +71,12 @@ export function Inspector({ bridge, session, revision, timeline, media, clips: i
 
   let body;
   if (!timeline) body = <p className="caption">{words.hint.studio.timeline.empty}</p>;
-  else if (found) {
+  else if (cue) {
+    body = <>
+      <p className="inspector-what">{labels.subtitle}</p>
+      <CuePanel key={cue.id} cue={cue} commit={commit} />
+    </>;
+  } else if (found) {
     body = <>
       <p className="inspector-what">{labels.transition} · {words.label.studio.timeline[found.transition.kind]}</p>
       <TransitionPanel transition={found.transition} track={found.track} timeline={timeline} commit={commit} />

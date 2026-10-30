@@ -14,6 +14,9 @@ from columbina.video.engine import Engine
 from support import fake_engine
 from support.media import made, real, real_engine
 
+# The studio's own platforms are tested in tests/video/test_platform.py.
+pytestmark = pytest.mark.usefixtures("studio_here")
+
 WORDS = [(200_000, 800_000, "one"), (900_000, 1_600_000, "two."), (2_400_000, 3_000_000, "three.")]
 
 

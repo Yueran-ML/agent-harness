@@ -2137,7 +2137,7 @@ def _parser() -> argparse.ArgumentParser:
         help="answer in one document of JSON, for another program",
     )
     video = commands.add_parser(
-        video_command.VIDEO, help="edit a film by what is said in it, with the ffmpeg of the system"
+        video_command.VIDEO, help="edit a film by what is said in it (Windows only, for now)"
     )
     video_command.arguments(video)
     apart = commands.add_parser(

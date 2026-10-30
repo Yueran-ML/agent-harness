@@ -18,6 +18,9 @@ from support.desk import Desk
 from support.fake_engine import Fake, served
 from support.studio_tools import desk_of, result
 
+# The studio's own platforms are tested in tests/video/test_platform.py.
+pytestmark = pytest.mark.usefixtures("studio_here")
+
 
 @pytest.fixture
 async def studio(ctx: Context, tmp_path: Path) -> AsyncIterator[tuple[Desk, Fake]]:

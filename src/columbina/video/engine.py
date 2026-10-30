@@ -59,7 +59,9 @@ from columbina import programs
 
 __all__ = [
     "NOT_FOUND",
+    "ONLY_WINDOWS",
     "PROTOCOL",
+    "STUDIO_PLATFORMS",
     "UNEXPECTED",
     "UNREACHABLE",
     "UNSTARTED",
@@ -73,6 +75,7 @@ __all__ = [
     "Rendering",
     "not_found",
     "program_of",
+    "unsupported",
 ]
 
 PROTOCOL = 2
@@ -382,6 +385,19 @@ def program_of(configured: str | None, search: str, outside: Sequence[Path]) -> 
     ):
         return str(program)
     return None
+
+
+STUDIO_PLATFORMS = frozenset({"win32"})
+"""Where the editing studio runs, as ``sys.platform`` names it: Windows for now. The engine is
+built and tested there only; macOS comes later. The rest of the agent runs everywhere."""
+
+ONLY_WINDOWS = "video editing currently needs Windows; macOS support will come later"
+"""What is said instead of editing on any other platform."""
+
+
+def unsupported() -> str | None:
+    """Say why video cannot be edited on this machine, or return None where it can."""
+    return None if sys.platform in STUDIO_PLATFORMS else ONLY_WINDOWS
 
 
 def not_found(configured: str | None) -> str:

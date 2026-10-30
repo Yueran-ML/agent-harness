@@ -1,6 +1,7 @@
 import asyncio
 import os
 import signal
+import sys
 import webbrowser
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
@@ -72,6 +73,19 @@ def unregistered(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(variable, raising=False)
     monkeypatch.setattr(registered, "CLIENT_ID", "")
     monkeypatch.setattr(registered, "SLUG", "")
+
+
+@pytest.fixture
+def studio_here(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let the editing studio run on this platform, as it does on Windows.
+
+    What the video tools and ``columbina video`` do with an engine, a fake one or a real one,
+    is the same on every platform; tests/video/test_platform.py tests what is said elsewhere.
+    """
+    from columbina.video import engine
+
+    here = frozenset({*engine.STUDIO_PLATFORMS, sys.platform})
+    monkeypatch.setattr(engine, "STUDIO_PLATFORMS", here)
 
 
 @pytest.fixture(autouse=True)

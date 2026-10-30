@@ -3,6 +3,7 @@
 Import does not create clips. Create a timeline and place media with ``edit --file FILE``;
 ``story`` writes its editable dialogue, ``apply`` cuts it, and ``render`` exports the timeline.
 Legacy projects are read only by ``migrate``. No Python path renders films independently.
+The engine runs on Windows only, for now; elsewhere every command says so.
 """
 
 import argparse
@@ -15,7 +16,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from columbina.video.editing import Editor, safe_name
-from columbina.video.engine import Engine, EngineError, not_found, program_of
+from columbina.video.engine import Engine, EngineError, not_found, program_of, unsupported
 from columbina.video.media import MediaUnavailableError, UnreadableMediaError, located
 from columbina.video.project import ProjectError
 from columbina.video.story import StoryError
@@ -267,6 +268,15 @@ def _migrate(args: argparse.Namespace, say: Callable[[str], None]) -> int:
 
 def run(args: argparse.Namespace, say: Callable[[str], None]) -> int:
     """Carry out ``columbina video``, returning a structured receipt or an explained error."""
+    missing = unsupported()
+    if missing is not None:
+        # Before any engine is looked for: on this platform there is none to find.
+        say(
+            json.dumps({"error": missing})
+            if getattr(args, "json", False)
+            else f"columbina: {missing}"
+        )
+        return 2
     if args.what == ENGINE:
         return _engine(args, say)
     if args.what == "migrate":

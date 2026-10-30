@@ -22,6 +22,9 @@ from support.desk import Desk
 from support.media import made, real, real_engine
 from support.studio_tools import desk_of, result
 
+# The studio's own platforms are tested in tests/video/test_platform.py.
+pytestmark = pytest.mark.usefixtures("studio_here")
+
 WORDS = [
     (220_000, 820_000, "one"), (920_000, 1_620_000, "two."),
     (2_420_000, 3_020_000, "three"), (3_120_000, 3_620_000, "four."),

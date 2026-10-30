@@ -2,10 +2,14 @@
 
 A batch of timeline edits is one undo step. Analysis and editable story files live beside
 that project. Media paths and export destinations go through the file seam.
+
+The engine runs on Windows only, for now; macOS comes later. Elsewhere the tools are not offered,
+and the model is told why among the facts of the run.
 """
 
 import asyncio
 import json
+import logging
 import os
 import sys
 from collections.abc import Callable
@@ -15,11 +19,19 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, Field, field_validator
 
+from columbina.agent import RUNTIME_FACTS, Facts
 from columbina.fs import FS, Access, Fs
 from columbina.kernel import Context, EmitEvent, ServiceKey
 from columbina.tools import TOOLS, Tool, ToolFailure, ToolRun
 from columbina.video.editing import Editor, safe_name, sidecars
-from columbina.video.engine import Engine, EngineError, Progress, not_found, program_of
+from columbina.video.engine import (
+    Engine,
+    EngineError,
+    Progress,
+    not_found,
+    program_of,
+    unsupported,
+)
 from columbina.video.media import MediaUnavailableError, Tools, UnreadableMediaError, located
 from columbina.video.project import ProjectError
 from columbina.video.story import StoryError
@@ -40,6 +52,7 @@ __all__ = [
 
 name = "video"
 inject = (TOOLS,)
+logger = logging.getLogger(__name__)
 _LONG_SECONDS = 6 * 60 * 60.0
 _MIGRATION_SECONDS = 20.0
 """How long a call migrates old projects at most: a call has 30 seconds."""
@@ -583,6 +596,17 @@ VIDEOS = ServiceKey[Videos]("videos")
 def apply(ctx: Context, config: Config) -> None:
     """Give tools and manage engine connections for the plugin's lifetime."""
     if not config.enabled:
+        return
+    missing = unsupported()
+    if missing is not None:
+        # The engine is built for Windows only, for now. Tools that could only say so are not
+        # offered; the model is told why, for whoever asks it to edit a film.
+        logger.warning("columbina: %s", missing)
+
+        def facts(gathered: Facts) -> None:
+            gathered.lines["video editing"] = f"not here: {missing}; there are no video tools"
+
+        ctx.on(RUNTIME_FACTS, facts)
         return
     videos = Videos(config, ctx.get(FS))
     videos.progress = lambda progress: ctx.emit(VIDEO_PROGRESS, progress)

@@ -76,7 +76,9 @@ def test_clips_are_taken_away_cut_and_moved_with_what_is_linked_to_them() -> Non
     assert edits.lift("t1", ["c4"]) == {
         "edit": "lift", "timeline": "t1", "clips": ["c4"], "linked": True,
     }  # fmt: skip
-    assert edits.ripple_delete("t1", ("c4", "c5"), linked=False)["clips"] == ["c4", "c5"]
+    assert edits.ripple_delete("t1", ("c4", "c5"), linked=False) == {
+        "edit": "ripple_delete", "timeline": "t1", "clips": ["c4", "c5"], "linked": False,
+    }  # fmt: skip
     assert edits.ripple_delete_range("t1", 10, 20) == {
         "edit": "ripple_delete_range", "timeline": "t1", "from": 10, "to": 20,
     }  # fmt: skip

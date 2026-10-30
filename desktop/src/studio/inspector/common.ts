@@ -18,7 +18,8 @@ const differs = (clip: Clip, patch: ClipPatch) => Object.entries(patch)
 
 /**
  * One transaction that sets each of the clips that are still there as `change` says, worked out
- * from each as it is when it is sent; clips that it would not change are left out.
+ * from each as it is when it is sent; clips that it would not change are left out, and so are clips
+ * on locked tracks, whose settings cannot be changed (Reference Manual 20, p. 762).
  */
 export function setClips(ids: readonly string[], change: (clip: Clip, timeline: Timeline) => ClipPatch | null): Build {
   return timeline => {
@@ -26,7 +27,7 @@ export function setClips(ids: readonly string[], change: (clip: Clip, timeline: 
     const ops: Op[] = [];
     for (const id of ids) {
       const located = locations.get(id);
-      if (!located) continue;
+      if (!located || located.track.locked) continue;
       const patch = change(located.clip, timeline);
       if (patch && differs(located.clip, patch)) ops.push({ op: 'set_clip', timeline: timeline.id, id, ...patch });
     }

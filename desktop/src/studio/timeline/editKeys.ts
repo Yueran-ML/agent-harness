@@ -254,6 +254,9 @@ export function editCommand(action: EditAction | null, context: EditContext): Ed
   const locations = clipLocations(timeline);
   const selected = linkedClips(timeline, context.selected, linked);
   const chosenTracks = [...new Set(selected.map(id => locations.get(id)!.track.id))];
+  // The clips chosen whose settings may be changed: not those on locked tracks, linked or not
+  // (Reference Manual 20, p. 762); basic operations would change them all the same.
+  const open = selected.filter(id => !locations.get(id)!.track.locked);
   const activeTracks = Object.values(targets).filter((id): id is string => typeof id === 'string');
   if (action.kind === 'quick') {
     // One transition of the length and alignment that DaVinci Resolve gives a standard one, on each
@@ -326,10 +329,10 @@ export function editCommand(action: EditAction | null, context: EditContext): Ed
     const next = action.direction < 0 ? points.reverse().find(point => point < frame) ?? 0 : points.find(point => point > frame) ?? duration(timeline);
     return { kind: 'seek', monitor: 'timeline', frame: Math.max(0, Math.min(duration(timeline) - 1, next)) };
   }
-  if (action.kind === 'speed') return selected.length ? { kind: 'speed', clips: selected } : null;
+  if (action.kind === 'speed') return open.length ? { kind: 'speed', clips: open } : null;
   if (action.kind === 'enabled') {
-    const enabled = selected.every(id => !locations.get(id)!.clip.enabled);
-    return transaction(selected.map(id => ({ op: 'set_clip', timeline: timeline.id, id, enabled })));
+    const enabled = open.every(id => !locations.get(id)!.clip.enabled);
+    return transaction(open.map(id => ({ op: 'set_clip', timeline: timeline.id, id, enabled })));
   }
   if (action.kind === 'lock') {
     const ofKind = timeline.tracks.filter(track => track.kind === action.tracks);
@@ -339,7 +342,7 @@ export function editCommand(action: EditAction | null, context: EditContext): Ed
   }
   if (action.kind === 'link') {
     // Clips chosen that are one group already are unlinked; else they are linked into a new one.
-    const chosen = selected.map(id => locations.get(id)!.clip);
+    const chosen = open.map(id => locations.get(id)!.clip);
     const groups = new Set(chosen.map(clip => clip.link));
     if (groups.size === 1 && !groups.has(null)) return transaction(chosen.map(clip => ({ op: 'set_clip', timeline: timeline.id, id: clip.id, link: null })));
     // The first names the new group, and the others join it (an empty link would make a group for each).

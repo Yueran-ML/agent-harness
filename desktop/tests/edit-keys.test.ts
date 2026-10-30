@@ -161,6 +161,17 @@ describe('DaVinci editing keys', () => {
     expect(command('#', { alt: true, shift: true, code: 'Digit3' }, context({ timeline: t }))).toBeNull();
     expect(command('F9', { alt: true, shift: true })).toBeNull();
   });
+  it('leaves clips on locked tracks out of D, R and Ctrl+Alt+L, linked or not', () => {
+    // Reference Manual 20, p. 762: clips on locked tracks cannot be otherwise affected, nor their parameters edited.
+    const t = timeline([clip('c1', 0, 100, { link: 'g1' }), clip('c2', 100, 100)]);
+    t.tracks.push({ id: 'a1', kind: 'audio', name: 'A1', enabled: true, locked: true, clips: [clip('a1c', 0, 100, { link: 'g1' })], transitions: [] });
+    const ctx = (selected: string[], linked = true) => context({ timeline: t, selected, linked });
+    expect(command('d', {}, ctx(['c1']))).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [{ op: 'set_clip', timeline: 't1', id: 'c1', enabled: false }] } });
+    expect(command('r', {}, ctx(['c1']))).toEqual({ kind: 'speed', clips: ['c1'] });
+    expect(command('l', { ctrl: true, alt: true }, ctx(['c1']))).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [{ op: 'set_clip', timeline: 't1', id: 'c1', link: null }] } });
+    expect(command('l', { ctrl: true, alt: true }, ctx(['c2', 'a1c'], false))).toBeNull();
+    for (const value of ['d', 'r']) expect(command(value, {}, ctx(['a1c'], false))).toBeNull();
+  });
   it('takes the range between timeline In and Out points for Shift+F10 and for Backspace, as DaVinci Resolve', () => {
     // Reference Manual 20, pp. 561, 842: with timeline In and Out, Ripple Overwrite replaces that range, the rest rippled.
     expect(command('F10', { shift: true }, context({ marks: { in: 20, out: 80 } }))).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [

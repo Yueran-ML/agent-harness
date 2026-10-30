@@ -8,6 +8,7 @@ import { ClipAudio } from './ClipAudio';
 import { ClipColor, ClipTitle, isColor, isTitle } from './ClipTitle';
 import { ClipVideo } from './ClipVideo';
 import { CuePanel, cueOf } from './CuePanel';
+import { FieldsLocked } from './fields';
 import { TimelineSettings } from './TimelineSettings';
 import { TransitionPanel } from './TransitionPanel';
 import { useCommit } from './useCommit';
@@ -31,14 +32,20 @@ export function Inspector({ bridge, session, revision, timeline, media, clips: i
   const words = useWords();
   const labels = words.label.studio.inspector;
   const { commit, refusal, setRefusal } = useCommit({ bridge, revision, session, timeline });
+  // Clips on locked tracks cannot be changed here (Reference Manual 20, p. 762): where some chosen
+  // are on tracks that are not locked, the fields show and set those; where all are locked, the
+  // fields show them, off, and say why.
   const chosen = useMemo(() => {
-    if (!timeline) return { video: [] as Clip[], audio: [] as Clip[], all: [] as Clip[] };
+    if (!timeline) return { video: [] as Clip[], audio: [] as Clip[], all: [] as Clip[], locked: false };
     const locations = clipLocations(timeline);
-    const all = ids.map(id => locations.get(id)).filter(located => located !== undefined);
+    const found = ids.map(id => locations.get(id)).filter(located => located !== undefined);
+    const open = found.filter(({ track }) => !track.locked);
+    const all = open.length > 0 ? open : found;
     return {
       video: all.filter(({ track }) => track.kind === 'video').map(({ clip }) => clip),
       audio: all.filter(({ track }) => track.kind === 'audio').map(({ clip }) => clip),
       all: all.map(({ clip }) => clip),
+      locked: open.length === 0 && found.length > 0,
     };
   }, [timeline, ids]);
   const found = useMemo(() => {
@@ -87,15 +94,18 @@ export function Inspector({ bridge, session, revision, timeline, media, clips: i
         <span className="inspector-name">{chosen.all.length === 1 ? name(chosen.all[0]) : null}</span>
         <span className="caption">{words.label.studio.media.selected(chosen.all.length)}</span>
         {mediaClips.length > 0 && <button type="button" className="icon-btn" aria-label={labels.changeSpeed} title={`${labels.changeSpeed} (R)`}
-          onClick={() => onSpeed(chosen.all.map(clip => clip.id))} data-test="open-speed"><Gauge size={14} /></button>}
+          disabled={chosen.locked} onClick={() => onSpeed(chosen.all.map(clip => clip.id))} data-test="open-speed"><Gauge size={14} /></button>}
       </div>
+      {chosen.locked && <p className="caption" data-test="inspector-locked">{words.hint.studio.inspector.locked}</p>}
       {tabs.length > 1 && <div className="inspector-tabs" role="tablist" aria-label={words.label.studio.editPage.inspector}>
         {tabs.map(each => <button key={each} type="button" role="tab" aria-selected={each === shown} onClick={() => setTab(each)}>{tabName[each]}</button>)}
       </div>}
-      {shown === 'source' && titles.length > 0 && <ClipTitle clips={titles} timeline={timeline} commit={commit} />}
-      {shown === 'source' && colors.length > 0 && <ClipColor clips={colors} commit={commit} />}
-      {shown === 'video' && <ClipVideo clips={chosen.video} timeline={timeline} commit={commit} />}
-      {shown === 'audio' && <ClipAudio clips={chosen.audio} timeline={timeline} commit={commit} />}
+      <FieldsLocked.Provider value={chosen.locked}>
+        {shown === 'source' && titles.length > 0 && <ClipTitle clips={titles} timeline={timeline} commit={commit} />}
+        {shown === 'source' && colors.length > 0 && <ClipColor clips={colors} commit={commit} />}
+        {shown === 'video' && <ClipVideo clips={chosen.video} timeline={timeline} commit={commit} />}
+        {shown === 'audio' && <ClipAudio clips={chosen.audio} timeline={timeline} commit={commit} />}
+      </FieldsLocked.Provider>
     </>;
   } else {
     body = <>

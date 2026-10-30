@@ -1436,6 +1436,7 @@ export const en = {
         rate: 'The frame rate is locked because the timeline has content. A new timeline can use another rate.',
         rateRefused: 'At this frame rate, a clip would run past the end of its media.',
         fadeAtTransition: 'A transition is at this edge, so a fade cannot be set here.',
+        locked: 'These clips are on locked tracks. Unlock the track to change them.',
         speedMedia: 'Only clips of media can change speed.',
         speedRange: 'The speed is from 1% to 10000%.',
         library: 'Drag a transition onto an edit point on the timeline, or a title or a solid color onto a video track, where it overwrites 5 seconds.',

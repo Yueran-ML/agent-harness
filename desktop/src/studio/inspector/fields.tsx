@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useId, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
 
 /**
  * The fields of the inspector, as DaVinci Resolve's: what is typed, dragged or slid is shown at
@@ -8,6 +8,9 @@ import { useEffect, useId, useRef, useState, type KeyboardEvent, type PointerEve
  * in. A label double-clicked puts the default back (p. 68). A field of several clips that differ
  * shows a dash, and sets them all alike.
  */
+
+/** Whether the fields are off: the clips they set are on locked tracks, which cannot be changed (Reference Manual 20, p. 762). */
+export const FieldsLocked = createContext(false);
 
 /** What a field shows where the clips it sets differ. */
 const MIXED = '—';
@@ -73,6 +76,7 @@ export interface NumberFieldProps extends NumberShape {
 /** A number with a label to drag, and a slider where it has one. */
 export function NumberField(props: NumberFieldProps) {
   const id = useId();
+  const disabled = useContext(FieldsLocked) || props.disabled === true;
   const [draft, setDraft] = useState<string | null>(null);
   const [live, setLive] = useState<number | null>(null);
   const [scrubbing, setScrubbing] = useState(false);
@@ -133,13 +137,13 @@ export function NumberField(props: NumberFieldProps) {
     }
   };
   const labelDown = (event: PointerEvent<HTMLElement>) => {
-    if (props.disabled || event.button !== 0) return;
+    if (disabled || event.button !== 0) return;
     scrub.current = { x: event.clientX, start: props.value ?? props.fallback, pointer: event.pointerId, moved: false };
     event.currentTarget.setPointerCapture?.(event.pointerId);
   };
   // The number box is a virtual slider until it is written in: a press that does not drag goes in to write.
   const boxDown = (event: PointerEvent<HTMLInputElement>) => {
-    if (props.disabled || event.button !== 0 || document.activeElement === event.currentTarget) return;
+    if (disabled || event.button !== 0 || document.activeElement === event.currentTarget) return;
     event.preventDefault();
     labelDown(event);
   };
@@ -166,18 +170,18 @@ export function NumberField(props: NumberFieldProps) {
     if (drag.moved) { event.preventDefault(); send(liveRef.current); }
   };
   return <div className="inspector-row" data-field={props.name} data-mixed={props.value === null || undefined} title={props.title}>
-    <label htmlFor={id} className="inspector-label" data-disabled={props.disabled || undefined}
+    <label htmlFor={id} className="inspector-label" data-disabled={disabled || undefined}
       onPointerDown={labelDown} onPointerMove={labelMove} onPointerUp={labelUp} onPointerCancel={revert}
-      onDoubleClick={event => { event.preventDefault(); if (!props.disabled) send(props.fallback); }}>{props.label}</label>
+      onDoubleClick={event => { event.preventDefault(); if (!disabled) send(props.fallback); }}>{props.label}</label>
     <span className="inspector-value">
       <input id={id} className="field inspector-number" type="text" inputMode="decimal" autoComplete="off" spellCheck={false}
-        value={text} placeholder={shown === null ? MIXED : undefined} disabled={props.disabled}
+        value={text} placeholder={shown === null ? MIXED : undefined} disabled={disabled}
         onPointerDown={boxDown} onPointerMove={labelMove} onPointerUp={boxUp} onPointerCancel={revert}
         onChange={event => setDraft(event.target.value)} onKeyDown={fieldKey}
         onBlur={() => { if (draft !== null) send(parse(draft)); }} />
       {props.unit && <span className="inspector-unit" aria-hidden="true">{props.unit}</span>}
     </span>
-    {props.slider && <input ref={slider} className="inspector-slider" type="range" aria-label={props.label} disabled={props.disabled}
+    {props.slider && <input ref={slider} className="inspector-slider" type="range" aria-label={props.label} disabled={disabled}
       min={props.slider.min} max={props.slider.max} step={props.slider.step} value={shown ?? props.fallback}
       onPointerDown={() => { sliding.current = 'idle'; }}
       onChange={event => {
@@ -194,10 +198,11 @@ export function NumberField(props: NumberFieldProps) {
 }
 
 /** A line of text, or lines of it: sent when Enter is pressed (Shift+Enter starts a new line) or the field is left. */
-export function TextField({ label, name, value, multiline = false, allowEmpty = false, disabled, onCommit }: {
+export function TextField({ label, name, value, multiline = false, allowEmpty = false, disabled: off, onCommit }: {
   label: string; name: string; value: string | null; multiline?: boolean; allowEmpty?: boolean; disabled?: boolean; onCommit: (value: string) => void;
 }) {
   const id = useId();
+  const disabled = useContext(FieldsLocked) || off === true;
   const [draft, setDraft] = useState<string | null>(null);
   const [held, hold] = useHeld(value);
   const send = () => {
@@ -226,6 +231,7 @@ export function TextField({ label, name, value, multiline = false, allowEmpty = 
 /** A colour of `#rrggbbaa`: its red, green and blue are chosen, its alpha kept. Sent when the picker is closed. */
 export function ColorField({ label, name, value, onCommit }: { label: string; name: string; value: string | null; onCommit: (value: string) => void }) {
   const id = useId();
+  const disabled = useContext(FieldsLocked);
   const [live, setLive] = useState<string | null>(null);
   const [held, hold] = useHeld(value);
   const input = useRef<HTMLInputElement>(null);
@@ -247,7 +253,7 @@ export function ColorField({ label, name, value, onCommit }: { label: string; na
   return <div className="inspector-row" data-field={name} data-mixed={color === null || undefined}>
     <label htmlFor={id} className="inspector-label">{label}</label>
     <span className="inspector-value">
-      <input ref={input} id={id} className="inspector-color" type="color" value={live ?? color?.slice(0, 7) ?? '#000000'}
+      <input ref={input} id={id} className="inspector-color" type="color" value={live ?? color?.slice(0, 7) ?? '#000000'} disabled={disabled}
         onChange={event => { if (event.nativeEvent.type !== 'change') setLive(event.target.value); }}
         onKeyDown={event => { if (event.key === 'Escape' && live !== null) { event.stopPropagation(); setLive(null); } }} />
       <span className="inspector-unit mono">{(live ?? color?.slice(0, 7) ?? MIXED).toUpperCase()}</span>
@@ -263,9 +269,10 @@ export function ChoiceField<T extends string>({ label, name, value, options, dis
   onCommit: (value: T) => void;
 }) {
   const id = useId();
+  const locked = useContext(FieldsLocked);
   return <div className="inspector-row" data-field={name} data-mixed={value === null || undefined}>
     <label htmlFor={id} className="inspector-label">{label}</label>
-    <select id={id} className="field inspector-select" value={value ?? ''} disabled={disabled} aria-describedby={describedBy}
+    <select id={id} className="field inspector-select" value={value ?? ''} disabled={locked || disabled} aria-describedby={describedBy}
       onChange={event => { if (event.target.value) onCommit(event.target.value as T); }}>
       {value === null && <option value="">{MIXED}</option>}
       {options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
@@ -277,10 +284,11 @@ export function ChoiceField<T extends string>({ label, name, value, options, dis
 export function SegmentField<T extends string>({ label, name, value, options, onCommit }: {
   label: string; name: string; value: T | null; options: readonly { value: T; label: string; icon?: ReactNode }[]; onCommit: (value: T) => void;
 }) {
+  const disabled = useContext(FieldsLocked);
   return <div className="inspector-row" data-field={name} data-mixed={value === null || undefined}>
     <span className="inspector-label">{label}</span>
     <span className="inspector-segments" role="group" aria-label={label}>
-      {options.map(option => <button key={option.value} type="button" className="icon-btn" aria-pressed={value === option.value}
+      {options.map(option => <button key={option.value} type="button" className="icon-btn" aria-pressed={value === option.value} disabled={disabled}
         aria-label={option.label} title={option.label} onClick={() => { if (value !== option.value) onCommit(option.value); }}>{option.icon ?? option.label}</button>)}
     </span>
   </div>;

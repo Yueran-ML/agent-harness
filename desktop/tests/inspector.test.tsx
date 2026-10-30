@@ -61,6 +61,32 @@ describe('the fields of the inspector', () => {
     expect(box('opacity').value).toBe('50.0');
   });
 
+  it('leaves clips on locked tracks alone, and with only those chosen turns the fields off and says why', async () => {
+    // Reference Manual 20, p. 762: parameters of locked clips cannot be edited in the Inspector.
+    const locked = basic();
+    locked.tracks[1] = { ...locked.tracks[1], locked: true } as ClipTrack;
+    const { call, rerender } = mount({ timeline: locked, clips: ['c1', 'a1'] });
+    // c1 and its sound a1, a1 on a locked track: the fields set c1 alone, and there is no Audio tab.
+    expect(screen.queryByRole('tab', { name: 'Audio' })).toBeNull();
+    expect(document.querySelector('[data-test="inspector-locked"]')).toBeNull();
+    type(box('rotation'), '45'); await settle();
+    expect(applied(call)).toEqual([{ revision: 17, ops: [{ op: 'set_clip', timeline: 't1', id: 'c1', transform: transform({ rotation: 45 }) }] }]);
+    // Only a1 chosen: its fields are shown, off, with the reason.
+    call.mockClear();
+    rerender({ clips: ['a1'] });
+    expect(document.querySelector('[data-test="inspector-locked"]')?.textContent).toBe('These clips are on locked tracks. Unlock the track to change them.');
+    expect(box('volume').disabled).toBe(true);
+    expect(slider('volume').disabled).toBe(true);
+    expect(box('volume').value).toBe('-6.0');
+    fireEvent.pointerDown(label('volume'), { button: 0, pointerId: 7, clientX: 100 });
+    fireEvent.pointerMove(label('volume'), { pointerId: 7, clientX: 150 });
+    fireEvent.pointerUp(label('volume'), { pointerId: 7, clientX: 150 });
+    fireEvent.doubleClick(label('pan'));
+    await settle();
+    expect(call).not.toHaveBeenCalled();
+    expect(document.querySelector<HTMLButtonElement>('[data-test="open-speed"]')!.disabled).toBe(true);
+  });
+
   it('puts back what was there with Escape, from a slider, a typed number or a dragged label', async () => {
     const { call } = mount({ clips: ['c1'] });
     fireEvent.pointerDown(slider('zoom'));

@@ -1249,6 +1249,7 @@ export const zhCN: Messages = {
         rate: '时间线已有内容，帧率已锁定。新建时间线时可以选用其他帧率。',
         rateRefused: '在这个帧率下，有片段会超出素材末尾。',
         fadeAtTransition: '这一端有转场，不能设置淡入淡出。',
+        locked: '这些片段在锁定的轨道上。要修改，请先解锁轨道。',
         speedMedia: '只有素材片段可以变速。',
         speedRange: '速度范围为 1% 到 10000%。',
         library: '把转场拖到时间线的剪辑点上，把标题或纯色拖到视频轨上，它会覆盖 5 秒。',

@@ -207,6 +207,31 @@ export function nearestEditPoint(timeline: Timeline, frame: number): { at: numbe
   return at === null ? null : { at, meetings: meetings.filter(each => each.at === at).map(({ at: _, ...meeting }) => meeting) };
 }
 
+/**
+ * The edits that empty the frames `from`–`to` of the video and audio tracks that are not locked,
+ * leaving the rest where it is (a lift of a range): clips inside are lifted, those across an end
+ * are trimmed back to it, and one across both is split at the end and its first part trimmed to
+ * the start. Each edit names clips as they are before it: a split keeps its id on the first part.
+ */
+export function liftRange(timeline: Timeline, from: number, to: number): Edit[] {
+  const inside: string[] = [];
+  const edits: Edit[] = [];
+  for (const track of timeline.tracks) {
+    if (track.kind === 'subtitle' || track.locked) continue;
+    for (const clip of track.clips) {
+      const end = clip.start + clip.length;
+      if (end <= from || clip.start >= to) continue;
+      if (clip.start >= from && end <= to) inside.push(clip.id);
+      else if (clip.start < from && end > to) {
+        edits.push({ edit: 'blade', timeline: timeline.id, at: to, tracks: [track.id], linked: false });
+        edits.push({ edit: 'trim', timeline: timeline.id, clip: clip.id, edge: 'out', delta: from - to, ripple: false, linked: false });
+      } else if (clip.start < from) edits.push({ edit: 'trim', timeline: timeline.id, clip: clip.id, edge: 'out', delta: from - end, ripple: false, linked: false });
+      else edits.push({ edit: 'trim', timeline: timeline.id, clip: clip.id, edge: 'in', delta: to - clip.start, ripple: false, linked: false });
+    }
+  }
+  return inside.length > 0 ? [{ edit: 'lift', timeline: timeline.id, clips: inside, linked: false }, ...edits] : edits;
+}
+
 export function editCommand(action: EditAction | null, context: EditContext): EditResult | null {
   if (!action) return null;
   const { timeline, source, revision, linked, marks, frame, targets } = context;
@@ -262,6 +287,15 @@ export function editCommand(action: EditAction | null, context: EditContext): Ed
     // Smart Insert goes in at the edit point nearest the playhead, which the page shows; it is sent
     // as that point, and the engine, which finds the nearest one again, keeps it.
     if (edit === 'smart_insert') return transaction([{ edit, timeline: timeline.id, source: whole, at: nearestCut(timeline, frame), ...targets }]);
+    // With timeline In and Out points, Ripple Overwrite puts the source in place of what lies between
+    // them, the rest moving by the difference (Reference Manual 20, pp. 561, 842): the range is taken
+    // out and the source inserted at the In, in one transaction. Without, the clip at the playhead.
+    if (edit === 'ripple_overwrite' && marks.in !== null && marks.out !== null && marks.out > marks.in) {
+      return transaction([
+        { edit: 'ripple_delete_range', timeline: timeline.id, from: marks.in, to: marks.out },
+        { edit: 'insert', timeline: timeline.id, source: whole, at: marks.in, ...targets },
+      ]);
+    }
     if (edit === 'ripple_overwrite') return transaction([{ edit, timeline: timeline.id, source: whole, at: frame, ...targets }]);
     const placed = threePoint(timeline, source, marks, frame, edit === 'replace');
     const command: Edit = edit === 'place_on_top' ? { edit, timeline: timeline.id, source: placed.material, at: placed.at }
@@ -269,7 +303,12 @@ export function editCommand(action: EditAction | null, context: EditContext): Ed
     return transaction([command]);
   }
   if (action.kind === 'delete') {
-    if (action.ripple && marks.in !== null && marks.out !== null && marks.out > marks.in) return transaction([{ edit: 'ripple_delete_range', timeline: timeline.id, from: marks.in, to: marks.out }]);
+    if (marks.in !== null && marks.out !== null && marks.out > marks.in) {
+      // With timeline In and Out points, the keys of deleting take the range on the tracks that are
+      // not locked: Delete closes it, Backspace leaves it empty (Reference Manual 20, p. 765).
+      return action.ripple ? transaction([{ edit: 'ripple_delete_range', timeline: timeline.id, from: marks.in, to: marks.out }])
+        : transaction(liftRange(timeline, marks.in, marks.out));
+    }
     if (!selected.length) return null;
     // On the Cut page, a clip of Track 1 deleted leaves no gap: "the Timeline will ripple to close
     // the gap automatically" (Reference Manual 20, p. 588). The others go as on the Edit page.

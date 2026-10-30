@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Key } from '../src/app/keys';
-import { editKey, editCommand, sourceTime, type EditContext } from '../src/studio/timeline/editKeys';
+import { editKey, editCommand, liftRange, sourceTime, type EditContext } from '../src/studio/timeline/editKeys';
 import { clip, media, timeline } from './timeline-fixture';
 
 const key = (value: string, fields: Partial<Key> = {}): Key => ({ key: value, ctrl: false, meta: false, shift: false, alt: false, composing: false, repeat: false, ...fields });
@@ -148,6 +148,27 @@ describe('DaVinci editing keys', () => {
     expect(command('F1', { alt: true, shift: true }, context({ timeline: t }))).toMatchObject({ transaction: { ops: [{ op: 'set_track', id: 'a1', locked: true }] } });
     expect(command('#', { alt: true, shift: true, code: 'Digit3' }, context({ timeline: t }))).toBeNull();
     expect(command('F9', { alt: true, shift: true })).toBeNull();
+  });
+  it('takes the range between timeline In and Out points for Shift+F10 and for Backspace, as DaVinci Resolve', () => {
+    // Reference Manual 20, pp. 561, 842: with timeline In and Out, Ripple Overwrite replaces that range, the rest rippled.
+    expect(command('F10', { shift: true }, context({ marks: { in: 20, out: 80 } }))).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [
+      { edit: 'ripple_delete_range', timeline: 't1', from: 20, to: 80 },
+      { edit: 'insert', timeline: 't1', source: { kind: 'media', media: 'm1' }, at: 20, video_track: 'v1', audio_track: null },
+    ] } });
+    expect(command('F10', { shift: true })).toMatchObject({ transaction: { ops: [{ edit: 'ripple_overwrite', at: 100 }] } });
+    // P. 765: Delete with timeline In and Out lifts the range, leaving a gap, on the tracks not locked.
+    const t = timeline([clip('c1', 0, 30), clip('c2', 30, 20), clip('c3', 50, 100)]);
+    t.tracks.push({ id: 'a1', kind: 'audio', name: 'A1', enabled: true, locked: false, clips: [clip('a1c', 0, 200)], transitions: [] });
+    t.tracks.push({ id: 'a2', kind: 'audio', name: 'A2', enabled: true, locked: true, clips: [clip('a2c', 0, 200)], transitions: [] });
+    expect(command('Backspace', {}, context({ timeline: t, marks: { in: 20, out: 80 } }))).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [
+      { edit: 'lift', timeline: 't1', clips: ['c2'], linked: false },
+      { edit: 'trim', timeline: 't1', clip: 'c1', edge: 'out', delta: -10, ripple: false, linked: false },
+      { edit: 'trim', timeline: 't1', clip: 'c3', edge: 'in', delta: 30, ripple: false, linked: false },
+      { edit: 'blade', timeline: 't1', at: 80, tracks: ['a1'], linked: false },
+      { edit: 'trim', timeline: 't1', clip: 'a1c', edge: 'out', delta: -60, ripple: false, linked: false },
+    ] } });
+    expect(liftRange(t, 300, 400)).toEqual([]);
+    expect(command('Backspace', {}, context({ timeline: t, marks: { in: 300, out: 400 } }))).toBeNull();
   });
   it('does nothing when a timeline or source needed by the command is absent', () => {
     expect(command('F9', {}, context({ timeline: null }))).toBeNull();

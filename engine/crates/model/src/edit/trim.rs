@@ -744,4 +744,203 @@ mod tests {
             [("c1".into(), "c3".into(), 10)]
         );
     }
+
+    fn trim_alone(clip: &str, edge: Edge, delta: i64, ripple: bool) -> Edit {
+        Edit::Trim {
+            timeline: "t1".into(),
+            clip: clip.into(),
+            edge,
+            delta,
+            ripple,
+            linked: false,
+        }
+    }
+
+    /// Put a clip on a track of t1.
+    fn put(track: &str, clip: crate::project::Clip) -> Op {
+        Op::InsertClip {
+            timeline: "t1".into(),
+            track: track.into(),
+            clip,
+        }
+    }
+
+    /// The fixture with c10 on V1 on [150, 200) from frame 20, right after c3, and transitions
+    /// of 10 frames centred on the cuts of c3 that `at` names.
+    fn between_two(at: &[(&str, &str)]) -> crate::Project {
+        let mut ops = vec![put("V1", clip("", 150, 50, 20, None))];
+        for &(left, right) in at {
+            ops.push(transition("V1", left, right, 10, Alignment::Center));
+        }
+        with(project(), ops)
+    }
+
+    #[test]
+    fn a_clip_is_trimmed_no_shorter_than_the_transitions_that_stay_at_it_cover() {
+        // With a ripple both stay, and each covers 5 frames of c3.
+        let both = [("c1", "c3"), ("c3", "c10")];
+        let mut project = with(between_two(&both), vec![lock("V2"), lock("A1"), lock("S1")]);
+        let expansion = edit(&mut project, trim_alone("c3", Edge::Out, -48, true));
+        assert!(expansion.clamped);
+        assert_eq!(
+            clips(&project, "V1")[1..],
+            rows(&[("c3", 100, 10, 150), ("c10", 110, 50, 20)])
+        );
+        // Without one, the transition at the end that moves is left behind, and the one at the
+        // other end stays.
+        let mut project = between_two(&[("c1", "c3")]);
+        edit(&mut project, trim_alone("c3", Edge::Out, -48, false));
+        assert_eq!(clips(&project, "V1")[1], ("c3".into(), 100, 5, 150));
+        assert_eq!(
+            transitions(&project, "V1"),
+            [("c1".into(), "c3".into(), 10)]
+        );
+        let mut project = between_two(&[("c3", "c10")]);
+        edit(&mut project, trim_alone("c3", Edge::In, 48, false));
+        assert_eq!(clips(&project, "V1")[1], ("c3".into(), 145, 5, 195));
+        assert_eq!(
+            transitions(&project, "V1"),
+            [("c3".into(), "c10".into(), 10)]
+        );
+    }
+
+    #[test]
+    fn a_start_is_trimmed_to_the_last_frame_of_a_clip_and_no_further() {
+        let mut project = project();
+        let expansion = edit(&mut project, trim_alone("c5", Edge::In, 60, false));
+        assert!(expansion.clamped);
+        assert_eq!(clips(&project, "V2"), rows(&[("c5", 169, 1, 99)]));
+    }
+
+    #[test]
+    fn an_end_is_trimmed_up_to_the_next_clip_across_a_gap() {
+        let mut project = with(project(), vec![put("V2", clip("", 190, 10, 0, None))]);
+        let expansion = edit(&mut project, trim_alone("c5", Edge::Out, 30, false));
+        assert!(expansion.clamped);
+        assert_eq!(clips(&project, "V2")[0], ("c5".into(), 120, 70, 50));
+    }
+
+    #[test]
+    fn the_transitions_at_a_trimmed_clip_are_put_back_beside_others_on_its_track() {
+        let both = [("c1", "c3"), ("c3", "c10")];
+        let mut project = between_two(&both);
+        edit(&mut project, trim_alone("c10", Edge::Out, -10, false));
+        assert_eq!(
+            transitions(&project, "V1"),
+            [
+                ("c1".into(), "c3".into(), 10),
+                ("c3".into(), "c10".into(), 10)
+            ]
+        );
+    }
+
+    /// The fixture with c4 cut short to [100, 130), and c10 on A1 on [135, 145) from frame 10
+    /// in the group of c3, whose sound is so in two pieces. V2 and S1 are locked.
+    fn sound_in_two() -> crate::Project {
+        let short = Op::TrimClip {
+            timeline: "t1".into(),
+            id: "c4".into(),
+            source_in: None,
+            start: 100,
+            length: 30,
+        };
+        let piece = put("A1", clip("", 135, 10, 10, Some("g2")));
+        with(project(), vec![short, piece, lock("V2"), lock("S1")])
+    }
+
+    #[test]
+    fn a_ripple_trim_goes_as_far_as_the_pieces_of_its_group_before_the_ripple_have_room() {
+        let mut project = sound_in_two();
+        assert!(edit(&mut project, trim("c3", Edge::Out, 10, true)).clamped);
+        assert_eq!(clips(&project, "V1")[1], ("c3".into(), 100, 55, 150));
+        assert_eq!(
+            clips(&project, "A1")[1..],
+            rows(&[("c4", 100, 35, 150), ("c10", 135, 15, 10)])
+        );
+        let mut project = sound_in_two();
+        assert!(edit(&mut project, trim("c3", Edge::In, -10, true)).clamped);
+        assert_eq!(clips(&project, "V1")[1], ("c3".into(), 100, 55, 145));
+        assert_eq!(
+            clips(&project, "A1")[1..],
+            rows(&[("c4", 100, 35, 145), ("c10", 135, 15, 5)])
+        );
+    }
+
+    #[test]
+    fn a_trim_without_a_ripple_of_an_l_cut_is_not_held_up_by_what_follows_its_sound() {
+        // c4 cut short to [100, 130), and c10 on A1 after it, before the end of c3.
+        let short = Op::TrimClip {
+            timeline: "t1".into(),
+            id: "c4".into(),
+            source_in: None,
+            start: 100,
+            length: 30,
+        };
+        let after = put("A1", clip("", 135, 10, 0, None));
+        let mut project = with(project(), vec![short, after]);
+        edit(&mut project, trim("c3", Edge::Out, -10, false));
+        assert_eq!(clips(&project, "V1")[1], ("c3".into(), 100, 40, 150));
+        assert_eq!(clips(&project, "A1")[1], ("c4".into(), 100, 20, 150));
+    }
+
+    /// Put a clip of t1 in a group, or in none.
+    fn grouped(id: &str, group: Option<&str>) -> Op {
+        Op::SetClip {
+            timeline: "t1".into(),
+            id: id.into(),
+            enabled: None,
+            speed: None,
+            reverse: None,
+            link: Some(group.map(Into::into)),
+            transform: None,
+            gain_db: None,
+            pan: None,
+            fade_in: None,
+            fade_out: None,
+            source: None,
+        }
+    }
+
+    #[test]
+    fn a_roll_moves_only_the_cuts_between_clips_of_the_two_groups() {
+        // c4 is taken out of g2: the cut between c2 and c4 stays.
+        let mut unlinked = with(project(), vec![grouped("c4", None)]);
+        edit(&mut unlinked, roll("c1", "c3", 10));
+        assert_eq!(clips(&unlinked, "V1")[1], ("c3".into(), 110, 40, 160));
+        assert_eq!(
+            clips(&unlinked, "A1"),
+            rows(&[("c2", 0, 100, 0), ("c4", 100, 50, 150)])
+        );
+        // c3, and c10 after it, are put in g1 with c1: the cut after c3 is not rolled with the
+        // cut before it.
+        let after = put("V1", clip("", 150, 50, 0, Some("g1")));
+        let mut regrouped = with(project(), vec![grouped("c3", Some("g1")), after]);
+        edit(&mut regrouped, roll("c1", "c3", 10));
+        assert_eq!(
+            clips(&regrouped, "V1"),
+            rows(&[("c1", 0, 110, 0), ("c3", 110, 40, 160), ("c10", 150, 50, 0)])
+        );
+    }
+
+    #[test]
+    fn a_slide_goes_as_far_as_its_neighbours_have_frames_and_room() {
+        // Back: c1 gives 10 frames.
+        let mut back = project();
+        edit(&mut back, slide("c3", -10));
+        assert_eq!(
+            clips(&back, "V1"),
+            rows(&[("c1", 0, 90, 0), ("c3", 90, 50, 150)])
+        );
+        // On: c3 can give all but a frame.
+        let mut on = project();
+        assert!(edit(&mut on, slide("c1", 60)).clamped);
+        assert_eq!(
+            clips(&on, "V1"),
+            rows(&[("c1", 49, 100, 0), ("c3", 149, 1, 199)])
+        );
+        // On, up to the next clip across a gap.
+        let mut gap = with(project(), vec![put("V2", clip("", 200, 10, 0, None))]);
+        assert!(edit(&mut gap, slide("c5", 50)).clamped);
+        assert_eq!(clips(&gap, "V2")[0], ("c5".into(), 150, 50, 50));
+    }
 }

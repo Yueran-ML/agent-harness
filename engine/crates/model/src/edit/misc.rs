@@ -528,7 +528,7 @@ pub(super) fn remove_track(work: &mut Work, track: &str) -> Result<(), EditError
 mod tests {
     use super::super::fixture::*;
     use super::super::{CueItem, Edit, EditError};
-    use crate::ops::Op;
+    use crate::ops::{Op, OpError};
     use crate::project::{Alignment, TrackKind, TransitionKind};
     use crate::time::Speed;
 
@@ -1188,5 +1188,170 @@ mod tests {
             },
         );
         assert_eq!(error, EditError::Locked { track: "A1".into() });
+    }
+
+    /// V2 of the fixture with c10 on [170, 180) from frame 100 and c11 on [180, 230) from 120,
+    /// right after c5, and a transition of 8 frames between c5 and c10 (`first`) or between c10
+    /// and c11.
+    fn three_on_v2(first: bool) -> crate::Project {
+        let put = |start, length, from| Op::InsertClip {
+            timeline: "t1".into(),
+            track: "V2".into(),
+            clip: clip("", start, length, from, None),
+        };
+        let between = if first {
+            transition("V2", "c5", "c10", 8, Alignment::Center)
+        } else {
+            transition("V2", "c10", "c11", 8, Alignment::Center)
+        };
+        with(
+            project(),
+            vec![put(170, 10, 100), put(180, 50, 120), between],
+        )
+    }
+
+    #[test]
+    fn a_transition_is_refused_where_with_the_one_at_the_other_end_it_would_cover_too_much() {
+        // c10 lasts 10 frames, and the transition already at it covers 4 of them: one of 14
+        // centred on its other end would cover 7 more. One of 13 covers 6 of the clip after its
+        // cut and 7 of the clip before it.
+        let too_long = |longest| EditError::NoHandles {
+            clip: "c10".into(),
+            need: 7,
+            have: 6,
+            longest: Some(longest),
+        };
+        let error = refused(three_on_v2(true), add("c10", "c11", 14, Alignment::Center));
+        assert_eq!(error, too_long(13));
+        let error = refused(three_on_v2(false), add("c5", "c10", 14, Alignment::Center));
+        assert_eq!(error, too_long(12));
+    }
+
+    #[test]
+    fn a_transition_lasts_a_frame_at_least() {
+        let mut project = project();
+        edit(&mut project, add("c1", "c3", 1, Alignment::Center));
+        for length in [0, -1] {
+            let error = refused(project.clone(), add("c2", "c4", length, Alignment::Center));
+            assert_eq!(error, EditError::Op(OpError::OutOfRange { what: "length" }));
+        }
+        let set = |length| Edit::SetTransition {
+            timeline: "t1".into(),
+            id: "x10".into(),
+            kind: None,
+            length: Some(length),
+            align: None,
+        };
+        edit(&mut project.clone(), set(1));
+        for length in [0, -1] {
+            let error = refused(project.clone(), set(length));
+            assert_eq!(error, EditError::Op(OpError::OutOfRange { what: "length" }));
+        }
+    }
+
+    #[test]
+    fn a_speed_out_of_range_is_refused_before_the_clip_is_looked_for() {
+        for (num, den) in [(1, 101), (101, 1), (2, 201), (201, 2)] {
+            let error = refused(project(), speed("c99", num, den, false));
+            assert_eq!(error, EditError::Op(OpError::OutOfRange { what: "speed" }));
+        }
+        for (num, den) in [(1, 100), (100, 1), (2, 200), (200, 2)] {
+            edit(&mut project(), speed("c5", num, den, false));
+        }
+    }
+
+    #[test]
+    fn a_speed_that_leaves_the_end_where_it_is_ripples_nothing() {
+        // c1 and c2 played backward end where they did, so c3, between the end of c1 and that of
+        // c2, is not in the way.
+        let mut project = l_cut();
+        let backward = Edit::SetSpeed {
+            timeline: "t1".into(),
+            clip: "c1".into(),
+            speed: Speed::ONE,
+            reverse: Some(true),
+            ripple: true,
+            linked: true,
+        };
+        edit(&mut project, backward);
+        assert!(the(&project, "c1").reverse && the(&project, "c2").reverse);
+        assert_eq!(clips(&project, "V1")[1], ("c3".into(), 100, 50, 150));
+    }
+
+    #[test]
+    fn a_clip_slowed_up_to_the_next_is_not_clamped_and_one_slowed_past_it_is() {
+        // c1 trimmed to [0, 50) at half the speed lasts 100 frames, up to c3.
+        let trimmed = with(
+            project(),
+            vec![Op::TrimClip {
+                timeline: "t1".into(),
+                id: "c1".into(),
+                source_in: None,
+                start: 0,
+                length: 50,
+            }],
+        );
+        let half = Edit::SetSpeed {
+            timeline: "t1".into(),
+            clip: "c1".into(),
+            speed: Speed { num: 1, den: 2 },
+            reverse: None,
+            ripple: false,
+            linked: false,
+        };
+        let mut project = trimmed;
+        assert!(!edit(&mut project, half).clamped);
+        assert_eq!(the(&project, "c1").length, 100);
+        // c3 at half the speed would last 100 frames, and a clip at 170 stops it at 70.
+        let mut project = with(
+            super::super::fixture::project(),
+            vec![Op::InsertClip {
+                timeline: "t1".into(),
+                track: "V1".into(),
+                clip: clip("", 170, 10, 0, None),
+            }],
+        );
+        let half = Edit::SetSpeed {
+            timeline: "t1".into(),
+            clip: "c3".into(),
+            speed: Speed { num: 1, den: 2 },
+            reverse: None,
+            ripple: false,
+            linked: false,
+        };
+        assert!(edit(&mut project, half).clamped);
+        assert_eq!(the(&project, "c3").length, 70);
+    }
+
+    #[test]
+    fn a_track_added_at_the_place_after_the_last_of_its_kind_goes_above_them() {
+        let mut project = project();
+        edit(
+            &mut project,
+            Edit::AddTrack {
+                timeline: "t1".into(),
+                kind: TrackKind::Video,
+                index: Some(2),
+                name: None,
+                language: None,
+            },
+        );
+        let ids: Vec<&str> = project.timelines[0]
+            .tracks
+            .iter()
+            .map(|r| r.id.as_str())
+            .collect();
+        assert_eq!(ids, ["V1", "V2", "V3", "A1", "A2", "S1"]);
+        let error = refused(
+            project,
+            Edit::AddTrack {
+                timeline: "t1".into(),
+                kind: TrackKind::Video,
+                index: Some(4),
+                name: None,
+                language: None,
+            },
+        );
+        assert_eq!(error, EditError::Op(OpError::OutOfList { at: 4, len: 3 }));
     }
 }

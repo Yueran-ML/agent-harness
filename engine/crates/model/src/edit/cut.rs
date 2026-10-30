@@ -1268,4 +1268,96 @@ mod tests {
         });
         assert!(serde_json::from_value::<Edit>(unknown).is_err());
     }
+
+    #[test]
+    fn a_gap_is_found_from_the_start_of_the_timeline_or_the_end_of_a_clip_and_not_in_one() {
+        let close = |at| Edit::CloseGap {
+            timeline: "t1".into(),
+            track: "V2".into(),
+            at,
+            straddling: Straddling::Refuse,
+        };
+        let later = crate::ops::Op::InsertClip {
+            timeline: "t1".into(),
+            track: "V2".into(),
+            clip: clip("", 200, 10, 0, None),
+        };
+        let locked = with(project(), vec![lock("V1"), lock("A1"), lock("S1"), later]);
+        assert_eq!(refused(locked.clone(), close(-1)), EditError::EmptyRange);
+        assert_eq!(refused(locked.clone(), close(130)), EditError::EmptyRange);
+        // From the start of the timeline.
+        let mut closed = locked.clone();
+        edit(&mut closed, close(0));
+        assert_eq!(
+            clips(&closed, "V2"),
+            rows(&[("c5", 0, 50, 50), ("c10", 80, 10, 0)])
+        );
+        // From the frame that c5 ends at.
+        let mut closed = locked;
+        edit(&mut closed, close(170));
+        assert_eq!(
+            clips(&closed, "V2"),
+            rows(&[("c5", 120, 50, 50), ("c10", 170, 10, 0)])
+        );
+        // A frame inside a clip that something follows is in no gap.
+        assert_eq!(
+            refused(project(), close_at("V1", 50)),
+            EditError::EmptyRange
+        );
+    }
+
+    fn close_at(track: &str, at: i64) -> Edit {
+        Edit::CloseGap {
+            timeline: "t1".into(),
+            track: track.into(),
+            at,
+            straddling: Straddling::Refuse,
+        }
+    }
+
+    #[test]
+    fn a_blade_on_one_track_that_cuts_nothing_names_it() {
+        assert_eq!(
+            refused(project(), blade(100, Some(&["V1"]), true)),
+            EditError::NothingAt {
+                track: Some("V1".into()),
+                frame: 100
+            }
+        );
+    }
+
+    #[test]
+    fn a_blade_leaves_a_linked_clip_that_starts_or_ends_at_it_whole() {
+        for (start, length) in [(30, 70), (0, 30)] {
+            let trim = crate::ops::Op::TrimClip {
+                timeline: "t1".into(),
+                id: "c2".into(),
+                source_in: Some(at(start)),
+                start,
+                length,
+            };
+            let mut project = with(project(), vec![trim]);
+            edit(&mut project, blade(30, Some(&["V1"]), true));
+            assert_eq!(clips(&project, "V1").len(), 3);
+            assert_eq!(
+                clips(&project, "A1"),
+                rows(&[("c2", start, length, start), ("c4", 100, 50, 150)])
+            );
+        }
+    }
+
+    #[test]
+    fn a_move_to_the_first_frame_goes_all_the_way_and_one_to_meet_a_clip_has_room() {
+        let mut moved = project();
+        let expansion = edit(&mut moved, move_by(&["c5"], -120, None, false));
+        assert!(!expansion.clamped);
+        assert_eq!(clips(&moved, "V2"), rows(&[("c5", 0, 50, 50)]));
+        // c5 moved onto V1 starts where c3 ends.
+        let mut moved = project();
+        edit(&mut moved, move_by(&["c5"], 30, Some("V1"), false));
+        assert_eq!(
+            clips(&moved, "V1"),
+            rows(&[("c1", 0, 100, 0), ("c3", 100, 50, 150), ("c5", 150, 50, 50)])
+        );
+    }
 }

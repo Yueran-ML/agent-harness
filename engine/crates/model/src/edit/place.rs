@@ -625,6 +625,140 @@ mod tests {
     }
 
     #[test]
+    fn media_with_no_marks_that_is_not_a_still_is_put_whole() {
+        let mut project = project();
+        edit(&mut project, overwrite(m1(None, None), 300));
+        assert_eq!(clips(&project, "V1")[2], ("c10".into(), 300, 250, 0));
+    }
+
+    #[test]
+    fn media_is_put_for_as_many_frames_as_it_has_from_where_it_begins() {
+        let frames = |length| Material::Media {
+            media: "m1".into(),
+            from: None,
+            to: None,
+            length: Some(length),
+        };
+        for length in [1, 250] {
+            let mut project = project();
+            edit(&mut project, overwrite(frames(length), 300));
+            assert_eq!(clips(&project, "V1")[2].2, length);
+        }
+        assert_eq!(
+            refused(project(), overwrite(frames(0), 300)),
+            EditError::EmptyRange
+        );
+        let past_end = EditError::Op(crate::ops::OpError::OutOfSource {
+            media: "m1".into(),
+            why: "past_end",
+        });
+        assert_eq!(
+            refused(project(), overwrite(m1(Some(10), Some(260)), 300)),
+            past_end
+        );
+        assert_eq!(
+            refused(project(), overwrite(m1(Some(250), None), 300)),
+            past_end
+        );
+    }
+
+    #[test]
+    fn nothing_is_put_before_the_start_of_the_timeline() {
+        let before = EditError::Op(crate::ops::OpError::OutOfTimeline { start: -5 });
+        assert_eq!(refused(project(), overwrite(colour(10), -5)), before);
+        let on_top = Edit::PlaceOnTop {
+            timeline: "t1".into(),
+            source: colour(10),
+            at: -5,
+        };
+        assert_eq!(refused(project(), on_top), before);
+    }
+
+    #[test]
+    fn an_edit_says_what_it_put_on_the_timeline() {
+        let mut project = project();
+        let expansion = edit(&mut project, overwrite(colour(10), 300));
+        assert_eq!(
+            expansion.created,
+            [super::super::Created::Clip {
+                id: "c10".into(),
+                kind: crate::project::TrackKind::Video,
+                link: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_replace_with_a_colour_shows_the_colour() {
+        let mut project = project();
+        let edit_ = Edit::Replace {
+            timeline: "t1".into(),
+            source: colour(10),
+            at: 130,
+            video_track: None,
+            audio_track: None,
+        };
+        edit(&mut project, edit_);
+        assert_eq!(clips(&project, "V1")[1], ("c3".into(), 100, 50, -1));
+        assert!(matches!(
+            the(&project, "c3").source,
+            crate::project::Source::Color { .. }
+        ));
+    }
+
+    #[test]
+    fn a_source_on_top_is_above_what_lies_in_its_frames_and_not_what_only_meets_them() {
+        let place = |at| Edit::PlaceOnTop {
+            timeline: "t1".into(),
+            source: colour(10),
+            at,
+        };
+        // On [170, 180), after c3 and c5 end: V1.
+        let mut project = project();
+        edit(&mut project, place(170));
+        assert_eq!(clips(&project, "V1")[2], ("c10".into(), 170, 10, -1));
+        // On [110, 120), over c3 and before c5 starts: V2.
+        let mut project = super::super::fixture::project();
+        edit(&mut project, place(110));
+        assert_eq!(clips(&project, "V2")[0], ("c10".into(), 110, 10, -1));
+    }
+
+    #[test]
+    fn a_ripple_overwrite_at_a_cut_takes_the_place_of_the_clip_that_starts_there() {
+        let mut project = with(project(), vec![lock("V2"), lock("S1")]);
+        let edit_ = Edit::RippleOverwrite {
+            timeline: "t1".into(),
+            source: m1(Some(0), Some(20)),
+            at: 100,
+            video_track: None,
+            audio_track: None,
+        };
+        edit(&mut project, edit_);
+        assert_eq!(
+            clips(&project, "V1"),
+            rows(&[("c1", 0, 100, 0), ("c10", 100, 20, 0)])
+        );
+    }
+
+    #[test]
+    fn a_still_lasts_five_seconds_at_the_rate_of_its_timeline() {
+        let mut project = project();
+        for track in &mut project.timelines[0].tracks {
+            track.clips.clear();
+            track.cues.clear();
+        }
+        project.timelines[0].rate = crate::time::Rate {
+            num: 30000,
+            den: 1001,
+        };
+        project.media[0].facts.duration = at(1);
+        project.media[0].facts.audio = None;
+        project.media[0].facts.video.as_mut().unwrap().still = true;
+        edit(&mut project, insert(m1(None, None), 0));
+        assert_eq!(clips(&project, "V1")[0].2, 149);
+    }
+
+    #[test]
     fn an_insert_of_more_than_the_media_has_is_refused() {
         let source = Material::Media {
             media: "m1".into(),

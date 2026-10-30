@@ -274,7 +274,9 @@ impl Plan {
             return Err(Fault::params(format!("subtitle_tracks: track {id} {why}"))
                 .with_data(json!({"reason": "subtitle_track", "track": id})));
         }
-        output::check(&request.path, dir, request.replace)?;
+        // Every check first: a refused export takes no partial file away.
+        let mut parts: Vec<PathBuf> = vec![];
+        parts.extend(output::check(&request.path, dir, request.replace)?);
         output::not_a_source(&request.path, &project)?;
         for (path, _) in srt::files(
             timeline,
@@ -282,7 +284,7 @@ impl Plan {
             &request.path,
             range.clone(),
         ) {
-            output::check(&path, dir, request.replace)?;
+            parts.extend(output::check(&path, dir, request.replace)?);
             output::not_a_source(&path, &project)?;
         }
         let bits = if codec == Codec::ProRes
@@ -306,6 +308,7 @@ impl Plan {
             quality: request.quality.into(),
             bits,
         };
+        output::remove_parts(&parts)?;
         Ok(Self {
             project: Arc::new(project),
             timeline: index,
@@ -388,10 +391,12 @@ impl Worker {
                 // Recheck the actual destination before creating a fallback. A requested MP4
                 // does not authorize overwriting an unrelated existing MOV or subtitle file.
                 self.plan.path.set_extension("mov");
-                output::check(&self.plan.path, &self.plan.project_dir, self.plan.replace)
-                    .map_err(|error| error.message)?;
+                let part =
+                    output::check(&self.plan.path, &self.plan.project_dir, self.plan.replace)
+                        .map_err(|error| error.message)?;
                 output::not_a_source(&self.plan.path, &self.plan.project)
                     .map_err(|error| error.message)?;
+                output::remove_parts(part.as_slice()).map_err(|error| error.message)?;
                 *outputs = output::Files::new(self.plan.replace);
                 movie = outputs
                     .add(&self.plan.path)
@@ -428,8 +433,9 @@ impl Worker {
             self.plan.range.clone(),
         );
         for (path, text) in sidecars {
-            output::check(&path, &self.plan.project_dir, self.plan.replace)
+            let stale = output::check(&path, &self.plan.project_dir, self.plan.replace)
                 .map_err(|error| error.message)?;
+            output::remove_parts(stale.as_slice()).map_err(|error| error.message)?;
             let part = outputs.add(&path).map_err(|error| error.to_string())?;
             std::fs::write(part, text).map_err(|error| error.to_string())?;
         }

@@ -101,6 +101,32 @@ async fn render_refuses_unsafe_paths_ranges_and_existing_files_before_starting()
 }
 
 #[tokio::test]
+async fn a_refused_export_takes_no_partial_file_away() {
+    let dir = project_dir();
+    let output = project_dir();
+    let engine = engine(
+        dir.path(),
+        &["--headless", "--no-proxies", "--idle-seconds", "1"],
+    )
+    .await;
+    let mut client = engine.client("agent").await;
+    let timeline = timeline(&mut client, 100).await;
+    let path = output.path().join("cut.mov");
+    let part = output.path().join("cut.mov.part");
+    std::fs::write(&part, "left by a crash").unwrap();
+    // The SRT beside the film cannot be written: the export is refused, and the partial file
+    // of the film that replace would take away is still there.
+    std::fs::create_dir(path.with_extension("srt")).unwrap();
+    let mut params = with_srt(&timeline, &path);
+    params["replace"] = json!(true);
+    let error = client.error("render.start", Some(params)).await;
+    assert_eq!(error["code"], -32602, "{error}");
+    assert_eq!(std::fs::read_to_string(&part).unwrap(), "left by a crash");
+    drop(client);
+    assert_eq!(engine.ended().await, 0);
+}
+
+#[tokio::test]
 async fn render_works_headlessly_with_clipped_srt_and_no_burned_subtitles() {
     if columbina_compose::gpu_for_tests().is_none() {
         return;

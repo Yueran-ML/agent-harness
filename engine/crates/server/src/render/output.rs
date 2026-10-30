@@ -55,7 +55,10 @@ pub(super) fn not_a_source(path: &Path, project: &columbina_model::Project) -> R
     Ok(())
 }
 
-pub(super) fn check(path: &Path, project: &Path, replace: bool) -> Result<(), Fault> {
+/// Check an output path before anything is written. A partial file in its way that `replace`
+/// lets the export take away is returned, to be taken away with [`remove_parts`] once every
+/// check of the export has passed: a refused export changes no file.
+pub(super) fn check(path: &Path, project: &Path, replace: bool) -> Result<Option<PathBuf>, Fault> {
     if !path.is_absolute() || path.file_name().is_none() {
         return Err(Fault::params("the export path must name an absolute file"));
     }
@@ -87,27 +90,40 @@ pub(super) fn check(path: &Path, project: &Path, replace: bool) -> Result<(), Fa
     stale_part(path, replace)
 }
 
+fn part_in_the_way(part: &Path) -> Fault {
+    Fault::new(
+        rpc::REFUSED,
+        format!("a partial file {} is in the way", part.display()),
+    )
+    .with_data(json!({"reason":"part_exists", "path":part}))
+}
+
 /// A partial file at `<path>.part`, left by an export that did not finish (the engine ended
 /// while it ran) or by another program, is never written over silently. Without `replace` the
-/// export is refused as `part_exists`; with it, the partial file is taken away first, unless a
-/// program still has it open (Windows refuses to delete it then) or it is not a file.
-fn stale_part(path: &Path, replace: bool) -> Result<(), Fault> {
+/// export is refused as `part_exists`; with it, the partial file is returned, to be taken away
+/// once the export has passed every check, unless it is not a file.
+fn stale_part(path: &Path, replace: bool) -> Result<Option<PathBuf>, Fault> {
     let part = part_of(path);
-    let refused = || {
-        Fault::new(
-            rpc::REFUSED,
-            format!("a partial file {} is in the way", part.display()),
-        )
-        .with_data(json!({"reason":"part_exists", "path":part}))
-    };
     match fs::symlink_metadata(&part) {
-        Ok(meta) if replace && meta.file_type().is_file() => {
-            fs::remove_file(&part).map_err(|_| refused())
-        }
-        Ok(_) => Err(refused()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Ok(meta) if replace && meta.file_type().is_file() => Ok(Some(part)),
+        Ok(_) => Err(part_in_the_way(&part)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(Fault::params(error.to_string())),
     }
+}
+
+/// Take away the partial files that [`check`] found in the way of an export with `replace`,
+/// once the export has passed every check. One that a program still has open (Windows refuses
+/// to delete it then) refuses the export as `part_exists`.
+pub(super) fn remove_parts(parts: &[PathBuf]) -> Result<(), Fault> {
+    for part in parts {
+        match fs::remove_file(part) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => return Err(part_in_the_way(part)),
+        }
+    }
+    Ok(())
 }
 
 pub(super) struct Files {
@@ -267,8 +283,13 @@ mod tests {
             Some(json!({"reason":"part_exists", "path":part}))
         );
         assert_eq!(fs::read(&part).unwrap(), b"left by a crash");
-        check(&path, project.path(), true).unwrap();
+        // With replace it is taken away only when asked to, after every other check.
+        let found = check(&path, project.path(), true).unwrap();
+        assert_eq!(found, Some(part.clone()));
+        assert!(part.exists());
+        remove_parts(std::slice::from_ref(&part)).unwrap();
         assert!(!part.exists());
+        assert_eq!(check(&path, project.path(), true).unwrap(), None);
         let mut files = Files::new(false);
         fs::write(files.add(&path).unwrap(), b"movie").unwrap();
         files.publish().unwrap();
@@ -285,7 +306,8 @@ mod tests {
                 .share_mode(1 | 2)
                 .open(&part)
                 .unwrap();
-            let error = check(&path, project.path(), true).unwrap_err();
+            let found = check(&path, project.path(), true).unwrap();
+            let error = remove_parts(&found.into_iter().collect::<Vec<_>>()).unwrap_err();
             assert_eq!(error.data.unwrap()["reason"], "part_exists");
             drop(held);
             assert!(part.exists());

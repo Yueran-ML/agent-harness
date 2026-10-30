@@ -294,6 +294,7 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
       drive.set(path.resolve(to), { ...source });
     }),
     mkdir: vi.fn(async (_folder: string, _options?: unknown) => undefined),
+    readdir: vi.fn(async (folder: string) => [...(listed.get(path.resolve(folder)) ?? [])]),
     writeFile: vi.fn(async (to: string, text: string, options?: { flag?: string }) => {
       if (options?.flag === 'wx' && drive.has(path.resolve(to))) throw there(to);
       drive.set(path.resolve(to), { size: String(text).length });
@@ -3936,11 +3937,19 @@ describe('the engine of the studio', () => {
     const chosen = path.resolve('/exports/existing.mov');
     const error = { code: -32001, message: 'An output already exists.', data: { reason: 'exists', path: chosen } };
     shell.engines.servers.get(main.address)!.answers.set('render.start', () => ({ error }));
-    // The file is there, and Save As asked to replace it: but a partial file beside it was not asked of.
-    shell.listed.set(path.resolve('/exports'), ['existing.mov', 'existing.mov.part']);
+    // The file is there, and Save As asked to replace it: but a partial file beside it was not asked
+    // of. The export is refused naming that file, not the film just confirmed, and the engine is not asked.
+    shell.listed.set(path.resolve('/exports'), ['existing.mov', 'Existing.mov.part']);
+    shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: chosen });
+    const part = path.join(path.resolve('/exports'), 'Existing.mov.part');
+    expect(await shell.invoke('engine-render', options)).toEqual({ ok: false, error: { code: -32001, message: `${part} is there already.`, data: { reason: 'part_exists', path: part } } });
+    expect(shell.dialog.showSaveDialog.mock.calls.at(-1)![1].filters).toEqual([{ name: 'MOV', extensions: ['mov'] }]);
+    expect(main.methods()).not.toContain('render.start');
+    // The engine's own refusal is handed on as it is.
+    shell.listed.set(path.resolve('/exports'), ['existing.mov']);
+    shell.absent.add(chosen);
     shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: chosen });
     expect(await shell.invoke('engine-render', options)).toEqual({ ok: false, error });
-    expect(shell.dialog.showSaveDialog.mock.calls.at(-1)![1].filters).toEqual([{ name: 'MOV', extensions: ['mov'] }]);
     expect(main.written.at(-1)!.params).toEqual({ timeline: 't1', codec: 'prores', quality: 'medium', subtitle_tracks: [], path: chosen, replace: false });
   });
 
@@ -3953,20 +3962,27 @@ describe('the engine of the studio', () => {
     const options = { timeline: 't1', codec: 'h264', quality: 'high', subtitle_tracks: ['S1'], name: 'Cut: "final"?' };
     const exports = path.resolve('/exports');
     const chosen = path.join(exports, 'film.mp4');
+    // Whether the export replaces what is there; or the file beside it that it is refused for, the engine not asked.
     const render = async (listing: string[], patch = {}) => {
       shell.listed.set(exports, listing);
       shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: chosen });
-      expect(await shell.invoke('engine-render', { ...options, ...patch })).toMatchObject({ ok: true });
+      const asked = main.written.length;
+      const answer = await shell.invoke('engine-render', { ...options, ...patch });
+      if (!answer.ok) {
+        expect(main.written.slice(asked).map(each => each.method)).not.toContain('render.start');
+        expect(answer.error.code).toBe(-32001);
+        return `${answer.error.data.reason} ${path.basename(answer.error.data.path)}`;
+      }
       return main.written.at(-1)!.params.replace;
     };
     // The file chosen is there: Windows asked whether to replace it, and the user said so.
     expect(await render(['film.mp4', 'notes.txt', 'other.srt'])).toBe(true);
     expect(shell.dialog.showSaveDialog.mock.calls.at(-1)![1].defaultPath).toBe(path.join(cwd, 'Cut_ _final__.mp4'));
     // An SRT, the .mov of a ProRes fallback or a partial file beside it was not asked of.
-    expect(await render(['film.mp4', 'FILM.srt'])).toBe(false);
-    expect(await render(['film.mp4', 'film.en.srt'])).toBe(false);
-    expect(await render(['film.mp4', 'film.mov'])).toBe(false);
-    expect(await render(['film.mp4', 'film.mp4.part'])).toBe(false);
+    expect(await render(['film.mp4', 'FILM.srt'])).toBe('exists FILM.srt');
+    expect(await render(['film.mp4', 'film.en.srt'])).toBe('exists film.en.srt');
+    expect(await render(['film.mp4', 'film.mov'])).toBe('exists film.mov');
+    expect(await render(['film.mp4', 'film.mp4.part'])).toBe('part_exists film.mp4.part');
     // Without subtitle tracks an SRT is not written, and ProRes has no fallback.
     expect(await render(['film.mp4', 'film.srt'], { subtitle_tracks: [] })).toBe(true);
     expect(await render(['film.mp4', 'film.mov'], { codec: 'prores' })).toBe(true);
@@ -3977,11 +3993,11 @@ describe('the engine of the studio', () => {
       { id: 't1', tracks: [{ id: 'v1', kind: 'video' }, subtitle('S1', 'en'), subtitle('S2', 'fr'), subtitle('S3', '', 'Notes: draft'), subtitle('S4', 'EN')] },
     ] } } }));
     expect(await render(['film.mp4', 'film.fr.srt', 'film.srt'], { subtitle_tracks: ['S3', 'S1'] })).toBe(true);
-    expect(await render(['film.mp4', 'film.en.srt'], { subtitle_tracks: ['S3', 'S1'] })).toBe(false);
-    expect(await render(['film.mp4', 'FILM.Notes_ draft.srt.part'], { subtitle_tracks: ['S3', 'S1'] })).toBe(false);
-    expect(await render(['film.mp4', 'film.EN-2.srt'], { subtitle_tracks: ['S1', 'S4'] })).toBe(false);
+    expect(await render(['film.mp4', 'film.en.srt'], { subtitle_tracks: ['S3', 'S1'] })).toBe('exists film.en.srt');
+    expect(await render(['film.mp4', 'FILM.Notes_ draft.srt.part'], { subtitle_tracks: ['S3', 'S1'] })).toBe('part_exists FILM.Notes_ draft.srt.part');
+    expect(await render(['film.mp4', 'film.EN-2.srt'], { subtitle_tracks: ['S1', 'S4'] })).toBe('exists film.EN-2.srt');
     expect(await render(['film.mp4', 'film.fr.srt'], { subtitle_tracks: ['S2'] })).toBe(true);
-    expect(await render(['film.mp4', 'film.srt'], { subtitle_tracks: ['S2'] })).toBe(false);
+    expect(await render(['film.mp4', 'film.srt'], { subtitle_tracks: ['S2'] })).toBe('exists film.srt');
     // A file that is not there replaces nothing.
     shell.absent.add(chosen);
     expect(await render([])).toBe(false);

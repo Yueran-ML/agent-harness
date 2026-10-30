@@ -2,9 +2,9 @@ const { app, BrowserWindow, Menu, Notification, Tray, dialog, ipcMain, nativeIma
 const { spawn } = require('node:child_process');
 const { createInterface } = require('node:readline');
 const {
-  constants, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync,
+  constants, createWriteStream, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync,
 } = require('node:fs');
-const { copyFile, mkdir, open, realpath, stat, writeFile } = require('node:fs/promises');
+const { copyFile, mkdir, open, readdir, realpath, stat, writeFile } = require('node:fs/promises');
 const path = require('node:path');
 const { StringDecoder } = require('node:string_decoder');
 const { pathToFileURL, fileURLToPath } = require('node:url');
@@ -1051,26 +1051,35 @@ async function srtFilesOf(open, chosen, options) {
   }
 }
 /**
- * Whether an export to `chosen` may replace what is there. Save As asked the user whether to
- * replace the file that they chose (Windows asks it of a file that is there), so a file that is
- * there was confirmed. What the export would write beside it was not asked of: an SRT of a
- * subtitle track chosen (`srts`, the names that it writes; null where they are not known, and any
- * SRT of the film's name counts), the .mov of a ProRes fallback, or a partial file. Where any of
- * those is there, nothing is replaced, and the engine refuses as it would without the dialog.
+ * The files in the folder of `chosen`, read without holding up the main process, where `chosen` is
+ * there (Save As asked whether to replace it); null where it is not, or the folder cannot be read,
+ * and then nothing is replaced.
  */
-function replacing(chosen, options, srts = null) {
-  if (!existsSync(chosen)) return false;
+async function besideOf(chosen) {
+  if (!existsSync(chosen)) return null;
+  try { return (await readdir(path.dirname(chosen))).map(String); } catch { return null; }
+}
+/**
+ * Whether an export to `chosen` may replace what is there, given the files of its folder (`there`,
+ * see `besideOf`). Save As asked the user whether to replace the file that they chose (Windows asks
+ * it of a file that is there), so a file that is there was confirmed. What the export would write
+ * beside it was not asked of: an SRT of a subtitle track chosen (`srts`, the names that it writes;
+ * null where they are not known, and any SRT of the film's name counts), the .mov of a ProRes
+ * fallback, or a partial file. Where any of those is there, nothing is replaced, and `blocking` is
+ * that file, which the export is refused for, as the engine refuses it without the dialog.
+ */
+function replacing(chosen, options, there, srts = null) {
+  if (there === null) return { replace: false, blocking: null };
   const { dir, name, ext } = path.parse(chosen);
   const same = process.platform === 'win32' ? (text) => text.toLowerCase() : (text) => text;
-  let there;
-  try { there = readdirSync(dir).map((file) => same(String(file))); } catch { return false; }
   const stem = same(name);
   const beside = (file) => file === same(`${name}${ext}.part`)
     || (srts === null
       ? options.subtitle_tracks.length > 0 && file.startsWith(`${stem}.`) && (file.endsWith('.srt') || file.endsWith('.srt.part'))
       : srts.some((srt) => file === same(srt) || file === same(`${srt}.part`)))
     || (options.codec !== 'prores' && same(ext) === '.mp4' && (file === `${stem}.mov` || file === `${stem}.mov.part`));
-  return !there.some(beside);
+  const found = there.find((file) => beside(same(file)));
+  return found === undefined ? { replace: true, blocking: null } : { replace: false, blocking: path.join(dir, found) };
 }
 /**
  * Look through a transaction of the page: it may name no file. Media is added only from files that
@@ -2016,9 +2025,22 @@ function installHandlers() {
     // The engine checks its output paths (including fallback MOV and SRT) and refuses an existing
     // one, unless it may replace them. Only the shell decides that, from what the user confirmed
     // in Save As (see `replacing`); the page never can.
-    const srts = existsSync(chosen.filePath) ? await srtFilesOf(open, chosen.filePath, options) : [];
-    if (studio !== open) return { ok: false, error: { code: null, message: 'The project of the studio was closed meanwhile.', data: null } };
-    const started = await answered(open.session.call('render.start', { ...options, path: chosen.filePath, replace: replacing(chosen.filePath, options, srts) }));
+    const closed = { ok: false, error: { code: null, message: 'The project of the studio was closed meanwhile.', data: null } };
+    const there = await besideOf(chosen.filePath);
+    if (studio !== open) return closed;
+    // The names of the SRT files are asked for last, so that what the engine has changes as little
+    // as can be before it is asked to start: nothing else is awaited between. (Another client may
+    // still rename a subtitle track in that moment; render.start takes no revision to hold it to.)
+    const srts = there === null ? [] : await srtFilesOf(open, chosen.filePath, options);
+    if (studio !== open) return closed;
+    const { replace, blocking } = replacing(chosen.filePath, options, there, srts);
+    // A file beside the film that Save As did not ask of: refused naming that file, not the film
+    // that the user just confirmed, as the engine would refuse it.
+    if (blocking !== null) {
+      const reason = blocking.toLowerCase().endsWith('.part') ? 'part_exists' : 'exists';
+      return { ok: false, error: { code: -32001, message: `${blocking} is there already.`, data: { reason, path: blocking } } };
+    }
+    const started = await answered(open.session.call('render.start', { ...options, path: chosen.filePath, replace }));
     if (started.ok && typeof started.result?.job === 'string' && !open.jobs.has(started.result.job)) open.jobs.set(started.result.job, { path: chosen.filePath });
     return started;
   });

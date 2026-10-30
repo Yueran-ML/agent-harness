@@ -582,16 +582,16 @@ describe('the viewer', () => {
     const engine = engineWith(projectOf());
     await studio(engine, false);
     expect(one('viewer').dataset.browser).toBe('');
-    expect(one('viewer-words').textContent).toBe('The preview appears in the desktop app.');
+    expect(one('viewer-words').textContent).toBe('The viewers appear only in the desktop app.');
     // Nothing is told to a shell that is not there.
     expect(engine.bridge.viewRect).not.toHaveBeenCalled();
     expect(engine.bridge.viewShow).not.toHaveBeenCalled();
     cleanup();
     await studio(engineWith(projectOf()), false, zhCN);
-    expect(one('viewer-words').textContent).toBe('预览窗只在桌面应用里显示。');
+    expect(one('viewer-words').textContent).toBe('检视器只在桌面应用里显示。');
     cleanup();
     await studio(engineWith(projectOf()), false, ja);
-    expect(one('viewer-words').textContent).toBe('プレビューはデスクトップアプリで表示されます。');
+    expect(one('viewer-words').textContent).toBe('ビューアはデスクトップアプリでのみ表示されます。');
   });
 
   it('works with the engine of the replay', async () => {

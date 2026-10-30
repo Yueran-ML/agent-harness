@@ -284,6 +284,8 @@ export function editCommand(action: EditAction | null, context: EditContext): Ed
     // With timeline In and Out points, Ripple Overwrite puts the source in place of what lies between
     // them, the rest moving by the difference (Reference Manual 20, pp. 561, 842): the range is taken
     // out and the source inserted at the In, in one transaction. Without, the clip at the playhead.
+    // Clips chosen do not change this, as they do for the keys of deleting (p. 760): the manual
+    // describes this edit by the range alone.
     if (edit === 'ripple_overwrite' && marks.in !== null && marks.out !== null && marks.out > marks.in) {
       return transaction([
         { edit: 'ripple_delete_range', timeline: timeline.id, from: marks.in, to: marks.out },

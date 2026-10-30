@@ -39,6 +39,10 @@ pub struct Request {
     subtitle_tracks: Vec<String>,
     #[serde(default)]
     replace: bool,
+    /// The revision of the project that the client prepared the export by, as the names of its
+    /// SRT files; refused as `stale_revision` where the project is not at it any more.
+    #[serde(default)]
+    pub revision: Option<u64>,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -130,7 +134,8 @@ impl Renders {
     pub fn prepare(&self, project: Project, request: Request) -> Result<Launch, Fault> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if state.stopped {
-            return Err(Fault::new(rpc::REFUSED, "the engine is stopping"));
+            return Err(Fault::new(rpc::REFUSED, "the engine is stopping")
+                .with_data(json!({"reason":"stopping"})));
         }
         if state
             .active
@@ -237,7 +242,13 @@ impl Plan {
             .timelines
             .iter()
             .position(|timeline| timeline.id == request.timeline)
-            .ok_or_else(|| Fault::params(format!("there is no timeline {}", request.timeline)))?;
+            .ok_or_else(|| {
+                Fault::params(format!(
+                    "there is no timeline {} in the project",
+                    request.timeline
+                ))
+                .with_data(json!({"reason": "missing", "timeline": request.timeline}))
+            })?;
         let timeline = &project.timelines[index];
         let duration = resolve::duration(timeline);
         let range = request
@@ -671,6 +682,7 @@ mod tests {
             range: None,
             subtitle_tracks: vec![],
             replace: false,
+            revision: None,
         };
         Worker {
             plan: Plan::new(project, request, dir).unwrap(),
@@ -686,6 +698,29 @@ mod tests {
             restored: 0,
             lose_at: None,
         }
+    }
+
+    #[test]
+    fn an_export_asked_for_while_the_engine_stops_is_refused_with_a_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let renders = Renders::new(dir.path(), Graphics::new(), Arc::new(|_| {}));
+        renders.stop();
+        let project = Project::sample();
+        let request = Request {
+            timeline: project.timelines[0].id.clone(),
+            path: dir.path().join("film.mov"),
+            codec: VideoCodec::Prores,
+            quality: VideoQuality::Medium,
+            range: None,
+            subtitle_tracks: vec![],
+            replace: false,
+            revision: None,
+        };
+        let Err(error) = renders.prepare(project, request) else {
+            panic!("an export started while the engine stops");
+        };
+        assert_eq!(error.code, rpc::REFUSED);
+        assert_eq!(error.data, Some(json!({"reason":"stopping"})));
     }
 
     #[test]
@@ -713,6 +748,7 @@ mod tests {
             range: None,
             subtitle_tracks: vec![],
             replace: false,
+            revision: None,
         };
         let mut worker = worker(dir.path());
         worker.plan = Plan::new(project, request, dir.path()).unwrap();

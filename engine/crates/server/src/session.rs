@@ -665,24 +665,7 @@ async fn dispatch(
         }
         "media.import" => media_import(engine, connection, kind, id, params).await,
         "media.inspect" => media_inspect(engine, connection, id, params).await,
-        "render.start" => {
-            let request: crate::render::Request = rpc::params(
-                method,
-                r#"{"timeline":"t1","path":"...","codec":"h264","quality":"high"}"#,
-                params,
-            )?;
-            let project = engine.state.lock().await.history.project().clone();
-            let renders = Arc::clone(&engine.renders);
-            let launch = tokio::task::spawn_blocking(move || renders.prepare(project, request))
-                .await
-                .map_err(|error| Fault::new(rpc::REFUSED, error.to_string()))??;
-            let reply = match connection.queue(rpc::result_line(id, &json!({"job":launch.job}))) {
-                Ok(()) => Reply::Queued,
-                Err(refused) => Reply::Refused(refused),
-            };
-            launch.start();
-            Ok(reply)
-        }
+        "render.start" => render_start(engine, connection, id, method, params).await,
         "render.cancel" => {
             #[derive(Deserialize)]
             #[serde(deny_unknown_fields)]
@@ -960,6 +943,50 @@ struct TransactionResult<'a> {
     clamped: &'a [usize],
 }
 
+/// `render.start`: check an export against a snapshot of the project, at the revision that the
+/// client gives if it gives one, and start it.
+async fn render_start(
+    engine: &Engine,
+    connection: &Connection,
+    id: &RawValue,
+    method: &str,
+    params: Option<&RawValue>,
+) -> Result<Reply, Reply> {
+    let request: crate::render::Request = rpc::params(
+        method,
+        r#"{"timeline":"t1","path":"...","codec":"h264","quality":"high"}"#,
+        params,
+    )?;
+    let project = {
+        let state = engine.state.lock().await;
+        let actual = state.history.revision();
+        if let Some(expected) = request.revision.filter(|expected| *expected != actual) {
+            return Err(stale_revision(expected, actual).into());
+        }
+        state.history.project().clone()
+    };
+    let renders = Arc::clone(&engine.renders);
+    let launch = tokio::task::spawn_blocking(move || renders.prepare(project, request))
+        .await
+        .map_err(|error| Fault::new(rpc::REFUSED, error.to_string()))??;
+    let reply = match connection.queue(rpc::result_line(id, &json!({"job":launch.job}))) {
+        Ok(()) => Reply::Queued,
+        Err(refused) => Reply::Refused(refused),
+    };
+    launch.start();
+    Ok(reply)
+}
+
+/// The refusal of a request prepared by the project at revision `expected`, which is now at
+/// `actual`: `transaction.apply` and `render.start` given a `revision`.
+fn stale_revision(expected: u64, actual: u64) -> Fault {
+    Fault::new(
+        rpc::REFUSED,
+        "the project changed since this request was prepared",
+    )
+    .with_data(json!({"reason":"stale_revision", "expected":expected, "actual":actual}))
+}
+
 /// `transaction.apply`: apply operations, all of them or none.
 async fn transaction_apply(
     engine: &Engine,
@@ -991,13 +1018,7 @@ async fn transaction_apply(
         .revision
         .filter(|revision| *revision != state.history.revision())
     {
-        return Err(Fault::new(
-            rpc::REFUSED,
-            "the project changed since these edits were prepared",
-        )
-        .with_data(json!({"reason":"stale_revision", "expected":revision,
-                "actual":state.history.revision()}))
-        .into());
+        return Err(stale_revision(revision, state.history.revision()).into());
     }
     let changed = state
         .history

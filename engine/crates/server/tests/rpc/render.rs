@@ -127,6 +127,58 @@ async fn a_refused_export_takes_no_partial_file_away() {
 }
 
 #[tokio::test]
+async fn render_names_a_missing_timeline_and_refuses_a_revision_that_is_not_the_projects() {
+    let dir = project_dir();
+    let output = project_dir();
+    let engine = engine(
+        dir.path(),
+        &["--headless", "--no-proxies", "--idle-seconds", "1"],
+    )
+    .await;
+    let mut client = engine.client("agent").await;
+    let timeline = timeline(&mut client, 100).await;
+    let path = output.path().join("cut.mov");
+    let part = output.path().join("cut.mov.part");
+    std::fs::write(&part, "left by a crash").unwrap();
+    // A timeline that is not there is named, as timeline.duration and transport.load name it.
+    let mut params = request(&json!("t404"), &path);
+    params["replace"] = json!(true);
+    let error = client.error("render.start", Some(params)).await;
+    assert_eq!(error["code"], -32602, "{error}");
+    assert_eq!(
+        error["data"],
+        json!({"reason":"missing", "timeline":"t404"}),
+        "{error}"
+    );
+    // The names of the SRT files were worked out at a revision that is not the project's any
+    // more: refused as transaction.apply refuses it, before anything is written or taken away.
+    let revision = client.result("project.get", None).await["revision"].clone();
+    let actual = revision.as_u64().unwrap();
+    let mut params = with_srt(&timeline, &path);
+    params["replace"] = json!(true);
+    params["revision"] = json!(actual - 1);
+    let error = client.error("render.start", Some(params.clone())).await;
+    assert_eq!(error["code"], -32001, "{error}");
+    assert_eq!(
+        error["data"],
+        json!({"reason":"stale_revision", "expected":actual - 1, "actual":actual}),
+        "{error}"
+    );
+    assert_eq!(std::fs::read_to_string(&part).unwrap(), "left by a crash");
+    assert!(!path.with_extension("srt").exists());
+    // At the project's revision it is taken, as it is with none.
+    if columbina_compose::gpu_for_tests().is_some() {
+        params["revision"] = revision;
+        let job = client.result("render.start", Some(params)).await["job"].clone();
+        let done = finished(&mut client, &job).await;
+        assert_eq!(done["state"], "done", "{done}");
+        assert!(!part.exists());
+    }
+    drop(client);
+    assert_eq!(engine.ended().await, 0);
+}
+
+#[tokio::test]
 async fn render_works_headlessly_with_clipped_srt_and_no_burned_subtitles() {
     if columbina_compose::gpu_for_tests().is_none() {
         return;

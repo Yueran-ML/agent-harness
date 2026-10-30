@@ -7,8 +7,15 @@ This is what a client is written against.
 ## Starting and finding an engine
 
 ```
-columbina-engine --project <DIR> [--headless] [--idle-seconds <N>]
+columbina-engine --project <DIR> [--headless] [--idle-seconds <N>] [--no-proxies] [--test-hooks]
 ```
+
+- `--no-proxies` starts an engine that makes no proxies (`media.make_proxy` is then `-32601`).
+  `--test-hooks` opens the test hook of the transport (`transport.frame_digest`, below); it is
+  for tests only. The engine takes a few more options for its own tests (`--proxy-ffmpeg
+  <absolute file>`, which comes before `COLUMBINA_PROXY_FFMPEG`, `--mute`, `--sound`,
+  `--queue-capacity`, `--queue-bytes`, `--read-gate`, `--fail-card-at`, `--proxy-readrate`,
+  `--proxy-encoder`, `--proxy-watchdog`); clients do not use them.
 
 - The engine reads media with libav (FFmpeg's libraries, an LGPL shared build), which it finds
   beside itself or on `PATH`: on Windows `avcodec-62.dll`, `avformat-62.dll`, `avutil-60.dll`,
@@ -83,7 +90,8 @@ columbina-engine --project <DIR> [--headless] [--idle-seconds <N>]
   `-32600` and id `null`. **Params** are an object; a method that takes none takes them left
   out, `null` or `{}`.
 - A message without an `id` is a notification; the engine defines none from clients and ignores
-  them. Batches (arrays) are refused (`-32600`).
+  a well-formed one. One that is not well formed (`jsonrpc` not `"2.0"`, no `method`) is
+  answered with `-32600` and id `null`, as a request would be. Batches (arrays) are refused (`-32600`).
 - Requests on one connection are answered in the order they were sent; a client may send many
   before reading the answers.
 
@@ -174,7 +182,8 @@ Before `hello`, every other request is refused with `-32600`.
   add them alongside a timeline in one `transaction.apply`, so a whole migration is one undo.
 - `media.import` reads each file (its identity, and what it holds, as below) and adds it to the
   optional `bin` (otherwise the root) in the same transaction; an unknown bin refuses the
-  whole import, without changing the project or its history. It adds the media to the
+  whole import (`-32001`, `{"reason":"missing","what":"bin","id":…,"index":0}`), without
+  changing the project or its history. It adds the media to the
   end of the media as **one transaction** of `add_media` operations, one for each path in order,
   each given an id by the engine; `added` lists them in the same order. Every path must be
   **absolute** and UTF-8; a relative one is refused (`-32602`, `data: {"index": i, "path":
@@ -315,7 +324,8 @@ itself; a client only sees them, and may turn their use off (`transport.proxies`
   until a client asks for it with **`media.make_proxy`** `{"media": "m1"}`: that forgets the
   failure and makes the proxy again if the media needs one (answered `{}` at once; what comes of
   it is told in `media.proxy`). Media not in the project is refused (`-32602`, `reason:
-  "missing"`); an engine that makes no proxies answers `-32601`. Deleting `failed.json` forgets
+  "missing"`), and that is checked first; an engine that makes no proxies answers `-32601`
+  for media that is there. Deleting `failed.json` forgets
   every failure, at the next start. A failure that is not the file's (the engine ended, the media
   was removed, no `ffmpeg`, a file that cannot be read, an `ffmpeg` that wrote nothing for 60 s,
   or one whose `ffmpeg` said that the disk is full or that a file may not be written: "no space
@@ -348,9 +358,10 @@ item may have `proxy`, which is left out when it has none:
 `path` is a file of the engine's own (see Security): `<id>-<12 hex digits>.mov` directly in
 `<project>/cache/proxies`; `width` and `height` as stored; `codec` as ffprobe names it
 (`hevc`, `prores`); `digest_of_source` the `identity.digest` of the media it was made from. A
-project written before proxies has none, and is read as it is. A proxy whose `path` is not of
-the engine's own is taken away as the project is read (logged `proxy_dropped`), and the rest of
-the project is read as it is.
+project written before proxies has none, and is read as it is. A proxy whose (absolute) `path` is
+not of the engine's own is taken away as the project is read (logged `proxy_dropped`), and the
+rest of the project is read as it is. A proxy `path` that is not absolute is not taken away:
+the project is refused as it is read (`not_absolute`), and the engine does not start.
 
 ### Schema 2
 
@@ -361,25 +372,30 @@ clients; a client must not write `project.json` itself.
 
 - A bin is `{id, name, parent}` (`parent: null` for the root). Bins cannot contain themselves,
   and a nonempty bin cannot be removed. Media adds `name`, nullable `bin`, `mark_in` and
-  `mark_out`; marks use the media duration's time scale.
+  `mark_out`; marks use the media duration's time scale. Nullable fields (`parent`, `bin`, the
+  marks, a clip's `link`) must be written, as `null` if there is none; of media, only `proxy`
+  may be left out, and `facts.video` / `facts.audio` may be `null` or left out.
 - A timeline is `{id, name, rate: {num, den}, width, height, sample_rate, tracks}`. Width and
   height are even integers, 16–16384; sample rate is 44100, 48000 or 96000. Frames are integers
   at the timeline rate. Video tracks stack in list order, the first at the bottom.
 - Every track has `id`, `kind`, `name`, `enabled`, `locked`. Video/audio tracks additionally
-  have `clips` and `transitions`; subtitle tracks instead have `language` and `cues`. Fields of
-  another track kind are refused, even empty arrays. Track ids are unique within a timeline.
+  have both `clips` and `transitions`; subtitle tracks instead have both `language` and `cues`.
+  Fields of another track kind are refused, even empty arrays. Track ids are unique within a timeline.
   A timeline shows one subtitle track at a time, as DaVinci Resolve does: at most one of its
   subtitle tracks is `enabled` (shown in the timeline monitor). A project with two is refused
   when it is read, and so is an operation that would make two (`subtitle_shown`, below).
 - A clip is `{id, start, length, source, enabled, speed, reverse, link, transform, gain_db, pan,
   fade_in, fade_out}`. `start >= 0`, `length > 0`; same-track clips cannot overlap.
-  `speed: {num, den}` is a positive rational in [1/8, 8]; direction is the separate `reverse`
+  `speed: {num, den}` is a positive rational from 1/100 to 100; direction is the separate `reverse`
   flag. `link` is a group id or `null`. Time conversion uses integer ticks, rounded down, so a
   cut need not be an exact sample boundary for arbitrary source time bases.
 - A stored `source` is `{kind:"media", media, in:{ticks,scale}}`,
   `{kind:"color", color:"#rrggbbaa"}`, or `{kind:"title", text, style}`.
-  Title style is `{font, size, color, x, y, align}`: size 1–4096 in timeline pixels; x/y in
-  [0,1]; align `left|center|right`. Text is at most 1000 characters.
+  Title style is `{font, size, color, x, y, align}`: size 1–4096 in timeline pixels; `x`/`y`
+  place the anchor as shares of the picture (0 at the left or top edge, 1 at the right or
+  bottom), any finite number (outside 0…1 the anchor is off the picture); align
+  `left|center|right` says which side of the text the anchor is on. Title text may be empty and
+  is at most 1000 characters.
 - Colors accept exactly eight hexadecimal digits after `#`, with either letter case; returned
   operations and saved projects normalize them to lowercase `#rrggbbaa` (alpha last).
 - `transform` is `{x,y,scale,rotation,opacity}`: offsets as shares of timeline width/height,
@@ -389,8 +405,8 @@ clients; a client must not write `project.json` itself.
 - A transition is `{id,kind,left,right,length,align}`. Kind is `dissolve|dip_black|dip_white`
   on video or `crossfade` on audio; alignment is `start|center|end`. Its clips must be adjacent
   on one track, have enough source handles and enough length beside their other transitions.
-- A subtitle cue is `{id,start,length,text}`, with a nonnegative start and positive length.
-  Cues cannot overlap on the same track. `language` is a short BCP 47 tag or an empty string.
+- A subtitle cue is `{id,start,length,text}`, with a nonnegative start and positive length;
+  its text is not empty and at most 1000 characters. Cues cannot overlap on the same track. `language` is a short BCP 47 tag or an empty string.
 
 Integers written into the project and edit frame/tick inputs stay within ±(2^53−1), so clients
 using JavaScript preserve them exactly. See `crates/model/src/project.rs` for the complete
@@ -493,7 +509,7 @@ picture.
 
 | `-32003` `reason` | when |
 |---|---|
-| `no_view` | `view.place` or `view.show` with no view attached |
+| `no_view` | `view.place` or `view.show` with no view attached (`data` also names the `monitor`) |
 | `gone` | the view's window was destroyed with its parent; the view is let go |
 | `window` | the window of the view could not be made |
 | `gpu` | no graphics card can draw in the window |
@@ -635,7 +651,9 @@ heard since that output started), `audio_frame` (the corresponding timeline cloc
 `audio_sample` (where the mixer is in the timeline, in timeline samples: the sample it started
 at plus those heard, at the timeline's `sample_rate`), so a test can tell the sound from the
 picture by the mixer itself rather than by the clock that the sound drives.
-These fields are absent after pause and are only for audio/picture regression checks.
+They are given while the timeline's sound is `"on"`; `audio_frame` or `audio_sample` is `null`
+while the output has no clock yet or the mixer has not started. These fields are absent after
+pause and are only for audio/picture regression checks.
 
 The media-specific details below describe the source monitor. Seek, pause, step, speed bounds,
 scrub settling and end-of-playback rules also apply to the timeline monitor.
@@ -724,8 +742,8 @@ media is unloaded; while playing, as the playhead moves, **at most 30 times a se
 
 | `-32004` `reason` | when |
 |---|---|
-| `not_loaded` | `transport.play`, `.pause`, `.seek` or `.step` with no media loaded, and none being loaded |
-| `failed` | the transport of the engine has stopped (a bug of the engine): it told the state with `media: null` as it stopped, and logged `transport_failed`; from then on every `transport.*` is refused so, but `transport.state`, which still answers with that state |
+| `not_loaded` | `transport.play`, `.pause`, `.seek` or `.step` with nothing loaded on that monitor (no media on the source monitor, no timeline on the timeline monitor), and nothing being loaded; `transport.frame_digest` with no picture yet |
+| `failed` | the transport of the engine (of the source monitor, or the timeline transport) has stopped (a bug of the engine): it told the state with `media: null` as it stopped, and logged `transport_failed`; from then on every `transport.*` is refused so, but `transport.state`, which still answers with that state |
 | `draw` | `transport.frame_digest` (a test hook) could not draw or read back the frame it was asked for |
 
 ## Operations
@@ -748,7 +766,7 @@ An operation is an object that names itself in `op` (unknown fields are refused,
 | `trim_clip` | `timeline`, `id`, `source_in?` (leave source in unchanged if absent), `start`, `length` |
 | `shift_clips` | `timeline`, `track`, `clips: [id, ...]`, `by` |
 | `shift_cues` | `timeline`, `track`, `cues: [id, ...]`, `by` |
-| `set_proxy` | `media`, `proxy` (a proxy, or `null` to take it away; its inverse sets the one before). A proxy must be a file of the engine's own (see Security), else it is refused as `not_a_proxy_path`; so must one on media that `add_media` adds |
+| `set_proxy` | `media`, `proxy` (a proxy, or `null` or left out to take it away; its inverse sets the one before). A proxy must be a file of the engine's own (see Security), else it is refused as `not_a_proxy_path`; so must one on media that `add_media` adds |
 | `set_timeline` | `id`, `name?`, `rate?`, `width?`, `height?`, `sample_rate?` |
 | `set_track` | `timeline`, `id`, `name?`, `enabled?`, `locked?`, `language?` |
 | `set_clip` | `timeline`, `id`, `enabled?`, `speed?`, `reverse?`, `link?`, `transform?`, `gain_db?`, `pan?`, `fade_in?`, `fade_out?`, `source?` |
@@ -786,8 +804,10 @@ in a transaction it is refused as `empty` and makes no step.
 
 `shift_clips` moves each distinct selected clip by `by` frames on one track, preserving its
 source, length and settings, and every transition whose two ends move together. A transition
-with only one end selected must be removed first. The operation refuses invalid positions,
-missing ids or overlap atomically. Its inverse moves the same ids by `-by`. `shift_cues` does
+with only one end selected must be removed first. The operation refuses, atomically, a
+clip moved before frame 0 (`out_of_timeline` `start`), past the largest integer (`too_large`),
+missing ids, or overlap. It does not look at the kind of the track: on a subtitle track its
+clips are `missing`. Its inverse moves the same ids by `-by`. `shift_cues` does
 the same for subtitles of one subtitle track, refusing `cue_overlap`, `out_of_range` `start`
 (before frame 0) or `wrong_track` for a track of picture or sound; the edits move every later
 subtitle of a track with one `shift_cues`, however many there are. Both refuse an empty list
@@ -873,8 +893,9 @@ fades are not silently substituted. All changes are still one reversible transac
 Within one `transaction.apply`, a thing that an operation adds may be given an id of the form
 `$name`: `$` and 1–32 of `A–Z a–z 0–9 _`. The thing is added as if its id were empty, and given
 one by the engine. Every **later** operation of the **same** transaction that names `$name` where
-it names a thing (its `timeline`, `track` or `id`, the `media` of a clip, and the `media` of
-`set_proxy`) is made to name that
+it names a thing (its `timeline`, `track` or `id`, the `media` of a clip, the `media` of
+`set_proxy`, and the ids listed in `clips` of `shift_clips` and `cues` of `shift_cues`) is made
+to name that
 id before it is applied. Edit references use the same rules. The ids are answered in `names`; `done` and `project.changed` carry only
 real ids. For example:
 
@@ -904,9 +925,10 @@ real ids. For example:
   existing content or a restored transition.
 - To address several outputs, use `name:{"video":"$v","audio":"$a","link":"$g"}`.
   Selectors are `primary`, `clip`, `video`, `audio`, `link`, `transition`, `cue`; every requested
-  output must exist. A missing output refuses the **whole** transaction with `-32001`,
+  output must exist. An empty name object, an unknown selector or a value that is not a string
+  cannot be read: the transaction is refused as `-32602` `{"index": i, "reason": "invalid_op"}`. A missing output refuses the **whole** transaction with `-32001`,
   `data:{reason:"missing",what:"named output",id:"$a",index:i,message:...}`, preserving the
-  project, revision, id counter and undo/redo. Empty name objects are refused.
+  project, revision, id counter and undo/redo.
 - `replace` retains ids; batch splits (`blade`, `cues_from`) expose their resulting basic
   operations in `done` rather than a single named output. `add_track.name` remains its display
   label; to name a new track within a transaction use basic `add_track` with `track.id:"$v"`.
@@ -920,7 +942,7 @@ real ids. For example:
 
   | reason | meaning |
   |---|---|
-  | `invalid_name` | not of the form `$` + 1–32 of `A–Z a–z 0–9 _` |
+  | `invalid_name` | a name given as a string that is not of the form `$` + 1–32 of `A–Z a–z 0–9 _` |
   | `unknown_name` | named before (or without) an operation that gives it |
   | `duplicate_name` | given twice |
   | `name_elsewhere` | a track's name used with another timeline than the one it was given in |
@@ -975,11 +997,11 @@ commits to it; and any client may send transactions. So:
 | code | when | `data` |
 |---|---|---|
 | `-32700` | the line is not JSON (id `null`) | |
-| `-32600` | not a request object, `jsonrpc` is not `"2.0"`, no `method`, a bad `id` (answered with id `null`), a request before `hello`, a second `hello`, a line over 16 MiB, `view.*` or `engine.yield` from a client that is not the desktop | |
+| `-32600` | not a request object, `jsonrpc` is not `"2.0"`, no `method`, a bad `id` (answered with id `null`), a request before `hello`, a second `hello`, a `hello` of another protocol, a line over 16 MiB, `view.*` or `engine.yield` from a client that is not the desktop | `{"reason": "protocol", "supported": [2]}` for a `hello` of another protocol |
 | `-32601` | no such method; `view.*` and `transport.*` in a `--headless` engine; `media.make_proxy` in an engine that makes no proxies; `engine.yield` in an engine that is not headless | |
-| `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name`; a speed of `transport.play` out of −8…8 or 0; `transport.load` of media or a timeline not in the project; `timeline.duration` of a timeline not there; `media.thumbnail` of a frame outside the media; `render.start` with a bad path, codec, quality, timeline, range or `subtitle_tracks`, and `render.cancel` of a job that is not there | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above; `{"reason": "speed"}`; `{"reason": "missing", "media": "..."}` or `{"reason": "missing", "timeline": "..."}`; `{"reason": "out_of_range", "frame": n}`; `{"reason": "subtitle_track", "track": "..."}` for a `subtitle_tracks` entry that is not a subtitle track of the timeline, or is named twice |
-| `-32001` | a transaction, undo or redo was refused; the project is exactly as it was; or `render.start` was refused before anything was written | the refusal, below |
-| `-32002` | `media.import`: a file cannot be read; nothing was added. `transport.load`: the file of the media cannot be opened or decoded | `{"path": "<as sent>", "reason": "...", "message": "..."}`, below |
+| `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name`; a speed of `transport.play` out of −8…8 or 0; `transport.load` of media or a timeline not in the project; `timeline.duration` of a timeline not there; `media.import` or `media.inspect` with no paths or a relative path; `media.thumbnail`, `media.waveform` or `media.make_proxy` of media not there; `media.thumbnail` of a frame outside the media, a height outside 1…270 or a width over 16384; a bad parent or rectangle of `view.*`; `render.start` with a bad path, codec, quality, timeline, range (an empty timeline has none, so it cannot be exported) or `subtitle_tracks`, and `render.cancel` of a job that is not there | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above; `{"reason": "speed"}`; `{"index": i, "path": "...", "reason": "relative"}`; `{"reason": "parent"}` or `{"reason": "rect"}` (`view.*`); `{"reason": "missing", "media": "..."}` or `{"reason": "missing", "timeline": "..."}` (not for `render.start`, whose missing timeline has no `data`); `{"reason": "out_of_range", "frame": n}`; `{"reason": "subtitle_track", "track": "..."}` for a `subtitle_tracks` entry that is not a subtitle track of the timeline, or is named twice |
+| `-32001` | a transaction, undo or redo was refused; the project is exactly as it was; or `render.start` was refused before anything was written (also, with no `data`, while the engine is stopping or when the export could not be started) | the refusal, below |
+| `-32002` | `media.import` or `media.inspect`: a file cannot be read; nothing was added. `transport.load`, `media.thumbnail`, `media.waveform`: the file of the media cannot be opened or decoded. The analysis of the engine stopped (no `data`) | `{"path": "<as sent>", "reason": "...", "message": "..."}`, below |
 | `-32003` | `view.*`: the view cannot be made, there is none, or its window is gone | `{"reason": "..."}`, see The view |
 | `-32004` | `transport.*`: no media is loaded, the transport has stopped, or the test hook could not draw | `{"reason": "..."}`, see The transport |
 
@@ -991,12 +1013,17 @@ holds a NUL), `not_media` (libav cannot open it as media of the formats above), 
 (neither picture nor sound), `unsupported` (what it holds cannot be used: a picture that libav
 cannot decode, no duration, a picture with no size or rate), `read` (it cannot be read on, once
 opened), or `failed` (the engine failed to read it). `transport.load` gives these too, and
-`decode` (its first frame cannot be decoded) and `seek`.
+`decode` (its first frame cannot be decoded) and `seek`; `media.thumbnail` and `media.waveform`
+may also give `no_video`, `no_audio`, `too_large` or `encode`, and the reading of media may give
+`device`, `out_of_range`, `no_encoder` or `write`.
 
-**Refusals (`-32001`).** `data` is `{"reason": "...", "message": "...", ...fields}`, with
+**Refusals (`-32001`).** `data` is `{"reason": "...", "message": "...", ...fields}` for a refused
+transaction, undo or redo, with
 `"index": i` (the place of the refused operation in `ops`) when an operation was refused, and
 `{"reason": "empty", "message": ...}` for a transaction with no operations. An undo or a redo is
-refused only through a bug of the engine. Each `reason` and its fields:
+refused only through a bug of the engine. The refusals that are not of a transaction
+(`stale_revision`, and `busy`, `exists`, `part_exists` and `source` of `render.start`) carry no
+`message` in `data`: it is the `message` of the error. Each `reason` and its fields:
 
 | reason | fields | meaning |
 |---|---|---|
@@ -1007,7 +1034,7 @@ refused only through a bug of the engine. Each `reason` and its fields:
 | `out_of_list` | `at`, `len` | an `index` past the end of its list |
 | `no_stream` | `media`, `kind` (`video`, `audio`) | the media has no stream for the track |
 | `wrong_kind` | `track`, `kind` | a clip moved to a track of the other kind |
-| `out_of_source` | `media`, `why` (`length`, `before_start`, `past_end`) | the clip lasts no frame, or shows what is not in its media |
+| `out_of_source` | `media`, `why` (`length`, `before_start`, `past_end`, `handles`, `marks`) | the clip lasts no frame, shows what is not in its media, a transition needs more of it than there is, or a mark is outside the media (or `mark_in` is not before `mark_out`) |
 | `scale` | `scale`, `media_scale` | a time of scale 0, or not of the scale of its media |
 | `overlap` | `with` | the clip covers frames that clip `with` covers |
 | `out_of_timeline` | `start` | the clip starts before frame 0 |
@@ -1040,12 +1067,12 @@ refused only through a bug of the engine. Each `reason` and its fields:
 | `wrong_track` | `what`, `kind` | content or settings on an incompatible track kind |
 | `cue_overlap` | `with` | subtitles overlap on one track |
 | `subtitle_shown` | `track` | a subtitle track would be enabled (by `set_track`, `add_track` or `add_timeline`) while subtitle track `track` of its timeline is enabled; a timeline shows one at a time |
-| `out_of_range` | `what` | invalid setting such as speed, gain, transform or text length; `digest` for media whose `identity.digest` is not 64 lowercase hex digits; `by`, `clips` or `cues` for a shift that would change nothing |
-| `has_transition` | `transition` | a basic operation would move just one transition endpoint |
+| `out_of_range` | `what` | an invalid setting: `width`, `height`, `sample_rate`, `start`, `length`, `speed`, `transform`, `gain_db`, `pan`, `fade`, `text`, `size`, `position`, `language`, `still`; `digest` for media whose `identity.digest` is not 64 lowercase hex digits; `by`, `clips` or `cues` for a shift that would change nothing |
+| `has_transition` | `transition` | `remove_clip`, `move_clip` or `trim_clip` of a clip that has a transition (remove it first), a `set_clip` that its transition cannot follow, or a `shift_clips` that moves just one end of a transition |
 | `not_adjacent` | `left`, `right` | transition endpoints do not meet |
 | `cut_taken` | `with` | a transition is already at this cut |
 | `too_long` | `transition`, `clip` | transitions cover more than the available clip length |
-| `source` | `clip` | basic set_clip cannot change this source kind/media |
+| `source` | `clip` | `set_clip` cannot change the kind or media of a source, and `trim_clip` gives no `source_in` to a title or color clip (not the `source` of `render.start`, which carries `path` and `media`) |
 | `cycle` | `bin` | cyclic bin parenting |
 | `fade_at_transition` | `clip`, `edge` | fade and transition at the same clip end |
 | `not_empty` | `bin`, `holds` | removing a bin that still holds content |
@@ -1072,7 +1099,7 @@ too. Otherwise `render.start` is refused with `-32602` and
 false. Unknown fields are refused, including the `subtitles` of earlier drafts.
 
 The path must be absolute, its parent directory must exist, and its extension must be `.mp4`
-(H.264/HEVC) or `.mov` (any codec). Export cannot write inside the project's cache, including
+(H.264/HEVC) or `.mov` (any codec), in either letter case. Export cannot write inside the project's cache, including
 through a directory link, or replace a directory or symbolic link. An existing destination or
 SRT with `replace: false` is refused with `-32001` and `{reason:"exists",path}`. A destination
 (movie or SRT, or the `.mov` of a ProRes fallback) that is the file of any media of the project
@@ -1106,16 +1133,19 @@ again and goes on: no frame was written for it yet, so the file is whole; the fi
 says the device was made again. If none can be made, or it is lost three times on one frame,
 the export fails, saying so. An encoder that fails after it opened (a frame, the sound or
 finishing the file) fails the export with a message naming the encoder and the frame; the
-ProRes fallback is only ever taken when no encoder opens, never in the middle of a file. Audio is AAC, 192 kb/s, 48 kHz stereo. H.264 uses
-8-bit picture; HEVC uses 10 bits when the project contains 10-bit media. If no hardware
+ProRes fallback is only ever taken when no encoder opens, never in the middle of a file. Audio is AAC, 192 kb/s, 48 kHz stereo; a timeline with no enabled
+clip on an enabled audio track gives a file with no sound. H.264 uses 8-bit picture; HEVC uses
+10 bits when the project contains media of more than 8 bits; ProRes always 10 bits. If no hardware
 encoder can open H.264/HEVC, the engine tries ProRes in a `.mov`, reports that change, and
 checks the new destination against the same overwrite rules.
 
 Each track in `subtitle_tracks` gets an SRT, in the order of the tracks of the timeline: one
 track uses `film.srt`; multiple tracks use `film.<language-or-track-name>.srt`. Unsafe filename characters are
-replaced and repeated names get numbered suffixes, without hashes. Cue times are clipped to
+replaced, the label is cut to 80 characters (`subtitles` if nothing is left), and names that
+are the same regardless of letter case get the suffixes `-2`, `-3`, …, without hashes. Cue times are clipped to
 the export range and rebased to zero; frame times use the exact rational frame rate, rounded
-down to milliseconds. Text is UTF-8 with normalized newlines, written as it is: players do not
+down to milliseconds. Text is UTF-8 with normalized newlines (an empty line inside a cue is written as one space, so
+it does not end the cue early), written as it is: players do not
 decode entities, so `&`, `<` and `>` are not escaped. Only what a player would read as a tag is
 broken up: players (ffmpeg, mpv) read `<` up to the next `>` on a line as a tag (`<i>`, `</b>`,
 `<font color=…>`, and drop any other), so a word joiner (U+2060, invisible and zero-width) is

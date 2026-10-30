@@ -6,6 +6,28 @@ change what was there before.
 
 ## Unreleased
 
+- The desktop application has an editing studio (phase 1), on Windows, made after DaVinci
+  Resolve. The Media page holds the media pool, with bins inside bins, list and thumbnail views
+  and the details of each clip. The Edit page has a source viewer and a timeline viewer, a
+  timeline of video, audio and subtitle tracks with selection, trim and blade tools, snapping,
+  linked selection, three-point edits (F9 to F12), ripple and lift deletes, rolls, slips, slides
+  and Alt-drag copies, an inspector for transform, opacity, volume, pan, fades, titles and
+  transitions, a dialog of speed (constant, reversed), and an effects library of transitions,
+  titles and solid colours. The Cut page has the source tape, smart insert, append, ripple
+  overwrite and place on top, a magnetic Track 1 and two timelines. A timeline shows one
+  subtitle track at a time; subtitles are added from the track's menu or by a double-click,
+  and are exported as SRT per track. The export dialog writes H.264 or HEVC with the hardware
+  encoder, or ProRes, with a bar of progress that can cancel. Keys and mouse gestures follow
+  Resolve and are listed in `docs/video.md`. Films the agent cut before the studio are made
+  timelines when the studio opens a folder.
+- The engine speaks protocol 2: edit commands (`insert`, `overwrite`, `ripple_delete`, `trim`,
+  `roll`, `slip`, `slide`, `set_speed`, `add_transition` and the rest) expand into basic
+  operations at the moment they are applied, so undo holds only basic operations, and one batch
+  is one step. It plays timelines in a timeline viewer beside the source viewer, mixes
+  their sound, makes thumbnails and waveforms, exports with `render.start` and writes SRT
+  for the subtitle tracks named in `subtitle_tracks`. New basic operations `shift_clips` and
+  `shift_cues` move many clips or subtitles of a track in one step. A timeline may enable only
+  one subtitle track (`subtitle_shown`). `engine/PROTOCOL.md` describes all of it.
 - Video editing runs on Windows only for now; macOS will have it later. On macOS and Linux the
   video plugin offers no tools and tells the model why, and every `columbina video` command says
   that video editing needs Windows instead of looking for an engine. The rest of the agent runs

@@ -230,10 +230,23 @@ columbina login github
   branch of its own, which is merged into the project, or dropped, when it is done.
 - **An editor holds the conversation.** `columbina acp` speaks the Agent Client Protocol, for an
   editor such as Zed.
-- **Video.** With `COLUMBINA_VIDEO=1` the agent cuts a film by what is said in it, with ffmpeg,
-  and lays pictures, music and titles over it. See [Editing video](docs/video.md). Video
-  editing, here and in the editing studio of the desktop application, runs on Windows only for
-  now; macOS will have it later. The rest of Columbina runs on Windows, macOS and Linux.
+- **Video.** With `COLUMBINA_VIDEO=1` the agent cuts a film by what is said in it, adds
+  subtitles from the speech and exports it, on the same timeline as the editing studio below.
+  See [Editing video](docs/video.md).
+
+### The editing studio
+
+The desktop application has an editing studio, made after DaVinci Resolve: a media pool, a Cut
+page and an Edit page with a source viewer and a timeline viewer, a timeline of video, audio and
+subtitle tracks, an inspector, transitions, titles and changes of speed, with Resolve's keys
+and mouse gestures. It plays timelines in real time on the graphics card, and exports H.264,
+HEVC or ProRes with SRT subtitles beside the film. The agent edits the same timeline with its
+video tools, and the person and the agent undo each other's steps in one history. Films that the
+agent cut before are made timelines when the studio opens. [Editing video](docs/video.md) says
+how to use it, with its keys.
+
+The studio runs on Windows only for now; macOS will have it later. On macOS and Linux its entry
+is greyed out, and the rest of Columbina runs there as usual.
 
 ### An assistant in Feishu
 
@@ -284,7 +297,7 @@ Each assistant may ask a model of its own, and think as hard as you choose for i
   DeepSeek, part by part, and what they cost.
 - [Pets](docs/pets.md) says how to make a pet for the desktop application, and how a program of
   your own can follow what the task is doing.
-- [Editing video](docs/video.md) says how the agent cuts a film by what is said in it, and
+- [Editing video](docs/video.md) says how the editing studio and the agent cut a film, and
   there is a Chinese and a Japanese one beside it.
 
 ## License

@@ -158,7 +158,13 @@ columbina login github
 - **定时任务。** `columbina schedules add` 让任务在桌面端打开期间每隔几分钟、每小时、每天或每周运行。
 - **每个任务一个工作树。** `columbina worktrees add 名称` 给任务一份在独立分支上的项目副本，做完后合并进项目或丢弃。
 - **由编辑器来对话。** `columbina acp` 支持 Agent Client Protocol，可以接 Zed 这类编辑器。
-- **剪视频。** 设 `COLUMBINA_VIDEO=1` 后，Agent 可以用 ffmpeg 按视频里说的话剪片子，并叠加画面、配乐和标题。见[剪辑视频](docs/video.zh-CN.md)。视频剪辑（这些工具和桌面应用的剪辑工作室）目前只支持 Windows，macOS 之后会加入；Agent 的其他功能在 Windows、macOS 和 Linux 上都能用。
+- **剪视频。** 设 `COLUMBINA_VIDEO=1` 后，Agent 可以按视频里说的话剪片子、根据语音加字幕并导出，用的是下面剪辑工作室里的同一条时间线。见[剪辑视频](docs/video.zh-CN.md)。
+
+### 剪辑工作室
+
+桌面应用里有一个仿照 DaVinci Resolve 的剪辑工作室：媒体池、快编页、带源检视器和时间线检视器的剪辑页，有视频、音频和字幕轨的时间线，检查器、转场、标题和变速，快捷键和鼠标操作都与达芬奇一致。时间线在显卡上实时播放，可以导出 H.264、HEVC 或 ProRes，字幕另存为影片旁的 SRT。Agent 用视频工具编辑同一条时间线，人和 Agent 共用一条撤销历史。以前由 Agent 剪过的片子，在打开工作室时会转成时间线。用法和快捷键见[剪辑视频](docs/video.zh-CN.md)。
+
+剪辑工作室目前只支持 Windows，macOS 之后会加入。在 macOS 和 Linux 上工作室入口是灰的，Columbina 的其他功能照常可用。
 
 ### 飞书助手
 
@@ -181,7 +187,7 @@ Columbina 也可以在 [QQ](https://q.qq.com) 里聊天：用你自己创建的�
 - [工程报告](docs/report.zh-CN.md)讲 Columbina 怎样组成、哪些选择决定了它的样子、怎样测试以及做得怎样（[英文版](docs/report.md)）。
 - [基准的表](docs/bench/README.md)给出 DeepSeek 两个模型上的结果、各部件的对比和花费。
 - [桌宠](docs/pets.md)讲怎样给桌面端做一只桌宠，以及你自己的程序怎样跟着任务的状态走（英文）。
-- [剪辑视频](docs/video.zh-CN.md)讲 Agent 怎样按视频里说的话剪片子。
+- [剪辑视频](docs/video.zh-CN.md)讲剪辑工作室和 Agent 怎样剪片子。
 
 ## 许可证
 

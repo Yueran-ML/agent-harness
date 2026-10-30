@@ -95,7 +95,12 @@ def test_a_film_is_cut_by_hand(
     assert main(["video", "edit", "film", "--edits", json.dumps(title)]) == 0
     assert json.loads(said(capsys))["done"]
     assert main(["video", "render", "film", "--codec", "prores"]) == 0
-    assert Path(json.loads(said(capsys))["path"]).is_file()
+    film = Path(json.loads(said(capsys))["path"])
+    assert film.is_file()
+    # The subtitle track that the timeline shows is written beside the film by default.
+    assert film.with_suffix(".srt").is_file()
+    assert main(["video", "render", "film", "--codec", "prores", "--subtitles", "S9"]) == 2
+    assert "subtitle_tracks: track S9" in said(capsys)
     assert main(["video", "undo", "film"]) == 0
     assert json.loads(said(capsys))["changed"] is True
     assert main(["video", "undo", "film", "--redo"]) == 0

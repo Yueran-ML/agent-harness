@@ -189,6 +189,25 @@ fn examples() -> Vec<(&'static str, Vec<Op>, Op)> {
     timeline.tracks = vec![
         Track::new("", TrackKind::Audio).with_clips(vec![Clip::of_media("", "m1", at(1), 0, 30)]),
     ];
+    // A timeline shows one track of subtitles at a time: S2 is added hidden while S1 is shown,
+    // and S1 is hidden before S2 is shown.
+    let mut english = Track::new("", TrackKind::Subtitle);
+    english.name = "English".into();
+    english.language = "en".into();
+    english.enabled = false;
+    let add_english = Op::AddTrack {
+        timeline: "t1".into(),
+        track: english,
+        index: None,
+    };
+    let show = |id: &str, enabled: bool| Op::SetTrack {
+        timeline: "t1".into(),
+        id: id.into(),
+        name: None,
+        enabled: Some(enabled),
+        locked: None,
+        language: None,
+    };
     let add_bin = |parent: Option<&str>| Op::AddBin {
         bin: Bin {
             id: String::new(),
@@ -241,6 +260,11 @@ fn examples() -> Vec<(&'static str, Vec<Op>, Op)> {
                 )]),
                 index: None,
             },
+        ),
+        (
+            "add_track of subtitles, hidden while S1 is shown",
+            vec![],
+            add_english.clone(),
         ),
         (
             "remove_track",
@@ -367,6 +391,11 @@ fn examples() -> Vec<(&'static str, Vec<Op>, Op)> {
                 locked: Some(true),
                 language: Some("zh-Hans".into()),
             },
+        ),
+        (
+            "set_track shows S2 once S1 is hidden",
+            vec![add_english, show("S1", false)],
+            show("S2", true),
         ),
         ("set_clip", vec![], fast),
         ("set_clip out of its group", vec![], unlinked),

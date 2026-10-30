@@ -113,6 +113,8 @@ pub struct Recipe {
     transitions: Vec<(i64, u8)>,
     cues: Vec<(i64, i64, usize)>,
     locked: Vec<bool>,
+    /// The track of subtitles that is shown: none, S1 or S2. A timeline shows one at a time.
+    shown: usize,
 }
 
 fn piece() -> impl Strategy<Value = Piece> {
@@ -169,13 +171,15 @@ pub fn recipe() -> impl Strategy<Value = Recipe> {
         ),
         prop::collection::vec((0i64..60, 1i64..40, 0usize..2), 0..8),
         prop::collection::vec(prop::bool::weighted(0.12), TRACKS.len()),
+        0usize..3,
     )
-        .prop_map(|(rate, pieces, transitions, cues, locked)| Recipe {
+        .prop_map(|(rate, pieces, transitions, cues, locked, shown)| Recipe {
             rate,
             pieces,
             transitions,
             cues,
             locked,
+            shown,
         })
 }
 
@@ -192,7 +196,11 @@ pub fn project_of(recipe: &Recipe) -> Project {
                 b'A' => TrackKind::Audio,
                 _ => TrackKind::Subtitle,
             };
-            Track::new(*id, kind)
+            let mut track = Track::new(*id, kind);
+            if kind == TrackKind::Subtitle {
+                track.enabled = ["", "S1", "S2"][recipe.shown] == *id;
+            }
+            track
         })
         .collect();
     let mut project = Project {

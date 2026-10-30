@@ -699,13 +699,24 @@ def remove_track(timeline: str, track: str) -> dict[str, Any]:
 # Operations
 
 
-def track(kind: TrackKind, *, id: str = "", name: str = "", language: str = "") -> dict[str, Any]:
-    """An empty track, as :func:`add_timeline` takes it: the engine names one with no ``id``."""
+def track(
+    kind: TrackKind,
+    *,
+    id: str = "",
+    name: str = "",
+    language: str = "",
+    enabled: bool = True,
+) -> dict[str, Any]:
+    """An empty track, as :func:`add_timeline` takes it: the engine names one with no ``id``.
+
+    A timeline shows one subtitle track at a time: of several subtitle tracks, at most one is
+    ``enabled``, and the engine refuses a timeline with more as ``subtitle_shown``.
+    """
     written: dict[str, Any] = {
         "id": id,
         "kind": kind,
         "name": name,
-        "enabled": True,
+        "enabled": enabled,
         "locked": False,
     }
     if kind == "subtitle":

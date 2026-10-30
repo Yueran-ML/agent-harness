@@ -60,6 +60,11 @@ When removing a range, subtitles in that range are trimmed or deleted and follow
 with the picture. Inserting through a cue splits it into two cues with the same text; the latter
 moves with its original picture. Locked tracks stay locked.
 
+A timeline shows one subtitle track at a time, as DaVinci Resolve does. A subtitle track added
+with `add_track` is hidden while another is shown. To show another track, hide the shown one in
+the same batch first (`set_track` with `enabled:false`, then `enabled:true` on the other);
+otherwise the engine refuses with `VIDEO_SUBTITLE_SHOWN`.
+
 ## CLI
 
 Every editing command prints a JSON receipt. Use the actual ids from these receipts:
@@ -107,8 +112,12 @@ retired: use engine edits and `render --quality high|medium|small` instead.
 Export uses original media, not playback proxies. `--codec` is `h264`, `hevc` or `prores`;
 ProRes uses MOV. H.264/HEVC hardware unavailability falls back to ProRes MOV, and the receipt
 names the actual file. Subtitles are UTF-8 SRT files beside the film, **not burnt in**; titles
-are drawn into the picture. `--no-subtitles` omits SRT, and `--replace` explicitly permits
-replacement of existing outputs. A render observes a fixed project snapshot; later editing
+are drawn into the picture. As in DaVinci Resolve's Deliver page, the subtitle tracks to write
+are chosen, shown or hidden: `--subtitles visible` (the default) writes the shown track,
+`--subtitles all` every subtitle track, and `--subtitles S1,S2` the tracks named (the
+`video_render` tool takes `subtitles: "visible" | "all" | [ids]`). One track is written as
+`<film>.srt`, several as `<film>.<language or track name>.srt`. `--no-subtitles` omits SRT, and
+`--replace` explicitly permits replacement of existing outputs. A render observes a fixed project snapshot; later editing
 can continue without changing that export.
 
 ## Old projects

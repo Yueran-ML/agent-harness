@@ -22,7 +22,11 @@ from columbina.video.span import placed, source_span
 from columbina.video.transcribe import Transcriber, TranscriptionError, transcript_of
 from columbina.video.transcript import Transcript
 
-__all__ = ["Editor", "receipt", "safe_name", "sidecars"]
+__all__ = ["Editor", "Subtitles", "chosen_subtitles", "receipt", "safe_name", "sidecars"]
+
+Subtitles = Literal["visible", "all"] | Sequence[str]
+"""The subtitle tracks that an export writes as SRT: ``visible``, the one that the timeline
+shows, if any; ``all``, every subtitle track, shown or hidden; or the ids of tracks."""
 
 
 def receipt(value: object) -> str:
@@ -45,16 +49,33 @@ def safe_name(name: str) -> str:
     return name or "Timeline"
 
 
-def sidecars(timeline: Mapping[str, Any], path: Path) -> list[Path]:
-    """The SRT files that an export of a timeline to ``path`` writes beside it.
+def chosen_subtitles(timeline: Mapping[str, Any], chosen: Subtitles) -> list[str]:
+    """The ids of the subtitle tracks of a timeline that ``chosen`` names, for ``render.start``.
 
-    As the engine names them: one enabled track of subtitles is ``<stem>.srt``; more are
-    ``<stem>.<language or name>.srt``, the name made safe and numbered where two are alike.
+    A timeline shows at most one subtitle track, as DaVinci Resolve does; an export writes the
+    SRT of any of them, shown or hidden. Ids are given as they are, for the engine to check.
+    """
+    subtitles = [one for one in timeline.get("tracks", []) if one.get("kind") == "subtitle"]
+    if chosen == "visible":
+        return [str(one["id"]) for one in subtitles if one.get("enabled", True)]
+    if chosen == "all":
+        return [str(one["id"]) for one in subtitles]
+    if isinstance(chosen, str):
+        return [chosen]
+    return list(chosen)
+
+
+def sidecars(timeline: Mapping[str, Any], path: Path, chosen: Sequence[str]) -> list[Path]:
+    """The SRT files that an export of the subtitle tracks ``chosen`` writes beside ``path``.
+
+    As the engine names them, in the order of the tracks of the timeline: one track is
+    ``<stem>.srt``; more are ``<stem>.<language or name>.srt``, the name made safe and numbered
+    where two are alike.
     """
     tracks = [
         one
         for one in timeline.get("tracks", [])
-        if one.get("kind") == "subtitle" and one.get("enabled", True)
+        if one.get("kind") == "subtitle" and one.get("id") in chosen
     ]
     if len(tracks) == 1:
         return [path.with_suffix(".srt")]
@@ -400,14 +421,19 @@ class Editor:
         *,
         codec: Literal["h264", "hevc", "prores"],
         quality: Literal["high", "medium", "small"],
-        subtitles: bool,
+        subtitle_tracks: Sequence[str],
         replace: bool,
         told: Callable[[Progress], object] | None = None,
     ) -> str:
         """Await an export, relay its progress, and cancel it if the tool is cancelled."""
         path.parent.mkdir(parents=True, exist_ok=True)
         job = await self.engine.render(
-            timeline, path, codec=codec, quality=quality, subtitles=subtitles, replace=replace
+            timeline,
+            path,
+            codec=codec,
+            quality=quality,
+            subtitle_tracks=subtitle_tracks,
+            replace=replace,
         )
         try:
             done = await job.finished(told)

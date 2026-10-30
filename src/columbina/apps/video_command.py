@@ -15,7 +15,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
-from columbina.video.editing import Editor, safe_name
+from columbina.video.editing import Editor, Subtitles, chosen_subtitles, safe_name
 from columbina.video.engine import Engine, EngineError, not_found, program_of, unsupported
 from columbina.video.media import MediaUnavailableError, UnreadableMediaError, located
 from columbina.video.project import ProjectError
@@ -87,6 +87,15 @@ def arguments(parser: argparse.ArgumentParser) -> None:
     rendering.add_argument("--output", help="output path; defaults to out/<timeline name>")
     rendering.add_argument("--codec", choices=["h264", "hevc", "prores"], default="h264")
     rendering.add_argument("--quality", choices=["high", "medium", "small"], default="high")
+    rendering.add_argument(
+        "--subtitles",
+        default="visible",
+        metavar="TRACKS",
+        help=(
+            "subtitle tracks written as SRT beside the film: visible (the one the timeline "
+            "shows; the default), all (shown or hidden), or track ids separated by commas"
+        ),
+    )
     rendering.add_argument("--no-subtitles", action="store_true", help="omit the SRT sidecars")
     rendering.add_argument("--replace", action="store_true", help="replace existing output files")
     undoing = what("undo", "undo the shared project's last transaction")
@@ -168,12 +177,19 @@ async def _done(args: argparse.Namespace, cwd: Path, directory: Path) -> str:
                 if args.output
                 else cwd / "out" / (safe_name(target["name"]) + extension)
             )
+            chosen: Subtitles = (
+                []
+                if args.no_subtitles
+                else args.subtitles
+                if args.subtitles in ("visible", "all")
+                else [one.strip() for one in args.subtitles.split(",") if one.strip()]
+            )
             return await editor.rendered(
                 target["id"],
                 path.resolve(),
                 codec=args.codec,
                 quality=args.quality,
-                subtitles=not args.no_subtitles,
+                subtitle_tracks=chosen_subtitles(target, chosen),
                 replace=args.replace,
             )
         if args.what == "undo":

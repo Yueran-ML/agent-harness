@@ -440,7 +440,7 @@ pub(super) fn cues_from(
 
 /// Add a track of `kind` at `index` among those of its kind, or above them, named `name` or by
 /// its id, and give its id: its letter and one above the highest number of the ids of that
-/// letter.
+/// letter. A track of subtitles is added disabled while another of the timeline is enabled.
 pub(super) fn new_track(
     work: &mut Work,
     kind: TrackKind,
@@ -474,6 +474,12 @@ pub(super) fn new_track(
         .unwrap_or(0);
     let id = format!("{letter}{}", highest + 1);
     let mut track = Track::new(id.clone(), kind);
+    // A timeline shows one track of subtitles at a time: a new one is hidden while another is
+    // shown.
+    track.enabled = !(kind == TrackKind::Subtitle
+        && tracks
+            .iter()
+            .any(|r| r.kind == TrackKind::Subtitle && r.enabled));
     if let Some(name) = name {
         track.name = name;
     }
@@ -1126,6 +1132,36 @@ mod tests {
             ),
             ("S2", "English", "en")
         );
+        // S1 is shown, so S2 is added hidden: a timeline shows one track of subtitles at a time.
+        assert!(!added.enabled);
+        let mut alone = with(
+            super::super::fixture::project(),
+            vec![Op::SetTrack {
+                timeline: "t1".into(),
+                id: "S1".into(),
+                name: None,
+                enabled: Some(false),
+                locked: None,
+                language: None,
+            }],
+        );
+        let subtitles = Edit::AddTrack {
+            timeline: "t1".into(),
+            kind: TrackKind::Subtitle,
+            index: None,
+            name: None,
+            language: None,
+        };
+        edit(&mut alone, subtitles.clone());
+        assert!(alone.timelines[0].tracks.last().unwrap().enabled);
+        edit(&mut alone, subtitles);
+        let shown: Vec<_> = alone.timelines[0]
+            .tracks
+            .iter()
+            .filter(|r| r.kind == TrackKind::Subtitle)
+            .map(|r| (r.id.as_str(), r.enabled))
+            .collect();
+        assert_eq!(shown, [("S1", false), ("S2", true), ("S3", false)]);
         let error = refused(
             project,
             Edit::AddTrack {

@@ -962,7 +962,7 @@ class Engine:
         codec: Literal["h264", "hevc", "prores"] = "h264",
         quality: Literal["high", "medium", "small"] = "high",
         frames: tuple[int, int] | None = None,
-        subtitles: bool = False,
+        subtitle_tracks: Sequence[str] = (),
         replace: bool = False,
     ) -> Rendering:
         """Have the engine render a timeline into a file, in the background.
@@ -978,19 +978,21 @@ class Engine:
             quality: How much is kept of the picture, against the size of the file.
             frames: The frames to render, the first and the one after the last; all of them if
                 it is not given.
-            subtitles: Whether the subtitles of the timeline are written beside the film, as SRT.
+            subtitle_tracks: The subtitle tracks of the timeline whose subtitles are written
+                beside the film, each as an SRT, whether it is shown or hidden; none if empty.
             replace: Whether a file that is there already is written over.
 
         Raises:
             EngineError: The engine refused: no such timeline, a relative path, a file that is
-                there already, or nothing to render.
+                there already, nothing to render, or a subtitle track that is not one of the
+                timeline's (``subtitle_track``).
         """
         params: dict[str, Any] = {
             "timeline": timeline,
             "path": str(path),
             "codec": codec,
             "quality": quality,
-            "subtitles": subtitles,
+            "subtitle_tracks": list(subtitle_tracks),
             "replace": replace,
         }
         if frames is not None:

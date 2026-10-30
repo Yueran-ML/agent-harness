@@ -28,8 +28,14 @@ async fn timeline(client: &mut Client, length: i64) -> Value {
 }
 
 fn request(timeline: &Value, path: &Path) -> Value {
-    json!({"timeline":timeline,"path":path,"codec":"prores","quality":"high",
-        "subtitles":true,"replace":false})
+    json!({"timeline":timeline,"path":path,"codec":"prores","quality":"high","replace":false})
+}
+
+/// A request to render a timeline that `timeline` made, with an SRT of its track of subtitles.
+fn with_srt(timeline: &Value, path: &Path) -> Value {
+    let mut params = request(timeline, path);
+    params["subtitle_tracks"] = json!(["S1"]);
+    params
 }
 
 async fn finished(client: &mut Client, job: &Value) -> Value {
@@ -109,7 +115,7 @@ async fn render_works_headlessly_with_clipped_srt_and_no_burned_subtitles() {
     let mut client = engine.client("agent").await;
     let timeline = timeline(&mut client, 100).await;
     let path = output.path().join("cut.mov");
-    let mut params = request(&timeline, &path);
+    let mut params = with_srt(&timeline, &path);
     params["range"] = json!({"from":20,"to":40});
     let job = client.result("render.start", Some(params)).await["job"].clone();
     let done = finished(&mut client, &job).await;
@@ -159,7 +165,7 @@ async fn render_cancellation_keeps_previous_files_and_releases_the_single_job_sl
     let path = output.path().join("cut.mov");
     std::fs::write(&path, b"old movie").unwrap();
     std::fs::write(path.with_extension("srt"), b"old subtitles").unwrap();
-    let mut params = request(&timeline, &path);
+    let mut params = with_srt(&timeline, &path);
     params["replace"] = json!(true);
     let job = client.result("render.start", Some(params.clone())).await["job"].clone();
     let busy = client.error("render.start", Some(params.clone())).await;
@@ -189,6 +195,149 @@ async fn render_cancellation_keeps_previous_files_and_releases_the_single_job_sl
             .error("render.cancel", Some(json!({"job":"missing"})))
             .await["code"],
         -32602
+    );
+    drop(client);
+    assert_eq!(engine.ended().await, 0);
+}
+
+/// A timeline of `timeline`, with S1 (zh) shown, and S2 (en) and S3 (fr) hidden beside it.
+async fn three_subtitles(client: &mut Client) -> Value {
+    let timeline = timeline(client, 50).await;
+    let subtitles = |language: &str, text: &str| {
+        json!({"op":"add_track", "timeline":timeline, "track":{"id":"", "kind":"subtitle",
+            "name":language, "enabled":false, "locked":false, "language":language,
+            "cues":[{"id":"", "start":0, "length":25, "text":text}]}})
+    };
+    client
+        .apply(json!([
+            subtitles("en", "Beside"),
+            subtitles("fr", "À côté")
+        ]))
+        .await;
+    timeline
+}
+
+fn set_shown(timeline: &Value, id: &str, enabled: bool) -> Value {
+    json!({"op":"set_track", "timeline":timeline, "id":id, "enabled":enabled})
+}
+
+#[tokio::test]
+async fn a_timeline_shows_one_track_of_subtitles_at_a_time() {
+    let dir = project_dir();
+    let engine = engine(
+        dir.path(),
+        &["--headless", "--no-proxies", "--idle-seconds", "1"],
+    )
+    .await;
+    let mut client = engine.client("agent").await;
+    let timeline = three_subtitles(&mut client).await;
+    // S1 is shown: S2 is not shown beside it, nor a track added shown.
+    let ops = json!({"ops":[set_shown(&timeline, "S2", true)]});
+    let refused = client.error("transaction.apply", Some(ops)).await;
+    assert_eq!(refused["code"], -32001);
+    assert_eq!(
+        refused["data"],
+        json!({"reason":"subtitle_shown", "track":"S1", "index":0, "message":
+            "operation 0 of the transaction was refused: subtitle track S1 is shown, and a \
+             timeline shows one subtitle track at a time"})
+    );
+    let shown = json!({"op":"add_track", "timeline":timeline, "track":{"id":"",
+        "kind":"subtitle", "name":"de", "enabled":true, "locked":false, "language":"de",
+        "cues":[]}});
+    let refused = client
+        .error("transaction.apply", Some(json!({"ops":[shown]})))
+        .await;
+    assert_eq!(refused["data"]["reason"], "subtitle_shown");
+    // The edit adds a track of subtitles hidden while another is shown.
+    let added = client
+        .apply(json!([{"edit":"add_track", "timeline":timeline, "kind":"subtitle"}]))
+        .await;
+    assert_eq!(added["done"][0]["track"]["enabled"], false, "{added}");
+    // S1 hidden, then S2 shown, in one transaction.
+    client
+        .apply(json!([
+            set_shown(&timeline, "S1", false),
+            set_shown(&timeline, "S2", true)
+        ]))
+        .await;
+    let project = client.result("project.get", None).await["project"].clone();
+    let shown: Vec<_> = project["timelines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|t| t["tracks"].as_array().unwrap())
+        .filter(|r| r["kind"] == "subtitle" && r["enabled"] == true)
+        .map(|r| r["id"].clone())
+        .collect();
+    assert_eq!(shown, [json!("S2")]);
+    drop(client);
+    assert_eq!(engine.ended().await, 0);
+}
+
+#[tokio::test]
+async fn render_writes_an_srt_of_each_chosen_track_of_subtitles_shown_or_hidden() {
+    let dir = project_dir();
+    let output = project_dir();
+    let engine = engine(
+        dir.path(),
+        &["--headless", "--no-proxies", "--idle-seconds", "1"],
+    )
+    .await;
+    let mut client = engine.client("agent").await;
+    let timeline = three_subtitles(&mut client).await;
+    client
+        .apply(json!([
+            set_shown(&timeline, "S1", false),
+            set_shown(&timeline, "S2", true)
+        ]))
+        .await;
+    // Names that are not a track of subtitles of the timeline, or one named twice, are refused
+    // before anything is written; so is the old `subtitles`.
+    let path = output.path().join("cut.mov");
+    for (tracks, track) in [
+        (json!(["S9"]), "S9"),
+        (json!(["V1"]), "V1"),
+        (json!(["S1", "S3", "S1"]), "S1"),
+    ] {
+        let mut params = request(&timeline, &path);
+        params["subtitle_tracks"] = tracks;
+        let error = client.error("render.start", Some(params)).await;
+        assert_eq!(error["code"], -32602, "{error}");
+        assert_eq!(
+            error["data"],
+            json!({"reason":"subtitle_track", "track":track})
+        );
+    }
+    let mut params = request(&timeline, &path);
+    params["subtitles"] = json!(true);
+    assert_eq!(
+        client.error("render.start", Some(params)).await["code"],
+        -32602
+    );
+    assert!(std::fs::read_dir(output.path()).unwrap().next().is_none());
+    if columbina_compose::gpu_for_tests().is_none() {
+        return;
+    }
+    // S1 (zh) and S3 (fr) are chosen, both hidden; S2 (en), which is shown, is not.
+    let mut params = request(&timeline, &path);
+    params["subtitle_tracks"] = json!(["S3", "S1"]);
+    params["range"] = json!({"from":0, "to":20});
+    let job = client.result("render.start", Some(params)).await["job"].clone();
+    let done = finished(&mut client, &job).await;
+    assert_eq!(done["state"], "done", "{done}");
+    let mut written: Vec<String> = std::fs::read_dir(output.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    written.sort();
+    assert_eq!(written, ["cut.fr.srt", "cut.mov", "cut.zh.srt"]);
+    assert_eq!(
+        std::fs::read_to_string(output.path().join("cut.zh.srt")).unwrap(),
+        "1\n00:00:00,400 --> 00:00:00,800\n旁边的字幕\n\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(output.path().join("cut.fr.srt")).unwrap(),
+        "1\n00:00:00,000 --> 00:00:00,800\nÀ côté\n\n"
     );
     drop(client);
     assert_eq!(engine.ended().await, 0);
@@ -496,7 +645,6 @@ async fn render_puts_each_sound_at_the_frame_of_its_picture() {
         .clone();
     let path = output.path().join("clicks.mov");
     let mut params = request(&names["$t"], &path);
-    params["subtitles"] = json!(false);
     params["range"] = json!({"from":5,"to":95});
     let job = client.result("render.start", Some(params)).await["job"].clone();
     let done = finished(&mut client, &job).await;

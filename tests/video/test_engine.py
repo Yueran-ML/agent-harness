@@ -584,12 +584,18 @@ async def test_a_render_is_followed_until_it_is_done(tmp_path: Path) -> None:
     async with served(tmp_path / "film") as fake:
         connected = await attached(tmp_path / "film")
         timeline = await timeline_with_a_clip(connected)
+        await connected.apply([edits.add_track(timeline, "subtitle")])
         film = tmp_path / "out" / "cut.mp4"
         film.parent.mkdir()
         heard: list[Progress] = []
 
         rendering = await connected.render(
-            timeline, film, codec="hevc", quality="small", frames=(0, 50), subtitles=True
+            timeline,
+            film,
+            codec="hevc",
+            quality="small",
+            frames=(0, 50),
+            subtitle_tracks=["S1"],
         )
         ended = await asyncio.wait_for(rendering.finished(heard.append), 5)
         again = [one async for one in rendering.progress()]
@@ -601,7 +607,7 @@ async def test_a_render_is_followed_until_it_is_done(tmp_path: Path) -> None:
                 "path": str(film),
                 "codec": "hevc",
                 "quality": "small",
-                "subtitles": True,
+                "subtitle_tracks": ["S1"],
                 "replace": False,
                 "range": {"from": 0, "to": 50},
             }

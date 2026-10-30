@@ -249,13 +249,7 @@ pub fn op_of(project: &Project, spec: &Spec) -> Op {
         2 => timeline_of(project, spec),
         3 => Op::RemoveTimeline { id: timeline_id },
         4 => Op::AddTrack {
-            track: Track::new(id_of(spec, &["V1", "V2", "A1", "A4"]), kind_of(spec.b)).with_clips(
-                if spec.b.is_multiple_of(3) {
-                    vec![]
-                } else {
-                    vec![clip_of(project, rate, spec, &["c3", "c40", "y"])]
-                },
-            ),
+            track: track_of(project, rate, spec),
             index: index_of(spec.c, track_ids.len()),
             timeline: timeline_id,
         },
@@ -756,10 +750,30 @@ fn proxy_of(path: &str, spec: &Spec) -> Proxy {
     }
 }
 
-/// A timeline to add, at one of the rates, with no tracks, one, or two.
+/// A track to add to a timeline of `rate`: of picture or sound, empty or with a clip; or now and
+/// then one of subtitles, shown or hidden. One added shown while another is shown is refused, as
+/// a timeline shows one at a time.
+fn track_of(project: &Project, rate: Rate, spec: &Spec) -> Track {
+    if spec.b % 5 == 4 {
+        return Track {
+            enabled: bit(spec, 0),
+            ..Track::new(id_of(spec, &["S1", "S2"]), TrackKind::Subtitle)
+        };
+    }
+    Track::new(id_of(spec, &["V1", "V2", "A1", "A4"]), kind_of(spec.b)).with_clips(
+        if spec.b.is_multiple_of(3) {
+            vec![]
+        } else {
+            vec![clip_of(project, rate, spec, &["c3", "c40", "y"])]
+        },
+    )
+}
+
+/// A timeline to add, at one of the rates, with no tracks, one, or two; and now and then two of
+/// subtitles.
 fn timeline_of(project: &Project, spec: &Spec) -> Op {
     let rate = RATES[spec.a % RATES.len()];
-    let tracks = match spec.b % 3 {
+    let mut tracks = match spec.b % 3 {
         0 => vec![],
         1 => vec![Track::new("", kind_of(spec.a)).with_clips(vec![clip_of(
             project,
@@ -779,6 +793,15 @@ fn timeline_of(project: &Project, spec: &Spec) -> Op {
             Track::new("", kind_of(spec.b / 3)),
         ],
     };
+    // Now and then two tracks of subtitles, each shown or hidden: both shown is refused.
+    if bit(spec, 5) {
+        for shown in [bit(spec, 6), bit(spec, 7)] {
+            tracks.push(Track {
+                enabled: shown,
+                ..Track::new("", TrackKind::Subtitle)
+            });
+        }
+    }
     Op::AddTimeline {
         timeline: Timeline {
             tracks,

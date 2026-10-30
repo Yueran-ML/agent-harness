@@ -43,6 +43,10 @@ Python 负责转录分析和可编辑文稿，不再拼接 ffmpeg 滤镜图，�
 删除时间范围时，该范围中的字幕会裁剪或删除，后面的字幕随画面前移。
 在字幕中间插入片段时，字幕切成同文字的两段，后半段随原画面后移。锁定轨道保持不动。
 
+与 DaVinci Resolve 一样，一条时间线同一时间只显示一条字幕轨。已有字幕轨显示时，`add_track` 新加的字幕轨默认隐藏。
+要改显示另一条，在同一批编辑里先把正在显示的那条 `set_track` 设为 `enabled:false`，再把另一条设为 `enabled:true`；
+否则引擎拒绝，错误码为 `VIDEO_SUBTITLE_SHOWN`。
+
 ## 命令行
 
 编辑命令返回 JSON 回执。下面的素材 ID 和轨道 ID 应替换为实际返回值：
@@ -89,6 +93,10 @@ columbina video undo .columbina/studio --redo
 导出使用原素材，不使用播放代理。`--codec` 支持 `h264`、`hevc`、`prores`，ProRes 使用 MOV。
 H.264/HEVC 硬件编码器不可用时回退为 ProRes MOV，回执给出实际路径。
 字幕以 UTF-8 SRT 保存在影片旁边，**不烧录进画面**；标题会绘制进画面。
+和 DaVinci Resolve 的交付页一样，导出时单独选择要写 SRT 的字幕轨，显示或隐藏的都可以：
+`--subtitles visible`（默认）写正在显示的那条，`--subtitles all` 写全部字幕轨，`--subtitles S1,S2` 写列出的轨
+（`video_render` 工具的参数为 `subtitles: "visible" | "all" | [轨道 id]`）。
+一条轨写成 `<影片名>.srt`，多条写成 `<影片名>.<语言或轨名>.srt`。
 `--no-subtitles` 不输出 SRT，`--replace` 明确允许覆盖已有输出。
 导出读取开始时的工程快照，后续编辑不会改变正在导出的影片。
 

@@ -130,7 +130,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `view.place` | `{"monitor":"source" \| "timeline", "x": x, "y": y, "width": w, "height": h}` | `{}` |
 | `view.show` | `{"monitor":"source" \| "timeline", "shown": true \| false}` | `{}` |
 | `view.detach` | `{"monitor":"source" \| "timeline"}` | `{"detached": true \| false}` |
-| `render.start` | `{"timeline":"t1", "path":"<file>", "codec":"h264", "quality":"high", "range"?:{"from":0,"to":250}, "subtitles"?:false, "replace"?:false}` | `{"job": "render-1"}` (see Rendering a timeline) |
+| `render.start` | `{"timeline":"t1", "path":"<file>", "codec":"h264", "quality":"high", "range"?:{"from":0,"to":250}, "subtitle_tracks"?:["S1"], "replace"?:false}` | `{"job": "render-1"}` (see Rendering a timeline) |
 | `render.cancel` | `{"job": "render-1"}` | `{}` |
 | `transport.frame_digest` | `{"monitor": m}` | test hook only, with `--test-hooks` (see The transport); `-32601` otherwise |
 | `transport.*` | see The transport | |
@@ -368,6 +368,9 @@ clients; a client must not write `project.json` itself.
 - Every track has `id`, `kind`, `name`, `enabled`, `locked`. Video/audio tracks additionally
   have `clips` and `transitions`; subtitle tracks instead have `language` and `cues`. Fields of
   another track kind are refused, even empty arrays. Track ids are unique within a timeline.
+  A timeline shows one subtitle track at a time, as DaVinci Resolve does: at most one of its
+  subtitle tracks is `enabled` (shown in the timeline monitor). A project with two is refused
+  when it is read, and so is an operation that would make two (`subtitle_shown`, below).
 - A clip is `{id, start, length, source, enabled, speed, reverse, link, transform, gain_db, pan,
   fade_in, fade_out}`. `start >= 0`, `length > 0`; same-track clips cannot overlap.
   `speed: {num, den}` is a positive rational in [1/8, 8]; direction is the separate `reverse`
@@ -503,7 +506,8 @@ A `parent` that is not a window, or not a handle in decimal, is refused with `-3
 ## The transport
 
 There are two independent transports: the **source monitor** loads one media item, and the
-**timeline monitor** loads a timeline and composes its enabled video and subtitle tracks.
+**timeline monitor** loads a timeline and composes its enabled video tracks and its shown
+(enabled) subtitle track, of which a timeline has at most one.
 Each has its own playhead, loaded item, speed and proxy preference. Every request and state
 notification names `monitor: "source" | "timeline"`; protocol 2 requires it. Each draws in its
 own view (above), when attached. Starting either monitor waits until the other has stopped
@@ -759,6 +763,15 @@ An operation is an object that names itself in `op` (unknown fields are refused,
 | `remove_cue` | `timeline`, `id` |
 | `set_cue` | `timeline`, `id`, `start?`, `length?`, `text?` |
 
+A timeline shows at most one subtitle track. `set_track` with `enabled: true` on a subtitle
+track while another subtitle track of its timeline is enabled is refused as `subtitle_shown`
+(naming the shown one), and so are `add_track` of an enabled subtitle track then, and
+`add_timeline` with two enabled subtitle tracks. The basic operations change no other track; to
+show another track, a client disables the shown one first in the same transaction:
+`[{"op":"set_track","timeline":"t1","id":"S1","enabled":false},
+{"op":"set_track","timeline":"t1","id":"S2","enabled":true}]`. Its undo takes them back in the
+reverse order. Disabling every subtitle track is allowed.
+
 Optional settings are unchanged when omitted. Nullable settings (`parent`, `bin`, marks and
 `link`) use explicit `null` to clear them. A `set_clip.source` may change title text/style or
 color, but not its source kind or media; use the `replace` edit for media replacement.
@@ -835,7 +848,7 @@ id targets that track. Both picture and sound placed together get a new link gro
 | `set_cue` | `id`, `start?`, `length?`, `text?` | Change given subtitle settings. |
 | `remove_cue` | `id` | Remove one subtitle. |
 | `cues_from` | `track`, `items:[{start,length,text},...]` | Replace all subtitles on that track. |
-| `add_track` | `kind`, `index?`, `name?`, `language?` | Add an empty track; index is among tracks of its kind; name is its display label. |
+| `add_track` | `kind`, `index?`, `name?`, `language?` | Add an empty track; index is among tracks of its kind; name is its display label. A subtitle track is added disabled (hidden) while another subtitle track of the timeline is enabled, and enabled otherwise. |
 | `remove_track` | `track` | Remove the track and its contents, all restored by undo. |
 
 Ripples preserve later content's relative timing on unlocked tracks. An unselected clip inside
@@ -964,7 +977,7 @@ commits to it; and any client may send transactions. So:
 | `-32700` | the line is not JSON (id `null`) | |
 | `-32600` | not a request object, `jsonrpc` is not `"2.0"`, no `method`, a bad `id` (answered with id `null`), a request before `hello`, a second `hello`, a line over 16 MiB, `view.*` or `engine.yield` from a client that is not the desktop | |
 | `-32601` | no such method; `view.*` and `transport.*` in a `--headless` engine; `media.make_proxy` in an engine that makes no proxies; `engine.yield` in an engine that is not headless | |
-| `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name`; a speed of `transport.play` out of −8…8 or 0; `transport.load` of media or a timeline not in the project; `timeline.duration` of a timeline not there; `media.thumbnail` of a frame outside the media; `render.start` with a bad path, codec, quality, timeline or range, and `render.cancel` of a job that is not there | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above; `{"reason": "speed"}`; `{"reason": "missing", "media": "..."}` or `{"reason": "missing", "timeline": "..."}`; `{"reason": "out_of_range", "frame": n}` |
+| `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name`; a speed of `transport.play` out of −8…8 or 0; `transport.load` of media or a timeline not in the project; `timeline.duration` of a timeline not there; `media.thumbnail` of a frame outside the media; `render.start` with a bad path, codec, quality, timeline, range or `subtitle_tracks`, and `render.cancel` of a job that is not there | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above; `{"reason": "speed"}`; `{"reason": "missing", "media": "..."}` or `{"reason": "missing", "timeline": "..."}`; `{"reason": "out_of_range", "frame": n}`; `{"reason": "subtitle_track", "track": "..."}` for a `subtitle_tracks` entry that is not a subtitle track of the timeline, or is named twice |
 | `-32001` | a transaction, undo or redo was refused; the project is exactly as it was; or `render.start` was refused before anything was written | the refusal, below |
 | `-32002` | `media.import`: a file cannot be read; nothing was added. `transport.load`: the file of the media cannot be opened or decoded | `{"path": "<as sent>", "reason": "...", "message": "..."}`, below |
 | `-32003` | `view.*`: the view cannot be made, there is none, or its window is gone | `{"reason": "..."}`, see The view |
@@ -1026,6 +1039,7 @@ refused only through a bug of the engine. Each `reason` and its fields:
 | `no_track` | `kind` | no track for the requested source |
 | `wrong_track` | `what`, `kind` | content or settings on an incompatible track kind |
 | `cue_overlap` | `with` | subtitles overlap on one track |
+| `subtitle_shown` | `track` | a subtitle track would be enabled (by `set_track`, `add_track` or `add_timeline`) while subtitle track `track` of its timeline is enabled; a timeline shows one at a time |
 | `out_of_range` | `what` | invalid setting such as speed, gain, transform or text length; `digest` for media whose `identity.digest` is not 64 lowercase hex digits; `by`, `clips` or `cues` for a shift that would change nothing |
 | `has_transition` | `transition` | a basic operation would move just one transition endpoint |
 | `not_adjacent` | `left`, `right` | transition endpoints do not meet |
@@ -1044,13 +1058,18 @@ the expanded operation list. Refusal emits no `project.changed` and adds no hist
 `render.start` is available to every greeted client, including a headless engine:
 
 ```json
-{"timeline":"t1","path":"C:/Exports/film.mp4","codec":"h264","quality":"high","range":{"from":0,"to":250},"subtitles":true,"replace":false}
+{"timeline":"t1","path":"C:/Exports/film.mp4","codec":"h264","quality":"high","range":{"from":0,"to":250},"subtitle_tracks":["S1","S2"],"replace":false}
 ```
 
 `codec` is `h264`, `hevc`, or `prores`; `quality` is `high`, `medium`, or `small`.
 `range` is optional and half-open; when omitted, it covers the full timeline. It must be
 nonempty and inside the timeline. The first exported frame becomes frame zero in the file.
-`subtitles` and `replace` default to false. Unknown fields are refused.
+`subtitle_tracks` lists the subtitle tracks of the timeline to write beside the film as SRT,
+as the checkboxes of DaVinci Resolve's Deliver page choose them; it defaults to none. Each must
+be a subtitle track of the timeline, named once, shown or hidden: a hidden track is exported
+too. Otherwise `render.start` is refused with `-32602` and
+`{"reason":"subtitle_track","track":"S9"}` before anything is written. `replace` defaults to
+false. Unknown fields are refused, including the `subtitles` of earlier drafts.
 
 The path must be absolute, its parent directory must exist, and its extension must be `.mp4`
 (H.264/HEVC) or `.mov` (any codec). Export cannot write inside the project's cache, including
@@ -1092,8 +1111,8 @@ ProRes fallback is only ever taken when no encoder opens, never in the middle of
 encoder can open H.264/HEVC, the engine tries ProRes in a `.mov`, reports that change, and
 checks the new destination against the same overwrite rules.
 
-With `subtitles: true`, each enabled subtitle track gets an SRT: one track uses `film.srt`;
-multiple tracks use `film.<language-or-track-name>.srt`. Unsafe filename characters are
+Each track in `subtitle_tracks` gets an SRT, in the order of the tracks of the timeline: one
+track uses `film.srt`; multiple tracks use `film.<language-or-track-name>.srt`. Unsafe filename characters are
 replaced and repeated names get numbered suffixes, without hashes. Cue times are clipped to
 the export range and rebased to zero; frame times use the exact rational frame rate, rounded
 down to milliseconds. Text is UTF-8 with normalized newlines, written as it is: players do not
@@ -1103,7 +1122,8 @@ broken up: players (ffmpeg, mpv) read `<` up to the next `>` on a line as a tag 
 written after each `<` that a `>` follows on its line, and `<i>x</i>` is shown as typed. A `<`
 with no `>` after it (`<3`, `a<b`) is written as it is. `{\…}` override codes are written as they
 are, so `{\an8}` places a line at the top as players expect.
-Disabled tracks are omitted; an enabled track with no cue in the range produces an empty SRT.
+Tracks not listed are omitted, shown or not; a listed track with no cue in the range produces
+an empty SRT.
 
 `render.cancel {job}` answers `{}` and requests cancellation; wait for the terminal progress
 notification before assuming its files have been cleaned up. An unknown job is `-32602`.

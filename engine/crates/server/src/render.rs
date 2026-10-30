@@ -33,8 +33,10 @@ pub struct Request {
     codec: VideoCodec,
     quality: VideoQuality,
     range: Option<FrameRange>,
+    /// The tracks of subtitles of the timeline that are written beside the film, each as an SRT,
+    /// shown or hidden, as the Deliver page of `DaVinci` has a box to tick for each.
     #[serde(default)]
-    subtitles: bool,
+    subtitle_tracks: Vec<String>,
     #[serde(default)]
     replace: bool,
 }
@@ -224,7 +226,7 @@ struct Plan {
     path: PathBuf,
     range: Range<i64>,
     video: VideoSettings,
-    subtitles: bool,
+    subtitle_tracks: Vec<String>,
     replace: bool,
     project_dir: PathBuf,
 }
@@ -257,13 +259,31 @@ impl Plan {
         {
             return Err(Fault::params("export to .mp4 (h264/hevc) or .mov"));
         }
+        for (at, id) in request.subtitle_tracks.iter().enumerate() {
+            let subtitles = timeline
+                .tracks
+                .iter()
+                .any(|track| track.id == *id && track.kind == TrackKind::Subtitle);
+            let why = if !subtitles {
+                "is not a subtitle track of the timeline"
+            } else if request.subtitle_tracks[..at].contains(id) {
+                "is named twice"
+            } else {
+                continue;
+            };
+            return Err(Fault::params(format!("subtitle_tracks: track {id} {why}"))
+                .with_data(json!({"reason": "subtitle_track", "track": id})));
+        }
         output::check(&request.path, dir, request.replace)?;
         output::not_a_source(&request.path, &project)?;
-        if request.subtitles {
-            for (path, _) in srt::files(timeline, &request.path, range.clone()) {
-                output::check(&path, dir, request.replace)?;
-                output::not_a_source(&path, &project)?;
-            }
+        for (path, _) in srt::files(
+            timeline,
+            &request.subtitle_tracks,
+            &request.path,
+            range.clone(),
+        ) {
+            output::check(&path, dir, request.replace)?;
+            output::not_a_source(&path, &project)?;
         }
         let bits = if codec == Codec::ProRes
             || codec == Codec::Hevc
@@ -292,7 +312,7 @@ impl Plan {
             path: request.path,
             range,
             video,
-            subtitles: request.subtitles,
+            subtitle_tracks: request.subtitle_tracks,
             replace: request.replace,
             project_dir: dir.to_owned(),
         })
@@ -401,13 +421,17 @@ impl Worker {
         });
         let mut outputs = output::Files::new(self.plan.replace);
         let mut writer = self.writer(&mut outputs, sound)?;
-        if self.plan.subtitles {
-            for (path, text) in srt::files(timeline, &self.plan.path, self.plan.range.clone()) {
-                output::check(&path, &self.plan.project_dir, self.plan.replace)
-                    .map_err(|error| error.message)?;
-                let part = outputs.add(&path).map_err(|error| error.to_string())?;
-                std::fs::write(part, text).map_err(|error| error.to_string())?;
-            }
+        let sidecars = srt::files(
+            timeline,
+            &self.plan.subtitle_tracks,
+            &self.plan.path,
+            self.plan.range.clone(),
+        );
+        for (path, text) in sidecars {
+            output::check(&path, &self.plan.project_dir, self.plan.replace)
+                .map_err(|error| error.message)?;
+            let part = outputs.add(&path).map_err(|error| error.to_string())?;
+            std::fs::write(part, text).map_err(|error| error.to_string())?;
         }
         let mut drawing = self.drawing(timeline)?;
         let sources = Sources::new(Hardware::Auto, Arc::new(|_, _| {}));
@@ -639,7 +663,7 @@ mod tests {
             codec: VideoCodec::H264,
             quality: VideoQuality::Medium,
             range: None,
-            subtitles: false,
+            subtitle_tracks: vec![],
             replace: false,
         };
         Worker {
@@ -681,7 +705,7 @@ mod tests {
             codec: VideoCodec::Prores,
             quality: VideoQuality::Medium,
             range: None,
-            subtitles: false,
+            subtitle_tracks: vec![],
             replace: false,
         };
         let mut worker = worker(dir.path());

@@ -440,6 +440,8 @@ def _timeline(
             tracks.append(track)
     tracks = [*video_tracks, *audio_tracks]
     if old.timeline.captions:
+        # The only subtitle track of the new timeline, and so the one that it shows: a timeline
+        # shows one at a time.
         subtitles = edits.track("subtitle", id="$subtitles", name="Subtitles")
         cues: list[edits.CueItem] = []
         for cue in legacy.captions(plan, old.timeline, old.transcripts):

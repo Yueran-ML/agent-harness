@@ -270,3 +270,51 @@ async def test_title_transition_and_separate_subtitles_survive_export(
         == 0
     )
     assert output.with_suffix(".srt").is_file()
+
+
+async def test_one_subtitle_track_is_shown_and_any_is_exported(
+    film: tuple[Desk, dict[str, str], list[str], Tools],
+) -> None:
+    desk, names, _, _ = film
+    timeline, shown = names["$film"], names["$sub"]
+    # Another subtitle track is added hidden, since the timeline shows one at a time.
+    added = result(
+        await desk.call(
+            "video_edit",
+            edits=[edits.add_track(timeline, "subtitle", name="French", language="fr")],
+        )
+    )
+    french = added["done"][0]["track"]
+    assert french["enabled"] is False
+    refused = await desk.call(
+        "video_edit", edits=[edits.set_track(timeline, french["id"], enabled=True)]
+    )
+    assert refused.error is not None
+    assert refused.error.code == "VIDEO_SUBTITLE_SHOWN"
+    # Shown in its place, the shown one hidden first in the same batch.
+    result(
+        await desk.call(
+            "video_edit",
+            edits=[
+                edits.set_track(timeline, shown, enabled=False),
+                edits.set_track(timeline, french["id"], enabled=True),
+            ],
+        )
+    )
+    assert [
+        one["enabled"] for one in (await tracks(desk)).values() if one["kind"] == "subtitle"
+    ] == [
+        False,
+        True,
+    ]
+    # The visible track by default: French, which has no subtitle.
+    path = desk.work / "out/shown.mov"
+    result(await desk.call("video_render", path=str(path), codec="prores"))
+    assert path.with_suffix(".srt").read_text(encoding="utf-8") == ""
+    # Every track, the hidden one too, each named by its language or its name.
+    path = desk.work / "out/all.mov"
+    result(await desk.call("video_render", path=str(path), codec="prores", subtitles="all"))
+    written = sorted(one.name for one in path.parent.glob("all.*.srt"))
+    assert written == ["all.fr.srt", "all.subtitles.srt"]
+    assert "one two." in (path.parent / "all.subtitles.srt").read_text(encoding="utf-8")
+    assert (path.parent / "all.fr.srt").read_text(encoding="utf-8") == ""

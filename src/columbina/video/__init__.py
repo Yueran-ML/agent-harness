@@ -23,7 +23,7 @@ from columbina.agent import RUNTIME_FACTS, Facts
 from columbina.fs import FS, Access, Fs
 from columbina.kernel import Context, EmitEvent, ServiceKey
 from columbina.tools import TOOLS, Tool, ToolFailure, ToolRun
-from columbina.video.editing import Editor, safe_name, sidecars
+from columbina.video.editing import Editor, chosen_subtitles, safe_name, sidecars
 from columbina.video.engine import (
     Engine,
     EngineError,
@@ -287,7 +287,14 @@ class _Render(_Timeline):
     )
     codec: Literal["h264", "hevc", "prores"] = "h264"
     quality: Literal["high", "medium", "small"] = "high"
-    subtitles: bool = True
+    subtitles: Literal["visible", "all"] | list[str] = Field(
+        default="visible",
+        description=(
+            'Subtitle tracks written beside the film as SRT: "visible" (the one subtitle '
+            'track the timeline shows, if any), "all" (every subtitle track, shown or '
+            "hidden), or a list of subtitle track ids; [] for none."
+        ),
+    )
     replace: bool = False
 
 
@@ -399,9 +406,9 @@ def tools_of(videos: Videos) -> list[Tool[Any, str]]:
                     # The hardware fallback can publish a MOV beside the requested MP4, and
                     # subtitles are written beside the film as SRT files.
                     videos.checked(run, tool, str(path.with_suffix(".mov")), "write")
-                    if args.subtitles:
-                        for sidecar in sidecars(target, path):
-                            videos.checked(run, tool, str(sidecar), "write")
+                    chosen = chosen_subtitles(target, args.subtitles)
+                    for sidecar in sidecars(target, path, chosen):
+                        videos.checked(run, tool, str(sidecar), "write")
                     _, project = await editor.engine.project()
                     used = {
                         clip["source"]["media"]
@@ -422,7 +429,7 @@ def tools_of(videos: Videos) -> list[Tool[Any, str]]:
                         path,
                         codec=args.codec,
                         quality=args.quality,
-                        subtitles=args.subtitles,
+                        subtitle_tracks=chosen,
                         replace=args.replace,
                         told=progress,
                     )
@@ -515,7 +522,8 @@ def tools_of(videos: Videos) -> list[Tool[Any, str]]:
             _Render,
             (
                 "Export a snapshot of the timeline using originals, with mixed "
-                "audio and optional SRT sidecars. Reports progress while waiting. "
+                "audio and an SRT beside it for each chosen subtitle track (by default "
+                "the one the timeline shows). Reports progress while waiting. "
                 "Existing files require replace=true. H.264/HEVC use available "
                 "hardware; ProRes MOV is the fallback."
             ),
@@ -579,7 +587,11 @@ roll: left,right,delta,linked?; slip/slide: clip,delta,linked?;
 add_transition: left,right,length,kind?,align:"start"|"center"|"end";
 set_transition: id,kind?,length?,align?; remove_transition: id;
 set_speed: clip,speed:{num:2,den:1},reverse?,ripple?,linked?;
-add_track: kind:"video"|"audio"|"subtitle",index?,name?,language?; remove_track: track;
+add_track: kind:"video"|"audio"|"subtitle",index?,name?,language?; remove_track: track.
+A timeline shows one subtitle track at a time (enabled): add_track makes a subtitle track hidden
+while another is shown. To show another, hide the shown one first in the same batch:
+{op:"set_track",id:"S1",enabled:false} then {op:"set_track",id:"S2",enabled:true}; otherwise
+it is refused as subtitle_shown. A hidden subtitle track can still be exported as SRT.
 add_cue: track,start,length,text; set_cue: id,start?,length?,text?; remove_cue: id;
 cues_from: track,items:[{start,length,text}]. Linked edits include partner clips by default.
 Basic operations: {op:"set_clip",timeline:"t1",id:"c1",gain_db:-6} or set_track with

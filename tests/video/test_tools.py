@@ -388,7 +388,8 @@ async def test_default_render_path_progress_and_no_history_step(studio: tuple[De
     rendered = result(await desk.call("video_render", codec="prores", quality="small"))
     assert Path(rendered["path"]) == desk.work / "out/Cut.mov"
     assert fake.rendered[-1]["quality"] == "small"
-    assert fake.rendered[-1]["subtitles"] is True
+    # The subtitle track that the timeline shows is written beside the film.
+    assert fake.rendered[-1]["subtitle_tracks"] == ["S1"]
     assert progress[-1].progress.state == "done"
     assert progress[0].progress.state == "running"
     assert len(fake.steps) == steps
@@ -593,7 +594,7 @@ async def test_render_failure_and_cancellation_do_not_change_timeline(
             desk.work / "out/stop.mp4",
             codec="h264",
             quality="small",
-            subtitles=False,
+            subtitle_tracks=[],
             replace=False,
             told=lambda _: ready.set(),
         )
@@ -626,7 +627,7 @@ async def test_a_render_given_up_on_before_its_start_is_answered_is_still_cancel
             desk.work / "out/stop.mp4",
             codec="h264",
             quality="small",
-            subtitles=False,
+            subtitle_tracks=[],
             replace=False,
         )
     )
@@ -792,12 +793,22 @@ async def test_media_added_by_an_edit_is_read_only_where_allowed_and_by_its_whol
 
 
 @pytest.mark.parametrize(
-    ("tracks", "named"),
+    ("tracks", "chosen", "asked", "named"),
     [
-        ([("en", "S1")], ["cut.srt"]),
+        ([("en", "S1")], "visible", ["S0"], ["cut.srt"]),
+        # The timeline shows S0 alone; a hidden track is written when it is chosen.
+        ([("en", "S1"), ("fr", "S2")], ["S1"], ["S1"], ["cut.srt"]),
         (
             [("en", "S1"), ("", "中文 字幕"), ("EN", "S3")],
+            "all",
+            ["S0", "S1", "S2"],
             ["cut.en.srt", "cut.中文 字幕.srt", "cut.EN-2.srt"],
+        ),
+        (
+            [("en", "S1"), ("", "中文 字幕"), ("EN", "S3")],
+            ["S2", "S0"],
+            ["S2", "S0"],
+            ["cut.en.srt", "cut.EN-2.srt"],
         ),
     ],
 )
@@ -805,6 +816,8 @@ async def test_subtitles_written_beside_an_export_are_asked_for_as_the_film_is(
     studio: tuple[Desk, Fake],
     monkeypatch: pytest.MonkeyPatch,
     tracks: list[tuple[str, str]],
+    chosen: str | list[str],
+    asked: list[str],
     named: list[str],
 ) -> None:
     desk, fake = studio
@@ -813,25 +826,45 @@ async def test_subtitles_written_beside_an_export_are_asked_for_as_the_film_is(
     timeline["tracks"] = [
         timeline["tracks"][0],
         *(
-            {**edits.track("subtitle", id=f"S{at}", name=name), "language": language}
+            {
+                **edits.track("subtitle", id=f"S{at}", name=name, enabled=at == 0),
+                "language": language,
+            }
             for at, (language, name) in enumerate(tracks)
         ),
     ]
     videos = desk.ctx.use(VIDEOS)
-    asked: list[tuple[str, str]] = []
+    checks: list[tuple[str, str]] = []
     checking = videos.checked
 
     def checked(run: object, tool: str, path: str, kind: Literal["read", "write"]) -> Path:
-        asked.append((Path(path).name, kind))
+        checks.append((Path(path).name, kind))
         return checking(run, tool, path, kind)  # pyright: ignore[reportArgumentType]
 
     monkeypatch.setattr(videos, "checked", checked)
-    result(await desk.call("video_render", path="out/cut.mp4"))
-    unasked = await desk.call("video_render", path="out/other.mp4", subtitles=False)
+    result(await desk.call("video_render", path="out/cut.mp4", subtitles=chosen))
+    sent = fake.rendered[-1]["subtitle_tracks"]
+    unasked = await desk.call("video_render", path="out/other.mp4", subtitles=[])
 
-    assert all((name, "write") in asked for name in named)
+    assert sent == asked
+    assert all((name, "write") in checks for name in named)
+    written = [name for name, _ in checks if name.startswith("cut.") and name.endswith(".srt")]
+    assert set(written) == set(named)
     assert unasked.error is None
-    assert not [name for name, _ in asked if name.startswith("other.") and name.endswith(".srt")]
+    assert fake.rendered[-1]["subtitle_tracks"] == []
+    assert not [name for name, _ in checks if name.startswith("other.") and name.endswith(".srt")]
+
+
+async def test_a_subtitle_track_that_is_not_one_of_the_timeline_is_not_exported(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    await seed_story(desk, fake)
+    refused = await desk.call("video_render", path="out/cut.mp4", subtitles=["A1"])
+
+    assert refused.error is not None
+    assert refused.error.code == "VIDEO_SUBTITLE_TRACK"
+    assert not (desk.work / "out/cut.mp4").exists()
 
 
 async def test_a_text_cut_read_before_the_engine_was_reached_again_is_refused(

@@ -7,11 +7,19 @@ use std::path::{Path, PathBuf};
 
 use columbina_model::{Rate, Timeline, TrackKind};
 
-pub fn files(timeline: &Timeline, path: &Path, range: Range<i64>) -> Vec<(PathBuf, String)> {
+/// The SRT of each track of subtitles of `timeline` that `chosen` names, shown or hidden, in the
+/// order of the tracks of the timeline, and where it is written beside the film at `path`: one
+/// is `<stem>.srt`, and more are `<stem>.<language or name>.srt`.
+pub fn files(
+    timeline: &Timeline,
+    chosen: &[String],
+    path: &Path,
+    range: Range<i64>,
+) -> Vec<(PathBuf, String)> {
     let tracks: Vec<_> = timeline
         .tracks
         .iter()
-        .filter(|track| track.enabled && track.kind == TrackKind::Subtitle)
+        .filter(|track| track.kind == TrackKind::Subtitle && chosen.contains(&track.id))
         .collect();
     let stem = path.file_stem().unwrap_or_default().to_string_lossy();
     let mut names = BTreeSet::new();
@@ -176,7 +184,7 @@ mod tests {
             cue(100, 10, "outside"),
         ];
         timeline.tracks = vec![track];
-        let got = files(&timeline, Path::new("cut.mp4"), 25..100);
+        let got = files(&timeline, &["S1".into()], Path::new("cut.mp4"), 25..100);
         assert_eq!(got, vec![(PathBuf::from("cut.srt"),
             "1\n00:00:00,000 --> 00:00:01,000\n<\u{2060}b>&\n第二行\n \n最后\n\n2\n00:00:01,400 --> 00:00:03,000\ntail\n\n".into())]);
     }
@@ -232,7 +240,13 @@ mod tests {
         ];
         timeline.tracks = vec![track];
         let dir = tempfile::tempdir().unwrap();
-        let (path, text) = files(&timeline, &dir.path().join("cut.mp4"), 0..100).remove(0);
+        let (path, text) = files(
+            &timeline,
+            &["S1".into()],
+            &dir.path().join("cut.mp4"),
+            0..100,
+        )
+        .remove(0);
         std::fs::write(&path, text).unwrap();
         for extension in ["vtt", "ass"] {
             let Some(read) = read_back(&path, extension) else {
@@ -258,28 +272,48 @@ mod tests {
     }
 
     #[test]
-    fn enabled_tracks_get_distinct_safe_language_or_track_names() {
+    fn chosen_tracks_shown_or_hidden_get_distinct_safe_language_or_track_names() {
         let mut timeline = Project::sample().timelines.remove(0);
-        let mut first = Track::new("S1", TrackKind::Subtitle);
-        first.language = "en".into();
-        let mut second = first.clone();
-        second.id = "S2".into();
-        second.language = "EN".into();
-        let mut third = Track::new("S3", TrackKind::Subtitle);
+        let subtitles = |id: &str, language: &str| {
+            let mut track = Track::new(id, TrackKind::Subtitle);
+            track.language = language.into();
+            // One track of subtitles is shown at a time.
+            track.enabled = id == "S1";
+            track
+        };
+        let mut third = subtitles("S3", "");
         third.name = "../中文:字幕\\..".into();
-        let mut hidden = first.clone();
-        hidden.enabled = false;
-        timeline.tracks = vec![first, second, third, hidden];
-        let got = files(&timeline, Path::new("out/cut.mov"), 0..100);
+        timeline.tracks = vec![
+            subtitles("S1", "en"),
+            subtitles("S2", "EN"),
+            third,
+            subtitles("S4", "fr"),
+            subtitles("S5", "de"),
+        ];
+        // In the order of the tracks, whatever the order they are chosen in; S5 is not chosen.
+        let chosen = ["S4", "S3", "S1", "S2", "V1"].map(String::from);
+        let got = files(&timeline, &chosen, Path::new("out/cut.mov"), 0..100);
         assert_eq!(
             got.iter().map(|(path, _)| path.clone()).collect::<Vec<_>>(),
             [
                 "out/cut.en.srt",
                 "out/cut.EN-2.srt",
-                "out/cut._中文_字幕_.srt"
+                "out/cut._中文_字幕_.srt",
+                "out/cut.fr.srt"
             ]
             .map(PathBuf::from)
         );
         assert!(got.iter().all(|(_, text)| text.is_empty()));
+        // One chosen track, shown or hidden, is written as the film is named.
+        for one in ["S1", "S4"] {
+            let got = files(&timeline, &[one.into()], Path::new("out/cut.mov"), 0..100);
+            assert_eq!(got.len(), 1);
+            assert_eq!(got[0].0, PathBuf::from("out/cut.srt"));
+        }
+        let none: Vec<(PathBuf, String)> = vec![];
+        assert_eq!(
+            files(&timeline, &[], Path::new("out/cut.mov"), 0..100),
+            none
+        );
     }
 }

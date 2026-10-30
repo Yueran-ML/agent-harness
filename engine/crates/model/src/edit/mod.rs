@@ -459,7 +459,8 @@ pub enum Edit {
         /// The subtitles.
         items: Vec<CueItem>,
     },
-    /// Add a track with nothing on it.
+    /// Add a track with nothing on it. A track of subtitles is added disabled (hidden) while
+    /// another track of subtitles of the timeline is enabled: a timeline shows one at a time.
     AddTrack {
         /// The timeline.
         timeline: Id,

@@ -54,7 +54,10 @@
 //! A timeline has no 0 in its rate, a picture of an even number of pixels from 16 to 16384 each
 //! way, and sound of 44100, 48000 or 96000 samples a second. A track of picture or of sound holds
 //! clips and transitions and no language; a track of subtitles holds subtitles, and a language
-//! that is empty or a short tag of BCP 47.
+//! that is empty or a short tag of BCP 47. A timeline shows one track of subtitles at a time, as
+//! `DaVinci` does: at most one of its tracks of subtitles is enabled. So a track of
+//! subtitles is not enabled, or added enabled, while another of its timeline is; a client that
+//! shows another track disables the one shown first, in the same transaction.
 //!
 //! A clip lasts at least one frame, from a frame of the timeline no earlier than 0, and on its
 //! track it covers no frame that another clip covers. It plays at a speed from 1/100 to 100. Its
@@ -564,6 +567,14 @@ pub enum OpError {
         /// The other subtitle.
         with: Id,
     },
+    /// A track of subtitles is to be enabled, or added enabled, while another track of
+    /// subtitles of its timeline is: a timeline shows one at a time. That one is to be disabled
+    /// first.
+    #[error("subtitle track {track} is shown, and a timeline shows one subtitle track at a time")]
+    SubtitleShown {
+        /// The track of subtitles that is shown.
+        track: Id,
+    },
     /// A clip starts before the first frame of its timeline.
     #[error("the clip starts at frame {start}, before the timeline does")]
     OutOfTimeline {
@@ -743,6 +754,7 @@ enum Fields {
     Scale { scale: u32, media_scale: u32 },
     Overlap { with: Id },
     CueOverlap { with: Id },
+    SubtitleShown { track: Id },
     OutOfTimeline { start: i64 },
     InUse { id: Id, by: Id },
     TooLarge { what: &'static str },
@@ -1202,6 +1214,7 @@ fn add_timeline(
     }
     name(&mut counter, &mut claims, &[], &mut timeline.tracks)?;
     check_tracks(project, timeline.rate, &mut timeline.tracks)?;
+    one_shown(&timeline.tracks).map_err(|(_, error)| error)?;
     let id = timeline.id.clone();
     project.timelines.insert(at, timeline);
     project.next_id = counter.next;
@@ -1232,6 +1245,13 @@ fn add_track(
     name(&mut counter, &mut claims, &timeline.tracks, &mut added)?;
     check_tracks(project, timeline.rate, &mut added)?;
     let [track] = added;
+    if track.kind == TrackKind::Subtitle && track.enabled {
+        if let Some(shown) = shown_subtitles(&timeline.tracks).next() {
+            return Err(OpError::SubtitleShown {
+                track: shown.id.clone(),
+            });
+        }
+    }
     let id = track.id.clone();
     project.timelines[t].tracks.insert(at, track);
     project.next_id = counter.next;
@@ -1562,6 +1582,13 @@ fn set_track(
     let track = &project.timelines[t].tracks[r];
     if let Some(language) = &set.language {
         check_language(track.kind, language)?;
+    }
+    if set.enabled == Some(true) && track.kind == TrackKind::Subtitle {
+        if let Some(shown) = shown_subtitles(&project.timelines[t].tracks).find(|s| s.id != id) {
+            return Err(OpError::SubtitleShown {
+                track: shown.id.clone(),
+            });
+        }
     }
     let inverse = Op::SetTrack {
         timeline: timeline_id.into(),
@@ -2215,6 +2242,28 @@ fn check_tracks(project: &Project, rate: Rate, tracks: &mut [Track]) -> Result<(
     Ok(())
 }
 
+/// The tracks of subtitles among `tracks` that are shown: enabled.
+fn shown_subtitles(tracks: &[Track]) -> impl Iterator<Item = &Track> {
+    tracks
+        .iter()
+        .filter(|r| r.kind == TrackKind::Subtitle && r.enabled)
+}
+
+/// Check that at most one of the tracks of subtitles of a timeline is shown. Otherwise give the
+/// second that is, and why it is refused: the first is shown.
+fn one_shown(tracks: &[Track]) -> Result<(), (&Track, OpError)> {
+    let mut shown = shown_subtitles(tracks);
+    match (shown.next(), shown.next()) {
+        (Some(first), Some(second)) => Err((
+            second,
+            OpError::SubtitleShown {
+                track: first.id.clone(),
+            },
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// Put the clips of a track in the order of their start, its transitions in the order of their
 /// cuts, and its subtitles in the order of their start.
 fn order(track: &mut Track) {
@@ -2865,10 +2914,10 @@ impl Project {
     ///
     /// Everything is checked that an operation checks of what it adds: each clip as
     /// [`Op::InsertClip`] checks it, each media as [`Op::AddMedia`] does, the settings of each
-    /// timeline, each track with its transitions and subtitles, the bins, and every integer
-    /// against [`LARGEST`]. Every thing has an id, and no two things of a kind share one: bins,
-    /// media and timelines in the project, tracks in their timeline, and clips, transitions and
-    /// subtitles in the project.
+    /// timeline, each track with its transitions and subtitles, that a timeline shows at most one
+    /// track of subtitles, the bins, and every integer against [`LARGEST`]. Every thing has an
+    /// id, and no two things of a kind share one: bins, media and timelines in the project,
+    /// tracks in their timeline, and clips, transitions and subtitles in the project.
     ///
     /// Two things are put right rather than refused. The things of each track are put in order:
     /// its clips and subtitles in the order of their start, and its transitions in the order of
@@ -2961,6 +3010,8 @@ impl Project {
                 }
                 check_track(self, timeline.rate, track).map_err(wrong("track", &track.id))?;
             }
+            one_shown(&timeline.tracks)
+                .map_err(|(track, error)| wrong("track", &track.id)(error))?;
         }
         Ok(())
     }
@@ -4221,6 +4272,7 @@ mod tests {
             (OpError::InUse { id: id(), by: id() }, "in_use"),
             (OpError::TooLarge { what: "start" }, "too_large"),
             (OpError::ZeroRate, "zero_rate"),
+            (OpError::SubtitleShown { track: id() }, "subtitle_shown"),
         ];
         for (error, reason) in every {
             let value = serde_json::to_value(&error).unwrap();
@@ -4756,6 +4808,8 @@ mod tests {
         for tag in ["", "zh", "en-GB", "zh-Hant-TW", "ja"] {
             let mut track = subtitles.clone();
             track.language = tag.into();
+            // One track of subtitles is shown at a time.
+            track.enabled = tag.is_empty();
             apply(&mut project, add(track)).unwrap();
         }
         let ids: Vec<&str> = project.timelines[0].tracks[2..]
@@ -6054,6 +6108,114 @@ mod tests {
         let done = round_trip(&project, remove("q3"));
         assert_eq!(done.timelines[0].tracks[2].cues.len(), 1);
         assert_eq!(refused_in(project, remove("q9")), missing("cue", "q9"));
+    }
+
+    #[test]
+    fn a_timeline_shows_one_track_of_subtitles_at_a_time() {
+        // S1 is shown; S2 is added hidden.
+        let mut hidden = Track::new("", TrackKind::Subtitle);
+        hidden.enabled = false;
+        let add = |track: Track| Op::AddTrack {
+            timeline: "t1".into(),
+            track,
+            index: None,
+        };
+        let project = round_trip(&with_subtitles(), add(hidden.clone()));
+        let shown = |project: &Project| -> Vec<String> {
+            project.timelines[0]
+                .tracks
+                .iter()
+                .filter(|r| r.kind == TrackKind::Subtitle && r.enabled)
+                .map(|r| r.id.clone())
+                .collect()
+        };
+        assert_eq!(shown(&project), ["S1"]);
+        let s1_shown = OpError::SubtitleShown { track: "S1".into() };
+        // Another track of subtitles is not added shown, nor shown, while S1 is.
+        assert_eq!(
+            refused_in(project.clone(), add(Track::new("", TrackKind::Subtitle))),
+            s1_shown
+        );
+        let enable = |id: &str, enabled: bool| Op::SetTrack {
+            timeline: "t1".into(),
+            id: id.into(),
+            name: None,
+            enabled: Some(enabled),
+            locked: None,
+            language: None,
+        };
+        assert_eq!(refused_in(project.clone(), enable("S2", true)), s1_shown);
+        assert_eq!(
+            refused_in(project.clone(), enable("S2", true)).to_string(),
+            "subtitle track S1 is shown, and a timeline shows one subtitle track at a time"
+        );
+        // Enabling the one that is shown, hiding one, and the tracks of picture and sound are
+        // as they were.
+        round_trip(&project, enable("S1", true));
+        round_trip(&project, enable("S2", false));
+        round_trip(&project, enable("V1", true));
+        round_trip(&project, add(Track::new("", TrackKind::Video)));
+        // S1 hidden first, S2 is shown: one at a time, and taken back in the reverse order.
+        let mut switched = project.clone();
+        let hide = apply(&mut switched, enable("S1", false)).unwrap();
+        let show = apply(&mut switched, enable("S2", true)).unwrap();
+        assert_eq!(shown(&switched), ["S2"]);
+        apply(&mut switched, show).unwrap();
+        apply(&mut switched, hide).unwrap();
+        assert_eq!(shown(&switched), ["S1"]);
+        // A shown track that is taken away comes back shown.
+        let mut removed = project.clone();
+        let back = apply(
+            &mut removed,
+            Op::RemoveTrack {
+                timeline: "t1".into(),
+                id: "S1".into(),
+            },
+        )
+        .unwrap();
+        apply(&mut removed, enable("S2", true)).unwrap();
+        assert_eq!(
+            refused_in(removed.clone(), back.clone()),
+            OpError::SubtitleShown { track: "S2".into() }
+        );
+        apply(&mut removed, enable("S2", false)).unwrap();
+        apply(&mut removed, back).unwrap();
+        assert_eq!(shown(&removed), ["S1"]);
+
+        // A timeline is added with one shown at most.
+        let subtitles = |id: &str, enabled: bool| {
+            let mut track = Track::new(id, TrackKind::Subtitle);
+            track.enabled = enabled;
+            track
+        };
+        let new = |tracks: Vec<Track>| Op::AddTimeline {
+            timeline: timeline("", tracks),
+            index: None,
+        };
+        let done = round_trip(
+            &project,
+            new(vec![
+                subtitles("S1", false),
+                subtitles("S2", true),
+                subtitles("S3", false),
+            ]),
+        );
+        assert_eq!(done.timelines.len(), 2);
+        assert_eq!(
+            refused_in(
+                project.clone(),
+                new(vec![subtitles("S1", true), subtitles("", true)])
+            ),
+            s1_shown
+        );
+
+        // A project that is read shows one at most on each timeline, and names the second.
+        let mut read = serde_json::to_value(&project).unwrap();
+        read["timelines"][0]["tracks"][3]["enabled"] = true.into();
+        assert_eq!(
+            refused_read(Project::from_value(read)),
+            wrong("track", "S2", s1_shown)
+        );
     }
 
     #[test]

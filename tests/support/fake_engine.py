@@ -381,6 +381,14 @@ class Fake:
         if path.exists() and not params.get("replace"):
             message = f"{path} is there already"
             raise RefusedError(-32002, message, {"path": str(path), "reason": "exists"})
+        if "subtitles" in params:
+            raise RefusedError(-32602, "render.start takes no subtitles", {"reason": "params"})
+        chosen = cast("list[str]", params.get("subtitle_tracks") or [])
+        subtitles = {one["id"] for one in timeline["tracks"] if one["kind"] == "subtitle"}
+        for at, track in enumerate(chosen):
+            if track not in subtitles or track in chosen[:at]:
+                message = f"subtitle_tracks: track {track} is not one subtitle track to write"
+                raise RefusedError(-32602, message, {"reason": "subtitle_track", "track": track})
         job = f"r{len(self.rendered)}"
         frames = self.render_frames if self.render_frames is not None else _duration(timeline)
         self.jobs[job] = "running"
@@ -493,11 +501,13 @@ class Fake:
             return self._cut_out(timeline, int(edit["from"]), int(edit["to"]), edit.get("tracks"))
         if name == "add_track":
             kind = str(edit["kind"])
+            # A timeline shows one subtitle track at a time: a new one is hidden while one is.
+            shown = kind == "subtitle" and _shown(timeline) is not None
             track: dict[str, Any] = {
                 "id": "",
                 "kind": kind,
                 "name": edit.get("name", ""),
-                "enabled": True,
+                "enabled": not shown,
                 "locked": False,
             }
             if kind == "subtitle":
@@ -622,8 +632,15 @@ class Fake:
             places = self.project["media"]
         elif kind == "timeline":
             places = self.project["timelines"]
+            tracks = cast("list[dict[str, Any]]", thing.get("tracks", []))
+            for at, track in enumerate(tracks):
+                if track["kind"] == "subtitle" and track.get("enabled", True):
+                    _one_shown({"tracks": tracks[:at]}, track, index)
         elif kind == "track":
-            places = self._timeline(str(op["timeline"]), index)["tracks"]
+            timeline = self._timeline(str(op["timeline"]), index)
+            places = timeline["tracks"]
+            if thing["kind"] == "subtitle" and thing.get("enabled", True):
+                _one_shown(timeline, thing, index)
         else:
             places = self._track(str(op["timeline"]), str(op["track"]), index)["clips"]
         if kind != "clip":
@@ -649,6 +666,8 @@ class Fake:
             timeline["tracks"] = [one for one in timeline["tracks"] if one["id"] != op["id"]]
         elif name == "set_track":
             track = self._track(str(op["timeline"]), str(op["id"]), index)
+            if track["kind"] == "subtitle" and op.get("enabled") is True:
+                _one_shown(self._timeline(str(op["timeline"]), index), track, index)
             track.update({k: v for k, v in op.items() if k not in ("op", "id", "timeline")})
         elif name in ("remove_clip", "move_clip", "trim_clip", "set_clip"):
             self._clip_changed(op, index)
@@ -720,6 +739,25 @@ def _later(clip: dict[str, Any], frames: int, rate: dict[str, int]) -> dict[str,
 
 def _start(thing: dict[str, Any]) -> int:
     return thing["start"]
+
+
+def _shown(timeline: dict[str, Any]) -> dict[str, Any] | None:
+    """The subtitle track that a timeline shows, if any: it shows one at a time."""
+    return next(
+        (one for one in timeline["tracks"] if one["kind"] == "subtitle" and one["enabled"]), None
+    )
+
+
+def _one_shown(timeline: dict[str, Any], track: dict[str, Any], index: int) -> None:
+    """Refuse to show ``track`` while another subtitle track of the timeline is shown."""
+    shown = _shown({"tracks": [one for one in timeline["tracks"] if one is not track]})
+    if shown is not None:
+        message = (
+            f"subtitle track {shown['id']} is shown, and a timeline shows one subtitle track "
+            "at a time"
+        )
+        data = {"index": index, "reason": "subtitle_shown", "track": shown["id"]}
+        raise RefusedError(-32001, message, {**data, "message": message})
 
 
 def _duration(timeline: dict[str, Any]) -> int:

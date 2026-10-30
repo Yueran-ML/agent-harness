@@ -67,8 +67,9 @@ const cuts = (): Timeline => ({
 });
 
 /**
- * Where a transaction's moves put the clips, and whether the engine refuses it: a move whose clip
- * has no track of its kind to go to (`no_track`) or would go on a locked one (`locked`); and a
+ * Where a transaction's moves put the clips, and whether the engine refuses it: a move that names a
+ * clip on a locked track, or whose clip has no track of its kind to go to (`no_track`) or would go
+ * on a locked one (`locked`); and a
  * `close_gap` with `ripple_blocked` where a clip of another track that is not locked lies across
  * the gap (unless `straddling` is 'stay'), or, with 'stay', where a clip after the gap would run
  * into one that stays. Other edits are not followed.
@@ -98,6 +99,8 @@ function refusalOf(project: Project, ops: readonly Record<string, unknown>[]): R
       const moved = [];
       for (const id of ids) {
         const from = laneOf(id);
+        // Only named clips can be on a locked track: those linked to them there are left alone.
+        if (from.locked) return { reason: 'locked', track: from.id };
         const to = peers(from.kind)[peers(from.kind).indexOf(from) + offset];
         if (!to) return { reason: 'no_track', kind: from.kind };
         if (to.locked) return { reason: 'locked', track: to.id };
@@ -557,6 +560,41 @@ describe('the Cut page', () => {
       { edit: 'move', timeline: 't1', delta: 0, linked: false, clips: ['c2'], to_track: 'v2', overwrite: true },
       { edit: 'close_gap', timeline: 't1', track: 'v1', at: 100, straddling: 'stay' },
     ] })).toMatchObject({ ok: false, error: { data: { reason: 'ripple_blocked', track: 'a1', clip: 's2' } } });
+  });
+
+  it('moves a clip of Track 1 whose sound is on a locked track, the sound staying, and copies it with Alt nowhere', async () => {
+    // DaVinci Resolve leaves the clips of a locked track where they are and moves the rest of their
+    // group (Reference Manual 20, pp. 762, 769): the move names the picture alone, and the engine takes it.
+    const held = cuts();
+    held.tracks = [
+      { id: 'v1', kind: 'video', name: 'V1', enabled: true, locked: false, clips: [clip('c1', 0, 100), clip('c2', 100, 100, { link: 'g2' }), clip('c3', 200, 100)], transitions: [] },
+      { id: 'a1', kind: 'audio', name: 'A1', enabled: true, locked: true, clips: [clip('s2', 100, 100, { link: 'g2' })], transitions: [] },
+    ];
+    const { bridge } = await mount({ timelines: [held] });
+    const upper = overview();
+    const scale = Number(upper.dataset.scale);
+    const at = (frame: number) => HEADER_WIDTH + frame * scale;
+    const drag = async (fields = {}) => {
+      bridge.call.mockClear();
+      fireEvent.pointerDown(upper.querySelector('[data-clip="c2"]')!, { button: 0, clientX: at(150), clientY: 45, pointerId: 1, ...fields });
+      fireEvent.pointerMove(upper, { clientX: at(160), clientY: 45, pointerId: 1, ...fields });
+      fireEvent.pointerUp(upper, { clientX: at(160), clientY: 45, pointerId: 1, ...fields });
+      await settle();
+      return sent(bridge).map(each => each.ops);
+    };
+    expect(await drag()).toEqual([[
+      { edit: 'move', timeline: 't1', delta: 10, linked: true, clips: ['c2'], overwrite: true },
+      { edit: 'close_gap', timeline: 't1', track: 'v1', at: 100, straddling: 'stay' },
+    ]]);
+    expect(await bridge.call.mock.results.at(-1)!.value).toMatchObject({ ok: true });
+    expect(document.querySelector('[data-test="studio-problem"]')).toBeNull();
+    // Had the sound been named too, the engine would have refused the whole move.
+    expect(await bridge.call('transaction.apply', { revision: 1, ops: [
+      { edit: 'move', timeline: 't1', delta: 10, linked: true, clips: ['c2', 's2'], overwrite: true },
+    ] })).toMatchObject({ ok: false, error: { data: { reason: 'locked', track: 'a1' } } });
+    // With Alt, the copy of the sound would go on the locked track: nothing is copied, and the page says why.
+    expect(await drag({ altKey: true })).toEqual([]);
+    expect(screen.getByRole('alert').textContent).toBe('A copy would go on a locked track, so nothing was copied.');
   });
 
   it('puts a dissolve or a dip to black at the edit point nearest the playhead, the earlier of two as near', async () => {

@@ -1,14 +1,17 @@
 import type { Clip, Media, Timeline } from '../engine';
 import type { Change, Edit, Transaction } from './commands';
-import { clipLocations, linkedClips, type Located } from './selection';
+import { clipLocations, movableClips, type Located } from './selection';
 import { snap } from './snap';
 
 export type Tool = 'select' | 'trim' | 'blade';
 export type Hit = 'move' | 'trim_in' | 'trim_out' | 'slip' | 'slide' | 'blade' | { kind: 'roll'; left: string; right: string };
 export interface Preview { id: string; track: string; start: number; length: number }
 export interface Gesture {
+  /** `ids`: the clips that the gesture moves or trims, none of them on a locked track (see `movableClips`). */
   timeline: Timeline; revision: number; ids: string[]; clip: string; action: Exclude<Hit, 'blade'>;
   origin: number; linked: boolean; rippleTrim: boolean; locations: ReadonlyMap<string, Located>;
+  /** Clips linked to them on locked tracks: they stay where they are, and are not named to the engine. */
+  lockedPartners: string[];
 }
 export interface Dragged {
   gesture: Gesture; delta: number; point: number | null; clamped: boolean; preview: Preview[]; command: Edit | null;
@@ -42,8 +45,8 @@ export function beginDrag(timeline: Timeline, revision: number, selection: reado
   const locations = clipLocations(timeline);
   const here = locations.get(id);
   if (!here || here.track.locked || action === 'blade') return null;
-  const ids = linkedClips(timeline, action === 'move' && selection.includes(id) ? [id, ...selection] : [id], linked);
-  return { timeline, revision, ids, clip: id, action, origin, linked, rippleTrim, locations };
+  const { movable: ids, lockedPartners } = movableClips(timeline, action === 'move' && selection.includes(id) ? [id, ...selection] : [id], linked);
+  return { timeline, revision, ids, clip: id, action, origin, linked, rippleTrim, locations, lockedPartners };
 }
 
 function handles(clip: Clip, timeline: Timeline, media: readonly Media[]): { before: number; after: number } {
@@ -104,8 +107,11 @@ export function dragTo(gesture: Gesture, frame: number, options: {
 }): Dragged {
   const { timeline, locations, action, ids, linked } = gesture;
   const here = locations.get(gesture.clip)!;
-  const moving = ids.map(id => locations.get(id)!);
   const copying = options.duplicate === true && action === 'move' && !options.ripple;
+  // A move leaves the clips linked to it on locked tracks where they are, and the engine moves the
+  // rest. A copy with Alt copies the whole group, so a copy of one of those that would go on a locked
+  // track refuses it (`copy_locked`), as one of any clip would.
+  const moving = (copying ? [...ids, ...gesture.lockedPartners] : ids).map(id => locations.get(id)!);
   const magnetic = !copying && options.magnetic && action === 'move' && !options.ripple && !options.vertical && options.magnetic.clips.has(gesture.clip) ? options.magnetic : null;
   // The pointer on an edit point of Track 1 between two clips that stay: the clips go in there.
   if (magnetic && (options.track === undefined || options.track === magnetic.track)) {

@@ -29,6 +29,22 @@ export function linkedClips(timeline: Timeline, ids: readonly string[], linked: 
 }
 
 /**
+ * The clips that a drag of `ids` moves, trims or slides, with those linked to them (`linked`), split
+ * by their tracks: `movable` on tracks that are not locked, and `lockedPartners`, clips linked to
+ * them on locked tracks. As in DaVinci Resolve, a clip on a locked track stays where it is and the
+ * rest of its group moves (Reference Manual 20, pp. 762, 769): a move names the movable ones only,
+ * and the engine leaves the others alone. A copy made with Alt is refused where a copy of a locked
+ * partner would go on a locked track (`copy_locked`), so it is told of them apart.
+ */
+export function movableClips(timeline: Timeline, ids: readonly string[], linked: boolean): { movable: string[]; lockedPartners: string[] } {
+  const locations = clipLocations(timeline);
+  const movable: string[] = [];
+  const lockedPartners: string[] = [];
+  for (const id of linkedClips(timeline, ids, linked)) (locations.get(id)!.track.locked ? lockedPartners : movable).push(id);
+  return { movable, lockedPartners };
+}
+
+/**
  * Track 1 of the Cut page, as DaVinci Resolve calls it: the first video track, which holds the
  * primary shots and ripples by itself (Reference Manual 20, pp. 509, 584–590); and its clips, with
  * the clips linked to them (their sound), which go with them. Null where there is no video track.

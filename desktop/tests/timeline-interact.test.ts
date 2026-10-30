@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { selectClips, linkedClips, clipLocations, primaryTrack } from '../src/studio/timeline/selection';
+import { selectClips, linkedClips, clipLocations, movableClips, primaryTrack } from '../src/studio/timeline/selection';
 import { snap, snapCandidates } from '../src/studio/timeline/snap';
 import { beginDrag, clearing, dragTo, finishDrag, hitClip } from '../src/studio/timeline/interact';
 import { clip, media, timeline } from './timeline-fixture';
@@ -41,6 +41,32 @@ describe('Track 1 of the Cut page', () => {
     ]);
     // Not on Track 1, or with no magnetic track, it is a move as on the Edit page.
     expect(dragTo(beginDrag(t, 3, ['c2'], 'c2', 'move', 150, true)!, 120, { media: [media], scale: 1 }).then).toBeUndefined();
+  });
+});
+describe('clips linked to others on a locked track', () => {
+  it('leave those where they are as they are moved or trimmed, and are not copied with Alt', () => {
+    // Reference Manual 20, pp. 762, 769: a clip on a locked track stays, and the rest of its group moves.
+    const t = scene();
+    t.tracks[1] = { ...t.tracks[1], locked: true } as typeof t.tracks[1];
+    expect(movableClips(t, ['c2'], true)).toEqual({ movable: ['c2'], lockedPartners: ['a2'] });
+    expect(movableClips(t, ['c2'], false)).toEqual({ movable: ['c2'], lockedPartners: [] });
+    const gesture = beginDrag(t, 3, ['c2', 'a2'], 'c2', 'move', 150, true)!;
+    expect(gesture.ids).toEqual(['c2']);
+    expect(gesture.lockedPartners).toEqual(['a2']);
+    const moved = dragTo(gesture, 400, { media: [media], scale: 1 });
+    expect(moved.preview.map(item => item.id)).toEqual(['c2']);
+    expect(finishDrag(moved)?.ops).toEqual([{ edit: 'move', timeline: 't1', delta: 250, linked: true, clips: ['c2'], overwrite: true }]);
+    // Up a track, the sound would have no A2 to go to; it stays on A1, so the move is sent.
+    const up = dragTo(gesture, 150, { media: [media], scale: 1, track: 'v2' });
+    expect(up.refused).toBeUndefined();
+    expect(finishDrag(up)?.ops).toEqual([{ edit: 'move', timeline: 't1', delta: 0, linked: true, clips: ['c2'], to_track: 'v2', overwrite: true }]);
+    // A trim of the picture neither shows the sound trimmed nor is held by it.
+    const trimmed = dragTo(beginDrag(t, 3, [], 'c2', 'trim_out', 200, true)!, 190, { media: [media], scale: 1 });
+    expect(trimmed.preview).toEqual([{ id: 'c2', track: 'v1', start: 100, length: 90 }]);
+    // With Alt the group is copied whole, and the copy of the sound would go on the locked track.
+    const copied = dragTo(gesture, 400, { media: [media], scale: 1, duplicate: true });
+    expect(finishDrag(copied)).toBeNull();
+    expect(copied.refused).toBe('copy_locked');
   });
 });
 describe('clips copied with Alt', () => {

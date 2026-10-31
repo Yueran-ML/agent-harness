@@ -375,6 +375,8 @@ fn clip(id: &str, media: &str, start: i64, length: i64) -> Value {
         "enabled": true, "speed": { "num": 1, "den": 1 }, "reverse": false, "link": null,
         "transform": { "x": 0.0, "y": 0.0, "scale": 1.0, "rotation": 0.0, "opacity": 1.0 },
         "gain_db": 0.0, "pan": 0.0, "fade_in": 0, "fade_out": 0,
+        "grade": { "nodes": [], "links": [{ "from": "source", "to": "output", "kind": "rgb", "input": 0 }] },
+        "group": null,
     })
 }
 

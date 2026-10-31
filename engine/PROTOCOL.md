@@ -1113,6 +1113,46 @@ A wrong node for an edit is `wrong_node`; an empty `to` is `out_of_range` `to`.
 `missing` also names `group`, `node` and `link`; `taken` `node` and `group`; `out_of_range` also
 `label`, `inputs`, `links`, `lut`, `param`, `to` and the paths of corrector settings.
 
+### Grades in the picture
+
+The timeline monitor and an export draw the grades alike (one code path, `grading.rs`): each
+layer of a clip is graded by its group's pre-clip grade, its own grade and its group's post-clip
+grade, in that order, after its picture is decoded and before it is moved, scaled and laid on
+the canvas with its opacity; the timeline's grade is done over the canvas once every layer is on
+it; the subtitles of the monitor are drawn over that, ungraded (p. 3330). An export burns no
+subtitles in. A grade that is not complete, or has no node, changes nothing.
+
+- **What is graded**: every clip of a track of picture, titles and colours as much as media (the
+  model lets any clip carry a grade; DaVinci grades a Text+ title "like any other clip", p. 1047).
+  The colour that a dip transition goes through is no clip and has no clip grade; the timeline
+  grade is over it.
+- **Frames of keys**: a key of a clip's grade, and of its group's grades as they apply to that
+  clip, is at a frame of the timeline counted from the clip's first frame (0). The clip's speed
+  and `reverse` do not move them: the Color page's Keyframe Editor mirrors the record timecode
+  of the clip (p. 3382), and a speed change moves only Edit-page keys, when asked (p. 1073).
+  Within a transition a clip is seen before its first frame or after its last, where its grade
+  holds its first or last key. The keys of the timeline's grade count the frames of the
+  timeline. (DaVinci ties a clip's keys to the source frames under them, pp. 3383, 3393: there a
+  trim of the head leaves them on the same pictures, here at the same distance from the clip's
+  first frame.)
+- **Cost**: a grade is made into code once, when it changes (any of its settings, or the card);
+  each frame takes only its parameters at that frame, so playing keyframes or dragging a setting
+  compiles nothing, and a change of grades alone does not start the read-ahead again.
+- **LUTs**: a corrector's `lut` that is an absolute path is read there; another is looked for in
+  the folder of the project, then in the library of LUTs: the folders that the environment
+  variable `COLUMBINA_LUTS` of the engine lists (absolute paths, separated as `PATH` is: `;` on
+  Windows), or, where it is not set, `luts` in `COLUMBINA_HOME`, else in `.columbina` in the
+  user's home. Only `.cube` is read; a cube is read between its points trilinearly (DaVinci's
+  default, p. 152). A LUT is read again when the grade that names it changes; one that could not
+  be read is looked for again at every change of the project.
+- **Missing LUTs**: a LUT that cannot be read (no such file, not a `.cube`, a file that does not
+  parse) leaves its node as though it named none, and is told as DaVinci marks it (p. 3413):
+  `missing_luts: [{"name": "looks/film.cube", "message": "there is no LUT looks/film.cube in the
+  folder of the project or in the library"}]`, by name, once each, of every grade of the timeline
+  (its clips' on tracks of picture, their groups', its own), in the **timeline state** (left out
+  where there is none, so a state without it has none missing) and in each `render.progress` of
+  an export of that timeline (left out likewise).
+
 ## Names of a transaction (`$name`)
 
 Within one `transaction.apply`, a thing that an operation adds may be given an id of the form
@@ -1183,7 +1223,7 @@ real ids. For example:
 | `engine.yielding` | `{"to": "desktop"}`: the engine is about to end, to yield the project to the desktop's engine (see `engine.yield`) |
 | `media.proxy` | `{"media": "m1", "state": "queued" \| "running" \| "done" \| "failed", "progress": 0.5, "message"?: "..."}` (see Proxies) |
 | `media.waveform` | `{"media": "m1"}` (background analysis finished; query again for data or error) |
-| `render.progress` | `{"job", "state": "running" \| "done" \| "failed" \| "cancelled", "frame", "frames", "fps", "path", "encoder"?, "message"?}` (see Rendering a timeline) |
+| `render.progress` | `{"job", "state": "running" \| "done" \| "failed" \| "cancelled", "frame", "frames", "fps", "path", "encoder"?, "message"?, "missing_luts"?}` (see Rendering a timeline, and Grades in the picture) |
 
 - `by` is the kind of the client that asked (for an undo or a redo, the one that asked for
   that); `made_by` is the kind of the client that made the transaction (for an undo or a redo,

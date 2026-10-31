@@ -191,7 +191,7 @@ fn drawn_as_known(path: &Path, known: &Known) -> Vec<u8> {
     for hardware in [Hardware::Off, Hardware::Auto] {
         let what = format!("{} decoded with {hardware:?}", path.display());
         let sources = Sources::new(hardware, Arc::new(|_, _| {}));
-        let scene = super::scene(&project, timeline, 0, &sources).unwrap();
+        let (scene, _) = super::scene(&project, timeline, 0, &sources).unwrap();
         let layer = &scene.layers[0];
         let Source::Picture(picture, _) = &layer.source else {
             panic!("{what}: not a picture");

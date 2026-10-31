@@ -11,7 +11,7 @@ use columbina_compose::{
 };
 use columbina_media::Hardware;
 use columbina_model::project::TrackKind;
-use columbina_model::{resolve, Facts, Identity, Media, Project, Proxy};
+use columbina_model::{resolve, Facts, Grade, Identity, Media, Project, Proxy};
 use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
@@ -20,6 +20,7 @@ use super::ahead::{Request, TrackReader, Want};
 use super::sources::{Read, Sources};
 use super::{Action, Notify};
 use crate::gpu::{Graphics, Subscription};
+use crate::grading::{Grading, LutPlaces, MissingLut};
 use crate::log::log;
 use crate::rpc::{self, Fault};
 use crate::transport::clock::{self, Clock};
@@ -42,6 +43,10 @@ pub struct Status {
     pub sound: Sound,
     pub source: Option<Source>,
     pub proxies: bool,
+    /// The LUTs that the grades of the timeline name and that cannot be read (left out where
+    /// there are none).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub missing_luts: Vec<MissingLut>,
 }
 
 impl Default for Status {
@@ -59,6 +64,7 @@ impl Default for Status {
             sound: Sound::None,
             source: None,
             proxies: true,
+            missing_luts: Vec::new(),
         }
     }
 }
@@ -127,6 +133,7 @@ impl Timeline {
         notify: Notify,
         again: Again,
         sound: crate::audio::Kind,
+        luts: LutPlaces,
     ) -> Self {
         let (inbox, received) = mpsc::channel();
         let shared = Arc::new(Mutex::new(Shared::default()));
@@ -152,6 +159,7 @@ impl Timeline {
                         view,
                         graphics,
                         sources: Sources::new(Hardware::Auto, again),
+                        grading: Grading::new(luts),
                         status: Status::default(),
                         project: None,
                         timeline: None,
@@ -274,6 +282,8 @@ struct Worker {
     view: ViewSlot,
     graphics: Arc<Graphics>,
     sources: Sources,
+    /// The grades of the timeline loaded, ready on the card.
+    grading: Grading,
     status: Status,
     project: Option<Arc<Project>>,
     timeline: Option<usize>,
@@ -471,6 +481,7 @@ impl Worker {
         self.timeline = None;
         self.readers.clear();
         self.previous.clear();
+        self.grading.clear();
         self.current = None;
         self.targets.clear();
         self.status = Status {
@@ -578,8 +589,8 @@ impl Worker {
     /// Take a project in place of the one there was. What the change does not touch goes on as
     /// it was: a change of another timeline, of bins or of media that the timeline does not
     /// use keeps the pictures read ahead and the sound playing; one that changes only what is
-    /// seen keeps the sound, and one that changes only what is heard keeps the pictures. Gives
-    /// whether anything of the timeline loaded changed.
+    /// seen keeps the sound, and one that changes only what is heard keeps the pictures, as one
+    /// that changes only grades does. Gives whether anything of the timeline loaded changed.
     fn replace(&mut self, project: Arc<Project>) -> bool {
         let Some(id) = self.status.timeline.as_ref() else {
             return false;
@@ -598,17 +609,21 @@ impl Worker {
             .as_ref()
             .zip(self.timeline)
             .map(|(before, at)| (Arc::clone(before), at));
-        let (picture, sound) = before.as_ref().map_or((false, false), |(before, at)| {
-            let was = &before.timelines[*at];
-            let from = self.clock.map_or(0, |clock| {
-                let frame = clock.frame(self.clock_now()).saturating_sub(1).max(0);
-                resolve::samples_at(frame, was.rate, was.sample_rate)
-            });
-            (
-                same_picture(before, was, &project, timeline),
-                same_sound(before, was, &project, timeline, from),
-            )
-        });
+        let (picture, sound, graded) =
+            before
+                .as_ref()
+                .map_or((false, false, false), |(before, at)| {
+                    let was = &before.timelines[*at];
+                    let from = self.clock.map_or(0, |clock| {
+                        let frame = clock.frame(self.clock_now()).saturating_sub(1).max(0);
+                        resolve::samples_at(frame, was.rate, was.sample_rate)
+                    });
+                    (
+                        same_picture(before, was, &project, timeline),
+                        same_sound(before, was, &project, timeline, from),
+                        same_grades(before, was, &project, timeline),
+                    )
+                });
         let last = (resolve::duration(timeline) - 1).max(0);
         let frame = clock::clamped(self.status.frame.unwrap_or(0), last);
         self.status.last = Some(last);
@@ -665,7 +680,7 @@ impl Worker {
         } else if !sound {
             self.restart_sound();
         }
-        !(picture && sound) || fresh
+        !(picture && sound && graded) || fresh
     }
 
     /// Whether a new proxy of `media` changes what the timeline loaded shows.
@@ -831,6 +846,10 @@ impl Worker {
         result
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each kind of layer, then the grades, in the order they are drawn"
+    )]
     fn draw_inner(&mut self, blocking: bool, scrubbing: bool) -> Result<(), Fault> {
         let (Some(project), Some(index)) = (&self.project, self.timeline) else {
             return Ok(());
@@ -854,7 +873,9 @@ impl Worker {
         let mut original = false;
         let mut proxy = false;
         let mut previous = BTreeMap::new();
+        let mut clips = Vec::new();
         for layer in resolve::video_at(timeline, &project, frame) {
+            let clip = layer.clip.clone();
             let (source, color) = match layer.content {
                 resolve::Content::Color { rgba } => {
                     (LayerSource::color(rgba), LayerColor::default())
@@ -917,10 +938,12 @@ impl Worker {
                 opacity: layer.opacity,
                 color,
             });
+            clips.push(clip);
         }
         // Keep only the layers being shown (at most two per track), not a full-resolution
         // picture of every clip ever visited. At a late cut, that track's old picture stays.
         self.previous = previous;
+        self.grade(&mut scene, &clips, frame)?;
         self.present(&scene)?;
         self.status.shown = Some(frame);
         self.status.exact = exact;
@@ -930,6 +953,25 @@ impl Worker {
             (_, true) => Source::Proxy,
             _ => Source::Original,
         });
+        Ok(())
+    }
+
+    /// Grade the layers of `scene`, of the clips `clips`, and its timeline, as they are at
+    /// `frame`, their grades made ready on the card first where the project or the card is
+    /// another; and tell the LUTs that cannot be read.
+    fn grade(&mut self, scene: &mut Scene, clips: &[String], frame: i64) -> Result<(), Fault> {
+        let (Some(project), Some(index)) = (&self.project, self.timeline) else {
+            return Ok(());
+        };
+        let gpu = self
+            .graphics
+            .gpu()
+            .map_err(|error| drawing(&error.to_string()))?;
+        self.grading.update(&gpu, project, index);
+        self.grading.grade(scene, clips, frame);
+        if self.status.missing_luts != self.grading.missing() {
+            self.status.missing_luts = self.grading.missing().to_vec();
+        }
         Ok(())
     }
 
@@ -1031,8 +1073,8 @@ fn demand(project: &Project, timeline: &columbina_model::Timeline) -> BTreeMap<S
 }
 
 /// Whether a timeline shows the same pictures in `after` as it did in `before`: the same
-/// size and rate, tracks of picture, and media (with its proxies) under them. Subtitles and
-/// sound are not pictures that are read ahead.
+/// size and rate, tracks of picture (but for the grades of their clips), and media (with its
+/// proxies) under them. Subtitles, sound and grades are not pictures that are read ahead.
 fn same_picture(
     before: &Project,
     was: &columbina_model::Timeline,
@@ -1044,7 +1086,14 @@ fn same_picture(
             .tracks
             .iter()
             .filter(|track| track.kind == TrackKind::Video)
-            .cloned()
+            .map(|track| {
+                let mut track = track.clone();
+                for clip in &mut track.clips {
+                    clip.grade = Grade::default();
+                    clip.group = None;
+                }
+                track
+            })
             .collect::<Vec<_>>()
     };
     (was.width, was.height, was.rate) == (now.width, now.height, now.rate)
@@ -1053,6 +1102,41 @@ fn same_picture(
             .keys()
             .all(|id| media_of(before, id).map(seen) == media_of(after, id).map(seen))
 }
+
+/// Whether a timeline is graded the same in `after` as in `before`: its grade, and the grades
+/// of each clip of its tracks of picture and of the group that the clip is in.
+fn same_grades(
+    before: &Project,
+    was: &columbina_model::Timeline,
+    after: &Project,
+    now: &columbina_model::Timeline,
+) -> bool {
+    fn grades<'p>(project: &'p Project, timeline: &'p columbina_model::Timeline) -> GradesOf<'p> {
+        let clips = timeline
+            .tracks
+            .iter()
+            .filter(|track| track.kind == TrackKind::Video)
+            .flat_map(|track| &track.clips)
+            .map(|clip| {
+                let group = clip
+                    .group
+                    .as_ref()
+                    .and_then(|id| project.groups.iter().find(|group| group.id == *id))
+                    .map(|group| (&group.pre, &group.post));
+                (clip.id.as_str(), &clip.grade, group)
+            })
+            .collect();
+        (&timeline.grade, clips)
+    }
+    grades(before, was) == grades(after, now)
+}
+
+/// The grade of a timeline, and of each clip of its tracks of picture with the pre-clip and
+/// post-clip grades of its group.
+type GradesOf<'p> = (
+    &'p Grade,
+    Vec<(&'p str, &'p Grade, Option<(&'p Grade, &'p Grade)>)>,
+);
 
 /// Whether a timeline sounds the same in `after` as in `before` from sample `from` to its end:
 /// the same pieces of the same clips, of the same media, at the same rates and length. Only
@@ -1082,6 +1166,9 @@ fn drawing(message: &str) -> Fault {
 }
 
 #[cfg(test)]
+mod grades;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use columbina_compose::Transform;
@@ -1096,6 +1183,7 @@ mod tests {
             view: Arc::default(),
             graphics: Graphics::new(),
             sources: Sources::new(Hardware::Off, Arc::new(|_, _| {})),
+            grading: Grading::new(LutPlaces::with_library(std::path::Path::new("."), vec![])),
             status: Status::default(),
             project: None,
             timeline: None,

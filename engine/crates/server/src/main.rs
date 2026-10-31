@@ -22,6 +22,11 @@
 //! the system shuts down. As it ends it stops taking connections, closes those that are open,
 //! saves the project, and lets the lock go.
 //!
+//! The LUTs that grades name are looked for in the folder of the project, then in the library of
+//! LUTs: the folders that `COLUMBINA_LUTS` lists (absolute paths, separated as `PATH` is), or
+//! where it is not set, `luts` in `COLUMBINA_HOME`, or else in `.columbina` in the user's home
+//! (see [`grading::library`]).
+//!
 //! It ends with 0 when it was asked to; 1 when it stopped because of an error after it started
 //! listening, as when the last save failed; 2 when it could not start, with `{"error": "…"}` on
 //! stderr; and 3 when the project is open in another engine, with `{"held": {"pid": …,
@@ -33,6 +38,7 @@ mod analysis;
 mod audio;
 mod conn;
 mod gpu;
+mod grading;
 mod log;
 mod names;
 mod play;

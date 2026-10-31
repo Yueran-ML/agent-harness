@@ -15,6 +15,7 @@ use serde_json::{json, value::RawValue, Value};
 use sha2::{Digest, Sha256};
 
 use crate::gpu::Graphics;
+use crate::grading::LutPlaces;
 use crate::log::log;
 use crate::rpc::{self, Fault};
 use crate::transport;
@@ -156,11 +157,16 @@ fn source_status(status: &transport::Status) -> Value {
 }
 
 impl Transport {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "what the two monitors are made of, each from the engine"
+    )]
     pub fn new(
         headless: bool,
         setup: transport::Setup,
         viewer: &Viewer,
         graphics: Arc<Graphics>,
+        luts: LutPlaces,
         notify: Notify,
         again: transport::Again,
         repair: transport::Again,
@@ -182,6 +188,7 @@ impl Transport {
                 notify,
                 repair,
                 setup.sound,
+                luts,
             )
         });
         Self {

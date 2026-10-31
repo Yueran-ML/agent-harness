@@ -25,6 +25,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::gpu::Graphics;
+use crate::grading::{Grading, LutPlaces, MissingLut};
 use crate::play::{mix::Mixer, sources::Sources, Notify};
 use crate::rpc::{self, Fault};
 use crate::srt;
@@ -94,6 +95,7 @@ struct FrameRange {
 
 pub struct Renders {
     graphics: Arc<Graphics>,
+    luts: LutPlaces,
     notify: Notify,
     project_dir: PathBuf,
     state: Mutex<State>,
@@ -126,9 +128,15 @@ impl Launch {
 }
 
 impl Renders {
-    pub fn new(project_dir: &Path, graphics: Arc<Graphics>, notify: Notify) -> Self {
+    pub fn new(
+        project_dir: &Path,
+        graphics: Arc<Graphics>,
+        luts: LutPlaces,
+        notify: Notify,
+    ) -> Self {
         Self {
             graphics,
+            luts,
             notify,
             project_dir: project_dir.to_owned(),
             state: Mutex::default(),
@@ -160,6 +168,8 @@ impl Renders {
         let mut worker = Worker {
             plan,
             graphics: Arc::clone(&self.graphics),
+            luts: self.luts.clone(),
+            missing: Vec::new(),
             notify: Arc::clone(&self.notify),
             cancel: Arc::clone(&cancel),
             job: job.clone(),
@@ -340,6 +350,10 @@ impl Plan {
 struct Worker {
     plan: Plan,
     graphics: Arc<Graphics>,
+    /// Where the LUTs of the grades are read from.
+    luts: LutPlaces,
+    /// The LUTs that the grades of the timeline name and that cannot be read.
+    missing: Vec<MissingLut>,
     notify: Notify,
     cancel: Arc<AtomicBool>,
     job: String,
@@ -381,6 +395,9 @@ impl Worker {
         }
         if let Some(message) = &self.message {
             note["message"] = json!(message);
+        }
+        if !self.missing.is_empty() {
+            note["missing_luts"] = json!(self.missing);
         }
         (self.notify)(&note);
         self.told = Some(Instant::now());
@@ -455,6 +472,10 @@ impl Worker {
             std::fs::write(part, text).map_err(|error| error.to_string())?;
         }
         let mut drawing = self.drawing(timeline)?;
+        drawing
+            .grading
+            .update(&drawing.gpu, &project, self.plan.timeline);
+        self.missing = drawing.grading.missing().to_vec();
         let sources = Sources::new(Hardware::Auto, Arc::new(|_, _| {}));
         let sample_at = |frame: i64, rate: u32| {
             i64::try_from(
@@ -476,8 +497,13 @@ impl Worker {
         self.tell("running");
         for frame in self.plan.range.clone() {
             self.cancelled()?;
-            let scene = scene(&project, timeline, frame, &sources)?;
-            self.draw(&mut drawing, timeline, &scene, &mut picture)?;
+            let (mut scene, clips) = scene(&project, timeline, frame, &sources)?;
+            self.draw(
+                &mut drawing,
+                timeline,
+                (&mut scene, &clips, frame),
+                &mut picture,
+            )?;
             let encoder = self.encoder.clone().unwrap_or_default();
             writer.video(&picture).map_err(|error| {
                 format!(
@@ -532,21 +558,23 @@ impl Worker {
         let target = Target::export(&gpu, timeline.width, timeline.height, self.plan.video.bits)
             .map_err(|error| error.to_string())?;
         Ok(Drawing {
+            grading: Grading::new(self.luts.clone()),
             gpu,
             compositor,
             target,
         })
     }
 
-    /// Draw a frame and read it back. Where the card is lost, before or while it draws, a new
-    /// card is made and the frame is drawn again with it: nothing of the frame was written yet,
-    /// so the export goes on from the last frame that it wrote. The export fails, saying so,
-    /// where no card can be made again within [`RESTORE`].
+    /// Draw a frame, its scene graded as the clips of its layers and the timeline are at that
+    /// frame of the timeline, and read it back. Where the card is lost, before or while it
+    /// draws, a new card is made and the frame is drawn again with it (its grades made again on
+    /// it): nothing of the frame was written yet, so the export goes on from the last frame that
+    /// it wrote. The export fails, saying so, where no card can be made again within [`RESTORE`].
     fn draw(
         &mut self,
         drawing: &mut Drawing,
         timeline: &columbina_model::Timeline,
-        scene: &Scene,
+        (scene, clips, frame): (&mut Scene, &[String], i64),
         picture: &mut Picture,
     ) -> Result<(), String> {
         #[cfg(test)]
@@ -566,6 +594,10 @@ impl Worker {
                 restored += 1;
                 self.restored += 1;
             }
+            drawing
+                .grading
+                .update(&drawing.gpu, &self.plan.project, self.plan.timeline);
+            drawing.grading.grade(scene, clips, frame);
             let drawn = {
                 let _turn = self.graphics.draw_turn(false);
                 self.cancelled()?;
@@ -628,23 +660,29 @@ const RESTORE: Duration = Duration::from_secs(30);
 
 /// What an export draws its frames with.
 struct Drawing {
+    /// The grades of the timeline, ready on the card.
+    grading: Grading,
     gpu: Arc<columbina_compose::Gpu>,
     compositor: Compositor,
     target: Target,
 }
 
+/// What an export shows at `frame` of the timeline, not yet graded, and the clip of each of its
+/// layers (or the transition, for the colour of a dip), for [`Grading::grade`].
 fn scene(
     project: &Project,
     timeline: &columbina_model::Timeline,
     frame: i64,
     sources: &Sources,
-) -> Result<Scene, String> {
+) -> Result<(Scene, Vec<String>), String> {
     let mut scene = Scene {
         width: timeline.width,
         height: timeline.height,
         ..Scene::default()
     };
+    let mut clips = Vec::new();
     for layer in resolve::video_at(timeline, project, frame) {
+        clips.push(layer.clip.clone());
         let (source, color) = match layer.content {
             resolve::Content::Color { rgba } => (Source::color(rgba), LayerColor::default()),
             resolve::Content::Title { text, style } => {
@@ -671,11 +709,12 @@ fn scene(
             color,
         });
     }
-    Ok(scene)
+    Ok((scene, clips))
 }
 
 /// The colour of a layer of a picture, for the preview and the export alike: how its codes are
-/// made R'G'B', and its input transform and grade (none yet).
+/// made R'G'B', and its input transform (none yet). Its grade is that of its clip, which
+/// [`Grading::grade`] puts in.
 ///
 /// The matrix and the range are those that the picture says ([`YuvCoding::of_native`]): the
 /// readers give pictures that keep the codes of their file, decoded on the card or on the
@@ -722,6 +761,8 @@ mod tests {
         Worker {
             plan: Plan::new(project, request, dir).unwrap(),
             graphics: Graphics::new(),
+            luts: LutPlaces::with_library(dir, vec![]),
+            missing: Vec::new(),
             notify: Arc::new(|_| {}),
             cancel: Arc::new(AtomicBool::new(false)),
             job: "test".into(),
@@ -738,7 +779,12 @@ mod tests {
     #[test]
     fn an_export_asked_for_while_the_engine_stops_is_refused_with_a_reason() {
         let dir = tempfile::tempdir().unwrap();
-        let renders = Renders::new(dir.path(), Graphics::new(), Arc::new(|_| {}));
+        let renders = Renders::new(
+            dir.path(),
+            Graphics::new(),
+            LutPlaces::with_library(dir.path(), vec![]),
+            Arc::new(|_| {}),
+        );
         renders.stop();
         let project = Project::sample();
         let request = Request {
@@ -803,6 +849,102 @@ mod tests {
             assert!(pixel[0] > 240 && pixel[1] < 12, "frame {frame}: {pixel:?}");
         }
         assert!(decoder.frame_at(12).is_err());
+    }
+
+    /// A grade of one corrector, set by `set`.
+    fn corrector(set: impl FnOnce(&mut columbina_model::Corrector)) -> columbina_model::Grade {
+        use columbina_model::{Kind, Link, Node, NodeKind};
+        let mut node = Node::new("n1", Kind::Corrector);
+        let NodeKind::Corrector(settings) = &mut node.kind else {
+            unreachable!("a corrector")
+        };
+        set(settings);
+        columbina_model::Grade {
+            nodes: vec![node],
+            links: vec![Link::rgb("source", "n1"), Link::rgb("n1", "output")],
+        }
+    }
+
+    #[test]
+    fn an_export_is_graded_as_the_monitor_grades_it() {
+        use columbina_compose::grade::{evaluate, GradeOptions};
+        use columbina_model::{Group, Interp, Key, Param};
+        const ORANGE: [u8; 4] = [200, 110, 40, 255];
+        if columbina_compose::gpu_for_tests().is_none() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::sample();
+        let keyed = Param::Keys(vec![
+            Key {
+                frame: 0,
+                value: 1.0,
+                interp: Interp::Linear,
+            },
+            Key {
+                frame: 8,
+                value: 0.25,
+                interp: Interp::Linear,
+            },
+        ]);
+        let own = corrector(|settings| {
+            let gain = &mut settings.primaries.gain;
+            (gain.r, gain.g, gain.b) = (keyed.clone(), keyed.clone(), keyed);
+        });
+        let post = corrector(|settings| settings.primaries.saturation = Param::Fixed(0.0));
+        let over = corrector(|settings| settings.primaries.gain.y = Param::Fixed(0.8));
+        project.groups = vec![Group {
+            post: post.clone(),
+            ..Group::new("k1", "Look")
+        }];
+        let timeline = &mut project.timelines[0];
+        (timeline.width, timeline.height) = (64, 36);
+        timeline.grade = over.clone();
+        timeline
+            .tracks
+            .retain(|track| track.kind == TrackKind::Video);
+        let clip = &mut timeline.tracks[0].clips[0];
+        clip.source = columbina_model::Source::Color {
+            color: columbina_model::Rgba(ORANGE),
+        };
+        (clip.start, clip.length) = (2, 10);
+        clip.grade = own.clone();
+        clip.group = Some("k1".into());
+        let request = Request {
+            timeline: timeline.id.clone(),
+            path: dir.path().join("graded.mov"),
+            codec: VideoCodec::Prores,
+            quality: VideoQuality::High,
+            range: Some(FrameRange { from: 2, to: 12 }),
+            subtitle_tracks: vec![],
+            replace: false,
+            revision: None,
+        };
+        let mut worker = worker(dir.path());
+        worker.plan = Plan::new(project, request, dir.path()).unwrap();
+        worker.run().unwrap();
+        assert_eq!(worker.missing, []);
+        let mut decoder =
+            columbina_media::VideoDecoder::open(&worker.plan.path, Hardware::Off).unwrap();
+        for frame in 0..10_u8 {
+            let raw = decoder.decoded_at(i64::from(frame)).unwrap();
+            let rgba = columbina_media::Converter::new()
+                .rgba_scaled(&raw, 64, 36)
+                .unwrap();
+            let got = rgba.data.as_chunks::<4>().0[64 * 18 + 32];
+            let at = f64::from(frame);
+            let mut rgb = [0, 1, 2].map(|i| f32::from(ORANGE[i]) / 255.0);
+            for (grade, frame) in [(&own, at), (&post, at), (&over, at + 2.0)] {
+                rgb = evaluate(grade, frame, &GradeOptions::default(), rgb);
+            }
+            for i in 0..3 {
+                let wanted = rgb[i] * 255.0;
+                assert!(
+                    (f32::from(got[i]) - wanted).abs() <= 2.5,
+                    "frame {frame}: {got:?}, and {rgb:?} was wanted"
+                );
+            }
+        }
     }
 
     fn no_hardware(

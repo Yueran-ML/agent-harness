@@ -23,6 +23,7 @@ use tokio::sync::{watch, Mutex, MutexGuard, Notify, Semaphore};
 
 use crate::analysis::{Analysis, ThumbnailRequest, WaveformRequest};
 use crate::gpu::Graphics;
+use crate::grading::LutPlaces;
 use crate::log::log;
 use crate::names;
 use crate::play::Transport;
@@ -235,11 +236,19 @@ impl Engine {
             let state = Arc::clone(&state);
             Arc::new(move |media: &str, _: Option<&Path>| make_again(&state, media, true))
         };
-        let renders = Arc::new(Renders::new(Path::new(&project), Arc::clone(&graphics), {
-            let state = Arc::clone(&state);
-            Arc::new(move |note| tell_render(&state, note, limits))
-        }));
-        let transport = Transport::new(headless, setup, &viewer, graphics, notify, again, repair);
+        let luts = LutPlaces::new(Path::new(&project));
+        let renders = Arc::new(Renders::new(
+            Path::new(&project),
+            Arc::clone(&graphics),
+            luts.clone(),
+            {
+                let state = Arc::clone(&state);
+                Arc::new(move |note| tell_render(&state, note, limits))
+            },
+        ));
+        let transport = Transport::new(
+            headless, setup, &viewer, graphics, luts, notify, again, repair,
+        );
         let project_now = {
             let mut locked = state.try_lock().expect("no one has the state yet");
             locked.transport = Some(transport.clone());

@@ -19,7 +19,10 @@ only of the sources of context. Nothing asks for the others. A fifth: letting th
 library that renders the lines of a conversation read markup. It reads markup in
 plain strings only, and the lines that it is handed are no plain strings. A sixth:
 an adapter that says that a reply stopped where it calls tools, or the other way
-round. The model service goes by what the reply holds.
+round. The model service goes by what the reply holds. A seventh: telling the agent that the
+team of ultra is over where the last word of that source that the model sees says so already.
+A summary takes the oldest part of a conversation, so that word is the last one given, and the
+same text is not written twice.
 
 A mutant of code that only one platform runs says which. On another platform
 no test can notice it, and ``mutate.py`` passes it over.
@@ -24643,12 +24646,6 @@ _EFFORT = (
         EFFORT_APP,
         "    return LEFT if _team_in_view(session) else None\n",
         "    return LEFT\n",
-    ),
-    mutant(
-        "the team is over once it was told of, whatever followed",
-        EFFORT_APP,
-        "            return any(ULTRA in block.text for block in data.message.content)\n",
-        "            return True\n",
     ),
     mutant(
         "what the agent is told of the team is said once and not again",

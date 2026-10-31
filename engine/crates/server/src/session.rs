@@ -929,7 +929,7 @@ async fn dispatch(
         "view.pointer" => view_pointer(engine, connection, kind, id, params).await,
         "luts.list" => luts_list(engine, connection, id, params).await,
         "viewer.wipe" | "viewer.split" => {
-            let result = engine.transport.compare(method, params).await?;
+            let result = crate::stills::compare(engine, &engine.transport, method, params).await?;
             Ok(match connection.queue(rpc::result_line(id, &result)) {
                 Ok(()) => Reply::Queued,
                 Err(refused) => Reply::Refused(refused),
@@ -971,11 +971,19 @@ async fn dispatch(
             order.send().await;
             Ok(reply)
         }
-        _ => Err(Fault::new(
-            rpc::METHOD_NOT_FOUND,
-            format!("there is no method {method}"),
-        )
-        .into()),
+        // `still.*`, `gallery.*`, `grade.append_node`, or no method of that name.
+        _ => {
+            crate::stills::call(
+                engine,
+                &engine.transport,
+                connection,
+                kind,
+                id,
+                method,
+                params,
+            )
+            .await
+        }
     }
 }
 
@@ -1721,6 +1729,73 @@ async fn transaction_apply(
     if let Some(due) = due {
         tell_when_due(engine, due);
     }
+    let line = rpc::result_line(
+        id,
+        &TransactionResult {
+            revision: applied.revision,
+            done: &done,
+            next_id: applied.next_id,
+            names: &names,
+            clamped: &changed.clamped,
+        },
+    );
+    Ok(engine.finish(state, connection, line))
+}
+
+/// Tell every connection that said hello `method` with `params` (`gallery.changed`).
+pub(crate) async fn tell_everyone(engine: &Engine, method: &str, params: &serde_json::Value) {
+    let mut state = engine.state.lock().await;
+    state.broadcast(&rpc::notification_line(method, params));
+    let kicked = std::mem::take(&mut state.kicked);
+    drop(state);
+    engine.log_kicked(kicked);
+}
+
+/// Apply, as one transaction made by `kind`, the operations and edits that `work` makes of the
+/// project as it is (`still.apply`, `grade.append_node`), worked out while the project is locked
+/// so that it does not change in between; and answer as `transaction.apply` does. `revision`,
+/// where given, binds the request as it binds `transaction.apply`.
+pub(crate) async fn apply_worked_out(
+    engine: &Engine,
+    connection: &Connection,
+    kind: Kind,
+    id: &RawValue,
+    revision: Option<u64>,
+    work: impl FnOnce(&Project) -> Result<Vec<serde_json::Value>, Fault>,
+) -> Result<Reply, Reply> {
+    let mut state = engine.state.lock().await;
+    state.end_idle_gesture(Instant::now());
+    if let Some(revision) =
+        revision.filter(|revision| !state.history.takes_revision(*revision, None))
+    {
+        let fault = stale_revision(revision, state.history.revision());
+        return Ok(engine.finish(state, connection, rpc::error_line(Some(id), &fault)));
+    }
+    let mut ops = Vec::new();
+    for (index, op) in work(state.history.project())?.into_iter().enumerate() {
+        let op: names::Input = serde_json::from_value(op).map_err(|error| {
+            Fault::params(format!("operation {index} is not an operation: {error}"))
+                .with_data(json!({ "index": index, "reason": "invalid_op" }))
+        })?;
+        ops.push(op);
+    }
+    let mut names = names::prepare(&mut ops).map_err(|error| {
+        Fault::params(error.to_string()).with_data(json!({"reason": error.reason}))
+    })?;
+    let changed = match state.history.change_with(
+        ops.into_iter().map(|input| input.change).collect(),
+        kind.as_str(),
+        &mut names,
+    ) {
+        Ok(changed) => changed,
+        Err(error) => {
+            let fault = Fault::refused(&error);
+            return Ok(engine.finish(state, connection, rpc::error_line(Some(id), &fault)));
+        }
+    };
+    let applied = changed.applied;
+    let names = names.finish();
+    let done = state.publish(&applied);
     let line = rpc::result_line(
         id,
         &TransactionResult {

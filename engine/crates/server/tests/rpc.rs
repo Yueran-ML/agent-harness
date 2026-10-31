@@ -36,6 +36,9 @@ mod compare;
 #[path = "rpc/palettes.rs"]
 mod palettes;
 
+#[path = "rpc/stills.rs"]
+mod stills;
+
 /// How long anything that should happen soon is waited for before the test fails.
 const WAIT: Duration = Duration::from_secs(30);
 

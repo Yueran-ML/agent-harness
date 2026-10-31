@@ -5,10 +5,11 @@
 //!
 //! # References
 //!
-//! - **A still** (`{"kind": "still", "path"}`): a picture file (PNG, TIFF, `OpenEXR`, as media
-//!   reads stills) as the Gallery holds it (p2999). It is read when the wipe is set, and shown as
-//!   it is stored, fitted to the canvas: a still is a grabbed picture, its grade in it, and is
-//!   neither graded nor transformed again.
+//! - **A still** (`{"kind": "still", "path"}`, or `{"kind": "still", "still": "s3"}` for a still
+//!   of the Gallery, [`crate::stills`]): a picture file (PNG, TIFF, `OpenEXR`, as media reads
+//!   stills) as the Gallery holds it (p2999). It is read when the wipe is set, and shown as it is
+//!   stored, fitted to the canvas: a still is a grabbed picture, its grade in it, and is neither
+//!   graded nor transformed again.
 //! - **A frame of the timeline** (`{"kind": "frame", "frame"}`): the timeline at that frame,
 //!   graded as it is there. It stays where it is as the playhead moves, as a timeline wipe does
 //!   with "Gang timeline wipe with current clip" off (p3002, p3261).
@@ -100,7 +101,13 @@ pub enum Side {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Reference {
     Still {
-        path: String,
+        /// The file of the still. The engine puts in the file of a still of the Gallery named
+        /// by `still` before the reference comes here.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        /// A still of the Gallery, by its id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        still: Option<String>,
     },
     Frame {
         frame: i64,
@@ -301,6 +308,9 @@ pub struct Comparison {
     scenes: Vec<(Key, Scene)>,
     /// The pictures shown, drawn into in turn: one is free when no one else holds it.
     shown: Vec<Arc<Target>>,
+    /// The frame last compared, and the picture of the comparison shown for it: what a still
+    /// is grabbed of while the frame is compared ([`Comparison::original`]).
+    compared: Option<(Arc<Target>, Arc<Target>)>,
 }
 
 impl Default for Comparison {
@@ -320,6 +330,7 @@ impl Comparison {
             wanted: Vec::new(),
             scenes: Vec::new(),
             shown: Vec::new(),
+            compared: None,
         }
     }
 
@@ -329,6 +340,7 @@ impl Comparison {
         self.wanted.clear();
         self.scenes.clear();
         self.shown.clear();
+        self.compared = None;
     }
 
     /// Take a change, the timeline `index` of `project` being loaded with its playhead at
@@ -348,8 +360,11 @@ impl Comparison {
         };
         let mut stills = HashMap::new();
         for reference in &references {
-            if let Reference::Still { path } = reference {
-                let path = PathBuf::from(path);
+            if let Reference::Still { path, .. } = reference {
+                let path = PathBuf::from(path.as_deref().ok_or_else(|| {
+                    Fault::params("a still is named by its path or by its id")
+                        .with_data(json!({"reason": "still"}))
+                })?);
                 let picture = read_still(&path).map_err(|message| {
                     Fault::params(format!(
                         "the still {} cannot be read: {message}",
@@ -569,7 +584,18 @@ impl Comparison {
             Mode::Off => unreachable!("returned above"),
         };
         drawn.map_err(|error| error.to_string())?;
+        self.compared = Some((Arc::clone(current), Arc::clone(&out)));
         Ok(Some(out))
+    }
+
+    /// The frame itself of `shown`, what the viewer shows: where it is the comparison last
+    /// drawn, the frame that was compared (image A, never the wipe or the split screen); else
+    /// `shown` itself.
+    pub fn original(&self, shown: &Arc<Target>) -> Arc<Target> {
+        match &self.compared {
+            Some((frame, out)) if Arc::ptr_eq(out, shown) => Arc::clone(frame),
+            _ => Arc::clone(shown),
+        }
     }
 }
 
@@ -584,7 +610,9 @@ fn read_still(path: &Path) -> Result<NativePicture, String> {
 
 /// The clips of picture of a timeline that are seen, in the order of the thumbnail timeline:
 /// by their start, then by their track from V1 up; each with the number of its track.
-fn clips_in_order(timeline: &columbina_model::Timeline) -> Vec<(usize, &columbina_model::Clip)> {
+pub(crate) fn clips_in_order(
+    timeline: &columbina_model::Timeline,
+) -> Vec<(usize, &columbina_model::Clip)> {
     let mut clips: Vec<_> = timeline
         .tracks
         .iter()
@@ -616,7 +644,9 @@ fn find(
 ) -> Result<Found, String> {
     let timeline = &project.timelines[index];
     match reference {
-        Reference::Still { path } => Ok(Found::Still(PathBuf::from(path))),
+        Reference::Still { path, .. } => Ok(Found::Still(PathBuf::from(
+            path.as_deref().unwrap_or_default(),
+        ))),
         Reference::Current => Ok(Found::Current),
         Reference::Frame { frame } => {
             let last = (resolve::duration(timeline) - 1).max(0);

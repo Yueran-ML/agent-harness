@@ -159,6 +159,20 @@ Before `hello`, every other request is refused with `-32600`.
 | `luts.list` | none, or `{"folder"?: "Film"}` | `{"roots": [...], "luts": [...], "truncated": false}` (see The library of LUTs) |
 | `viewer.wipe` | `{"on"?: true, "style"?: "horizontal", "position"?: 0.5, ..., "reference": {"kind": "still", "path": "..."}}`, or `{"on": false}` | what the timeline monitor compares with (see Comparisons in the viewer) |
 | `viewer.split` | `{"on"?: true, "items": [{"kind": "current"}, ...], "selected"?: 0, "outline"?: true}`, or `{"on": false}` | as `viewer.wipe` |
+| `still.grab` | none, or `{"view"?: "timeline", "album"?: "a1", "clip"?: "c3", "level"?: "clip" \| "pre_clip" \| "post_clip", "format"?: "auto" \| "png" \| "exr"}` | the still (see The Gallery) |
+| `still.get` | `{"still": "s1"}` | all the still holds, its grades too, and its `album` |
+| `still.apply` | `{"still": "s1", "to": [target, ...], "mode"?: "apply" \| "append", "keyframes"?: "none" \| "source_timecode" \| "start_frame", "preserve_nodes"?: 0, "revision"?: n}` | as `transaction.apply` |
+| `still.label` | `{"still": "s1", "label": "Day exterior"}` | `{"id", "label"}` |
+| `still.delete` | `{"stills": ["s1", ...]}` | `{"deleted": [...]}` |
+| `still.move` | `{"stills": ["s1", ...], "album": "pa1"}` | `{"moved": {"s1": "ps4", ...}}` |
+| `still.export` | `{"stills": ["s1", ...], "dir": "<folder>", "prefix"?: "Show", "replace"?: false}` | `{"written": [{"image", "json"}, ...]}` |
+| `still.import` | `{"paths": ["<file>", ...], "album"?: "a1"}` | `{"added": [still, ...]}` |
+| `gallery.list` | none, or `{"album"?: "a1"}` | `{"albums": [{"id", "name", "kind", "stills": [still, ...]}, ...]}` |
+| `gallery.thumbnail` | `{"still": "s1", "height"?: 90}` | `{"width": 160, "height": 90, "png": "<base64>"}` |
+| `gallery.album.create` | none, or `{"kind"?: "stills" \| "powergrade", "name"?: "Looks"}` | `{"id", "name", "kind"}` |
+| `gallery.album.rename` | `{"album": "a1", "name": "Looks"}` | `{"id", "name"}` |
+| `gallery.album.delete` | `{"album": "a2"}` | `{"deleted": [still ids]}` |
+| `grade.append_node` | `{"from": target, "node": "n4", "to": [target, ...], "keyframes"?: "source_timecode" \| "start_frame", "revision"?: n}` | as `transaction.apply` (Append Node to Selected Clips, see The Gallery) |
 
 - `hello` says once per connection what the client is; a second `hello` is refused (`-32600`).
   From then on the connection is sent every notification. `protocol` other than 2 is refused
@@ -248,7 +262,8 @@ Before `hello`, every other request is refused with `-32600`.
   transaction clears what could be redone. 1000 steps are kept.
 - `view.*`: the viewer, below; `transport.*`: playing a source, below; `scopes.*`: the scopes
   of the monitors, below (Scopes); `luts.list`: below (The library of LUTs); `viewer.*`: below
-  (Comparisons in the viewer).
+  (Comparisons in the viewer); `still.*`, `gallery.*` and `grade.append_node`: below (The
+  Gallery).
 
 ## Gestures
 
@@ -1613,7 +1628,10 @@ for the viewer and are off unless set.
 
 - `{"kind": "still", "path"}`: a picture file (PNG, TIFF, OpenEXR; the first picture of the
   file), read when the method is called, shown as it is stored (a still holds its grade),
-  fitted to the canvas. It is not graded again.
+  fitted to the canvas. It is not graded again. `{"kind": "still", "still": "s3"}` names a still
+  of the Gallery by its id instead (see The Gallery): its picture is read the same way, and the
+  answer gives the reference with the `path` the engine found; a still not in the Gallery (or an
+  id of no still, or both `still` and `path`) is `-32602` `{"reason": "still", "still"}`.
 - `{"kind": "frame", "frame"}`: the timeline at that frame (held within it), graded as it is
   there. It stays where it is as the playhead moves.
 - `{"kind": "clip", "clip", "frame"?: 0}`: the timeline at `frame` frames from the first frame of
@@ -1654,6 +1672,151 @@ or with a reference not found in the timeline (no such clip, or none before the 
 the last), and `{"reason": "still", "path", "message"}` for a still that cannot be read. A
 reference of the timeline needs a timeline loaded: `-32004` with `{"reason": "not_loaded"}`
 otherwise. A refused call changes nothing.
+
+## The Gallery
+
+Stills of the timeline monitor, with the grades that made them, kept in albums, as the Gallery
+of the Color page of `DaVinci Resolve` keeps them (Reference Manual ch. 141–142, pp. 3256–3297,
+3393). Two galleries, neither in `project.json` and neither undone by `history.undo` (the
+manual tells no undo of the Gallery):
+
+- **The project's**, in `<project>/gallery`: its still albums (ids `a1`, `a2`, …; stills `s1`,
+  `s2`, …), "available only to the project in which they were saved" (p. 3266). It starts with
+  one album, `Stills 1` (p. 3265).
+- **The PowerGrades**, shared by every project of the user (p. 3266): in the folder that
+  `COLUMBINA_POWERGRADES` names (absolute), else `%COLUMBINA_HOME%\powergrades`, else
+  `%USERPROFILE%\.columbina\powergrades` (`$HOME` elsewhere). Its albums are `pa1`, …, its stills
+  `ps1`, …; it starts with `PowerGrade 1`. Every engine of the user reads and writes it, one
+  change at a time (a lock folder `.lock` in it, waited for at most 5 s, and taken over after
+  30 s as left by an engine that ended).
+
+Each holds `gallery.json` (`{"format": 1, "next": n, "albums": [{"id", "name", "stills": [ids in
+order]}]}`), and in `stills/` for each still `<id>.json` (what it holds, below), its picture
+`<id>.png` or `<id>.exr`, and `<id>.thumb.png` (at most 270 high, R'G'B'A of 8 bits). Ids are
+never given twice in a gallery. A still is named by its id only.
+
+### What a still holds
+
+`still.get` gives it whole; `gallery.list` and the other methods give it without `grades`,
+`frozen`, `keyframes` and `color`, and with `source` cut to its ids, frames and timecodes, and
+`grades` as `{"clip": bool, "timeline": bool}`.
+
+| Field | What it is |
+|---|---|
+| `id`, `album` | its id, and the album it is in |
+| `name` | its number, Track.Shot.Version (pp. 3258, 3261): the track of picture of its clip (V1 is 1), the clip's place in the order of the thumbnail timeline (by start, then track from V1 up; from 1), and 1 (versions are not done); `""` where it is of no clip or was imported |
+| `label` | what it is labelled (Change Label, p. 3262), at most 100 characters: `""` at first (of an import, the name of its file) |
+| `created` | when it was grabbed or imported, RFC 3339 in UTC |
+| `image` | `{"file", "format": "png" \| "exr", "width", "height"}` |
+| `level` | which grade of its clip `grades.clip` is: `clip`, or its group's `pre_clip` or `post_clip` (the Node Editor's mode when it was grabbed, p. 3306) |
+| `grades` | `{"clip": grade \| null, "timeline": grade \| null}`: the grade of its clip at `level` (null where it is of no clip) and the timeline's (null where the timeline's has no node: "if one is applied", p. 3286), with their keys |
+| `frozen` | the same grades without keys: each keyed setting at the value of its key at the frame grabbed or the nearest before it (the first, before them all), "whatever parameter values are contained by the next keyframe to the left of the position of the playhead" (p. 3393: halfway between keys of 50 and 0, 50) |
+| `keyframes` | of each grade, `null` or `{"counts", "rate", "start", "last", "frames", "from_start"}`: what frames its keys count (`source`: of the clip's media, at the media's rate; `clip`: of a title, colour or still clip from its first; `group`: of whatever clip a group's grade is on; `timeline`), from what `start` (the frame of the source at the clip's in point, or 0) to what `last` (of `source` only), the frames of its keys, and the same counted from `start`: the keys "reference the source timecode, or start frame of the original clips" (p. 3393) |
+| `source` | where it came from (Still Properties, p. 3258): `project` (`""`, kept for later), `timeline` `{"id", "name", "rate"}`, `frame` and `record_timecode` (`HH:MM:SS:FF`, not drop frame, of a whole number of frames a second, the rate rounded up), `clip` (the clip as the project had it, its grade left out), `media` (as the project had it, or null), `group`, `track`, `shot`, `source_frame` (the frame its keys count there) and `source_timecode` (of `source_frame` at the media's rate, from the start of the media, which has no timecode of its own; null of a clip of no media); null of an imported picture |
+| `color` | the project's `color` when it was grabbed |
+| `imported` | of an imported still, the path it was taken from |
+
+**Its picture** is what the viewer shows of the frame, after the output transform, as half
+floats: of image A, never the wipe or split screen it is compared with, and with no subtitles.
+It is written as a PNG of R'G'B' of 16 bits (each value of 0..1 times 65535, rounded) where every
+value is within 0..1, and as an OpenEXR of half floats (channels B, G and R, uncompressed,
+`INCREASING_Y`), every value as it is, where one is not (an output of scene-linear light, values
+above white); `format` `"png"` or `"exr"` chooses instead (a PNG clamps). An HDR output of PQ or
+HLG codes is within 0..1, and is kept as a PNG. `DaVinci Resolve` saves a DPX (p. 3259), which is
+not done. A wipe shows a still as it is stored (see Comparisons in the viewer).
+
+### Grabbing
+
+`still.grab` (Grab Still, Ctrl+Alt+G, p. 3257) takes the frame that the timeline monitor shows
+into `album` (the project's first album where it is left out); of the clip `clip` (the one the
+client shows as current), else the one on top at the playhead; its grade at `level` (the Node
+Editor's mode; `pre_clip` and `post_clip` need the clip in a group, `-32602` `{"reason":
+"ungrouped", "clip"}` otherwise). A frame of no clip is grabbed with no clip grade. It needs the
+timeline monitor: `-32601` in a headless engine; `-32004` `{"reason": "not_loaded"}` where no
+timeline is loaded, `{"reason": "draw"}` where the frame cannot be read back. `view` is
+`"timeline"` (`-32602` `{"reason": "view"}` otherwise). Grab All Stills, Grab Missing Stills and
+One Still Per Scene are not done.
+
+### Applying a still's grade
+
+`still.apply` sets the grades of `to` (targets as in Grades) from the still, as one transaction:
+one `set_grade` of each target (each once), worked out while the project is locked, so one undo
+step, answered and told as `transaction.apply` is (with `revision` as there). A timeline's grade
+takes the still's timeline grade, any other its clip grade: which grade is applied depends on
+the Node Editor's mode, and a group's grade takes the clip grade (p. 3287). A still without that
+grade is refused (`-32001` `{"reason": "no_grade", "still", "grade"}`).
+
+- `mode` `"apply"` (Apply Grade, p. 3290; the default): the grade in place of the target's, as
+  `copy_grade` sets it: the ids of its nodes kept; with `preserve_nodes` N (0–10, Copy Grade:
+  Preserve number of nodes, p. 3285) a target of at least N nodes keeps its first N in place of
+  the first N of the still's, each of their kind and inputs (`wrong_node` otherwise; a still of
+  fewer nodes is `out_of_range` `preserve_nodes`).
+- `mode` `"append"` (Append Node Graph, p. 3290): its nodes after the target's, chained as
+  `append_node_graph` chains them, laid out where the editor lays them (`pos` null).
+  `preserve_nodes` is of applying (`-32602` `{"reason": "preserve_nodes"}`).
+- `keyframes` (Apply Grades Using, pp. 3264, 3287; `"none"` by default, as the Gallery's own
+  setting): `"none"` sets `frozen` (No Keyframes); `"source_timecode"` and `"start_frame"` set
+  `grades` with its keys put on the frames of the target as `copy_grade` puts them, from the clip
+  the still came from (`source.clip`, `source.media`): to the same time of the source, or as far
+  from the start; where the two show no time of the source alike (or one has no source), from
+  the start. A grade of a group, and one applied to a group, keeps its keys where they are.
+
+The ids of the still's nodes are kept where the grade holds no other node of them and the
+project could have made them; else a node is given `<id>.<n>` (`n4.1`), never of the engine's own
+shape, so that a still of another project (a PowerGrade) applies whatever its ids.
+
+`grade.append_node` is Append Node to Selected Clips (Color menu, p. 3297): the node `node`, a
+corrector, of the grade `from`, alone, after the end of each grade of `to`, chained as above, its
+keys put as `keyframes` says (`"source_timecode"` by default, as `copy_grade`): one `set_grade`
+of each, one undo step.
+
+Refusals are those of a transaction (`-32001`, the project as it was): `{"reason":
+"out_of_range", "what": "to" | "preserve_nodes"}`, `{"reason": "missing", "what": "timeline" |
+"clip" | "group" | "node", "id"}`, `{"reason": "wrong_node", "node", "kind"}`, `no_grade`, and
+those of the `set_grade` worked out.
+
+### Albums and stills
+
+- `gallery.list`: the project's albums, then the PowerGrade albums at the bottom (p. 3265), each
+  `{"id", "name", "kind": "stills" | "powergrade", "stills"}` with its stills in order; the one
+  album where it is named.
+- `gallery.thumbnail`: the thumbnail of a still `height` high (1–270, 90 by default, at most its
+  own), as `media.thumbnail` answers.
+- `gallery.album.create`: an album of the project (`"stills"`, the default) or of the
+  PowerGrades, named `name` (1–100 characters), else `Stills N` or `PowerGrade N`, N one more
+  than the most of that name ("numbered incrementally", p. 3265). `gallery.album.rename` renames
+  one; `gallery.album.delete` removes one with its stills (Remove Current Album, p. 3265), but
+  not the last of its gallery (`-32001` `{"reason": "last_album", "album"}`; the manual says so
+  of the PowerGrades, and the project keeps one too, for a grab to go into).
+- `still.label` (Change Label; at most 100 characters, may be empty); `still.delete` (Delete
+  Selected, p. 3258), every id checked first; `still.move` to another album (a still dragged
+  onto an album, p. 3265): within a gallery it keeps its id, into the other it is copied under a
+  new id and taken out of the first; `moved` gives where each is now.
+- `still.export` (p. 3271): for each still its picture and its JSON into `dir` (absolute, a
+  folder that is there), as `<prefix>_<name>.png|exr` and `.json` (`<name>` its number, or its id
+  where it has none; without `prefix`, the name alone). A file there is `-32001` `{"reason":
+  "exists", "path"}` unless `replace`. No `.drx` is made: the JSON holds the grades instead.
+  Export With Display LUT is not done.
+- `still.import` (p. 3270): each file (absolute) a still, read as media reads a still (PNG,
+  TIFF, OpenEXR; not Y'CbCr, as JPEG), kept as a PNG of 16 bits or an OpenEXR as above; with the
+  grades, label and source of a still's JSON of the same name beside it (as an export leaves
+  it), else with none, labelled by the name of its file. A file that cannot be read is `-32002`
+  `{"path", "reason": "not_a_still", "message"}`, and nothing is imported.
+
+Every method that changes the Gallery tells every client `gallery.changed` `{}` before it
+answers, so that each can call `gallery.list` again. They work in a headless engine (an
+agent's), but for `still.grab`.
+
+**Refusals.** `-32602` for params that are not the method's; `{"reason": "missing", "what":
+"still" | "album", "id"}` for an id of no still or album of the Gallery (of one of no shape of
+theirs, as `../s1`, too); `{"reason": "out_of_range", "what": "name" | "label" | "height" |
+"prefix"}`; `{"reason": "relative", "path"}` for a path that is not absolute; `{"reason":
+"not_a_folder", "path"}`. `-32002` `{"reason": "gallery", "path", "message"}` where a folder or
+file of the Gallery cannot be made, read or written; `{"reason": "link", "path"}` where
+`gallery`, the folder of the PowerGrades or `stills` in one is a link or a junction (see
+Security); `{"reason": "write", "path", "message"}` where an export cannot be written.
+
+Memories (Alt+1…8, p. 3271) are not kept by the engine: a client keeps which still each holds.
 
 ## The library of LUTs
 
@@ -1985,6 +2148,7 @@ real ids. For example:
 | `media.waveform` | `{"media": "m1"}` (background analysis finished; query again for data or error) |
 | `render.progress` | `{"job", "state": "running" \| "done" \| "failed" \| "cancelled", "frame", "frames", "fps", "path", "encoder"?, "message"?, "missing_luts"?}` (see Rendering a timeline, and Grades in the picture) |
 | `scopes.frame` | `{"scope_id": "scope-1", "view": "timeline", "frame": n, "width": w, "height": h, "rgba": "<base64>"}`: a picture of a scope, to the connection that subscribed it only (see Scopes) |
+| `gallery.changed` | `{}`: the Gallery was changed; call `gallery.list` again (see The Gallery) |
 | `view.pointer` | `{"monitor", "kind": "down" \| "move" \| "up" \| "cancel", "button", "buttons", "x", "y", "inside", "window": {"x", "y"}, "shift", "ctrl", "alt"}`: what the pointer did on a view that takes it, to the connection that asked only (see Samples and the pointer) |
 
 - `by` is the kind of the client that asked (for an undo or a redo, the one that asked for
@@ -2022,6 +2186,12 @@ commits to it; and any client may send transactions. So:
   refuses a `folder` that is not a path of plain names within them. A corrector's `lut` itself
   may still name any absolute path, which the engine reads as a `.cube` when it grades (see
   Grades in the picture).
+- **The Gallery is the engine's own.** Its folders are `<project>/gallery` and the folder of the
+  PowerGrades (see The Gallery), which the engine makes; it does not use one that is a link or a
+  junction (nor `stills` in it), and reads, writes and deletes only `gallery.json` and the files
+  `stills/<id>.json|png|exr|thumb.png` of ids of its own shape, never through a link. A client
+  names a still or an album by its id only. `still.export` writes into the folder a client
+  names, and `still.import` reads the files it names, as an export and an import of media do.
 - **Media paths are the user's sources**, and may be anywhere: `add_media` takes any absolute
   path, and the engine reads (never writes or deletes) the file there when it is loaded,
   scrubbed or made a proxy of. A `project.json` from elsewhere may name a path on another

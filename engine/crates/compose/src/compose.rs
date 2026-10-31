@@ -516,6 +516,62 @@ impl Target {
         buffer.unmap();
         Ok(pixels)
     }
+
+    /// Wait for what was last rendered into a preview, and read back its half floats as they
+    /// are (IEEE 754 binary16, R'G'B'A, `width × 4` a row, rows one after another), nothing
+    /// clamped or rounded: the picture of the viewer, for a still of the Gallery.
+    ///
+    /// # Errors
+    /// It is an export, or the card could not give the picture back (it was lost).
+    pub fn read_halves(&self) -> Result<Vec<u16>, ComposeError> {
+        if self.export.is_some() {
+            return Err(ComposeError::Target(
+                "an export is read back as a picture".into(),
+            ));
+        }
+        if let Some(why) = self.gpu.lost_reason() {
+            return Err(ComposeError::Lost(why));
+        }
+        let device = self.gpu.device();
+        let row = (self.width * 8).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("columbina preview read of halves"),
+            size: u64::from(row) * u64::from(self.height),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("columbina preview read of halves"),
+        });
+        encoder.copy_texture_to_buffer(
+            self.texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row),
+                    rows_per_image: Some(self.height),
+                },
+            },
+            self.texture.size(),
+        );
+        self.gpu.queue().submit([encoder.finish()]);
+        wait_mapped(&self.gpu, &[&buffer])?;
+        let mapped = buffer
+            .slice(..)
+            .get_mapped_range()
+            .map_err(|error| ComposeError::Read(error.to_string()))?;
+        let width = self.width as usize * 8;
+        let mut halves = Vec::with_capacity(self.width as usize * 4 * self.height as usize);
+        for line in mapped.chunks(row as usize) {
+            for half in line[..width].as_chunks::<2>().0 {
+                halves.push(u16::from_le_bytes(*half));
+            }
+        }
+        drop(mapped);
+        buffer.unmap();
+        Ok(halves)
+    }
 }
 
 /// The value of a half float; 0 for one that is not a number.

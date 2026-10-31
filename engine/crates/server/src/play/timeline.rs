@@ -111,6 +111,8 @@ enum Command {
     Shown(oneshot::Sender<Result<Shown, Fault>>),
     /// What the frame is compared with (`viewer.wipe`, `viewer.split`).
     Compare(Change, oneshot::Sender<Result<Value, Fault>>),
+    /// The frame itself, not what it is compared with, for a still (`still.grab`).
+    Original(oneshot::Sender<Result<crate::stills::Frame, Fault>>),
     Stop,
 }
 
@@ -284,6 +286,14 @@ impl Timeline {
     pub async fn compare(&self, change: Change) -> Result<Value, Fault> {
         let (reply, receiver) = oneshot::channel();
         self.send(Command::Compare(change, reply))?;
+        receiver.await.map_err(|_| stopped())?
+    }
+
+    /// The frame shown, as it was composed, before it was compared with anything; with the
+    /// project and timeline it was drawn of.
+    pub async fn original(&self) -> Result<crate::stills::Frame, Fault> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(Command::Original(reply))?;
         receiver.await.map_err(|_| stopped())?
     }
 }
@@ -628,8 +638,29 @@ impl Worker {
             Command::Compare(change, reply) => {
                 let _ = reply.send(self.compare_with(change));
             }
+            Command::Original(reply) => {
+                let _ = reply.send(self.original());
+            }
             Command::Act(action) => self.action(action),
             Command::Stop => unreachable!("handled by run"),
+        }
+    }
+
+    /// The frame shown, before it is compared with anything (`still.grab`).
+    fn original(&self) -> Result<crate::stills::Frame, Fault> {
+        match (
+            &self.current,
+            self.status.shown,
+            &self.project,
+            self.timeline,
+        ) {
+            (Some(shown), Some(at), Some(project), Some(timeline)) => Ok(crate::stills::Frame {
+                target: self.compare.original(shown),
+                at,
+                project: Arc::clone(project),
+                timeline,
+            }),
+            _ => Err(not_loaded()),
         }
     }
 

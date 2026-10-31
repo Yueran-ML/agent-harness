@@ -371,6 +371,21 @@ impl Transport {
         timeline.compare(change).await
     }
 
+    /// `still.grab`: the frame that the timeline monitor shows, before it is compared with
+    /// anything, and the project and timeline it is of.
+    ///
+    /// # Errors
+    /// The engine is headless, or no timeline is loaded.
+    pub async fn original(&self, method: &str) -> Result<crate::stills::Frame, Fault> {
+        let Some(timeline) = &self.timeline else {
+            return Err(Fault::new(
+                rpc::METHOD_NOT_FOUND,
+                format!("there is no method {method} in a headless engine: it has no monitor"),
+            ));
+        };
+        timeline.original().await
+    }
+
     pub async fn frame_digest(&self, params: Option<&RawValue>) -> Result<Value, Fault> {
         let method = "transport.frame_digest";
         self.check(method)?;

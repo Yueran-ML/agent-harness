@@ -80,6 +80,11 @@ export interface Media {
   identity: Identity;
   facts: Facts;
   proxy?: Proxy;
+  /**
+   * Its input colour space and data levels set by hand. The engine always writes it; media that a
+   * client builds may leave it out, and is read as none set (`keptOverride`).
+   */
+  color_override?: ColorOverride;
 }
 
 export type TrackKind = 'video' | 'audio' | 'subtitle';
@@ -130,7 +135,99 @@ export interface Timeline {
   /** Its grade, which colours the picture once its tracks are put together. */
   grade: Grade;
 }
-export interface Project { schema: 3; next_id: number; bins: Bin[]; media: Media[]; timelines: Timeline[]; groups: Group[] }
+/**
+ * A project. `color` is always written by the engine; a project that a client builds may leave it
+ * out, and it is read as not colour managed (`keptColor`).
+ */
+export interface Project { schema: 3; next_id: number; bins: Bin[]; media: Media[]; timelines: Timeline[]; groups: Group[]; color?: ColorSettings }
+
+// Colour management (PROTOCOL.md, "Colour management"; engine/crates/model/src/color_management.rs),
+// as DaVinci Resolve's Project Settings > Color Management sets it (Reference Manual 20, pp. 149-153,
+// 224-252). Spaces are named as the engine's catalogue names them.
+
+/** The Color science menu (pp. 149, 224-226). */
+export type ColorScience = 'yrgb' | 'yrgb_managed' | 'acescct' | 'acescc';
+/** The Resolve color management preset (pp. 230-232). */
+export type ColorPreset = 'sdr_rec709' | 'sdr_p3_broadcast' | 'sdr_p3_cinema' | 'sdr_rec2020' | 'davinci_wide_gamut' | 'hdr_p3_broadcast' | 'hdr_rec2020' | 'custom';
+/** Timeline working luminance (p. 238); `custom` takes `custom_luminance`. */
+export type WorkingLuminance = 'sdr_100' | 'hdr_500' | 'hdr_1000' | 'hdr_2000' | 'hdr_4000' | 'hdr_er_1000_2000' | 'custom';
+/** A DRT of input or output (pp. 239-242). Only `none` is a plain transform; the others are the engine's own. */
+export type ToneMapping = 'none' | 'simple' | 'luminance' | 'davinci' | 'saturation_preserving';
+/** A gamut, as the model names it (Limit output gamut to, p. 239). */
+export type ColorGamut = 'rec709' | 'rec601-pal' | 'rec601-ntsc' | 'rec2020' | 'dci-p3' | 'p3-d65';
+/** Apply resize transformations in (p. 243). */
+export type ResizeSpace = 'timeline' | 'log' | 'linear' | 'linear_mapped' | 'gamma' | 'gamma_mapped';
+/** The 1D and 3D LUT of a stage (pp. 151-152), by names relative to the folders of LUTs; the 1D is done first. */
+export interface LutPair { '1d': string | null; '3d': string | null }
+/** Sat. Rolloff Start and Limit of a Saturation Preserving DRT, in nits (p. 240). */
+export interface SatRolloff { start: number; limit: number }
+/** The colour management of a project. Every field is always written by the engine. */
+export interface ColorSettings {
+  science: ColorScience;
+  automatic: boolean;
+  processing_mode: 'sdr' | 'hdr';
+  preset: ColorPreset;
+  /** A space of the catalogue, or `bypass`. */
+  output: string;
+  separate_gamma: boolean;
+  /** A space of the catalogue, or `bypass`. */
+  input: string;
+  timeline: string;
+  working_luminance: WorkingLuminance;
+  custom_luminance: number;
+  hdr_203_nits: boolean;
+  limit_gamut: ColorGamut | null;
+  input_drt: ToneMapping;
+  input_sat_rolloff: SatRolloff;
+  output_drt: ToneMapping;
+  output_sat_rolloff: SatRolloff;
+  inverse_drt: boolean;
+  white_point_adaptation: boolean;
+  color_space_aware_tools: boolean;
+  resize_in: ResizeSpace;
+  graphics_white: number;
+  aces_version: '1.3' | '2.0';
+  /** A space of the catalogue. */
+  idt: string;
+  /** An ODT of `aces_version`, by its name. */
+  odt: string;
+  gamut_compress: boolean;
+  node_luts_in: 'timeline' | 'ap0_linear';
+  lut_interpolation: 'trilinear' | 'tetrahedral';
+  input_lut: LutPair;
+  output_lut: LutPair;
+  viewer_lut: LutPair;
+  s_curve_contrast: boolean;
+}
+/** Data Levels of media (pp. 221-222). */
+export type DataLevels = 'auto' | 'video' | 'full';
+/** The colour of media set by hand: a space of the catalogue, `bypass`, or null for the project's default; and its data levels. */
+export interface ColorOverride { input: string | null; levels: DataLevels }
+
+/** The colour settings of a new project, as the engine writes them: not managed (DaVinci YRGB, p. 225). */
+export function defaultColorSettings(): ColorSettings {
+  const rec709 = 'Rec.709 Gamma 2.4';
+  const noLuts = (): LutPair => ({ '1d': null, '3d': null });
+  return {
+    science: 'yrgb', automatic: false, processing_mode: 'sdr', preset: 'sdr_rec709', output: rec709,
+    separate_gamma: false, input: rec709, timeline: rec709, working_luminance: 'sdr_100', custom_luminance: 100,
+    hdr_203_nits: false, limit_gamut: null, input_drt: 'none', input_sat_rolloff: { start: 100, limit: 1000 },
+    output_drt: 'none', output_sat_rolloff: { start: 100, limit: 1000 }, inverse_drt: false,
+    white_point_adaptation: true, color_space_aware_tools: true, resize_in: 'linear', graphics_white: 100,
+    aces_version: '2.0', idt: rec709, odt: 'Rec.709', gamut_compress: false, node_luts_in: 'timeline',
+    lut_interpolation: 'trilinear', input_lut: noLuts(), output_lut: noLuts(), viewer_lut: noLuts(), s_curve_contrast: true,
+  };
+}
+
+/** The colour settings of a project as the engine reads them: each one left out is its default. */
+export function keptColor(project: Pick<Project, 'color'>): ColorSettings {
+  return mergePatch(defaultColorSettings(), project.color ?? {}) as ColorSettings;
+}
+
+/** The colour of media as the engine reads it: what is left out is none set. */
+export function keptOverride(media: Pick<Media, 'color_override'>): ColorOverride {
+  return { input: null, levels: 'auto', ...media.color_override };
+}
 
 // Grades (PROTOCOL.md, "Grades"; engine/crates/model/src/grade.rs), as DaVinci Resolve's Color
 // page builds them (Reference Manual 20, Chapters 143–147).
@@ -274,7 +371,11 @@ export type Op =
   | { op: 'add_group'; group: Group; index?: number | null }
   | { op: 'remove_group'; id: string }
   | { op: 'set_group'; id: string; name?: string | null }
-  | { op: 'set_clip_group'; timeline: string; clip: string; group: string | null };
+  | { op: 'set_clip_group'; timeline: string; clip: string; group: string | null }
+  /** `settings` is a patch of `color`, merged as `set_node` merges `params`; `done` and the inverse carry the values as the engine writes them. */
+  | { op: 'set_color_settings'; settings: Record<string, unknown> }
+  /** `input` left out keeps it; null sets it back to the project's default. */
+  | { op: 'set_media_color'; id: string; input?: string | null; levels?: DataLevels | null };
 
 /** Who asked for a change, or made the step that it takes back or does again. */
 export type ClientKind = 'desktop' | 'agent' | 'cli' | 'engine';
@@ -835,6 +936,13 @@ export function applyOp(project: Project, op: Op): Project {
     case 'remove_group': return { ...project, groups: without(project.groups, placeOf(project.groups, op.id, 'group')) };
     case 'set_group': return inGroup(project, op.id, group => patched(group, op, ['name']));
     case 'set_clip_group': return inTimeline(project, op.timeline, timeline => inClip(timeline, op.clip, clip => ({ ...clip, group: op.group ?? null })));
+    case 'set_color_settings': return { ...project, color: mergePatch(keptColor(project), op.settings) as ColorSettings };
+    case 'set_media_color': {
+      const at = placeOf(project.media, op.id, 'media');
+      const media = project.media[at];
+      const override = patched(keptOverride(media), op, ['input', 'levels'], ['input']);
+      return { ...project, media: replaced(project.media, at, { ...media, color_override: override }) };
+    }
     default: throw new CopyMismatch(`the operation ${(op as { op: unknown }).op} is not known to the copy`);
   }
 }

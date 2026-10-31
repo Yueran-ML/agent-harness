@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
-  applyOp, CopyMismatch, emptyGrade, mergePatch, sortLinks,
-  type Clip, type ClipTrack, type GradeNode, type Link, type Op, type Project, type Timeline,
+  applyOp, CopyMismatch, defaultColorSettings, emptyGrade, keptColor, mergePatch, sortLinks,
+  type Clip, type ClipTrack, type GradeNode, type Link, type Media, type Op, type Project, type Timeline,
 } from '../src/studio/engine';
 
 interface Example { name: string; before: Project; after: Project; done: Op; inverse: Op }
@@ -74,5 +74,36 @@ describe('the grades of the copy, where the examples do not reach', () => {
       { op: 'remove_group', id: 'k1' },
       { op: 'set_clip_group', timeline: 't1', clip: 'c99', group: null },
     ] as Op[]) expect(() => applyOp(project, op)).toThrow(CopyMismatch);
+  });
+});
+
+describe('the colour management of the copy, where the examples do not reach', () => {
+  const at = (name: string) => structuredClone(examples.find(example => example.name === name)!);
+
+  it('has the defaults the engine writes, and reads a project without colour settings as the engine does', () => {
+    const example = at('set_color_settings to ACEScct');
+    expect(defaultColorSettings()).toStrictEqual(example.before.color);
+    const { color: _color, ...before } = example.before;
+    expect(keptColor({})).toStrictEqual(defaultColorSettings());
+    expect(keptColor({ color: { science: 'acescct' } as never }).odt).toBe('Rec.709');
+    expect(applyOp({ ...before, next_id: example.after.next_id }, example.done)).toStrictEqual(example.after);
+  });
+
+  it('merges a patch of colour settings field by field into the objects within it', () => {
+    const example = at('set_color_settings of a LUT of the project');
+    const project = applyOp(example.before, { op: 'set_color_settings', settings: { output_lut: { '1d': 'shaper.cube' } } });
+    const after = applyOp(project, example.done);
+    expect(after.color?.output_lut).toStrictEqual({ '1d': 'shaper.cube', '3d': 'Film/Kodak 2383.cube' });
+    expect(after.color?.lut_interpolation).toBe('tetrahedral');
+  });
+
+  it('sets the colour of media by hand, keeping what is left out and clearing a space set to null', () => {
+    const example = at('set_media_color');
+    const strip = (project: Project): Project => ({ ...project, media: project.media.map(({ color_override: _o, ...media }) => media as Media) });
+    expect(applyOp({ ...strip(example.before), next_id: example.after.next_id }, example.done)).toStrictEqual(example.after);
+    const set = applyOp(example.after, { op: 'set_media_color', id: 'm1', levels: 'video' });
+    expect(set.media[0].color_override).toStrictEqual({ input: 'DJI D-Gamut/D-Log', levels: 'video' });
+    expect(applyOp(set, { op: 'set_media_color', id: 'm1', input: null }).media[0].color_override).toStrictEqual({ input: null, levels: 'video' });
+    expect(() => applyOp(example.before, { op: 'set_media_color', id: 'm99', levels: 'full' })).toThrow(CopyMismatch);
   });
 });

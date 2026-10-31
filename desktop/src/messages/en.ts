@@ -808,7 +808,7 @@ export const en = {
       open: 'Studio',
       close: 'Close the studio',
       pages: 'Pages of the studio',
-      page: { media: 'Media', cut: 'Cut', edit: 'Edit' },
+      page: { media: 'Media', cut: 'Cut', edit: 'Edit', color: 'Color' },
       /** The two viewers of the Edit page, as DaVinci Resolve names them. */
       monitor: {
         source: 'Source', timeline: 'Timeline', sourceTitle: 'Source viewer', timelineTitle: 'Timeline viewer', choose: 'Viewer shown',
@@ -829,6 +829,27 @@ export const en = {
         edits: 'Edits', smartInsert: 'Smart insert', append: 'Append', rippleOverwrite: 'Ripple overwrite', placeOnTop: 'Place on top',
         sourceOverwrite: 'Source overwrite', transitions: 'Transitions', dissolve: 'Dissolve', dipBlack: 'Dip to black',
         overview: 'Whole timeline', detail: 'Timeline around the playhead', tapeStrip: 'Source tape of the bin',
+      },
+      /** The Color page, in DaVinci Resolve's words (Reference Manual 20, Chapters 126–128 and 143). */
+      colorPage: {
+        toolbar: 'Interface toolbar', gallery: 'Gallery', luts: 'LUTs', clips: 'Clips', clipFilter: 'Clip filter', timeline: 'Timeline', nodes: 'Nodes',
+        filter: { all: 'All Clips', graded: 'Graded Clips', ungraded: 'Ungraded Clips', grouped: 'Grouped Clips', matched: 'Shot Matched Clips' },
+        viewer: 'Viewer', lutBrowser: 'LUT browser', nodeEditor: 'Node editor', thumbnails: 'Thumbnail timeline', miniTimeline: 'Mini-timeline',
+        videoTracks: 'Video tracks', level: 'Node graph shown',
+        levels: { pre_clip: 'Group Pre-Clip', clip: 'Clip', post_clip: 'Group Post-Clip', timeline: 'Timeline' },
+        nodeSource: 'Source', nodeOutput: 'Output',
+        kinds: { corrector: 'Corrector', parallel_mixer: 'Parallel Mixer', layer_mixer: 'Layer Mixer', key_mixer: 'Key Mixer' },
+        disabled: 'Disabled', matched: 'Shot matched', graded: 'Graded', grouped: 'Group', solidColor: 'Solid color', title: 'Title',
+        palettes: 'Palettes', leftPalettes: 'Left palettes', centerPalettes: 'Center palettes', rightPanel: 'Keyframes and scopes',
+        palette: {
+          primaries: 'Primaries', curves: 'Curves', qualifier: 'Qualifier', window: 'Window', tracker: 'Tracker', blur: 'Blur', key: 'Key',
+          keyframes: 'Keyframes', scopes: 'Scopes',
+        },
+        timecode: 'Viewer timecode',
+        timecodes: { source: 'Source Timecode', record: 'Timeline Timecode', sourceFrame: 'Source Frame', recordFrame: 'Timeline Frame' },
+        realtime: 'Playing in real time', dropping: 'Dropping frames', stopped: 'Not playing',
+        enhanced: 'Enhanced viewer', full: 'Full page viewer', cinema: 'Cinema viewer', exitCinema: 'Exit cinema viewer',
+        missingLut: (name: string) => `Missing LUT: ${name}`, missingLuts: 'Multiple LUTs missing',
       },
       /** The fields of the inspector, as DaVinci Resolve names them. */
       inspector: {
@@ -1486,6 +1507,15 @@ export const en = {
         transition: 'Adds the transition at the edit point nearest the playhead.',
         emptyBin: 'This bin has no media for the source tape.',
         noTimeline: 'Create a timeline on the Edit page to begin.',
+      },
+      colorPage: {
+        noClip: 'There is no clip at the playhead.',
+        noClips: 'There are no clips on the video tracks shown.',
+        noNodes: 'This grade has no nodes yet.',
+        incomplete: 'The grade is off: a node is not connected.',
+        gallery: 'Stills and albums come in a later version.',
+        luts: 'The LUT browser comes in a later version.',
+        palette: 'The controls of this palette come in a later version.',
       },
       windowsOnly: 'The editing studio runs only on Windows for now. macOS will come later.',
       browser: 'The viewers appear only in the desktop app.',

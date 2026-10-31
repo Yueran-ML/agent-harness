@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react';
-import { Film, FolderOpen, PanelRightClose, PanelRightOpen, Scissors, X } from 'lucide-react';
+import { Film, FolderOpen, Palette, PanelRightClose, PanelRightOpen, Scissors, X } from 'lucide-react';
 import { useWords } from '../app/locale';
-import { shortcut } from '../app/system';
+import { shortcut, studioSupported } from '../app/system';
 import { sentenceOf } from '../key/form';
 import type { StudioEngine } from './connection';
 import { callEngine, type Monitor, type PageMethod, type SourceTransportState, type TimelineTransportState } from './engine';
@@ -10,6 +10,7 @@ import { MediaPool } from './MediaPool';
 import { MigrationBanner } from './MigrationBanner';
 import { migrationsOf } from './migration';
 import { MonitorPane } from './MonitorPane';
+import { ColorPage } from './pages/ColorPage';
 import { CutPage } from './pages/CutPage';
 import { EditPage } from './pages/EditPage';
 import { MediaPage } from './pages/MediaPage';
@@ -23,14 +24,21 @@ import { useMonitor } from './useMonitor';
 import type { ViewerNotice } from './Viewer';
 
 /** The pages of the studio, at its foot as in DaVinci Resolve. Those of the later phases come with them. */
-export type StudioPage = 'media' | 'cut' | 'edit';
-const pages: readonly StudioPage[] = ['media', 'cut', 'edit'];
-const PAGE_ICONS = { media: FolderOpen, cut: Scissors, edit: Film } as const;
+export type StudioPage = 'media' | 'cut' | 'edit' | 'color';
+const PAGE_ICONS = { media: FolderOpen, cut: Scissors, edit: Film, color: Palette } as const;
+/**
+ * The pages, in DaVinci Resolve's order. The studio opens only on Windows (the author's decision);
+ * the Color page is held to that besides, so that it never shows elsewhere before its time.
+ */
+export function studioPages(): readonly StudioPage[] {
+  return studioSupported() ? ['media', 'cut', 'edit', 'color'] : ['media', 'cut', 'edit'];
+}
 
 /** The timelines of a project that is not there yet: the same list each time, so that the pool is not drawn again for it. */
 const NO_TIMELINES: readonly never[] = [];
 const NO_BINS: readonly never[] = [];
 const NO_MEDIA: readonly never[] = [];
+const NO_GROUPS: readonly never[] = [];
 /** The rate of a timeline monitor that has no timeline to go by. */
 const NO_RATE = { num: 25, den: 1 } as const;
 
@@ -111,6 +119,7 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
   const migrated = useSyncExternalStore(migrations.subscribe, migrations.getSnapshot, migrations.getSnapshot);
   const root = useRef<HTMLElement>(null);
   const tabs = useRef<HTMLElement>(null);
+  const pages = studioPages();
 
   // The keyboard comes to the studio as it opens, for its keys.
   useEffect(() => { root.current?.focus({ preventScroll: true }); }, []);
@@ -321,6 +330,22 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
       onRetry={again}
       onProblem={(said, failure) => fail(said)(failure)}
       onExport={onExport}
+    />}
+    {page === 'color' && pages.includes('color') && <ColorPage
+      bridge={bridge}
+      native={native}
+      session={snapshot.session ?? 0}
+      revision={snapshot.revision ?? 0}
+      pool={pool}
+      media={project?.media ?? NO_MEDIA}
+      timelines={timelines}
+      groups={project?.groups ?? NO_GROUPS}
+      selected={selected}
+      onSelect={setChosenTimeline}
+      timelineMonitor={timelineMonitor}
+      noticeOf={noticeOf}
+      onRetry={again}
+      onProblem={(said, failure) => fail(said)(failure)}
     />}
     {exporting !== null && <RenderDialog
       timelines={timelines}

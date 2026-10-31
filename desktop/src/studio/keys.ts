@@ -129,10 +129,13 @@ export class Intent {
   }
 }
 
-/** Whether a key goes to the studio: the keyboard is in it, or on the page itself. */
+/**
+ * Whether a key goes to the studio: the keyboard is in it, on the page itself, or in a part of the
+ * studio laid over the whole window (`data-studio-portal`, the Color page's cinema viewer).
+ */
 export function inStudio(target: EventTarget | null): boolean {
   if (target === null || target === document.body || target === document.documentElement || target === document) return true;
-  return target instanceof Element && target.closest('.studio') !== null;
+  return target instanceof Element && target.closest('.studio, [data-studio-portal]') !== null;
 }
 
 /** Whether the keyboard writes into something: a field, a list to choose from, or text that can be edited. */

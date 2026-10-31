@@ -12,7 +12,7 @@ import type { MonitorControls } from './useMonitor';
  * viewer does in DaVinci Resolve. Hidden, it keeps its transport and its place in the engine, and
  * its view is hidden.
  */
-export function MonitorPane({ controls, bridge, native, active, notice, onRetry, hidden = false, focused = false, onFocus, name, hint, switcher }: {
+export function MonitorPane({ controls, bridge, native, active, notice, onRetry, hidden = false, focused = false, onFocus, name, hint, switcher, footer }: {
   controls: MonitorControls; bridge: ViewBridge; native: boolean; active: boolean; notice: ViewerNotice | null; onRetry: () => void;
   hidden?: boolean; focused?: boolean; onFocus?: (monitor: Monitor) => void;
   /** The name of what is loaded. */
@@ -21,6 +21,8 @@ export function MonitorPane({ controls, bridge, native, active, notice, onRetry,
   hint?: string;
   /** In place of the name of the monitor: the switch between the two, where only one is shown. */
   switcher?: ReactNode;
+  /** What is said beneath the picture, above the transport: the Color page's missing LUTs. */
+  footer?: ReactNode;
 }) {
   const words = useWords().label.studio.monitor;
   const { monitor } = controls;
@@ -33,6 +35,7 @@ export function MonitorPane({ controls, bridge, native, active, notice, onRetry,
     </header>}
     <Viewer bridge={bridge} native={native} monitor={monitor} active={active && !hidden} notice={notice} onRetry={onRetry} />
     {hint && !controls.loaded && (notice === null || notice.kind === 'browser') && <p className="caption monitor-hint" data-test="load-hint">{hint}</p>}
+    {footer}
     <Transport state={controls.state} rate={controls.rate} last={controls.last} frame={controls.frame} held={controls.held} onCommand={controls.run}
       onSeek={controls.seek} onDrag={controls.drag} onProxies={controls.proxies} />
   </section>;

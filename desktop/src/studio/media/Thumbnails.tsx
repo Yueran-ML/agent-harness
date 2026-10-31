@@ -10,11 +10,14 @@ export class Thumbnails {
   private readonly images = new Map<string, Promise<string>>();
   constructor(private readonly bridge: Pick<EngineBridge, 'call'>) {}
   get(media: Media): Promise<string> {
-    const frame = media.mark_in ? framesOf(media.mark_in, rateOf(media)) : 0;
-    const key = `${media.id}/${frame}`;
+    return this.at(media.id, media.mark_in ? framesOf(media.mark_in, rateOf(media)) : 0);
+  }
+  /** The picture of a frame of media, counted at the media's own rate. */
+  at(media: string, frame: number): Promise<string> {
+    const key = `${media}/${frame}`;
     const existing = this.images.get(key);
     if (existing) return existing;
-    const image = callEngine(this.bridge, 'media.thumbnail', { media: media.id, frame, height: 90 })
+    const image = callEngine(this.bridge, 'media.thumbnail', { media, frame, height: 90 })
       .then(result => `data:image/png;base64,${result.png}`);
     this.images.set(key, image);
     void image.catch(() => { if (this.images.get(key) === image) this.images.delete(key); });

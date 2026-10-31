@@ -297,7 +297,7 @@ describe('the media pool', () => {
     expect(marked('viewer')).toHaveLength(2);
     expect(document.querySelectorAll('.cut-viewer > .monitor:not([hidden])')).toHaveLength(1);
     expect(marked('studio-pages')).toEqual([]);
-    expect([...document.querySelectorAll('[role="tab"]')].map(tab => tab.textContent)).toEqual(['Media', 'Cut', 'Edit']);
+    expect([...document.querySelectorAll('[role="tab"]')].map(tab => tab.textContent)).toEqual(['Media', 'Cut', 'Edit', 'Color']);
   });
 });
 
@@ -781,19 +781,22 @@ describe('the studio as a keyboard and a reader know it', () => {
     const engine = engineWith(projectOf(mediaOf('m1')));
     await studio(engine);
     const tabs = () => [...document.querySelectorAll<HTMLElement>('[role="tab"]')].map(tab => [tab.textContent, tab.tabIndex]);
-    expect(tabs()).toEqual([['Media', 0], ['Cut', -1], ['Edit', -1]]);
+    expect(tabs()).toEqual([['Media', 0], ['Cut', -1], ['Edit', -1], ['Color', -1]]);
     one('page-media').focus();
     fireEvent.keyDown(one('page-media'), { key: 'ArrowRight' });
-    expect(tabs()).toEqual([['Media', -1], ['Cut', 0], ['Edit', -1]]);
+    expect(tabs()).toEqual([['Media', -1], ['Cut', 0], ['Edit', -1], ['Color', -1]]);
     expect(document.activeElement).toBe(one('page-cut'));
     expect(marked('cut-page')).toHaveLength(1);
     fireEvent.keyDown(one('page-cut'), { key: 'ArrowRight' });
-    expect(tabs()).toEqual([['Media', -1], ['Cut', -1], ['Edit', 0]]);
+    expect(tabs()).toEqual([['Media', -1], ['Cut', -1], ['Edit', 0], ['Color', -1]]);
     expect(document.activeElement).toBe(one('page-edit'));
     fireEvent.keyDown(one('page-edit'), { key: 'ArrowRight' });
+    expect(document.activeElement).toBe(one('page-color'));
+    expect(marked('color-page')).toHaveLength(1);
+    fireEvent.keyDown(one('page-color'), { key: 'ArrowRight' });
     expect(document.activeElement).toBe(one('page-media'));
     fireEvent.keyDown(one('page-media'), { key: 'ArrowLeft' });
-    expect(document.activeElement).toBe(one('page-edit'));
+    expect(document.activeElement).toBe(one('page-color'));
     await settle();
     // The arrows of the tabs are not steps of the transport. (The pool of the Cut page, in its
     // thumbnail view, asks for pictures of its media.)

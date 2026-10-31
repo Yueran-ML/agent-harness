@@ -368,7 +368,7 @@ rest of the project is read as it is. So is a proxy whose `path` is not absolute
 away before the project is checked, so the project is read without it and the engine starts.
 (Such a proxy in an operation, `set_proxy` or `add_media`, is still refused as `not_absolute`.)
 
-### Schema 2
+### Schema 3
 
 The top level is `{schema: 3, next_id, bins: [...], media: [...], timelines: [...], groups: [...]}`.
 Schema 3 differs from schema 2 only by the grades (see Grades below). A schema 1 or schema 2
@@ -386,7 +386,7 @@ clients; a client must not write `project.json` itself.
   the start of `n + 1`, and shows the Out as frame `n`. Nullable fields (`parent`, `bin`, the
   marks, a clip's `link`) must be written, as `null` if there is none; of media, only `proxy`
   may be left out, and `facts.video` / `facts.audio` may be `null` or left out.
-- A timeline is `{id, name, rate: {num, den}, width, height, sample_rate, tracks}`. Width and
+- A timeline is `{id, name, rate: {num, den}, width, height, sample_rate, tracks, grade}`. Width and
   height are even integers, 16–16384; sample rate is 44100, 48000 or 96000. Frames are integers
   at the timeline rate. Video tracks stack in list order, the first at the bottom.
 - Every track has `id`, `kind`, `name`, `enabled`, `locked`. Video/audio tracks additionally
@@ -396,7 +396,8 @@ clients; a client must not write `project.json` itself.
   subtitle tracks is `enabled` (shown in the timeline monitor). A project with two is refused
   when it is read, and so is an operation that would make two (`subtitle_shown`, below).
 - A clip is `{id, start, length, source, enabled, speed, reverse, link, transform, gain_db, pan,
-  fade_in, fade_out}`. `start >= 0`, `length > 0`; same-track clips cannot overlap.
+  fade_in, fade_out, grade, group}`. `grade` is the clip's graph and `group` a group id or `null`
+  (see Grades). `start >= 0`, `length > 0`; same-track clips cannot overlap.
   `speed: {num, den}` is a positive rational from 1/100 to 100; direction is the separate `reverse`
   flag. `link` is a group id or `null`. Time conversion uses integer ticks, rounded down, so a
   cut need not be an exact sample boundary for arbitrary source time bases.
@@ -1136,7 +1137,8 @@ real ids. For example:
 ```
 → in a new project, `"names": {"$c": "c2", "$t": "t1", "$v": "V1"}`.
 
-- Names may bind media, bins, timelines, tracks, clips, transitions and cues, including those
+- Names may bind media, bins, timelines, tracks, clips, transitions, cues, nodes and groups (see
+  Grades), including those
   inside an added timeline or track. A name can be referenced only by a **later input entry**,
   not elsewhere inside the same added object.
 - A clip's `link` (including `set_clip.link`) may declare a new `$group` on its first use. Later

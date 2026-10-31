@@ -98,6 +98,8 @@ jobs:
         with:
           workspaces: engine -> target
 
+      # columbina-server does not link columbina-ocio yet, so no OpenColorIO is built here. Once it
+      # does, it needs OCIO_DIR as the engine of CI does: take the steps of OpenColorIO of ci.yml.
       - name: Build the engine
         if: runner.os == 'Windows'
         working-directory: engine

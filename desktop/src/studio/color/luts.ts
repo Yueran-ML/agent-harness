@@ -14,6 +14,9 @@ import type { Worked } from './nodeEdits';
 
 /** The LUT ▸ submenu of a node (p. 3412), named as Resolve names it in every language. */
 export const LUT_MENU = 'LUT';
+/** Its submenus of the 1D and of the 3D LUTs, named so too (Resolve's are 1D Input LUT and 3D LUT, p. 3412). */
+export const LUT_1D_MENU = '1D LUT';
+export const LUT_3D_MENU = '3D LUT';
 
 /** What a LUT is called on the page: its file's name, without `.cube`. */
 export function lutTitle(name: string): string {
@@ -85,6 +88,25 @@ export function namedLuts(library: LutLibrary): LutFile[] {
   return library.luts.filter(lut => !lut.shadowed);
 }
 
+/**
+ * Which menu of 1D or 3D LUTs a LUT is in (p. 3412; the Lookup Tables, p. 152): a 1D table is 1D;
+ * a cube, with a shaper or not, is 3D. One whose kind the engine did not tell (an older engine,
+ * or a file it could not tell) is taken as 3D, which most are.
+ */
+export function lutDimension(lut: Pick<LutFile, 'kind'>): '1d' | '3d' {
+  return lut.kind === '1d' ? '1d' : '3d';
+}
+
+/** Whether the engine read the LUT and found that it does not parse: it cannot be used. */
+export function lutBroken(lut: Pick<LutFile, 'status'>): boolean {
+  return lut.status === 'error';
+}
+
+/** Whether a LUT can be put on a node or a stage: the one of its name that the engine reads, and one that parses. */
+export function lutUsable(lut: Pick<LutFile, 'shadowed' | 'status'>): boolean {
+  return !lut.shadowed && !lutBroken(lut);
+}
+
 /** The LUTs of the favorites, each the one the engine reads by that name, sorted by file name. */
 export function favoriteLuts(library: LutLibrary, favorites: ReadonlySet<string>): LutFile[] {
   return namedLuts(library).filter(lut => favorites.has(lut.name)).sort(byTitle);
@@ -96,33 +118,61 @@ export function searched(luts: readonly LutFile[], words: string): LutFile[] {
   return wanted === '' ? [...luts] : luts.filter(lut => lutTitle(lut.name).toLocaleLowerCase().includes(wanted));
 }
 
+/** The words of a LUT ▸ submenu: `broken` marks a LUT that does not parse. */
+export interface LutMenuWords { none: string; favorites: string; broken?: string }
+
 /**
- * The items of a LUT ▸ submenu (p. 3412; the interaction reference, §5.2): None at the top (the
- * manual does not say how a LUT is taken off), then the LUTs of the root, then a submenu for each
- * folder with the LUTs under it, each by its path below that folder, and Favorites ▸. The LUT
- * chosen is checked. Folders are one deep, so that a submenu with submenus need not scroll.
+ * The items of a LUT ▸ submenu (p. 3412; the interaction reference, §5.2).
+ *
+ * A node's (`only` left out): None at the top (the manual does not say how a LUT is taken off),
+ * then a submenu of the 1D LUTs and one of the 3D LUTs, as Resolve's 1D Input LUT and 3D LUT
+ * submenus part them (a node of ours holds one LUT, applied as it is, so the 1D are not offered
+ * twice as Input and Output), and Favorites ▸. A menu of one kind (`only`, the Viewer LUT's 3D):
+ * None, then that kind's LUTs, then Favorites ▸ of that kind.
+ *
+ * In each, the LUTs at the root come first, then a submenu for each folder with the LUTs under it,
+ * each by its path below that folder; folders are one deep, so that a submenu with submenus need
+ * not scroll. The LUT chosen is checked. A LUT that does not parse is shown, greyed and marked,
+ * and cannot be chosen.
  */
 export function lutMenuItems(library: LutLibrary | null, favorites: ReadonlySet<string>, chosen: string | null,
-  pick: (name: string | null) => void, words: { none: string; favorites: string }, id = 'lut'): MenuItem[] {
+  pick: (name: string | null) => void, words: LutMenuWords, id = 'lut', only?: '1d' | '3d'): MenuItem[] {
   const named = library === null ? [] : namedLuts(library).slice().sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
-  const item = (lut: LutFile, label: string, prefix: string): MenuItem => ({
-    id: `${id}-${prefix}${lut.name}`, label, checked: lut.name === chosen, run: () => pick(lut.name),
-  });
+  const item = (lut: LutFile, label: string, prefix: string): MenuItem => {
+    const broken = lutBroken(lut);
+    return {
+      id: `${id}-${prefix}${lut.name}`, label: broken && words.broken ? `${label} (${words.broken})` : label,
+      checked: lut.name === chosen, disabled: broken || undefined, run: () => pick(lut.name),
+    };
+  };
+  /** The LUTs of a kind: those of the root, then a submenu of each folder. */
+  const tree = (luts: readonly LutFile[], prefix: string): MenuItem[] => {
+    const items: MenuItem[] = [];
+    const folders = new Map<string, LutFile[]>();
+    for (const lut of luts) {
+      const slash = lut.name.indexOf('/');
+      if (slash < 0) { items.push(item(lut, lutTitle(lut.name), prefix)); continue; }
+      const top = lut.name.slice(0, slash);
+      folders.set(top, [...(folders.get(top) ?? []), lut]);
+    }
+    for (const [folder, inside] of folders) {
+      items.push({
+        id: `${id}-${prefix}folder-${folder}`, label: folder,
+        items: inside.map(lut => item(lut, lut.name.slice(folder.length + 1).replace(/\.cube$/i, ''), prefix)),
+      });
+    }
+    return items;
+  };
   const items: MenuItem[] = [{ id: `${id}-none`, label: words.none, checked: chosen === null, run: () => pick(null) }];
-  const folders = new Map<string, LutFile[]>();
-  for (const lut of named) {
-    const slash = lut.name.indexOf('/');
-    if (slash < 0) { items.push(item(lut, lutTitle(lut.name), '')); continue; }
-    const top = lut.name.slice(0, slash);
-    folders.set(top, [...(folders.get(top) ?? []), lut]);
+  if (only !== undefined) {
+    items.push(...tree(named.filter(lut => lutDimension(lut) === only), ''));
+  } else {
+    for (const [kind, label] of [['1d', LUT_1D_MENU], ['3d', LUT_3D_MENU]] as const) {
+      const luts = named.filter(lut => lutDimension(lut) === kind);
+      items.push({ id: `${id}-${kind}`, label, disabled: luts.length === 0, items: tree(luts, `${kind}-`) });
+    }
   }
-  for (const [folder, luts] of folders) {
-    items.push({
-      id: `${id}-folder-${folder}`, label: folder,
-      items: luts.map(lut => item(lut, lut.name.slice(folder.length + 1).replace(/\.cube$/i, ''), '')),
-    });
-  }
-  const liked = library === null ? [] : favoriteLuts(library, favorites);
+  const liked = library === null ? [] : favoriteLuts(library, favorites).filter(lut => only === undefined || lutDimension(lut) === only);
   items.push({
     id: `${id}-favorites`, label: words.favorites, disabled: liked.length === 0,
     items: liked.map(lut => item(lut, lutTitle(lut.name), 'favorite-')),

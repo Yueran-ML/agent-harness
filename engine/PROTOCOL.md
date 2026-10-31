@@ -1665,7 +1665,10 @@ them:
 {"roots": [{"place": "project", "path": "C:\\…\\studio", "exists": true},
            {"place": "library", "path": "C:\\Users\\…\\.columbina\\luts", "exists": false}],
  "luts": [{"name": "LUTs/Film.cube", "root": 0, "size": 1234,
-           "modified_us": 1790000000000000, "shadowed": false}],
+           "modified_us": 1790000000000000, "shadowed": false, "kind": "3d", "status": "ok"},
+          {"name": "Log.cube", "root": 0, "size": 40, "modified_us": 1790000000000000,
+           "shadowed": false, "kind": "1d", "status": "error",
+           "message": "line 3: the file ends after 1 of the 2 rows of its tables"}],
  "truncated": false}
 ```
 
@@ -1679,8 +1682,19 @@ them:
   `modified_us` is when it was last written, in microseconds since 1970 (UTC), or `null`.
   `shadowed` is `true` where a root before it has a file of the same name (compared as the
   system compares names, without case on Windows): a node of that name reads that file instead.
-- Files are not read. One that is listed may still fail to parse when it is used, and is then
-  told in `missing_luts` (Grades in the picture). `.3dl` and other formats are not listed.
+- `kind` is what tables the file has: `"1d"`, `"3d"`, or `"shaper+3d"` (a 1D shaper before the
+  cube, as Resolve writes them); `null` where it cannot be told. `status` is whether it parses
+  as the engine reads it when it grades: `"ok"`; `"error"`, with `message` saying why (`line N:
+  ...`, as `missing_luts` would; such a file cannot be used, and a node that names it grades as
+  though it named none); or `"unchecked"`, not parsed by this list, its `kind` read from the
+  keywords before its first row alone. `.3dl` and other formats are not listed.
+- How a file is checked, and what it costs: each is parsed whole once, and what came of it is
+  kept by its path, size and time of writing until one of them changes; the tables are not
+  kept. A list parses only the files it does not know yet, four at a time, and begins none once
+  2 s have passed since the list began, nor one longer than 64 MiB: those are `"unchecked"`,
+  and a later list goes on with them. A file longer than any LUT the engine reads (1 GiB) is an
+  `"error"` without being read. (A library of 50 cubes of 33³ and 65³, 107 MB, is parsed in
+  about 0.2 s the first time, and listed in microseconds after.)
 - `folder` lists only the LUTs under that folder of each root, still named from the root. It is
   a relative path of plain names, with `/` or `\`. One with `..`, a root or a drive is refused
   with `-32602`, `data: {"reason": "outside_roots", "folder": "<as sent>"}`; a root that does not
@@ -2002,8 +2016,8 @@ commits to it; and any client may send transactions. So:
   and only a file (not a link) is deleted; anything else is left as it is (logged
   `proxy_not_deleted`).
 - **The library of LUTs is listed within its roots.** `luts.list` reads the names of folders
-  and files (never their contents) only under the folder of the project and the folders of the
-  library. It does not go through a link or a junction, neither one that the `folder` asked for
+  and files only under the folder of the project and the folders of the library, and the
+  contents of the `.cube` files listed there (to tell their kind, never written). It does not go through a link or a junction, neither one that the `folder` asked for
   passes through nor one found below (nor into `cache` of the project, the engine's own), and it
   refuses a `folder` that is not a path of plain names within them. A corrector's `lut` itself
   may still name any absolute path, which the engine reads as a `.cube` when it grades (see

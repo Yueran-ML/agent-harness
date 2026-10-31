@@ -27,6 +27,9 @@ mod grades;
 #[path = "rpc/scopes.rs"]
 mod scopes;
 
+#[path = "rpc/luts.rs"]
+mod luts;
+
 #[path = "rpc/compare.rs"]
 mod compare;
 

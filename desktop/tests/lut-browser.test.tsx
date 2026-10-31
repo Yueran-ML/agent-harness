@@ -10,10 +10,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LutLibrary, Target } from '../src/studio/engine';
 import { layoutGrade } from '../src/studio/color/graph';
 import {
-  draggedLut, favoriteLuts, lutFolders, lutMenuItems, lutsIn, lutTitle, searched, setNodeLut, usersOf, LUT_DRAG,
+  draggedLut, favoriteLuts, lutBroken, lutDimension, lutFolders, lutMenuItems, lutsIn, lutTitle, searched, setNodeLut, usersOf, LUT_DRAG,
 } from '../src/studio/color/luts';
+import type { MenuItem } from '../src/studio/color/ColorMenu';
 import { forgetFavorites } from '../src/studio/color/useLuts';
-import { calls, corrector, library, lutGrade, mount, projectOf, sent, settle } from './colorEngine';
+import { calls, corrector, library, lutGrade, mixedLibrary, mount, projectOf, sent, settle } from './colorEngine';
 import { clip, timeline } from './timeline-fixture';
 import { likeABrowser } from './mounted';
 
@@ -36,7 +37,7 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); delete (window as { columbina?: unknown }).columbina; localStorage.clear(); forgetFavorites(); });
 
 const C1: Target = { level: 'clip', timeline: 't1', clip: 'c1' };
-const words = { none: 'None', favorites: 'Favorites' };
+const words = { none: 'None', favorites: 'Favorites', broken: 'cannot be read' };
 
 describe('the LUTs, worked out', () => {
   it('are laid out by folder, the project first, each folder under the one it is in', () => {
@@ -52,18 +53,32 @@ describe('the LUTs, worked out', () => {
     expect(favoriteLuts(luts, new Set(['shaper.cube', 'gone.cube'])).map(each => [each.name, each.root])).toEqual([['shaper.cube', 0]]);
   });
 
-  it('make a LUT ▸ submenu: None, the LUTs of the root, a submenu of each folder, and Favorites', () => {
+  it('make a LUT ▸ submenu: None, the 1D LUTs and the 3D LUTs apart, each of the root then by folder, and Favorites', () => {
     const pick = vi.fn();
-    const items = lutMenuItems(library(), new Set(['Film/Kodak 2383.cube']), 'Film/Kodak 2383.cube', pick, words);
-    expect(items.map(each => [each.label, each.checked ?? false, each.items?.map(item => item.label) ?? null])).toEqual([
-      ['None', false, null], ['shaper', false, null], ['Film', false, ['Fuji 3513', 'Kodak 2383']], ['Looks', false, ['Teal']],
-      ['Favorites', false, ['Kodak 2383']],
+    const shape = (items: MenuItem[]): unknown[] => items.map(each => (each.items ? [each.label, shape(each.items)] : each.label));
+    const items = lutMenuItems(mixedLibrary(), new Set(['Film/Kodak 2383.cube', 'Log/Log to Lin.cube']), 'Film/Kodak 2383.cube', pick, words);
+    expect(shape(items)).toEqual([
+      'None',
+      ['1D LUT', [['Film', ['Linear']], ['Log', ['Log to Lin']]]],
+      ['3D LUT', ['shaper', ['Film', ['Broken (cannot be read)', 'Fuji 3513', 'Kodak 2383']], ['Looks', ['Teal']]]],
+      ['Favorites', ['Kodak 2383', 'Log to Lin']],
     ]);
-    expect(items[2].items![1].checked).toBe(true);
+    // The LUT chosen is checked; one that does not parse cannot be chosen.
+    const film = items[2].items![1].items!;
+    expect(film.map(each => [each.checked, each.disabled ?? false])).toEqual([[false, true], [false, false], [true, false]]);
     items[0].run!();
-    items[3].items![0].run!();
-    expect(pick.mock.calls).toEqual([[null], ['Looks/Teal.cube']]);
-    expect(lutMenuItems(null, new Set(), null, pick, words).map(each => [each.label, each.disabled ?? false])).toEqual([['None', false], ['Favorites', true]]);
+    items[1].items![1].items![0].run!();
+    expect(pick.mock.calls).toEqual([[null], ['Log/Log to Lin.cube']]);
+    // A menu of one kind, as the Viewer LUT's 3D: its LUTs, and its favorites.
+    expect(shape(lutMenuItems(mixedLibrary(), new Set(['Film/Kodak 2383.cube', 'Log/Log to Lin.cube']), null, pick, words, 'viewer', '3d'))).toEqual([
+      'None', 'shaper', ['Film', ['Broken (cannot be read)', 'Fuji 3513', 'Kodak 2383']], ['Looks', ['Teal']], ['Favorites', ['Kodak 2383']],
+    ]);
+    expect(lutMenuItems(null, new Set(), null, pick, words).map(each => [each.label, each.disabled ?? false]))
+      .toEqual([['None', false], ['1D LUT', true], ['3D LUT', true], ['Favorites', true]]);
+    // An engine from before the kinds: every LUT is taken as 3D, and none as broken.
+    const old: LutLibrary = { ...library(), luts: library().luts.map(({ kind: _kind, status: _status, ...rest }) => rest) };
+    expect(lutDimension(old.luts[0])).toBe('3d');
+    expect(lutBroken(old.luts[0])).toBe(false);
   });
 
   it('put a LUT on a corrector, and nothing on another node, or the LUT it has', () => {
@@ -176,6 +191,27 @@ describe('the LUT browser', () => {
     expect(screen.queryByRole('button', { name: 'Missing LUTs' })).toBeNull();
   });
 
+  it('marks each LUT 1D or 3D, and one that does not parse as unusable, with why', async () => {
+    const { bridge } = await mount(projectOf(), { page: 'Color', luts: mixedLibrary() });
+    await openBrowser();
+    fireEvent.click(folder('library:Film'));
+    expect(tiles()).toEqual(['Film/Broken.cube', 'Film/Fuji 3513.cube', 'Film/Kodak 2383.cube', 'Film/Linear.cube']);
+    const kinds = () => [...document.querySelectorAll<HTMLElement>('[data-test="lut-kind"]')].map(each => each.textContent);
+    expect(kinds()).toEqual(['3D', '3D', '3D', '1D']);
+    const broken = tile('Film/Broken.cube');
+    expect(broken.dataset.broken).toBe('true');
+    expect(broken.draggable).toBe(false);
+    expect(broken.title).toBe('Film/Broken.cube\nThis LUT cannot be read, so it cannot be used.\nline 3: the file ends after 1 of the 8 rows of its tables');
+    expect(tile('Film/Linear.cube').draggable).toBe(true);
+    bridge.call.mockClear();
+    fireEvent.contextMenu(broken, { clientX: 50, clientY: 50 });
+    const apply = screen.getByRole('menuitem', { name: 'Apply LUT to Current Node' }) as HTMLButtonElement;
+    expect(apply.disabled).toBe(true);
+    fireEvent.click(apply);
+    await settle();
+    expect(sent(bridge)).toEqual([]);
+  });
+
   it('says where the engine cannot list the LUTs', async () => {
     const { bridge } = await mount(projectOf(), { page: 'Color' });
     bridge.call.mockImplementation(async (method: string) => (method === 'luts.list'
@@ -221,8 +257,13 @@ describe('a LUT on a node', () => {
     const nodeMenu = () => { fireEvent.contextMenu(document.querySelector('[data-node="n1"]')!, { clientX: 200, clientY: 60 }); fireEvent.click(screen.getByRole('menuitem', { name: 'LUT' })); };
     nodeMenu();
     const lutMenu = screen.getByRole('menu', { name: 'LUT' });
-    expect(within(lutMenu).getAllByRole('menuitem').map(each => each.getAttribute('aria-label'))).toEqual(['None', 'shaper', 'Film', 'Looks', 'Favorites']);
-    fireEvent.click(within(lutMenu).getByRole('menuitem', { name: 'Looks' }));
+    expect(within(lutMenu).getAllByRole('menuitem').map(each => each.getAttribute('aria-label'))).toEqual(['None', '1D LUT', '3D LUT', 'Favorites']);
+    // The library has no 1D LUT: its submenu is greyed.
+    expect((within(lutMenu).getByRole('menuitem', { name: '1D LUT' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(lutMenu).getByRole('menuitem', { name: '3D LUT' }));
+    const cubes = screen.getByRole('menu', { name: '3D LUT' });
+    expect(within(cubes).getAllByRole('menuitem').map(each => each.getAttribute('aria-label'))).toEqual(['shaper', 'Film', 'Looks']);
+    fireEvent.click(within(cubes).getByRole('menuitem', { name: 'Looks' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Teal' }));
     await settle();
     nodeMenu();

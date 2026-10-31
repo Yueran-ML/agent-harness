@@ -17,6 +17,8 @@ base64 = "=0.22.1"
 png = "=0.18.1"
 tempfile.workspace = true
 columbina-compose = { path = "../compose" }
+# The reader of .cube files, which luts.list parses each file with for its kind.
+columbina-lut = { path = "../lut" }
 columbina-media = { path = "../media" }
 columbina-model = { path = "../model" }
 columbina-store = { path = "../store" }

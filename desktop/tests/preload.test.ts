@@ -197,7 +197,7 @@ describe('the bridge of the main window', () => {
     const { exposed } = bridgeOf('electron/preload.cjs');
     const engine = exposed.columbina.engine as unknown as Record<string, Call>;
     expect(Object.keys(engine).sort()).toEqual(declared('src/bridge.d.ts', 'EngineBridge').sort());
-    expect(Object.keys(engine)).toHaveLength(9);
+    expect(Object.keys(engine)).toHaveLength(10);
   });
 
   it('hands the engine what a call names, and nothing else that came with it', () => {
@@ -226,6 +226,8 @@ describe('the bridge of the main window', () => {
     expect(handed('render', { timeline: 't1', codec: 'h264', quality: 'high', subtitle_tracks: [], name: 'Main', ...more })![1]).toMatchObject({ name: 'Main' });
     // The page names the job of an export to have its file shown, and no path.
     expect(handed('reveal', 'render-1', more)).toEqual(['columbina:engine-reveal', { job: 'render-1' }]);
+    // The page names a root of LUTs, and nothing else goes over.
+    expect(handed('openLutFolder', 'C:\luts', more)).toEqual(['columbina:engine-open-lut-folder', { path: 'C:\luts' }]);
     expect(handed('close', more)).toEqual(['columbina:engine-close']);
   });
 

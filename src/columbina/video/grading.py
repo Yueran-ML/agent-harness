@@ -1297,7 +1297,12 @@ class Grader:
                     for root in library.roots
                 ],
                 "luts": [
-                    {"name": one.name, **({"shadowed": True} if one.shadowed else {})}
+                    {
+                        "name": one.name,
+                        **({"kind": one.kind} if one.kind is not None else {}),
+                        **({"shadowed": True} if one.shadowed else {}),
+                        **({"error": one.message} if one.status == "error" else {}),
+                    }
                     for one in library.luts
                 ],
                 "truncated": library.truncated,
@@ -1350,10 +1355,13 @@ class Grader:
             if error.code == -32601:  # An engine from before luts.list: it is told as missing.
                 return given
             raise
-        names = [one.name for one in library.luts if not one.shadowed]
-        for name in names:
-            if _same_name(name) == _same_name(given):
-                return name
+        named = [one for one in library.luts if not one.shadowed]
+        names = [one.name for one in named]
+        for one in named:
+            if _same_name(one.name) == _same_name(given):
+                if one.status == "error":
+                    raise GradeError(f"the LUT {one.name} cannot be used: {one.message}")
+                return one.name
         if library.truncated:
             return given
         close = difflib.get_close_matches(given, names, n=5, cutoff=0.4)

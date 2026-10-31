@@ -129,6 +129,30 @@
   cursor: default;
 }
 
+/* A LUT the engine could not parse: it cannot be used, and why is said under the pointer. */
+.color-lut[data-broken] {
+  cursor: not-allowed;
+}
+
+.color-lut[data-broken] .color-lut-picture,
+.color-lut[data-broken] .color-lut-name {
+  color: var(--bad);
+}
+
+/* 1D or 3D, at the upper left of the picture (the star is at the right), as the Type of Resolve's LUTs. */
+.color-lut-kind {
+  position: absolute;
+  left: 6px;
+  top: 6px;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: #0008;
+  color: var(--moon-2);
+  font-size: 9px;
+  line-height: 14px;
+  pointer-events: none;
+}
+
 /* Where Resolve draws the LUT on a test image or the frame shown: the engine cannot yet, so a mark of a LUT. */
 .color-lut-picture {
   aspect-ratio: 16 / 9;

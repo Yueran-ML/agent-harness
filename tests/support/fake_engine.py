@@ -488,6 +488,8 @@ class Fake:
                     "size": 120,
                     "modified_us": 1_790_000_000_000_000,
                     "shadowed": False,
+                    "kind": "3d",
+                    "status": "ok",
                 }
             ],
             "truncated": False,

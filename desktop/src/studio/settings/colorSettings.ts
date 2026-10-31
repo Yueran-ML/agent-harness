@@ -184,6 +184,56 @@ export function acesVersionPatch(version: ColorSettings['aces_version'], odt: st
   return ODTS[version].includes(odt) ? { aces_version: version } : { aces_version: version, odt: COMMON_ODT };
 }
 
+// The draft of the window. Resolve applies the Project Settings when Save is clicked (p. 139): the
+// window edits a draft, the edits of each setting kept apart (to the field of a field, so that the
+// limit of a rolloff and the 3D LUT of a stage are edits of their own), and shown over the project
+// as it is now. A change of the project meanwhile (another client, an undo) so shows at once in
+// what was not edited here, and Save sends only what differs from the project then.
+
+type Fields = Record<string, unknown>;
+const isFields = (value: unknown): value is Fields => typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** The draft with an edit made: the fields of `patch` over those of `draft`, a field of a field kept apart. */
+export function withEdit(draft: Fields, patch: Fields): Fields {
+  const next: Fields = { ...draft };
+  for (const [name, value] of Object.entries(patch)) {
+    next[name] = isFields(value) && isFields(draft[name]) ? withEdit(draft[name] as Fields, value) : value;
+  }
+  return next;
+}
+
+/** The settings as the window shows them: the draft's edits over the settings of the project now. */
+export function drafted(settings: ColorSettings, draft: Fields): ColorSettings {
+  const over = (base: unknown, edits: Fields): Fields => {
+    const shown: Fields = { ...(base as Fields) };
+    for (const [name, value] of Object.entries(edits)) shown[name] = isFields(value) && isFields(shown[name]) ? over(shown[name], value) : value;
+    return shown;
+  };
+  return over(settings, draft) as unknown as ColorSettings;
+}
+
+/**
+ * The patch of `set_color_settings` that Save sends: each edit of the draft that differs from the
+ * settings of the project now, a field of a field alone (the engine merges it), or null where
+ * none does.
+ */
+export function draftChanges(settings: ColorSettings, draft: Fields): Fields | null {
+  const changes = (base: unknown, edits: Fields): Fields | null => {
+    const changed: Fields = {};
+    for (const [name, value] of Object.entries(edits)) {
+      const was = isFields(base) ? base[name] : undefined;
+      if (isFields(value) && isFields(was)) {
+        const inner = changes(was, value);
+        if (inner !== null) changed[name] = inner;
+      } else if (!Object.is(was, value)) {
+        changed[name] = value;
+      }
+    }
+    return Object.keys(changed).length === 0 ? null : changed;
+  };
+  return changes(settings, draft);
+}
+
 /** The input space that media takes where none is set by hand and its file says none: the project's, as it is in force. */
 export function projectInput(settings: ColorSettings): string {
   if (settings.science === 'acescct' || settings.science === 'acescc') return settings.idt;

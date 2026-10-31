@@ -192,6 +192,8 @@ async def test_the_library_of_luts_is_read_into_its_roots_and_files(tmp_path: Pa
                 size=120,
                 modified_us=1_790_000_000_000_000,
                 shadowed=False,
+                kind="3d",
+                status="ok",
             )
         ]
         assert not library.truncated
@@ -205,6 +207,40 @@ async def test_the_library_of_luts_is_read_into_its_roots_and_files(tmp_path: Pa
         with pytest.raises(EngineError) as odd:
             await connected.luts()
         assert odd.value.code == UNEXPECTED
+
+
+async def test_each_lut_says_its_kind_and_whether_it_parses(tmp_path: Path) -> None:
+    root = {"place": "project", "path": str(tmp_path), "exists": True}
+    lut = {"name": "a.cube", "root": 0, "size": 9, "modified_us": None, "shadowed": False}
+    async with served(tmp_path / "film") as fake, await attached(tmp_path / "film") as connected:
+        fake.results["luts.list"] = {
+            "roots": [root],
+            "luts": [
+                {**lut, "kind": "shaper+3d", "status": "ok"},
+                {**lut, "kind": "3d", "status": "error", "message": "line 3: too few"},
+                {**lut, "kind": None, "status": "unchecked"},
+                # An engine from before the kind and the status: unchecked, of no kind.
+                lut,
+            ],
+            "truncated": False,
+        }
+        said = [(one.kind, one.status, one.message) for one in (await connected.luts()).luts]
+        assert said == [
+            ("shaper+3d", "ok", None),
+            ("3d", "error", "line 3: too few"),
+            (None, "unchecked", None),
+            (None, "unchecked", None),
+        ]
+        for odd in (
+            {**lut, "kind": "2d", "status": "ok"},
+            {**lut, "status": "broken"},
+            {**lut, "status": "error"},
+            {**lut, "status": "error", "message": 3},
+        ):
+            fake.results["luts.list"] = {"roots": [root], "luts": [odd], "truncated": False}
+            with pytest.raises(EngineError) as unexpected:
+                await connected.luts()
+            assert unexpected.value.code == UNEXPECTED, odd
 
 
 async def test_a_refusal_keeps_what_the_engine_said_of_it(tmp_path: Path) -> None:

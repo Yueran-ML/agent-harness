@@ -433,7 +433,16 @@ export interface LutRoot { place: 'project' | 'library'; path: string; exists: b
  * A LUT of the library, by the name that a node gives it (its path from its root, with `/`); `root`
  * is the index of its root, and `shadowed` says that a root before it has one of the same name, which is read instead.
  */
-export interface LutFile { name: string; root: number; size: number; modified_us: number | null; shadowed: boolean }
+export interface LutFile {
+  name: string; root: number; size: number; modified_us: number | null; shadowed: boolean;
+  /** Its tables (null where it cannot be told; left out by an engine from before it said). */
+  kind?: LutKind | null;
+  /** Whether it parses as the engine grades with it: `error` cannot be used (`message` says why); `unchecked` was not parsed by the list. */
+  status?: 'ok' | 'error' | 'unchecked';
+  message?: string;
+}
+/** What tables a `.cube` has: a 1D table, a cube, or a 1D shaper before a cube (Resolve's). */
+export type LutKind = '1d' | '3d' | 'shaper+3d';
 /** The answer of `luts.list`. */
 export interface LutLibrary { roots: LutRoot[]; luts: LutFile[]; truncated: boolean }
 /** What a view shows, as `view.display` tells it: whether Windows has HDR on for its monitor, and whether it shows HDR. */

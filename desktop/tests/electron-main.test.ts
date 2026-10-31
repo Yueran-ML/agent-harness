@@ -4209,6 +4209,41 @@ describe('the engine of the studio', () => {
     expect(shell.system.showItemInFolder.mock.calls.length).toBe(count);
   });
 
+  it('opens in the file manager only a folder that the engine lists as a root of LUTs', async () => {
+    const shell = await shellHarness();
+    const project = path.resolve('/film/.columbina/studio');
+    const library = path.resolve('/home/me/.columbina/luts');
+    expect(await shell.invoke('engine-open-lut-folder', { path: library })).toBe(false);
+    await openIn(shell);
+    const [main] = connections(shell);
+    const server = shell.engines.servers.get(main.address)!;
+    server.answers.set('luts.list', () => ({ result: { roots: [
+      { place: 'project', path: project, exists: true }, { place: 'library', path: library, exists: true },
+    ], luts: [], truncated: false } }));
+    expect(await shell.invoke('engine-open-lut-folder', { path: library })).toBe(true);
+    expect(shell.system.openPath).toHaveBeenLastCalledWith(library);
+    expect(main.written.at(-1)).toMatchObject({ method: 'luts.list' });
+    expect(await shell.invoke('engine-open-lut-folder', { path: project })).toBe(true);
+    expect(shell.system.openPath).toHaveBeenLastCalledWith(project);
+    // Any other path, one below a root or above it, a relative one or none, is not opened.
+    const count = shell.system.openPath.mock.calls.length;
+    for (const asked of [
+      { path: path.join(library, 'Film') }, { path: path.dirname(library) }, { path: path.resolve('/Windows/System32') },
+      { path: 'luts' }, { path: `${library}${path.sep}..` }, { root: 1 }, {}, null,
+    ]) expect(await shell.invoke('engine-open-lut-folder', asked)).toBe(false);
+    // A root that is not there, or an engine that lists none, opens nothing either.
+    shell.gone.add(library);
+    expect(await shell.invoke('engine-open-lut-folder', { path: library })).toBe(false);
+    shell.gone.delete(library);
+    server.answers.set('luts.list', () => ({ error: { code: -32601, message: 'no such method' } }));
+    expect(await shell.invoke('engine-open-lut-folder', { path: library })).toBe(false);
+    expect(shell.system.openPath.mock.calls.length).toBe(count);
+    // What the file manager says it could not do is told.
+    server.answers.set('luts.list', () => ({ result: { roots: [{ place: 'library', path: library, exists: true }], luts: [], truncated: false } }));
+    shell.system.openPath.mockResolvedValueOnce('No application opens folders.');
+    await expect(shell.invoke('engine-open-lut-folder', { path: library })).rejects.toThrow('No application opens folders.');
+  });
+
   it('refuses a transaction of the page that says whether media is a still picture', async () => {
     const shell = await shellHarness();
     await openIn(shell);
@@ -4784,7 +4819,7 @@ describe('the engine of the studio', () => {
 
   it('answers only its own window', async () => {
     const shell = await shellHarness();
-    for (const name of ['engine-open', 'engine-call', 'engine-import', 'engine-render', 'engine-reveal', 'engine-view-rect', 'engine-view-show', 'engine-close']) {
+    for (const name of ['engine-open', 'engine-call', 'engine-import', 'engine-render', 'engine-reveal', 'engine-open-lut-folder', 'engine-view-rect', 'engine-view-show', 'engine-close']) {
       await expect(Promise.resolve().then(() => shell.handlers.get(`columbina:${name}`)!(shell.unrelated, { cwd: path.resolve('/film') })))
         .rejects.toThrow('IPC sender');
     }

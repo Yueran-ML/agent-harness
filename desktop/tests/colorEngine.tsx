@@ -28,18 +28,33 @@ export const lutGrade = (lut: string | null = null): Grade => ({
 export const library = (): LutLibrary => ({
   roots: [{ place: 'project', path: 'F:\\film\\.columbina\\studio', exists: true }, { place: 'library', path: 'C:\\Users\\me\\.columbina\\luts', exists: true }],
   luts: [
-    { name: 'Looks/Teal.cube', root: 0, size: 10, modified_us: 1, shadowed: false },
-    { name: 'shaper.cube', root: 0, size: 10, modified_us: 1, shadowed: false },
-    { name: 'Film/Kodak 2383.cube', root: 1, size: 10, modified_us: 1, shadowed: false },
-    { name: 'Film/Fuji 3513.cube', root: 1, size: 10, modified_us: 1, shadowed: false },
-    { name: 'shaper.cube', root: 1, size: 10, modified_us: 1, shadowed: true },
+    { name: 'Looks/Teal.cube', root: 0, size: 10, modified_us: 1, shadowed: false, kind: '3d', status: 'ok' },
+    { name: 'shaper.cube', root: 0, size: 10, modified_us: 1, shadowed: false, kind: 'shaper+3d', status: 'ok' },
+    { name: 'Film/Kodak 2383.cube', root: 1, size: 10, modified_us: 1, shadowed: false, kind: '3d', status: 'ok' },
+    { name: 'Film/Fuji 3513.cube', root: 1, size: 10, modified_us: 1, shadowed: false, kind: '3d', status: 'ok' },
+    { name: 'shaper.cube', root: 1, size: 10, modified_us: 1, shadowed: true, kind: '3d', status: 'ok' },
   ],
   truncated: false,
 });
 
+/** The library with a 1D LUT in the project's Log folder and in Film, and a 3D LUT in Film that does not parse. */
+export const mixedLibrary = (): LutLibrary => {
+  const kept = library();
+  return { ...kept, luts: [
+    ...kept.luts.slice(0, 2),
+    { name: 'Log/Log to Lin.cube', root: 0, size: 10, modified_us: 1, shadowed: false, kind: '1d', status: 'ok' },
+    ...kept.luts.slice(2, 4),
+    { name: 'Film/Broken.cube', root: 1, size: 10, modified_us: 1, shadowed: false, kind: '3d', status: 'error', message: 'line 3: the file ends after 1 of the 8 rows of its tables' },
+    { name: 'Film/Linear.cube', root: 1, size: 10, modified_us: 1, shadowed: false, kind: '1d', status: 'ok' },
+    ...kept.luts.slice(4),
+  ] };
+};
+
 export function fakeEngine(project: Project, luts: LutLibrary = library()) {
   let revision = 0;
   let refusal: Record<string, unknown> | null = null;
+  /** A promise that `transaction.apply` waits for before it answers, where a test holds it. */
+  let held: Promise<void> | null = null;
   const listeners = new Set<(event: EngineEvent) => void>();
   const tell = (method: string, params: unknown) => listeners.forEach(listener => listener({ kind: 'notification', session: 1, method, params }));
   let state: TransportState = { monitor: 'timeline', timeline: null, frame: null, shown: null, last: null, speed: 1, playing: false, proxies: true, exact: true, sound: 'off', source: null, late: 0 };
@@ -69,6 +84,7 @@ export function fakeEngine(project: Project, luts: LutLibrary = library()) {
         return { ok: true, result: { hdr: params?.hdr ?? true, source: view, timeline: view } };
       }
       if (method === 'transaction.apply') {
+        if (held) await held;
         if (refusal) return { ok: false, error: { code: -32001, message: 'refused', data: refusal } };
         const done = (params!.ops as Op[]).filter(op => 'op' in op);
         for (const op of done) project = applyOp(project, op);
@@ -78,13 +94,23 @@ export function fakeEngine(project: Project, luts: LutLibrary = library()) {
       }
       return { ok: true, result: {} };
     }),
+    // The shell opens a root of LUTs that the engine lists, and nothing else.
+    openLutFolder: vi.fn(async (folder: string) => luts.roots.some(root => root.path === folder && root.exists)),
     importFiles: vi.fn(async () => ({ ok: true, result: null })), viewRect: vi.fn(async () => {}), viewShow: vi.fn(async () => {}), close: vi.fn(async () => {}),
     onEvent: (listener: (event: EngineEvent) => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
-  } as unknown as EngineBridge & { call: ReturnType<typeof vi.fn> };
+  } as unknown as EngineBridge & { call: ReturnType<typeof vi.fn>; openLutFolder: ReturnType<typeof vi.fn> };
   return {
     bridge, copy: new ProjectCopy(bridge),
     project: () => project,
     refuse: (data: Record<string, unknown> | null) => { refusal = data; },
+    /** Hold the answers of transactions until the promise settles. */
+    hold: (until: Promise<void> | null) => { held = until; },
+    /** Another client (or an undo) changes the project: the operations are applied and told, as made by an agent. */
+    outside: (ops: Op[]) => act(() => {
+      for (const op of ops) project = applyOp(project, op);
+      revision++;
+      tell('project.changed', { revision, made_by: 'agent', by: 'agent', next_id: project.next_id, done: ops });
+    }),
     /** The engine is started again: a new session is opened. */
     restart: () => act(() => { session += 1; opened(); }),
     notify: (fields: Record<string, unknown>) => act(() => { state = { ...state, ...fields } as TransportState; tell('transport.state', state); }),

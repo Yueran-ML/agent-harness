@@ -363,7 +363,7 @@ async def test_a_lut_is_set_by_its_name_in_the_library_and_a_missing_one_is_told
 ) -> None:
     desk, fake = studio
     listed = result(await desk.call("video_grade_lut", action="list"))
-    assert listed["luts"] == [{"name": "LUTs/film.cube"}]
+    assert listed["luts"] == [{"name": "LUTs/film.cube", "kind": "3d"}]
     assert [one["place"] for one in listed["roots"]] == ["project", "library"]
     told = result(await desk.call("video_grade_lut", grade="c1", lut="LUTs/film.cube"))
     assert fake.transactions[0][0] == {
@@ -386,6 +386,39 @@ async def test_a_lut_is_set_by_its_name_in_the_library_and_a_missing_one_is_told
     listing = result(await desk.call("video_info"))
     clips = listing["timelines"][0]["tracks"][0]["clips"]
     assert clips[1]["grade"]["nodes"][0]["lut_missing"] == message
+
+
+async def test_a_lut_that_does_not_parse_is_listed_with_why_and_not_set(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    root = {"place": "project", "path": str(desk.work), "exists": True}
+    lut = {"root": 0, "size": 9, "modified_us": None, "shadowed": False}
+    fake.results["luts.list"] = {
+        "roots": [root],
+        "luts": [
+            {**lut, "name": "Log.cube", "kind": "1d", "status": "ok"},
+            {**lut, "name": "Broken.cube", "kind": "3d", "status": "error", "message": "line 3"},
+            {**lut, "name": "Old.cube"},
+        ],
+        "truncated": False,
+    }
+    listed = result(await desk.call("video_grade_lut", action="list"))
+    assert listed["luts"] == [
+        {"name": "Log.cube", "kind": "1d"},
+        {"name": "Broken.cube", "kind": "3d", "error": "line 3"},
+        {"name": "Old.cube"},
+    ]
+    refused = await desk.call("video_grade_lut", grade="c1", lut="broken.cube")
+    assert refused.error is not None
+    assert "the LUT Broken.cube cannot be used: line 3" in refused.text
+    assert fake.transactions == []
+    result(await desk.call("video_grade_lut", grade="c1", lut="Log.cube"))
+    result(await desk.call("video_grade_lut", grade="c1", lut="Old.cube"))
+    assert [ops[1]["params"] for ops in fake.transactions] == [
+        {"lut": "Log.cube"},
+        {"lut": "Old.cube"},
+    ]
 
 
 async def test_a_group_is_made_with_its_clips_and_a_pre_grade_in_one_step(
@@ -616,7 +649,7 @@ async def test_the_engine_grades_as_the_tools_ask(
     )
     (desk.work / ".columbina" / "studio" / "film.cube").write_text(cube, encoding="utf-8")
     listed = result(await desk.call("video_grade_lut", action="list"))
-    assert {"name": "film.cube"} in listed["luts"]
+    assert {"name": "film.cube", "kind": "3d"} in listed["luts"]
     result(await desk.call("video_grade_lut", grade=first, node=1, lut="film.cube"))
     found = result(await desk.call("video_grade_info", grade=first))
     assert found["nodes"][0]["lut"] == "film.cube"

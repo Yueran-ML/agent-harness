@@ -2093,6 +2093,27 @@ function installHandlers() {
     shell.showItemInFolder(job.path);
     return true;
   });
+  ipcMain.handle('columbina:engine-open-lut-folder', async (event, asked) => {
+    checkSender(event);
+    refuseStudioElsewhere();
+    // Open LUT Folder (Reference Manual 20, p. 3409): only a folder that the engine lists as a root
+    // of LUTs now (`luts.list`), the one the page names among them, never another path.
+    const open = studio;
+    const named = asked?.path;
+    if (!open || typeof named !== 'string' || !path.isAbsolute(named)) return false;
+    const listed = await answered(open.session.call('luts.list', null));
+    const roots = listed.ok && Array.isArray(listed.result?.roots) ? listed.result.roots : [];
+    const root = roots.find(each => typeof each?.path === 'string' && path.isAbsolute(each.path) && each.path === named);
+    if (!root || studio !== open) return false;
+    try {
+      if (!statSync(root.path).isDirectory()) return false;
+    } catch {
+      return false;
+    }
+    const failed = await shell.openPath(root.path);
+    if (failed) throw new Error(failed);
+    return true;
+  });
   ipcMain.handle('columbina:left-key', (event, asked) => {
     checkSender(event);
     // macOS keeps its menu, whose keys never come to the page.

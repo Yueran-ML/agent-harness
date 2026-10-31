@@ -5,7 +5,8 @@ import type { EngineBridge } from '../../bridge';
 import type { Group, LutFile, Timeline } from '../engine';
 import { ColorMenu, type Menu } from './ColorMenu';
 import {
-  FAVORITES, favoriteLuts, folderId, folderOf, LUT_DRAG, lutFolders, lutsIn, lutTitle, MISSING, placeOf, searched, usersOf,
+  FAVORITES, favoriteLuts, folderId, folderOf, LUT_DRAG, lutBroken, lutDimension, lutFolders, lutsIn, lutTitle, lutUsable, MISSING, placeOf, searched,
+  usersOf,
 } from './luts';
 import { toggleFavorite, useFavoriteLuts, useLutLibrary } from './useLuts';
 import './luts.css';
@@ -26,7 +27,9 @@ export interface RevealedLut { name: string; asked: number }
  * to the current node or adds it to the favorites, as the star does that shows on it under the
  * pointer; a right-click elsewhere refreshes the list from the disk. The thumbnails of Resolve show
  * each LUT on a test image or on the frame shown: the engine cannot draw a LUT on a frame by itself
- * yet, so each shows its name.
+ * yet, so each shows its name, and whether it is a 1D or a 3D LUT (the Type that Resolve's Column
+ * view and Thumbnail Sort show, p. 3411). A LUT that the engine could not parse is shown marked,
+ * with why under the pointer, and cannot be dragged or applied.
  */
 export function LutBrowser({ bridge, session, canApply, onApply, missing, timeline, groups, numbers, revealed }: {
   bridge: Pick<EngineBridge, 'call' | 'onEvent'>;
@@ -90,7 +93,7 @@ export function LutBrowser({ bridge, session, canApply, onApply, missing, timeli
     setChosen(keyOf(lut));
     const liked = favorites.has(lut.name);
     setMenu({ x: event.clientX, y: event.clientY, label: lutWords.menu, items: [
-      { id: 'lut-apply', label: lutWords.apply, disabled: !canApply || lut.shadowed, run: () => onApply(lut.name) },
+      { id: 'lut-apply', label: lutWords.apply, disabled: !canApply || !lutUsable(lut), run: () => onApply(lut.name) },
       { id: 'lut-favorite', label: liked ? lutWords.removeFavorite : lutWords.addFavorite, disabled: lut.shadowed, run: () => toggleFavorite(lut.name) },
     ] });
   };
@@ -144,11 +147,15 @@ export function LutBrowser({ bridge, session, canApply, onApply, missing, timeli
             : <ul ref={list} className="color-lut-list" aria-label={lutWords.list} data-test="lut-list">
               {luts.map((lut) => {
                 const liked = favorites.has(lut.name);
+                const broken = lutBroken(lut);
+                const why = lut.shadowed ? said.lutShadowed : broken ? [said.lutBroken, ...(lut.message ? [lut.message] : [])].join('\n') : null;
                 return <li key={keyOf(lut)} className="color-lut" data-key={keyOf(lut)} data-lut={lut.name} aria-selected={chosen === keyOf(lut)}
-                  data-shadowed={lut.shadowed || undefined} title={lut.shadowed ? `${lut.name}\n${said.lutShadowed}` : lut.name}
-                  draggable={!lut.shadowed} onDragStart={event => drag(lut, event)} onClick={() => setChosen(keyOf(lut))}
+                  data-shadowed={lut.shadowed || undefined} data-broken={broken || undefined} data-kind={lutDimension(lut)}
+                  title={why === null ? lut.name : `${lut.name}\n${why}`}
+                  draggable={lutUsable(lut)} onDragStart={event => drag(lut, event)} onClick={() => setChosen(keyOf(lut))}
                   onContextMenu={event => lutMenu(lut, event)} data-test="lut">
-                  <span className="color-lut-picture" aria-hidden="true"><Layers3 size={22} /></span>
+                  <span className="color-lut-picture" aria-hidden="true">{broken ? <TriangleAlert size={22} /> : <Layers3 size={22} />}</span>
+                  <span className="color-lut-kind" lang="en" data-test="lut-kind">{lutDimension(lut) === '1d' ? '1D' : '3D'}</span>
                   <span className="color-lut-name">{lutTitle(lut.name)}</span>
                   {!lut.shadowed && <button type="button" className="color-lut-star" aria-pressed={liked} data-liked={liked || undefined}
                     aria-label={liked ? lutWords.removeFavorite : lutWords.addFavorite} title={liked ? lutWords.removeFavorite : lutWords.addFavorite}

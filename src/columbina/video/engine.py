@@ -73,8 +73,10 @@ __all__ = [
     "Engine",
     "EngineError",
     "Lut",
+    "LutKind",
     "LutLibrary",
     "LutRoot",
+    "LutStatus",
     "Progress",
     "RenderState",
     "Rendering",
@@ -374,6 +376,13 @@ class LutRoot:
     exists: bool
 
 
+LutKind = Literal["1d", "3d", "shaper+3d"]
+"""What tables a ``.cube`` has, as ``luts.list`` tells it."""
+
+LutStatus = Literal["ok", "error", "unchecked"]
+"""Whether a ``.cube`` parses, as ``luts.list`` tells it."""
+
+
 @dataclass(frozen=True)
 class Lut:
     """A ``.cube`` file under a root, by the name that a corrector's ``lut`` gives it.
@@ -385,6 +394,13 @@ class Lut:
         modified_us: When it was last written, in microseconds since 1970 (UTC).
         shadowed: Whether a root before it has a file of the same name, which a node of that
             name reads instead.
+        kind: Its tables: ``1d``, ``3d``, or ``shaper+3d`` (a 1D shaper before the cube, as
+            Resolve writes them); ``None`` where it cannot be told, or the engine does not say.
+        status: Whether it parses as the engine reads it when it grades: ``ok``; ``error``
+            (``message`` says why), a file that cannot be used; or ``unchecked``, not parsed by
+            the list (its time ran out, or the file is very long), and so for an engine from
+            before the list said it.
+        message: Why it does not parse, where ``status`` is ``error``.
     """
 
     name: str
@@ -392,6 +408,9 @@ class Lut:
     size: int
     modified_us: int | None
     shadowed: bool
+    kind: LutKind | None = None
+    status: LutStatus = "unchecked"
+    message: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1669,6 +1688,15 @@ def _library(said: dict[str, Any]) -> LutLibrary:
             or not 0 <= root < len(read_roots)
         ):
             raise _unexpected(method)
+        # An engine from before the kind and the status of each file leaves them out.
+        kind, status = each.get("kind"), each.get("status", "unchecked")
+        message = each.get("message") if status == "error" else None
+        if (
+            kind not in (None, "1d", "3d", "shaper+3d")
+            or status not in ("ok", "error", "unchecked")
+            or (status == "error" and not isinstance(message, str))
+        ):
+            raise _unexpected(method)
         read_luts.append(
             Lut(
                 name=name,
@@ -1676,6 +1704,9 @@ def _library(said: dict[str, Any]) -> LutLibrary:
                 size=_whole(each, "size"),
                 modified_us=modified,
                 shadowed=shadowed,
+                kind=kind,
+                status=status,
+                message=message,
             )
         )
     return LutLibrary(roots=read_roots, luts=read_luts, truncated=truncated)

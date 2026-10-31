@@ -118,6 +118,8 @@ contextBridge.exposeInMainWorld('columbina', {
       language: options?.language, name: options?.name,
     }),
     reveal: (job) => ipcRenderer.invoke('columbina:engine-reveal', { job }),
+    // A root of LUTs that `luts.list` gave, which the shell opens only if the engine lists it.
+    openLutFolder: (folder) => ipcRenderer.invoke('columbina:engine-open-lut-folder', { path: folder }),
     viewRect: (rect, monitor) => ipcRenderer.invoke('columbina:engine-view-rect', {
       monitor, x: rect?.x, y: rect?.y, width: rect?.width, height: rect?.height,
     }),

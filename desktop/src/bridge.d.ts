@@ -296,6 +296,12 @@ export interface EngineBridge {
    */
   reveal(job: string): Promise<boolean>;
   /**
+   * Open LUT Folder (Reference Manual 20, p. 3409): show a root of LUTs that `luts.list` gave in
+   * the file manager of the system. The shell asks the engine for its roots again and opens the
+   * folder only where it is one of them and is there; false where it is not.
+   */
+  openLutFolder(folder: string): Promise<boolean>;
+  /**
    * Say where the viewer lies, in device pixels from the corner of the client area. The view is
    * made there once an engine is open, and moved there as it changes.
    */

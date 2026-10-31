@@ -1,34 +1,48 @@
-import { useCallback, useRef, useState, type ReactNode } from 'react';
-import { RotateCw } from 'lucide-react';
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
+import { FolderOpen, RotateCw } from 'lucide-react';
 import { useWords } from '../../app/locale';
 import { Sheet } from '../../app/Sheet';
 import type { EngineBridge } from '../../bridge';
 import { callEngine, keptColor, type ColorSettings, type LutLibrary, type LutPair, type Project, type SatRolloff } from '../engine';
 import { refusalText } from '../inspector/refusal';
-import { namedLuts } from '../color/luts';
+import { lutBroken, lutDimension, namedLuts } from '../color/luts';
 import { useLutLibrary } from '../color/useLuts';
 import { hdrOffEverywhere, useViewerHdr } from '../viewerDisplay';
 import {
-  ACES_VERSIONS, acesVersionPatch, BYPASS, colorFieldsShown, DAVINCI, DRTS, GAMUT_NAMES, GAMUTS, gammasOf, LOG, LUMINANCE_NAMES, LUMINANCES,
-  NODE_LUT_NAMES, ODTS, PRESET_NAMES, PRESETS, presetPatch, PROCESSING_NAMES, processingPatch, RESIZES, SCIENCE_NAMES, SCIENCES, separateGamma,
-  SPACES, SPLIT_GAMUTS, splitSpace, joinSpace, withGamut, type ColorField,
+  ACES_VERSIONS, acesVersionPatch, BYPASS, colorFieldsShown, DAVINCI, draftChanges, drafted, DRTS, GAMUT_NAMES, GAMUTS, gammasOf, LOG,
+  LUMINANCE_NAMES, LUMINANCES, NODE_LUT_NAMES, ODTS, PRESET_NAMES, PRESETS, presetPatch, PROCESSING_NAMES, processingPatch, RESIZES,
+  SCIENCE_NAMES, SCIENCES, separateGamma, SPACES, SPLIT_GAMUTS, splitSpace, joinSpace, withEdit, withGamut, type ColorField,
 } from './colorSettings';
 import './settings.css';
 
 type Panel = 'color' | 'general';
 type Patch = Record<string, unknown>;
+type Bridge = Pick<EngineBridge, 'call' | 'onEvent'> & Partial<Pick<EngineBridge, 'openLutFolder'>>;
+
+/** What the window has changed and not saved: edits of the project's `color`, and Display HDR On Viewers If Available (null: not changed). */
+interface Draft { color: Patch; hdr: boolean | null }
+const UNCHANGED: Draft = { color: {}, hdr: null };
 
 /**
- * The Project Settings window (Reference Manual 20, pp. 19–20): its panels in a sidebar at the left,
- * of which the studio has Color Management (pp. 149–153, 224–252) and the Color group of General
- * Options (p. 156). It opens from the gear at the lower right of every page.
+ * The Project Settings window (Reference Manual 20, pp. 19–20, 138–139): its panels in a sidebar at
+ * the left, of which the studio has Color Management (pp. 149–153, 224–252) and the Color group of
+ * General Options (p. 156). It opens from the gear at the lower right of every page.
  *
- * Resolve applies its settings when Save is pressed. Here each change is sent at once, as one
- * `set_color_settings` of what changed (and what has to change with it), which one undo takes back
- * in the one history of the project; what the engine refuses is said at the top of the panel.
+ * As in Resolve, a change is made when Save is clicked (p. 139): until then the window edits a
+ * draft, shown over the project as it is now (`drafted`). Save sends what differs from the project
+ * then as one `set_color_settings`, one transaction that one undo takes back, and closes the
+ * window; Alt+click Save keeps it open, as Option-click does in Resolve. Cancel, the cross and
+ * Escape close it and forget the draft. What the engine refuses is said at the top, and the window
+ * stays open with the draft. The manual does not say what an open window does when the project
+ * changes elsewhere (another client, an undo): the settings not edited here show the new values,
+ * the edits stay, and a line says so.
+ *
+ * Display HDR On Viewers If Available is a setting of this window in Resolve (p. 244) and waits for
+ * Save like the others; here it is kept on this computer (`viewerDisplay.ts`), and set when Save is
+ * clicked and the rest was accepted.
  */
 export function ProjectSettings({ bridge, project, onClose }: {
-  bridge: Pick<EngineBridge, 'call' | 'onEvent'>;
+  bridge: Bridge;
   project: Project | null;
   onClose: () => void;
 }) {
@@ -37,23 +51,61 @@ export function ProjectSettings({ bridge, project, onClose }: {
   const said = words.hint.studio;
   const [panel, setPanel] = useState<Panel>('color');
   const [problem, setProblem] = useState<string | null>(null);
-  const pending = useRef(false);
-  const settings = project === null ? null : keptColor(project);
+  const [draft, setDraft] = useState<Draft>(UNCHANGED);
+  const [elsewhere, setElsewhere] = useState(false);
+  const saving = useRef(false);
+  const viewer = useViewerHdr(bridge);
+  const current = project === null ? null : keptColor(project);
+  const settings = current === null ? null : drafted(current, draft.color);
+  const hdr = draft.hdr ?? viewer.hdr;
 
-  const send = useCallback(async (patch: Patch) => {
-    if (pending.current) { setProblem(said.edit.pending); return; }
-    pending.current = true;
+  // The project changed while there are edits not saved, and not by Save: what was not edited shows the new values.
+  const color = project?.color;
+  const seen = useRef(color);
+  useEffect(() => {
+    if (seen.current === color) return;
+    seen.current = color;
+    if (!saving.current && Object.keys(draft.color).length > 0) setElsewhere(true);
+  }, [color, draft.color]);
+
+  const edit = (patch: Patch) => setDraft(was => ({ ...was, color: withEdit(was.color, patch) }));
+  const setHdr = (on: boolean) => setDraft(was => ({ ...was, hdr: on }));
+
+  const save = async (keepOpen: boolean) => {
+    if (current === null) return;
+    if (saving.current) { setProblem(said.edit.pending); return; }
+    const patch = draftChanges(current, draft.color);
+    saving.current = true;
     setProblem(null);
     try {
-      await callEngine(bridge, 'transaction.apply', { ops: [{ op: 'set_color_settings', settings: patch }] });
+      if (patch !== null) await callEngine(bridge, 'transaction.apply', { ops: [{ op: 'set_color_settings', settings: patch }] });
     } catch (error) {
       setProblem(refusalText(error, said));
+      return;
     } finally {
-      pending.current = false;
+      saving.current = false;
     }
-  }, [bridge, said]);
+    if (draft.hdr !== null && draft.hdr !== viewer.hdr) viewer.set(draft.hdr);
+    setDraft(UNCHANGED);
+    setElsewhere(false);
+    if (!keepOpen) onClose();
+  };
 
-  return <Sheet title={labels.title} wide onClose={onClose} foot={<button type="button" className="btn" onClick={onClose} data-first>{words.label.close}</button>}>
+  const openFolder = async (folder: string) => {
+    let opened = false;
+    try {
+      opened = await bridge.openLutFolder!(folder);
+    } catch {
+      opened = false;
+    }
+    if (!opened) setProblem(said.settings.folderFailed);
+  };
+
+  return <Sheet title={labels.title} wide onClose={onClose} foot={<>
+    <button type="button" className="btn" onClick={onClose} data-first data-test="settings-cancel">{words.label.cancel}</button>
+    <button type="button" className="btn btn-main" disabled={settings === null} title={said.settings.applied}
+      onClick={(event: ReactMouseEvent) => void save(event.altKey)} data-test="settings-save">{labels.save}</button>
+  </>}>
     <div className="project-settings" data-test="project-settings">
       <nav className="project-settings-panels" aria-label={labels.panels}>
         {(['color', 'general'] as const).map(each => <button key={each} type="button" aria-pressed={panel === each} onClick={() => setPanel(each)}
@@ -61,11 +113,13 @@ export function ProjectSettings({ bridge, project, onClose }: {
       </nav>
       <div className="project-settings-panel">
         {problem && <p className="project-settings-problem" role="alert" data-test="settings-problem">{problem}</p>}
+        {elsewhere && <p className="caption" role="status" data-test="settings-elsewhere">{said.settings.changedElsewhere}</p>}
         {settings === null ? <p className="caption">{said.settings.noProject}</p> : panel === 'color'
-          ? <ColorManagement bridge={bridge} settings={settings} send={send} />
+          ? <ColorManagement bridge={bridge} settings={settings} send={edit} hdr={hdr} setHdr={setHdr}
+            openFolder={bridge.openLutFolder ? (folder => void openFolder(folder)) : null} />
           : <section aria-label={labels.color}>
             <h3 className="overline">{labels.color}</h3>
-            <Check label={labels.sCurve} checked={settings.s_curve_contrast} onChange={on => void send({ s_curve_contrast: on })} test="s_curve_contrast" />
+            <Check label={labels.sCurve} checked={settings.s_curve_contrast} onChange={on => edit({ s_curve_contrast: on })} test="s_curve_contrast" />
           </section>}
         <p className="caption">{said.settings.applied}</p>
       </div>
@@ -138,18 +192,30 @@ function SpacePicker({ id, label, gammaLabel, value, bypass, split, onChange, te
   </>;
 }
 
-/** The two menus of a stage of LUTs, its 1D and its 3D (pp. 151–152): no LUT, or one of the library, by the name a node gives it. */
+/**
+ * The two menus of a stage of LUTs, its 1D and its 3D (pp. 151–152): no LUT, or one of the library
+ * of that kind, by the name a node gives it. One that the engine could not parse is shown, and
+ * cannot be chosen.
+ */
 function LutPairPicker({ field, label, value, library, send }: {
   field: 'input_lut' | 'output_lut' | 'viewer_lut'; label: string; value: LutPair; library: LutLibrary | null; send: (patch: Patch) => void;
 }) {
-  const labels = useWords().label.studio.settings;
-  const names = library === null ? [] : namedLuts(library).map(lut => lut.name).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  const words = useWords();
+  const labels = words.label.studio.settings;
+  const broken = words.label.studio.colorPage.lutPanel.broken;
+  const named = library === null ? [] : namedLuts(library).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
   const menu = (kind: '1d' | '3d') => {
     const chosen = value[kind];
-    const options = [{ value: '', label: labels.noLut }, ...names.map(name => ({ value: name, label: name.replace(/\.cube$/i, '') }))];
-    if (chosen !== null && !names.includes(chosen)) options.push({ value: chosen, label: `${chosen} (${labels.missing})` });
-    return <Choice id={`${field}-${kind}`} aria={`${label}: ${kind === '1d' ? labels.lut1d : labels.lut3d}`} value={chosen ?? ''} options={options}
-      onChange={name => send({ [field]: { [kind]: name === '' ? null : name } })} test={`${field}-${kind}`} />;
+    const luts = named.filter(lut => lutDimension(lut) === kind);
+    const options = [{ value: '', label: labels.noLut, disabled: false }, ...luts.map(lut => ({
+      value: lut.name, label: `${lut.name.replace(/\.cube$/i, '')}${lutBroken(lut) ? ` (${broken})` : ''}`, disabled: lutBroken(lut),
+    }))];
+    if (chosen !== null && !luts.some(lut => lut.name === chosen)) options.push({ value: chosen, label: `${chosen} (${labels.missing})`, disabled: false });
+    return <select id={`${field}-${kind}`} className="field" aria-label={`${label}: ${kind === '1d' ? labels.lut1d : labels.lut3d}`} value={chosen ?? ''}
+      onChange={(event) => { const name = event.target.value; if (name !== (chosen ?? '')) send({ [field]: { [kind]: name === '' ? null : name } }); }}
+      data-test={`color-${field}-${kind}`}>
+      {options.map(each => <option key={each.value} value={each.value} disabled={each.disabled}>{each.label}</option>)}
+    </select>;
   };
   return <Row label={label} test={field}>{menu('1d')}{menu('3d')}</Row>;
 }
@@ -157,9 +223,16 @@ function LutPairPicker({ field, label, value, library, send }: {
 /**
  * The Color Management panel (the interaction reference, §7.1, §5.3): Color Space & Transforms,
  * each setting shown where it applies (`colorFieldsShown`), and the Lookup Tables. Display HDR On
- * Viewers If Available is among them, as in Resolve, but is a preference of this computer.
+ * Viewers If Available is among them, as in Resolve, but is a preference of this computer. What it
+ * sets goes to the draft of the window (`send`, `setHdr`), which Save applies.
  */
-function ColorManagement({ bridge, settings, send }: { bridge: Pick<EngineBridge, 'call' | 'onEvent'>; settings: ColorSettings; send: (patch: Patch) => void }) {
+function ColorManagement({ bridge, settings, send, hdr, setHdr, openFolder }: {
+  bridge: Pick<EngineBridge, 'call' | 'onEvent'>; settings: ColorSettings; send: (patch: Patch) => void;
+  /** Display HDR On Viewers If Available, as the draft has it. */
+  hdr: boolean; setHdr: (on: boolean) => void;
+  /** Open LUT Folder (p. 3409), where the shell can open a folder. */
+  openFolder: ((folder: string) => void) | null;
+}) {
   const words = useWords();
   const labels = words.label.studio.settings;
   const said = words.hint.studio.settings;
@@ -267,8 +340,8 @@ function ColorManagement({ bridge, settings, send }: { bridge: Pick<EngineBridge
         <Choice id="node_luts_in" label={labels.nodeLuts} value={settings.node_luts_in} test="node_luts_in" onChange={value => set({ node_luts_in: value })}
           options={(['timeline', 'ap0_linear'] as const).map(each => ({ value: each, label: NODE_LUT_NAMES[each] }))} />
       </Row>}
-      <Check label={labels.displayHdr} checked={viewer.hdr} onChange={viewer.set} test="display_hdr" />
-      <p className="caption project-setting-hint">{said.displayHdr}{viewer.hdr && hdrOffEverywhere(viewer.shows) ? ` ${said.hdrOff}` : ''}</p>
+      <Check label={labels.displayHdr} checked={hdr} onChange={setHdr} test="display_hdr" />
+      <p className="caption project-setting-hint">{said.displayHdr}{hdr && hdrOffEverywhere(viewer.shows) ? ` ${said.hdrOff}` : ''}</p>
     </section>
     <section aria-label={labels.lookupTables}>
       <h3 className="overline">{labels.lookupTables}</h3>
@@ -286,7 +359,11 @@ function ColorManagement({ bridge, settings, send }: { bridge: Pick<EngineBridge
       </div>
       {library !== null && library.roots.length > 0 && <div className="caption project-lut-folders" data-test="lut-roots">
         <p>{said.lutFolders}</p>
-        <ol>{library.roots.map(root => <li key={root.path} lang="en" data-exists={root.exists}>{root.path}</li>)}</ol>
+        <ol>{library.roots.map(root => <li key={root.path} data-exists={root.exists} data-test="lut-root">
+          <span lang="en">{root.path}</span>
+          {openFolder && <button type="button" className="btn btn-quiet" disabled={!root.exists} title={root.exists ? root.path : said.folderAbsent}
+            onClick={() => openFolder(root.path)} data-test="open-lut-folder"><FolderOpen size={13} aria-hidden="true" />{labels.openLutFolder}</button>}
+        </li>)}</ol>
       </div>}
     </section>
   </div>;

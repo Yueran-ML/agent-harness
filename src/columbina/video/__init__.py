@@ -418,8 +418,9 @@ class _GradeLut(_Timeline):
     action: Literal["set", "clear", "list"] = Field(
         default="set",
         description=(
-            "list: the LUTs in the project folder and the library, by name. set: put lut on "
-            "node (a new corrector appended when node is omitted). clear: take node's LUT away."
+            "list: the LUTs in the project folder and the library, by name, with kind (1d, 3d, "
+            "shaper+3d) and error for one that cannot be used. set: put lut on node (a new "
+            "corrector appended when node is omitted). clear: take node's LUT away."
         ),
     )
     grade: str | _Target | None = Field(default=None, description=_TARGET)

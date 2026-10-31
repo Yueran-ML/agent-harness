@@ -837,7 +837,7 @@ export const en = {
         inputLut: 'Input Lookup Table', outputLut: 'Output Lookup Table', viewerLut: 'Color Viewer Lookup Table',
         lut1d: '1D lookup table', lut3d: '3D lookup table', noLut: 'No LUT selected', missing: 'missing',
         interpolation: '3D Lookup Table Interpolation', trilinear: 'Trilinear', tetrahedral: 'Tetrahedral', updateLists: 'Update Lists',
-        sCurve: 'Use S-curve for contrast',
+        openLutFolder: 'Open LUT Folder', sCurve: 'Use S-curve for contrast', save: 'Save',
       },
       /** Exporting a timeline: DaVinci Resolve's Quick Export, with the settings of its render. */
       render: {
@@ -899,6 +899,7 @@ export const en = {
           folders: 'LUT folders', list: 'LUTs', project: 'Project LUTs', library: 'LUT library', favorites: 'Favorites', missing: 'Missing LUTs',
           search: 'Search', refresh: 'Refresh', menu: 'LUT menu', apply: 'Apply LUT to Current Node', addFavorite: 'Add to Favorites',
           removeFavorite: 'Remove from Favorites', name: 'LUT name', clips: 'Clips', none: 'None',
+          broken: 'cannot be read',
         },
         /** The options menu of the viewer (p. 2986) with what the plan adds to it (p. 244). */
         viewerOptions: 'Viewer options', displayHdr: 'Display HDR On Viewers If Available', viewerLut: 'Viewer LUT',
@@ -1554,7 +1555,10 @@ export const en = {
       },
       timeline: { empty: 'Choose or create a timeline to begin editing.' },
       settings: {
-        applied: 'Each change is made at once, and can be undone like any edit.',
+        applied: 'Changes are made when you click Save, as one step that can be undone. Alt+click Save to keep this window open.',
+        changedElsewhere: 'The settings of the project were changed elsewhere. What you have not changed here shows the new values.',
+        folderAbsent: 'This folder does not exist yet.',
+        folderFailed: 'The folder could not be opened.',
         noProject: 'Open the project in the studio to change its settings.',
         regrade: 'Changing this after grading has begun changes how every grade looks.',
         displayHdr: 'This is kept on this computer for every project. The viewers show HDR only where HDR is on in the display settings of Windows.',
@@ -1628,6 +1632,7 @@ export const en = {
         noLutsHere: 'There are no LUTs here.',
         noFavorites: 'Point at a LUT and click its star to add it to the favorites.',
         lutShadowed: 'A LUT of the same name in the folder of the project is used instead.',
+        lutBroken: 'This LUT cannot be read, so it cannot be used.',
         missingLuts: 'These LUTs could not be read. The nodes that use them are graded without them.',
         palette: 'The controls of this palette come in a later version.',
         noCorrector: 'Choose a corrector node in the node editor to adjust it.',

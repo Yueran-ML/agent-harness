@@ -927,7 +927,7 @@ async fn dispatch(
         }
         "view.sample" => view_sample(engine, connection, id, params).await,
         "view.pointer" => view_pointer(engine, connection, kind, id, params).await,
-        "luts.list" => luts_list(engine, connection, id, params).await,
+        "luts.list" | "grade.export_lut" => luts_call(engine, connection, id, method, params).await,
         "viewer.wipe" | "viewer.split" => {
             let result = crate::stills::compare(engine, &engine.transport, method, params).await?;
             Ok(match connection.queue(rpc::result_line(id, &result)) {
@@ -1340,6 +1340,43 @@ async fn view_sample(
     })
     .await
     .map_err(|error| probe::drawing(&error.to_string()))??;
+    Ok(match connection.queue(rpc::result_line(id, &result)) {
+        Ok(()) => Reply::Queued,
+        Err(refused) => Reply::Refused(refused),
+    })
+}
+
+/// `luts.list`, or `grade.export_lut`.
+async fn luts_call(
+    engine: &Engine,
+    connection: &Connection,
+    id: &RawValue,
+    method: &str,
+    params: Option<&RawValue>,
+) -> Result<Reply, Reply> {
+    if method == "grade.export_lut" {
+        export_lut(engine, connection, id, params).await
+    } else {
+        luts_list(engine, connection, id, params).await
+    }
+}
+
+/// `grade.export_lut`: a grade baked into a cube and written (`crate::lut_export`).
+async fn export_lut(
+    engine: &Engine,
+    connection: &Connection,
+    id: &RawValue,
+    params: Option<&RawValue>,
+) -> Result<Reply, Reply> {
+    let request = crate::lut_export::Request::read(params)?;
+    let project = engine.state.lock().await.history.project().clone();
+    let places = engine.luts.clone();
+    let dir = PathBuf::from(&engine.project);
+    let result = tokio::task::spawn_blocking(move || {
+        crate::lut_export::export(&project, &dir, &places, &request)
+    })
+    .await
+    .map_err(|error| Fault::new(rpc::CANNOT_READ, error.to_string()))??;
     Ok(match connection.queue(rpc::result_line(id, &result)) {
         Ok(()) => Reply::Queued,
         Err(refused) => Reply::Refused(refused),

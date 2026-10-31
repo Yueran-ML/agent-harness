@@ -417,6 +417,9 @@ LutKind = Literal["1d", "3d", "shaper+3d"]
 LutStatus = Literal["ok", "error", "unchecked"]
 """Whether a ``.cube`` parses, as ``luts.list`` tells it."""
 
+LutSize = Literal[17, 33, 65]
+"""The points on an edge of a cube that ``grade.export_lut`` bakes, as Generate LUT offers."""
+
 
 @dataclass(frozen=True)
 class Lut:
@@ -1200,6 +1203,40 @@ class Engine:
         """
         said = await self._call("luts.list", {} if folder is None else {"folder": folder})
         return _library(said)
+
+    async def export_lut(
+        self,
+        grade: Mapping[str, Any],
+        path: str | Path,
+        *,
+        size: LutSize = 33,
+        node: str | None = None,
+        frame: int | None = None,
+        replace: bool = False,
+    ) -> dict[str, Any]:
+        """Bake a grade, or one corrector of it, into a 3D LUT written as a ``.cube``.
+
+        As Generate LUT of DaVinci Resolve: ``size`` points on an edge, what the grade does to
+        each colour on its own (Primaries, curves, Soft Clip, the LUTs of nodes); a node that
+        reads the pixels about each one (Midtone Detail) is left out and named in ``ignored``.
+        ``path`` is a name in the project folder, or an absolute path. ``frame`` is where keys
+        are read. The answer is ``{"path", "name", "size", "nodes", "ignored"}``; ``name`` is
+        what a corrector's ``lut`` names it by (``PROTOCOL.md``, Generate LUT).
+
+        Raises:
+            EngineError: The size, path, grade or node is refused (``-32602``), or a LUT of a
+                node cannot be read, the file is there without ``replace``, or it cannot be
+                written (``-32001``).
+        """
+        method = "grade.export_lut"
+        params: dict[str, Any] = {"grade": dict(grade), "size": size, "path": str(path)}
+        if node is not None:
+            params["node"] = node
+        if frame is not None:
+            params["frame"] = frame
+        if replace:
+            params["replace"] = True
+        return _object(await self._call(method, params), method)
 
     async def grab_still(
         self,

@@ -659,3 +659,55 @@ async def test_the_engine_grades_as_the_tools_ask(
     )
     assert refused.error is not None
     assert "Key Output gain (how strongly the node works): 0 to 2" in refused.text
+
+
+async def test_a_grade_is_exported_as_a_cube_that_the_engine_bakes(
+    ctx: Context, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from columbina.video import edits
+    from support.media import real_engine
+
+    monkeypatch.setenv("COLUMBINA_LUTS", str(tmp_path / "library"))
+    desk = await desk_of(ctx, tmp_path, engine=real_engine())
+    rate = edits.Rate(num=25, den=1)
+    batch = [
+        edits.add_timeline(
+            "Film", rate, id="$film", width=160, height=120, tracks=[edits.track("video")]
+        ),
+        edits.insert("$film", edits.of_color("#808080ff", 50), 0, audio_track=None),
+    ]
+    result(await desk.call("video_edit", edits=batch))
+    (clip,) = result(await desk.call("video_info"))["timelines"][0]["tracks"][0]["clips"]
+    first = clip["id"]
+    result(
+        await desk.call(
+            "video_grade_node", grade=first, action="append", settings={"primaries.saturation": 0}
+        )
+    )
+    folder = desk.work / ".columbina" / "studio" / "looks"
+    folder.mkdir()
+
+    # Node 1, as DaVinci numbers it, baked into 17 points on an edge in the project's folder.
+    told = result(
+        await desk.call(
+            "video_grade_lut", action="export", grade=first, node=1, size=17, path="looks/grey.cube"
+        )
+    )
+    assert told["name"] == "looks/grey.cube"
+    assert told["size"] == 17
+    assert told["ignored"] == []
+    lines = (folder / "grey.cube").read_text(encoding="utf-8").splitlines()
+    assert "LUT_3D_SIZE 17" in lines
+    rows = [line for line in lines if line[:1].isdigit() or line.startswith("-")]
+    assert len(rows) == 17**3
+    # The point of pure red, made grey by saturation 0: its three values are one.
+    red = [float(value) for value in rows[16].split()]
+    assert red[0] > 0.0
+    assert red[0] == red[1] == red[2]
+
+    refused = await desk.call("video_grade_lut", action="export", grade=first)
+    assert refused.error is not None
+    assert "export needs path" in refused.text
+    outside = await desk.call("video_grade_lut", action="export", grade=first, path="../x.cube")
+    assert outside.error is not None
+    assert not (desk.work / ".columbina" / "x.cube").exists()

@@ -24,6 +24,27 @@
 //!   of the built-in config of the version, as OCIO has it (or a space, or ACES2065-1 for No
 //!   Output Device Transform), clipped.
 //!
+//! # The project's LUTs
+//!
+//! The Lookup Tables of the Color Management panel (pp. 151–152) apply in every science, and
+//! in `DaVinci YRGB` too, each level its 1D LUT before its 3D LUT (p. 152), read between their
+//! points as the project's 3D Lookup Table Interpolation says (pp. 152–153), at the places of
+//! the overall order of p. 3330:
+//!
+//! - the **Input LUT** on each picture of media after its input transform (RCM's into the
+//!   timeline, or the IDT of ACES) and before its grades, "before every other image processing
+//!   operation" of the Color page (p. 152); not on titles and colours, which are no source;
+//! - the **Output LUT** on the frame after the timeline grade and the subtitles, before the
+//!   output transform (RCM's, or the ODT of ACES): "after the operations applied in the Color
+//!   page, but before" the display LUT (p. 152);
+//! - the **Color Viewer LUT** after all of that, only on what the view of the timeline monitor
+//!   shows (p. 152; p. 672: the viewer of the Color page). An export never has it, and nor do
+//!   the scopes, which measure "the actual video data levels" where no Scopes LUT is chosen
+//!   (p. 152), nor `view.sample`, nor a still grabbed.
+//!
+//! A LUT that cannot be read is left out of its level and told as one that a node names is
+//! ([`Colour::missing`]).
+//!
 //! The transforms between spaces are OCIO's ([`columbina_compose::ocio`]); the DRTs, gains,
 //! limits and matrices ours ([`columbina_compose::tone`]), on linear Rec.2020 where 1.0 is 100
 //! nits.
@@ -31,23 +52,27 @@
 //! # Made once
 //!
 //! [`Colour::make`] makes every operation of a project: OCIO's processors on the processor and
-//! their shaders on the card, once each for what they do ([`CardOps`]). What it was made of is its
-//! [`Key`]: the settings, and the input space and levels of each media; the colour of a project
-//! is made again only when that changes.
+//! their shaders on the card, once each for what they do ([`CardOps`]), and its LUTs read and put
+//! on the card. What it was made of is its [`Key`]: the settings, and the input space and levels
+//! of each media; the colour of a project is made again only when that changes, or, where a LUT
+//! of it could not be read, at the next change of the project (`crate::grading`).
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
+use columbina_compose::grade::{CardLuts, Luts as _};
 use columbina_compose::ocio::{self, catalogue, CardOps, Direction, Processor};
 use columbina_compose::scopes::{Signal, REC2020_LUMA, REC601_LUMA, REC709_LUMA};
 use columbina_compose::tone::{self, Drt, Kind, Matrix};
-use columbina_compose::{ColorOp, ColorRange, Scene, Source, YuvMatrix};
+use columbina_compose::{ColorOp, ColorRange, Gpu, Interpolation, Scene, Source, Stage, YuvMatrix};
 use columbina_model::color_management::{
-    self as cm, Aces, ColorSettings, Levels, MediaInput, OdtOutput, Pipeline, Preset, Rcm,
-    ToneMapping,
+    self as cm, Aces, ColorSettings, Levels, LutInterpolation, LutPair, MediaInput, OdtOutput,
+    Pipeline, Preset, Rcm, ToneMapping,
 };
 use columbina_model::{Gamma, Gamut, InputSpace, Media, Project};
 use columbina_view::{Content, HdrTransfer};
+
+use crate::grading::{LutPlaces, MissingLut};
 
 /// The space that the DRTs, gains and limits work in: linear light of Rec.2020, 1.0 at 100 nits.
 const LINEAR: &str = "Linear Rec.2020";
@@ -198,6 +223,79 @@ pub struct Colour {
     /// The luma coefficients of the timeline space, for the grades.
     luma: [f32; 3],
     out: Output,
+    /// The project's LUTs.
+    luts: ProjectLuts,
+}
+
+/// The LUTs of the Lookup Tables of a project (pp. 151–152), each level's 1D first, on the card;
+/// and those that could not be read.
+#[derive(Default)]
+struct ProjectLuts {
+    input: Vec<ColorOp>,
+    output: Vec<ColorOp>,
+    viewer: Vec<ColorOp>,
+    missing: Vec<MissingLut>,
+}
+
+impl ProjectLuts {
+    /// The LUTs that `settings` names, read from `places` and put on `card`, read between their
+    /// points as the project says. A name that cannot be read is left out, and told.
+    fn read(card: &Arc<Gpu>, places: &LutPlaces, settings: &ColorSettings) -> Self {
+        let levels = [
+            &settings.input_lut,
+            &settings.output_lut,
+            &settings.viewer_lut,
+        ];
+        if levels
+            .iter()
+            .all(|pair| pair.one.is_none() && pair.three.is_none())
+        {
+            return ProjectLuts::default();
+        }
+        let mut luts = CardLuts::new(
+            Arc::clone(card),
+            Arc::clone(&places.cache),
+            places.roots.clone(),
+        );
+        luts.set_interpolation(interpolation(settings.lut_interpolation));
+        let mut missing = BTreeMap::new();
+        let level = |pair: &LutPair| -> Vec<ColorOp> {
+            [&pair.one, &pair.three]
+                .into_iter()
+                .flatten()
+                .filter_map(|name| {
+                    let op = luts.lut(name);
+                    if op.is_none() {
+                        let why = luts
+                            .error(name)
+                            .unwrap_or_else(|| "it cannot be read".to_owned());
+                        missing.insert(name.clone(), why);
+                    }
+                    op
+                })
+                .collect()
+        };
+        let [input, output, viewer] = levels.map(level);
+        ProjectLuts {
+            input,
+            output,
+            viewer,
+            missing: missing
+                .into_iter()
+                .map(|(name, message)| MissingLut { name, message })
+                .collect(),
+        }
+    }
+}
+
+/// How the compositor reads a cube between its points, as the project's 3D Lookup Table
+/// Interpolation says (pp. 152–153).
+#[must_use]
+pub fn interpolation(setting: LutInterpolation) -> Interpolation {
+    match setting {
+        LutInterpolation::Trilinear => Interpolation::Trilinear,
+        LutInterpolation::Tetrahedral => Interpolation::Tetrahedral,
+    }
 }
 
 impl std::fmt::Debug for Colour {
@@ -226,6 +324,7 @@ impl Colour {
             output: Vec::new(),
             luma: REC709_LUMA,
             out: Output::default(),
+            luts: ProjectLuts::default(),
         }
     }
 
@@ -247,12 +346,29 @@ impl Colour {
         self.out
     }
 
-    /// The colour management of the project of `key`, on the card of `ops`.
+    /// The Color Viewer LUT (p. 152): what the view of the timeline monitor does over the frame,
+    /// and nothing else does.
+    #[must_use]
+    pub fn viewer(&self) -> Stage {
+        Stage {
+            ops: self.luts.viewer.clone(),
+        }
+    }
+
+    /// The LUTs of the project's Lookup Tables that cannot be read, by name.
+    #[must_use]
+    pub fn missing(&self) -> &[MissingLut] {
+        &self.luts.missing
+    }
+
+    /// The colour management of the project of `key`, on the card of `ops`, its LUTs read from
+    /// `places`.
     ///
     /// # Errors
     /// A transform cannot be made (OCIO's message): a space that the catalogue names and the
     /// config lacks, which the tests hold none to be.
-    pub fn make(ops: &CardOps, key: Key) -> Result<Colour, String> {
+    pub fn make(ops: &CardOps, places: &LutPlaces, key: Key) -> Result<Colour, String> {
+        let luts = ProjectLuts::read(ops.gpu(), places, &key.settings);
         let mut levels: HashMap<String, MediaColour> = key
             .media
             .iter()
@@ -277,6 +393,7 @@ impl Colour {
                 let mut colour = Colour::unmanaged();
                 colour.media = levels;
                 colour.key = key;
+                colour.luts = luts;
                 return Ok(colour);
             }
             Pipeline::Rcm(rcm) => {
@@ -302,12 +419,13 @@ impl Colour {
             output,
             luma,
             out,
+            luts,
         })
     }
 
-    /// Give each layer of `scene` its input transform and how its codes are read, and the scene
-    /// its output transform. `media` names the media of each layer of a picture (none of a
-    /// layer that is no clip of media).
+    /// Give each layer of `scene` its input transform and how its codes are read, each picture
+    /// then the Input LUT, and the scene the Output LUT and then its output transform. `media`
+    /// names the media of each layer of a picture (none of a layer that is no clip of media).
     pub fn apply<S: AsRef<str>>(&self, scene: &mut Scene, media: &[Option<S>]) {
         for (index, layer) in scene.layers.iter_mut().enumerate() {
             layer.color.unclamped = self.managed;
@@ -325,11 +443,17 @@ impl Colour {
                     } else {
                         layer.color.input.ops.clear();
                     }
+                    layer
+                        .color
+                        .input
+                        .ops
+                        .extend(self.luts.input.iter().cloned());
                 }
                 _ => layer.color.input.ops.clone_from(&self.graphics),
             }
         }
-        scene.output.ops.clone_from(&self.output);
+        scene.output.ops.clone_from(&self.luts.output);
+        scene.output.ops.extend(self.output.iter().cloned());
     }
 }
 
@@ -606,6 +730,21 @@ pub fn output_of_settings(settings: &ColorSettings) -> Result<Output, String> {
         }
         Pipeline::Aces(aces) => aces_output(&aces),
     })
+}
+
+/// The luma coefficients that the grades of a project of `settings` take, made without a card:
+/// those of its timeline space, or of Rec.709 where it is not managed (as [`Colour::luma`]).
+///
+/// # Errors
+/// OCIO's, where the luma of the timeline space cannot be found.
+pub fn grade_luma(settings: &ColorSettings) -> Result<[f32; 3], String> {
+    let timeline = match settings.pipeline() {
+        Pipeline::Unmanaged => return Ok(REC709_LUMA),
+        Pipeline::Rcm(rcm) => rcm.timeline,
+        Pipeline::Aces(aces) => aces.timeline,
+    };
+    let config = ocio::config().map_err(|e| e.to_string())?;
+    luma_of(&config, &space_of(timeline).ocio).map_err(|e| e.to_string())
 }
 
 /// The light of a frame of PQ read back for an export, of `bits` 10 (P010) whose Y'CbCr is of
@@ -1087,15 +1226,135 @@ fn display_output(display: &str, view: &str) -> Output {
 mod tests {
     use super::*;
 
+    use columbina_compose::TextureKind;
+
+    /// What each layer's input and the output are made of, as the bodies of their operations.
+    fn bodies(ops: &[ColorOp]) -> Vec<String> {
+        ops.iter().map(|op| op.body.to_string()).collect()
+    }
+
+    #[test]
+    fn the_luts_of_the_project_come_after_the_input_transform_and_before_the_output_transform() {
+        let Some(gpu) = columbina_compose::gpu_for_tests() else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("half.cube"),
+            "LUT_1D_SIZE 2\n0 0 0\n0.5 0.5 0.5\n",
+        )
+        .unwrap();
+        let mut cube = String::from("LUT_3D_SIZE 2\n");
+        for _ in 0..8 {
+            cube.push_str("0.5 0.5 0.5\n");
+        }
+        std::fs::write(dir.path().join("grey.cube"), cube).unwrap();
+        let places = LutPlaces::with_library(dir.path(), vec![]);
+        let ops = CardOps::new(Arc::clone(&gpu));
+        let both = LutPair {
+            one: Some("half.cube".into()),
+            three: Some("grey.cube".into()),
+        };
+        let managed = ColorSettings {
+            science: cm::Science::YrgbManaged,
+            preset: Preset::Custom,
+            timeline: "DaVinci Wide Gamut/DaVinci Intermediate".into(),
+            ..ColorSettings::default()
+        };
+        let aces = ColorSettings {
+            science: cm::Science::Acescct,
+            ..ColorSettings::default()
+        };
+        for settings in [ColorSettings::default(), managed, aces] {
+            let mut project = columbina_model::Project::sample();
+            project.color = settings.clone();
+            let without = Colour::make(&ops, &places, Key::of(&project)).unwrap();
+            project.color.input_lut = both.clone();
+            project.color.output_lut = both.clone();
+            project.color.viewer_lut = LutPair {
+                one: None,
+                three: Some("grey.cube".into()),
+            };
+            let with = Colour::make(&ops, &places, Key::of(&project)).unwrap();
+            assert_eq!(with.missing(), []);
+            let scene = |colour: &Colour| {
+                let mut scene = Scene {
+                    layers: vec![
+                        columbina_compose::SceneLayer {
+                            source: Source::Picture(Arc::default(), 0),
+                            transform: columbina_compose::Transform::NONE,
+                            opacity: 1.0,
+                            color: columbina_compose::LayerColor::default(),
+                        },
+                        columbina_compose::SceneLayer {
+                            source: Source::Color([1.0; 4]),
+                            transform: columbina_compose::Transform::NONE,
+                            opacity: 1.0,
+                            color: columbina_compose::LayerColor::default(),
+                        },
+                    ],
+                    ..Scene::default()
+                };
+                colour.apply(&mut scene, &[Some("m1"), None]);
+                scene
+            };
+            let (plain, looked) = (scene(&without), scene(&with));
+            let lut_ops = &looked.layers[0].color.input.ops;
+            let transform = bodies(&plain.layers[0].color.input.ops);
+            // The picture: its input transform (none in YRGB), then the 1D, then the 3D.
+            assert_eq!(bodies(lut_ops)[..transform.len()], transform[..]);
+            let luts = &lut_ops[transform.len()..];
+            assert_eq!(luts.len(), 2, "{:?}", settings.science);
+            assert_eq!(luts[0].textures[0].kind, TextureKind::D2);
+            assert_eq!(luts[1].textures[0].kind, TextureKind::D3);
+            // A colour has no Input LUT.
+            assert_eq!(
+                bodies(&looked.layers[1].color.input.ops),
+                bodies(&plain.layers[1].color.input.ops)
+            );
+            // The frame: the 1D, the 3D, then the output transform.
+            let output = &looked.output.ops;
+            assert_eq!(output.len(), plain.output.ops.len() + 2);
+            assert_eq!(output[0].textures[0].kind, TextureKind::D2);
+            assert_eq!(output[1].textures[0].kind, TextureKind::D3);
+            assert_eq!(bodies(&output[2..]), bodies(&plain.output.ops));
+            // The viewer: its 3D alone, and nothing without.
+            let viewer = with.viewer();
+            assert_eq!(viewer.ops.len(), 1);
+            assert_eq!(viewer.ops[0].textures[0].kind, TextureKind::D3);
+            assert!(without.viewer().is_identity());
+        }
+        // A LUT that cannot be read is left out and told.
+        let mut project = columbina_model::Project::sample();
+        project.color.output_lut = LutPair {
+            one: Some("none.cube".into()),
+            three: Some("grey.cube".into()),
+        };
+        let colour = Colour::make(&ops, &places, Key::of(&project)).unwrap();
+        assert_eq!(colour.missing().len(), 1);
+        assert_eq!(colour.missing()[0].name, "none.cube");
+        let mut scene = Scene::default();
+        colour.apply(&mut scene, &[] as &[Option<&str>]);
+        assert_eq!(scene.output.ops.len(), 1);
+        assert_eq!(scene.output.ops[0].textures[0].kind, TextureKind::D3);
+    }
+
     #[test]
     fn the_light_of_a_frame_of_pq_is_its_brightest_channel_and_its_mean() {
         // 4 × 2 of P010: a grey of PQ 0.508 (100 nits) but one pixel of Y' alone at 0.7518
         // (1000 nits) on its left half; codes in the top 10 bits of words.
         let (width, height) = (4u32, 2u32);
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "codes")]
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "codes"
+        )]
         let code = |value: f64| ((64.0 + 876.0 * value).round() as u16) << 6;
         let mut luma = vec![0u8; 8 * 2];
-        for (at, value) in [0.508_078, 0.751_827, 0.508_078, 0.508_078].iter().enumerate() {
+        for (at, value) in [0.508_078, 0.751_827, 0.508_078, 0.508_078]
+            .iter()
+            .enumerate()
+        {
             for row in 0..2 {
                 luma[row * 8 + at * 2..][..2].copy_from_slice(&code(*value).to_le_bytes());
             }
@@ -1117,7 +1376,10 @@ mod tests {
         };
         let (most, mean) = light_of(&picture);
         assert!((most - 1000.0).abs() < 15.0, "{most}");
-        assert!((mean - (6.0 * 100.0 + 2.0 * most) / 8.0).abs() < 2.0, "{mean}");
+        assert!(
+            (mean - (6.0 * 100.0 + 2.0 * most) / 8.0).abs() < 2.0,
+            "{mean}"
+        );
     }
 
     #[test]

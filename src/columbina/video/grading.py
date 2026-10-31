@@ -1288,16 +1288,22 @@ class Grader:
     async def lut(
         self,
         timeline: str | None,
-        action: Literal["set", "clear", "list"],
+        action: Literal["set", "clear", "list", "export"],
         given: str | Mapping[str, Any] | None,
         node: str | int | None,
         lut: str | None,
         folder: str | None,
+        *,
+        size: Literal[17, 33, 65] = 33,
+        path: str | None = None,
     ) -> dict[str, Any]:
-        """List the LUTs that a node may name, or set or clear the LUT of a node.
+        """List the LUTs that a node may name, set or clear the LUT of a node, or export one.
 
-        A LUT set where no node is named goes on a corrector appended for it.
+        A LUT set where no node is named goes on a corrector appended for it. ``export`` bakes
+        the grade (or its node) into a ``.cube`` at ``path``, as Generate LUT does.
         """
+        if action == "export":
+            return await self._export_lut(timeline, given, node, size, path)
         if action == "list":
             library = await self.engine.luts(folder)
             return {
@@ -1344,6 +1350,26 @@ class Grader:
 
         done, project = await self._applied(build)
         return await self._receipt(done, project, targets)
+
+    async def _export_lut(
+        self,
+        timeline: str | None,
+        given: str | Mapping[str, Any] | None,
+        node: str | int | None,
+        size: Literal[17, 33, 65],
+        path: str | None,
+    ) -> dict[str, Any]:
+        """Bake a grade, or a node of it, into a ``.cube`` at ``path``; say what was baked."""
+        if given is None:
+            raise GradeError("export needs the grade to bake")
+        if not path:
+            raise GradeError(
+                "export needs path: a .cube name in the project folder, or an absolute path"
+            )
+        _, project = await self.engine.project()
+        target = target_of(given, project, timeline)
+        id = None if node is None else node_of(grade_at(project, target), target, node)
+        return await self.engine.export_lut(target, path, size=size, node=id)
 
     async def _lut_named(self, given: str) -> str:
         """The name of a LUT to set: as the library spells it, or a whole path that may be read.

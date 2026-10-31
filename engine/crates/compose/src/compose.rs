@@ -1556,6 +1556,90 @@ impl Compositor {
         Ok(())
     }
 
+    /// Do `stage` over the whole of the picture that the preview `from` holds once it is
+    /// rendered, into the preview `to` of its size: a stage after the frame that only a viewer
+    /// shows, such as the Color Viewer LUT of RM20 p. 152, so that the frame itself, and what
+    /// measures it, are without it. Gives whether it did anything: a stage that does nothing,
+    /// or whose pipeline is still being made where this compiles in the background
+    /// ([`Compositor::compile_in_background`], which wakes it once made), leaves `to` as it is,
+    /// `from` being the picture.
+    ///
+    /// # Errors
+    /// The card was lost; a target is of another card, an export, or of another size than the
+    /// other; the stage reads the pixels about each one, which is not done here; or its code is
+    /// not WGSL that the card takes.
+    pub fn apply(
+        &mut self,
+        stage: &Stage,
+        from: &Target,
+        to: &Target,
+    ) -> Result<bool, ComposeError> {
+        if let Some(why) = self.gpu.lost_reason() {
+            return Err(ComposeError::Lost(why));
+        }
+        for target in [from, to] {
+            if !Arc::ptr_eq(&self.gpu, &target.gpu) {
+                return Err(ComposeError::Target(
+                    "the target is on another graphics card".into(),
+                ));
+            }
+            if target.export.is_some() {
+                return Err(ComposeError::Target(
+                    "a stage is done over a preview, not over an export".into(),
+                ));
+            }
+        }
+        if from.size() != to.size() {
+            return Err(ComposeError::Target(format!(
+                "a picture of {}×{} is done into a target of {}×{}",
+                from.width, from.height, to.width, to.height
+            )));
+        }
+        if stage.reads_neighbourhoods() {
+            return Err(ComposeError::Color(
+                "a stage over a picture reads no pixels about each one".into(),
+            ));
+        }
+        let Some(work) = self.stage_work(stage, from.size()) else {
+            return Ok(false);
+        };
+        let key = (Pipe::Stage, to.texture.format(), Some(work.program));
+        self.keep_made();
+        let mut made = self
+            .pipeline(key.0, key.1, key.2)
+            .map_err(ComposeError::Color)?;
+        if !made && !self.background {
+            self.finish_compiling();
+            made = self
+                .pipeline(key.0, key.1, key.2)
+                .map_err(ComposeError::Color)?;
+        }
+        if !made {
+            // Being made on a thread of its own: the picture is shown without it meanwhile, as
+            // a frame drawn otherwise than its scene says, and drawn again once it is made.
+            self.provisional = true;
+            return Ok(false);
+        }
+        let Some(colour) = self.colour_binds(&[(work.program, &work.inputs)]).pop() else {
+            return Err(ComposeError::Color("its parameters cannot be bound".into()));
+        };
+        let mut encoder =
+            self.gpu
+                .device()
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("columbina stage over a picture"),
+                });
+        self.stage_pass(
+            &mut encoder,
+            &from.texture,
+            &to.texture,
+            work.program,
+            &colour,
+        );
+        self.gpu.queue().submit([encoder.finish()]);
+        Ok(true)
+    }
+
     /// What a stage over the canvas does, where it does something: its program, and what its
     /// neighbourhoods are taken with, over a canvas of `size`.
     fn stage_work(&mut self, stage: &Stage, size: (u32, u32)) -> Option<StageWork> {

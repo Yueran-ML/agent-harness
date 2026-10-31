@@ -59,6 +59,14 @@
 //! of LUTs ([`library`]). One that cannot be read leaves its node as though it named none, and is
 //! told ([`Grading::missing`]): in the state of the timeline monitor and in the progress of an
 //! export (`missing_luts`), as `DaVinci` shows "Missing LUT" (p. 3413).
+//!
+//! The LUTs of the project's Lookup Tables (Input, Output and Color Viewer, pp. 151–152) are of
+//! its colour management ([`crate::managed`]), made with it, and told with those of the nodes
+//! where they cannot be read; such a colour management is made again at the next change of the
+//! project, so that a LUT put in its place is found. The Color Viewer LUT is done by the
+//! monitor over the frame it shows, into a picture of its own for its view
+//! ([`Grading::viewed`]): the frame itself, which the scopes measure, is without it, and an
+//! export never has it.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -200,6 +208,8 @@ pub struct Grading {
     groups: HashMap<String, GroupGrades>,
     timeline: Option<Arc<Prepared>>,
     missing: Vec<MissingLut>,
+    /// The pictures that the Color Viewer LUT is done into for the view.
+    viewed: Vec<Arc<Target>>,
     /// How many grades were made ready, for the tests.
     made: u64,
 }
@@ -220,6 +230,7 @@ impl Grading {
             groups: HashMap::new(),
             timeline: None,
             missing: Vec::new(),
+            viewed: Vec::new(),
             made: 0,
         }
     }
@@ -249,6 +260,10 @@ impl Grading {
             .card
             .as_ref()
             .is_some_and(|(card, _, _)| Arc::ptr_eq(card, gpu));
+        let changed = !self
+            .of
+            .as_ref()
+            .is_some_and(|(of, _)| Arc::ptr_eq(of, project));
         let ready = self.ready_colour();
         if same_card
             && !ready
@@ -273,7 +288,7 @@ impl Grading {
             self.groups.clear();
             self.timeline = None;
         }
-        self.update_colour(project, same_card);
+        self.update_colour(project, same_card, changed);
         // The options of the grades, by the colour in force: another luma, S-curve or
         // interpolation makes every grade again.
         let settings = self.colour.key().settings();
@@ -356,6 +371,11 @@ impl Grading {
                     },
                 );
             }
+        }
+        for lut in self.colour.missing() {
+            missing
+                .entry(lut.name.clone())
+                .or_insert_with(|| lut.message.clone());
         }
         self.missing = missing
             .into_iter()
@@ -451,13 +471,56 @@ impl Grading {
         self.colour.luma()
     }
 
+    /// What the view of a monitor shows of `shown`, a frame that `compositor` drew: that frame
+    /// through the project's Color Viewer LUT (p. 152), in a picture of its own, where it has
+    /// one; else `shown` itself.
+    ///
+    /// # Errors
+    /// The picture cannot be made, or the LUT done (the card was lost).
+    pub fn viewed(
+        &mut self,
+        compositor: &mut Compositor,
+        shown: &Arc<Target>,
+    ) -> Result<Arc<Target>, String> {
+        let stage = self.colour.viewer();
+        if stage.is_identity() {
+            self.viewed.clear();
+            return Ok(Arc::clone(shown));
+        }
+        let gpu = Arc::clone(compositor.gpu());
+        let size = shown.size();
+        self.viewed
+            .retain(|target| target.size() == size && Arc::ptr_eq(target.gpu(), &gpu));
+        // One that the view no longer holds.
+        let free = self
+            .viewed
+            .iter()
+            .find(|target| {
+                Arc::strong_count(target) == 1 && Arc::strong_count(target.texture()) == 1
+            })
+            .cloned();
+        let into = if let Some(free) = free {
+            free
+        } else {
+            let made = Arc::new(Target::preview(&gpu, size.0, size.1).map_err(|e| e.to_string())?);
+            self.viewed.push(Arc::clone(&made));
+            made
+        };
+        let done = compositor
+            .apply(&stage, shown, &into)
+            .map_err(|error| error.to_string())?;
+        Ok(if done { into } else { Arc::clone(shown) })
+    }
+
     /// The colour management of `project`: made here for an export, for the first project of a
     /// monitor, and on a new card (`same_card` false); else wanted of a thread of its own
-    /// ([`Grading::make_ahead`]), the colour in force kept meanwhile.
-    fn update_colour(&mut self, project: &Project, same_card: bool) {
+    /// ([`Grading::make_ahead`]), the colour in force kept meanwhile. One with a LUT that could
+    /// not be read is made again where the project is another (`changed`).
+    fn update_colour(&mut self, project: &Project, same_card: bool, changed: bool) {
         let key = Key::of(project);
         let first = self.of.is_none() && !self.colour.key().managed();
-        if same_card && key == *self.colour.key() {
+        let again = changed && !self.colour.missing().is_empty();
+        if same_card && key == *self.colour.key() && !again {
             if let Some(background) = &mut self.background {
                 // Back to what is in force: nothing more is wanted.
                 background.wanted = None;
@@ -476,7 +539,7 @@ impl Grading {
         }
         let ops = Arc::clone(&self.card.as_ref().expect("a card is had").2);
         let since = Instant::now();
-        match Colour::make(&ops, key) {
+        match Colour::make(&ops, &self.places, key) {
             Ok(colour) => {
                 crate::log::log(
                     "colour_made",
@@ -616,7 +679,7 @@ impl Warm {
     /// The colour management of `key`, its shaders and those of the grades by it compiled by
     /// drawing the frame small.
     fn make(mut self, key: Key) -> Made {
-        let colour = Arc::new(Colour::make(&self.ops, key)?);
+        let colour = Arc::new(Colour::make(&self.ops, &self.places, key)?);
         let mut grading = Grading::new(self.places.clone());
         grading.card = Some((
             Arc::clone(&self.gpu),
@@ -631,8 +694,14 @@ impl Warm {
         grading.update(&self.gpu, &self.project, self.index);
         grading.grade(&mut self.scene, &self.clips, self.frame);
         let target = Target::preview(&self.gpu, WARM.0, WARM.1).map_err(|e| e.to_string())?;
-        Compositor::new(Arc::clone(&self.gpu))
+        let mut compositor = Compositor::new(Arc::clone(&self.gpu));
+        compositor
             .render(&self.scene, &target)
+            .map_err(|error| error.to_string())?;
+        // And the Color Viewer LUT that the view will have the frame through.
+        let viewed = Target::preview(&self.gpu, WARM.0, WARM.1).map_err(|e| e.to_string())?;
+        compositor
+            .apply(&colour.viewer(), &target, &viewed)
             .map_err(|error| error.to_string())?;
         Ok(colour)
     }

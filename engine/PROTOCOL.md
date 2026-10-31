@@ -157,6 +157,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `scopes.unsubscribe` | `{"scope_id": "scope-1"}` | `{}` |
 | `scopes.statistics` | `{"view": "timeline" \| "source", "bins"?: 256}`, or `{"timeline": "t1", "frame": n, "bins"?}`; either with `"grade": target, "node": "n1", "at"?: "input" \| "output", "clip"?: "c1"` | the figures of the frame shown, of a frame drawn off screen, or of the picture at a node (see Scopes) |
 | `luts.list` | none, or `{"folder"?: "Film"}` | `{"roots": [...], "luts": [...], "truncated": false}` (see The library of LUTs) |
+| `grade.export_lut` | `{"grade": target, "node"?: "n1", "size": 17 \| 33 \| 65, "path": "<name or file>.cube", "frame"?: n, "replace"?: false}` | `{"path", "name", "size", "nodes": [...], "ignored": [{"node", "why"}]}` (see Generate LUT) |
 | `viewer.wipe` | `{"on"?: true, "style"?: "horizontal", "position"?: 0.5, ..., "reference": {"kind": "still", "path": "..."}}`, or `{"on": false}` | what the timeline monitor compares with (see Comparisons in the viewer) |
 | `viewer.split` | `{"on"?: true, "items": [{"kind": "current"}, ...], "selected"?: 0, "outline"?: true}`, or `{"on": false}` | as `viewer.wipe` |
 | `still.grab` | none, or `{"view"?: "timeline", "album"?: "a1", "clip"?: "c3", "level"?: "clip" \| "pre_clip" \| "post_clip", "format"?: "auto" \| "png" \| "exr"}` | the still (see The Gallery) |
@@ -1457,9 +1458,66 @@ subtitles in. A grade that is not complete, or has no node, changes nothing.
   parse) leaves its node as though it named none, and is told as DaVinci marks it (p. 3413):
   `missing_luts: [{"name": "looks/film.cube", "message": "there is no LUT looks/film.cube in the
   folder of the project or in the library"}]`, by name, once each, of every grade of the timeline
-  (its clips' on tracks of picture, their groups', its own), in the **timeline state** (left out
-  where there is none, so a state without it has none missing) and in each `render.progress` of
-  an export of that timeline (left out likewise).
+  (its clips' on tracks of picture, their groups', its own), and of the project's Input, Output
+  and Color Viewer LUTs (What colour management does to the picture), in the **timeline state**
+  (left out where there is none, so a state without it has none missing; told again as soon as
+  a change of the project's colour, made on a thread of its own, finds or loses one) and in each
+  `render.progress` of an export of that timeline (left out likewise).
+
+### Generate LUT
+
+`grade.export_lut` bakes a grade into a 3D LUT and writes it as a `.cube`, as Generate LUT of
+DaVinci Resolve does from a clip's thumbnail (Generate 3D LUT (17/33/65 Point Cube), pp.
+3413–3414). It answers once the file is written, and changes neither the project nor its
+history; a headless engine has it too.
+
+```json
+{"grade":{"level":"clip","timeline":"t1","clip":"c3"},"size":33,"path":"looks/day.cube"}
+```
+
+- **`grade`** is any grade (`clip`, `pre_clip`, `post_clip`, `timeline`); **`node`**, where
+  given, a corrector of it baked alone (between the source and the output, whether or not it is
+  on). **`size`** is the points on an edge: 17, 33 or 65. **`frame`** is where its keys are
+  read: a frame of the timeline for a clip's grade (turned into the frame of its keys as the
+  monitor does; the clip's first frame where left out) and for a timeline's (0), the frame of
+  its own keys for a group's (0).
+- **What is baked** (p. 3413: Primaries and Custom Curves adjustments "mathematically combined",
+  nodes with Qualifiers, Windows or filtering "completely ignored"): what the grade does to each
+  colour on its own, by the engine's reference of the grades on the processor: the Primaries
+  in both modes (wheels and Log), Contrast and Pivot as the project's S-curve setting says,
+  Temperature, Tint, Color Boost, Shadows and Highlights, the custom and HSL curves, Soft Clip,
+  Shot Match, and the LUT of a node (between its points as the project's
+  `lut_interpolation` says), through each node's key settings and the mixers as the grade links
+  them, with the luma of the timeline space. A node that reads the pixels about each one
+  (Midtone Detail other than 0) is left out whole, as though it were off, and named in
+  `ignored` (`{"node": "n2", "why": "midtone_detail"}`); asked for alone, it is refused.
+  Qualifiers, windows and blur, once there, are left out so too. The project's Input, Output
+  and Viewer LUTs and the transforms of colour management are not of the grade, and are not
+  baked.
+- **The cube**: a `TITLE`, `LUT_3D_SIZE` and `size`³ rows, red fastest (Adobe's form, as
+  `crates/lut` writes it, every value the shortest decimal that reads back as the same float);
+  over 0–1 of the timeline space, its values as the grade gives them (beyond 0–1 too). A point
+  of it is the grade's at that colour, to the float; between the points it is as near as a cube
+  of its size is (the test: within 2e-2, 8e-3 and 4e-3 of a contrast, lift and saturation for
+  17, 33 and 65).
+- **`path`**: a name relative to the folder of the project, of plain names (no `..`, root,
+  drive or `:`; through no link or junction; not in `cache`), its folders there already: the
+  folder of LUTs of the project, so that `luts.list` lists it and a corrector's `lut` may name it
+  by that name. Or an absolute path, which the user chose (a dialog of the desktop), as
+  `render.start` takes one: its folder there already and not in the project's cache, and no
+  file of the media of the project or its proxy. Either ends in `.cube` (any case). It is
+  written beside its place and then moved there, so that nothing reads half of it; a file there
+  is replaced only with `replace: true`, and only a file.
+- **Answer**: `path` (the file, absolute), `name` (what a corrector's `lut` names it by: relative
+  to the root of LUTs it lies in, with `/`, else the path), `size`, `nodes` (those baked, in the
+  order of the grade) and `ignored`.
+- **Refused** with `-32602` and `data.reason`: `size` (not 17, 33 or 65), `path` (with
+  `message`), `missing` (with `timeline`, `clip`, `group` or `node`: no such grade or node),
+  `not_a_corrector` (`node` is a mixer), `cannot_bake` (`node`, `why`). With `-32001`:
+  `missing_luts` (`missing_luts: [{"name", "message"}]`: a LUT of a node that is baked cannot be
+  read, so the cube would not be the grade), `exists` (`path`, without `replace`), `source`
+  (`path`, `media`), `write` (`path`, `message`). `-32002`, where the luma of the timeline space
+  cannot be found. Nothing is written when it is refused.
 
 ## Scopes
 
@@ -2053,6 +2111,30 @@ for 1000 to 100 nits, 50 → 50, 100 → 90, 1000 → 100), on each channel (`si
 the target, as "5500 nits to 100", p. 2089) or on luminance (the others), `davinci` greying the
 brightest and darkest, `saturation_preserving` by its Sat. Rolloff (`crates/compose/src/tone.rs`).
 
+**The project's LUTs** (`input_lut`, `output_lut`, `viewer_lut`, the Lookup Tables of pp.
+151–152) are done in every science, `yrgb` too, each level's `1d` before its `3d` (p. 152), a
+cube read between its points as `lut_interpolation` says, at the places of the overall order of
+p. 3330:
+
+- the **Input LUT** on each picture of media after its input transform (RCM's into the timeline
+  space, or the IDT of ACES) and before its grades, "before every other image processing
+  operation" of the Color page; not on titles and colours, which are no source;
+- the **Output LUT** on the frame after the timeline grade and the subtitles, before the output
+  transform (RCM's, or the ODT of ACES): "after the operations applied in the Color page, but
+  before" the display LUT;
+- the **Color Viewer LUT** over the frame as the view of the timeline monitor shows it, after
+  any comparison of the viewer (wipe or split screen), and before the view's own mapping to the
+  display (HDR or SDR): on that view only. An export never has it, nor the frame that the scopes
+  measure ("unbiased", p. 152: there is no Scopes LUT), `view.sample` reads, a still is grabbed of
+  and `transport.frame_digest` hashes; nor the source monitor, which shows the media as they are.
+
+A cube clips what is beyond its domain (0–1 where the file says none, p. 225), so a level whose
+LUT is of display-referred values clips a timeline of scene-referred ones, as in Resolve. A LUT
+that cannot be read is left out of its level, and told as `missing_luts` (Grades in the
+picture); a project whose LUT could not be read makes its colour again at the next change of the
+project, so that a file put in its place is found. With none of the three named, `yrgb` is drawn
+to the bit as before.
+
 A change of the colour management, while a timeline is loaded in the monitor, is made ready on a
 thread of the engine's own and its shaders compiled there; the monitor shows the colour it had
 until then (up to a second and a half for an ODT of ACES 2.0), and then draws again. A load, and
@@ -2194,6 +2276,11 @@ commits to it; and any client may send transactions. So:
   refuses a `folder` that is not a path of plain names within them. A corrector's `lut` itself
   may still name any absolute path, which the engine reads as a `.cube` when it grades (see
   Grades in the picture).
+- **A LUT is written where it is asked for.** `grade.export_lut` writes one `.cube`: by a name
+  within the folder of the project (plain names, through no link or junction, not into
+  `cache`), or at an absolute path that the client names, as an export of a timeline is, its
+  folder there already and not the project's cache, and never over a file of the project's
+  media or proxies, a folder or a link; over another file only with `replace`.
 - **The Gallery is the engine's own.** Its folders are `<project>/gallery` and the folder of the
   PowerGrades (see The Gallery), which the engine makes; it does not use one that is a link or a
   junction (nor `stills` in it), and reads, writes and deletes only `gallery.json` and the files
@@ -2214,7 +2301,7 @@ commits to it; and any client may send transactions. So:
 | `-32700` | the line is not JSON (id `null`) | |
 | `-32600` | not a request object, `jsonrpc` is not `"2.0"`, no `method`, a bad `id` (answered with id `null`), a request before `hello`, a second `hello`, a `hello` of another protocol, a line over 16 MiB, `view.*` or `engine.yield` from a client that is not the desktop | `{"reason": "protocol", "supported": [2]}` for a `hello` of another protocol |
 | `-32601` | no such method; `view.*` (but `view.sample` of a frame drawn off screen), `transport.*` and `scopes.*` (but `scopes.statistics` of a frame drawn off screen) in a `--headless` engine; `media.make_proxy` in an engine that makes no proxies; `engine.yield` in an engine that is not headless | |
-| `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name`; a speed of `transport.play` out of −8…8 or 0; `transport.load` of media or a timeline not in the project; `timeline.duration` of a timeline not there; `media.import` or `media.inspect` with no paths or a relative path; `media.thumbnail`, `media.waveform` or `media.make_proxy` of media not there; `media.thumbnail` of a frame outside the media, a height outside 1…270 or a width over 16384; a bad parent or rectangle of `view.*`; `render.start` with a bad path, codec, quality, timeline, range (an empty timeline has none, so it cannot be exported) or `subtitle_tracks`, and `render.cancel` of a job that is not there; `scopes.*` with bad settings, a scope that is not the connection's, too many scopes or bins out of range; `luts.list` with a `folder` outside the roots; `transaction.apply` with a `gesture` id that is empty or longer than 64 characters; `view.sample` off the frame or of an even size, and `view.sample` or `scopes.statistics` naming a node that cannot be drawn | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above; `{"reason": "speed"}`; `{"index": i, "path": "...", "reason": "relative"}`; `{"reason": "parent"}` or `{"reason": "rect"}` (`view.*`); `{"reason": "missing", "media": "..."}` or `{"reason": "missing", "timeline": "..."}` (`render.start` too); `{"reason": "out_of_range", "frame": n}`; `{"reason": "subtitle_track", "track": "..."}` for a `subtitle_tracks` entry that is not a subtitle track of the timeline, or is named twice; `{"reason": "settings" \| "missing" \| "too_many" \| "bins", ...}` (`scopes.*`, see Scopes); `{"reason": "outside_roots", "folder": "..."}` (`luts.list`); `{"reason": "gesture"}`; `{"reason": "outside" \| "size" \| "monitor" \| "node" \| "grade" \| "timeline" \| "clip"}` (see Samples and the pointer) |
+| `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name`; a speed of `transport.play` out of −8…8 or 0; `transport.load` of media or a timeline not in the project; `timeline.duration` of a timeline not there; `media.import` or `media.inspect` with no paths or a relative path; `media.thumbnail`, `media.waveform` or `media.make_proxy` of media not there; `media.thumbnail` of a frame outside the media, a height outside 1…270 or a width over 16384; a bad parent or rectangle of `view.*`; `render.start` with a bad path, codec, quality, timeline, range (an empty timeline has none, so it cannot be exported) or `subtitle_tracks`, and `render.cancel` of a job that is not there; `scopes.*` with bad settings, a scope that is not the connection's, too many scopes or bins out of range; `luts.list` with a `folder` outside the roots; `grade.export_lut` of a size, path, grade or node that it does not take; `transaction.apply` with a `gesture` id that is empty or longer than 64 characters; `view.sample` off the frame or of an even size, and `view.sample` or `scopes.statistics` naming a node that cannot be drawn | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above; `{"reason": "speed"}`; `{"index": i, "path": "...", "reason": "relative"}`; `{"reason": "parent"}` or `{"reason": "rect"}` (`view.*`); `{"reason": "missing", "media": "..."}` or `{"reason": "missing", "timeline": "..."}` (`render.start` too); `{"reason": "out_of_range", "frame": n}`; `{"reason": "subtitle_track", "track": "..."}` for a `subtitle_tracks` entry that is not a subtitle track of the timeline, or is named twice; `{"reason": "settings" \| "missing" \| "too_many" \| "bins", ...}` (`scopes.*`, see Scopes); `{"reason": "outside_roots", "folder": "..."}` (`luts.list`); `{"reason": "size" \| "path" \| "missing" \| "not_a_corrector" \| "cannot_bake", ...}` (`grade.export_lut`, see Generate LUT); `{"reason": "gesture"}`; `{"reason": "outside" \| "size" \| "monitor" \| "node" \| "grade" \| "timeline" \| "clip"}` (see Samples and the pointer) |
 | `-32001` | a transaction, undo or redo was refused; the project is exactly as it was; or `render.start` was refused before anything was written or taken away (with `{"reason":"stopping"}` while the engine is stopping; with no `data` when the export could not be started) | the refusal, below |
 | `-32002` | `media.import` or `media.inspect`: a file cannot be read; nothing was added. `transport.load`, `media.thumbnail`, `media.waveform`: the file of the media cannot be opened or decoded. The analysis of the engine stopped (no `data`) | `{"path": "<as sent>", "reason": "...", "message": "..."}`, below |
 | `-32003` | `view.*`: the view cannot be made, there is none, or its window is gone | `{"reason": "..."}`, see The view |

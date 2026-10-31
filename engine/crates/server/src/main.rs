@@ -46,6 +46,7 @@ mod gallery;
 mod gpu;
 mod grading;
 mod log;
+mod lut_export;
 mod luts;
 mod managed;
 mod names;

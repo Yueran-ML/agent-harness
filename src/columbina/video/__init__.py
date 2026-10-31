@@ -435,17 +435,23 @@ class _GradeCopy(_Graded):
 
 
 class _GradeLut(_Graded):
-    action: Literal["set", "clear", "list"] = Field(
+    action: Literal["set", "clear", "list", "export"] = Field(
         default="set",
         description=(
             "list: the LUTs of the project folder and the library, with kind and why one cannot "
-            "be used. set: lut on node (a corrector appended without node). clear: node's LUT."
+            "be used. set: lut on node (a corrector appended without node). clear: node's LUT. "
+            "export: the grade (or node) baked into a .cube at path."
         ),
     )
     grade: _Grade | None = Field(default=None, description=_TARGET)
     node: int | str | None = Field(default=None, description=_NODE)
     lut: str | None = Field(default=None, description="A .cube by its listed name, or a path.")
     folder: str | None = Field(default=None, description="list: only this folder of each root.")
+    size: Literal[17, 33, 65] = Field(default=33, description="export: points on an edge.")
+    path: str | None = Field(
+        default=None,
+        description="export: where the .cube goes: a name in the project folder, or absolute.",
+    )
 
 
 class _GradeGroup(_Graded):
@@ -608,7 +614,16 @@ async def _graded(args: _Project, grader: grading.Grader) -> dict[str, Any]:
         )
     if isinstance(args, _GradeLut):
         grade = None if args.grade is None else _target(args.grade)
-        return await grader.lut(on, args.action, grade, args.node, args.lut, args.folder)
+        return await grader.lut(
+            on,
+            args.action,
+            grade,
+            args.node,
+            args.lut,
+            args.folder,
+            size=args.size,
+            path=args.path,
+        )
     assert isinstance(args, _GradeGroup)
     return await grader.group(
         on,
@@ -923,7 +938,8 @@ def tools_of(videos: Videos) -> list[Tool[Any, str]]:
         tool(
             "video_grade_lut",
             _GradeLut,
-            "List the .cube LUTs, or set or clear a corrector's LUT; one undo step.",
+            "List the .cube LUTs, set or clear a corrector's LUT (one undo step), or export a "
+            "grade as a .cube.",
         ),
         tool(
             "video_grade_group",

@@ -542,6 +542,19 @@ impl Worker {
         }
     }
 
+    /// Draw again where not playing; and tell the state where the LUTs that cannot be read are
+    /// others, as a colour management made since may read LUTs that the one before could not,
+    /// or not those it could.
+    fn redraw(&mut self) {
+        if !self.status.playing {
+            let missing = self.status.missing_luts.clone();
+            let _ = self.draw(true, false);
+            if self.status.missing_luts != missing {
+                self.tell(true);
+            }
+        }
+    }
+
     fn pause(&mut self) {
         self.sound.stop();
         self.status.sound = if self.has_sound() {
@@ -609,11 +622,7 @@ impl Worker {
                 }
                 self.tell(true);
             }
-            Command::Redraw => {
-                if !self.status.playing {
-                    let _ = self.draw(true, false);
-                }
-            }
+            Command::Redraw => self.redraw(),
             Command::Pause(reply) => {
                 self.pause();
                 if self.status.timeline.is_some() {
@@ -1184,7 +1193,12 @@ impl Worker {
             .map_err(|error| drawing(&error))?
             .unwrap_or_else(|| Arc::clone(&target));
         if let Some(view) = lock(&self.view).as_ref() {
-            view.present_texture(Arc::clone(shown.texture()), Arc::clone(&gpu))
+            // The view alone has it through the project's Color Viewer LUT (p. 152).
+            let viewed = self
+                .grading
+                .viewed(compositor, &shown)
+                .map_err(|error| drawing(&error))?;
+            view.present_texture(Arc::clone(viewed.texture()), Arc::clone(&gpu))
                 .map_err(|error| drawing(&error.to_string()))?;
         }
         let measured = if crate::compare::SCOPES_SEE_COMPARISON {

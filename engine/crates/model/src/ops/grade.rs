@@ -12,7 +12,7 @@ use std::collections::HashSet;
 use super::{clip_at, missing, place, range, taken, timeline_at, Counter, Op, OpError};
 use crate::grade::{
     changed, check_label, check_node, check_node_id, merge, Grade, Group, Link, Node, NodeKind,
-    Port, Target,
+    Port, Pos, Target,
 };
 use crate::project::{Id, Project};
 
@@ -259,14 +259,32 @@ pub(super) fn disconnect(
     })
 }
 
+/// What `set_node` changes of a node: each field that is given.
+pub(crate) struct NodeChange<'a> {
+    pub(crate) label: Option<String>,
+    pub(crate) enabled: Option<bool>,
+    pub(crate) locked: Option<bool>,
+    #[allow(clippy::option_option, reason = "left out and null are told apart")]
+    pub(crate) pos: Option<Option<Pos>>,
+    pub(crate) params: Option<&'a serde_json::Value>,
+}
+
+/// Set what is given of a node. Its `params` are not set where it is locked both before and
+/// after the change: a node is unlocked and set in one change, or set and locked, and so the
+/// inverse of a change is never refused for the lock.
 pub(super) fn set_node(
     project: &mut Project,
     target: &Target,
     id: &str,
-    label: Option<String>,
-    enabled: Option<bool>,
-    params: Option<&serde_json::Value>,
+    change: NodeChange<'_>,
 ) -> Result<Op, OpError> {
+    let NodeChange {
+        label,
+        enabled,
+        locked,
+        pos,
+        params,
+    } = change;
     let grade = grade_at(project, target)?;
     let at = grade.position(id).ok_or_else(|| missing("node", id))?;
     let old = &grade.nodes[at];
@@ -278,8 +296,20 @@ pub(super) fn set_node(
     if let Some(enabled) = enabled {
         node.enabled = enabled;
     }
+    if let Some(locked) = locked {
+        node.locked = locked;
+    }
+    if let Some(pos) = pos {
+        if let Some(pos) = pos {
+            pos.check()?;
+        }
+        node.pos = pos;
+    }
     let mut back = None;
     if let Some(patch) = params {
+        if old.locked && node.locked {
+            return Err(OpError::NodeLocked { node: id.into() });
+        }
         let before = old.kind.params();
         let mut value = before.clone();
         merge(&mut value, patch);
@@ -300,6 +330,8 @@ pub(super) fn set_node(
         id: id.into(),
         label: label.map(|_| old.label.clone()),
         enabled: enabled.map(|_| old.enabled),
+        locked: locked.map(|_| old.locked),
+        pos: pos.map(|_| old.pos),
         params: back,
     };
     *grade_mut(project, target)? = new;
@@ -463,6 +495,8 @@ pub(super) fn done(project: &Project, op: Op, inverse: &Op) -> Op {
                 id,
                 label,
                 enabled,
+                locked,
+                pos,
                 params,
             },
             _,
@@ -475,6 +509,8 @@ pub(super) fn done(project: &Project, op: Op, inverse: &Op) -> Op {
                 id,
                 label,
                 enabled,
+                locked,
+                pos,
                 params,
             }
         }

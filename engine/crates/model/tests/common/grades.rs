@@ -3,7 +3,7 @@
 //! reserved, links that go round or into inputs that are not there, and settings out of their
 //! bounds.
 
-use columbina_model::grade::{Grade, Group, Interp, Key, Kind, Link, Node, Port, Target};
+use columbina_model::grade::{Grade, Group, Interp, Key, Kind, Link, Node, Port, Pos, Target};
 use columbina_model::{Op, Project};
 
 /// The grades of a project, each by its target, and one that is not there.
@@ -160,12 +160,30 @@ fn params_of(n: usize) -> serde_json::Value {
     }
 }
 
+/// Where a node lies, made of `n`: now and then further than a node may lie.
+fn pos_of(n: usize) -> Pos {
+    let step = f64::from(u32::try_from(n % 997).unwrap_or(0));
+    match n % 41 {
+        0 => Pos { x: 2.0e6, y: 0.0 },
+        1 => Pos { x: 0.0, y: -3.0e6 },
+        _ => Pos {
+            x: step * 7.25 - 900.0,
+            y: step * 0.5,
+        },
+    }
+}
+
 /// A grade of a few nodes in a row, now and then with a link back or of an id that is
 /// reserved, made of `n` for a project whose `next_id` is `next`.
 fn grade_made_of(n: usize, next: u64) -> Grade {
     let count = n % 4;
     let mut nodes: Vec<Node> = (0..count)
-        .map(|k| Node::new(format!("a{k}"), kind_of(n / 3 + k)))
+        .map(|k| {
+            let mut node = Node::new(format!("a{k}"), kind_of(n / 3 + k));
+            node.locked = (n + k) % 5 == 2;
+            node.pos = (n / 5 + k).is_multiple_of(2).then(|| pos_of(n + k * 31));
+            node
+        })
         .collect();
     if n % 9 == 1 && !nodes.is_empty() {
         nodes[0].id = format!("n{next}");
@@ -215,6 +233,10 @@ pub fn grade_op_of(project: &Project, n: [usize; 4]) -> Op {
             };
             if n[3] % 23 == 5 {
                 new.label = "x".repeat(101);
+            }
+            new.locked = n[3] % 5 == 3;
+            if n[3] % 3 == 1 {
+                new.pos = Some(pos_of(n[3] / 3));
             }
             let given = new.id.clone();
             let links = (0..n[2] % 4)
@@ -268,6 +290,12 @@ pub fn grade_op_of(project: &Project, n: [usize; 4]) -> Op {
             id: node,
             label: n[3].is_multiple_of(3).then(|| format!("L{}", n[2] % 100)),
             enabled: n[3].is_multiple_of(5).then_some(n[2].is_multiple_of(2)),
+            locked: (n[3] % 7 < 2).then_some(n[2].is_multiple_of(3)),
+            pos: match n[3] % 6 {
+                1 => Some(None),
+                2 | 3 => Some(Some(pos_of(n[2] / 5))),
+                _ => None,
+            },
             params: (n[3] % 4 != 1).then(|| params_of(n[2] / 3)),
         },
         10 => {

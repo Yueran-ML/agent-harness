@@ -1,7 +1,9 @@
 //! The operations and edits of grades, one by one: what each does, what it gives back, and what
 //! it refuses.
 
-use columbina_model::grade::{Composite, Interp, Key, Kind, Link, Node, NodeKind, Param, Port};
+use columbina_model::grade::{
+    Composite, Interp, Key, Kind, Link, Node, NodeKind, Param, Port, Pos,
+};
 use columbina_model::{
     apply, apply_done, expand, Edit, EditError, Grade, Group, Op, OpError, Project, Target,
 };
@@ -505,6 +507,8 @@ fn the_settings_of_a_node_are_changed_where_they_are_given_and_taken_back_exactl
             id: "n3".into(),
             label: Some("Skin".into()),
             enabled: Some(false),
+            locked: None,
+            pos: None,
             params: Some(patch),
         },
     );
@@ -526,6 +530,8 @@ fn the_settings_of_a_node_are_changed_where_they_are_given_and_taken_back_exactl
             id: "n3".into(),
             label: Some("Skin".into()),
             enabled: Some(false),
+            locked: None,
+            pos: None,
             params: Some(json!({
                 "primaries": {"saturation": 60.0, "lift": {"r": -0.05}},
                 "lut": "LUTs/film.cube",
@@ -540,6 +546,8 @@ fn the_settings_of_a_node_are_changed_where_they_are_given_and_taken_back_exactl
             id: "n3".into(),
             label: Some(String::new()),
             enabled: Some(true),
+            locked: None,
+            pos: None,
             params: Some(json!({
                 "primaries": {"saturation": 50.0, "lift": {"r": 0.0}},
                 "lut": null,
@@ -569,6 +577,8 @@ fn a_setting_is_keyframed_and_set_back_to_one_value() {
         id: "n4".into(),
         label: None,
         enabled: None,
+        locked: None,
+        pos: None,
         params: Some(json!({"primaries": {"contrast": value}})),
     };
     let (_, inverse) = applied(&mut project, set(json!({ "keys": keys })));
@@ -595,6 +605,8 @@ fn settings_that_are_not_of_the_node_or_out_of_bounds_are_refused() {
         id: id.into(),
         label: None,
         enabled: None,
+        locked: None,
+        pos: None,
         params: Some(params),
     };
     let error = refused(
@@ -683,6 +695,8 @@ fn a_mixer_keeps_the_inputs_that_links_go_into() {
         id: "n5".into(),
         label: None,
         enabled: None,
+        locked: None,
+        pos: None,
         params: Some(json!({"inputs": inputs})),
     };
     let error = refused(&project, add(Node::corrector(""), vec![rgb("", "n5", 2)]));
@@ -718,6 +732,8 @@ fn a_mixer_keeps_the_inputs_that_links_go_into() {
             id: "n5".into(),
             label: None,
             enabled: None,
+            locked: None,
+            pos: None,
             params: Some(json!({"composite": "screen"})),
         },
     );
@@ -1164,6 +1180,8 @@ fn extract_node_keeps_the_node_out_of_the_tree_and_reset_node_sets_it_anew() {
             id: "n3".into(),
             label: Some("Base".into()),
             enabled: None,
+            locked: None,
+            pos: None,
             params: Some(json!({"primaries": {"gain": {"y": 1.4}}})),
         },
     );
@@ -1258,6 +1276,8 @@ fn paste_value_sets_one_setting_and_paste_node_all_of_them() {
             id: "n3".into(),
             label: None,
             enabled: None,
+            locked: None,
+            pos: None,
             params: Some(json!({"primaries": {"saturation": 70, "contrast": 1.3}})),
         },
     );
@@ -1759,6 +1779,8 @@ fn set_params(params: serde_json::Value) -> Op {
         id: "n3".into(),
         label: None,
         enabled: None,
+        locked: None,
+        pos: None,
         params: Some(params),
     }
 }
@@ -1875,4 +1897,396 @@ fn a_corrector_written_without_a_shot_match_is_read_as_having_none() {
     assert_eq!(neutral.gain.b, Param::Fixed(1.0));
     assert_eq!(neutral.offset.g, Param::Fixed(0.0));
     assert_eq!(neutral.contrast, Param::Fixed(1.0));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Lock Node and where nodes lie
+// ---------------------------------------------------------------------------------------------
+
+/// Set n3 of c1 as given.
+#[allow(clippy::option_option, reason = "left out and null are told apart")]
+fn set_n3(locked: Option<bool>, pos: Option<Option<Pos>>, params: Option<serde_json::Value>) -> Op {
+    Op::SetNode {
+        grade: c1(),
+        id: "n3".into(),
+        label: None,
+        enabled: None,
+        locked,
+        pos,
+        params,
+    }
+}
+
+fn at(x: f64, y: f64) -> Pos {
+    Pos { x, y }
+}
+
+/// `serial` with n3 locked.
+fn locked_n3() -> Project {
+    let mut project = serial();
+    applied(&mut project, set_n3(Some(true), None, None));
+    project
+}
+
+#[test]
+fn a_locked_node_refuses_its_settings_but_takes_its_label_its_switch_and_its_place() {
+    let mut project = locked_n3();
+    assert!(grade(&project, &c1()).nodes[0].locked);
+    let saturation = json!({"primaries": {"saturation": 20}});
+    let error = refused(&project, set_n3(None, None, Some(saturation.clone())));
+    assert_eq!(error, OpError::NodeLocked { node: "n3".into() });
+    // Its settings left as they are are refused too: a patch is a change asked for.
+    assert_eq!(
+        refused(&project, set_n3(Some(true), None, Some(json!({})))),
+        OpError::NodeLocked { node: "n3".into() }
+    );
+    // "Lets you prevent any changes from being made to that track's corresponding node"
+    // (p. 3382): to its settings. Its label, whether it is enabled and where it lies are not
+    // settings of it, as the button that enables it is beside the lock (p. 3382).
+    let (done, inverse) = applied(
+        &mut project,
+        Op::SetNode {
+            grade: c1(),
+            id: "n3".into(),
+            label: Some("Base".into()),
+            enabled: Some(false),
+            locked: None,
+            pos: Some(Some(at(300.0, 80.0))),
+            params: None,
+        },
+    );
+    assert_eq!(
+        inverse,
+        Op::SetNode {
+            grade: c1(),
+            id: "n3".into(),
+            label: Some(String::new()),
+            enabled: Some(true),
+            locked: None,
+            pos: Some(None),
+            params: None,
+        }
+    );
+    assert_eq!(
+        serde_json::to_value(&done).unwrap(),
+        json!({"op": "set_node", "grade": {"level": "clip", "timeline": "t1", "clip": "c1"},
+               "id": "n3", "label": "Base", "enabled": false, "pos": {"x": 300.0, "y": 80.0}})
+    );
+    // Unlocked and set in one change; and its inverse sets it back and locks it, which is not
+    // refused, as the node is unlocked before it.
+    let (_, inverse) = applied(&mut project, set_n3(Some(false), None, Some(saturation)));
+    assert_eq!(
+        inverse,
+        set_n3(
+            Some(true),
+            None,
+            Some(json!({"primaries": {"saturation": 50.0}}))
+        )
+    );
+    // Set and locked in one change.
+    applied(
+        &mut project,
+        set_n3(Some(true), None, Some(json!({"primaries": {"hue": 60}}))),
+    );
+    assert!(grade(&project, &c1()).nodes[0].locked);
+}
+
+#[test]
+fn the_edits_that_set_a_locked_node_are_refused_and_the_others_are_not() {
+    let project = locked_n3();
+    let locked = EditError::Op(OpError::NodeLocked { node: "n3".into() });
+    let reset = Edit::ResetNode {
+        grade: c1(),
+        node: "n3".into(),
+    };
+    assert_eq!(refused_edit(&project, reset), locked);
+    let paste_value = Edit::PasteValue {
+        from: c1(),
+        from_node: "n4".into(),
+        to: c1(),
+        to_node: "n3".into(),
+        param: "primaries.saturation".into(),
+    };
+    assert_eq!(refused_edit(&project, paste_value), locked);
+    let paste_node = Edit::PasteNode {
+        from: c1(),
+        from_node: "n4".into(),
+        to: c1(),
+        to_node: "n3".into(),
+    };
+    assert_eq!(refused_edit(&project, paste_node), locked);
+    // Its settings are copied from it, and nodes are added beside it.
+    let mut project = project;
+    edited(
+        &mut project,
+        Edit::PasteNode {
+            from: c1(),
+            from_node: "n3".into(),
+            to: c1(),
+            to_node: "n4".into(),
+        },
+    );
+    edited(
+        &mut project,
+        Edit::AddSerial {
+            grade: c1(),
+            node: "n3".into(),
+        },
+    );
+    // It is taken out of its tree, and away, with its lock and its place.
+    applied(&mut project, set_n3(None, Some(Some(at(10.0, 20.0))), None));
+    edited(
+        &mut project,
+        Edit::ExtractNode {
+            grade: c1(),
+            node: "n3".into(),
+        },
+    );
+    let n3 = grade(&project, &c1()).nodes[0].clone();
+    assert!(n3.locked);
+    assert_eq!(n3.pos, Some(at(10.0, 20.0)));
+    applied(
+        &mut project,
+        Op::RemoveNode {
+            grade: c1(),
+            id: "n3".into(),
+            links: None,
+        },
+    );
+}
+
+#[test]
+fn a_locked_mixer_is_given_no_input_more() {
+    let mut project = serial();
+    edited(
+        &mut project,
+        Edit::AddParallel {
+            grade: c1(),
+            node: "n4".into(),
+        },
+    );
+    let mixer = grade(&project, &c1())
+        .nodes
+        .iter()
+        .find(|n| n.kind.kind() == Kind::ParallelMixer)
+        .unwrap()
+        .id
+        .clone();
+    applied(
+        &mut project,
+        Op::SetNode {
+            grade: c1(),
+            id: mixer.clone(),
+            label: None,
+            enabled: None,
+            locked: Some(true),
+            pos: None,
+            params: None,
+        },
+    );
+    let error = refused_edit(
+        &project,
+        Edit::AddParallel {
+            grade: c1(),
+            node: "n4".into(),
+        },
+    );
+    assert_eq!(error, EditError::Op(OpError::NodeLocked { node: mixer }));
+}
+
+#[test]
+fn a_node_is_put_further_than_a_million_from_0_by_nothing() {
+    let project = serial();
+    for pos in [at(1.5e6, 0.0), at(0.0, -2.0e6)] {
+        assert_eq!(
+            refused(&project, set_n3(None, Some(Some(pos)), None)),
+            OpError::OutOfRange { what: "pos" }
+        );
+        let mut node = Node::corrector("");
+        node.pos = Some(pos);
+        assert_eq!(
+            refused(&project, add(node, vec![])),
+            OpError::OutOfRange { what: "pos" }
+        );
+    }
+    let mut node = Node::corrector("");
+    node.pos = Some(at(-40.0, 1000.0));
+    node.locked = true;
+    let mut project = project;
+    let (done, _) = applied(&mut project, add(node, vec![]));
+    let Op::AddNode { node, .. } = done else {
+        unreachable!()
+    };
+    assert_eq!((node.locked, node.pos), (true, Some(at(-40.0, 1000.0))));
+}
+
+#[test]
+fn the_refusal_of_a_locked_node_is_written_as_the_protocol_names_it() {
+    let written = serde_json::to_value(OpError::NodeLocked { node: "n3".into() }).unwrap();
+    assert_eq!(
+        written,
+        json!({"reason": "node_locked", "node": "n3", "message": "node n3 is locked"})
+    );
+    let op: Op = serde_json::from_value(json!({
+        "op": "set_node", "grade": {"level": "clip", "timeline": "t1", "clip": "c1"}, "id": "n3",
+        "locked": true, "pos": null,
+    }))
+    .unwrap();
+    assert_eq!(op, set_n3(Some(true), Some(None), None));
+    // Left out is left as it is, and so not written.
+    let op: Op = serde_json::from_value(json!({
+        "op": "set_node", "grade": {"level": "clip", "timeline": "t1", "clip": "c1"}, "id": "n3",
+    }))
+    .unwrap();
+    assert_eq!(op, set_n3(None, None, None));
+    assert_eq!(
+        serde_json::to_value(&op).unwrap(),
+        json!({"op": "set_node", "grade": {"level": "clip", "timeline": "t1", "clip": "c1"},
+               "id": "n3"})
+    );
+}
+
+/// A node `id` that lies at `x`, `y`.
+fn placed(id: &str, x: f64, y: f64) -> Node {
+    let mut node = saturated(id, 40.0);
+    node.pos = Some(at(x, y));
+    node
+}
+
+#[test]
+fn copy_grade_takes_where_its_nodes_lie_and_their_locks_along() {
+    let mut project = with_c2(vec![placed("a1", 500.0, 60.0)]);
+    let mut from = in_a_row(vec![placed("b1", 102.0, 28.0), placed("b2", 250.0, 28.0)]);
+    from.nodes[1].locked = true;
+    applied(
+        &mut project,
+        Op::SetGrade {
+            grade: c1(),
+            value: from.clone(),
+        },
+    );
+    edited(&mut project, copy(vec![c2()], None));
+    assert_eq!(grade(&project, &c2()), from);
+    // A node kept by Preserve number of nodes lies where the node it takes the place of lay,
+    // and keeps its own lock.
+    let mut project = with_c2(vec![placed("a1", 500.0, 60.0)]);
+    applied(
+        &mut project,
+        Op::SetGrade {
+            grade: c1(),
+            value: from,
+        },
+    );
+    applied(
+        &mut project,
+        Op::SetNode {
+            grade: c2(),
+            id: "a1".into(),
+            label: None,
+            enabled: None,
+            locked: Some(true),
+            pos: None,
+            params: None,
+        },
+    );
+    edited(&mut project, copy(vec![c2()], Some(1)));
+    let g = grade(&project, &c2());
+    assert_eq!(g.nodes[0].id, "a1");
+    assert_eq!(g.nodes[0].pos, Some(at(102.0, 28.0)));
+    assert!(g.nodes[0].locked);
+    assert_eq!(g.nodes[1].pos, Some(at(250.0, 28.0)));
+}
+
+#[test]
+fn append_node_graph_puts_the_nodes_it_adds_right_of_those_there() {
+    // Nodes that lie somewhere: the leftmost added a column right of the rightmost there.
+    let mut project = with_c2(vec![placed("a1", 102.0, 28.0), placed("a2", 400.0, 120.0)]);
+    applied(
+        &mut project,
+        Op::SetGrade {
+            grade: c1(),
+            value: in_a_row(vec![placed("b1", 50.0, 10.0), placed("b2", 198.0, 10.0)]),
+        },
+    );
+    let append = |project: &mut Project| {
+        edited(
+            project,
+            Edit::AppendNodeGraph {
+                from: c1(),
+                to: vec![c2()],
+                keyframes: None,
+            },
+        );
+    };
+    append(&mut project);
+    let g = grade(&project, &c2());
+    let lie: Vec<Option<Pos>> = g.nodes.iter().map(|n| n.pos).collect();
+    assert_eq!(
+        lie,
+        [
+            Some(at(102.0, 28.0)),
+            Some(at(400.0, 120.0)),
+            Some(at(548.0, 10.0)),
+            Some(at(696.0, 10.0)),
+        ]
+    );
+    // Nodes laid out by the editor are taken to be as far right as it could lay them: three
+    // nodes, three columns.
+    let mut project = with_c2(vec![
+        saturated("a1", 1.0),
+        saturated("a2", 2.0),
+        placed("a3", 120.0, 300.0),
+    ]);
+    applied(
+        &mut project,
+        Op::SetGrade {
+            grade: c1(),
+            value: in_a_row(vec![placed("b1", 102.0, 28.0), saturated("b2", 3.0)]),
+        },
+    );
+    append(&mut project);
+    let g = grade(&project, &c2());
+    assert_eq!(g.nodes[3].pos, Some(at(102.0 + 3.0 * 148.0, 28.0)));
+    assert_eq!(g.nodes[4].pos, None);
+    // Into a grade without nodes, they lie where they lay.
+    let mut project = with_c2(vec![]);
+    applied(
+        &mut project,
+        Op::SetGrade {
+            grade: c1(),
+            value: in_a_row(vec![placed("b1", 70.0, 28.0)]),
+        },
+    );
+    append(&mut project);
+    assert_eq!(grade(&project, &c2()).nodes[0].pos, Some(at(70.0, 28.0)));
+}
+
+#[test]
+fn collapse_group_grades_puts_the_clip_s_nodes_right_of_the_pre_clip_ones() {
+    let (mut project, group) = grouped();
+    let pre = Target::PreClip { group };
+    applied(
+        &mut project,
+        Op::SetGrade {
+            grade: pre,
+            value: in_a_row(vec![placed("n3", 102.0, 28.0)]),
+        },
+    );
+    applied(
+        &mut project,
+        set_n3(None, Some(Some(at(102.0, 28.0))), None),
+    );
+    edited(
+        &mut project,
+        Edit::CollapseGroupGrades {
+            timeline: "t1".into(),
+            clips: vec!["c1".into()],
+        },
+    );
+    let g = grade(&project, &c1());
+    assert_eq!(g.nodes[0].pos, Some(at(102.0, 28.0)));
+    // The clip's n3, right of the pre-clip node; its n4, laid out by the editor, as it was.
+    assert_eq!(g.nodes[1].id, "n3");
+    assert_eq!(g.nodes[1].pos, Some(at(250.0, 28.0)));
+    assert_eq!(g.nodes[2].pos, None);
 }

@@ -48,6 +48,8 @@ fn mixer(id: &str, kind: NodeKind) -> Node {
         id: id.into(),
         label: String::new(),
         enabled: true,
+        locked: false,
+        pos: None,
         kind,
     }
 }

@@ -7,7 +7,8 @@ use std::collections::{HashMap, HashSet};
 
 use super::{EditError, Expansion, MOST_PRESERVED_NODES};
 use crate::grade::{
-    at_path, patch_at, Grade, Kind, Link, Node, NodeKind, Port, Target, OUTPUT, SOURCE,
+    at_path, patch_at, Grade, Kind, Link, Node, NodeKind, Port, Pos, Target, FIRST_COLUMN,
+    FURTHEST_POS, NODE_STEP, OUTPUT, SOURCE,
 };
 use crate::keyframes::{aligned, Align, KeyBase};
 use crate::ops::{apply_done, grade_at, group_of_clip, reserve_node_ids, Op, OpError};
@@ -120,6 +121,8 @@ fn beside_mixer(
                 id: out.to.clone(),
                 label: None,
                 enabled: None,
+                locked: None,
+                pos: None,
                 params: Some(serde_json::json!({ "inputs": inputs + 1 })),
             };
             steps.apply(project, more)?;
@@ -313,7 +316,18 @@ fn preserved(project: &mut Project, copied: &Grade, kept: Vec<Node>) -> Result<G
     let ids = reserve_node_ids(project, &held, taken.len())?;
     names.extend(taken.into_iter().zip(ids));
     let mut value = renamed(copied, &names);
-    value.nodes.splice(..kept.len(), kept);
+    // A node kept lies where the node it takes the place of lies, so that the layout of the
+    // copied grade, whose structure it is, holds.
+    let count = kept.len();
+    let kept: Vec<Node> = kept
+        .into_iter()
+        .zip(&copied.nodes)
+        .map(|(node, place)| Node {
+            pos: place.pos,
+            ..node
+        })
+        .collect();
+    value.nodes.splice(..count, kept);
     Ok(value)
 }
 
@@ -346,14 +360,23 @@ fn renamed(grade: &Grade, names: &HashMap<Id, Id>) -> Grade {
 /// `then` after `first`, as one grade: the nodes of both, in their order, what went into the
 /// output of `first` going into what the source went into in `then`, and what went into the
 /// output of `then` into the output. Their nodes are of other ids. Where nothing went into the
-/// output of `first`, nothing goes into what the source went into in `then`.
+/// output of `first`, nothing goes into what the source went into in `then`. The nodes of
+/// `then` that lie somewhere of their own are moved right of those of `first` (see
+/// [`right_of`]).
 fn chain(first: Grade, then: &Grade) -> Grade {
+    let shift = right_of(&first, then);
     let mut value = first;
     let last = value
         .link_into(OUTPUT, Port::Rgb, 0)
         .map(|l| l.from.clone());
     value.links.retain(|l| l.target() != (OUTPUT, Port::Rgb, 0));
-    value.nodes.extend(then.nodes.iter().cloned());
+    value.nodes.extend(then.nodes.iter().map(|node| Node {
+        pos: node.pos.map(|pos| Pos {
+            x: (pos.x + shift).clamp(-FURTHEST_POS, FURTHEST_POS),
+            y: pos.y,
+        }),
+        ..node.clone()
+    }));
     for link in &then.links {
         let from = if link.from == SOURCE {
             match &last {
@@ -370,6 +393,35 @@ fn chain(first: Grade, then: &Grade) -> Grade {
     }
     value.sort_links();
     value
+}
+
+/// How far right the nodes of `then` that lie somewhere of their own are moved, put after the
+/// nodes of `first`: so that the leftmost of them is a column ([`NODE_STEP`]) right of the
+/// rightmost node of `first`. A node of `first` that lies nowhere of its own is taken to be as
+/// far right as the editor could lay it out, in the column after as many columns as `first` has
+/// nodes. Nothing is moved where `first` has no node, or none of `then` lies anywhere of its own.
+fn right_of(first: &Grade, then: &Grade) -> f64 {
+    let Some(left) = then
+        .nodes
+        .iter()
+        .filter_map(|node| node.pos.map(|pos| pos.x))
+        .reduce(f64::min)
+    else {
+        return 0.0;
+    };
+    let laid = first.nodes.iter().any(|node| node.pos.is_none());
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a grade has far fewer than 2^52 nodes"
+    )]
+    let furthest_laid = FIRST_COLUMN + (first.nodes.len() as f64 - 1.0) * NODE_STEP;
+    let right = first
+        .nodes
+        .iter()
+        .filter_map(|node| node.pos.map(|pos| pos.x))
+        .chain(laid.then_some(furthest_laid))
+        .reduce(f64::max);
+    right.map_or(0.0, |right| right + NODE_STEP - left)
 }
 
 /// `grade` with new ids for its nodes, of the shape of those the engine makes, in their order,
@@ -539,6 +591,8 @@ fn set_params(grade: &Target, node: &str, params: serde_json::Value) -> Op {
         id: node.into(),
         label: None,
         enabled: None,
+        locked: None,
+        pos: None,
         params: Some(params),
     }
 }

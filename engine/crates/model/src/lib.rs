@@ -23,7 +23,7 @@ pub use color::{
 pub use color_management::{ColorOverride, ColorSettings, Levels, Science};
 pub use edit::{expand, Change, CueItem, Edge, Edit, EditError, Expansion, Material, Straddling};
 pub use grade::{
-    Composite, Corrector, Grade, Group, Interp, Key, Kind, Link, Node, NodeKind, Param, Port,
+    Composite, Corrector, Grade, Group, Interp, Key, Kind, Link, Node, NodeKind, Param, Port, Pos,
     ShotMatch, Target,
 };
 pub use history::{Applied, Changed, History, Step, TransactionError, HISTORY_MOST};

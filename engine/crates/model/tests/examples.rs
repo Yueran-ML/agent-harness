@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use columbina_model::grade::{Interp, Key, Kind, Link, Node, Port, Target};
+use columbina_model::grade::{Interp, Key, Kind, Link, Node, Port, Pos, Target};
 use columbina_model::{
     apply, apply_done, Alignment, Bin, Clip, Cue, Grade, Group, Op, Project, Proxy, Rate, Rgba,
     Source, Speed, TextAlign, Time, TitleStyle, Track, TrackKind, Transform, Transition,
@@ -645,7 +645,22 @@ fn set_shot_match(value: serde_json::Value) -> Op {
         id: "n9".into(),
         label: None,
         enabled: None,
+        locked: None,
+        pos: None,
         params: Some(params.into()),
+    }
+}
+
+/// Lock n9, the node of `first_node`, where it lies at (120, 30).
+fn lock_n9() -> Op {
+    Op::SetNode {
+        grade: c1(),
+        id: "n9".into(),
+        label: None,
+        enabled: None,
+        locked: Some(true),
+        pos: Some(Some(Pos { x: 120.0, y: 30.0 })),
+        params: None,
     }
 }
 
@@ -768,6 +783,8 @@ fn grade_examples() -> Vec<(&'static str, Vec<Op>, Op)> {
                 id: "n9".into(),
                 label: Some("Skin".into()),
                 enabled: Some(false),
+                locked: None,
+                pos: None,
                 params: Some(serde_json::json!({
                     "primaries": {"saturation": 60, "lift": {"r": -0.05}},
                     "lut": "LUTs/film.cube",
@@ -782,6 +799,8 @@ fn grade_examples() -> Vec<(&'static str, Vec<Op>, Op)> {
                 id: "n9".into(),
                 label: None,
                 enabled: None,
+                locked: None,
+                pos: None,
                 params: Some(serde_json::json!({"primaries": {"contrast": {"keys": keys}}})),
             },
         ),
@@ -799,6 +818,45 @@ fn grade_examples() -> Vec<(&'static str, Vec<Op>, Op)> {
             "set_node taking a shot match away",
             vec![first_node(), set_shot_match(shot_match())],
             set_shot_match(serde_json::Value::Null),
+        ),
+        (
+            "set_node moving a node and locking it",
+            vec![first_node()],
+            Op::SetNode {
+                grade: c1(),
+                id: "n9".into(),
+                label: None,
+                enabled: None,
+                locked: Some(true),
+                pos: Some(Some(Pos { x: 250.0, y: 40.5 })),
+                params: None,
+            },
+        ),
+        (
+            "set_node unlocking a node and setting it",
+            vec![first_node(), lock_n9()],
+            Op::SetNode {
+                grade: c1(),
+                id: "n9".into(),
+                label: None,
+                enabled: None,
+                locked: Some(false),
+                pos: None,
+                params: Some(serde_json::json!({"primaries": {"saturation": 40}})),
+            },
+        ),
+        (
+            "set_node putting a node back where the editor lays it out",
+            vec![first_node(), lock_n9()],
+            Op::SetNode {
+                grade: c1(),
+                id: "n9".into(),
+                label: None,
+                enabled: None,
+                locked: None,
+                pos: Some(None),
+                params: None,
+            },
         ),
         (
             "set_grade of a timeline",

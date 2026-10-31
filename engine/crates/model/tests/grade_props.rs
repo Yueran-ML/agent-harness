@@ -10,7 +10,9 @@ use std::collections::BTreeMap;
 
 use columbina_model::grade::{Node, Target};
 use columbina_model::keyframes::Align;
-use columbina_model::{apply, apply_done, expand, Edit, Group, Link, Op, Project};
+use columbina_model::{
+    apply, apply_done, expand, Edit, EditError, Group, Link, Op, OpError, Project,
+};
 use common::grades::{grade_of, grade_op_of, targets};
 use common::{check, messy, op_of, spec, tidy, Spec};
 use proptest::prelude::*;
@@ -298,9 +300,26 @@ fn the_random_operations_and_edits_of_grades_are_applied_as_well_as_refused() {
                 .as_str()
                 .unwrap()
                 .to_owned();
+            let moves = matches!(
+                &op,
+                Op::SetNode {
+                    pos: Some(Some(_)),
+                    ..
+                }
+            );
             match apply(&mut project, op) {
-                Ok(_) => *applied.entry(name).or_default() += 1,
-                Err(_) => *refused.entry(name).or_default() += 1,
+                Ok(_) => {
+                    *applied.entry(name).or_default() += 1;
+                    if moves {
+                        *applied.entry("set_node moving".into()).or_default() += 1;
+                    }
+                }
+                Err(error) => {
+                    if matches!(error, OpError::NodeLocked { .. }) {
+                        *refused.entry("op of a locked node".into()).or_default() += 1;
+                    }
+                    *refused.entry(name).or_default() += 1;
+                }
             }
             let n = [
                 numbers.next(),
@@ -316,7 +335,12 @@ fn the_random_operations_and_edits_of_grades_are_applied_as_well_as_refused() {
                 .to_owned();
             match expand(&mut project, edit) {
                 Ok(_) => *applied.entry(name).or_default() += 1,
-                Err(_) => *refused.entry(name).or_default() += 1,
+                Err(error) => {
+                    if matches!(error, EditError::Op(OpError::NodeLocked { .. })) {
+                        *refused.entry("edit of a locked node".into()).or_default() += 1;
+                    }
+                    *refused.entry(name).or_default() += 1;
+                }
             }
         }
     }
@@ -349,5 +373,12 @@ fn the_random_operations_and_edits_of_grades_are_applied_as_well_as_refused() {
             refused.get(name).copied().unwrap_or(0),
         );
         assert!(ok >= 5 && no >= 1, "{name}: {ok} applied, {no} refused");
+    }
+    // Nodes are moved, and their settings refused while they are locked.
+    let moved = applied.get("set_node moving").copied().unwrap_or(0);
+    assert!(moved >= 5, "{moved} nodes moved");
+    for name in ["op of a locked node", "edit of a locked node"] {
+        let no = refused.get(name).copied().unwrap_or(0);
+        assert!(no >= 1, "{name}: {no} refused");
     }
 }

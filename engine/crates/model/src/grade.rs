@@ -351,9 +351,10 @@ pub mod bounds {
 
 /// A node of a grade.
 ///
-/// It is written `{"id", "kind", "label", "enabled", "params"}`, where `params` is what a node
-/// of its kind is set by: a [`Corrector`], a [`ParallelMixer`], a [`LayerMixer`] or a
-/// [`KeyMixer`].
+/// It is written `{"id", "kind", "label", "enabled", "locked", "pos", "params"}`, where `params`
+/// is what a node of its kind is set by: a [`Corrector`], a [`ParallelMixer`], a [`LayerMixer`]
+/// or a [`KeyMixer`]. `locked` and `pos` are always written, and may be left out where a node
+/// is read: they are then `false` and `null`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Node {
     /// What it is known by in its grade: `n` and a number where the engine made it. Never
@@ -364,8 +365,55 @@ pub struct Node {
     pub label: String,
     /// Whether it does what it is set to. A node that is not passes its picture through.
     pub enabled: bool,
+    /// Whether it is locked, as Lock Node locks it (pp. 3297, 3382): "prevent any changes from
+    /// being made" to it, so that its settings are not changed by accident. Its `params` are not
+    /// set while it is ([`crate::OpError::NodeLocked`]); its label, whether it is enabled, where it
+    /// lies, its links, and whether it is in its grade at all are.
+    pub locked: bool,
+    /// Where it lies in the node editor, or none for where the editor lays it out (see
+    /// [`Pos`]). `DaVinci` keeps the layout of a node graph with the grade, so that a colourist
+    /// who comes back to it, or another, finds it as it was left (p. 3321).
+    pub pos: Option<Pos>,
     /// What kind of node it is, and how it is set.
     pub kind: NodeKind,
+}
+
+/// Where a node lies in the node editor: the top left corner of its card, in the editor's
+/// units, a pixel at a zoom of 1, `x` to the right and `y` down. Each is finite and within
+/// [`FURTHEST_POS`] of 0.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Pos {
+    /// How far right.
+    pub x: f64,
+    /// How far down.
+    pub y: f64,
+}
+
+/// The furthest from 0 that a node may lie, either way.
+pub const FURTHEST_POS: f64 = 1_000_000.0;
+
+/// How far apart the columns of nodes are across the node editor, as the editor of the studio
+/// lays them out: a card and the room after it (`NODE_WIDTH + COLUMN_GAP` of
+/// `desktop/src/studio/color/graph.ts`). Nodes that are put after a grade's own, as Append Node
+/// Graph puts them (p. 3290), are moved right by columns of this.
+pub const NODE_STEP: f64 = 148.0;
+
+/// Where the editor of the studio puts the first column of nodes that it lays out
+/// (`columnX(1)` of `desktop/src/studio/color/graph.ts`), and so where a node that lies nowhere
+/// of its own may be as far left as.
+pub const FIRST_COLUMN: f64 = 102.0;
+
+impl Pos {
+    /// Check it: each is finite and within [`FURTHEST_POS`] of 0.
+    pub(crate) fn check(self) -> Result<(), OpError> {
+        let fits = |v: f64| v.is_finite() && v.abs() <= FURTHEST_POS;
+        if fits(self.x) && fits(self.y) {
+            Ok(())
+        } else {
+            Err(OpError::OutOfRange { what: "pos" })
+        }
+    }
 }
 
 /// What kind of node a node is, and how it is set.
@@ -416,6 +464,10 @@ struct RawNode {
     kind: Kind,
     label: String,
     enabled: bool,
+    #[serde(default)]
+    locked: bool,
+    #[serde(default)]
+    pos: Option<Pos>,
     params: serde_json::Value,
 }
 
@@ -427,6 +479,8 @@ impl<'de> Deserialize<'de> for Node {
             id: raw.id,
             label: raw.label,
             enabled: raw.enabled,
+            locked: raw.locked,
+            pos: raw.pos,
             kind,
         })
     }
@@ -434,11 +488,13 @@ impl<'de> Deserialize<'de> for Node {
 
 impl Serialize for Node {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut node = serializer.serialize_struct("Node", 5)?;
+        let mut node = serializer.serialize_struct("Node", 7)?;
         node.serialize_field("id", &self.id)?;
         node.serialize_field("kind", &self.kind.kind())?;
         node.serialize_field("label", &self.label)?;
         node.serialize_field("enabled", &self.enabled)?;
+        node.serialize_field("locked", &self.locked)?;
+        node.serialize_field("pos", &self.pos)?;
         match &self.kind {
             NodeKind::Corrector(params) => node.serialize_field("params", params)?,
             NodeKind::ParallelMixer(params) => node.serialize_field("params", params)?,
@@ -552,13 +608,16 @@ impl NodeKind {
 }
 
 impl Node {
-    /// A node of `kind` as a new one is set, enabled, with no label.
+    /// A node of `kind` as a new one is set, enabled, unlocked, with no label, where the editor
+    /// lays it out.
     #[must_use]
     pub fn new(id: impl Into<Id>, kind: Kind) -> Self {
         Self {
             id: id.into(),
             label: String::new(),
             enabled: true,
+            locked: false,
+            pos: None,
             kind: NodeKind::new(kind),
         }
     }
@@ -1609,9 +1668,12 @@ pub(crate) fn check_node_id(id: &str) -> Result<(), OpError> {
     }
 }
 
-/// Check a node but for its id: its label and its settings.
+/// Check a node but for its id: its label, where it lies and its settings.
 pub(crate) fn check_node(node: &Node) -> Result<(), OpError> {
     check_label(&node.label)?;
+    if let Some(pos) = node.pos {
+        pos.check()?;
+    }
     node.kind.check()
 }
 
@@ -2024,6 +2086,56 @@ mod tests {
     }
 
     #[test]
+    fn a_node_is_read_unlocked_and_laid_out_where_it_leaves_them_out() {
+        // As the engine wrote nodes before Lock Node and the layout were kept.
+        let old = serde_json::json!({
+            "id": "n1", "kind": "parallel_mixer", "label": "", "enabled": true,
+            "params": {"inputs": 2},
+        });
+        let node: Node = serde_json::from_value(old).unwrap();
+        assert!(!node.locked);
+        assert_eq!(node.pos, None);
+        assert_eq!(node, Node::new("n1", Kind::ParallelMixer));
+        let placed = serde_json::json!({
+            "id": "n1", "kind": "parallel_mixer", "label": "", "enabled": true,
+            "locked": true, "pos": {"x": -12.5, "y": 300},
+            "params": {"inputs": 2},
+        });
+        let node: Node = serde_json::from_value(placed.clone()).unwrap();
+        assert!(node.locked);
+        assert_eq!(node.pos, Some(Pos { x: -12.5, y: 300.0 }));
+        assert_eq!(check_node(&node), Ok(()));
+        let mut written = serde_json::to_value(&node).unwrap();
+        assert_eq!(written["pos"], serde_json::json!({"x": -12.5, "y": 300.0}));
+        written["pos"]["z"] = 1.into();
+        assert!(serde_json::from_value::<Node>(written).is_err());
+        let mut half = placed;
+        half["pos"] = serde_json::json!({"x": 1});
+        assert!(serde_json::from_value::<Node>(half).is_err());
+    }
+
+    #[test]
+    fn a_node_lies_within_a_million_of_0() {
+        let mut node = Node::corrector("n1");
+        for (x, y, fits) in [
+            (FURTHEST_POS, -FURTHEST_POS, true),
+            (0.0, 0.0, true),
+            (FURTHEST_POS * 1.5, 0.0, false),
+            (0.0, -FURTHEST_POS - 1.0, false),
+            (f64::NAN, 0.0, false),
+            (0.0, f64::INFINITY, false),
+        ] {
+            node.pos = Some(Pos { x, y });
+            let checked = check_node(&node);
+            if fits {
+                assert_eq!(checked, Ok(()));
+            } else {
+                assert_eq!(checked, Err(OpError::OutOfRange { what: "pos" }));
+            }
+        }
+    }
+
+    #[test]
     fn a_node_is_written_with_the_params_of_its_kind() {
         let node = Node::new("n1", Kind::LayerMixer);
         let written = serde_json::to_value(&node).unwrap();
@@ -2031,6 +2143,7 @@ mod tests {
             written,
             serde_json::json!({
                 "id": "n1", "kind": "layer_mixer", "label": "", "enabled": true,
+                "locked": false, "pos": null,
                 "params": {"inputs": 2, "composite": "normal"},
             })
         );

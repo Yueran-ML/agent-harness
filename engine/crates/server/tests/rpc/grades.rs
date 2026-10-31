@@ -215,6 +215,8 @@ fn six_nodes(seed: f64) -> Grade {
                 id: "mix".into(),
                 label: String::new(),
                 enabled: true,
+                locked: false,
+                pos: None,
                 kind: NodeKind::LayerMixer(LayerMixer {
                     inputs: 2,
                     composite: Composite::Overlay,

@@ -111,6 +111,8 @@ fn mixed(nodes: Vec<Node>, mixer: NodeKind) -> Grade {
         id: "m".into(),
         label: String::new(),
         enabled: true,
+        locked: false,
+        pos: None,
         kind: mixer,
     });
     graph(all, links)
@@ -1124,6 +1126,8 @@ fn a_key_mixer_meets_or_adds_its_keys() {
             id: "km".into(),
             label: String::new(),
             enabled: true,
+            locked: false,
+            pos: None,
             kind: NodeKind::KeyMixer(mixer),
         });
         grade.links.extend([
@@ -1690,6 +1694,8 @@ fn the_card_does_graphs_of_every_kind_as_the_processor_does() {
                     id: "pm".into(),
                     label: String::new(),
                     enabled: true,
+                    locked: false,
+                    pos: None,
                     kind: NodeKind::ParallelMixer(ParallelMixer::default()),
                 },
                 random_corrector(r, "l1"),
@@ -1698,6 +1704,8 @@ fn the_card_does_graphs_of_every_kind_as_the_processor_does() {
                     id: "lm".into(),
                     label: String::new(),
                     enabled: true,
+                    locked: false,
+                    pos: None,
                     kind: NodeKind::LayerMixer(LayerMixer {
                         inputs: 2,
                         composite: Composite::Screen,
@@ -1708,6 +1716,8 @@ fn the_card_does_graphs_of_every_kind_as_the_processor_does() {
                     id: "km".into(),
                     label: String::new(),
                     enabled: true,
+                    locked: false,
+                    pos: None,
                     kind: NodeKind::KeyMixer(KeyMixer::default()),
                 },
             ],

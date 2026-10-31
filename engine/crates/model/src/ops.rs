@@ -116,7 +116,7 @@ use serde::{Deserialize, Serialize, Serializer};
 
 use crate::color_management::Levels;
 use crate::grade::{
-    Grade, Group, Link, Node, Port, Target, LONGEST_LABEL, LONGEST_PATH, MOST_INPUTS,
+    Grade, Group, Link, Node, Port, Pos, Target, LONGEST_LABEL, LONGEST_PATH, MOST_INPUTS,
 };
 use crate::project::{
     Alignment, Bin, Clip, Cue, Id, Media, Project, Proxy, Source, Timeline, Track, TrackKind,
@@ -532,6 +532,16 @@ pub enum Op {
         /// Whether it does what it is set to.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         enabled: Option<bool>,
+        /// Whether it is locked (Lock Node, p. 3382).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        locked: Option<bool>,
+        /// Where it lies in the node editor, or `null` for where the editor lays it out.
+        #[serde(
+            default,
+            deserialize_with = "nullable",
+            skip_serializing_if = "Option::is_none"
+        )]
+        pos: Option<Option<Pos>>,
         /// Its settings that change, as an object of the fields of its `params` that change:
         /// each object within it is put into the object of that name, and any other value takes
         /// the place of the one there, whole.
@@ -899,6 +909,15 @@ pub enum OpError {
         /// What is wrong with them.
         why: String,
     },
+    /// The settings of a node that is locked (Lock Node, pp. 3297, 3382) are to be set: by
+    /// `set_node` with `params`, and so by the edits that set them (`reset_node`, `paste_node`,
+    /// `paste_value`, a mixer given an input). It is to be unlocked first, or in the same
+    /// `set_node`.
+    #[error("node {node} is locked")]
+    NodeLocked {
+        /// The node.
+        node: Id,
+    },
     /// A node is not of a kind that the change can be made to or about. `kind` is the kind
     /// that it is, or `source` or `output`.
     #[error("node {node} is a {kind}, which this cannot be done to")]
@@ -1097,6 +1116,9 @@ enum Fields {
     Params {
         node: Id,
         why: String,
+    },
+    NodeLocked {
+        node: Id,
     },
     WrongNode {
         node: Id,
@@ -1385,8 +1407,21 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
             id,
             label,
             enabled,
+            locked,
+            pos,
             params,
-        } => grade::set_node(project, &grade, &id, label, enabled, params.as_ref()),
+        } => grade::set_node(
+            project,
+            &grade,
+            &id,
+            grade::NodeChange {
+                label,
+                enabled,
+                locked,
+                pos,
+                params: params.as_ref(),
+            },
+        ),
         Op::SetGrade { grade, value } => grade::set_grade(project, &grade, value),
         Op::AddGroup { group, index } => grade::add_group(project, group, index),
         Op::RemoveGroup { id } => grade::remove_group(project, &id),

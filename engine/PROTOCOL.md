@@ -1149,10 +1149,38 @@ mixer) is not linked or whose RGB output (key output) feeds nothing, is kept but
 picture as it is, as DaVinci disables such a grade (pp. 3312, 3319); the model's
 `Grade::is_complete` tells it.
 
-A **node** is `{id, kind, label, enabled, params}`. `id` is unique within its grade (not in the
-project: copying a grade keeps its ids), never `source` or `output`; the engine makes `n` +
-`next_id`. `label` is at most 100 characters (an editor shows 12, p. 3313). A disabled node
-passes its picture through. `params` by `kind`:
+A **node** is `{id, kind, label, enabled, locked, pos, params}`. `id` is unique within its grade
+(not in the project: copying a grade keeps its ids), never `source` or `output`; the engine makes
+`n` + `next_id`. `label` is at most 100 characters (an editor shows 12, p. 3313). A disabled node
+passes its picture through. The engine always writes `locked` and `pos`, and reads a node
+without them as `false` and `null`:
+
+- `locked` is Lock Node (pp. 3297, 3382: "prevent any changes from being made to that track's
+  corresponding node", "preventing you from accidentally making adjustments to it"). A locked
+  node's `params` are not set (`node_locked`): not by `set_node` `params`, and so not by the
+  edits that set them, `reset_node`, `paste_value`, `paste_node` onto it, or a mixer given an
+  input by `add_parallel` / `add_layer`. Its label, `enabled` (the button beside the lock in the
+  Keyframe Editor, p. 3382), `pos`, its links, and whether it is in the grade at all
+  (`remove_node`, `extract_node`, a grade put in whole by `set_grade`, `copy_grade` or
+  `collapse_group_grades`) stay free, as the manual names only adjustments. Copied from, it
+  gives its settings as any node does.
+- `pos` is `{x, y}`, where the node lies in the node editor: the top left corner of its card, in
+  the editor's units (a pixel at zoom 1, `x` right, `y` down), each finite and within 10^6 of 0
+  (`out_of_range` `pos`); or `null`, where the editor lays it out. DaVinci keeps the layout of a
+  node graph with the grade, so that it is found as it was left by the colourist who comes back
+  to it or another (p. 3321). It is kept on the node, not in a table of the grade, so that it
+  goes wherever the node goes: `remove_node` and its inverse, `extract_node`, `copy_grade`,
+  `set_grade`, groups. `copy_grade` with `preserve_nodes` gives a kept node the `pos` of the node
+  of the copy whose place it takes, as the layout is the copy's. `append_node_graph` and
+  `collapse_group_grades` move the nodes they put after others that have a `pos` right, so that
+  the leftmost of them is 148 (a column of the studio's editor) right of the rightmost node
+  before them, a node without a `pos` there counted as far right as the editor could lay it (at
+  `102 + (n − 1) · 148` for `n` nodes); into a grade without nodes they keep theirs. A node
+  without a `pos` stays without one. An editor sends a drag as one transaction of `set_node`
+  `pos` (one step to undo), and Cleanup Node Graph (p. 3321) as one `set_grade` with every `pos`
+  `null`.
+
+`params` by `kind`:
 
 - `parallel_mixer`: `{"inputs": 2}` — 1…256 inputs, mixed equally (pp. 3334–3335).
 - `layer_mixer`: `{"inputs": 2, "composite": "normal"}` — the lowest input is on top
@@ -1287,7 +1315,7 @@ Keyframe Editor's ruler only "mirrors the record timecode" of the clip (p. 3382)
 | `remove_node` | `grade`, `id`, `links?` | `add_node` with its links |
 | `connect` | `grade`, `link` | `connect` of the link the input had, or `disconnect` |
 | `disconnect` | `grade`, `to`, `kind`, `input` | `connect` |
-| `set_node` | `grade`, `id`, `label?`, `enabled?`, `params?` | `set_node` with the values as they were |
+| `set_node` | `grade`, `id`, `label?`, `enabled?`, `locked?`, `pos?` (`{x, y}` or `null`), `params?` | `set_node` with the values as they were |
 | `set_grade` | `grade`, `value` (a grade, its nodes with ids) | `set_grade` of the grade as it was |
 | `add_group` | `group` (empty `id` for `k` + `next_id`), `index?` | `remove_group` |
 | `remove_group` | `id` (no clip in it) | `add_group` |
@@ -1310,7 +1338,11 @@ Keyframe Editor's ruler only "mirrors the record timecode" of the clip (p. 3382)
   be the params of the node's kind (`params`, with serde's message) within their ranges
   (`out_of_range` with the path, such as `primaries.saturation`); a mixer cannot lose inputs
   that links go into (`no_port`). Its `done` and inverse carry the values at the patch's paths
-  as the engine writes them (`60` comes back as `60.0`).
+  as the engine writes them (`60` comes back as `60.0`). `params` of a node that is locked
+  before and after the change are `node_locked`: a node is unlocked and set in one `set_node`
+  (`"locked": false` with `params`), or set and locked, so the inverse of a change is never
+  refused for the lock. `pos` left out leaves where the node lies; `null` gives it back to the
+  editor's layout.
 - Nodes of a grade put in whole (`set_grade`, `add_group`, a clip of `insert_clip`, `add_track`
   or `add_timeline`, a timeline's) have ids (`no_id`), unique in the grade (`taken` `node`), of
   which an `n…` id must be below `next_id` (`reserved`).
@@ -1332,7 +1364,7 @@ operations above when applied, as the other edits are.
 | `add_parallel` | `grade`, `node` (a corrector) | Add a corrector taking what the node takes; if the node's picture goes only into a parallel mixer, the mixer gets one more input for it, else a new parallel mixer takes the node at input 0, the new corrector at input 1, and the node's place (Option-P, pp. 3334–3335). |
 | `add_layer` | `grade`, `node` (a corrector) | As `add_parallel`, with a layer mixer; the new corrector is at the lowest input, on top (Option-L, p. 3336). |
 | `extract_node` | `grade`, `node` | Take the node out of the tree, bridged as by `remove_node`, and keep it unlinked (E, p. 3319). |
-| `reset_node` | `grade`, `node` | Set the node as a new one of its kind, keeping its label, `enabled` and inputs. |
+| `reset_node` | `grade`, `node` | Set the node as a new one of its kind, keeping its label, `enabled`, `locked`, `pos` and inputs (`node_locked` where it is locked). |
 | `copy_grade` | `from`, `to: [target, ...]`, `preserve_nodes?` (0…10, default 0), `keyframes?` (`"source_timecode"`, the default, or `"start_frame"`) | `set_grade` each `to` to the grade `from`, ids kept (pp. 3286, 3290), its keys put on the frames of each `to` as `keyframes` says (above; kept nodes keep theirs). With `preserve_nodes` N (Copy Grade: Preserve number of nodes, p. 3285), a `to` of at least N nodes keeps its first N: they take the places of the first N nodes of the copy, whose links are kept, so "the first N nodes of a copied grade are ignored"; a node of the copy after them whose id one of them holds gets a new id. A `to` of fewer than N nodes gets the copy whole. Each kept node must be of the kind of the node of the copy it replaces, with as many inputs (`wrong_node` naming the kept node), and the copy must have N nodes (`out_of_range` `preserve_nodes`, as is N over 10). |
 | `append_node_graph` | `from`, `to: [target, ...]`, `keyframes?` (as `copy_grade`) | Add the nodes of `from` after the end of each `to`, with new ids, their keys put on the frames of each `to` as `keyframes` says: what fed the output feeds what the source fed, and what fed the output of `from` feeds the output (Append Node Graph, p. 3290). `append_grade`, its old name, is read as it. |
 | `collapse_group_grades` | `timeline`, `clips: [clip id, ...]` | For each clip, in a group (`ungrouped` if not): put the nodes of the group's pre-clip grade before the clip's nodes and those of its post-clip grade after them, chained as `append_node_graph` chains (the picture goes through them in the order of p. 3330, keyframes at their frames), with new ids for the group's nodes, the clip's keeping theirs; then `set_clip_group` it to `null`. The group keeps its grades and other clips (Collapse Group Grades, pp. 3306–3307). A group grade without nodes adds none; one that is not complete is copied as it is, leaving the clip's grade not complete. The timeline grade is not touched. Done as `set_grade` (when there are nodes to add) and `set_clip_group`. |
@@ -1355,8 +1387,18 @@ A wrong node for an edit is `wrong_node`; an empty `to` is `out_of_range` `to`, 
 | `wrong_node` | `node`, `kind` (the node's kind, `source` or `output`) | an edit that cannot be done to or about that node |
 
 `missing` also names `group`, `node` and `link`; `taken` `node` and `group`; `out_of_range` also
-`label`, `inputs`, `links`, `lut`, `param`, `to`, `clips`, `preserve_nodes` and the paths of
-corrector settings.
+`label`, `inputs`, `links`, `lut`, `param`, `to`, `clips`, `preserve_nodes`, `pos` and the paths
+of corrector settings.
+
+**The default node 01.** A clip new to DaVinci's Color page has one ungraded corrector, 01
+(pp. 3309, 3312); a new grade of the engine has no node, which colours the picture as that one
+does. An editor may show a grade without nodes, whose source feeds its output, with a node 01 of
+the id `n` + `next_id`, and make it with the first change to it, in the transaction of the
+change: `add_serial` after `source` first (in a grade without nodes the engine gives exactly that
+id, as it passes over only the ids that the grade holds), then the change naming that id. Undone,
+the grade has no node again. A change that leaves the node as it is (taking it away, resetting
+it) sends nothing; a whole grade put in place (Reset All Grades and Nodes, Ctrl+Home, which
+gives back the grade without nodes) is sent as it is.
 
 ### Grades in the picture
 
@@ -1368,6 +1410,7 @@ it; the subtitles of the monitor are drawn over that, ungraded (p. 3330). An exp
 subtitles in. A grade that is not complete, or has no node, changes nothing.
 
 - **What is graded**: every clip of a track of picture, titles and colours as much as media (the
+| `node_locked` | `node` | the `params` of a locked node set, by `set_node` or an edit that sets them (Lock Node, p. 3382). Not `locked`, which is the refusal of a locked track (`track`) |
   model lets any clip carry a grade; DaVinci grades a Text+ title "like any other clip", p. 1047).
   The colour that a dip transition goes through is no clip and has no clip grade; the timeline
   grade is over it.

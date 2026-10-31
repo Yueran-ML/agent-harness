@@ -23,6 +23,7 @@ use crate::gpu::{Graphics, Subscription};
 use crate::grading::{Grading, LutPlaces, MissingLut};
 use crate::log::log;
 use crate::rpc::{self, Fault};
+use crate::scopes::{Scopes, Shown};
 use crate::transport::clock::{self, Clock};
 use crate::transport::{Again, Sound, SoundSlot, Source, POOL_BYTES, SETTLE, TOLD_EVERY};
 use crate::view::{Monitor, ViewSlot};
@@ -105,6 +106,8 @@ enum Command {
     Redraw,
     Pause(oneshot::Sender<()>),
     Digest(oneshot::Sender<Result<Value, Fault>>),
+    /// What is shown, for the scopes to measure.
+    Shown(oneshot::Sender<Result<Shown, Fault>>),
     Stop,
 }
 
@@ -134,6 +137,7 @@ impl Timeline {
         again: Again,
         sound: crate::audio::Kind,
         luts: LutPlaces,
+        scopes: Scopes,
     ) -> Self {
         let (inbox, received) = mpsc::channel();
         let shared = Arc::new(Mutex::new(Shared::default()));
@@ -160,6 +164,7 @@ impl Timeline {
                         graphics,
                         sources: Sources::new(Hardware::Auto, again),
                         grading: Grading::new(luts),
+                        scopes,
                         status: Status::default(),
                         project: None,
                         timeline: None,
@@ -250,6 +255,13 @@ impl Timeline {
         receiver.await.map_err(|_| stopped())
     }
 
+    /// The frame shown, as it was composed.
+    pub async fn shown(&self) -> Result<Shown, Fault> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(Command::Shown(reply))?;
+        receiver.await.map_err(|_| stopped())?
+    }
+
     pub async fn digest(&self) -> Result<Value, Fault> {
         let (reply, receiver) = oneshot::channel();
         self.send(Command::Digest(reply))?;
@@ -284,6 +296,8 @@ struct Worker {
     sources: Sources,
     /// The grades of the timeline loaded, ready on the card.
     grading: Grading,
+    /// The scopes of the timeline monitor, told each frame shown.
+    scopes: Scopes,
     status: Status,
     project: Option<Arc<Project>>,
     timeline: Option<usize>,
@@ -482,6 +496,7 @@ impl Worker {
         self.readers.clear();
         self.previous.clear();
         self.grading.clear();
+        self.scopes.cleared(Monitor::Timeline);
         self.current = None;
         self.targets.clear();
         self.status = Status {
@@ -574,6 +589,17 @@ impl Worker {
                         digest
                     });
                 let _ = reply.send(result);
+            }
+            Command::Shown(reply) => {
+                let shown = match (&self.current, &self.compositor, self.status.shown) {
+                    (Some(target), Some(compositor), Some(frame)) => Ok(Shown::Target {
+                        gpu: Arc::clone(compositor.gpu()),
+                        target: Arc::clone(target),
+                        frame,
+                    }),
+                    _ => Err(not_loaded()),
+                };
+                let _ = reply.send(shown);
             }
             Command::Act(action) => self.action(action),
             Command::Stop => unreachable!("handled by run"),
@@ -944,7 +970,7 @@ impl Worker {
         // picture of every clip ever visited. At a late cut, that track's old picture stays.
         self.previous = previous;
         self.grade(&mut scene, &clips, frame)?;
-        self.present(&scene)?;
+        self.present(&scene, frame)?;
         self.status.shown = Some(frame);
         self.status.exact = exact;
         self.status.late += u64::from(late && self.status.playing);
@@ -975,7 +1001,8 @@ impl Worker {
         Ok(())
     }
 
-    fn present(&mut self, scene: &Scene) -> Result<(), Fault> {
+    /// Compose `scene`, the frame `frame`, hand it to the view, and tell the scopes.
+    fn present(&mut self, scene: &Scene, frame: i64) -> Result<(), Fault> {
         let gpu = self
             .graphics
             .gpu()
@@ -1015,9 +1042,17 @@ impl Worker {
             .render(scene, &target)
             .map_err(|error| drawing(&error.to_string()))?;
         if let Some(view) = lock(&self.view).as_ref() {
-            view.present_texture(Arc::clone(target.texture()), gpu)
+            view.present_texture(Arc::clone(target.texture()), Arc::clone(&gpu))
                 .map_err(|error| drawing(&error.to_string()))?;
         }
+        self.scopes.shown(
+            Monitor::Timeline,
+            Shown::Target {
+                gpu,
+                target: Arc::clone(&target),
+                frame,
+            },
+        );
         self.current = Some(target);
         Ok(())
     }
@@ -1184,6 +1219,7 @@ mod tests {
             graphics: Graphics::new(),
             sources: Sources::new(Hardware::Off, Arc::new(|_, _| {})),
             grading: Grading::new(LutPlaces::with_library(std::path::Path::new("."), vec![])),
+            scopes: Scopes::new(true, Graphics::new()),
             status: Status::default(),
             project: None,
             timeline: None,
@@ -1329,19 +1365,19 @@ mod tests {
             return;
         }
         let mut worker = worker();
-        worker.present(&filled([255, 0, 0, 255])).unwrap();
+        worker.present(&filled([255, 0, 0, 255]), 0).unwrap();
         let shown = Arc::downgrade(worker.current.as_ref().unwrap());
         // A view holds the texture that it shows, as present_texture keeps it, until it shows
         // another; the monitor no longer holds the target once it draws the next frame.
         let held = Arc::clone(worker.current.as_ref().unwrap().texture());
-        worker.present(&filled([0, 255, 0, 255])).unwrap();
-        worker.present(&filled([0, 0, 255, 255])).unwrap();
+        worker.present(&filled([0, 255, 0, 255]), 0).unwrap();
+        worker.present(&filled([0, 0, 255, 255]), 0).unwrap();
         let red = shown.upgrade().expect("the monitor keeps its targets");
         assert_eq!(red.read_rgba().unwrap()[..4], [255, 0, 0, 255]);
         assert_eq!(worker.targets.len(), 3);
         // Once the view lets it go, the target is drawn on again.
         drop((held, red));
-        worker.present(&filled([255, 255, 255, 255])).unwrap();
+        worker.present(&filled([255, 255, 255, 255]), 0).unwrap();
         assert_eq!(worker.targets.len(), 3);
     }
 }

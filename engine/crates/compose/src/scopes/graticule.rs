@@ -275,9 +275,10 @@ pub fn spectral_locus() -> Vec<[f64; 2]> {
     LOCUS_XY.to_vec()
 }
 
-/// The graticule of a scope, as its settings say.
+/// The graticule of a scope, as its settings say: what [`super::Scope::graticule`] gives once
+/// the scope is made on the card, worked out without one.
 #[must_use]
-pub(crate) fn graticule(settings: &ScopeSettings) -> Graticule {
+pub fn graticule(settings: &ScopeSettings) -> Graticule {
     let (width, height) = settings.kind.picture_size();
     let mut graticule = Graticule {
         width,

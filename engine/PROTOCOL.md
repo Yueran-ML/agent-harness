@@ -142,6 +142,11 @@ Before `hello`, every other request is refused with `-32600`.
 | `render.cancel` | `{"job": "render-1"}` | `{}` |
 | `transport.frame_digest` | `{"monitor": m}` | test hook only, with `--test-hooks` (see The transport); `-32601` otherwise |
 | `transport.*` | see The transport | |
+| `scopes.subscribe` | `{"view": "timeline" \| "source", "settings": {"kind": "waveform", ...}}` | `{"scope_id": "scope-1", "size": {"width": 512, "height": 256}, "graticule": {...}, "settings": {...}}`, then `scopes.frame` (see Scopes) |
+| `scopes.set` | `{"scope_id": "scope-1", "settings": {...}}` | as `scopes.subscribe` |
+| `scopes.unsubscribe` | `{"scope_id": "scope-1"}` | `{}` |
+| `scopes.statistics` | `{"view": "timeline" \| "source", "bins"?: 256}` | the figures of the frame shown (see Scopes) |
+| `luts.list` | none, or `{"folder"?: "Film"}` | `{"roots": [...], "luts": [...], "truncated": false}` (see The library of LUTs) |
 
 - `hello` says once per connection what the client is; a second `hello` is refused (`-32600`).
   From then on the connection is sent every notification. `protocol` other than 2 is refused
@@ -227,7 +232,8 @@ Before `hello`, every other request is refused with `-32600`.
 - `history.undo` takes back the latest step **whoever made it** (desktop and agent share one
   line of undo); `history.redo` does again the step undone last, with the same ids. A new
   transaction clears what could be redone. 1000 steps are kept.
-- `view.*`: the viewer, below; `transport.*`: playing a source, below.
+- `view.*`: the viewer, below; `transport.*`: playing a source, below; `scopes.*`: the scopes
+  of the monitors, below (Scopes); `luts.list`: below (The library of LUTs).
 
 ## Thumbnails and waveforms
 
@@ -1181,6 +1187,160 @@ subtitles in. A grade that is not complete, or has no node, changes nothing.
   where there is none, so a state without it has none missing) and in each `render.progress` of
   an export of that timeline (left out likewise).
 
+## Scopes
+
+The video scopes of a monitor, as the Color page of DaVinci Resolve has them (pp. 3007–3022):
+the waveform, the RGB parade, the vectorscope, the histogram and the CIE 1931 chromaticity
+diagram. A client subscribes a scope to a monitor and is sent a picture of it for each frame
+that the monitor shows; the agent reads the figures of the frame shown instead
+(`scopes.statistics`). They are of an engine that is not `--headless` (one with monitors): in a
+headless engine every `scopes.*` method is `-32601`.
+
+**What is measured.** The frame as the monitor shows it, before the view maps it to its
+display. For the timeline monitor, that is the frame composed with its grades: the signal that
+an export writes, with the subtitles that the monitor draws over it. For the source monitor it
+is the picture of the media alone, ungraded, composed as a timeline would show it: DaVinci's
+scopes show the image of the viewer, on every page that has them (Media, Cut, Edit, Color and
+Deliver, p. 692). R', G' and B' are signals from 0 to 1, 1 being the code 1023 of 10 bits
+whatever the range of the file (DaVinci's data levels, p. 3008). A scope counts every pixel of
+a frame of up to 4096 × 2160, one in two each way up to 8K, and one in four beyond.
+
+**`scopes.subscribe`** `{"view", "settings"}` answers `{"scope_id", "size": {"width",
+"height"}, "graticule", "settings"}`: the id of the scope (`"scope-<n>"`, of this connection
+alone), the size of its pictures, its graticule, and the settings as they were taken, with every
+field written. A connection may have 16 scopes at once (DaVinci's floating window shows 9).
+
+**`scopes.set`** `{"scope_id", "settings"}` gives a scope of this connection other settings,
+and answers as `scopes.subscribe`. Every frame sent after the answer is of the new settings.
+
+**`scopes.unsubscribe`** `{"scope_id"}` answers `{}`, and no frame of the scope is sent after
+the answer. The scopes of a connection are let go when it closes.
+
+**Frames.** A scope is sent `scopes.frame` once it is subscribed or set, if its monitor has
+something loaded (the monitor draws its frame again for it), and each time its monitor shows a
+frame: playing, seeking or paused, and when a change of the grades changes what is seen. A
+scope is sent at most **30 frames a second**. While its monitor shows frames faster, those in
+between are passed over, and the last frame shown is always sent once its time comes, so a
+scope rests on the frame that the monitor rests on. A scope is not sent another frame while its
+last one has not been written to the client, so a client that reads slowly is sent fewer
+frames, and is not closed for them. A paused monitor that shows nothing new sends nothing.
+
+`scopes.frame` `{"scope_id", "view", "frame", "width", "height", "rgba"}` is sent to the
+connection that subscribed the scope, and to no other. The protocol has one framing, lines of
+JSON, and the picture is carried in it as thumbnails and waveforms are: `rgba` is the base64 of
+`width × height × 4` bytes, RGBA of 8 bits, by rows from the top, opaque (the default waveform,
+512 × 256, is 512 KiB, some 700 KB as base64). `frame` is the frame of the timeline, or of the
+media for the source monitor. A scope is counted on the graphics card from the very texture
+that the monitor shows, in the submission to the card's queue that follows the frame's own (the
+compositor submits each frame by itself), and read back on a thread of the scopes, so that
+neither monitor waits for it. When the card is lost, the scopes are made again on the next one;
+a frame that cannot be counted or read is tried again a second later, or passed over for the
+next frame shown.
+
+**Settings.** `kind` and the kind's own fields side by side, then `signal` and `look`. Every
+field but `kind` may be left out, and is then as this table says; a field that is not one of the
+kind's is refused.
+
+| field | kinds | default | values |
+|---|---|---|---|
+| `kind` | | (required) | `"waveform"`, `"parade"`, `"vectorscope"`, `"histogram"`, `"chromaticity"` |
+| `width` | waveform | 512 | columns, 16–4096 |
+| `width` | parade | 256 | columns of each of R, G and B, 16–1365; the picture is three times as wide |
+| `width`, `height` | chromaticity | 512, 576 | 16–1024 each; x is 0–0.8 across and y 0–0.9 up, so 8 to 9 keeps their units alike |
+| `levels` | waveform, parade | 256 | the height of the picture: levels of a signal from 0 to 1, 16–1024 |
+| `channels` | waveform | `"luma"` | `"luma"`, or `"rgb"`: R, G and B over one another, white where they meet |
+| `channels` | histogram | `"rgb"` | `"rgb"`, or `"yrgb"`: luma above them, each in a strip of its own |
+| `scale` | waveform, parade, histogram | `"10-bit"` | `"10-bit"` (0–1023), `"percent"`, `"nits"`: on the curve of PQ, or of HLG on a display of 1000 nits where `signal.transfer` is `"hlg"` (p. 3009) |
+| `size` | vectorscope | 256 | its side, even, 16–1024 |
+| `zoom` | vectorscope | 1 | 1–8 (2 is DaVinci's 2X Zoom) |
+| `tones` | vectorscope | `"all"` | `"all"`, `"low"` (luma below `low`), `"mid"`, `"high"` (luma above `high`) (p. 3020) |
+| `low`, `high` | vectorscope | 0.30, 0.70 | 0–1, `low` not above `high` |
+| `targets` | vectorscope | `"75"` | the boxes of colour bars: `"off"`, `"75"`, `"100"`, `"both"` (p. 3010) |
+| `skin_tone` | vectorscope | `true` | whether the skin tone line is drawn, 123° from Cb |
+| `bins` | histogram | 256 | 16–1024, the width of the picture |
+| `height` | histogram | 256 | 16–4096, shared by its strips |
+| `space` | chromaticity | `"rec709"` | the primaries of the signal: a gamut (`"rec709"`, `"rec2020"`, `"dci-p3"`, `"p3-d65"`, `"rec601-pal"`, `"rec601-ntsc"`), or `{"red": [x, y], "green", "blue", "white"}` |
+| `gamuts` | chromaticity | `[{"name": "Rec.709", "primaries": "rec709"}]` | the triangles drawn, each `{"name", "primaries"}` with primaries written as `space` is; the first is the space's own as a rule, and the next one is to compare with (p. 3017) |
+| `signal.luma` | all | `"rec709"` | the luma coefficients: `"rec709"`, `"rec601"`, `"rec2020"`, or `[red, green, blue]`, red and blue above 0 and at most 0.5 |
+| `signal.transfer` | all | `"rec709"` | a gamma of the model (`"rec709"`, `"gamma22"`, `"gamma26"`, `"gamma28"`, `"srgb"`, `"linear"`, `"st2084"`, `"hlg"`): what the chromaticity diagram makes the signal linear by, and the curve of a scale of nits |
+| `look.mapping` | all | `"log"` | how a count is made a brightness: `"log"`, or `"gamma"` (2.2), which keeps more of the strong parts apart |
+| `look.brightness` | all | 0.5 | 0–1; each 1/16 doubles the trace (DaVinci's slider of each scope) |
+| `look.graticule` | all | 0.5 | 0–1: how brightly the graticule is drawn into the picture; 0 for none, the client then drawing `graticule` itself |
+
+Until the colour settings of the project are in the protocol, `signal` is the client's to set,
+and is Rec.709 unless it says otherwise.
+
+**The graticule** is `{"width", "height", "lines": [{"from": [x, y], "to": [x, y], "colour":
+[r, g, b]}], "labels": [{"at": [x, y], "text": "512", "colour": [r, g, b]}]}`, in pixels of the
+picture from its top left corner; a label is written from `at`, its left at the middle of its
+height. It holds the scale, the targets and the skin tone line, the spectral locus and the
+triangles. It is given once for each settings, in the answer. The same lines are drawn into the
+picture as brightly as `look.graticule` says, so that a picture reads alone (as when the agent
+is shown it).
+
+**`scopes.statistics`** `{"view", "bins"?}` (`bins` 16–1024, 256 unless given) measures every
+pixel of the frame that the monitor shows now, on the card, and answers at once; it needs no
+scope:
+
+```
+{"view": "timeline", "frame": 120, "width": 1920, "height": 1080, "samples": 2073600,
+ "red": {"min", "max", "mean"}, "green": {...}, "blue": {...}, "luma": {...},
+ "chroma": {"centroid": [cb, cr], "spread": [σcb, σcr], "radius", "saturation", "hue"},
+ "percentiles": {"red": {"1", "50", "99"}, "green": {...}, "blue": {...}, "luma": {...}},
+ "histogram": {"bins": 256, "red": [n, ...], "green": [...], "blue": [...], "luma": [...]}}
+```
+
+- Signals are from 0 to 1, or beyond where the frame is: `min` and `max` are its true extremes.
+- Luma and chroma are made with Rec.709's coefficients until the colour settings of the project
+  say otherwise.
+- `chroma` is in Cb and Cr, from −0.5 to 0.5 within the gamut, as the vectorscope shows it
+  unzoomed. `centroid` is their means (a cast where it is off the centre), `spread` their
+  standard deviations, `radius` the root mean square distance from the centroid, `saturation`
+  the mean distance from the centre, and `hue` the angle of the centroid in degrees
+  counterclockwise from Cb (0–360; the skin tone line is at 123).
+- A percentile is the signal of the bin below which that share of the pixels is.
+- The same frame gives the same figures, to the last bit.
+
+**Refusals.** `-32602` for params that are not the method's; with `data` `{"reason":
+"settings", "message"}` for settings that cannot be read or are out of range, `{"reason":
+"missing", "scope_id"}` for a scope that is not this connection's, `{"reason": "too_many",
+"most": 16}`, and `{"reason": "bins"}`. `scopes.statistics` is `-32004` with `{"reason":
+"not_loaded"}` when the monitor shows nothing, and with `{"reason": "draw"}` when the frame could
+not be measured (the card was lost: ask again).
+
+## The library of LUTs
+
+**`luts.list`** (no params, or `{"folder"}`) lists the folders that a corrector's `lut` is
+looked for in (see Grades in the picture), and the LUTs in them by the names that a node gives
+them:
+
+```
+{"roots": [{"place": "project", "path": "C:\\…\\studio", "exists": true},
+           {"place": "library", "path": "C:\\Users\\…\\.columbina\\luts", "exists": false}],
+ "luts": [{"name": "LUTs/Film.cube", "root": 0, "size": 1234,
+           "modified_us": 1790000000000000, "shadowed": false}],
+ "truncated": false}
+```
+
+- `roots` are in the order a name is looked for in them: the folder of the project, then each
+  folder of the library (`COLUMBINA_LUTS`, else `luts` in `COLUMBINA_HOME`, else in
+  `.columbina` in the user's home). A folder of the library that is not there is listed with
+  `"exists": false`.
+- `luts` are the `.cube` files (the extension in any case) under each root, by root, then by
+  name (code points). `name` is the path from the root, with `/` between folders, which is what
+  a corrector's `lut` names it by; `root` is the index of its root; `size` is in bytes; and
+  `modified_us` is when it was last written, in microseconds since 1970 (UTC), or `null`.
+  `shadowed` is `true` where a root before it has a file of the same name (compared as the
+  system compares names, without case on Windows): a node of that name reads that file instead.
+- Files are not read. One that is listed may still fail to parse when it is used, and is then
+  told in `missing_luts` (Grades in the picture). `.3dl` and other formats are not listed.
+- `folder` lists only the LUTs under that folder of each root, still named from the root. It is
+  a relative path of plain names, with `/` or `\`. One with `..`, a root or a drive is refused
+  with `-32602`, `data: {"reason": "outside_roots", "folder": "<as sent>"}`; a root that does not
+  have the folder lists nothing.
+- At most 10000 files are listed, 100000 entries of folders looked at, and folders 16 deep; past
+  that, `truncated` is `true` and what was found is given.
+
 ## Names of a transaction (`$name`)
 
 Within one `transaction.apply`, a thing that an operation adds may be given an id of the form
@@ -1252,6 +1412,7 @@ real ids. For example:
 | `media.proxy` | `{"media": "m1", "state": "queued" \| "running" \| "done" \| "failed", "progress": 0.5, "message"?: "..."}` (see Proxies) |
 | `media.waveform` | `{"media": "m1"}` (background analysis finished; query again for data or error) |
 | `render.progress` | `{"job", "state": "running" \| "done" \| "failed" \| "cancelled", "frame", "frames", "fps", "path", "encoder"?, "message"?, "missing_luts"?}` (see Rendering a timeline, and Grades in the picture) |
+| `scopes.frame` | `{"scope_id": "scope-1", "view": "timeline", "frame": n, "width": w, "height": h, "rgba": "<base64>"}`: a picture of a scope, to the connection that subscribed it only (see Scopes) |
 
 - `by` is the kind of the client that asked (for an undo or a redo, the one that asked for
   that); `made_by` is the kind of the client that made the transaction (for an undo or a redo,
@@ -1279,6 +1440,13 @@ commits to it; and any client may send transactions. So:
   is read without it (logged `proxy_dropped`). Before each deletion the same is checked again,
   and only a file (not a link) is deleted; anything else is left as it is (logged
   `proxy_not_deleted`).
+- **The library of LUTs is listed within its roots.** `luts.list` reads the names of folders
+  and files (never their contents) only under the folder of the project and the folders of the
+  library. It does not go through a link or a junction, neither one that the `folder` asked for
+  passes through nor one found below (nor into `cache` of the project, the engine's own), and it
+  refuses a `folder` that is not a path of plain names within them. A corrector's `lut` itself
+  may still name any absolute path, which the engine reads as a `.cube` when it grades (see
+  Grades in the picture).
 - **Media paths are the user's sources**, and may be anywhere: `add_media` takes any absolute
   path, and the engine reads (never writes or deletes) the file there when it is loaded,
   scrubbed or made a proxy of. A `project.json` from elsewhere may name a path on another
@@ -1292,12 +1460,12 @@ commits to it; and any client may send transactions. So:
 |---|---|---|
 | `-32700` | the line is not JSON (id `null`) | |
 | `-32600` | not a request object, `jsonrpc` is not `"2.0"`, no `method`, a bad `id` (answered with id `null`), a request before `hello`, a second `hello`, a `hello` of another protocol, a line over 16 MiB, `view.*` or `engine.yield` from a client that is not the desktop | `{"reason": "protocol", "supported": [2]}` for a `hello` of another protocol |
-| `-32601` | no such method; `view.*` and `transport.*` in a `--headless` engine; `media.make_proxy` in an engine that makes no proxies; `engine.yield` in an engine that is not headless | |
-| `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name`; a speed of `transport.play` out of −8…8 or 0; `transport.load` of media or a timeline not in the project; `timeline.duration` of a timeline not there; `media.import` or `media.inspect` with no paths or a relative path; `media.thumbnail`, `media.waveform` or `media.make_proxy` of media not there; `media.thumbnail` of a frame outside the media, a height outside 1…270 or a width over 16384; a bad parent or rectangle of `view.*`; `render.start` with a bad path, codec, quality, timeline, range (an empty timeline has none, so it cannot be exported) or `subtitle_tracks`, and `render.cancel` of a job that is not there | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above; `{"reason": "speed"}`; `{"index": i, "path": "...", "reason": "relative"}`; `{"reason": "parent"}` or `{"reason": "rect"}` (`view.*`); `{"reason": "missing", "media": "..."}` or `{"reason": "missing", "timeline": "..."}` (`render.start` too); `{"reason": "out_of_range", "frame": n}`; `{"reason": "subtitle_track", "track": "..."}` for a `subtitle_tracks` entry that is not a subtitle track of the timeline, or is named twice |
+| `-32601` | no such method; `view.*`, `transport.*` and `scopes.*` in a `--headless` engine; `media.make_proxy` in an engine that makes no proxies; `engine.yield` in an engine that is not headless | |
+| `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name`; a speed of `transport.play` out of −8…8 or 0; `transport.load` of media or a timeline not in the project; `timeline.duration` of a timeline not there; `media.import` or `media.inspect` with no paths or a relative path; `media.thumbnail`, `media.waveform` or `media.make_proxy` of media not there; `media.thumbnail` of a frame outside the media, a height outside 1…270 or a width over 16384; a bad parent or rectangle of `view.*`; `render.start` with a bad path, codec, quality, timeline, range (an empty timeline has none, so it cannot be exported) or `subtitle_tracks`, and `render.cancel` of a job that is not there; `scopes.*` with bad settings, a scope that is not the connection's, too many scopes or bins out of range; `luts.list` with a `folder` outside the roots | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above; `{"reason": "speed"}`; `{"index": i, "path": "...", "reason": "relative"}`; `{"reason": "parent"}` or `{"reason": "rect"}` (`view.*`); `{"reason": "missing", "media": "..."}` or `{"reason": "missing", "timeline": "..."}` (`render.start` too); `{"reason": "out_of_range", "frame": n}`; `{"reason": "subtitle_track", "track": "..."}` for a `subtitle_tracks` entry that is not a subtitle track of the timeline, or is named twice; `{"reason": "settings" \| "missing" \| "too_many" \| "bins", ...}` (`scopes.*`, see Scopes); `{"reason": "outside_roots", "folder": "..."}` (`luts.list`) |
 | `-32001` | a transaction, undo or redo was refused; the project is exactly as it was; or `render.start` was refused before anything was written or taken away (with `{"reason":"stopping"}` while the engine is stopping; with no `data` when the export could not be started) | the refusal, below |
 | `-32002` | `media.import` or `media.inspect`: a file cannot be read; nothing was added. `transport.load`, `media.thumbnail`, `media.waveform`: the file of the media cannot be opened or decoded. The analysis of the engine stopped (no `data`) | `{"path": "<as sent>", "reason": "...", "message": "..."}`, below |
 | `-32003` | `view.*`: the view cannot be made, there is none, or its window is gone | `{"reason": "..."}`, see The view |
-| `-32004` | `transport.*`: no media is loaded, the transport has stopped, or the test hook could not draw | `{"reason": "..."}`, see The transport |
+| `-32004` | `transport.*`: no media is loaded, the transport has stopped, or the test hook could not draw; `scopes.statistics`: the monitor shows nothing, or its frame could not be measured | `{"reason": "..."}`, see The transport; `not_loaded` or `draw` (see Scopes) |
 
 The connection stays usable after every error.
 

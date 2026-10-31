@@ -33,6 +33,10 @@
 //! "address": "…"}}` on stderr, or `{"contended": true}` if that engine has not yet said where it
 //! listens.
 
+// The futures of the methods hold what a monitor shows (a target of the card) across an await,
+// and whether wgpu's types may be sent is deeper than the compiler looks by default.
+#![recursion_limit = "256"]
+
 mod address;
 mod analysis;
 mod audio;
@@ -40,12 +44,14 @@ mod conn;
 mod gpu;
 mod grading;
 mod log;
+mod luts;
 mod names;
 mod play;
 mod proxy;
 mod queue;
 mod render;
 mod rpc;
+mod scopes;
 mod session;
 mod srt;
 mod timer;

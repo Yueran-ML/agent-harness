@@ -18,6 +18,7 @@ use crate::gpu::Graphics;
 use crate::grading::LutPlaces;
 use crate::log::log;
 use crate::rpc::{self, Fault};
+use crate::scopes::{Scopes, Shown};
 use crate::transport;
 use crate::view::{Monitor, Viewer};
 
@@ -170,6 +171,7 @@ impl Transport {
         notify: Notify,
         again: transport::Again,
         repair: transport::Again,
+        scopes: &Scopes,
     ) -> Self {
         let source = transport::Transport::new(
             headless,
@@ -180,6 +182,7 @@ impl Transport {
                 Arc::new(move |status| notify(&source_status(status)))
             },
             again,
+            scopes.clone(),
         );
         let timeline = (!headless).then(|| {
             timeline::Timeline::new(
@@ -189,6 +192,7 @@ impl Transport {
                 repair,
                 setup.sound,
                 luts,
+                scopes.clone(),
             )
         });
         Self {
@@ -324,6 +328,24 @@ impl Transport {
         self.source.stop();
         if let Some(timeline) = &self.timeline {
             timeline.stop();
+        }
+    }
+
+    /// What a monitor shows now, for the scopes to measure.
+    ///
+    /// # Errors
+    /// The engine is headless, or the monitor shows nothing.
+    pub async fn shown(&self, monitor: Monitor) -> Result<Shown, Fault> {
+        self.source.check("transport.state")?;
+        match monitor {
+            Monitor::Timeline => self.timeline.as_ref().expect("not headless").shown().await,
+            Monitor::Source => {
+                let snapshot = self.source.snapshot().await?;
+                Ok(Shown::Picture {
+                    picture: snapshot.picture,
+                    rotation: snapshot.rotation,
+                })
+            }
         }
     }
 

@@ -110,7 +110,8 @@ use tokio::sync::oneshot;
 use crate::audio::{self, Output};
 use crate::log::log;
 use crate::rpc::{self, Fault};
-use crate::view::ViewSlot;
+use crate::scopes::{Scopes, Shown};
+use crate::view::{Monitor, ViewSlot};
 use clock::{Clock, First, NANOS};
 
 /// The most that the pictures held at once while playing may take.
@@ -468,6 +469,7 @@ impl Transport {
         view: ViewSlot,
         notify: Notify,
         again: Again,
+        scopes: Scopes,
     ) -> Transport {
         let shared = Arc::new(Mutex::new(Shared {
             status: Status::unloaded(),
@@ -519,6 +521,7 @@ impl Transport {
                                 shared,
                                 notify,
                                 view,
+                                scopes,
                                 epoch: Instant::now(),
                                 told: None,
                             },
@@ -1022,6 +1025,8 @@ struct World {
     shared: Arc<Mutex<Shared>>,
     notify: Notify,
     view: ViewSlot,
+    /// The scopes of the source monitor, told each picture shown.
+    scopes: Scopes,
     /// The start of the monotonic clock.
     epoch: Instant,
     /// What was told last, and when.
@@ -1034,17 +1039,25 @@ impl World {
         i128::try_from(self.epoch.elapsed().as_nanos()).unwrap_or(i128::MAX)
     }
 
-    /// Hand a picture to the view, if one is attached.
+    /// Hand a picture to the view, if one is attached, and to the scopes.
     fn present(&self, picture: &Arc<NativePicture>, rotation: i16) {
         if let Some(view) = lock(&self.view).as_ref() {
             view.present(Arc::clone(picture), rotation);
         }
+        self.scopes.shown(
+            Monitor::Source,
+            Shown::Picture {
+                picture: Arc::clone(picture),
+                rotation,
+            },
+        );
     }
 
     fn clear(&self) {
         if let Some(view) = lock(&self.view).as_ref() {
             view.clear();
         }
+        self.scopes.cleared(Monitor::Source);
     }
 
     /// The proxy of media at `path` could not be read: it is not read again, nor sent again by
@@ -2631,6 +2644,7 @@ mod tests {
                     shared,
                     notify: Arc::new(|_| {}),
                     view: Arc::new(Mutex::new(None)),
+                    scopes: Scopes::new(true, crate::gpu::Graphics::new()),
                     epoch: Instant::now(),
                     told: None,
                 },

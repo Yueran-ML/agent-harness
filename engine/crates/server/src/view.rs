@@ -41,7 +41,7 @@ pub enum Monitor {
 }
 
 impl Monitor {
-    fn index(self) -> usize {
+    pub(crate) fn index(self) -> usize {
         match self {
             Self::Source => 0,
             Self::Timeline => 1,

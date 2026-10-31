@@ -25,14 +25,16 @@ use crate::analysis::{Analysis, ThumbnailRequest, WaveformRequest};
 use crate::gpu::Graphics;
 use crate::grading::LutPlaces;
 use crate::log::log;
+use crate::luts;
 use crate::names;
 use crate::play::Transport;
 use crate::proxy::{self, Made, Note, Proxies};
 use crate::queue::{self, Limits, Refused};
 use crate::render::Renders;
 use crate::rpc::{self, Fault, Line};
+use crate::scopes::{Scopes, StatisticsRequest};
 use crate::transport;
-use crate::view::Viewer;
+use crate::view::{Monitor, Viewer};
 
 /// The version of the engine that `hello` answers with.
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -97,6 +99,10 @@ pub struct Engine {
     analysis: Analysis,
     /// One background export, independent of playback and project edits.
     renders: Arc<Renders>,
+    /// The scopes of the monitors.
+    scopes: Scopes,
+    /// Where the LUTs that grades name are looked for, for `luts.list`.
+    luts: LutPlaces,
     /// Whether the engine is headless, as `hello` answers it.
     headless: bool,
     /// Told when the engine is to end, having yielded the project to the desktop
@@ -168,6 +174,11 @@ impl Connection {
     pub fn queue(&self, line: Line) -> Result<(), Refused> {
         self.queue.push(line)
     }
+
+    /// Where messages are queued on it, for what sends to it later.
+    pub fn sender(&self) -> &queue::Sender {
+        &self.queue
+    }
 }
 
 /// Log that a connection was closed because its client does not read what it is sent.
@@ -188,6 +199,7 @@ pub fn log_kicked(id: u64, kind: Option<Kind>, limits: Limits) {
 impl Engine {
     #[allow(
         clippy::too_many_arguments,
+        clippy::too_many_lines,
         reason = "what the engine is made of, each from the command line or `main`"
     )]
     pub fn new(
@@ -246,8 +258,17 @@ impl Engine {
                 Arc::new(move |note| tell_render(&state, note, limits))
             },
         ));
+        let scopes = Scopes::new(headless, Arc::clone(&graphics));
         let transport = Transport::new(
-            headless, setup, &viewer, graphics, luts, notify, again, repair,
+            headless,
+            setup,
+            &viewer,
+            graphics,
+            luts.clone(),
+            notify,
+            again,
+            repair,
+            &scopes,
         );
         let project_now = {
             let mut locked = state.try_lock().expect("no one has the state yet");
@@ -289,6 +310,8 @@ impl Engine {
             proxies,
             analysis,
             renders,
+            scopes,
+            luts,
             headless,
             yielded: Arc::new(Notify::new()),
         }
@@ -302,6 +325,7 @@ impl Engine {
     /// Cancel analysis and stop the proxy being made, deleting its partial output. This
     /// blocks for a few seconds at most; the state must not be locked meanwhile.
     pub fn stop_background(&self) {
+        self.scopes.stop();
         self.renders.stop();
         self.transport.stop();
         self.analysis.stop();
@@ -332,6 +356,7 @@ impl Engine {
 
     /// Forget a connection that has ended.
     pub async fn leave(&self, id: u64) {
+        self.scopes.forget(id);
         self.state.lock().await.peers.remove(&id);
         self.connections().stops.remove(&id);
         self.presence
@@ -693,6 +718,10 @@ async fn dispatch(
             media_analysis(engine, connection, id, method, params).await
         }
         "engine.yield" => engine_yield(engine, connection, kind, id, params).await,
+        "scopes.subscribe" | "scopes.set" | "scopes.unsubscribe" | "scopes.statistics" => {
+            scopes_call(engine, connection, id, method, params).await
+        }
+        "luts.list" => luts_list(engine, connection, id, params).await,
         "view.attach" | "view.place" | "view.show" | "view.detach" => {
             let result = engine.viewer.call(kind, method, params).await?;
             if method == "view.attach" {
@@ -735,6 +764,59 @@ async fn dispatch(
         )
         .into()),
     }
+}
+
+/// `scopes.*`: the scopes of the monitors, and the statistics of what a monitor shows.
+async fn scopes_call(
+    engine: &Engine,
+    connection: &Connection,
+    id: &RawValue,
+    method: &str,
+    params: Option<&RawValue>,
+) -> Result<Reply, Reply> {
+    let redraw = |view: Monitor| engine.transport.redraw(view);
+    let (number, sender) = (connection.id, connection.sender());
+    let answered = match method {
+        "scopes.subscribe" => engine
+            .scopes
+            .subscribe(number, sender, id, params, &redraw)?,
+        "scopes.set" => engine.scopes.set(number, sender, id, params, &redraw)?,
+        "scopes.unsubscribe" => engine.scopes.unsubscribe(number, sender, id, params)?,
+        _ => {
+            engine.scopes.check(method)?;
+            let asked = StatisticsRequest::read(params)?;
+            let shown = engine.transport.shown(asked.view).await?;
+            let scopes = engine.scopes.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                scopes.statistics(asked.view, &shown, asked.bins)
+            })
+            .await
+            .map_err(|error| Fault::new(rpc::TRANSPORT_FAILED, error.to_string()))??;
+            connection.queue(rpc::result_line(id, &result))
+        }
+    };
+    Ok(match answered {
+        Ok(()) => Reply::Queued,
+        Err(refused) => Reply::Refused(refused),
+    })
+}
+
+/// `luts.list`: the folders that LUTs are looked for in, and the LUTs in them.
+async fn luts_list(
+    engine: &Engine,
+    connection: &Connection,
+    id: &RawValue,
+    params: Option<&RawValue>,
+) -> Result<Reply, Reply> {
+    let asked = luts::Request::read(params)?;
+    let places = engine.luts.clone();
+    let result = tokio::task::spawn_blocking(move || luts::list(&places, &asked))
+        .await
+        .map_err(|error| Fault::new(rpc::CANNOT_READ, error.to_string()))?;
+    Ok(match connection.queue(rpc::result_line(id, &result)) {
+        Ok(()) => Reply::Queued,
+        Err(refused) => Reply::Refused(refused),
+    })
 }
 
 async fn media_analysis(

@@ -94,6 +94,18 @@ impl Sender {
 }
 
 impl Sender {
+    /// Queue a message, without waiting, and give how many had been queued once it was: when the
+    /// writer has written as many ([`Sender::written_count`]), it has been written too.
+    pub fn push_counted(&self, line: Line) -> Result<u64, Refused> {
+        self.push(line)?;
+        Ok(self.pushed.load(Ordering::SeqCst))
+    }
+
+    /// How many messages the writer has written.
+    pub fn written_count(&self) -> u64 {
+        *self.written.borrow()
+    }
+
     /// Wait until every message queued so far has been written, or the writer has ended.
     pub async fn written(&self) {
         let pushed = self.pushed.load(Ordering::SeqCst);

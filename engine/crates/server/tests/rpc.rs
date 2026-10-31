@@ -24,6 +24,9 @@ mod render;
 #[path = "rpc/grades.rs"]
 mod grades;
 
+#[path = "rpc/scopes.rs"]
+mod scopes;
+
 /// How long anything that should happen soon is waited for before the test fails.
 const WAIT: Duration = Duration::from_secs(30);
 
@@ -76,10 +79,21 @@ async fn start(dir: &Path, args: &[&str]) -> Started {
 
 /// Start an engine on `dir` whose stderr is read or not, and read its first line.
 async fn start_with(dir: &Path, args: &[&str], mode: Stderr) -> Started {
+    start_in(dir, args, mode, &[]).await
+}
+
+/// As [`start_with`], with the variables of `env` set for the engine.
+async fn start_in(
+    dir: &Path,
+    args: &[&str],
+    mode: Stderr,
+    env: &[(&str, &std::ffi::OsStr)],
+) -> Started {
     let mut child = Command::new(env!("CARGO_BIN_EXE_columbina-engine"))
         .arg("--project")
         .arg(dir)
         .args(args)
+        .envs(env.iter().copied())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

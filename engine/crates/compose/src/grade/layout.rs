@@ -81,8 +81,10 @@ pub const SHOT_GAMMA: u32 = 27;
 pub const SHOT_GAIN: u32 = 28;
 /// What is added to R, G and B, and the pivot.
 pub const SHOT_OFFSET: u32 = 29;
+/// Midtone Detail: its amount (the setting over 100), [`MIDTONE_GAIN`] and [`MIDTONE_EDGE`].
+pub const DETAIL: u32 = 30;
 /// The size of the block of a corrector.
-pub const CORRECTOR: u32 = 30;
+pub const CORRECTOR: u32 = 31;
 
 /// Shadows or Highlights.
 pub const ZONES_ON: u32 = 1;
@@ -108,6 +110,8 @@ pub const HSL_ON: u32 = 512;
 pub const CLIP_ON: u32 = 1024;
 /// The shot match.
 pub const SHOT_ON: u32 = 2048;
+/// Midtone Detail.
+pub const DETAIL_ON: u32 = 4096;
 
 /// How far Gamma bends: the exponent of a Gamma of `g` is `2^(-GAMMA_POWER · g)`.
 pub const GAMMA_POWER: f64 = 2.0;
@@ -119,6 +123,21 @@ pub const TEMPERATURE_STOPS: [f64; 3] = [0.5, 0.0, -0.5];
 pub const TINT_STOPS: [f64; 3] = [0.25, -0.5, 0.25];
 /// The width of the knee of Soft Clip at a softness of 100.
 pub const SOFT_REACH: f64 = 0.5;
+
+/// Midtone Detail (p. 3063): the standard deviation of the Gaussian that the mean and the
+/// spread of luma about a pixel are taken by, in pixels of a frame 1080 high
+/// ([`crate::color::REFERENCE_HEIGHT`]): about the scale of the "edge detail" of the manual,
+/// textures and the edges of things, which the setting makes stand out or softens, and wider
+/// than noise.
+pub const MIDTONE_RADIUS: f64 = 10.0;
+/// How much more the detail of the midtones is at a Midtone Detail of +100: its difference from
+/// the mean about it is made `1 + MIDTONE_GAIN` times as large.
+pub const MIDTONE_GAIN: f64 = 1.0;
+/// The spread of luma about a pixel (its standard deviation) from which a region counts as one
+/// of "high edge detail": a raised Midtone Detail works on regions as they reach it, a lowered
+/// one on regions as they fall from it to none ("regions of the image with low amounts of
+/// detail are softened while areas of high-detail are left alone").
+pub const MIDTONE_EDGE: f64 = 0.04;
 
 /// The number of a composite mode, as the maths numbers them: the place of each in
 /// [`Composite`], from `Normal` at 0 to `VividLight` at 26.
@@ -392,6 +411,12 @@ pub fn corrector(
     out[SHOT_GAIN as usize][3] = f(at(&shot.contrast, frame));
     out[SHOT_OFFSET as usize] = rgb(&shot.offset.r, &shot.offset.g, &shot.offset.b, frame, same);
     out[SHOT_OFFSET as usize][3] = f(at(&shot.pivot, frame));
+    out[DETAIL as usize] = [
+        f(at(&p.midtone_detail, frame) / 100.0),
+        f(MIDTONE_GAIN),
+        f(MIDTONE_EDGE),
+        0.0,
+    ];
     let diagonal = |curve: &Curve| curve.points == [[0.0, 0.0], [1.0, 1.0]];
     let curved = if curves.ganged {
         !diagonal(&curves.y)
@@ -445,12 +470,21 @@ fn features(block: &[[f32; 4]], curved: bool) -> u32 {
                 || !all(SHOT_OFFSET, 3, 0.0)
                 || at(SHOT_GAIN)[3] != 1.0,
         ),
+        (DETAIL_ON, at(DETAIL)[0] != 0.0),
     ];
     steps
         .iter()
         .filter(|(_, on)| *on)
         .map(|(feature, _)| feature)
         .sum()
+}
+
+/// Whether the Midtone Detail of `corrector` is ever other than 0: then its grade reads the
+/// pixels about each one (a neighbourhood), whatever it is at a frame; a setting of 0 that never
+/// changes is the grade of a pixel alone.
+#[must_use]
+pub fn reads_detail(corrector: &Corrector) -> bool {
+    !matches!(corrector.primaries.midtone_detail, Param::Fixed(value) if value == 0.0)
 }
 
 /// A key input: invert, gain, offset, matte.

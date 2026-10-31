@@ -63,10 +63,25 @@
 //!    lowered "while leaving the midtones alone", highlights brought down with "a smooth blend"
 //!    into the midtones. `DaVinci`'s may work on the neighbourhood of a pixel; these are tone
 //!    curves of the pixel alone.
-//! 2. **Midtone Detail** (p. 3063) raises "the contrast of regions of the image with high edge
-//!    detail": it needs the pixels about each one, which a pointwise operation does not have. It
-//!    is kept and does nothing until the compositor draws a layer into a texture of its own and
-//!    can run a pass over its neighbourhood (`color.rs`, the extension for blur and sharpen).
+//! 2. **Midtone Detail** (p. 3063): raised, "the contrast of regions of the image with high edge
+//!    detail is raised to increase the perception of image sharpness"; lowered, "regions of the
+//!    image with low amounts of detail are softened while areas of high-detail are left alone".
+//!    It reads the pixels about each one, a neighbourhood (`color.rs`): the mean `m` of luma
+//!    about the pixel and its spread `σ` (standard deviation), by a Gaussian of
+//!    [`layout::MIDTONE_RADIUS`] pixels of a frame 1080 high, of the luma after Shadows and
+//!    Highlights. With `Y` the luma of the pixel, `w = 4 t (1 - t)` (`t` = `Y` held within 0
+//!    and 1: 1 at mid grey, 0 at black and white, so that the midtones are worked on) and
+//!    `e = smoothstep(0, E, σ)` (how much the region is one of detail, `E` =
+//!    [`layout::MIDTONE_EDGE`]), it adds to R, G and B `a G e w (Y - m)` for a setting `a`
+//!    (over 100) above 0, a local contrast that makes the detail `1 + G` times as large at +100
+//!    (`G` = [`layout::MIDTONE_GAIN`]), and `a (1 - e) w (Y - m)` below 0, which takes the
+//!    regions of little detail towards their mean, all the way at -100, and leaves the
+//!    detailed ones. `DaVinci` publishes none of it: the shape is the manual's, and the
+//!    constants are guesses to be set against `DaVinci` itself. A setting of 0 that is not
+//!    keyframed reads no neighbourhood, and is the grade of a pixel alone, to the bit; one that
+//!    is keyframed reads one at every frame (the shape of the grade is the same), and does
+//!    nothing at a frame where it is 0. On a pixel alone ([`evaluate`]) it is left out, as it
+//!    leaves a picture of one colour; [`evaluate_picture`] takes it with the pixels about each.
 //! 3. **Color Boost** (p. 3063, "a non-uniform saturation … sometimes referred to as a vibrance
 //!    operation"): `x + (x - Y) b (1 - S)`, `b` the setting over 100 and `S` the saturation
 //!    `(max - min) / max`: low saturation is raised (or lowered) more.
@@ -128,8 +143,13 @@
 //!     and 1. The curves are the same cubics, flat beyond their ends, the curves of hue going round
 //!     so that their ends meet smoothly (p. 3122). Hue vs Hue turns by `out × 180°`; Hue vs Sat,
 //!     Lum vs Sat and Sat vs Sat multiply saturation by `1 + out` each; Hue vs Lum (times the
-//!     saturation, as the hue of a grey is nothing) and Sat vs Lum add `out × Y` to R, G and B,
-//!     multiplying luma by about `1 + out` so that black stays black.
+//!     saturation, as the hue of a grey is nothing) and Sat vs Lum multiply luma by `1 + out`,
+//!     adding `out × Y` to R, G and B, so that black stays black and the colour is kept. The
+//!     manual says that they "increase or decrease the lightness" (p. 3124), "darken specific
+//!     hues to add richness and depth", and darken the most saturated parts as "highly saturated
+//!     colors block more light from passing through the emulsion" of film (p. 3127): a light
+//!     let through in a share, as the curves of saturation do, rather than a level added, which
+//!     would raise black.
 //! 12. **Soft Clip** (pp. 3117–3121): High at 100 (1023 of 10 bits, 1.0) and High Soft at 0
 //!     clip nothing ("image data that you push above 1023 … is preserved"); High below 100 clips
 //!     there, "even by a single digit"; High Soft `s` compresses from `H - w` towards `H`
@@ -155,11 +175,12 @@ use std::sync::Arc;
 
 use columbina_model::grade::Grade;
 
+use crate::neighbourhood::{self, Image};
 use crate::{ColorOp, Stage};
 /// The cache and the folders that [`CardLuts`] reads LUTs by, from the LUT crate.
 pub use columbina_lut::{LutCache, Roots};
 use graph::Plan;
-pub use luts::CardLuts;
+pub use luts::{CardLuts, TEXTURE_BUDGET};
 use maths::Constants;
 
 /// The maths of the nodes, on the card.
@@ -287,6 +308,7 @@ impl Prepared {
                 library: library(options).into(),
                 params: Vec::new(),
                 textures,
+                neighbourhoods: plan.neighbourhoods(),
             });
         }
         Prepared {
@@ -345,7 +367,8 @@ pub fn stage_of_grades(grades: &[(&Grade, f64)], options: &GradeOptions, luts: &
 }
 
 /// What `grade` makes of `rgb` at `frame`, on the processor: the reference that the card is held
-/// to. LUTs are left out, as with [`NoLuts`].
+/// to. LUTs are left out, as with [`NoLuts`]; and Midtone Detail, which has no pixels about
+/// `rgb` to work on (it leaves a picture of one colour as it is), see [`evaluate_picture`].
 #[must_use]
 pub fn evaluate(grade: &Grade, frame: f64, options: &GradeOptions, rgb: [f32; 3]) -> [f32; 3] {
     evaluate_with(grade, frame, options, &NoLuts, &|_, rgb| rgb, rgb)
@@ -367,6 +390,71 @@ pub fn evaluate_with(
     };
     let params = plan.params(grade, frame, options.luma64());
     plan.run(&options.constants(), &params, rgb, lut)
+}
+
+/// What `grade` makes of a picture at `frame` on the processor, Midtone Detail and all, as the
+/// compositor grades a layer drawn at the size of its picture: `pixels`, R'G'B' of `width` ×
+/// `height`, row after row, `units` of them to a pixel of a frame 1080 high
+/// ([`neighbourhood::units`]); with the LUTs that `luts` has, each done by `lut`.
+///
+/// The colour that each neighbourhood filters is kept in half floats, and filtered as the card
+/// does it ([`neighbourhood::filtered`]), so that only the roundings of the card are left
+/// between the two.
+///
+/// # Panics
+/// `pixels` is not of `width` × `height`.
+#[must_use]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::cast_precision_loss,
+    reason = "a grade, its frame and options, its LUTs and a picture; places of pixels"
+)]
+pub fn evaluate_picture(
+    grade: &Grade,
+    frame: f64,
+    options: &GradeOptions,
+    luts: &dyn Luts,
+    lut: &dyn Fn(&str, [f32; 3]) -> [f32; 3],
+    (width, height): (u32, u32),
+    pixels: &[[f32; 3]],
+    units: f32,
+) -> Vec<[f32; 3]> {
+    assert_eq!(pixels.len(), width as usize * height as usize);
+    let Some(plan) = Plan::of(grade, luts) else {
+        return pixels.to_vec();
+    };
+    let params = plan.params(grade, frame, options.luma64());
+    let constants = options.constants();
+    let mut around: Vec<Vec<[f32; 3]>> = vec![Vec::new(); pixels.len()];
+    for (number, kept) in plan.neighbourhoods().iter().enumerate() {
+        let source = Image {
+            width,
+            height,
+            pixels: pixels
+                .iter()
+                .zip(&around)
+                .map(|(rgb, around)| {
+                    let [r, g, b] =
+                        plan.detail_source(number, &constants, &params, *rgb, lut, around);
+                    [r, g, b, 1.0].map(neighbourhood::half)
+                })
+                .collect(),
+        };
+        let filtered = neighbourhood::filtered(&source, kept.filter, units);
+        for (at, around) in around.iter_mut().enumerate() {
+            let (x, y) = (at % width as usize, at / width as usize);
+            let place = [
+                (x as f32 + 0.5) / width as f32,
+                (y as f32 + 0.5) / height as f32,
+            ];
+            around.push(neighbourhood::colour_at(&filtered, place));
+        }
+    }
+    pixels
+        .iter()
+        .zip(&around)
+        .map(|(rgb, around)| plan.run_around(&constants, &params, *rgb, lut, around))
+        .collect()
 }
 
 #[cfg(test)]

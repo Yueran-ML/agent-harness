@@ -4,9 +4,12 @@
 
 @group(0) @binding(0) var canvas: texture_2d<f32>;
 
-// The lines from "colour: begin" to "colour: end" are put in place by those of the stage.
+// The lines from "colour: begin" to "colour: end" are put in place by those of the stage;
+// `colour_at` is where the pixel lies on the canvas, from 0 to 1 across and down, for the
+// neighbourhoods that it reads there.
 // colour: begin
 const colour_identity: bool = true;
+var<private> colour_at: vec2<f32>;
 fn colour(rgb: vec3<f32>) -> vec3<f32> {
     return rgb;
 }
@@ -23,5 +26,6 @@ fn vs(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
 @fragment
 fn fs(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let texel = textureLoad(canvas, vec2<i32>(position.xy), 0);
+    colour_at = position.xy / vec2<f32>(textureDimensions(canvas));
     return vec4<f32>(colour(texel.rgb), texel.a);
 }

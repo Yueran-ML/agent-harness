@@ -174,20 +174,53 @@ fn grade_log(x0: vec3<f32>, at: u32) -> vec3<f32> {
         + param(at + 11u).rgb * highlight;
 }
 
-// A corrector up to its LUT (p. 3331): Shadows and Highlights, Color Boost, Temp and Tint,
-// Lift, Gamma and Gain with Lum Mix, Contrast, the custom curves, Offset and the Log wheels,
-// Hue and Saturation.
-fn grade_primary(x0: vec3<f32>, at: u32) -> vec3<f32> {
+// Shadows and Highlights, the first step of a corrector.
+fn grade_shadows(x0: vec3<f32>, at: u32) -> vec3<f32> {
+    let features = u32(param(at + 26u).x);
+    if ((features & 1u) == 0u) {
+        return x0;
+    }
+    let zones = param(at + 8u);
+    let y = grade_luma(x0);
+    return x0 + vec3<f32>(zones.x * (1.0 - grade_smoothstep(0.0, 0.5, y))
+        + zones.y * grade_smoothstep(0.5, 1.0, y));
+}
+
+// The colour that the neighbourhood of Midtone Detail filters, of the input of its node: its
+// luma after Shadows and Highlights less a half, and the square of that.
+fn grade_detail_source(x0: vec3<f32>, at: u32) -> vec3<f32> {
+    let y = grade_luma(grade_shadows(x0, at)) - 0.5;
+    return vec3<f32>(y, y * y, 0.0);
+}
+
+// Midtone Detail of `x`, `around` the mean about it of what `grade_detail_source` gives.
+fn grade_midtone_detail(x: vec3<f32>, around: vec3<f32>, at: u32) -> vec3<f32> {
+    let features = u32(param(at + 26u).x);
+    if ((features & 4096u) == 0u) {
+        return x;
+    }
+    let detail = param(at + 30u);
+    let y = grade_luma(x);
+    let mean = around.x + 0.5;
+    let spread = sqrt(max(around.y - around.x * around.x, 0.0));
+    let t = clamp(y, 0.0, 1.0);
+    let midtones = 4.0 * t * (1.0 - t);
+    let edges = grade_smoothstep(0.0, detail.z, spread);
+    var change = detail.x * (1.0 - edges);
+    if (detail.x > 0.0) {
+        change = detail.x * detail.y * edges;
+    }
+    return x + vec3<f32>(change * midtones * (y - mean));
+}
+
+// A corrector from Color Boost up to its LUT (p. 3331): Color Boost, Temp and Tint, Lift, Gamma
+// and Gain with Lum Mix, Contrast, the custom curves, Offset and the Log wheels, Hue and
+// Saturation.
+fn grade_after_detail(x0: vec3<f32>, at: u32) -> vec3<f32> {
     var x = x0;
     // The steps that are at their neutral settings (each the identity there) are left out.
     let features = u32(param(at + 26u).x);
     let colour = param(at + 6u);
-    if ((features & 1u) != 0u) {
-        let zones = param(at + 8u);
-        let y = grade_luma(x);
-        x = x + vec3<f32>(zones.x * (1.0 - grade_smoothstep(0.0, 0.5, y))
-            + zones.y * grade_smoothstep(0.5, 1.0, y));
-    }
     if ((features & 2u) != 0u) {
         x = x + (x - vec3<f32>(grade_luma(x))) * (colour.w * (1.0 - grade_sat(x)));
     }
@@ -234,6 +267,17 @@ fn grade_primary(x0: vec3<f32>, at: u32) -> vec3<f32> {
         x = grade_saturate(x, colour.x);
     }
     return x;
+}
+
+// A corrector up to its LUT, without its Midtone Detail, which needs the pixels about each.
+fn grade_primary(x0: vec3<f32>, at: u32) -> vec3<f32> {
+    return grade_after_detail(grade_shadows(x0, at), at);
+}
+
+// A corrector up to its LUT with its Midtone Detail, `around` the mean about the pixel of what
+// `grade_detail_source` gives.
+fn grade_primary_detailed(x0: vec3<f32>, at: u32, around: vec3<f32>) -> vec3<f32> {
+    return grade_after_detail(grade_midtone_detail(grade_shadows(x0, at), around, at), at);
 }
 
 fn grade_clip_low(x: f32, low: f32, width: f32) -> f32 {

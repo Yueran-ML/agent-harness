@@ -897,8 +897,9 @@ impl Default for Curve {
 /// hue, which go round, so that their left end meets their right end (p. 3122); the
 /// lightness or the saturation for the others. `out` is from -1 to 1, and 0 changes nothing: a
 /// turn of the hue of half a circle each way for Hue vs Hue, the saturation multiplied by
-/// `1 + out` for the curves of saturation, and the lightness raised or lowered by `out` for
-/// those of lightness.
+/// `1 + out` for the curves of saturation, and the lightness (luma) multiplied by `1 + out` for
+/// those of lightness, Hue vs Lum as much as the colour is saturated: lighter or darker in a
+/// share, as film lets light through (p. 3127), so that black stays black.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HslCurves {

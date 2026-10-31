@@ -11,6 +11,8 @@
 //!   transform ([`Stage`]), with how later work plugs into them.
 //! - [`geometry`]: where a layer is put, worked out without the card.
 //! - [`grade`]: a grade of the Color page at a frame, made into an operation of a [`Stage`].
+//! - [`neighbourhood`]: the filters of the pixels about each one that operations of colour read
+//!   (Midtone Detail; blur and sharpen), on the processor as the card takes them.
 //! - [`scopes`]: the video scopes of a frame counted on the card, and its figures for the agent.
 //! - [`yuv`]: the planes of a picture on the card, and the shader that makes them R'G'B', which
 //!   the view draws with too.
@@ -20,13 +22,15 @@ mod compose;
 pub mod geometry;
 mod gpu;
 pub mod grade;
+pub mod neighbourhood;
 pub mod scopes;
 mod text;
 pub mod wipe;
 pub mod yuv;
 
 pub use color::{
-    ColorOp, ColorRange, LayerColor, OpTexture, Stage, TextureKind, YuvCoding, YuvMatrix,
+    ColorOp, ColorRange, Filter, LayerColor, Neighbourhood, OpTexture, Stage, TextureKind,
+    YuvCoding, YuvMatrix,
 };
 pub use compose::{ComposeError, Compositor, Scene, SceneLayer, Source, Target, WORKING_FORMAT};
 pub use geometry::{quarter_turns, Transform};

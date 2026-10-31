@@ -6,6 +6,10 @@
 //! it made before that mix (`c`), and its key (`k`). A serial node and a parallel mixer read
 //! `o`; a layer mixer lays the `c` of each input over the layers above it, as much as its `k`
 //! (pp. 3336–3338); a key input reads `k`.
+//!
+//! A corrector whose Midtone Detail is ever other than 0 reads a neighbourhood (`color.rs`): the
+//! colour that its Midtone Detail filters ([`Plan::detail_body`]) is made by the steps that its
+//! input comes of, and then its own Shadows and Highlights.
 
 #![allow(
     clippy::float_cmp,
@@ -21,6 +25,7 @@ use columbina_model::grade::{Grade, NodeKind, Port, OUTPUT, SOURCE};
 use super::layout::{self, CORRECTOR, KEY_INPUT, KEY_OUTPUT};
 use super::maths::{self, Constants, Params, Rgb};
 use super::Luts;
+use crate::color::{Filter, Neighbourhood};
 use crate::ColorOp;
 
 /// Where a step reads a picture from.
@@ -45,13 +50,15 @@ pub(crate) struct LutUse {
 /// A step of a grade.
 #[derive(Clone, Debug)]
 pub(crate) enum Step {
-    /// A corrector: node `node` of the grade, its block of parameters at `block`.
+    /// A corrector: node `node` of the grade, its block of parameters at `block`; `detail` the
+    /// number of the neighbourhood that its Midtone Detail reads, where it reads one.
     Corrector {
         node: usize,
         input: From,
         key: Option<usize>,
         block: u32,
         lut: Option<LutUse>,
+        detail: Option<usize>,
     },
     /// A node of the picture that is disabled: it gives its first input as it is.
     Pass { input: From },
@@ -81,6 +88,8 @@ pub(crate) struct Plan {
     pub fixed: u32,
     /// The number of textures of the LUTs.
     pub textures: usize,
+    /// The steps whose Midtone Detail reads a neighbourhood, in the order of their numbers.
+    pub details: Vec<usize>,
 }
 
 impl Plan {
@@ -152,6 +161,7 @@ impl Plan {
             output: from(Some(output))?,
             fixed: 0,
             textures: 0,
+            details: Vec::new(),
         };
         let mut lut_params: Vec<(usize, usize)> = Vec::new();
         for &n in &order {
@@ -207,12 +217,17 @@ impl Plan {
                             texture,
                         })
                     });
+                    let detail = layout::reads_detail(corrector).then(|| {
+                        plan.details.push(plan.steps.len());
+                        plan.details.len() - 1
+                    });
                     Step::Corrector {
                         node: n,
                         input: *inputs(Port::Rgb, 1)?.first()?,
                         key,
                         block,
                         lut,
+                        detail,
                     }
                 }
                 (NodeKind::ParallelMixer(mixer), true) => Step::Parallel {
@@ -288,123 +303,242 @@ impl Plan {
     }
 
     /// The WGSL of the body of the operation of the grade, which changes `rgb`.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each kind of step, one after another"
-    )]
     pub(crate) fn body(&self) -> String {
         let mut code = String::from("let grade_source = rgb;\n");
-        let o = |from: From| match from {
-            From::Source => "grade_source".to_owned(),
-            From::Step(s) => format!("o{s}"),
-        };
-        for (s, step) in self.steps.iter().enumerate() {
-            let _ = match step {
-                Step::Corrector {
-                    input,
-                    key,
-                    block,
-                    lut,
-                    ..
-                } => {
-                    let key_in = key.map_or_else(
-                        || "1.0".to_owned(),
-                        |k| format!("grade_key(k{k}, param($P + {}u))", block + KEY_INPUT),
-                    );
-                    let lut = lut.as_ref().map_or_else(String::new, |lut| {
-                        format!(
-                            "    {{\n        var rgb = x;\n        {{\n{}\n        }}\n        x = rgb;\n    }}\n",
-                            rewrite(&lut.op.body, lut.params, lut.texture)
-                        )
-                    });
-                    write!(
-                        code,
-                        "var o{s}: vec3<f32>;\nvar c{s}: vec3<f32>;\nvar k{s}: f32;\n{{\n    \
-                         let input = {input};\n    \
-                         var x = grade_primary(input, $P + {block}u);\n\
-                         {lut}    \
-                         x = grade_secondary(x, input, $P + {block}u);\n    \
-                         k{s} = grade_key({key_in}, param($P + {output}u));\n    \
-                         c{s} = x;\n    \
-                         o{s} = select(input + (x - input) * k{s}, x, k{s} == 1.0);\n}}\n",
-                        input = o(*input),
-                        output = block + KEY_OUTPUT,
-                    )
-                }
-                Step::Pass { input } => writeln!(
-                    code,
-                    "let o{s} = {};\nlet c{s} = o{s};\nlet k{s} = 1.0;",
-                    o(*input)
-                ),
-                Step::Parallel { inputs } => {
-                    let first = o(inputs[0]);
-                    let mut sum = String::new();
-                    for input in &inputs[1..] {
-                        if sum.is_empty() {
-                            sum = format!("({} - {first})", o(*input));
-                        } else {
-                            sum = format!("{sum} + ({} - {first})", o(*input));
-                        }
-                    }
-                    let mean = if sum.is_empty() {
-                        first
-                    } else {
-                        format!("{first} + ({sum}) / {:?}", place(inputs.len()))
-                    };
-                    writeln!(
-                        code,
-                        "let o{s} = {mean};\nlet c{s} = o{s};\nlet k{s} = 1.0;"
-                    )
-                }
-                Step::Layer { inputs, mode } => {
-                    let _ = writeln!(code, "var o{s} = {};", o(inputs[0]));
-                    for input in &inputs[1..] {
-                        let (c, k) = match input {
-                            From::Source => ("grade_source".to_owned(), "1.0".to_owned()),
-                            From::Step(t) => (format!("c{t}"), format!("k{t}")),
-                        };
-                        let _ = writeln!(
-                            code,
-                            "o{s} = o{s} + (grade_composite({mode}u, o{s}, {c}) - o{s}) * {k};"
-                        );
-                    }
-                    writeln!(code, "let c{s} = o{s};\nlet k{s} = 1.0;")
-                }
-                Step::KeyMix { inputs, block, .. } => {
-                    let _ = writeln!(
-                        code,
-                        "var k{s} = grade_key(k{}, param($P + {block}u));",
-                        inputs[0]
-                    );
-                    for (i, input) in inputs.iter().enumerate().skip(1) {
-                        let at = *block as usize + i;
-                        let _ = writeln!(
-                            code,
-                            "k{s} = grade_key_combine(k{s}, grade_key(k{input}, param($P + {at}u)), \
-                             param($P + {at}u).w);"
-                        );
-                    }
-                    writeln!(
-                        code,
-                        "k{s} = grade_key(k{s}, param($P + {}u));",
-                        *block as usize + inputs.len()
-                    )
-                }
-                Step::PassKey { input } => writeln!(code, "let k{s} = k{input};"),
-            };
+        for s in 0..self.steps.len() {
+            self.step_code(s, &mut code);
         }
         let _ = writeln!(code, "rgb = {};", o(self.output));
         code
     }
 
+    /// The neighbourhoods that the grade reads: those of the Midtone Detail of its correctors,
+    /// in order.
+    pub(crate) fn neighbourhoods(&self) -> Vec<Neighbourhood> {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a constant of a few pixels"
+        )]
+        let sigma = layout::MIDTONE_RADIUS as f32;
+        (0..self.details.len())
+            .map(|number| Neighbourhood {
+                body: self.detail_body(number).into(),
+                filter: Filter::Gaussian { sigma: [sigma; 2] },
+            })
+            .collect()
+    }
+
+    /// The WGSL of the body of neighbourhood `number`: the steps that the input of its corrector
+    /// comes of (and none other), and then what its Midtone Detail filters of that input.
+    pub(crate) fn detail_body(&self, number: usize) -> String {
+        let at = self.details[number];
+        let Step::Corrector { input, block, .. } = &self.steps[at] else {
+            unreachable!("a neighbourhood is of a corrector");
+        };
+        // The steps that the input reads, through any number of them.
+        let mut needed = vec![false; at];
+        let mut stack: Vec<usize> = match input {
+            From::Step(s) => vec![*s],
+            From::Source => Vec::new(),
+        };
+        while let Some(s) = stack.pop() {
+            if needed[s] {
+                continue;
+            }
+            needed[s] = true;
+            stack.extend(self.reads(s));
+        }
+        let mut code = String::from("let grade_source = rgb;\n");
+        for s in (0..at).filter(|s| needed[*s]) {
+            self.step_code(s, &mut code);
+        }
+        let _ = writeln!(
+            code,
+            "rgb = grade_detail_source({}, $P + {block}u);",
+            o(*input)
+        );
+        code
+    }
+
+    /// The steps that step `s` reads.
+    fn reads(&self, s: usize) -> Vec<usize> {
+        let step = |from: &From| match from {
+            From::Step(t) => Some(*t),
+            From::Source => None,
+        };
+        match &self.steps[s] {
+            Step::Corrector { input, key, .. } => step(input).into_iter().chain(*key).collect(),
+            Step::Pass { input } => step(input).into_iter().collect(),
+            Step::Parallel { inputs } | Step::Layer { inputs, .. } => {
+                inputs.iter().filter_map(step).collect()
+            }
+            Step::KeyMix { inputs, .. } => inputs.clone(),
+            Step::PassKey { input } => vec![*input],
+        }
+    }
+
+    /// The WGSL of step `s`, put at the end of `code`.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each kind of step, one after another"
+    )]
+    fn step_code(&self, s: usize, code: &mut String) {
+        let _ = match &self.steps[s] {
+            Step::Corrector {
+                input,
+                key,
+                block,
+                lut,
+                detail,
+                ..
+            } => {
+                let key_in = key.map_or_else(
+                    || "1.0".to_owned(),
+                    |k| format!("grade_key(k{k}, param($P + {}u))", block + KEY_INPUT),
+                );
+                let lut = lut.as_ref().map_or_else(String::new, |lut| {
+                    format!(
+                        "    {{\n        var rgb = x;\n        {{\n{}\n        }}\n        x = rgb;\n    }}\n",
+                        rewrite(&lut.op.body, lut.params, lut.texture)
+                    )
+                });
+                let primary = match detail {
+                    None => format!("grade_primary(input, $P + {block}u)"),
+                    Some(number) => {
+                        format!("grade_primary_detailed(input, $P + {block}u, $N{number})")
+                    }
+                };
+                write!(
+                    code,
+                    "var o{s}: vec3<f32>;\nvar c{s}: vec3<f32>;\nvar k{s}: f32;\n{{\n    \
+                     let input = {input};\n    \
+                     var x = {primary};\n\
+                     {lut}    \
+                     x = grade_secondary(x, input, $P + {block}u);\n    \
+                     k{s} = grade_key({key_in}, param($P + {output}u));\n    \
+                     c{s} = x;\n    \
+                     o{s} = select(input + (x - input) * k{s}, x, k{s} == 1.0);\n}}\n",
+                    input = o(*input),
+                    output = block + KEY_OUTPUT,
+                )
+            }
+            Step::Pass { input } => writeln!(
+                code,
+                "let o{s} = {};\nlet c{s} = o{s};\nlet k{s} = 1.0;",
+                o(*input)
+            ),
+            Step::Parallel { inputs } => {
+                let first = o(inputs[0]);
+                let mut sum = String::new();
+                for input in &inputs[1..] {
+                    if sum.is_empty() {
+                        sum = format!("({} - {first})", o(*input));
+                    } else {
+                        sum = format!("{sum} + ({} - {first})", o(*input));
+                    }
+                }
+                let mean = if sum.is_empty() {
+                    first
+                } else {
+                    format!("{first} + ({sum}) / {:?}", place(inputs.len()))
+                };
+                writeln!(
+                    code,
+                    "let o{s} = {mean};\nlet c{s} = o{s};\nlet k{s} = 1.0;"
+                )
+            }
+            Step::Layer { inputs, mode } => {
+                let _ = writeln!(code, "var o{s} = {};", o(inputs[0]));
+                for input in &inputs[1..] {
+                    let (c, k) = match input {
+                        From::Source => ("grade_source".to_owned(), "1.0".to_owned()),
+                        From::Step(t) => (format!("c{t}"), format!("k{t}")),
+                    };
+                    let _ = writeln!(
+                        code,
+                        "o{s} = o{s} + (grade_composite({mode}u, o{s}, {c}) - o{s}) * {k};"
+                    );
+                }
+                writeln!(code, "let c{s} = o{s};\nlet k{s} = 1.0;")
+            }
+            Step::KeyMix { inputs, block, .. } => {
+                let _ = writeln!(
+                    code,
+                    "var k{s} = grade_key(k{}, param($P + {block}u));",
+                    inputs[0]
+                );
+                for (i, input) in inputs.iter().enumerate().skip(1) {
+                    let at = *block as usize + i;
+                    let _ = writeln!(
+                        code,
+                        "k{s} = grade_key_combine(k{s}, grade_key(k{input}, param($P + {at}u)), \
+                         param($P + {at}u).w);"
+                    );
+                }
+                writeln!(
+                    code,
+                    "k{s} = grade_key(k{s}, param($P + {}u));",
+                    *block as usize + inputs.len()
+                )
+            }
+            Step::PassKey { input } => writeln!(code, "let k{s} = k{input};"),
+        };
+    }
+
     /// What the grade makes of `rgb` on the processor, with `params` as [`Plan::params`] makes
-    /// them; `lut` is what the LUT of each name makes of a colour.
+    /// them; `lut` is what the LUT of each name makes of a colour. A pixel alone has nothing about
+    /// it: Midtone Detail is left out (as it leaves a picture of one colour).
     pub(crate) fn run(
         &self,
         constants: &Constants,
         params: &[[f32; 4]],
         rgb: Rgb,
         lut: &dyn Fn(&str, Rgb) -> Rgb,
+    ) -> Rgb {
+        self.walk(constants, params, rgb, lut, None, None)
+    }
+
+    /// What the grade makes of `rgb` on the processor as [`Plan::run`] does, the neighbourhoods
+    /// that it reads being `around` at the pixel (one for each of [`Plan::details`]).
+    pub(crate) fn run_around(
+        &self,
+        constants: &Constants,
+        params: &[[f32; 4]],
+        rgb: Rgb,
+        lut: &dyn Fn(&str, Rgb) -> Rgb,
+        around: &[Rgb],
+    ) -> Rgb {
+        self.walk(constants, params, rgb, lut, Some(around), None)
+    }
+
+    /// The colour that neighbourhood `number` filters of `rgb` on the processor, those before it
+    /// being `around` at the pixel.
+    pub(crate) fn detail_source(
+        &self,
+        number: usize,
+        constants: &Constants,
+        params: &[[f32; 4]],
+        rgb: Rgb,
+        lut: &dyn Fn(&str, Rgb) -> Rgb,
+        around: &[Rgb],
+    ) -> Rgb {
+        self.walk(constants, params, rgb, lut, Some(around), Some(number))
+    }
+
+    /// The steps on the processor: up to the corrector of neighbourhood `stop`, whose colour to
+    /// filter it gives, or all of them.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each kind of step, one after another"
+    )]
+    fn walk(
+        &self,
+        constants: &Constants,
+        params: &[[f32; 4]],
+        rgb: Rgb,
+        lut: &dyn Fn(&str, Rgb) -> Rgb,
+        around: Option<&[Rgb]>,
+        stop: Option<usize>,
     ) -> Rgb {
         let p = Params(params);
         let count = self.steps.len();
@@ -423,10 +557,19 @@ impl Plan {
                     key,
                     block,
                     lut: used,
+                    detail,
                     ..
                 } => {
                     let input = picture(&o, *input);
-                    let mut x = maths::primary(constants, p, *block, input);
+                    if stop.is_some() && *detail == stop {
+                        return maths::detail_source(constants, p, *block, input);
+                    }
+                    let mut x = match (detail, around) {
+                        (Some(number), Some(around)) => {
+                            maths::primary_detailed(constants, p, *block, input, around[*number])
+                        }
+                        _ => maths::primary(constants, p, *block, input),
+                    };
                     if let Some(used) = used {
                         x = lut(&used.name, x);
                     }
@@ -493,6 +636,14 @@ impl Plan {
             }
         }
         picture(&o, self.output)
+    }
+}
+
+/// The WGSL of the picture that `from` gives.
+fn o(from: From) -> String {
+    match from {
+        From::Source => "grade_source".to_owned(),
+        From::Step(s) => format!("o{s}"),
     }
 }
 

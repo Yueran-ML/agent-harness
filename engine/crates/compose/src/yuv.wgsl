@@ -221,9 +221,12 @@ fn unpremultiplied(sampled: vec4<f32>) -> vec3<f32> {
 
 // The compositor's: the input transform and the grade of the layer, on R'G'B' once it is
 // decoded (`color.rs`). The lines from "colour: begin" to "colour: end" are put in place by
-// those of a layer that has them; as they are written, they do nothing.
+// those of a layer that has them; as they are written, they do nothing. `colour_at` is where
+// the pixel lies in the picture as it is shown, from 0 to 1 across and down, for the
+// neighbourhoods that a grade reads there.
 // colour: begin
 const colour_identity: bool = true;
+var<private> colour_at: vec2<f32>;
 fn colour(rgb: vec3<f32>) -> vec3<f32> {
     return rgb;
 }
@@ -331,6 +334,7 @@ fn fs_layer(layer: Layer) -> @location(0) vec4<f32> {
         sampled = sum / weights;
     }
     let alpha = coverage(layer.local) * params.extra.x;
+    colour_at = clamp(shown, vec2<f32>(0.0), vec2<f32>(1.0));
     if params.kind.y < 0.5 {
         return vec4<f32>(colour(rgb_of(sampled.xyz)) * alpha, alpha);
     }

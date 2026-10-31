@@ -285,23 +285,61 @@ pub(crate) fn log(c: &Constants, p: Params, node: u32, x0: Rgb) -> Rgb {
     )
 }
 
-/// A corrector up to its LUT (p. 3331): Shadows and Highlights, Color Boost, Temp and Tint,
-/// Lift, Gamma and Gain with Lum Mix, Contrast, the custom curves, Offset and the Log wheels,
-/// Hue and Saturation.
-pub(crate) fn primary(c: &Constants, p: Params, node: u32, x0: Rgb) -> Rgb {
+/// Shadows and Highlights (pp. 3063–3064), the first step of a corrector.
+pub(crate) fn shadows(c: &Constants, p: Params, node: u32, x0: Rgb) -> Rgb {
+    let features = whole(p.at(node + at::FEATURES)[0]);
+    if features & at::ZONES_ON == 0 {
+        return x0;
+    }
+    let zones = p.at(node + at::ZONES);
+    let y = luma(c, x0);
+    add(
+        x0,
+        splat(zones[0] * (1.0 - smoothstep(0.0, 0.5, y)) + zones[1] * smoothstep(0.5, 1.0, y)),
+    )
+}
+
+/// The colour that the neighbourhood of Midtone Detail filters, of the input `x0` of its node:
+/// its luma after Shadows and Highlights less a half, and the square of that, in R and G. Their
+/// means about a pixel are the mean of luma there, less a half, and its spread
+/// ([`midtone_detail`]); the half is taken away for the square to keep its precision in a
+/// texture of half floats.
+pub(crate) fn detail_source(c: &Constants, p: Params, node: u32, x0: Rgb) -> Rgb {
+    let y = luma(c, shadows(c, p, node, x0)) - 0.5;
+    [y, y * y, 0.0]
+}
+
+/// Midtone Detail (p. 3063) of `x`, `around` the mean about it of what [`detail_source`] gives
+/// (see the documentation of [`crate::grade`]).
+pub(crate) fn midtone_detail(c: &Constants, p: Params, node: u32, x: Rgb, around: Rgb) -> Rgb {
+    let features = whole(p.at(node + at::FEATURES)[0]);
+    if features & at::DETAIL_ON == 0 {
+        return x;
+    }
+    let detail = p.at(node + at::DETAIL);
+    let y = luma(c, x);
+    let mean = around[0] + 0.5;
+    let spread = (around[1] - around[0] * around[0]).max(0.0).sqrt();
+    let t = y.clamp(0.0, 1.0);
+    let midtones = 4.0 * t * (1.0 - t);
+    let edges = smoothstep(0.0, detail[2], spread);
+    let change = if detail[0] > 0.0 {
+        detail[0] * detail[1] * edges
+    } else {
+        detail[0] * (1.0 - edges)
+    };
+    add(x, splat(change * midtones * (y - mean)))
+}
+
+/// A corrector from Color Boost up to its LUT (p. 3331): Color Boost, Temp and Tint, Lift,
+/// Gamma and Gain with Lum Mix, Contrast, the custom curves, Offset and the Log wheels, Hue and
+/// Saturation.
+pub(crate) fn after_detail(c: &Constants, p: Params, node: u32, x0: Rgb) -> Rgb {
     let mut x = x0;
     // The steps that are at their neutral settings (each the identity there) are left out.
     let features = whole(p.at(node + at::FEATURES)[0]);
     let on = |feature: u32| features & feature != 0;
     let colour = p.at(node + at::COLOUR);
-    if on(at::ZONES_ON) {
-        let zones = p.at(node + at::ZONES);
-        let y = luma(c, x);
-        x = add(
-            x,
-            splat(zones[0] * (1.0 - smoothstep(0.0, 0.5, y)) + zones[1] * smoothstep(0.5, 1.0, y)),
-        );
-    }
     if on(at::BOOST_ON) {
         x = add(
             x,
@@ -340,6 +378,19 @@ pub(crate) fn primary(c: &Constants, p: Params, node: u32, x0: Rgb) -> Rgb {
         x = saturate(c, x, colour[0]);
     }
     x
+}
+
+/// A corrector up to its LUT (p. 3331), without its Midtone Detail, which needs the pixels about
+/// each: Shadows and Highlights, and then [`after_detail`].
+pub(crate) fn primary(c: &Constants, p: Params, node: u32, x0: Rgb) -> Rgb {
+    after_detail(c, p, node, shadows(c, p, node, x0))
+}
+
+/// A corrector up to its LUT with its Midtone Detail, `around` the mean about the pixel of what
+/// [`detail_source`] gives.
+pub(crate) fn primary_detailed(c: &Constants, p: Params, node: u32, x0: Rgb, around: Rgb) -> Rgb {
+    let x = midtone_detail(c, p, node, shadows(c, p, node, x0), around);
+    after_detail(c, p, node, x)
 }
 
 /// The low end of Soft Clip (p. 3120).

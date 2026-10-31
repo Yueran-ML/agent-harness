@@ -60,9 +60,11 @@ fn coverage(local: vec2<f32>) -> f32 {
 
 // The input transform and the grade of the layer (`color.rs`): the lines from "colour: begin"
 // to "colour: end" are put in place by those of a layer that has them; as they are written,
-// they do nothing.
+// they do nothing. `colour_at` is where the pixel lies in the texture, from 0 to 1 across and
+// down, for the neighbourhoods that a grade reads there.
 // colour: begin
 const colour_identity: bool = true;
+var<private> colour_at: vec2<f32>;
 fn colour(rgb: vec3<f32>) -> vec3<f32> {
     return rgb;
 }
@@ -81,6 +83,7 @@ fn fs_layer(layer: Layer) -> @location(0) vec4<f32> {
     let size = params.quad.zw - params.quad.xy;
     let at = clamp((layer.local - params.quad.xy) / size, vec2<f32>(0.0), vec2<f32>(1.0));
     let texel = textureSample(picture, bilinear, at);
+    colour_at = at;
     let alpha = coverage(layer.local) * params.extra.x * params.tint.a;
     return vec4<f32>(graded(texel.rgb * params.tint.rgb, texel.a), texel.a) * alpha;
 }

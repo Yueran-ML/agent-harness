@@ -404,12 +404,233 @@ fn shadows_and_highlights_leave_the_midtones() {
     near(eval(&highlights, [0.3; 3]), [0.3; 3], 1e-6);
 }
 
-#[test]
-fn midtone_detail_needs_neighbours_and_does_nothing_on_its_own() {
-    let detail = one(|c| c.primaries.midtone_detail = fixed(80.0));
-    for rgb in colours() {
-        assert_eq!(eval(&detail, rgb), rgb);
+fn detailed(amount: f64) -> Grade {
+    one(|c| c.primaries.midtone_detail = fixed(amount))
+}
+
+/// A grey picture of 320 × 240 in four parts of 160 × 120: at the top left, stripes two pixels
+/// wide of 0.35 and 0.65; at the top right, a flat 0.5; at the bottom left, stripes of 0.01 and
+/// 0.09, near black; at the bottom right, a checker of 0.495 and 0.505, a faint noise.
+fn quarters() -> Vec<[f32; 3]> {
+    (0..240_u32)
+        .flat_map(|y| (0..320_u32).map(move |x| (x, y)))
+        .map(|(x, y)| {
+            let odd = (x / 2) % 2 == 1;
+            let v = match (x < 160, y < 120) {
+                (true, true) => {
+                    if odd {
+                        0.65
+                    } else {
+                        0.35
+                    }
+                }
+                (false, true) => 0.5,
+                (true, false) => {
+                    if odd {
+                        0.09
+                    } else {
+                        0.01
+                    }
+                }
+                (false, false) => {
+                    if (x + y) % 2 == 1 {
+                        0.505
+                    } else {
+                        0.495
+                    }
+                }
+            };
+            [v; 3]
+        })
+        .collect()
+}
+
+/// What `grade` makes of [`quarters`], a pixel of it to a pixel of the reference frame.
+fn graded_quarters(grade: &Grade) -> Vec<[f32; 3]> {
+    evaluate_picture(
+        grade,
+        0.0,
+        &options(),
+        &NoLuts,
+        &|_, rgb| rgb,
+        (320, 240),
+        &quarters(),
+        1.0,
+    )
+}
+
+/// The least and the most luma within the middle of a quarter (`left`, `top`), 40 pixels (four
+/// standard deviations of the filter) from its edges.
+fn spread_of(pixels: &[[f32; 3]], left: bool, top: bool) -> (f32, f32) {
+    let (x0, y0) = (if left { 0 } else { 160 }, if top { 0 } else { 120 });
+    let mut least = f32::MAX;
+    let mut most = f32::MIN;
+    for y in y0 + 40..y0 + 80 {
+        for x in x0 + 40..x0 + 120 {
+            let v = luma(pixels[y * 320 + x]);
+            least = least.min(v);
+            most = most.max(v);
+        }
     }
+    (least, most)
+}
+
+#[test]
+fn midtone_detail_raises_the_contrast_of_the_detail_of_the_midtones() {
+    let before = quarters();
+    let after = graded_quarters(&detailed(100.0));
+    let range = |pixels: &[[f32; 3]], left, top| {
+        let (least, most) = spread_of(pixels, left, top);
+        most - least
+    };
+    // The stripes of the midtones nearly twice as far apart (by 1 + 0.91 there).
+    let raised = range(&after, true, true) / range(&before, true, true);
+    assert!((1.8..2.0).contains(&raised), "{raised}");
+    // About their mean: the stripes still about 0.5.
+    let (least, most) = spread_of(&after, true, true);
+    assert!((f32::midpoint(least, most) - 0.5).abs() < 0.01);
+    // Flat: as it was.
+    let (least, most) = spread_of(&after, false, true);
+    assert!((least - 0.5).abs() < 1e-3 && (most - 0.5).abs() < 1e-3);
+    // The stripes near black are left nearly as they are: no midtones there.
+    let dark = range(&after, true, false) / range(&before, true, false);
+    assert!((1.0..1.3).contains(&dark), "{dark}");
+    // A noise too faint to be detail is not raised much.
+    let faint = range(&after, false, false) / range(&before, false, false);
+    assert!((1.0..1.1).contains(&faint), "{faint}");
+    // Half as much, about half the change.
+    let half = graded_quarters(&detailed(50.0));
+    let halved = range(&half, true, true) / range(&before, true, true);
+    assert!(
+        (halved - 1.0 - (raised - 1.0) / 2.0).abs() < 0.02,
+        "{halved}"
+    );
+}
+
+#[test]
+fn midtone_detail_lowered_softens_what_has_little_detail_and_leaves_the_rest() {
+    let before = quarters();
+    let after = graded_quarters(&detailed(-100.0));
+    let range = |pixels: &[[f32; 3]], left, top| {
+        let (least, most) = spread_of(pixels, left, top);
+        most - least
+    };
+    // The faint noise is taken nearly all the way to its mean.
+    let softened = range(&after, false, false) / range(&before, false, false);
+    assert!(softened < 0.1, "{softened}");
+    // The stripes, which are detail, stay.
+    let kept = range(&after, true, true) / range(&before, true, true);
+    assert!((0.98..=1.0).contains(&kept), "{kept}");
+}
+
+#[test]
+fn midtone_detail_leaves_a_picture_of_one_colour_and_a_pixel_alone() {
+    for amount in [100.0, -100.0, 37.0] {
+        let grade = detailed(amount);
+        // A pixel alone has nothing about it.
+        for rgb in colours() {
+            assert_eq!(eval(&grade, rgb), rgb);
+        }
+        // A picture of one colour: as it was, but for the half floats of its mean.
+        let flat = vec![[0.3, 0.45, 0.6]; 40 * 30];
+        let out = evaluate_picture(
+            &grade,
+            0.0,
+            &options(),
+            &NoLuts,
+            &|_, rgb| rgb,
+            (40, 30),
+            &flat,
+            1.0,
+        );
+        for pixel in out {
+            near(pixel, [0.3, 0.45, 0.6], 5e-4);
+        }
+    }
+}
+
+#[test]
+fn midtone_detail_reads_a_neighbourhood_unless_it_is_always_0() {
+    let neighbourhoods = |grade: &Grade| -> Vec<crate::Neighbourhood> {
+        grade_ops(grade, 0.0, &options(), &NoLuts)
+            .into_iter()
+            .flat_map(|op| op.neighbourhoods)
+            .collect()
+    };
+    let code = |grade: &Grade| {
+        let ops = grade_ops(grade, 0.0, &options(), &NoLuts);
+        ops.last().unwrap().body.to_string()
+    };
+    // At 0, the grade of a pixel alone: the code of a node as it is made.
+    assert!(neighbourhoods(&detailed(0.0)).is_empty());
+    assert_eq!(code(&detailed(0.0)), code(&one(|_| {})));
+    // Otherwise one, a Gaussian of its radius; keyframed through 0 as well, with the same code.
+    let fixed_on = neighbourhoods(&detailed(30.0));
+    assert_eq!(fixed_on.len(), 1);
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a constant of a few pixels"
+    )]
+    let radius = layout::MIDTONE_RADIUS as f32;
+    assert_eq!(
+        fixed_on[0].filter,
+        crate::Filter::Gaussian { sigma: [radius; 2] }
+    );
+    let keyed = one(|c| {
+        c.primaries.midtone_detail = Param::Keys(vec![
+            Key {
+                frame: 0,
+                value: 0.0,
+                interp: Interp::Linear,
+            },
+            Key {
+                frame: 10,
+                value: 50.0,
+                interp: Interp::Linear,
+            },
+        ]);
+    });
+    assert_eq!(neighbourhoods(&keyed).len(), 1);
+    assert_eq!(code(&keyed), code(&detailed(30.0)));
+    assert!(code(&keyed).contains("$N0"));
+    // Two, the second after the first: what the second filters reads the first.
+    let two = serial(vec![
+        corrector("a", |c| c.primaries.midtone_detail = fixed(20.0)),
+        gain_node("b", [1.2, 1.0, 1.0]),
+        corrector("c", |c| c.primaries.midtone_detail = fixed(-20.0)),
+    ]);
+    let both = neighbourhoods(&two);
+    assert_eq!(both.len(), 2);
+    assert!(!both[0].body.contains("$N"));
+    assert!(both[1].body.contains("$N0") && !both[1].body.contains("$N1"));
+    assert!(code(&two).contains("$N0") && code(&two).contains("$N1"));
+    // In a branch: what it filters comes of what its input comes of, and of nothing else.
+    let branch = mixed(
+        vec![
+            gain_node("a", [1.5, 1.0, 1.0]),
+            corrector("b", |c| c.primaries.midtone_detail = fixed(40.0)),
+        ],
+        NodeKind::ParallelMixer(ParallelMixer { inputs: 2 }),
+    );
+    let only = neighbourhoods(&branch);
+    assert_eq!(only.len(), 1);
+    assert!(!only[0].body.contains("o0"), "{}", only[0].body);
+    assert!(only[0].body.contains("grade_detail_source(grade_source"));
+}
+
+#[test]
+fn midtone_detail_is_in_its_node_after_shadows_and_highlights() {
+    // Shadows raise what is filtered as well as the pixel: a node that raises the shadows of
+    // stripes near black raises their mean as much, and they are not taken for detail more.
+    let before = graded_quarters(&one(|c| c.primaries.shadows = fixed(60.0)));
+    let after = graded_quarters(&one(|c| {
+        c.primaries.shadows = fixed(60.0);
+        c.primaries.midtone_detail = fixed(100.0);
+    }));
+    let (least, most) = spread_of(&before, true, false);
+    let (least_after, most_after) = spread_of(&after, true, false);
+    assert!(((least + most) - (least_after + most_after)).abs() < 0.02);
+    assert!(most_after - least_after > most - least);
 }
 
 #[test]
@@ -517,6 +738,33 @@ fn hsl_curves_work_on_the_hue_saturation_and_luma_of_the_input() {
     let sat_lum = one(|c| c.hsl.sat_vs_lum = vec![[0.0, 0.5]]);
     near(eval(&sat_lum, [0.4; 3]), [0.6; 3], 1e-6);
     near(eval(&sat_lum, [0.0; 3]), [0.0; 3], 0.0);
+}
+
+#[test]
+fn hsl_curves_of_lightness_multiply_luma_by_one_and_their_output() {
+    // Flat curves, each of one point: Sat vs Lum lowers every colour's luma by 40 %, and Hue vs
+    // Lum raises it by half, times its saturation; the differences of R, G and B from luma
+    // stay, black stays black.
+    let sat_lum = one(|c| c.hsl.sat_vs_lum = vec![[0.5, -0.4]]);
+    let hue_lum = one(|c| c.hsl.hue_vs_lum = vec![[0.5, 0.5]]);
+    for rgb in [
+        [0.8, 0.2, 0.2],
+        [0.3, 0.6, 0.9],
+        [0.5, 0.5, 0.5],
+        [0.05, 0.02, 0.0],
+        [1.2, 0.9, 0.3],
+    ] {
+        let chroma = |x: [f32; 3]| x.map(|v| v - luma(x));
+        let out = eval(&sat_lum, rgb);
+        assert!((luma(out) - luma(rgb) * 0.6).abs() < 1e-6, "{rgb:?}");
+        near(chroma(out), chroma(rgb), 1e-6);
+        let out = eval(&hue_lum, rgb);
+        let by = 1.0 + 0.5 * maths::sat(rgb);
+        assert!((luma(out) - luma(rgb) * by).abs() < 1e-6, "{rgb:?}");
+        near(chroma(out), chroma(rgb), 1e-6);
+    }
+    assert_eq!(eval(&sat_lum, [0.0; 3]), [0.0; 3]);
+    assert_eq!(eval(&hue_lum, [0.0; 3]), [0.0; 3]);
 }
 
 #[test]
@@ -1473,6 +1721,7 @@ impl Luts for Inverting {
             library: "fn lut_test_unused() {}".into(),
             params: vec![[2.0, 0.0, 0.0, 0.0]],
             textures: vec![self.0.clone()],
+            ..ColorOp::default()
         })
     }
 }
@@ -1688,5 +1937,54 @@ fn luts_named_by_nodes_are_read_and_put_on_the_card() {
         card.run(&stage, &[x])[0],
         evaluate(&grade, 0.0, &options(), x)
     ));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn textures_of_luts_used_longest_ago_go_while_they_take_more_than_the_budget() {
+    type Table = fn([f64; 3]) -> [f64; 3];
+    let Some(mut card) = Card::new() else { return };
+    let dir = folder("budget");
+    let tables: [(&str, Table); 3] = [
+        ("a.cube", |[r, g, b]| [1.0 - r, g, b]),
+        ("b.cube", |[r, g, b]| [r, 1.0 - g, b]),
+        ("c.cube", |[r, g, b]| [r, g, 1.0 - b]),
+    ];
+    for (name, f) in tables {
+        std::fs::write(dir.join(name), cube_file(9, 0, f)).unwrap();
+    }
+    let mut luts = CardLuts::new(
+        Arc::clone(&card.gpu),
+        Arc::new(columbina_lut::LutCache::default()),
+        columbina_lut::Roots {
+            project: Some(dir.clone()),
+            library: Vec::new(),
+        },
+    );
+    assert!(luts.lut("a.cube").is_some());
+    // A cube of 9³ texels of four half floats.
+    let one = 9 * 9 * 9 * 8;
+    assert_eq!(luts.texture_bytes(), (one, 1));
+    luts.set_budget(2 * one);
+    assert!(luts.lut("b.cube").is_some());
+    assert_eq!(luts.texture_bytes(), (2 * one, 2));
+    // a used again; then c: b, used longest ago, goes.
+    let node = |name: &str| serial(vec![corrector("n", |c| c.lut = Some(name.into()))]);
+    let colours = [[0.2, 0.3, 0.8], [0.9, 0.1, 0.4]];
+    let before = card.run(&stage_of(&node("b.cube"), 0.0, &options(), &luts), &colours);
+    assert!(luts.lut("a.cube").is_some());
+    assert!(luts.lut("c.cube").is_some());
+    assert_eq!(luts.texture_bytes(), (2 * one, 2));
+    // b is made again as it is asked for, the same LUT; a goes, used longest ago now.
+    let again = card.run(&stage_of(&node("b.cube"), 0.0, &options(), &luts), &colours);
+    assert_eq!(before, again);
+    near(again[0], [0.2, 0.7, 0.8], 2e-3);
+    assert_eq!(luts.texture_bytes(), (2 * one, 2));
+    // A budget of nothing keeps none; what a grade made ready holds is still on the card.
+    let held = stage_of(&node("c.cube"), 0.0, &options(), &luts);
+    luts.set_budget(0);
+    assert_eq!(luts.texture_bytes(), (0, 0));
+    let out = card.run(&held, &colours);
+    near(out[1], [0.9, 0.1, 0.6], 2e-3);
     let _ = std::fs::remove_dir_all(dir);
 }

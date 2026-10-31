@@ -6,12 +6,14 @@
 //! `yuv.wgsl`, by its matrix and range; a title drawn into pixels on the processor, see
 //! `text.rs`, and kept for as long as the same text is drawn; a colour), goes through its input
 //! transform and its grade, is fitted to the canvas, put on it by its transform, and laid over
-//! what is there by its opacity, premultiplied: `out = layer + (1 - alpha of layer) * under`. The
-//! canvas is black at first, and of half floats ([`WORKING_FORMAT`]) for a preview and an export
-//! alike: the working space of the timeline. Colours are mixed as they are coded, with their gamma
-//! (as long as there is no colour management, the working space is R'G'B' of Rec.709). Then the
-//! timeline grade is done over the canvas, the subtitles are drawn, and the output transform is
-//! done last.
+//! what is there by its opacity, premultiplied: `out = layer + (1 - alpha of layer) * under`. A
+//! layer whose operations read the pixels about each one is drawn first into textures of its
+//! own, one for each such neighbourhood, at the size of its picture, and those are filtered
+//! (`color.rs`); the others are drawn in their one pass. The canvas is black at first, and of
+//! half floats ([`WORKING_FORMAT`]) for a preview and an export alike: the working space of the
+//! timeline. Colours are mixed as they are coded, with their gamma (as long as there is no
+//! colour management, the working space is R'G'B' of Rec.709). Then the timeline grade is done
+//! over the canvas, the subtitles are drawn, and the output transform is done last.
 //!
 //! Subtitles are drawn over the timeline grade, in a preview only: white with a black outline, in
 //! the middle at the bottom, letters a twentieth of the height of the canvas high.
@@ -23,12 +25,13 @@ use std::time::{Duration, Instant};
 use columbina_media::{NativePicture, Picture, PictureFormat};
 use columbina_model::project::{Rgba, TextAlign};
 
-use crate::color::{self, Inputs, LayerColor, Program, Stage, TextureKind};
+use crate::color::{self, Filter, Inputs, LayerColor, Part, Program, Stage, TextureKind};
 use crate::geometry::{
     fit, minification, picture_stride, placement, raster_scale, samples, shown_size,
     subtitle_origin, subtitle_size, text_window, title_origin, Affine, Transform,
 };
 use crate::gpu::Gpu;
+use crate::neighbourhood::{self, Pass};
 use crate::text::{self, Laid, Raster, Spec, Text, MOST_PIXELS};
 use crate::yuv::{self, Texel};
 
@@ -40,6 +43,19 @@ const CONVERT_SHADER: &str = include_str!("convert.wgsl");
 
 /// The shader of a stage of colour over the canvas, which, as it is written, copies it.
 const STAGE_SHADER: &str = include_str!("stage.wgsl");
+
+/// The shader of a pass of the filter of a neighbourhood.
+const FILTER_SHADER: &str = include_str!("neighbourhood.wgsl");
+
+/// The bytes of the uniform of `neighbourhood.wgsl`.
+const FILTER_PARAMS_SIZE: u64 = 32;
+
+/// The format of the textures of neighbourhoods: that of the canvas.
+const NEIGHBOURHOOD_FORMAT: wgpu::TextureFormat = WORKING_FORMAT;
+
+/// How many frames the textures of neighbourhoods of a size are kept for while none of that
+/// size is drawn.
+const SPARES_KEPT_FOR: u64 = 60;
 
 /// The format of the canvas, the working space of the timeline, for a preview and an export.
 pub const WORKING_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
@@ -613,6 +629,120 @@ struct Graded {
     inputs: Inputs,
 }
 
+/// What is done for one of the neighbourhoods that the operations of a layer, or of a stage over
+/// the canvas, read: the colour that it filters drawn into `source` (by the program numbered
+/// `program`, reading `inputs`: the layer drawn by its draw with the uniform numbered `uniform`
+/// of the frame, or the canvas by a pass of the stage), and that filtered, across into
+/// `between` and down into `out`, which the operations after it read.
+struct Tap {
+    program: usize,
+    inputs: Inputs,
+    uniform: usize,
+    source: wgpu::Texture,
+    between: wgpu::Texture,
+    out: wgpu::Texture,
+    passes: [Pass; 2],
+}
+
+/// The neighbourhoods of a layer, and the draw (of those of the frame) that draws it.
+struct LayerTaps {
+    layer: usize,
+    draw: usize,
+    taps: Vec<Tap>,
+}
+
+/// A stage over the canvas that does something: its program, what it reads, and what is done
+/// for its neighbourhoods first.
+struct StageWork {
+    program: usize,
+    inputs: Inputs,
+    taps: Vec<Tap>,
+}
+
+/// What the layers of a frame draw: the draws, their uniforms and their programs of colour, one
+/// each; and what is done first for the neighbourhoods of some, with the uniforms of their draws
+/// alone.
+#[derive(Default)]
+struct Layered {
+    draws: Vec<Draw>,
+    uniforms: Vec<Vec<f32>>,
+    colours: Vec<Option<Graded>>,
+    taps: Vec<LayerTaps>,
+    tap_uniforms: Vec<Vec<f32>>,
+}
+
+/// What a texture that the passes of a frame share is drawn into with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Role {
+    /// The colour that a neighbourhood filters.
+    Source,
+    /// The first pass of its filter.
+    Between,
+}
+
+/// The textures of neighbourhoods, kept from frame to frame by their sizes: those lent to a
+/// frame, each to one use, and those shared within it by the passes that draw into them one
+/// after another, one of each size for each [`Role`].
+#[derive(Default)]
+struct Spares {
+    kept: HashMap<(u32, u32), Vec<(wgpu::Texture, u64)>>,
+    lent: Vec<wgpu::Texture>,
+    shared: HashMap<((u32, u32), Role), wgpu::Texture>,
+}
+
+impl Spares {
+    /// A texture of `size` of its own for this frame.
+    fn take(&mut self, gpu: &Gpu, size: (u32, u32)) -> wgpu::Texture {
+        let texture = self.kept_or_made(gpu, size);
+        self.lent.push(texture.clone());
+        texture
+    }
+
+    /// The texture of `size` that the passes of this frame in `role` share.
+    fn shared(&mut self, gpu: &Gpu, size: (u32, u32), role: Role) -> wgpu::Texture {
+        if let Some(texture) = self.shared.get(&(size, role)) {
+            return texture.clone();
+        }
+        let texture = self.kept_or_made(gpu, size);
+        self.shared.insert((size, role), texture.clone());
+        texture
+    }
+
+    fn kept_or_made(&mut self, gpu: &Gpu, size: (u32, u32)) -> wgpu::Texture {
+        self.kept.get_mut(&size).and_then(Vec::pop).map_or_else(
+            || canvas(gpu, size.0, size.1, NEIGHBOURHOOD_FORMAT, "neighbourhood"),
+            |(texture, _)| texture,
+        )
+    }
+
+    /// Keep the textures of a frame, numbered `frame`, for the next; let go of those of sizes
+    /// not drawn for a while.
+    fn settle(&mut self, frame: u64) {
+        for texture in self
+            .lent
+            .drain(..)
+            .chain(self.shared.drain().map(|(_, t)| t))
+        {
+            let size = (texture.width(), texture.height());
+            self.kept.entry(size).or_default().push((texture, frame));
+        }
+        for kept in self.kept.values_mut() {
+            kept.retain(|(_, used)| used + SPARES_KEPT_FOR >= frame);
+        }
+        self.kept.retain(|_, kept| !kept.is_empty());
+    }
+
+    /// The bytes of the textures kept.
+    fn bytes(&self) -> u64 {
+        self.kept
+            .iter()
+            .map(|((width, height), kept)| {
+                u64::from(*width) * u64::from(*height) * 8 * kept.len() as u64
+            })
+            .sum()
+    }
+}
+
 /// A layer, or the subtitles, to be drawn.
 struct Call {
     pipe: Pipe,
@@ -682,13 +812,17 @@ struct TextPart {
 
 /// Where a text is put.
 enum Put {
-    /// Over this quad of its frame, with this texture.
-    Drawn([f64; 4], wgpu::TextureView),
+    /// Over this quad of its frame, with this texture, of this size.
+    Drawn([f64; 4], wgpu::TextureView, (u32, u32)),
     /// Nowhere on the canvas.
     Unseen,
     /// Too large to draw at once: to be laid out this many times smaller, at least.
     TooLarge(f64),
 }
+
+/// A text put on the canvas: the quad of its frame that it covers, its texture, and the size of
+/// that.
+type Fitted = ([f64; 4], wgpu::TextureView, (u32, u32));
 
 /// What is drawn for a layer.
 enum Draw {
@@ -726,6 +860,13 @@ pub struct Compositor {
     generation: u64,
     planes: HashMap<Shape, Vec<Planes>>,
     texts: HashMap<TextKey, LaidText>,
+    /// What binds the uniform of a pass of a filter and its source, and its pipeline, made as
+    /// it is first needed.
+    filter_layout: wgpu::BindGroupLayout,
+    filter: Option<wgpu::RenderPipeline>,
+    /// The uniforms of the passes of filters of a frame, one slot of `slot` bytes each.
+    filter_uniform: wgpu::Buffer,
+    spares: Spares,
     /// The number of the frame being composed.
     frame: u64,
 }
@@ -886,7 +1027,28 @@ impl Compositor {
             .unwrap_or(256)
             .next_multiple_of(alignment);
         let uniform = uniform_buffer(device, u64::from(slot) * 8);
+        let filter_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("columbina filter"),
+            entries: &[
+                uniform_entry(FILTER_PARAMS_SIZE),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let filter_uniform = uniform_buffer(device, u64::from(slot) * 4);
         Compositor {
+            filter_layout,
+            filter: None,
+            filter_uniform,
+            spares: Spares::default(),
             yuv_layouts,
             rgba_layout,
             stage_layout: stage_layout(device),
@@ -916,6 +1078,20 @@ impl Compositor {
         &self.gpu
     }
 
+    /// How many pipelines it has made: for the tests, that a frame makes none it need not.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn pipelines_made(&self) -> usize {
+        self.pipelines.len()
+    }
+
+    /// The bytes of the textures of neighbourhoods kept for the frames to come.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn neighbourhood_bytes(&self) -> u64 {
+        self.spares.bytes()
+    }
+
     /// Compose `scene` into `target`, which is of its size and on the same card. It returns once
     /// the work is handed to the card; an export is read back with [`Target::read_picture`].
     ///
@@ -941,26 +1117,22 @@ impl Compositor {
         self.frame += 1;
         let canvas = (f64::from(scene.width), f64::from(scene.height));
         let whole = [0.0, 0.0, canvas.0, canvas.1];
-        let mut draws: Vec<Draw> = Vec::new();
-        let mut uniforms: Vec<Vec<f32>> = Vec::new();
-        let mut colours: Vec<Option<Graded>> = Vec::new();
-        let laid = self.layers(
-            scene,
-            canvas,
-            whole,
-            &mut draws,
-            &mut uniforms,
-            &mut colours,
-        );
-        if let Err(error) = laid {
-            self.give_back(draws);
+        let mut laid = Layered::default();
+        if let Err(error) = self.layers(scene, canvas, whole, &mut laid) {
+            self.give_back(laid.draws);
             return Err(error);
         }
+        let Layered {
+            mut draws,
+            mut uniforms,
+            mut colours,
+            taps,
+            tap_uniforms,
+        } = laid;
         // The stages over the canvas, where they do something.
-        let grade =
-            color::program(&[&scene.grade]).map(|(program, inputs)| (self.number(program), inputs));
-        let output = color::program(&[&scene.output])
-            .map(|(program, inputs)| (self.number(program), inputs));
+        let size = (scene.width, scene.height);
+        let grade = self.stage_work(&scene.grade, size);
+        let output = self.stage_work(&scene.output, size);
         let layered = draws.len();
         if target.export.is_none() && !scene.subtitles.is_empty() {
             let size = subtitle_size(scene.height);
@@ -974,7 +1146,7 @@ impl Compositor {
                 canvas,
             );
             match put {
-                Ok(Some((quad, view))) => {
+                Ok(Some((quad, view, _))) => {
                     uniforms.push(layer_uniform(
                         &place,
                         canvas,
@@ -998,17 +1170,21 @@ impl Compositor {
             }
         }
 
-        // The uniforms of all the layers, one slot each.
-        let offsets = match self.write_uniforms(&uniforms) {
+        // The uniforms of all the layers, one slot each, and then of the layers as their
+        // neighbourhoods draw them.
+        let drawn = uniforms.len();
+        uniforms.extend(tap_uniforms);
+        let mut offsets = match self.write_uniforms(&uniforms) {
             Ok(offsets) => offsets,
             Err(error) => {
                 self.give_back(draws);
                 return Err(error);
             }
         };
+        let tap_offsets = offsets.split_off(drawn);
 
         let format = target.texture.format();
-        let made = self.pipelines_of(&draws, &colours, [&grade, &output], format);
+        let made = self.pipelines_of(&draws, &colours, &taps, [&grade, &output], format);
         if let Err(error) = made {
             self.give_back(draws);
             return Err(error);
@@ -1037,13 +1213,21 @@ impl Compositor {
                 colour: None,
             });
         }
-        // What the programs of colour read: those of the layers, then of the stages.
+        // What the programs of colour read: those of the layers, of the stages, and of the
+        // neighbourhoods of the layers and of the stages, in that order.
+        let stage_taps = [&grade, &output]
+            .into_iter()
+            .flatten()
+            .flat_map(|work| &work.taps);
         let mut blocks: Vec<(usize, &Inputs)> = Vec::new();
         for colour in colours.iter().flatten() {
             blocks.push((colour.program, &colour.inputs));
         }
-        for (program, inputs) in [&grade, &output].into_iter().flatten() {
-            blocks.push((*program, inputs));
+        for work in [&grade, &output].into_iter().flatten() {
+            blocks.push((work.program, &work.inputs));
+        }
+        for tap in taps.iter().flat_map(|layer| &layer.taps).chain(stage_taps) {
+            blocks.push((tap.program, &tap.inputs));
         }
         let mut colour_binds = self.colour_binds(&blocks).into_iter();
         for (call, colour) in calls.iter_mut().zip(&colours) {
@@ -1052,16 +1236,22 @@ impl Compositor {
                 call.colour = colour_binds.next();
             }
         }
-        let stage_binds: Vec<(usize, wgpu::BindGroup)> = [&grade, &output]
-            .into_iter()
-            .flatten()
-            .map(|(program, _)| *program)
-            .zip(colour_binds)
+        let grade_bind = grade.as_ref().and_then(|_| colour_binds.next());
+        let output_bind = output.as_ref().and_then(|_| colour_binds.next());
+        let mut tap_binds = colour_binds;
+        // The uniforms of the passes of the filters, in the order they are done.
+        let filter_passes: Vec<Pass> = taps
+            .iter()
+            .flat_map(|layer| &layer.taps)
+            .chain(
+                [&grade, &output]
+                    .into_iter()
+                    .flatten()
+                    .flat_map(|work| &work.taps),
+            )
+            .flat_map(|tap| tap.passes)
             .collect();
-        let (grade, output) = match (&grade, &output) {
-            (Some(_), _) => (stage_binds.first(), stage_binds.get(1)),
-            (None, _) => (None, stage_binds.first()),
-        };
+        let mut filter_offsets = self.write_filter_uniforms(&filter_passes).into_iter();
 
         // The canvases drawn into, one after the other: the frame ends in the target's texture.
         let passes = usize::from(grade.is_some()) + usize::from(output.is_some());
@@ -1079,6 +1269,15 @@ impl Compositor {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("columbina compose"),
         });
+        // The neighbourhoods of the layers, each layer drawn into a texture of its own and that
+        // filtered, before the layers are laid on the canvas.
+        for layer in &taps {
+            let call = &calls[layer.draw];
+            for (tap, colour) in layer.taps.iter().zip(&mut tap_binds) {
+                self.tap_pass(&mut encoder, call, tap, tap_offsets[tap.uniform], &colour);
+                self.filter_passes(&mut encoder, tap, &mut filter_offsets);
+            }
+        }
         // The layers, and the subtitles over them where there is no timeline grade.
         let first = if grade.is_some() {
             layered
@@ -1086,17 +1285,25 @@ impl Compositor {
             calls.len()
         };
         self.draw_calls(&mut encoder, current, &calls[..first], format, true);
-        if let Some((program, colour)) = grade {
+        if let (Some(work), Some(colour)) = (&grade, &grade_bind) {
+            for (tap, bind) in work.taps.iter().zip(&mut tap_binds) {
+                self.stage_pass(&mut encoder, current, &tap.source, tap.program, &bind);
+                self.filter_passes(&mut encoder, tap, &mut filter_offsets);
+            }
             let next = other(current);
-            self.stage_pass(&mut encoder, current, next, *program, colour);
+            self.stage_pass(&mut encoder, current, next, work.program, colour);
             current = next;
             if first < calls.len() {
                 self.draw_calls(&mut encoder, current, &calls[first..], format, false);
             }
         }
-        if let Some((program, colour)) = output {
+        if let (Some(work), Some(colour)) = (&output, &output_bind) {
+            for (tap, bind) in work.taps.iter().zip(&mut tap_binds) {
+                self.stage_pass(&mut encoder, current, &tap.source, tap.program, &bind);
+                self.filter_passes(&mut encoder, tap, &mut filter_offsets);
+            }
             let next = other(current);
-            self.stage_pass(&mut encoder, current, next, *program, colour);
+            self.stage_pass(&mut encoder, current, next, work.program, colour);
             current = next;
         }
         debug_assert!(std::ptr::eq(current, main), "the frame ends in the target");
@@ -1108,6 +1315,184 @@ impl Compositor {
         self.give_back(draws);
         self.forget_unused();
         Ok(())
+    }
+
+    /// What a stage over the canvas does, where it does something: its program, and what its
+    /// neighbourhoods are taken with, over a canvas of `size`.
+    fn stage_work(&mut self, stage: &Stage, size: (u32, u32)) -> Option<StageWork> {
+        let stages = [stage];
+        let filters = color::filters(&stages);
+        if filters.is_empty() {
+            return color::program(&stages).map(|(program, inputs)| StageWork {
+                program: self.number(program),
+                inputs,
+                taps: Vec::new(),
+            });
+        }
+        let height = f64::from(size.1);
+        let units = neighbourhood::units(height, height, height);
+        let (taps, whole) = self.taps_of(&stages, &filters, size, units, 0);
+        whole.map(|(program, inputs)| StageWork {
+            program,
+            inputs,
+            taps,
+        })
+    }
+
+    /// What is done for the neighbourhoods of `stages`, of `filters`, over a picture of `size`
+    /// that `units` of its pixels make a pixel of a frame [`color::REFERENCE_HEIGHT`] high, by
+    /// draws of the uniform numbered `uniform`; and the program of the whole, which reads them.
+    fn taps_of(
+        &mut self,
+        stages: &[&Stage],
+        filters: &[Filter],
+        size: (u32, u32),
+        units: f32,
+        uniform: usize,
+    ) -> (Vec<Tap>, Option<(usize, Inputs)>) {
+        let mut taps: Vec<Tap> = Vec::with_capacity(filters.len());
+        let mut views = Vec::with_capacity(filters.len());
+        for (number, filter) in filters.iter().enumerate() {
+            let passes = neighbourhood::passes(*filter, units, size);
+            let (program, inputs) = color::program_of(stages, Part::Neighbourhood(number), &views)
+                .expect("a neighbourhood is of an operation");
+            let source = self.spares.shared(&self.gpu, size, Role::Source);
+            let between = self
+                .spares
+                .shared(&self.gpu, passes[0].target, Role::Between);
+            let out = self.spares.take(&self.gpu, passes[1].target);
+            views.push(out.create_view(&wgpu::TextureViewDescriptor::default()));
+            taps.push(Tap {
+                program: self.number(program),
+                inputs,
+                uniform,
+                source,
+                between,
+                out,
+                passes,
+            });
+        }
+        let whole = color::program_of(stages, Part::Whole, &views)
+            .map(|(program, inputs)| (self.number(program), inputs));
+        (taps, whole)
+    }
+
+    /// Draw the layer of `call` into the texture of `tap`, by its program, with the uniform at
+    /// `offset`.
+    fn tap_pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        call: &Call,
+        tap: &Tap,
+        offset: u32,
+        colour: &wgpu::BindGroup,
+    ) {
+        let view = tap
+            .source
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("columbina neighbourhood"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.pipelines[&(call.pipe, NEIGHBOURHOOD_FORMAT, Some(tap.program))]);
+        pass.set_bind_group(0, &call.bind, &[offset]);
+        pass.set_bind_group(1, colour, &[]);
+        pass.draw(0..6, 0..1);
+    }
+
+    /// Filter the texture of `tap` across and down, by the uniforms at the next two of
+    /// `offsets`.
+    fn filter_passes(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        tap: &Tap,
+        offsets: &mut impl Iterator<Item = u32>,
+    ) {
+        let device = self.gpu.device();
+        let pipeline = self
+            .filter
+            .as_ref()
+            .expect("the pipeline of filters is made");
+        for (from, to) in [(&tap.source, &tap.between), (&tap.between, &tap.out)] {
+            let offset = offsets.next().expect("a uniform of each pass");
+            let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("columbina filter"),
+                layout: &self.filter_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &self.filter_uniform,
+                            offset: 0,
+                            size: wgpu::BufferSize::new(FILTER_PARAMS_SIZE),
+                        }),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(
+                            &from.create_view(&wgpu::TextureViewDescriptor::default()),
+                        ),
+                    },
+                ],
+            });
+            let view = to.create_view(&wgpu::TextureViewDescriptor::default());
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("columbina filter"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, &bind, &[offset]);
+            pass.draw(0..3, 0..1);
+        }
+    }
+
+    /// Write the uniforms of the passes of the filters of a frame, a slot each, into their
+    /// buffer, made larger if it is too small; give the offset of each.
+    fn write_filter_uniforms(&mut self, passes: &[Pass]) -> Vec<u32> {
+        if passes.is_empty() {
+            return Vec::new();
+        }
+        let slot = self.slot as usize;
+        let mut bytes = vec![0_u8; passes.len() * slot];
+        for (pass, at) in passes.iter().zip(bytes.chunks_mut(slot)) {
+            for (value, into) in pass.uniform().iter().zip(at.chunks_mut(4)) {
+                into.copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        if self.filter_uniform.size() < bytes.len() as u64 {
+            self.filter_uniform =
+                uniform_buffer(self.gpu.device(), (bytes.len() as u64).next_power_of_two());
+        }
+        self.gpu
+            .queue()
+            .write_buffer(&self.filter_uniform, 0, &bytes);
+        (0..passes.len())
+            .map(|i| u32::try_from(i * slot).unwrap_or(u32::MAX))
+            .collect()
     }
 
     /// Draw `calls` into `canvas`, cleared to black first or drawn over.
@@ -1201,23 +1586,52 @@ impl Compositor {
         &mut self,
         draws: &[Draw],
         colours: &[Option<Graded>],
-        stages: [&Option<(usize, Inputs)>; 2],
+        taps: &[LayerTaps],
+        stages: [&Option<StageWork>; 2],
         format: wgpu::TextureFormat,
     ) -> Result<(), ComposeError> {
+        let pipe = |draw: &Draw| match draw {
+            Draw::Picture { shape, .. } => Pipe::Yuv(shape.texel),
+            Draw::Texture(_) => Pipe::Rgba,
+        };
         for (draw, colour) in draws.iter().zip(colours) {
-            let pipe = match draw {
-                Draw::Picture { shape, .. } => Pipe::Yuv(shape.texel),
-                Draw::Texture(_) => Pipe::Rgba,
-            };
-            self.pipeline(pipe, format, colour.as_ref().map(|colour| colour.program))
+            self.pipeline(
+                pipe(draw),
+                format,
+                colour.as_ref().map(|colour| colour.program),
+            )
+            .map_err(|message| ComposeError::Layer {
+                layer: colour.as_ref().map_or(0, |colour| colour.layer),
+                message,
+            })?;
+        }
+        for layer in taps {
+            for tap in &layer.taps {
+                self.pipeline(
+                    pipe(&draws[layer.draw]),
+                    NEIGHBOURHOOD_FORMAT,
+                    Some(tap.program),
+                )
                 .map_err(|message| ComposeError::Layer {
-                    layer: colour.as_ref().map_or(0, |colour| colour.layer),
+                    layer: layer.layer,
                     message,
                 })?;
+            }
         }
-        for (program, _) in stages.into_iter().flatten() {
-            self.pipeline(Pipe::Stage, format, Some(*program))
+        for work in stages.into_iter().flatten() {
+            self.pipeline(Pipe::Stage, format, Some(work.program))
                 .map_err(ComposeError::Color)?;
+            for tap in &work.taps {
+                self.pipeline(Pipe::Stage, NEIGHBOURHOOD_FORMAT, Some(tap.program))
+                    .map_err(ComposeError::Color)?;
+            }
+        }
+        let filtered = !taps.is_empty()
+            || stages
+                .iter()
+                .any(|work| work.as_ref().is_some_and(|work| !work.taps.is_empty()));
+        if filtered && self.filter.is_none() {
+            self.filter = Some(filter_pipeline(self.gpu.device(), &self.filter_layout));
         }
         Ok(())
     }
@@ -1310,8 +1724,9 @@ impl Compositor {
         Ok(offsets)
     }
 
-    /// The draws and uniforms of the layers of a scene. The planes taken for pictures are in
-    /// `draws`, to be given back, whatever comes of it.
+    /// The draws and uniforms of the layers of a scene, and what is done first for the
+    /// neighbourhoods of each. The planes taken for pictures are in its draws, to be given back,
+    /// whatever comes of it.
     #[allow(
         clippy::too_many_lines,
         reason = "each kind of layer, one after another"
@@ -1321,9 +1736,7 @@ impl Compositor {
         scene: &Scene,
         canvas: (f64, f64),
         whole: [f64; 4],
-        draws: &mut Vec<Draw>,
-        uniforms: &mut Vec<Vec<f32>>,
-        colours: &mut Vec<Option<Graded>>,
+        laid: &mut Layered,
     ) -> Result<(), ComposeError> {
         for (index, layer) in scene.layers.iter().enumerate() {
             let opacity = if layer.opacity.is_nan() {
@@ -1339,14 +1752,46 @@ impl Compositor {
                 layer: index,
                 message,
             };
-            // Its input transform and its grade, after it is decoded.
-            let graded = color::program(&[&layer.color.input, &layer.color.grade]).map(
-                |(program, inputs)| Graded {
+            // Its input transform and its grade, after it is decoded; with what is done first
+            // for their neighbourhoods, where they read any, once the size of its picture is
+            // known.
+            let stages = [&layer.color.input, &layer.color.grade];
+            let filters = color::filters(&stages);
+            let mut graded = if filters.is_empty() {
+                color::program(&stages).map(|(program, inputs)| Graded {
                     layer: index,
                     program: self.number(program),
                     inputs,
-                },
-            );
+                })
+            } else {
+                None
+            };
+            // What is done for the neighbourhoods of a layer drawn by the draw numbered `draw`,
+            // of a picture of `size`, `units` of its pixels to a pixel of the reference frame,
+            // drawn alone by `uniform`.
+            let mut neighbourhoods = |this: &mut Self,
+                                      laid: &mut Layered,
+                                      draw: usize,
+                                      size: (u32, u32),
+                                      units: f32,
+                                      uniform: Vec<f32>| {
+                if filters.is_empty() {
+                    return;
+                }
+                let number = laid.tap_uniforms.len();
+                laid.tap_uniforms.push(uniform);
+                let (taps, program) = this.taps_of(&stages, &filters, size, units, number);
+                graded = program.map(|(program, inputs)| Graded {
+                    layer: index,
+                    program,
+                    inputs,
+                });
+                laid.taps.push(LayerTaps {
+                    layer: index,
+                    draw,
+                    taps,
+                });
+            };
             match &layer.source {
                 Source::Picture(picture, rotation) => {
                     let layout = yuv::check(picture).map_err(failed)?;
@@ -1372,17 +1817,32 @@ impl Compositor {
                     };
                     let planes = self.take_planes(shape);
                     let uploaded = yuv::upload(self.gpu.queue(), &planes.textures, picture);
-                    draws.push(Draw::Picture { shape, planes });
-                    colours.push(graded);
+                    let draw = laid.draws.len();
+                    laid.draws.push(Draw::Picture { shape, planes });
                     uploaded.map_err(failed)?;
-                    let mut values = yuv::picture_params(
+                    let decoded = yuv::picture_params(
                         [0.0; 4],
                         layout,
                         shape.texel,
                         layer.color.coding,
                         *rotation,
-                    )
-                    .to_vec();
+                    );
+                    // Alone, at its own size.
+                    let own = (f64::from(shown.0), f64::from(shown.1));
+                    let mut alone = decoded.to_vec();
+                    alone.extend(layer_uniform(
+                        &placement(own, own, &Transform::NONE),
+                        own,
+                        [0.0, 0.0, own.0, own.1],
+                        1.0,
+                        1.0,
+                        1,
+                        None,
+                    ));
+                    let units = neighbourhood::units(own.1, frame.1, canvas.1);
+                    neighbourhoods(self, laid, draw, shown, units, alone);
+                    laid.colours.push(graded);
+                    let mut values = decoded.to_vec();
                     values.extend(layer_uniform(
                         &placement(canvas, frame, &layer.transform),
                         canvas,
@@ -1392,20 +1852,34 @@ impl Compositor {
                         samples(minification(shown, frame, scale)),
                         None,
                     ));
-                    uniforms.push(values);
+                    laid.uniforms.push(values);
                 }
                 Source::Color(rgba) => {
-                    uniforms.push(layer_uniform(
+                    let tint = rgba.map(|channel| channel.clamp(0.0, 1.0));
+                    // A texel, which a filter keeps as it is.
+                    let alone = layer_uniform(
+                        &placement((1.0, 1.0), (1.0, 1.0), &Transform::NONE),
+                        (1.0, 1.0),
+                        [0.0, 0.0, 1.0, 1.0],
+                        1.0,
+                        1.0,
+                        1,
+                        Some(tint),
+                    );
+                    let units = neighbourhood::units(1.0, canvas.1, canvas.1);
+                    let draw = laid.draws.len();
+                    neighbourhoods(self, laid, draw, (1, 1), units, alone);
+                    laid.uniforms.push(layer_uniform(
                         &placement(canvas, canvas, &layer.transform),
                         canvas,
                         whole,
                         opacity,
                         scale,
                         1,
-                        Some(rgba.map(|channel| channel.clamp(0.0, 1.0))),
+                        Some(tint),
                     ));
-                    draws.push(Draw::Texture(self.white.clone()));
-                    colours.push(graded);
+                    laid.draws.push(Draw::Texture(self.white.clone()));
+                    laid.colours.push(graded);
                 }
                 Source::Title(title) => {
                     let style = &title.style;
@@ -1428,8 +1902,21 @@ impl Compositor {
                         &place,
                         canvas,
                     );
-                    if let Some((quad, view)) = put.map_err(failed)? {
-                        uniforms.push(layer_uniform(
+                    if let Some((quad, view, pixels)) = put.map_err(failed)? {
+                        let own = (f64::from(pixels.0), f64::from(pixels.1));
+                        let alone = layer_uniform(
+                            &placement(own, own, &Transform::NONE),
+                            own,
+                            [0.0, 0.0, own.0, own.1],
+                            1.0,
+                            1.0,
+                            1,
+                            Some([1.0; 4]),
+                        );
+                        let units = neighbourhood::units(own.1, quad[3] - quad[1], canvas.1);
+                        let draw = laid.draws.len();
+                        neighbourhoods(self, laid, draw, pixels, units, alone);
+                        laid.uniforms.push(layer_uniform(
                             &place,
                             canvas,
                             quad,
@@ -1438,8 +1925,8 @@ impl Compositor {
                             1,
                             Some([1.0; 4]),
                         ));
-                        draws.push(Draw::Texture(view));
-                        colours.push(graded);
+                        laid.draws.push(Draw::Texture(view));
+                        laid.colours.push(graded);
                     }
                 }
             }
@@ -1476,6 +1963,7 @@ impl Compositor {
                 self.planes.entry(shape).or_default().push(planes);
             }
         }
+        self.spares.settle(self.frame);
     }
 
     /// Let go of the planes of shapes not drawn for a while.
@@ -1497,11 +1985,11 @@ impl Compositor {
         origin: impl Fn((f64, f64)) -> (f64, f64),
         place: &Affine,
         canvas: (f64, f64),
-    ) -> Result<Option<([f64; 4], wgpu::TextureView)>, String> {
+    ) -> Result<Option<Fitted>, String> {
         let mut per = per;
         for _ in 0..SHRINKS {
             match self.put_text(&spec(per), per, &origin, place, canvas) {
-                Put::Drawn(quad, view) => return Ok(Some((quad, view))),
+                Put::Drawn(quad, view, size) => return Ok(Some((quad, view, size))),
                 Put::Unseen => return Ok(None),
                 // Smaller by a quarter of an octave at least, on quarters of an octave.
                 Put::TooLarge(by) => {
@@ -1586,7 +2074,7 @@ impl Compositor {
             start.0 + f64::from(window[2]) / per,
             start.1 + f64::from(window[3]) / per,
         ];
-        Put::Drawn(quad, view)
+        Put::Drawn(quad, view, (width, height))
     }
 
     /// Let go of the text drawn longest ago, other than `keep`.
@@ -1883,6 +2371,45 @@ fn stage_pipeline(
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+/// The pipeline of the passes of filters (`neighbourhood.wgsl`), which write into textures of
+/// neighbourhoods.
+fn filter_pipeline(device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> wgpu::RenderPipeline {
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("columbina filter"),
+        source: wgpu::ShaderSource::Wgsl(FILTER_SHADER.into()),
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("columbina filter"),
+        bind_group_layouts: &[Some(layout)],
+        immediate_size: 0,
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("columbina filter"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some("vs"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some("fs"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: NEIGHBOURHOOD_FORMAT,
                 blend: None,
                 write_mask: wgpu::ColorWrites::ALL,
             })],

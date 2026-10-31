@@ -38,8 +38,8 @@
 //! - **The corrector (T9)** turns a node graph into one operation, or one per node, in the order
 //!   of the manual (p. 3331); its parameters are uniforms in `params`, and parallel and layer
 //!   mixers are pointwise too (each branch reads the same `rgb`). Operations that need pixels
-//!   about the one they make (blur, sharpen, noise reduction) do not fit a point: they need the
-//!   layer drawn into a texture of its own first, a step that is not here yet.
+//!   about the one they make (Midtone Detail; blur, sharpen and mist, T25) read them through
+//!   [`Neighbourhood`]s, below.
 //! - **LUTs (T10)** are textures of an operation (`textures`, a 3D one for a cube, read with
 //!   `textureLoad` for a tetrahedral interpolation of its own, or sampled), with the code that
 //!   reads them as its `library`, shared by every operation that names the same.
@@ -49,6 +49,40 @@
 //!   media into the working space) and of the output transform. Decoding clamps R'G'B' to 0..1,
 //!   as phase 1 did; keeping what is above white (superwhites, HDR) means lifting that clamp
 //!   for those transforms, and the convert of an export choosing its matrix, both later.
+//!
+//! # Neighbourhoods
+//!
+//! An operation may read, at each pixel, a filtered picture of what came into it: each of its
+//! [`ColorOp::neighbourhoods`] is the colour that its `body` makes of the operation's input (the
+//! picture as the operations before it left it), taken through its [`Filter`], and read in the
+//! operation's code as `$N0`, `$N1`, …: the filtered colour at the pixel. A neighbourhood's body
+//! may read those before it (`$N` of a lower number), as a node of a grade may come after
+//! another that reads its own.
+//!
+//! A layer whose operations have neighbourhoods is drawn so (`compose.rs`): for each
+//! neighbourhood, in order, the layer is drawn into a texture of its own of the size of its
+//! picture (decoded, its input transform, and the operations before the one that reads it, and
+//! then the neighbourhood's body), alone and as it is shown, with no transform; that texture is
+//! filtered by two passes, across and down (a separable Gaussian or box, `neighbourhood.wgsl`),
+//! into a smaller one where the filter is wide enough to lose nothing by it
+//! ([`crate::neighbourhood::reduction`]); and then the layer is drawn onto the canvas as any
+//! other, in one pass, its operations reading the filtered textures where each of its pixels
+//! lies in its picture. So what a neighbourhood needs of the operations before it is done on the
+//! card twice, once for the filter and once on the canvas, and the layer is graded as precisely
+//! as one without a neighbourhood: only what is filtered goes through textures of half floats.
+//!
+//! The texture is of the picture at its own size, whatever the size it is drawn at, as `DaVinci`
+//! takes a picture at "the full native resolution of the source media" (p. 284). How far a filter
+//! reaches is said in pixels of a frame [`REFERENCE_HEIGHT`] high, the frame being the timeline
+//! as the layer is fitted into it: so a blur looks the same in a preview of any size and in an
+//! export, and on media of any resolution, as `DaVinci`'s effects "readjust themselves to match
+//! the sizing of each new timeline resolution" (p. 283). A layer whose operations have none (a
+//! grade whose Midtone Detail is 0 and not keyframed has none) is drawn in its one pass as
+//! before, to the bit.
+//!
+//! The timeline grade and the output transform read neighbourhoods of the canvas the same way:
+//! the canvas is drawn by the operations before the one that reads it into a texture, and that
+//! is filtered.
 
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -151,25 +185,55 @@ pub struct OpTexture {
     pub view: wgpu::TextureView,
 }
 
+/// The rows of the frame that the reach of a [`Filter`] is said in: a filter of a standard
+/// deviation of 1 is of a pixel of the timeline where it is 1080 high, of 2 pixels where it is
+/// 2160 high, and of as many pixels of a picture as make a pixel of such a timeline.
+pub const REFERENCE_HEIGHT: f32 = 1080.0;
+
+/// How the pixels about each one are taken: two passes, across and down, each reaching as far
+/// as its own value (`[across, down]`), in pixels of a frame [`REFERENCE_HEIGHT`] high. The
+/// pixels beyond the edges are those at the edges.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Filter {
+    /// A Gaussian of these standard deviations.
+    Gaussian { sigma: [f32; 2] },
+    /// The mean of the pixels whose centres are within these distances of the pixel's.
+    Box { radius: [f32; 2] },
+}
+
+/// What an operation reads of the pixels about each one: the colour that `body` makes of the
+/// operation's input, through `filter` (see the module's documentation). `body` is WGSL as the
+/// operation's is, reading the operation's parameters and textures, and the neighbourhoods
+/// before it.
+#[derive(Clone, Debug)]
+pub struct Neighbourhood {
+    pub body: Arc<str>,
+    pub filter: Filter,
+}
+
 /// An operation on the colour of one pixel at a time.
 ///
 /// `body` is WGSL: statements that change `rgb`, a `var` of `vec3<f32>` (R'G'B' or RGB of the
 /// space of the stage, 0 to 1 for black to white, and beyond). In it:
 /// - `param($P + k)` is the `k`th of the operation's `params` (a `vec4<f32>`);
-/// - `$T0`, `$T1`, … are its `textures`, and `$S` a linear sampler that clamps to the edges.
+/// - `$T0`, `$T1`, … are its `textures`, and `$S` a linear sampler that clamps to the edges;
+/// - `$N0`, `$N1`, … are its `neighbourhoods`, each a `vec3<f32>`: the colour filtered, at the
+///   pixel.
 ///
 /// `library` is WGSL put once before every operation, for functions that the bodies call: the
 /// same library, by its text, is put once however many operations name it. Names in it are to
 /// be of the operation's kind (`lut_tetrahedral`), so as not to meet others.
 ///
-/// The text of `body` and `library` and the kinds of `textures` make the shader: keep them the
-/// same from frame to frame, and change only `params` and the textures themselves.
+/// The text of `body` and `library`, the kinds of `textures`, and how many `neighbourhoods` there
+/// are and their bodies make the shader: keep them the same from frame to frame, and change only
+/// `params`, the textures themselves, and the filters.
 #[derive(Clone, Debug, Default)]
 pub struct ColorOp {
     pub body: Arc<str>,
     pub library: Arc<str>,
     pub params: Vec<[f32; 4]>,
     pub textures: Vec<OpTexture>,
+    pub neighbourhoods: Vec<Neighbourhood>,
 }
 
 /// A stage of colour: its operations, in the order they are done. None is the identity: nothing
@@ -184,6 +248,12 @@ impl Stage {
     #[must_use]
     pub fn is_identity(&self) -> bool {
         self.ops.is_empty()
+    }
+
+    /// Whether an operation of it reads the pixels about each one.
+    #[must_use]
+    pub fn reads_neighbourhoods(&self) -> bool {
+        self.ops.iter().any(|op| !op.neighbourhoods.is_empty())
     }
 }
 
@@ -221,16 +291,77 @@ pub(crate) const IDENTITY_END: &str = "// colour: end";
 /// The bindings of group 1, before the textures: the parameters, then the sampler.
 pub(crate) const FIRST_TEXTURE_BINDING: u32 = 2;
 
+/// The filters of the neighbourhoods that the operations of `stages` read, in order: the
+/// textures that [`program_of`] is given are these, filtered.
+pub(crate) fn filters(stages: &[&Stage]) -> Vec<Filter> {
+    stages
+        .iter()
+        .flat_map(|stage| &stage.ops)
+        .flat_map(|op| op.neighbourhoods.iter().map(|n| n.filter))
+        .collect()
+}
+
+/// Which colour a program gives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Part {
+    /// That of all the operations.
+    Whole,
+    /// The colour that neighbourhood `n` (of all those of the stages, in order) filters: that
+    /// of the operations before the one it is of, and then of its body.
+    Neighbourhood(usize),
+}
+
 /// The program of `stages`, done one after another, and what it reads; none where they do
-/// nothing.
+/// nothing. They are to read no neighbourhoods (see [`program_of`]).
 pub(crate) fn program(stages: &[&Stage]) -> Option<(Program, Inputs)> {
-    let ops: Vec<&ColorOp> = stages.iter().flat_map(|stage| &stage.ops).collect();
+    program_of(stages, Part::Whole, &[])
+}
+
+/// The program of `part` of `stages`, and what it reads, `neighbours` being the textures of
+/// their neighbourhoods, filtered ([`filters`]): as many as come before the neighbourhood of
+/// `part`, or all of them. None where it does nothing.
+///
+/// # Panics
+/// Fewer `neighbours` are given than the program reads.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the parts of a program, one after another"
+)]
+pub(crate) fn program_of(
+    stages: &[&Stage],
+    part: Part,
+    neighbours: &[wgpu::TextureView],
+) -> Option<(Program, Inputs)> {
+    let all: Vec<&ColorOp> = stages.iter().flat_map(|stage| &stage.ops).collect();
+    // The number of the first neighbourhood of each operation.
+    let mut first = Vec::with_capacity(all.len());
+    let mut count = 0;
+    for op in &all {
+        first.push(count);
+        count += op.neighbourhoods.len();
+    }
+    // The operations done; the body of the last, where it is a neighbourhood's; and how many
+    // neighbourhoods are read.
+    let (ops, last_body, reads) = match part {
+        Part::Whole => (&all[..], None, count),
+        Part::Neighbourhood(n) => {
+            let at = (0..all.len())
+                .find(|&i| n >= first[i] && n - first[i] < all[i].neighbourhoods.len())?;
+            let body = Arc::clone(&all[at].neighbourhoods[n - first[at]].body);
+            (&all[..=at], Some(body), n)
+        }
+    };
     if ops.is_empty() {
         return None;
     }
+    assert!(
+        neighbours.len() >= reads,
+        "a program reads {reads} neighbourhoods, and {} are given",
+        neighbours.len()
+    );
     let mut code = String::new();
     let mut libraries: Vec<&str> = Vec::new();
-    for op in &ops {
+    for op in ops {
         if !op.library.is_empty() && !libraries.contains(&&*op.library) {
             libraries.push(&op.library);
         }
@@ -241,6 +372,7 @@ pub(crate) fn program(stages: &[&Stage]) -> Option<(Program, Inputs)> {
     }
     code.push_str(
         "const colour_identity: bool = false;\n\
+         var<private> colour_at: vec2<f32>;\n\
          @group(1) @binding(0) var<storage, read> colour_params: array<vec4<f32>>;\n\
          @group(1) @binding(1) var colour_sampler: sampler;\n\
          fn param(index: u32) -> vec4<f32> {\n    return colour_params[index];\n}\n",
@@ -251,11 +383,21 @@ pub(crate) fn program(stages: &[&Stage]) -> Option<(Program, Inputs)> {
         textures: Vec::new(),
     };
     for (index, op) in ops.iter().enumerate() {
-        let mut body = op.body.replace("$P", &format!("{}u", inputs.params.len()));
+        let body = match &last_body {
+            Some(body) if index + 1 == ops.len() => body,
+            _ => &op.body,
+        };
+        let mut body = body.replace("$P", &format!("{}u", inputs.params.len()));
         // From the last, so that $T1 is not taken for the start of $T10.
         for number in (0..op.textures.len()).rev() {
             let binding = kinds.len() + number;
             body = body.replace(&format!("$T{number}"), &format!("colour_texture_{binding}"));
+        }
+        for number in (0..op.neighbourhoods.len()).rev() {
+            body = body.replace(
+                &format!("$N{number}"),
+                &format!("colour_neighbour_{}()", first[index] + number),
+            );
         }
         body = body.replace("$S", "colour_sampler");
         for texture in &op.textures {
@@ -276,6 +418,11 @@ pub(crate) fn program(stages: &[&Stage]) -> Option<(Program, Inputs)> {
         );
         inputs.params.extend(&op.params);
     }
+    for (number, view) in neighbours[..reads].iter().enumerate() {
+        code.push_str(&neighbour_code(number, kinds.len()));
+        kinds.push(TextureKind::D2);
+        inputs.textures.push(view.clone());
+    }
     code.push_str("fn colour(rgb: vec3<f32>) -> vec3<f32> {\n    var out = rgb;\n");
     for index in 0..ops.len() {
         let _ = writeln!(code, "    out = colour_op_{index}(out);");
@@ -292,6 +439,33 @@ pub(crate) fn program(stages: &[&Stage]) -> Option<(Program, Inputs)> {
         },
         inputs,
     ))
+}
+
+/// The WGSL of neighbourhood `number`, filtered, its texture the `binding`th of the program:
+/// `colour_neighbour_{number}()`, its colour where the pixel lies in the picture (`colour_at`,
+/// from 0 to 1 across and down), between its four texels as the shader of pictures reads its
+/// planes, unpremultiplied.
+fn neighbour_code(number: usize, binding: usize) -> String {
+    let texture = format!("colour_texture_{binding}");
+    format!(
+        "@group(1) @binding({}) var {texture}: texture_2d<f32>;\n\
+         fn colour_neighbour_{number}() -> vec3<f32> {{\n    \
+         let size = vec2<f32>(textureDimensions({texture}));\n    \
+         let place = colour_at * size - vec2<f32>(0.5);\n    \
+         let base = floor(place);\n    \
+         let blend = place - base;\n    \
+         let last = size - vec2<f32>(1.0);\n    \
+         let low = vec2<i32>(clamp(base, vec2<f32>(0.0), last));\n    \
+         let high = vec2<i32>(clamp(base + vec2<f32>(1.0), vec2<f32>(0.0), last));\n    \
+         let top = mix(textureLoad({texture}, low, 0), \
+         textureLoad({texture}, vec2<i32>(high.x, low.y), 0), blend.x);\n    \
+         let bottom = mix(textureLoad({texture}, vec2<i32>(low.x, high.y), 0), \
+         textureLoad({texture}, high, 0), blend.x);\n    \
+         let filtered = mix(top, bottom, blend.y);\n    \
+         if (filtered.a <= 0.0) {{\n        return vec3<f32>(0.0);\n    }}\n    \
+         return filtered.rgb / filtered.a;\n}}\n",
+        FIRST_TEXTURE_BINDING as usize + binding,
+    )
 }
 
 /// A shader with the function of colour that it is written with (the identity) put in place by

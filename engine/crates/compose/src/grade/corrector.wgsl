@@ -231,20 +231,14 @@ fn grade_after_detail(x0: vec3<f32>, at: u32) -> vec3<f32> {
         let lift = param(at);
         let e = param(at + 1u);
         let gain = param(at + 2u);
-        let mean = param(at + 3u);
-        var o = vec3<f32>(
+        let mix = param(at + 3u).w;
+        let o = vec3<f32>(
             grade_lgg(x.r, lift.r, e.r, gain.r),
             grade_lgg(x.g, lift.g, e.g, gain.g),
             grade_lgg(x.b, lift.b, e.b, gain.b),
         );
-        let n = vec3<f32>(
-            grade_lgg(x.r, mean.x, mean.y, mean.z),
-            grade_lgg(x.g, mean.x, mean.y, mean.z),
-            grade_lgg(x.b, mean.x, mean.y, mean.z),
-        );
-        o = o + vec3<f32>(mean.w * (grade_luma(n) - grade_luma(o)));
-        let y0 = grade_luma(o);
-        x = o + vec3<f32>(mean.w * (grade_lgg(y0, lift.w, e.w, gain.w) - y0));
+        let y = grade_lgg(grade_luma(x), lift.w, e.w, gain.w);
+        x = o + vec3<f32>(mix * (y - grade_luma(o)));
     }
     if ((features & 16u) != 0u) {
         let contrast = param(at + 5u);

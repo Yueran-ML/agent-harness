@@ -240,7 +240,7 @@ pub(crate) fn curves(c: &Constants, p: Params, node: u32, x: Rgb) -> Rgb {
             ],
         );
     }
-    let mix = p.at(node + at::LGG_MEAN)[3];
+    let mix = p.at(node + at::LUM_MIX)[3];
     let by = |channel: usize| -> Rgb {
         x.map(|v| {
             custom(
@@ -354,12 +354,10 @@ pub(crate) fn after_detail(c: &Constants, p: Params, node: u32, x0: Rgb) -> Rgb 
         let lift = p.at(node + at::LIFT);
         let e = p.at(node + at::GAMMA);
         let gain = p.at(node + at::GAIN);
-        let mean = p.at(node + at::LGG_MEAN);
-        let mut o = [0, 1, 2].map(|i| lgg(x[i], lift[i], e[i], gain[i]));
-        let n = x.map(|v| lgg(v, mean[0], mean[1], mean[2]));
-        o = add(o, splat(mean[3] * (luma(c, n) - luma(c, o))));
-        let y0 = luma(c, o);
-        x = add(o, splat(mean[3] * (lgg(y0, lift[3], e[3], gain[3]) - y0)));
+        let mix = p.at(node + at::LUM_MIX)[3];
+        let o = [0, 1, 2].map(|i| lgg(x[i], lift[i], e[i], gain[i]));
+        let y = lgg(luma(c, x), lift[3], e[3], gain[3]);
+        x = add(o, splat(mix * (y - luma(c, o))));
     }
     if on(at::CONTRAST_ON) {
         let k = p.at(node + at::CONTRAST);

@@ -25,8 +25,8 @@ pub const LIFT: u32 = 0;
 pub const GAMMA: u32 = 1;
 /// Gain of R, G, B and Y.
 pub const GAIN: u32 = 2;
-/// Lift, Gamma (an exponent) and Gain of the luma-weighted mean of R, G and B, and Lum Mix.
-pub const LGG_MEAN: u32 = 3;
+/// Lum Mix, in `w` (over 100); `x`, `y` and `z` are not used.
+pub const LUM_MIX: u32 = 3;
 /// Offset of R, G and B.
 pub const OFFSET: u32 = 4;
 /// Contrast and Pivot.
@@ -304,15 +304,7 @@ pub fn corrector(
     out[LIFT as usize] = lift.map(f);
     out[GAMMA as usize] = gamma.map(|g| f(gamma_exponent(g)));
     out[GAIN as usize] = gain.map(f);
-    let mean = |values: [f64; 4], neutral: f64| {
-        neutral + (0..3).map(|i| luma[i] * (values[i] - neutral)).sum::<f64>()
-    };
-    out[LGG_MEAN as usize] = [
-        f(mean(lift, 0.0)),
-        f(gamma_exponent(mean(gamma, 0.0))),
-        f(mean(gain, 1.0)),
-        f(at(&p.lum_mix, frame) / 100.0),
-    ];
+    out[LUM_MIX as usize] = [0.0, 0.0, 0.0, f(at(&p.lum_mix, frame) / 100.0)];
     out[OFFSET as usize] = rgb(&p.offset.r, &p.offset.g, &p.offset.b, frame, |o| {
         (o - 25.0) / 100.0
     });

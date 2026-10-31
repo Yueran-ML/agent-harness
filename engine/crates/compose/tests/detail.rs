@@ -317,9 +317,10 @@ fn graded_scene() -> Scene {
 }
 
 /// A graded frame without operations on neighbourhoods is the frame that the compositor made
-/// before they came in, to the bit: kept from it in `tests/golden/graded.rgba16f` (written with
+/// before they came in, to the bit: kept in `tests/golden/graded.rgba16f` (written with
 /// `COLUMBINA_WRITE_GOLDEN=1` by the compositor of `26c4e96`, on the card of the machine that
-/// wrote it, an NVIDIA one, by Direct3D 12 and FXC).
+/// wrote it, an NVIDIA one, by Direct3D 12 and FXC; and written again once Lum Mix took the
+/// master ring as one move of Y, R, G and B, which its Y-only Lift changes).
 #[test]
 fn a_frame_graded_without_neighbourhoods_is_drawn_as_it_was_to_the_bit() {
     let Some(gpu) = gpu_for_tests() else { return };

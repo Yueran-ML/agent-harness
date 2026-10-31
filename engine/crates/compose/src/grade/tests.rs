@@ -226,8 +226,9 @@ fn nodes_as_they_are_made_change_nothing_to_the_bit() {
 #[test]
 fn gain_scales_from_black() {
     let grade = one(|c| {
+        // The master ring: Y, R, G and B together (p. 3061).
         let g = &mut c.primaries.gain;
-        (g.r, g.g, g.b) = (fixed(2.0), fixed(2.0), fixed(2.0));
+        (g.y, g.r, g.g, g.b) = (fixed(2.0), fixed(2.0), fixed(2.0), fixed(2.0));
     });
     for rgb in colours() {
         near(
@@ -242,13 +243,16 @@ fn gain_scales_from_black() {
 fn lift_raises_black_and_keeps_white() {
     let grade = one(|c| {
         let l = &mut c.primaries.lift;
-        (l.r, l.g, l.b) = (fixed(0.2), fixed(0.2), fixed(0.2));
+        (l.y, l.r, l.g, l.b) = (fixed(0.2), fixed(0.2), fixed(0.2), fixed(0.2));
     });
     near(eval(&grade, [0.0; 3]), [0.2; 3], 1e-6);
     near(eval(&grade, [1.0; 3]), [1.0; 3], 1e-6);
     near(eval(&grade, [0.5; 3]), [0.6; 3], 1e-6);
-    // Lowered, black goes below 0 and white stays.
-    let grade = one(|c| c.primaries.lift.g = fixed(-0.1));
+    // Lowered, black goes below 0 and white stays (a channel of its own, at Lum Mix 0).
+    let grade = one(|c| {
+        c.primaries.lift.g = fixed(-0.1);
+        c.primaries.lum_mix = fixed(0.0);
+    });
     let out = eval(&grade, [0.0, 0.0, 0.0]);
     assert!(out[1] < -0.05);
 }
@@ -257,7 +261,7 @@ fn lift_raises_black_and_keeps_white() {
 fn gamma_bends_the_midtones_and_keeps_black_and_white() {
     let grade = one(|c| {
         let g = &mut c.primaries.gamma;
-        (g.r, g.g, g.b) = (fixed(0.25), fixed(0.25), fixed(0.25));
+        (g.y, g.r, g.g, g.b) = (fixed(0.25), fixed(0.25), fixed(0.25), fixed(0.25));
     });
     near(eval(&grade, [0.0; 3]), [0.0; 3], 1e-6);
     near(eval(&grade, [1.0; 3]), [1.0; 3], 1e-6);
@@ -345,11 +349,16 @@ fn lum_mix_keeps_luma_against_the_channels_and_lets_y_change_it() {
     let x = [0.5, 0.4, 0.3];
     let apart = eval(&red(0.0), x);
     near(apart, [0.75, 0.32, 0.3], 1e-6);
-    // At 100, the luma is what the mean of the gains makes of it.
+    // At 100, the other channels keep the luma as it was (p. 3064).
     let mixed = eval(&red(100.0), x);
-    let mean = 1.0 + 0.2126 * 0.5 + 0.7152 * -0.2;
-    assert!((luma(mixed) - mean * luma(x)).abs() < 1e-6);
-    assert!((luma(apart) - mean * luma(x)).abs() > 1e-3);
+    assert!((luma(mixed) - luma(x)).abs() < 1e-6);
+    assert!((luma(apart) - luma(x)).abs() > 1e-3);
+    // The differences of the channels are those of the gains, all moved alike.
+    near(
+        [mixed[0] - mixed[1], mixed[1] - mixed[2], 0.0],
+        [apart[0] - apart[1], apart[1] - apart[2], 0.0],
+        1e-6,
+    );
     // Y alone changes luma at 100 and nothing at 0.
     let y_gain = |mix: f64| {
         one(|c| {
@@ -362,6 +371,50 @@ fn lum_mix_keeps_luma_against_the_channels_and_lets_y_change_it() {
     assert!((luma(out) - 1.2 * luma(x)).abs() < 1e-6);
     // Added to each channel, so saturation falls as luma rises.
     assert!((out[0] - out[2] - (x[0] - x[2])).abs() < 1e-6);
+}
+
+#[test]
+fn a_master_ring_moves_y_r_g_and_b_together_once_whatever_lum_mix_is() {
+    // The master ring writes Y, R, G and B alike (p. 3061): a Gain of 1.2 takes mid grey to
+    // 0.6 at any Lum Mix, and a colour as the channels alone take it.
+    let ring = |mix: f64, lift: f64, gamma: f64, gain: f64| {
+        one(|c| {
+            for (wheel, value) in [
+                (&mut c.primaries.lift, lift),
+                (&mut c.primaries.gamma, gamma),
+                (&mut c.primaries.gain, gain),
+            ] {
+                wheel.y = fixed(value);
+                wheel.r = fixed(value);
+                wheel.g = fixed(value);
+                wheel.b = fixed(value);
+            }
+            c.primaries.lum_mix = fixed(mix);
+        })
+    };
+    for mix in [0.0, 37.0, 100.0] {
+        near(eval(&ring(mix, 0.0, 0.0, 1.2), [0.5; 3]), [0.6; 3], 1e-6);
+        let colour = [0.6, 0.35, 0.2];
+        near(
+            eval(&ring(mix, 0.0, 0.0, 1.2), colour),
+            colour.map(|v| v * 1.2),
+            1e-6,
+        );
+        // Lift is as linear: once too.
+        near(
+            eval(&ring(mix, 0.1, 0.0, 1.0), colour),
+            colour.map(|v| v + 0.1 * (1.0 - v)),
+            1e-6,
+        );
+        // Gamma on a grey: once.
+        #[allow(clippy::cast_possible_truncation, reason = "an exponent near 1")]
+        let e = layout::gamma_exponent(0.2) as f32;
+        near(
+            eval(&ring(mix, 0.0, 0.2, 1.0), [0.4; 3]),
+            [0.4_f32.powf(e); 3],
+            1e-6,
+        );
+    }
 }
 
 #[test]

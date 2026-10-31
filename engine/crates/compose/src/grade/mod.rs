@@ -94,15 +94,18 @@
 //!    scales from black; Lift raises black and keeps white (p. 3066, "starts at black, and then
 //!    falls off … to no influence at white"); Gamma bends the midtones and keeps black and white
 //!    ("most Gamma contrast adjustments have a minimal effect on the black and white point").
-//!    Lum Mix `m` (over 100): at 100 the changes of R, G and B apart are matched in luma by the
-//!    other channels (p. 3064), here by adding `m (Y(n) - Y(o))` to each channel, `o` the result
-//!    and `n` the result of the luma-weighted mean of the three settings: what is common to the
-//!    three (the master) changes luma, and what differs between them (the colour) does not.
-//!    Then the Y settings, the "Y-only" adjustment (p. 3068), do the same to luma and add its
-//!    change to R, G and B, by `m` ("at 0, Y-only contrast adjustments are turned off"), which
-//!    lowers saturation as contrast rises, as p. 3068 says. The master ring of a wheel moves Y,
-//!    R, G and B together (p. 3061); with these formulas the RGB and the Y parts of such a move
-//!    add up, as "contribute equally" (p. 3064) reads.
+//!    With `o` the result of the R, G and B settings, `Y` the luma of the input and `lgg_Y` the
+//!    same formula with the Y settings, the step gives `o + m (lgg_Y(Y) - Y(o))` for a Lum Mix
+//!    `m` (over 100): at 100 the luma of the result is what the Y settings make of the luma, so
+//!    that a change of R, G or B apart is matched by "automatic adjustments … to the other two
+//!    color channels in order to maintain constant Luma levels" (p. 3064); at 0 the channels are
+//!    their own and "Y-only contrast adjustments are turned off" (p. 3064). The master ring of a
+//!    wheel moves Y, R, G and B together ("the YRGB parameters located underneath all change
+//!    together", p. 3061; Ctrl and a drag "adjusts YRGB contrast identically as if you were
+//!    dragging that control's master ring"): then `lgg_Y(Y)` is `Y(o)` as near as the channels'
+//!    formula is linear, so the move is done once, whatever Lum Mix is. The Y settings alone add
+//!    the change of luma to R, G and B alike, so that "an increase in contrast results in
+//!    perceptually diminished color saturation" (p. 3068). Offset has no Y (p. 3067).
 //! 6. **Contrast and Pivot** (p. 3063). With "Use S-curve for contrast" on (the default, and
 //!    [`GradeOptions::s_curve_contrast`]): `p (x/p)^k` below the pivot `p` and
 //!    `1 - (1 - p)((1 - x)/(1 - p))^k` above, which has the slope `k` at the pivot and never
@@ -116,8 +119,9 @@
 //!    which a curve that may overshoot does, and `DaVinci`'s curves are smooth through their
 //!    control points. Its intensity `I` mixes: `x + I (curve(x) - x)` (p. 3116). Ganged, the Y
 //!    curve works on R, G and B, each by its own intensity (p. 3115). Not ganged, the R, G and B
-//!    curves work on their channels with the luma kept as Lum Mix says (as for the wheels, `n`
-//!    from the luma-weighted mean of their changes), and then the Y curve on luma alone (p. 3116,
+//!    curves work on their channels with the luma kept as Lum Mix says (adding `m (Y(n) -
+//!    Y(o))`, `n` from the luma-weighted mean of their changes, so that what is common to the
+//!    three changes luma), and then the Y curve on luma alone (p. 3116,
 //!    "increasing luma contrast results in a perceptual decrease of image saturation"), by Lum
 //!    Mix as p. 3064 says.
 //! 8. **Offset and the Log wheels** (pp. 3068–3074). Offset, which "is in fact processed as part

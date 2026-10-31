@@ -46,5 +46,7 @@ pub use compose::{ComposeError, Compositor, Scene, SceneLayer, Source, Target, W
 pub use geometry::{quarter_turns, Transform};
 #[doc(hidden)]
 pub use gpu::gpu_for_tests;
-pub use gpu::{Gpu, GpuError, Preference, Watch};
+pub use gpu::{
+    ChosenBy, CompilerKind, Gpu, GpuError, Preference, ShaderCompiler, Watch, COMPILER_VARIABLE,
+};
 pub use text::{warm_up as warm_up_fonts, Text};

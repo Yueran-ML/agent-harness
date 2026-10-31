@@ -141,7 +141,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `media.make_proxy` | `{"media": "m1"}` | `{}` (see Proxies) |
 | `media.thumbnail` | `{"media": "m1", "frame": 50, "height": 90}` (`frame` optional) | `{"width": 160, "height": 90, "png": "<base64>"}` |
 | `media.waveform` | `{"media": "m1"}` | `{"rate": 100, "channels": 2, "peaks": "<base64>"}`, or `{"pending": true}` |
-| `view.attach` | `{"monitor":"source" \| "timeline", "parent": "<handle>", "x": x, "y": y, "width": w, "height": h}` | `{"adapter": "<name>", "backend": "Dx12"}` |
+| `view.attach` | `{"monitor":"source" \| "timeline", "parent": "<handle>", "x": x, "y": y, "width": w, "height": h}` | `{"adapter": "<name>", "backend": "Dx12", "compiler": "dxc" \| "fxc" \| "auto" \| null}` |
 | `view.place` | `{"monitor":"source" \| "timeline", "x": x, "y": y, "width": w, "height": h}` | `{}` |
 | `view.show` | `{"monitor":"source" \| "timeline", "shown": true \| false}` | `{}` |
 | `view.detach` | `{"monitor":"source" \| "timeline"}` | `{"detached": true \| false}` |
@@ -604,9 +604,16 @@ picture.
   desktop attaches again to its new window. If drawing a frame takes more than 1 s (the card
   hangs, a driver resets), the view hides itself, so that the page is seen rather than a frozen
   picture, and shows itself again once the frame returns. The engine has one graphics card,
-  made when the first view is attached (`gpu_ready`: its adapter, its API, and whether it is the
-  system's in software), which the view draws with; a device that is lost (`gpu_lost`) is made
-  again, a second apart until it can be (`gpu_remaking`), and the view draws again on it. For
+  made when the first view is attached (`gpu_ready`: its adapter, its API, whether it is the
+  system's in software, and `compiler`, what compiles its shaders, with `compiler_path`), which
+  the view draws with. On Windows the shaders are compiled by Microsoft's DXC where
+  `dxcompiler.dll` and `dxil.dll` lie beside the engine (as the package of the desktop brings
+  them), else by FXC; `COLUMBINA_DX12_COMPILER` (`auto`, `fxc`, or the path of a
+  `dxcompiler.dll`) names another. The engine says which at its start (`shader_compiler`:
+  `compiler`, `path`, `by`); a DXC with which no device can be made is given up for FXC for as
+  long as the engine runs (`shader_compiler_fallback`, with why). A device that is lost
+  (`gpu_lost`) is made again, a second apart until it can be (`gpu_remaking`), and the view
+  draws again on it. For
   10 s after a card was lost only a card is taken, since a driver that resets brings it back; then
   the software adapter is taken if there is no card, and a card is looked for every 30 s while the
   engine draws in software (`gpu_upgraded` once one is taken). A surface that is lost is made

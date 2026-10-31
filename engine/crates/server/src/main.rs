@@ -335,6 +335,19 @@ enum Ending {
 /// Open the project of a directory whose lock is held, and serve it until the engine is
 /// stopped.
 fn start(options: &Options, dir: &Path, address: &Address) -> Ending {
+    if cfg!(windows) {
+        // What will compile the shaders of the card, which is made later: Microsoft's DXC where
+        // it lies beside the engine (as the package brings it), else FXC.
+        let compiler = columbina_compose::ShaderCompiler::chosen();
+        log(
+            "shader_compiler",
+            &json!({
+                "compiler": compiler.name(),
+                "path": compiler.path(),
+                "by": compiler.reason(),
+            }),
+        );
+    }
     // A proxy that is not where the engine keeps them is not taken: the engine reads, and
     // deletes, only its own. It is taken away before the project is read, so that one at a path
     // that is not absolute does not keep the project from being read.

@@ -28,6 +28,7 @@ mod pointer;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, PoisonError};
 
+use columbina_compose::ShaderCompiler;
 use columbina_view::{Cursor, Event, Gpu, Output, RawParent, Rect, View, ViewError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -360,7 +361,8 @@ impl Viewer {
             let gpu = graphics
                 .gpu()
                 .map_err(|error| ViewError::Gpu(error.to_string()))?;
-            View::attach_with_hdr(parent, rect, gpu, reporter, hdr)
+            let compiler = gpu.shader_compiler().map(ShaderCompiler::name);
+            View::attach_with_hdr(parent, rect, gpu, reporter, hdr).map(|view| (view, compiler))
         })
         .await
         .map_err(|error| {
@@ -370,15 +372,16 @@ impl Viewer {
             )
             .with_data(json!({ "reason": "failed" }))
         })?;
-        let view = made.map_err(|error| fault(&error))?;
+        let (view, compiler) = made.map_err(|error| fault(&error))?;
         // A view made in place of one that took the pointer takes it too.
         if let Some(cursor) = self.pointers.cursor(attach.monitor) {
             let _ = view.take_pointer(Some(cursor));
         }
-        let result = json!({ "adapter": view.adapter(), "backend": view.backend() });
+        let result =
+            json!({ "adapter": view.adapter(), "backend": view.backend(), "compiler": compiler });
         log(
             "view_attached",
-            &json!({"monitor":attach.monitor, "adapter":view.adapter(), "backend":view.backend()}),
+            &json!({"monitor":attach.monitor, "adapter":view.adapter(), "backend":view.backend(), "compiler":compiler}),
         );
         *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(view);
         Ok(result)

@@ -7,7 +7,9 @@
 //! it was lost with [`Gpu::when_lost`], or ask [`Gpu::is_lost`]; nothing of this is an error of
 //! theirs.
 
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 
 /// The backends that the engine draws with: Direct3D 12 on Windows, Metal on macOS. Elsewhere
 /// (Linux, for the tests of the pure parts) whatever wgpu was built with, which may be none.
@@ -141,6 +143,8 @@ pub struct Gpu {
     backend: String,
     software: bool,
     sixteen_norm: bool,
+    compiler: ShaderCompiler,
+    dxc_failure: Option<String>,
     watchers: Arc<Watchers>,
 }
 
@@ -152,6 +156,8 @@ impl std::fmt::Debug for Gpu {
             .field("backend", &self.backend)
             .field("software", &self.software)
             .field("sixteen_norm", &self.sixteen_norm)
+            .field("compiler", &self.compiler)
+            .field("dxc_failure", &self.dxc_failure)
             .finish_non_exhaustive()
     }
 }
@@ -162,10 +168,45 @@ impl Gpu {
     /// textures and buffers as large as it takes. This takes some 100 ms: call it where
     /// blocking is allowed.
     ///
+    /// The shaders are compiled as [`ShaderCompiler::chosen`] says. Where DXC makes no device
+    /// (a `dxcompiler.dll` that does not load, or a `dxil.dll` that does not sign what it
+    /// compiles), the device is made again with FXC; if FXC makes one, DXC is not tried again
+    /// while the process lasts, and [`Gpu::dxc_failure`] says why it was given up.
+    ///
     /// # Errors
-    /// There is no backend or adapter, not even in software, or no device can be made.
+    /// There is no backend or adapter, not even in software, or no device can be made, with
+    /// FXC either.
     pub fn new(preference: Preference) -> Result<Arc<Gpu>, GpuError> {
-        let instance = instance(BACKENDS)?;
+        Gpu::new_with(preference, ShaderCompiler::chosen(), &DXC_GIVEN_UP).map(Arc::new)
+    }
+
+    /// [`Gpu::new`] with `compiler`, and where a DXC that failed is remembered.
+    fn new_with(
+        preference: Preference,
+        compiler: ShaderCompiler,
+        given_up: &OnceLock<String>,
+    ) -> Result<Gpu, GpuError> {
+        let dxc = compiler.path().map(Path::to_path_buf);
+        let (error, dxc) = match (Gpu::made(preference, compiler), dxc) {
+            (Err(error), Some(dxc)) if cfg!(windows) => (error, dxc),
+            (made, _) => return made,
+        };
+        let fxc = ShaderCompiler {
+            kind: CompilerKind::Fxc,
+            by: ChosenBy::DxcFailed,
+        };
+        // FXC failing too, there is no card to make a device of, whatever compiles: its error
+        // is told, and DXC may be tried again.
+        let mut gpu = Gpu::made(preference, fxc)?;
+        let why = format!("{}: {error}", dxc.display());
+        let _ = given_up.set(why.clone());
+        gpu.dxc_failure = Some(why);
+        Ok(gpu)
+    }
+
+    /// Make the instance with `compiler`, the adapter and the device.
+    fn made(preference: Preference, compiler: ShaderCompiler) -> Result<Gpu, GpuError> {
+        let instance = instance(BACKENDS, &compiler)?;
         let ask = |fallback: bool| {
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -212,7 +253,7 @@ impl Gpu {
             move |error: wgpu::Error| watchers.error(&error.to_string())
         }));
         let info = adapter.get_info();
-        Ok(Arc::new(Gpu {
+        Ok(Gpu {
             sixteen_norm: device
                 .features()
                 .contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM),
@@ -223,8 +264,10 @@ impl Gpu {
             adapter,
             device,
             queue,
+            compiler,
+            dxc_failure: None,
             watchers,
-        }))
+        })
     }
 
     /// The instance, which the surfaces of the views are made from.
@@ -271,6 +314,20 @@ impl Gpu {
     #[must_use]
     pub fn has_sixteen_norm(&self) -> bool {
         self.sixteen_norm
+    }
+
+    /// The compiler of the shaders, for Direct3D 12; none for another API (Metal compiles its
+    /// own).
+    #[must_use]
+    pub fn shader_compiler(&self) -> Option<&ShaderCompiler> {
+        (self.backend == "Dx12").then_some(&self.compiler)
+    }
+
+    /// Why DXC made no device (its `dxcompiler.dll`, then the error), where FXC compiles the
+    /// shaders of this card in its place.
+    #[must_use]
+    pub fn dxc_failure(&self) -> Option<&str> {
+        self.dxc_failure.as_deref()
     }
 
     /// Whether the device was lost: nothing made on it is of use any more.
@@ -333,8 +390,12 @@ impl Gpu {
     }
 }
 
-/// Make an instance for the backends that the engine uses on this platform.
-fn instance(backends: wgpu::Backends) -> Result<wgpu::Instance, GpuError> {
+/// Make an instance for the backends that the engine uses on this platform, whose Direct3D 12
+/// compiles shaders with `compiler`.
+fn instance(
+    backends: wgpu::Backends,
+    compiler: &ShaderCompiler,
+) -> Result<wgpu::Instance, GpuError> {
     // wgpu panics when no backend was compiled for this platform (as on Linux, where only
     // the pure parts run). Nor can an instance draw if none of the requested backends exist.
     if !wgpu::Instance::enabled_backend_features().intersects(backends) {
@@ -346,43 +407,176 @@ fn instance(backends: wgpu::Backends) -> Result<wgpu::Instance, GpuError> {
         backends,
         ..wgpu::InstanceDescriptor::new_without_display_handle()
     };
-    descriptor.backend_options.dx12.shader_compiler = dx12_compiler();
-    if matches!(
-        descriptor.backend_options.dx12.shader_compiler,
-        wgpu::Dx12Compiler::DynamicDxc { .. }
-    ) {
+    descriptor.backend_options.dx12.shader_compiler = compiler.wgpu();
+    if matches!(compiler.kind, CompilerKind::Dxc(_)) {
         descriptor.backend_options.dx12.force_shader_model = dxc_shader_model();
     }
     Ok(wgpu::Instance::new(descriptor))
 }
 
-/// The compiler of Direct3D 12 shaders: FXC, which every Windows has, unless
-/// `COLUMBINA_DX12_COMPILER` names another (`auto`, or the path of a `dxcompiler.dll`).
-///
-/// wgpu would otherwise take whatever `dxcompiler.dll` is found on the `PATH`, and builds of it
-/// that other programs ship (as Obsidian and Electron ship Dawn's) crash the process as some of
-/// our shaders are compiled, with no error that could be caught.
-///
-/// A `dxcompiler.dll` named by its path (Microsoft's, of the Windows SDK or of a release of
-/// `DirectXShaderCompiler`) compiles the shaders some three times as fast as FXC does those of
-/// grades of many nodes. It signs them with the `dxil.dll` that Windows finds by its name: the
-/// one beside the executable, else in the folders of the system, else on the `PATH`, and not
-/// the one beside `dxcompiler.dll` (2026-10-31: Obsidian's, on the `PATH`, of version 1.7, which
-/// would not sign shaders of model 6.8, and every device failed to be made, "Parent device is
-/// lost"). So the shaders that it compiles are of model 6.0, which every `dxil.dll` signs and is
-/// all that ours need ([`dxc_shader_model`]).
-#[must_use]
-pub fn dx12_compiler() -> wgpu::Dx12Compiler {
-    match std::env::var("COLUMBINA_DX12_COMPILER") {
-        Ok(named) if named.eq_ignore_ascii_case("auto") => wgpu::Dx12Compiler::Auto,
-        Ok(named) if named.to_ascii_lowercase().ends_with("dxcompiler.dll") => {
-            wgpu::Dx12Compiler::DynamicDxc { dxc_path: named }
+/// The variable that names the compiler of Direct3D 12 shaders.
+pub const COMPILER_VARIABLE: &str = "COLUMBINA_DX12_COMPILER";
+
+/// Why DXC was given up, once it made no device and FXC made one: from then on FXC compiles
+/// the shaders of every card that the process makes.
+static DXC_GIVEN_UP: OnceLock<String> = OnceLock::new();
+
+/// The compiler of the Direct3D 12 shaders of a [`Gpu`], and how it was chosen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShaderCompiler {
+    /// What compiles them.
+    pub kind: CompilerKind,
+    /// Why it does.
+    pub by: ChosenBy,
+}
+
+/// What compiles the Direct3D 12 shaders.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CompilerKind {
+    /// FXC, the `d3dcompiler_47.dll` that every Windows has.
+    Fxc,
+    /// Microsoft's DXC, the `dxcompiler.dll` of this path, compiling shaders of model 6.0.
+    Dxc(PathBuf),
+    /// What wgpu takes: a `dxcompiler.dll` found by its name, else FXC.
+    Auto,
+}
+
+/// Why a compiler compiles the Direct3D 12 shaders.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChosenBy {
+    /// `COLUMBINA_DX12_COMPILER` names it.
+    Variable,
+    /// `dxcompiler.dll` and `dxil.dll` lie beside the executable.
+    BesideExecutable,
+    /// Neither: FXC.
+    Default,
+    /// DXC made no device, and FXC did.
+    DxcFailed,
+}
+
+impl ShaderCompiler {
+    /// The compiler that a [`Gpu`] made now compiles its shaders with, in this order:
+    ///
+    /// 1. what `COLUMBINA_DX12_COMPILER` names: `auto` (wgpu's choice), `fxc`, or the path of a
+    ///    `dxcompiler.dll`; any other value is FXC;
+    /// 2. else Microsoft's DXC, where `dxcompiler.dll` and `dxil.dll` lie beside the executable
+    ///    (as the package brings them, from the Windows SDK), by the absolute path of that
+    ///    `dxcompiler.dll`;
+    /// 3. else FXC, which every Windows has.
+    ///
+    /// DXC that made no device once in this process ([`Gpu::new`]) is not taken again: FXC is.
+    ///
+    /// wgpu would otherwise take whatever `dxcompiler.dll` is found on the `PATH`, and builds of
+    /// it that other programs ship (as Obsidian and Electron ship Dawn's) crash the process as
+    /// some of our shaders are compiled, with no error that could be caught. So DXC is always
+    /// loaded by its full path, never by the search of Windows.
+    ///
+    /// DXC compiles the shaders of grades of many nodes some twice as fast as FXC. It signs them
+    /// with the `dxil.dll` that Windows finds by its name: the one beside the executable, else
+    /// in the folders of the system, else on the `PATH`, and not the one beside a
+    /// `dxcompiler.dll` named elsewhere (2026-10-31: Obsidian's, on the `PATH`, of version 1.7,
+    /// which would not sign shaders of model 6.8, and every device failed to be made, "Parent
+    /// device is lost"). So the shaders that it compiles are of model 6.0, which every
+    /// `dxil.dll` signs and is all that ours need.
+    #[must_use]
+    pub fn chosen() -> ShaderCompiler {
+        let variable = std::env::var_os(COMPILER_VARIABLE);
+        let executable = std::env::current_exe().ok();
+        let beside = executable.as_deref().and_then(Path::parent);
+        let chosen = choose(variable.as_deref(), beside);
+        match (&chosen.kind, DXC_GIVEN_UP.get()) {
+            (CompilerKind::Dxc(_), Some(_)) => ShaderCompiler {
+                kind: CompilerKind::Fxc,
+                by: ChosenBy::DxcFailed,
+            },
+            _ => chosen,
         }
-        _ => wgpu::Dx12Compiler::Fxc,
+    }
+
+    /// Its name in the log: `fxc`, `dxc` or `auto`.
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        match self.kind {
+            CompilerKind::Fxc => "fxc",
+            CompilerKind::Dxc(_) => "dxc",
+            CompilerKind::Auto => "auto",
+        }
+    }
+
+    /// The `dxcompiler.dll` of DXC.
+    #[must_use]
+    pub fn path(&self) -> Option<&Path> {
+        match &self.kind {
+            CompilerKind::Dxc(path) => Some(path),
+            CompilerKind::Fxc | CompilerKind::Auto => None,
+        }
+    }
+
+    /// Why it was chosen, in the log: `COLUMBINA_DX12_COMPILER`, `beside the executable`,
+    /// `default` or `dxc failed`.
+    #[must_use]
+    pub fn reason(&self) -> &'static str {
+        match self.by {
+            ChosenBy::Variable => COMPILER_VARIABLE,
+            ChosenBy::BesideExecutable => "beside the executable",
+            ChosenBy::Default => "default",
+            ChosenBy::DxcFailed => "dxc failed",
+        }
+    }
+
+    /// As wgpu names it.
+    fn wgpu(&self) -> wgpu::Dx12Compiler {
+        match &self.kind {
+            CompilerKind::Fxc => wgpu::Dx12Compiler::Fxc,
+            CompilerKind::Dxc(path) => wgpu::Dx12Compiler::DynamicDxc {
+                dxc_path: path.to_string_lossy().into_owned(),
+            },
+            CompilerKind::Auto => wgpu::Dx12Compiler::Auto,
+        }
     }
 }
 
-/// The shader model of the shaders that DXC compiles: 6.0 (see [`dx12_compiler`]).
+/// The compiler that `variable` (the value of `COLUMBINA_DX12_COMPILER`) names, else DXC if
+/// `dxcompiler.dll` and `dxil.dll` are in `beside`, else FXC.
+fn choose(variable: Option<&OsStr>, beside: Option<&Path>) -> ShaderCompiler {
+    let named = |kind| ShaderCompiler {
+        kind,
+        by: ChosenBy::Variable,
+    };
+    if let Some(value) = variable.filter(|value| !value.is_empty()) {
+        let text = value.to_string_lossy();
+        return if text.eq_ignore_ascii_case("auto") {
+            named(CompilerKind::Auto)
+        } else if text.to_ascii_lowercase().ends_with("dxcompiler.dll") {
+            named(CompilerKind::Dxc(PathBuf::from(value)))
+        } else {
+            named(CompilerKind::Fxc)
+        };
+    }
+    if let Some(folder) = beside {
+        let compiler = folder.join("dxcompiler.dll");
+        if compiler.is_file() && folder.join("dxil.dll").is_file() {
+            return ShaderCompiler {
+                kind: CompilerKind::Dxc(compiler),
+                by: ChosenBy::BesideExecutable,
+            };
+        }
+    }
+    ShaderCompiler {
+        kind: CompilerKind::Fxc,
+        by: ChosenBy::Default,
+    }
+}
+
+/// The compiler of Direct3D 12 shaders that a [`Gpu`] made now takes, as wgpu names it (see
+/// [`ShaderCompiler::chosen`]), for the tests that say what they measure with.
+#[cfg(test)]
+#[must_use]
+pub(crate) fn dx12_compiler() -> wgpu::Dx12Compiler {
+    ShaderCompiler::chosen().wgpu()
+}
+
+/// The shader model of the shaders that DXC compiles: 6.0 (see [`ShaderCompiler::chosen`]).
 #[allow(
     unsafe_code,
     reason = "the token of wgpu that lowers the shader model is made by an unsafe function"
@@ -443,7 +637,7 @@ mod tests {
         let unavailable = wgpu::Backends::all() - wgpu::Instance::enabled_backend_features();
         for backends in [wgpu::Backends::empty(), unavailable] {
             assert_eq!(
-                instance(backends).unwrap_err(),
+                instance(backends, &fxc()).unwrap_err(),
                 GpuError::NoAdapter("wgpu has no backend to draw with on this platform".into())
             );
         }
@@ -493,6 +687,151 @@ mod tests {
             Ok(gpu) => assert!(gpu.is_software(), "{gpu:?}"),
             Err(error) if cfg!(windows) => panic!("no WARP: {error}"),
             Err(error) => eprintln!("skipped: no software adapter: {error}"),
+        }
+    }
+
+    fn fxc() -> ShaderCompiler {
+        ShaderCompiler {
+            kind: CompilerKind::Fxc,
+            by: ChosenBy::Default,
+        }
+    }
+
+    /// A folder of its own under the temporary one, with these files, empty.
+    fn folder_with(name: &str, files: &[&str]) -> PathBuf {
+        let folder = std::env::temp_dir().join(format!(
+            "columbina-compose-gpu-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).unwrap();
+        for file in files {
+            std::fs::write(folder.join(file), b"").unwrap();
+        }
+        folder
+    }
+
+    #[test]
+    fn the_compiler_named_comes_first_then_dxc_beside_the_executable_then_fxc() {
+        let both = folder_with("both", &["dxcompiler.dll", "dxil.dll"]);
+        let alone = folder_with("alone", &["dxcompiler.dll"]);
+        let named = |value: &str| choose(Some(OsStr::new(value)), Some(&both));
+        let by_variable = |kind| ShaderCompiler {
+            kind,
+            by: ChosenBy::Variable,
+        };
+        assert_eq!(named("auto"), by_variable(CompilerKind::Auto));
+        assert_eq!(named("AUTO"), by_variable(CompilerKind::Auto));
+        assert_eq!(named("fxc"), by_variable(CompilerKind::Fxc));
+        // Any other value is FXC, as it always was, whatever lies beside the executable.
+        assert_eq!(named("dxc"), by_variable(CompilerKind::Fxc));
+        assert_eq!(
+            named(r"C:\SDK\x64\DXCompiler.dll"),
+            by_variable(CompilerKind::Dxc(PathBuf::from(
+                r"C:\SDK\x64\DXCompiler.dll"
+            )))
+        );
+        // Empty, it names nothing.
+        assert_eq!(
+            choose(Some(OsStr::new("")), Some(&both)),
+            ShaderCompiler {
+                kind: CompilerKind::Dxc(both.join("dxcompiler.dll")),
+                by: ChosenBy::BesideExecutable,
+            }
+        );
+        assert_eq!(
+            choose(None, Some(&both)),
+            ShaderCompiler {
+                kind: CompilerKind::Dxc(both.join("dxcompiler.dll")),
+                by: ChosenBy::BesideExecutable,
+            }
+        );
+        // dxcompiler.dll without the dxil.dll that signs what it compiles is not taken.
+        assert_eq!(choose(None, Some(&alone)), fxc());
+        assert_eq!(choose(None, None), fxc());
+        let _ = std::fs::remove_dir_all(both);
+        let _ = std::fs::remove_dir_all(alone);
+    }
+
+    #[test]
+    fn the_compiler_is_named_in_the_log_with_why() {
+        let dxc = ShaderCompiler {
+            kind: CompilerKind::Dxc(PathBuf::from(r"C:\engine\dxcompiler.dll")),
+            by: ChosenBy::BesideExecutable,
+        };
+        assert_eq!(
+            (dxc.name(), dxc.path(), dxc.reason()),
+            (
+                "dxc",
+                Some(Path::new(r"C:\engine\dxcompiler.dll")),
+                "beside the executable"
+            )
+        );
+        assert!(
+            matches!(dxc.wgpu(), wgpu::Dx12Compiler::DynamicDxc { dxc_path } if dxc_path == r"C:\engine\dxcompiler.dll")
+        );
+        assert_eq!(
+            (fxc().name(), fxc().path(), fxc().reason()),
+            ("fxc", None, "default")
+        );
+        assert!(matches!(fxc().wgpu(), wgpu::Dx12Compiler::Fxc));
+    }
+
+    #[test]
+    fn the_tests_compile_with_fxc_as_nothing_lies_beside_them() {
+        // The DLLs are never copied into target/ (see tests/dxc.rs for a test with them).
+        if std::env::var_os(COMPILER_VARIABLE).is_none() {
+            assert_eq!(ShaderCompiler::chosen(), fxc());
+        }
+    }
+
+    #[test]
+    fn a_dxc_that_makes_no_device_gives_way_to_fxc_for_the_rest_of_the_process() {
+        // A dxcompiler.dll that is not there: Direct3D 12 cannot be had with it at all. WARP,
+        // which is in every Windows, draws, so that no card is needed. Only Windows compiles
+        // with DXC or FXC.
+        if !cfg!(windows) {
+            return;
+        }
+        let missing = ShaderCompiler {
+            kind: CompilerKind::Dxc(std::env::temp_dir().join("no-such-folder/dxcompiler.dll")),
+            by: ChosenBy::Variable,
+        };
+        let given_up = OnceLock::new();
+        match Gpu::new_with(Preference::Software, missing, &given_up) {
+            Ok(gpu) => {
+                assert_eq!(
+                    gpu.shader_compiler(),
+                    Some(&ShaderCompiler {
+                        kind: CompilerKind::Fxc,
+                        by: ChosenBy::DxcFailed,
+                    })
+                );
+                let why = gpu.dxc_failure().expect("why DXC was given up");
+                assert_eq!(given_up.get().map(String::as_str), Some(why));
+                // The card draws with FXC.
+                let module = gpu
+                    .device()
+                    .create_shader_module(wgpu::ShaderModuleDescriptor {
+                        label: None,
+                        source: wgpu::ShaderSource::Wgsl(
+                            "@compute @workgroup_size(1) fn main() {}".into(),
+                        ),
+                    });
+                let scope = gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
+                let _ = gpu
+                    .device()
+                    .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                        label: None,
+                        layout: None,
+                        module: &module,
+                        entry_point: Some("main"),
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                        cache: None,
+                    });
+                assert!(pollster::block_on(scope.pop()).is_none());
+            }
+            Err(error) => panic!("no WARP with FXC: {error}"),
         }
     }
 }

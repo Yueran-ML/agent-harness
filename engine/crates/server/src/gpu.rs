@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
-use columbina_compose::{Gpu, GpuError, Preference, Watch};
+use columbina_compose::{Gpu, GpuError, Preference, ShaderCompiler, Watch};
 use serde_json::json;
 
 use crate::log::log;
@@ -147,6 +147,13 @@ impl Graphics {
         let wanted =
             preference.unwrap_or_else(|| self::preference(state.hardware_lost_at, Instant::now()));
         let gpu = Gpu::new(wanted)?;
+        if let Some(why) = gpu.dxc_failure() {
+            log(
+                "shader_compiler_fallback",
+                &json!({ "from": "dxc", "to": "fxc", "message": why }),
+            );
+        }
+        let compiler = gpu.shader_compiler();
         log(
             "gpu_ready",
             &json!({
@@ -154,6 +161,8 @@ impl Graphics {
                 "backend": gpu.backend(),
                 "software": gpu.is_software(),
                 "sixteen_norm": gpu.has_sixteen_norm(),
+                "compiler": compiler.map(ShaderCompiler::name),
+                "compiler_path": compiler.and_then(ShaderCompiler::path),
             }),
         );
         let errors = gpu.when_error({

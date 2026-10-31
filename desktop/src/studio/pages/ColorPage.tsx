@@ -20,6 +20,7 @@ import { MiniTimeline } from '../color/MiniTimeline';
 import { NodeEditor } from '../color/NodeEditor';
 import { Palettes, type CenterPalette, type LeftPalette, type RightPanel } from '../color/Palettes';
 import { ThumbnailTimeline } from '../color/ThumbnailTimeline';
+import { placeOf, type EditedNode } from '../color/useNodeEdit';
 import '../color/color.css';
 
 /** Narrower than this, the left and center palettes are merged into one group (Reference Manual 20, p. 2976). */
@@ -160,6 +161,12 @@ export function ColorPage({
   const currentNode = grade === null ? null
     : grade.nodes.some(node => node.id === nodes[gradeKey]) ? nodes[gradeKey] : grade.nodes[0]?.id ?? null;
   const onCurrentNode = useCallback((node: string) => setNodes(old => ({ ...old, [gradeKey]: node })), [gradeKey]);
+  // The node that the palettes edit: the current node, where it is, with its grade and the playhead as its keys count it (T17).
+  const placed = placeOf(shownLevel, selected?.id ?? null, current?.clip ?? null, frame ?? 0);
+  const editedNode = grade?.nodes.find(node => node.id === currentNode) ?? null;
+  const edited = useMemo<EditedNode | null>(() => (placed === null || editedNode === null ? null
+    : { bridge, revision, target: placed.target, node: editedNode, frame: placed.frame, onFailure: failed }),
+  [bridge, revision, JSON.stringify(placed), editedNode, failed]);
 
   // Going to a clip: it is chosen, alone, and the playhead goes to its first frame (p. 3024).
   const go = useCallback((clip: string, start: number) => {
@@ -319,7 +326,7 @@ export function ColorPage({
         onClip={clipPressed} onSeek={timelineMonitor.seek} onEnable={enable} onSkip={skip} />
     </div>}
     <div className="color-palettes-area" {...focusOf('palettes')}>
-      <Palettes merged={merged} left={left} center={center} last={last} right={right}
+      <Palettes merged={merged} left={left} center={center} last={last} right={right} edited={edited}
         onLeft={(each) => { setLeft(each); setLast('left'); }} onCenter={(each) => { setCenter(each); setLast('center'); }} onRight={setRight} />
     </div>
   </div>;

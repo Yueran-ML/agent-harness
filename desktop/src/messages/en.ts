@@ -850,6 +850,31 @@ export const en = {
         realtime: 'Playing in real time', dropping: 'Dropping frames', stopped: 'Not playing',
         enhanced: 'Enhanced viewer', full: 'Full page viewer', cinema: 'Cinema viewer', exitCinema: 'Exit cinema viewer',
         missingLut: (name: string) => `Missing LUT: ${name}`, missingLuts: 'Multiple LUTs missing',
+        /** The orange dot of a palette's button: the current node is adjusted there. */
+        changed: 'Adjusted',
+        /** The Primaries palette (Reference Manual 20, Chapter 131), in DaVinci Resolve's words. */
+        primariesPalette: {
+          modes: 'Primaries mode', wheels: 'Color Wheels', bars: 'Color Bars', log: 'Log Wheels', reset: 'Reset',
+          wheel: { lift: 'Lift', gamma: 'Gamma', gain: 'Gain', offset: 'Offset', shadow: 'Shadow', midtone: 'Midtone', highlight: 'Highlight' },
+          resetWheel: 'Reset the wheel', master: 'Master wheel', balance: 'Color balance',
+          settings: {
+            temperature: 'Temp', tint: 'Tint', contrast: 'Contrast', pivot: 'Pivot', midtone_detail: 'Mid/Detail', color_boost: 'Col Boost',
+            shadows: 'Shad', highlights: 'Hi/Light', saturation: 'Sat', hue: 'Hue', lum_mix: 'L. Mix', low_range: 'Low Range', high_range: 'High Range',
+          },
+          auto: 'Auto Color', blackPoint: 'Pick Black Point', whitePoint: 'Pick White Point',
+        },
+        /** The Curves palette (Reference Manual 20, Chapter 134), in DaVinci Resolve's words. */
+        curvesPalette: {
+          modes: 'Curve', custom: 'Custom', hue_vs_hue: 'Hue vs Hue', hue_vs_sat: 'Hue vs Sat', hue_vs_lum: 'Hue vs Lum',
+          lum_vs_sat: 'Lum vs Sat', sat_vs_sat: 'Sat vs Sat', sat_vs_lum: 'Sat vs Lum',
+          editor: 'Curve editor', point: 'Control point', resetCustom: 'Reset Custom Curve', reset: 'Reset',
+          gang: 'Gang Custom Curves', channels: { y: 'Luma', r: 'Red', g: 'Green', b: 'Blue' }, intensity: 'Intensity', resetChannel: 'Reset the curve',
+          options: 'Options', defaultAnchors: 'Default Anchors', copyToRed: 'Copy to Red', copyToGreen: 'Copy to Green', copyToBlue: 'Copy to Blue',
+          softClip: 'Soft Clip', gangSoftClip: 'Gang Soft Clip', low: 'Low', lowSoft: 'Low Soft', high: 'High', highSoft: 'High Soft',
+          input: 'Input', hueRotate: 'Hue Rotate', saturation: 'Saturation', lum: 'Lum',
+          vectors: { red: 'Red', yellow: 'Yellow', green: 'Green', cyan: 'Cyan', blue: 'Blue', magenta: 'Magenta' },
+          picker: 'Sample in the viewer',
+        },
       },
       /** The fields of the inspector, as DaVinci Resolve names them. */
       inspector: {
@@ -1516,6 +1541,10 @@ export const en = {
         gallery: 'Stills and albums come in a later version.',
         luts: 'The LUT browser comes in a later version.',
         palette: 'The controls of this palette come in a later version.',
+        noCorrector: 'Choose a corrector node in the node editor to adjust it.',
+        autoFlat: 'Auto Color found too little range in this frame to balance it.',
+        picker: 'Sampling the viewer needs the engine to read the color at a point of the picture, which it cannot do yet.',
+        keyed: 'This setting has keyframes: a change goes into the keyframe at the playhead or to its left.',
       },
       windowsOnly: 'The editing studio runs only on Windows for now. macOS will come later.',
       browser: 'The viewers appear only in the desktop app.',

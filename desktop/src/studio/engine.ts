@@ -524,8 +524,21 @@ export interface PageMethods {
   'transport.proxies': Record<string, never>;
   'view.place': Record<string, never>;
   'view.show': Record<string, never>;
+  'scopes.statistics': ScopeStatistics;
 }
 export type PageMethod = keyof PageMethods;
+
+/** A channel's figures in `scopes.statistics`: its least, greatest and mean signal (0 to 1, or beyond). */
+export interface ChannelFigures { min: number; max: number; mean: number }
+/** The figures of the frame that a monitor shows now (PROTOCOL.md, "Scopes"): the Primaries palette's Auto Color reads them. */
+export interface ScopeStatistics {
+  view: Monitor; frame: number; width: number; height: number; samples: number;
+  red: ChannelFigures; green: ChannelFigures; blue: ChannelFigures; luma: ChannelFigures;
+  chroma: { centroid: [number, number]; spread: [number, number]; radius: number; saturation: number; hue: number };
+  /** The signal below which 1%, 50% and 99% of the pixels are. */
+  percentiles: Record<'red' | 'green' | 'blue' | 'luma', { '1': number; '50': number; '99': number }>;
+  histogram: { bins: number; red: number[]; green: number[]; blue: number[]; luma: number[] };
+}
 
 /** Where the viewer lies: device pixels of the screen, from the top left corner of the client area. */
 export interface ViewRect {

@@ -145,6 +145,8 @@ const PAGE_METHODS = new Set([
   'project.get', 'transaction.apply', 'history.undo', 'history.redo', 'media.make_proxy',
   'transport.load', 'transport.play', 'transport.pause', 'transport.seek', 'transport.step', 'transport.state', 'transport.proxies',
   'view.place', 'view.show', 'timeline.duration', 'media.thumbnail', 'media.waveform', 'render.cancel',
+  // The figures of the frame shown, which the Primaries palette's Auto Color reads.
+  'scopes.statistics',
 ]);
 /** The endings of the files that the engine reads as media, offered first in the dialog. */
 const MEDIA_ENDINGS = [

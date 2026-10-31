@@ -161,7 +161,11 @@ describe('the Color page', () => {
     expect(tabsOf('left')).toEqual(['Primaries']);
     expect(tabsOf('center')).toEqual(['Curves', 'Qualifier', 'Window', 'Tracker', 'Blur', 'Key']);
     expect(tabsOf('right')).toEqual(['Keyframes', 'Scopes']);
-    expect(screen.getAllByRole('tabpanel').map(each => each.textContent)).toEqual(Array(3).fill('The controls of this palette come in a later version.'));
+    // Primaries and Curves have their controls (T17); the right panel is a placeholder until T19.
+    const [primariesPanel, curvesPanel, rightPanel] = screen.getAllByRole('tabpanel');
+    expect(primariesPanel.querySelector('[data-test="primaries"]')).not.toBeNull();
+    expect(curvesPanel.querySelector('[data-test="curves"]')).not.toBeNull();
+    expect(rightPanel.textContent).toBe('The controls of this palette come in a later version.');
     // The three places at the top left are one place: one opens in place of another, and pressed again it closes.
     fireEvent.click(within(toolbar).getByRole('button', { name: 'LUTs' }));
     expect(screen.queryByRole('region', { name: 'Gallery' })).toBeNull();
@@ -405,6 +409,20 @@ describe('the Color page', () => {
     expect(tabsOf('left')).toEqual(['一级校色']);
     expect(tabsOf('center')).toEqual(['曲线', '限定器', '窗口', '跟踪器', '模糊', '键']);
     expect(tabsOf('right')).toEqual(['关键帧', '示波器']);
+  });
+
+  it('edits the current node from the palettes, in the grade shown, and marks the palette adjusted', async () => {
+    const { bridge } = await mount();
+    // c1 is at the playhead, and its first node is current.
+    const name = document.querySelector('[data-field="primaries.saturation"] .color-number-name')!;
+    fireEvent.pointerDown(name, { button: 0, pointerId: 1, clientX: 0 });
+    fireEvent.pointerMove(name, { pointerId: 1, clientX: 40 });
+    fireEvent.pointerUp(name, { pointerId: 1, clientX: 40 });
+    await settle();
+    expect(calls(bridge, 'transaction.apply').at(-1)).toEqual({ revision: 0, ops: [
+      { op: 'set_node', grade: { level: 'clip', timeline: 't1', clip: 'c1' }, id: 'n1', params: { primaries: { saturation: 60 } } }] });
+    expect(document.querySelector('[data-palette="primaries"] [data-test="changed-dot"]')).not.toBeNull();
+    expect(document.querySelector('[data-palette="curves"] [data-test="changed-dot"]')).toBeNull();
   });
 
   it('is a page of the studio on Windows only', () => {

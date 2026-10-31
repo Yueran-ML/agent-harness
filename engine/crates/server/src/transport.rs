@@ -302,7 +302,9 @@ enum Command {
         path: PathBuf,
         /// Its proxy, if it has one that may be used.
         proxy: Option<PathBuf>,
-        facts: Facts,
+        /// Boxed: the facts of a picture, with what it says of its colours, are larger than
+        /// every other command together.
+        facts: Box<Facts>,
         /// The rate of the first timeline of the project, for media that is sound alone.
         grid: Option<Rate>,
         reply: oneshot::Sender<Result<Status, Fault>>,
@@ -618,7 +620,7 @@ impl Transport {
             media: media.to_owned(),
             path,
             proxy,
-            facts,
+            facts: Box::new(facts),
             grid,
             reply,
         });

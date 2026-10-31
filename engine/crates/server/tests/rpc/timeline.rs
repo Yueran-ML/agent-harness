@@ -3,8 +3,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use columbina_compose::{Compositor, LayerColor, Scene, SceneLayer, Source, Target, Transform};
-use columbina_media::{Hardware, VideoDecoder};
+use columbina_compose::{
+    Compositor, LayerColor, Scene, SceneLayer, Source, Target, Transform, YuvCoding,
+};
+use columbina_media::{Converter, Hardware, VideoDecoder};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -61,6 +63,23 @@ async fn sought(client: &mut Client, frame: i64) -> Value {
         })
         .await;
     action(client, "transport.frame_digest", json!({})).await
+}
+
+/// A frame of a decoder as a layer of a scene, as the engine composes it: a picture of the
+/// sampling of chroma of its file, decoded by the matrix and range that it says.
+fn decoded_layer(decoder: &mut VideoDecoder, frame: i64, opacity: f32) -> SceneLayer {
+    let picture = Converter::new()
+        .native(&decoder.decoded_at(frame).unwrap())
+        .unwrap();
+    SceneLayer {
+        color: LayerColor {
+            coding: YuvCoding::of_native(&picture),
+            ..LayerColor::default()
+        },
+        source: Source::Picture(Arc::new(picture), 0),
+        transform: Transform::NONE,
+        opacity,
+    }
 }
 
 #[tokio::test]
@@ -160,19 +179,11 @@ async fn timeline_cuts_dissolve_and_reverse_speed_show_the_expected_frames() {
             height: 36,
             ..Scene::default()
         };
-        scene.layers.push(SceneLayer {
-            source: Source::Picture(Arc::new(decoder.frame_at(left).unwrap()), 0),
-            transform: Transform::NONE,
-            opacity: 1.0,
-            color: LayerColor::default(),
-        });
+        scene.layers.push(decoded_layer(&mut decoder, left, 1.0));
         if let Some((right, opacity)) = right {
-            scene.layers.push(SceneLayer {
-                source: Source::Picture(Arc::new(decoder.frame_at(right).unwrap()), 0),
-                transform: Transform::NONE,
-                opacity,
-                color: LayerColor::default(),
-            });
+            scene
+                .layers
+                .push(decoded_layer(&mut decoder, right, opacity));
         }
         compose.render(&scene, &target).unwrap();
         let expected = format!("{:x}", Sha256::digest(target.read_rgba().unwrap()));
@@ -186,12 +197,7 @@ async fn timeline_cuts_dissolve_and_reverse_speed_show_the_expected_frames() {
         let scene = Scene {
             width: 64,
             height: 36,
-            layers: vec![SceneLayer {
-                source: Source::Picture(Arc::new(decoder.frame_at(source).unwrap()), 0),
-                transform: Transform::NONE,
-                opacity: 1.0,
-                color: LayerColor::default(),
-            }],
+            layers: vec![decoded_layer(&mut decoder, source, 1.0)],
             ..Scene::default()
         };
         compose.render(&scene, &target).unwrap();
@@ -795,4 +801,71 @@ async fn timeline_falls_back_to_system_time_after_audio_device_failure() {
             s["monitor"] == "timeline" && s["sound"] == "on"
         })
         .await;
+}
+
+/// The first frame of a sample, in the source monitor and alone on a timeline of its size: the
+/// same picture, decoded alike (its own range and matrix, its chroma of its own sampling), so
+/// the same pixels, as each draws them for a digest.
+async fn both_monitors_show(sample: support::Sample) {
+    let dir = project_dir();
+    let Some((_engine, mut client)) =
+        transport_engine_with(dir.path(), &[sample], &["--sound", "null", "--test-hooks"]).await
+    else {
+        return;
+    };
+    let got = project(&mut client).await;
+    let media = &got["project"]["media"][0];
+    let video = &media["facts"]["video"];
+    let mut alone = clip("$one", "m1", 0, 5);
+    alone["source"]["in"] = json!({"ticks":0, "scale":media["facts"]["duration"]["scale"]});
+    let names = client
+        .apply(json!([{"op":"add_timeline", "timeline":{
+            "id":"$timeline", "name":"Alone", "width":video["width"], "height":video["height"],
+            "rate":{"num":25,"den":1}, "sample_rate":48000,
+            "tracks":[{"id":"$v", "kind":"video", "name":"Picture", "enabled":true,
+                "locked":false, "clips":[alone], "transitions":[]}]
+        }}]))
+        .await["names"]
+        .clone();
+    load(&mut client, &names).await;
+    let timeline = sought(&mut client, 0).await;
+    let loaded = client
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
+        .await;
+    assert_eq!(
+        (&loaded["shown"], &loaded["exact"]),
+        (&json!(0), &json!(true))
+    );
+    let source = client.source_result("transport.frame_digest", None).await;
+    assert_eq!(
+        (&source["width"], &source["height"], &source["frame"]),
+        (&video["width"], &video["height"], &json!(0)),
+        "{sample:?}: {source}"
+    );
+    assert_eq!(
+        source["hash"], timeline["hash"],
+        "{sample:?}: the source monitor {source}, the timeline {timeline}"
+    );
+    if sample == support::Sample::RedPng {
+        // Red, as the still is, not of BT.601 (R' 231).
+        for pixel in source["pixels"].as_array().unwrap() {
+            let red = pixel[0].as_u64().unwrap();
+            assert!(red >= 252 && pixel[1].as_u64().unwrap() <= 2, "{source}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_source_and_timeline_monitors_show_a_picture_alike() {
+    if columbina_compose::gpu_for_tests().is_none() {
+        return;
+    }
+    for sample in [
+        support::Sample::Bt709Full,
+        support::Sample::H264High422,
+        support::Sample::Hevc444,
+        support::Sample::RedPng,
+    ] {
+        both_monitors_show(sample).await;
+    }
 }

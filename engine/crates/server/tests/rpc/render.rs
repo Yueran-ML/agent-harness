@@ -4,9 +4,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use columbina_compose::{
-    Compositor, LayerColor, Scene, SceneLayer, Source, Target, Text, Transform,
+    Compositor, LayerColor, Scene, SceneLayer, Source, Target, Text, Transform, YuvCoding,
 };
-use columbina_media::{AudioDecoder, Codec, Hardware, VideoDecoder};
+use columbina_media::{AudioDecoder, Codec, Converter, Hardware, NativePicture, VideoDecoder};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -461,6 +461,15 @@ async fn cut(client: &mut Client, scale: i64) -> (Value, Value) {
     (names, style)
 }
 
+/// The colour of a layer of a picture, as the engine decodes it: by the matrix and range that the
+/// picture says.
+fn coded(picture: &NativePicture) -> LayerColor {
+    LayerColor {
+        coding: YuvCoding::of_native(picture),
+        ..LayerColor::default()
+    }
+}
+
 fn reference(frame: i64, decoder: &mut VideoDecoder, style: &Value) -> Scene {
     let left = if frame < 35 {
         10 + frame
@@ -469,24 +478,27 @@ fn reference(frame: i64, decoder: &mut VideoDecoder, style: &Value) -> Scene {
     } else {
         frame - 60
     };
-    let layer = |picture, opacity| SceneLayer {
-        source: Source::Picture(Arc::new(picture), 0),
-        transform: Transform::NONE,
-        opacity,
-        color: LayerColor::default(),
+    let mut layer = |frame, opacity| {
+        let picture = Converter::new()
+            .native(&decoder.decoded_at(frame).unwrap())
+            .unwrap();
+        SceneLayer {
+            color: coded(&picture),
+            source: Source::Picture(Arc::new(picture), 0),
+            transform: Transform::NONE,
+            opacity,
+        }
     };
     let mut scene = Scene {
         width: 320,
         height: 180,
-        layers: vec![layer(decoder.frame_at(left).unwrap(), 1.0)],
+        layers: vec![layer(left, 1.0)],
         ..Scene::default()
     };
     if (25..35).contains(&frame) {
         #[allow(clippy::cast_precision_loss)]
         let opacity = (frame - 24) as f32 / 11.0;
-        scene
-            .layers
-            .push(layer(decoder.frame_at(frame + 30).unwrap(), opacity));
+        scene.layers.push(layer(frame + 30, opacity));
     }
     if (40..55).contains(&frame) {
         scene.layers.push(SceneLayer {
@@ -626,7 +638,9 @@ async fn render_h264_matches_preview_original_frames_dissolve_titles_and_stereo_
             format!("{:x}", Sha256::digest(&expected)),
             "preview frame {frame}"
         );
-        let picture = export.frame_at(frame).unwrap();
+        let picture = Converter::new()
+            .native(&export.decoded_at(frame).unwrap())
+            .unwrap();
         if !(25..35).contains(&frame) {
             let source_frame = if frame < 25 {
                 frame + 10
@@ -647,10 +661,10 @@ async fn render_h264_matches_preview_original_frames_dissolve_titles_and_stereo_
                     width: 320,
                     height: 180,
                     layers: vec![SceneLayer {
+                        color: coded(&picture),
                         source: Source::Picture(Arc::new(picture), 0),
                         transform: Transform::NONE,
                         opacity: 1.0,
-                        color: LayerColor::default(),
                     }],
                     ..Scene::default()
                 },

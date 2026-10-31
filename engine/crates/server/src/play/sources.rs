@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use columbina_media::{Converter, Hardware, MediaError, Picture, VideoDecoder};
+use columbina_media::{Converter, Hardware, MediaError, NativePicture, VideoDecoder};
 use columbina_model::{Identity, Media, Rate, Time};
 
 use crate::transport::{Again, Source};
@@ -66,8 +66,9 @@ struct Reader {
     decoder: VideoDecoder,
     converter: Converter,
     // A single idle picture is enough: track queues own the read-ahead pictures. Reuse only
-    // when no queue, compositor or view still holds it.
-    picture: Arc<Picture>,
+    // when no queue, compositor or view still holds it. Pictures keep the sampling of chroma of
+    // their file, and say how their codes are made R'G'B' (their matrix and range).
+    picture: Arc<NativePicture>,
     /// The session of the graphics card that the decoder may use, if it was given one.
     _session: Option<Session>,
 }
@@ -174,7 +175,7 @@ pub struct Sources {
 
 #[derive(Clone)]
 pub struct Read {
-    pub picture: Arc<Picture>,
+    pub picture: Arc<NativePicture>,
     pub exact: bool,
     pub source: Source,
     pub rotation: i16,
@@ -240,12 +241,12 @@ impl Lease {
         }
         let picture = Arc::get_mut(&mut reader.picture).expect("the reader owns this buffer");
         let decoded = reader.decoder.decoded_at(frame)?;
-        match reader.converter.picture_into(&decoded, picture) {
+        match reader.converter.native_into(&decoded, picture) {
             Err(MediaError::Device(why)) => {
                 drop(decoded);
                 reader.decoder.device_failed(&why);
                 let decoded = reader.decoder.decoded_at(frame)?;
-                reader.converter.picture_into(&decoded, picture)?;
+                reader.converter.native_into(&decoded, picture)?;
             }
             result => result?,
         }

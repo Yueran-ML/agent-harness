@@ -22,7 +22,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use columbina_compose::{Gpu, Preference};
-use columbina_view::{Event, Picture, RawParent, Rect, View, ViewError};
+use columbina_view::{Event, NativePicture, Picture, RawParent, Rect, View, ViewError};
 use windows::core::w;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -358,7 +358,7 @@ fn click(x: i32, y: i32) {
 }
 
 /// A picture of one colour, of BT.709 of limited range, and the colour it is drawn as.
-fn solid(width: u32, height: u32, codes: [u8; 3]) -> (Arc<Picture>, [u8; 3]) {
+fn solid(width: u32, height: u32, codes: [u8; 3]) -> (Arc<NativePicture>, [u8; 3]) {
     let [y, cb, cr] = codes;
     let stride = (width as usize).next_multiple_of(64);
     let rows = height as usize;
@@ -388,7 +388,7 @@ fn solid(width: u32, height: u32, codes: [u8; 3]) -> (Arc<Picture>, [u8; 3]) {
         luma + 1.8556 * cb,
     ]
     .map(|value| (value.clamp(0.0, 1.0) * 255.0).round() as u8);
-    (Arc::new(picture), rgb)
+    (Arc::new(columbina_compose::yuv::native_of(picture)), rgb)
 }
 
 /// The engine's card, as the server makes it: a real one, or WARP.

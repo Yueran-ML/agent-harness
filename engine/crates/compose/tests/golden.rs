@@ -14,10 +14,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use columbina_compose::yuv::native_of;
 use columbina_compose::{
     gpu_for_tests, Compositor, LayerColor, Scene, SceneLayer, Source, Target, Transform,
 };
-use columbina_media::Picture;
+use columbina_media::{NativePicture, Picture};
 
 /// The codes of BT.709 of limited range of R'G'B' from 0 to 1.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -42,7 +43,12 @@ fn codes(rgb: [f64; 3], ten: bool) -> [u16; 3] {
 
 /// A picture whose pixel at (x, y) has the codes that `pixel` gives; the chroma of each block of
 /// 2 × 2 is that of its top left pixel.
-fn picture(width: u32, height: u32, ten: bool, pixel: impl Fn(u32, u32) -> [u16; 3]) -> Picture {
+fn picture(
+    width: u32,
+    height: u32,
+    ten: bool,
+    pixel: impl Fn(u32, u32) -> [u16; 3],
+) -> NativePicture {
     let bytes = if ten { 2 } else { 1 };
     let stride = (width as usize * bytes).next_multiple_of(64);
     let rows = height as usize;
@@ -70,7 +76,7 @@ fn picture(width: u32, height: u32, ten: bool, pixel: impl Fn(u32, u32) -> [u16;
             }
         }
     }
-    Picture {
+    native_of(Picture {
         frame: 0,
         width,
         height,
@@ -79,7 +85,7 @@ fn picture(width: u32, height: u32, ten: bool, pixel: impl Fn(u32, u32) -> [u16;
         chroma,
         luma_stride: stride,
         chroma_stride: stride,
-    }
+    })
 }
 
 fn layer(source: Source, transform: Transform, opacity: f32) -> SceneLayer {

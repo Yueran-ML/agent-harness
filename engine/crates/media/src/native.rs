@@ -307,11 +307,31 @@ pub(crate) fn fill(
     } else {
         PictureFormat::P416
     };
-    let exact = layout.planar_yuv
-        && target.chroma_shift() == (across, down)
+    let sampled = layout.planar_yuv && target.chroma_shift() == (across, down);
+    // Where libav has a format laid out as the picture with the bits of the frame (P010, P210,
+    // P212, P410, P412, P216, P416), swscale writes it: it moves each code to the top of its
+    // word, as `repack` does, and keeps the range, which it changes only of the formats of JPEG
+    // (of 8 bits); and it does so some 100 times as fast as `repack` where the engine is built
+    // without optimizing (60 ms for a frame of 1080p in 10 bits, 100 ms of 4:2:2, which the
+    // tests of the transport, built so, cannot wait for).
+    let same_bits = match (target, layout.depth) {
+        (PictureFormat::P010, 10) => Some(Pixel::P010LE),
+        (PictureFormat::P216, 10) => Some(Pixel::P210LE),
+        (PictureFormat::P216, 12) => Some(Pixel::P212LE),
+        (PictureFormat::P216, 16) => Some(Pixel::P216LE),
+        (PictureFormat::P416, 10) => Some(Pixel::P410LE),
+        (PictureFormat::P416, 12) => Some(Pixel::P412LE),
+        (PictureFormat::P416, 16) => Some(Pixel::P416LE),
+        _ => None,
+    }
+    .filter(|_| sampled);
+    // The others whose chroma is sampled as the picture's are moved by `repack`: bytes of 8 bits
+    // (of JPEG too, whose range is kept), and words of other bits of 4:2:2 and 4:4:4.
+    let exact = sampled
+        && same_bits.is_none()
         && match target {
             PictureFormat::Nv12 => layout.depth == 8,
-            PictureFormat::P010 => layout.depth == 10,
+            PictureFormat::P010 => false,
             PictureFormat::P216 | PictureFormat::P416 => true,
         };
     let bits = match target {
@@ -323,34 +343,35 @@ pub(crate) fn fill(
     if exact {
         repack(source, layout.depth, target, &mut planes);
     } else {
-        let scaler = scaler_for(scaler, format, width, height, target, layout.rgb)?;
+        let output = same_bits.unwrap_or_else(|| target.pixel());
+        let scaler = scaler_for(scaler, format, width, height, output, layout.rgb)?;
         ffi::scale_into(scaler, source, &mut planes).map_err(MediaError::Decode)?;
     }
     into.describe(codes, format, layout.rgb);
     Ok(())
 }
 
-/// The scaler that was kept, if it was made for frames of this format and size into `target`,
+/// The scaler that was kept, if it was made for frames of this format and size into `output`,
 /// else a new one in its place.
 fn scaler_for(
     slot: &mut Option<Scaler>,
     format: Pixel,
     width: u32,
     height: u32,
-    target: PictureFormat,
+    output: Pixel,
     rgb: bool,
 ) -> Result<&mut Scaler, MediaError> {
     let fits = slot.as_ref().is_some_and(|scaler| {
-        let (input, output) = (scaler.0.input(), scaler.0.output());
+        let input = scaler.0.input();
         (input.format, input.width, input.height) == (format, width, height)
-            && output.format == target.pixel()
+            && scaler.0.output().format == output
     });
     if !fits {
         let made = ff::software::scaling::Context::get(
             format,
             width,
             height,
-            target.pixel(),
+            output,
             width,
             height,
             ff::software::scaling::Flags::BILINEAR,

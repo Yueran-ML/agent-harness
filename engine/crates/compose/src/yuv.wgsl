@@ -1,6 +1,7 @@
-// A picture of Y'CbCr 4:2:0 in two planes, drawn as R'G'B': by the matrix and range of the
-// picture (BT.601, BT.709 or BT.2020, limited or full, from the uniform), the gamma of the file
-// kept (the target is not sRGB, so nothing is encoded twice).
+// A picture of Y'CbCr in two planes, 4:2:0, 4:2:2 or 4:4:4, drawn as R'G'B': by the matrix and
+// range of the picture (BT.601, BT.709 or BT.2020, limited or full, in codes of its own bits,
+// from the uniform), the gamma of the file kept (the target is not sRGB, so nothing is encoded
+// twice).
 //
 // Two ways of drawing share it:
 // - the view's (`vs`, `fs`): the picture fills the viewport, the rectangle of the target where it
@@ -12,8 +13,10 @@
 // The planes are read texel by texel and blended here, two by two, rather than sampled: so that
 // planes of 16-bit integers, where a card has no 16-bit normalized formats, are read the same
 // way, and so that chroma is sited "left" (chroma location type 0, the default of MPEG-2 and
-// H.264/HEVC, whatever the colour primaries): on the first luma sample of its pair of columns,
-// and halfway between its two rows. Files that say another siting are drawn so too (phase 1).
+// H.264/HEVC, whatever the colour primaries): of 4:2:0, on the first luma sample of its pair of
+// columns, and halfway between its two rows; of 4:2:2, on the first of its pair of columns, in
+// its own row (co-sited, as BT.601 and BT.709 lay 4:2:2); of 4:4:4, on its own sample. Files that
+// say another siting are drawn so too (phase 1).
 // The line below is changed to `alias Texel = u32;` for planes of integers.
 alias Texel = f32;
 
@@ -22,11 +25,14 @@ struct Params {
     dest: vec4<f32>,
     // The width and height of the luma plane, then of the chroma plane, in texels.
     planes: vec4<f32>,
-    // What a texel is multiplied by to be a code (255 for 8 bits, 1023.98 for P010 of 16-bit
-    // unorm, 1/64 for P010 of integers); the code of black and the range of codes to white of
-    // luma; the quarter turns clockwise that the picture is turned to be shown.
+    // What a texel is multiplied by to be a code (255 for 8 bits, 1023.98 for 10 bits in words
+    // of 16-bit unorm, 1/64 for them as integers, 65535/16 and 1/16 for 12 bits); the code of
+    // black and the range of codes to white of luma; the quarter turns clockwise that the
+    // picture is turned to be shown.
     luma: vec4<f32>,
-    // The code of no colour and the range of codes of chroma.
+    // The code of no colour and the range of codes of chroma; then the samples of chroma to a
+    // sample of luma across and down: 0.5 where chroma is halved (across of 4:2:0 and 4:2:2,
+    // down of 4:2:0), else 1.
     chroma: vec4<f32>,
     // What Cr and Cb, from -0.5 to 0.5, are multiplied by: R' from Cr, G' from Cb and from Cr
     // (taken away), B' from Cb (`YuvMatrix::coefficients`).
@@ -107,10 +113,13 @@ fn ycc_at(shown: vec2<f32>) -> vec3<f32> {
             stored = shown;
         }
     }
-    // In luma texels, from the centre of the first. A chroma texel lies on the luma texel of
-    // twice its column, and between the luma rows of twice its row and the one after.
+    // In luma texels, from the centre of the first. A chroma texel of 4:2:0 lies on the luma
+    // texel of twice its column, and between the luma rows of twice its row and the one after:
+    // at (2x, 2y + 0.5), so the place in chroma texels is (x · 0.5, (y − 0.5) · 0.5). Of 4:2:2,
+    // on (2x, y): (x · 0.5, y). Of 4:4:4, on (x, y).
     let place = stored * params.planes.xy - vec2<f32>(0.5, 0.5);
-    let chroma_place = vec2<f32>(place.x * 0.5, (place.y - 0.5) * 0.5);
+    let step = params.chroma.zw;
+    let chroma_place = vec2<f32>(place.x * step.x, (place.y - (1.0 - step.y)) * step.y);
 
     let scale = params.luma.x;
     let y = (luma(place) * scale - params.luma.y) / params.luma.z;

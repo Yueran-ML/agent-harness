@@ -51,8 +51,11 @@
 //!
 //! # Colour
 //!
-//! A picture is NV12 or P010 ([`Picture`]), taken as BT.709 of limited range (phase 0: colour
-//! is managed in phase 2), turned into R'G'B' as it is drawn, and written as it is, its gamma
+//! A picture is a [`NativePicture`], in the sampling of chroma of its file (4:2:0 as NV12 or
+//! P010, 4:2:2 and 4:4:4 in 16 bits, every sample of chroma kept), turned into R'G'B' as it is
+//! drawn by the matrix and range that it says ([`columbina_compose::YuvCoding::of_native`]): as
+//! the compositor decodes it as a layer of a timeline and of an export, so that a clip looks the
+//! same in the source monitor and in the timeline monitor. It is written as it is, its gamma
 //! kept, to a surface that is not sRGB (`Bgra8Unorm`), so that it is not encoded twice. Pixels
 //! are taken as square. A picture is fitted into the window, turned as its media says, its shape
 //! kept, and centred, with black bars ([`letterbox`]).
@@ -95,7 +98,7 @@ use native_none as native;
 
 pub use columbina_compose::Gpu;
 use columbina_compose::Watch;
-pub use columbina_media::Picture;
+pub use columbina_media::{NativePicture, Picture};
 pub use render::{letterbox, quarter_turns, Placement};
 
 /// How long a frame may take before the window is hidden.
@@ -249,7 +252,7 @@ enum Pending {
 }
 
 enum Frame {
-    Picture(Arc<Picture>, i16),
+    Picture(Arc<NativePicture>, i16),
     /// The device identity prevents recovery from binding an old texture to a new device.
     Texture {
         texture: Arc<wgpu::Texture>,
@@ -541,7 +544,7 @@ impl View {
     /// picture that comes before the last one was drawn takes its place. The view keeps the
     /// picture it drew last, to draw it again as the window changes, until the next one or
     /// [`View::clear`].
-    pub fn present(&self, picture: Arc<Picture>, rotation: i16) {
+    pub fn present(&self, picture: Arc<NativePicture>, rotation: i16) {
         let mut odd = None;
         self.shared.change(|state| {
             if rotation.rem_euclid(90) == 0 {

@@ -9,7 +9,7 @@ use columbina_compose::grade::{evaluate, stage_of, stage_of_grades, GradeOptions
 use columbina_compose::{
     gpu_for_tests, Compositor, Gpu, LayerColor, Scene, SceneLayer, Source, Target, Transform,
 };
-use columbina_media::Picture;
+use columbina_media::{NativePicture, Picture};
 use columbina_model::grade::{
     Composite, Corrector, Grade, Interp, Key, LayerMixer, Link, Node, NodeKind, ParallelMixer,
     Param, Port, OUTPUT, SOURCE,
@@ -242,7 +242,7 @@ fn graded_layers_and_canvas_are_what_the_processor_makes_of_them() {
 }
 
 /// A picture of one colour, 8-bit 4:2:0 of BT.709 limited range.
-fn picture(width: u32, height: u32, codes: [u8; 3]) -> Picture {
+fn picture(width: u32, height: u32, codes: [u8; 3]) -> NativePicture {
     let stride = (width as usize).next_multiple_of(64);
     let rows = height as usize;
     let luma = vec![codes[0]; stride * rows];
@@ -250,7 +250,7 @@ fn picture(width: u32, height: u32, codes: [u8; 3]) -> Picture {
     for pair in chroma.as_chunks_mut::<2>().0 {
         pair.copy_from_slice(&[codes[1], codes[2]]);
     }
-    Picture {
+    columbina_compose::yuv::native_of(Picture {
         frame: 0,
         width,
         height,
@@ -259,7 +259,7 @@ fn picture(width: u32, height: u32, codes: [u8; 3]) -> Picture {
         chroma,
         luma_stride: stride,
         chroma_stride: stride,
-    }
+    })
 }
 
 /// A grade of six nodes: three serial correctors, two of them in parallel, a layer mixer.

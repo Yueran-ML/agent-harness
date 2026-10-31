@@ -2,6 +2,8 @@
 //! same compositor and mixer as playback. Subtitles are sidecars, never burned in.
 
 mod output;
+#[cfg(test)]
+mod pictures;
 
 use std::collections::VecDeque;
 use std::ops::Range;
@@ -12,14 +14,13 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use columbina_compose::{
-    ColorRange, Compositor, LayerColor, Scene, SceneLayer, Source, Target, Text, YuvCoding,
-    YuvMatrix,
+    Compositor, LayerColor, Scene, SceneLayer, Source, Target, Text, Transform, YuvCoding,
 };
 use columbina_media::{
-    AudioFormat, AudioSettings, Codec, Hardware, MediaError, Picture, Quality, VideoSettings,
-    Writer,
+    AudioFormat, AudioSettings, Codec, Hardware, MediaError, NativePicture, Picture, Quality,
+    VideoSettings, Writer,
 };
-use columbina_model::{resolve, Media, Project, TrackKind};
+use columbina_model::{resolve, Project, TrackKind};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -659,10 +660,8 @@ fn scene(
                     .picture(media, &layer.clip, tick, false, false)
                     .map_err(|error| error.to_string())?
                     .ok_or("the export decoder pool is busy")?;
-                (
-                    Source::Picture(read.picture, read.rotation),
-                    layer_color(media),
-                )
+                let color = layer_color(&read.picture);
+                (Source::Picture(read.picture, read.rotation), color)
             }
         };
         scene.layers.push(SceneLayer {
@@ -675,33 +674,30 @@ fn scene(
     Ok(scene)
 }
 
-/// The colour of a layer of a clip of `media`, for the preview and the export alike: how its
-/// pictures are made R'G'B', and its input transform and grade (none yet).
+/// The colour of a layer of a picture, for the preview and the export alike: how its codes are
+/// made R'G'B', and its input transform and grade (none yet).
 ///
-/// The matrix is the one that the file says, or that players take where it says none
-/// (`YuvMatrix::of`): the pictures that the readers give ([`columbina_media::Picture`]) keep
-/// the matrix of the file, but for one stored as R'G'B' (a still), which libav makes Y'CbCr by
-/// BT.601. Their range is taken as limited, whatever the file says.
-// TODO(T8 → readers of `NativePicture`): libav makes the codes of a picture of full range
-// limited as it converts it on the processor, and keeps them full on the card (CUDA), so the
-// range of a `Picture` is not known from the file. Read `NativePicture`s, which keep the codes
-// of the file on both paths, and take the coding of each (`YuvCoding::of_native`) instead.
-pub(crate) fn layer_color(media: &Media) -> LayerColor {
-    let Some(video) = &media.facts.video else {
-        return LayerColor::default();
-    };
-    let color = video.color.clone().unwrap_or_default();
-    let matrix = if color.matrix == 0 {
-        YuvMatrix::Bt601
-    } else {
-        YuvMatrix::of(&color, video.width, video.height)
-    };
+/// The matrix and the range are those that the picture says ([`YuvCoding::of_native`]): the
+/// readers give pictures that keep the codes of their file, decoded on the card or on the
+/// processor alike, whose matrix is the one that the frame says, or that players take where it
+/// says none (BT.601 for SD, BT.709 else), and whose range is full where the frame says so; a
+/// picture stored as R'G'B' (a still) is made Y'CbCr of BT.709 of limited range as it is read,
+/// and says so. A picture of 4:2:2 or 4:4:4 keeps its chroma.
+pub(crate) fn layer_color(picture: &NativePicture) -> LayerColor {
     LayerColor {
-        coding: YuvCoding {
-            matrix,
-            range: ColorRange::Limited,
-        },
+        coding: YuvCoding::of_native(picture),
         ..LayerColor::default()
+    }
+}
+
+/// A layer that shows a picture by itself, as the source monitor shows it: fitted to the canvas,
+/// unmoved, opaque, decoded as [`layer_color`] says, as a picture of a clip of a timeline is.
+pub(crate) fn picture_layer(picture: Arc<NativePicture>, rotation: i16) -> SceneLayer {
+    SceneLayer {
+        color: layer_color(&picture),
+        source: Source::Picture(picture, rotation),
+        transform: Transform::NONE,
+        opacity: 1.0,
     }
 }
 

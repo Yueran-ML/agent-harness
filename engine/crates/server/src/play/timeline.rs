@@ -864,8 +864,6 @@ impl Worker {
                     LayerColor::default(),
                 ),
                 resolve::Content::Media { media, tick } => {
-                    let color = media_of(&project, &media)
-                        .map_or_else(LayerColor::default, crate::render::layer_color);
                     let want = Want {
                         clip: layer.clip.clone(),
                         media,
@@ -909,6 +907,7 @@ impl Worker {
                     original |= read.source == Source::Original;
                     proxy |= read.source == Source::Proxy;
                     previous.insert((layer.track, layer.clip), read.clone());
+                    let color = crate::render::layer_color(&read.picture);
                     (LayerSource::Picture(read.picture, read.rotation), color)
                 }
             };

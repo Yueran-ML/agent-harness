@@ -5,11 +5,12 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use columbina_compose::geometry::picture_stride;
+use columbina_compose::yuv::native_of;
 use columbina_compose::{
     gpu_for_tests, ComposeError, Compositor, Gpu, LayerColor, Preference, Scene, SceneLayer,
     Source, Target, Text, Transform, WORKING_FORMAT,
 };
-use columbina_media::Picture;
+use columbina_media::{NativePicture, Picture};
 use columbina_model::project::{Rgba, TextAlign, TitleStyle};
 
 /// The codes of BT.709 of limited range of R'G'B' from 0 to 1.
@@ -53,7 +54,12 @@ fn rgb(codes: [u16; 3], ten: bool) -> [f64; 3] {
 
 /// A picture whose pixel at (x, y) has the codes that `pixel` gives; the chroma of each block of
 /// 2 × 2 is that of its top left pixel. Rows are longer than they need to be, as a decoder's are.
-fn picture(width: u32, height: u32, ten: bool, pixel: impl Fn(u32, u32) -> [u16; 3]) -> Picture {
+fn picture(
+    width: u32,
+    height: u32,
+    ten: bool,
+    pixel: impl Fn(u32, u32) -> [u16; 3],
+) -> NativePicture {
     let bytes = if ten { 2 } else { 1 };
     let stride = (width as usize * bytes).next_multiple_of(64) + 64;
     let rows = height as usize;
@@ -81,7 +87,7 @@ fn picture(width: u32, height: u32, ten: bool, pixel: impl Fn(u32, u32) -> [u16;
             }
         }
     }
-    Picture {
+    native_of(Picture {
         frame: 0,
         width,
         height,
@@ -90,7 +96,7 @@ fn picture(width: u32, height: u32, ten: bool, pixel: impl Fn(u32, u32) -> [u16;
         chroma,
         luma_stride: stride,
         chroma_stride: stride,
-    }
+    })
 }
 
 /// The pixels of a frame read back, R'G'B'A.
@@ -194,7 +200,7 @@ fn colours_are_laid_over_each_other_as_the_alpha_formula_says() {
 }
 
 /// A grey picture of 64 × 36 with a block of another colour over x 16 to 32 and y 8 to 16.
-fn block_picture(ten: bool) -> (Picture, [f64; 3], [f64; 3]) {
+fn block_picture(ten: bool) -> (NativePicture, [f64; 3], [f64; 3]) {
     let grey = codes([0.5, 0.5, 0.5], ten);
     let block = codes([0.8, 0.2, 0.1], ten);
     let picture = picture(64, 36, ten, |x, y| {
@@ -797,7 +803,7 @@ fn the_software_adapter_composes_and_converts_alike() {
 }
 
 /// Stripes a pixel wide, black and white, over a picture of 4K.
-fn stripes() -> Arc<Picture> {
+fn stripes() -> Arc<NativePicture> {
     let (white, black) = (codes([1.0; 3], false), codes([0.0; 3], false));
     Arc::new(picture(3840, 2160, false, |x, _| {
         if x % 2 == 0 {

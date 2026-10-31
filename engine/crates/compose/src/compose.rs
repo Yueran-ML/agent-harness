@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::sync::{mpsc, Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use columbina_media::Picture;
+use columbina_media::{NativePicture, Picture, PictureFormat};
 use columbina_model::project::{Rgba, TextAlign};
 
 use crate::color::{self, Inputs, LayerColor, Program, Stage, TextureKind};
@@ -110,8 +110,11 @@ impl Default for Scene {
 /// What a layer shows.
 #[derive(Clone, Debug)]
 pub enum Source {
-    /// A picture, turned clockwise so many degrees (as its media says) to be shown.
-    Picture(Arc<Picture>, i16),
+    /// A picture, in the sampling of chroma of its file (4:2:0, 4:2:2 or 4:4:4), turned clockwise
+    /// so many degrees (as its media says) to be shown. Its codes are made R'G'B' as the
+    /// layer's [`LayerColor::coding`] says, which is to be the picture's own
+    /// ([`crate::YuvCoding::of_native`]).
+    Picture(Arc<NativePicture>, i16),
     /// A title: its text, placed on the canvas as its style says.
     Title(Text),
     /// A colour over the canvas: R', G', B' and how opaque it is, from 0 to 1, not
@@ -619,12 +622,12 @@ struct Call {
     colour: Option<wgpu::BindGroup>,
 }
 
-/// The shape of the planes of a picture.
+/// The shape of the planes of a picture: their sizes and formats follow from it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct Shape {
     width: u32,
     height: u32,
-    ten: bool,
+    format: PictureFormat,
     texel: Texel,
 }
 
@@ -1340,7 +1343,7 @@ impl Compositor {
             );
             match &layer.source {
                 Source::Picture(picture, rotation) => {
-                    let ten = yuv::check(picture).map_err(failed)?;
+                    let layout = yuv::check(picture).map_err(failed)?;
                     let most = self.gpu.device().limits().max_texture_dimension_2d;
                     if picture.width > most || picture.height > most {
                         return Err(failed(format!(
@@ -1357,8 +1360,8 @@ impl Compositor {
                     let shape = Shape {
                         width: picture.width,
                         height: picture.height,
-                        ten,
-                        texel: Texel::for_picture(ten, self.gpu.has_sixteen_norm()),
+                        format: picture.format,
+                        texel: Texel::for_picture(layout.wide(), self.gpu.has_sixteen_norm()),
                     };
                     let planes = self.take_planes(shape);
                     let uploaded =
@@ -1368,8 +1371,7 @@ impl Compositor {
                     uploaded.map_err(failed)?;
                     let mut values = yuv::picture_params(
                         [0.0; 4],
-                        (picture.width, picture.height),
-                        ten,
+                        layout,
                         shape.texel,
                         layer.color.coding,
                         *rotation,
@@ -1447,7 +1449,7 @@ impl Compositor {
                 self.gpu.device(),
                 shape.width,
                 shape.height,
-                shape.ten,
+                shape.format,
                 shape.texel,
             );
             Planes {

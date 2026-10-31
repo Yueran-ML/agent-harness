@@ -5,9 +5,9 @@
 //! Nothing here knows of windows: [`Painter`] draws into any texture of the format it was made
 //! for, a window's or one that the tests read back.
 
-use columbina_compose::yuv::{self, Texel};
+use columbina_compose::yuv::{self, Layout, Texel};
 use columbina_compose::YuvCoding;
-use columbina_media::Picture;
+use columbina_media::NativePicture;
 
 pub use columbina_compose::quarter_turns;
 
@@ -60,11 +60,11 @@ struct Pipeline {
     pipeline: wgpu::RenderPipeline,
 }
 
-/// The textures of the planes of the last picture, kept for the next one of the same shape.
+/// The textures of the planes of the last picture, kept for the next one of the same shape, and
+/// how that picture is read: its layout and its coding.
 struct Planes {
-    width: u32,
-    height: u32,
-    ten: bool,
+    layout: Layout,
+    coding: YuvCoding,
     texel: Texel,
     luma: wgpu::Texture,
     chroma: wgpu::Texture,
@@ -83,11 +83,11 @@ pub(crate) struct Painter {
     device: wgpu::Device,
     queue: wgpu::Queue,
     format: wgpu::TextureFormat,
-    /// Whether the device has `R16Unorm` and `Rg16Unorm`, for pictures of P010.
+    /// Whether the device has `R16Unorm` and `Rg16Unorm`, for pictures of words of 16 bits.
     sixteen_norm: bool,
     uniform: wgpu::Buffer,
     float: Pipeline,
-    /// Made when a picture of P010 is first drawn without 16-bit normalized formats.
+    /// Made when a picture of words of 16 bits is first drawn without 16-bit normalized formats.
     uint: Option<Pipeline>,
     planes: Option<Planes>,
     rgb_pipeline: Option<Pipeline>,
@@ -127,13 +127,13 @@ impl Painter {
     }
 
     /// Upload the planes of a picture, into the textures of the last one where it is of the
-    /// same shape.
+    /// same shape (sizes and format), to be drawn by the matrix and range that it says.
     ///
     /// # Errors
     /// The picture is not one that can be drawn: no pixels, planes shorter than it says, or
     /// larger than the card takes. Nothing is uploaded, and the last picture is kept.
-    pub(crate) fn upload(&mut self, picture: &Picture) -> Result<(), String> {
-        let ten = yuv::check(picture)?;
+    pub(crate) fn upload(&mut self, picture: &NativePicture) -> Result<(), String> {
+        let layout = yuv::check(picture)?;
         let most = self.device.limits().max_texture_dimension_2d;
         if picture.width > most || picture.height > most {
             return Err(format!(
@@ -141,15 +141,18 @@ impl Painter {
                 picture.width, picture.height
             ));
         }
-        let texel = Texel::for_picture(ten, self.sixteen_norm);
+        let texel = Texel::for_picture(layout.wide(), self.sixteen_norm);
         let reuse = self.planes.as_ref().is_some_and(|planes| {
-            (planes.width, planes.height, planes.ten, planes.texel)
-                == (picture.width, picture.height, ten, texel)
+            let kept = planes.layout;
+            (kept.width, kept.height, kept.format, planes.texel)
+                == (layout.width, layout.height, layout.format, texel)
         });
         if !reuse {
-            self.planes = Some(self.planes_for(picture.width, picture.height, ten, texel));
+            self.planes = Some(self.planes_for(layout, texel));
         }
-        let planes = self.planes.as_ref().expect("made above");
+        let planes = self.planes.as_mut().expect("made above");
+        planes.layout = layout;
+        planes.coding = YuvCoding::of_native(picture);
         yuv::upload(&self.queue, &planes.luma, &planes.chroma, picture)?;
         self.rgb_frame = None;
         Ok(())
@@ -208,8 +211,14 @@ impl Painter {
     }
 
     /// Textures, and what binds them, for planes of a shape.
-    fn planes_for(&mut self, width: u32, height: u32, ten: bool, texel: Texel) -> Planes {
-        let (luma, chroma) = yuv::plane_textures(&self.device, width, height, ten, texel);
+    fn planes_for(&mut self, layout: Layout, texel: Texel) -> Planes {
+        let (luma, chroma) = yuv::plane_textures(
+            &self.device,
+            layout.width,
+            layout.height,
+            layout.format,
+            texel,
+        );
         let pipeline = match texel {
             Texel::Float => &self.float,
             Texel::Uint => self
@@ -239,9 +248,8 @@ impl Painter {
             ],
         });
         Planes {
-            width,
-            height,
-            ten,
+            layout,
+            coding: YuvCoding::default(),
             texel,
             luma,
             chroma,
@@ -283,7 +291,8 @@ impl Painter {
             })
         } else {
             self.planes.as_ref().and_then(|planes| {
-                letterbox(size, (planes.width, planes.height), rotation).map(|placement| {
+                let shape = (planes.layout.width, planes.layout.height);
+                letterbox(size, shape, rotation).map(|placement| {
                     self.queue
                         .write_buffer(&self.uniform, 0, &params(planes, placement, rotation));
                     let pipeline = match planes.texel {
@@ -345,16 +354,9 @@ fn params(planes: &Planes, placement: Placement, rotation: i16) -> Vec<u8> {
         placement.width as f32,
         placement.height as f32,
     ];
-    // A picture shown by itself (the source monitor) is taken as BT.709 of limited range, as
-    // in phase 1; the timeline monitor's pictures are decoded by the compositor, each by its own.
-    let values = yuv::picture_params(
-        dest,
-        (planes.width, planes.height),
-        planes.ten,
-        planes.texel,
-        YuvCoding::default(),
-        rotation,
-    );
+    // A picture shown by itself (the source monitor) is decoded by the matrix and range that it
+    // says, as the compositor decodes it as a layer (the timeline monitor, an export).
+    let values = yuv::picture_params(dest, planes.layout, planes.texel, planes.coding, rotation);
     let mut bytes: Vec<u8> = values
         .iter()
         .flat_map(|value| value.to_le_bytes())
@@ -494,6 +496,8 @@ fn rgb_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> Pipeline 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use columbina_media::PictureFormat;
+    use std::sync::Arc;
 
     #[test]
     fn a_picture_fills_a_target_of_its_shape() {
@@ -807,7 +811,7 @@ mod tests {
         height: u32,
         ten: bool,
         pixel: impl Fn(u32, u32) -> [u16; 3],
-    ) -> Picture {
+    ) -> NativePicture {
         let bytes = if ten { 2 } else { 1 };
         let stride = (width as usize * bytes).next_multiple_of(64) + 64;
         let rows = height as usize;
@@ -836,7 +840,7 @@ mod tests {
                 }
             }
         }
-        Picture {
+        yuv::native_of(columbina_media::Picture {
             frame: 0,
             width,
             height,
@@ -845,7 +849,7 @@ mod tests {
             chroma,
             luma_stride: stride,
             chroma_stride: stride,
-        }
+        })
     }
 
     /// R'G'B' from 0 to 1 of codes of BT.709 of limited range, as the shader should make it.
@@ -1091,6 +1095,187 @@ mod tests {
                 "{width}×{height}: {pixels:?}"
             );
         }
+    }
+
+    /// A picture of `format` of `bits` bits, said to be of `coding`, whose pixel at (x, y) has
+    /// the codes that `pixel` gives, its chroma that of the first pixel of the pixels that a
+    /// sample of chroma is for.
+    fn native(
+        (width, height): (u32, u32),
+        format: PictureFormat,
+        bits: u8,
+        coding: YuvCoding,
+        pixel: impl Fn(u32, u32) -> [u16; 3],
+    ) -> NativePicture {
+        let bytes = format.bytes();
+        let (across, down) = format.chroma_shift();
+        let (chroma_width, chroma_height) =
+            (width.div_ceil(1 << across), height.div_ceil(1 << down));
+        let luma_stride = (width as usize * bytes).next_multiple_of(64) + 64;
+        let chroma_stride = (chroma_width as usize * 2 * bytes).next_multiple_of(64);
+        let mut luma = vec![0; luma_stride * height as usize];
+        let mut chroma = vec![0; chroma_stride * chroma_height as usize];
+        let put = |plane: &mut Vec<u8>, at: usize, code: u16| {
+            if bytes == 2 {
+                let word = u16::try_from(u32::from(code) << (16 - bits)).unwrap();
+                plane[at..at + 2].copy_from_slice(&word.to_le_bytes());
+            } else {
+                plane[at] = u8::try_from(code).unwrap();
+            }
+        };
+        for y in 0..height {
+            for x in 0..width {
+                put(
+                    &mut luma,
+                    y as usize * luma_stride + x as usize * bytes,
+                    pixel(x, y)[0],
+                );
+            }
+        }
+        for y in 0..chroma_height {
+            for x in 0..chroma_width {
+                let [_, cb, cr] = pixel(x << across, y << down);
+                let at = y as usize * chroma_stride + x as usize * 2 * bytes;
+                put(&mut chroma, at, cb);
+                put(&mut chroma, at + bytes, cr);
+            }
+        }
+        NativePicture {
+            frame: 0,
+            width,
+            height,
+            format,
+            bits,
+            matrix: coding.matrix,
+            range: coding.range,
+            chroma_location: 1,
+            luma,
+            chroma,
+            luma_stride,
+            chroma_stride,
+        }
+    }
+
+    /// The pixels of the picture composed by itself into a preview of its size, as R'G'B'.
+    fn composed(gpu: &Arc<columbina_compose::Gpu>, picture: &NativePicture) -> Vec<[u8; 3]> {
+        use columbina_compose::{Compositor, LayerColor, Scene, SceneLayer, Source, Target};
+        let mut compositor = Compositor::new(Arc::clone(gpu));
+        let target = Target::preview(gpu, picture.width, picture.height).unwrap();
+        let scene = Scene {
+            width: picture.width,
+            height: picture.height,
+            layers: vec![SceneLayer {
+                source: Source::Picture(Arc::new(picture.clone()), 0),
+                transform: columbina_compose::Transform::NONE,
+                opacity: 1.0,
+                color: LayerColor {
+                    coding: YuvCoding::of_native(picture),
+                    ..LayerColor::default()
+                },
+            }],
+            ..Scene::default()
+        };
+        compositor.render(&scene, &target).unwrap();
+        target
+            .read_rgba()
+            .unwrap()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|pixel| [pixel[0], pixel[1], pixel[2]])
+            .collect()
+    }
+
+    #[test]
+    fn a_picture_is_drawn_by_its_own_sampling_matrix_and_range_as_the_compositor_draws_it() {
+        use columbina_compose::{ColorRange, YuvMatrix};
+        let Some(shared) = columbina_compose::gpu_for_tests() else {
+            return;
+        };
+        let gpu = Gpu {
+            device: shared.device().clone(),
+            queue: shared.queue().clone(),
+        };
+        let mut painter = Painter::new(&gpu.device, &gpu.queue, wgpu::TextureFormat::Bgra8Unorm);
+        let size = (32, 16);
+        let coding = |matrix, range| YuvCoding { matrix, range };
+        let mut pictures = Vec::new();
+        for (format, bits, coded) in [
+            (
+                PictureFormat::Nv12,
+                8,
+                coding(YuvMatrix::Bt601, ColorRange::Full),
+            ),
+            (
+                PictureFormat::P010,
+                10,
+                coding(YuvMatrix::Bt709, ColorRange::Limited),
+            ),
+            (
+                PictureFormat::P216,
+                10,
+                coding(YuvMatrix::Bt601, ColorRange::Limited),
+            ),
+            (
+                PictureFormat::P416,
+                12,
+                coding(YuvMatrix::Bt2020, ColorRange::Full),
+            ),
+            (
+                PictureFormat::P416,
+                8,
+                coding(YuvMatrix::Bt709, ColorRange::Limited),
+            ),
+        ] {
+            let [black, luma_range, middle, chroma_range] = yuv::levels(coded, bits);
+            // Luma that rises across, and chroma that changes at every pixel across and every
+            // row down, so that where each sample of chroma lies shows.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let pixel = move |x: u32, y: u32| {
+                let luma = black + luma_range * f64::from(x) / 31.0;
+                let cb = middle + chroma_range * 0.4 * (f64::from(y % 5) / 4.0 - 0.5);
+                let cr = middle + chroma_range * 0.4 * (f64::from((x * 7) % 11) / 10.0 - 0.5);
+                [luma, cb, cr].map(|code| code.round() as u16)
+            };
+            pictures.push(native(size, format, bits, coded, pixel));
+        }
+        for picture in &pictures {
+            let wanted = composed(&shared, picture);
+            for sixteen_norm in [true, false] {
+                painter.sixteen_norm = sixteen_norm && shared.has_sixteen_norm();
+                painter.upload(picture).unwrap();
+                let drawn = draw(&painter, &gpu, size, 0);
+                for (index, (drawn, wanted)) in drawn.iter().zip(&wanted).enumerate() {
+                    for channel in 0..3 {
+                        assert!(
+                            drawn[channel].abs_diff(wanted[channel]) <= 1,
+                            "{:?} of {} bits, {:?} {:?}, pixel {index}: drawn {drawn:?}, not \
+                             {wanted:?}",
+                            picture.format,
+                            picture.bits,
+                            picture.matrix,
+                            picture.range,
+                        );
+                    }
+                }
+            }
+        }
+        // Of full range and BT.601: white and black are 255 and 0, and R' 1, G' 0, B' 0 is red.
+        let full = coding(YuvMatrix::Bt601, ColorRange::Full);
+        let red = native((8, 4), PictureFormat::Nv12, 8, full, |x, _| match x / 2 {
+            0 => [255, 128, 128],
+            1 => [0, 128, 128],
+            _ => [76, 85, 255],
+        });
+        painter.upload(&red).unwrap();
+        let drawn = draw(&painter, &gpu, (8, 4), 0);
+        // The even columns of the second row, where the samples of chroma lie.
+        assert_eq!(drawn[8], [255, 255, 255]);
+        assert_eq!(drawn[10], [0, 0, 0]);
+        assert!(
+            drawn[14][0] >= 253 && drawn[14][1] <= 2 && drawn[14][2] <= 2,
+            "{drawn:?}"
+        );
     }
 
     #[test]

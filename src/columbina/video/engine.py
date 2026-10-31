@@ -36,6 +36,7 @@ newest 20 are kept.
 """
 
 import asyncio
+import base64
 import contextlib
 import itertools
 import json
@@ -65,6 +66,7 @@ __all__ = [
     "UNEXPECTED",
     "UNREACHABLE",
     "UNSTARTED",
+    "AlbumKind",
     "Applied",
     "Changed",
     "Changes",
@@ -72,6 +74,7 @@ __all__ = [
     "Chroma",
     "Engine",
     "EngineError",
+    "KeyAlign",
     "Lut",
     "LutKind",
     "LutLibrary",
@@ -81,6 +84,10 @@ __all__ = [
     "RenderState",
     "Rendering",
     "Statistics",
+    "StillFormat",
+    "StillKeyframes",
+    "StillLevel",
+    "StillMode",
     "not_found",
     "program_of",
     "unsupported",
@@ -285,6 +292,26 @@ class Progress:
 
 View = Literal["timeline", "source"]
 """A monitor of the engine: the timeline monitor or the source monitor."""
+
+StillLevel = Literal["clip", "pre_clip", "post_clip"]
+"""Which grade of its clip a still keeps: the Node Editor's mode (``PROTOCOL.md``, The Gallery)."""
+
+StillFormat = Literal["auto", "png", "exr"]
+"""How a still's picture is written: ``auto`` is a PNG of 16 bits where every value is within
+0..1, else an OpenEXR of half floats."""
+
+StillMode = Literal["apply", "append"]
+"""Apply Grade (in place of a grade) or Append Node Graph (after its nodes)."""
+
+StillKeyframes = Literal["none", "source_timecode", "start_frame"]
+"""Apply Grades Using: without keys (the setting at the frame grabbed), or with them aligned by
+source timecode or by start frames."""
+
+KeyAlign = Literal["source_timecode", "start_frame"]
+"""How keys copied to another clip are put on its frames."""
+
+AlbumKind = Literal["stills", "powergrade"]
+"""An album of the project's stills, or of the PowerGrades that every project shares."""
 
 _CHANNELS = ("red", "green", "blue", "luma")
 
@@ -1135,6 +1162,208 @@ class Engine:
         said = await self._call("luts.list", {} if folder is None else {"folder": folder})
         return _library(said)
 
+    async def grab_still(
+        self,
+        *,
+        album: str | None = None,
+        clip: str | None = None,
+        level: StillLevel = "clip",
+        format: StillFormat = "auto",
+    ) -> dict[str, Any]:
+        """Grab a still of the frame that the timeline monitor shows, with its grades.
+
+        It goes into ``album`` (the project's first where none is named), of ``clip`` (the one on
+        top at the playhead where none is named), keeping its grade at ``level``. The answer is
+        the still as ``gallery.list`` gives it: ``id``, ``name`` (Track.Shot.Version), ``label``,
+        ``image`` and ``source`` (``PROTOCOL.md``, The Gallery).
+
+        Raises:
+            EngineError: The engine is headless (``-32601``), no timeline is loaded (``-32004``),
+                or the album or clip is not there (``-32602``).
+        """
+        params: dict[str, Any] = {"view": "timeline"}
+        if album is not None:
+            params["album"] = album
+        if clip is not None:
+            params["clip"] = clip
+        if level != "clip":
+            params["level"] = level
+        if format != "auto":
+            params["format"] = format
+        return _object(await self._call("still.grab", params), "still.grab")
+
+    async def gallery(self, album: str | None = None) -> list[dict[str, Any]]:
+        """Return the albums of the Gallery, the project's then the PowerGrades', with stills.
+
+        Each album is ``{"id", "name", "kind", "stills"}``; ``album`` gives that one alone.
+        """
+        method = "gallery.list"
+        said = await self._call(method, {} if album is None else {"album": album})
+        return _objects(said.get("albums"), method)
+
+    async def still(self, still: str) -> dict[str, Any]:
+        """Return all that a still holds (``PROTOCOL.md``, What a still holds).
+
+        That is its grades with their keys and at the frame grabbed, and where it came from.
+        """
+        return _object(await self._call("still.get", {"still": still}), "still.get")
+
+    async def still_thumbnail(self, still: str, height: int = 90) -> tuple[int, int, bytes]:
+        """Return a PNG of a still ``height`` high (1 to 270): its width, height and bytes."""
+        method = "gallery.thumbnail"
+        said = await self._call(method, {"still": still, "height": height})
+        png = said.get("png")
+        if not isinstance(png, str):
+            raise _unexpected(method)
+        try:
+            data = base64.b64decode(png, validate=True)
+        except ValueError as error:
+            raise _unexpected(method) from error
+        return _whole(said, "width"), _whole(said, "height"), data
+
+    async def apply_still(
+        self,
+        still: str,
+        to: Sequence[Mapping[str, Any]],
+        *,
+        mode: StillMode = "apply",
+        keyframes: StillKeyframes = "none",
+        preserve_nodes: int = 0,
+        revision: int | None = None,
+    ) -> Applied:
+        """Apply a still's grade to grades of the project, as one step of its history.
+
+        ``to`` are targets of grades (``{"level": "clip", "timeline", "clip"}``, a group's, or a
+        timeline's, which takes the still's timeline grade). ``mode`` ``apply`` puts the grade in
+        place of each, keeping the first ``preserve_nodes`` nodes of each; ``append`` puts its
+        nodes after theirs. ``keyframes`` is Apply Grades Using.
+
+        Raises:
+            EngineError: It was refused (``-32001``: ``no_grade``, ``missing``, ``wrong_node``,
+                ``out_of_range``, ``stale_revision``), or the still is not there (``-32602``).
+        """
+        params: dict[str, Any] = {
+            "still": still,
+            "to": [dict(target) for target in to],
+            "mode": mode,
+            "keyframes": keyframes,
+        }
+        if preserve_nodes:
+            params["preserve_nodes"] = preserve_nodes
+        if revision is not None:
+            params["revision"] = revision
+        said = await self._call("still.apply", params)
+        return _applied(said, said.get("names"))
+
+    async def append_node(
+        self,
+        grade: Mapping[str, Any],
+        node: str,
+        to: Sequence[Mapping[str, Any]],
+        *,
+        keyframes: KeyAlign = "source_timecode",
+        revision: int | None = None,
+    ) -> Applied:
+        """Append the corrector ``node`` of ``grade`` to the end of each grade of ``to``.
+
+        It is Append Node to Selected Clips, as one step of the history.
+
+        Raises:
+            EngineError: It was refused (``-32001``).
+        """
+        params: dict[str, Any] = {
+            "from": dict(grade),
+            "node": node,
+            "to": [dict(target) for target in to],
+            "keyframes": keyframes,
+        }
+        if revision is not None:
+            params["revision"] = revision
+        said = await self._call("grade.append_node", params)
+        return _applied(said, said.get("names"))
+
+    async def label_still(self, still: str, label: str) -> None:
+        """Label a still (at most 100 characters; empty for none)."""
+        await self._call("still.label", {"still": still, "label": label})
+
+    async def delete_stills(self, stills: Sequence[str]) -> list[str]:
+        """Delete stills from the Gallery, all or none; return their ids. It is not undone."""
+        method = "still.delete"
+        said = await self._call(method, {"stills": list(stills)})
+        return _strings(said.get("deleted"), method)
+
+    async def move_stills(self, stills: Sequence[str], album: str) -> dict[str, str]:
+        """Move stills to another album; return the id of each where it is now.
+
+        A still moved between the project's albums and the PowerGrades' is given a new id.
+        """
+        method = "still.move"
+        moved = _object(
+            (await self._call(method, {"stills": list(stills), "album": album})).get("moved"),
+            method,
+        )
+        if not all(isinstance(id, str) for id in moved.values()):
+            raise _unexpected(method)
+        return cast("dict[str, str]", moved)
+
+    async def create_album(
+        self, kind: AlbumKind = "stills", name: str | None = None
+    ) -> dict[str, Any]:
+        """Add an album of the project's stills or of the PowerGrades; return it.
+
+        It is ``{"id", "name", "kind"}``; without a name, ``Stills N`` or ``PowerGrade N``.
+        """
+        params: dict[str, Any] = {"kind": kind}
+        if name is not None:
+            params["name"] = name
+        return _object(await self._call("gallery.album.create", params), "gallery.album.create")
+
+    async def rename_album(self, album: str, name: str) -> None:
+        """Rename an album (1 to 100 characters)."""
+        await self._call("gallery.album.rename", {"album": album, "name": name})
+
+    async def delete_album(self, album: str) -> list[str]:
+        """Remove an album and its stills; return the ids of its stills.
+
+        The last album of a gallery stays (``-32001``, ``last_album``).
+        """
+        method = "gallery.album.delete"
+        said = await self._call(method, {"album": album})
+        return _strings(said.get("deleted"), method)
+
+    async def export_stills(
+        self,
+        stills: Sequence[str],
+        directory: Path,
+        *,
+        prefix: str | None = None,
+        replace: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Write each still's picture and its JSON into ``directory`` (absolute).
+
+        They are named ``<prefix>_<number>``; the answer is ``{"image", "json"}`` of each.
+        """
+        method = "still.export"
+        params: dict[str, Any] = {"stills": list(stills), "dir": str(directory)}
+        if prefix is not None:
+            params["prefix"] = prefix
+        if replace:
+            params["replace"] = True
+        return _objects((await self._call(method, params)).get("written"), method)
+
+    async def import_stills(
+        self, paths: Sequence[Path], *, album: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Take pictures (PNG, TIFF, OpenEXR; absolute paths) in as stills; return them.
+
+        Each takes the grades of a still's JSON beside it, where there is one.
+        """
+        method = "still.import"
+        params: dict[str, Any] = {"paths": [str(path) for path in paths]}
+        if album is not None:
+            params["album"] = album
+        return _objects((await self._call(method, params)).get("added"), method)
+
     async def render(
         self,
         timeline: str,
@@ -1594,6 +1823,24 @@ def _object(value: object, method: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise _unexpected(method)
     return cast("dict[str, Any]", value)
+
+
+def _objects(value: object, method: str) -> list[dict[str, Any]]:
+    """Read a list of objects of an answer."""
+    if not isinstance(value, list) or not all(
+        isinstance(one, dict) for one in cast("list[object]", value)
+    ):
+        raise _unexpected(method)
+    return cast("list[dict[str, Any]]", value)
+
+
+def _strings(value: object, method: str) -> list[str]:
+    """Read a list of strings of an answer."""
+    if not isinstance(value, list) or not all(
+        isinstance(one, str) for one in cast("list[object]", value)
+    ):
+        raise _unexpected(method)
+    return cast("list[str]", value)
 
 
 def _pair(value: object, method: str) -> tuple[float, float]:

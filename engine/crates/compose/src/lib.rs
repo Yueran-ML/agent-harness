@@ -11,6 +11,7 @@
 //!   transform ([`Stage`]), with how later work plugs into them.
 //! - [`geometry`]: where a layer is put, worked out without the card.
 //! - [`grade`]: a grade of the Color page at a frame, made into an operation of a [`Stage`].
+//! - [`scopes`]: the video scopes of a frame counted on the card, and its figures for the agent.
 //! - [`yuv`]: the planes of a picture on the card, and the shader that makes them R'G'B', which
 //!   the view draws with too.
 
@@ -19,6 +20,7 @@ mod compose;
 pub mod geometry;
 mod gpu;
 pub mod grade;
+pub mod scopes;
 mod text;
 pub mod yuv;
 

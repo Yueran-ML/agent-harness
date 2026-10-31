@@ -106,6 +106,10 @@ export interface Clip {
   pan: number;
   fade_in: number;
   fade_out: number;
+  /** Its grade, which colours its picture before it is put on the tracks below it. A clip of sound keeps one too. */
+  grade: Grade;
+  /** The group that it is graded in, or null. */
+  group: string | null;
 }
 export type TransitionKind = 'dissolve' | 'dip_black' | 'dip_white' | 'crossfade';
 export type Alignment = 'start' | 'center' | 'end';
@@ -123,8 +127,103 @@ export interface Timeline {
   height: number;
   sample_rate: number;
   tracks: Track[];
+  /** Its grade, which colours the picture once its tracks are put together. */
+  grade: Grade;
 }
-export interface Project { schema: 2; next_id: number; bins: Bin[]; media: Media[]; timelines: Timeline[] }
+export interface Project { schema: 3; next_id: number; bins: Bin[]; media: Media[]; timelines: Timeline[]; groups: Group[] }
+
+// Grades (PROTOCOL.md, "Grades"; engine/crates/model/src/grade.rs), as DaVinci Resolve's Color
+// page builds them (Reference Manual 20, Chapters 143–147).
+
+/** How the value of a parameter goes from a key to the next: on a line, held, or along a curve. */
+export type Interp = 'linear' | 'hold' | { bezier: { out: [number, number]; in: [number, number] } };
+/** A keyframe: frames count the frames of the clip from 0 (of the timeline, for its grade). */
+export interface Keyframe { frame: number; value: number; interp: Interp }
+/** A setting of a node: one value, or keyframes in the order of their frames, one at least. */
+export type Param = number | { keys: Keyframe[] };
+export interface Wheel { y: Param; r: Param; g: Param; b: Param }
+export interface Rgb { r: Param; g: Param; b: Param }
+export interface Primaries {
+  lift: Wheel; gamma: Wheel; gain: Wheel; offset: Rgb;
+  contrast: Param; pivot: Param; saturation: Param; hue: Param; lum_mix: Param; temperature: Param; tint: Param;
+  color_boost: Param; midtone_detail: Param; shadows: Param; highlights: Param;
+}
+export interface LogWheels { shadow: Rgb; midtone: Rgb; highlight: Rgb; low_range: Param; high_range: Param }
+/** A curve point: `[in, out]`. */
+export type CurvePoint = [number, number];
+export interface Curve { points: CurvePoint[]; intensity: Param }
+export interface Curves { ganged: boolean; y: Curve; r: Curve; g: Curve; b: Curve }
+export interface HslCurves {
+  hue_vs_hue: CurvePoint[]; hue_vs_sat: CurvePoint[]; hue_vs_lum: CurvePoint[];
+  lum_vs_sat: CurvePoint[]; sat_vs_sat: CurvePoint[]; sat_vs_lum: CurvePoint[];
+}
+export interface SoftClip { low: Rgb; high: Rgb; low_soft: Rgb; high_soft: Rgb }
+export interface KeyInput { invert: boolean; matte: boolean; gain: Param; offset: Param }
+export interface KeyOutput { invert: boolean; gain: Param; offset: Param }
+export interface Corrector {
+  primaries: Primaries; log: LogWheels; curves: Curves; hsl: HslCurves; lut: string | null; soft_clip: SoftClip;
+  key: { input: KeyInput; output: KeyOutput };
+}
+export type Composite =
+  | 'normal' | 'add' | 'color' | 'color_burn' | 'color_dodge' | 'darken' | 'darker_color' | 'difference' | 'divide'
+  | 'exclusion' | 'hard_mix' | 'hardlight' | 'hue' | 'lighten' | 'lighter_color' | 'linear_burn' | 'linear_dodge'
+  | 'linear_light' | 'luminosity' | 'multiply' | 'overlay' | 'pin_light' | 'saturation' | 'screen' | 'softlight'
+  | 'subtract' | 'vivid_light';
+export interface ParallelMixer { inputs: number }
+export interface LayerMixer { inputs: number; composite: Composite }
+export interface KeyMixer { inputs: KeyInput[]; output: KeyOutput }
+/**
+ * A node of a grade (named so as not to hide the DOM's `Node`). Its id is unique within its grade
+ * only, and never `source` or `output`; its `params` are those of its kind.
+ */
+export type GradeNode = { id: string; label: string; enabled: boolean } & (
+  | { kind: 'corrector'; params: Corrector }
+  | { kind: 'parallel_mixer'; params: ParallelMixer }
+  | { kind: 'layer_mixer'; params: LayerMixer }
+  | { kind: 'key_mixer'; params: KeyMixer });
+export type NodeKind = GradeNode['kind'];
+/** What a link carries: the picture or a key. */
+export type LinkKind = 'rgb' | 'key';
+/** A link from the output of `kind` of `from` (a node or `source`) into input `input` of `to` (a node or `output`). */
+export interface Link { from: string; to: string; kind: LinkKind; input: number }
+/** Nodes in the order they were added (an editor's numbering), links in the engine's order (see `sortLinks`). */
+export interface Grade { nodes: GradeNode[]; links: Link[] }
+/** One of the four grades a picture goes through, in this order: pre_clip, clip, post_clip, timeline. */
+export type Target =
+  | { level: 'clip'; timeline: string; clip: string }
+  | { level: 'pre_clip'; group: string }
+  | { level: 'post_clip'; group: string }
+  | { level: 'timeline'; timeline: string };
+/** A group of clips graded together; a clip names it in its `group`. */
+export interface Group { id: string; name: string; pre: Grade; post: Grade }
+
+/** The grade every new clip and timeline has, as the engine writes it: the source linked straight to the output. */
+export function emptyGrade(): Grade {
+  return { nodes: [], links: [{ from: 'source', to: 'output', kind: 'rgb', input: 0 }] };
+}
+
+/**
+ * Rust compares the ids of links as strings, byte by byte in UTF-8, which is the order of code
+ * points. JavaScript's `<` compares UTF-16 code units, which differs from it beyond U+FFFF, and ids
+ * that a client gives are not held to ASCII; so code points are compared here.
+ */
+function compareIds(a: string, b: string): number {
+  const shorter = Math.min(a.length, b.length);
+  for (let at = 0; at < shorter;) {
+    const x = a.codePointAt(at) as number;
+    const y = b.codePointAt(at) as number;
+    if (x !== y) return x < y ? -1 : 1;
+    at += x > 0xffff ? 2 : 1;
+  }
+  return a.length - b.length;
+}
+
+const KIND_ORDER: Record<LinkKind, number> = { rgb: 0, key: 1 };
+
+/** The links of a grade in the engine's one order: by `to`, then kind (rgb before key), then input. */
+export function sortLinks(links: readonly Link[]): Link[] {
+  return [...links].sort((a, b) => compareIds(a.to, b.to) || KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || a.input - b.input);
+}
 
 type Settings<T, K extends keyof T> = { [P in K]?: T[P] | null };
 /** Basic operations broadcast in `done`. Editing commands are expanded by the engine alone. */
@@ -154,7 +253,20 @@ export type Op =
   | ({ op: 'set_transition'; timeline: string; id: string } & Settings<Transition, 'kind' | 'length' | 'align'>)
   | { op: 'add_cue'; timeline: string; track: string; cue: Cue }
   | { op: 'remove_cue'; timeline: string; id: string }
-  | ({ op: 'set_cue'; timeline: string; id: string } & Settings<Cue, 'start' | 'length' | 'text'>);
+  | ({ op: 'set_cue'; timeline: string; id: string } & Settings<Cue, 'start' | 'length' | 'text'>)
+  /** In `done`: the id the engine gave, the index, and the links naming that id. */
+  | { op: 'add_node'; grade: Target; node: GradeNode; index?: number | null; links?: Link[] }
+  /** In `done`: always with the `links` put in the node's place. */
+  | { op: 'remove_node'; grade: Target; id: string; links?: Link[] | null }
+  | { op: 'connect'; grade: Target; link: Link }
+  | { op: 'disconnect'; grade: Target; to: string; kind: LinkKind; input: number }
+  /** `params` is a patch: each object is merged into the object of that name, any other value (null too) takes its place. */
+  | { op: 'set_node'; grade: Target; id: string; label?: string | null; enabled?: boolean | null; params?: Record<string, unknown> | null }
+  | { op: 'set_grade'; grade: Target; value: Grade }
+  | { op: 'add_group'; group: Group; index?: number | null }
+  | { op: 'remove_group'; id: string }
+  | { op: 'set_group'; id: string; name?: string | null }
+  | { op: 'set_clip_group'; timeline: string; clip: string; group: string | null };
 
 /** Who asked for a change, or made the step that it takes back or does again. */
 export type ClientKind = 'desktop' | 'agent' | 'cli' | 'engine';
@@ -489,6 +601,125 @@ function inTransition(timeline: Timeline, id: string, change: (items: Transition
   throw new CopyMismatch(`there is no transition ${id} in the copy`);
 }
 
+/**
+ * A grade as the engine keeps it: one left out (as a client of schema 2 builds a clip or a
+ * timeline) is read as the empty grade, and links are put in their order.
+ */
+function kept(grade: Grade | undefined): Grade {
+  return grade === undefined ? emptyGrade() : { ...grade, links: sortLinks(grade.links) };
+}
+
+/** A clip as the engine keeps it, its grade and group read as `kept` reads them. */
+function keptClip(clip: Clip): Clip {
+  return { ...clip, grade: kept(clip.grade), group: clip.group ?? null };
+}
+
+function keptTrack(track: Track): Track {
+  return ordered(track.kind === 'subtitle' ? track : { ...track, clips: track.clips.map(keptClip) });
+}
+
+function keptTimeline(timeline: Timeline): Timeline {
+  return { ...timeline, grade: kept(timeline.grade), tracks: timeline.tracks.map(keptTrack) };
+}
+
+function inGroup(project: Project, id: string, change: (group: Group) => Group): Project {
+  const at = placeOf(project.groups, id, 'group');
+  return { ...project, groups: replaced(project.groups, at, change(project.groups[at])) };
+}
+
+function inClip(timeline: Timeline, id: string, change: (clip: Clip) => Clip): Timeline {
+  const [track, at] = clipAt(timeline, id);
+  return inTrack(timeline, track, each => {
+    const clips = clipTrack(each).clips;
+    return { ...clipTrack(each), clips: replaced(clips, at, change(clips[at])) };
+  });
+}
+
+/** Change the grade that `target` names; its links are put in order after. */
+function inGrade(project: Project, target: Target, change: (grade: Grade) => Grade): Project {
+  const sorted = (grade: Grade): Grade => {
+    const changed = change(grade);
+    return { ...changed, links: sortLinks(changed.links) };
+  };
+  switch (target.level) {
+    case 'clip': return inTimeline(project, target.timeline, timeline => inClip(timeline, target.clip, clip => ({ ...clip, grade: sorted(clip.grade) })));
+    case 'timeline': return inTimeline(project, target.timeline, timeline => ({ ...timeline, grade: sorted(timeline.grade) }));
+    case 'pre_clip': return inGroup(project, target.group, group => ({ ...group, pre: sorted(group.pre) }));
+    case 'post_clip': return inGroup(project, target.group, group => ({ ...group, post: sorted(group.post) }));
+    default: throw new CopyMismatch(`the grade of level ${(target as { level: unknown }).level} is not known to the copy`);
+  }
+}
+
+const sameInput = (a: Pick<Link, 'to' | 'kind' | 'input'>, b: Pick<Link, 'to' | 'kind' | 'input'>): boolean =>
+  a.to === b.to && a.kind === b.kind && a.input === b.input;
+
+/** Put links into a grade, each in place of the link its input had. */
+function linked(links: readonly Link[], added: readonly Link[]): Link[] {
+  let all = [...links];
+  for (const link of added) all = [...all.filter(each => !sameInput(each, link)), link];
+  return all;
+}
+
+function nodeAt(grade: Grade, id: string): number {
+  const at = grade.nodes.findIndex(node => node.id === id);
+  if (at < 0) throw new CopyMismatch(`there is no node ${id} in the grade of the copy`);
+  return at;
+}
+
+/** How many inputs of `kind` the node or end `id` has (`Grade::inputs_of`). */
+function inputsOf(grade: Grade, id: string, kind: LinkKind): number {
+  if (id === 'output') return kind === 'rgb' ? 1 : 0;
+  if (id === 'source') return 0;
+  const node = grade.nodes.find(each => each.id === id);
+  if (node === undefined) return 0;
+  switch (node.kind) {
+    case 'corrector': return 1;
+    case 'parallel_mixer': case 'layer_mixer': return kind === 'rgb' ? node.params.inputs : 0;
+    case 'key_mixer': return kind === 'key' ? node.params.inputs.length : 0;
+    default: return 0;
+  }
+}
+
+/**
+ * The links that take the place of a node taken away, as DaVinci links the nodes on either side
+ * (`Grade::bridge`): what comes into its first linked input of each kind goes into every input its
+ * output of that kind went into. The engine's `done` carries them; this is for a `remove_node`
+ * without them.
+ */
+function bridge(grade: Grade, id: string): Link[] {
+  const links: Link[] = [];
+  for (const kind of ['rgb', 'key'] as const) {
+    let before: Link | undefined;
+    for (let input = 0; input < inputsOf(grade, id, kind) && before === undefined; input += 1) {
+      before = grade.links.find(link => sameInput(link, { to: id, kind, input }));
+    }
+    if (before === undefined) continue;
+    for (const after of grade.links) {
+      if (after.from === id && after.kind === kind) links.push({ from: before.from, to: after.to, kind, input: after.input });
+    }
+  }
+  return links;
+}
+
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/**
+ * Put `patch` into `base` as the engine does (`grade::merge`): where both are objects, each field of
+ * the patch into the field of that name; otherwise the patch in place of the base, whole. A null
+ * is a value like any other.
+ */
+export function mergePatch(base: unknown, patch: unknown): unknown {
+  if (!isObject(base) || !isObject(patch)) return patch;
+  const merged: Record<string, unknown> = { ...base };
+  for (const [name, value] of Object.entries(patch)) merged[name] = Object.hasOwn(base, name) ? mergePatch(base[name], value) : value;
+  return merged;
+}
+
+function setNode(node: GradeNode, op: Extract<Op, { op: 'set_node' }>): GradeNode {
+  const changed = patched(node, op, ['label', 'enabled']);
+  return op.params == null ? changed : { ...changed, params: mergePatch(changed.params, op.params) } as GradeNode;
+}
+
 /** Mirror only accepted basic operations, preserving all objects outside the changed branch. */
 export function applyOp(project: Project, op: Op): Project {
   switch (op.op) {
@@ -515,13 +746,13 @@ export function applyOp(project: Project, op: Op): Project {
       const at = placeOf(project.bins, op.id, 'bin');
       return { ...project, bins: replaced(project.bins, at, patched(project.bins[at], op, ['name', 'parent'], ['parent'])) };
     }
-    case 'add_timeline': return { ...project, timelines: inserted(project.timelines, { ...op.timeline, tracks: op.timeline.tracks.map(ordered) }, op.index) };
+    case 'add_timeline': return { ...project, timelines: inserted(project.timelines, keptTimeline(op.timeline), op.index) };
     case 'remove_timeline': return { ...project, timelines: without(project.timelines, placeOf(project.timelines, op.id, 'timeline')) };
     case 'set_timeline': return inTimeline(project, op.id, timeline => patched(timeline, op, ['name', 'rate', 'width', 'height', 'sample_rate']));
-    case 'add_track': return inTimeline(project, op.timeline, timeline => ({ ...timeline, tracks: inserted(timeline.tracks, ordered(op.track), op.index) }));
+    case 'add_track': return inTimeline(project, op.timeline, timeline => ({ ...timeline, tracks: inserted(timeline.tracks, keptTrack(op.track), op.index) }));
     case 'remove_track': return inTimeline(project, op.timeline, timeline => ({ ...timeline, tracks: without(timeline.tracks, placeOf(timeline.tracks, op.id, 'track')) }));
     case 'set_track': return inTimeline(project, op.timeline, timeline => inTrack(timeline, placeOf(timeline.tracks, op.id, 'track'), track => patched(track, op, ['name', 'enabled', 'locked', ...(track.kind === 'subtitle' ? ['language'] : [])])));
-    case 'insert_clip': return inTimeline(project, op.timeline, timeline => inClips(timeline, placeOf(timeline.tracks, op.track, 'track'), clips => put(clips, op.clip)));
+    case 'insert_clip': return inTimeline(project, op.timeline, timeline => inClips(timeline, placeOf(timeline.tracks, op.track, 'track'), clips => put(clips, keptClip(op.clip))));
     case 'remove_clip': return inTimeline(project, op.timeline, timeline => {
       const [track, at] = clipAt(timeline, op.id);
       return inClips(timeline, track, clips => without(clips, at));
@@ -572,6 +803,30 @@ export function applyOp(project: Project, op: Op): Project {
     }));
     case 'remove_cue': return inTimeline(project, op.timeline, timeline => inCue(timeline, op.id, (items, at) => without(items, at)));
     case 'set_cue': return inTimeline(project, op.timeline, timeline => inCue(timeline, op.id, (items, at) => replaced(items, at, patched(items[at], op, ['start', 'length', 'text']))));
+    case 'add_node': return inGrade(project, op.grade, grade => ({
+      nodes: inserted(grade.nodes, op.node, op.index),
+      links: linked(grade.links, op.links ?? []),
+    }));
+    case 'remove_node': return inGrade(project, op.grade, grade => {
+      const at = nodeAt(grade, op.id);
+      const links = op.links ?? bridge(grade, op.id);
+      return { nodes: without(grade.nodes, at), links: [...grade.links.filter(link => link.from !== op.id && link.to !== op.id), ...links] };
+    });
+    case 'connect': return inGrade(project, op.grade, grade => ({ ...grade, links: linked(grade.links, [op.link]) }));
+    case 'disconnect': return inGrade(project, op.grade, grade => {
+      const at = grade.links.findIndex(link => sameInput(link, op));
+      if (at < 0) throw new CopyMismatch(`there is no link into input ${op.input} of ${op.kind} of ${op.to} in the copy`);
+      return { ...grade, links: without(grade.links, at) };
+    });
+    case 'set_node': return inGrade(project, op.grade, grade => {
+      const at = nodeAt(grade, op.id);
+      return { ...grade, nodes: replaced(grade.nodes, at, setNode(grade.nodes[at], op)) };
+    });
+    case 'set_grade': return inGrade(project, op.grade, () => op.value);
+    case 'add_group': return { ...project, groups: inserted(project.groups, { ...op.group, pre: kept(op.group.pre), post: kept(op.group.post) }, op.index) };
+    case 'remove_group': return { ...project, groups: without(project.groups, placeOf(project.groups, op.id, 'group')) };
+    case 'set_group': return inGroup(project, op.id, group => patched(group, op, ['name']));
+    case 'set_clip_group': return inTimeline(project, op.timeline, timeline => inClip(timeline, op.clip, clip => ({ ...clip, group: op.group ?? null })));
     default: throw new CopyMismatch(`the operation ${(op as { op: unknown }).op} is not known to the copy`);
   }
 }

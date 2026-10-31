@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { EngineBridge } from '../src/bridge';
 import {
-  applyOp, callEngine, deviceRect, EngineError, ProjectCopy,
+  applyOp, callEngine, deviceRect, emptyGrade, EngineError, ProjectCopy,
   type Clip, type ClipTrack, type EngineAnswer, type EngineEvent, type Media, type Op, type Project, type ProjectChanged, type Proxy,
 } from '../src/studio/engine';
 
 const SCALE = 15360;
-const empty = (): Project => ({ schema: 2, bins: [], next_id: 1, media: [], timelines: [] });
+const empty = (): Project => ({ schema: 3, groups: [], bins: [], next_id: 1, media: [], timelines: [] });
 const media = (id: string, audio = true): Media => ({
   id, name: `${id}.mp4`, bin: null, mark_in: null, mark_out: null, path: `C:\\media\\${id}.mp4`,
   identity: { size: 1000, modified_us: 1_790_000_000_000_000, digest: '0'.repeat(64) },
@@ -16,7 +16,7 @@ const media = (id: string, audio = true): Media => ({
     audio: audio ? { rate: 48000, channels: 2, codec: 'aac' } : null,
   },
 });
-const clip = (id: string, start: number, length: number, from = 'm1', ticks = 0): Clip => ({ id, source: { kind: 'media', media: from, in: { ticks, scale: SCALE } }, start, length, enabled: true, speed: { num: 1, den: 1 }, reverse: false, link: null, transform: { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 }, gain_db: 0, pan: 0, fade_in: 0, fade_out: 0 });
+const clip = (id: string, start: number, length: number, from = 'm1', ticks = 0): Clip => ({ id, source: { kind: 'media', media: from, in: { ticks, scale: SCALE } }, start, length, enabled: true, speed: { num: 1, den: 1 }, reverse: false, link: null, transform: { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 }, gain_db: 0, pan: 0, fade_in: 0, fade_out: 0, grade: emptyGrade(), group: null });
 const proxy: Proxy = { path: 'C:\\film\\.columbina\\studio\\cache\\proxies\\m1-000000000000.mov', width: 1920, height: 1080, codec: 'hevc', digest_of_source: '0'.repeat(64) };
 
 /** A bridge of the engine whose engine has the project that a test sets, at its revision. */
@@ -83,7 +83,7 @@ describe('the copy of the project', () => {
       // Media imported: two files, one transaction.
       change(1, 3, { op: 'add_media', media: media('m1'), index: 0 }, { op: 'add_media', media: media('m2', false), index: 1 }),
       // A timeline with a track of picture, whose clips come in the order of their start.
-      change(2, 6, { op: 'add_timeline', index: 0, timeline: { id: 't3', name: 'Cut', rate: { num: 25, den: 1 }, width: 1920, height: 1080, sample_rate: 48000, tracks: [
+      change(2, 6, { op: 'add_timeline', index: 0, timeline: { id: 't3', name: 'Cut', rate: { num: 25, den: 1 }, width: 1920, height: 1080, sample_rate: 48000, grade: emptyGrade(), tracks: [
         { id: 'V1', name: 'V1', enabled: true, locked: false, transitions: [], kind: 'video', clips: [clip('c5', 100, 20), clip('c4', 0, 50)] },
       ] } }),
       change(3, 6, { op: 'add_track', timeline: 't3', index: 1, track: { id: 'A1', name: 'A1', enabled: true, locked: false, transitions: [], kind: 'audio', clips: [] } }),
@@ -98,7 +98,7 @@ describe('the copy of the project', () => {
       change(8, 8, { op: 'remove_clip', timeline: 't3', id: 'c6' }),
       change(9, 9, { op: 'insert_clip', timeline: 't3', track: 'A1', clip: clip('c8', 0, 25) }),
       // A timeline put before the first, and a track that is taken away with its clips.
-      change(10, 10, { op: 'add_timeline', index: 0, timeline: { id: 't9', name: 'Other', rate: { num: 30000, den: 1001 }, width: 1920, height: 1080, sample_rate: 48000, tracks: [] } },
+      change(10, 10, { op: 'add_timeline', index: 0, timeline: { id: 't9', name: 'Other', rate: { num: 30000, den: 1001 }, width: 1920, height: 1080, sample_rate: 48000, grade: emptyGrade(), tracks: [] } },
         { op: 'remove_track', timeline: 't3', id: 'A1' }),
       // A clip moved onto a track of its kind on which it starts first.
       change(11, 10, { op: 'add_track', timeline: 't3', track: { id: 'V2', name: 'V2', enabled: true, locked: false, transitions: [], kind: 'video', clips: [clip('c9', 20, 5, 'm2')] } },
@@ -110,10 +110,10 @@ describe('the copy of the project', () => {
     ];
     for (const each of script) engine.changed(each);
     const expected: Project = {
-      schema: 2, bins: [], next_id: 10,
+      schema: 3, groups: [], bins: [], next_id: 10,
       media: [media('m1'), media('m2', false)],
       timelines: [{
-        id: 't3', name: 'Cut', rate: { num: 25, den: 1 }, width: 1920, height: 1080, sample_rate: 48000, tracks: [
+        id: 't3', name: 'Cut', rate: { num: 25, den: 1 }, width: 1920, height: 1080, sample_rate: 48000, grade: emptyGrade(), tracks: [
           { id: 'V1', name: 'V1', enabled: true, locked: false, transitions: [], kind: 'video', clips: [clip('c4', 10, 40, 'm1', SCALE), clip('c5', 100, 20)] },
           { id: 'V2', name: 'V2', enabled: true, locked: false, transitions: [], kind: 'video', clips: [clip('c7', 0, 10)] },
         ],
@@ -130,7 +130,7 @@ describe('the copy of the project', () => {
   });
 
   it('holds the proxy of media while it is set, and the order of the clips of a track by their start', () => {
-    let project: Project = { ...empty(), media: [media('m1')], timelines: [{ id: 't1', name: 'T', rate: { num: 25, den: 1 }, width: 1920, height: 1080, sample_rate: 48000, tracks: [{ id: 'V1', name: 'V1', enabled: true, locked: false, transitions: [], kind: 'video', clips: [] }] }] };
+    let project: Project = { ...empty(), media: [media('m1')], timelines: [{ id: 't1', name: 'T', rate: { num: 25, den: 1 }, width: 1920, height: 1080, sample_rate: 48000, grade: emptyGrade(), tracks: [{ id: 'V1', name: 'V1', enabled: true, locked: false, transitions: [], kind: 'video', clips: [] }] }] };
     project = applyOp(project, { op: 'set_proxy', media: 'm1', proxy });
     expect(project.media[0].proxy).toEqual(proxy);
     for (const [id, start] of [['c1', 50], ['c2', 10], ['c3', 30], ['c4', 0]] as const) {
@@ -139,7 +139,7 @@ describe('the copy of the project', () => {
     expect((project.timelines[0].tracks[0] as ClipTrack).clips.map(each => each.id)).toEqual(['c4', 'c2', 'c3', 'c1']);
     // What did not change is the same object: a view of it need not be drawn again.
     const before = project;
-    const after = applyOp(project, { op: 'add_timeline', timeline: { id: 't2', name: 'U', rate: { num: 25, den: 1 }, width: 1920, height: 1080, sample_rate: 48000, tracks: [] } });
+    const after = applyOp(project, { op: 'add_timeline', timeline: { id: 't2', name: 'U', rate: { num: 25, den: 1 }, width: 1920, height: 1080, sample_rate: 48000, grade: emptyGrade(), tracks: [] } });
     expect(after.timelines[0]).toBe(before.timelines[0]);
     expect(after.media).toBe(before.media);
     expect(before.timelines).toHaveLength(1);
@@ -151,7 +151,7 @@ describe('the copy of the project', () => {
       { op: 'move_clip', timeline: 't1', id: 'c9', track: 'V1', start: 0 }, { op: 'add_media', media: media('m2'), index: 5 },
       { op: 'set_proxy', media: 'm9', proxy: null }, { op: 'remove_track', timeline: 't1', id: 'A1' }, { op: 'paint' },
     ] as Op[]) {
-      expect(() => applyOp({ ...empty(), timelines: [{ id: 't1', name: 'T', rate: { num: 25, den: 1 }, width: 1920, height: 1080, sample_rate: 48000, tracks: [{ id: 'V1', name: 'V1', enabled: true, locked: false, transitions: [], kind: 'video', clips: [] }] }] }, op)).toThrow();
+      expect(() => applyOp({ ...empty(), timelines: [{ id: 't1', name: 'T', rate: { num: 25, den: 1 }, width: 1920, height: 1080, sample_rate: 48000, grade: emptyGrade(), tracks: [{ id: 'V1', name: 'V1', enabled: true, locked: false, transitions: [], kind: 'video', clips: [] }] }] }, op)).toThrow();
     }
   });
 

@@ -69,7 +69,7 @@ const replayMedia: Media[] = [
  */
 export function createMockEngine(): EngineBridge {
   const listeners = new Set<(event: EngineEvent) => void>();
-  const project: Project = { schema: 2, bins: [], next_id: 5, media: replayMedia, timelines: [] };
+  const project: Project = { schema: 3, bins: [], next_id: 5, media: replayMedia, timelines: [], groups: [] };
   const session = 1;
   const lastOf = (media: Media) => {
     const rate = media.facts.video?.rate ?? { num: 25, den: 1 };

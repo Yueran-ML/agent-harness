@@ -12,7 +12,7 @@ import { zhCN } from '../src/messages/zh-CN';
 import { Studio } from '../src/studio/Studio';
 import { TWO_MONITORS_PX } from '../src/studio/pages/EditPage';
 import { freshName, timelineDefaults } from '../src/studio/pages/NewTimeline';
-import { applyOp, ProjectCopy, type EngineEvent, type Media, type Op, type Project, type TransportState } from '../src/studio/engine';
+import { applyOp, emptyGrade, ProjectCopy, type EngineEvent, type Media, type Op, type Project, type TransportState } from '../src/studio/engine';
 import type { EngineBridge } from '../src/bridge';
 import { clip, media, timeline } from './timeline-fixture';
 import { likeABrowser } from './mounted';
@@ -42,7 +42,7 @@ const second: Media = { ...media, id: 'm2', name: 'Street', facts: { ...media.fa
 
 /** An engine that keeps a project and the two transports, and tells what changed as the real one does. */
 function fakeEngine(empty = false) {
-  let project: Project = { schema: 2, next_id: 10, bins: [], media: [media, second], timelines: empty ? [] : [timeline(), { ...timeline([clip('c3')]), id: 't2', name: 'Alternate' }] };
+  let project: Project = { schema: 3, groups: [], next_id: 10, bins: [], media: [media, second], timelines: empty ? [] : [timeline(), { ...timeline([clip('c3')]), id: 't2', name: 'Alternate' }] };
   let revision = 0;
   let refuse: string | null = null;
   const listeners = new Set<(event: EngineEvent) => void>();
@@ -261,7 +261,7 @@ describe('the Edit page', () => {
       tracks: [
         { id: '', kind: 'video', name: 'V1', enabled: true, locked: false, clips: [], transitions: [] },
         { id: '', kind: 'audio', name: 'A1', enabled: true, locked: false, clips: [], transitions: [] },
-      ] } }] }]);
+      ], grade: emptyGrade() } }] }]);
     expect(screen.queryByRole('dialog')).toBeNull();
     expect((screen.getByRole('combobox', { name: 'Timeline' }) as HTMLSelectElement).value).toBe('t10');
     expect(calls(bridge, 'transport.load')).toEqual([{ monitor: 'timeline', timeline: 't10' }]);

@@ -5,7 +5,7 @@
  */
 import { vi } from 'vitest';
 import type { EngineBridge } from '../src/bridge';
-import type { Media, Timeline } from '../src/studio/engine';
+import { emptyGrade, type Media, type Timeline } from '../src/studio/engine';
 import { clip, media } from './timeline-fixture';
 
 export const VIDEO_TRACKS = 6;
@@ -25,6 +25,7 @@ export function bigTimeline(): Timeline {
       ...Array.from({ length: VIDEO_TRACKS }, (_, row) => track('video', row)),
       ...Array.from({ length: AUDIO_TRACKS }, (_, row) => track('audio', row)),
     ],
+    grade: emptyGrade(),
   } as Timeline;
 }
 

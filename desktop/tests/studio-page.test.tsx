@@ -47,7 +47,7 @@ function shellEngine() {
       return opened;
     }),
     call: vi.fn(async (method: string): Promise<EngineAnswer> => (method === 'project.get'
-      ? { ok: true, result: { revision: 0, next_id: 2, project: { schema: 2, bins: [], next_id: 2, media: [film], timelines: [] } } }
+      ? { ok: true, result: { revision: 0, next_id: 2, project: { schema: 3, groups: [], bins: [], next_id: 2, media: [film], timelines: [] } } }
       : method === 'transport.state'
         ? { ok: true, result: { monitor: 'source', media: 'm1', frame: 0, playing: false, speed: 1, exact: true, shown: 0, last: 249, sound: 'off', source: 'original', proxies: true } }
         : { ok: true, result: {} })),
@@ -415,8 +415,9 @@ describe('the old projects of the folder, as the studio opens', () => {
 
   it('names a timeline as the project has it, and is kept while the studio is left before it is told', async () => {
     engine.call.mockImplementation(async (method: string): Promise<EngineAnswer> => (method === 'project.get'
-      ? { ok: true, result: { revision: 1, next_id: 5, project: { schema: 2, bins: [], next_id: 5, media: [film], timelines: [
-        { id: 't3', name: 'Film (old)', rate: { num: 25, den: 1 }, width: 1920, height: 1080, sample_rate: 48000, tracks: [] },
+      ? { ok: true, result: { revision: 1, next_id: 5, project: { schema: 3, groups: [], bins: [], next_id: 5, media: [film], timelines: [
+        { id: 't3', name: 'Film (old)', rate: { num: 25, den: 1 }, width: 1920, height: 1080, sample_rate: 48000, tracks: [],
+          grade: { nodes: [], links: [{ from: 'source', to: 'output', kind: 'rgb', input: 0 }] } },
       ] } } }
       : { ok: true, result: {} }));
     await opened();

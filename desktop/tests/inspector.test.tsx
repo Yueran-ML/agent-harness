@@ -8,7 +8,7 @@
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EngineBridge } from '../src/bridge';
-import type { Clip, ClipTrack, Timeline } from '../src/studio/engine';
+import { emptyGrade, type Clip, type ClipTrack, type Timeline } from '../src/studio/engine';
 import { Inspector } from '../src/studio/inspector/Inspector';
 import { percentOf, SpeedDialog, speedEdits, speedOf } from '../src/studio/inspector/SpeedDialog';
 import { clip, media } from './timeline-fixture';
@@ -22,7 +22,7 @@ const title = (id: string, start: number, length: number, fields: Partial<Clip> 
   source: { kind: 'title', text: 'Hello', style: { font: '', size: 70, color: '#ffffff80', x: 0.5, y: 0.5, align: 'center' } }, ...fields,
 });
 const track = (id: string, kind: 'video' | 'audio', clips: Clip[], transitions: ClipTrack['transitions'] = []): ClipTrack => ({ id, kind, name: id.toUpperCase(), enabled: true, locked: false, clips, transitions });
-const make = (tracks: ClipTrack[]): Timeline => ({ id: 't1', name: 'Main', rate: { num: 25, den: 1 }, width: 1920, height: 1080, sample_rate: 48000, tracks });
+const make = (tracks: ClipTrack[]): Timeline => ({ id: 't1', name: 'Main', rate: { num: 25, den: 1 }, width: 1920, height: 1080, sample_rate: 48000, tracks, grade: emptyGrade() });
 const basic = () => make([
   track('v1', 'video', [clip('c1', 10, 60, { link: 'g1' }), clip('c2', 70, 60, { transform: { x: 0, y: 0, scale: 1, rotation: 0, opacity: 0.5 } }), title('t1', 200, 50), title('t2', 260, 50, { source: { kind: 'title', text: 'Bye', style: { font: '', size: 40, color: '#00ff00ff', x: 0.25, y: 0.5, align: 'left' } } })]),
   track('a1', 'audio', [clip('a1', 10, 60, { link: 'g1', gain_db: -6 })]),

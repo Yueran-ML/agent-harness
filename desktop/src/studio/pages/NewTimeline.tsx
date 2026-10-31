@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { useWords } from '../../app/locale';
 import { Sheet } from '../../app/Sheet';
-import type { Media, Rate, Timeline, Track } from '../engine';
+import { emptyGrade, type Media, type Rate, type Timeline, type Track } from '../engine';
 import { rateText } from '../timecode';
 import { RATES, rateKey } from '../inspector/TimelineSettings';
 
@@ -32,7 +32,7 @@ export function timelineDefaults(media: readonly Media[]): Pick<Timeline, 'width
 /** A new timeline with one video track and one audio track, its id and theirs given by the engine. */
 export function newTimeline(name: string, settings: Pick<Timeline, 'width' | 'height' | 'rate' | 'sample_rate'>): Timeline {
   const track = (kind: 'video' | 'audio', label: string): Track => ({ id: '', kind, name: label, enabled: true, locked: false, clips: [], transitions: [] });
-  return { id: '$timeline', name, ...settings, tracks: [track('video', 'V1'), track('audio', 'A1')] };
+  return { id: '$timeline', name, ...settings, tracks: [track('video', 'V1'), track('audio', 'A1')], grade: emptyGrade() };
 }
 
 const settingsText = (settings: { width: number; height: number; rate: Rate; sample_rate: number }, fps: (rate: string) => string) =>

@@ -7,7 +7,7 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EngineBridge } from '../src/bridge';
-import type { ClipTrack, Timeline as TimelineModel } from '../src/studio/engine';
+import { emptyGrade, type ClipTrack, type Timeline as TimelineModel } from '../src/studio/engine';
 import { Library } from '../src/studio/effects/Library';
 import { EFFECT_DRAG, effectOfTypes, type Effect } from '../src/studio/effects/drag';
 import { effectTarget } from '../src/studio/effects/drop';
@@ -41,6 +41,7 @@ const make = (videoTransitions: ClipTrack['transitions'] = [], locked = false): 
     { id: 'v1', kind: 'video', name: 'V1', enabled: true, locked, clips: [clip('c1', 10, 60), clip('c2', 70, 60), clip('c3', 160, 40)], transitions: videoTransitions },
     { id: 'a1', kind: 'audio', name: 'A1', enabled: true, locked: false, clips: [clip('a1', 10, 60), clip('a2', 70, 60)], transitions: [] },
   ],
+  grade: emptyGrade(),
 });
 function mount(t = make()) {
   const call = vi.fn().mockResolvedValue({ ok: true, result: {} });

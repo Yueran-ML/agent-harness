@@ -16,7 +16,7 @@ function pool(items = [media('m1'), media('m2'), media('m3')], bins: Bin[] = [])
   const importing = vi.fn();
   const call = vi.fn<(...args: any[]) => Promise<EngineAnswer>>();
   function Harness() {
-    const [project, setProject] = useState<Project>({ schema: 2, next_id: 10, media: items, bins, timelines: [] });
+    const [project, setProject] = useState<Project>({ schema: 3, groups: [], next_id: 10, media: items, bins, timelines: [] });
     call.mockImplementation(async (method, params) => {
       if (method !== 'transaction.apply') throw new Error(method);
       const done: Op[] = params.ops.map((op: Op) => op.op === 'add_bin' ? { ...op, bin: { ...op.bin, id: 'b10' } } : op);

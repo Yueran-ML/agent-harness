@@ -14,7 +14,7 @@ import { CUT_NARROW_PX } from '../src/studio/pages/CutPage';
 import { nearestCut, nearestEditPoint } from '../src/studio/timeline/editKeys';
 import { fitZoom, HEADER_WIDTH } from '../src/studio/timeline/geometry';
 import { placeOnTape, tapeIndexAt, tapeMedia, tapeOf, tapeStep } from '../src/studio/cut/SourceTape';
-import { applyOp, ProjectCopy, type EngineEvent, type Media, type Op, type Project, type Timeline, type TransportState } from '../src/studio/engine';
+import { applyOp, emptyGrade, ProjectCopy, type EngineEvent, type Media, type Op, type Project, type Timeline, type TransportState } from '../src/studio/engine';
 import type { EngineBridge } from '../src/bridge';
 import { clip, media } from './timeline-fixture';
 import { likeABrowser } from './mounted';
@@ -64,6 +64,7 @@ const cuts = (): Timeline => ({
     { id: 'a1', kind: 'audio', name: 'A1', enabled: true, locked: false, clips: [clip('ca', 0, 150)], transitions: [] },
     { id: 'a2', kind: 'audio', name: 'A2', enabled: true, locked: true, clips: [clip('cl', 0, 130)], transitions: [] },
   ],
+  grade: emptyGrade(),
 });
 
 /**
@@ -139,7 +140,7 @@ function refusalOf(project: Project, ops: readonly Record<string, unknown>[]): R
 
 /** An engine that keeps a project and the two transports, and tells what changed as the real one does. */
 function fakeEngine(timelines: Timeline[] = [cuts()], pool: { media: Media[]; bins: Project['bins'] } = { media: [m1, m2, m3], bins: [{ id: 'b1', name: 'B-roll', parent: null }] }) {
-  let project: Project = { schema: 2, next_id: 10, bins: pool.bins, media: pool.media, timelines };
+  let project: Project = { schema: 3, groups: [], next_id: 10, bins: pool.bins, media: pool.media, timelines };
   let revision = 0;
   const listeners = new Set<(event: EngineEvent) => void>();
   const tell = (method: string, params: unknown) => listeners.forEach(listener => listener({ kind: 'notification', session: 1, method, params }));

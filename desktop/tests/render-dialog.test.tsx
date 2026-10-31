@@ -41,7 +41,7 @@ function project(): Project {
   const main = timeline();
   main.tracks.push({ id: 's1', kind: 'subtitle', name: 'S1', enabled: true, locked: false, language: 'en', cues: [{ id: 'q1', start: 0, length: 50, text: 'Hello' }] });
   main.tracks.push({ id: 's2', kind: 'subtitle', name: 'S2', enabled: false, locked: false, language: 'fr', cues: [{ id: 'q2', start: 0, length: 50, text: 'Bonjour' }] });
-  return { schema: 2, next_id: 10, bins: [], media: [media], timelines: [main, { ...timeline([clip('c3')]), id: 't2', name: 'Alternate' }] };
+  return { schema: 3, groups: [], next_id: 10, bins: [], media: [media], timelines: [main, { ...timeline([clip('c3')]), id: 't2', name: 'Alternate' }] };
 }
 
 /** An engine that keeps a project and its two transports, and renders as the shell and the engine would. */

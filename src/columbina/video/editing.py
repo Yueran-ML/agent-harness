@@ -14,7 +14,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Literal
 
-from columbina.video import edits, media, story, textcut, words
+from columbina.video import edits, grading, media, story, textcut, words
 from columbina.video.edits import CueItem
 from columbina.video.engine import Applied, Engine, EngineError, Progress
 from columbina.video.project import ProjectError, identity_of, written
@@ -456,10 +456,28 @@ class Editor:
             {"changed": done is not None, "redo": redo, **(_applied(done) if done else {})}
         )
 
-    async def info(self, timeline: str | None = None) -> str:
-        """List engine ids and timeline positions for subsequent edits."""
+    async def info(
+        self, timeline: str | None = None, readable: Callable[[str], Path | None] | None = None
+    ) -> str:
+        """List engine ids and timeline positions for subsequent edits.
+
+        Grades are given in short (:func:`columbina.video.grading.brief`): a corrector has some
+        ninety settings, and a clip that is not graded has none to tell of. ``readable`` gives
+        the path of a LUT named by an absolute path where the session may read it, to tell
+        whether it is there; without it such LUTs are not looked for.
+        """
         revision, project = await self.engine.project()
         timelines = [_timeline(project, timeline)] if timeline else project["timelines"]
+        groups: list[dict[str, Any]] = project.get("groups", [])
+        names: set[str] = set()
+        for target in timelines:
+            names |= grading.luts_of(target.get("grade"))
+            for track in target["tracks"]:
+                for clip in track.get("clips", []):
+                    names |= grading.luts_of(clip.get("grade"))
+        for group in groups:
+            names |= grading.luts_of(group.get("pre")) | grading.luts_of(group.get("post"))
+        missing = await grading.missing_luts(self.engine, names, readable or (lambda _: None))
         summary: list[dict[str, Any]] = []
         for target in timelines:
             rate = edits.Rate.model_validate(target["rate"])
@@ -468,6 +486,12 @@ class Editor:
                 clips: list[dict[str, Any]] = []
                 for clip in track.get("clips", []):
                     item = dict(clip)
+                    item.pop("grade", None)
+                    if clip.get("group") is None:
+                        item.pop("group", None)
+                    graded = grading.brief(clip.get("grade"), missing)
+                    if graded is not None:
+                        item["grade"] = graded
                     position = placed(clip)
                     if position is not None:
                         item["source_out"] = {
@@ -478,9 +502,13 @@ class Editor:
                 tracks.append(
                     {**track, **({"clips": clips} if track["kind"] != "subtitle" else {})}
                 )
+            told = {key: value for key, value in target.items() if key != "grade"}
+            graded = grading.brief(target.get("grade"), missing)
+            if graded is not None:
+                told["grade"] = graded
             summary.append(
                 {
-                    **target,
+                    **told,
                     "tracks": tracks,
                     "frames": max(
                         (
@@ -502,5 +530,20 @@ class Editor:
                     {**item, "transcribed": item["id"] in transcripts} for item in project["media"]
                 ],
                 "timelines": summary,
+                **(
+                    {
+                        "groups": [
+                            {
+                                "id": group["id"],
+                                "name": group["name"],
+                                "pre": grading.brief(group.get("pre"), missing),
+                                "post": grading.brief(group.get("post"), missing),
+                            }
+                            for group in groups
+                        ]
+                    }
+                    if groups
+                    else {}
+                ),
             }
         )

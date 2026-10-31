@@ -211,6 +211,12 @@ def _studio_file(access: Access) -> bool:
         "video_render",
         "video_undo",
         "video_info",
+        "video_grade_info",
+        "video_grade_set",
+        "video_grade_node",
+        "video_grade_copy",
+        "video_grade_lut",
+        "video_grade_group",
     }:
         return True
     return (

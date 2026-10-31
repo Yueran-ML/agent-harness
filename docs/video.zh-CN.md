@@ -124,12 +124,13 @@ F2 重命名，Delete 从媒体池移除（有时间线在用时会被拒绝）�
 
 ## Agent 的视频工具
 
-九个工具为 `video_import`、`video_info`、`video_edit`、`video_transcribe`、`video_story`、
-`video_apply`、`video_correct`、`video_render`、`video_undo`。默认工程是工作目录下的 `.columbina/studio`，即工作室的工程；
+剪辑工具有九个：`video_import`、`video_info`、`video_edit`、`video_transcribe`、`video_story`、
+`video_apply`、`video_correct`、`video_render`、`video_undo`。调色工具有六个：`video_grade_info`、
+`video_grade_set`、`video_grade_node`、`video_grade_copy`、`video_grade_lut`、`video_grade_group`，见下文“调色”一节。默认工程是工作目录下的 `.columbina/studio`，即工作室的工程；
 也可用 `project` 指定其他目录。工程里有多条时间线时，作用于时间线的工具需要指定时间线 ID。
 
 - `video_import` 把素材加进媒体池，可以指定已有的素材箱，返回素材 ID；它不会把素材放上时间线。
-- `video_info` 列出素材、素材箱和时间线，包括轨道、片段、源入出点、位置、时长、速度和转场。
+- `video_info` 列出素材、素材箱和时间线，包括轨道、片段、源入出点、位置、时长、速度和转场；调过色的片段和时间线附调色摘要，并列出调色组。
 - `video_edit` 把一批编辑作为**一个原子事务、一个撤销步骤**提交。回执包含已执行的操作、`$name` 对应的实际 ID，以及被夹值的输入序号。
 - `video_transcribe` 把素材转录到 `analysis/`，也可以用转录的词替换一条字幕轨的字幕（一步撤销）。
 - `video_story`、`video_apply`、`video_correct` 用于按文字剪辑（见下文）。
@@ -153,6 +154,31 @@ F2 重命名，Delete 从媒体池移除（有时间线在用时会被拒绝）�
 与 DaVinci Resolve 一样，一条时间线同一时间只显示一条字幕轨。已有字幕轨显示时，`add_track` 新加的字幕轨默认隐藏。
 要改显示另一条，在同一批编辑里先把正在显示的那条 `set_track` 设为 `enabled:false`，再把另一条设为 `enabled:true`；
 否则引擎拒绝，错误码为 `VIDEO_SUBTITLE_SHOWN`。
+
+### 调色
+
+调色工具操作的是调色页的调色，结构与 DaVinci Resolve 相同：每个片段一棵节点树，每个片段组有组前置和组后置两张调色，
+时间线上还有一张作用于整条时间线的调色，按这个顺序生效。工具用片段 ID 指片段的调色，
+用 `{"level": "pre_clip" | "post_clip", "group": "k2"}` 指组的调色，用 `{"level": "timeline"}` 指时间线调色；
+节点用调色页显示的编号（最先添加的是 1）或节点 ID 指定。每次修改是一个事务、一个撤销步骤，与工作室里的人共用；
+回执附带这张调色的摘要。
+
+- `video_grade_info` 概括一张调色：按顺序列出节点的编号、ID、类型、标签和是否启用，每个输入接自哪里，
+  校色节点只列改变了画面的参数（按 `primaries.saturation` 这样的路径，用达芬奇界面上的单位），LUT 及其中缺失的，
+  混合器及其输入，以及节点是否带镜头匹配的调整。不指定调色时，列出所有调过色的片段、时间线调色和调色组。
+- `video_grade_set` 修改一个节点的参数、标签或 `enabled`。参数在发出前先检查，越界时用达芬奇的参数名、范围和中性值说明
+  （饱和度：0 到 100，50 不改变画面）。数值参数也可以是关键帧：`{"keys": [{"frame": 0, "value": 40, "interp": "linear"}, ...]}`，
+  帧号从片段第一帧算起，`hold` 是静态关键帧，`bezier` 是缓入缓出。
+- `video_grade_node` 用 `append`（追加节点）、`add_serial`、`add_serial_before`、`add_parallel`、`add_layer` 添加校色节点，
+  可以在同一步里给出标签和参数；也可以删除、重置或取出一个节点。
+- `video_grade_copy` 把一张调色复制到其他调色上（`preserve_nodes` 保留目标前 N 个节点），把它的节点追加到其他调色末尾
+  （Append Node Graph），或者粘贴一个节点的全部参数或单个参数。
+- `video_grade_lut` 列出工程目录和 LUT 库里的 `.cube` LUT（LUT 库为 `COLUMBINA_LUTS`，未设置时为 `COLUMBINA_HOME`
+  或 `~/.columbina` 下的 `luts` 文件夹），按名字给校色节点设置或清除 LUT；不指定节点时，LUT 放在末尾新加的校色节点上。
+- `video_grade_group` 新建片段组、加入或移出片段、改名、删除，把一张调色复制进组前置或组后置调色，或者把组调色并入各片段自己的调色。
+  组调色的进一步修改用其他调色工具，并指定 `pre_clip` 或 `post_clip`。
+
+引擎查找 LUT 的位置上没有这个 `.cube` 文件时，LUT 记为缺失。文件存在但解析失败的，由引擎在绘制画面时报告。
 
 ## 按文字剪辑
 
@@ -252,5 +278,5 @@ Agent 的源文件读取和输出写入遵守会话文件权限，包括 `add_me
 
 ## 本版本还没有的
 
-关键帧和曲线变速、调色、Fairlight 式混音（变速时保持音调、音乐自动压低）、标记、适配填充（Fit to Fill）、
+关键帧和曲线变速、工作室的调色页（agent 已经可以调色）、Fairlight 式混音（变速时保持音调、音乐自动压低）、标记、适配填充（Fit to Fill）、
 Close Up、多机位以及按时间码对齐素材，都在之后的阶段加入。桌面端导出只用硬件编码器，没有时改写 ProRes。

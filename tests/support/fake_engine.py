@@ -16,6 +16,13 @@ track that is not locked, as the engine does for clips that play forward; ``add_
 nothing. An edit that names a locked track, or a clip on one, is refused with ``locked``. A
 render writes a few bytes where it is told to, and tells its progress to every connection.
 
+Grades (schema 3) are kept as simply: the operations of grades and groups do what they say, an
+edit that adds a corrector becomes one ``add_node`` linked as the engine links it (beside a node,
+only its input is linked), a corrector that it adds has no settings but ``lut`` and
+``shot_match``, ``copy_grade`` and ``paste_*`` copy, ``reset_node`` takes the settings away,
+``collapse_group_grades`` only takes the clips out of their groups, and ``append_node_graph``
+changes nothing.
+
 In a test, :func:`served` serves a project in the loop of the test. As a program, run it the way
 the engine is run, ``python fake_engine.py --project DIR --headless [--idle-seconds N]``, and with
 ``--mode`` it ends as an engine that cannot start ends instead:
@@ -110,6 +117,33 @@ class RefusedError(Exception):
 _KINDS = {"add_media": "media", "add_timeline": "timeline", "add_track": "track", "add_bin": "bin"}
 _LETTERS = {"media": "m", "timeline": "t", "clip": "c", "bin": "b"}
 _TRACK_LETTERS = {"video": "V", "audio": "A", "subtitle": "S"}
+_GRADE_OPS = {
+    "add_node",
+    "remove_node",
+    "connect",
+    "disconnect",
+    "set_node",
+    "set_grade",
+    "add_group",
+    "remove_group",
+    "set_group",
+    "set_clip_group",
+}
+_GRADE_EDITS = {
+    "append_node",
+    "add_serial",
+    "add_serial_before",
+    "add_parallel",
+    "add_layer",
+    "extract_node",
+    "reset_node",
+    "copy_grade",
+    "append_node_graph",
+    "append_grade",
+    "collapse_group_grades",
+    "paste_value",
+    "paste_node",
+}
 _PLACING = {
     "insert",
     "overwrite",
@@ -170,6 +204,7 @@ class Fake:
         jobs: The state of each render, by its job.
         rendered: What each ``render.start`` was asked, in order.
         looked: What each ``scopes.statistics`` and ``luts.list`` was asked, in order.
+        transactions: The operations and edits of every ``transaction.apply``, as they were sent.
     """
 
     def __init__(self, directory: Path, address: str) -> None:
@@ -207,6 +242,7 @@ class Fake:
         self.jobs: dict[str, str] = {}
         self.rendered: list[dict[str, Any]] = []
         self.looked: list[tuple[str, dict[str, Any]]] = []
+        self.transactions: list[list[dict[str, Any]]] = []
         self.last_left = time.monotonic()
         self.log: Callable[[dict[str, Any]], None] = lambda line: None
 
@@ -293,6 +329,7 @@ class Fake:
         if params.get("revision", self.revision) != self.revision:
             raise RefusedError(-32001, "the project changed", {"reason": "stale_revision"})
         ops = cast("list[dict[str, Any]]", params.get("ops") or [])
+        self.transactions.append(copy.deepcopy(ops))
         if not ops:
             message = "the transaction has no operations"
             raise RefusedError(-32001, message, {"reason": "empty", "message": message})
@@ -504,6 +541,9 @@ class Fake:
 
     def _one(self, op: dict[str, Any], names: dict[str, str], index: int) -> None:
         """Apply an operation."""
+        if op["op"] in _GRADE_OPS:
+            self._graded(op, names, index)
+            return
         kind = _KINDS.get(op["op"], "clip" if op["op"] == "insert_clip" else None)
         for key in ("timeline", "track", "id"):
             if key in op and key != kind:
@@ -547,6 +587,8 @@ class Fake:
     ) -> list[dict[str, Any]]:
         """Work an edit out into operations, simply."""
         name = edit.get("edit")
+        if name in _GRADE_EDITS:
+            return self._grade_worked(edit, names, index)
         if name not in _EDITS:
             message = f"there is no edit {name}"
             raise RefusedError(-32602, message, {"index": index, "reason": "unknown_edit"})
@@ -663,6 +705,200 @@ class Fake:
                     trimmed = {"source_in": begins, "start": start, "length": last - end}
                     ops.append({"op": "trim_clip", **where, **trimmed})
         return ops
+
+    # Grades
+
+    def _refused(self, index: int, reason: str, message: str, **data: object) -> RefusedError:
+        return RefusedError(
+            -32001, message, {"index": index, "reason": reason, **data, "message": message}
+        )
+
+    def _target(self, target: dict[str, Any], names: dict[str, str], index: int) -> dict[str, Any]:
+        return {key: self._named(value, names, index) for key, value in target.items()}
+
+    def _group(self, id: object, index: int) -> dict[str, Any]:
+        for group in self.project.setdefault("groups", []):
+            if group["id"] == id:
+                return cast("dict[str, Any]", group)
+        raise self._refused(index, "missing", f"there is no group {id}", what="group", id=id)
+
+    def _found_clip(self, timeline: object, id: object, index: int) -> dict[str, Any]:
+        for track in self._timeline(str(timeline), index)["tracks"]:
+            for clip in track.get("clips", []):
+                if clip["id"] == id:
+                    return cast("dict[str, Any]", clip)
+        raise self._refused(index, "missing", f"there is no clip {id}", what="clip", id=id)
+
+    def _grade_of(self, target: dict[str, Any], index: int) -> dict[str, Any]:
+        """The grade that a target names, in the project."""
+        level = target.get("level")
+        if level in ("pre_clip", "post_clip"):
+            group = self._group(target.get("group"), index)
+            return cast("dict[str, Any]", group["pre" if level == "pre_clip" else "post"])
+        if level == "timeline":
+            timeline = self._timeline(str(target.get("timeline")), index)
+            return cast("dict[str, Any]", timeline.setdefault("grade", _empty_grade()))
+        clip = self._found_clip(target.get("timeline"), target.get("clip"), index)
+        return cast("dict[str, Any]", clip.setdefault("grade", _empty_grade()))
+
+    def _graded(self, op: dict[str, Any], names: dict[str, str], index: int) -> None:
+        """Apply an operation of grades or groups."""
+        name = op["op"]
+        if name == "add_group":
+            group = op["group"]
+            given = str(group.get("id", ""))
+            if not given or given.startswith("$"):
+                group["id"] = f"k{self.project['next_id']}"
+                self.project["next_id"] += 1
+                if given:
+                    names[given] = group["id"]
+            groups = self.project.setdefault("groups", [])
+            op.setdefault("index", len(groups))
+            groups.insert(op["index"], group)
+            return
+        if name in ("remove_group", "set_group"):
+            op["id"] = self._named(op["id"], names, index)
+            group = self._group(op["id"], index)
+            if name == "set_group":
+                group.update({k: v for k, v in op.items() if k not in ("op", "id")})
+                return
+            for timeline in self.project["timelines"]:
+                for track in timeline["tracks"]:
+                    for clip in track.get("clips", []):
+                        if clip.get("group") == op["id"]:
+                            message = f"clip {clip['id']} is in group {op['id']}"
+                            raise self._refused(
+                                index, "grouped", message, group=op["id"], clip=clip["id"]
+                            )
+            self.project["groups"].remove(group)
+            return
+        if name == "set_clip_group":
+            for key in ("timeline", "clip", "group"):
+                op[key] = self._named(op[key], names, index)
+            if op["group"] is not None:
+                self._group(op["group"], index)
+            self._found_clip(op["timeline"], op["clip"], index)["group"] = op["group"]
+            return
+        op["grade"] = self._target(op["grade"], names, index)
+        grade = self._grade_of(op["grade"], index)
+        nodes: list[dict[str, Any]] = grade["nodes"]
+        if name == "set_grade":
+            grade.clear()
+            grade.update(copy.deepcopy(op["value"]))
+            return
+        if name == "add_node":
+            node = op["node"]
+            given = str(node.get("id", ""))
+            if not given or given.startswith("$"):
+                node["id"] = f"n{self.project['next_id']}"
+                self.project["next_id"] += 1
+                if given:
+                    names[given] = node["id"]
+            op.setdefault("index", len(nodes))
+            nodes.insert(op["index"], node)
+            links = [
+                {**link, **{end: node["id"] for end in ("from", "to") if link[end] in ("", given)}}
+                for link in op.get("links", [])
+            ]
+            for link in links:
+                _linked(grade, link)
+            op["links"] = links
+            return
+        if name in ("connect", "disconnect"):
+            if name == "connect":
+                _linked(grade, op["link"])
+            else:
+                grade["links"] = [one for one in grade["links"] if not _into(one, op)]
+            return
+        id = op["id"] = self._named(op["id"], names, index)
+        found = [one for one in nodes if one["id"] == id]
+        if not found:
+            raise self._refused(index, "missing", f"there is no node {id}", what="node", id=id)
+        if name == "set_node":
+            found[0].update({k: op[k] for k in ("label", "enabled") if k in op})
+            if "params" in op:
+                found[0]["params"] = _patched(found[0].get("params", {}), op["params"])
+            return
+        # remove_node: what came into it goes where it went, unless links are given.
+        up = next((one["from"] for one in grade["links"] if _into(one, {"to": id})), None)
+        went = [one for one in grade["links"] if one["from"] == id]
+        grade["links"] = [one for one in grade["links"] if id not in (one["from"], one["to"])]
+        bridged = op.get("links")
+        if bridged is None:
+            bridged = [{**one, "from": up} for one in went] if up is not None else []
+        for link in bridged:
+            _linked(grade, link)
+        op["links"] = bridged
+        nodes.remove(found[0])
+
+    def _grade_worked(
+        self, edit: dict[str, Any], names: dict[str, str], index: int
+    ) -> list[dict[str, Any]]:
+        """Work an edit of grades out into operations, simply."""
+        name = edit["edit"]
+        if name == "collapse_group_grades":
+            on = self._named(edit["timeline"], names, index)
+            return [
+                {"op": "set_clip_group", "timeline": on, "clip": clip, "group": None}
+                for clip in edit["clips"]
+            ]
+        if name in ("copy_grade", "append_node_graph", "append_grade", "paste_node", "paste_value"):
+            source = self._target(edit["from"], names, index)
+            into: list[dict[str, Any]] = edit["to"] if "from_node" not in edit else [edit["to"]]
+            targets = [self._target(one, names, index) for one in into]
+            copied = copy.deepcopy(self._grade_of(source, index))
+            if name == "copy_grade":
+                return [{"op": "set_grade", "grade": one, "value": copied} for one in targets]
+            if name in ("append_node_graph", "append_grade"):
+                kept = [copy.deepcopy(self._grade_of(one, index)) for one in targets]
+                return [
+                    {"op": "set_grade", "grade": one, "value": value}
+                    for one, value in zip(targets, kept, strict=True)
+                ]
+            node = next(one for one in copied["nodes"] if one["id"] == edit["from_node"])
+            params: dict[str, Any] = node["params"]
+            if name == "paste_value":
+                parts = edit["param"].split(".")
+                patch: dict[str, Any] = {}
+                place, value = patch, params
+                for part in parts[:-1]:
+                    place, value = place.setdefault(part, {}), value[part]
+                place[parts[-1]] = value[parts[-1]]
+                params = patch
+            to_node = edit["to_node"]
+            return [{"op": "set_node", "grade": targets[0], "id": to_node, "params": params}]
+        target = self._target(edit["grade"], names, index)
+        grade = self._grade_of(target, index)
+        node = edit.get("node", "output")
+        ids = {one["id"] for one in grade["nodes"]} | {"source", "output"}
+        if node not in ids:
+            raise self._refused(index, "missing", f"there is no node {node}", what="node", id=node)
+        up = next((one["from"] for one in grade["links"] if _into(one, {"to": node})), None)
+        if name == "reset_node":
+            params = {"lut": None, "shot_match": None}
+            return [{"op": "set_node", "grade": target, "id": node, "params": params}]
+        if name == "extract_node":
+            kept = copy.deepcopy(next(one for one in grade["nodes"] if one["id"] == node))
+            return [
+                {"op": "remove_node", "grade": target, "id": node},
+                {"op": "add_node", "grade": target, "node": kept, "links": []},
+            ]
+        if name == "add_serial":
+            links = [_link(node, "")] + [
+                {**one, "from": ""} for one in grade["links"] if one["from"] == node
+            ]
+        elif name in ("append_node", "add_serial_before"):
+            links = [_link("", node)] + ([_link(up, "")] if up is not None else [])
+        else:
+            links = [_link(up, "")] if up is not None else []
+        corrector = {
+            "id": "",
+            "kind": "corrector",
+            "label": "",
+            "enabled": True,
+            "params": {"lut": None, "shot_match": None},
+        }
+        return [{"op": "add_node", "grade": target, "node": corrector, "links": links}]
 
     def _named(self, value: object, names: dict[str, str], index: int) -> object:
         if isinstance(value, str) and value.startswith("$"):
@@ -819,6 +1055,40 @@ def _one_shown(timeline: dict[str, Any], track: dict[str, Any], index: int) -> N
         )
         data = {"index": index, "reason": "subtitle_shown", "track": shown["id"]}
         raise RefusedError(-32001, message, {**data, "message": message})
+
+
+def _empty_grade() -> dict[str, Any]:
+    return {"nodes": [], "links": [_link("source", "output")]}
+
+
+def _link(source: str, to: str) -> dict[str, Any]:
+    return {"from": source, "to": to, "kind": "rgb", "input": 0}
+
+
+def _into(link: dict[str, Any], end: dict[str, Any]) -> bool:
+    """Whether a link goes into the input that ``end`` names: its first RGB one, unless said."""
+    return (
+        link["to"] == end["to"]
+        and link["kind"] == end.get("kind", "rgb")
+        and link["input"] == end.get("input", 0)
+    )
+
+
+def _linked(grade: dict[str, Any], link: dict[str, Any]) -> None:
+    """Put a link in place of the one into its input, keeping the links in the engine's order."""
+    grade["links"] = [one for one in grade["links"] if not _into(one, link)] + [link]
+    grade["links"].sort(key=lambda one: (one["to"], one["kind"] != "rgb", one["input"]))
+
+
+def _patched(params: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    """The params with a patch put in: objects into objects, other values in place."""
+    out = copy.deepcopy(params)
+    for key, value in patch.items():
+        if isinstance(out.get(key), dict) and isinstance(value, dict):
+            out[key] = _patched(out[key], cast("dict[str, Any]", value))
+        else:
+            out[key] = copy.deepcopy(value)
+    return out
 
 
 def _duration(timeline: dict[str, Any]) -> int:

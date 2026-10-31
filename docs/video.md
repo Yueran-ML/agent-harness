@@ -170,16 +170,19 @@ dialog is open. Ctrl+M, which marks in Resolve, is left for markers; the export 
 
 ## The agent's tools
 
-The nine tools are `video_import`, `video_info`, `video_edit`, `video_transcribe`, `video_story`,
-`video_apply`, `video_correct`, `video_render` and `video_undo`. By default they connect to
-`.columbina/studio` under the session workspace, the studio's project; an explicit `project`
-selects another directory. With more than one timeline in the project, a tool that works on a
-timeline needs its id.
+The editing tools are `video_import`, `video_info`, `video_edit`, `video_transcribe`,
+`video_story`, `video_apply`, `video_correct`, `video_render` and `video_undo`; the grading
+tools, `video_grade_info`, `video_grade_set`, `video_grade_node`, `video_grade_copy`,
+`video_grade_lut` and `video_grade_group`, are described under Grades below. By default they
+connect to `.columbina/studio` under the session workspace, the studio's project; an explicit
+`project` selects another directory. With more than one timeline in the project, a tool that
+works on a timeline needs its id.
 
 - `video_import` adds media to the pool, optionally into an existing bin, and returns the media
   ids. It places nothing on a timeline.
 - `video_info` lists media, bins and timelines with their tracks, clips, source In and Out,
-  placement, duration, speed and transitions.
+  placement, duration, speed and transitions; a graded clip or timeline with its grade in short,
+  and the groups of grades.
 - `video_edit` applies a batch of edits as **one atomic transaction and one undo step**. Its
   receipt has the operations done, the ids given to `$names` and the inputs that were clamped.
 - `video_transcribe` transcribes media into `analysis/`, and can replace a subtitle track with
@@ -212,6 +215,43 @@ A timeline shows one subtitle track at a time, as DaVinci Resolve does. A subtit
 with `add_track` is hidden while another is shown. To show another track, hide the shown one in
 the same batch first (`set_track` with `enabled:false`, then `enabled:true` on the other);
 otherwise the engine refuses with `VIDEO_SUBTITLE_SHOWN`.
+
+### Grades
+
+The grading tools work on the grades of the Color page as DaVinci Resolve builds them: a tree of
+nodes for each clip, a pre-clip and a post-clip grade for each group of clips, and one grade over
+the whole timeline, applied in that order. A tool names a grade by a clip id, or by
+`{"level": "pre_clip" | "post_clip", "group": "k2"}` or `{"level": "timeline"}`, and a node by
+its number as the Color page shows it (1 is the first added) or by its id. Each change is one
+transaction and one undo step, shared with the person in the studio, and its receipt has the
+grade's summary.
+
+- `video_grade_info` summarises a grade: its nodes in order with number, id, kind, label and
+  whether each is on; what each input is linked from; only the corrector settings that change
+  the picture, by their paths (`primaries.saturation`) in DaVinci's units; LUTs, and those that
+  are missing; mixers and their inputs; and whether Shot Match adjusted a node. Without a grade,
+  it lists every graded clip, the timeline's grade and the groups.
+- `video_grade_set` patches one node's settings, label or `enabled`. Values are checked before
+  they are sent, so a value out of range is told with DaVinci's name, range and neutral value
+  (Saturation: 0 to 100, 50 changes nothing). A number may be keyframes,
+  `{"keys": [{"frame": 0, "value": 40, "interp": "linear"}, ...]}`, frames counted from the
+  clip's first, with `hold` for static keyframes and `bezier` for eases.
+- `video_grade_node` adds a corrector as `append` (Append Node), `add_serial`,
+  `add_serial_before`, `add_parallel` or `add_layer` add one, with its label and settings in the
+  same step if given, or removes, resets or extracts a node.
+- `video_grade_copy` copies a grade onto others (with `preserve_nodes`, each keeps its first N
+  nodes), appends its nodes to theirs (Append Node Graph), or pastes one node's settings or one
+  setting.
+- `video_grade_lut` lists the `.cube` LUTs of the project folder and the LUT library
+  (`COLUMBINA_LUTS`, otherwise the `luts` folder in `COLUMBINA_HOME` or in `~/.columbina`), and
+  sets or clears a corrector's LUT by name; without a node, the LUT goes on a new corrector at
+  the end.
+- `video_grade_group` makes a group of clips, adds or removes clips, renames or deletes it,
+  copies a grade into its pre-clip or post-clip grade, or collapses its grades into each clip's
+  own. A group's grades are edited further with the other tools and `pre_clip`/`post_clip`.
+
+A LUT is missing when there is no such `.cube` file where the engine looks for it. One that is
+there but does not parse is reported by the engine as it draws the picture.
 
 ## Editing by text
 
@@ -333,6 +373,7 @@ client has been absent for a while.
 
 ## Not in this version
 
-Keyframes and speed curves, colour, Fairlight-style mixing (pitch kept at another speed, music
+Keyframes and speed curves, the Color page of the studio (the agent already grades),
+Fairlight-style mixing (pitch kept at another speed, music
 ducking), markers, Fit to Fill, Close Up, multicam and lining clips up by timecode come in later
 phases. The desktop's export writes with hardware encoders only, with ProRes as the fallback.

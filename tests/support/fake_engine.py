@@ -205,6 +205,9 @@ class Fake:
         rendered: What each ``render.start`` was asked, in order.
         looked: What each ``scopes.statistics`` and ``luts.list`` was asked, in order.
         transactions: The operations and edits of every ``transaction.apply``, as they were sent.
+        gestures: The ``gesture`` of every ``transaction.apply``, or ``None``, in order.
+        measure: What ``scopes.statistics`` of a frame drawn off screen answers, from its
+            params and the project; a grey frame unless a test says.
     """
 
     def __init__(self, directory: Path, address: str) -> None:
@@ -243,6 +246,11 @@ class Fake:
         self.rendered: list[dict[str, Any]] = []
         self.looked: list[tuple[str, dict[str, Any]]] = []
         self.transactions: list[list[dict[str, Any]]] = []
+        self.gestures: list[dict[str, Any] | None] = []
+        self.gesture: tuple[str, int] | None = None
+        self.measure: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]] = (
+            lambda params, project: grey_frame(int(params.get("bins", 256)))
+        )
         self.last_left = time.monotonic()
         self.log: Callable[[dict[str, Any]], None] = lambda line: None
 
@@ -326,8 +334,20 @@ class Fake:
         }
 
     def transaction_apply(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
-        if params.get("revision", self.revision) != self.revision:
+        given = cast("dict[str, Any] | None", params.get("gesture"))
+        self.gestures.append(copy.deepcopy(given))
+        key = None if given is None else f"{id(asking)}:{given['id']}"
+        going = self.gesture is not None and key == self.gesture[0]
+        if going and self.steps and self.gesture is not None:
+            fresh = self.gesture[1] <= params.get("revision", self.revision) <= self.revision
+        else:
+            fresh = params.get("revision", self.revision) == self.revision
+        if not fresh:
+            if given is not None and given.get("end"):
+                self.gesture = None
             raise RefusedError(-32001, "the project changed", {"reason": "stale_revision"})
+        if not going:
+            self.gesture = None
         ops = cast("list[dict[str, Any]]", params.get("ops") or [])
         self.transactions.append(copy.deepcopy(ops))
         if not ops:
@@ -338,9 +358,26 @@ class Fake:
             done, names, clamped = self._applied(copy.deepcopy(ops))
         except RefusedError:
             self.project = before
+            if given is not None and given.get("end"):
+                self.gesture = None
             raise
         self.edits.extend(copy.deepcopy(op) for op in ops if "edit" in op)
-        self.changed(str(asking.client), done, before)
+        if going and self.gesture is not None:
+            step = self.steps[-1]
+            self.revision += 1
+            self.steps[-1] = Step(
+                step.before, copy.deepcopy(self.project), step.done + done, step.made_by
+            )
+            self._told(str(asking.client), str(asking.client), done)
+        else:
+            self.changed(str(asking.client), done, before)
+            if key is not None:
+                self.gesture = (key, self.revision - 1)
+        if given is not None and given.get("end"):
+            self.gesture = None
+            last = self.steps[-1]
+            if _same_project(last.before, self.project):
+                self.steps.pop()
         return {
             "revision": self.revision,
             "done": done,
@@ -350,9 +387,11 @@ class Fake:
         }
 
     def history_undo(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        self.gesture = None
         return self._stepped(asking, self.steps, self.undone, back=True)
 
     def history_redo(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        self.gesture = None
         return self._stepped(asking, self.undone, self.steps, back=False)
 
     def media_import(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
@@ -440,6 +479,16 @@ class Fake:
     def scopes_statistics(self, _asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
         """The figures of a grey frame of 4 x 2, as a monitor of the desktop's engine shows it."""
         self.looked.append(("scopes.statistics", copy.deepcopy(params)))
+        if "timeline" in params:
+            said = self.measure(copy.deepcopy(params), copy.deepcopy(self.project))
+            said.update(timeline=params["timeline"], frame=params["frame"])
+            if "node" in params:
+                said["node"] = {
+                    "grade": params["grade"],
+                    "node": params["node"],
+                    "at": params.get("at", "output"),
+                }
+            return said
         if self.headless is not False:
             raise RefusedError(-32601, "there is no method scopes.statistics in a headless engine")
         bins = params.get("bins", 256)
@@ -970,6 +1019,14 @@ class Fake:
             track.update({k: v for k, v in op.items() if k not in ("op", "id", "timeline")})
         elif name in ("remove_clip", "move_clip", "trim_clip", "set_clip"):
             self._clip_changed(op, index)
+        elif name == "set_color_settings":
+            self.project["color"] = _patched(self.project.get("color", {}), op["settings"])
+        elif name == "set_media_color":
+            media = next((m for m in self.project["media"] if m["id"] == op["id"]), None)
+            if media is None:
+                raise self._refused(index, "missing", "no such media", what="media", id=op["id"])
+            told = media.setdefault("color_override", {"input": None, "levels": "auto"})
+            told.update({key: op[key] for key in ("input", "levels") if key in op})
 
     def _track(self, timeline: str, id: str, index: int) -> dict[str, Any]:
         found = [one for one in self._timeline(timeline, index)["tracks"] if one["id"] == id]
@@ -1091,6 +1148,53 @@ def _patched(params: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
         else:
             out[key] = copy.deepcopy(value)
     return out
+
+
+def grey_frame(bins: int, value: float = 128 / 255) -> dict[str, Any]:
+    """The figures of a frame of 4 x 2 pixels all of one grey, as ``scopes.statistics``."""
+    return frame_of([(value, value, value)] * 8, bins)
+
+
+def frame_of(pixels: list[tuple[float, float, float]], bins: int) -> dict[str, Any]:
+    """The figures of pixels of R', G' and B' as ``scopes.statistics`` answers them."""
+    names = ("red", "green", "blue", "luma")
+    values = [(r, g, b, 0.2126 * r + 0.7152 * g + 0.0722 * b) for r, g, b in pixels]
+    counts = {name: [0] * bins for name in names}
+    for value in values:
+        for name, one in zip(names, value, strict=True):
+            counts[name][round(min(max(one, 0.0), 1.0) * (bins - 1))] += 1
+    figures: dict[str, Any] = {}
+    for at, name in enumerate(names):
+        each = [value[at] for value in values]
+        figures[name] = {"min": min(each), "max": max(each), "mean": sum(each) / len(each)}
+    return {
+        "frame": 0,
+        "width": len(pixels),
+        "height": 1,
+        "samples": len(pixels),
+        **figures,
+        "chroma": {
+            "centroid": [0.0, 0.0],
+            "spread": [0.0, 0.0],
+            "radius": 0.0,
+            "saturation": 0.0,
+            "hue": 0.0,
+        },
+        "percentiles": {
+            name: {
+                "1": figures[name]["min"],
+                "50": figures[name]["mean"],
+                "99": figures[name]["max"],
+            }
+            for name in names
+        },
+        "histogram": {"bins": bins, **counts},
+    }
+
+
+def _same_project(one: dict[str, Any], other: dict[str, Any]) -> bool:
+    """Whether two projects are alike but for ``next_id``, which a gesture does not take back."""
+    return {**one, "next_id": 0} == {**other, "next_id": 0}
 
 
 def _duration(timeline: dict[str, Any]) -> int:

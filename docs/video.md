@@ -173,7 +173,8 @@ dialog is open. Ctrl+M, which marks in Resolve, is left for markers; the export 
 The editing tools are `video_import`, `video_info`, `video_edit`, `video_transcribe`,
 `video_story`, `video_apply`, `video_correct`, `video_render` and `video_undo`; the grading
 tools, `video_grade_info`, `video_grade_set`, `video_grade_node`, `video_grade_copy`,
-`video_grade_lut` and `video_grade_group`, are described under Grades below. By default they
+`video_grade_lut`, `video_grade_group`, `video_grade_scopes`, `video_color_settings`,
+`video_media_color` and `video_shot_match`, are described under Grades below. By default they
 connect to `.columbina/studio` under the session workspace, the studio's project; an explicit
 `project` selects another directory. With more than one timeline in the project, a tool that
 works on a timeline needs its id.
@@ -230,7 +231,10 @@ grade's summary.
   whether each is on; what each input is linked from; only the corrector settings that change
   the picture, by their paths (`primaries.saturation`) in DaVinci's units; LUTs, and those that
   are missing; mixers and their inputs; and whether Shot Match adjusted a node. Without a grade,
-  it lists every graded clip, the timeline's grade and the groups.
+  it lists every graded clip, the timeline's grade and the groups. With `reference: true` it
+  gives the full reference instead: every setting of a node with DaVinci's name, its range and
+  neutral value, keyframes, mixers, the colour settings and the colour spaces. The tools'
+  descriptions keep only the essentials, so that they cost little on every request.
 - `video_grade_set` patches one node's settings, label or `enabled`. Values are checked before
   they are sent, so a value out of range is told with DaVinci's name, range and neutral value
   (Saturation: 0 to 100, 50 changes nothing). A number may be keyframes,
@@ -247,15 +251,44 @@ grade's summary.
   setting. `keyframes` says where copied keys go: `source_timecode` (the default, the same time
   of the media) or `start_frame` (as far from each clip's first picture).
 - `video_grade_lut` lists the `.cube` LUTs of the project folder and the LUT library
-  (`COLUMBINA_LUTS`, otherwise the `luts` folder in `COLUMBINA_HOME` or in `~/.columbina`), and
-  sets or clears a corrector's LUT by name; without a node, the LUT goes on a new corrector at
-  the end.
+  (`COLUMBINA_LUTS`, otherwise the `luts` folder in `COLUMBINA_HOME` or in `~/.columbina`) with
+  their kind (1D, 3D, shaper and 3D), and sets or clears a corrector's LUT by name; without a
+  node, the LUT goes on a new corrector at the end.
 - `video_grade_group` makes a group of clips, adds or removes clips, renames or deletes it,
   copies a grade into its pre-clip or post-clip grade, or collapses its grades into each clip's
   own. A group's grades are edited further with the other tools and `pre_clip`/`post_clip`.
 
+- `video_grade_scopes` measures a frame drawn off screen, as an export draws it, so it needs no
+  monitor and works with the agent's own headless engine: for R', G', B' and luma their least,
+  most and mean and the levels below which 1, 5, 25, 50, 75, 95 and 99 percent of the pixels
+  are, the chroma (its centroid, a cast where it is off the centre) and the mid grey. `clip`
+  measures the middle of a clip; with `node`, the picture going into the node or coming out of
+  it (`at`) is measured instead of the frame; `histogram` adds a coarse histogram.
+- `video_color_settings` reads the project's colour management (Project Settings › Color
+  Management: DaVinci YRGB, DaVinci YRGB Color Managed, ACEScct, ACEScc) with the spaces it puts
+  in force (the timeline space a preset chooses, for instance), or sets a patch of it as one undo
+  step.
+- `video_media_color` lists the colour of media (what the file says, and what is set by hand),
+  or sets the Input Color Space of media, `bypass`, or `default` (the project's), and their Data
+  Levels, as the media pool does, for many media in one undo step.
+- `video_shot_match` is Shot Match to This Clip: it makes clips look like a target clip, or a
+  still of the Gallery (`{"still": "s1"}`). As in DaVinci Resolve the result is invisible: it is
+  the `shot_match` of a node, its very last adjustment after Soft Clip, "similar to a LUT"
+  (p. 3048), and no setting of the palettes changes; `video_grade_info` shows the node as
+  matched. The node is `node` of each clip, its last corrector otherwise, or a corrector added
+  to a grade that has none. Each clip and the target are measured off screen, the clip's node
+  without any match it already had; per channel a gamma, a gain and an offset, and a contrast
+  about the target's mid grey, are fitted by least squares to the percentiles, the mean chroma
+  and the mid grey, within bounds narrower than the engine allows, so that a clip far from its
+  target is brought closer without harm, and a parameter held at a bound is told. The clips,
+  however many, are one undo step. `reset: true` takes a match away; `auto: true` is the A
+  button instead, balancing each clip's blacks and whites into its visible Lift and Gain.
+  Shot Match is made for clips that are not graded yet, normalized to Rec.709 Gamma 2.4
+  (pp. 3047–3048); the receipt says so where the timeline works in another space or a clip was
+  graded already.
+
 A LUT is missing when there is no such `.cube` file where the engine looks for it. One that is
-there but does not parse is reported by the engine as it draws the picture.
+there but does not parse is listed with why, and is not set.
 
 ## Editing by text
 

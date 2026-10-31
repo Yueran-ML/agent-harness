@@ -15,9 +15,9 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Annotated, Any, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, WithJsonSchema, field_validator
 
 from columbina.agent import RUNTIME_FACTS, Facts
 from columbina.fs import FS, Access, Fs
@@ -310,103 +310,123 @@ class _Target(BaseModel):
     level: Literal["clip", "pre_clip", "post_clip", "timeline"] = "clip"
     clip: str | None = None
     group: str | None = None
-    timeline: str | None = Field(
-        default=None, description="Defaults to the tool's timeline, or the only one."
-    )
+    timeline: str | None = None
+
+
+class _Still(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    still: str
+
+
+_STRING_OR_OBJECT = WithJsonSchema({"anyOf": [{"type": "string"}, {"type": "object"}]})
+# The objects are checked as they are read, and told of in the descriptions: their schemas
+# would be repeated in every tool of grades, on every request.
+_Grade = Annotated[str | _Target, _STRING_OR_OBJECT]
+_Matched = Annotated[str | _Still, _STRING_OR_OBJECT]
+
+
+def _compact(schema: dict[str, Any]) -> None:
+    """Leave out of the schema of a tool of grades what costs tokens and tells a model nothing.
+
+    That is the ``null`` of an optional field (it is left out instead) and its default of
+    ``null``.
+    """
+    properties = cast("dict[str, dict[str, Any]]", schema.get("properties", {}))
+    for field in properties.values():
+        among = field.get("anyOf")
+        if isinstance(among, list):
+            kept = [one for one in cast("list[Any]", among) if one != {"type": "null"}]
+            if len(kept) == 1:
+                del field["anyOf"]
+                field.update(cast("dict[str, Any]", kept[0]))
+            else:
+                field["anyOf"] = kept
+        if "default" in field and field["default"] is None:
+            del field["default"]
+
+
+class _Graded(_Timeline):
+    model_config = ConfigDict(json_schema_extra=_compact)
+
+    project: str = Field(default=_DEFAULT_PROJECT, description="Project directory.")
+    timeline: str | None = Field(default=None, description="Timeline id; omit if only one.")
 
 
 _TARGET = (
-    'Which grade: a clip id, or {level, clip?, group?, timeline?}: {"level": "clip", "clip": '
-    '"c4"}, {"level": "pre_clip" | "post_clip", "group": "k2"} (a group\'s grades before and '
-    'after its clips\'), or {"level": "timeline"} (over the whole timeline).'
+    'A grade: a clip id; {"level": "pre_clip"|"post_clip", "group": id} (a group\'s, before or '
+    'after its clips\'); {"level": "timeline"}; or {"level": "clip", "clip": id}.'
 )
-_NODE = (
-    "The node: its number as DaVinci shows it (1 is the first added; video_grade_info lists "
-    "them) or its id."
-)
+_NODE = "A node: its number as DaVinci shows it (from 1), or its id."
 _SETTINGS = (
-    "Corrector settings to change, by paths with dots in DaVinci's units, e.g. "
-    '{"primaries.saturation": 0, "primaries.lift.b": 0.05, "curves.y.points": [[0,0],[0.5,0.6],'
-    "[1,1]]}. Neutral values: lift/gamma {y,r,g,b} 0 (-1..1), gain 1 (0..16), offset {r,g,b} 25 "
-    "(-75..125), contrast 1 (0..2), pivot 0.435, saturation 50 (0..100), hue 50, lum_mix 100, "
-    "temperature 0 (-4000..4000), tint/color_boost/midtone_detail/shadows/highlights 0 "
-    "(-100..100), log.shadow/midtone/highlight {r,g,b} 0 (-1..1), log.low_range 0.333, "
-    "log.high_range 0.55, curves.y/r/g/b {points [[in,out],...] 0..1, intensity 100}, "
-    "curves.ganged true, hsl.hue_vs_hue/hue_vs_sat/hue_vs_lum/lum_vs_sat/sat_vs_sat/sat_vs_lum "
-    "points [[in 0..1, out -1..1]] ([] is flat), soft_clip.low/high/low_soft/high_soft {r,g,b} "
-    "0/100/0/0 (0..100), key.input/output {invert, gain 1 (0..2), offset 0}, lut, shot_match "
-    '{gamma, gain, offset, contrast, pivot} or null. A number may be keyframes {"keys": [{"frame":'
-    ' 0, "value": 40, "interp": "linear"|"hold"|{"bezier": {"out": [t, dv], "in": [t, dv]}}}, '
-    "...]}. A key's frame: of a clip of media, the frame of its media (at the media's own "
-    "rate, from 0) whose picture is shown, so keys stay on their pictures through trims, slips "
-    "and speed changes; of a title, a colour or a still, the clip's frame from its first (0); of "
-    "the timeline's grade, the timeline's frame. Mixers: inputs, composite (layer mixer)."
+    'Corrector settings by paths with dots, in DaVinci\'s units: {"primaries.saturation": 0, '
+    '"primaries.gain.r": 1.1, "curves.y.points": [[0,0],[0.5,0.6],[1,1]]}. Neutral: lift, gamma '
+    "0; gain 1; offset 25; contrast 1; saturation 50. A number may be keyframes "
+    '{"keys": [{"frame", "value"}, ...]}. Every setting, its range and keyframes: '
+    "video_grade_info with reference true."
 )
 
 
-class _GradeInfo(_Timeline):
-    grade: str | _Target | None = Field(
-        default=None, description=_TARGET + " Omit to list every grade of the timeline."
+class _GradeInfo(_Graded):
+    grade: _Grade | None = Field(default=None, description=_TARGET + " Omit for all.")
+    reference: bool = Field(
+        default=False,
+        description=(
+            "true: the full reference instead: every setting with its range, keyframes, mixers, "
+            "colour settings and spaces."
+        ),
     )
 
 
-class _GradeSet(_Timeline):
-    grade: str | _Target = Field(description=_TARGET)
+class _GradeSet(_Graded):
+    grade: _Grade = Field(description=_TARGET)
     node: int | str = Field(description=_NODE)
     settings: dict[str, Any] | None = Field(default=None, description=_SETTINGS)
     label: str | None = None
     enabled: bool | None = None
 
 
-class _GradeNode(_Timeline):
-    grade: str | _Target = Field(description=_TARGET)
+class _GradeNode(_Graded):
+    grade: _Grade = Field(description=_TARGET)
     action: grading.NodeAction = Field(
         description=(
-            "append: a corrector at the end, before the output (Append Node, Alt+K). add_serial: "
-            "after node (or source), taking what it fed (Alt+S). add_serial_before: before a "
-            "corrector or output (Shift+S). add_parallel / add_layer: beside a corrector, mixed "
-            "by a parallel / layer mixer (Alt+P / Alt+L). remove: delete node, joining its "
-            "neighbours. reset: back to new settings, keeping label and links. extract: unlink "
-            "node, keeping it (E)."
+            "append: a corrector before the output (Alt+K). add_serial: after node or source "
+            "(Alt+S). add_serial_before: before node (Shift+S). add_parallel / add_layer: beside "
+            "node, mixed (Alt+P / Alt+L). remove: joining its neighbours. reset: new settings. "
+            "extract: unlinked, kept (E)."
         )
     )
     node: int | str | None = Field(default=None, description=_NODE + " Not for append.")
-    label: str | None = Field(default=None, description="Label of a corrector that is added.")
+    label: str | None = Field(default=None, description="Of a corrector added.")
     settings: dict[str, Any] | None = Field(
-        default=None, description="Settings of a corrector that is added, as video_grade_set."
+        default=None, description="Of a corrector added, as video_grade_set."
     )
 
 
-class _GradeCopy(_Timeline):
+class _GradeCopy(_Graded):
     model_config = ConfigDict(populate_by_name=True)
 
     action: grading.CopyAction = Field(
         default="copy",
         description=(
-            "copy: replace each grade of to with from's (Copy Grade / Apply Grade). append: add "
-            "from's nodes after the end of each (Append Node Graph). paste_node: from_node's "
-            "settings into to_node (same kind). paste_value: one setting, param."
+            "copy: from's grade in place of each of to (Apply Grade). append: from's nodes after "
+            "theirs (Append Node Graph). paste_node: from_node's settings into to_node. "
+            "paste_value: one setting, param."
         ),
     )
-    source: str | _Target = Field(alias="from", description=_TARGET)
-    to: list[str | _Target] = Field(min_length=1, description="Grades copied into.")
+    source: _Grade = Field(alias="from", description=_TARGET)
+    to: list[_Grade] = Field(min_length=1, description="The grades copied into.")
     preserve_nodes: int | None = Field(
         default=None,
         ge=0,
         le=10,
-        description=(
-            "copy only: keep the first N nodes of each target that has N or more (Preserve "
-            "number of nodes)."
-        ),
+        description="copy: keep the first N nodes of each target with N or more.",
     )
     keyframes: grading.KeyAlign | None = Field(
         default=None,
         description=(
-            "copy and append: where the keys of from go in each target (Apply Grades Using). "
-            "source_timecode (the default): at the same time of the media, so a grade copied to "
-            "the same media keeps its keys on the same pictures, by start frames where the clips "
-            "show no common stretch of media; start_frame: as far from each clip's first picture "
-            "as from from's."
+            "copy, append: where keys go (Apply Grades Using): source_timecode (default; at the "
+            "same time of the media) or start_frame (as far from each clip's start)."
         ),
     )
     from_node: int | str | None = None
@@ -414,56 +434,158 @@ class _GradeCopy(_Timeline):
     param: str | None = Field(default=None, description="paste_value: e.g. primaries.saturation.")
 
 
-class _GradeLut(_Timeline):
+class _GradeLut(_Graded):
     action: Literal["set", "clear", "list"] = Field(
         default="set",
         description=(
-            "list: the LUTs in the project folder and the library, by name, with kind (1d, 3d, "
-            "shaper+3d) and error for one that cannot be used. set: put lut on node (a new "
-            "corrector appended when node is omitted). clear: take node's LUT away."
+            "list: the LUTs of the project folder and the library, with kind and why one cannot "
+            "be used. set: lut on node (a corrector appended without node). clear: node's LUT."
         ),
     )
-    grade: str | _Target | None = Field(default=None, description=_TARGET)
+    grade: _Grade | None = Field(default=None, description=_TARGET)
     node: int | str | None = Field(default=None, description=_NODE)
-    lut: str | None = Field(
-        default=None, description="A .cube by its name from list, or an absolute path."
-    )
+    lut: str | None = Field(default=None, description="A .cube by its listed name, or a path.")
     folder: str | None = Field(default=None, description="list: only this folder of each root.")
 
 
-class _GradeGroup(_Timeline):
+class _GradeGroup(_Graded):
     model_config = ConfigDict(populate_by_name=True)
 
     action: grading.GroupAction = Field(
         description=(
-            "create: a group named name, with clips, and optionally from copied into its level "
-            "grade. add / remove: clips into group / out of their groups. rename. delete: the "
-            "group, ungrouping its clips. grade: copy from into the group's level grade (pre or "
-            "post), or clear it when from is omitted. collapse: put the group grades into each "
-            "clip's own grade and take it out of the group (clips, or all of group's)."
+            "create: group name with clips, from copied into its level grade if given. add / "
+            "remove: clips into group / out of theirs. rename. delete: ungrouping its clips. "
+            "grade: from into the level grade, cleared without from. collapse: the group's "
+            "grades into each clip's own, out of the group (clips, or all of group's)."
         )
     )
-    group: str | None = Field(default=None, description="Group id, from video_grade_info.")
+    group: str | None = Field(default=None, description="Group id (video_grade_info).")
     name: str | None = None
-    clips: list[str] = Field(default_factory=list, description="Clip ids on the timeline.")
+    clips: list[str] = Field(default_factory=list, description="Clip ids.")
     level: Literal["pre", "post"] | None = Field(
         default=None, description="pre: before each clip's grade; post: after it."
     )
-    source: str | _Target | None = Field(default=None, alias="from", description=_TARGET)
+    source: _Grade | None = Field(default=None, alias="from", description=_TARGET)
 
 
-_GRADING = (_GradeInfo, _GradeSet, _GradeNode, _GradeCopy, _GradeLut, _GradeGroup)
+class _GradeScopes(_Graded):
+    frame: int | None = Field(
+        default=None, ge=0, description="Timeline frame; the middle of clip by default."
+    )
+    clip: str | None = Field(default=None, description="Clip id: its middle frame, its grade.")
+    grade: _Grade | None = Field(default=None, description=_TARGET + " With node.")
+    node: int | str | None = Field(
+        default=None, description=_NODE + " Measures the picture at it, not the frame."
+    )
+    at: Literal["input", "output"] | None = Field(
+        default=None, description="Into the node or out of it (default)."
+    )
+    histogram: int | None = Field(
+        default=None, ge=4, le=256, description="Also a histogram of this many levels, in %."
+    )
 
 
-def _target(given: "str | _Target") -> str | dict[str, Any]:
+class _ColorSettings(_Project):
+    model_config = ConfigDict(json_schema_extra=_compact)
+
+    settings: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            'A patch of the project\'s color, e.g. {"science": "yrgb_managed", "preset": '
+            '"custom", "timeline": "DaVinci Wide Gamut/DaVinci Intermediate"}; omit to read. '
+            "Fields and spaces: video_grade_info with reference true."
+        ),
+    )
+
+
+class _MediaColor(_Project):
+    model_config = ConfigDict(json_schema_extra=_compact)
+
+    media: list[str] = Field(
+        default_factory=list, description="Media ids; omit to list all with a picture."
+    )
+    input: str | None = Field(
+        default=None,
+        description="Input Color Space: a space, bypass, or default (the project's).",
+    )
+    levels: Literal["auto", "video", "full"] | None = Field(
+        default=None, description="Data Levels."
+    )
+
+
+class _ShotMatch(_Graded):
+    clips: list[str] = Field(min_length=1, description="The clips to match, or balance.")
+    target: _Matched | None = Field(
+        default=None, description='The clip to match to, or {"still": id} of the Gallery.'
+    )
+    frame: int | None = Field(
+        default=None, ge=0, description="Timeline frame of the target clip; its middle by default."
+    )
+    node: int | str | None = Field(
+        default=None,
+        description=_NODE + " Of each clip; its last corrector by default, or one appended.",
+    )
+    auto: bool = Field(
+        default=False,
+        description="Auto Color (the A button): each clip's blacks and whites into Lift and Gain.",
+    )
+    reset: bool = Field(
+        default=False, description="Take the shot match away: of node, or every node of each clip."
+    )
+
+
+_GRADING = (
+    _GradeInfo,
+    _GradeSet,
+    _GradeNode,
+    _GradeCopy,
+    _GradeLut,
+    _GradeGroup,
+    _GradeScopes,
+    _ColorSettings,
+    _MediaColor,
+    _ShotMatch,
+)
+
+
+def _target(given: "str | _Target | _Still") -> str | dict[str, Any]:
     return given if isinstance(given, str) else given.model_dump(exclude_none=True)
 
 
-async def _graded(args: _Timeline, grader: grading.Grader) -> dict[str, Any]:
+async def _graded(args: _Project, grader: grading.Grader) -> dict[str, Any]:
     """Do what a tool of grades asks."""
+    if isinstance(args, _ColorSettings):
+        return await grader.color_settings(args.settings)
+    if isinstance(args, _MediaColor):
+        return await grader.media_color(args.media, input=args.input, levels=args.levels)
+    assert isinstance(args, _Graded)
     on = args.timeline
     if isinstance(args, _GradeInfo):
+        if args.reference:
+            if args.grade is not None:
+                raise grading.GradeError("reference is told alone: leave grade out")
+            return grading.reference()
         return await grader.info(on, None if args.grade is None else _target(args.grade))
+    if isinstance(args, _GradeScopes):
+        return await grader.scopes(
+            on,
+            frame=args.frame,
+            clip=args.clip,
+            given=None if args.grade is None else _target(args.grade),
+            node=args.node,
+            at=args.at,
+            histogram=args.histogram,
+        )
+    if isinstance(args, _ShotMatch):
+        return await grader.shot_match(
+            on,
+            args.clips,
+            None if args.target is None else _target(args.target),
+            frame=args.frame,
+            node=args.node,
+            auto=args.auto,
+            reset=args.reset,
+        )
     if isinstance(args, _GradeSet):
         return await grader.set(
             on, _target(args.grade), args.node, args.settings, args.label, args.enabled
@@ -772,12 +894,11 @@ def tools_of(videos: Videos) -> list[Tool[Any, str]]:
             "video_grade_info",
             _GradeInfo,
             (
-                "Summarise a grade of the Color page: its nodes in order (number, id, kind, "
-                "label, enabled), what each input is linked from, only the corrector settings "
-                "that change the picture (paths with dots, DaVinci's units), LUTs and those that "
-                "are missing, mixers and their inputs, and Shot Match. complete=false means the "
-                "grade is linked only in part and changes nothing. Without grade: every graded "
-                "clip, the timeline grade and the groups of the timeline."
+                "A grade of the Color page in short: its nodes in order (number, id, kind, label, "
+                "enabled, input), only the settings that change the picture, LUTs (missing ones "
+                "too), mixers, and shot_match where Shot Match adjusted a node. complete=false: "
+                "linked in part, changing nothing. Without grade: every graded clip, the timeline "
+                "grade and the groups."
             ),
             effect="read",
         ),
@@ -785,43 +906,67 @@ def tools_of(videos: Videos) -> list[Tool[Any, str]]:
             "video_grade_set",
             _GradeSet,
             (
-                "Change settings of one node (a patch: objects merge, other values replace), its "
-                "label or enabled. Grades go: group pre-clip, clip, group post-clip, then the "
-                "timeline. One undo step; returns the grade's summary."
+                "Patch one node's settings (objects merge), label or enabled. Grades go: group "
+                "pre-clip, clip, group post-clip, timeline. One undo step."
             ),
         ),
         tool(
             "video_grade_node",
             _GradeNode,
-            (
-                "Add, remove, reset or extract a node of a grade, as the Color page's commands "
-                "do. An added corrector may get label and settings in the same undo step."
-            ),
+            "Add, remove, reset or extract a node as the Color page does; one undo step.",
         ),
         tool(
             "video_grade_copy",
             _GradeCopy,
-            (
-                "Copy a grade onto other clips, groups or the timeline, append its nodes to "
-                "theirs, or paste one node's settings or one setting. One undo step."
-            ),
+            "Copy a grade onto others, append its nodes, or paste a node or a setting; one step.",
         ),
         tool(
             "video_grade_lut",
             _GradeLut,
-            (
-                "List the .cube LUTs of the project folder and the LUT library, or set or clear "
-                "a corrector's LUT. One undo step."
-            ),
+            "List the .cube LUTs, or set or clear a corrector's LUT; one undo step.",
         ),
         tool(
             "video_grade_group",
             _GradeGroup,
             (
-                "Groups of clips graded together (a shared look): create, add or remove clips, "
-                "rename, delete, set the group's pre or post grade from another grade, or "
-                "collapse its grades into each clip's own. Edit a group's grade further with "
-                "the other grade tools and level pre_clip/post_clip. One undo step."
+                "Groups of clips graded together: create, add, remove, rename, delete, set the "
+                "pre or post grade, collapse. Edit a group grade with level pre_clip/post_clip."
+            ),
+        ),
+        tool(
+            "video_grade_scopes",
+            _GradeScopes,
+            (
+                "Measure a frame drawn off screen (no desktop needed): R, G, B and luma min, max, "
+                "mean and percentiles 1-99, chroma and mid grey; of the frame as exported, or "
+                "of the picture into or out of a node."
+            ),
+            effect="read",
+        ),
+        tool(
+            "video_color_settings",
+            _ColorSettings,
+            (
+                "Read the project's colour management (DaVinci YRGB, RCM, ACES) and the spaces "
+                "it puts in force, or set a patch of it; one undo step."
+            ),
+        ),
+        tool(
+            "video_media_color",
+            _MediaColor,
+            (
+                "List media's colour (what the file says, the override), or set their Input "
+                "Color Space, bypass or Data Levels; one undo step."
+            ),
+        ),
+        tool(
+            "video_shot_match",
+            _ShotMatch,
+            (
+                "Shot Match to This Clip (or a still): match clips' colour and contrast to a "
+                "target, as an invisible last step of a node (shot_match; the palettes do not "
+                "show it). auto: the A button, into visible Lift and Gain. reset: take a match "
+                "away. Made for ungraded clips and Rec.709 Gamma 2.4. One undo step in all."
             ),
         ),
     ]

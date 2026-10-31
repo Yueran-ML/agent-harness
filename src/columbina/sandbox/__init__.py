@@ -217,6 +217,10 @@ def _studio_file(access: Access) -> bool:
         "video_grade_copy",
         "video_grade_lut",
         "video_grade_group",
+        "video_grade_scopes",
+        "video_color_settings",
+        "video_media_color",
+        "video_shot_match",
     }:
         return True
     return (

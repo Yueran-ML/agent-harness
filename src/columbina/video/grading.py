@@ -13,20 +13,26 @@ What is here:
 - **Checks**: a patch of the settings of a node, checked in DaVinci's units before it is sent,
   so that what is wrong with it is told in words that a model can act on.
 - **Writing**: the targets, edits and operations of grades as the engine reads them.
-- :class:`Grader`, which does what the tools of grades ask, each as one transaction.
+- :class:`Grader`, which does what the tools of grades ask, each as one transaction: and the
+  figures of frames (off screen, so a headless engine has them), colour management, and Shot
+  Match and Auto Color (:mod:`columbina.video.shotmatch` works them out).
+- :func:`reference`: every setting in full, for a model that asks.
 """
 
 import asyncio
+import contextlib
 import copy
 import difflib
 import math
 import os
+import secrets
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from columbina.video.engine import Applied, Engine, EngineError
+from columbina.video import shotmatch
+from columbina.video.engine import Applied, Engine, EngineError, NodeSide, Statistics
 
 __all__ = [
     "COMPOSITES",
@@ -39,12 +45,15 @@ __all__ = [
     "expanded",
     "grade_at",
     "hint_of",
+    "in_force",
     "luts_of",
     "missing_luts",
     "new_corrector",
     "node_of",
+    "reference",
     "summary",
     "target_of",
+    "timeline_space",
 ]
 
 Level = Literal["clip", "pre_clip", "post_clip", "timeline"]
@@ -1480,6 +1489,498 @@ class Grader:
             told["collapsed"] = made
         return told
 
+    # -----------------------------------------------------------------------------------------
+    # Scopes, colour management, Shot Match and Auto Color
+    # -----------------------------------------------------------------------------------------
+
+    async def scopes(
+        self,
+        timeline: str | None,
+        *,
+        frame: int | None,
+        clip: str | None,
+        given: str | Mapping[str, Any] | None,
+        node: str | int | None,
+        at: NodeSide | None,
+        histogram: int | None,
+    ) -> dict[str, Any]:
+        """The figures of a frame drawn off screen, or of the picture at a node there.
+
+        The frame is ``frame``, or the middle of ``clip``; a node is of ``given`` (the grade of
+        ``clip`` where that is left out). Nothing is changed, and no monitor is needed.
+        """
+        if node is None and (given is not None or at is not None):
+            raise GradeError("grade and at are of a node: give node too")
+        if node is not None and given is None and clip is None:
+            raise GradeError("node needs the grade it is of, or the clip whose grade it is")
+        _, project = await self.engine.project()
+        on = _timeline_of(project, timeline)
+        target: dict[str, Any] | None = None
+        id: str | None = None
+        if node is not None:
+            target = target_of(given if given is not None else str(clip), project, timeline)
+            id = node_of(grade_at(project, target), target, node)
+            if clip is None and target["level"] == "clip":
+                clip = str(target["clip"])
+        if frame is None:
+            if clip is None:
+                raise GradeError("give frame, or clip to measure the middle of the clip")
+            _, placed = _picture_clip(on, clip)
+            frame = _middle(placed)
+        elif clip is not None:
+            _picture_clip(on, clip)
+        figures = await self.engine.statistics(
+            timeline=str(on["id"]),
+            frame=frame,
+            grade=target,
+            node=id,
+            at=at,
+            clip=clip if target is not None and target["level"] != "clip" else None,
+            bins=_BINS,
+        )
+        told: dict[str, Any] = {
+            "timeline": on["id"],
+            "frame": figures.frame,
+            "width": figures.width,
+            "height": figures.height,
+            "samples": figures.samples,
+            "measured": (
+                {"grade": target, "node": id, "at": at or "output"}
+                if target is not None
+                else "the frame as an export draws it"
+            ),
+        }
+        for name in ("red", "green", "blue", "luma"):
+            channel = getattr(figures, name)
+            told[name] = {
+                "min": round(channel.min, 4),
+                "max": round(channel.max, 4),
+                "mean": round(channel.mean, 4),
+                "percentiles": {
+                    str(level): round(shotmatch.percentile(figures.histogram[name], level / 100), 4)
+                    for level in shotmatch.LEVELS
+                },
+            }
+        chroma = figures.chroma
+        told["chroma"] = {
+            "centroid": [round(one, 4) for one in chroma.centroid],
+            "spread": [round(one, 4) for one in chroma.spread],
+            "saturation": round(chroma.saturation, 4),
+            "hue": round(chroma.hue, 2),
+        }
+        told["mid_grey"] = round(_figures(figures).grey, 4)
+        if histogram:
+            told["histogram"] = {
+                "bins": histogram,
+                **{
+                    name: _coarse(figures.histogram[name], histogram)
+                    for name in ("red", "green", "blue", "luma")
+                },
+            }
+        return told
+
+    async def color_settings(self, settings: Mapping[str, Any] | None) -> dict[str, Any]:
+        """The project's colour management, or a patch of it set as one transaction."""
+        if settings is None:
+            revision, project = await self.engine.project()
+            color = _object(project.get("color"))
+            return {"revision": revision, "color": color, "in_force": in_force(color)}
+        if not settings:
+            raise GradeError("settings is empty: give the fields to change, such as science")
+        done, project = await self._applied(
+            lambda _: [{"op": "set_color_settings", "settings": dict(settings)}]
+        )
+        color = _object(project.get("color"))
+        return {"revision": done.revision, "color": color, "in_force": in_force(color)}
+
+    async def media_color(
+        self,
+        media: Sequence[str],
+        *,
+        input: str | None,
+        levels: Literal["auto", "video", "full"] | None,
+    ) -> dict[str, Any]:
+        """The colour of media: listed, or its input space and data levels set by hand.
+
+        ``input`` is a space, ``bypass``, or ``default`` (the project's, Project Default).
+        """
+        changing = input is not None or levels is not None
+        if changing and not media:
+            raise GradeError("name the media to set: their ids, as video_info lists them")
+
+        def chosen(project: Mapping[str, Any]) -> list[dict[str, Any]]:
+            items = [_object(one) for one in _items(project.get("media"))]
+            if not media:
+                return [one for one in items if _object(one.get("facts")).get("video")]
+            known = {str(one.get("id")): one for one in items}
+            missing = [one for one in media if one not in known]
+            if missing:
+                raise GradeError(
+                    f"there is no media {', '.join(missing)}; video_info lists the media"
+                )
+            return [known[one] for one in media]
+
+        revision: int | None = None
+        if changing:
+
+            def build(project: Mapping[str, Any]) -> list[dict[str, Any]]:
+                ops: list[dict[str, Any]] = []
+                for one in chosen(project):
+                    op: dict[str, Any] = {"op": "set_media_color", "id": one["id"]}
+                    if input is not None:
+                        op["input"] = None if input == "default" else input
+                    if levels is not None:
+                        op["levels"] = levels
+                    ops.append(op)
+                return ops
+
+            done, project = await self._applied(build)
+            revision = done.revision
+        else:
+            revision, project = await self.engine.project()
+        told: list[dict[str, Any]] = []
+        for one in chosen(project):
+            item: dict[str, Any] = {
+                "media": one.get("id"),
+                "name": one.get("name"),
+                "color_override": {"input": None, "levels": "auto"}
+                | _object(one.get("color_override")),
+            }
+            facts = _object(_object(one.get("facts")).get("video")).get("color")
+            if facts is not None:
+                item["file"] = facts
+            told.append(item)
+        return {"revision": revision, "media": told, "in_force": in_force(project.get("color"))}
+
+    async def shot_match(
+        self,
+        timeline: str | None,
+        clips: Sequence[str],
+        target: str | Mapping[str, Any] | None,
+        *,
+        frame: int | None,
+        node: str | int | None,
+        auto: bool,
+        reset: bool,
+    ) -> dict[str, Any]:
+        """Match clips to a target clip or still, balance them by Auto Color, or reset a match.
+
+        A match goes into the ``shot_match`` of a corrector of each clip, Auto Color into its
+        Lift and Gain; a node is ``node`` of each clip's grade, else its last corrector, else one
+        appended. Each call is one step of the history, whatever it adds and sets.
+        """
+        if not clips:
+            raise GradeError("clips names the clips, one at least")
+        if len(set(clips)) != len(clips):
+            raise GradeError("a clip is named twice in clips")
+        if auto and reset:
+            raise GradeError("auto and reset are two things: give one")
+        if (auto or reset) and (target is not None or frame is not None):
+            raise GradeError(
+                f"{'auto' if auto else 'reset'} works on each clip alone: no target or frame"
+            )
+        if not (auto or reset) and target is None:
+            raise GradeError(
+                'target names the clip (its id) or the still ({"still": "s1"}) to match to'
+            )
+        if reset:
+            return await self._unmatched(timeline, clips, node)
+        for attempt in range(_ATTEMPTS):
+            told = await self._matched(timeline, clips, target, frame, node, auto)
+            if told is not None:
+                return told
+            if attempt + 1 == _ATTEMPTS:
+                break
+        raise GradeError("the project kept changing while the clips were measured; call again")
+
+    async def _unmatched(
+        self, timeline: str | None, clips: Sequence[str], node: str | int | None
+    ) -> dict[str, Any]:
+        targets: list[dict[str, Any]] = []
+
+        def build(project: Mapping[str, Any]) -> list[dict[str, Any]]:
+            ops: list[dict[str, Any]] = []
+            targets.clear()
+            for clip in clips:
+                target = target_of(clip, project, timeline)
+                grade = grade_at(project, target)
+                ids = (
+                    [node_of(grade, target, node)]
+                    if node is not None
+                    else [
+                        str(one["id"])
+                        for one in _nodes(grade)
+                        if _object(one.get("params")).get("shot_match") is not None
+                    ]
+                )
+                for id in ids:
+                    if _object(_node(grade, id).get("params")).get("shot_match") is None:
+                        raise GradeError(f"node {id} of clip {clip} has no shot match")
+                    ops.append(_set_node(target, id, params={"shot_match": None}))
+                targets.append(target)
+            if not ops:
+                raise GradeError("none of the clips has a shot match")
+            return ops
+
+        done, project = await self._applied(build)
+        return await self._receipt(done, project, targets)
+
+    async def _matched(
+        self,
+        timeline: str | None,
+        clips: Sequence[str],
+        given: str | Mapping[str, Any] | None,
+        frame: int | None,
+        node: str | int | None,
+        auto: bool,
+    ) -> dict[str, Any] | None:
+        """One attempt at a match or Auto Color; ``None`` where the project changed under it."""
+        revision, project = await self.engine.project()
+        session = self.engine.session
+        on = _timeline_of(project, timeline)
+        timeline_id = str(on["id"])
+        still = _still_of(given)
+        source: str | None = None if given is None or still is not None else _clip_of(given)
+        if source is not None:
+            _picture_clip(on, source)
+        elif frame is not None:
+            raise GradeError("frame is of a target clip; a still is matched as it was grabbed")
+        plans: list[_Plan] = []
+        skipped: list[dict[str, Any]] = []
+        for clip in clips:
+            if clip == source:
+                skipped.append({"clip": clip, "why": "it is the target"})
+                continue
+            target = target_of(clip, project, timeline_id)
+            grade = grade_at(project, target)
+            if node is not None:
+                id: str | None = node_of(grade, target, node)
+                kind = _node(grade, str(id)).get("kind")
+                if kind != "corrector":
+                    raise GradeError(
+                        f"node {node} of clip {clip} is a {kind}; a match goes on a corrector"
+                    )
+            else:
+                id = _last_corrector(grade)
+            _, placed = _picture_clip(on, clip)
+            plans.append(_Plan(clip, target, id, _middle(placed), _graded(grade)))
+        if not plans:
+            raise GradeError("there is no clip to match but the target")
+        probe: _Plan | None = None
+        if source is not None:
+            target = target_of(source, project, timeline_id)
+            _, placed = _picture_clip(on, source)
+            at = _middle(placed) if frame is None else frame
+            if not int(placed["start"]) <= at < int(placed["start"]) + int(placed["length"]):
+                raise GradeError(
+                    f"frame {at} is not of clip {source}, which is on frames "
+                    f"{placed['start']} to {int(placed['start']) + int(placed['length']) - 1}"
+                )
+            probe = _Plan(source, target, _output_of(grade_at(project, target)), at, False)
+        adding = [plan for plan in plans if plan.node is None]
+        if probe is not None and probe.node is None:
+            adding.append(probe)
+        gesture: dict[str, Any] | None = None
+        at_revision = revision
+        if adding:
+            # A grade without a node is given one, to measure the picture that comes out of it
+            # (the target's only for that, taken away again), in a gesture: one step to undo.
+            gesture = {"id": f"shot-match-{secrets.token_hex(6)}"}
+            edits = [{"edit": "append_node", "grade": plan.target} for plan in adding]
+            try:
+                first = await self.engine.apply(
+                    edits, revision=revision, session=session, gesture=gesture
+                )
+            except EngineError as error:
+                if _stale(error):
+                    return None
+                raise
+            added = [
+                str(_object(op.get("node")).get("id"))
+                for op in first.done
+                if op.get("op") == "add_node" and _object(op.get("node")).get("kind") == "corrector"
+            ]
+            for plan, id in zip(adding, added, strict=True):
+                plan.node = id
+                plan.added = True
+            at_revision = first.revision
+        originals = [
+            {"op": "set_grade", "grade": plan.target, "value": grade_at(project, plan.target)}
+            for plan in adding
+        ]
+        ended = None if gesture is None else {**gesture, "end": True}
+        try:
+            ops, told = await self._worked(timeline_id, plans, probe, still, auto)
+        except Exception:
+            if ended is not None:
+                # Back to the project as it was: a gesture that ends so leaves no step.
+                with contextlib.suppress(EngineError):
+                    await self.engine.apply(
+                        originals, revision=at_revision, session=session, gesture=ended
+                    )
+            raise
+        if skipped:
+            told["skipped"] = skipped + told.get("skipped", [])
+        if probe is not None and probe.added:
+            ops.append(originals[-1])
+        if not ops:
+            if ended is not None:
+                await self.engine.apply(
+                    originals, revision=at_revision, session=session, gesture=ended
+                )
+            return {"operations": 0, **told}
+        try:
+            done = await self.engine.apply(
+                ops, revision=at_revision, session=session, gesture=ended
+            )
+        except EngineError as error:
+            if not _stale(error):
+                raise
+            if probe is not None and probe.added:
+                await self._probe_taken_away(probe, originals[-1])
+            return None
+        told = {"revision": done.revision, "operations": len(done.done), **told}
+        return told
+
+    async def _probe_taken_away(self, probe: "_Plan", original: Mapping[str, Any]) -> None:
+        """Take away the node that a target was given to be measured, as a step of its own.
+
+        That is where another change stopped the match and left it.
+        """
+        revision, project = await self.engine.project()
+        grade = grade_at(project, probe.target)
+        nodes = _nodes(grade)
+        if len(nodes) == 1 and nodes[0].get("id") == probe.node:
+            try:
+                await self.engine.apply([original], revision=revision, session=self.engine.session)
+            except EngineError as error:
+                if not _stale(error):
+                    raise
+
+    async def _worked(
+        self,
+        timeline: str,
+        plans: Sequence["_Plan"],
+        probe: "_Plan | None",
+        still: str | None,
+        auto: bool,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Measure the clips (and the target) and work out the operations that match them."""
+        _, project = await self.engine.project()
+        told: dict[str, Any] = {}
+        space = timeline_space(project.get("color"))
+        if space != _MADE_FOR:
+            told["note"] = (
+                f"Shot Match and Auto Color are made for {_MADE_FOR} (p. 3047), and they measure "
+                f"in the timeline's space, which is {space or 'not known'}"
+            )
+        wanted: shotmatch.Figures | None = None
+        if probe is not None:
+            wanted = await self._figures(timeline, probe, project)
+            told["target"] = {"clip": probe.clip, "frame": probe.frame, **wanted.told()}
+        elif still is not None:
+            wanted = await self._still_figures(still)
+            told["target"] = {"still": still, **wanted.told()}
+        ops: list[dict[str, Any]] = []
+        results: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        for plan in plans:
+            assert plan.node is not None
+            grade = grade_at(project, plan.target)
+            params = _object(_node(grade, plan.node).get("params"))
+            figures = await self._figures(timeline, plan, project)
+            item: dict[str, Any] = {
+                "clip": plan.clip,
+                "node": _number_of(grade, plan.node),
+                "id": plan.node,
+                "frame": plan.frame,
+            }
+            if plan.added:
+                item["added"] = True
+            if auto:
+                found = _auto_of(figures, params)
+                if isinstance(found, str):
+                    skipped.append({"clip": plan.clip, "why": found})
+                    continue
+                lift, gain = found
+                patch = {
+                    "primaries": {
+                        "lift": dict(zip("rgb", map(_rounded, lift), strict=True)),
+                        "gain": dict(zip("rgb", map(_rounded, gain), strict=True)),
+                    }
+                }
+                ops.append(_set_node(plan.target, plan.node, params=patch))
+                results.append({**item, "settings": _flat(patch)})
+                continue
+            assert wanted is not None
+            solved = shotmatch.solve(figures, wanted)
+            match = solved.match
+            values = {
+                "gamma": dict(zip("rgb", map(_rounded, match.gamma), strict=True)),
+                "gain": dict(zip("rgb", map(_rounded, match.gain), strict=True)),
+                "offset": dict(zip("rgb", map(_rounded, match.offset), strict=True)),
+                "contrast": _rounded(match.contrast),
+                "pivot": _rounded(match.pivot),
+            }
+            ops.append(_set_node(plan.target, plan.node, params={"shot_match": values}))
+            foretold = match.mapped(figures)
+            item.update(
+                shot_match=values,
+                before=round(solved.before, 4),
+                after=round(solved.after, 4),
+                mid_grey=[round(figures.grey, 4), round(foretold.grey, 4)],
+                chroma=[
+                    [round(one, 4) for one in figures.chroma],
+                    [round(one, 4) for one in foretold.chroma],
+                ],
+            )
+            if solved.limited:
+                item["limited"] = list(solved.limited)
+            if plan.graded:
+                item["graded"] = (
+                    "the clip was graded already: Shot Match is meant for clips that are not "
+                    "(p. 3048)"
+                )
+            results.append(item)
+        told["auto" if auto else "matched"] = results
+        if skipped:
+            told["skipped"] = skipped
+        return ops, told
+
+    async def _figures(
+        self, timeline: str, plan: "_Plan", project: Mapping[str, Any]
+    ) -> shotmatch.Figures:
+        """The figures of the picture coming out of a plan's node, without its shot match."""
+        assert plan.node is not None
+        measured = await self.engine.statistics(
+            timeline=timeline, frame=plan.frame, grade=plan.target, node=plan.node, bins=_BINS
+        )
+        figures = _figures(measured)
+        held = _object(_node(grade_at(project, plan.target), plan.node).get("params")).get(
+            "shot_match"
+        )
+        if held is None:
+            return figures
+        try:
+            return shotmatch.ShotMatch.of(_object(held)).unmapped(figures)
+        except ValueError:
+            raise GradeError(
+                f"the shot match of node {plan.node} of clip {plan.clip} has keyframes; reset it "
+                "first (video_shot_match with reset)"
+            ) from None
+
+    async def _still_figures(self, still: str) -> shotmatch.Figures:
+        try:
+            _, _, png = await self.engine.still_thumbnail(still, _STILL_HEIGHT)
+        except EngineError as error:
+            if (error.data or {}).get("reason") == "missing":
+                raise GradeError(f"there is no still {still} in the Gallery") from None
+            raise
+        try:
+            return await asyncio.to_thread(shotmatch.figures_of_png, png)
+        except ValueError as error:
+            raise GradeError(f"the picture of still {still} cannot be read: {error}") from None
+
 
 def _given(node: str | int | None) -> str | int:
     assert node is not None
@@ -1561,5 +2062,339 @@ def hint_of(error: EngineError) -> str | None:
         "grouped": "take its clips out first, or use action delete, which does",
         "ungrouped": "only a clip in a group can be collapsed",
         "params": "video_grade_info shows the kind of the node and its settings",
+        "unknown_space": "video_grade_info with reference true lists the spaces",
+        "inapplicable": (
+            "the setting is not of the science or preset in force, before or after the change; "
+            "video_color_settings shows what is in force"
+        ),
+        "color_settings": "video_grade_info with reference true lists the colour settings",
+        "camera_raw": "camera raw keeps its maker's space: only bypass or default",
+        "no_stream": "media without a picture keeps the defaults",
+        "empty": "every value given is the value there already",
     }
     return hints.get(str(reason))
+
+
+# ---------------------------------------------------------------------------------------------
+# Colour management, as far as the tools tell it
+# ---------------------------------------------------------------------------------------------
+
+_MADE_FOR = "Rec.709 Gamma 2.4"
+"""The space that Shot Match and Auto Color are made for (p. 3047)."""
+
+_PRESETS = {
+    "sdr_rec709": "Rec.709 Gamma 2.4",
+    "sdr_p3_broadcast": "P3-D65 Gamma 2.4",
+    "sdr_p3_cinema": "DCI-P3 Gamma 2.6",
+    "sdr_rec2020": "Rec.2020 Gamma 2.4",
+    "davinci_wide_gamut": "DaVinci Wide Gamut/DaVinci Intermediate",
+    "hdr_p3_broadcast": "P3-D65 ST2084",
+    "hdr_rec2020": "Rec.2100 ST2084",
+}
+"""The timeline space of each preset of RCM (PROTOCOL.md, The project's color; the engine's
+``Preset::settings``)."""
+
+
+def in_force(color: object) -> dict[str, Any]:
+    """What a project's ``color`` puts in force: whether it is managed, and its spaces.
+
+    A preset of Resolve Color Management (or Automatic) decides the timeline space and keeps
+    the input at Rec.709 Gamma 2.4; Custom takes its own fields; ACES works in ACEScct or ACEScc
+    from its IDT to its ODT. Fields left out are read as their defaults.
+    """
+    given = _object(color)
+    science = given.get("science", "yrgb")
+    if science == "yrgb":
+        return {"science": "yrgb", "managed": False}
+    if science in ("acescct", "acescc"):
+        return {
+            "science": science,
+            "managed": True,
+            "timeline": "ACEScct" if science == "acescct" else "ACEScc",
+            "input": given.get("idt", _MADE_FOR),
+            "output": given.get("odt", "Rec.709"),
+            "aces_version": given.get("aces_version", "2.0"),
+        }
+    if given.get("automatic"):
+        preset = "hdr_rec2020" if given.get("processing_mode") == "hdr" else "sdr_rec709"
+    else:
+        preset = str(given.get("preset", "sdr_rec709"))
+    custom = preset == "custom"
+    return {
+        "science": science,
+        "managed": True,
+        "preset": preset,
+        "timeline": given.get("timeline", _MADE_FOR) if custom else _PRESETS.get(preset),
+        "input": given.get("input", _MADE_FOR) if custom else _MADE_FOR,
+        "output": given.get("output", _MADE_FOR),
+    }
+
+
+def timeline_space(color: object) -> str | None:
+    """The space that grades work in: Rec.709 Gamma 2.4 for a project not colour managed."""
+    told = in_force(color)
+    if not told["managed"]:
+        return _MADE_FOR
+    space = told.get("timeline")
+    return space if isinstance(space, str) else None
+
+
+# ---------------------------------------------------------------------------------------------
+# Shot Match and Auto Color
+# ---------------------------------------------------------------------------------------------
+
+_BINS = 1024
+"""The levels of the histograms measured: their percentiles are within a thousandth."""
+
+_STILL_HEIGHT = 270
+"""The thumbnail of a still that its figures are read from: the largest the engine gives."""
+
+
+@dataclass
+class _Plan:
+    """A clip to be measured: its grade, the node (``None`` until it is added), the frame."""
+
+    clip: str
+    target: dict[str, Any]
+    node: str | None
+    frame: int
+    graded: bool
+    added: bool = False
+
+
+def _middle(clip: Mapping[str, Any]) -> int:
+    return int(clip["start"]) + int(clip["length"]) // 2
+
+
+def _last_corrector(grade: Mapping[str, Any]) -> str | None:
+    """The corrector nearest the output, else the last by number; ``None`` where there is none.
+
+    It is found by following the picture back from the output through the first input of each
+    node.
+    """
+    into = _links_into(grade)
+    kinds = {str(one.get("id")): one.get("kind") for one in _nodes(grade)}
+    at = into.get(("output", "rgb", 0))
+    seen: set[str] = set()
+    while at is not None and at in kinds and at not in seen:
+        seen.add(at)
+        if kinds[at] == "corrector":
+            return at
+        at = into.get((at, "rgb", 0))
+    correctors = [id for id, kind in kinds.items() if kind == "corrector"]
+    return correctors[-1] if correctors else None
+
+
+def _output_of(grade: Mapping[str, Any]) -> str | None:
+    """The node whose picture is a grade's output; ``None`` where the source is."""
+    at = _links_into(grade).get(("output", "rgb", 0))
+    return at if at is not None and any(one.get("id") == at for one in _nodes(grade)) else None
+
+
+def _graded(grade: Mapping[str, Any]) -> bool:
+    """Whether a grade changes the picture by any setting of a corrector or a LUT."""
+    for node in _nodes(grade):
+        params = _object(node.get("params"))
+        if node.get("kind") == "corrector":
+            settings: dict[str, Any] = {}
+            _changed(CORRECTOR, params, "", settings)
+            if settings or params.get("lut"):
+                return True
+    return False
+
+
+def _number_of(grade: Mapping[str, Any], id: str) -> int:
+    return next(at for at, one in enumerate(_nodes(grade), 1) if one.get("id") == id)
+
+
+def _still_of(given: str | Mapping[str, Any] | None) -> str | None:
+    if isinstance(given, Mapping):
+        still = given.get("still")
+        if set(given) != {"still"} or not isinstance(still, str):
+            raise GradeError('target is a clip id, or {"still": "s1"} for a still of the Gallery')
+        return still
+    return None
+
+
+def _clip_of(given: str | Mapping[str, Any]) -> str:
+    if not isinstance(given, str):
+        raise GradeError('target is a clip id, or {"still": "s1"} for a still of the Gallery')
+    return given
+
+
+def _stale(error: EngineError) -> bool:
+    return (error.data or {}).get("reason") == "stale_revision"
+
+
+def _figures(measured: Statistics) -> shotmatch.Figures:
+    means = (measured.red.mean, measured.green.mean, measured.blue.mean)
+    return shotmatch.figures(measured.histogram, means)
+
+
+def _coarse(counts: Sequence[int], bins: int) -> list[float]:
+    """A histogram in fewer levels, each the percent of the pixels in it."""
+    total = sum(counts) or 1
+    out = [0] * bins
+    for at, count in enumerate(counts):
+        out[min(at * bins // len(counts), bins - 1)] += count
+    return [round(100 * one / total, 2) for one in out]
+
+
+def _rounded(value: float) -> float:
+    return round(value, 6)
+
+
+def _flat(patch: Mapping[str, Any], path: str = "") -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in patch.items():
+        where = f"{path}.{key}" if path else key
+        if _is_map(value):
+            out.update(_flat(_object(value), where))
+        else:
+            out[where] = value
+    return out
+
+
+def _auto_of(
+    figures: shotmatch.Figures, params: Mapping[str, Any]
+) -> tuple[tuple[float, float, float], tuple[float, float, float]] | str:
+    """Auto Color of a node from the figures of its output: its Lift and Gain, or why not."""
+    primaries = _object(params.get("primaries"))
+    now: list[list[float]] = []
+    for name, neutral in (("lift", 0.0), ("gain", 1.0)):
+        wheel = _object(primaries.get(name))
+        values = [wheel.get(channel, neutral) for channel in "rgb"]
+        if not all(_real(one) for one in values):
+            return f"the {name.capitalize()} of its node has keyframes, which Auto Color keeps"
+        now.append([float(cast("float", one)) for one in values])
+    found = shotmatch.auto_color(
+        [one[0] for one in figures.levels], [one[-1] for one in figures.levels], now[0], now[1]
+    )
+    if found is None:
+        return "the frame has too little range to balance by"
+    return found
+
+
+# ---------------------------------------------------------------------------------------------
+# The reference that the short descriptions of the tools leave out
+# ---------------------------------------------------------------------------------------------
+
+_KEYFRAMES = (
+    'A number may be keyframes {"keys": [{"frame": 0, "value": 40, "interp": "linear"}, ...]}: '
+    "frames whole and rising, one key at least; interp linear (where left out), hold, or "
+    '{"bezier": {"out": [t, dv], "in": [t, dv]}}, t from 0 to 1 a share of the frames to the next '
+    "key and dv a change of value. A key's frame: of a clip of media, the frame of its media (at "
+    "the media's own rate, from 0) whose picture is shown, so keys stay on their pictures through "
+    "trims, slips and speed changes; of a title, a colour or a still, the clip's frame from its "
+    "first (0); of a group's grade, of the clip it is on; of the timeline's grade, the timeline's "
+    "frame."
+)
+_GAMUTS = ("Rec.709", "Rec.601 (PAL)", "Rec.601 (NTSC)", "Rec.2020", "DCI-P3", "P3-D65")
+_GAMMAS = ("Gamma 2.4", "Gamma 2.2", "Gamma 2.6", "Gamma 2.8", "sRGB", "Linear", "ST2084", "HLG")
+_CAMERAS = (
+    "Rec.709 (Scene)", "Apple Log", "Apple Log 2", "DJI D-Gamut/D-Log", "Sony S-Gamut3/S-Log3",
+    "Sony S-Gamut3.Cine/S-Log3", "Panasonic V-Gamut/V-Log", "Canon Cinema Gamut/Canon Log 2",
+    "Canon Cinema Gamut/Canon Log 3", "ARRI Wide Gamut 3/LogC3", "ARRI Wide Gamut 4/LogC4",
+    "FujiFilm F-Gamut/F-Log2", "Blackmagic Design Wide Gamut Gen 5/Film Gen 5",
+    "RED Wide Gamut RGB/Log3G10", "DaVinci Wide Gamut/DaVinci Intermediate",
+    "DaVinci Wide Gamut/Linear", "ACEScct", "ACEScc", "ACEScg", "ACES (AP0) Linear",
+)  # fmt: skip
+_COLOR = {
+    "science": "yrgb (DaVinci YRGB, not managed: the default), yrgb_managed (RCM), acescct, acescc",
+    "automatic": "RCM: Automatic color management, true or false",
+    "processing_mode": "RCM with automatic: sdr or hdr",
+    "preset": (
+        "RCM without automatic: sdr_rec709, sdr_p3_broadcast, sdr_p3_cinema, sdr_rec2020, "
+        "davinci_wide_gamut, hdr_p3_broadcast, hdr_rec2020, custom; a preset sets the timeline "
+        "space, luminance, DRTs and gamut limit, and not output: send both"
+    ),
+    "output": "RCM: a space, or bypass",
+    "input": "Custom: a space or bypass, for media that says none",
+    "timeline": "Custom: a space, the one grades work in",
+    "working_luminance": (
+        "Custom: sdr_100, hdr_500, hdr_1000, hdr_2000, hdr_4000, hdr_er_1000_2000, custom "
+        "(custom_luminance, nits 1-10000)"
+    ),
+    "input_drt, output_drt": "Custom: none, simple, luminance, davinci, saturation_preserving",
+    "input_sat_rolloff, output_sat_rolloff": "{start, limit} nits, start < limit",
+    "limit_gamut": "Custom: null, rec709, rec601-pal, rec601-ntsc, rec2020, dci-p3, p3-d65",
+    "hdr_203_nits, inverse_drt, white_point_adaptation, color_space_aware_tools": "Custom: flags",
+    "resize_in": "Custom: timeline, log, linear, linear_mapped, gamma, gamma_mapped",
+    "graphics_white": "RCM: nits 1-10000",
+    "aces_version, idt, odt": (
+        "ACES: 1.3 or 2.0, an IDT space, an ODT of that version (Rec.709, sRGB, P3-D65, "
+        "Rec.2020, ...): change version and odt together"
+    ),
+    "gamut_compress": "ACES: flag",
+    "node_luts_in": "ACES: timeline or ap0_linear",
+    "lut_interpolation": "trilinear or tetrahedral",
+    "input_lut, output_lut, viewer_lut": '{"1d": name or null, "3d": name or null}',
+    "s_curve_contrast": "flag: Contrast as an S-curve",
+}
+
+
+def _reference_of(spec: Spec, path: str, out: dict[str, str]) -> None:
+    if isinstance(spec, dict):
+        for key, one in spec.items():
+            _reference_of(one, f"{path}.{key}" if path else key, out)
+    elif isinstance(spec, Number):
+        out[path] = spec.told()
+    elif isinstance(spec, Flag):
+        out[path] = f"{spec.name}: true or false, {str(spec.default).lower()} for a new node"
+    elif isinstance(spec, Points):
+        least = f", {spec.least} points at least" if spec.least else ", [] is flat"
+        out[path] = (
+            f"{spec.name}: points [[in, out], ...], in 0 to 1 rising, out {_number(spec.low)} "
+            f"to {_number(spec.high)}{least}"
+        )
+    elif isinstance(spec, Lut):
+        out[path] = "a .cube by its name in the LUT library or project folder, a path, or null"
+    elif isinstance(spec, Whole):
+        out[path] = (
+            f"{spec.name}: null, or an object of {_listed(spec.fields)}, made whole with "
+            "neutral values where the node has none; invisible on the palettes"
+        )
+        _reference_of(spec.fields, path, out)
+    elif isinstance(spec, Count):
+        out[path] = f"{spec.name}: {spec.low} to {spec.high}"
+    elif isinstance(spec, Choice):
+        out[path] = f"{spec.name}: {', '.join(spec.choices)}"
+    else:
+        out[path] = (
+            f"{spec.least} to {spec.most} inputs, each {{{_listed(spec.item)}}}; the list is "
+            "replaced whole"
+        )
+
+
+def reference() -> dict[str, Any]:
+    """What the tools of grades take, in full.
+
+    Each setting of a node with its DaVinci name, range and neutral value, keyframes, the
+    settings of colour management and the spaces.
+    """
+    correctors: dict[str, str] = {}
+    _reference_of(CORRECTOR, "", correctors)
+    mixers: dict[str, dict[str, str]] = {}
+    for kind, spec in _MIXERS.items():
+        mixers[kind] = {}
+        _reference_of(spec, "", mixers[kind])
+    return {
+        "paths": (
+            'Settings are written by paths with dots, as {"primaries.lift.b": 0.05}, or as '
+            "objects; a patch merges objects and replaces other values."
+        ),
+        "corrector": correctors,
+        "mixers": mixers,
+        "keyframes": _KEYFRAMES,
+        "shot_match": (
+            "Each channel S(gain * x^gamma + offset), then an S-curve of contrast about pivot "
+            "keeping 0 and 1; after Soft Clip, the last step of its node, within its key. "
+            "video_shot_match works it out; set to null to reset."
+        ),
+        "color_settings": _COLOR,
+        "spaces": (
+            f"'<gamut> <gamma>' for each gamut of {', '.join(_GAMUTS)} and gamma of "
+            f"{', '.join(_GAMMAS)} (Rec.709 sRGB is 'sRGB'; Rec.2020 ST2084 and HLG are "
+            f"'Rec.2100 ST2084' and 'Rec.2100 HLG'), and {', '.join(_CAMERAS)}"
+        ),
+    }

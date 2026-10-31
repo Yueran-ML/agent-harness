@@ -80,6 +80,7 @@ __all__ = [
     "LutLibrary",
     "LutRoot",
     "LutStatus",
+    "NodeSide",
     "Progress",
     "RenderState",
     "Rendering",
@@ -293,6 +294,9 @@ class Progress:
 View = Literal["timeline", "source"]
 """A monitor of the engine: the timeline monitor or the source monitor."""
 
+NodeSide = Literal["input", "output"]
+"""The picture going into a node of a grade, or coming out of it."""
+
 StillLevel = Literal["clip", "pre_clip", "post_clip"]
 """Which grade of its clip a still keeps: the Node Editor's mode (``PROTOCOL.md``, The Gallery)."""
 
@@ -357,7 +361,7 @@ class Statistics:
     They are what ``scopes.statistics`` answers (``PROTOCOL.md``, Scopes).
 
     Attributes:
-        view: The monitor.
+        view: The monitor; ``None`` of a frame drawn off screen.
         frame: The frame shown: of the timeline, or of the media for the source monitor.
         width: Its width in pixels.
         height: Its height.
@@ -371,9 +375,11 @@ class Statistics:
             ``"1"``, ``"50"`` and ``"99"`` percent of the pixels are.
         histogram: For each channel, how many pixels are in each of ``bins`` levels from 0 to 1.
         bins: How many levels the histogram has.
+        timeline: The timeline of a frame drawn off screen or of a node.
+        node: Of the picture at a node, ``{"grade", "node", "at"}``.
     """
 
-    view: View
+    view: View | None
     frame: int
     width: int
     height: int
@@ -386,6 +392,8 @@ class Statistics:
     percentiles: dict[str, dict[str, float]]
     histogram: dict[str, list[int]]
     bins: int
+    timeline: str | None = None
+    node: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -1052,6 +1060,7 @@ class Engine:
         *,
         revision: int | None = None,
         session: int | None = None,
+        gesture: Mapping[str, Any] | None = None,
     ) -> Applied:
         """Apply operations and edits to the project, all or none, as one step of its history.
 
@@ -1068,6 +1077,9 @@ class Engine:
         greeted another engine since, which counts its revisions from 0 again, the transaction
         is refused in the same way without being sent.
 
+        ``gesture`` (``{"id", "end"?}``, PROTOCOL "Gestures") puts the transaction into one step
+        of the history with the others of the same gesture, until one with ``end`` true.
+
         Raises:
             EngineError: The transaction was refused (``-32001``, with the ``index`` of the
                 operation or the edit and the ``reason`` in ``data``, as ``locked`` or
@@ -1076,6 +1088,8 @@ class Engine:
         params: dict[str, Any] = {"ops": [dict(op) for op in ops]}
         if revision is not None:
             params["revision"] = revision
+        if gesture is not None:
+            params["gesture"] = dict(gesture)
         wire = await self._ensure()
         if session is not None and session != self._session:
             raise EngineError(
@@ -1136,17 +1150,42 @@ class Engine:
             raise EngineError("the engine answered media.inspect with no media", code=UNEXPECTED)
         return cast("list[dict[str, Any]]", items)
 
-    async def statistics(self, view: View = "timeline", *, bins: int | None = None) -> Statistics:
-        """Return the figures of the frame that a monitor shows now, measured on the card.
+    async def statistics(
+        self,
+        view: View = "timeline",
+        *,
+        bins: int | None = None,
+        timeline: str | None = None,
+        frame: int | None = None,
+        grade: Mapping[str, Any] | None = None,
+        node: str | None = None,
+        at: NodeSide | None = None,
+        clip: str | None = None,
+    ) -> Statistics:
+        """Return the figures of a frame, measured on the card.
 
-        Only an engine with monitors (the desktop's) has them. ``bins`` is the number of levels
-        of the histogram, 16 to 1024 (256 unless given).
+        Of the frame that the monitor ``view`` shows now, which only an engine with monitors
+        (the desktop's) has; or, where ``timeline`` is given, of its ``frame`` drawn off screen
+        as an export draws it, in a headless engine too. With ``grade`` (a target of grades) and
+        ``node``, of the picture going into the node or coming out of it (``at``, ``output``
+        unless given; ``clip`` names the clip of a group's grade). ``bins`` is the number of
+        levels of the histogram, 16 to 1024 (256 unless given).
 
         Raises:
-            EngineError: The engine is headless (``-32601``), the monitor shows nothing
-                (``-32004``, ``not_loaded``), or ``bins`` is out of range (``-32602``).
+            EngineError: The engine is headless and a monitor is named (``-32601``), the monitor
+                shows nothing (``-32004``, ``not_loaded``), or a parameter is out of range or
+                names nothing there (``-32602``, with its ``reason``).
         """
-        params: dict[str, Any] = {"view": view}
+        params: dict[str, Any] = (
+            {"view": view} if timeline is None else {"timeline": timeline, "frame": frame}
+        )
+        if grade is not None:
+            params["grade"] = dict(grade)
+            params["node"] = node
+        if at is not None:
+            params["at"] = at
+        if clip is not None:
+            params["clip"] = clip
         if bins is not None:
             params["bins"] = bins
         return _statistics(await self._call("scopes.statistics", params))
@@ -1858,7 +1897,11 @@ def _statistics(said: dict[str, Any]) -> Statistics:
     """
     method = "scopes.statistics"
     view = said.get("view")
-    if view not in ("timeline", "source"):
+    timeline = said.get("timeline")
+    node = said.get("node")
+    if view not in ("timeline", "source") and not (view is None and isinstance(timeline, str)):
+        raise _unexpected(method)
+    if timeline is not None and not isinstance(timeline, str):
         raise _unexpected(method)
 
     def channel(name: str) -> Channel:
@@ -1901,6 +1944,8 @@ def _statistics(said: dict[str, Any]) -> Statistics:
         percentiles=shares,
         histogram=counts,
         bins=_whole(histogram, "bins"),
+        timeline=timeline,
+        node=None if node is None else _object(node, method),
     )
 
 

@@ -168,11 +168,13 @@ F2 重命名，Delete 从媒体池移除（有时间线在用时会被拒绝）�
   混合器及其输入，以及节点是否带镜头匹配的调整。不指定调色时，列出所有调过色的片段、时间线调色和调色组。
 - `video_grade_set` 修改一个节点的参数、标签或 `enabled`。参数在发出前先检查，越界时用达芬奇的参数名、范围和中性值说明
   （饱和度：0 到 100，50 不改变画面）。数值参数也可以是关键帧：`{"keys": [{"frame": 0, "value": 40, "interp": "linear"}, ...]}`，
-  帧号从片段第一帧算起，`hold` 是静态关键帧，`bezier` 是缓入缓出。
+  `hold` 是静态关键帧，`bezier` 是缓入缓出。帧号的含义：素材片段是它显示的那张画面在素材里的帧号（按素材自己的帧率，从 0 起），
+  所以修剪、滑移、变速之后关键帧仍在原来的画面上；标题、纯色、静帧从片段第一帧算起；时间线调色按时间线的帧。
 - `video_grade_node` 用 `append`（追加节点）、`add_serial`、`add_serial_before`、`add_parallel`、`add_layer` 添加校色节点，
   可以在同一步里给出标签和参数；也可以删除、重置或取出一个节点。
 - `video_grade_copy` 把一张调色复制到其他调色上（`preserve_nodes` 保留目标前 N 个节点），把它的节点追加到其他调色末尾
-  （Append Node Graph），或者粘贴一个节点的全部参数或单个参数。
+  （Append Node Graph），或者粘贴一个节点的全部参数或单个参数。`keyframes` 决定复制过去的关键帧放在哪里：
+  `source_timecode`（默认，按素材里的同一时刻）或 `start_frame`（按离各片段第一张画面的距离）。
 - `video_grade_lut` 列出工程目录和 LUT 库里的 `.cube` LUT（LUT 库为 `COLUMBINA_LUTS`，未设置时为 `COLUMBINA_HOME`
   或 `~/.columbina` 下的 `luts` 文件夹），按名字给校色节点设置或清除 LUT；不指定节点时，LUT 放在末尾新加的校色节点上。
 - `video_grade_group` 新建片段组、加入或移出片段、改名、删除，把一张调色复制进组前置或组后置调色，或者把组调色并入各片段自己的调色。

@@ -318,6 +318,46 @@ async def test_grades_are_copied_appended_and_pasted_between_clips(
     assert len(fake.transactions) == 3
 
 
+async def test_keys_of_a_copied_grade_go_where_keyframes_says(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    c2 = {"level": "clip", "timeline": "t1", "clip": "c2"}
+    c1 = {"level": "clip", "timeline": "t1", "clip": "c1"}
+    result(
+        await desk.call("video_grade_copy", **{"from": "c2"}, to=["c1"], keyframes="start_frame")
+    )
+    assert fake.transactions[0] == [
+        {"edit": "copy_grade", "from": c2, "to": [c1], "keyframes": "start_frame"}
+    ]
+    result(
+        await desk.call(
+            "video_grade_copy",
+            action="append",
+            **{"from": "c2"},
+            to=["c1"],
+            keyframes="source_timecode",
+        )
+    )
+    assert fake.transactions[1] == [
+        {"edit": "append_node_graph", "from": c2, "to": [c1], "keyframes": "source_timecode"}
+    ]
+    pasted = await desk.call(
+        "video_grade_copy",
+        action="paste_node",
+        **{"from": "c2"},
+        from_node=1,
+        to=["c1"],
+        to_node=1,
+        keyframes="start_frame",
+    )
+    assert pasted.error is not None
+    assert "keyframes is for copy and append" in pasted.text
+    wrong = await desk.call("video_grade_copy", **{"from": "c2"}, to=["c1"], keyframes="frame")
+    assert wrong.error is not None
+    assert len(fake.transactions) == 2
+
+
 async def test_a_lut_is_set_by_its_name_in_the_library_and_a_missing_one_is_told(
     studio: tuple[Desk, Fake],
 ) -> None:

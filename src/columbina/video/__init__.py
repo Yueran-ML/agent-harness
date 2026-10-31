@@ -337,8 +337,10 @@ _SETTINGS = (
     "0/100/0/0 (0..100), key.input/output {invert, gain 1 (0..2), offset 0}, lut, shot_match "
     '{gamma, gain, offset, contrast, pivot} or null. A number may be keyframes {"keys": [{"frame":'
     ' 0, "value": 40, "interp": "linear"|"hold"|{"bezier": {"out": [t, dv], "in": [t, dv]}}}, '
-    "...]}, frames counted from the clip's first (the timeline's, for its grade). Mixers: "
-    "inputs, composite (layer mixer)."
+    "...]}. A key's frame: of a clip of media, the frame of its media (at the media's own "
+    "rate, from 0) whose picture is shown, so keys stay on their pictures through trims, slips "
+    "and speed changes; of a title, a colour or a still, the clip's frame from its first (0); of "
+    "the timeline's grade, the timeline's frame. Mixers: inputs, composite (layer mixer)."
 )
 
 
@@ -395,6 +397,16 @@ class _GradeCopy(_Timeline):
         description=(
             "copy only: keep the first N nodes of each target that has N or more (Preserve "
             "number of nodes)."
+        ),
+    )
+    keyframes: grading.KeyAlign | None = Field(
+        default=None,
+        description=(
+            "copy and append: where the keys of from go in each target (Apply Grades Using). "
+            "source_timecode (the default): at the same time of the media, so a grade copied to "
+            "the same media keeps its keys on the same pictures, by start frames where the clips "
+            "show no common stretch of media; start_frame: as far from each clip's first picture "
+            "as from from's."
         ),
     )
     from_node: int | str | None = None
@@ -467,6 +479,7 @@ async def _graded(args: _Timeline, grader: grading.Grader) -> dict[str, Any]:
             [_target(one) for one in args.to],
             preserve_nodes=args.preserve_nodes,
             from_node=args.from_node,
+            keyframes=args.keyframes,
             to_node=args.to_node,
             param=args.param,
         )

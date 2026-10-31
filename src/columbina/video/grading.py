@@ -53,6 +53,8 @@ NodeAction = Literal[
     "extract",
 ]  # fmt: skip
 CopyAction = Literal["copy", "append", "paste_node", "paste_value"]
+# Where the keys of a grade copied to another go (Apply Grades Using, pp. 3264, 3287).
+KeyAlign = Literal["source_timecode", "start_frame"]
 GroupAction = Literal["create", "add", "remove", "rename", "delete", "grade", "collapse"]
 
 EMPTY_GRADE: dict[str, Any] = {
@@ -520,7 +522,9 @@ def _checked_keys(spec: Number, given: dict[str, Any], path: str) -> dict[str, A
         frame, value = key["frame"], key["value"]
         if type(frame) is not int or abs(frame) > _LARGEST_FRAME:
             raise GradeError(
-                f"{here}: frame is a whole number of frames from the first of the clip (0)"
+                f"{here}: frame is a whole number of frames: of the clip's media (at its own "
+                "rate, from 0) for a clip of media, of the clip from its first (0) for a title, "
+                "a colour or a still, of the timeline for its grade"
             )
         if last is not None and frame <= last:
             raise GradeError(f"{here}: the frames of keys rise, each key at its own frame")
@@ -1215,10 +1219,18 @@ class Grader:
         from_node: str | int | None,
         to_node: str | int | None,
         param: str | None,
+        keyframes: KeyAlign | None = None,
     ) -> dict[str, Any]:
-        """Copy a grade, append its nodes, or paste a node or one of its settings."""
+        """Copy a grade, append its nodes, or paste a node or one of its settings.
+
+        ``keyframes`` says where the keys of a grade copied or appended go (``copy_grade`` and
+        ``append_node_graph``, PROTOCOL "Keys copied to another clip"): ``source_timecode``, the
+        engine's default, or ``start_frame``.
+        """
         if not to:
             raise GradeError("to names the grades to copy into, one at least")
+        if keyframes is not None and action not in ("copy", "append"):
+            raise GradeError("keyframes is for copy and append")
         if preserve_nodes is not None and action != "copy":
             raise GradeError("preserve_nodes is for copy")
         if preserve_nodes is not None and not 0 <= preserve_nodes <= _MOST_PRESERVED:
@@ -1242,9 +1254,14 @@ class Grader:
                 edit: dict[str, Any] = {"edit": "copy_grade", "from": origin, "to": into}
                 if preserve_nodes:
                     edit["preserve_nodes"] = preserve_nodes
+                if keyframes is not None:
+                    edit["keyframes"] = keyframes
                 return [edit]
             if action == "append":
-                return [{"edit": "append_node_graph", "from": origin, "to": into}]
+                edit = {"edit": "append_node_graph", "from": origin, "to": into}
+                if keyframes is not None:
+                    edit["keyframes"] = keyframes
+                return [edit]
             edit = {
                 "edit": action,
                 "from": origin,

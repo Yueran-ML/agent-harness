@@ -234,14 +234,18 @@ grade's summary.
 - `video_grade_set` patches one node's settings, label or `enabled`. Values are checked before
   they are sent, so a value out of range is told with DaVinci's name, range and neutral value
   (Saturation: 0 to 100, 50 changes nothing). A number may be keyframes,
-  `{"keys": [{"frame": 0, "value": 40, "interp": "linear"}, ...]}`, frames counted from the
-  clip's first, with `hold` for static keyframes and `bezier` for eases.
+  `{"keys": [{"frame": 0, "value": 40, "interp": "linear"}, ...]}`, with `hold` for static
+  keyframes and `bezier` for eases. A key's frame is, for a clip of media, the frame of its
+  media (at the media's own rate, from 0) whose picture is shown, so keys stay on their pictures
+  through trims, slips and speed changes; for a title, a colour or a still, the clip's frame
+  from its first; for the timeline's grade, the timeline's frame.
 - `video_grade_node` adds a corrector as `append` (Append Node), `add_serial`,
   `add_serial_before`, `add_parallel` or `add_layer` add one, with its label and settings in the
   same step if given, or removes, resets or extracts a node.
 - `video_grade_copy` copies a grade onto others (with `preserve_nodes`, each keeps its first N
   nodes), appends its nodes to theirs (Append Node Graph), or pastes one node's settings or one
-  setting.
+  setting. `keyframes` says where copied keys go: `source_timecode` (the default, the same time
+  of the media) or `start_frame` (as far from each clip's first picture).
 - `video_grade_lut` lists the `.cube` LUTs of the project folder and the LUT library
   (`COLUMBINA_LUTS`, otherwise the `luts` folder in `COLUMBINA_HOME` or in `~/.columbina`), and
   sets or clears a corrector's LUT by name; without a node, the LUT goes on a new corrector at

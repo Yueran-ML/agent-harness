@@ -473,6 +473,8 @@ describe('the menus', () => {
     const menu = screen.getByRole('menu', { name: 'Node menu' });
     expect(within(menu).getAllByRole('menuitem').map(each => [each.getAttribute('aria-label'), each.getAttribute('aria-keyshortcuts')])).toEqual([
       ['Add Node', null], ['Add Outside Node', 'Alt+O'], ['Change Label', null], ['Delete Node', 'Delete'], ['Reset Node Grade', 'Shift+Home'],
+      // The LUT of the node (T18, p. 3412).
+      ['LUT', null], ['Reveal Selected LUT', null],
       ['Reset Shot Match', null],
     ]);
     // An outside node waits for the keys of the Qualifier and Key palettes.

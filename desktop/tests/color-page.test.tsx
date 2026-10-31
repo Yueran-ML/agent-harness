@@ -169,7 +169,7 @@ describe('the Color page', () => {
     // The three places at the top left are one place: one opens in place of another, and pressed again it closes.
     fireEvent.click(within(toolbar).getByRole('button', { name: 'LUTs' }));
     expect(screen.queryByRole('region', { name: 'Gallery' })).toBeNull();
-    expect(screen.getByRole('region', { name: 'LUT browser' }).textContent).toContain('The LUT browser comes in a later version.');
+    expect(screen.getByRole('region', { name: 'LUT browser' }).querySelector('[data-test="lut-browser"]')).not.toBeNull();
     fireEvent.click(within(toolbar).getByRole('button', { name: 'Media pool' }));
     expect(screen.getByRole('region', { name: 'Media pool' })).toBeDefined();
     fireEvent.click(within(toolbar).getByRole('button', { name: 'Media pool' }));

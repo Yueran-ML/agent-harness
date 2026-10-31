@@ -35,7 +35,8 @@ const film = {
   facts: { duration: { ticks: 10, scale: 1 }, video: { width: 1920, height: 1080, rate: { num: 25, den: 1 }, codec: 'h264', bits: 8, rotation: 0 }, audio: null },
 };
 /** What the page asked the transport, but for what it fetches by itself. */
-const asked = () => engine.call.mock.calls.map(([method]) => method).filter(method => method !== 'project.get' && method !== 'transport.state');
+// The choice of HDR on the viewers is sent at each connect (T18), as the project and the state are fetched.
+const asked = () => engine.call.mock.calls.map(([method]) => method).filter(method => method !== 'project.get' && method !== 'transport.state' && method !== 'view.display');
 
 /** The engine of the studio, as the shell lets the page reach it. */
 function shellEngine() {

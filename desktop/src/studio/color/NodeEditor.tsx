@@ -1,9 +1,9 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { Hand, MousePointer2, X } from 'lucide-react';
 import { keyOf } from '../../app/keys';
 import { useWords } from '../../app/locale';
 import { editingAllowed, inStudio } from '../keys';
-import type { Grade, GradeNode, Link, LinkKind, Target } from '../engine';
+import type { Grade, GradeNode, Link, LinkKind, LutLibrary, Target } from '../engine';
 import type { GradeLevel } from './clips';
 import { ColorMenu, type Menu, type MenuItem } from './ColorMenu';
 import {
@@ -15,6 +15,7 @@ import {
   morph, nodeKey, pasteNode, reconnect, relabel, reset, resetShotMatch, restoreOriginal, stepNode, swapNodes, toggleAll, toggleNodes, type AddHow, type NodeCommand, type Worked,
 } from './nodeEdits';
 import type { GradeEditing } from './useGradeEditing';
+import { carriesLut, draggedLut, LUT_MENU, lutMenuItems, setNodeLut } from './luts';
 import './nodes.css';
 
 /** How far the pointer goes before a press becomes a drag. */
@@ -25,6 +26,15 @@ export const ZOOM_MOST = 3;
 const ZOOM_STEP = 1.25;
 const NO_PLACES: Placed = {};
 const NO_IDS: ReadonlySet<string> = new Set();
+
+/** The LUTs that a node can be given (p. 3412): by a drag from the LUT browser, or its LUT ▸ submenu; and Reveal Selected LUT. */
+export interface NodeLuts {
+  /** The session of the engine, whose browser the drags come from. */
+  session: number;
+  library: LutLibrary | null;
+  favorites: ReadonlySet<string>;
+  onReveal: (name: string) => void;
+}
 
 /**
  * What the node editor keeps that the project does not: where nodes were dragged to, by grade (the
@@ -189,7 +199,7 @@ const isMixerOf = (node: GradeNode | undefined, kind: LinkKind) => node !== unde
  * Every change is one transaction, undone in the one history. Where a node lies, how far the editor
  * is zoomed and which nodes are chosen are the view's: the project keeps none of them.
  */
-export function NodeEditor({ grade, level, levels, onLevel, current, onCurrent, hint, target, gradeKey, views, focused, editing }: {
+export function NodeEditor({ grade, level, levels, onLevel, current, onCurrent, hint, target, gradeKey, views, focused, editing, luts }: {
   grade: Grade | null;
   level: GradeLevel;
   levels: readonly GradeLevel[];
@@ -206,6 +216,7 @@ export function NodeEditor({ grade, level, levels, onLevel, current, onCurrent, 
   /** Whether the node editor has the focus of the page (p. 2967): Delete, Ctrl+C, Ctrl+V and H are its then. */
   focused: boolean;
   editing: GradeEditing;
+  luts?: NodeLuts;
 }) {
   const words = useWords();
   const labels = words.label.studio.colorPage;
@@ -559,6 +570,28 @@ export function NodeEditor({ grade, level, levels, onLevel, current, onCurrent, 
 
   const pointerCancel = () => { drag.current = null; setPreview(null); };
 
+  // A LUT dragged from the LUT browser onto a corrector goes on it, in place of the one it has (p. 3412); elsewhere nothing.
+  const lutTarget = (event: ReactDragEvent<HTMLDivElement>): GradeNode | null => {
+    if (!luts || base === null || !carriesLut(event.dataTransfer)) return null;
+    const node = nodeAt(base, pointOf(event))?.node;
+    return node?.kind === 'corrector' ? node : null;
+  };
+  const lutOver = (event: ReactDragEvent<HTMLDivElement>) => {
+    const node = lutTarget(event);
+    if (node === null) { if (preview?.node) setPreview(null); return; }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+    if (preview?.node !== node.id) setPreview({ node: node.id });
+  };
+  const lutDrop = (event: ReactDragEvent<HTMLDivElement>) => {
+    const node = lutTarget(event);
+    setPreview(null);
+    if (node === null || target === null || !luts) return;
+    event.preventDefault();
+    const name = draggedLut(event.dataTransfer, luts.session);
+    if (name !== null) run(setNodeLut(target, node, name));
+  };
+
   const contextMenu = (event: ReactMouseEvent<HTMLDivElement>) => {
     event.preventDefault();
     if (base === null || target === null || grade === null) return;
@@ -611,6 +644,13 @@ export function NodeEditor({ grade, level, levels, onLevel, current, onCurrent, 
       { id: 'delete', label: menuWords.deleteNode, keys: 'Delete', run: () => run(deleteNodes(target, grade, [node.id])) },
       { id: 'reset', label: menuWords.reset, keys: 'Shift+Home', run: () => run(reset('node', target, grade, node.id)) },
     ];
+    if (node.kind === 'corrector' && luts) {
+      const lut = node.params.lut;
+      items.push(
+        { id: 'lut', label: LUT_MENU, items: lutMenuItems(luts.library, luts.favorites, lut, name => run(setNodeLut(target, node, name)), labels.lutPanel) },
+        { id: 'reveal-lut', label: menuWords.revealLut, disabled: lut === null, run: () => { if (lut !== null) luts.onReveal(lut); } },
+      );
+    }
     if (node.kind === 'corrector' && node.params.shot_match != null) {
       items.push({ id: 'reset-match', label: menuWords.resetShotMatch, run: () => run(resetShotMatch(target, node.id)) });
     }
@@ -658,7 +698,8 @@ export function NodeEditor({ grade, level, levels, onLevel, current, onCurrent, 
       <button type="button" className="icon-btn" aria-label={words.label.close} onClick={() => editing.setProblem(null)}><X size={13} /></button></div>}
     <div ref={canvas} className="color-nodes-canvas" data-test="node-canvas" data-tool={tool}
       onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerCancel} onLostPointerCapture={pointerCancel}
-      onPointerLeave={() => { if (!drag.current && hover) setHover(null); }} onContextMenu={contextMenu}>
+      onPointerLeave={() => { if (!drag.current && hover) setHover(null); }} onContextMenu={contextMenu}
+      onDragOver={lutOver} onDragLeave={() => { if (preview?.node) setPreview(null); }} onDrop={lutDrop}>
       {grade === null || layout === null ? <p className="caption color-empty">{hint}</p> : <div className="color-graph-area">
         <GradeGraph layout={layout} zoom={zoom} shown={shown} onLabel={startLabel} />
         {grade.nodes.length === 0 && <p className="caption color-empty" data-test="no-nodes">{said.noNodes}</p>}

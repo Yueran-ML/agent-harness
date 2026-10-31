@@ -803,6 +803,9 @@ export const en = {
         list: 'List view', thumbnails: 'Thumbnail view', details: 'Media details', path: 'Path', videoCodec: 'Video codec', audioCodec: 'Audio codec',
         dimensions: 'Dimensions', duration: 'Duration', frameRate: 'Frame rate', depth: 'Bit depth', sampleRate: 'Sample rate', channels: 'Channels',
         markIn: 'In', markOut: 'Out', noProxy: 'No proxy', selected: (count: number) => `${count} selected`,
+        /** The right-click menu of media (Reference Manual 20, pp. 221–222, 230, 245). */
+        menu: 'Media menu', inputColorSpace: 'Input Color Space', inputGamma: 'Input Gamma', acesInput: 'ACES Input Transform',
+        projectDefault: 'Project Default', bypass: 'Bypass', dataLevels: 'Data Levels', levels: { auto: 'Auto', video: 'Video', full: 'Full' },
       },
       /** Its way in, beside the tasks, and its name. */
       open: 'Studio',
@@ -814,6 +817,28 @@ export const en = {
         source: 'Source', timeline: 'Timeline', sourceTitle: 'Source viewer', timelineTitle: 'Timeline viewer', choose: 'Viewer shown',
       },
       editPage: { inspector: 'Inspector', newTimeline: 'New timeline', create: 'Create', noTimeline: 'No timeline' },
+      /** The Project Settings window (Reference Manual 20, pp. 19–20, 149–156), in DaVinci Resolve's words. */
+      settings: {
+        title: 'Project Settings', panels: 'Panels', colorManagement: 'Color Management', generalOptions: 'General Options',
+        spaces: 'Color Space & Transforms', lookupTables: 'Lookup Tables', color: 'Color',
+        science: 'Color science', automatic: 'Automatic color management', processingMode: 'Color processing mode',
+        preset: 'Resolve color management preset', custom: 'Custom', output: 'Output color space', separateGamma: 'Use Separate Color Space and Gamma',
+        input: 'Input color space', timeline: 'Timeline color space', inputGamma: 'Input gamma', timelineGamma: 'Timeline gamma', outputGamma: 'Output gamma',
+        bypass: 'Bypass', workingLuminance: 'Timeline working luminance', nits: 'Nits', hdr203: 'Use 203 nits reference for Rec.2100 HDR',
+        limitGamut: 'Limit output gamut to', none: 'None', inputDrt: 'Input DRT', outputDrt: 'Output DRT',
+        drts: { none: 'None', simple: 'Simple', luminance: 'Luminance Mapping', saturation_preserving: 'Saturation Preserving' },
+        rolloffStart: 'Sat. Rolloff Start', rolloffLimit: 'Sat. Rolloff Limit',
+        inverseDrt: 'Use inverse DRT for SDR to HDR conversion', whitePoint: 'Use white point adaptation', aware: 'Use color space aware grading tools',
+        resizeIn: 'Apply resize transformations in',
+        resizes: { timeline: 'Timeline', linear: 'Linear', linear_mapped: 'Linear Mapped', gamma: 'Gamma', gamma_mapped: 'Gamma Mapped' },
+        graphicsWhite: 'Graphics white level', displayHdr: 'Display HDR On Viewers If Available',
+        acesVersion: 'ACES version', idt: 'ACES Input Device Transform', odt: 'ACES Output Device Transform',
+        gamutCompress: 'Apply ACES reference gamut compress', nodeLuts: 'Process Node LUTs in',
+        inputLut: 'Input Lookup Table', outputLut: 'Output Lookup Table', viewerLut: 'Color Viewer Lookup Table',
+        lut1d: '1D lookup table', lut3d: '3D lookup table', noLut: 'No LUT selected', missing: 'missing',
+        interpolation: '3D Lookup Table Interpolation', trilinear: 'Trilinear', tetrahedral: 'Tetrahedral', updateLists: 'Update Lists',
+        sCurve: 'Use S-curve for contrast',
+      },
       /** Exporting a timeline: DaVinci Resolve's Quick Export, with the settings of its render. */
       render: {
         quickExport: 'Quick export', title: 'Export timeline', timeline: 'Timeline', range: 'Range', whole: 'Entire timeline', marked: 'In to out',
@@ -848,6 +873,7 @@ export const en = {
           addInput: 'Add One Input', toLayer: 'Morph Into Layer Mixer Node', toParallel: 'Morph Into Parallel Node', composite: 'Composite Mode',
           deleteLink: 'Delete Link', resetAll: 'Reset All Grades and Nodes', cleanup: 'Cleanup Node Graph',
           zoomIn: 'Zoom In', zoomOut: 'Zoom Out', zoomToWindow: 'Zoom to Window', originalSize: 'Original Size', collapse: 'Collapse Group Grades',
+          revealLut: 'Reveal Selected LUT',
         },
         /** The composite modes of a Layer Mixer, as DaVinci Resolve names them (pp. 1055–1058). */
         composites: {
@@ -868,6 +894,14 @@ export const en = {
         realtime: 'Playing in real time', dropping: 'Dropping frames', stopped: 'Not playing',
         enhanced: 'Enhanced viewer', full: 'Full page viewer', cinema: 'Cinema viewer', exitCinema: 'Exit cinema viewer',
         missingLut: (name: string) => `Missing LUT: ${name}`, missingLuts: 'Multiple LUTs missing',
+        /** The LUT browser (Reference Manual 20, pp. 2970–2971, 3410–3413), in DaVinci Resolve's words. */
+        lutPanel: {
+          folders: 'LUT folders', list: 'LUTs', project: 'Project LUTs', library: 'LUT library', favorites: 'Favorites', missing: 'Missing LUTs',
+          search: 'Search', refresh: 'Refresh', menu: 'LUT menu', apply: 'Apply LUT to Current Node', addFavorite: 'Add to Favorites',
+          removeFavorite: 'Remove from Favorites', name: 'LUT name', clips: 'Clips', none: 'None',
+        },
+        /** The options menu of the viewer (p. 2986) with what the plan adds to it (p. 244). */
+        viewerOptions: 'Viewer options', displayHdr: 'Display HDR On Viewers If Available', viewerLut: 'Viewer LUT',
         /** The orange dot of a palette's button: the current node is adjusted there. */
         changed: 'Adjusted',
         /** The Primaries palette (Reference Manual 20, Chapter 131), in DaVinci Resolve's words. */
@@ -1512,8 +1546,20 @@ export const en = {
         ungrouped: "This clip is not in a group.",
         params: "These settings do not fit this kind of node.",
         wrong_node: "This cannot be done with the chosen node.",
+        camera_raw: "The color space of camera raw media comes from its camera and cannot be set.",
+        unknown_space: "That color space or transform is not one that the engine knows.",
+        inapplicable: "This setting does not apply to the current color management.",
+        color_settings: "These color settings could not be read.",
       },
       timeline: { empty: 'Choose or create a timeline to begin editing.' },
+      settings: {
+        applied: 'Each change is made at once, and can be undone like any edit.',
+        noProject: 'Open the project in the studio to change its settings.',
+        regrade: 'Changing this after grading has begun changes how every grade looks.',
+        displayHdr: 'This is kept on this computer for every project. The viewers show HDR only where HDR is on in the display settings of Windows.',
+        hdrOff: 'Windows has HDR off for the display of the viewer, so it shows SDR.',
+        lutFolders: 'A LUT is looked for in these folders, in this order.',
+      },
       loadSource: 'Double-click media in the media pool to see it here.',
       newTimeline: 'The timeline takes the size of the first video in the media pool, and its frame rate unless you choose another. It starts with one video track and one audio track. Once it has content, its frame rate is locked.',
       newTimelineFailed: 'The timeline could not be created.',
@@ -1575,7 +1621,13 @@ export const en = {
         noNodes: 'This grade has no nodes yet.',
         incomplete: 'The grade is off: a node is not connected.',
         gallery: 'Stills and albums come in a later version.',
-        luts: 'The LUT browser comes in a later version.',
+        lutsFailed: 'The LUTs could not be listed.',
+        lutsTruncated: 'There are too many LUTs to list them all.',
+        noLuts: 'No LUTs were found. Put .cube files in the folder of the project or in the LUT library, then refresh.',
+        noLutsHere: 'There are no LUTs here.',
+        noFavorites: 'Point at a LUT and click its star to add it to the favorites.',
+        lutShadowed: 'A LUT of the same name in the folder of the project is used instead.',
+        missingLuts: 'These LUTs could not be read. The nodes that use them are graded without them.',
         palette: 'The controls of this palette come in a later version.',
         noCorrector: 'Choose a corrector node in the node editor to adjust it.',
         autoFlat: 'Auto Color found too little range in this frame to balance it.',

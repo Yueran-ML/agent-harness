@@ -1,8 +1,12 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { Grid2X2, Import, List, RotateCw, Trash2, X } from 'lucide-react';
 import { useWords } from '../app/locale';
+import { studioSupported } from '../app/system';
 import type { EngineBridge } from '../bridge';
-import { callEngine, EngineError, type Bin, type Media, type Op, type ProxyEvent, type Rate } from './engine';
+import { callEngine, EngineError, keptColor, type Bin, type ColorSettings, type Media, type Op, type ProxyEvent, type Rate } from './engine';
+import type { Menu } from './color/ColorMenu';
+import { CoveringMenu } from './color/CoveringMenu';
+import { MEDIA_COLOR_REASONS, mediaColorItems } from './media/colorMenu';
 import { Bins } from './media/Bins';
 import { Clips } from './media/Clips';
 import { Details } from './media/Details';
@@ -11,7 +15,7 @@ import { Thumbnails } from './media/Thumbnails';
 export { factsOf, proxyStanding } from './media/facts';
 
 /** Media IDs and metadata are edited through one engine transaction; the original files stay where they are. */
-export const MediaPool = memo(function MediaPool({ media, bins, timelines, proxies, loaded, bridge, session, onImport, onLoad, onMakeAgain, initialGrid = false, onBin, follow = null }: {
+export const MediaPool = memo(function MediaPool({ media, bins, timelines, proxies, loaded, bridge, session, onImport, onLoad, onMakeAgain, initialGrid = false, onBin, follow = null, color }: {
   media: readonly Media[] | null; bins: readonly Bin[]; timelines: readonly { rate: Rate }[];
   proxies: Readonly<Record<string, ProxyEvent>>; loaded: string | null; bridge: Pick<EngineBridge, 'call'>; session: number;
   onImport: (bin: string | null) => void; onLoad: (id: string) => void; onMakeAgain: (id: string) => void;
@@ -21,6 +25,8 @@ export const MediaPool = memo(function MediaPool({ media, bins, timelines, proxi
   onBin?: (bin: string | null) => void;
   /** A medium to choose as it changes: the one under the playhead of the Cut page's source tape. */
   follow?: string | null;
+  /** The colour management of the project, which says what the menu of media offers (its Input Color Space, p. 230). */
+  color?: ColorSettings;
 }) {
   const words = useWords();
   const labels = words.label.studio.media;
@@ -28,6 +34,7 @@ export const MediaPool = memo(function MediaPool({ media, bins, timelines, proxi
   const [selection, setSelection] = useState<Selection>(EMPTY_SELECTION);
   const [grid, setGrid] = useState(initialGrid);
   const [problem, setProblem] = useState<{ said: string; detail: string } | null>(null);
+  const [menu, setMenu] = useState<Menu | null>(null);
   const pending = useRef(false);
   const selectedBin = bins.some(each => each.id === bin) ? bin : null;
   useEffect(() => { onBin?.(selectedBin); }, [selectedBin, onBin]);
@@ -47,7 +54,9 @@ export const MediaPool = memo(function MediaPool({ media, bins, timelines, proxi
     } catch (error) {
       const reason = error instanceof EngineError ? (error.data as { reason?: string } | null)?.reason : null;
       const said = reason === 'not_empty' ? words.hint.studio.binUsed
-        : reason === 'in_use' ? words.hint.studio.mediaUsed : words.hint.studio.mediaEditFailed;
+        : reason === 'in_use' ? words.hint.studio.mediaUsed
+          : MEDIA_COLOR_REASONS.find(each => each === reason) ? words.hint.studio.edit[reason as typeof MEDIA_COLOR_REASONS[number]]
+            : words.hint.studio.mediaEditFailed;
       setProblem({ said, detail: error instanceof Error ? error.message : String(error) });
       return false;
     } finally { pending.current = false; }
@@ -59,6 +68,16 @@ export const MediaPool = memo(function MediaPool({ media, bins, timelines, proxi
     if (moving.length === 0) return;
     void edit(moving.map(each => ({ op: 'set_media', id: each.id, bin: target })));
   };
+  // The right-click menu of media: its colour, for those chosen where it is one of them, else for it alone, which is then chosen.
+  const colorMenu = (event: MouseEvent) => {
+    const id = (event.target as Element).closest<HTMLElement>('[data-media]')?.dataset.media;
+    if (!id || !studioSupported()) return;
+    event.preventDefault();
+    const of = selection.ids.includes(id) ? visible.filter(each => selection.ids.includes(each.id)) : visible.filter(each => each.id === id);
+    if (!selection.ids.includes(id)) setSelection({ ids: [id], focus: id, anchor: id });
+    setMenu({ x: event.clientX, y: event.clientY, label: labels.menu, items: mediaColorItems(of, keptColor({ color }), labels, ops => void edit(ops)) });
+  };
+  const closeMenu = useCallback(() => setMenu(null), []);
   return <section className="pool" aria-label={words.label.studio.pool} data-test="pool">
     <header className="pool-head">
       <h2 className="overline">{words.label.studio.pool}</h2>
@@ -72,7 +91,7 @@ export const MediaPool = memo(function MediaPool({ media, bins, timelines, proxi
       <button type="button" className="icon-btn" aria-label={words.label.close} onClick={() => setProblem(null)}><X size={14} /></button></div>}
     <div className="pool-browser">
       <Bins bins={bins} selected={selectedBin} onSelect={selectBin} onEdit={edit} onMove={move} session={session} />
-      <div className="pool-clips">
+      <div className="pool-clips" onContextMenu={colorMenu}>
         {media !== null && visible.length === 0 && <p className="caption pool-none" data-test="pool-none">{media.length === 0 ? words.hint.studio.noMedia : words.hint.studio.emptyBin}</p>}
         <Clips media={visible} timelines={timelines} proxies={proxies} loaded={loaded} selection={selection} onSelect={setSelection}
           onLoad={onLoad} onMakeAgain={onMakeAgain} onEdit={edit} session={session} thumbnails={grid ? thumbnails : null} />
@@ -85,5 +104,6 @@ export const MediaPool = memo(function MediaPool({ media, bins, timelines, proxi
       {failed && <button type="button" className="btn btn-quiet" onClick={() => onMakeAgain(failed.id)} data-test="make-proxy-again"><RotateCw size={14} aria-hidden="true" />{words.label.studio.makeProxyAgain}</button>}
     </footer>}
     {details && <Details media={details} told={proxies[details.id]} timelines={timelines} onMakeAgain={() => onMakeAgain(details.id)} />}
+    {menu && <CoveringMenu menu={menu} onClose={closeMenu} />}
   </section>;
 });

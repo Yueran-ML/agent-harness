@@ -413,6 +413,20 @@ export interface TimelineTransportState extends TransportBase {
 }
 export type TransportState = SourceTransportState | TimelineTransportState;
 
+/** A folder that a corrector's `lut` is looked for in, in the order of `luts.list` (PROTOCOL.md, "The library of LUTs"). */
+export interface LutRoot { place: 'project' | 'library'; path: string; exists: boolean }
+/**
+ * A LUT of the library, by the name that a node gives it (its path from its root, with `/`); `root`
+ * is the index of its root, and `shadowed` says that a root before it has one of the same name, which is read instead.
+ */
+export interface LutFile { name: string; root: number; size: number; modified_us: number | null; shadowed: boolean }
+/** The answer of `luts.list`. */
+export interface LutLibrary { roots: LutRoot[]; luts: LutFile[]; truncated: boolean }
+/** What a view shows, as `view.display` tells it: whether Windows has HDR on for its monitor, and whether it shows HDR. */
+export interface ViewShows { hdr_on: boolean; hdr_shown: boolean; peak_nits: number | null; sdr_white_nits: number | null }
+/** The answer of `view.display` (Display HDR On Viewers If Available, p. 244), for each monitor that has a view. */
+export interface ViewDisplay { hdr: boolean; source: ViewShows | null; timeline: ViewShows | null }
+
 /** The notification `media.proxy`: how the proxy of media is being made. */
 export interface ProxyEvent {
   media: string;
@@ -514,6 +528,8 @@ export interface PageMethods {
   'timeline.duration': { frames: number };
   'media.thumbnail': { width: number; height: number; png: string };
   'media.waveform': { rate: number; channels: number; peaks: string } | { pending: true };
+  'luts.list': LutLibrary;
+  'view.display': ViewDisplay;
   'render.cancel': Record<string, never>;
   'transport.load': TransportState;
   'transport.play': Record<string, never>;

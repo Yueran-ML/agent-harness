@@ -4,7 +4,7 @@ import { Expand, Film, FolderOpen, GalleryHorizontalEnd, Images, Layers3, Maximi
 import { keyOf } from '../../app/keys';
 import { useWords } from '../../app/locale';
 import type { EngineBridge } from '../../bridge';
-import { callEngine, type ClipTrack, type Group, type Media, type TimelineTransportState, type Timeline as TimelineModel } from '../engine';
+import { callEngine, keptColor, type ClipTrack, type ColorSettings, type Group, type Media, type TimelineTransportState, type Timeline as TimelineModel } from '../engine';
 import { editingAllowed, inStudio, useStudioKeys } from '../keys';
 import { MonitorPane } from '../MonitorPane';
 import { Thumbnails } from '../media/Thumbnails';
@@ -12,6 +12,11 @@ import { rateOf, timecode } from '../timecode';
 import type { MonitorControls } from '../useMonitor';
 import type { ViewerNotice } from '../Viewer';
 import { useTimelineLoad } from './useTimelineLoad';
+import { LutBrowser, type RevealedLut } from '../color/LutBrowser';
+import { setNodeLut } from '../color/luts';
+import { useFavoriteLuts, useLutLibrary } from '../color/useLuts';
+import { ViewerOptions } from '../color/ViewerOptions';
+import type { NodeLuts } from '../color/NodeEditor';
 import {
   CLIP_FILTERS, currentClip, gradeOf, keptBy, levelsOf, numberedClips, shownClips, sourceFrameAt, stepClip,
   type ClipFilter, type GradeLevel,
@@ -74,11 +79,11 @@ function useRealTime(state: TimelineState | null): 'stopped' | 'realtime' | 'dro
  * The viewer is the timeline monitor of the Cut and Edit pages, with its transport and its keys.
  * The current clip is the one at the playhead: its grade is in the node editor and its thumbnail is
  * outlined in orange. Up and Down go to the clip before and after it. Alt+F, Shift+F and P make the
- * viewer larger. The palettes, the gallery and the LUT browser are placeholders until T17–T19, T26;
+ * viewer larger. The LUT browser (T18) puts LUTs on nodes; the gallery is a placeholder until T26;
  * the node editor shows the grade, and edits it from T16.
  */
 export function ColorPage({
-  bridge, native, session, revision, pool, media, timelines, groups = NO_GROUPS, selected, onSelect, timelineMonitor, noticeOf, onRetry, onProblem,
+  bridge, native, session, revision, pool, media, timelines, groups = NO_GROUPS, selected, onSelect, timelineMonitor, noticeOf, onRetry, onProblem, color,
 }: {
   bridge: Pick<EngineBridge, 'call' | 'onEvent' | 'viewRect' | 'viewShow'>;
   native: boolean;
@@ -96,6 +101,8 @@ export function ColorPage({
   noticeOf: (monitor: 'timeline') => ViewerNotice | null;
   onRetry: () => void;
   onProblem: (said: string, failure: unknown) => void;
+  /** The colour management of the project, whose Color Viewer LUT the viewer's menu sets (T18). */
+  color?: ColorSettings;
 }) {
   const words = useWords();
   const labels = words.label.studio.colorPage;
@@ -124,6 +131,7 @@ export function ColorPage({
   const [center, setCenter] = useState<CenterPalette>('curves');
   const [last, setLast] = useState<'left' | 'center'>('left');
   const [right, setRight] = useState<RightPanel>('scopes');
+  const [revealed, setRevealed] = useState<RevealedLut | null>(null);
   const thumbnails = useMemo(() => new Thumbnails(bridge), [bridge, session]);
   const now = useRef({ onProblem, words });
   now.current = { onProblem, words };
@@ -174,6 +182,13 @@ export function ColorPage({
   const edited = useMemo<EditedNode | null>(() => (placed === null || editedNode === null ? null
     : { bridge, revision, target: placed.target, node: editedNode, frame: placed.frame, onFailure: failed }),
   [bridge, revision, JSON.stringify(placed), editedNode, failed]);
+  // The LUTs of nodes (T18): Apply LUT to Current Node and drags from the browser, the node menu's LUT ▸, and Reveal Selected LUT.
+  const lutLibrary = useLutLibrary(bridge).library;
+  const favoriteLuts = useFavoriteLuts();
+  const revealLut = useCallback((name: string) => { setSide('luts'); setRevealed(old => ({ name, asked: (old?.asked ?? 0) + 1 })); }, []);
+  const nodeLuts = useMemo<NodeLuts>(() => ({ session, library: lutLibrary, favorites: favoriteLuts, onReveal: revealLut }),
+    [session, lutLibrary, favoriteLuts, revealLut]);
+  const applyLut = (name: string) => { if (grades.target !== null) grades.editing.run(setNodeLut(grades.target, editedNode ?? undefined, name)); };
 
   // Going to a clip: it is chosen, alone, and the playhead goes to its first frame (p. 3024).
   const go = useCallback((clip: string, start: number) => {
@@ -274,6 +289,7 @@ export function ColorPage({
       data-test="head-timecode-kind">
       {(['source', 'record', 'sourceFrame', 'recordFrame'] as const).map(each => <option key={each} value={each}>{labels.timecodes[each]}</option>)}
     </select>
+    <ViewerOptions bridge={bridge} color={keptColor({ color })} run={grades.editing.run} />
     <button type="button" className="icon-btn" aria-pressed={viewerMode === 'enhanced'} aria-label={labels.enhanced}
       title={`${labels.enhanced} (Alt+F)`}
       onClick={event => setViewerMode(old => (event.altKey ? (old === 'full' ? 'normal' : 'full') : old === 'enhanced' ? 'normal' : 'enhanced'))}
@@ -313,15 +329,18 @@ export function ColorPage({
     </div>
     {side !== null && <section className="color-side" aria-label={side === 'gallery' ? labels.gallery : side === 'luts' ? labels.lutBrowser : undefined}
       data-panel={side} data-test="color-side" {...focusOf('side')}>
-      {side === 'pool' ? pool : <>
-        <h2 className="overline">{side === 'gallery' ? labels.gallery : labels.lutBrowser}</h2>
-        <p className="caption color-empty">{side === 'gallery' ? said.gallery : said.luts}</p>
+      {side === 'pool' ? pool : side === 'luts' ? <LutBrowser bridge={bridge} session={session} onApply={applyLut}
+        canApply={grades.target !== null && editedNode?.kind === 'corrector'} missing={missing} timeline={selected} groups={groups} numbers={numbers}
+        revealed={revealed} /> : <>
+        <h2 className="overline">{labels.gallery}</h2>
+        <p className="caption color-empty">{said.gallery}</p>
       </>}
     </section>}
     {viewerMode === 'cinema' ? createPortal(<div className="color-cinema" data-studio-portal="">{viewer}</div>, document.body) : viewer}
     {nodesOpen && <section className="color-nodes" aria-label={labels.nodeEditor} data-test="node-editor" {...focusOf('nodes')}>
       <NodeEditor grade={grade} level={shownLevel} levels={levels} onLevel={setLevel} current={currentNode} onCurrent={onCurrentNode}
-        hint={noTimeline} target={grades.target} gradeKey={gradeKey} views={grades.views} focused={area === 'nodes'} editing={grades.editing} />
+        hint={noTimeline} target={grades.target} gradeKey={gradeKey} views={grades.views} focused={area === 'nodes'} editing={grades.editing}
+        luts={nodeLuts} />
       <button type="button" className="icon-btn color-expand" aria-pressed={nodesExpanded} aria-label={labels.nodeEditor} title={labels.nodeEditor}
         onClick={() => setNodesExpanded(open => !open)} data-test="expand-nodes"><Expand size={13} /></button>
     </section>}

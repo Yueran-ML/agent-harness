@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react';
-import { Film, FolderOpen, Palette, PanelRightClose, PanelRightOpen, Scissors, X } from 'lucide-react';
+import { Film, FolderOpen, Palette, PanelRightClose, PanelRightOpen, Scissors, Settings, X } from 'lucide-react';
 import { useWords } from '../app/locale';
 import { shortcut, studioSupported } from '../app/system';
 import { sentenceOf } from '../key/form';
@@ -17,6 +17,8 @@ import { MediaPage } from './pages/MediaPage';
 import { RenderDialog } from './render/RenderDialog';
 import { ExportProgress } from './render/RenderProgress';
 import { rendersOf } from './render/renders';
+import { ProjectSettings } from './settings/ProjectSettings';
+import { viewerDisplayOf } from './viewerDisplay';
 import { duration } from './timeline/geometry';
 import type { Marks } from './timeline/snap';
 import { framesOf, rateOf } from './timecode';
@@ -116,6 +118,10 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
   const exportGoing = () => { const state = renders.getSnapshot().job?.state; return state === 'running' || state === 'cancelling'; };
   const exportRunning = useSyncExternalStore(renders.subscribe, exportGoing, exportGoing);
   const migrations = migrationsOf(bridge);
+  // Display HDR On Viewers If Available, sent to each engine as it is opened (p. 244).
+  viewerDisplayOf(bridge);
+  // The Project Settings, from the gear at the lower right of every page (p. 19).
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const migrated = useSyncExternalStore(migrations.subscribe, migrations.getSnapshot, migrations.getSnapshot);
   const root = useRef<HTMLElement>(null);
   const tabs = useRef<HTMLElement>(null);
@@ -250,6 +256,7 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
     initialGrid={page === 'cut'}
     onBin={setBin}
     follow={page === 'cut' && onTape ? loaded?.id ?? null : null}
+    color={project?.color}
   />;
   const onExport = useCallback((marks: Marks | null) => setExporting({ marks }), []);
   const conversationWords = conversationHidden ? words.label.studio.showConversation : words.label.studio.hideConversation;
@@ -340,6 +347,7 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
       media={project?.media ?? NO_MEDIA}
       timelines={timelines}
       groups={project?.groups ?? NO_GROUPS}
+      color={project?.color}
       selected={selected}
       onSelect={setChosenTimeline}
       timelineMonitor={timelineMonitor}
@@ -372,5 +380,8 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
         </button>;
       })}
     </nav>
+    {studioSupported() && <button type="button" className="icon-btn studio-settings-button" aria-label={words.label.studio.settings.title}
+      title={words.label.studio.settings.title} onClick={() => setSettingsOpen(true)} data-test="project-settings-open"><Settings size={15} /></button>}
+    {settingsOpen && <ProjectSettings bridge={bridge} project={project} onClose={() => setSettingsOpen(false)} />}
   </section>;
 }

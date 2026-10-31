@@ -100,9 +100,12 @@ function engineWith(project: Project, given: { state?: TransportState | null; op
     session,
     tell: (event: EngineEvent) => act(() => tell(event)),
     notify: (method: string, params: unknown) => act(() => tell({ kind: 'notification', session, method, params })),
-    /** What the engine is asked, without the project and the state that the copy fetches. */
+    /**
+     * What the engine is asked, without the project and the state that the copy fetches, and the
+     * choice of HDR on the viewers that is sent at each connect (T18).
+     */
     asked: () => bridge.call.mock.calls
-      .filter(([method]) => method !== 'project.get' && method !== 'transport.state')
+      .filter(([method]) => method !== 'project.get' && method !== 'transport.state' && method !== 'view.display')
       .map(([method, params]) => (params === undefined ? [method] : [method, params])),
     setRevision(next: number) { revision = next; },
   };
@@ -799,8 +802,8 @@ describe('the studio as a keyboard and a reader know it', () => {
     expect(document.activeElement).toBe(one('page-color'));
     await settle();
     // The arrows of the tabs are not steps of the transport. (The pool of the Cut page, in its
-    // thumbnail view, asks for pictures of its media.)
-    expect(engine.asked().filter(([method]) => method !== 'media.thumbnail')).toEqual([]);
+    // thumbnail view, asks for pictures of its media, and the Color page for the LUTs of the library.)
+    expect(engine.asked().filter(([method]) => method !== 'media.thumbnail' && method !== 'luts.list')).toEqual([]);
   });
 
   it('says where the playhead is in timecode, on a bar that the keyboard reaches', async () => {

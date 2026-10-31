@@ -60,6 +60,7 @@ fn media() -> Vec<Media> {
                 codec: "h264".into(),
                 bits: 8,
                 rotation: 0,
+                color: None,
             }),
             audio: audio.then(|| AudioFacts {
                 rate: 48000,

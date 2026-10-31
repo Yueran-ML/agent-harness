@@ -418,6 +418,7 @@ fn picture(stream: &Stream) -> Result<VideoFacts, MediaError> {
         codec: stream.parameters().id().name().to_owned(),
         bits,
         rotation: rotation(stream),
+        color: None,
     })
 }
 

@@ -9,6 +9,7 @@
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::color::ColorFacts;
 use crate::ops::Invalid;
 use crate::time::{Rate, Speed, Time};
 
@@ -209,6 +210,10 @@ pub struct VideoFacts {
     pub bits: u8,
     /// How far the picture is turned clockwise to be shown upright, in degrees: 0, 90, 180 or 270.
     pub rotation: i16,
+    /// What the file says of its colours. None where they were not read, as in a project whose
+    /// media were probed before colours were: left out of the JSON, and read so where it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<ColorFacts>,
 }
 
 /// The sound of a file.
@@ -845,6 +850,7 @@ impl Project {
                         codec: "h264".into(),
                         bits: 8,
                         rotation: 0,
+                        color: None,
                     }),
                     audio: Some(AudioFacts {
                         rate: 48000,

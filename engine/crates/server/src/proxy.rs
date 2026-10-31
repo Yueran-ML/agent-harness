@@ -1626,6 +1626,7 @@ mod tests {
             codec: codec.into(),
             bits,
             rotation: 0,
+            color: None,
         }
     }
 

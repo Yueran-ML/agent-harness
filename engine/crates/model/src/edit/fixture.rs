@@ -48,6 +48,7 @@ fn media(id: &str, frames: i64, video: bool) -> Media {
                 codec: "h264".into(),
                 bits: 8,
                 rotation: 0,
+                color: None,
             }),
             audio: Some(AudioFacts {
                 rate: 48000,

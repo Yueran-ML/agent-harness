@@ -537,3 +537,44 @@ async fn the_luts_of_the_project_and_the_library_are_listed_and_nothing_outside_
     let error = client.error("luts.list", Some(json!({"path": "x"}))).await;
     assert_eq!(error["code"], -32602);
 }
+
+/// The first frame of the first scope of an engine, and its first statistics, come within a
+/// couple of seconds: the pipelines of the scopes are made ahead as a scope is first asked for,
+/// side by side, each in a fraction of a second (FXC took 40 s and more over them before).
+#[tokio::test]
+async fn the_first_frame_of_a_scope_and_the_first_statistics_come_at_once() {
+    if columbina_compose::gpu_for_tests().is_none() {
+        return;
+    }
+    let dir = project_dir();
+    let first = engine(dir.path(), &["--no-proxies", "--sound", "null"]).await;
+    let mut client = first.client("desktop").await;
+    timeline(&mut client, 25, bars(50)).await;
+    let asked = Instant::now();
+    let subscribed = client
+        .result(
+            "scopes.subscribe",
+            Some(json!({"view": "timeline", "settings": {"kind": "histogram"}})),
+        )
+        .await;
+    let (frame, _) = next_frame(&mut client, &subscribed["scope_id"]).await;
+    let first_frame = asked.elapsed();
+    assert_eq!(frame["frame"], 0);
+    // Another engine, whose scopes are first asked for statistics.
+    let dir = project_dir();
+    let other = engine(dir.path(), &["--no-proxies", "--sound", "null"]).await;
+    let mut client = other.client("desktop").await;
+    timeline(&mut client, 25, bars(50)).await;
+    let asked = Instant::now();
+    let figures = client
+        .result("scopes.statistics", Some(json!({"view": "timeline"})))
+        .await;
+    let first_figures = asked.elapsed();
+    assert_eq!(figures["samples"], 128 * 72, "{figures}");
+    eprintln!(
+        "the first frame of a scope came {first_frame:?} after it was subscribed, and the \
+         first statistics {first_figures:?} after they were asked for"
+    );
+    assert!(first_frame < Duration::from_secs(5), "{first_frame:?}");
+    assert!(first_figures < Duration::from_secs(5), "{first_figures:?}");
+}

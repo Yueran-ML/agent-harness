@@ -1058,3 +1058,63 @@ fn pictures_to_look_at() {
         }
     }
 }
+
+/// How long the pipeline of each entry point of the scopes takes to make, with its workgroup
+/// memory cleared by the shader itself as the scopes make them, and all of them as
+/// [`Scopes::new`] makes them, side by side. With `COLUMBINA_SCOPES_CLEARED_BY_NAGA=1`, also as
+/// they were made before (naga's clearing of the workgroup memory; minutes with FXC).
+#[test]
+#[ignore = "a measurement of time, for a card"]
+fn how_long_the_pipelines_of_the_scopes_take_to_make() {
+    let Some(gpu) = gpu_for_tests() else { return };
+    println!("{gpu:?}, {:?}", crate::gpu::dx12_compiler());
+    // Each on a device of its own: a device keeps what it compiled of the same code.
+    let start = Instant::now();
+    let _scopes = Scopes::new(Arc::clone(&gpu));
+    println!(
+        "Scopes::new, side by side: {:.0} ms",
+        start.elapsed().as_secs_f64() * 1000.0
+    );
+    no_errors(&gpu);
+    let Some(gpu) = gpu_for_tests() else { return };
+    let device = gpu.device();
+    let before = std::env::var("COLUMBINA_SCOPES_CLEARED_BY_NAGA").as_deref() == Ok("1");
+    for zero in [false, true] {
+        if zero && !before {
+            continue;
+        }
+        // A module of its own each time: wgpu keeps what it compiled of a module's entry point.
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(include_str!("scopes.wgsl").into()),
+        });
+        for entry_point in [
+            "waveform_main",
+            "vectorscope_main",
+            "histogram_main",
+            "chromaticity_main",
+            "display_main",
+            "statistics_main",
+            "statistics_final",
+        ] {
+            let start = Instant::now();
+            let _pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: None,
+                layout: None,
+                module: &module,
+                entry_point: Some(entry_point),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    zero_initialize_workgroup_memory: zero,
+                    ..wgpu::PipelineCompilationOptions::default()
+                },
+                cache: None,
+            });
+            println!(
+                "{entry_point:<18} {:>8.0} ms{}",
+                start.elapsed().as_secs_f64() * 1000.0,
+                if zero { " (cleared by naga)" } else { "" }
+            );
+        }
+    }
+    no_errors(&gpu);
+}

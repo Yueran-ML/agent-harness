@@ -31,6 +31,7 @@
 pub mod settings;
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -102,6 +103,8 @@ struct Inner {
     wake: Condvar,
     /// The pipelines of the scopes, on the card they were made on.
     pipelines: Mutex<Option<Arc<compose::Scopes>>>,
+    /// Whether the pipelines were asked to be made ahead, on a thread of their own.
+    warmed: AtomicBool,
 }
 
 #[derive(Default)]
@@ -220,18 +223,43 @@ impl Scopes {
             hub: Mutex::new(Hub::default()),
             wake: Condvar::new(),
             pipelines: Mutex::new(None),
+            warmed: AtomicBool::new(false),
         }))
+    }
+
+    /// Make the pipelines of the scopes on a thread of their own, once: the first frame of the
+    /// first scope then waits for them only as long as they are still being made, and not for
+    /// all of their making after the monitor has shown a frame. (They take some 0.2 s with
+    /// FXC, and took 40 s and more before their workgroups were cleared by the shader itself.)
+    pub fn warm(&self) {
+        if self.0.headless || self.0.warmed.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let inner = Arc::clone(&self.0);
+        let started = std::thread::Builder::new()
+            .name("columbina-scopes-warm".into())
+            .spawn(move || {
+                if let Ok(gpu) = inner.graphics.gpu() {
+                    let _ = inner.pipelines(&gpu);
+                }
+            });
+        if started.is_err() {
+            // They are made as the first scope is drawn, then.
+            self.0.warmed.store(false, Ordering::SeqCst);
+        }
     }
 
     fn hub(&self) -> MutexGuard<'_, Hub> {
         self.0.lock()
     }
 
-    /// Refuse a method of the scopes in a headless engine, which has no monitors.
+    /// Refuse a method of the scopes in a headless engine, which has no monitors; in another,
+    /// have the pipelines of the scopes made ahead ([`Scopes::warm`]), as a scope is wanted.
     ///
     /// # Errors
     /// The engine is headless.
     pub fn check(&self, method: &str) -> Result<(), Fault> {
+        self.warm();
         if self.0.headless {
             Err(Fault::new(
                 rpc::METHOD_NOT_FOUND,

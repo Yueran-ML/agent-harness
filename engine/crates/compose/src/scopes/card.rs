@@ -29,7 +29,8 @@ const READ_WITHIN: Duration = Duration::from_secs(20);
 /// How long to wait between asking the card whether a buffer is mapped.
 const READ_POLL: Duration = Duration::from_micros(250);
 
-/// The pipelines of the scopes, made once for the card (some 10 ms) and shared by every scope.
+/// The pipelines of the scopes, made once for the card and shared by every scope: some 0.2 s with
+/// FXC, the seven made side by side (see [`Scopes::new`]).
 pub struct Scopes {
     gpu: Arc<Gpu>,
     accumulate_layout: wgpu::BindGroupLayout,
@@ -166,7 +167,14 @@ impl Params {
 
 impl Scopes {
     /// Make the pipelines of the scopes on `gpu`.
+    ///
+    /// # Panics
+    /// A thread that makes a pipeline panicked (as wgpu does where the device cannot be used).
     #[must_use]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the layouts of the bindings, and the pipelines made side by side"
+    )]
     pub fn new(gpu: Arc<Gpu>) -> Scopes {
         let device = gpu.device();
         let entry = |binding: u32, ty: wgpu::BindingType| wgpu::BindGroupLayoutEntry {
@@ -240,10 +248,33 @@ impl Scopes {
                 layout: Some(&pipeline_layout),
                 module: &module,
                 entry_point: Some(entry_point),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    // Each entry point clears what it shares in its workgroup before it is
+                    // read (the bins of the waveform and the histogram by atomic stores, the
+                    // reduction of the statistics by the value of each thread). As naga would
+                    // clear it, by an assignment of an array of thousands of zeros, FXC took
+                    // 14 s to 200 s over an entry point, and 0.1 to 0.3 s without.
+                    zero_initialize_workgroup_memory: false,
+                    ..wgpu::PipelineCompilationOptions::default()
+                },
                 cache: None,
             })
         };
+        // Each is compiled on a thread of its own: FXC takes some 0.1 to 0.2 s over each.
+        let [waveform, vectorscope, histogram, chromaticity, display, statistics, statistics_final] =
+            std::thread::scope(|scope| {
+                let made = [
+                    (&accumulate_layout, "waveform_main"),
+                    (&accumulate_layout, "vectorscope_main"),
+                    (&accumulate_layout, "histogram_main"),
+                    (&accumulate_layout, "chromaticity_main"),
+                    (&display_layout, "display_main"),
+                    (&statistics_layout, "statistics_main"),
+                    (&statistics_layout, "statistics_final"),
+                ]
+                .map(|(layout, entry_point)| scope.spawn(move || pipeline(layout, entry_point)));
+                made.map(|made| made.join().expect("a pipeline of the scopes is made"))
+            });
         let no_table = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("columbina scopes no table"),
             size: 4,
@@ -251,18 +282,18 @@ impl Scopes {
             mapped_at_creation: false,
         });
         Scopes {
-            waveform: pipeline(&accumulate_layout, "waveform_main"),
-            vectorscope: pipeline(&accumulate_layout, "vectorscope_main"),
-            histogram: pipeline(&accumulate_layout, "histogram_main"),
-            chromaticity: pipeline(&accumulate_layout, "chromaticity_main"),
-            display: pipeline(&display_layout, "display_main"),
-            statistics: pipeline(&statistics_layout, "statistics_main"),
-            statistics_final: pipeline(&statistics_layout, "statistics_final"),
+            gpu,
             accumulate_layout,
             display_layout,
             statistics_layout,
+            waveform,
+            vectorscope,
+            histogram,
+            chromaticity,
+            display,
+            statistics,
+            statistics_final,
             no_table,
-            gpu,
         }
     }
 

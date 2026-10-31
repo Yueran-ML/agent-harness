@@ -264,6 +264,7 @@ dependencies = [
  "columbina-lut",
  "columbina-media",
  "columbina-model",
+ "columbina-ocio",
  "cosmic-text",
  "pollster",
  "thiserror 2.0.21",

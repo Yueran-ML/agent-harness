@@ -46,9 +46,10 @@
 //! - **Scopes (T11)** read the texture of a preview ([`crate::Target::texture`]): the frame after
 //!   the output transform, as it is exported, before a view maps it into its window.
 //! - **Colour management (T6, T7, T12)** are operations of the input transform (the space of the
-//!   media into the working space) and of the output transform. Decoding clamps R'G'B' to 0..1,
-//!   as phase 1 did; keeping what is above white (superwhites, HDR) means lifting that clamp
-//!   for those transforms, and the convert of an export choosing its matrix, both later.
+//!   media into the working space) and of the output transform ([`crate::ocio`], [`crate::tone`]).
+//!   Decoding holds R'G'B' to 0..1, as phase 1 did, unless [`LayerColor::unclamped`] (a managed
+//!   project); the convert of an export takes its matrix from the output space
+//!   ([`crate::Target::set_matrix`]).
 //!
 //! # Neighbourhoods
 //!
@@ -267,6 +268,13 @@ pub struct LayerColor {
     /// The grade of the clip: its group's pre-clip grade, its own, and its group's post-clip
     /// grade, one after the other.
     pub grade: Stage,
+    /// Whether R'G'B' decoded keeps what is beyond 0..1 (superwhites and superblacks of
+    /// Y'CbCr, and the values of integer R'G'B' of limited range beyond its ends), as a
+    /// project whose colour is managed keeps them (RM20 p. 221: kept "internally", and its
+    /// input transforms "done without clipping", p. 239); or holds it to 0..1, as phase 1 did
+    /// and `DaVinci YRGB` here still does, so that a project that is not managed is drawn as it
+    /// was, to the bit (the default). R'G'B' of floats is never held.
+    pub unclamped: bool,
 }
 
 /// The WGSL of the operations of stages done one after another, as a function

@@ -1,4 +1,6 @@
-// The composed picture, R'G'B' of BT.709, made Y'CbCr 4:2:0 of limited range for an encoder:
+// The composed picture, R'G'B' of the output space, made Y'CbCr 4:2:0 of limited range for an
+// encoder, by the matrix of that space (BT.709 by default; BT.2020 of non-constant luminance for
+// Rec.2100; BT.601):
 // NV12 (8 bits) or P010 (10 bits in the high bits of 16), each plane written into a buffer of
 // words laid out as `columbina_media::Picture` lays its planes out, rows `stride` bytes apart, so
 // that it is read back as it is.
@@ -15,7 +17,8 @@ struct Convert {
     // 1 for P010, 0 for NV12; and the rows of chroma.
     ten: u32,
     chroma_rows: u32,
-    pad0: u32,
+    // The matrix: 0 BT.709, 1 BT.2020, 2 BT.601 (`Target::set_matrix`).
+    matrix: u32,
     pad1: u32,
 };
 
@@ -30,9 +33,27 @@ fn pixel(x: i32, y: i32) -> vec3<f32> {
     return clamp(textureLoad(canvas, at, 0).rgb, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
-// BT.709: Kr = 0.2126, Kb = 0.0722.
+// BT.709: Kr = 0.2126, Kb = 0.0722; BT.2020: 0.2627, 0.0593; BT.601: 0.299, 0.114.
 fn luma_of(rgb: vec3<f32>) -> f32 {
+    if params.matrix == 1u {
+        return dot(rgb, vec3<f32>(0.2627, 0.6780, 0.0593));
+    }
+    if params.matrix == 2u {
+        return dot(rgb, vec3<f32>(0.299, 0.587, 0.114));
+    }
     return dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+}
+
+// Cb and Cr of `rgb`, whose luma is `y`: B' − Y' and R' − Y' divided by 2 (1 − Kb) and
+// 2 (1 − Kr), each by its own constants so that BT.709 is divided as it always was.
+fn chroma_of(rgb: vec3<f32>, y: f32) -> vec2<f32> {
+    if params.matrix == 1u {
+        return vec2<f32>((rgb.b - y) / 1.8814, (rgb.r - y) / 1.4746);
+    }
+    if params.matrix == 2u {
+        return vec2<f32>((rgb.b - y) / 1.772, (rgb.r - y) / 1.402);
+    }
+    return vec2<f32>((rgb.b - y) / 1.8556, (rgb.r - y) / 1.5748);
 }
 
 // How far a value of 8 bits is moved before it is rounded down, at a place: an ordered dither
@@ -66,7 +87,7 @@ fn luma_code(rgb: vec3<f32>, place: vec2<u32>) -> u32 {
 // The codes of Cb and Cr: no colour at 128 or 512.
 fn chroma_codes(rgb: vec3<f32>, place: vec2<u32>) -> vec2<u32> {
     let y = luma_of(rgb);
-    let c = vec2<f32>((rgb.b - y) / 1.8556, (rgb.r - y) / 1.5748);
+    let c = chroma_of(rgb, y);
     if params.ten == 1u {
         let v = vec2<f32>(512.0) + 896.0 * c;
         return vec2<u32>(coded(v.x, 1023.0, place), coded(v.y, 1023.0, place));

@@ -79,7 +79,7 @@ pub const LOW: &str = "_columbina_low";
 /// With `split`, each table is read from two textures, its values as half floats and what they
 /// lose (also as half floats), whose sum keeps 22 bits of the significand (see [`crate::gpu`]).
 pub fn translate(glsl: &str, function: &str, split: bool) -> Result<Translated, TranslateError> {
-    let source = separate_samplers(glsl, split)?;
+    let source = separate_samplers(&single_swizzles(glsl), split)?;
     let source = format!(
         "#version 450\n{source}\n\
          layout(location = 0) in vec4 columbina_in;\n\
@@ -128,6 +128,18 @@ pub fn translate(glsl: &str, function: &str, split: bool) -> Result<Translated, 
         naga::back::wgsl::write_string(&module, &info, naga::back::wgsl::WriterFlags::empty())
             .map_err(|error| TranslateError::Write(error.to_string()))?;
     Ok(Translated { library, resources })
+}
+
+/// `glsl` with each store into a component of a swizzle (`outColor.rgb.r = …`, as OCIO writes
+/// the red modifier of ACES 1.x) made a store into the component itself (`outColor.r = …`), the
+/// same: naga's reader of GLSL makes the first a store through a pointer that its validator
+/// refuses, which left the output transforms of ACES 1.3 baked into a cube.
+fn single_swizzles(glsl: &str) -> String {
+    let mut out = glsl.to_owned();
+    for channel in ['r', 'g', 'b'] {
+        out = out.replace(&format!(".rgb.{channel} ="), &format!(".{channel} ="));
+    }
+    out
 }
 
 fn validate(module: &Module) -> Result<naga::valid::ModuleInfo, TranslateError> {

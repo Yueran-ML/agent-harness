@@ -354,6 +354,24 @@ impl Target {
         })
     }
 
+    /// Make the frames of an export Y'CbCr by the matrix `matrix` from now on: that of its
+    /// output space (BT.2020 for Rec.2100, as its tags say), BT.709 by default. Nothing for a
+    /// preview, whose frames are R'G'B'.
+    pub fn set_matrix(&self, matrix: crate::YuvMatrix) {
+        let Some(export) = &self.export else {
+            return;
+        };
+        let code: u32 = match matrix {
+            crate::YuvMatrix::Bt2020 => 1,
+            crate::YuvMatrix::Bt601 => 2,
+            _ => 0,
+        };
+        // The seventh word of the uniform of `convert.wgsl`.
+        self.gpu
+            .queue()
+            .write_buffer(&export.params, 24, &code.to_le_bytes());
+    }
+
     /// The texture that a frame ends in, after its output transform: for a preview, the
     /// picture itself, of half floats, which a view on the same card can draw.
     #[must_use]
@@ -433,6 +451,21 @@ impl Target {
     /// # Errors
     /// It is an export, or the card could not give the picture back (it was lost).
     pub fn read_rgba(&self) -> Result<Vec<u8>, ComposeError> {
+        self.read_preview(eight_bits)
+    }
+
+    /// Wait for what was last rendered into a preview, and read back its half floats as they
+    /// are, beyond 0..1 too: R, G, B and A of each pixel, a row after another. For the tests of
+    /// colour, which hold values of HDR and of Log to their references.
+    ///
+    /// # Errors
+    /// As [`Target::read_rgba`].
+    pub fn read_floats(&self) -> Result<Vec<f32>, ComposeError> {
+        self.read_preview(half_value)
+    }
+
+    /// The half floats of a preview, each made what `each` makes of it.
+    fn read_preview<T>(&self, each: impl Fn(u16) -> T) -> Result<Vec<T>, ComposeError> {
         if self.export.is_some() {
             return Err(ComposeError::Target(
                 "an export is read back as a picture".into(),
@@ -476,7 +509,7 @@ impl Target {
         let mut pixels = Vec::with_capacity(self.width as usize * 4 * self.height as usize);
         for line in mapped.chunks(row as usize) {
             for half in line[..width].as_chunks::<2>().0 {
-                pixels.push(eight_bits(u16::from_le_bytes(*half)));
+                pixels.push(each(u16::from_le_bytes(*half)));
             }
         }
         drop(mapped);
@@ -1820,13 +1853,14 @@ impl Compositor {
                     let draw = laid.draws.len();
                     laid.draws.push(Draw::Picture { shape, planes });
                     uploaded.map_err(failed)?;
-                    let decoded = yuv::picture_params(
+                    let mut decoded = yuv::picture_params(
                         [0.0; 4],
                         layout,
                         shape.texel,
                         layer.color.coding,
                         *rotation,
                     );
+                    yuv::set_unclamped(&mut decoded, layer.color.unclamped);
                     // Alone, at its own size.
                     let own = (f64::from(shown.0), f64::from(shown.1));
                     let mut alone = decoded.to_vec();

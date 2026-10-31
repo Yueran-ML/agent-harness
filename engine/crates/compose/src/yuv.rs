@@ -440,6 +440,16 @@ pub fn levels(coding: YuvCoding, bits: u8) -> [f64; 4] {
     }
 }
 
+/// Where [`picture_params`] says whether R'G'B' decoded keeps what is beyond 0..1 (`kind.w`).
+pub const UNCLAMPED_PARAM: usize = 27;
+
+/// Say in the parameters of a picture whether its R'G'B' decoded keeps what is beyond 0..1
+/// ([`crate::LayerColor::unclamped`]): the shader's `rgb_of` holds Y'CbCr and integer R'G'B' to
+/// 0..1 where it does not, as phase 1 did.
+pub fn set_unclamped(params: &mut [f32], unclamped: bool) {
+    params[UNCLAMPED_PARAM] = if unclamped { 1.0 } else { 0.0 };
+}
+
 /// The black and the range from black to white of R'G'B' of `bits` bits at full scale, from 0
 /// to 1: 0 and 1 of full range; of limited range, `16 · 2^(bits − 8)` and `219 · 2^(bits − 8)`
 /// of the most, `2^bits − 1` (16/255 and 219/255 of 8 bits). Of floats, always 0 and 1.

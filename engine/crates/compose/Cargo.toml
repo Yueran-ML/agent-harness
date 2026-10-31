@@ -11,6 +11,8 @@ workspace = true
 columbina-lut = { path = "../lut" }
 columbina-media = { path = "../media" }
 columbina-model = { path = "../model" }
+# The transforms of colour management, made operations of a stage (`ocio.rs`).
+columbina-ocio = { path = "../ocio" }
 cosmic-text.workspace = true
 pollster.workspace = true
 thiserror.workspace = true

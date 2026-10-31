@@ -49,7 +49,8 @@ struct Params {
     // What the picture is: x 0 of Y'CbCr, 1 of R'G'B'A of integers, 2 of R'G'B'A of floats; y
     // its alpha: 0 none, 1 straight, 2 premultiplied; z what a texel of R'G'B'A, or of the plane
     // of alpha, is multiplied by to be from 0 to 1 (1 of normalized and float texels, 1/65535 of
-    // integers).
+    // integers); w 1 where R'G'B' decoded keeps what is beyond 0..1 (colour management), 0 where
+    // it is held to 0..1.
     kind: vec4<f32>,
     // The compositor's: a point (x, y) of the frame, in its pixels, is put at
     // (row0.x * x + row0.y * y + row0.z, row1.x * x + row1.y * y + row1.z) of the canvas, whose
@@ -187,27 +188,33 @@ fn sample_at(shown: vec2<f32>) -> vec4<f32> {
     return vec4<f32>(value, opacity);
 }
 
-// R'G'B' of what `sample_at` gives (unpremultiplied): of Y'CbCr by the matrix of the picture,
-// from 0 to 1 as in phase 1; of R'G'B'A of integers from 0 to 1 too; of floats as it is, beyond
-// 0..1 too (scene-linear light, as of OpenEXR).
+// R'G'B' of what `sample_at` gives (unpremultiplied): of Y'CbCr by the matrix of the picture;
+// of R'G'B'A of integers as its levels make it; of floats as it is, beyond 0..1 too
+// (scene-linear light, as of OpenEXR).
 //
-// The clamps here are where R'G'B' decoded is held to 0..1: for the superwhites of Y'CbCr, and
-// its values of Log and HDR beyond 1, to be kept, they are to go (T7 of phase 2), with what an
-// export does with values beyond 0..1.
+// Y'CbCr and integer R'G'B' are held to 0..1 here, as phase 1 held them, unless `kind.w` says
+// that what is beyond is kept: where colour management is on (T7), whose input transforms keep
+// superwhites and superblacks and the values of Log beyond 1 (RM20 pp. 221, 239). `DaVinci YRGB`
+// keeps the clamp, so that a project that is not managed is drawn to the bit as it was.
 fn rgb_of(value: vec3<f32>) -> vec3<f32> {
     if params.kind.x > 1.5 {
         return value;
     }
-    if params.kind.x > 0.5 {
-        return clamp(value, vec3<f32>(0.0), vec3<f32>(1.0));
+    var rgb = value;
+    if params.kind.x < 0.5 {
+        let y = value.x;
+        let cb = value.y;
+        let cr = value.z;
+        rgb = vec3<f32>(
+            y + params.matrix.x * cr,
+            y - params.matrix.y * cb - params.matrix.z * cr,
+            y + params.matrix.w * cb,
+        );
     }
-    let y = value.x;
-    let cb = value.y;
-    let cr = value.z;
-    let r = y + params.matrix.x * cr;
-    let g = y - params.matrix.y * cb - params.matrix.z * cr;
-    let b = y + params.matrix.w * cb;
-    return clamp(vec3<f32>(r, g, b), vec3<f32>(0.0), vec3<f32>(1.0));
+    if params.kind.w > 0.5 {
+        return rgb;
+    }
+    return clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
 // What `sample_at` gave, unpremultiplied where it has alpha (and is not transparent): what is

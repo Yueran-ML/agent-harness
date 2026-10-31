@@ -13,6 +13,7 @@
 //! - [`grade`]: a grade of the Color page at a frame, made into an operation of a [`Stage`].
 //! - [`neighbourhood`]: the filters of the pixels about each one that operations of colour read
 //!   (Midtone Detail; blur and sharpen), on the processor as the card takes them.
+//! - [`sample`]: a few pixels of a frame read back as they are, for a picker of colour.
 //! - [`scopes`]: the video scopes of a frame counted on the card, and its figures for the agent.
 //! - [`yuv`]: the planes of a picture on the card, and the shader that makes them R'G'B', which
 //!   the view draws with too.
@@ -23,6 +24,7 @@ pub mod geometry;
 mod gpu;
 pub mod grade;
 pub mod neighbourhood;
+pub mod sample;
 pub mod scopes;
 mod text;
 pub mod wipe;

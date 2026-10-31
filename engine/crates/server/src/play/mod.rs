@@ -331,6 +331,12 @@ impl Transport {
         }
     }
 
+    /// The timeline that the timeline monitor has loaded, if it has one.
+    pub fn timeline_loaded(&self) -> Option<String> {
+        let status = self.timeline.as_ref()?.status();
+        status["timeline"].as_str().map(str::to_owned)
+    }
+
     /// What a monitor shows now, for the scopes to measure.
     ///
     /// # Errors

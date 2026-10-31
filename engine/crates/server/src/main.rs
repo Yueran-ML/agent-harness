@@ -48,6 +48,7 @@ mod log;
 mod luts;
 mod names;
 mod play;
+mod probe;
 mod proxy;
 mod queue;
 mod render;

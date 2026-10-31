@@ -111,6 +111,13 @@ change as a notification **before** the answer to its request. `hello` and `proj
 answered in the same order: a client sees exactly the changes with a revision above the one in
 those answers.
 
+The one exception is a **gesture** (a control dragged, see Gestures): its transactions are told
+at most 10 times a second, several in one `project.changed` whose `base` names the revision
+that it applies to, so that the answer to one of them may come before it is told. What a
+gesture held is told before anything else of the project (another change, an undo, the end of
+the gesture, the answer to `hello` or `project.get`), so every client still sees every change,
+in order, with no gaps.
+
 **A client that does not read** fills its queue (4096 messages, or 128 MiB, whichever comes
 first; a single message is always queued if the queue is empty). The engine then closes its
 connection rather than drop a single message, and logs `{"event": "kicked", ...}`. A client
@@ -126,7 +133,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `engine.yield` | none | `{}` (desktop only, to a `--headless` engine; see below) |
 | `project.get` | none | `{"revision": n, "next_id": k, "project": {...}}` |
 | `timeline.duration` | `{"timeline": "t1"}` | `{"frames": n}` |
-| `transaction.apply` | `{"ops": [op_or_edit, ...], "revision": n}` (`revision` optional) | `{"revision": n, "done": [op, ...], "next_id": k, "names": {"$a": "c7", ...}, "clamped": [i, ...]}` |
+| `transaction.apply` | `{"ops": [op_or_edit, ...], "revision": n, "gesture": {"id": "g1", "end": false}}` (`revision`, `gesture` and `end` optional) | `{"revision": n, "done": [op, ...], "next_id": k, "names": {"$a": "c7", ...}, "clamped": [i, ...]}` |
 | `history.undo` | none | `{"revision": n, "done": [op, ...], "next_id": k}`, or `{"revision": n, "done": null}` if there is nothing to undo |
 | `history.redo` | none | as `history.undo` |
 | `media.import` | `{"paths": ["<file>", ...], "bin": "<bin id>"}` (`bin` optional) | `{"revision": n, "added": ["m3", ...], "next_id": k}` |
@@ -139,6 +146,8 @@ Before `hello`, every other request is refused with `-32600`.
 | `view.show` | `{"monitor":"source" \| "timeline", "shown": true \| false}` | `{}` |
 | `view.detach` | `{"monitor":"source" \| "timeline"}` | `{"detached": true \| false}` |
 | `view.display` | `{"hdr"?: true \| false}` | `{"hdr": true, "source": {"hdr_on": true, "hdr_shown": true, "peak_nits": 400.0, "sdr_white_nits": 148.0} \| null, "timeline": ... \| null}` (see The view) |
+| `view.sample` | `{"monitor": m}` or `{"timeline": "t1", "frame": n}`, `"x": 960.5, "y": 540.5, "size"?: 1, "grade"?: target, "node"?: "n1", "clip"?: "c1"` | `{"frame", "x", "y", "size", "width", "height", "region", "rgb": [r, g, b], "node"?: {"grade", "node", "input", "output"}}` (see Samples and the pointer) |
+| `view.pointer` | `{"monitor": m, "on": true \| false, "cursor"?: "arrow" \| "crosshair" \| "move" \| "resize_ew" \| "resize_ns"}` | `{"monitor", "on", "cursor"}`, then `view.pointer` notifications (see Samples and the pointer) |
 | `render.start` | `{"timeline":"t1", "path":"<file>", "codec":"h264", "quality":"high", "range"?:{"from":0,"to":250}, "subtitle_tracks"?:["S1"], "replace"?:false, "revision"?:n}` | `{"job": "render-1"}` (see Rendering a timeline) |
 | `render.cancel` | `{"job": "render-1"}` | `{}` |
 | `transport.frame_digest` | `{"monitor": m}` | test hook only, with `--test-hooks` (see The transport); `-32601` otherwise |
@@ -146,7 +155,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `scopes.subscribe` | `{"view": "timeline" \| "source", "settings": {"kind": "waveform", ...}}` | `{"scope_id": "scope-1", "size": {"width": 512, "height": 256}, "graticule": {...}, "settings": {...}}`, then `scopes.frame` (see Scopes) |
 | `scopes.set` | `{"scope_id": "scope-1", "settings": {...}}` | as `scopes.subscribe` |
 | `scopes.unsubscribe` | `{"scope_id": "scope-1"}` | `{}` |
-| `scopes.statistics` | `{"view": "timeline" \| "source", "bins"?: 256}` | the figures of the frame shown (see Scopes) |
+| `scopes.statistics` | `{"view": "timeline" \| "source", "bins"?: 256}`, or `{"timeline": "t1", "frame": n, "bins"?}`; either with `"grade": target, "node": "n1", "at"?: "input" \| "output", "clip"?: "c1"` | the figures of the frame shown, of a frame drawn off screen, or of the picture at a node (see Scopes) |
 | `luts.list` | none, or `{"folder"?: "Film"}` | `{"roots": [...], "luts": [...], "truncated": false}` (see The library of LUTs) |
 | `viewer.wipe` | `{"on"?: true, "style"?: "horizontal", "position"?: 0.5, ..., "reference": {"kind": "still", "path": "..."}}`, or `{"on": false}` | what the timeline monitor compares with (see Comparisons in the viewer) |
 | `viewer.split` | `{"on"?: true, "items": [{"kind": "current"}, ...], "selected"?: 0, "outline"?: true}`, or `{"on": false}` | as `viewer.wipe` |
@@ -183,7 +192,9 @@ Before `hello`, every other request is refused with `-32600`.
   An optional `revision` binds the request to the snapshot used to prepare its ranges. The
   engine checks it under the same lock as the change; a mismatch refuses the whole batch
   with `-32001`, `data: {"reason":"stale_revision","expected":n,"actual":k}` and no history
-  change. Omit it for commands meant to operate on the current state.
+  change. Omit it for commands meant to operate on the current state. An optional `gesture`
+  makes it part of a drag, kept with the others of the drag as one undo step (see Gestures);
+  without it, a transaction is exactly as before.
 - `media.inspect` reads identities and facts under the same path and read limits as
   `media.import`, returning media in input order with empty ids. It does not change the
   project, revision or undo history, and starts no proxies. Clients may name these media and
@@ -238,6 +249,49 @@ Before `hello`, every other request is refused with `-32600`.
 - `view.*`: the viewer, below; `transport.*`: playing a source, below; `scopes.*`: the scopes
   of the monitors, below (Scopes); `luts.list`: below (The library of LUTs); `viewer.*`: below
   (Comparisons in the viewer).
+
+## Gestures
+
+A control dragged on the Color page (a wheel, a slider, a point of a curve) changes the project
+many times a second; DaVinci Resolve draws each change at once, and its undo takes the whole drag
+back (pp. 3061–3062). A client sends such a drag as transactions of one **gesture**:
+`transaction.apply` with `"gesture": {"id": "<1 to 64 characters>", "end"?: true}`.
+
+- **Each is applied and drawn at once.** It is a transaction as any other: applied whole or
+  refused, with its own revision and answer, saved, and drawn by the monitors as soon as they
+  draw again. So every client's copy and the picture follow the drag as it goes.
+- **They are one step to undo.** The first transaction of a gesture is a step of its own, and
+  lets go of what could be redone, as any transaction does; each next one of the same gesture is
+  put into that step (its operations after the step's, its inverses after the step's inverses).
+  `history.undo` takes the whole gesture back, last first, to the project as it was before it,
+  whoever asks; `history.redo` does it again, as one step. A gesture that ends with the project
+  as it was before it (a drag let go where it began, or put back by Escape) leaves no step at
+  all, though each of its changes was told; `next_id` does not go back.
+- **What ends a gesture.** A transaction with `"end": true` (the release of the control: it is
+  applied, and the gesture ends with it); anything else done to the history in between, by
+  anyone: a transaction of another gesture or of none (another client's, or the same client's),
+  an undo, a redo; its connection closing; or 10 s with no transaction of it. The next
+  transaction of the same id then begins another gesture, another step. A change that the engine
+  makes itself (a proxy set) does not end one. The ids are the connection's own: another
+  connection's gesture of the same id is another gesture. A refused transaction changes nothing,
+  the gesture included, but one with `"end": true` still ends its gesture.
+- **Revisions.** Every transaction of a gesture makes a revision. A `revision` given with a
+  transaction of the gesture that is going on is taken if it is any revision since the one before
+  the gesture began (only the gesture has changed the project since), so a client may send each
+  change of a drag at the revision that its copy has, however far behind the gesture its copy is.
+  Once another change has ended the gesture, such a `revision` is stale (`-32001`, `reason:
+  "stale_revision"`, with the revision of the project in `actual`), as it would be without a
+  gesture: the client fetches the project or takes in the change, and begins again.
+- **Notifications.** The first change of a gesture is told at once (unless a change was told
+  less than 100 ms before); each next one at most every 100 ms (10 a second): what is not told
+  yet is held, and told as one `project.changed` of the gesture's `by` and `made_by`, `done`
+  every operation held in order, `revision` the last, and `base` the revision that it applies to
+  (left out where that is `revision − 1`). What is held is told once 100 ms have gone by since a
+  change was last told, as the gesture ends, as another gesture begins, and before anything else
+  of the project is told or answered (`hello`, `project.get`, an undo, another transaction). The
+  client that sends the gesture may therefore be answered before it is told; it is told in time.
+- A client that sends no `gesture` (the Python client, a command) is answered and told exactly
+  as before.
 
 ## Thumbnails and waveforms
 
@@ -451,7 +505,10 @@ picture.
   process** sends them: it owns the window and its handle. The page (the renderer) never gets
   the handle and never calls the engine for the view: it tells the main process where the
   viewer is (over IPC), and the main process sends `view.place`. A `--headless` engine draws in
-  no window: every `view.*` is answered `-32601`.
+  no window: every `view.*` is answered `-32601`. `view.sample` and `view.pointer` are the
+  exceptions: they touch no window of the desktop's, so the page calls them (through the main
+  process, which lets them by), and any client may call `view.sample` (below, Samples and the
+  pointer).
 - **`parent`** is the native handle of the window, written in **decimal**, as a string: on
   Windows the `HWND` of `BrowserWindow.getNativeWindowHandle()` (a Buffer of 8 bytes: read it
   with `readBigUInt64LE()` and send its `toString()`; a signed reading is taken too).
@@ -566,6 +623,76 @@ picture.
 
 A `parent` that is not a window, or not a handle in decimal, is refused with `-32602` and
 `data: {"reason": "parent"}`; a rectangle wider or higher than 16384 with `{"reason": "rect"}`.
+
+### Samples and the pointer
+
+The pickers of the Color page (the black and white points of Lift and Gain, the samples of the
+curves and of the HSL curves, p. 3122), the line of a wipe dragged on the viewer, and the windows
+of a node drawn on it are tools used on the picture; but the picture is the engine's own window,
+and the page is told nothing of what is done on it. So the engine reads the picture for the page,
+and tells it what the pointer does there.
+
+**`view.sample`** `{"monitor": m}` or `{"timeline": "t1", "frame": n}`, `"x"`, `"y"`, `"size"?`
+gives the colour of a point of a picture: the mean R'G'B' of the square of `size` pixels (an odd
+number from 1 to 31, 1 unless given) about the pixel under `(x, y)`, cut by the edges of the
+frame. `x` and `y` are pixels of the frame from its top left corner, a pixel's centre at `.5`, as
+`view.pointer` tells them: of the timeline for the timeline monitor (its width and height), of
+the picture as it is shown (turned as its media says) for the source monitor.
+
+- With `monitor`, it is what that monitor shows now, as its scopes measure it (the comparison
+  with its reference, where a wipe or a split screen is on), before the view maps it to its
+  display: an engine with no monitor (`--headless`) answers `-32601`, and one whose monitor shows
+  nothing `-32004` `not_loaded`. With `timeline` and `frame`, the frame is drawn off screen as an
+  export draws it (graded, without subtitles), in a headless engine too.
+- With `grade` (a grade target, as the operations on grades name it, see Grades) and `node`, it
+  also gives the colour that goes into the node at that point and the colour that comes out of it,
+  in the working space of the timeline, as the node sees them (see below, The picture at a node).
+  With `monitor` this is of the timeline that the timeline monitor shows, at the frame it shows;
+  the source monitor shows media, ungraded, and is refused (`node`).
+- Answer: `{"monitor": m` or `"timeline": "t1", "frame", "x", "y", "size", "width", "height"`
+  (of the frame), `"region": {"x", "y", "width", "height"}` (the pixels averaged), `"rgb": [r,
+  g, b]`, and with a node `"node": {"grade", "node", "input": [r, g, b], "output": [r, g,
+  b]}}`. Values are from 0 to 1, or beyond where the picture is.
+
+**The picture at a node** (`view.sample` and `scopes.statistics` with `grade` and `node`) is the
+picture that goes into the node (its first picture input, `"at": "input"`) or comes out of it
+(`"output"`, the default), drawn by the grade cut there: the node and everything that leads to it,
+and nothing after it. The grades before it are done whole and none after it: for a node of a
+clip's grade, the pre-clip grade of its group and the clip's grade up to the node; for the
+pre-clip grade of a group, that grade up to the node; for its post-clip grade, the pre-clip and
+the clip's grades and that grade up to the node; and for these, only the layer of the clip is
+drawn (for a grade of a group, the clip shown on top that is in the group, or `clip`), where it
+lies on the canvas, not laid over the others nor graded by the timeline. For a node of the
+timeline's grade, every layer is drawn and laid together, and that grade done up to the node.
+None has an output transform. Refused with `-32602` and `reason`: `node` (a node half named, no
+such node, a node that gives no picture (a key mixer) or takes none, one whose input has nothing
+linked, a grade that cannot be cut there because a node leads to the node only by its key),
+`grade` (no such group), `timeline` (the grade is of another timeline than the frame), `clip`
+(the clip, or no clip of the group, is shown at that frame).
+
+**`view.pointer`** `{"monitor": m, "on": true, "cursor"?: "arrow"}` has the view of that monitor
+take the pointer, showing that cursor over itself (`crosshair` for a picker, `move`,
+`resize_ew`, `resize_ns` for the handles of a wipe or a window), and tell what the pointer does
+there to this connection alone; `{"monitor": m, "on": false}` lets it go. Only the desktop may
+call it (`-32600` from another client; `-32601` in a headless engine), and only with a view
+attached (`-32003` `no_view`); a view attached again in place of one takes the pointer as the one
+before did. A connection that asks takes it from one that asked before; one that closes lets it
+go. While a view does not take the pointer (as at first), the mouse goes through it to the page,
+as it always did, and nothing is told.
+
+While it takes it, the view is the target of the mouse over the picture, and the engine tells
+`view.pointer` `{"monitor", "kind", "button", "buttons", "x", "y", "inside", "window", "shift",
+"ctrl", "alt"}` for each press (`down`), move (`move`) and release (`up`) of a button: `button` the
+one pressed or released (`"left"`, `"right"`, `"middle"`, null for a move), `buttons` those held
+after it, `x` and `y` where it is on the frame drawn (as `view.sample` takes them; null where no
+frame is drawn), `inside` whether that is on the picture (not on the black about it), `window`
+where it is in the view's window in device pixels, and the keys held. A button pressed over the
+view captures the mouse until the last button is released, so a drag goes on beyond the view
+(`inside` false, `x` and `y` beyond the frame); if another window takes the mouse meanwhile, the
+drag ends with `cancel`. Presses and releases are each told; moves as fast as the connection
+reads them (the next once the one before was written, those between dropped), and the last place
+the pointer stopped at is always told, before the next press or release. The view never takes
+the keyboard: keys stay the page's.
 
 ## The transport
 
@@ -1275,7 +1402,8 @@ the waveform, the RGB parade, the vectorscope, the histogram and the CIE 1931 ch
 diagram. A client subscribes a scope to a monitor and is sent a picture of it for each frame
 that the monitor shows; the agent reads the figures of the frame shown instead
 (`scopes.statistics`). They are of an engine that is not `--headless` (one with monitors): in a
-headless engine every `scopes.*` method is `-32601`.
+headless engine every `scopes.*` method is `-32601`, but `scopes.statistics` of a frame drawn off
+screen (below).
 
 **What is measured.** The frame as the monitor shows it, before the view maps it to its
 display. For the timeline monitor, that is the frame composed with its grades: the signal that
@@ -1382,6 +1510,19 @@ scope:
 - A percentile is the signal of the bin below which that share of the pixels is.
 - The same frame gives the same figures, to the last bit.
 
+**Off screen, and at a node.** `scopes.statistics` `{"timeline": "t1", "frame": n, "bins"?}`
+measures that frame of that timeline drawn off screen, as an export draws it (graded, without
+subtitles; see Samples and the pointer, in The view): in a headless engine too, as an agent that
+runs its own engine reads the figures of a shot. With `"grade": target, "node": "n1", "at"?:
+"input" | "output"` (and `"clip"?` for a grade of a group), with `{"view": "timeline"}` (the
+timeline and frame that the timeline monitor shows) or with `timeline` and `frame`, it measures
+the picture that goes into the node or comes out of it, drawn as The picture at a node says (the
+Auto Color of a node, and the histogram of the Curves palette, p. 3110). The answer is as above,
+with `"timeline"` beside `frame`, `"node": {"grade", "node", "at"}` for a node, and `view` only
+where a monitor was named. Refused with `-32602` for both or neither of `view` and `timeline`
+with `frame`, the source monitor with a node (`reason: "node"`), `at` or `clip` without a node,
+and the refusals of The picture at a node; with `-32004` `not_loaded` where the timeline monitor
+shows no timeline.
 **Refusals.** `-32602` for params that are not the method's; with `data` `{"reason":
 "settings", "message"}` for settings that cannot be read or are out of range, `{"reason":
 "missing", "scope_id"}` for a scope that is not this connection's, `{"reason": "too_many",
@@ -1729,7 +1870,7 @@ real ids. For example:
 
 | method | params |
 |---|---|
-| `project.changed` | `{"revision": n, "by": "<kind>", "made_by": "<kind>", "done": [op, ...], "next_id": k}` |
+| `project.changed` | `{"revision": n, "base"?: b, "by": "<kind>", "made_by": "<kind>", "done": [op, ...], "next_id": k}` (`base` where several changes of a gesture are told together, see Gestures) |
 | `engine.error` | `{"message": "...", "kind": "save"}` |
 | `transport.state` | the state of the transport (see The transport) |
 | `engine.yielding` | `{"to": "desktop"}`: the engine is about to end, to yield the project to the desktop's engine (see `engine.yield`) |
@@ -1737,15 +1878,18 @@ real ids. For example:
 | `media.waveform` | `{"media": "m1"}` (background analysis finished; query again for data or error) |
 | `render.progress` | `{"job", "state": "running" \| "done" \| "failed" \| "cancelled", "frame", "frames", "fps", "path", "encoder"?, "message"?, "missing_luts"?}` (see Rendering a timeline, and Grades in the picture) |
 | `scopes.frame` | `{"scope_id": "scope-1", "view": "timeline", "frame": n, "width": w, "height": h, "rgba": "<base64>"}`: a picture of a scope, to the connection that subscribed it only (see Scopes) |
+| `view.pointer` | `{"monitor", "kind": "down" \| "move" \| "up" \| "cancel", "button", "buttons", "x", "y", "inside", "window": {"x", "y"}, "shift", "ctrl", "alt"}`: what the pointer did on a view that takes it, to the connection that asked only (see Samples and the pointer) |
 
 - `by` is the kind of the client that asked (for an undo or a redo, the one that asked for
   that); `made_by` is the kind of the client that made the transaction (for an undo or a redo,
   the one that made the step taken back or done again). Both are `"engine"` for a change that
   the engine made itself (a proxy set on its media), which is no step of the history.
 - **Keeping a copy.** Call `project.get` after `hello`; then for each `project.changed`: ignore
-  it if `revision` is not above yours; if it is yours + 1, set your `next_id` to its `next_id`
-  and apply `done` in order; if it skips a revision (which the engine never does on one
-  connection), call `project.get` again.
+  it if `revision` is not above yours; if it applies to yours (its `base`, or `revision − 1`
+  where it has none), set your `next_id` to its `next_id` and apply `done` in order; if it
+  applies to another revision (which the engine never sends on one connection), call
+  `project.get` again. A client that does not read `base` stays right: it fetches the project
+  again where a gesture's changes were told together.
 - `engine.error` with `kind: "save"`: the project could not be saved; the engine keeps it and
   tries again, more slowly while it keeps failing (at least every 32 s).
 
@@ -1784,8 +1928,8 @@ commits to it; and any client may send transactions. So:
 |---|---|---|
 | `-32700` | the line is not JSON (id `null`) | |
 | `-32600` | not a request object, `jsonrpc` is not `"2.0"`, no `method`, a bad `id` (answered with id `null`), a request before `hello`, a second `hello`, a `hello` of another protocol, a line over 16 MiB, `view.*` or `engine.yield` from a client that is not the desktop | `{"reason": "protocol", "supported": [2]}` for a `hello` of another protocol |
-| `-32601` | no such method; `view.*`, `transport.*` and `scopes.*` in a `--headless` engine; `media.make_proxy` in an engine that makes no proxies; `engine.yield` in an engine that is not headless | |
-| `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name`; a speed of `transport.play` out of −8…8 or 0; `transport.load` of media or a timeline not in the project; `timeline.duration` of a timeline not there; `media.import` or `media.inspect` with no paths or a relative path; `media.thumbnail`, `media.waveform` or `media.make_proxy` of media not there; `media.thumbnail` of a frame outside the media, a height outside 1…270 or a width over 16384; a bad parent or rectangle of `view.*`; `render.start` with a bad path, codec, quality, timeline, range (an empty timeline has none, so it cannot be exported) or `subtitle_tracks`, and `render.cancel` of a job that is not there; `scopes.*` with bad settings, a scope that is not the connection's, too many scopes or bins out of range; `luts.list` with a `folder` outside the roots | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above; `{"reason": "speed"}`; `{"index": i, "path": "...", "reason": "relative"}`; `{"reason": "parent"}` or `{"reason": "rect"}` (`view.*`); `{"reason": "missing", "media": "..."}` or `{"reason": "missing", "timeline": "..."}` (`render.start` too); `{"reason": "out_of_range", "frame": n}`; `{"reason": "subtitle_track", "track": "..."}` for a `subtitle_tracks` entry that is not a subtitle track of the timeline, or is named twice; `{"reason": "settings" \| "missing" \| "too_many" \| "bins", ...}` (`scopes.*`, see Scopes); `{"reason": "outside_roots", "folder": "..."}` (`luts.list`) |
+| `-32601` | no such method; `view.*` (but `view.sample` of a frame drawn off screen), `transport.*` and `scopes.*` (but `scopes.statistics` of a frame drawn off screen) in a `--headless` engine; `media.make_proxy` in an engine that makes no proxies; `engine.yield` in an engine that is not headless | |
+| `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name`; a speed of `transport.play` out of −8…8 or 0; `transport.load` of media or a timeline not in the project; `timeline.duration` of a timeline not there; `media.import` or `media.inspect` with no paths or a relative path; `media.thumbnail`, `media.waveform` or `media.make_proxy` of media not there; `media.thumbnail` of a frame outside the media, a height outside 1…270 or a width over 16384; a bad parent or rectangle of `view.*`; `render.start` with a bad path, codec, quality, timeline, range (an empty timeline has none, so it cannot be exported) or `subtitle_tracks`, and `render.cancel` of a job that is not there; `scopes.*` with bad settings, a scope that is not the connection's, too many scopes or bins out of range; `luts.list` with a `folder` outside the roots; `transaction.apply` with a `gesture` id that is empty or longer than 64 characters; `view.sample` off the frame or of an even size, and `view.sample` or `scopes.statistics` naming a node that cannot be drawn | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above; `{"reason": "speed"}`; `{"index": i, "path": "...", "reason": "relative"}`; `{"reason": "parent"}` or `{"reason": "rect"}` (`view.*`); `{"reason": "missing", "media": "..."}` or `{"reason": "missing", "timeline": "..."}` (`render.start` too); `{"reason": "out_of_range", "frame": n}`; `{"reason": "subtitle_track", "track": "..."}` for a `subtitle_tracks` entry that is not a subtitle track of the timeline, or is named twice; `{"reason": "settings" \| "missing" \| "too_many" \| "bins", ...}` (`scopes.*`, see Scopes); `{"reason": "outside_roots", "folder": "..."}` (`luts.list`); `{"reason": "gesture"}`; `{"reason": "outside" \| "size" \| "monitor" \| "node" \| "grade" \| "timeline" \| "clip"}` (see Samples and the pointer) |
 | `-32001` | a transaction, undo or redo was refused; the project is exactly as it was; or `render.start` was refused before anything was written or taken away (with `{"reason":"stopping"}` while the engine is stopping; with no `data` when the export could not be started) | the refusal, below |
 | `-32002` | `media.import` or `media.inspect`: a file cannot be read; nothing was added. `transport.load`, `media.thumbnail`, `media.waveform`: the file of the media cannot be opened or decoded. The analysis of the engine stopped (no `data`) | `{"path": "<as sent>", "reason": "...", "message": "..."}`, below |
 | `-32003` | `view.*`: the view cannot be made, there is none, or its window is gone | `{"reason": "..."}`, see The view |

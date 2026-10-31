@@ -78,6 +78,9 @@
 //! it: a window that only answers `HTTRANSPARENT` to hit tests lets through the input of its own
 //! thread, not the real input of the user. The process is made aware of the DPI of each monitor
 //! ([`prepare_process`]), as Electron is, so that rectangles are in device pixels on both sides.
+//! While it is asked to take the pointer ([`View::take_pointer`]), for a tool of the page used on
+//! the picture, it is enabled and answers `HTCLIENT`, so that the mouse over it is its own, and it
+//! reports what the mouse does there ([`Event::Pointer`], see [`mod@pointer`]).
 //!
 //! On **macOS** the view is not available yet: [`View::attach`] fails at once with
 //! [`ViewError::Unsupported`], touching nothing of `AppKit` (why, and what it would take, is in
@@ -93,6 +96,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 pub mod display;
+pub mod pointer;
 mod render;
 mod screen;
 
@@ -111,6 +115,7 @@ pub use columbina_compose::Gpu;
 use columbina_compose::Watch;
 pub use columbina_media::{NativePicture, Picture};
 pub use display::{Content, Display, HdrTransfer, Monitor, Output};
+pub use pointer::{Button, Pointer, PointerKind};
 pub use render::{letterbox, quarter_turns, Placement};
 
 /// How long a frame may take before the window is hidden.
@@ -219,8 +224,9 @@ impl ViewError {
     }
 }
 
-/// What happened to a view, as it is reported to whoever made it, for its log.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// What happened to a view, as it is reported to whoever made it: for its log, and what the
+/// pointer did on it, where it is asked to take it.
+#[derive(Clone, Debug, PartialEq)]
 pub enum Event {
     /// The graphics card is ready to draw in the window, at first and on each card given since:
     /// the name of its adapter and of the API, and how the process is aware of the DPI of
@@ -252,6 +258,24 @@ pub enum Event {
     /// Something went wrong that the view goes on from: a picture that cannot be drawn, an
     /// error of the card.
     Error { message: String },
+    /// The pointer did something on the view, which takes it ([`View::take_pointer`]).
+    Pointer(Pointer),
+}
+
+/// The cursor that a view that takes the pointer shows over itself.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Cursor {
+    /// The arrow.
+    #[default]
+    Arrow,
+    /// A cross, to pick a colour.
+    Crosshair,
+    /// Arrows four ways, to move a thing.
+    Move,
+    /// Arrows left and right.
+    ResizeEw,
+    /// Arrows up and down.
+    ResizeNs,
 }
 
 /// What reports the [`Event`]s of a view. It is called on the view's threads, and must not
@@ -334,6 +358,11 @@ pub(crate) struct State {
     content: Content,
     /// What the view shows, as its drawer last found.
     display: Option<Display>,
+    /// The size of the frame that it draws, as it is shown (a picture turned); none where it
+    /// draws none.
+    frame: Option<(u32, u32)>,
+    /// Whether it takes the pointer, and the cursor that it shows then.
+    pointer: Option<Cursor>,
 }
 
 impl State {
@@ -345,6 +374,18 @@ impl State {
     #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn rect(&self) -> Rect {
         self.rect
+    }
+
+    /// Whether it takes the pointer, and the cursor that it shows then.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(crate) fn pointer(&self) -> Option<Cursor> {
+        self.pointer
+    }
+
+    /// Where a point of the window is on the frame drawn, and whether it is on it.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(crate) fn on_picture(&self, point: (i32, i32)) -> Option<((f64, f64), bool)> {
+        pointer::on_picture(self.size, self.frame?, point)
     }
 
     /// The window has been given the size of its rectangle by its thread.
@@ -377,6 +418,8 @@ impl Shared {
                 hdr_allowed: true,
                 content: Content::Sdr,
                 display: None,
+                frame: None,
+                pointer: None,
             }),
             wake: Condvar::new(),
             watch: Condvar::new(),
@@ -600,6 +643,12 @@ impl View {
                 state.odd_rotation = Some(rotation);
                 odd = Some(rotation);
             }
+            let shown = if rotation.rem_euclid(90) == 0 {
+                columbina_compose::geometry::shown_size((picture.width, picture.height), rotation)
+            } else {
+                (picture.width, picture.height)
+            };
+            state.frame = Some(shown);
             state.pending = Pending::Frame(Frame::Picture(picture, rotation));
             state.dirty = true;
         });
@@ -634,6 +683,7 @@ impl View {
                 "the composed frame is not on the view's current device".into(),
             ));
         }
+        state.frame = Some((texture.width(), texture.height()));
         state.pending = Pending::Frame(Frame::Texture { texture, gpu });
         state.dirty = true;
         drop(state);
@@ -678,9 +728,27 @@ impl View {
     /// Draw black, and let the last picture go.
     pub fn clear(&self) {
         self.shared.change(|state| {
+            state.frame = None;
             state.pending = Pending::Clear;
             state.dirty = true;
         });
+    }
+
+    /// Take the pointer, showing `cursor` over the view, or let it go (none), as it is at first.
+    /// While it takes it, the mouse over the view is the view's, not the page's beneath it, and
+    /// what it does there is reported ([`Event::Pointer`]). It returns at once; the window's thread
+    /// enables or disables the window.
+    ///
+    /// # Errors
+    /// The window was destroyed with its parent.
+    pub fn take_pointer(&self, cursor: Option<Cursor>) -> Result<(), ViewError> {
+        self.alive(|state| state.pointer = cursor)
+    }
+
+    /// Whether the view takes the pointer, and the cursor that it shows then.
+    #[must_use]
+    pub fn pointer(&self) -> Option<Cursor> {
+        self.shared.lock().pointer
     }
 
     /// Allow the view to show HDR where Windows has HDR on for the monitor that its window is on,

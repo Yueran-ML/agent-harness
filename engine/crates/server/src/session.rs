@@ -7,18 +7,27 @@
 //! is sent the changes in the order of their revisions, and a client sees its own change as a
 //! notification before it sees the answer to its request. Nothing is awaited while the lock is
 //! held, and nothing is logged: what is to be logged is kept and logged once it is let go.
+//!
+//! A transaction of a gesture (`transaction.apply` with `gesture`, a control dragged) is applied
+//! and drawn at once, but told at most every [`TELL_EVERY`]: what is not told yet is held, and
+//! told as one `project.changed` (with the revision it applies to in `base`), once the time has
+//! come, as the gesture ends, and before anything else is told of the project. So a client that
+//! sends a gesture may be answered before it is told; every client is still told every change, in
+//! order, and one that asks for the project is told all that was held first.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use columbina_media::MediaError;
+use columbina_model::grade::Target as GradeTarget;
 use columbina_model::{Applied, Change, History, Media, Op, Project, Proxy};
 use columbina_store::Saver;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use serde_json::value::RawValue;
+use serde_json::{json, Value};
 use tokio::sync::{watch, Mutex, MutexGuard, Notify, Semaphore};
 
 use crate::analysis::{Analysis, ThumbnailRequest, WaveformRequest};
@@ -28,16 +37,27 @@ use crate::log::log;
 use crate::luts;
 use crate::names;
 use crate::play::Transport;
+use crate::probe::{self, NodeAt, Place, Probe};
 use crate::proxy::{self, Made, Note, Proxies};
 use crate::queue::{self, Limits, Refused};
 use crate::render::Renders;
 use crate::rpc::{self, Fault, Line};
-use crate::scopes::{Scopes, StatisticsRequest};
+use crate::scopes::{Scopes, Shown, StatisticsRequest};
 use crate::transport;
 use crate::view::{Monitor, Viewer};
 
 /// The version of the engine that `hello` answers with.
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The least time between two `project.changed` of the transactions of a gesture: 10 a second.
+pub const TELL_EVERY: Duration = Duration::from_millis(100);
+
+/// How long a gesture that is sent nothing more goes on: its next transaction after this begins
+/// another, a step of its own. A client that ends its gestures never meets it.
+pub const GESTURE_IDLE: Duration = Duration::from_secs(10);
+
+/// The longest id of a gesture.
+const LONGEST_GESTURE: usize = 64;
 
 /// What kind of program a client is, as it says in `hello`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -103,6 +123,8 @@ pub struct Engine {
     scopes: Scopes,
     /// Where the LUTs that grades name are looked for, for `luts.list`.
     luts: LutPlaces,
+    /// What draws frames apart from the monitors, to be measured.
+    probe: Arc<Probe>,
     /// Whether the engine is headless, as `hello` answers it.
     headless: bool,
     /// Told when the engine is to end, having yielded the project to the desktop
@@ -134,6 +156,25 @@ pub struct State {
     /// The maker of proxies, told when the project changes, so that it makes none of media that
     /// was removed.
     proxies: Proxies,
+    /// When the gesture that is going on was last sent a transaction.
+    gesture_last: Option<Instant>,
+    /// What the transactions of a gesture changed that is not told yet.
+    held: Option<Held>,
+    /// When a change was last told.
+    told_at: Option<Instant>,
+    /// When what is held is to be told, once a task waits for it.
+    tell_at: Option<Instant>,
+}
+
+/// What a gesture changed that is not told yet: the revision that it applies to, and what was
+/// done since, as the last of it was done.
+struct Held {
+    base: u64,
+    revision: u64,
+    done: Vec<Op>,
+    by: String,
+    made_by: String,
+    next_id: u64,
 }
 
 /// A connection that said hello.
@@ -220,6 +261,10 @@ impl Engine {
             kicked: Vec::new(),
             transport: None,
             proxies: proxies.clone(),
+            gesture_last: None,
+            held: None,
+            told_at: None,
+            tell_at: None,
         }));
         let graphics = Graphics::new();
         let viewer = Viewer::new(headless, Arc::clone(&graphics));
@@ -259,6 +304,7 @@ impl Engine {
             },
         ));
         let scopes = Scopes::new(headless, Arc::clone(&graphics));
+        let probe = Arc::new(Probe::new(Arc::clone(&graphics), luts.clone()));
         let transport = Transport::new(
             headless,
             setup,
@@ -312,6 +358,7 @@ impl Engine {
             renders,
             scopes,
             luts,
+            probe,
             headless,
             yielded: Arc::new(Notify::new()),
         }
@@ -354,10 +401,25 @@ impl Engine {
         Some(id)
     }
 
-    /// Forget a connection that has ended.
+    /// Forget a connection that has ended. A gesture that it was sending ends.
     pub async fn leave(&self, id: u64) {
         self.scopes.forget(id);
-        self.state.lock().await.peers.remove(&id);
+        self.viewer.forget(id);
+        let mut state = self.state.lock().await;
+        state.peers.remove(&id);
+        let prefix = format!("{id}:");
+        if state
+            .history
+            .gesture()
+            .is_some_and(|(key, _)| key.starts_with(&prefix))
+        {
+            state.history.end_gesture();
+            state.gesture_last = None;
+            state.flush();
+        }
+        let kicked = std::mem::take(&mut state.kicked);
+        drop(state);
+        self.log_kicked(kicked);
         self.connections().stops.remove(&id);
         self.presence
             .send_modify(|presence| presence.connected -= 1);
@@ -584,30 +646,126 @@ impl State {
         }
     }
 
-    /// Save the project as it is now, and tell everyone what changed. Gives what was done, as
-    /// it is written.
+    /// Save the project as it is now, and tell everyone what changed, after what a gesture
+    /// changed that was held. Gives what was done, as it is written.
     fn publish(&mut self, applied: &Applied) -> Box<RawValue> {
+        self.flush();
+        self.save_and_draw();
+        let done = serde_json::value::to_raw_value(&applied.done)
+            .expect("an operation is written as JSON");
+        self.tell(
+            None,
+            applied.revision,
+            &applied.by,
+            &applied.made_by,
+            &done,
+            applied.next_id,
+        );
+        self.took_media(&applied.done);
+        done
+    }
+
+    /// Save the project as it is now and draw it, as a transaction of a gesture changed it, and
+    /// tell everyone what changed if [`TELL_EVERY`] has gone by since a change was last told,
+    /// or the gesture ended (`ends`); else hold it, to be told with what follows of the gesture,
+    /// which is the one it `begins` or the one whose changes are held. Gives what was
+    /// done, as it is written, and when what is held is to be told, where a task is to wait for
+    /// it.
+    fn publish_in_gesture(
+        &mut self,
+        applied: &Applied,
+        begins: bool,
+        ends: bool,
+        now: Instant,
+    ) -> (Box<RawValue>, Option<Instant>) {
+        // What is held is of one gesture: that of another is told before this one begins.
+        if begins {
+            self.flush();
+        }
+        self.save_and_draw();
+        let done = serde_json::value::to_raw_value(&applied.done)
+            .expect("an operation is written as JSON");
+        let held = self.held.get_or_insert_with(|| Held {
+            base: applied.revision - 1,
+            revision: applied.revision,
+            done: Vec::new(),
+            by: applied.by.clone(),
+            made_by: applied.made_by.clone(),
+            next_id: applied.next_id,
+        });
+        held.revision = applied.revision;
+        held.next_id = applied.next_id;
+        held.done.extend(applied.done.iter().cloned());
+        let due = self.told_at.map(|told| told + TELL_EVERY);
+        if ends || due.is_none_or(|due| due <= now) {
+            self.flush();
+            return (done, None);
+        }
+        if self.tell_at.is_some() {
+            return (done, None);
+        }
+        self.tell_at = due;
+        (done, due)
+    }
+
+    /// Tell everyone what a gesture changed that was held, if anything was.
+    fn flush(&mut self) {
+        self.tell_at = None;
+        let Some(held) = self.held.take() else {
+            return;
+        };
+        let done =
+            serde_json::value::to_raw_value(&held.done).expect("an operation is written as JSON");
+        let base = (held.base + 1 != held.revision).then_some(held.base);
+        self.tell(
+            base,
+            held.revision,
+            &held.by,
+            &held.made_by,
+            &done,
+            held.next_id,
+        );
+        self.took_media(&held.done);
+    }
+
+    /// Save the project as it is now, and have the transport draw it.
+    fn save_and_draw(&self) {
         if let Some(saver) = &self.saver {
             saver.changed(self.history.project().clone());
         }
-        let done = serde_json::value::to_raw_value(&applied.done)
-            .expect("an operation is written as JSON");
-        let changed = Changed {
-            revision: applied.revision,
-            by: &applied.by,
-            made_by: &applied.made_by,
-            done: &done,
-            next_id: applied.next_id,
-        };
-        self.broadcast(&rpc::notification_line("project.changed", &changed));
         if let Some(transport) = &self.transport {
             transport.project_changed(self.history.project());
         }
+    }
+
+    /// Tell everyone of a change, and the maker of proxies.
+    fn tell(
+        &mut self,
+        base: Option<u64>,
+        revision: u64,
+        by: &str,
+        made_by: &str,
+        done: &RawValue,
+        next_id: u64,
+    ) {
+        let changed = Changed {
+            revision,
+            base,
+            by,
+            made_by,
+            done,
+            next_id,
+        };
+        self.broadcast(&rpc::notification_line("project.changed", &changed));
+        self.told_at = Some(Instant::now());
         for note in self.proxies.project_changed(self.history.project()) {
             self.broadcast(&rpc::notification_line("media.proxy", &note));
         }
-        let added = applied
-            .done
+    }
+
+    /// Have the maker of proxies make those of media that `done` added.
+    fn took_media(&self, done: &[Op]) {
+        let added = done
             .iter()
             .filter_map(|op| match op {
                 Op::AddMedia { media, .. } => Some(media.id.clone()),
@@ -617,14 +775,57 @@ impl State {
         if !added.is_empty() {
             self.proxies.imported(self.history.project(), &added);
         }
-        done
     }
+
+    /// End the gesture that is going on where it was sent nothing for [`GESTURE_IDLE`].
+    fn end_idle_gesture(&mut self, now: Instant) {
+        if self.history.gesture().is_some()
+            && self
+                .gesture_last
+                .is_none_or(|last| last + GESTURE_IDLE <= now)
+        {
+            self.history.end_gesture();
+            self.gesture_last = None;
+            self.flush();
+        }
+    }
+}
+
+/// Tell what a gesture changed that is held once it is due, as [`State::publish_in_gesture`]
+/// asks: unless it was told before, with something else.
+fn tell_when_due(engine: &Engine, due: Instant) {
+    let state = Arc::clone(&engine.state);
+    let limits = engine.limits;
+    tokio::spawn(async move {
+        let mut due = due;
+        loop {
+            tokio::time::sleep_until(due.into()).await;
+            let mut locked = state.lock().await;
+            match locked.tell_at {
+                Some(at) if at > Instant::now() => due = at,
+                Some(_) => {
+                    locked.flush();
+                    let kicked = std::mem::take(&mut locked.kicked);
+                    drop(locked);
+                    for (id, kind) in kicked {
+                        log_kicked(id, Some(kind), limits);
+                    }
+                    return;
+                }
+                None => return,
+            }
+        }
+    });
 }
 
 /// The params of `project.changed`.
 #[derive(Serialize)]
 struct Changed<'a> {
     revision: u64,
+    /// The revision that `done` applies to, where it is not the one before `revision`: what a
+    /// gesture changed, held and told at once.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    base: Option<u64>,
     by: &'a str,
     made_by: &'a str,
     done: &'a RawValue,
@@ -718,9 +919,14 @@ async fn dispatch(
             media_analysis(engine, connection, id, method, params).await
         }
         "engine.yield" => engine_yield(engine, connection, kind, id, params).await,
+        "scopes.statistics" if measured_apart(params) => {
+            statistics_apart(engine, connection, id, params).await
+        }
         "scopes.subscribe" | "scopes.set" | "scopes.unsubscribe" | "scopes.statistics" => {
             scopes_call(engine, connection, id, method, params).await
         }
+        "view.sample" => view_sample(engine, connection, id, params).await,
+        "view.pointer" => view_pointer(engine, connection, kind, id, params).await,
         "luts.list" => luts_list(engine, connection, id, params).await,
         "viewer.wipe" | "viewer.split" => {
             let result = engine.transport.compare(method, params).await?;
@@ -803,6 +1009,325 @@ async fn scopes_call(
         }
     };
     Ok(match answered {
+        Ok(()) => Reply::Queued,
+        Err(refused) => Reply::Refused(refused),
+    })
+}
+
+/// `view.pointer`: have the view of a monitor take the pointer for this connection, or let it go.
+async fn view_pointer(
+    engine: &Engine,
+    connection: &Connection,
+    kind: Kind,
+    id: &RawValue,
+    params: Option<&RawValue>,
+) -> Result<Reply, Reply> {
+    let result = engine
+        .viewer
+        .pointer(kind, connection.id, connection.sender(), params)
+        .await?;
+    Ok(match connection.queue(rpc::result_line(id, &result)) {
+        Ok(()) => Reply::Queued,
+        Err(refused) => Reply::Refused(refused),
+    })
+}
+
+/// Whether `scopes.statistics` asks for a frame drawn apart from what a monitor shows: of a
+/// timeline at a frame, or at a node of a grade.
+fn measured_apart(params: Option<&RawValue>) -> bool {
+    params
+        .and_then(|params| {
+            serde_json::from_str::<serde_json::Map<String, Value>>(params.get()).ok()
+        })
+        .is_some_and(|params| {
+            ["timeline", "frame", "grade", "node", "at", "clip"]
+                .iter()
+                .any(|name| params.contains_key(*name))
+        })
+}
+
+/// The params of `scopes.statistics` measured apart from what a monitor shows.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StatisticsApart {
+    #[serde(default)]
+    view: Option<Monitor>,
+    #[serde(default)]
+    timeline: Option<String>,
+    #[serde(default)]
+    frame: Option<i64>,
+    #[serde(default = "bins")]
+    bins: u32,
+    #[serde(default)]
+    grade: Option<GradeTarget>,
+    #[serde(default)]
+    node: Option<String>,
+    #[serde(default)]
+    at: Option<Place>,
+    #[serde(default)]
+    clip: Option<String>,
+}
+
+fn bins() -> u32 {
+    256
+}
+
+/// The params of `view.sample`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Sample {
+    #[serde(default)]
+    monitor: Option<Monitor>,
+    #[serde(default)]
+    timeline: Option<String>,
+    #[serde(default)]
+    frame: Option<i64>,
+    x: f64,
+    y: f64,
+    #[serde(default = "one")]
+    size: u32,
+    #[serde(default)]
+    grade: Option<GradeTarget>,
+    #[serde(default)]
+    node: Option<String>,
+    #[serde(default)]
+    clip: Option<String>,
+}
+
+fn one() -> u32 {
+    1
+}
+
+/// The node that params name, at `place`: none where they name none.
+fn node_at(
+    grade: Option<GradeTarget>,
+    node: Option<String>,
+    place: Place,
+    clip: Option<String>,
+) -> Result<Option<NodeAt>, Fault> {
+    match (grade, node) {
+        (Some(grade), Some(node)) => Ok(Some(NodeAt {
+            grade,
+            node,
+            place,
+            clip,
+        })),
+        (None, None) if clip.is_none() => Ok(None),
+        _ => Err(Fault::params(
+            "a node is named by both its grade and its node, and a clip only with them",
+        )
+        .with_data(json!({ "reason": "node" }))),
+    }
+}
+
+/// Where a frame to measure is: of the timeline that the timeline monitor shows, at the frame
+/// it shows (a monitor's), or of a timeline at a frame (`timeline` and `frame`). Gives the
+/// timeline, the frame and the monitor.
+async fn frame_named(
+    engine: &Engine,
+    monitor: Option<Monitor>,
+    timeline: Option<String>,
+    frame: Option<i64>,
+    names: (&str, &str),
+) -> Result<(Option<Shown>, Option<(String, i64)>), Fault> {
+    match (monitor, timeline, frame) {
+        (Some(monitor), None, None) => {
+            let shown = engine.transport.shown(monitor).await?;
+            let at = match (&shown, engine.transport.timeline_loaded()) {
+                (Shown::Target { frame, .. }, Some(timeline)) => Some((timeline, *frame)),
+                _ => None,
+            };
+            Ok((Some(shown), at))
+        }
+        (None, Some(timeline), Some(frame)) => Ok((None, Some((timeline, frame)))),
+        _ => Err(Fault::params(format!(
+            "a frame is named by {} alone, or by timeline and frame",
+            names.0
+        ))
+        .with_data(json!({ "reason": names.1 }))),
+    }
+}
+
+/// The refusal of a node of a grade on the source monitor, which shows media ungraded.
+fn no_grades_there() -> Fault {
+    Fault::params("the source monitor shows media, which is graded on a timeline only")
+        .with_data(json!({ "reason": "node" }))
+}
+
+/// `scopes.statistics` of a frame drawn apart from what a monitor shows: of a timeline at a frame
+/// (in a headless engine too), or at a node of a grade, of the frame that the timeline monitor
+/// shows or of a timeline at a frame.
+async fn statistics_apart(
+    engine: &Engine,
+    connection: &Connection,
+    id: &RawValue,
+    params: Option<&RawValue>,
+) -> Result<Reply, Reply> {
+    let asked: StatisticsApart = rpc::params(
+        "scopes.statistics",
+        r#"{"view": "timeline" | "source"} or {"timeline": "t1", "frame": 0}, "bins"?: 256, "grade"?: {"level": "clip", ...}, "node"?: "n1", "at"?: "input" | "output", "clip"?: "c1""#,
+        params,
+    )?;
+    if !(16..=1024).contains(&asked.bins) {
+        return Err(Fault::params(format!(
+            "the bins of the histogram are {}, not from 16 to 1024",
+            asked.bins
+        ))
+        .with_data(json!({"reason": "bins"}))
+        .into());
+    }
+    let node = node_at(
+        asked.grade,
+        asked.node,
+        asked.at.unwrap_or_default(),
+        asked.clip,
+    )?;
+    if node.is_none() && asked.at.is_some() {
+        return Err(Fault::params("at is given only with a node")
+            .with_data(json!({ "reason": "node" }))
+            .into());
+    }
+    if asked.view == Some(Monitor::Source) {
+        return Err(no_grades_there().into());
+    }
+    let monitor = asked.view;
+    let (_, at) = frame_named(
+        engine,
+        monitor,
+        asked.timeline,
+        asked.frame,
+        ("view", "view"),
+    )
+    .await?;
+    let (timeline, frame) = at.ok_or_else(|| {
+        Fault::new(
+            rpc::TRANSPORT_FAILED,
+            "the timeline monitor shows no timeline",
+        )
+        .with_data(json!({ "reason": "not_loaded" }))
+    })?;
+    let project = engine.state.lock().await.history.project().clone();
+    let (probe, scopes, bins) = (Arc::clone(&engine.probe), engine.scopes.clone(), asked.bins);
+    let result = tokio::task::spawn_blocking(move || {
+        let drawn = probe.draw(&project, &timeline, frame, node.as_ref())?;
+        let shown = Shown::Target {
+            gpu: drawn.gpu,
+            target: drawn.target,
+            frame,
+        };
+        let mut value = scopes.statistics(Monitor::Timeline, &shown, bins)?;
+        if let Some(object) = value.as_object_mut() {
+            object.remove("view");
+            if let Some(monitor) = monitor {
+                object.insert("view".into(), json!(monitor));
+            }
+            object.insert("timeline".into(), json!(timeline));
+            if let Some(node) = &node {
+                object.insert("node".into(), node.written());
+            }
+        }
+        Ok::<_, Fault>(value)
+    })
+    .await
+    .map_err(|error| probe::drawing(&error.to_string()))??;
+    Ok(match connection.queue(rpc::result_line(id, &result)) {
+        Ok(()) => Reply::Queued,
+        Err(refused) => Reply::Refused(refused),
+    })
+}
+
+/// `view.sample`: the mean of a few pixels of what a monitor shows, or of a frame of a timeline
+/// drawn off screen, about a point of the picture; and, for a node of a grade, of the picture
+/// that goes into it and comes out of it there.
+async fn view_sample(
+    engine: &Engine,
+    connection: &Connection,
+    id: &RawValue,
+    params: Option<&RawValue>,
+) -> Result<Reply, Reply> {
+    let asked: Sample = rpc::params(
+        "view.sample",
+        r#"{"monitor": "timeline" | "source"} or {"timeline": "t1", "frame": 0}, "x": 960.5, "y": 540.5, "size"?: 1, "grade"?: {"level": "clip", ...}, "node"?: "n1", "clip"?: "c1""#,
+        params,
+    )?;
+    let node = node_at(asked.grade, asked.node, Place::Output, asked.clip)?;
+    if node.is_some() && asked.monitor == Some(Monitor::Source) {
+        return Err(no_grades_there().into());
+    }
+    let monitor = asked.monitor;
+    let (shown, at) = frame_named(
+        engine,
+        monitor,
+        asked.timeline,
+        asked.frame,
+        ("monitor", "monitor"),
+    )
+    .await?;
+    if node.is_some() && at.is_none() {
+        return Err(Fault::new(
+            rpc::TRANSPORT_FAILED,
+            "the timeline monitor shows no timeline",
+        )
+        .with_data(json!({ "reason": "not_loaded" }))
+        .into());
+    }
+    let shown_frame = shown.as_ref().map(|shown| match shown {
+        Shown::Target { frame, .. } => *frame,
+        Shown::Picture { picture, .. } => picture.frame,
+    });
+    let project = engine.state.lock().await.history.project().clone();
+    let probe = Arc::clone(&engine.probe);
+    let (x, y, size) = (asked.x, asked.y, asked.size);
+    let result = tokio::task::spawn_blocking(move || {
+        let mean = |drawn: &probe::Drawn| {
+            let (width, height) = drawn.target.size();
+            let region = probe::square(x, y, size, width, height)?;
+            probe::mean_of(drawn, region).map(|rgb| (rgb, region, (width, height)))
+        };
+        let drawn = match shown {
+            Some(Shown::Target { gpu, target, .. }) => probe::Drawn { gpu, target },
+            Some(Shown::Picture { picture, rotation }) => probe.draw_picture(picture, rotation)?,
+            None => {
+                let (timeline, frame) = at.as_ref().expect("named with the frame");
+                probe.draw(&project, timeline, *frame, None)?
+            }
+        };
+        let (rgb, region, (width, height)) = mean(&drawn)?;
+        let mut value = json!({
+            "frame": at.as_ref().map(|(_, frame)| *frame).or(shown_frame),
+            "x": x,
+            "y": y,
+            "size": size,
+            "width": width,
+            "height": height,
+            "region": { "x": region.x, "y": region.y, "width": region.width, "height": region.height },
+            "rgb": rgb,
+        });
+        match monitor {
+            Some(monitor) => value["monitor"] = json!(monitor),
+            None => value["timeline"] = json!(at.as_ref().map(|(timeline, _)| timeline)),
+        }
+        if let (Some(node), Some((timeline, frame))) = (node, &at) {
+            let mut values = Vec::new();
+            for place in [Place::Input, Place::Output] {
+                let at_node = NodeAt {
+                    place,
+                    ..node.clone()
+                };
+                let drawn = probe.draw(&project, timeline, *frame, Some(&at_node))?;
+                values.push(mean(&drawn)?.0);
+            }
+            let mut written = node.written();
+            written.as_object_mut().map(|object| object.remove("at"));
+            written["input"] = json!(values[0]);
+            written["output"] = json!(values[1]);
+            value["node"] = written;
+        }
+        Ok::<_, Fault>(value)
+    })
+    .await
+    .map_err(|error| probe::drawing(&error.to_string()))??;
+    Ok(match connection.queue(rpc::result_line(id, &result)) {
         Ok(()) => Reply::Queued,
         Err(refused) => Reply::Refused(refused),
     })
@@ -936,6 +1461,8 @@ async fn hello(
         return Err(fault.into());
     }
     let mut state = engine.state.lock().await;
+    // What was held is told before the revision of the answer, to those who said hello before.
+    state.flush();
     state.peers.insert(
         connection.id,
         Peer {
@@ -975,7 +1502,9 @@ async fn project_get(
     params: Option<&RawValue>,
 ) -> Result<Reply, Reply> {
     rpc::no_params("project.get", params)?;
-    let state = engine.state.lock().await;
+    let mut state = engine.state.lock().await;
+    // What was held is told first: the project answered is never behind what is told after it.
+    state.flush();
     let project = state.history.project();
     let line = rpc::result_line(
         id,
@@ -1029,6 +1558,18 @@ struct Transaction<'a> {
     #[serde(borrow)]
     ops: Vec<&'a RawValue>,
     revision: Option<u64>,
+    #[serde(default)]
+    gesture: Option<GestureParams>,
+}
+
+/// The gesture that a transaction is part of: its id, which the client chooses, and whether it
+/// ends with this transaction.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GestureParams {
+    id: String,
+    #[serde(default)]
+    end: bool,
 }
 
 /// The answer to `transaction.apply`.
@@ -1093,7 +1634,25 @@ async fn transaction_apply(
     id: &RawValue,
     params: Option<&RawValue>,
 ) -> Result<Reply, Reply> {
-    let transaction: Transaction = rpc::params("transaction.apply", r#"{"ops": [...]}"#, params)?;
+    let transaction: Transaction = rpc::params(
+        "transaction.apply",
+        r#"{"ops": [...], "revision"?: 12, "gesture"?: {"id": "g1", "end"?: false}}"#,
+        params,
+    )?;
+    if let Some(gesture) = &transaction.gesture {
+        if gesture.id.is_empty() || gesture.id.chars().count() > LONGEST_GESTURE {
+            return Err(Fault::params(format!(
+                "the id of a gesture is from 1 to {LONGEST_GESTURE} characters"
+            ))
+            .with_data(json!({ "reason": "gesture" }))
+            .into());
+        }
+    }
+    // The gestures of a connection are its own: another's of the same id is another gesture.
+    let key = transaction
+        .gesture
+        .as_ref()
+        .map(|gesture| (format!("{}:{}", connection.id, gesture.id), gesture.end));
     let mut ops = Vec::with_capacity(transaction.ops.len());
     for (index, op) in transaction.ops.iter().enumerate() {
         let op: names::Input = serde_json::from_str(op.get()).map_err(|error| {
@@ -1112,23 +1671,51 @@ async fn transaction_apply(
     })?;
 
     let mut state = engine.state.lock().await;
+    let now = Instant::now();
+    state.end_idle_gesture(now);
+    let gesture = key.as_ref().map(|(key, _)| key.as_str());
     if let Some(revision) = transaction
         .revision
-        .filter(|revision| *revision != state.history.revision())
+        .filter(|revision| !state.history.takes_revision(*revision, gesture))
     {
-        return Err(stale_revision(revision, state.history.revision()).into());
+        let fault = stale_revision(revision, state.history.revision());
+        return Ok(engine.finish(state, connection, rpc::error_line(Some(id), &fault)));
     }
-    let changed = state
-        .history
-        .change_with(
-            ops.into_iter().map(|input| input.change).collect(),
-            kind.as_str(),
-            &mut names,
-        )
-        .map_err(|error| Fault::refused(&error))?;
-    let applied = changed.applied;
+    let requested = ops.into_iter().map(|input| input.change).collect();
+    let changed = match &key {
+        Some((key, end)) => {
+            state
+                .history
+                .change_in_gesture(requested, kind.as_str(), &mut names, key, *end)
+        }
+        None => state
+            .history
+            .change_with(requested, kind.as_str(), &mut names),
+    };
+    let changed = match changed {
+        Ok(changed) => changed,
+        Err(error) => {
+            // A gesture that this ended is told of now.
+            if key.is_some() && state.history.gesture().is_none() {
+                state.gesture_last = None;
+                state.flush();
+            }
+            let fault = Fault::refused(&error);
+            return Ok(engine.finish(state, connection, rpc::error_line(Some(id), &fault)));
+        }
+    };
+    let applied = &changed.applied;
     let names = names.finish();
-    let done = state.publish(&applied);
+    let (done, due) = if key.is_some() {
+        let going_on = state.history.gesture().is_some();
+        state.gesture_last = going_on.then_some(now);
+        state.publish_in_gesture(applied, !changed.merged, !going_on, now)
+    } else {
+        (state.publish(applied), None)
+    };
+    if let Some(due) = due {
+        tell_when_due(engine, due);
+    }
     let line = rpc::result_line(
         id,
         &TransactionResult {
@@ -1191,6 +1778,9 @@ async fn history_step(
     } else {
         state.history.redo(kind.as_str())
     };
+    // An undo or a redo ends the gesture that was going on, and what it held is told first.
+    state.gesture_last = None;
+    state.flush();
     let Some(step) = step else {
         let result = json!({ "revision": state.history.revision(), "done": null });
         let line = rpc::result_line(id, &result);

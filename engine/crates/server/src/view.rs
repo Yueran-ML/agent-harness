@@ -18,11 +18,17 @@
 //! Whether the views may show HDR, where Windows has it on for their monitor ("Display HDR On
 //! Viewers If Available", RM20 p244), is a setting of the viewer, for both monitors, allowed
 //! unless `view.display` says otherwise; each view attached since is given it.
+//!
+//! A view takes the pointer while a connection of the desktop asks it to (`view.pointer`), for a
+//! tool of the page that is used on the picture; what the pointer does there is told to that
+//! connection alone, as `view.pointer` notifications ([`pointer`]).
+
+mod pointer;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, PoisonError};
 
-use columbina_view::{Event, Gpu, Output, RawParent, Rect, View, ViewError};
+use columbina_view::{Cursor, Event, Gpu, Output, RawParent, Rect, View, ViewError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serde_json::value::RawValue;
@@ -30,8 +36,10 @@ use tokio::sync::Mutex;
 
 use crate::gpu::{Graphics, Subscription};
 use crate::log::log;
+use crate::queue;
 use crate::rpc::{self, Fault};
 use crate::session::Kind;
+use pointer::Pointers;
 
 /// Where the view of the engine is, if one is attached: shared with the transport, which hands
 /// it pictures.
@@ -67,6 +75,8 @@ pub struct Viewer {
     busy: Mutex<()>,
     /// Whether the views may show HDR.
     hdr: AtomicBool,
+    /// Who is told what the pointer does on each view, while one takes it.
+    pointers: Pointers,
 }
 
 /// The params of `view.attach`.
@@ -106,6 +116,40 @@ struct Detach {
     monitor: Monitor,
 }
 
+/// The params of `view.pointer`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TakePointer {
+    monitor: Monitor,
+    on: bool,
+    #[serde(default)]
+    cursor: CursorName,
+}
+
+/// The cursor shown over a view that takes the pointer, as it is written.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CursorName {
+    #[default]
+    Arrow,
+    Crosshair,
+    Move,
+    ResizeEw,
+    ResizeNs,
+}
+
+impl From<CursorName> for Cursor {
+    fn from(name: CursorName) -> Cursor {
+        match name {
+            CursorName::Arrow => Cursor::Arrow,
+            CursorName::Crosshair => Cursor::Crosshair,
+            CursorName::Move => Cursor::Move,
+            CursorName::ResizeEw => Cursor::ResizeEw,
+            CursorName::ResizeNs => Cursor::ResizeNs,
+        }
+    }
+}
+
 /// The params of `view.display`.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -119,6 +163,7 @@ const PLACE: &str =
     r#"{"monitor":"source"|"timeline", "x": 0, "y": 0, "width": 640, "height": 360}"#;
 const SHOW: &str = r#"{"monitor":"source"|"timeline", "shown": true | false}"#;
 const DISPLAY: &str = r#"{"hdr"?: true | false}"#;
+const POINTER: &str = r#"{"monitor":"source"|"timeline", "on": true | false, "cursor"?: "arrow" | "crosshair" | "move" | "resize_ew" | "resize_ns"}"#;
 
 impl Viewer {
     pub fn new(headless: bool, graphics: Arc<Graphics>) -> Self {
@@ -138,7 +183,71 @@ impl Viewer {
             _subscription: subscription,
             busy: Mutex::new(()),
             hdr: AtomicBool::new(true),
+            pointers: Pointers::new(),
         }
+    }
+
+    /// `view.pointer`, of the connection `connection` of the desktop: have the view of a monitor
+    /// take the pointer, and tell what it does there to this connection alone (in place of one
+    /// that asked before), or let it go.
+    pub async fn pointer(
+        &self,
+        kind: Kind,
+        connection: u64,
+        sender: &queue::Sender,
+        params: Option<&RawValue>,
+    ) -> Result<serde_json::Value, Fault> {
+        let method = "view.pointer";
+        self.check(kind, method)?;
+        let asked: TakePointer = rpc::params(method, POINTER, params)?;
+        let cursor = asked.on.then_some(Cursor::from(asked.cursor));
+        let taken = self
+            .with_view(asked.monitor, |view| view.take_pointer(cursor))
+            .await;
+        if asked.on {
+            // Only a view that is there takes it.
+            taken?;
+            self.pointers
+                .tell(asked.monitor, connection, sender.clone(), cursor);
+        } else {
+            // Let go, whether or not a view is still there.
+            self.pointers.stop(asked.monitor);
+        }
+        Ok(json!({
+            "monitor": asked.monitor,
+            "on": asked.on,
+            "cursor": asked.on.then_some(asked.cursor),
+        }))
+    }
+
+    /// Forget a connection that has ended: the views that took the pointer for it let it go.
+    pub fn forget(&self, connection: u64) {
+        for monitor in self.pointers.forget(connection) {
+            if let Some(view) = self.slots[monitor.index()]
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+            {
+                let _ = view.take_pointer(None);
+            }
+        }
+    }
+
+    /// Refuse a method of the view where there is none, or the client is not the desktop.
+    fn check(&self, kind: Kind, method: &str) -> Result<(), Fault> {
+        if self.headless {
+            return Err(Fault::new(
+                rpc::METHOD_NOT_FOUND,
+                format!("there is no method {method} in a headless engine: it draws in no window"),
+            ));
+        }
+        if kind != Kind::Desktop {
+            return Err(Fault::new(
+                rpc::INVALID_REQUEST,
+                format!("{method} is the desktop's: only it has the window that the view is in"),
+            ));
+        }
+        Ok(())
     }
 
     /// Where the view is, for the transport.
@@ -161,18 +270,7 @@ impl Viewer {
         method: &str,
         params: Option<&RawValue>,
     ) -> Result<serde_json::Value, Fault> {
-        if self.headless {
-            return Err(Fault::new(
-                rpc::METHOD_NOT_FOUND,
-                format!("there is no method {method} in a headless engine: it draws in no window"),
-            ));
-        }
-        if kind != Kind::Desktop {
-            return Err(Fault::new(
-                rpc::INVALID_REQUEST,
-                format!("{method} is the desktop's: only it has the window that the view is in"),
-            ));
-        }
+        self.check(kind, method)?;
         match method {
             "view.attach" => self.attach(rpc::params(method, ATTACH, params)?).await,
             "view.place" => {
@@ -255,7 +353,7 @@ impl Viewer {
         let old = self.take(attach.monitor);
         let graphics = Arc::clone(&self.graphics);
         let slot = self.slot(attach.monitor);
-        let reporter = reporter(&graphics, &slot, attach.monitor);
+        let reporter = reporter(&graphics, &slot, attach.monitor, &self.pointers);
         let hdr = self.hdr.load(Ordering::SeqCst);
         let made = tokio::task::spawn_blocking(move || {
             drop(old);
@@ -273,6 +371,10 @@ impl Viewer {
             .with_data(json!({ "reason": "failed" }))
         })?;
         let view = made.map_err(|error| fault(&error))?;
+        // A view made in place of one that took the pointer takes it too.
+        if let Some(cursor) = self.pointers.cursor(attach.monitor) {
+            let _ = view.take_pointer(Some(cursor));
+        }
         let result = json!({ "adapter": view.adapter(), "backend": view.backend() });
         log(
             "view_attached",
@@ -354,10 +456,20 @@ fn give(slot: &std::sync::Weak<std::sync::Mutex<Option<View>>>, gpu: Arc<Gpu>) {
 /// What a view reports to: the log; and, once the card that it draws with is lost, the card of
 /// the engine, given to it on a thread of its own: the one made in its place already, if the
 /// view was given one that was lost, or else one made now (and given to every subscriber too).
-fn reporter(graphics: &Arc<Graphics>, slot: &ViewSlot, monitor: Monitor) -> columbina_view::Report {
+fn reporter(
+    graphics: &Arc<Graphics>,
+    slot: &ViewSlot,
+    monitor: Monitor,
+    pointers: &Pointers,
+) -> columbina_view::Report {
     let graphics = Arc::downgrade(graphics);
     let slot = Arc::downgrade(slot);
+    let pointers = pointers.clone();
     Arc::new(move |event: Event| {
+        if let Event::Pointer(pointer) = event {
+            pointers.told(monitor, &pointer);
+            return;
+        }
         let lost = matches!(event, Event::DeviceLost { .. });
         report(event, monitor);
         let (Some(graphics), true) = (graphics.upgrade(), lost) else {
@@ -412,5 +524,6 @@ fn report(event: Event, monitor: Monitor) {
             "view_error",
             &json!({ "monitor":monitor, "message": message }),
         ),
+        Event::Pointer(_) => {}
     }
 }

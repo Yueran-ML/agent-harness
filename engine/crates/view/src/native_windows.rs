@@ -2,9 +2,16 @@
 //! of its own that does nothing but take its messages (see the crate's docs).
 //!
 //! The other threads never touch the window: they post `WM_SYNC` to it, and its thread makes it
-//! match what the view's state says (where it is, whether it is seen). Posting never waits.
+//! match what the view's state says (where it is, whether it is seen, whether it takes the
+//! pointer). Posting never waits.
+//!
+//! While the view takes the pointer, the window is enabled, answers `HTCLIENT` to hit tests and
+//! is not `WS_EX_TRANSPARENT`, so that the mouse over it is its own; a button pressed over it
+//! captures the mouse until the last button is released, so that a drag goes on beyond it. Each
+//! press, move and release is reported with where it is on the picture. Otherwise the window is as
+//! it always was, and a mouse message that reaches it anyway (posted to it) is not reported.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::num::NonZeroIsize;
 use std::sync::{mpsc, Arc, Mutex, Once, OnceLock, PoisonError};
 use std::time::Duration;
@@ -21,16 +28,23 @@ use windows::Win32::UI::HiDpi::{
     GetThreadDpiAwarenessContext, SetProcessDpiAwarenessContext,
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    EnableWindow, GetKeyState, ReleaseCapture, SetCapture, VK_MENU,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, IsWindow,
-    LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassExW, SetWindowPos, TranslateMessage,
-    HTTRANSPARENT, HWND_TOP, IDC_ARROW, MA_NOACTIVATE, MSG, SWP_HIDEWINDOW, SWP_NOACTIVATE,
-    SWP_SHOWWINDOW, WM_APP, WM_DESTROY, WM_ERASEBKGND, WM_MOUSEACTIVATE, WM_NCHITTEST, WM_PAINT,
-    WNDCLASSEXW, WS_CHILD, WS_CLIPSIBLINGS, WS_DISABLED, WS_EX_NOACTIVATE, WS_EX_NOPARENTNOTIFY,
-    WS_EX_TRANSPARENT, WS_VISIBLE,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
+    GetWindowLongPtrW, IsWindow, LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassExW,
+    SetCursor, SetWindowLongPtrW, SetWindowPos, TranslateMessage, GWL_EXSTYLE, HTCLIENT,
+    HTTRANSPARENT, HWND_TOP, IDC_ARROW, IDC_CROSS, IDC_SIZEALL, IDC_SIZENS, IDC_SIZEWE,
+    MA_NOACTIVATE, MSG, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_SHOWWINDOW, WM_APP, WM_CAPTURECHANGED,
+    WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
+    WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP,
+    WM_SETCURSOR, WNDCLASSEXW, WS_CHILD, WS_CLIPSIBLINGS, WS_DISABLED, WS_EX_NOACTIVATE,
+    WS_EX_NOPARENTNOTIFY, WS_EX_TRANSPARENT, WS_VISIBLE,
 };
 
-use crate::{RawParent, Rect, Shared, ViewError, Worker};
+use crate::pointer::{Button, Pointer, PointerKind};
+use crate::{Cursor, Event, RawParent, Rect, Shared, ViewError, Worker};
 
 /// The class of the windows of views.
 const CLASS: PCWSTR = w!("ColumbinaView");
@@ -46,7 +60,19 @@ const MAKING: Duration = Duration::from_secs(10);
 thread_local! {
     /// The state of the view whose window this thread serves.
     static SHARED: RefCell<Option<Arc<Shared>>> = const { RefCell::new(None) };
+    /// The buttons that were pressed over the window and are held, a bit each, as
+    /// [`Pointer::buttons`] has them.
+    static HELD: Cell<u8> = const { Cell::new(0) };
+    /// Where the mouse last was in the window.
+    static LAST: Cell<(i32, i32)> = const { Cell::new((0, 0)) };
 }
+
+/// The keys and buttons held, as the messages of the mouse give them in `wparam`.
+const MK_LBUTTON: u32 = 0x1;
+const MK_RBUTTON: u32 = 0x2;
+const MK_SHIFT: u32 = 0x4;
+const MK_CONTROL: u32 = 0x8;
+const MK_MBUTTON: u32 = 0x10;
 
 pub(crate) fn prepare_process() {
     AWARENESS.get_or_init(|| {
@@ -289,10 +315,11 @@ fn make(parent: isize, rect: Rect) -> Result<HWND, String> {
 /// Make the window match the view's state: where it is, and whether it is seen. It is put on top
 /// of the parent's other children again, as the page's own windows may have come over it.
 fn sync(window: HWND, shared: &Shared) {
-    let (rect, visible) = {
+    let (rect, visible, pointer) = {
         let state = shared.lock();
-        (state.rect(), state.visible())
+        (state.rect(), state.visible(), state.pointer().is_some())
     };
+    take_pointer(window, pointer);
     let shown = if visible {
         SWP_SHOWWINDOW
     } else {
@@ -319,6 +346,134 @@ fn with_shared(work: impl FnOnce(&Shared)) {
     }
 }
 
+/// Make the window the target of the mouse, or let the mouse through it to the page beneath.
+fn take_pointer(window: HWND, take: bool) {
+    // SAFETY: the window is this thread's own; its style is read and written as a whole number.
+    unsafe {
+        let extended = GetWindowLongPtrW(window, GWL_EXSTYLE);
+        let transparent = isize::try_from(WS_EX_TRANSPARENT.0).expect("a small constant");
+        let wanted = if take {
+            extended & !transparent
+        } else {
+            extended | transparent
+        };
+        if wanted != extended {
+            SetWindowLongPtrW(window, GWL_EXSTYLE, wanted);
+        }
+        let _ = EnableWindow(window, take);
+        if !take && HELD.with(Cell::get) != 0 {
+            HELD.with(|held| held.set(0));
+            let _ = ReleaseCapture();
+        }
+    }
+}
+
+/// Whether the view takes the pointer, and the cursor it shows then.
+fn pointer_taken() -> Option<Cursor> {
+    let mut taken = None;
+    with_shared(|shared| taken = shared.lock().pointer());
+    taken
+}
+
+/// The button of a message of a button, and whether it was pressed.
+fn button_of(message: u32) -> Option<(Button, bool)> {
+    match message {
+        WM_LBUTTONDOWN => Some((Button::Left, true)),
+        WM_LBUTTONUP => Some((Button::Left, false)),
+        WM_RBUTTONDOWN => Some((Button::Right, true)),
+        WM_RBUTTONUP => Some((Button::Right, false)),
+        WM_MBUTTONDOWN => Some((Button::Middle, true)),
+        WM_MBUTTONUP => Some((Button::Middle, false)),
+        _ => None,
+    }
+}
+
+fn bit(button: Button) -> u8 {
+    match button {
+        Button::Left => 1,
+        Button::Right => 2,
+        Button::Middle => 4,
+    }
+}
+
+/// Report what a message of the mouse did, where the view takes the pointer: a press captures
+/// the mouse, and the release of the last button held lets it go.
+fn mouse(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the coordinates are the two signed words of lparam"
+    )]
+    let point = (
+        i32::from((lparam.0.cast_unsigned() as u16).cast_signed()),
+        i32::from(((lparam.0.cast_unsigned() >> 16) as u16).cast_signed()),
+    );
+    LAST.with(|last| last.set(point));
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the flags are in the low word"
+    )]
+    let keys = wparam.0 as u32;
+    let buttons = u8::from(keys & MK_LBUTTON != 0)
+        | u8::from(keys & MK_RBUTTON != 0) << 1
+        | u8::from(keys & MK_MBUTTON != 0) << 2;
+    let (kind, button) = match button_of(message) {
+        Some((button, true)) => {
+            if HELD.with(Cell::get) == 0 {
+                // SAFETY: the window is this thread's own.
+                unsafe { SetCapture(window) };
+            }
+            HELD.with(|held| held.set(held.get() | bit(button)));
+            (PointerKind::Down, Some(button))
+        }
+        Some((button, false)) => {
+            let was = HELD.with(Cell::get);
+            if was & bit(button) == 0 {
+                // Pressed elsewhere, released here: not a gesture of the view's.
+                return;
+            }
+            HELD.with(|held| held.set(was & !bit(button)));
+            if was & !bit(button) == 0 {
+                // SAFETY: it lets go of the mouse that this thread captured.
+                let _ = unsafe { ReleaseCapture() };
+            }
+            (PointerKind::Up, Some(button))
+        }
+        None => (PointerKind::Move, None),
+    };
+    report(kind, button, buttons, point, keys);
+}
+
+/// Report what the pointer did at `point` of the window.
+fn report(kind: PointerKind, button: Option<Button>, buttons: u8, point: (i32, i32), keys: u32) {
+    // SAFETY: it reads the state of a key of this thread's input, which is joined to the page's.
+    let alt = unsafe { GetKeyState(i32::from(VK_MENU.0)) } < 0;
+    with_shared(|shared| {
+        let on = shared.lock().on_picture(point);
+        shared.report(Event::Pointer(Pointer {
+            kind,
+            button,
+            buttons,
+            picture: on.map(|(at, _)| at),
+            inside: on.is_some_and(|(_, inside)| inside),
+            window: point,
+            shift: keys & MK_SHIFT != 0,
+            ctrl: keys & MK_CONTROL != 0,
+            alt,
+        }));
+    });
+}
+
+/// The cursor of the system for `cursor`.
+fn cursor_of(cursor: Cursor) -> PCWSTR {
+    match cursor {
+        Cursor::Arrow => IDC_ARROW,
+        Cursor::Crosshair => IDC_CROSS,
+        Cursor::Move => IDC_SIZEALL,
+        Cursor::ResizeEw => IDC_SIZEWE,
+        Cursor::ResizeNs => IDC_SIZENS,
+    }
+}
+
 /// The procedure of the window. It never waits for another thread: it changes the view's state
 /// and wakes the drawer, at most.
 unsafe extern "system" fn window_procedure(
@@ -328,9 +483,40 @@ unsafe extern "system" fn window_procedure(
     lparam: LPARAM,
 ) -> LRESULT {
     match message {
-        // Never the target of the mouse, nor activated by it (it is disabled besides).
-        WM_NCHITTEST => LRESULT(HTTRANSPARENT as isize),
+        // Never the target of the mouse (it is disabled besides), unless it takes the pointer;
+        // never activated by it.
+        WM_NCHITTEST => {
+            if pointer_taken().is_some() {
+                LRESULT(isize::try_from(HTCLIENT).expect("a small constant"))
+            } else {
+                LRESULT(HTTRANSPARENT as isize)
+            }
+        }
         WM_MOUSEACTIVATE => LRESULT(isize::try_from(MA_NOACTIVATE).expect("a small constant")),
+        WM_SETCURSOR => match pointer_taken() {
+            Some(cursor) => {
+                // SAFETY: a cursor of the system, which is never freed.
+                unsafe { SetCursor(LoadCursorW(None, cursor_of(cursor)).ok()) };
+                LRESULT(1)
+            }
+            // SAFETY: the arguments are the system's, handed on as they came.
+            None => unsafe { DefWindowProcW(window, message, wparam, lparam) },
+        },
+        WM_MOUSEMOVE | WM_LBUTTONDOWN | WM_LBUTTONUP | WM_RBUTTONDOWN | WM_RBUTTONUP
+        | WM_MBUTTONDOWN | WM_MBUTTONUP => {
+            if pointer_taken().is_some() {
+                mouse(window, message, wparam, lparam);
+            }
+            LRESULT(0)
+        }
+        WM_CAPTURECHANGED => {
+            // Another window took the mouse while a button was held: the drag ends there.
+            let held = HELD.with(|held| held.replace(0));
+            if held != 0 && lparam.0 != window.0 as isize && pointer_taken().is_some() {
+                report(PointerKind::Cancel, None, 0, LAST.with(Cell::get), 0);
+            }
+            LRESULT(0)
+        }
         WM_ERASEBKGND => LRESULT(1),
         WM_PAINT => {
             let mut paint = PAINTSTRUCT::default();

@@ -268,12 +268,63 @@ export interface KeyOutput { invert: boolean; gain: Param; offset: Param }
  * gamma 1, gain 1, offset 0, contrast 1 (pivot 0.435). See PROTOCOL.md, "Grades".
  */
 export interface ShotMatch { gamma: Rgb; gain: Rgb; offset: Rgb; contrast: Param; pivot: Param }
+/** The blur of the key coming into a corrector (Key palette, p. 3362): radius 0…2000 (0), ratio 0…1 (0.5). */
+export interface KeyBlur { radius: Param; ratio: Param }
+/**
+ * The Key palette of a corrector (pp. 3361–3362). `qualifier` (the Qualifier controls: invert, Matte
+ * mode, gain, offset; at first `false`, `true`, 1, 0) and `input_blur` are always written by the
+ * engine, and read as they are at first where they are left out, as they are here.
+ */
+export interface CorrectorKey { input: KeyInput; output: KeyOutput; qualifier?: KeyInput; input_blur?: KeyBlur }
+/** The modes of the Qualifier palette that are kept (pp. 3160–3175); HSL by default. */
+export type QualifierMode = 'hsl' | 'rgb' | 'lum';
+/** Hue of an HSL qualifier, each 0…100: a turn of hue (red 0, green 33.3, blue 66.7), going round. */
+export interface HueRange { on: boolean; center: Param; width: Param; soft: Param; symmetry: Param }
+/** A range of saturation, luma, red, green or blue of a qualifier, each 0…100, black to white. */
+export interface QualifierRange { on: boolean; low: Param; high: Param; low_soft: Param; high_soft: Param }
+/** Matte Finesse's Morph Operation (p. 3181). */
+export type Morph = 'shrink' | 'grow' | 'opening' | 'closing';
+/** The Matte Finesse controls that are kept (pp. 3178–3181); each changes nothing at its default. */
+export interface MatteFinesse {
+  pre_filter: Param; clean_black: Param; black_clip: Param; clean_white: Param; white_clip: Param;
+  blur_radius: Param; in_out_ratio: Param; morph: Morph; morph_radius: Param;
+}
+/**
+ * The Qualifier palette of a corrector (pp. 3157–3182): its own key, of the picture that comes into it.
+ * Given whole to a node that has none (`set_node {qualifier: {...}}`), patched in part, taken away
+ * with `{qualifier: null}`. Defaults, ranges and the order of the key: PROTOCOL.md, "Grades".
+ */
+export interface Qualifier {
+  mode: QualifierMode; invert: boolean;
+  hue: HueRange; sat: QualifierRange; lum: QualifierRange; red: QualifierRange; green: QualifierRange; blue: QualifierRange;
+  finesse: MatteFinesse;
+}
 export interface Corrector {
   primaries: Primaries; log: LogWheels; curves: Curves; hsl: HslCurves; lut: string | null; soft_clip: SoftClip;
-  key: { input: KeyInput; output: KeyOutput };
+  key: CorrectorKey;
   /** The engine always writes it; `null` for none. */
   shot_match: ShotMatch | null;
+  /** The engine always writes it; `null` for none, as a node is until a colour is picked. */
+  qualifier?: Qualifier | null;
 }
+
+/** A qualifier as the engine makes one first: every pixel, Matte Finesse at its defaults. */
+export function newQualifier(): Qualifier {
+  const range = (): QualifierRange => ({ on: true, low: 0, high: 100, low_soft: 0, high_soft: 0 });
+  return {
+    mode: 'hsl', invert: false,
+    hue: { on: true, center: 50, width: 100, soft: 0, symmetry: 50 },
+    sat: range(), lum: range(), red: range(), green: range(), blue: range(),
+    finesse: {
+      pre_filter: 0, clean_black: 0, black_clip: 0, clean_white: 0, white_clip: 100,
+      blur_radius: 0, in_out_ratio: 0, morph: 'shrink', morph_radius: 0,
+    },
+  };
+}
+
+/** What `viewer.highlight` asks for and answers (PROTOCOL.md, "Highlight"): Shift-H `highlight`, Alt-Shift-H `bw`. */
+export type HighlightMode = 'off' | 'highlight' | 'bw';
+export interface ViewerHighlight { monitor: 'timeline'; mode: HighlightMode; grade?: Target; node?: string }
 export type Composite =
   | 'normal' | 'add' | 'color' | 'color_burn' | 'color_dodge' | 'darken' | 'darker_color' | 'difference' | 'divide'
   | 'exclusion' | 'hard_mix' | 'hardlight' | 'hue' | 'lighten' | 'lighter_color' | 'linear_burn' | 'linear_dodge'
@@ -424,6 +475,8 @@ export interface TimelineTransportState extends TransportBase {
   timeline: string | null;
   source: 'proxy' | 'original' | 'mixed' | null;
   late: number;
+  /** The Highlight mode shown (`viewer.highlight`), while one is on. */
+  highlight?: { mode: 'highlight' | 'bw'; grade: Target; node: string };
 }
 export type TransportState = SourceTransportState | TimelineTransportState;
 
@@ -584,6 +637,7 @@ export interface PageMethods {
   'gallery.album.rename': { id: string; name: string };
   'gallery.album.delete': { deleted: string[] };
   'grade.append_node': Applied;
+  'viewer.highlight': ViewerHighlight;
 }
 export type PageMethod = keyof PageMethods;
 
@@ -700,8 +754,8 @@ export interface ScopeFrame {
  */
 export interface TransactionGesture { id: string; end?: boolean }
 
-/** Where at a node of a grade a picture is taken: what goes into it, or what comes out. */
-export type NodePlace = 'input' | 'output';
+/** Where at a node of a grade a picture is taken: what goes into it, what comes out, or its key (as Highlight BW shows it). */
+export type NodePlace = 'input' | 'output' | 'key';
 
 /**
  * What `view.sample` is asked: a point of the picture that a monitor shows (`monitor`), or of a
@@ -735,7 +789,8 @@ export interface ViewSample {
   height: number;
   region: { x: number; y: number; width: number; height: number };
   rgb: [number, number, number];
-  node?: { grade: Target; node: string; input: [number, number, number]; output: [number, number, number] };
+  /** `key`: the node's key there, 0…1, as Highlight BW shows it. */
+  node?: { grade: Target; node: string; input: [number, number, number]; output: [number, number, number]; key: number };
 }
 
 /** The cursor that a view that takes the pointer shows. */

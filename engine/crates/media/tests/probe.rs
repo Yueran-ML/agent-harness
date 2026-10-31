@@ -396,3 +396,43 @@ fn a_list_of_other_files_is_not_media() {
         assert!(VideoDecoder::open(&path, Hardware::Off).is_err());
     }
 }
+
+#[test]
+fn the_frames_of_mp4_are_counted_from_its_index_and_a_dropped_frame_leaves_a_number_unused() {
+    // How many frames are decoded from a file, in software, and the number of the last.
+    let decoded = |path: &Path| {
+        let mut decoder = VideoDecoder::open(path, Hardware::Off).unwrap();
+        let (mut frames, mut last) = (0_u64, 0);
+        while let Some(picture) = decoder.next().unwrap() {
+            frames += 1;
+            last = picture.frame;
+        }
+        (frames, last)
+    };
+    let Some(made) = media(Sample::Dropped) else {
+        return;
+    };
+    let facts = probe(&made.path).unwrap();
+    let rate = facts.video.unwrap().rate;
+    assert_eq!(rate, Rate { num: 30, den: 1 });
+    // 121 numbers of frames by its duration, 120 frames, the last numbered 120: 60 has none.
+    assert_eq!(
+        facts.duration.ticks * 30,
+        121 * i64::from(facts.duration.scale)
+    );
+    assert_eq!(columbina_media::frame_count(&made.path).unwrap(), Some(120));
+    assert_eq!(decoded(&made.path), (120, 120));
+    // Frames before the start of an edit list are decoded and dropped, and not counted.
+    if let Some(made) = media(Sample::EditList) {
+        if let Some(count) = columbina_media::frame_count(&made.path).unwrap() {
+            assert_eq!(count, decoded(&made.path).0);
+        }
+    }
+    // Matroska lists only its key frames: how many frames it has is not known without reading it.
+    if let Some(made) = media(Sample::SameTimes) {
+        assert_eq!(columbina_media::frame_count(&made.path).unwrap(), None);
+    }
+    if let Some(made) = media(Sample::Fhd) {
+        assert_eq!(columbina_media::frame_count(&made.path).unwrap(), Some(100));
+    }
+}

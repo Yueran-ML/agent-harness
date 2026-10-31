@@ -23,11 +23,15 @@
 //! with their timestamps (`-fps_mode passthrough`, the time base of the media), so that frame `n`
 //! of the proxy is frame `n` of the media, numbered at the media's rate; it has no sound, which is
 //! read from the media. A proxy is checked before it is used: its first and last frames are
-//! numbered as the media's ([`columbina_media::frame_numbers`]), and its frames are all key
-//! frames. It is written to `<project>/cache/proxies/<media>-<12 digits of the digest>.mov`, as a
-//! `.part` first, and set on the media by a change of the engine that is no step of the history to
-//! undo ([`columbina_model::History::apply_unrecorded`]). Media whose file is that of other media
-//! (the same digest and the same facts) is given that media's proxy ([`twin_of`]).
+//! numbered as the media's ([`columbina_media::frame_numbers`]), it has as many frames as the
+//! media where the index of the media says how many that is ([`columbina_media::frame_count`]),
+//! and its frames are all key frames. A proxy may have fewer frames than the media has numbers:
+//! where a frame of the media comes late (as a phone that drops one makes it), no frame has the
+//! number it leaves, in the media as in the proxy, and the frame before it is shown there. It is
+//! written to `<project>/cache/proxies/<media>-<12 digits of the digest>.mov`, as a `.part`
+//! first, and set on the media by a change of the engine that is no step of the history to undo
+//! ([`columbina_model::History::apply_unrecorded`]). Media whose file is that of other media (the
+//! same digest and the same facts) is given that media's proxy ([`twin_of`]).
 //!
 //! What it is at is told to every client in `media.proxy`: `queued`, `running` (with how far it
 //! is, at most once a second), `done` or `failed`. A proxy being made of media that is removed
@@ -460,7 +464,8 @@ impl Job {
         })
     }
 
-    /// How many frames the media has, as its facts say.
+    /// How many numbers of frames the media has, as its facts say: the number after its last
+    /// frame's, at its rate. As many frames, or fewer where one comes late (see the module's doc).
     fn frames(&self) -> i64 {
         clock::last_frame(self.duration, self.video.rate) + 1
     }
@@ -1091,7 +1096,7 @@ fn make(
     );
     (hooks.notify)(&Note::new(&job.media, "running", 0.0));
     match encode(inner, hooks, job, cancelled, child) {
-        Ok((proxy, recipe, frames)) => match (hooks.made)(&job.media, &proxy) {
+        Ok((proxy, recipe, frames, counted)) => match (hooks.made)(&job.media, &proxy) {
             Made::Set => {
                 log(
                     "proxy_made",
@@ -1102,7 +1107,8 @@ fn make(
                         "width": proxy.width,
                         "height": proxy.height,
                         "frames": frames,
-                        "frames_of_media": job.frames(),
+                        "frames_of_media": counted,
+                        "numbers_of_media": job.frames(),
                         "seconds": started.elapsed().as_secs_f64(),
                     }),
                 );
@@ -1227,7 +1233,7 @@ fn encode(
     job: &Job,
     cancelled: &AtomicBool,
     child: &Arc<Mutex<Option<Child>>>,
-) -> Result<(Proxy, Recipe, i64), Failure> {
+) -> Result<(Proxy, Recipe, i64, Option<u64>), Failure> {
     let Some(ffmpeg) = &inner.ffmpeg else {
         return Err(Failure::now(
             "there is no ffmpeg to make proxies with: none beside the engine, and \
@@ -1270,7 +1276,7 @@ fn encode(
         }
         let message = match ran {
             Ran::Wrote(frames) => match checked_proxy(&part, job) {
-                Ok((width, height, codec)) => {
+                Ok((width, height, codec, counted)) => {
                     std::fs::rename(&part, &path).map_err(|error| {
                         let _ = delete(&inner.dir, &part);
                         Failure {
@@ -1286,7 +1292,7 @@ fn encode(
                         codec,
                         digest_of_source: job.digest.clone(),
                     };
-                    return Ok((proxy, recipe, frames));
+                    return Ok((proxy, recipe, frames, counted));
                 }
                 Err(message) => message,
             },
@@ -1506,9 +1512,10 @@ fn cause(said: &str) -> &str {
 }
 
 /// Check a proxy that was made: its first and last frames are numbered as those of the media,
-/// at the rate of the media, and every frame of its start is a key frame. Gives its width,
-/// height and codec.
-fn checked_proxy(part: &Path, job: &Job) -> Result<(u32, u32, String), String> {
+/// at the rate of the media, it has as many frames as the media where the index of the media
+/// says how many that is, and every frame of its start is a key frame. Gives its width, height
+/// and codec, and how many frames the media has, where that is known.
+fn checked_proxy(part: &Path, job: &Job) -> Result<(u32, u32, String, Option<u64>), String> {
     let facts = columbina_media::probe(part)
         .map_err(|error| format!("the proxy cannot be read: {error}"))?;
     let video = facts.video.ok_or("the proxy has no picture")?;
@@ -1524,12 +1531,27 @@ fn checked_proxy(part: &Path, job: &Job) -> Result<(u32, u32, String), String> {
             proxy.0, media.0, proxy.1, media.1
         ));
     }
+    let counted = columbina_media::frame_count(&job.source)
+        .map_err(|error| format!("the media cannot be read: {error}"))?;
+    if let Some(counted) = counted {
+        let made = columbina_media::frame_count(part)
+            .map_err(|error| format!("the proxy cannot be read: {error}"))?;
+        if made != Some(counted) {
+            return Err(format!(
+                "the proxy has {} frames, and the media {counted}",
+                made.map_or_else(
+                    || "an unknown number of".to_owned(),
+                    |made| made.to_string()
+                )
+            ));
+        }
+    }
     let gop = columbina_media::gop(part, GOP_PACKETS)
         .map_err(|error| format!("the proxy cannot be read: {error}"))?;
     if !gop.all_intra() {
         return Err("the frames of the proxy are not all key frames".into());
     }
-    Ok((video.width, video.height, video.codec))
+    Ok((video.width, video.height, video.codec, counted))
 }
 
 /// Put `ffmpeg` in a job of the system that ends with the engine, so that it does not go on if

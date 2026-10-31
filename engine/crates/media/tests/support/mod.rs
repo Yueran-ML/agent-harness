@@ -78,6 +78,10 @@ pub enum Sample {
     /// B-frames) without coding it again (`-ss 1.3 -c copy`): an edit list starts it after its
     /// first key frame, whose frames before 1.3 s are decoded and dropped.
     EditList,
+    /// MP4 of H.264 at 30 frames a second in a time base of 1/600, as a phone writes it, with
+    /// B-frames: 121 numbers of frames (4.033 s), and frame 60 dropped, so that no frame has the
+    /// number 60 and the picture has 120 frames, one fewer than its duration makes room for.
+    Dropped,
     /// Sound only: WAV, 16 bits in stereo at 48 kHz, 4 s, silent but for a beep of 10 ms at
     /// 1 kHz, half of full scale, starting at each whole second (0, 1, 2 and 3 s), at its
     /// peak from its first sample: where a beep is heard tells where the sound is.
@@ -118,7 +122,7 @@ impl Sample {
             | Sample::Vfr
             | Sample::SameTimes => Some(100),
             Sample::Uhd => Some(180),
-            Sample::Collide => Some(120),
+            Sample::Collide | Sample::Dropped => Some(120),
             Sample::Prores | Sample::Webm => Some(50),
             Sample::Portrait => Some(60),
             Sample::Fhd10 => Some(25),
@@ -154,6 +158,7 @@ impl Sample {
             Sample::Noise => "v1-noise-aac.m4a",
             Sample::Collide => "v1-collide-h264.mp4",
             Sample::EditList => "v1-editlist-h264.mp4",
+            Sample::Dropped => "v1-dropped-h264.mp4",
             Sample::Clicks => "v1-clicks.wav",
         }
     }
@@ -660,6 +665,27 @@ fn recipes(sample: Sample, encoders: &str) -> Vec<Recipe> {
                 "1/90000",
                 "-video_track_timescale",
                 "90000",
+            ],
+        ),
+        Sample::Dropped => one_step(
+            h264(encoders, 30),
+            &numbered(
+                640,
+                360,
+                30,
+                5,
+                8,
+                "420",
+                ",trim=end_frame=121,select='not(eq(n\\,60))',settb=1/600",
+            ),
+            false,
+            &[
+                "-fps_mode",
+                "passthrough",
+                "-enc_time_base:v",
+                "1/600",
+                "-video_track_timescale",
+                "600",
             ],
         ),
         Sample::EditList => h264(encoders, 50)

@@ -12,12 +12,13 @@ use ff::ffi::{
     av_frame_unref, av_hwdevice_ctx_create, av_hwdevice_find_type_by_name,
     av_hwframe_transfer_data, av_pix_fmt_desc_get, av_seek_frame, av_strerror,
     avcodec_default_get_format, avcodec_get_hw_config, avformat_index_get_entries_count,
-    avformat_index_get_entry_from_timestamp, swr_alloc_set_opts2, swr_convert, swr_free,
-    swr_get_out_samples, swr_init, sws_scale, AVBufferRef, AVChannelLayout, AVChannelOrder,
-    AVCodecContext, AVColorPrimaries, AVColorRange, AVColorSpace, AVColorTransferCharacteristic,
-    AVDiscard, AVHWDeviceType, AVHWFramesContext, AVPixelFormat, AVSampleFormat, SwrContext,
-    AVSEEK_FLAG_BACKWARD, AVSEEK_FLAG_BYTE, AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX,
-    AV_PIX_FMT_FLAG_HWACCEL, FF_THREAD_FRAME, FF_THREAD_SLICE,
+    avformat_index_get_entry, avformat_index_get_entry_from_timestamp, swr_alloc_set_opts2,
+    swr_convert, swr_free, swr_get_out_samples, swr_init, sws_scale, AVBufferRef, AVChannelLayout,
+    AVChannelOrder, AVCodecContext, AVColorPrimaries, AVColorRange, AVColorSpace,
+    AVColorTransferCharacteristic, AVDiscard, AVHWDeviceType, AVHWFramesContext, AVPixelFormat,
+    AVSampleFormat, SwrContext, AVINDEX_DISCARD_FRAME, AVSEEK_FLAG_BACKWARD, AVSEEK_FLAG_BYTE,
+    AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX, AV_PIX_FMT_FLAG_HWACCEL, FF_THREAD_FRAME,
+    FF_THREAD_SLICE,
 };
 use ffmpeg_next as ff;
 
@@ -417,6 +418,26 @@ pub(crate) fn index_entries(input: &ff::format::context::Input, stream: usize) -
     };
     // SAFETY: the stream is of an open context.
     unsafe { avformat_index_get_entries_count(stream.as_ptr()) }
+}
+
+/// How many entries of the index of a stream are frames that are kept once decoded: those that
+/// are not before the start (or after the end) of an edit list.
+pub(crate) fn kept_index_entries(input: &ff::format::context::Input, stream: usize) -> u64 {
+    let Some(stream) = input.stream(stream) else {
+        return 0;
+    };
+    // SAFETY: the stream is of an open context, and nothing is read from it meanwhile; each
+    // entry that is given lives until then, and only its flags are read.
+    unsafe {
+        let pointer = stream.as_ptr().cast_mut();
+        let count = avformat_index_get_entries_count(pointer);
+        (0..count)
+            .filter(|&index| {
+                let entry = avformat_index_get_entry(pointer, index);
+                !entry.is_null() && (*entry).flags() & AVINDEX_DISCARD_FRAME == 0
+            })
+            .count() as u64
+    }
 }
 
 /// Seek to byte `position` of the file, where the demuxer can: for the formats whose seeking by

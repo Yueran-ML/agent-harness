@@ -191,6 +191,31 @@ pub fn frame_numbers(
     Ok((number(first), number(last)))
 }
 
+/// How many frames the picture of a file has, where its index says so without reading it: in
+/// MP4 and `QuickTime`, whose index lists every frame when the file is opened, those that are
+/// kept once decoded (not those before the start of an edit list). None for the other formats,
+/// and for a file of fragments, whose index grows as it is read (it lists fewer frames than its
+/// header counts). The number of frames is not the number of the frame after the last: a frame
+/// that comes late leaves a number that no frame has, as a phone that drops a frame does, and
+/// the frame before it is shown there (see the crate's doc).
+///
+/// # Errors
+/// The file cannot be opened (as [`probe`]), or it has no picture.
+pub fn frame_count(path: &Path) -> Result<Option<u64>, MediaError> {
+    let input = open(path)?;
+    let index = video_stream(&input)?.ok_or(MediaError::NoVideo)?;
+    if !input.format().name().split(',').any(|name| name == "mov") {
+        return Ok(None);
+    }
+    let stream = input.stream(index).ok_or(MediaError::NoVideo)?;
+    let counted = u64::try_from(stream.frames()).unwrap_or(0);
+    let listed = u64::try_from(ffi::index_entries(&input, index)).unwrap_or(0);
+    if counted == 0 || listed != counted {
+        return Ok(None);
+    }
+    Ok(Some(ffi::kept_index_entries(&input, index)))
+}
+
 /// The demuxers of libav that a file may be read with: those of the editing of Python
 /// (`columbina.video.media.DEMUXERS`), and MPEG-PS (`mpeg`, of DVDs and cameras), which
 /// that list lacks. A list of other files, such as an HLS playlist or a list of `concat`, is of none of

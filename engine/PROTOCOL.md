@@ -299,7 +299,11 @@ itself; a client only sees them, and may turn their use off (`transport.proxies`
   timestamp, so that frame `n` of the proxy is frame `n` of the media (the frames of the proxy
   are numbered at the rate of the media, whatever its container says); no sound (the sound is
   always read from the media). Before it is set, it is checked: its first and last 8 frames are
-  numbered as those of the media, and its frames are key frames. It is written to
+  numbered as those of the media, it has as many frames as the media where the media's index
+  says how many (MP4 and QuickTime, not of fragments), and its frames are key frames. A frame of
+  the media that comes late (a phone that drops one) leaves a number that no frame has, in the
+  media and in the proxy alike, and the frame before it is shown there: such media has fewer
+  frames than its duration has numbers. It is written to
   `<project>/cache/proxies/<media id>-<12 hex digits of the digest>.mov`, as `….mov.part` until
   it is whole. Making a proxy takes a fraction of the time the media lasts (some 2 s for 10 s of
   4K HEVC on an RTX 4080).
@@ -733,8 +737,9 @@ media is unloaded; while playing, as the playhead moves, **at most 30 times a se
   `transport_sound_lost`, `transport_failed`, `transport_source`, `transport_proxy_failed`,
   `sound_ready`, `sound_unavailable`, `sound_failed`. Of proxies: `proxy_ffmpeg` (the `ffmpeg`
   found, or `null`), `proxy_queued`, `proxy_started`, `proxy_encoding` (the `pid` of each
-  `ffmpeg`), `proxy_made` (its `encoder`, size, frames and seconds; `encoder: null` for the proxy
-  of other media of the same file), `proxy_recipe_failed` (an encoder that failed, before the next
+  `ffmpeg`), `proxy_made` (its `encoder`, size, `frames` written, `frames_of_media` as the
+  media's index counts them or `null`, `numbers_of_media` as its duration has them, and seconds;
+  `encoder: null` for the proxy of other media of the same file), `proxy_recipe_failed` (an encoder that failed, before the next
   is tried), `proxy_failed`, `proxy_skipped` (media that could not be read to tell whether it
   needs one, or whose proxy failed before), `proxy_deleted` (a file of the cache that no media
   names, as the engine starts), `proxy_dropped` (a proxy that is not the engine's own, taken

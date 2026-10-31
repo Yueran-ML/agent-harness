@@ -4238,6 +4238,7 @@ async fn proxies_are_made_one_at_a_time_with_every_frame_a_key_frame_numbered_as
         Sample::MkvLateStart,
         Sample::Portrait,
         Sample::EditList,
+        Sample::Dropped,
     ];
     let Some((engine, mut agent)) = proxy_engine(dir.path(), &samples, &[]).await else {
         return;
@@ -4266,6 +4267,19 @@ async fn proxies_are_made_one_at_a_time_with_every_frame_a_key_frame_numbered_as
     assert_eq!(size(0), (json!(1920), json!(1080)));
     assert_eq!(size(1), (json!(640), json!(360)));
     assert_eq!(size(7), (json!(640), json!(360)));
+    // A phone's media with a frame dropped: the proxy has its 120 frames, as many as the media,
+    // and one number of the 121 that its duration has is no frame's, in both.
+    let made = logged(&engine, "proxy_made");
+    let dropped = made.iter().find(|line| line["media"] == "m10").unwrap();
+    assert_eq!(
+        (
+            &dropped["frames"],
+            &dropped["frames_of_media"],
+            &dropped["numbers_of_media"]
+        ),
+        (&json!(120), &json!(120), &json!(121)),
+        "{dropped}"
+    );
 }
 
 #[tokio::test]

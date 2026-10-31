@@ -1,0 +1,190 @@
+/*
+ * The node editor as it is edited (Reference Manual 20, pp. 3311–3321): the tools, what is chosen,
+ * the halves of a link, a link being drawn, the box drawn round nodes, and the right-click menus of
+ * the Color page.
+ */
+.color-node-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.color-node-tools .icon-btn[aria-pressed='true'] {
+  color: var(--accent);
+}
+
+.color-node-zoom {
+  width: 64px;
+  margin-left: var(--s1);
+}
+
+.color-nodes-problem {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: 2px var(--s2) 2px var(--s3);
+  font-size: var(--text-caption);
+  background: var(--warn-wash);
+}
+
+.color-nodes-problem span {
+  flex: 1;
+}
+
+.color-nodes-canvas[data-tool='pan'] {
+  cursor: grab;
+}
+
+.color-graph-area {
+  position: relative;
+  min-width: 100%;
+  min-height: 100%;
+}
+
+.color-graph {
+  user-select: none;
+  touch-action: none;
+}
+
+/* The others chosen are white; the current node stays orange (p. 3314). */
+.color-node[data-chosen] .color-node-card {
+  stroke: #f2f0ea;
+  stroke-width: 2;
+}
+
+/* A node that a node dragged would be dropped on, or a mixer that a link would go into. */
+.color-node[data-target] .color-node-card {
+  stroke: var(--accent);
+  stroke-dasharray: 4 2;
+}
+
+.color-node-number-hit {
+  fill: transparent;
+  cursor: pointer;
+}
+
+.color-node-number {
+  pointer-events: none;
+}
+
+.color-port {
+  cursor: crosshair;
+}
+
+.color-port[data-lit], .color-end[data-lit] circle {
+  stroke: #f2f0ea;
+  stroke-width: 1.5;
+}
+
+.color-end {
+  cursor: crosshair;
+}
+
+.color-link-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 10;
+  pointer-events: stroke;
+}
+
+/* The second half under the pointer is blue, to be dragged or clicked away; a link chosen, or one that a drag would replace, orange (p. 3319). */
+.color-link[data-hover='end'] {
+  stroke: #4c9bff;
+  stroke-width: 2.4;
+}
+
+.color-link[data-hover='start'] {
+  stroke-width: 2.4;
+}
+
+.color-link[data-chosen], .color-link[data-replacing] {
+  stroke: var(--accent);
+  stroke-width: 2.4;
+}
+
+.color-wire {
+  pointer-events: none;
+  stroke-dasharray: none;
+  opacity: 0.85;
+}
+
+.color-marquee {
+  fill: #ffffff14;
+  stroke: #f2f0ea;
+  stroke-dasharray: 3 2;
+  pointer-events: none;
+}
+
+.color-label-field {
+  position: absolute;
+  height: 22px;
+  min-width: 80px;
+  padding: 0 4px;
+  font-size: 11px;
+}
+
+/* The right-click menus, laid over the window. */
+.color-menu-layer {
+  position: fixed;
+  inset: 0 auto auto 0;
+  z-index: 40;
+}
+
+.color-menu {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  min-width: 190px;
+  max-height: 80vh;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--r1, 6px);
+  background: var(--ink-1, var(--ink-2));
+  box-shadow: 0 8px 24px #0006;
+}
+
+.color-menu-entry {
+  position: relative;
+}
+
+.color-menu-entry > button {
+  all: unset;
+  box-sizing: border-box;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 4px 4px;
+  border-radius: 4px;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.color-menu-entry > button:hover:not(:disabled), .color-menu-entry > button:focus-visible, .color-menu-entry > button[aria-expanded='true'] {
+  background: var(--ink-3, #ffffff14);
+}
+
+.color-menu-entry > button:disabled {
+  opacity: 0.45;
+}
+
+.color-menu-check {
+  width: 12px;
+  text-align: center;
+}
+
+.color-menu-label {
+  flex: 1;
+}
+
+.color-menu-keys {
+  margin-left: var(--s3);
+  color: var(--moon-3);
+  font-size: 11px;
+}
+
+.color-menu .color-menu {
+  overflow-y: auto;
+}

@@ -18,6 +18,7 @@ import {
 } from '../color/clips';
 import { MiniTimeline } from '../color/MiniTimeline';
 import { NodeEditor } from '../color/NodeEditor';
+import { useColorPageGrades } from '../color/useColorPageGrades';
 import { Palettes, type CenterPalette, type LeftPalette, type RightPanel } from '../color/Palettes';
 import { ThumbnailTimeline } from '../color/ThumbnailTimeline';
 import { placeOf, type EditedNode } from '../color/useNodeEdit';
@@ -161,6 +162,11 @@ export function ColorPage({
   const currentNode = grade === null ? null
     : grade.nodes.some(node => node.id === nodes[gradeKey]) ? nodes[gradeKey] : grade.nodes[0]?.id ?? null;
   const onCurrentNode = useCallback((node: string) => setNodes(old => ({ ...old, [gradeKey]: node })), [gradeKey]);
+  // The grade shown, as the edits name it; undo and redo, = and -, whole grades copied and pasted, and the menu of a thumbnail.
+  const visibleClips = useMemo(() => visible.map(each => each.clip), [visible]);
+  const grades = useColorPageGrades({
+    bridge, revision, session, area, level: shownLevel, timeline: selected, clips: visibleClips, current: current?.clip ?? null, chosen: chosenClips,
+  });
   // The node that the palettes edit: the current node, where it is, with its grade and the playhead as its keys count it (T17).
   const placed = placeOf(shownLevel, selected?.id ?? null, current?.clip ?? null, frame ?? 0);
   const editedNode = grade?.nodes.find(node => node.id === currentNode) ?? null;
@@ -312,11 +318,11 @@ export function ColorPage({
     {viewerMode === 'cinema' ? createPortal(<div className="color-cinema" data-studio-portal="">{viewer}</div>, document.body) : viewer}
     {nodesOpen && <section className="color-nodes" aria-label={labels.nodeEditor} data-test="node-editor" {...focusOf('nodes')}>
       <NodeEditor grade={grade} level={shownLevel} levels={levels} onLevel={setLevel} current={currentNode} onCurrent={onCurrentNode}
-        hint={noTimeline} />
+        hint={noTimeline} target={grades.target} gradeKey={gradeKey} views={grades.views} focused={area === 'nodes'} editing={grades.editing} />
       <button type="button" className="icon-btn color-expand" aria-pressed={nodesExpanded} aria-label={labels.nodeEditor} title={labels.nodeEditor}
         onClick={() => setNodesExpanded(open => !open)} data-test="expand-nodes"><Expand size={13} /></button>
     </section>}
-    {clipsOpen && <div className="color-thumbs-area" {...focusOf('thumbnails')}>
+    {clipsOpen && <div className="color-thumbs-area" {...focusOf('thumbnails')} onContextMenu={grades.onThumbnailMenu}>
       <ThumbnailTimeline clips={listed} media={mediaById} rate={selected?.rate ?? { num: 25, den: 1 }} cache={thumbnails}
         current={current?.clip.id ?? null} selected={chosenClips} onPick={pick} pictures={pictures} onPicture={onPicture}
         hint={selected === null ? noTimeline : said.noClips} />
@@ -329,5 +335,6 @@ export function ColorPage({
       <Palettes merged={merged} left={left} center={center} last={last} right={right} edited={edited}
         onLeft={(each) => { setLeft(each); setLast('left'); }} onCenter={(each) => { setCenter(each); setLast('center'); }} onRight={setRight} />
     </div>
+    {grades.menu}
   </div>;
 }

@@ -839,6 +839,24 @@ export const en = {
         levels: { pre_clip: 'Group Pre-Clip', clip: 'Clip', post_clip: 'Group Post-Clip', timeline: 'Timeline' },
         nodeSource: 'Source', nodeOutput: 'Output',
         kinds: { corrector: 'Corrector', parallel_mixer: 'Parallel Mixer', layer_mixer: 'Layer Mixer', key_mixer: 'Key Mixer' },
+        /** The node editor as it is edited, and its right-click menus (Reference Manual 20, pp. 3310–3322). */
+        nodeMenu: {
+          nodeMenu: 'Node menu', graphMenu: 'Node graph menu', link: 'Link', thumbMenu: 'Clip menu', tools: 'Node editor tools',
+          selectTool: 'Selection tool', panTool: 'Hand tool', zoom: 'Zoom', labelField: 'Node label',
+          addNode: 'Add Node', serial: 'Add Serial', before: 'Add Before Current', parallel: 'Add Parallel', layer: 'Add Layer', outside: 'Add Outside Node',
+          label: 'Change Label', deleteNode: 'Delete Node', reset: 'Reset Node Grade', resetShotMatch: 'Reset Shot Match',
+          addInput: 'Add One Input', toLayer: 'Morph Into Layer Mixer Node', toParallel: 'Morph Into Parallel Node', composite: 'Composite Mode',
+          deleteLink: 'Delete Link', resetAll: 'Reset All Grades and Nodes', cleanup: 'Cleanup Node Graph',
+          zoomIn: 'Zoom In', zoomOut: 'Zoom Out', zoomToWindow: 'Zoom to Window', originalSize: 'Original Size', collapse: 'Collapse Group Grades',
+        },
+        /** The composite modes of a Layer Mixer, as DaVinci Resolve names them (pp. 1055–1058). */
+        composites: {
+          normal: 'Normal', add: 'Add', color: 'Color', color_burn: 'Color Burn', color_dodge: 'Color Dodge', darken: 'Darken', darker_color: 'Darker Color',
+          difference: 'Difference', divide: 'Divide', exclusion: 'Exclusion', hard_mix: 'Hard Mix', hardlight: 'Hardlight', hue: 'Hue', lighten: 'Lighten',
+          lighter_color: 'Lighter Color', linear_burn: 'Linear Burn', linear_dodge: 'Linear Dodge', linear_light: 'Linear Light', luminosity: 'Luminosity',
+          multiply: 'Multiply', overlay: 'Overlay', pin_light: 'Pin Light', saturation: 'Saturation', screen: 'Screen', softlight: 'Softlight',
+          subtract: 'Subtract', vivid_light: 'Vivid Light',
+        },
         disabled: 'Disabled', matched: 'Shot matched', graded: 'Graded', grouped: 'Group', solidColor: 'Solid color', title: 'Title',
         palettes: 'Palettes', leftPalettes: 'Left palettes', centerPalettes: 'Center palettes', rightPanel: 'Keyframes and scopes',
         palette: {
@@ -1476,6 +1494,13 @@ export const en = {
         cycle: "A bin cannot be placed inside itself.",
         fade_at_transition: "A fade and a transition cannot share the same clip edge.",
         not_empty: "The bin still contains items.",
+        no_port: "That node has no such input or output.",
+        input_taken: "That input already has a link.",
+        loop: "This link would make the grade loop back on itself.",
+        grouped: "A clip is still in this group. Take it out of the group first.",
+        ungrouped: "This clip is not in a group.",
+        params: "These settings do not fit this kind of node.",
+        wrong_node: "This cannot be done with the chosen node.",
       },
       timeline: { empty: 'Choose or create a timeline to begin editing.' },
       loadSource: 'Double-click media in the media pool to see it here.',

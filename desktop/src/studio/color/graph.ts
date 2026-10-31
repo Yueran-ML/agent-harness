@@ -6,7 +6,9 @@
  *
  * The project keeps no place for a node (where a node lies is the view's, not the grade's), so the
  * editor places them: each node one column right of the furthest node that feeds it, the nodes of
- * a column in the order they were added. Pure, so that the editor of T16 can move nodes from here.
+ * a column in the order they were added, unless the user dragged them elsewhere (`Placed`, a state
+ * of the view). The ports, the halves of links and the nodes under a point are found here too, for
+ * the editor to draw links and choose nodes by. Pure.
  */
 import { sortLinks, type Grade, type GradeNode, type Link, type LinkKind } from '../engine';
 
@@ -114,8 +116,22 @@ function columnsOf(grade: Grade): Map<string, number> {
   return columns;
 }
 
-/** Lay out a grade: where each node, the source and the output lie, and how large the whole is. */
-export function layoutGrade(grade: Grade): Layout {
+/** A point of the graph, in its own units (a pixel at zoom 1). */
+export interface Point { x: number; y: number }
+/**
+ * Where nodes were dragged to, by their ids: a state of the view, which the project does not keep
+ * (see `layoutGrade`). A node that is not in it stands where the editor places it.
+ */
+export type Placed = Readonly<Record<string, Point>>;
+/** The least room above a node that is dragged up, for its label. */
+const TOP = 14;
+
+/**
+ * Lay out a grade: where each node, the source and the output lie, and how large the whole is.
+ * A node that was dragged (`placed`) stands where it was put; the others where the editor puts
+ * them. Cleanup Node Graph (p. 3321) is laying it out again with none dragged.
+ */
+export function layoutGrade(grade: Grade, placed: Placed = {}): Layout {
   const columns = columnsOf(grade);
   const rowsUsed = new Map<number, number>();
   const nodes = grade.nodes.map((node, index) => {
@@ -130,8 +146,14 @@ export function layoutGrade(grade: Grade): Layout {
   const sourceX = MARGIN + END_RADIUS;
   const columnX = (column: number) => MARGIN + END_RADIUS * 2 + COLUMN_GAP + (column - 1) * (NODE_WIDTH + COLUMN_GAP);
   const rowY = (row: number) => MARGIN + row * (NODE_HEIGHT + ROW_GAP);
-  for (const each of nodes) { each.x = columnX(each.column); each.y = rowY(each.row); }
-  const outputX = lastColumn === 0 ? sourceX + COLUMN_GAP * 2 + END_RADIUS * 2 : columnX(lastColumn) + NODE_WIDTH + COLUMN_GAP + END_RADIUS;
+  for (const each of nodes) {
+    const put = placed[each.node.id];
+    each.x = put ? Math.max(0, put.x) : columnX(each.column);
+    each.y = put ? Math.max(TOP, put.y) : rowY(each.row);
+  }
+  const autoOutputX = lastColumn === 0 ? sourceX + COLUMN_GAP * 2 + END_RADIUS * 2 : columnX(lastColumn) + NODE_WIDTH + COLUMN_GAP + END_RADIUS;
+  // The output stays right of every node, one dragged far right too.
+  const outputX = Math.max(autoOutputX, ...nodes.map(each => each.x + NODE_WIDTH + COLUMN_GAP / 2 + END_RADIUS));
   // The two ends are level with the first port of the picture of the first row.
   const endY = MARGIN + PORT_INSET;
   return {
@@ -140,7 +162,7 @@ export function layoutGrade(grade: Grade): Layout {
     source: { x: sourceX, y: endY },
     output: { x: outputX, y: endY },
     width: outputX + END_RADIUS + MARGIN,
-    height: rowY(rows - 1) + NODE_HEIGHT + MARGIN,
+    height: Math.max(rowY(rows - 1) + NODE_HEIGHT + MARGIN, ...nodes.map(each => each.y + NODE_HEIGHT + MARGIN)),
   };
 }
 
@@ -177,3 +199,102 @@ export function linkPath(from: { x: number; y: number }, to: { x: number; y: num
 
 /** A link as one string, to name it in the page: `from>to:kind:input`. */
 export const linkName = (link: Link): string => `${link.from}>${link.to}:${link.kind}:${link.input}`;
+
+/** The four points of the curve of a link, as `linkPath` draws it. */
+function controls(from: Point, to: Point): [Point, Point, Point, Point] {
+  const bend = Math.max(24, Math.abs(to.x - from.x) / 2);
+  return [from, { x: from.x + bend, y: from.y }, { x: to.x - bend, y: to.y }, to];
+}
+const mid = (a: Point, b: Point): Point => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+const svgPoint = (point: Point) => `${point.x} ${point.y}`;
+
+/**
+ * The two halves of a link, as paths: the first, from its output, which selects the link when
+ * clicked; and the second, into its input, which deletes it when clicked and takes its end along
+ * when dragged (Reference Manual 20, p. 3319). Split at the middle of the curve of `linkPath`.
+ */
+export function linkHalves(from: Point, to: Point): [string, string] {
+  const [p0, p1, p2, p3] = controls(from, to);
+  const p01 = mid(p0, p1); const p12 = mid(p1, p2); const p23 = mid(p2, p3);
+  const p012 = mid(p01, p12); const p123 = mid(p12, p23);
+  const middle = mid(p012, p123);
+  return [
+    `M ${svgPoint(p0)} C ${svgPoint(p01)}, ${svgPoint(p012)}, ${svgPoint(middle)}`,
+    `M ${svgPoint(middle)} C ${svgPoint(p123)}, ${svgPoint(p23)}, ${svgPoint(p3)}`,
+  ];
+}
+
+/** The point of the curve of a link at `t`, from 0 at its output to 1 at its input. */
+export function pointOnLink(from: Point, to: Point, t: number): Point {
+  const [p0, p1, p2, p3] = controls(from, to);
+  const u = 1 - t;
+  const along = (a: number, b: number, c: number, d: number) => u * u * u * a + 3 * u * u * t * b + 3 * u * t * t * c + t * t * t * d;
+  return { x: along(p0.x, p1.x, p2.x, p3.x), y: along(p0.y, p1.y, p2.y, p3.y) };
+}
+
+/** A port of the graph: an input or an output of a kind of a node, the source (an output) or the output (an input). */
+export interface Port { node: string; side: 'in' | 'out'; kind: LinkKind; input: number }
+/** How near a port the pointer must be to take it, in units of the graph. */
+export const PORT_REACH = 10;
+const distance = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
+
+/** Every port of a layout and where it is. */
+export function portsOf(layout: Layout): { port: Port; at: Point }[] {
+  const ports: { port: Port; at: Point }[] = [
+    { port: { node: 'source', side: 'out', kind: 'rgb', input: 0 }, at: { x: layout.source.x + END_RADIUS, y: layout.source.y } },
+    { port: { node: 'output', side: 'in', kind: 'rgb', input: 0 }, at: { x: layout.output.x - END_RADIUS, y: layout.output.y } },
+  ];
+  for (const placed of layout.nodes) {
+    for (const kind of ['rgb', 'key'] as const) {
+      for (let input = 0; input < inputsOf(placed.node, kind); input++) {
+        ports.push({ port: { node: placed.node.id, side: 'in', kind, input }, at: inputPoint(placed, kind, input) });
+      }
+      if (hasOutput(placed.node, kind)) ports.push({ port: { node: placed.node.id, side: 'out', kind, input: 0 }, at: outputPoint(placed, kind) });
+    }
+  }
+  return ports;
+}
+
+/** The port nearest `point` within reach that `accepts`, or null. */
+export function portAt(layout: Layout, point: Point, accepts: (port: Port) => boolean = () => true): Port | null {
+  let best: { port: Port; away: number } | null = null;
+  for (const { port, at } of portsOf(layout)) {
+    const away = distance(at, point);
+    if (away <= PORT_REACH && accepts(port) && (best === null || away < best.away)) best = { port, away };
+  }
+  return best?.port ?? null;
+}
+
+/** The node whose card lies under `point`, the one drawn last where cards lie on one another. */
+export function nodeAt(layout: Layout, point: Point): PlacedNode | null {
+  for (let at = layout.nodes.length - 1; at >= 0; at--) {
+    const each = layout.nodes[at];
+    if (point.x >= each.x && point.x <= each.x + NODE_WIDTH && point.y >= each.y && point.y <= each.y + NODE_HEIGHT) return each;
+  }
+  return null;
+}
+
+/** The nodes whose cards a box drawn from `a` to `b` touches (p. 3314). */
+export function nodesIn(layout: Layout, a: Point, b: Point): string[] {
+  const left = Math.min(a.x, b.x); const right = Math.max(a.x, b.x);
+  const top = Math.min(a.y, b.y); const bottom = Math.max(a.y, b.y);
+  return layout.nodes.filter(each => each.x <= right && each.x + NODE_WIDTH >= left && each.y <= bottom && each.y + NODE_HEIGHT >= top)
+    .map(each => each.node.id);
+}
+
+/** How near a link the pointer must be for a node dropped there to go into it (p. 3319). */
+export const LINK_REACH = 8;
+
+/** The link whose curve passes within reach of `point`, or null. */
+export function linkNear(layout: Layout, point: Point): Link | null {
+  let best: { link: Link; away: number } | null = null;
+  for (const link of layout.links) {
+    const ends = linkEnds(layout, link);
+    if (!ends) continue;
+    for (let step = 0; step <= 32; step++) {
+      const away = distance(pointOnLink(ends.from, ends.to, step / 32), point);
+      if (away <= LINK_REACH && (best === null || away < best.away)) best = { link, away };
+    }
+  }
+  return best?.link ?? null;
+}

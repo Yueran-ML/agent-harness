@@ -2,13 +2,13 @@
 
 use std::path::Path;
 
-use columbina_model::{AudioFacts, Facts, Rate, Time, VideoFacts};
+use columbina_model::{AudioFacts, ColorFacts, Facts, Rate, Time, VideoFacts};
 use ff::format::context::Input;
 use ff::format::stream::{Disposition, Stream};
 use ff::media::Type;
 use ffmpeg_next as ff;
 
-use crate::{ffi, timing, MediaError};
+use crate::{color, ffi, timing, Hardware, MediaError, VideoDecoder};
 
 /// What a file holds, as libav finds it. This blocks.
 ///
@@ -25,6 +25,9 @@ use crate::{ffi, timing, MediaError};
 ///   matrix that mirrors the picture is read as a mirror left to right and a turn: the turn
 ///   is kept, and the mirror is not, since the facts of a file hold none. (The editing of
 ///   Python keeps the turn as ffprobe gives it, counterclockwise: its 90 is 270 here.)
+/// - What it says of its colours is read from the parameters of its stream; for a picture of
+///   PQ or HLG whose stream lacks the mastering display or the light levels, its first frame is
+///   decoded on the processor for them too (see [`crate::Decoded::color`]).
 ///
 /// # Errors
 /// The path is not UTF-8; the file is not there, cannot be read, or is not media of the formats
@@ -49,6 +52,12 @@ pub fn probe(path: &Path) -> Result<Facts, MediaError> {
         );
     }
     let audio = audio.map(|index| sound(&stream_of(index)?)).transpose()?;
+    if let Some(video) = &mut video {
+        video.color = video
+            .color
+            .take()
+            .map(|stream| from_first_frame(path, stream));
+    }
     let duration = duration(&mut input, timed, video.as_ref().map(|video| video.rate))?;
     Ok(Facts {
         duration,
@@ -418,8 +427,29 @@ fn picture(stream: &Stream) -> Result<VideoFacts, MediaError> {
         codec: stream.parameters().id().name().to_owned(),
         bits,
         rotation: rotation(stream),
-        color: None,
+        color: Some(color::of_stream(
+            stream,
+            ffi::pixel_of_number(parameters.format),
+        )),
     })
+}
+
+/// The colours of the picture of a file, with what its first frame says where the stream may
+/// lack it: the side data of HDR, which an encoder may write in the frames only (as x265 writes
+/// it, in SEI). The first frame is decoded on the processor for that, and only for a picture of
+/// PQ or HLG that lacks it; a frame that cannot be decoded leaves the colours of the stream.
+fn from_first_frame(path: &Path, stream: ColorFacts) -> ColorFacts {
+    if !color::wants_frame(&stream) {
+        return stream;
+    }
+    let first = VideoDecoder::open(path, Hardware::Off)
+        .and_then(|mut decoder| decoder.next_decoded())
+        .ok()
+        .flatten();
+    match first {
+        Some(first) => color::merged(&stream, &first.color()),
+        None => stream,
+    }
 }
 
 /// The sound of a file.

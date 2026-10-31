@@ -17,8 +17,8 @@ use ff::ffi::{
     AVChannelOrder, AVCodecContext, AVColorPrimaries, AVColorRange, AVColorSpace,
     AVColorTransferCharacteristic, AVDiscard, AVHWDeviceType, AVHWFramesContext, AVPixelFormat,
     AVSampleFormat, SwrContext, AVINDEX_DISCARD_FRAME, AVSEEK_FLAG_BACKWARD, AVSEEK_FLAG_BYTE,
-    AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX, AV_PIX_FMT_FLAG_HWACCEL, FF_THREAD_FRAME,
-    FF_THREAD_SLICE,
+    AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX, AV_PIX_FMT_FLAG_BE, AV_PIX_FMT_FLAG_HWACCEL,
+    AV_PIX_FMT_FLAG_PLANAR, AV_PIX_FMT_FLAG_RGB, FF_THREAD_FRAME, FF_THREAD_SLICE,
 };
 use ffmpeg_next as ff;
 
@@ -250,7 +250,8 @@ impl Planes<'_> {
 unsafe extern "C" fn keep(_opaque: *mut c_void, _data: *mut u8) {}
 
 /// Copy a frame on a device straight into planes of memory, in its [`memory_format`], which is
-/// NV12 or P010: one copy, with no frame in between. The planes are long enough for the size of
+/// of two planes laid out as the planes are (NV12, P010, or those of 4:2:2 and 4:4:4 of 16-bit
+/// words: P210 to P416): one copy, with no frame in between. The planes are long enough for the size of
 /// the frame at their strides, which are at least as long as a row.
 pub(crate) fn transfer_into(
     from: &ff::frame::Video,
@@ -515,12 +516,132 @@ pub(crate) fn parameters(stream: &ff::format::stream::Stream) -> Parameters {
     }
 }
 
+/// The numbers that a stream or a frame gives for its colours, as libav numbers them: the colour
+/// primaries, the transfer, the matrix (`AVColorSpace`), the range and where chroma lies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ColorCodes {
+    pub primaries: c_int,
+    pub transfer: c_int,
+    pub matrix: c_int,
+    pub range: c_int,
+    pub location: c_int,
+}
+
+/// Read a field of libav that is an enumeration as the integer that it is, so that a number
+/// that is no variant of the enumeration of the bindings is not taken for one.
+///
+/// # Safety
+/// `field` points to a field of an enumeration of `repr(i32)`, or of `c_int`, that may be read.
+unsafe fn number<T>(field: *const T) -> c_int {
+    debug_assert_eq!(std::mem::size_of::<T>(), std::mem::size_of::<c_int>());
+    // SAFETY: as the caller says; an enumeration of the bindings is of `repr(i32)`.
+    unsafe { field.cast::<c_int>().read() }
+}
+
+/// What the parameters of a stream say of its colours.
+pub(crate) fn stream_colors(stream: &ff::format::stream::Stream) -> ColorCodes {
+    // SAFETY: the stream is of an open context, and has parameters; each field is an
+    // enumeration of `repr(i32)` that is only read.
+    unsafe {
+        let parameters = (*stream.as_ptr()).codecpar;
+        ColorCodes {
+            primaries: number(&raw const (*parameters).color_primaries),
+            transfer: number(&raw const (*parameters).color_trc),
+            matrix: number(&raw const (*parameters).color_space),
+            range: number(&raw const (*parameters).color_range),
+            location: number(&raw const (*parameters).chroma_location),
+        }
+    }
+}
+
+/// What a decoded frame says of its colours.
+pub(crate) fn frame_colors(frame: &ff::frame::Video) -> ColorCodes {
+    // SAFETY: the frame is a frame of libav; each field is an enumeration of `repr(i32)` that
+    // is only read.
+    unsafe {
+        let frame = frame.as_ptr();
+        ColorCodes {
+            primaries: number(&raw const (*frame).color_primaries),
+            transfer: number(&raw const (*frame).color_trc),
+            matrix: number(&raw const (*frame).colorspace),
+            range: number(&raw const (*frame).color_range),
+            location: number(&raw const (*frame).chroma_location),
+        }
+    }
+}
+
+/// How the pixels of a format of libav are laid out, as far as the pictures of the crate need.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Layout {
+    /// Its components are R, G and B, not Y', Cb and Cr.
+    pub rgb: bool,
+    /// How far chroma is halved across and down, as powers of 2: (1, 1) for 4:2:0, (1, 0) for
+    /// 4:2:2, (0, 0) for 4:4:4.
+    pub log2_chroma: (u32, u32),
+    /// The bits of its first component.
+    pub depth: u32,
+    /// Whether it is Y', Cb and Cr each in a plane of its own (planes 0, 1 and 2), each sample
+    /// a byte (8 bits) or a little-endian word of 16 bits that holds its bits at the bottom, all
+    /// of the same depth: so that its planes may be read as they are.
+    pub planar_yuv: bool,
+}
+
+/// How the pixels of `format` are laid out; none for a format that libav does not describe.
+pub(crate) fn layout(format: ff::format::Pixel) -> Option<Layout> {
+    // SAFETY: as in `on_device`; the descriptor is only read.
+    unsafe {
+        let descriptor = av_pix_fmt_desc_get(format.into());
+        if descriptor.is_null() || (*descriptor).nb_components == 0 {
+            return None;
+        }
+        let descriptor = &*descriptor;
+        let flag = |bit: c_int| descriptor.flags & u64::from(bit.unsigned_abs()) != 0;
+        let rgb = flag(AV_PIX_FMT_FLAG_RGB);
+        let depth = u32::try_from(descriptor.comp[0].depth).ok()?;
+        let step = if depth > 8 { 2 } else { 1 };
+        let planar_yuv = !rgb
+            && !flag(AV_PIX_FMT_FLAG_BE)
+            && flag(AV_PIX_FMT_FLAG_PLANAR)
+            && descriptor.nb_components >= 3
+            && (0..3).all(|index: usize| {
+                let component = &descriptor.comp[index];
+                component.plane == c_int::try_from(index).unwrap_or(-1)
+                    && component.step == step
+                    && component.offset == 0
+                    && component.shift == 0
+                    && u32::try_from(component.depth).ok() == Some(depth)
+            })
+            && depth <= 16;
+        Some(Layout {
+            rgb,
+            log2_chroma: (
+                u32::from(descriptor.log2_chroma_w),
+                u32::from(descriptor.log2_chroma_h),
+            ),
+            depth,
+            planar_yuv,
+        })
+    }
+}
+
 extern "C" {
     /// `av_pix_fmt_desc_get`, which takes any number and gives null for one that is not a
     /// format: declared here to take the number as the integer that it is, so that no number
     /// is taken for a variant of `AVPixelFormat` that it is not.
     #[link_name = "av_pix_fmt_desc_get"]
     fn descriptor_of_number(format: c_int) -> *const ff::ffi::AVPixFmtDescriptor;
+}
+
+/// The format that libav numbers `format`, if it is one.
+pub(crate) fn pixel_of_number(format: c_int) -> Option<ff::format::Pixel> {
+    // SAFETY: the function takes any number. A number that has a descriptor is a format of
+    // libav, so a variant of `AVPixelFormat` (of `repr(i32)`), whose bindings hold every format.
+    unsafe {
+        if descriptor_of_number(format).is_null() {
+            return None;
+        }
+        Some(std::mem::transmute::<c_int, AVPixelFormat>(format).into())
+    }
 }
 
 /// The bits of luma of the format that libav numbers `format`.
@@ -562,6 +683,32 @@ impl Scaler {
                 0,
                 coefficients,
                 1,
+                0,
+                1 << 16,
+                1 << 16,
+            )
+        };
+        if code < 0 {
+            Err(error_text(code))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl Scaler {
+    /// Make R'G'B' into Y'CbCr by the matrix of BT.709, of limited range, rather than by
+    /// BT.601, which swscale takes where it is not told.
+    pub fn rgb_to_bt709(&mut self) -> Result<(), String> {
+        // SAFETY: as in `thumbnail_colors`; R'G'B' is of full range, Y'CbCr of limited.
+        let code = unsafe {
+            let coefficients = ff::ffi::sws_getCoefficients(ff::ffi::SWS_CS_ITU709);
+            ff::ffi::sws_setColorspaceDetails(
+                self.0.as_mut_ptr(),
+                coefficients,
+                1,
+                coefficients,
+                0,
                 0,
                 1 << 16,
                 1 << 16,

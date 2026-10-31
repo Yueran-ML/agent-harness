@@ -36,6 +36,19 @@
 //! then the frame shown there is the one before; or by two, and then
 //! [`VideoDecoder::frame_at`] gives the first and [`VideoDecoder::next`] the second.
 //!
+//! # Colours
+//!
+//! [`VideoFacts::color`] is what a file says of the colours of its picture: the primaries, the
+//! transfer and the matrix as H.273 numbers them (the NCLC of `QuickTime`, the VUI of H.264 and
+//! HEVC), its range, the siting of its chroma, and the side data of HDR (the mastering display
+//! of SMPTE ST 2086 and the light levels of CTA-861.3), from the parameters of its stream and,
+//! for PQ and HLG, from its first frame where the stream lacks them. [`input_space`] decides
+//! from them the colour space that the picture is in, as `DaVinci Resolve` does; [`YuvMatrix`]
+//! and [`levels`] how its Y'CbCr is made R'G'B'.
+//!
+//! A [`Picture`] is always 4:2:0. A [`NativePicture`] ([`Converter::native`]) keeps the chroma
+//! of 4:2:2 and 4:4:4 in 16 bits (P216 and P416), and says the matrix and range of its codes.
+//!
 //! # Rotation
 //!
 //! [`VideoFacts::rotation`] is how far a picture is turned **clockwise** to be shown upright,
@@ -65,23 +78,30 @@
 //! stderr carries lines of JSON only.
 
 mod audio;
+mod color;
 mod decode;
 mod encode;
 mod error;
 #[allow(unsafe_code)]
 mod ffi;
 mod identity;
+mod native;
 mod probe;
 mod timing;
 
 pub use audio::{AudioDecoder, AudioFormat, Samples};
-pub use columbina_model::{AudioFacts, Facts, Identity, Rate, Time, VideoFacts};
+pub use color::{levels, YuvMatrix};
+pub use columbina_model::{
+    input_space, AudioFacts, Basis, ColorFacts, ColorRange, Facts, Gamma, Gamut, Identity,
+    InputSpace, Rate, Time, VideoFacts,
+};
 pub use decode::{
     video_start, Converter, Decoded, Hardware, HardwarePath, Picture, Rgba, VideoDecoder,
 };
 pub use encode::{encoders_for, AudioSettings, Codec, EncoderPath, Quality, VideoSettings, Writer};
 pub use error::MediaError;
 pub use identity::identity;
+pub use native::{NativePicture, PictureFormat};
 pub use probe::{frame_count, frame_numbers, gop, probe, Gop, DEMUXERS};
 
 /// Make libav ready to be used, once: its log is turned off.

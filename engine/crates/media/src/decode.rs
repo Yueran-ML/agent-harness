@@ -5,12 +5,14 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use columbina_model::{Rate, Time};
+use columbina_model::{ColorFacts, Rate, Time};
 use ff::format::context::Input;
 use ff::format::Pixel;
 use ffmpeg_next as ff;
 
+use crate::color;
 use crate::ffi::{self, Device, Planes, Scaler};
+use crate::native::{self, NativePicture};
 use crate::probe;
 use crate::timing::Timing;
 use crate::MediaError;
@@ -165,6 +167,9 @@ impl Picture {
 pub struct Decoded {
     frame: i64,
     raw: ff::frame::Video,
+    /// The bits of luma of the picture, as its stream says: those that a frame of more bits, as
+    /// a card gives one, holds at the top of each sample.
+    bits: u8,
     /// Whether the frame that came out before it has the same number, so that it is not the
     /// frame shown at its number.
     repeat: bool,
@@ -183,11 +188,20 @@ impl Decoded {
         ffi::on_device(self.raw.format())
     }
 
+    /// What the frame says of its colours: the numbers of its primaries, transfer, matrix, range
+    /// and siting of chroma, and the side data of HDR that it carries (the mastering display
+    /// and the light levels), as the decoder read them from the frame (its VUI and SEI).
+    #[must_use]
+    pub fn color(&self) -> ColorFacts {
+        color::of_frame(&self.raw)
+    }
+
     /// Another of the same frame, which shares its memory.
     fn again(&self) -> Result<Self, MediaError> {
         Ok(Self {
             frame: self.frame,
             raw: ffi::reference(&self.raw).map_err(MediaError::Decode)?,
+            bits: self.bits,
             repeat: self.repeat,
         })
     }
@@ -195,7 +209,8 @@ impl Decoded {
 
 /// What makes [`Decoded`] frames into [`Picture`]s: it copies them from the graphics card, and
 /// converts those of other formats (4:2:2, 4:4:4, RGB, 12 bits) with swscale, to P010 if they
-/// have more than 8 bits and NV12 if not, writing straight into the picture. It keeps what it
+/// have more than 8 bits and NV12 if not, writing straight into the picture. It makes them
+/// [`NativePicture`]s too ([`Converter::native`]), which keep the chroma of 4:2:2 and 4:4:4. It keeps what it
 /// made for the last frame, so that the next one of the same shape is made without starting
 /// again; it takes frames of any file, one after another. One is used by one thread at a time,
 /// and each thread that makes pictures has its own.
@@ -210,6 +225,8 @@ pub struct Converter {
     copied: Option<ff::frame::Video>,
     scaler: Option<Scaler>,
     thumbnail_scaler: Option<Scaler>,
+    /// The scaler of [`Converter::native`], for frames that it does not take as they are.
+    native_scaler: Option<Scaler>,
 }
 
 /// A small, packed RGBA picture, in stored orientation, with no row padding.
@@ -342,6 +359,68 @@ impl Converter {
         let copied = self.copied.get_or_insert_with(ff::frame::Video::empty);
         ffi::transfer(copied, raw).map_err(MediaError::Device)?;
         convert(&mut self.scaler, copied, decoded.frame, into)
+    }
+}
+
+impl Converter {
+    /// Make a frame a picture in the sampling of chroma that its file stores, nothing of its
+    /// chroma thrown away: 4:2:0 as NV12 or P010, as [`Converter::picture`] makes it; 4:2:2 as
+    /// P216 and 4:4:4 (and R'G'B') as P416, in 16 bits (see [`NativePicture`]).
+    ///
+    /// A frame whose Y', Cb and Cr are each in a plane of their own (as the decoders of the
+    /// processor give them: ProRes, `DNxHR`, H.264 and HEVC of 4:2:2 and 4:4:4), or that is
+    /// laid out as the picture already (as a card gives P010, P210 or P416), keeps every code
+    /// as it is; another (packed, R'G'B') is converted by swscale.
+    ///
+    /// # Errors
+    /// As [`Converter::picture`].
+    pub fn native(&mut self, decoded: &Decoded) -> Result<NativePicture, MediaError> {
+        let mut picture = NativePicture::default();
+        self.native_into(decoded, &mut picture)?;
+        Ok(picture)
+    }
+
+    /// As [`Converter::native`], in the place of `into`, whose planes are written over and kept
+    /// where they are of the size needed.
+    ///
+    /// # Errors
+    /// As [`Converter::picture`]; `into` is then written over in part.
+    pub fn native_into(
+        &mut self,
+        decoded: &Decoded,
+        into: &mut NativePicture,
+    ) -> Result<(), MediaError> {
+        let raw = &decoded.raw;
+        let codes = ffi::frame_colors(raw);
+        if !ffi::on_device(raw.format()) {
+            return native::fill(
+                &mut self.native_scaler,
+                raw,
+                decoded.bits,
+                decoded.frame,
+                codes,
+                into,
+            );
+        }
+        let memory = ffi::memory_format(raw)
+            .ok_or_else(|| MediaError::Device("a frame on the card has no format".into()))?;
+        if let Some((format, bits)) = native::laid_out_as(memory) {
+            let bits = native::bits_of(bits.into(), decoded.bits);
+            let mut planes = into.shape(decoded.frame, raw.width(), raw.height(), format, bits);
+            ffi::transfer_into(raw, &mut planes).map_err(MediaError::Device)?;
+            into.describe(codes, memory, false);
+            return Ok(());
+        }
+        let copied = self.copied.get_or_insert_with(ff::frame::Video::empty);
+        ffi::transfer(copied, raw).map_err(MediaError::Device)?;
+        native::fill(
+            &mut self.native_scaler,
+            copied,
+            decoded.bits,
+            decoded.frame,
+            codes,
+            into,
+        )
     }
 }
 
@@ -749,6 +828,7 @@ impl VideoDecoder {
             Decoded {
                 frame: 0,
                 raw: first.raw,
+                bits: first.bits,
                 repeat: false,
             }
         } else {
@@ -1201,7 +1281,12 @@ impl VideoDecoder {
                     if raw.is_key() {
                         self.learn_key(frame);
                     }
-                    return Ok(Some(Decoded { frame, raw, repeat }));
+                    return Ok(Some(Decoded {
+                        frame,
+                        raw,
+                        bits: self.shape.2,
+                        repeat,
+                    }));
                 }
                 Err(ff::Error::Other { errno }) if errno == ff::util::error::EAGAIN => {
                     self.feed()?;
@@ -1367,6 +1452,7 @@ mod thumbnail_tests {
         let frame = Decoded {
             frame: 0,
             raw,
+            bits: 8,
             repeat: false,
         };
         let result = Converter::new().rgba_scaled(&frame, 8, 8).unwrap();

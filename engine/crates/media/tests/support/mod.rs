@@ -86,6 +86,28 @@ pub enum Sample {
     /// 1 kHz, half of full scale, starting at each whole second (0, 1, 2 and 3 s), at its
     /// peak from its first sample: where a beep is heard tells where the sound is.
     Clicks,
+    /// 640×360 H.264, 8 bits 4:2:0, 25 frames a second, 1 s, of `testsrc2`, said to be BT.709
+    /// (primaries, transfer and matrix 1-1-1) of limited range.
+    Bt709Limited,
+    /// As [`Sample::Bt709Limited`], said to be of full range (its frames are `yuvj420p`).
+    Bt709Full,
+    /// 640×360 HEVC Main 10, 1 s, said to be BT.2020 and PQ (9-16-9) of limited range, with
+    /// a mastering display and light levels in SEI (in its frames, not its container):
+    /// `G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)`, `MaxCLL` 1000 and
+    /// `MaxFALL` 400.
+    Pq,
+    /// 640×360 HEVC Main 10, 1 s, said to be BT.2020 and HLG (9-18-9).
+    Hlg,
+    /// 640×360 H.264 High 4:2:2, 10 bits, 1 s, of `testsrc2` made in 4:2:2.
+    H264High422,
+    /// 640×360 `DNxHR` HQX, 10 bits 4:2:2, in `QuickTime`, 1 s.
+    Dnxhr,
+    /// 640×360 HEVC of 4:4:4 in 12 bits (Main 4:4:4 12), 1 s, of `testsrc2` made in 4:4:4.
+    Hevc444,
+    /// 640×360 `ProRes` 4444, 1 s, made of 10 bits 4:4:4 (decoded as 12 bits).
+    Prores4444,
+    /// A still PNG of 64×48 in R'G'B' of 8 bits, every pixel pure red.
+    RedPng,
 }
 
 impl Sample {
@@ -125,7 +147,16 @@ impl Sample {
             Sample::Collide | Sample::Dropped => Some(120),
             Sample::Prores | Sample::Webm => Some(50),
             Sample::Portrait => Some(60),
-            Sample::Fhd10 => Some(25),
+            Sample::Fhd10
+            | Sample::Bt709Limited
+            | Sample::Bt709Full
+            | Sample::Pq
+            | Sample::Hlg
+            | Sample::H264High422
+            | Sample::Dnxhr
+            | Sample::Hevc444
+            | Sample::Prores4444 => Some(25),
+            Sample::RedPng => Some(1),
             Sample::Wav | Sample::Evc | Sample::Noise | Sample::EditList | Sample::Clicks => None,
         }
     }
@@ -160,6 +191,15 @@ impl Sample {
             Sample::EditList => "v1-editlist-h264.mp4",
             Sample::Dropped => "v1-dropped-h264.mp4",
             Sample::Clicks => "v1-clicks.wav",
+            Sample::Bt709Limited => "v1-bt709-limited-h264.mp4",
+            Sample::Bt709Full => "v1-bt709-full-h264.mp4",
+            Sample::Pq => "v1-pq-hevc-main10.mp4",
+            Sample::Hlg => "v1-hlg-hevc-main10.mp4",
+            Sample::H264High422 => "v1-h264-high422-10bit.mp4",
+            Sample::Dnxhr => "v1-dnxhr-hqx.mov",
+            Sample::Hevc444 => "v1-hevc-444-12bit.mp4",
+            Sample::Prores4444 => "v1-prores-4444.mov",
+            Sample::RedPng => "v1-red.png",
         }
     }
 }
@@ -435,6 +475,47 @@ fn hevc10(encoders: &str, gop: u32) -> Vec<(String, Vec<String>)> {
     found
 }
 
+/// The ffmpeg that makes the media, if there is one: its program.
+pub fn ffmpeg_program() -> Option<&'static str> {
+    ffmpeg().map(|found| found.program.as_str())
+}
+
+/// The first frame of the picture of a file, decoded by the ffmpeg of the command line into
+/// raw planes of `pixel_format` (as `yuv422p10le`): what a decoder of libav should give. None
+/// where there is no ffmpeg.
+///
+/// # Panics
+/// If ffmpeg cannot decode it.
+pub fn first_frame_raw(path: &Path, pixel_format: &str) -> Option<Vec<u8>> {
+    let program = ffmpeg_program()?;
+    let output = Command::new(program)
+        .args(["-hide_banner", "-loglevel", "error", "-i"])
+        .arg(path)
+        .args([
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            pixel_format,
+            "-",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Some(output.stdout)
+}
+
+/// `testsrc2` of 640×360 at 25 frames a second for 1 s, made in `format`, its frames said to be
+/// of the colours `params` (of the filter `setparams`), as `[v]`.
+fn tagged(format: &str, params: &str) -> String {
+    format!("testsrc2=size=640x360:rate=25:duration=1,format={format},setparams={params}[v]")
+}
+
 /// A recipe of one step for each encoder: `graph` (whose picture is `[v]`, and whose sound, if
 /// it has any, `[a]`), the encoder's arguments, and `after` them.
 fn one_step(
@@ -706,6 +787,115 @@ fn recipes(sample: Sample, encoders: &str) -> Vec<Recipe> {
                 }
             })
             .collect(),
+        Sample::Bt709Limited | Sample::Bt709Full => one_step(
+            h264(encoders, 25),
+            &tagged(
+                "yuv420p",
+                &format!(
+                    "color_primaries=bt709:color_trc=bt709:colorspace=bt709:range={}",
+                    if sample == Sample::Bt709Full {
+                        "pc"
+                    } else {
+                        "tv"
+                    }
+                ),
+            ),
+            false,
+            &[],
+        ),
+        Sample::Pq | Sample::Hlg => {
+            let (transfer, extra) = if sample == Sample::Pq {
+                (
+                    "smpte2084",
+                    "master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1):\
+                     max-cll=1000,400:",
+                )
+            } else {
+                ("arib-std-b67", "")
+            };
+            one_step(
+                named(
+                    encoders,
+                    "libx265",
+                    &[
+                        "-preset",
+                        "ultrafast",
+                        "-crf",
+                        "20",
+                        "-x265-params",
+                        &format!("{extra}log-level=error"),
+                    ],
+                ),
+                &tagged(
+                    "yuv420p10le",
+                    &format!(
+                        "color_primaries=bt2020:color_trc={transfer}:colorspace=bt2020nc:range=tv"
+                    ),
+                ),
+                false,
+                &[],
+            )
+        }
+        Sample::H264High422 => one_step(
+            named(
+                encoders,
+                "libx264",
+                &[
+                    "-preset",
+                    "ultrafast",
+                    "-crf",
+                    "10",
+                    "-profile:v",
+                    "high422",
+                ],
+            ),
+            &tagged("yuv422p10le", "range=tv"),
+            false,
+            &[],
+        ),
+        Sample::Dnxhr => one_step(
+            named(encoders, "dnxhd", &["-profile:v", "dnxhr_hqx"]),
+            &tagged("yuv422p10le", "range=tv"),
+            false,
+            &[],
+        ),
+        Sample::Hevc444 => one_step(
+            named(
+                encoders,
+                "libx265",
+                &[
+                    "-preset",
+                    "ultrafast",
+                    "-crf",
+                    "10",
+                    "-x265-params",
+                    "log-level=error",
+                ],
+            ),
+            &tagged("yuv444p12le", "range=tv"),
+            false,
+            &[],
+        ),
+        Sample::Prores4444 => one_step(
+            named(encoders, "prores_ks", &["-profile:v", "4"]),
+            &tagged("yuv444p10le", "range=tv"),
+            false,
+            &[],
+        ),
+        Sample::RedPng => vec![Recipe {
+            encoder: "png".into(),
+            steps: vec![strings(&[
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=red:size=64x48",
+                "-frames:v",
+                "1",
+                "-pix_fmt",
+                "rgb24",
+                "{out}",
+            ])],
+        }],
         Sample::Webm => one_step(
             named(
                 encoders,

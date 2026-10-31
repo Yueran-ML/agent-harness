@@ -177,6 +177,7 @@ COMMAND_MCP = "src/columbina/commands/mcp.py"
 SERVE_RPC = "src/columbina/apps/serve/rpc.py"
 SERVE_WIRE = "src/columbina/apps/serve/wire.py"
 SERVE_SERVER = "src/columbina/apps/serve/server.py"
+SERVE_PLUGIN = "src/columbina/apps/serve/__init__.py"
 SERVE_BUNDLE = "src/columbina/bundles/serve.yml"
 EFFORT_APP = "src/columbina/apps/effort.py"
 WITHHELD = "src/columbina/withheld.py"
@@ -24621,21 +24622,57 @@ _EFFORT = (
     ),
     mutant(
         "ultra tells the agent nothing",
-        SERVE_SERVER,
-        '        return f"{text}\\n\\n{ULTRA}" if self._chosen_effort() == "ultra" else text\n',
-        "        return text\n",
+        EFFORT_APP,
+        '    if effort == "ultra":\n        return ULTRA\n',
+        "",
     ),
     mutant(
         "every level tells the agent of the team",
-        SERVE_SERVER,
-        '        return f"{text}\\n\\n{ULTRA}" if self._chosen_effort() == "ultra" else text\n',
-        '        return f"{text}\\n\\n{ULTRA}"\n',
+        EFFORT_APP,
+        '    if effort == "ultra":\n',
+        "    if True:\n",
     ),
     mutant(
-        "the agent of the conversation hears nothing of the team",
-        SERVE_SERVER,
-        "        agent.ctx.on(SYSTEM_PROMPT_ASSEMBLE, self._with_the_effort)\n",
+        "the agent is never told that the team is over",
+        EFFORT_APP,
+        "    return LEFT if _team_in_view(session) else None\n",
+        "    return None\n",
+    ),
+    mutant(
+        "the agent is told that the team is over where it was never told of it",
+        EFFORT_APP,
+        "    return LEFT if _team_in_view(session) else None\n",
+        "    return LEFT\n",
+    ),
+    mutant(
+        "the team is over once it was told of, whatever followed",
+        EFFORT_APP,
+        "            return any(ULTRA in block.text for block in data.message.content)\n",
+        "            return True\n",
+    ),
+    mutant(
+        "what the agent is told of the team is said once and not again",
+        EFFORT_APP,
+        '    return ContextSource(render, order=_ORDER, kind="append")\n',
+        '    return ContextSource(render, order=_ORDER, kind="note")\n',
+    ),
+    mutant(
+        "what the agent is told of the team says that it takes the place of what came before",
+        EFFORT_APP,
+        '    return ContextSource(render, order=_ORDER, kind="append")\n',
+        '    return ContextSource(render, order=_ORDER, kind="replace")\n',
+    ),
+    mutant(
+        "the agent of the conversation is told nothing of the team",
+        SERVE_PLUGIN,
+        "    ctx.use(AGENTS).context.add(ctx, SOURCE, told_by(server.how_to_work))\n",
         "",
+    ),
+    mutant(
+        "every agent is told how the agent of the conversation works",
+        SERVE_SERVER,
+        "        return told_at(self._chosen_effort(), agent.session) if agent is self._agent else None\n",
+        "        return told_at(self._chosen_effort(), agent.session)\n",
     ),
     mutant(
         "the status tells of no levels",
@@ -24711,14 +24748,14 @@ _EFFORT = (
     mutant(
         "ultra tells the agent at the terminal nothing",
         CLI_FRONTEND,
-        '        return f"{text}\\n\\n{ULTRA}" if self._chosen_effort() == "ultra" else text\n',
-        "        return text\n",
+        "    ctx.use(AGENTS).context.add(ctx, SOURCE, told_by(cli.how_to_work))\n",
+        "",
     ),
     mutant(
-        "every level tells the agent at the terminal of the team",
+        "the agent at the terminal is told of the team at the level of the config",
         CLI_FRONTEND,
-        '        return f"{text}\\n\\n{ULTRA}" if self._chosen_effort() == "ultra" else text\n',
-        '        return f"{text}\\n\\n{ULTRA}"\n',
+        "        return told_at(self._chosen_effort(), agent.session) if agent is self._agent else None\n",
+        '        return told_at("default", agent.session) if agent is self._agent else None\n',
     ),
     mutant(
         "a session that is begun anew at the terminal asks what the run began with",
@@ -26129,8 +26166,38 @@ _ANTHROPIC = (
     mutant(
         "empty instructions are sent",
         ANTHROPIC_MESSAGES,
-        '    if system:\n        body["system"] = system\n',
-        '    body["system"] = system\n',
+        "    if system:\n        stable = ",
+        "    if True:\n        stable = ",
+    ),
+    mutant(
+        "the tools and the instructions keep no breakpoint of their own",
+        ANTHROPIC_MESSAGES,
+        '            stable[-1]["cache_control"] = dict(control)\n',
+        "",
+    ),
+    mutant(
+        "the breakpoint is put on the first tool",
+        ANTHROPIC_MESSAGES,
+        '            stable[-1]["cache_control"] = dict(control)\n',
+        '            stable[0]["cache_control"] = dict(control)\n',
+    ),
+    mutant(
+        "tools without instructions keep no breakpoint",
+        ANTHROPIC_MESSAGES,
+        "        stable = tools\n",
+        "",
+    ),
+    mutant(
+        "the breakpoint of the tools and the instructions is kept for five minutes",
+        ANTHROPIC_MESSAGES,
+        '            stable[-1]["cache_control"] = dict(control)\n',
+        '            stable[-1]["cache_control"] = {"type": "ephemeral"}\n',
+    ),
+    mutant(
+        "no breakpoint moves with the conversation",
+        ANTHROPIC_MESSAGES,
+        '            stable[-1]["cache_control"] = dict(control)\n        body["cache_control"] = control\n',
+        '            stable[-1]["cache_control"] = dict(control)\n',
     ),
     mutant(
         "the tools are offered without what they take",

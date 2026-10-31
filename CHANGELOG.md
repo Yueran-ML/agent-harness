@@ -171,6 +171,19 @@ change what was there before.
 - On Windows the cmdlets that read files, `Get-Content`, `Select-String` and `Import-Csv`, read
   UTF-8 in the commands of the agent and of hooks, and Python opens files in UTF-8 there unless
   `PYTHONUTF8` says otherwise. A file of UTF-8 in Chinese no longer comes out garbled.
+- Ultra no longer adds to the system prompt. The agent of the conversation is told how to work
+  at ultra in a message of its own before the input of the turn, and told once that it is over
+  when another level is chosen. The system prompt, the tools and the conversation so far are
+  then the same at every level, so a change of level no longer writes the whole system prompt
+  into the conversation again, and only what is asked of the reasoning and what follows the
+  conversation differ. A summary that takes the message away has it told again, as with every
+  instruction of that kind, and a subagent is told nothing of it.
+- Requests to Anthropic ask the cache to keep the tools and the system prompt apart from the
+  conversation, with a breakpoint of their own beside the one that moves with the conversation,
+  each for as long as the config says. A change of the effort, or of the beginning of the
+  conversation, then still reads them from the cache, on the models that put the thinking after
+  them. `python -m bench.cache_levels` measures what a service reads from its cache as the
+  level changes, with the key that the program finds as it always does.
 
 ## 0.2.0 (2026-10-25)
 

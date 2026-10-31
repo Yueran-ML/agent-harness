@@ -51,7 +51,7 @@ from columbina.apps.cli.terminal import TERMINAL, real
 from columbina.apps.cli.transcript import Symbols, Transcript, fit, recap
 from columbina.apps.common import DEFAULT_PROMPT, model_named, open_agent
 from columbina.apps.effort import (
-    ULTRA,
+    SOURCE,
     Effort,
     Style,
     effort_named,
@@ -59,10 +59,12 @@ from columbina.apps.effort import (
     offered,
     reasoning_of,
     style_of,
+    told_at,
+    told_by,
 )
 from columbina.apps.terminal_text import harmless
 from columbina.commands import COMMANDS, SWITCH, Command, Commands, Opener, is_command
-from columbina.kernel import Context, Next
+from columbina.kernel import Context
 from columbina.llm import CallConfig
 from columbina.permissions import PERMISSIONS
 from columbina.prices import SPENDING
@@ -77,7 +79,6 @@ from columbina.session import (
     TurnEndEvent,
     TurnStartEvent,
 )
-from columbina.system_prompt import SYSTEM_PROMPT_ASSEMBLE, Draft
 from columbina.token_meter import TOKEN_METER
 
 __all__ = ["Cli", "Config", "apply", "inject", "name"]
@@ -284,6 +285,13 @@ class Cli:
             return self._effort
         return effort_of(self._config.model.reasoning, self._style())
 
+    async def how_to_work(self, agent: Agent) -> str | None:
+        """Tell the agent of the conversation how to work at the level of effort, and no other.
+
+        A subagent, or an agent that the conversation has left, is told nothing.
+        """
+        return told_at(self._chosen_effort(), agent.session) if agent is self._agent else None
+
     def _call(self) -> CallConfig:
         """The model that a request of this run asks, and how much it asks it to reason.
 
@@ -400,8 +408,6 @@ class Cli:
         agent.ctx.on(SESSION_EVENT, self._heard(agent, self._event))
         agent.ctx.on(STREAM, self._heard(agent, self._chunk))
         agent.ctx.on(APPROVAL_ASK, Responder(prompt, self._ctx.get(PERMISSIONS)))
-        # Only the agent of the conversation hears this: a subagent has a scope of its own.
-        agent.ctx.on(SYSTEM_PROMPT_ASSEMBLE, self._with_the_effort)
         prompt.on_cancel = lambda: agent.cancel("user")
         # The agent may be in a turn already. Whoever waits for it to come to rest finds out.
         self._turning = True
@@ -503,11 +509,6 @@ class Cli:
                 self._turning = False
                 self._mark(prompt)
 
-    async def _with_the_effort(self, draft: Draft, proceed: Next[Draft, str]) -> str:
-        """Tell the agent of the conversation how to work, where the level of effort is ultra."""
-        text = await proceed(draft)
-        return f"{text}\n\n{ULTRA}" if self._chosen_effort() == "ultra" else text
-
     def _event(self, committed: Committed) -> None:
         prompt, agent = self._prompt, self._agent
         assert prompt is not None
@@ -573,5 +574,7 @@ def apply(ctx: Context, config: Config) -> None:
     commands.registry.add(
         ctx, "new", Command(cli.begin_anew, "End this session and begin another one.")
     )
+    # The agent of the conversation is told how to work at ultra, and no other.
+    ctx.use(AGENTS).context.add(ctx, SOURCE, told_by(cli.how_to_work))
     ctx.provide(SWITCH, cli.switch)
     ctx.provide(FRONTEND, cli)

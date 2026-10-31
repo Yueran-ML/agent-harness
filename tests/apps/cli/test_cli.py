@@ -24,11 +24,13 @@ from columbina.agent import INBOX, STREAM, Agent, AgentSpec, StreamFrame
 from columbina.approval import APPROVAL, ApprovalRequest
 from columbina.apps import FRONTEND, Frontend
 from columbina.apps.cli.terminal import TERMINAL
+from columbina.apps.cli.transcript import Symbols, on_screen, recap
 from columbina.apps.effort import ULTRA
 from columbina.commands import COMMANDS, SWITCH, Command
 from columbina.commands import compact as compact_command
 from columbina.commands import fork as fork_command
 from columbina.compaction import COMPACTION, Outcome, Why
+from columbina.export import About, exported
 from columbina.kernel import Context
 from columbina.llm import LLM, BlockEnd, BlockStart, Chunk, LlmFailure, TextDelta, Usage
 from columbina.llm.adapters.scripted import Call, Reply
@@ -36,9 +38,9 @@ from columbina.session import TurnEndEvent, UserMessageEvent
 from columbina.session.store import SESSION_FILE
 from columbina.token_meter import TOKEN_METER
 from columbina.tools import Tool, ToolRun
-from support.loop import MODEL, Harness, assistant, from_a_source, lingering, user
+from support.loop import MODEL, Harness, assistant, context, from_a_source, lingering, user
 from support.terminal import CTRL_D, ESCAPE, Desk, desk, stands, until
-from support.thinking import Thinking, instructions_now
+from support.thinking import Thinking, instructions_now, told_of_the_effort
 
 STEER = chr(0xBB)
 
@@ -373,12 +375,34 @@ async def test_how_hard_the_model_thinks_is_chosen_and_kept_when_the_model_is_na
         at.type(CTRL_D)
         await left(running)
 
-    # Ultra asks for the most reasoning there is, and tells the agent how to work.
+    # Ultra asks for the most reasoning there is, and tells the agent how to work in a message
+    # of its own: the instructions stay as they were.
     asked = [
-        (request.config.model, request.config.reasoning, ULTRA in instructions_now(request))
+        (request.config.model, request.config.reasoning, told_of_the_effort(request))
         for request in harness.model.requests
     ]
-    assert asked == [("deep", "max", False), ("deep-2", "max", True), ("deep-2", "low", False)]
+    assert asked == [("deep", "max", []), ("deep-2", "max", [ULTRA]), ("deep-2", "low", [])]
+    assert all(ULTRA not in instructions_now(request) for request in harness.model.requests)
+    # Not a word of it is shown, now or when the session is taken up again, or in a page of it.
+    assert "Work at full depth" not in at.seen()
+    second = harness.model.requests[1]
+    assert second.messages[-2:] == (context("effort", ULTRA), user("Second."))
+    (first_session,) = [
+        stored
+        for stored in harness.sessions.stored(harness.cwd)
+        if any(
+            isinstance(event.data, UserMessageEvent) and event.data.source == "context/effort"
+            for event in harness.sessions.read(harness.cwd, stored.id).events
+        )
+    ]
+    events = harness.sessions.read(harness.cwd, first_session.id).events
+    shown = on_screen(recap(events, Symbols()), colours=False)
+    assert "Second." in shown
+    assert "Work at full depth" not in shown
+    for form in ("md", "html"):
+        page = exported(About(first_session.id, 0, str(harness.cwd)), events, form)
+        assert "Second." in page
+        assert "Work at full depth" not in page
 
 
 async def test_the_terminal_asks_what_the_config_asks_until_a_level_is_chosen(

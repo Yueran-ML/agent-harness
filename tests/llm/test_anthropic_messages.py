@@ -216,7 +216,14 @@ def test_the_instructions_go_into_system_and_the_tools_are_offered() -> None:
         LlmRequest(config=MODEL, messages=(instructions, *HELLO, another), tools=(READ,)), CONFIG
     )
 
-    assert body["system"] == "Be brief.\n\nBe kind.\n\nAnswer in English."
+    # The instructions are one block, and the cache keeps what ends with them.
+    assert body["system"] == [
+        {
+            "type": "text",
+            "text": "Be brief.\n\nBe kind.\n\nAnswer in English.",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
     assert body["messages"] == [{"role": "user", "content": [{"type": "text", "text": "hello"}]}]
     assert body["tools"] == [
         {
@@ -268,6 +275,71 @@ def test_the_cache_is_asked_for_as_the_config_says(cache: Any, control: Any) -> 
     body = build_body(request(*HELLO), CONFIG.model_copy(update={"cache": cache}))
 
     assert body.get("cache_control") == control
+
+
+INSTRUCTIONS = SystemMessage(content=(TextBlock(text="Be brief."),))
+WRITE = ToolSchema(name="write", description="Write a file.", parameters={"type": "object"})
+
+
+def breakpoints(body: dict[str, Any]) -> list[tuple[str, Any]]:
+    """Where a body asks the cache to keep what comes before, in the order the service reads it.
+
+    The service reads the tools, then the instructions, then the conversation. A breakpoint at
+    the top of the body moves to the last block of the conversation.
+    """
+    found: list[tuple[str, Any]] = []
+    for at, tool in enumerate(body.get("tools", [])):
+        if "cache_control" in tool:
+            found.append((f"tools[{at}]", tool["cache_control"]))
+    for at, block in enumerate(body.get("system", [])):
+        if "cache_control" in block:
+            found.append((f"system[{at}]", block["cache_control"]))
+    found.extend(
+        ("messages", block["cache_control"])
+        for turn in body["messages"]
+        for block in turn["content"]
+        if "cache_control" in block
+    )
+    if "cache_control" in body:
+        found.append(("last", body["cache_control"]))
+    return found
+
+
+@pytest.mark.parametrize(
+    ("cache", "control"),
+    [("5m", {"type": "ephemeral"}), ("1h", {"type": "ephemeral", "ttl": "1h"})],
+)
+@pytest.mark.parametrize(
+    ("messages", "tools", "first"),
+    [
+        ((INSTRUCTIONS, *HELLO), (READ, WRITE), "system[0]"),
+        ((INSTRUCTIONS, *HELLO), (), "system[0]"),
+        (HELLO, (READ, WRITE), "tools[1]"),
+    ],
+    ids=["instructions and tools", "instructions alone", "tools alone"],
+)
+def test_the_cache_keeps_the_tools_and_the_instructions_apart_from_the_conversation(
+    cache: Any, control: Any, messages: tuple[Message, ...], tools: Any, first: str
+) -> None:
+    body = build_body(request(*messages, tools=tools), CONFIG.model_copy(update={"cache": cache}))
+
+    # One breakpoint where the tools and the instructions end, and one that moves to the end of
+    # the conversation: two of the four that the service takes, of one length of time, so that
+    # none of a longer time comes after one of a shorter time.
+    assert breakpoints(body) == [(first, control), ("last", control)]
+
+
+def test_a_conversation_without_tools_or_instructions_has_the_one_breakpoint_that_moves() -> None:
+    assert breakpoints(build_body(request(*HELLO), CONFIG)) == [("last", {"type": "ephemeral"})]
+
+
+def test_no_breakpoint_is_asked_for_where_the_cache_is_off() -> None:
+    body = build_body(
+        request(INSTRUCTIONS, *HELLO, tools=(READ,)), CONFIG.model_copy(update={"cache": "off"})
+    )
+
+    assert breakpoints(body) == []
+    assert body["system"] == [{"type": "text", "text": "Be brief."}]
 
 
 def test_the_thinking_is_shown_as_the_config_says() -> None:

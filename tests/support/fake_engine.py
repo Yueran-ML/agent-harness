@@ -135,6 +135,7 @@ _GRADE_EDITS = {
     "add_serial_before",
     "add_parallel",
     "add_layer",
+    "add_outside",
     "extract_node",
     "reset_node",
     "copy_grade",
@@ -938,6 +939,9 @@ class Fake:
             links = [_link(node, "")] + [
                 {**one, "from": ""} for one in grade["links"] if one["from"] == node
             ]
+        elif name == "add_outside":
+            links = [_link(node, ""), {"from": node, "to": "", "kind": "key", "input": 0}]
+            links += [{**one, "from": ""} for one in grade["links"] if one["from"] == node]
         elif name in ("append_node", "add_serial_before"):
             links = [_link("", node)] + ([_link(up, "")] if up is not None else [])
         else:

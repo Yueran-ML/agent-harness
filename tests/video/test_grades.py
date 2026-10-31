@@ -230,6 +230,69 @@ async def test_a_shot_match_given_in_part_where_there_is_none_is_made_whole(
     assert told["grades"][0]["nodes"][0]["shot_match"] is True
 
 
+async def test_a_qualifier_given_in_part_where_there_is_none_is_made_whole_and_told(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    told = result(
+        await desk.call(
+            "video_grade_set",
+            grade="c2",
+            node="n3",
+            settings={
+                "qualifier.hue.center": 8,
+                "qualifier.hue.width": 12,
+                "qualifier.finesse.blur_radius": 30,
+                "key.qualifier.gain": 0.8,
+            },
+        )
+    )
+    (sent,) = fake.transactions[0]
+    qualifier = sent["params"]["qualifier"]
+    assert qualifier["mode"] == "hsl"
+    assert qualifier["hue"] == {"on": True, "center": 8, "width": 12, "soft": 0.0, "symmetry": 50.0}
+    assert qualifier["lum"] == {
+        "on": True, "low": 0.0, "high": 100.0, "low_soft": 0.0, "high_soft": 0.0,
+    }  # fmt: skip
+    assert qualifier["finesse"]["white_clip"] == 100.0
+    assert qualifier["finesse"]["morph"] == "shrink"
+    assert sent["params"]["key"] == {"qualifier": {"gain": 0.8}}
+    node = told["grades"][0]["nodes"][0]
+    assert node["qualifier"] == "hsl"
+    assert node["settings"]["qualifier.hue.center"] == 8
+    assert node["settings"]["qualifier.finesse.blur_radius"] == 30
+    assert node["settings"]["key.qualifier.gain"] == 0.8
+    for settings, said in [
+        ({"qualifier.finesse.blur_radius": 2500}, "Blur Radius"),
+        ({"qualifier.mode": "3d"}, "hsl, rgb, lum"),
+        ({"qualifier.finesse.morph": "erode"}, "shrink, grow, opening, closing"),
+        ({"key.input_blur.ratio": 2}, "H/V Ratio"),
+    ]:
+        refused = await desk.call("video_grade_set", grade="c2", node="n3", settings=settings)
+        assert refused.error is not None, settings
+        assert said in refused.text, refused.text
+    assert len(fake.transactions) == 1
+
+
+async def test_an_outside_node_is_added_after_a_corrector(studio: tuple[Desk, Fake]) -> None:
+    desk, fake = studio
+    target = {"level": "clip", "timeline": "t1", "clip": "c2"}
+    result(
+        await desk.call(
+            "video_grade_node",
+            grade="c2",
+            action="add_outside",
+            node=1,
+            settings={"primaries.saturation": 20},
+        )
+    )
+    edit, set_node = fake.transactions[0]
+    assert edit == {"edit": "add_outside", "grade": target, "node": "n3"}
+    assert set_node["op"] == "set_node"
+    assert set_node["id"] == "n10"
+    assert set_node["params"] == {"primaries": {"saturation": 20}}
+
+
 async def test_nodes_are_added_removed_reset_and_extracted_by_the_color_pages_commands(
     studio: tuple[Desk, Fake],
 ) -> None:

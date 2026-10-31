@@ -58,8 +58,8 @@ __all__ = [
 
 Level = Literal["clip", "pre_clip", "post_clip", "timeline"]
 NodeAction = Literal[
-    "append", "add_serial", "add_serial_before", "add_parallel", "add_layer", "remove", "reset",
-    "extract",
+    "append", "add_serial", "add_serial_before", "add_parallel", "add_layer", "add_outside",
+    "remove", "reset", "extract",
 ]  # fmt: skip
 CopyAction = Literal["copy", "append", "paste_node", "paste_value"]
 # Where the keys of a grade copied to another go (Apply Grades Using, pp. 3264, 3287).
@@ -212,6 +212,47 @@ _KEY_OUTPUT: Branch = {
     "offset": Number("Key Output offset", 0.0, -1.0, 1.0),
 }
 
+
+def _range(name: str) -> Branch:
+    """A range of a qualifier (pp. 3173-3175): on, Low, High, Low Soft, High Soft, 0..100."""
+    return {
+        "on": Flag(f"{name} on (off: it does not limit the key)", True),
+        "low": Number(f"{name} Low", 0.0, 0.0, 100.0),
+        "high": Number(f"{name} High", 100.0, 0.0, 100.0),
+        "low_soft": Number(f"{name} Low Soft", 0.0, 0.0, 100.0),
+        "high_soft": Number(f"{name} High Soft", 0.0, 0.0, 100.0),
+    }
+
+
+QUALIFIER: Branch = {
+    "mode": Choice("Qualifier mode", "hsl", ("hsl", "rgb", "lum")),
+    "invert": Flag("Qualifier invert", False),
+    "hue": {
+        "on": Flag("Hue on (off: it does not limit the key)", True),
+        "center": Number("Hue Center (red 0, green 33.3, blue 66.7)", 50.0, 0.0, 100.0),
+        "width": Number("Hue Width (100 every hue)", 100.0, 0.0, 100.0),
+        "soft": Number("Hue Soft", 0.0, 0.0, 100.0),
+        "symmetry": Number("Hue Symmetry", 50.0, 0.0, 100.0),
+    },
+    "sat": _range("Sat"),
+    "lum": _range("Lum"),
+    "red": _range("Red"),
+    "green": _range("Green"),
+    "blue": _range("Blue"),
+    "finesse": {
+        "pre_filter": Number("Pre-Filter", 0.0, 0.0, 100.0),
+        "clean_black": Number("Clean Black", 0.0, 0.0, 100.0),
+        "black_clip": Number("Black Clip", 0.0, 0.0, 100.0),
+        "clean_white": Number("Clean White", 0.0, 0.0, 100.0),
+        "white_clip": Number("White Clip", 100.0, 0.0, 100.0),
+        "blur_radius": Number("Blur Radius", 0.0, 0.0, 2000.0),
+        "in_out_ratio": Number("In/Out Ratio", 0.0, -100.0, 100.0),
+        "morph": Choice("Morph Operation", "shrink", ("shrink", "grow", "opening", "closing")),
+        "morph_radius": Number("Morph Radius", 0.0, 0.0, 100.0),
+    },
+}
+"""The Qualifier palette (pp. 3157-3182), as PROTOCOL.md's Grades gives it."""
+
 COMPOSITES = (
     "normal", "add", "color", "color_burn", "color_dodge", "darken", "darker_color",
     "difference", "divide", "exclusion", "hard_mix", "hardlight", "hue", "lighten",
@@ -270,7 +311,15 @@ CORRECTOR: Branch = {
         "low_soft": _rgb("Soft Clip Low Soft", 0.0, 0.0, 100.0),
         "high_soft": _rgb("Soft Clip High Soft", 0.0, 0.0, 100.0),
     },
-    "key": {"input": _key_input(True, "Key Input"), "output": _KEY_OUTPUT},
+    "key": {
+        "input": _key_input(True, "Key Input"),
+        "output": _KEY_OUTPUT,
+        "qualifier": _key_input(True, "Key Qualifier"),
+        "input_blur": {
+            "radius": Number("Key Input Blur Radius", 0.0, 0.0, 2000.0),
+            "ratio": Number("Key Input Blur H/V Ratio", 0.5, 0.0, 1.0),
+        },
+    },
     "shot_match": Whole(
         "Shot Match",
         {
@@ -281,6 +330,7 @@ CORRECTOR: Branch = {
             "pivot": Number("Shot Match pivot", 0.435, 0.0, 1.0),
         },
     ),
+    "qualifier": Whole("Qualifier", QUALIFIER),
 }
 """The settings of a corrector, with the units, ranges and neutral values of PROTOCOL.md."""
 
@@ -700,6 +750,10 @@ def _node_summary(
                 item["lut_missing"] = missing[lut]
         if params.get("shot_match") is not None:
             item["shot_match"] = True
+        qualifier = params.get("qualifier")
+        if _is_map(qualifier):
+            item["qualifier"] = _object(qualifier).get("mode", "hsl")
+            _changed(QUALIFIER, qualifier, "qualifier", settings)
     elif kind in ("parallel_mixer", "layer_mixer"):
         count = int(params.get("inputs", 2))
         item["inputs"] = (
@@ -1155,6 +1209,7 @@ class Grader:
             "add_serial_before",
             "add_parallel",
             "add_layer",
+            "add_outside",
         )
         if not adding and (label is not None or settings):
             raise GradeError(f"label and settings are for a node that is added, not for {action}")
@@ -1197,11 +1252,10 @@ class Grader:
             if adding and (label is not None or settings):
                 # The corrector that the edit adds is the first node it adds, and the engine
                 # gives it n and the next_id of the project: no node has an id from there on.
-                new = {
-                    "id": f"n{project['next_id']}",
-                    "kind": "corrector",
-                    "params": new_corrector(),
-                }
+                params = new_corrector()
+                if action == "add_outside":
+                    params["key"]["input"]["invert"] = True
+                new = {"id": f"n{project['next_id']}", "kind": "corrector", "params": params}
                 patch = checked_patch(settings, new) if settings else None
                 ops.append(_set_node(target, str(new["id"]), params=patch, label=label))
             return ops
@@ -2080,7 +2134,7 @@ def hint_of(error: EngineError) -> str | None:
         "wrong_node": (
             "video_grade_info shows the kind of each node: add_parallel, add_layer and "
             "add_serial_before go beside or before a corrector (add_serial_before also before "
-            "output), add_serial after a node or source"
+            "output), add_outside after a corrector, add_serial after a node or source"
         ),
         "no_port": "video_grade_info shows how the nodes are linked",
         "input_taken": "video_grade_info shows how the nodes are linked",

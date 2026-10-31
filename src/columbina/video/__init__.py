@@ -393,7 +393,8 @@ class _GradeNode(_Graded):
             "append: a corrector before the output (Alt+K). add_serial: after node or source "
             "(Alt+S). add_serial_before: before node (Shift+S). add_parallel / add_layer: beside "
             "node, mixed (Alt+P / Alt+L). remove: joining its neighbours. reset: new settings. "
-            "extract: unlinked, kept (E)."
+            "extract: unlinked, kept (E). add_outside: after a corrector, its key inverted "
+            "(Alt+O)."
         )
     )
     node: int | str | None = Field(default=None, description=_NODE + " Not for append.")

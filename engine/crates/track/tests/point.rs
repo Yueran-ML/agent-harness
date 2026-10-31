@@ -80,11 +80,10 @@ fn a_moving_blob_is_followed_by_one_crosshair() {
     }
 }
 
-#[test]
-fn two_crosshairs_give_a_zoom_and_a_rotation() {
-    let at = [[90.0, 70.0], [170.0, 120.0]];
-    let scene = blobs(&at);
-    let c = [130.0, 95.0];
+/// The motion at frame 9 of crosshairs on blobs at `at`, while the scene zooms by 1 % and turns
+/// by 0.01 rad a frame about `c`, and the motion it should be.
+fn zoomed_and_turned(at: &[[f64; 2]], c: [f64; 2]) -> (Motion, Motion) {
+    let scene = blobs(at);
     let truths: Vec<Mat3> = (0..10)
         .map(|k| {
             similarity(
@@ -109,8 +108,26 @@ fn two_crosshairs_give_a_zoom_and_a_rotation() {
         0,
         Direction::Forward,
     );
-    let m = data.motion_at(9);
-    let want = Motion::from_matrix(&truths[9], c).unwrap();
+    (
+        data.motion_at(9),
+        Motion::from_matrix(&truths[9], c).unwrap(),
+    )
+}
+
+#[test]
+fn two_crosshairs_track_rotation_and_three_zoom() {
+    // "At least two tracking points [...] to track rotation, and at least three to track zoom"
+    // (p. 3237).
+    let c = [130.0, 95.0];
+    let (m, want) = zoomed_and_turned(&[[90.0, 70.0], [170.0, 120.0]], c);
+    assert!((m.rotate - want.rotate).abs() < 1e-3, "{m:?} {want:?}");
+    assert!((m.zoom - 1.0).abs() < 1e-12, "{m:?}");
+    // The anchor halfway between them still goes where it should.
+    assert!(
+        (m.pan - want.pan).abs() < 0.1 && (m.tilt - want.tilt).abs() < 0.1,
+        "{m:?} {want:?}"
+    );
+    let (m, want) = zoomed_and_turned(&[[90.0, 70.0], [170.0, 120.0], [100.0, 125.0]], c);
     assert!((m.zoom - want.zoom).abs() < 1e-3, "{m:?} {want:?}");
     assert!((m.rotate - want.rotate).abs() < 1e-3, "{m:?} {want:?}");
     assert!(

@@ -15,8 +15,10 @@
 //!   with a fixed seed, then least squares reweighted by Huber's weights). Features lost are
 //!   replaced from within the window where it now is.
 //! - [`PointTracker`] (p. 3234, pp. 3245–3249): crosshairs placed by the user, each followed on
-//!   its own with a larger window; one gives a shift, two a similarity, four a homography when
-//!   Perspective 3D is on (three an affine map).
+//!   its own with a larger window. As the manual has it, rotation needs at least two points and
+//!   zoom at least three (p. 3237): one gives a shift, two a shift and a rotation, three or more
+//!   a similarity, and with Perspective 3D on three an affine map and four a homography
+//!   ([`Model::for_points`]).
 //! - The motion is fitted as a homography with Perspective 3D and as a similarity without; the
 //!   boxes that are off then put their components back to no motion ([`Motion::masked`]).
 //! - [`run`] makes the commands of the palette (forward, reverse, forward and back, one frame

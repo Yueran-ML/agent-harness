@@ -12,7 +12,8 @@ use crate::{Step, TrackError};
 #[derive(Clone, Debug, PartialEq)]
 pub struct PointOptions {
     /// Whether the motion is fitted with perspective (a homography from 4 points, an affine map
-    /// from 3) or as a similarity (from 2 points; one point gives a shift).
+    /// from 3) or without: a similarity from 3 points, a shift and a rotation from 2 (zoom
+    /// needs three points, p. 3237), a shift from 1.
     pub perspective: bool,
     /// The half side of the template window about each crosshair: 15 makes it 31×31. A
     /// crosshair has no inner and outer box to set (p. 3247), so this is fixed.

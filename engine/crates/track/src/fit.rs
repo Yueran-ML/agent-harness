@@ -8,7 +8,10 @@ use crate::linalg::{solve, Mat3, Point};
 pub enum Model {
     /// A shift: 2 numbers, 1 point.
     Translation,
-    /// A shift, a uniform scale and a rotation: 4 numbers, 2 points.
+    /// A shift and a rotation: 3 numbers, 2 points.
+    Rigid,
+    /// A shift, a uniform scale and a rotation: 4 numbers, 2 points (but see
+    /// [`Model::for_points`]: it is fitted from 3).
     Similarity,
     /// Any linear map and a shift: 6 numbers, 3 points.
     Affine,
@@ -22,14 +25,17 @@ impl Model {
     pub fn min_points(self) -> usize {
         match self {
             Self::Translation => 1,
-            Self::Similarity => 2,
+            Self::Rigid | Self::Similarity => 2,
             Self::Affine => 3,
             Self::Homography => 4,
         }
     }
 
-    /// The kind fitted to `n` points: what Perspective 3D asks for when it is on (a homography
-    /// from 4 points, an affine map from 3), else a similarity, down to a shift for one point.
+    /// The kind fitted to `n` points, as the manual allows: "at least two tracking points
+    /// [...] to track rotation, and at least three to track zoom" (p. 3237). So one point gives a
+    /// shift, two a shift and a rotation (the zoom stays 1), and three or more a similarity; with
+    /// Perspective 3D on, three give an affine map and four or more a homography.
+    ///
     /// Zoom and rotation are fitted even when their boxes are off, and left out only from what
     /// is applied to the window ([`crate::Motion::masked`]): a fit that ignored a rotation of the
     /// subject would put its features far from the anchor out of place.
@@ -38,7 +44,7 @@ impl Model {
         match n {
             0 => None,
             1 => Some(Self::Translation),
-            2 => Some(Self::Similarity),
+            2 => Some(Self::Rigid),
             3 if perspective => Some(Self::Affine),
             _ if perspective => Some(Self::Homography),
             _ => Some(Self::Similarity),
@@ -99,8 +105,9 @@ pub(crate) fn least_squares(model: Model, src: &[Point], dst: &[Point], w: &[f64
     let (ms, md) = (mean(src), mean(dst));
     match model {
         Model::Translation => Some(Mat3::translation(md[0] - ms[0], md[1] - ms[1])),
-        Model::Similarity => {
-            // x' = a·x − b·y + tx, y' = b·x + a·y + ty, about the means.
+        Model::Rigid | Model::Similarity => {
+            // x' = a·x − b·y + tx, y' = b·x + a·y + ty, about the means; for a rigid motion,
+            // (a, b) made a unit vector (the rotation of Procrustes).
             let (mut num_a, mut num_b, mut den) = (0.0, 0.0, 0.0);
             for ((p, q), &w) in src.iter().zip(dst).zip(w) {
                 let (x, y) = (p[0] - ms[0], p[1] - ms[1]);
@@ -112,7 +119,15 @@ pub(crate) fn least_squares(model: Model, src: &[Point], dst: &[Point], w: &[f64
             if den <= 1e-12 * total {
                 return None;
             }
-            let (a, b) = (num_a / den, num_b / den);
+            let (a, b) = if model == Model::Rigid {
+                let norm = num_a.hypot(num_b);
+                if norm <= 1e-12 * den {
+                    return None;
+                }
+                (num_a / norm, num_b / norm)
+            } else {
+                (num_a / den, num_b / den)
+            };
             Some(Mat3([
                 [a, -b, md[0] - (a * ms[0] - b * ms[1])],
                 [b, a, md[1] - (b * ms[0] + a * ms[1])],
@@ -282,7 +297,7 @@ fn degenerate(model: Model, ps: &[Point]) -> bool {
     };
     match model {
         Model::Translation => false,
-        Model::Similarity => close(ps[0], ps[1]),
+        Model::Rigid | Model::Similarity => close(ps[0], ps[1]),
         Model::Affine => area(ps[0], ps[1], ps[2]) < 4.0,
         Model::Homography => (0..4).any(|skip| {
             let t: Vec<Point> = (0..4).filter(|&i| i != skip).map(|i| ps[i]).collect();
@@ -455,10 +470,13 @@ mod tests {
     fn each_kind_is_found_exactly_from_its_pairs() {
         let h = Mat3([[1.02, -0.05, 4.0], [0.04, 0.99, -3.0], [2e-5, -1e-5, 1.0]]);
         let sim = Mat3([[0.98, -0.1, 7.0], [0.1, 0.98, 2.0], [0.0, 0.0, 1.0]]);
+        let (sin, cos) = 0.1_f64.sin_cos();
+        let rigid = Mat3([[cos, -sin, 7.0], [sin, cos, 2.0], [0.0, 0.0, 1.0]]);
         let aff = Mat3([[1.1, 0.2, -5.0], [-0.1, 0.9, 6.0], [0.0, 0.0, 1.0]]);
         let src = grid();
         for (model, truth) in [
             (Model::Translation, Mat3::translation(3.5, -2.25)),
+            (Model::Rigid, rigid),
             (Model::Similarity, sim),
             (Model::Affine, aff),
             (Model::Homography, h),
@@ -509,10 +527,23 @@ mod tests {
     }
 
     #[test]
+    fn a_rigid_fit_keeps_the_scale_of_a_zoom_out() {
+        let src = grid();
+        let sim = Mat3([[0.98, -0.1, 7.0], [0.1, 0.98, 2.0], [0.0, 0.0, 1.0]]);
+        let dst: Vec<Point> = src.iter().map(|&p| sim.apply(p)).collect();
+        let fit = least_squares(Model::Rigid, &src, &dst, &vec![1.0; src.len()]).unwrap();
+        let m = fit.0;
+        assert!((m[0][0].hypot(m[1][0]) - 1.0).abs() < 1e-12);
+        assert!((m[1][0].atan2(m[0][0]) - 0.1_f64.atan2(0.98)).abs() < 1e-12);
+    }
+
+    #[test]
     fn the_kind_follows_the_points_and_perspective() {
         assert_eq!(Model::for_points(false, 0), None);
         assert_eq!(Model::for_points(true, 1), Some(Model::Translation));
-        assert_eq!(Model::for_points(true, 2), Some(Model::Similarity));
+        // Two points track rotation, three zoom (p. 3237).
+        assert_eq!(Model::for_points(true, 2), Some(Model::Rigid));
+        assert_eq!(Model::for_points(false, 2), Some(Model::Rigid));
         assert_eq!(Model::for_points(true, 3), Some(Model::Affine));
         assert_eq!(Model::for_points(false, 3), Some(Model::Similarity));
         assert_eq!(Model::for_points(true, 9), Some(Model::Homography));

@@ -1,0 +1,256 @@
+/*
+ * The Gallery of the Color page (Reference Manual 20, pp. 3256–3272): its head, the albums at its
+ * left, the stills, and the memories at its foot; and the second row of the viewer's toolbar, with
+ * its wipe and split screen (pp. 2987, 3000, 3003).
+ */
+.color-side[data-panel='gallery'] {
+  padding: 0;
+}
+
+.gallery {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.gallery-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: var(--s1) var(--s2);
+  box-shadow: inset 0 -1px 0 var(--line);
+}
+
+.gallery-head .icon-btn[aria-pressed='true'] {
+  color: var(--accent);
+}
+
+.gallery-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0 var(--s1);
+}
+
+.gallery-size {
+  width: 64px;
+  min-width: 0;
+}
+
+.gallery-search {
+  margin: var(--s1) var(--s2) 0;
+  height: 26px;
+  font-size: var(--text-caption);
+}
+
+.gallery-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.gallery-albums {
+  flex: none;
+  width: 34%;
+  max-width: 120px;
+  margin: 0;
+  padding: var(--s1) 0;
+  list-style: none;
+  overflow-y: auto;
+  font-size: var(--text-caption);
+  box-shadow: inset -1px 0 0 var(--line);
+}
+
+.gallery-albums > li {
+  padding: 3px var(--s2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--moon-2);
+  cursor: default;
+}
+
+.gallery-albums > li[aria-selected='true'] {
+  color: var(--moon-1);
+  background: var(--accent-soft);
+}
+
+/* The PowerGrade albums, at the bottom (p. 3265): set apart from the project's by a line above the first. */
+.gallery-albums > li[data-kind='stills'] + li[data-kind='powergrade'] {
+  margin-top: var(--s1);
+  box-shadow: inset 0 1px 0 var(--line);
+}
+
+.gallery-rename {
+  height: 22px;
+  font-size: var(--text-caption);
+}
+
+.gallery-stills {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: var(--s2);
+  padding: var(--s2);
+  overflow-y: auto;
+}
+
+.gallery-still {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  font-size: 10px;
+  color: var(--moon-2);
+}
+
+.gallery-picture {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 100%;
+  overflow: hidden;
+  border: 2px solid transparent;
+  border-radius: 2px;
+  background: var(--ink-0);
+}
+
+.gallery-picture > img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.gallery-still[aria-selected='true'] .gallery-picture {
+  border-color: var(--moon-2);
+}
+
+.gallery-still[data-current] .gallery-picture {
+  border-color: var(--accent);
+}
+
+/* The still that the wipe shows. */
+.gallery-still[data-wiped] .gallery-still-name {
+  color: var(--accent);
+}
+
+.gallery-still-name {
+  font-family: var(--font-mono, monospace);
+  color: var(--moon-1);
+}
+
+.gallery-still-label {
+  min-height: 12px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The memories A–H, at the foot of the Gallery. */
+.gallery-memories {
+  display: flex;
+  gap: 4px;
+  margin: 0;
+  padding: var(--s1) var(--s2);
+  list-style: none;
+  overflow-x: auto;
+  box-shadow: inset 0 1px 0 var(--line);
+}
+
+.gallery-memory {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  height: 32px;
+  border-radius: 2px;
+  background: var(--ink-0);
+}
+
+.gallery-memory .gallery-picture {
+  border: none;
+}
+
+.gallery-memory-letter {
+  position: absolute;
+  left: 2px;
+  top: 0;
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--moon-1);
+  text-shadow: 0 0 2px var(--ink-0);
+}
+
+.gallery-memory:not([data-filled]) .gallery-memory-letter {
+  position: static;
+  color: var(--moon-3, var(--moon-2));
+}
+
+.gallery-problem {
+  margin: 0;
+  padding: var(--s1) var(--s2);
+  font-size: var(--text-caption);
+  color: var(--danger, var(--accent));
+}
+
+.gallery-properties {
+  display: grid;
+  gap: var(--s1);
+  margin: 0;
+}
+
+.gallery-properties > div {
+  display: grid;
+  grid-template-columns: 9em 1fr;
+  gap: var(--s2);
+}
+
+.gallery-properties dt {
+  color: var(--moon-2);
+}
+
+.gallery-properties dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* --- The viewer's toolbar: its title bar, and the second row beneath it. */
+.color-viewer .monitor-head {
+  height: auto;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  padding: 0;
+}
+
+.color-viewer-heads {
+  display: flex;
+  flex-direction: column;
+}
+
+.color-viewer-heads > .color-viewer-head,
+.color-viewer-modes {
+  min-height: 28px;
+  padding: 0 var(--s3);
+}
+
+.color-viewer-modes {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  box-shadow: inset 0 1px 0 var(--line);
+}
+
+.color-viewer-modes .icon-btn[aria-pressed='true'] {
+  color: var(--accent);
+}
+
+/* The clip of a timeline wipe: outlined in blue (p. 3261), the current one in orange. */
+.color-thumb[data-reference] .color-thumb-frame {
+  border-color: var(--info, #4a90e2);
+}

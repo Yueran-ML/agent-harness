@@ -111,6 +111,11 @@ contextBridge.exposeInMainWorld('columbina', {
     open: (cwd) => ipcRenderer.invoke('columbina:engine-open', { cwd }),
     call: (method, params) => ipcRenderer.invoke('columbina:engine-call', { method, params }),
     importFiles: (asked) => ipcRenderer.invoke('columbina:engine-import', { language: asked?.language, ...(asked?.bin === undefined ? {} : { bin: asked.bin }) }),
+    // Stills of the Gallery come from pictures chosen in the dialog of the system, and go where Save As says.
+    importStills: (asked) => ipcRenderer.invoke('columbina:engine-still-import', { language: asked?.language, ...(asked?.album === undefined ? {} : { album: asked.album }) }),
+    exportStills: (asked) => ipcRenderer.invoke('columbina:engine-still-export', {
+      language: asked?.language, stills: Array.isArray(asked?.stills) ? [...asked.stills] : asked?.stills,
+    }),
     render: (options) => ipcRenderer.invoke('columbina:engine-render', {
       timeline: options?.timeline, codec: options?.codec, quality: options?.quality,
       subtitle_tracks: Array.isArray(options?.subtitle_tracks) ? [...options.subtitle_tracks] : options?.subtitle_tracks,

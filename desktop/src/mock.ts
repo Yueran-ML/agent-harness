@@ -137,6 +137,8 @@ export function createMockEngine(): EngineBridge {
       }
     },
     async importFiles() { return ok(null) as EngineAnswer<null>; },
+    async importStills() { return ok(null) as EngineAnswer<null>; },
+    async exportStills() { return ok(null) as EngineAnswer<null>; },
     async render() { return { ok: true, result: { cancelled: true } }; },
     async reveal() { return false; },
     async openLutFolder() { return false; },

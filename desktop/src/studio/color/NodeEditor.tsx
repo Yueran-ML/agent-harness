@@ -220,7 +220,8 @@ const isMixerOf = (node: GradeNode | undefined, kind: LinkKind) => node !== unde
  * it is dropped, and Cleanup Node Graph one `set_grade`. How far the editor is zoomed and which nodes
  * are chosen are the view's.
  */
-export function NodeEditor({ grade: real, defaultNode = null, level, levels, onLevel, current, onCurrent, hint, target, gradeKey, views, focused, editing, luts }: {
+export function NodeEditor({ grade: real, defaultNode = null, level, levels, onLevel, current, onCurrent, hint, target, gradeKey, views, focused, editing, luts,
+  appendNode }: {
   grade: Grade | null;
   /** The id of the default node 01 that a grade without nodes is shown with (`defaultNodeOf`), or null. */
   defaultNode?: string | null;
@@ -240,6 +241,11 @@ export function NodeEditor({ grade: real, defaultNode = null, level, levels, onL
   focused: boolean;
   editing: GradeEditing;
   luts?: NodeLuts;
+  /**
+   * Append Node to Selected Clips (Color menu, p. 3297), in the menu of a corrector: whether there
+   * are clips chosen to append it to, and what appends it.
+   */
+  appendNode?: { label: string; can: boolean; run: (node: string) => void };
 }) {
   const words = useWords();
   const labels = words.label.studio.colorPage;
@@ -692,6 +698,10 @@ export function NodeEditor({ grade: real, defaultNode = null, level, levels, onL
     }
     if (node.kind === 'corrector' && node.params.shot_match != null) {
       items.push({ id: 'reset-match', label: menuWords.resetShotMatch, run: () => run(resetShotMatch(target, node.id)) });
+    }
+    // The default node 01 is not in the grade until a change makes it, so there is nothing to append yet.
+    if (corrector && appendNode) {
+      items.push({ id: 'append-to-selected', label: appendNode.label, disabled: !appendNode.can || node.id === defaultNode, run: () => appendNode.run(node.id) });
     }
     if (node.kind !== 'corrector') items.push({ id: 'add-input', label: menuWords.addInput, run: () => run(addInput(target, grade, node.id)) });
     if (node.kind === 'parallel_mixer') items.push({ id: 'morph', label: menuWords.toLayer, run: () => run(morph(target, grade, node.id)) });

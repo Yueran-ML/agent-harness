@@ -4332,6 +4332,9 @@ describe('the engine of the studio', () => {
       'transport.pause', 'transport.seek', 'transport.step', 'transport.state', 'transport.proxies',
       'timeline.duration', 'media.thumbnail', 'media.waveform', 'scopes.statistics', 'scopes.subscribe', 'scopes.set', 'scopes.unsubscribe',
       'view.sample', 'view.pointer',
+      // The Gallery and the comparisons of the viewer (T26, T27).
+      'viewer.wipe', 'viewer.split', 'still.grab', 'still.get', 'still.apply', 'still.label', 'still.delete', 'still.move',
+      'gallery.list', 'gallery.thumbnail', 'gallery.album.create', 'gallery.album.rename', 'gallery.album.delete', 'grade.append_node',
     ];
     for (const method of allowed) {
       const params = method === 'transaction.apply' ? { ops: [{ op: 'remove_clip', timeline: 't1', id: 'c1' }] } : { frame: 3, monitor: 'source' };
@@ -4339,7 +4342,7 @@ describe('the engine of the studio', () => {
       expect(main.written.at(-1)).toMatchObject({ method, params });
     }
     const sent = main.written.length + view.written.length;
-    for (const method of ['render.start', 'view.attach', 'view.detach', 'media.import', 'hello', 'project.changed', 'transport', '', 7, undefined, 'constructor']) {
+    for (const method of ['render.start', 'view.attach', 'view.detach', 'media.import', 'still.import', 'still.export', 'hello', 'project.changed', 'transport', '', 7, undefined, 'constructor']) {
       await expect(shell.invoke('engine-call', { method, params: {} })).rejects.toThrow('no method of the engine');
     }
     for (const params of [[1], 'ops', 3]) {
@@ -4353,6 +4356,67 @@ describe('the engine of the studio', () => {
     expect(await shell.invoke('engine-call', { method: 'transaction.apply', params: { ops: [] } })).toEqual({
       ok: false, error: { code: -32001, message: 'the clip covers frames that clip c1 covers', data: { reason: 'overlap', with: 'c1', index: 0 } },
     });
+  });
+
+  it('lets a comparison of the viewer name a still by its id, never a file', async () => {
+    const shell = await shellHarness();
+    await openIn(shell);
+    const [main] = connections(shell);
+    const named = { on: true, reference: { kind: 'still', still: 's3' } };
+    expect(await shell.invoke('engine-call', { method: 'viewer.wipe', params: named })).toEqual({ ok: true, result: {} });
+    expect(main.written.at(-1)).toMatchObject({ method: 'viewer.wipe', params: named });
+    const split = { items: [{ kind: 'current' }, { kind: 'still', still: 'ps1' }, { kind: 'clip', clip: 'c2' }] };
+    expect(await shell.invoke('engine-call', { method: 'viewer.split', params: split })).toEqual({ ok: true, result: {} });
+    const sent = main.written.length;
+    for (const [method, params] of [
+      ['viewer.wipe', { reference: { kind: 'still', path: 'C:\\secret.png' } }],
+      ['viewer.wipe', { reference: { kind: 'still', still: 's1', path: 'C:\\secret.png' } }],
+      ['viewer.split', { items: [{ kind: 'current' }, { kind: 'still', path: 'C:\\secret.exr' }] }],
+    ] as const) {
+      await expect(shell.invoke('engine-call', { method, params })).rejects.toThrow('by its id, not a file');
+    }
+    expect(main.written.length).toBe(sent);
+  });
+
+  it('imports stills only from pictures chosen in the dialog, and exports them where Save As says, by the name typed there', async () => {
+    const shell = await shellHarness();
+    expect(await shell.invoke('engine-still-import', { language: 'en' })).toMatchObject({ ok: false });
+    expect(await shell.invoke('engine-still-export', { language: 'en', stills: ['s1'] })).toMatchObject({ ok: false });
+    expect(shell.dialog.showOpenDialog).not.toHaveBeenCalled();
+    await openIn(shell);
+    const [main] = connections(shell);
+    const server = shell.engines.servers.get(main.address)!;
+    server.answers.set('still.import', params => ({ result: { added: params.paths.map((_: string, at: number) => ({ id: `s${at + 1}` })) } }));
+    server.answers.set('still.export', () => ({ result: { written: [] } }));
+    const chosen = [path.resolve('/looks/day.png'), path.resolve('/looks/night.exr')];
+    shell.dialog.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [...chosen, 'relative.png'] });
+    // Whatever paths the page names are no part of it.
+    expect(await shell.invoke('engine-still-import', { language: 'zh-CN', album: 'a2', paths: ['C:\\secret.png'] }))
+      .toEqual({ ok: true, result: { added: [{ id: 's1' }, { id: 's2' }] } });
+    expect(main.written.at(-1)).toMatchObject({ method: 'still.import', params: { paths: chosen, album: 'a2' } });
+    const [over, options] = shell.dialog.showOpenDialog.mock.calls.at(-1)!;
+    expect(over).toBe(shell.window);
+    expect(options.title).toBe('导入静帧');
+    expect(options.properties).toEqual(['openFile', 'multiSelections']);
+    expect(options.filters[0].extensions).toEqual(['png', 'tif', 'tiff', 'exr']);
+    // Nothing chosen is nothing imported; an album is named by its id.
+    const asked = main.written.length;
+    expect(await shell.invoke('engine-still-import', { language: 'en' })).toEqual({ ok: true, result: null });
+    expect(main.written.length).toBe(asked);
+    for (const album of ['', 3, {}]) await expect(shell.invoke('engine-still-import', { album })).rejects.toThrow('Name an album by its id.');
+    // Export: the folder and the name that Save As gave, the name the prefix of each file; nothing there is replaced.
+    shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: path.resolve('/out/Show.png') });
+    expect(await shell.invoke('engine-still-export', { language: 'ja', stills: ['s1', 'ps2'], dir: 'C:\\elsewhere' })).toEqual({ ok: true, result: { written: [] } });
+    expect(main.written.at(-1)).toMatchObject({ method: 'still.export', params: { stills: ['s1', 'ps2'], dir: path.resolve('/out'), prefix: 'Show' } });
+    expect(main.written.at(-1)!.params.replace).toBeUndefined();
+    expect(shell.dialog.showSaveDialog.mock.calls.at(-1)![1].title).toBe('スチルを書き出す');
+    shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: true, filePath: '' });
+    const before = main.written.length;
+    expect(await shell.invoke('engine-still-export', { language: 'en', stills: ['s1'] })).toEqual({ ok: true, result: null });
+    expect(main.written.length).toBe(before);
+    for (const stills of [undefined, [], [''], [3], 's1']) {
+      await expect(shell.invoke('engine-still-export', { stills })).rejects.toThrow('Name the stills to export by their ids.');
+    }
   });
 
   it('lets a transaction of the page name no file: no media that it adds, and no proxy that it sets', async () => {
@@ -4547,6 +4611,8 @@ describe('the engine of the studio', () => {
       for (const [name, asked] of [
         ['engine-call', { method: 'project.get' }],
         ['engine-import', {}],
+        ['engine-still-import', {}],
+        ['engine-still-export', { stills: ['s1'] }],
         ['engine-render', { timeline: 't1', codec: 'hevc', quality: 'high', subtitle_tracks: [] }],
         ['engine-view-rect', { monitor: 'source', x: 0, y: 0, width: 400, height: 180 }],
         ['engine-view-show', { monitor: 'source', shown: true }],
@@ -4819,7 +4885,7 @@ describe('the engine of the studio', () => {
 
   it('answers only its own window', async () => {
     const shell = await shellHarness();
-    for (const name of ['engine-open', 'engine-call', 'engine-import', 'engine-render', 'engine-reveal', 'engine-open-lut-folder', 'engine-view-rect', 'engine-view-show', 'engine-close']) {
+    for (const name of ['engine-open', 'engine-call', 'engine-import', 'engine-still-import', 'engine-still-export', 'engine-render', 'engine-reveal', 'engine-open-lut-folder', 'engine-view-rect', 'engine-view-show', 'engine-close']) {
       await expect(Promise.resolve().then(() => shell.handlers.get(`columbina:${name}`)!(shell.unrelated, { cwd: path.resolve('/film') })))
         .rejects.toThrow('IPC sender');
     }

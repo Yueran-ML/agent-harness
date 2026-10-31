@@ -903,6 +903,33 @@ export const en = {
         },
         /** The options menu of the viewer (p. 2986) with what the plan adds to it (p. 244). */
         viewerOptions: 'Viewer options', displayHdr: 'Display HDR On Viewers If Available', viewerLut: 'Viewer LUT',
+        /** The Gallery, its stills and memories (Reference Manual 20, ch. 141–142), in DaVinci Resolve's words. */
+        galleryPanel: {
+          albums: 'Albums', memories: 'Memories', stills: 'Stills', stillSize: 'Still size', search: 'Search',
+          albumMenu: 'Album menu', stillMenu: 'Still menu', galleryMenu: 'Gallery menu', memoryMenu: 'Memory menu', viewerMenu: 'Viewer menu',
+          addStillAlbum: 'Add Still Album', addPowerGradeAlbum: 'Add PowerGrade Album', removeAlbum: 'Remove Current Album', renameAlbum: 'Album name',
+          applyGrade: 'Apply Grade', appendNodeGraph: 'Append Node Graph', deleteSelected: 'Delete Selected', properties: 'Properties',
+          changeLabel: 'Change Label', export: 'Export', import: 'Import', grabStill: 'Grab Still',
+          applyGradesUsing: 'Apply Grades Using',
+          keyframes: { none: 'No Keyframes', source_timecode: 'Keyframes Aligning Source Timecode', start_frame: 'Keyframes Aligning Start Frames' },
+          preserveNodes: 'Copy Grade: Preserve number of nodes',
+          memory: 'Memory', clearMemory: 'Clear', memoriesAlbum: 'Memories',
+          appendToSelected: 'Append Node to Selected Clips', wipeTimelineClip: 'Wipe Timeline Clip',
+          propertiesTitle: 'Still Properties', stillId: 'Still ID', labelField: 'Label', created: 'Created', timeline: 'Timeline', clip: 'Clip',
+          recordTimecode: 'Record TC', sourceTimecode: 'Source TC', size: 'Size', imported: 'Imported from', ok: 'OK', delete: 'Delete',
+        },
+        /** Wipes and split screens of the viewer (pp. 2999–3006), in DaVinci Resolve's words. */
+        compare: {
+          modes: 'Viewer modes', imageWipe: 'Image Wipe', splitScreen: 'Split Screen', wipeOnOff: 'Wipe On/Off', wipeStyle: 'Wipe Style',
+          styles: {
+            horizontal: 'Horizontal', vertical: 'Vertical', diagonal: 'Diagonal', mix: 'Mix', difference: 'Difference', box: 'Box',
+            venetian_blind: 'Venetian Blind', checkerboard: 'Checkerboard',
+          },
+          invert: 'Invert Wipe', referenceMode: 'Reference Wipe Mode', referenceModes: { gallery: 'Gallery', timeline: 'Timeline' },
+          gang: 'Gang Timeline Wipe With Current Clip', splitMode: 'Split screen mode',
+          splitModes: { current_group: 'Current Group', neighbor_clips: 'Neighbor Clips', selected_clips: 'Selected Clips', selected_stills: 'Selected Still Images' },
+          showOutline: 'Show Outline', reference: 'Wipe reference clip',
+        },
         /** The orange dot of a palette's button: the current node is adjusted there. */
         changed: 'Adjusted',
         /** The Primaries palette (Reference Manual 20, Chapter 131), in DaVinci Resolve's words. */
@@ -1625,7 +1652,26 @@ export const en = {
         noClips: 'There are no clips on the video tracks shown.',
         noNodes: 'This grade has no nodes yet.',
         incomplete: 'The grade is off: a node is not connected.',
-        gallery: 'Stills and albums come in a later version.',
+        gallery: {
+          empty: 'There are no stills in this album. Press Ctrl+Alt+G to grab one.',
+          noneFound: 'No still here has a label like this.',
+          failed: 'The Gallery could not be read.',
+          confirmDelete: 'The selected stills will be deleted. This cannot be undone.',
+          confirmRemoveAlbum: 'The album will be removed with all its stills. This cannot be undone.',
+          /** Why the engine refused a change of the Gallery, or of grades from it, by its reason. */
+          refusals: {
+            last_album: 'The last album cannot be removed.',
+            exists: 'Files of these names are there already. Choose another name or place.',
+            no_grade: 'This still holds no grade for the mode of the node editor.',
+            not_a_still: 'This file cannot be read as a still.',
+            missing: 'This still or album is not in the Gallery any more.',
+            link: 'The folder of the Gallery is a link, so it is not used.',
+            gallery: 'The folder of the Gallery could not be read or written.',
+            write: 'The stills could not be written there.',
+            not_loaded: 'Open a timeline in the viewer to grab a still.',
+            draw: 'The frame could not be read from the viewer.',
+          },
+        },
         lutsFailed: 'The LUTs could not be listed.',
         lutsTruncated: 'There are too many LUTs to list them all.',
         noLuts: 'No LUTs were found. Put .cube files in the folder of the project or in the LUT library, then refresh.',

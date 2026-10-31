@@ -127,13 +127,16 @@ function windowBar(theme) {
 const WORDS = {
   en: { chooseFolder: 'Choose a project folder', chooseFiles: 'Choose files to attach', open: 'Open Columbina', quit: 'Quit Columbina', hidePet: 'Hide the pet',
     petWaiting: (tool) => (tool ? `Waiting for your yes to ${tool}.` : 'Waiting for your yes.'), petDone: 'Done.', petFailed: 'Something went wrong.',
-    chooseExport: 'Export timeline', chooseMedia: 'Choose media to import', media: 'Video, audio and pictures', allFiles: 'All files' },
+    chooseExport: 'Export timeline', chooseMedia: 'Choose media to import', media: 'Video, audio and pictures', allFiles: 'All files',
+    importStills: 'Import Stills', exportStills: 'Export Stills', stills: 'Still images' },
   ja: { chooseFolder: 'プロジェクトフォルダーを選択', chooseFiles: '添付するファイルを選択', open: 'Columbina を開く', quit: 'Columbina を終了', hidePet: 'ペットをしまう',
     petWaiting: (tool) => (tool ? `${tool} の承認を待っています。` : '承認を待っています。'), petDone: '終わりました。', petFailed: 'うまくいきませんでした。',
-    chooseExport: 'タイムラインを書き出す', chooseMedia: '読み込むメディアを選択', media: '動画・音声・画像', allFiles: 'すべてのファイル' },
+    chooseExport: 'タイムラインを書き出す', chooseMedia: '読み込むメディアを選択', media: '動画・音声・画像', allFiles: 'すべてのファイル',
+    importStills: 'スチルを読み込む', exportStills: 'スチルを書き出す', stills: '静止画' },
   'zh-CN': { chooseFolder: '选择项目文件夹', chooseFiles: '选择要附上的文件', open: '打开 Columbina', quit: '退出 Columbina', hidePet: '收起桌宠',
     petWaiting: (tool) => (tool ? `等你点头：${tool}。` : '等你点头。'), petDone: '做完了。', petFailed: '遇到点难题。',
-    chooseExport: '导出时间线', chooseMedia: '选择要导入的媒体', media: '视频、音频和图片', allFiles: '所有文件' },
+    chooseExport: '导出时间线', chooseMedia: '选择要导入的媒体', media: '视频、音频和图片', allFiles: '所有文件',
+    importStills: '导入静帧', exportStills: '导出静帧', stills: '静帧图像' },
 };
 /**
  * The methods of the engine that the page may call. The view is attached and detached by the
@@ -155,7 +158,14 @@ const PAGE_METHODS = new Set([
   // The colour of a point of the picture, and the pointer on a view, for the pickers of the Color
   // page, the line of a wipe and the windows.
   'view.sample', 'view.pointer',
+  // The Gallery of the Color page and the comparisons of its viewer, which name stills and albums
+  // by their ids only: a wipe names no file (see `comparisonOfThePage`), and stills are imported
+  // from files chosen in the dialog and exported where Save As says (`engine-still-import`, `-export`).
+  'viewer.wipe', 'viewer.split', 'still.grab', 'still.get', 'still.apply', 'still.label', 'still.delete', 'still.move',
+  'gallery.list', 'gallery.thumbnail', 'gallery.album.create', 'gallery.album.rename', 'gallery.album.delete', 'grade.append_node',
 ]);
+/** The endings of the pictures that the engine makes stills of (PNG, TIFF, OpenEXR; not JPEG, which is Y'CbCr). */
+const STILL_ENDINGS = ['png', 'tif', 'tiff', 'exr'];
 /** The endings of the files that the engine reads as media, offered first in the dialog. */
 const MEDIA_ENDINGS = [
   'mp4', 'm4v', 'mov', 'mkv', 'webm', 'avi', 'ts', 'm2ts', 'mts', 'mpg', 'mpeg', 'vob',
@@ -1137,6 +1147,18 @@ function transactionOfThePage(params) {
   }
 }
 /**
+ * A comparison of the viewer that the page asks for: its references name stills by their ids and
+ * the timeline by its clips and frames, never a file, which the engine would read.
+ */
+function comparisonOfThePage(params) {
+  const references = [params?.reference, ...(Array.isArray(params?.items) ? params.items : [])];
+  for (const reference of references) {
+    if (reference !== null && typeof reference === 'object' && Object.hasOwn(reference, 'path')) {
+      throw new Error('The page names a still of the Gallery by its id, not a file.');
+    }
+  }
+}
+/**
  * What the page is answered of a request to the engine: the result, or the error as the engine
  * gave it, with its code and data, which an error thrown to the page would lose.
  */
@@ -2011,6 +2033,7 @@ function installHandlers() {
     const params = asked?.params ?? null;
     if (params !== null && (typeof params !== 'object' || Array.isArray(params))) throw new Error('What a method of the engine is given is an object.');
     if (method === 'transaction.apply') transactionOfThePage(params);
+    if (method === 'viewer.wipe' || method === 'viewer.split') comparisonOfThePage(params);
     // The page cancels the exports that it started, not those of an agent on the same engine.
     if (method === 'render.cancel' && !(typeof params?.job === 'string' && studio?.jobs.has(params.job))) {
       throw new Error('The page cancels only an export that it started.');
@@ -2041,6 +2064,47 @@ function installHandlers() {
     if (paths.length === 0) return { ok: true, result: null };
     if (studio !== open) return { ok: false, error: { code: null, message: 'The project of the studio was closed meanwhile.', data: null } };
     return answered(open.session.call('media.import', { paths, ...(bin === undefined ? {} : { bin }) }));
+  });
+  ipcMain.handle('columbina:engine-still-import', async (event, asked) => {
+    checkSender(event);
+    refuseStudioElsewhere();
+    const open = studio;
+    if (!open) return { ok: false, error: { code: null, message: 'No project is open in the studio.', data: null } };
+    const album = asked?.album;
+    if (album !== undefined && (typeof album !== 'string' || !album)) throw new Error('Name an album by its id.');
+    // Import (Reference Manual 20, p. 3270): the engine is given only pictures that the user chose in the dialog.
+    const words = WORDS[spoken(asked?.language)];
+    const result = await dialog.showOpenDialog(window, {
+      title: words.importStills, properties: ['openFile', 'multiSelections'],
+      filters: [{ name: words.stills, extensions: STILL_ENDINGS }, { name: words.allFiles, extensions: ['*'] }],
+    });
+    const paths = result.canceled ? [] : result.filePaths.filter((chosen) => typeof chosen === 'string' && path.isAbsolute(chosen));
+    if (paths.length === 0) return { ok: true, result: null };
+    if (studio !== open) return { ok: false, error: { code: null, message: 'The project of the studio was closed meanwhile.', data: null } };
+    return answered(open.session.call('still.import', { paths, ...(album === undefined ? {} : { album }) }));
+  });
+  ipcMain.handle('columbina:engine-still-export', async (event, asked) => {
+    checkSender(event);
+    refuseStudioElsewhere();
+    const open = studio;
+    if (!open) return { ok: false, error: { code: null, message: 'No project is open in the studio.', data: null } };
+    const stills = asked?.stills;
+    if (!Array.isArray(stills) || stills.length === 0 || !stills.every(still => typeof still === 'string' && still)) {
+      throw new Error('Name the stills to export by their ids.');
+    }
+    // Export (p. 3271): a place is chosen and a name typed in Save As; each still is written there
+    // as that name, an underscore and its number. Files that are there are not replaced.
+    const words = WORDS[spoken(asked?.language)];
+    const folder = path.resolve(open.project, ...STUDIO_FOLDER.map(() => '..'));
+    const chosen = await dialog.showSaveDialog(window, {
+      title: words.exportStills, defaultPath: path.join(folder, 'Still'),
+      filters: [{ name: words.stills, extensions: ['png', 'exr'] }],
+    });
+    if (chosen.canceled) return { ok: true, result: null };
+    if (typeof chosen.filePath !== 'string' || !path.isAbsolute(chosen.filePath)) throw new Error('Choose a whole path in Save As.');
+    if (studio !== open) return { ok: false, error: { code: null, message: 'The project of the studio was closed meanwhile.', data: null } };
+    const prefix = path.basename(chosen.filePath, path.extname(chosen.filePath));
+    return answered(open.session.call('still.export', { stills: [...stills], dir: path.dirname(chosen.filePath), ...(prefix ? { prefix } : {}) }));
   });
   ipcMain.handle('columbina:engine-render', async (event, asked) => {
     checkSender(event);

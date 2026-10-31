@@ -166,8 +166,8 @@ describe('the Color page', () => {
     const toolbar = screen.getByRole('toolbar', { name: 'Interface toolbar' });
     expect(within(toolbar).getAllByRole('button').map(each => each.textContent)).toEqual(['Gallery', 'LUTs', 'Media pool', 'Clips', 'Timeline', 'Nodes']);
     expect(within(toolbar).getByRole('combobox', { name: 'Clip filter' })).toBeDefined();
-    // The gallery is open at first, a placeholder until stills come.
-    expect(screen.getByRole('region', { name: 'Gallery' }).textContent).toContain('Stills and albums come in a later version.');
+    // The gallery is open at first (T26): its albums and stills, none in this one.
+    expect(screen.getByRole('region', { name: 'Gallery' }).textContent).toContain('There are no stills in this album.');
     expect(screen.getByRole('region', { name: 'Timeline viewer' })).toBeDefined();
     expect(screen.getByRole('region', { name: 'Node editor' })).toBeDefined();
     expect(screen.getByRole('listbox', { name: 'Thumbnail timeline' })).toBeDefined();

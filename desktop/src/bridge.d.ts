@@ -1,4 +1,6 @@
-import type { EngineAnswer, EngineEvent, EngineOpened, Imported, Monitor, PageMethod, RenderOptions, RenderStarted, ViewRect } from './studio/engine';
+import type {
+  EngineAnswer, EngineEvent, EngineOpened, Imported, Monitor, PageMethod, RenderOptions, RenderStarted, StillsExported, StillsImported, ViewRect,
+} from './studio/engine';
 
 export interface ColumbinaBridge {
   /** The system that the application runs on, as Node names it: `win32`, `darwin` or `linux`. */
@@ -288,6 +290,18 @@ export interface EngineBridge {
    * and import it into the project. The result is null where nothing was chosen.
    */
   importFiles(asked?: { language: string; bin?: string }): Promise<EngineAnswer<Imported | null>>;
+  /**
+   * Import (Reference Manual 20, p. 3270): let the user choose pictures in the dialog of the system,
+   * titled in the language that is named, and make each a still of the album named (`still.import`).
+   * The result is null where nothing was chosen.
+   */
+  importStills(asked: { language: string; album?: string }): Promise<EngineAnswer<StillsImported | null>>;
+  /**
+   * Export (p. 3271): let the user choose a place and type a name in Save As, and write each still
+   * named there, its picture and its grade, prefixed by that name (`still.export`). Files that are
+   * there already are not replaced. The result is null where nothing was chosen.
+   */
+  exportStills(asked: { language: string; stills: string[] }): Promise<EngineAnswer<StillsExported | null>>;
   /** Choose an export destination in Save As and start rendering. Existing outputs are not replaced. */
   render(options: RenderOptions): Promise<EngineAnswer<RenderStarted>>;
   /**

@@ -12,7 +12,7 @@ import { useWords } from '../../app/locale';
 import type { EngineBridge } from '../../bridge';
 import type { Clip, Grade, Target, Timeline } from '../engine';
 import { editingAllowed, inStudio } from '../keys';
-import { ColorMenu, type Menu } from './ColorMenu';
+import { ColorMenu, type Menu, type MenuItem } from './ColorMenu';
 import { NodeViews } from './NodeEditor';
 import type { GradeLevel } from './clips';
 import { applyPrior, collapseGroups, defaultNodeOf, pageKey, pasteGrade, targetOf, withDefaultNode, type DefaultNode } from './nodeEdits';
@@ -36,7 +36,7 @@ export interface ColorPageGrades {
   menu: ReactNode;
 }
 
-export function useColorPageGrades({ bridge, revision, session, area, level, timeline, clips, current, chosen, grade = null, nextId }: {
+export function useColorPageGrades({ bridge, revision, session, area, level, timeline, clips, current, chosen, grade = null, nextId, thumbnailItems }: {
   bridge: Pick<EngineBridge, 'call'>;
   revision: number;
   session: number;
@@ -54,6 +54,8 @@ export function useColorPageGrades({ bridge, revision, session, area, level, tim
   grade?: Grade | null;
   /** The project's `next_id`, which names the default node that a grade without nodes is shown with. */
   nextId?: number;
+  /** More items of a thumbnail's menu, for the clip right-clicked: Wipe Timeline Clip (T27). */
+  thumbnailItems?: (clip: string) => MenuItem[];
 }): ColorPageGrades {
   const labels = useWords().label.studio.colorPage.nodeMenu;
   const target = targetOf(level, timeline, current);
@@ -67,8 +69,8 @@ export function useColorPageGrades({ bridge, revision, session, area, level, tim
   const [menu, setMenu] = useState<Menu | null>(null);
   useEffect(() => { copied.current = null; setMenu(null); }, [session, timeline?.id]);
 
-  const now = useRef({ editing, area, timeline, clips, current, chosen });
-  now.current = { editing, area, timeline, clips, current, chosen };
+  const now = useRef({ editing, area, timeline, clips, current, chosen, thumbnailItems });
+  now.current = { editing, area, timeline, clips, current, chosen, thumbnailItems };
   /** The clips that a command of the thumbnail timeline is for: those chosen, where `clip` is one of them, else it alone. */
   const chosenWith = (clip: string): Clip[] => {
     const { clips: all, chosen: picked } = now.current;
@@ -111,6 +113,7 @@ export function useColorPageGrades({ bridge, revision, session, area, level, tim
     const of = chosenWith(clip);
     const collapse = collapseGroups(timelineId, of);
     setMenu({ x: event.clientX, y: event.clientY, label: labels.thumbMenu, items: [
+      ...(now.current.thumbnailItems?.(clip) ?? []),
       { id: 'collapse', label: labels.collapse, disabled: collapse === null, run: () => now.current.editing.run(collapse) },
     ] });
   }, [labels]);

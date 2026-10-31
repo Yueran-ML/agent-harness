@@ -535,7 +535,10 @@ describe('the menus', () => {
       // The LUT of the node (T18, p. 3412).
       ['LUT', null], ['Reveal Selected LUT', null],
       ['Reset Shot Match', null],
+      // Append Node to Selected Clips (T26, p. 3297), which no other clip chosen leaves off.
+      ['Append Node to Selected Clips', null],
     ]);
+    expect((within(menu).getByRole('menuitem', { name: 'Append Node to Selected Clips' }) as HTMLButtonElement).disabled).toBe(true);
     // An outside node waits for the keys of the Qualifier and Key palettes.
     expect((within(menu).getByRole('menuitem', { name: 'Add Outside Node' }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Add Node' }));

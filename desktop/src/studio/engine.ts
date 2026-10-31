@@ -569,8 +569,107 @@ export interface PageMethods {
   'scopes.unsubscribe': Record<string, never>;
   'view.sample': ViewSample;
   'view.pointer': { monitor: Monitor; on: boolean; cursor: PointerCursor | null };
+  // The Gallery and the comparisons of the viewer (PROTOCOL.md, "The Gallery", "Comparisons in the viewer").
+  'viewer.wipe': Compared;
+  'viewer.split': Compared;
+  'still.grab': Still;
+  'still.get': StillWhole;
+  'still.apply': Applied;
+  'still.label': { id: string; label: string };
+  'still.delete': { deleted: string[] };
+  'still.move': { moved: Record<string, string> };
+  'gallery.list': { albums: GalleryAlbum[] };
+  'gallery.thumbnail': { width: number; height: number; png: string };
+  'gallery.album.create': { id: string; name: string; kind: AlbumKind };
+  'gallery.album.rename': { id: string; name: string };
+  'gallery.album.delete': { deleted: string[] };
+  'grade.append_node': Applied;
 }
 export type PageMethod = keyof PageMethods;
+
+/** An album of the project's gallery, or of the PowerGrades that every project shares (p. 3266). */
+export type AlbumKind = 'stills' | 'powergrade';
+/** Which grade of its clip a still holds: the Node Editor's mode when it was grabbed (p. 3306). */
+export type StillLevel = 'clip' | 'pre_clip' | 'post_clip';
+/** Apply Grades Using (pp. 3264, 3287): how the keys of a still's grade are put on a clip. */
+export type KeyframesUsing = 'none' | 'source_timecode' | 'start_frame';
+
+/**
+ * A still of the Gallery as `gallery.list` gives it (PROTOCOL.md, "What a still holds"): its
+ * number Track.Shot.Version (`name`), its label, and where it came from, without its grades.
+ */
+export interface Still {
+  id: string;
+  album: string;
+  name: string;
+  label: string;
+  /** When it was grabbed or imported, RFC 3339 in UTC. */
+  created: string;
+  image: { file: string; format: 'png' | 'exr'; width: number; height: number };
+  level: StillLevel;
+  /** Whether it holds a clip grade and a timeline grade. */
+  grades: { clip: boolean; timeline: boolean };
+  source: StillSource | null;
+  /** Of an imported still, the path it was taken from. */
+  imported?: string;
+}
+/** Where a still came from (Still Properties, p. 3258); null of an imported picture. */
+export interface StillSource {
+  timeline: { id: string; name: string; rate: Rate };
+  frame: number;
+  record_timecode: string;
+  clip?: { id: string } | null;
+  media?: { id: string; name?: string } | null;
+  group?: string | null;
+  track?: number | null;
+  shot?: number | null;
+  source_frame?: number | null;
+  source_timecode?: string | null;
+}
+/** A still as `still.get` gives it: with its grades, as they are and frozen, and the colour of the project then. */
+export interface StillWhole extends Omit<Still, 'grades' | 'source'> {
+  grades: { clip: Grade | null; timeline: Grade | null };
+  frozen: { clip: Grade | null; timeline: Grade | null };
+  source: (StillSource & { clip?: (Omit<Clip, 'grade'> & { name?: string }) | null; media?: Media | null }) | null;
+}
+/** An album, with its stills in the order of their ids (Sort Stills › Still ID, p. 3263). */
+export interface GalleryAlbum { id: string; name: string; kind: AlbumKind; stills: Still[] }
+/** What `still.import` answers: the stills added. The shell asks for the files in the dialog of the system. */
+export interface StillsImported { added: Still[] }
+/** What `still.export` answers: the files written for each still. The shell asks for the place in Save As. */
+export interface StillsExported { written: { image: string; json: string }[] }
+
+/** The styles of a wipe that the engine draws (p. 3000); Alpha is not done. */
+export type WipeStyle = 'horizontal' | 'vertical' | 'diagonal' | 'mix' | 'difference' | 'box' | 'venetian_blind' | 'checkerboard';
+/**
+ * What the viewer compares its frame with (PROTOCOL.md, "Comparisons in the viewer"): a still of
+ * the Gallery by its id (the page names no file), the timeline at a frame or a clip, the clip
+ * before or after the current one following the playhead, or (of a split screen) the frame shown.
+ */
+export type ViewerReference =
+  | { kind: 'still'; still: string }
+  | { kind: 'frame'; frame: number }
+  | { kind: 'clip'; clip: string; frame?: number }
+  | { kind: 'neighbour'; side: 'previous' | 'next'; current?: string }
+  | { kind: 'current' };
+/** A reference as the engine answers it: of the timeline, with the frame it shows now (`at`). */
+export type ComparedReference = ViewerReference & { at?: number | null; path?: string };
+/** The whole of a wipe: every setting is sent each time, what is left out taking its default. */
+export interface WipeSettings {
+  style: WipeStyle;
+  position: number;
+  angle: number;
+  invert: boolean;
+  softness?: number;
+  border?: number;
+  border_color?: [number, number, number];
+  gain?: number;
+}
+/** What `viewer.wipe` and `viewer.split` answer: what the viewer compares now. */
+export type Compared =
+  | { mode: 'off' }
+  | { mode: 'wipe'; wipe: WipeSettings & { on: boolean; reference: ComparedReference } }
+  | { mode: 'split'; split: { on: boolean; items: ComparedReference[]; selected?: number; outline: boolean } };
 
 /**
  * The graticule of a scope (PROTOCOL.md, "Scopes"): its lines and labels in pixels of its picture

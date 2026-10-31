@@ -52,9 +52,11 @@ function Picture({ entry, media, rate, cache, offset }: { entry: ColorClip; medi
 }
 
 /** One clip of the thumbnail timeline, with what is written above and below it (pp. 2973–2974, 3027–3028). */
-const Thumbnail = memo(function Thumbnail({ entry, media, rate, cache, current, selected, text, offset, onPick, onText, onPicture }: {
+const Thumbnail = memo(function Thumbnail({ entry, media, rate, cache, current, selected, referenced = false, text, offset, onPick, onText, onPicture }: {
   entry: ColorClip; media: Media | undefined; rate: Rate; cache: Thumbnails | null;
   current: boolean; selected: boolean; text: ThumbnailText; offset: number;
+  /** Whether a timeline wipe shows this clip: outlined in blue (p. 3261). */
+  referenced?: boolean;
   onPick: (clip: string, event: MouseEvent | PointerEvent) => void;
   onText: () => void;
   /** The frame of the clip, from its first, that its picture is to show. */
@@ -77,7 +79,8 @@ const Thumbnail = memo(function Thumbnail({ entry, media, rate, cache, current, 
   return <li role="option" className="color-thumb" aria-selected={selected} aria-current={current || undefined} aria-label={`${numberText(number)} ${name}`}
     tabIndex={current ? 0 : -1}
     data-clip={clip.id} data-number={number} data-current={current || undefined} data-selected={selected || undefined} data-enabled={clip.enabled}
-    title={name}>
+    data-reference={referenced || undefined} title={referenced ? `${name}
+${labels.compare.reference}` : name}>
     <div className="color-thumb-top">
       <span className="color-thumb-number" data-graded={badges.graded || undefined} title={badges.graded ? labels.graded : undefined} data-test="thumb-number">
         {numberText(number)}</span>
@@ -122,9 +125,9 @@ const Thumbnail = memo(function Thumbnail({ entry, media, rate, cache, current, 
  * its first frame; Ctrl+click and Shift+click choose more without moving it. The wheel scrolls it
  * (up is to the right), and so does a drag with the middle button. Dragged across, a thumbnail
  * goes through its clip, and the frame where it is let go becomes its picture (a matter of the
- * view, which no undo takes back).
+ * view, which no undo takes back). The clip that a timeline wipe shows is outlined in blue (p. 3261).
  */
-export function ThumbnailTimeline({ clips, media, rate, cache, current, selected, onPick, pictures, onPicture, hint }: {
+export function ThumbnailTimeline({ clips, media, rate, cache, current, selected, onPick, pictures, onPicture, hint, reference = null }: {
   clips: readonly ColorClip[];
   media: ReadonlyMap<string, Media>;
   rate: Rate;
@@ -136,6 +139,8 @@ export function ThumbnailTimeline({ clips, media, rate, cache, current, selected
   pictures: Readonly<Record<string, number>>;
   onPicture: (clip: string, offset: number) => void;
   hint: string;
+  /** The clip that a timeline wipe shows now, where one does. */
+  reference?: string | null;
 }) {
   const labels = useWords().label.studio.colorPage;
   const list = useRef<HTMLOListElement>(null);
@@ -178,7 +183,7 @@ export function ThumbnailTimeline({ clips, media, rate, cache, current, selected
     onPointerCancel={() => { panning.current = null; }}>
     {clips.map(entry => <Thumbnail key={entry.clip.id} entry={entry} rate={rate} cache={cache}
       media={entry.clip.source.kind === 'media' ? media.get(entry.clip.source.media) : undefined}
-      current={entry.clip.id === current} selected={selected.has(entry.clip.id)} text={text} offset={pictures[entry.clip.id] ?? 0}
+      current={entry.clip.id === current} selected={selected.has(entry.clip.id)} referenced={entry.clip.id === reference} text={text} offset={pictures[entry.clip.id] ?? 0}
       onPick={pick} onText={cycle} onPicture={picture} />)}
   </ol>;
 }

@@ -31,6 +31,12 @@ import { placeOf, type EditedNode } from '../color/useNodeEdit';
 import { keyClockOf } from '../color/keyFrames';
 import { makeDefaultNode } from '../color/nodeEdits';
 import { refusalText } from '../inspector/refusal';
+import { useColorGallery } from '../color/Gallery';
+import { appendNodeParams, appendNodeTargets, KEYFRAMES_USING } from '../color/stills';
+import { useComparison, type Comparison } from '../color/useComparison';
+import { ComparisonBar, comparisonMenuItems, splitMenu } from '../color/ComparisonBar';
+import { CoveringMenu } from '../color/CoveringMenu';
+import type { Menu } from '../color/ColorMenu';
 import '../color/color.css';
 
 /** Narrower than this, the left and center palettes are merged into one group (Reference Manual 20, p. 2976). */
@@ -82,14 +88,15 @@ function useRealTime(state: TimelineState | null): 'stopped' | 'realtime' | 'dro
  * The viewer is the timeline monitor of the Cut and Edit pages, with its transport and its keys.
  * The current clip is the one at the playhead: its grade is in the node editor and its thumbnail is
  * outlined in orange. Up and Down go to the clip before and after it. Alt+F, Shift+F and P make the
- * viewer larger. The LUT browser (T18) puts LUTs on nodes; the gallery is a placeholder until T26;
- * the node editor shows the grade, and edits it from T16.
+ * viewer larger. The LUT browser (T18) puts LUTs on nodes; the Gallery (T26) keeps stills and
+ * memories and applies their grades; the viewer wipes the frame against a still or a clip, or shows
+ * a split screen (T27); the node editor shows the grade, and edits it from T16.
  */
 export function ColorPage({
   bridge, native, session, revision, pool, media, timelines, groups = NO_GROUPS, selected, onSelect, timelineMonitor, noticeOf, onRetry, onProblem, color,
-  nextId,
+  nextId, project = '', language = 'en',
 }: {
-  bridge: Pick<EngineBridge, 'call' | 'onEvent' | 'viewRect' | 'viewShow'>;
+  bridge: Pick<EngineBridge, 'call' | 'onEvent' | 'viewRect' | 'viewShow'> & Partial<Pick<EngineBridge, 'importStills' | 'exportStills'>>;
   native: boolean;
   session: number;
   revision: number;
@@ -109,6 +116,10 @@ export function ColorPage({
   color?: ColorSettings;
   /** The project's `next_id`: a grade without nodes is shown with the node 01 that the engine would add to it (T3d). */
   nextId?: number;
+  /** The folder of the project, by which the memories of the Gallery are kept (T26). */
+  project?: string;
+  /** The language that the dialogs of the shell (Import and Export of stills) are titled in. */
+  language?: string;
 }) {
   const words = useWords();
   const labels = words.label.studio.colorPage;
@@ -177,9 +188,15 @@ export function ColorPage({
   // The grade shown, as the edits name it; undo and redo, = and -, whole grades copied and pasted, and the menu of a thumbnail.
   // A grade without nodes is shown with DaVinci's default node 01 (T3d), which the first change to it makes.
   const visibleClips = useMemo(() => visible.map(each => each.clip), [visible]);
+  // Wipe Timeline Clip, in the menu of a thumbnail other than the current one's (p. 3002).
+  const comparisonRef = useRef<Comparison | null>(null);
+  const currentId = useRef<string | null>(null);
+  currentId.current = current?.clip.id ?? null;
+  const thumbnailItems = useCallback((clip: string) => (clip === currentId.current ? []
+    : [{ id: 'wipe-timeline-clip', label: labels.galleryPanel.wipeTimelineClip, run: () => comparisonRef.current?.wipeTimelineClip(clip) }]), [labels]);
   const grades = useColorPageGrades({
     bridge, revision, session, area, level: shownLevel, timeline: selected, clips: visibleClips, current: current?.clip ?? null, chosen: chosenClips,
-    grade, nextId,
+    grade, nextId, thumbnailItems,
   });
   const shownGrade = grades.shown;
   const currentNode = shownGrade === null ? null
@@ -209,6 +226,17 @@ export function ColorPage({
   const nodeLuts = useMemo<NodeLuts>(() => ({ session, library: lutLibrary, favorites: favoriteLuts, onReveal: revealLut }),
     [session, lutLibrary, favoriteLuts, revealLut]);
   const applyLut = (name: string) => { if (grades.target !== null) grades.editing.run(setNodeLut(grades.target, editedNode ?? undefined, name)); };
+
+  // The Gallery (T26) and the comparisons of the viewer (T27).
+  const [wiped, setWiped] = useState<string | null>(null);
+  const gallery = useColorGallery({
+    bridge, session, project, language, revision, level: shownLevel, timeline: selected, clips: visibleClips, chosenClips, current: current?.clip ?? null,
+    groups, wipedStill: wiped, onWipe: still => comparisonRef.current?.wipeStill(still), onRefused: grades.editing.setProblem, onFailed: failed,
+  });
+  const [viewerMenu, setViewerMenu] = useState<Menu | null>(null);
+  const closeViewerMenu = useCallback(() => setViewerMenu(null), []);
+  const galleryNow = useRef(gallery);
+  galleryNow.current = gallery;
 
   // Going to a clip: it is chosen, alone, and the playhead goes to its first frame (p. 3024).
   const go = useCallback((clip: string, start: number) => {
@@ -244,6 +272,48 @@ export function ColorPage({
     const next = new Set(old); if (next.has(track.id)) next.delete(track.id); else next.add(track.id); return next;
   }), []);
 
+  // The viewer's right-click menu (p. 2999 and §1.2): Grab Still, Wipe On/Off, Split Screen ▸, and Apply Grade ▸ of the still wiped.
+  const openViewerMenu = useCallback((x: number, y: number) => {
+    const comparison = comparisonRef.current;
+    const compare = now.current.words.label.studio.colorPage.compare;
+    const galleryWords = now.current.words.label.studio.colorPage.galleryPanel;
+    if (comparison === null) return;
+    const wipedNow = comparison.wipedStill;
+    setViewerMenu({ x, y, label: galleryWords.viewerMenu, items: [
+      { id: 'grab-still', label: galleryWords.grabStill, keys: 'Ctrl+Alt+G', run: () => galleryNow.current.grab() },
+      { id: 'wipe-on-off', label: compare.wipeOnOff, keys: 'Ctrl+W', checked: comparison.wiping, run: comparison.toggleWipe },
+      splitMenu(comparison, compare),
+      ...(wipedNow === null ? [] : [{ id: 'apply-wiped', label: galleryWords.applyGrade, items: KEYFRAMES_USING.map(each => ({
+        id: `apply-wiped-${each}`, label: galleryWords.keyframes[each], run: () => galleryNow.current.apply(wipedNow, 'apply', each),
+      })) }]),
+    ] });
+  }, []);
+  // The right button on the picture while the view takes the pointer: the point of the view's window, in pixels of the screen.
+  const onPointerMenu = useCallback((at: { x: number; y: number }) => {
+    const box = page.current?.querySelector('.color-viewer [data-test="viewer-box"]')?.getBoundingClientRect();
+    const ratio = typeof devicePixelRatio === 'number' && devicePixelRatio > 0 ? devicePixelRatio : 1;
+    openViewerMenu((box?.left ?? 0) + at.x / ratio, (box?.top ?? 0) + at.y / ratio);
+  }, [openViewerMenu]);
+  const comparison = useComparison({
+    bridge, session, native, loaded: timelineState !== null && timelineMonitor.loaded, timeline: selected, clips: visibleClips, current: current?.clip ?? null,
+    frame: frame ?? 0, playing: timelineState?.playing ?? false, chosen: chosenClips, stills: gallery.chosenStills, currentStill: gallery.currentStill,
+    // A tile of Selected Clips: the playhead goes to the first frame of its clip, which is current, and the clips chosen stay chosen.
+    onGo: (clip) => { const entry = numbered.find(each => each.clip.id === clip); if (entry) { setChosen(clip); timelineMonitor.seek(entry.clip.start, false); } },
+    onProblem: (failure) => { if (failure instanceof EngineError) grades.editing.setProblem(refusalText(failure, now.current.words.hint.studio)); else failed(failure); },
+    onPointerMenu,
+  });
+  comparisonRef.current = comparison;
+  useEffect(() => { setWiped(comparison.wipedStill); }, [comparison.wipedStill]);
+  // Append Node to Selected Clips (Color menu, p. 3297), from the menu of the node: the current node, after the grades of the other clips chosen.
+  const appendTo = appendNodeTargets(selected, visibleClips, chosenClips, current?.clip ?? null);
+  const appendNode = useMemo(() => ({
+    label: labels.galleryPanel.appendToSelected, can: appendTo.length > 0 && grades.target !== null,
+    run: (node: string) => {
+      if (grades.target === null || appendTo.length === 0) return;
+      callEngine(bridge, 'grade.append_node', appendNodeParams(grades.target, node, appendTo, gallery.settings, revision)).catch(paletteFailed);
+    },
+  }), [labels, JSON.stringify(appendTo), grades.target, bridge, gallery.settings, revision, paletteFailed]);
+
   // The keys of the transport go to the timeline monitor; Up and Down go from clip to clip, and three keys make the viewer larger.
   useStudioKeys(timelineMonitor.loaded, timelineMonitor.context, timelineMonitor.run);
   const keys = useRef({ listed, current, frame, go, viewerMode });
@@ -270,6 +340,40 @@ export function ColorPage({
       else if (isF && key.shift && !key.ctrl && !key.alt && !key.meta) toggle('full');
       else if (plain && (key.code === 'KeyP' || letter === 'p')) toggle('cinema');
       else if (plain && letter === 'Escape' && state.viewerMode === 'cinema') { event.preventDefault(); setViewerMode('normal'); }
+    };
+    window.addEventListener('keydown', down);
+    return () => window.removeEventListener('keydown', down);
+  }, []);
+
+  // The keys of the Gallery and of comparisons (§9.1–§9.3), by where the key lies, as Ctrl+Alt is AltGr on some layouts:
+  // Ctrl+Alt+G grabs a still; Ctrl+W wipes, Alt+W inverts; Ctrl+Alt+B and N go to the still before and after; Ctrl+Alt+Left
+  // and Right step the clip of a timeline wipe; Ctrl+Alt+W splits the screen; Alt+1…8 saves a memory and Ctrl+1…8 loads it.
+  useEffect(() => {
+    const down = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || !inStudio(event.target)) return;
+      const key = keyOf(event);
+      if (key.meta || key.shift || !editingAllowed(event.target, key)) return;
+      const comparison = comparisonRef.current;
+      const shown = galleryNow.current;
+      if (comparison === null) return;
+      const letter = /^Key([A-Z])$/.exec(key.code ?? '')?.[1]?.toLowerCase() ?? (key.key.length === 1 ? key.key.toLowerCase() : '');
+      const digit = /^Digit([1-8])$/.exec(key.code ?? '')?.[1] ?? (/^[1-8]$/.test(key.key) ? key.key : null);
+      const take = (run: () => void) => { event.preventDefault(); run(); };
+      if (key.ctrl && key.alt) {
+        if (key.key === 'ArrowLeft' || key.key === 'ArrowRight') { take(() => comparison.stepReference(key.key === 'ArrowLeft' ? -1 : 1)); return; }
+        if (key.repeat) return;
+        if (letter === 'g') take(shown.grab);
+        else if (letter === 'w') take(comparison.toggleSplit);
+        else if (letter === 'b' || letter === 'n') {
+          take(() => { const still = shown.stepStill(letter === 'b' ? -1 : 1); if (still !== null) comparison.showStill(still); });
+        }
+        return;
+      }
+      if (key.repeat) return;
+      if (key.ctrl && letter === 'w') take(comparison.toggleWipe);
+      else if (key.alt && letter === 'w') take(comparison.invert);
+      else if (key.alt && digit !== null) take(() => shown.storeMemory(Number(digit) - 1));
+      else if (key.ctrl && digit !== null) take(() => shown.recallMemory(Number(digit) - 1));
     };
     window.addEventListener('keydown', down);
     return () => window.removeEventListener('keydown', down);
@@ -309,7 +413,7 @@ export function ColorPage({
       data-test="head-timecode-kind">
       {(['source', 'record', 'sourceFrame', 'recordFrame'] as const).map(each => <option key={each} value={each}>{labels.timecodes[each]}</option>)}
     </select>
-    <ViewerOptions bridge={bridge} color={keptColor({ color })} run={grades.editing.run} />
+    <ViewerOptions bridge={bridge} color={keptColor({ color })} run={grades.editing.run} comparisons={comparisonMenuItems(comparison, labels.compare)} />
     <button type="button" className="icon-btn" aria-pressed={viewerMode === 'enhanced'} aria-label={labels.enhanced}
       title={`${labels.enhanced} (Alt+F)`}
       onClick={event => setViewerMode(old => (event.altKey ? (old === 'full' ? 'normal' : 'full') : old === 'enhanced' ? 'normal' : 'enhanced'))}
@@ -320,15 +424,23 @@ export function ColorPage({
     title={missing.map(each => `${each.name}: ${each.message}`).join('\n')} data-test="missing-luts">
     {missing.length === 1 ? labels.missingLut(missing[0].name) : labels.missingLuts}
   </p>;
-  const viewer = <section className="color-viewer" aria-label={labels.viewer} data-test="color-viewer" {...focusOf('viewer')}>
+  const viewer = <section className="color-viewer" aria-label={labels.viewer} data-test="color-viewer" data-split={comparison.splitting || undefined}
+    {...focusOf('viewer')}
+    onContextMenu={(event) => {
+      if (!(event.target instanceof Element) || !event.target.closest('[data-test="viewer-box"]')) return;
+      event.preventDefault();
+      openViewerMenu(event.clientX, event.clientY);
+    }}>
     <MonitorPane controls={timelineMonitor} bridge={bridge} native={native} active hidden={nodesOpen && nodesExpanded && viewerMode === 'normal'}
-      notice={noticeOf('timeline')} onRetry={onRetry} hint={words.hint.studio.timeline.empty} switcher={viewerHead} footer={missingNotice || undefined} />
+      notice={noticeOf('timeline')} onRetry={onRetry} hint={words.hint.studio.timeline.empty}
+      switcher={<div className="color-viewer-heads">{viewerHead}<ComparisonBar comparison={comparison} /></div>} footer={missingNotice || undefined} />
     {viewerMode === 'cinema' && <button type="button" className="btn color-cinema-exit" onClick={() => setViewerMode('normal')} data-test="exit-cinema">
       {labels.exitCinema}</button>}
   </section>;
   const noTimeline = timelines.length === 0 ? words.hint.studio.cutPage.noTimeline : said.noClip;
 
   return <div ref={page} className="studio-body color-page" data-viewer-mode={viewerMode} data-merged={merged || undefined}
+    data-split={comparison.splitting || undefined}
     data-side={side ?? undefined} data-nodes={nodesOpen || undefined} data-nodes-expanded={(nodesOpen && nodesExpanded) || undefined} data-test="color-page">
     <div className="color-bar" role="toolbar" aria-label={labels.toolbar}>
       {sideButton('gallery', labels.gallery, Images)}
@@ -351,23 +463,20 @@ export function ColorPage({
       data-panel={side} data-test="color-side" {...focusOf('side')}>
       {side === 'pool' ? pool : side === 'luts' ? <LutBrowser bridge={bridge} session={session} onApply={applyLut}
         canApply={grades.target !== null && editedNode?.kind === 'corrector'} missing={missing} timeline={selected} groups={groups} numbers={numbers}
-        revealed={revealed} /> : <>
-        <h2 className="overline">{labels.gallery}</h2>
-        <p className="caption color-empty">{said.gallery}</p>
-      </>}
+        revealed={revealed} /> : gallery.panel}
     </section>}
     {viewerMode === 'cinema' ? createPortal(<div className="color-cinema" data-studio-portal="">{viewer}</div>, document.body) : viewer}
     {nodesOpen && <section className="color-nodes" aria-label={labels.nodeEditor} data-test="node-editor" {...focusOf('nodes')}>
       <NodeEditor grade={grade} defaultNode={defaultNode?.id ?? null} level={shownLevel} levels={levels} onLevel={setLevel} current={currentNode} onCurrent={onCurrentNode}
         hint={noTimeline} target={grades.target} gradeKey={gradeKey} views={grades.views} focused={area === 'nodes'} editing={grades.editing}
-        luts={nodeLuts} />
+        luts={nodeLuts} appendNode={appendNode} />
       <button type="button" className="icon-btn color-expand" aria-pressed={nodesExpanded} aria-label={labels.nodeEditor} title={labels.nodeEditor}
         onClick={() => setNodesExpanded(open => !open)} data-test="expand-nodes"><Expand size={13} /></button>
     </section>}
     {clipsOpen && <div className="color-thumbs-area" {...focusOf('thumbnails')} onContextMenu={grades.onThumbnailMenu}>
       <ThumbnailTimeline clips={listed} media={mediaById} rate={selected?.rate ?? { num: 25, den: 1 }} cache={thumbnails}
         current={current?.clip.id ?? null} selected={chosenClips} onPick={pick} pictures={pictures} onPicture={onPicture}
-        hint={selected === null ? noTimeline : said.noClips} />
+        hint={selected === null ? noTimeline : said.noClips} reference={comparison.referenceClip} />
     </div>}
     {miniOpen && selected !== null && <div className="color-mini-area" {...focusOf('mini')}>
       <MiniTimeline timeline={selected} numbers={numbers} frame={frame ?? 0} current={current?.clip.id ?? null} skipped={skipped}
@@ -378,6 +487,7 @@ export function ColorPage({
         onLeft={(each) => { setLeft(each); setLast('left'); }} onCenter={(each) => { setCenter(each); setLast('center'); }} onRight={setRight} />
     </div>
     {grades.menu}
+    {viewerMenu && <CoveringMenu menu={viewerMenu} onClose={closeViewerMenu} />}
     {scopes.floating}
   </div>;
 }

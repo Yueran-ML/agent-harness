@@ -87,79 +87,127 @@ fn grade_s_contrast(x: f32, c: f32, p: f32) -> f32 {
     return 1.0 - (1.0 - p) * pow((1.0 - x) / (1.0 - p), c);
 }
 
-// The value at x of the curve of `count` points from `at` (each its x, its y and its slope),
-// held flat beyond its first and last points where `flat`, or carried on along their slopes.
-// Between two points it is the cubic of Hermite through them with their slopes; none is 0.
-fn grade_curve(at: u32, count: u32, x: f32, flat: bool) -> f32 {
-    if (count == 0u) {
-        return 0.0;
-    }
-    let first = param(at);
-    if (x <= first.x || count == 1u) {
-        return select(first.y + first.z * (x - first.x), first.y, flat);
-    }
-    let last = param(at + count - 1u);
-    if (x >= last.x) {
-        return select(last.y + last.z * (x - last.x), last.y, flat);
-    }
-    var i = 0u;
-    for (var j = 1u; j + 1u < count; j = j + 1u) {
-        if (param(at + j).x <= x) {
-            i = j;
-        } else {
-            break;
-        }
-    }
-    let p0 = param(at + i);
-    let p1 = param(at + i + 1u);
-    let dx = p1.x - p0.x;
-    let dy = p1.y - p0.y;
-    let t = (x - p0.x) / dx;
+// The curves of a corrector: each a list of `count` points from `at` in the parameters, each
+// point its x, its y and its slope. A curve is held flat beyond its first and last points where
+// `flat`, or carried on along their slopes; between two points it is the cubic of Hermite
+// through them with their slopes (none is 0).
+//
+// Curves are looked up three at a time, a channel each (`at`, `count` and `x` of a vec3), and as
+// many lookups as can be share one loop: FXC, the compiler of Direct3D 12, takes about a second
+// over each loop in a shader of a few nodes, which has a copy of all this for each node.
+
+// Where the search of three curves for the last point at or before x has got to: that point, and
+// whether the search goes on (it stops at the first point beyond x).
+struct GradeSearch {
+    i: vec3<u32>,
+    going: vec3<bool>,
+}
+
+fn grade_search() -> GradeSearch {
+    return GradeSearch(vec3<u32>(0u), vec3<bool>(true));
+}
+
+// The search, after the point `j` (from 1 up) is looked at.
+fn grade_search_step(s: GradeSearch, at: vec3<u32>, count: vec3<u32>, x: vec3<f32>, j: u32) -> GradeSearch {
+    let at_j = at + vec3<u32>(j);
+    let px = vec3<f32>(param(at_j.x).x, param(at_j.y).x, param(at_j.z).x);
+    let going = s.going & (vec3<u32>(j + 1u) < count) & (px <= x);
+    return GradeSearch(select(s.i, vec3<u32>(j), going), going);
+}
+
+// The values at x of three curves, the search of each ended at its point `i`.
+fn grade_curve_at(at: vec3<u32>, count: vec3<u32>, x: vec3<f32>, i: vec3<u32>, flat: bool) -> vec3<f32> {
+    let f0 = param(at.x);
+    let f1 = param(at.y);
+    let f2 = param(at.z);
+    let first_x = vec3<f32>(f0.x, f1.x, f2.x);
+    let first_y = vec3<f32>(f0.y, f1.y, f2.y);
+    let first_z = vec3<f32>(f0.z, f1.z, f2.z);
+    let end = at + max(count, vec3<u32>(1u)) - vec3<u32>(1u);
+    let l0 = param(end.x);
+    let l1 = param(end.y);
+    let l2 = param(end.z);
+    let last_x = vec3<f32>(l0.x, l1.x, l2.x);
+    let last_y = vec3<f32>(l0.y, l1.y, l2.y);
+    let last_z = vec3<f32>(l0.z, l1.z, l2.z);
+    let a = at + i;
+    let a0 = param(a.x);
+    let a1 = param(a.y);
+    let a2 = param(a.z);
+    let b0 = param(a.x + 1u);
+    let b1 = param(a.y + 1u);
+    let b2 = param(a.z + 1u);
+    let p0x = vec3<f32>(a0.x, a1.x, a2.x);
+    let p0y = vec3<f32>(a0.y, a1.y, a2.y);
+    let p0z = vec3<f32>(a0.z, a1.z, a2.z);
+    let p1x = vec3<f32>(b0.x, b1.x, b2.x);
+    let p1y = vec3<f32>(b0.y, b1.y, b2.y);
+    let p1z = vec3<f32>(b0.z, b1.z, b2.z);
+    let dx = p1x - p0x;
+    let dy = p1y - p0y;
+    let t = (x - p0x) / dx;
     let t2 = t * t;
     let t3 = t2 * t;
     let h10 = t3 - 2.0 * t2 + t;
     let h11 = t3 - t2;
-    return p0.y + dy * t + h10 * (dx * p0.z - dy) + h11 * (dx * p1.z - dy);
+    var r = p0y + dy * t + h10 * (dx * p0z - dy) + h11 * (dx * p1z - dy);
+    r = select(r, select(last_y + last_z * (x - last_x), last_y, flat), x >= last_x);
+    r = select(
+        r,
+        select(first_y + first_z * (x - first_x), first_y, flat),
+        (x <= first_x) | (count == vec3<u32>(1u)),
+    );
+    return select(r, vec3<f32>(0.0), count == vec3<u32>(0u));
 }
 
-// What a custom curve changes x by: its intensity times its value less x.
-fn grade_custom(at: u32, offset: f32, count: f32, intensity: f32, x: f32) -> f32 {
-    return intensity * (grade_curve(at + u32(offset), u32(count), x, false) - x);
+// The values at x of three curves.
+fn grade_curve3(at: vec3<u32>, count: vec3<u32>, x: vec3<f32>, flat: bool) -> vec3<f32> {
+    var s = grade_search();
+    let most = max(max(count.x, count.y), count.z);
+    for (var j = 1u; j + 1u < most; j = j + 1u) {
+        s = grade_search_step(s, at, count, x, j);
+    }
+    return grade_curve_at(at, count, x, s.i, flat);
 }
 
 fn grade_curves(x: vec3<f32>, at: u32) -> vec3<f32> {
     let intensity = param(at + 12u);
-    let offsets = param(at + 13u);
-    let counts = param(at + 14u);
-    if (param(at + 15u).x != 0.0) {
-        return x + vec3<f32>(
-            grade_custom(at, offsets.x, counts.x, intensity.y, x.r),
-            grade_custom(at, offsets.x, counts.x, intensity.z, x.g),
-            grade_custom(at, offsets.x, counts.x, intensity.w, x.b),
-        );
+    let offsets = vec4<u32>(param(at + 13u));
+    let counts = vec4<u32>(param(at + 14u));
+    let ganged = param(at + 15u).x != 0.0;
+    // Each channel of x through the curves of R, G and B; or, ganged, all three through that of
+    // Y, each channel by its own intensity.
+    let at_r = vec3<u32>(at + select(offsets.y, offsets.x, ganged));
+    let at_g = vec3<u32>(at + select(offsets.z, offsets.x, ganged));
+    let at_b = vec3<u32>(at + select(offsets.w, offsets.x, ganged));
+    let count_r = vec3<u32>(select(counts.y, counts.x, ganged));
+    let count_g = vec3<u32>(select(counts.z, counts.x, ganged));
+    let count_b = vec3<u32>(select(counts.w, counts.x, ganged));
+    var r = grade_search();
+    var g = grade_search();
+    var b = grade_search();
+    let most = max(max(count_r.x, count_g.x), count_b.x);
+    for (var j = 1u; j + 1u < most; j = j + 1u) {
+        r = grade_search_step(r, at_r, count_r, x, j);
+        g = grade_search_step(g, at_g, count_g, x, j);
+        b = grade_search_step(b, at_b, count_b, x, j);
+    }
+    // What the curves of R, G and B change each channel by.
+    let dr = intensity.y * (grade_curve_at(at_r, count_r, x, r.i, false) - x);
+    let dg = intensity.z * (grade_curve_at(at_g, count_g, x, g.i, false) - x);
+    let db = intensity.w * (grade_curve_at(at_b, count_b, x, b.i, false) - x);
+    var o = x + vec3<f32>(dr.r, dg.g, db.b);
+    if (ganged) {
+        return o;
     }
     let mix = param(at + 3u).w;
-    // What the curves of R, G and B change each channel by.
-    let dr = vec3<f32>(
-        grade_custom(at, offsets.y, counts.y, intensity.y, x.r),
-        grade_custom(at, offsets.y, counts.y, intensity.y, x.g),
-        grade_custom(at, offsets.y, counts.y, intensity.y, x.b),
-    );
-    let dg = vec3<f32>(
-        grade_custom(at, offsets.z, counts.z, intensity.z, x.r),
-        grade_custom(at, offsets.z, counts.z, intensity.z, x.g),
-        grade_custom(at, offsets.z, counts.z, intensity.z, x.b),
-    );
-    let db = vec3<f32>(
-        grade_custom(at, offsets.w, counts.w, intensity.w, x.r),
-        grade_custom(at, offsets.w, counts.w, intensity.w, x.g),
-        grade_custom(at, offsets.w, counts.w, intensity.w, x.b),
-    );
-    var o = x + vec3<f32>(dr.r, dg.g, db.b);
     let n = x + dr * GRADE_LUMA.r + dg * GRADE_LUMA.g + db * GRADE_LUMA.b;
     o = o + vec3<f32>(mix * (grade_luma(n) - grade_luma(o)));
-    let y = grade_luma(o);
-    return o + vec3<f32>(mix * grade_custom(at, offsets.x, counts.x, intensity.x, y));
+    let y = vec3<f32>(grade_luma(o));
+    let at_y = vec3<u32>(at + offsets.x);
+    let count_y = vec3<u32>(counts.x);
+    let dy = intensity.x * (grade_curve3(at_y, count_y, y, false) - y);
+    return o + vec3<f32>(mix * dy.x);
 }
 
 // Offset, which is done as a part of the Log controls (p. 3073), and the Log wheels.
@@ -322,16 +370,29 @@ fn grade_secondary(x0: vec3<f32>, input: vec3<f32>, at: u32) -> vec3<f32> {
         let hue = grade_hue(input);
         let sat = grade_sat(input);
         let lum = clamp(grade_luma(input), 0.0, 1.0);
+        // Hue vs Hue, Hue vs Sat and Hue vs Lum; and Lum vs Sat, Sat vs Sat and Sat vs Lum.
+        let at_hue = vec3<u32>(at) + vec3<u32>(offsets.xyz);
+        let count_hue = vec3<u32>(counts.xyz);
+        let x_hue = vec3<f32>(hue);
+        let at_rest = vec3<u32>(at) + vec3<u32>(vec3<f32>(offsets.w, offsets2.x, offsets2.y));
+        let count_rest = vec3<u32>(vec3<f32>(counts.w, counts2.x, counts2.y));
+        let x_rest = vec3<f32>(lum, sat, sat);
+        var by_hue = grade_search();
+        var by_rest = grade_search();
+        let most = max(max(max(count_hue.x, count_hue.y), count_hue.z), max(max(count_rest.x, count_rest.y), count_rest.z));
+        for (var j = 1u; j + 1u < most; j = j + 1u) {
+            by_hue = grade_search_step(by_hue, at_hue, count_hue, x_hue, j);
+            by_rest = grade_search_step(by_rest, at_rest, count_rest, x_rest, j);
+        }
+        let of_hue = grade_curve_at(at_hue, count_hue, x_hue, by_hue.i, true);
+        let of_rest = grade_curve_at(at_rest, count_rest, x_rest, by_rest.i, true);
         if (counts.x > 0.0) {
-            let turn = grade_curve(at + u32(offsets.x), u32(counts.x), hue, true) * GRADE_PI;
+            let turn = of_hue.x * GRADE_PI;
             x = grade_rotate(x, cos(turn) - 1.0, sin(turn));
         }
-        let k = (1.0 + grade_curve(at + u32(offsets.y), u32(counts.y), hue, true))
-            * (1.0 + grade_curve(at + u32(offsets.w), u32(counts.w), lum, true))
-            * (1.0 + grade_curve(at + u32(offsets2.x), u32(counts2.x), sat, true));
+        let k = (1.0 + of_hue.y) * (1.0 + of_rest.x) * (1.0 + of_rest.y);
         x = grade_saturate(x, k);
-        let light = grade_curve(at + u32(offsets.z), u32(counts.z), hue, true) * sat
-            + grade_curve(at + u32(offsets2.y), u32(counts2.y), sat, true);
+        let light = of_hue.z * sat + of_rest.z;
         x = x + vec3<f32>(grade_luma(x) * light);
     }
     if ((features & 1024u) != 0u) {

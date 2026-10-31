@@ -359,3 +359,110 @@ async fn a_timeline_of_4k_of_three_graded_layers_and_a_graded_timeline_plays_at_
     // slower; a frame that took too long to draw would move the playhead more slowly.
     assert!(late_of(true) <= late_of(false) + 2, "{late:?}");
 }
+
+/// While a graded timeline plays, the shape of its grade changes four times (a node added after
+/// the last each time, whose shaders take FXC a second or more to compile): no frame waits for
+/// them. They are made on threads of their own, and the frames before are drawn with the grade
+/// as it was. Measured by the longest time between two states of the playing monitor (one is
+/// told for each frame drawn, at 30 a second) and how fast the playhead moves; and once it is
+/// paused, the frame measured is drawn with the grade as it is.
+#[tokio::test]
+async fn a_grade_whose_shape_changes_while_it_plays_holds_no_frame_up() {
+    if columbina_compose::gpu_for_tests().is_none() {
+        return;
+    }
+    let dir = project_dir();
+    let engine = engine(
+        dir.path(),
+        &["--no-proxies", "--sound", "null", "--test-hooks"],
+    )
+    .await;
+    let mut watcher = engine.client("desktop").await;
+    let mut agent = engine.client("agent").await;
+    let mut colour = clip("$colour", "unused", 0, 900);
+    colour["source"] = json!({"kind":"color","color":"#c86e28ff"});
+    let mut first = Node::corrector("first");
+    if let NodeKind::Corrector(settings) = &mut first.kind {
+        settings.primaries.gain.y = Param::Fixed(1.1);
+    }
+    colour["grade"] = json!(Grade {
+        nodes: vec![first],
+        links: vec![Link::rgb("source", "first"), Link::rgb("first", "output")],
+    });
+    let names = watcher
+        .apply(json!([{"op":"add_timeline", "timeline":{
+            "id":"$timeline", "name":"Playing", "width":64, "height":36,
+            "rate":{"num":30,"den":1}, "sample_rate":48000,
+            "tracks":[{"id":"$v", "kind":"video", "name":"Picture", "enabled":true,
+                "locked":false, "clips":[colour], "transitions":[]}]
+        }}]))
+        .await["names"]
+        .clone();
+    watcher
+        .result(
+            "transport.load",
+            Some(json!({"monitor":"timeline", "timeline":names["$timeline"]})),
+        )
+        .await;
+    // The grade as it is loaded is made before it plays: a digest waits for it.
+    let before = digest(&mut watcher).await;
+    watcher.take_notifications();
+    watcher
+        .result(
+            "transport.play",
+            Some(json!({"monitor":"timeline", "speed":1})),
+        )
+        .await;
+    let target = json!({"level":"clip", "timeline":names["$timeline"], "clip":names["$colour"]});
+    let changes = async {
+        let mut last = json!("first");
+        for step in 0..4 {
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            let name = format!("$step{step}");
+            let mut node = Node::corrector(&name);
+            if let NodeKind::Corrector(settings) = &mut node.kind {
+                settings.primaries.saturation = Param::Fixed(10.0 * f64::from(step));
+            }
+            let done = agent
+                .apply(
+                    json!([{"op":"add_node", "grade":target, "node":node, "links":[
+                    {"from":last, "to":name, "kind":"rgb", "input":0},
+                    {"from":name, "to":"output", "kind":"rgb", "input":0}]}]),
+                )
+                .await;
+            last = done["names"][&name].clone();
+        }
+    };
+    let (states, ()) = tokio::join!(watcher.states_for(Duration::from_millis(3600)), changes);
+    let playing: Vec<_> = states
+        .iter()
+        .filter(|(state, _)| state["monitor"] == "timeline" && state["playing"] == true)
+        .collect();
+    let longest = playing
+        .windows(2)
+        .map(|pair| pair[1].1.duration_since(pair[0].1))
+        .max()
+        .unwrap();
+    let (first_state, then) = playing.first().unwrap();
+    let (last_state, at) = playing.last().unwrap();
+    #[allow(clippy::cast_precision_loss)]
+    let rate = (last_state["frame"].as_i64().unwrap() - first_state["frame"].as_i64().unwrap())
+        as f64
+        / at.duration_since(*then).as_secs_f64();
+    eprintln!(
+        "four changes of the shape of the grade while it plays: the longest time between two \
+         frames told {longest:?}; the playhead moves at {rate:.1} frames a second"
+    );
+    assert!(longest < Duration::from_millis(400), "{longest:?}");
+    assert!(rate > 27.0, "{rate}");
+    watcher
+        .result("transport.pause", Some(json!({"monitor":"timeline"})))
+        .await;
+    // Paused, the frame is drawn with the grade of five nodes: grey, the first node added
+    // taking the saturation to 0.
+    let after = digest(&mut watcher).await;
+    assert_ne!(after["hash"], before["hash"]);
+    for pixel in after["pixels"].as_array().unwrap() {
+        assert!(grey(pixel), "{after}");
+    }
+}

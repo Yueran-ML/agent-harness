@@ -1438,6 +1438,14 @@ subtitles in. A grade that is not complete, or has no node, changes nothing.
 - **Cost**: a grade is made into code once, when it changes (any of its settings, or the card);
   each frame takes only its parameters at that frame, so playing keyframes or dragging a setting
   compiles nothing, and a change of grades alone does not start the read-ahead again.
+- **A new shape of a grade** (a node added, removed, enabled or linked otherwise; a LUT of
+  another shape) is compiled on threads of the engine's own, a tenth of a second to a few
+  seconds, while the timeline monitor goes on: until it is made, a layer is drawn with its
+  grade as the frame before drew it, or ungraded where the layer at its place before was other
+  media, and the timeline grade (and the output transform) as before. The monitor draws the
+  frame again once it is made, playing or still. `transport.frame_digest` and
+  `scopes.statistics` of the timeline monitor measure the frame drawn with the grade as it is
+  (they wait for it); an export always waits for its grades.
 - **LUTs**: a corrector's `lut` that is an absolute path is read there; another is looked for in
   the folder of the project, then in the library of LUTs: the folders that the environment
   variable `COLUMBINA_LUTS` of the engine lists (absolute paths, separated as `PATH` is: `;` on

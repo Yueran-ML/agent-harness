@@ -107,6 +107,8 @@ fn shown(monitor: &mut Worker, project: &Project, frame: i64) -> Vec<u8> {
     monitor.replace(Arc::new(project.clone()));
     monitor.status.frame = Some(frame);
     monitor.draw(true, false).unwrap();
+    // Drawn again once the pipelines of its grades are made, as the monitor does.
+    monitor.finish_compiling();
     monitor.current.as_ref().unwrap().read_rgba().unwrap()
 }
 

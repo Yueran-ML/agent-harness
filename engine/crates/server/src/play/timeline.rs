@@ -31,6 +31,10 @@ use crate::view::{Monitor, ViewSlot};
 
 const SEEK_WAIT: Duration = Duration::from_secs(5);
 
+/// How often a monitor that is still, and shows a frame drawn while the pipelines of its grades
+/// were being made, looks whether they are made, to draw it again.
+const COMPILED_POLL: Duration = Duration::from_millis(10);
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Status {
     pub monitor: Monitor,
@@ -455,8 +459,37 @@ impl Worker {
             let nanos = (clock.when(next) - now).max(0);
             Some(Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX)).min(TOLD_EVERY))
         } else {
-            self.settle
-                .map(|at| at.saturating_duration_since(Instant::now()))
+            let settle = self
+                .settle
+                .map(|at| at.saturating_duration_since(Instant::now()));
+            if self.is_provisional() {
+                Some(settle.map_or(COMPILED_POLL, |settle| settle.min(COMPILED_POLL)))
+            } else {
+                settle
+            }
+        }
+    }
+
+    /// Whether the frame shown was drawn while the pipelines of its grades were being made,
+    /// with the grades of the frames before (see `Compositor::compile_in_background`).
+    fn is_provisional(&self) -> bool {
+        self.compositor
+            .as_ref()
+            .is_some_and(Compositor::is_provisional)
+    }
+
+    /// The frame shown drawn again once the pipelines of its grades are made, if it was drawn
+    /// before they were and the monitor is still: what is measured is what the monitor settles
+    /// on.
+    fn finish_compiling(&mut self) {
+        if !self.is_provisional() {
+            return;
+        }
+        if let Some(compositor) = &mut self.compositor {
+            compositor.finish_compiling();
+        }
+        if self.clock.is_none() {
+            let _ = self.draw(true, false);
         }
     }
 
@@ -542,6 +575,7 @@ impl Worker {
         }
     }
 
+    #[allow(clippy::too_many_lines, reason = "an arm for each command")]
     fn apply(&mut self, command: Command) {
         match command {
             Command::Load { project, id, reply } => {
@@ -588,6 +622,7 @@ impl Worker {
                 let _ = reply.send(());
             }
             Command::Digest(reply) => {
+                self.finish_compiling();
                 let sound = (self.status.sound == Sound::On)
                     .then(|| {
                         self.sound.working().and_then(|output| {
@@ -625,6 +660,7 @@ impl Worker {
                 let _ = reply.send(result);
             }
             Command::Shown(reply) => {
+                self.finish_compiling();
                 let shown = match (&self.current, &self.compositor, self.status.shown) {
                     (Some(target), Some(compositor), Some(frame)) => Ok(Shown::Target {
                         gpu: Arc::clone(compositor.gpu()),
@@ -639,6 +675,7 @@ impl Worker {
                 let _ = reply.send(self.compare_with(change));
             }
             Command::Original(reply) => {
+                self.finish_compiling();
                 let _ = reply.send(self.original());
             }
             Command::Act(action) => self.action(action),
@@ -887,6 +924,14 @@ impl Worker {
             self.settle = None;
             let _ = self.draw(true, false);
             self.tell(true);
+        } else if self.is_provisional()
+            && !self
+                .compositor
+                .as_ref()
+                .is_some_and(Compositor::is_compiling)
+        {
+            // The pipelines of the grades of the frame shown are made: it is drawn again.
+            let _ = self.draw(true, false);
         }
     }
 
@@ -1102,7 +1147,11 @@ impl Worker {
         {
             self.current = None;
             self.targets.clear();
-            self.compositor = Some(Compositor::new(Arc::clone(&gpu)));
+            let mut compositor = Compositor::new(Arc::clone(&gpu));
+            // A frame is not held up by the shaders of a grade whose shape changed: it is drawn
+            // with the grade as it was until they are made (the monitor looks, COMPILED_POLL).
+            compositor.compile_in_background(|| {});
+            self.compositor = Some(compositor);
         }
         self.targets
             .retain(|target| target.size() == (scene.width, scene.height));

@@ -122,6 +122,8 @@ fn settings_changed_while_playing_are_made_ready_without_a_frame_waiting_for_the
     // Loaded: its colour made before its first frame, as a load waits for it.
     monitor.status.frame = Some(0);
     monitor.draw(true, false).unwrap();
+    // As measured: drawn again once the pipelines of its programs of colour are made.
+    monitor.finish_compiling();
     let before = monitor.current.as_ref().unwrap().read_rgba().unwrap();
     let mut times = Vec::new();
     let mut frame = 1;
@@ -155,6 +157,7 @@ fn settings_changed_while_playing_are_made_ready_without_a_frame_waiting_for_the
     for _ in 0..5 {
         draw(&mut monitor, &mut after);
     }
+    monitor.finish_compiling();
     let shown = monitor.current.as_ref().unwrap().read_rgba().unwrap();
     assert_ne!(before, shown, "the new colour is shown");
     let worst = during.iter().copied().fold(0.0, f64::max);
@@ -208,6 +211,7 @@ fn a_frame_drawn_off_screen_is_measured_as_the_monitor_shows_it() {
     monitor.replace(Arc::clone(&project));
     monitor.status.frame = Some(12);
     monitor.draw(true, false).unwrap();
+    monitor.finish_compiling();
     let shown = Shown::Target {
         gpu: Arc::clone(monitor.compositor.as_ref().unwrap().gpu()),
         target: Arc::clone(monitor.current.as_ref().unwrap()),

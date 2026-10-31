@@ -32,6 +32,7 @@ use crate::geometry::{
 };
 use crate::gpu::Gpu;
 use crate::neighbourhood::{self, Pass};
+use crate::pipelines::{Builder, Made, Make};
 use crate::text::{self, Laid, Raster, Spec, Text, MOST_PIXELS};
 use crate::yuv::{self, Texel};
 
@@ -710,6 +711,61 @@ enum Pipe {
     Stage,
 }
 
+/// What a pipeline is known by: its kind, the format it draws into, and its program of colour.
+type PipelineKey = (Pipe, wgpu::TextureFormat, Option<usize>);
+
+/// What a layer was drawn with: by its kind of pipeline, and the code of its input transform
+/// (by which the layer at the same place in the next frame is taken for the same), its program of
+/// colour and what that read.
+struct ShownLayer {
+    pipe: Pipe,
+    input: Vec<Arc<str>>,
+    program: usize,
+    inputs: Inputs,
+}
+
+/// What of a frame cannot be drawn yet as it is, its pipelines being made: draws (by their
+/// number in the frame) and the stages over the canvas (the timeline grade, the output
+/// transform).
+#[derive(Default)]
+struct Waiting {
+    draws: Vec<usize>,
+    stages: [bool; 2],
+}
+
+impl Waiting {
+    fn is_empty(&self) -> bool {
+        self.draws.is_empty() && !self.stages.contains(&true)
+    }
+}
+
+/// The kind of pipeline that draws `draw`.
+fn pipe_of(draw: &Draw) -> Pipe {
+    match draw {
+        Draw::Picture { shape, .. } => Pipe::Yuv(shape.texel),
+        Draw::Texture(_) => Pipe::Rgba,
+    }
+}
+
+/// Of what a program read for one draw, the same again.
+fn copied(inputs: &Inputs) -> Inputs {
+    Inputs {
+        params: inputs.params.clone(),
+        textures: inputs.textures.clone(),
+    }
+}
+
+/// The code of the input transform of a layer.
+fn input_code(layer: &SceneLayer) -> Vec<Arc<str>> {
+    layer
+        .color
+        .input
+        .ops
+        .iter()
+        .map(|op| Arc::clone(&op.body))
+        .collect()
+}
+
 /// The colour of a layer drawn, where it does something: the number of the layer in its scene,
 /// of its program, and what the program reads.
 struct Graded {
@@ -933,7 +989,21 @@ pub struct Compositor {
     programs: Vec<Program>,
     program_numbers: HashMap<String, usize>,
     /// The pipelines, by their kind, the format they draw into, and their program of colour.
-    pipelines: HashMap<(Pipe, wgpu::TextureFormat, Option<usize>), wgpu::RenderPipeline>,
+    pipelines: HashMap<PipelineKey, wgpu::RenderPipeline>,
+    /// What makes the pipelines of programs of colour, on threads of its own.
+    builder: Builder<PipelineKey>,
+    /// The pipelines that could not be made, and why.
+    failed: HashMap<PipelineKey, String>,
+    /// Whether a frame is drawn without waiting for the pipelines of its programs of colour
+    /// ([`Compositor::compile_in_background`]).
+    background: bool,
+    /// What the last frames drew each layer (by its number in the scene) and each stage over
+    /// the canvas with, for the frames drawn while their pipelines are made.
+    shown_layers: HashMap<usize, ShownLayer>,
+    shown_stages: [Option<(usize, Inputs)>; 2],
+    /// Whether the last frame was drawn with programs other than its own, as its own were being
+    /// made.
+    provisional: bool,
     convert: Option<(wgpu::ComputePipeline, wgpu::ComputePipeline)>,
     sampler: wgpu::Sampler,
     /// The sampler that operations of colour read their textures with.
@@ -1146,6 +1216,12 @@ impl Compositor {
             programs: Vec::new(),
             program_numbers: HashMap::new(),
             pipelines: HashMap::new(),
+            builder: Builder::new(Arc::clone(&gpu)),
+            failed: HashMap::new(),
+            background: false,
+            shown_layers: HashMap::new(),
+            shown_stages: [None, None],
+            provisional: false,
             convert: None,
             sampler,
             colour_sampler,
@@ -1165,6 +1241,59 @@ impl Compositor {
     #[must_use]
     pub fn gpu(&self) -> &Arc<Gpu> {
         &self.gpu
+    }
+
+    /// Draw each frame without waiting for the pipelines of its programs of colour, which are
+    /// made on threads of their own, and call `wake` (on such a thread) each time one is made.
+    ///
+    /// Until the pipeline of a layer is made, the layer is drawn as the last frame drew the
+    /// layer at the same place in the scene, by that program and with what it read then, where
+    /// that layer had the same input transform (the same media, as a rule): a grade being
+    /// changed is shown as it was, and then as it is. Else the layer is drawn with no colour of
+    /// its own, its input transform too. A stage over the canvas (the timeline grade, the output
+    /// transform) is done as the last frame did it, or not at such a frame. Such a frame is
+    /// [`Compositor::is_provisional`]: a preview draws it, and again once `wake` is called; an
+    /// export is to wait ([`Compositor::finish_compiling`]), or use a compositor of its own,
+    /// which waits.
+    pub fn compile_in_background(&mut self, wake: impl Fn() + Send + Sync + 'static) {
+        self.background = true;
+        self.builder.wake_with(Arc::new(wake));
+    }
+
+    /// Compose `scene` into `target` as [`Compositor::render`] does, but waiting for the
+    /// pipelines of its programs of colour whether or not it draws frames without waiting
+    /// ([`Compositor::compile_in_background`]): for a picture that is kept (a reference that a
+    /// frame is compared with), not a frame of a monitor. What the frames drawn without waiting
+    /// are drawn with, and whether the last was provisional, are left as they were.
+    ///
+    /// # Errors
+    /// As [`Compositor::render`].
+    pub fn render_waiting(&mut self, scene: &Scene, target: &Target) -> Result<(), ComposeError> {
+        let (background, provisional) = (self.background, self.provisional);
+        self.background = false;
+        let rendered = self.render(scene, target);
+        (self.background, self.provisional) = (background, provisional);
+        rendered
+    }
+
+    /// Whether the last frame was drawn otherwise than its scene says, as the pipelines of some
+    /// of its programs of colour were being made (see [`Compositor::compile_in_background`]).
+    #[must_use]
+    pub fn is_provisional(&self) -> bool {
+        self.provisional
+    }
+
+    /// Whether pipelines are being made.
+    #[must_use]
+    pub fn is_compiling(&self) -> bool {
+        self.builder.is_busy()
+    }
+
+    /// Wait until the pipelines being made are made: a frame drawn after is drawn as its scene
+    /// says, as far as the pipelines asked for so far go.
+    pub fn finish_compiling(&mut self) {
+        let made = self.builder.finish();
+        self.keep(made);
     }
 
     /// How many pipelines it has made: for the tests, that a frame makes none it need not.
@@ -1204,6 +1333,7 @@ impl Compositor {
             )));
         }
         self.frame += 1;
+        self.provisional = false;
         let canvas = (f64::from(scene.width), f64::from(scene.height));
         let whole = [0.0, 0.0, canvas.0, canvas.1];
         let mut laid = Layered::default();
@@ -1215,13 +1345,13 @@ impl Compositor {
             mut draws,
             mut uniforms,
             mut colours,
-            taps,
+            mut taps,
             tap_uniforms,
         } = laid;
         // The stages over the canvas, where they do something.
         let size = (scene.width, scene.height);
-        let grade = self.stage_work(&scene.grade, size);
-        let output = self.stage_work(&scene.output, size);
+        let mut grade = self.stage_work(&scene.grade, size);
+        let mut output = self.stage_work(&scene.output, size);
         let layered = draws.len();
         if target.export.is_none() && !scene.subtitles.is_empty() {
             let size = subtitle_size(scene.height);
@@ -1274,9 +1404,29 @@ impl Compositor {
 
         let format = target.texture.format();
         let made = self.pipelines_of(&draws, &colours, &taps, [&grade, &output], format);
-        if let Err(error) = made {
-            self.give_back(draws);
-            return Err(error);
+        let waiting = match made {
+            Ok(waiting) => waiting,
+            Err(error) => {
+                self.give_back(draws);
+                return Err(error);
+            }
+        };
+        self.provisional = !waiting.is_empty();
+        if self.background {
+            let stood = self.stand_in_for_layers(
+                scene,
+                &draws,
+                &mut colours,
+                &mut taps,
+                &waiting.draws,
+                format,
+            );
+            if let Err(error) = stood {
+                self.give_back(draws);
+                return Err(error);
+            }
+            grade = self.stand_in_for_stage(0, grade, waiting.stages[0], format);
+            output = self.stand_in_for_stage(1, output, waiting.stages[1], format);
         }
         let mut calls = Vec::with_capacity(draws.len());
         for (draw, offset) in draws.iter_mut().zip(offsets) {
@@ -1669,8 +1819,13 @@ impl Compositor {
         number
     }
 
-    /// Make the pipelines that the draws and the stages of a frame need, where they are not
-    /// made yet.
+    /// Ask for the pipelines that the draws and the stages of a frame need, where they are not
+    /// made yet, those of programs of colour made side by side; and wait for them, or, with
+    /// [`Compositor::compile_in_background`], say what waits for them.
+    ///
+    /// # Errors
+    /// A program of colour is not WGSL that the card takes: an error of its layer, or of the
+    /// colour of the frame for a stage.
     fn pipelines_of(
         &mut self,
         draws: &[Draw],
@@ -1678,41 +1833,76 @@ impl Compositor {
         taps: &[LayerTaps],
         stages: [&Option<StageWork>; 2],
         format: wgpu::TextureFormat,
-    ) -> Result<(), ComposeError> {
-        let pipe = |draw: &Draw| match draw {
-            Draw::Picture { shape, .. } => Pipe::Yuv(shape.texel),
-            Draw::Texture(_) => Pipe::Rgba,
-        };
-        for (draw, colour) in draws.iter().zip(colours) {
-            self.pipeline(
-                pipe(draw),
-                format,
-                colour.as_ref().map(|colour| colour.program),
-            )
-            .map_err(|message| ComposeError::Layer {
-                layer: colour.as_ref().map_or(0, |colour| colour.layer),
-                message,
-            })?;
+    ) -> Result<Waiting, ComposeError> {
+        /// What a pipeline is for: a draw (its number, and its layer's), or a stage.
+        #[derive(Clone, Copy)]
+        enum For {
+            Draw(usize, usize),
+            Stage(usize),
+        }
+        let mut wanted: Vec<(For, PipelineKey)> = Vec::new();
+        for (number, (draw, colour)) in draws.iter().zip(colours).enumerate() {
+            let layer = colour.as_ref().map_or(0, |colour| colour.layer);
+            wanted.push((
+                For::Draw(number, layer),
+                (
+                    pipe_of(draw),
+                    format,
+                    colour.as_ref().map(|colour| colour.program),
+                ),
+            ));
         }
         for layer in taps {
             for tap in &layer.taps {
-                self.pipeline(
-                    pipe(&draws[layer.draw]),
-                    NEIGHBOURHOOD_FORMAT,
-                    Some(tap.program),
-                )
-                .map_err(|message| ComposeError::Layer {
-                    layer: layer.layer,
-                    message,
-                })?;
+                wanted.push((
+                    For::Draw(layer.draw, layer.layer),
+                    (
+                        pipe_of(&draws[layer.draw]),
+                        NEIGHBOURHOOD_FORMAT,
+                        Some(tap.program),
+                    ),
+                ));
             }
         }
-        for work in stages.into_iter().flatten() {
-            self.pipeline(Pipe::Stage, format, Some(work.program))
-                .map_err(ComposeError::Color)?;
-            for tap in &work.taps {
-                self.pipeline(Pipe::Stage, NEIGHBOURHOOD_FORMAT, Some(tap.program))
-                    .map_err(ComposeError::Color)?;
+        for (number, work) in stages.into_iter().enumerate() {
+            if let Some(work) = work {
+                wanted.push((
+                    For::Stage(number),
+                    (Pipe::Stage, format, Some(work.program)),
+                ));
+                for tap in &work.taps {
+                    wanted.push((
+                        For::Stage(number),
+                        (Pipe::Stage, NEIGHBOURHOOD_FORMAT, Some(tap.program)),
+                    ));
+                }
+            }
+        }
+        let failed = |what: For, message: String| match what {
+            For::Draw(_, layer) => ComposeError::Layer { layer, message },
+            For::Stage(_) => ComposeError::Color(message),
+        };
+        self.keep_made();
+        for &(what, (pipe, format, program)) in &wanted {
+            self.pipeline(pipe, format, program)
+                .map_err(|message| failed(what, message))?;
+        }
+        if !self.background {
+            self.finish_compiling();
+        }
+        let mut waiting = Waiting::default();
+        for &(what, (pipe, format, program)) in &wanted {
+            let made = self
+                .pipeline(pipe, format, program)
+                .map_err(|message| failed(what, message))?;
+            match what {
+                _ if made => {}
+                For::Draw(number, _) => {
+                    if !waiting.draws.contains(&number) {
+                        waiting.draws.push(number);
+                    }
+                }
+                For::Stage(number) => waiting.stages[number] = true,
             }
         }
         let filtered = !taps.is_empty()
@@ -1722,7 +1912,114 @@ impl Compositor {
         if filtered && self.filter.is_none() {
             self.filter = Some(filter_pipeline(self.gpu.device(), &self.filter_layout));
         }
+        Ok(waiting)
+    }
+
+    /// Keep the pipelines that the builder made since it was last asked.
+    fn keep_made(&mut self) {
+        let made = self.builder.take();
+        self.keep(made);
+    }
+
+    /// Draw the layers whose pipelines are not made yet otherwise, and remember what the layers
+    /// of this frame are drawn with, for the frames to come (see
+    /// [`Compositor::compile_in_background`]).
+    ///
+    /// # Errors
+    /// The pipeline of a layer without a program of colour cannot be made.
+    fn stand_in_for_layers(
+        &mut self,
+        scene: &Scene,
+        draws: &[Draw],
+        colours: &mut [Option<Graded>],
+        taps: &mut Vec<LayerTaps>,
+        waiting: &[usize],
+        format: wgpu::TextureFormat,
+    ) -> Result<(), ComposeError> {
+        let mut shown = HashMap::new();
+        for &number in waiting {
+            let pipe = pipe_of(&draws[number]);
+            let layer = colours[number].as_ref().map(|colour| colour.layer);
+            taps.retain(|taps| taps.draw != number);
+            let stand_in = layer.and_then(|layer| {
+                let before = self.shown_layers.remove(&layer)?;
+                let same = before.pipe == pipe
+                    && scene.layers.get(layer).map(input_code).as_ref() == Some(&before.input)
+                    && self
+                        .pipelines
+                        .contains_key(&(pipe, format, Some(before.program)));
+                same.then_some((layer, before))
+            });
+            colours[number] = if let Some((layer, before)) = stand_in {
+                let graded = Graded {
+                    layer,
+                    program: before.program,
+                    inputs: copied(&before.inputs),
+                };
+                shown.insert(layer, before);
+                Some(graded)
+            } else {
+                self.pipeline(pipe, format, None)
+                    .map_err(|message| ComposeError::Layer {
+                        layer: layer.unwrap_or(0),
+                        message,
+                    })?;
+                None
+            };
+        }
+        for (number, (draw, colour)) in draws.iter().zip(colours.iter()).enumerate() {
+            let Some(colour) = colour else { continue };
+            if waiting.contains(&number) || taps.iter().any(|taps| taps.draw == number) {
+                continue;
+            }
+            let Some(layer) = scene.layers.get(colour.layer) else {
+                continue;
+            };
+            shown.insert(
+                colour.layer,
+                ShownLayer {
+                    pipe: pipe_of(draw),
+                    input: input_code(layer),
+                    program: colour.program,
+                    inputs: copied(&colour.inputs),
+                },
+            );
+        }
+        self.shown_layers = shown;
         Ok(())
+    }
+
+    /// The stage over the canvas numbered `number` (the timeline grade, the output transform),
+    /// done as the last frame did it where its pipelines are not made yet, or not at all; and
+    /// what it is done with remembered for the frames to come.
+    fn stand_in_for_stage(
+        &mut self,
+        number: usize,
+        work: Option<StageWork>,
+        waiting: bool,
+        format: wgpu::TextureFormat,
+    ) -> Option<StageWork> {
+        if !waiting {
+            self.shown_stages[number] = work
+                .as_ref()
+                .filter(|work| work.taps.is_empty())
+                .map(|work| (work.program, copied(&work.inputs)));
+            return work;
+        }
+        match &self.shown_stages[number] {
+            Some((program, inputs))
+                if self
+                    .pipelines
+                    .contains_key(&(Pipe::Stage, format, Some(*program))) =>
+            {
+                Some(StageWork {
+                    program: *program,
+                    inputs: copied(inputs),
+                    taps: Vec::new(),
+                })
+            }
+            _ => None,
+        }
     }
 
     /// Write what the programs of colour of a frame read, each block at a place of its own in
@@ -2197,8 +2494,9 @@ impl Compositor {
         }
     }
 
-    /// The pipeline of `pipe` that draws into targets of `format`, with a program of colour or
-    /// none, made if it is not yet.
+    /// Whether the pipeline of `pipe` that draws into targets of `format`, with a program of
+    /// colour or none, is made: one with a program is asked of the builder if it is not (and is
+    /// not made yet as this returns); one without, the compositor's own shader, is made at once.
     ///
     /// # Errors
     /// The code of the program is not WGSL that the card takes, or reads what is not bound.
@@ -2207,9 +2505,16 @@ impl Compositor {
         pipe: Pipe,
         format: wgpu::TextureFormat,
         program: Option<usize>,
-    ) -> Result<(), String> {
-        if self.pipelines.contains_key(&(pipe, format, program)) {
-            return Ok(());
+    ) -> Result<bool, String> {
+        let key = (pipe, format, program);
+        if self.pipelines.contains_key(&key) {
+            return Ok(true);
+        }
+        if let Some(why) = self.failed.get(&key) {
+            return Err(why.clone());
+        }
+        if self.builder.is_pending(&key) {
+            return Ok(false);
         }
         if let Some(number) = program {
             let kinds = &self.programs[number].textures;
@@ -2218,7 +2523,6 @@ impl Compositor {
                 self.colour_layouts.insert(kinds.clone(), layout);
             }
         }
-        let device = self.gpu.device();
         let (shader, layout) = match pipe {
             Pipe::Yuv(texel) => (texel.shader(), &self.yuv_layouts[&texel]),
             Pipe::Rgba => (LAYER_SHADER.to_owned(), &self.rgba_layout),
@@ -2229,26 +2533,33 @@ impl Compositor {
                 let program = &self.programs[number];
                 (
                     color::with_program(&shader, program),
-                    Some(&self.colour_layouts[&program.textures]),
+                    Some(self.colour_layouts[&program.textures].clone()),
                 )
             }
             None => (shader, None),
         };
-        // The code of a program is not the compositor's: what is wrong with it is caught here,
-        // and not left to the card's handler of errors.
-        let scope = program.map(|_| device.push_error_scope(wgpu::ErrorFilter::Validation));
-        let pipeline = if pipe == Pipe::Stage {
-            stage_pipeline(device, &source, layout, colour, format)
-        } else {
-            layer_pipeline(device, &source, layout, colour, format)
-        };
-        if let Some(scope) = scope {
-            if let Some(error) = pollster::block_on(scope.pop()) {
-                return Err(format!("its colour cannot be done: {error}"));
+        let making = maker(pipe, source, layout.clone(), colour, format);
+        if program.is_none() {
+            let made = making(self.gpu.device());
+            self.keep(vec![(key, made)]);
+            return self.pipeline(pipe, format, program);
+        }
+        self.builder.ask(key, making);
+        Ok(false)
+    }
+
+    /// Keep the pipelines made, and why those that were not could not be.
+    fn keep(&mut self, made: Vec<(PipelineKey, Made)>) {
+        for (key, made) in made {
+            match made {
+                Ok(pipeline) => {
+                    self.pipelines.insert(key, pipeline);
+                }
+                Err(why) => {
+                    self.failed.insert(key, why);
+                }
             }
         }
-        self.pipelines.insert((pipe, format, program), pipeline);
-        Ok(())
     }
 
     /// What binds the planes of a picture (luma, chroma and alpha), and the uniform.
@@ -2378,6 +2689,35 @@ impl Compositor {
         encoder.copy_buffer_to_buffer(&export.luma, 0, &export.luma_read, 0, None);
         encoder.copy_buffer_to_buffer(&export.chroma, 0, &export.chroma_read, 0, None);
     }
+}
+
+/// What makes the pipeline of `pipe` of the shader `source` that draws into targets of
+/// `format`, `layout` binding what it reads and `colour` what its program of colour reads, where
+/// it has one: on whatever thread, the errors of its validation caught in a scope of that
+/// thread, as the code of a program is not the compositor's.
+fn maker(
+    pipe: Pipe,
+    source: String,
+    layout: wgpu::BindGroupLayout,
+    colour: Option<wgpu::BindGroupLayout>,
+    format: wgpu::TextureFormat,
+) -> Make {
+    Box::new(move |device: &wgpu::Device| {
+        let scope = colour
+            .as_ref()
+            .map(|_| device.push_error_scope(wgpu::ErrorFilter::Validation));
+        let pipeline = if pipe == Pipe::Stage {
+            stage_pipeline(device, &source, &layout, colour.as_ref(), format)
+        } else {
+            layer_pipeline(device, &source, &layout, colour.as_ref(), format)
+        };
+        if let Some(scope) = scope {
+            if let Some(error) = pollster::block_on(scope.pop()) {
+                return Err(format!("its colour cannot be done: {error}"));
+            }
+        }
+        Ok(pipeline)
+    })
 }
 
 /// A pipeline that draws layers of the shader `source` into targets of `format`, laid over what

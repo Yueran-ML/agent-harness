@@ -534,8 +534,9 @@ impl Comparison {
                 Target::preview(gpu, scene.width, scene.height)
                     .map_err(|error| error.to_string())?,
             );
+            // A reference is kept and drawn once: drawn with its grades as they are.
             compositor
-                .render(&scene, &target)
+                .render_waiting(&scene, &target)
                 .map_err(|error| error.to_string())?;
             self.drawn.insert(key, target);
         }

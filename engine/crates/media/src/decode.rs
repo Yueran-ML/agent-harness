@@ -173,6 +173,9 @@ pub struct Decoded {
     /// Whether the frame that came out before it has the same number, so that it is not the
     /// frame shown at its number.
     repeat: bool,
+    /// What its stream (its container) says of its colours, which a picture of it is taken by
+    /// before what the frame says (see [`Converter::native`]).
+    said: ffi::ColorCodes,
 }
 
 impl Decoded {
@@ -203,6 +206,7 @@ impl Decoded {
             raw: ffi::reference(&self.raw).map_err(MediaError::Decode)?,
             bits: self.bits,
             repeat: self.repeat,
+            said: self.said,
         })
     }
 }
@@ -210,7 +214,8 @@ impl Decoded {
 /// What makes [`Decoded`] frames into [`Picture`]s: it copies them from the graphics card, and
 /// converts those of other formats (4:2:2, 4:4:4, RGB, 12 bits) with swscale, to P010 if they
 /// have more than 8 bits and NV12 if not, writing straight into the picture. It makes them
-/// [`NativePicture`]s too ([`Converter::native`]), which keep the chroma of 4:2:2 and 4:4:4. It keeps what it
+/// [`NativePicture`]s too ([`Converter::native`]), which keep the chroma of 4:2:2 and 4:4:4, and
+/// R'G'B' and alpha as they are. It keeps what it
 /// made for the last frame, so that the next one of the same shape is made without starting
 /// again; it takes frames of any file, one after another. One is used by one thread at a time,
 /// and each thread that makes pictures has its own.
@@ -365,12 +370,19 @@ impl Converter {
 impl Converter {
     /// Make a frame a picture in the sampling of chroma that its file stores, nothing of its
     /// chroma thrown away: 4:2:0 as NV12 or P010, as [`Converter::picture`] makes it; 4:2:2 as
-    /// P216 and 4:4:4 (and R'G'B') as P416, in 16 bits (see [`NativePicture`]).
+    /// P216 and 4:4:4 as P416, in 16 bits; R'G'B' (and grey, and a palette) as R'G'B'A, never
+    /// made Y'CbCr: of integers at full scale (Rgba64), of floats in half floats (`RgbaF16`)
+    /// (see [`NativePicture`]). Alpha is kept: of R'G'B'A as its fourth value, of Y'CbCr
+    /// (`ProRes` 4444) as a plane of its own.
     ///
     /// A frame whose Y', Cb and Cr are each in a plane of their own (as the decoders of the
     /// processor give them: ProRes, `DNxHR`, H.264 and HEVC of 4:2:2 and 4:4:4), or that is
     /// laid out as the picture already (as a card gives P010, P210 or P416), keeps every code
-    /// as it is; another (packed, R'G'B') is converted by swscale.
+    /// as it is; another (packed) is converted by swscale.
+    ///
+    /// Its matrix, range and siting of chroma are what its stream says (the container: MXF,
+    /// `QuickTime`, Matroska, or the parameters of the stream itself), and where it says
+    /// nothing, what the frame says, as [`crate::probe`] reads the colours of a file.
     ///
     /// # Errors
     /// As [`Converter::picture`].
@@ -391,7 +403,7 @@ impl Converter {
         into: &mut NativePicture,
     ) -> Result<(), MediaError> {
         let raw = &decoded.raw;
-        let codes = ffi::frame_colors(raw);
+        let codes = decoded.said.before(ffi::frame_colors(raw));
         if !ffi::on_device(raw.format()) {
             return native::fill(
                 &mut self.native_scaler,
@@ -530,6 +542,8 @@ pub struct VideoDecoder {
     /// The width and height of the picture as it is stored, and the bits of its luma, as the
     /// stream says.
     shape: (u32, u32, u8),
+    /// What the stream says of the colours of its picture.
+    said: ffi::ColorCodes,
     input: Input,
     stream: usize,
     decoder: ff::decoder::Video,
@@ -687,9 +701,10 @@ impl VideoDecoder {
     ) -> Result<Self, Attempt> {
         let mut input = probe::open(path)?;
         let stream = probe::video_stream(&input)?.ok_or(MediaError::NoVideo)?;
-        let (timing, start, mut context, shape) = {
+        let (timing, start, mut context, shape, said) = {
             let found = input.stream(stream).ok_or(MediaError::NoVideo)?;
             let shape = shape_of(&found);
+            let said = ffi::stream_colors(&found);
             let base = probe::base(&found)?;
             let rate = forced.or_else(|| probe::rate(&found)).ok_or_else(|| {
                 MediaError::Unsupported("its picture has no rate of frames".into())
@@ -702,7 +717,7 @@ impl VideoDecoder {
             };
             let context = ff::codec::Context::from_parameters(found.parameters())
                 .map_err(|error| MediaError::Open(error.to_string()))?;
-            (timing, start, context, shape)
+            (timing, start, context, shape, said)
         };
         let codec = context.id();
         let unsupported = || {
@@ -756,6 +771,7 @@ impl VideoDecoder {
         let mut decoder = Self {
             source: path.to_owned(),
             shape,
+            said,
             input,
             stream,
             decoder: opened,
@@ -829,6 +845,7 @@ impl VideoDecoder {
                 frame: 0,
                 raw: first.raw,
                 bits: first.bits,
+                said: first.said,
                 repeat: false,
             }
         } else {
@@ -1285,6 +1302,7 @@ impl VideoDecoder {
                         frame,
                         raw,
                         bits: self.shape.2,
+                        said: self.said,
                         repeat,
                     }));
                 }
@@ -1454,6 +1472,7 @@ mod thumbnail_tests {
             raw,
             bits: 8,
             repeat: false,
+            said: ffi::ColorCodes::UNSAID,
         };
         let result = Converter::new().rgba_scaled(&frame, 8, 8).unwrap();
         // BT.709 limited-range Y=100, Cb=140, Cr=180; BT.601 gives a visibly different red.

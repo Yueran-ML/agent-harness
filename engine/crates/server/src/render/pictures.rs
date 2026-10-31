@@ -209,7 +209,15 @@ fn drawn_as_known(path: &Path, known: &Known) -> Vec<u8> {
         compositor.render(&scene, &export).unwrap();
         let mut read = Picture::default();
         export.read_picture(&mut read).unwrap();
-        let flat = flat_pixels(picture);
+        // R'G'B'A is drawn as it is, at every pixel; Y'CbCr where its chroma does not matter.
+        let flat = if picture.format.is_rgb() {
+            (0..height)
+                .step_by(3)
+                .flat_map(|y| (0..width).step_by(3).map(move |x| (x, y)))
+                .collect()
+        } else {
+            flat_pixels(picture)
+        };
         assert!(
             flat.len() >= 8,
             "{what}: {} pixels of one colour about",
@@ -217,7 +225,12 @@ fn drawn_as_known(path: &Path, known: &Known) -> Vec<u8> {
         );
         for &(x, y) in &flat {
             let pixel = &shown[(y * width + x) as usize * 4..][..4];
-            let wanted = rgb_of(codes_at(picture, x, y), known.coding, known.bits);
+            let wanted = if picture.format.is_rgb() {
+                let words = picture.rgba(x, y);
+                [0, 1, 2].map(|channel| f64::from(words[channel]) / 65535.0)
+            } else {
+                rgb_of(codes_at(picture, x, y), known.coding, known.bits)
+            };
             let at = format!("{what}, at ({x}, {y})");
             // A half float rounded to 8 bits: within a step of the colour of the codes.
             assert_near(pixel, wanted, 1.0, &at);
@@ -333,21 +346,20 @@ fn a_still_of_r_g_b_is_drawn_in_its_own_colour() {
     if columbina_compose::gpu_for_tests().is_none() {
         return;
     }
-    // Made Y'CbCr of BT.709 of limited range in 16 bits as it is read, and drawn by that.
+    // Kept R'G'B'A as it is read (T5b), its codes at full scale, of full range; not made
+    // Y'CbCr, as it was until then.
     let shown = drawn_as_known(
         &made.path,
         &Known {
-            format: PictureFormat::P416,
+            format: PictureFormat::Rgba64,
             bits: 8,
-            coding: coding(YuvMatrix::Bt709, ColorRange::Limited),
+            coding: coding(YuvMatrix::Bt709, ColorRange::Full),
         },
     );
-    // Red, but for what swscale makes of it: Y' 62.19 and Cr 239.13 of 8 bits (in words of 16),
-    // where BT.709 has 62.56 and 240, which are R' 253 (as the media crate's own test of the
-    // still allows a code either way). Decoded by BT.601, as a still was until now, these codes
-    // would be R' 231.
+    // Red exactly: 255, 0, 0. (It was R' 253 until T5b: its file, `v1-red.png`, was red made
+    // Y'CbCr by the filter that made it and back, 253, and so was the still as it was drawn.)
     for pixel in shown.as_chunks::<4>().0 {
-        assert_near(pixel, [1.0, 0.0, 0.0], 2.5, "pure red");
+        assert_eq!(pixel, &[255, 0, 0, 255], "pure red");
     }
 }
 

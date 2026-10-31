@@ -48,7 +48,7 @@ pub fn probe(path: &Path) -> Result<Facts, MediaError> {
     if let Some(video) = &mut video {
         video.still = matches!(
             input.format().name(),
-            "png_pipe" | "jpeg_pipe" | "webp_pipe"
+            "png_pipe" | "jpeg_pipe" | "webp_pipe" | "tiff_pipe" | "exr_pipe"
         );
     }
     let audio = audio.map(|index| sound(&stream_of(index)?)).transpose()?;
@@ -226,16 +226,21 @@ pub fn frame_count(path: &Path) -> Result<Option<u64>, MediaError> {
 }
 
 /// The demuxers of libav that a file may be read with: those of the editing of Python
-/// (`columbina.video.media.DEMUXERS`), and MPEG-PS (`mpeg`, of DVDs and cameras), which
-/// that list lacks. A list of other files, such as an HLS playlist or a list of `concat`, is of none of
-/// them, so that libav opens no file that such a list names; nor is text, which the demuxers of
-/// pictures drawn in text would take for one.
-pub const DEMUXERS: [&str; 13] = [
+/// (`columbina.video.media.DEMUXERS`), and what that list lacks: MPEG-PS (`mpeg`, of DVDs and
+/// cameras), MXF (`mxf`, of broadcast and cinema cameras: `OP1a`, and `OP-Atom`, whose essence is
+/// in the file read), and stills of TIFF and `OpenEXR` (`tiff_pipe`, `exr_pipe`, a picture each,
+/// as PNG). It is a list of what may be read, not of what may not: a list of other files, such as
+/// an HLS playlist or a list of `concat`, is of none of them, so that libav opens no file that
+/// such a list names (and an `image2` pattern names no others); nor is text, which the demuxers
+/// of pictures drawn in text would take for one. None of these opens another file or address:
+/// MXF reads the essence of its own file only, and only `file:` may be opened at all.
+pub const DEMUXERS: [&str; 16] = [
     "mov",
     "matroska",
     "avi",
     "mpegts",
     "mpeg",
+    "mxf",
     "wav",
     "mp3",
     "flac",
@@ -244,6 +249,8 @@ pub const DEMUXERS: [&str; 13] = [
     "png_pipe",
     "jpeg_pipe",
     "webp_pipe",
+    "tiff_pipe",
+    "exr_pipe",
 ];
 
 /// Refuse a path that a project cannot hold, or that libav cannot be given.

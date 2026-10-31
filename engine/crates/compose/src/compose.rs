@@ -628,13 +628,14 @@ struct Shape {
     width: u32,
     height: u32,
     format: PictureFormat,
+    /// Whether it has a plane of alpha (of Y'CbCr).
+    alpha: bool,
     texel: Texel,
 }
 
 /// The textures of the planes of a picture of a shape, kept to be uploaded into again.
 struct Planes {
-    luma: wgpu::Texture,
-    chroma: wgpu::Texture,
+    textures: yuv::PlaneTextures,
     /// What binds them, with the uniform of its generation.
     bind: Option<(u64, wgpu::BindGroup)>,
     /// The frame it was last drawn in.
@@ -797,7 +798,12 @@ impl Compositor {
                 };
                 let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                     label: Some("columbina picture"),
-                    entries: &[uniform_entry(yuv::PARAMS_SIZE), plane(1), plane(2)],
+                    entries: &[
+                        uniform_entry(yuv::PARAMS_SIZE),
+                        plane(1),
+                        plane(2),
+                        plane(3),
+                    ],
                 });
                 (texel, layout)
             })
@@ -1361,11 +1367,11 @@ impl Compositor {
                         width: picture.width,
                         height: picture.height,
                         format: picture.format,
-                        texel: Texel::for_picture(layout.wide(), self.gpu.has_sixteen_norm()),
+                        alpha: layout.alpha_plane(),
+                        texel: layout.texel(self.gpu.has_sixteen_norm()),
                     };
                     let planes = self.take_planes(shape);
-                    let uploaded =
-                        yuv::upload(self.gpu.queue(), &planes.luma, &planes.chroma, picture);
+                    let uploaded = yuv::upload(self.gpu.queue(), &planes.textures, picture);
                     draws.push(Draw::Picture { shape, planes });
                     colours.push(graded);
                     uploaded.map_err(failed)?;
@@ -1445,16 +1451,16 @@ impl Compositor {
     fn take_planes(&mut self, shape: Shape) -> Planes {
         let kept = self.planes.get_mut(&shape).and_then(Vec::pop);
         let mut planes = kept.unwrap_or_else(|| {
-            let (luma, chroma) = yuv::plane_textures(
+            let textures = yuv::plane_textures(
                 self.gpu.device(),
                 shape.width,
                 shape.height,
                 shape.format,
+                shape.alpha,
                 shape.texel,
             );
             Planes {
-                luma,
-                chroma,
+                textures,
                 bind: None,
                 used: 0,
             }
@@ -1667,8 +1673,9 @@ impl Compositor {
         Ok(())
     }
 
-    /// What binds the planes of a picture, and the uniform.
+    /// What binds the planes of a picture (luma, chroma and alpha), and the uniform.
     fn planes_bind(&self, texel: Texel, planes: &Planes) -> wgpu::BindGroup {
+        let [luma, chroma, alpha] = planes.textures.views();
         self.gpu
             .device()
             .create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1678,19 +1685,15 @@ impl Compositor {
                     self.uniform_entry(yuv::PARAMS_SIZE),
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: wgpu::BindingResource::TextureView(
-                            &planes
-                                .luma
-                                .create_view(&wgpu::TextureViewDescriptor::default()),
-                        ),
+                        resource: wgpu::BindingResource::TextureView(&luma),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
-                        resource: wgpu::BindingResource::TextureView(
-                            &planes
-                                .chroma
-                                .create_view(&wgpu::TextureViewDescriptor::default()),
-                        ),
+                        resource: wgpu::BindingResource::TextureView(&chroma),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&alpha),
                     },
                 ],
             })

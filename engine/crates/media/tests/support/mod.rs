@@ -108,6 +108,77 @@ pub enum Sample {
     Prores4444,
     /// A still PNG of 64×48 in R'G'B' of 8 bits, every pixel pure red.
     RedPng,
+    /// A still PNG of 256×4 in R'G'B' of 8 bits, of every code: row 0 red (R' = x, G' = B' =
+    /// 0, x from 0 to 255 across), row 1 green, row 2 blue, row 3 grey (R' = G' = B' = x); pure
+    /// red, green, blue and white at x = 255. See [`ramp`].
+    RampPng,
+    /// As [`Sample::RampPng`], a TIFF.
+    RampTiff,
+    /// A still PNG of 256×2 of grey of 8 bits (`gray`): the code x across.
+    GreyPng,
+    /// A still PNG of 256×2 in R'G'B' of 16 bits (`rgb48be`): R' = 256·x + 255·y, G' = 65535 −
+    /// 256·x, B' = 16·x.
+    Rgb48Png,
+    /// A still PNG of 256×2 in R'G'B'A of 8 bits: R' 200, G' 100, B' 50, alpha x (straight, as
+    /// PNG has it).
+    AlphaPng,
+    /// A still PNG of a palette (`pal8`) of 64×48, of `testsrc2`, every entry opaque.
+    PalettePng,
+    /// A still `OpenEXR` of 64×48 of floats (`gbrpf32le`): `testsrc2` four times as bright
+    /// (exposure +2), up to 4.0.
+    HotExr,
+    /// A still `OpenEXR` of 64×48 of floats with alpha (`gbrapf32le`): red, alpha about a half,
+    /// premultiplied (as `OpenEXR` has it, and as libav makes it for the encoder).
+    AlphaExr,
+    /// 256×64 `ProRes` 4444 with alpha, 1 s at 25 frames a second, made of `yuva444p10le` and
+    /// decoded as 12 bits: the colour 0x3080C0, its alpha `x · 1023 / 255` of 10 bits, from 0 at
+    /// the left to 1023 at the right.
+    ProresAlpha,
+    /// 64×32 H.264, lossless 4:2:0 of 8 bits, one frame, its chroma said (in its VUI) to be
+    /// sited as libav numbers it (`AVChromaLocation`, 1 left to 6 bottom): luma 128, Cb a
+    /// checkerboard of its samples (192 where x + y of the sample is even, else 64), Cr
+    /// stripes across (160 where x of the sample is even, else 96). See [`checkerboard`].
+    Sited420(u8),
+    /// As [`Sample::Sited420`], 4:2:2 in FFV1 in Matroska, said to be sited left (1) or center
+    /// (2).
+    Sited422(u8),
+    /// MXF (`OP1a`) of `DNxHR` HQX, 10 bits 4:2:2, 640×360 at 25 frames a second, 1 s, of
+    /// `testsrc2`, said by MXF (not by its stream, which has no word of it) to be BT.2020 and
+    /// HLG (9-18-9) of limited range.
+    Mxf,
+}
+
+/// The codes of R', G' and B' of [`Sample::RampPng`] (and [`Sample::RampTiff`]) at `(x, y)`.
+pub fn ramp(x: u32, y: u32) -> [u8; 3] {
+    let code = u8::try_from(x).unwrap();
+    match y {
+        0 => [code, 0, 0],
+        1 => [0, code, 0],
+        2 => [0, 0, code],
+        _ => [code; 3],
+    }
+}
+
+/// The codes of Cb and Cr of a sample of chroma at `(x, y)` of the plane of chroma of
+/// [`Sample::Sited420`] and [`Sample::Sited422`].
+pub fn checkerboard(x: u32, y: u32) -> [u8; 2] {
+    [
+        if (x + y).is_multiple_of(2) { 192 } else { 64 },
+        if x.is_multiple_of(2) { 160 } else { 96 },
+    ]
+}
+
+/// The name of a siting of chroma, as `ffmpeg` names it (`-chroma_sample_location`).
+fn siting(location: u8) -> &'static str {
+    match location {
+        1 => "left",
+        2 => "center",
+        3 => "topleft",
+        4 => "top",
+        5 => "bottomleft",
+        6 => "bottom",
+        _ => panic!("no siting {location}"),
+    }
 }
 
 impl Sample {
@@ -155,8 +226,20 @@ impl Sample {
             | Sample::H264High422
             | Sample::Dnxhr
             | Sample::Hevc444
-            | Sample::Prores4444 => Some(25),
-            Sample::RedPng => Some(1),
+            | Sample::Prores4444
+            | Sample::ProresAlpha
+            | Sample::Mxf => Some(25),
+            Sample::RedPng
+            | Sample::RampPng
+            | Sample::RampTiff
+            | Sample::GreyPng
+            | Sample::Rgb48Png
+            | Sample::AlphaPng
+            | Sample::PalettePng
+            | Sample::HotExr
+            | Sample::AlphaExr
+            | Sample::Sited420(_)
+            | Sample::Sited422(_) => Some(1),
             Sample::Wav | Sample::Evc | Sample::Noise | Sample::EditList | Sample::Clicks => None,
         }
     }
@@ -199,7 +282,31 @@ impl Sample {
             Sample::Dnxhr => "v1-dnxhr-hqx.mov",
             Sample::Hevc444 => "v1-hevc-444-12bit.mp4",
             Sample::Prores4444 => "v1-prores-4444.mov",
-            Sample::RedPng => "v1-red.png",
+            Sample::RedPng => "v2-red.png",
+            Sample::RampPng => "v1-ramp.png",
+            Sample::RampTiff => "v1-ramp.tiff",
+            Sample::GreyPng => "v1-grey.png",
+            Sample::Rgb48Png => "v1-rgb48.png",
+            Sample::AlphaPng => "v1-alpha.png",
+            Sample::PalettePng => "v1-palette.png",
+            Sample::HotExr => "v1-hot.exr",
+            Sample::AlphaExr => "v1-alpha.exr",
+            Sample::ProresAlpha => "v1-prores-4444-alpha.mov",
+            Sample::Sited420(location) => match location {
+                1 => "v1-sited-420-left.mp4",
+                2 => "v1-sited-420-center.mp4",
+                3 => "v1-sited-420-topleft.mp4",
+                4 => "v1-sited-420-top.mp4",
+                5 => "v1-sited-420-bottomleft.mp4",
+                6 => "v1-sited-420-bottom.mp4",
+                _ => panic!("no siting {location}"),
+            },
+            Sample::Sited422(location) => match location {
+                1 => "v1-sited-422-left.mkv",
+                2 => "v1-sited-422-center.mkv",
+                _ => panic!("no siting {location} of 4:2:2 here"),
+            },
+            Sample::Mxf => "v1-dnxhr-hqx-hlg.mxf",
         }
     }
 }
@@ -542,6 +649,16 @@ fn one_step(
         .collect()
 }
 
+/// A still: the first frame of `graph` (whose picture is `[v]`) by `encoder`, in `format`.
+fn still(encoders: &str, encoder: &str, graph: &str, format: &str) -> Vec<Recipe> {
+    one_step(
+        named(encoders, encoder, &["-pix_fmt", format, "-frames:v", "1"]),
+        graph,
+        false,
+        &[],
+    )
+}
+
 /// The encoder of its own name, with its arguments, if ffmpeg has it.
 fn named(encoders: &str, name: &str, args: &[&str]) -> Vec<(String, Vec<String>)> {
     if encoders.contains(&format!(" {name} ")) {
@@ -882,20 +999,120 @@ fn recipes(sample: Sample, encoders: &str) -> Vec<Recipe> {
             false,
             &[],
         ),
-        Sample::RedPng => vec![Recipe {
-            encoder: "png".into(),
-            steps: vec![strings(&[
-                "-f",
-                "lavfi",
-                "-i",
-                "color=c=red:size=64x48",
-                "-frames:v",
-                "1",
-                "-pix_fmt",
-                "rgb24",
-                "{out}",
-            ])],
-        }],
+        // Made R'G'B' by the filter itself: `color` makes Y'CbCr unless it is asked for R'G'B',
+        // and red made Y'CbCr and back is 253 (as `v1-red.png`, made so, was).
+        Sample::RedPng => still(
+            encoders,
+            "png",
+            "color=c=red:size=64x48,format=rgb24[v]",
+            "rgb24",
+        ),
+        Sample::RampPng | Sample::RampTiff => still(
+            encoders,
+            if sample == Sample::RampPng {
+                "png"
+            } else {
+                "tiff"
+            },
+            "color=c=black:size=256x4,format=gbrp,geq=r='X*(eq(Y,0)+eq(Y,3))':\
+             g='X*(eq(Y,1)+eq(Y,3))':b='X*(eq(Y,2)+eq(Y,3))'[v]",
+            "rgb24",
+        ),
+        Sample::GreyPng => still(
+            encoders,
+            "png",
+            "color=c=black:size=256x2,format=gray,geq=lum='X'[v]",
+            "gray",
+        ),
+        Sample::Rgb48Png => still(
+            encoders,
+            "png",
+            "color=c=black:size=256x2,format=gbrp16le,\
+             geq=r='256*X+255*Y':g='65535-256*X':b='16*X'[v]",
+            "rgb48be",
+        ),
+        Sample::AlphaPng => still(
+            encoders,
+            "png",
+            "color=c=black:size=256x2,format=gbrap,geq=r=200:g=100:b=50:a='X'[v]",
+            "rgba",
+        ),
+        Sample::PalettePng => still(
+            encoders,
+            "png",
+            "testsrc2=size=64x48,format=pal8[v]",
+            "pal8",
+        ),
+        Sample::HotExr => still(
+            encoders,
+            "exr",
+            "testsrc2=size=64x48,format=gbrpf32le,exposure=exposure=2[v]",
+            "gbrpf32le",
+        ),
+        Sample::AlphaExr => still(
+            encoders,
+            "exr",
+            "color=c=red@0.5:size=64x48,format=rgba,format=gbrapf32le[v]",
+            "gbrapf32le",
+        ),
+        Sample::ProresAlpha => one_step(
+            named(
+                encoders,
+                "prores_ks",
+                &["-profile:v", "4", "-alpha_bits", "16"],
+            ),
+            "color=c=0x3080C0:size=256x64:rate=25:duration=1,format=yuva444p10le,\
+             geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='X*1023/255'[v]",
+            false,
+            &[],
+        ),
+        Sample::Sited420(location) => one_step(
+            named(
+                encoders,
+                "libx264",
+                &[
+                    "-qp",
+                    "0",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-chroma_sample_location",
+                    siting(location),
+                    "-frames:v",
+                    "1",
+                ],
+            ),
+            "color=c=gray:size=64x32,format=yuv420p,\
+             geq=lum='128':cb='if(mod(X+Y,2),64,192)':cr='if(mod(X,2),96,160)'[v]",
+            false,
+            &[],
+        ),
+        Sample::Sited422(location) => one_step(
+            named(
+                encoders,
+                "ffv1",
+                &[
+                    "-pix_fmt",
+                    "yuv422p",
+                    "-chroma_sample_location",
+                    siting(location),
+                    "-frames:v",
+                    "1",
+                ],
+            ),
+            "color=c=gray:size=64x32,format=yuv422p,\
+             geq=lum='128':cb='if(mod(X+Y,2),64,192)':cr='if(mod(X,2),96,160)'[v]",
+            false,
+            &[],
+        ),
+        Sample::Mxf => one_step(
+            named(encoders, "dnxhd", &["-profile:v", "dnxhr_hqx"]),
+            &tagged(
+                "yuv422p10le",
+                "color_primaries=bt2020:color_trc=arib-std-b67:colorspace=bt2020nc:range=tv",
+            ),
+            false,
+            &["-f", "mxf"],
+        ),
         Sample::Webm => one_step(
             named(
                 encoders,

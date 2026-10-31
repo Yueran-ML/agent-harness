@@ -328,21 +328,54 @@ fn a_picture_of_4_2_2_is_no_picture_of_4_2_0() {
 }
 
 #[test]
-fn r_g_b_is_made_y_cb_cr_of_bt709_of_limited_range_in_4_4_4() {
-    let Some(made) = media(Sample::RedPng) else {
+fn a_picture_of_4_2_0_and_4_2_2_says_where_its_chroma_lies() {
+    // Each file says a siting of its own; its chroma, coded losslessly, is the checkerboard as
+    // it was made, whatever the siting (which is where the samples lie, not what they are).
+    let sitings = (1..=6)
+        .map(|location| (Sample::Sited420(location), location, (1, 1)))
+        .chain((1..=2).map(|location| (Sample::Sited422(location), location, (1, 0))));
+    for (sample, location, shift) in sitings {
+        let Some((path, video)) = probed(sample) else {
+            return;
+        };
+        assert_eq!(video.color.unwrap().chroma_location, location, "{sample:?}");
+        let picture = native(&path, Hardware::Off);
+        assert_eq!(picture.chroma_location, location, "{sample:?}");
+        assert_eq!(picture.format.chroma_shift(), shift, "{sample:?}");
+        let (width, height) = (picture.width, picture.height);
+        for y in 0..height {
+            for x in 0..width {
+                let [blue, red] = support::checkerboard(x >> shift.0, y >> shift.1);
+                let expected = [128, u16::from(blue), u16::from(red)];
+                assert_eq!(picture.ycc(x, y), expected, "{sample:?} at ({x}, {y})");
+            }
+        }
+    }
+}
+
+#[test]
+fn mxf_is_read_and_its_colours_are_those_that_mxf_says() {
+    assert!(columbina_media::DEMUXERS.contains(&"mxf"));
+    let Some((path, video)) = probed(Sample::Mxf) else {
         return;
     };
-    let picture = native(&made.path, Hardware::Off);
-    assert_eq!(picture.format, PictureFormat::P416);
+    let color = video.color.clone().expect("what MXF says");
+    // BT.2020, HLG and the matrix of BT.2020: of the descriptor of MXF, as the stream of
+    // DNxHR says nothing of them.
+    assert_eq!(
+        (color.primaries, color.transfer, color.matrix, color.range),
+        (9, 18, 9, ColorRange::Limited)
+    );
+    let (space, basis) = input_space(&video, None, InputSpace::REC709);
+    assert_eq!((space, basis), (InputSpace::REC2100_HLG, Basis::Metadata));
+    assert!(!video.still);
+    assert_eq!(video.bits, 10);
+    let raw = support::first_frame_raw(&path, "yuv422p10le").unwrap();
+    let picture = native(&path, Hardware::Off);
+    assert_eq!(picture.format, PictureFormat::P216);
     assert_eq!(
         (picture.matrix, picture.range),
-        (YuvMatrix::Bt709, ColorRange::Limited)
+        (YuvMatrix::Bt2020, ColorRange::Limited)
     );
-    assert_eq!(picture.bits, 8);
-    // Pure red in BT.709 of limited range: Y' 16 + 219·0.2126, Cb 128 − 112·0.2126/0.9278,
-    // Cr 240.
-    let [y, cb, cr] = picture.ycc(10, 10);
-    for (got, expected) in [(y, 63), (cb, 102), (cr, 240)] {
-        assert!(got.abs_diff(expected) <= 1, "{:?}", picture.ycc(10, 10));
-    }
+    assert_holds(&picture, &raw, 10, (1, 0));
 }

@@ -847,10 +847,10 @@ async fn both_monitors_show(sample: support::Sample) {
         "{sample:?}: the source monitor {source}, the timeline {timeline}"
     );
     if sample == support::Sample::RedPng {
-        // Red, as the still is, not of BT.601 (R' 231).
+        // Red exactly, as the still is: drawn as R'G'B' (not of BT.601, R' 231, nor made
+        // Y'CbCr, 253).
         for pixel in source["pixels"].as_array().unwrap() {
-            let red = pixel[0].as_u64().unwrap();
-            assert!(red >= 252 && pixel[1].as_u64().unwrap() <= 2, "{source}");
+            assert_eq!(pixel.as_array().unwrap()[..3], [255, 0, 0], "{source}");
         }
     }
 }

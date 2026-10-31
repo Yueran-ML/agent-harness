@@ -101,7 +101,7 @@ pub use decode::{
 pub use encode::{encoders_for, AudioSettings, Codec, EncoderPath, Quality, VideoSettings, Writer};
 pub use error::MediaError;
 pub use identity::identity;
-pub use native::{NativePicture, PictureFormat};
+pub use native::{Alpha, NativePicture, PictureFormat};
 pub use probe::{frame_count, frame_numbers, gop, probe, Gop, DEMUXERS};
 
 /// Make libav ready to be used, once: its log is turned off.

@@ -10,14 +10,15 @@ use ff::ffi::{
     av_channel_layout_compare, av_channel_layout_copy, av_channel_layout_default,
     av_channel_layout_uninit, av_frame_alloc, av_frame_free, av_frame_make_writable, av_frame_ref,
     av_frame_unref, av_hwdevice_ctx_create, av_hwdevice_find_type_by_name,
-    av_hwframe_transfer_data, av_pix_fmt_desc_get, av_seek_frame, av_strerror,
+    av_hwframe_transfer_data, av_pix_fmt_desc_get, av_read_image_line2, av_seek_frame, av_strerror,
     avcodec_default_get_format, avcodec_get_hw_config, avformat_index_get_entries_count,
     avformat_index_get_entry, avformat_index_get_entry_from_timestamp, swr_alloc_set_opts2,
     swr_convert, swr_free, swr_get_out_samples, swr_init, sws_scale, AVBufferRef, AVChannelLayout,
     AVChannelOrder, AVCodecContext, AVColorPrimaries, AVColorRange, AVColorSpace,
     AVColorTransferCharacteristic, AVDiscard, AVHWDeviceType, AVHWFramesContext, AVPixelFormat,
     AVSampleFormat, SwrContext, AVINDEX_DISCARD_FRAME, AVSEEK_FLAG_BACKWARD, AVSEEK_FLAG_BYTE,
-    AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX, AV_PIX_FMT_FLAG_BE, AV_PIX_FMT_FLAG_HWACCEL,
+    AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX, AV_PIX_FMT_FLAG_ALPHA, AV_PIX_FMT_FLAG_BAYER,
+    AV_PIX_FMT_FLAG_BE, AV_PIX_FMT_FLAG_FLOAT, AV_PIX_FMT_FLAG_HWACCEL, AV_PIX_FMT_FLAG_PAL,
     AV_PIX_FMT_FLAG_PLANAR, AV_PIX_FMT_FLAG_RGB, FF_THREAD_FRAME, FF_THREAD_SLICE,
 };
 use ffmpeg_next as ff;
@@ -527,6 +528,41 @@ pub(crate) struct ColorCodes {
     pub location: c_int,
 }
 
+impl ColorCodes {
+    /// Nothing said: each number libav's "unspecified".
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub const UNSAID: ColorCodes = ColorCodes {
+        primaries: 2,
+        transfer: 2,
+        matrix: 2,
+        range: 0,
+        location: 0,
+    };
+
+    /// What these say, and where they say nothing, what `then` says: of a stream before its
+    /// frames, as MXF says the colours of `DNxHR` whose frames are said by its decoder to be
+    /// of BT.709 whatever they are, and as [`crate::probe`] reads them. Unspecified (2) and
+    /// reserved (0) primaries and transfers, an unspecified (2) matrix, an unspecified (0)
+    /// range or siting say nothing; a matrix of 0 (R'G'B') does.
+    #[must_use]
+    pub fn before(self, then: ColorCodes) -> ColorCodes {
+        let said = |value: c_int, nothing: &[c_int], other: c_int| {
+            if nothing.contains(&value) {
+                other
+            } else {
+                value
+            }
+        };
+        ColorCodes {
+            primaries: said(self.primaries, &[0, 2], then.primaries),
+            transfer: said(self.transfer, &[0, 2], then.transfer),
+            matrix: said(self.matrix, &[2], then.matrix),
+            range: said(self.range, &[0], then.range),
+            location: said(self.location, &[0], then.location),
+        }
+    }
+}
+
 /// Read a field of libav that is an enumeration as the integer that it is, so that a number
 /// that is no variant of the enumeration of the bindings is not taken for one.
 ///
@@ -572,6 +608,10 @@ pub(crate) fn frame_colors(frame: &ff::frame::Video) -> ColorCodes {
 
 /// How the pixels of a format of libav are laid out, as far as the pictures of the crate need.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each a fact of the descriptor of libav"
+)]
 pub(crate) struct Layout {
     /// Its components are R, G and B, not Y', Cb and Cr.
     pub rgb: bool,
@@ -584,6 +624,14 @@ pub(crate) struct Layout {
     /// a byte (8 bits) or a little-endian word of 16 bits that holds its bits at the bottom, all
     /// of the same depth: so that its planes may be read as they are.
     pub planar_yuv: bool,
+    /// Whether it is planar Y'CbCr ([`Layout::planar_yuv`]) with alpha in a fourth plane of its
+    /// own (plane 3), of the depth and sample size of luma: the `yuva` formats.
+    pub alpha_plane: bool,
+    /// Whether its pixels are R'G'B', or grey (one value for R', G' and B'), or indices of a
+    /// palette of R'G'B'A, with or without alpha, of components that libav reads one at a time
+    /// (`av_read_image_line2`): so that they are taken as R'G'B'A as they are, never made
+    /// Y'CbCr. Not of a Bayer mosaic, which is to be demosaiced first.
+    pub rgb_like: bool,
 }
 
 /// How the pixels of `format` are laid out; none for a format that libav does not describe.
@@ -612,6 +660,18 @@ pub(crate) fn layout(format: ff::format::Pixel) -> Option<Layout> {
                     && u32::try_from(component.depth).ok() == Some(depth)
             })
             && depth <= 16;
+        let alpha = &descriptor.comp[3];
+        let alpha_plane = planar_yuv
+            && flag(AV_PIX_FMT_FLAG_ALPHA)
+            && descriptor.nb_components == 4
+            && alpha.plane == 3
+            && alpha.step == step
+            && alpha.offset == 0
+            && alpha.shift == 0
+            && u32::try_from(alpha.depth).ok() == Some(depth);
+        let rgb_like = !flag(AV_PIX_FMT_FLAG_BAYER)
+            && !flag(AV_PIX_FMT_FLAG_HWACCEL)
+            && (rgb || flag(AV_PIX_FMT_FLAG_PAL) || descriptor.nb_components <= 2);
         Some(Layout {
             rgb,
             log2_chroma: (
@@ -620,8 +680,131 @@ pub(crate) fn layout(format: ff::format::Pixel) -> Option<Layout> {
             ),
             depth,
             planar_yuv,
+            alpha_plane,
+            rgb_like,
         })
     }
+}
+
+/// The components of the pixels of a format that [`Layout::rgb_like`] says are R'G'B', grey or
+/// indices of a palette, as [`read_row`] reads them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each a flag of the descriptor of libav"
+)]
+pub(crate) struct Components {
+    /// How many there are: R, G, B and maybe A (in that order, whatever planes or bytes they
+    /// are in); grey and maybe A; or the index of a palette.
+    pub count: usize,
+    /// The bits of each (32 of a float, 16 of a half float).
+    pub depths: [u32; 4],
+    /// Whether they are R, G and B, not grey.
+    pub rgb: bool,
+    /// Whether the last is alpha (of a palette: whether its entries have alpha).
+    pub alpha: bool,
+    /// Whether they are floats (of 32 bits, or halves of 16), not integers.
+    pub float: bool,
+    /// Whether the first is an index of the palette that the frame carries.
+    pub palette: bool,
+}
+
+/// The components of the pixels of `format`, where it is a format that libav describes.
+pub(crate) fn components(format: ff::format::Pixel) -> Option<Components> {
+    // SAFETY: as in `layout`.
+    unsafe {
+        let descriptor = av_pix_fmt_desc_get(format.into());
+        if descriptor.is_null() || (*descriptor).nb_components == 0 {
+            return None;
+        }
+        let descriptor = &*descriptor;
+        let flag = |bit: c_int| descriptor.flags & u64::from(bit.unsigned_abs()) != 0;
+        let mut depths = [0; 4];
+        for (depth, component) in depths.iter_mut().zip(&descriptor.comp) {
+            *depth = u32::try_from(component.depth).unwrap_or(0);
+        }
+        Some(Components {
+            count: usize::from(descriptor.nb_components).min(4),
+            depths,
+            rgb: flag(AV_PIX_FMT_FLAG_RGB),
+            alpha: flag(AV_PIX_FMT_FLAG_ALPHA),
+            float: flag(AV_PIX_FMT_FLAG_FLOAT),
+            palette: flag(AV_PIX_FMT_FLAG_PAL),
+        })
+    }
+}
+
+/// Read the values of `component` in row `y` of a frame in memory into `into`, one for each of
+/// the first pixels of the row (as many as `into` holds), as libav reads them
+/// (`av_read_image_line2`): an integer with the bits of the component at the bottom, the bits
+/// of a float as they are, an index of a palette as it is.
+///
+/// # Panics
+/// `y` is not a row of the frame, `component` is not one of its format, or `into` is longer
+/// than a row.
+pub(crate) fn read_row(frame: &ff::frame::Video, component: usize, y: u32, into: &mut [u32]) {
+    let format = frame.format();
+    let count = components(format).map_or(0, |described| described.count);
+    assert!(
+        component < count && y < frame.height() && into.len() <= frame.width() as usize,
+        "row {y} of component {component} of a frame of {}×{}",
+        frame.width(),
+        frame.height()
+    );
+    // SAFETY: the frame is in memory (a format of a device has no components), of its own
+    // format and size, so its planes hold every row of every component; the row, the component
+    // and the pixels read are its own (checked above), and `into` has room for the values read,
+    // of 4 bytes each. Nothing is written but `into`.
+    unsafe {
+        let raw = frame.as_ptr();
+        let mut data: [*const u8; 4] = [std::ptr::null(); 4];
+        for (to, from) in data.iter_mut().zip(&(*raw).data) {
+            *to = from.cast_const();
+        }
+        av_read_image_line2(
+            into.as_mut_ptr().cast(),
+            data.as_mut_ptr(),
+            (*raw).linesize.as_ptr(),
+            av_pix_fmt_desc_get(format.into()),
+            0,
+            c_int::try_from(y).unwrap_or(0),
+            c_int::try_from(component).unwrap_or(0),
+            c_int::try_from(into.len()).unwrap_or(0),
+            0,
+            4,
+        );
+    }
+}
+
+/// The palette of a frame of a format of a palette: 256 entries of A, R, G and B, a byte each
+/// from the top, as libav holds them.
+///
+/// # Panics
+/// The format of the frame has no palette.
+pub(crate) fn palette(frame: &ff::frame::Video) -> [u32; 256] {
+    assert!(
+        components(frame.format()).is_some_and(|described| described.palette),
+        "a frame without a palette"
+    );
+    let mut entries = [0_u32; 256];
+    // SAFETY: a frame of a format of a palette holds its palette in plane 1: 256 entries of 4
+    // bytes in the native order of bytes, as libav lays them; they are only read.
+    unsafe {
+        let plane = (*frame.as_ptr()).data[1].cast_const();
+        if !plane.is_null() {
+            for (at, entry) in entries.iter_mut().enumerate() {
+                *entry = plane.add(4 * at).cast::<u32>().read_unaligned();
+            }
+        }
+    }
+    entries
+}
+
+/// What a decoded frame says of its alpha, as libav numbers it (`AVAlphaMode`): 0 nothing, 1
+/// premultiplied, 2 straight.
+pub(crate) fn alpha_mode(frame: &ff::frame::Video) -> c_int {
+    // SAFETY: as in `frame_colors`.
+    unsafe { number(&raw const (*frame.as_ptr()).alpha_mode) }
 }
 
 extern "C" {

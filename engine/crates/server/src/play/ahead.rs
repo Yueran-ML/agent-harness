@@ -350,9 +350,10 @@ fn run(shared: &Shared, sources: &Sources, budget: usize) {
 fn trim(state: &mut State, budget: usize) {
     let frame = state.request.as_ref().map_or(0, |request| request.frame);
     let bytes = |cached: &Cached| {
-        cached.result.as_ref().map_or(0, |read| {
-            read.picture.luma.len() + read.picture.chroma.len()
-        })
+        cached
+            .result
+            .as_ref()
+            .map_or(0, |read| read.picture.bytes())
     };
     let mut total: usize = state.ready.iter().map(bytes).sum();
     // Keep at least the two layers of the current dissolve, even when one frame alone is

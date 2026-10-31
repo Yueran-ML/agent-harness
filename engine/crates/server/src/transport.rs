@@ -169,7 +169,7 @@ impl Limits {
     /// `bytes`, those they were made for (which become its): the pictures that the converter may
     /// keep from now on.
     fn fit(&mut self, bytes: &mut u64, picture: &NativePicture) -> Option<usize> {
-        let size = u64::try_from(picture.luma.len() + picture.chroma.len()).unwrap_or(u64::MAX);
+        let size = u64::try_from(picture.bytes()).unwrap_or(u64::MAX);
         if size <= *bytes {
             return None;
         }

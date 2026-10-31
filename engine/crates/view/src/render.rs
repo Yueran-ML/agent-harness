@@ -66,8 +66,7 @@ struct Planes {
     layout: Layout,
     coding: YuvCoding,
     texel: Texel,
-    luma: wgpu::Texture,
-    chroma: wgpu::Texture,
+    textures: yuv::PlaneTextures,
     bind: wgpu::BindGroup,
 }
 
@@ -127,7 +126,8 @@ impl Painter {
     }
 
     /// Upload the planes of a picture, into the textures of the last one where it is of the
-    /// same shape (sizes and format), to be drawn by the matrix and range that it says.
+    /// same shape (sizes, format and plane of alpha), to be drawn by the matrix, range, siting
+    /// of chroma and alpha that it says (over black, where it has alpha).
     ///
     /// # Errors
     /// The picture is not one that can be drawn: no pixels, planes shorter than it says, or
@@ -141,11 +141,22 @@ impl Painter {
                 picture.width, picture.height
             ));
         }
-        let texel = Texel::for_picture(layout.wide(), self.sixteen_norm);
+        let texel = layout.texel(self.sixteen_norm);
         let reuse = self.planes.as_ref().is_some_and(|planes| {
             let kept = planes.layout;
-            (kept.width, kept.height, kept.format, planes.texel)
-                == (layout.width, layout.height, layout.format, texel)
+            (
+                kept.width,
+                kept.height,
+                kept.format,
+                kept.alpha_plane(),
+                planes.texel,
+            ) == (
+                layout.width,
+                layout.height,
+                layout.format,
+                layout.alpha_plane(),
+                texel,
+            )
         });
         if !reuse {
             self.planes = Some(self.planes_for(layout, texel));
@@ -153,7 +164,7 @@ impl Painter {
         let planes = self.planes.as_mut().expect("made above");
         planes.layout = layout;
         planes.coding = YuvCoding::of_native(picture);
-        yuv::upload(&self.queue, &planes.luma, &planes.chroma, picture)?;
+        yuv::upload(&self.queue, &planes.textures, picture)?;
         self.rgb_frame = None;
         Ok(())
     }
@@ -212,13 +223,15 @@ impl Painter {
 
     /// Textures, and what binds them, for planes of a shape.
     fn planes_for(&mut self, layout: Layout, texel: Texel) -> Planes {
-        let (luma, chroma) = yuv::plane_textures(
+        let textures = yuv::plane_textures(
             &self.device,
             layout.width,
             layout.height,
             layout.format,
+            layout.alpha_plane(),
             texel,
         );
+        let [luma, chroma, alpha] = textures.views();
         let pipeline = match texel {
             Texel::Float => &self.float,
             Texel::Uint => self
@@ -235,15 +248,15 @@ impl Painter {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(
-                        &luma.create_view(&wgpu::TextureViewDescriptor::default()),
-                    ),
+                    resource: wgpu::BindingResource::TextureView(&luma),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::TextureView(
-                        &chroma.create_view(&wgpu::TextureViewDescriptor::default()),
-                    ),
+                    resource: wgpu::BindingResource::TextureView(&chroma),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&alpha),
                 },
             ],
         });
@@ -251,8 +264,7 @@ impl Painter {
             layout,
             coding: YuvCoding::default(),
             texel,
-            luma,
-            chroma,
+            textures,
             bind,
         }
     }
@@ -399,6 +411,7 @@ fn pipeline(device: &wgpu::Device, format: wgpu::TextureFormat, texel: Texel) ->
             },
             plane(1),
             plane(2),
+            plane(3),
         ],
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1153,7 +1166,20 @@ mod tests {
             chroma,
             luma_stride,
             chroma_stride,
+            ..NativePicture::default()
         }
+    }
+
+    /// A value from 0 to 1 as a half float, its bits below those of a half float dropped.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn half(value: f64) -> u16 {
+        let value = value as f32;
+        if value < 2f32.powi(-14) {
+            return 0;
+        }
+        let bits = value.to_bits();
+        let exponent = ((bits >> 23) & 0xff).cast_signed() - 127 + 15;
+        ((exponent as u32) << 10 | ((bits >> 13) & 0x3ff)) as u16
     }
 
     /// The pixels of the picture composed by itself into a preview of its size, as R'G'B'.
@@ -1184,6 +1210,72 @@ mod tests {
             .iter()
             .map(|pixel| [pixel[0], pixel[1], pixel[2]])
             .collect()
+    }
+
+    /// Add to `pictures` (of the sizes of `size`, made by the test below, in its order) ones
+    /// of chroma sited centre, of alpha of a plane of its own, and of R'G'B'A with alpha.
+    fn add_sited_and_alpha(pictures: &mut Vec<NativePicture>, size: (u32, u32)) {
+        use columbina_compose::ColorRange;
+        // Chroma sited elsewhere than left: of 4:2:0 and 4:2:2, centred.
+        for index in [0, 2] {
+            let mut centred = pictures[index].clone();
+            centred.chroma_location = 2;
+            pictures.push(centred);
+        }
+        // Alpha of 4:4:4 in a plane of its own, straight, rising across: over black.
+        let mut prores = pictures[3].clone();
+        prores.alpha = columbina_media::Alpha::Straight;
+        prores.alpha_plane = vec![0; prores.luma.len()];
+        for y in 0..size.1 as usize {
+            for x in 0..size.0 as usize {
+                let word = u16::try_from(x * 65535 / 31).unwrap();
+                let at = y * prores.luma_stride + 2 * x;
+                prores.alpha_plane[at..at + 2].copy_from_slice(&word.to_le_bytes());
+            }
+        }
+        pictures.push(prores);
+        // R'G'B'A: of words at full scale, straight, and of half floats, premultiplied.
+        let rgba = |x: u32, y: u32| {
+            let alpha = f64::from(x + y) / 46.0;
+            [f64::from(x) / 31.0, f64::from(y) / 15.0, 0.5, alpha]
+        };
+        for (format, alpha) in [
+            (PictureFormat::Rgba64, columbina_media::Alpha::Straight),
+            (
+                PictureFormat::RgbaF16,
+                columbina_media::Alpha::Premultiplied,
+            ),
+        ] {
+            let stride = size.0 as usize * 8;
+            let mut plane = vec![0; stride * size.1 as usize];
+            for y in 0..size.1 {
+                for x in 0..size.0 {
+                    let [r, g, b, a] = rgba(x, y);
+                    let values = if format == PictureFormat::Rgba64 {
+                        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                        [r, g, b, a].map(|value| (value * 65535.0).round() as u16)
+                    } else {
+                        [r * a, g * a, b * a, a].map(half)
+                    };
+                    let at = y as usize * stride + x as usize * 8;
+                    for (channel, value) in values.into_iter().enumerate() {
+                        plane[at + 2 * channel..at + 2 * channel + 2]
+                            .copy_from_slice(&value.to_le_bytes());
+                    }
+                }
+            }
+            pictures.push(NativePicture {
+                width: size.0,
+                height: size.1,
+                format,
+                bits: 16,
+                range: ColorRange::Full,
+                alpha,
+                luma: plane,
+                luma_stride: stride,
+                ..NativePicture::default()
+            });
+        }
     }
 
     #[test]
@@ -1239,6 +1331,7 @@ mod tests {
             };
             pictures.push(native(size, format, bits, coded, pixel));
         }
+        add_sited_and_alpha(&mut pictures, size);
         for picture in &pictures {
             let wanted = composed(&shared, picture);
             for sixteen_norm in [true, false] {

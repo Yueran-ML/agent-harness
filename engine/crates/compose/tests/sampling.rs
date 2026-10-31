@@ -114,6 +114,7 @@ fn native(
         chroma: chroma_plane,
         luma_stride,
         chroma_stride,
+        ..NativePicture::default()
     }
 }
 

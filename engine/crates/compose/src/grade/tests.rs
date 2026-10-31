@@ -1159,11 +1159,14 @@ impl Card {
 }
 
 /// Whether the card's colour is the processor's, within 1e-3 (of the size of the value, where
-/// it is more than 1).
+/// it is more than 1), and within 1e-2 beyond 16.
 fn close(card: [f32; 3], processor: [f32; 3]) -> bool {
-    card.iter()
-        .zip(processor)
-        .all(|(a, b)| (a - b).abs() <= 1e-3 * b.abs().max(1.0))
+    // Beyond 16 a value comes only of a division by almost nothing (Color Dodge, Divide), whose
+    // error on the card grows with it: FXC there differs from the processor by some 2e-3.
+    card.iter().zip(processor).all(|(a, b)| {
+        let share = if b.abs() > 16.0 { 1e-2 } else { 1e-3 };
+        (a - b).abs() <= share * b.abs().max(1.0)
+    })
 }
 
 fn points(rng: &mut Rng, least: usize, round: bool) -> Vec<[f64; 2]> {

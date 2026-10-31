@@ -22,10 +22,13 @@ fn card() -> Option<Card> {
     if !wgpu::Instance::enabled_backend_features().intersects(wgpu::Backends::PRIMARY) {
         return None;
     }
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+    // FXC, as the engine compiles with: a `dxcompiler.dll` on the PATH may be one that crashes.
+    let mut descriptor = wgpu::InstanceDescriptor {
         backends: wgpu::Backends::PRIMARY,
         ..wgpu::InstanceDescriptor::new_without_display_handle()
-    });
+    };
+    descriptor.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::Fxc;
+    let instance = wgpu::Instance::new(descriptor);
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         force_fallback_adapter: false,

@@ -342,10 +342,29 @@ fn instance(backends: wgpu::Backends) -> Result<wgpu::Instance, GpuError> {
             "wgpu has no backend to draw with on this platform".into(),
         ));
     }
-    Ok(wgpu::Instance::new(wgpu::InstanceDescriptor {
+    let mut descriptor = wgpu::InstanceDescriptor {
         backends,
         ..wgpu::InstanceDescriptor::new_without_display_handle()
-    }))
+    };
+    descriptor.backend_options.dx12.shader_compiler = dx12_compiler();
+    Ok(wgpu::Instance::new(descriptor))
+}
+
+/// The compiler of Direct3D 12 shaders: FXC, which every Windows has, unless
+/// `COLUMBINA_DX12_COMPILER` names another (`auto`, or the path of a `dxcompiler.dll`).
+///
+/// wgpu would otherwise take whatever `dxcompiler.dll` is found on the `PATH`, and builds of it
+/// that other programs ship (as Obsidian and Electron ship Dawn's) crash the process as some of
+/// our shaders are compiled, with no error that could be caught.
+#[must_use]
+pub fn dx12_compiler() -> wgpu::Dx12Compiler {
+    match std::env::var("COLUMBINA_DX12_COMPILER") {
+        Ok(named) if named.eq_ignore_ascii_case("auto") => wgpu::Dx12Compiler::Auto,
+        Ok(named) if named.to_ascii_lowercase().ends_with("dxcompiler.dll") => {
+            wgpu::Dx12Compiler::DynamicDxc { dxc_path: named }
+        }
+        _ => wgpu::Dx12Compiler::Fxc,
+    }
 }
 
 /// The features that are asked for where the adapter has them.

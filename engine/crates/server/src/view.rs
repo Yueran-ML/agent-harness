@@ -14,10 +14,15 @@
 //! The viewer subscribes to it: each card made in place of one that was lost is given to the view
 //! there is then; and a view that reports its card lost is given the card that is there, made
 //! anew if need be.
+//!
+//! Whether the views may show HDR, where Windows has it on for their monitor ("Display HDR On
+//! Viewers If Available", RM20 p244), is a setting of the viewer, for both monitors, allowed
+//! unless `view.display` says otherwise; each view attached since is given it.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, PoisonError};
 
-use columbina_view::{Event, Gpu, RawParent, Rect, View, ViewError};
+use columbina_view::{Event, Gpu, Output, RawParent, Rect, View, ViewError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serde_json::value::RawValue;
@@ -60,6 +65,8 @@ pub struct Viewer {
     _subscription: Subscription,
     /// Held while a method changes the view, so that one is done before the next begins.
     busy: Mutex<()>,
+    /// Whether the views may show HDR.
+    hdr: AtomicBool,
 }
 
 /// The params of `view.attach`.
@@ -99,10 +106,19 @@ struct Detach {
     monitor: Monitor,
 }
 
+/// The params of `view.display`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DisplayParams {
+    #[serde(default)]
+    hdr: Option<bool>,
+}
+
 const ATTACH: &str = r#"{"monitor":"source"|"timeline", "parent": "<handle in decimal>", "x": 0, "y": 0, "width": 640, "height": 360}"#;
 const PLACE: &str =
     r#"{"monitor":"source"|"timeline", "x": 0, "y": 0, "width": 640, "height": 360}"#;
 const SHOW: &str = r#"{"monitor":"source"|"timeline", "shown": true | false}"#;
+const DISPLAY: &str = r#"{"hdr"?: true | false}"#;
 
 impl Viewer {
     pub fn new(headless: bool, graphics: Arc<Graphics>) -> Self {
@@ -121,6 +137,7 @@ impl Viewer {
             graphics,
             _subscription: subscription,
             busy: Mutex::new(()),
+            hdr: AtomicBool::new(true),
         }
     }
 
@@ -185,11 +202,37 @@ impl Viewer {
                 }
                 Ok(json!({ "detached": detached }))
             }
+            "view.display" => {
+                let params: DisplayParams = rpc::params(method, DISPLAY, params)?;
+                Ok(self.display(params.hdr).await)
+            }
             _ => Err(Fault::new(
                 rpc::METHOD_NOT_FOUND,
                 format!("there is no method {method}"),
             )),
         }
+    }
+
+    /// `view.display`: allow HDR or not, where `hdr` is given, and say what each view shows.
+    async fn display(&self, hdr: Option<bool>) -> serde_json::Value {
+        let _busy = self.busy.lock().await;
+        if let Some(hdr) = hdr {
+            if self.hdr.swap(hdr, Ordering::SeqCst) != hdr {
+                log("view_hdr_allowed", &json!({ "hdr": hdr }));
+            }
+        }
+        let allowed = self.hdr.load(Ordering::SeqCst);
+        let mut result = json!({ "hdr": allowed });
+        for (monitor, name) in [(Monitor::Source, "source"), (Monitor::Timeline, "timeline")] {
+            let slot = self.slots[monitor.index()]
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            result[name] = slot.as_ref().map_or(serde_json::Value::Null, |view| {
+                view.allow_hdr(allowed);
+                display_json(view.display())
+            });
+        }
+        result
     }
 
     /// `view.attach`: make the view, in place of the one there was.
@@ -213,12 +256,13 @@ impl Viewer {
         let graphics = Arc::clone(&self.graphics);
         let slot = self.slot(attach.monitor);
         let reporter = reporter(&graphics, &slot, attach.monitor);
+        let hdr = self.hdr.load(Ordering::SeqCst);
         let made = tokio::task::spawn_blocking(move || {
             drop(old);
             let gpu = graphics
                 .gpu()
                 .map_err(|error| ViewError::Gpu(error.to_string()))?;
-            View::attach_reporting(parent, rect, gpu, reporter)
+            View::attach_with_hdr(parent, rect, gpu, reporter, hdr)
         })
         .await
         .map_err(|error| {
@@ -266,6 +310,20 @@ impl Viewer {
             }
         }
     }
+}
+
+/// What a view shows, as `view.display` says it: null before its first frame.
+fn display_json(display: Option<columbina_view::Display>) -> serde_json::Value {
+    let Some(display) = display else {
+        return serde_json::Value::Null;
+    };
+    let monitor = display.monitor;
+    json!({
+        "hdr_on": monitor.is_some_and(|monitor| monitor.hdr),
+        "hdr_shown": matches!(display.output, Output::Hdr { .. }),
+        "peak_nits": monitor.and_then(|monitor| monitor.peak_nits),
+        "sdr_white_nits": monitor.and_then(|monitor| monitor.sdr_white_nits),
+    })
 }
 
 /// Destroy a view where blocking is allowed: its threads are waited for.
@@ -341,6 +399,15 @@ fn report(event: Event, monitor: Monitor) {
             &json!({ "monitor":monitor, "message": message }),
         ),
         Event::SurfaceLost => log("view_surface_lost", &json!({ "monitor":monitor })),
+        Event::Display {
+            hdr_on,
+            hdr_shown,
+            peak_nits,
+            sdr_white_nits,
+        } => log(
+            "view_display",
+            &json!({ "monitor":monitor, "hdr_on": hdr_on, "hdr_shown": hdr_shown, "peak_nits": peak_nits, "sdr_white_nits": sdr_white_nits }),
+        ),
         Event::Error { message } => log(
             "view_error",
             &json!({ "monitor":monitor, "message": message }),

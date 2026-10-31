@@ -3823,6 +3823,11 @@ async fn the_view_shows_the_frame_sought() {
     };
     let parent = parent::Parent::shown();
     let mut desktop = engine.client("desktop").await;
+    // In SDR, as the screen is read back in 8 bits: a monitor with HDR on would show the picture
+    // at the white of SDR of Windows, which a copy of the screen does not keep.
+    desktop
+        .result("view.display", Some(json!({ "hdr": false })))
+        .await;
     let attach = json!({ "monitor": "source", "parent": parent.hwnd.to_string(), "x": 0, "y": 0, "width": 960, "height": 540 });
     desktop.result("view.attach", Some(attach)).await;
     agent
@@ -5281,4 +5286,92 @@ async fn measure_proxies() {
         "the engine held at most {most_memory:.0} MiB (its working set), and {:.0} MiB at the end",
         memory_of(engine.pid).unwrap_or(0.0)
     );
+}
+
+#[tokio::test]
+async fn the_viewer_allows_hdr_unless_told_otherwise_and_checks_its_params() {
+    let dir = project_dir();
+    let engine = engine(dir.path(), &[]).await;
+    let mut agent = engine.client("agent").await;
+    let error = agent.error("view.display", Some(json!({}))).await;
+    assert_eq!(error["code"], -32600, "{error}");
+    let mut desktop = engine.client("desktop").await;
+    assert_eq!(
+        desktop.result("view.display", Some(json!({}))).await,
+        json!({ "hdr": true, "source": null, "timeline": null })
+    );
+    assert_eq!(
+        desktop
+            .result("view.display", Some(json!({ "hdr": false })))
+            .await,
+        json!({ "hdr": false, "source": null, "timeline": null })
+    );
+    assert_eq!(
+        desktop.result("view.display", Some(json!({}))).await["hdr"],
+        false
+    );
+    for params in [
+        None,
+        Some(json!({ "hdr": 1 })),
+        Some(json!({ "monitor": "source" })),
+    ] {
+        let error = desktop.error("view.display", params.clone()).await;
+        assert_eq!(error["code"], -32602, "{params:?}: {error}");
+    }
+    let other = project_dir();
+    let headless = self::engine(other.path(), &["--headless"]).await;
+    let mut desktop = headless.client("desktop").await;
+    let error = desktop.error("view.display", Some(json!({}))).await;
+    assert_eq!(error["code"], -32601, "{error}");
+}
+
+/// Ask `view.display` until what it says of `monitor` is as `wanted` says.
+#[cfg(windows)]
+async fn until_display(
+    desktop: &mut Client,
+    monitor: &str,
+    wanted: impl Fn(&Value) -> bool,
+) -> Value {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let display = desktop.result("view.display", Some(json!({}))).await;
+        if wanted(&display[monitor]) {
+            return display;
+        }
+        assert!(Instant::now() < deadline, "{monitor}: {display}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn view_display_says_what_each_view_shows_and_keeps_it_to_sdr() {
+    let dir = project_dir();
+    let engine = engine(dir.path(), &[]).await;
+    let parent = parent::Parent::open();
+    let mut desktop = engine.client("desktop").await;
+    let attach = |monitor: &str, x| json!({"monitor":monitor, "parent":parent.hwnd.to_string(), "x":x, "y":0, "width":64, "height":36});
+    desktop
+        .result("view.attach", Some(attach("timeline", 0)))
+        .await;
+    let display = until_display(&mut desktop, "timeline", |shown| !shown.is_null()).await;
+    assert_eq!(display["source"], Value::Null);
+    let timeline = &display["timeline"];
+    // HDR is shown where the monitor has it on, as it is allowed.
+    assert_eq!(timeline["hdr_shown"], timeline["hdr_on"], "{display}");
+    eprintln!("the monitor of the test says: {timeline}");
+    desktop
+        .result("view.display", Some(json!({ "hdr": false })))
+        .await;
+    until_display(&mut desktop, "timeline", |shown| {
+        shown["hdr_shown"] == false
+    })
+    .await;
+    // A view attached while HDR is not allowed is not allowed it either.
+    desktop
+        .result("view.attach", Some(attach("source", 100)))
+        .await;
+    let display = until_display(&mut desktop, "source", |shown| !shown.is_null()).await;
+    assert_eq!(display["source"]["hdr_shown"], false, "{display}");
+    assert_eq!(display["hdr"], false);
 }

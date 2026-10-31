@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use columbina_compose::Gpu;
 
+use crate::display::{self, choose_surface, Content, Display, Monitor, Output};
 use crate::native::{self, Syncer};
 use crate::render::Painter;
 use crate::{frame_begun, frame_ended, Event, Frame, Pending, Shared};
@@ -130,9 +131,19 @@ pub(crate) fn run(
     let mut retries = 0;
     let mut again_at: Option<Instant> = None;
     loop {
-        let Some(job) = next(shared, &mut again_at) else {
+        let check_at = card.screen.as_ref().map(Screen::check_at);
+        let Some(job) = next(shared, &mut again_at, check_at) else {
             return;
         };
+        if job.check {
+            // The monitor read again, while nothing is drawn: drawn again if it changed.
+            if let Some(screen) = card.screen.as_mut() {
+                if screen.check_display() {
+                    shared.change(|state| state.dirty = true);
+                }
+            }
+            continue;
+        }
         match job.pending {
             Pending::Nothing => {}
             Pending::Frame(frame) => {
@@ -156,12 +167,16 @@ pub(crate) fn run(
         if job.size.0 == 0 || job.size.1 == 0 {
             continue;
         }
+        if screen.display_due(job.wish.hdr_allowed) {
+            // Before the frame, which the watchdog watches.
+            screen.check_display();
+        }
         frame_begun(shared);
         if let Some(hang) = job.stall {
             // As a card that hangs: for the tests of the watchdog.
             std::thread::sleep(hang);
         }
-        let outcome = screen.frame(&mut shown, job.size);
+        let outcome = screen.frame(&mut shown, job.size, job.wish);
         frame_ended(shared, syncer, outcome == Outcome::Presented);
         if screen.is_lost() {
             // Lost in the frame: drawn again once the view is given another card.
@@ -186,6 +201,15 @@ pub(crate) fn run(
     }
 }
 
+/// How the view is to show its pictures.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Wish {
+    /// Whether it may show HDR.
+    hdr_allowed: bool,
+    /// What the pictures hold.
+    content: Content,
+}
+
 /// What there is to do.
 struct Job {
     /// The picture asked for since the last frame.
@@ -198,16 +222,25 @@ struct Job {
     stall: Option<Duration>,
     /// The card to draw with.
     gpu: Arc<Gpu>,
+    /// How the pictures are to be shown.
+    wish: Wish,
+    /// Only to read the monitor again (at `check_at`), and draw nothing.
+    check: bool,
 }
 
 /// Wait for something to draw in a window that is seen and has pixels, or, at `again_at`, to
-/// draw again what was not shown. None once the view ends or its window is destroyed.
-fn next(shared: &Shared, again_at: &mut Option<Instant>) -> Option<Job> {
+/// draw again what was not shown, or, at `check_at` while HDR is allowed, to read the monitor
+/// again. None once the view ends or its window is destroyed.
+fn next(shared: &Shared, again_at: &mut Option<Instant>, check_at: Option<Instant>) -> Option<Job> {
     let mut state = shared.lock();
     loop {
         if state.quit || state.gone {
             return None;
         }
+        let wish = Wish {
+            hdr_allowed: state.hdr_allowed,
+            content: state.content,
+        };
         let drawable = state.dirty && state.visible() && state.size.0 > 0 && state.size.1 > 0;
         if drawable || state.lose_device {
             state.dirty = false;
@@ -218,16 +251,34 @@ fn next(shared: &Shared, again_at: &mut Option<Instant>) -> Option<Job> {
                 lose: std::mem::take(&mut state.lose_device),
                 stall: state.stall.take(),
                 gpu: Arc::clone(&state.gpu),
+                wish,
+                check: false,
             });
         }
-        state = match *again_at {
+        let check_at = check_at.filter(|_| state.hdr_allowed);
+        if check_at.is_some_and(|at| Instant::now() >= at) {
+            return Some(Job {
+                pending: Pending::Nothing,
+                size: state.size,
+                lose: false,
+                stall: None,
+                gpu: Arc::clone(&state.gpu),
+                wish,
+                check: true,
+            });
+        }
+        let wake_at = match (*again_at, check_at) {
+            (Some(again), Some(check)) => Some(again.min(check)),
+            (again, check) => again.or(check),
+        };
+        state = match wake_at {
             Some(at) => {
                 let wait = at.saturating_duration_since(Instant::now());
-                let (mut state, waited) = shared
+                let (mut state, _) = shared
                     .wake
                     .wait_timeout(state, wait)
                     .unwrap_or_else(PoisonError::into_inner);
-                if waited.timed_out() {
+                if again_at.is_some_and(|at| Instant::now() >= at) {
                     *again_at = None;
                     state.dirty = true;
                 }
@@ -259,6 +310,14 @@ struct Screen {
     surface: wgpu::Surface<'static>,
     painter: Painter,
     config: wgpu::SurfaceConfiguration,
+    /// What the surface takes, to choose its format and colour space again as the monitor
+    /// changes.
+    capabilities: wgpu::SurfaceCapabilities,
+    /// What the monitor said of itself, and when it was last read.
+    monitor: Option<Monitor>,
+    checked_at: Instant,
+    /// What was last reported of what the view shows.
+    reported: Option<Display>,
     /// Whether the surface is configured as `config` says.
     configured: bool,
     /// The number of the picture whose planes the painter holds.
@@ -281,7 +340,9 @@ impl Screen {
             ));
         }
         let capabilities = surface.get_capabilities(adapter);
-        let format = surface_format(&capabilities.formats)
+        let monitor = Monitor::of(&surface.display_hdr_info(adapter));
+        let hdr_allowed = shared.lock().hdr_allowed;
+        let choice = choose_surface(&capabilities, monitor.as_ref(), hdr_allowed)
             .ok_or("the window takes no format that the view draws")?;
         let alpha_mode = if capabilities
             .alpha_modes
@@ -297,8 +358,8 @@ impl Screen {
         };
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format,
-            color_space: wgpu::SurfaceColorSpace::Auto,
+            format: choice.format,
+            color_space: choice.color_space,
             width: 1,
             height: 1,
             present_mode: wgpu::PresentMode::Fifo,
@@ -309,10 +370,14 @@ impl Screen {
         Ok(Screen {
             shared: Arc::clone(shared),
             handle,
-            painter: Painter::new(gpu.device(), gpu.queue(), format),
+            painter: Painter::new(gpu.device(), gpu.queue(), choice.format),
             gpu: Arc::clone(gpu),
             surface,
             config,
+            capabilities,
+            monitor,
+            checked_at: Instant::now(),
+            reported: None,
             configured: false,
             uploaded: None,
             adapter: gpu.name().to_owned(),
@@ -333,6 +398,70 @@ impl Screen {
         self.gpu.is_lost()
     }
 
+    /// When the monitor is next read, while HDR is allowed.
+    fn check_at(&self) -> Instant {
+        self.checked_at + display::CHECK
+    }
+
+    /// Whether the monitor is to be read again before the next frame.
+    fn display_due(&self, hdr_allowed: bool) -> bool {
+        hdr_allowed && Instant::now() >= self.check_at()
+    }
+
+    /// Read the monitor that the window is on again; whether what it says changed.
+    fn check_display(&mut self) -> bool {
+        self.checked_at = Instant::now();
+        let monitor = Monitor::of(&self.surface.display_hdr_info(self.gpu.adapter()));
+        if monitor == self.monitor {
+            return false;
+        }
+        self.monitor = monitor;
+        true
+    }
+
+    /// Make the surface and the painter show the pictures as `wish` and the monitor say: the
+    /// surface configured again, and the painter made again for its format, where it changes.
+    fn apply(&mut self, wish: Wish) -> Result<(), String> {
+        let choice = choose_surface(&self.capabilities, self.monitor.as_ref(), wish.hdr_allowed)
+            .ok_or("the window takes no format that the view draws")?;
+        if (choice.format, choice.color_space) != (self.config.format, self.config.color_space) {
+            if choice.format != self.config.format {
+                self.painter = Painter::new(self.gpu.device(), self.gpu.queue(), choice.format);
+                self.uploaded = None;
+            }
+            self.config.format = choice.format;
+            self.config.color_space = choice.color_space;
+            self.configured = false;
+        }
+        if self
+            .painter
+            .set_mapping(display::mapping(wish.content, choice.output))
+        {
+            self.uploaded = None;
+        }
+        let shown = Display {
+            monitor: self.monitor,
+            output: choice.output,
+        };
+        if self.reported != Some(shown) {
+            self.reported = Some(shown);
+            self.shared.lock().display = Some(shown);
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "nits of a monitor, rounded"
+            )]
+            let nits = |nits: Option<f32>| nits.map(|nits| nits.round() as u32);
+            self.shared.report(Event::Display {
+                hdr_on: self.monitor.is_some_and(|monitor| monitor.hdr),
+                hdr_shown: matches!(choice.output, Output::Hdr { .. }),
+                peak_nits: nits(self.monitor.and_then(|monitor| monitor.peak_nits)),
+                sdr_white_nits: nits(self.monitor.and_then(|monitor| monitor.sdr_white_nits)),
+            });
+        }
+        Ok(())
+    }
+
     /// Configure the surface as `config` says, catching what the card refuses.
     fn configure(&mut self) -> Result<(), String> {
         let scope = self
@@ -350,7 +479,11 @@ impl Screen {
 
     /// Draw `shown` into a window of `size`, and present it. A picture that cannot be uploaded
     /// is let go, and black is drawn.
-    fn frame(&mut self, shown: &mut Option<(Frame, u64)>, size: (u32, u32)) -> Outcome {
+    fn frame(&mut self, shown: &mut Option<(Frame, u64)>, size: (u32, u32), wish: Wish) -> Outcome {
+        if let Err(message) = self.apply(wish) {
+            self.shared.report(Event::Error { message });
+            return Outcome::Failed;
+        }
         // CPU pictures can be uploaded again after recovery. A composed texture belongs to
         // its old device and must be replaced by the producer, never sampled on a new one.
         if shown.as_ref().is_some_and(|(frame, _)| matches!(frame, Frame::Texture { gpu, .. } if !Arc::ptr_eq(gpu, &self.gpu))) {
@@ -452,16 +585,4 @@ impl Screen {
         self.surface = surface;
         self.configure()
     }
-}
-
-/// The format of a surface that the view draws into: 8 bits that are not sRGB, else the first
-/// that is not sRGB, else none.
-fn surface_format(formats: &[wgpu::TextureFormat]) -> Option<wgpu::TextureFormat> {
-    [
-        wgpu::TextureFormat::Bgra8Unorm,
-        wgpu::TextureFormat::Rgba8Unorm,
-    ]
-    .into_iter()
-    .find(|format| formats.contains(format))
-    .or_else(|| formats.iter().copied().find(|format| !format.is_srgb()))
 }

@@ -27,7 +27,8 @@
 //!   size, the window shown again or uncovered (`WM_PAINT`). It never draws on a clock, so an idle
 //!   view takes no time at all, and a playing one is drawn as often as pictures come, at the rate
 //!   of the media (pictures that come faster than it draws are skipped: the newest wins). It
-//!   draws with v-sync (`Fifo`), one frame queued at most.
+//!   draws with v-sync (`Fifo`), one frame queued at most. While HDR is allowed, it wakes once a
+//!   second to read the monitor of the window again, and draws only if that changed.
 //! - **the watchdog's**, which sleeps until a frame is begun. If a frame (uploading the picture,
 //!   taking an image of the window, drawing, presenting it) takes more than [`STALL`] (1 s), as
 //!   when the card hangs or a driver resets, the window is hidden, so that the page beneath it
@@ -60,6 +61,15 @@
 //! are taken as square. A picture is fitted into the window, turned as its media says, its shape
 //! kept, and centred, with black bars ([`letterbox`]).
 //!
+//! Where Windows has HDR on for the monitor that the window is on, and the view is allowed HDR
+//! ([`View::allow_hdr`], "Display HDR On Viewers If Available", RM20 p244, allowed unless told
+//! otherwise), the surface is one of half floats in scRGB, and the picture is mapped onto it:
+//! SDR with its white on the white of SDR that Windows has, so that it looks as it does with
+//! HDR off; HDR content ([`View::set_content`]) in nits, rolled off to the peak of the monitor.
+//! The monitor is followed as the window moves, and as HDR or the brightness of SDR is changed,
+//! within a second ([`display`] has how). Where HDR is off or not allowed, and the content is
+//! SDR (as it is unless told otherwise), the picture is drawn as it always was, bit for bit.
+//!
 //! # Platforms
 //!
 //! On **Windows** the window is a child `HWND` (`WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS |
@@ -82,6 +92,7 @@ use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+pub mod display;
 mod render;
 mod screen;
 
@@ -99,6 +110,7 @@ use native_none as native;
 pub use columbina_compose::Gpu;
 use columbina_compose::Watch;
 pub use columbina_media::{NativePicture, Picture};
+pub use display::{Content, Display, HdrTransfer, Monitor, Output};
 pub use render::{letterbox, quarter_turns, Placement};
 
 /// How long a frame may take before the window is hidden.
@@ -227,6 +239,16 @@ pub enum Event {
     DeviceLost { message: String },
     /// The surface of the window was lost, and is made again.
     SurfaceLost,
+    /// What the view shows changed, as the monitor or the view was set: whether Windows has HDR
+    /// on for the monitor of the window, whether the view shows HDR, and the peak and white of
+    /// SDR of the monitor, in nits, where it says them (rounded; [`View::display`] has them as
+    /// they were read).
+    Display {
+        hdr_on: bool,
+        hdr_shown: bool,
+        peak_nits: Option<u32>,
+        sdr_white_nits: Option<u32>,
+    },
     /// Something went wrong that the view goes on from: a picture that cannot be drawn, an
     /// error of the card.
     Error { message: String },
@@ -306,6 +328,12 @@ pub(crate) struct State {
     gpu: Arc<Gpu>,
     /// Tells the view when that card is lost.
     gpu_watch: Option<Watch>,
+    /// Whether the view may show HDR, where the monitor has it on.
+    hdr_allowed: bool,
+    /// What the pictures given hold.
+    content: Content,
+    /// What the view shows, as its drawer last found.
+    display: Option<Display>,
 }
 
 impl State {
@@ -346,6 +374,9 @@ impl Shared {
                 presented: 0,
                 gpu,
                 gpu_watch: None,
+                hdr_allowed: true,
+                content: Content::Sdr,
+                display: None,
             }),
             wake: Condvar::new(),
             watch: Condvar::new(),
@@ -450,9 +481,25 @@ impl View {
         gpu: Arc<Gpu>,
         report: Report,
     ) -> Result<View, ViewError> {
+        Self::attach_with_hdr(parent, rect, gpu, report, true)
+    }
+
+    /// As [`View::attach_reporting`], allowed HDR or not from its first frame
+    /// ([`View::allow_hdr`]).
+    ///
+    /// # Errors
+    /// As [`View::attach`].
+    pub fn attach_with_hdr(
+        parent: RawParent,
+        rect: Rect,
+        gpu: Arc<Gpu>,
+        report: Report,
+        hdr_allowed: bool,
+    ) -> Result<View, ViewError> {
         let rect = rect.checked()?;
         prepare_process();
         let shared = Arc::new(Shared::new(rect, Arc::clone(&gpu), report));
+        shared.lock().hdr_allowed = hdr_allowed;
         let watch = watch_gpu(&shared, &gpu);
         shared.lock().gpu_watch = Some(watch);
         drop(gpu);
@@ -634,6 +681,37 @@ impl View {
             state.pending = Pending::Clear;
             state.dirty = true;
         });
+    }
+
+    /// Allow the view to show HDR where Windows has HDR on for the monitor that its window is on,
+    /// or keep it to SDR ("Display HDR On Viewers If Available", RM20 p244). Allowed unless told
+    /// otherwise. It returns at once; the picture is drawn again as it is to be shown.
+    pub fn allow_hdr(&self, allowed: bool) {
+        self.shared.change(|state| {
+            if state.hdr_allowed != allowed {
+                state.hdr_allowed = allowed;
+                state.dirty = true;
+            }
+        });
+    }
+
+    /// Say what the pictures given to the view hold: SDR (as unless told otherwise), or HDR of a
+    /// transfer and peak, so that they are mapped onto the monitor as they are to be. It returns
+    /// at once; the picture is drawn again.
+    pub fn set_content(&self, content: Content) {
+        self.shared.change(|state| {
+            if state.content != content {
+                state.content = content;
+                state.dirty = true;
+            }
+        });
+    }
+
+    /// What the view shows, and what the monitor of its window said of itself, as the drawer last
+    /// found as it drew: none before its first frame.
+    #[must_use]
+    pub fn display(&self) -> Option<Display> {
+        self.shared.lock().display
     }
 
     /// The name of the graphics adapter that the view was made with.

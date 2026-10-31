@@ -391,6 +391,13 @@ fn solid(width: u32, height: u32, codes: [u8; 3]) -> (Arc<NativePicture>, [u8; 3
     (Arc::new(columbina_compose::yuv::native_of(picture)), rgb)
 }
 
+/// A view kept to SDR: what the screen shows is read back in 8 bits, and a monitor with HDR on
+/// would show the picture at the white of SDR of Windows, which a copy of the screen does not
+/// keep.
+fn sdr_view(parent: RawParent, rect: Rect, gpu: Arc<Gpu>, report: columbina_view::Report) -> View {
+    View::attach_with_hdr(parent, rect, gpu, report, false).unwrap()
+}
+
 /// The engine's card, as the server makes it: a real one, or WARP.
 fn gpu() -> Arc<Gpu> {
     Gpu::new(Preference::HighPerformance).expect("a graphics card, or the software one")
@@ -434,8 +441,7 @@ fn a_view_draws_in_its_parent_follows_it_and_lets_the_input_through() {
         width: 320,
         height: 180,
     };
-    let view =
-        View::attach_reporting(RawParent::Windows(parent.hwnd), rect, gpu(), report).unwrap();
+    let view = sdr_view(RawParent::Windows(parent.hwnd), rect, gpu(), report);
     eprintln!("drawn by {} with {}", view.adapter(), view.backend());
     let child = hwnd(isize::try_from(view.raw_handle()).unwrap());
     unsafe {
@@ -589,8 +595,7 @@ fn a_view_whose_parent_is_destroyed_is_gone() {
         let events = Arc::clone(&events);
         Arc::new(move |event: Event| events.lock().unwrap().push(event))
     };
-    let view =
-        View::attach_reporting(RawParent::Windows(parent.hwnd), rect, gpu(), report).unwrap();
+    let view = sdr_view(RawParent::Windows(parent.hwnd), rect, gpu(), report);
     assert!(!view.is_gone());
     // A turn that is not a quarter is drawn as none, and told once while it lasts.
     for rotation in [45, 45, -90, 45] {
@@ -630,8 +635,7 @@ fn a_frame_that_hangs_hides_the_view_until_it_returns() {
         width: 200,
         height: 150,
     };
-    let view =
-        View::attach_reporting(RawParent::Windows(parent.hwnd), rect, gpu(), report).unwrap();
+    let view = sdr_view(RawParent::Windows(parent.hwnd), rect, gpu(), report);
     let child = hwnd(isize::try_from(view.raw_handle()).unwrap());
     let visible = || {
         let style = unsafe { GetWindowLongW(child, GWL_STYLE) }.cast_unsigned();
@@ -699,8 +703,18 @@ fn two_views_on_one_card_each_draw_their_own_picture() {
         width: 240,
         height: 180,
     };
-    let left = View::attach(RawParent::Windows(parent.hwnd), rect(20), Arc::clone(&gpu)).unwrap();
-    let right = View::attach(RawParent::Windows(parent.hwnd), rect(320), Arc::clone(&gpu)).unwrap();
+    let left = sdr_view(
+        RawParent::Windows(parent.hwnd),
+        rect(20),
+        Arc::clone(&gpu),
+        Arc::new(|_| {}),
+    );
+    let right = sdr_view(
+        RawParent::Windows(parent.hwnd),
+        rect(320),
+        Arc::clone(&gpu),
+        Arc::new(|_| {}),
+    );
     assert!(Arc::ptr_eq(&left.gpu(), &right.gpu()));
     let (a, left_colour) = solid(64, 48, [120, 80, 190]);
     let (b, right_colour) = solid(64, 48, [180, 60, 140]);
@@ -747,18 +761,18 @@ fn composed_textures_share_the_device_and_are_replaced_after_a_device_change() {
         width: 240,
         height: 180,
     };
-    let source = View::attach(
+    let source = sdr_view(
         RawParent::Windows(parent.hwnd),
         rect(20),
         Arc::clone(&first_gpu),
-    )
-    .unwrap();
-    let timeline = View::attach(
+        Arc::new(|_| {}),
+    );
+    let timeline = sdr_view(
         RawParent::Windows(parent.hwnd),
         rect(320),
         Arc::clone(&first_gpu),
-    )
-    .unwrap();
+        Arc::new(|_| {}),
+    );
     let (picture, source_color) = solid(64, 48, [120, 80, 190]);
     source.present(picture, 0);
     let compose = |gpu: &Arc<Gpu>, color| {
@@ -816,4 +830,87 @@ fn composed_textures_share_the_device_and_are_replaced_after_a_device_change() {
         "composed frame cleared",
         &[((140, 110), source_color), ((440, 110), [0, 0, 0])],
     );
+}
+
+/// What the view says it shows, once its drawer has found it.
+fn display_of(view: &View) -> columbina_view::Display {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        if let Some(display) = view.display() {
+            return display;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the view says nothing of its display"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Run by hand: what the monitor that a window is on says of HDR, as the view reads it, and the
+/// surface it chooses with HDR allowed and not. It changes nothing of the system.
+#[test]
+#[ignore = "needs a desktop: run with --ignored --nocapture, and read what it says"]
+fn the_view_reports_the_hdr_of_its_monitor() {
+    use columbina_view::{Content, HdrTransfer, Output};
+    columbina_view::prepare_process();
+    let parent = Parent::open(200, 200, 480, 270);
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let report = {
+        let events = Arc::clone(&events);
+        Arc::new(move |event: Event| events.lock().unwrap().push(event))
+    };
+    let rect = Rect {
+        x: 0,
+        y: 0,
+        width: 480,
+        height: 270,
+    };
+    let view =
+        View::attach_reporting(RawParent::Windows(parent.hwnd), rect, gpu(), report).unwrap();
+    let (picture, _) = solid(64, 36, [180, 128, 128]);
+    view.present(picture, 0);
+    let allowed = display_of(&view);
+    eprintln!("monitor: {:?}", allowed.monitor);
+    eprintln!("HDR allowed: {:?}", allowed.output);
+    let hdr_on = allowed.monitor.is_some_and(|monitor| monitor.hdr);
+    assert_eq!(matches!(allowed.output, Output::Hdr { .. }), hdr_on);
+
+    // Not allowed: SDR, whatever the monitor.
+    view.allow_hdr(false);
+    let deadline = Instant::now() + WAIT;
+    while view.display().map(|display| display.output) != Some(Output::Sdr) {
+        assert!(Instant::now() < deadline, "{:?}", view.display());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    eprintln!(
+        "HDR not allowed: {:?}",
+        view.display().map(|display| display.output)
+    );
+
+    // HDR content, allowed again: drawn, and nothing reported wrong.
+    view.allow_hdr(true);
+    view.set_content(Content::Hdr {
+        transfer: HdrTransfer::Pq,
+        peak_nits: 1000.0,
+    });
+    let presented = view.presented();
+    let deadline = Instant::now() + WAIT;
+    while view.presented() == presented {
+        assert!(Instant::now() < deadline, "not drawn again");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    let events = events.lock().unwrap().clone();
+    for event in &events {
+        eprintln!("event: {event:?}");
+    }
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, Event::Error { .. })),
+        "{events:?}"
+    );
+    drop(view);
+    drop(parent);
 }

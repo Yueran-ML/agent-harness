@@ -729,7 +729,7 @@ async fn dispatch(
                 Err(refused) => Reply::Refused(refused),
             })
         }
-        "view.attach" | "view.place" | "view.show" | "view.detach" => {
+        "view.attach" | "view.place" | "view.show" | "view.detach" | "view.display" => {
             let result = engine.viewer.call(kind, method, params).await?;
             if method == "view.attach" {
                 let (monitor, _) = crate::play::monitor_params(method, params)?;

@@ -138,6 +138,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `view.place` | `{"monitor":"source" \| "timeline", "x": x, "y": y, "width": w, "height": h}` | `{}` |
 | `view.show` | `{"monitor":"source" \| "timeline", "shown": true \| false}` | `{}` |
 | `view.detach` | `{"monitor":"source" \| "timeline"}` | `{"detached": true \| false}` |
+| `view.display` | `{"hdr"?: true \| false}` | `{"hdr": true, "source": {"hdr_on": true, "hdr_shown": true, "peak_nits": 400.0, "sdr_white_nits": 148.0} \| null, "timeline": ... \| null}` (see The view) |
 | `render.start` | `{"timeline":"t1", "path":"<file>", "codec":"h264", "quality":"high", "range"?:{"from":0,"to":250}, "subtitle_tracks"?:["S1"], "replace"?:false, "revision"?:n}` | `{"job": "render-1"}` (see Rendering a timeline) |
 | `render.cancel` | `{"job": "render-1"}` | `{}` |
 | `transport.frame_digest` | `{"monitor": m}` | test hook only, with `--test-hooks` (see The transport); `-32601` otherwise |
@@ -442,9 +443,9 @@ window that it makes inside the desktop's window, over the rectangle that the pa
 the viewer (`crates/view`). No frame crosses between the processes; the page never sees the
 picture.
 
-- **Monitors.** Every `view.*` request must name `monitor: "source"` or `"timeline"`.
-  There is one independent native window for each monitor. Missing, null or other monitor
-  values are refused (`-32602`); protocol 2 does not default to the source monitor.
+- **Monitors.** Every `view.*` request but `view.display` must name `monitor: "source"` or
+  `"timeline"`. There is one independent native window for each monitor. Missing, null or other
+  monitor values are refused (`-32602`); protocol 2 does not default to the source monitor.
 - **Who sends them.** Only the desktop (`hello` with `"client": "desktop"`) may call `view.*`;
   another client is refused with `-32600`. Within the desktop, only the **Electron main
   process** sends them: it owns the window and its handle. The page (the renderer) never gets
@@ -504,6 +505,27 @@ picture.
   textures are cleared and the producer must recompose on the new GPU. CPU source pictures
   can be uploaded again. Window lifecycle logs include `monitor`.
 - **`view.detach`** destroys only that monitor's view; `detached` says whether there was one.
+- **`view.display`** is the setting "Display HDR On Viewers If Available" of the viewer's menu
+  (RM20 p244), for both monitors: `hdr` allows the views to show HDR where Windows has HDR on
+  for the monitor that their window is on, or keeps them to SDR. It is **allowed** unless sent
+  `false`; it is the engine's, kept until it ends, and given to each view attached since.
+  Without `hdr` it changes nothing. Either way it says the setting, and for each monitor what
+  its view shows as it last drew (`null` with no view, or before its first frame): `hdr_on`
+  whether Windows has HDR on for the monitor of its window, `hdr_shown` whether the view shows
+  HDR (`hdr_on` and allowed), and the monitor's `peak_nits` and `sdr_white_nits` (the
+  brightness of SDR content in the settings of Windows), each `null` where the monitor does not
+  say. The engine reads the monitor through DXGI (`IDXGIOutput6::GetDesc1`, and
+  `DisplayConfigGetDeviceInfo` for the white of SDR) when the view is made and, while HDR is
+  allowed, at most once a second, so a window moved to another monitor, or HDR or the
+  brightness turned in the settings of Windows, is followed within a second.
+  - **What is shown in HDR.** The surface is one of half floats in scRGB (linear BT.709, 1.0 =
+    80 nits). A picture of SDR, which is every picture for now, is put with its white on the
+    white of SDR of Windows, through the sRGB curve, as Windows shows SDR: it looks as it does
+    with HDR off. HDR content (PQ or HLG, once the project's colour management says what a
+    picture holds) is shown in nits, rolled off to the monitor's peak. With HDR off or not
+    allowed, an SDR picture is drawn exactly as before, bit for bit.
+  - The setting has no other effect: the scopes, `transport.frame_digest` and exports read the
+    picture before it is shown, and are the same either way.
 - **Failures.** A view whose window was destroyed with its parent (the window closed) is let
   go: `view.place` and `view.show` are then answered `-32003` with `reason: "gone"`, and the
   desktop attaches again to its new window. If drawing a frame takes more than 1 s (the card
@@ -517,8 +539,11 @@ picture.
   engine draws in software (`gpu_upgraded` once one is taken). A surface that is lost is made
   again. These are logged on stderr (`view_ready`, `view_stalled`, `view_recovered`,
   `view_device_lost`, `view_surface_lost`, `view_error`, `gpu_error`), with
-  `view_attached` and `view_detached`. `view_ready` says the engine's `dpi_awareness`:
-  `per_monitor_v2`, or why not, in which case the rectangles will be off.
+  `view_attached` and `view_detached`; `view_display` says what a view shows each time it
+  changes (`hdr_on`, `hdr_shown`, `peak_nits`, `sdr_white_nits`, rounded), and
+  `view_hdr_allowed` each time `view.display` changes the setting. `view_ready` says the
+  engine's `dpi_awareness`: `per_monitor_v2`, or why not, in which case the rectangles will be
+  off.
 - **Not tested yet** (phase 0): the border of the window dragged by the user (Windows' modal
   loop of sizing), the window moved to a monitor of another DPI, fullscreen, sleep and resume,
   and a device lost for real (it is lost on purpose in a test).

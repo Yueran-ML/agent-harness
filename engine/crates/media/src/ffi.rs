@@ -14,12 +14,12 @@ use ff::ffi::{
     avcodec_default_get_format, avcodec_get_hw_config, avformat_index_get_entries_count,
     avformat_index_get_entry, avformat_index_get_entry_from_timestamp, swr_alloc_set_opts2,
     swr_convert, swr_free, swr_get_out_samples, swr_init, sws_scale, AVBufferRef, AVChannelLayout,
-    AVChannelOrder, AVCodecContext, AVColorPrimaries, AVColorRange, AVColorSpace,
-    AVColorTransferCharacteristic, AVDiscard, AVHWDeviceType, AVHWFramesContext, AVPixelFormat,
-    AVSampleFormat, SwrContext, AVINDEX_DISCARD_FRAME, AVSEEK_FLAG_BACKWARD, AVSEEK_FLAG_BYTE,
-    AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX, AV_PIX_FMT_FLAG_ALPHA, AV_PIX_FMT_FLAG_BAYER,
-    AV_PIX_FMT_FLAG_BE, AV_PIX_FMT_FLAG_FLOAT, AV_PIX_FMT_FLAG_HWACCEL, AV_PIX_FMT_FLAG_PAL,
-    AV_PIX_FMT_FLAG_PLANAR, AV_PIX_FMT_FLAG_RGB, FF_THREAD_FRAME, FF_THREAD_SLICE,
+    AVChannelOrder, AVCodecContext, AVColorRange, AVDiscard, AVHWDeviceType, AVHWFramesContext,
+    AVPixelFormat, AVSampleFormat, SwrContext, AVINDEX_DISCARD_FRAME, AVSEEK_FLAG_BACKWARD,
+    AVSEEK_FLAG_BYTE, AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX, AV_PIX_FMT_FLAG_ALPHA,
+    AV_PIX_FMT_FLAG_BAYER, AV_PIX_FMT_FLAG_BE, AV_PIX_FMT_FLAG_FLOAT, AV_PIX_FMT_FLAG_HWACCEL,
+    AV_PIX_FMT_FLAG_PAL, AV_PIX_FMT_FLAG_PLANAR, AV_PIX_FMT_FLAG_RGB, FF_THREAD_FRAME,
+    FF_THREAD_SLICE,
 };
 use ffmpeg_next as ff;
 
@@ -1118,15 +1118,123 @@ pub(crate) fn writable(frame: &mut ff::Frame) -> Result<(), String> {
 
 /// Have an encoder that is not open yet say that its frames are BT.709 of limited range, as
 /// the pictures of the crate are taken to be.
-pub(crate) fn tag_bt709(context: &mut ff::codec::Context) {
-    // SAFETY: the context is not open, so these may be set.
+pub(crate) fn tag(context: &mut ff::codec::Context, tags: &crate::encode::ColorTags) {
+    use ff::ffi::{
+        av_frame_side_data_new, AVColorPrimaries as P, AVColorSpace as M,
+        AVColorTransferCharacteristic as T, AVFrameSideDataType,
+    };
+    // H.273's numbers, as libav numbers them too; one it has no name for is unspecified.
+    let primaries = match tags.primaries {
+        1 => P::AVCOL_PRI_BT709,
+        4 => P::AVCOL_PRI_BT470M,
+        5 => P::AVCOL_PRI_BT470BG,
+        6 => P::AVCOL_PRI_SMPTE170M,
+        7 => P::AVCOL_PRI_SMPTE240M,
+        9 => P::AVCOL_PRI_BT2020,
+        11 => P::AVCOL_PRI_SMPTE431,
+        12 => P::AVCOL_PRI_SMPTE432,
+        _ => P::AVCOL_PRI_UNSPECIFIED,
+    };
+    let transfer = match tags.transfer {
+        1 => T::AVCOL_TRC_BT709,
+        4 => T::AVCOL_TRC_GAMMA22,
+        5 => T::AVCOL_TRC_GAMMA28,
+        6 => T::AVCOL_TRC_SMPTE170M,
+        8 => T::AVCOL_TRC_LINEAR,
+        13 => T::AVCOL_TRC_IEC61966_2_1,
+        14 => T::AVCOL_TRC_BT2020_10,
+        16 => T::AVCOL_TRC_SMPTE2084,
+        18 => T::AVCOL_TRC_ARIB_STD_B67,
+        _ => T::AVCOL_TRC_UNSPECIFIED,
+    };
+    let matrix = match tags.matrix {
+        1 => M::AVCOL_SPC_BT709,
+        5 => M::AVCOL_SPC_BT470BG,
+        6 => M::AVCOL_SPC_SMPTE170M,
+        9 => M::AVCOL_SPC_BT2020_NCL,
+        _ => M::AVCOL_SPC_UNSPECIFIED,
+    };
+    // SAFETY: the context is not open, so these may be set; the side data is made by libav in
+    // the context's own list, which it frees with the context.
     unsafe {
         let context = context.as_mut_ptr();
-        (*context).color_primaries = AVColorPrimaries::AVCOL_PRI_BT709;
-        (*context).color_trc = AVColorTransferCharacteristic::AVCOL_TRC_BT709;
-        (*context).colorspace = AVColorSpace::AVCOL_SPC_BT709;
-        (*context).color_range = AVColorRange::AVCOL_RANGE_MPEG;
+        (*context).color_primaries = primaries;
+        (*context).color_trc = transfer;
+        (*context).colorspace = matrix;
+        (*context).color_range = if tags.full_range {
+            AVColorRange::AVCOL_RANGE_JPEG
+        } else {
+            AVColorRange::AVCOL_RANGE_MPEG
+        };
+        if let Some(mastering) = &tags.mastering {
+            let bytes = crate::encode::mastering_bytes_of(mastering);
+            let made = av_frame_side_data_new(
+                &raw mut (*context).decoded_side_data,
+                &raw mut (*context).nb_decoded_side_data,
+                AVFrameSideDataType::AV_FRAME_DATA_MASTERING_DISPLAY_METADATA,
+                bytes.len(),
+                0,
+            );
+            if !made.is_null() && (*made).size >= bytes.len() {
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), (*made).data, bytes.len());
+            }
+        }
     }
+}
+
+/// Side data of a stream, as its bytes.
+pub(crate) enum SideData {
+    /// An `AVMasteringDisplayMetadata`.
+    Mastering(Vec<u8>),
+    /// An `AVContentLightMetadata`.
+    ContentLight(Vec<u8>),
+}
+
+/// Add side data to the parameters of stream `stream` of a file, before its index is written
+/// (which `QuickTime` and MP4 write when the file is finished).
+pub(crate) fn add_stream_side_data(
+    output: &mut ff::format::context::Output,
+    stream: usize,
+    data: SideData,
+) -> Result<(), String> {
+    use ff::ffi::{av_free, av_malloc, av_packet_side_data_add, AVPacketSideDataType};
+    let (kind, bytes) = match data {
+        SideData::Mastering(bytes) => (
+            AVPacketSideDataType::AV_PKT_DATA_MASTERING_DISPLAY_METADATA,
+            bytes,
+        ),
+        SideData::ContentLight(bytes) => {
+            (AVPacketSideDataType::AV_PKT_DATA_CONTENT_LIGHT_LEVEL, bytes)
+        }
+    };
+    if stream >= output.nb_streams() as usize {
+        return Err(format!("there is no stream {stream}"));
+    }
+    // SAFETY: the context has `nb_streams` streams, each with parameters; the buffer is made by
+    // av_malloc, as av_packet_side_data_add takes it (keeping it where it adds it, freed here
+    // where it does not); any side data of the same kind is replaced.
+    unsafe {
+        let stream = *(*output.as_mut_ptr()).streams.add(stream);
+        let parameters = (*stream).codecpar;
+        let buffer = av_malloc(bytes.len()).cast::<u8>();
+        if buffer.is_null() {
+            return Err("no memory for side data".into());
+        }
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), buffer, bytes.len());
+        let added = av_packet_side_data_add(
+            &raw mut (*parameters).coded_side_data,
+            &raw mut (*parameters).nb_coded_side_data,
+            kind,
+            buffer.cast::<c_void>(),
+            bytes.len(),
+            0,
+        );
+        if added.is_null() {
+            av_free(buffer.cast::<c_void>());
+            return Err("libav cannot keep side data".into());
+        }
+    }
+    Ok(())
 }
 
 /// Set the tag of the codec of a stream of a file whose header is not written yet, as `hvc1`

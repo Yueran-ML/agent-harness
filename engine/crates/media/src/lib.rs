@@ -98,7 +98,10 @@ pub use columbina_model::{
 pub use decode::{
     video_start, Converter, Decoded, Hardware, HardwarePath, Picture, Rgba, VideoDecoder,
 };
-pub use encode::{encoders_for, AudioSettings, Codec, EncoderPath, Quality, VideoSettings, Writer};
+pub use encode::{
+    encoders_for, AudioSettings, Codec, ColorTags, ContentLight, EncoderPath, Mastering, Quality,
+    VideoSettings, Writer,
+};
 pub use error::MediaError;
 pub use identity::identity;
 pub use native::{Alpha, NativePicture, PictureFormat};

@@ -472,3 +472,121 @@ fn measure_the_encoders() {
         }
     }
 }
+
+/// What `ffprobe` says of the picture of a file: its colours and its side data, flat, a line a
+/// field (`streams.stream.0.color_transfer="smpte2084"`). None without an ffmpeg.
+fn probed(path: &Path) -> Option<String> {
+    let ffmpeg = support::ffmpeg_program()?;
+    let ffprobe = ffmpeg.replace("ffmpeg", "ffprobe");
+    let output = std::process::Command::new(ffprobe)
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=codec_name,profile,pix_fmt,color_range,color_space,color_transfer,\
+             color_primaries:stream_side_data",
+            "-of",
+            "flat",
+        ])
+        .arg(path)
+        .output()
+        .ok()?;
+    assert!(output.status.success(), "{output:?}");
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[test]
+fn a_file_says_the_colours_and_the_light_of_hdr_that_it_is_written_with() {
+    use columbina_media::{ColorTags, ContentLight, Mastering};
+    let _one = one_at_a_time();
+    let directory = tempfile::tempdir().unwrap();
+    let pq = ColorTags {
+        primaries: 9,
+        transfer: 16,
+        matrix: 9,
+        full_range: false,
+        mastering: Some(Mastering {
+            primaries: [[0.68, 0.32], [0.265, 0.69], [0.15, 0.06]],
+            white: [0.3127, 0.329],
+            min_nits: 0.0001,
+            max_nits: 1000.0,
+        }),
+    };
+    let hlg = ColorTags {
+        transfer: 18,
+        mastering: None,
+        ..pq
+    };
+    let mut cases = vec![
+        ("pq.mov", Codec::ProRes, pq, EncoderPath::ProResKs),
+        ("hlg.mov", Codec::ProRes, hlg, EncoderPath::ProResKs),
+    ];
+    if encoders_for(Codec::Hevc).contains(&EncoderPath::Nvenc) {
+        cases.push(("pq.mp4", Codec::Hevc, pq, EncoderPath::Nvenc));
+        cases.push(("hlg.mp4", Codec::Hevc, hlg, EncoderPath::Nvenc));
+    } else {
+        assert!(!gpu_required(), "NVENC is required");
+    }
+    for (name, codec, tags, encoder) in cases {
+        let path = directory.path().join(name);
+        let settings = VideoSettings {
+            codec,
+            width: 320,
+            height: 180,
+            rate: Rate { num: 25, den: 1 },
+            bits: 10,
+            quality: Quality::Medium,
+        };
+        let mut writer = Writer::create_tagged_on(&path, encoder, settings, None, &tags).unwrap();
+        for _ in 0..5 {
+            writer.video(&coloured(320, 180, 10)).unwrap();
+        }
+        if tags.mastering.is_some() {
+            writer
+                .set_content_light(ContentLight {
+                    max_cll: 812,
+                    max_fall: 123,
+                })
+                .unwrap();
+        }
+        writer.finish().unwrap();
+        let Some(said) = probed(&path) else {
+            return;
+        };
+        let has = |line: &str| said.contains(line);
+        let transfer = if tags.transfer == 16 {
+            "smpte2084"
+        } else {
+            "arib-std-b67"
+        };
+        assert!(
+            has("color_primaries=\"bt2020\"")
+                && has(&format!("color_transfer=\"{transfer}\""))
+                && has("color_space=\"bt2020nc\"")
+                && has("color_range=\"tv\""),
+            "{name}: {said}"
+        );
+        if codec == Codec::Hevc {
+            assert!(has("profile=\"Main 10\""), "{name}: {said}");
+        }
+        if tags.mastering.is_some() {
+            assert!(
+                has("Mastering display metadata")
+                    && has("max_luminance=\"10000000/10000\"")
+                    && has("red_x=\"34000/50000\"")
+                    && has("white_point_y=\"16450/50000\""),
+                "{name}: {said}"
+            );
+            assert!(
+                has("Content light level metadata")
+                    && has("max_content=812")
+                    && has("max_average=123"),
+                "{name}: {said}"
+            );
+        } else {
+            assert!(!has("Mastering display"), "{name}: {said}");
+        }
+    }
+}

@@ -127,6 +127,77 @@ pub struct VideoSettings {
     pub quality: Quality,
 }
 
+/// What a file says of the colours of its picture: H.273's numbers of its primaries, transfer and
+/// matrix (as `ColorFacts` reads them), its range, and of HDR the display it was mastered on
+/// (SMPTE ST 2086). By default BT.709 of limited range, as every file was written before.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ColorTags {
+    pub primaries: u8,
+    pub transfer: u8,
+    pub matrix: u8,
+    pub full_range: bool,
+    pub mastering: Option<Mastering>,
+}
+
+impl Default for ColorTags {
+    fn default() -> Self {
+        ColorTags {
+            primaries: 1,
+            transfer: 1,
+            matrix: 1,
+            full_range: false,
+            mastering: None,
+        }
+    }
+}
+
+/// The display that a picture of HDR was mastered on: the chromaticities (x, y) of its red,
+/// green and blue and of its white, and its least and most luminance in nits.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Mastering {
+    pub primaries: [[f64; 2]; 3],
+    pub white: [f64; 2],
+    pub min_nits: f64,
+    pub max_nits: f64,
+}
+
+/// The light of the content of a picture of HDR (CTA-861.3): the brightest pixel of any frame
+/// (`MaxCLL`) and the brightest mean of a frame (`MaxFALL`), in nits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ContentLight {
+    pub max_cll: u32,
+    pub max_fall: u32,
+}
+
+/// An `AVMasteringDisplayMetadata`: the primaries and white as fractions of 50000ths, the least
+/// and most luminance as fractions of 10000ths of a nit, both said to be there (22 `int`s, as the
+/// reader of `color.rs` reads them).
+pub(crate) fn mastering_bytes_of(mastering: &Mastering) -> Vec<u8> {
+    let mut words: Vec<i32> = Vec::with_capacity(22);
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "chromaticities and nits in their units"
+    )]
+    let mut fraction = |value: f64, unit: i32| {
+        words.push((value * f64::from(unit)).round() as i32);
+        words.push(unit);
+    };
+    for point in mastering.primaries.iter().chain([&mastering.white]) {
+        fraction(point[0], 50_000);
+        fraction(point[1], 50_000);
+    }
+    fraction(mastering.min_nits, 10_000);
+    fraction(mastering.max_nits, 10_000);
+    words.push(1);
+    words.push(1);
+    words.iter().flat_map(|word| word.to_ne_bytes()).collect()
+}
+
+/// An error of writing the file at `path`.
+fn write_error(path: &Path) -> impl Fn(String) -> MediaError + '_ {
+    move |why| MediaError::Write(format!("{} cannot be written: {why}", path.display()))
+}
+
 /// The sound of a file to be written: AAC, by libav's own encoder, at 192 kb/s.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AudioSettings {
@@ -184,7 +255,7 @@ pub fn encoders_for(codec: Codec) -> Vec<EncoderPath> {
     let opened: Vec<EncoderPath> = candidates(codec)
         .iter()
         .copied()
-        .filter(|&encoder| open_video(encoder, &tried).is_ok())
+        .filter(|&encoder| open_video(encoder, &tried, &ColorTags::default()).is_ok())
         .collect();
     if !opened.is_empty() {
         *found = Some(opened.clone());
@@ -293,6 +364,7 @@ fn input_format(settings: &VideoSettings) -> Pixel {
 fn open_video(
     encoder: EncoderPath,
     settings: &VideoSettings,
+    tags: &ColorTags,
 ) -> Result<ff::encoder::Video, String> {
     let codec = settings.codec;
     let name = encoder
@@ -319,7 +391,7 @@ fn open_video(
     context.set_gop(u32::try_from(every).unwrap_or(u32::MAX).max(1));
     // Rate is set by quality, not by bits a second (whose default is 200 kb/s).
     context.set_bit_rate(0);
-    ffi::tag_bt709(&mut context);
+    ffi::tag(&mut context, tags);
     let mut flags = ff::codec::Flags::GLOBAL_HEADER;
     let quantizer = settings.quality.quantizer();
     let mut options = ff::Dictionary::new();
@@ -327,6 +399,10 @@ fn open_video(
     // or Main 10, as the bits of its frames say.
     if codec == Codec::H264 && encoder != EncoderPath::VideoToolbox {
         options.set("profile", "high");
+    }
+    // HEVC of 10 bits is Main 10, as HDR10 and HLG are written, asked for by name of NVENC.
+    if codec == Codec::Hevc && settings.bits > 8 && encoder == EncoderPath::Nvenc {
+        options.set("profile", "main10");
     }
     match encoder {
         EncoderPath::Nvenc => {
@@ -494,6 +570,23 @@ impl Writer {
         video: VideoSettings,
         audio: Option<AudioSettings>,
     ) -> Result<Self, MediaError> {
+        Self::create_tagged(path, video, audio, &ColorTags::default())
+    }
+
+    /// As [`Writer::create`], the file saying that its picture's colours are `tags`: in the
+    /// parameters of its encoder and stream (and so in the `colr` of MP4 and `QuickTime`), and of
+    /// HDR, its mastering display in the stream's side data (`mdcv`), and in the encoder's where
+    /// it writes it into the stream (SEI). Its light ([`Writer::set_content_light`]) is said
+    /// when it is finished.
+    ///
+    /// # Errors
+    /// As [`Writer::create`].
+    pub fn create_tagged(
+        path: &Path,
+        video: VideoSettings,
+        audio: Option<AudioSettings>,
+        tags: &ColorTags,
+    ) -> Result<Self, MediaError> {
         check(&video, Container::of(path)?)?;
         // The sound first: an encoder of sound that does not open is not one of the picture
         // that fails, to be passed for the next.
@@ -502,7 +595,7 @@ impl Writer {
         }
         let mut fallbacks = Vec::new();
         for encoder in encoders_for(video.codec) {
-            match Self::create_on(path, encoder, video, audio) {
+            match Self::create_tagged_on(path, encoder, video, audio, tags) {
                 Ok(mut writer) => {
                     writer.fallbacks = fallbacks;
                     return Ok(writer);
@@ -535,6 +628,20 @@ impl Writer {
         video: VideoSettings,
         audio: Option<AudioSettings>,
     ) -> Result<Self, MediaError> {
+        Self::create_tagged_on(path, encoder, video, audio, &ColorTags::default())
+    }
+
+    /// As [`Writer::create_on`], tagged as [`Writer::create_tagged`] says.
+    ///
+    /// # Errors
+    /// As [`Writer::create_on`].
+    pub fn create_tagged_on(
+        path: &Path,
+        encoder: EncoderPath,
+        video: VideoSettings,
+        audio: Option<AudioSettings>,
+        tags: &ColorTags,
+    ) -> Result<Self, MediaError> {
         crate::init();
         let container = Container::of(path)?;
         check(&video, container)?;
@@ -545,7 +652,7 @@ impl Writer {
             )));
         }
         probe::checked(path)?;
-        let opened = open_video(encoder, &video).map_err(MediaError::Encode)?;
+        let opened = open_video(encoder, &video, tags).map_err(MediaError::Encode)?;
         let sound = audio.map(open_audio).transpose()?;
 
         // The path is given as a URL of the file protocol, as a file is read (`crate::probe`).
@@ -567,6 +674,14 @@ impl Writer {
         };
         if video.codec == Codec::Hevc {
             ffi::set_codec_tag(&mut output, video_index, *b"hvc1");
+        }
+        if let Some(mastering) = &tags.mastering {
+            ffi::add_stream_side_data(
+                &mut output,
+                video_index,
+                ffi::SideData::Mastering(mastering_bytes_of(mastering)),
+            )
+            .map_err(write_error(path))?;
         }
         let audio_index = match &sound {
             Some(encoder) => {
@@ -740,6 +855,25 @@ impl Writer {
         sound.pending.drain(..sound.taken);
         sound.taken = 0;
         Ok(())
+    }
+
+    /// Say the light of the content of the picture (`MaxCLL` and `MaxFALL`), measured of its
+    /// frames, in the stream's side data (`clli` of MP4 and `QuickTime`): given before
+    /// [`Writer::finish`], which writes the index of the file and its description of the stream
+    /// in it.
+    ///
+    /// # Errors
+    /// libav cannot keep it.
+    pub fn set_content_light(&mut self, light: ContentLight) -> Result<(), MediaError> {
+        let mut bytes = Vec::with_capacity(8);
+        bytes.extend_from_slice(&light.max_cll.to_ne_bytes());
+        bytes.extend_from_slice(&light.max_fall.to_ne_bytes());
+        ffi::add_stream_side_data(
+            &mut self.output,
+            self.track.index,
+            ffi::SideData::ContentLight(bytes),
+        )
+        .map_err(MediaError::Write)
     }
 
     /// Encode what is left, the last samples of sound in a shorter frame, and write the end

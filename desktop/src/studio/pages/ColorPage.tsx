@@ -4,7 +4,7 @@ import { Expand, Film, FolderOpen, GalleryHorizontalEnd, Images, Layers3, Maximi
 import { keyOf } from '../../app/keys';
 import { useWords } from '../../app/locale';
 import type { EngineBridge } from '../../bridge';
-import { callEngine, keptColor, type ClipTrack, type ColorSettings, type Group, type Media, type TimelineTransportState, type Timeline as TimelineModel } from '../engine';
+import { callEngine, EngineError, keptColor, type ClipTrack, type ColorSettings, type Group, type Media, type TimelineTransportState, type Timeline as TimelineModel } from '../engine';
 import { editingAllowed, inStudio, useStudioKeys } from '../keys';
 import { MonitorPane } from '../MonitorPane';
 import { Thumbnails } from '../media/Thumbnails';
@@ -28,6 +28,9 @@ import { Palettes, type CenterPalette, type LeftPalette, type RightPanel } from 
 import { useColorScopes } from '../color/Scopes';
 import { ThumbnailTimeline } from '../color/ThumbnailTimeline';
 import { placeOf, type EditedNode } from '../color/useNodeEdit';
+import { keyClockOf } from '../color/keyFrames';
+import { makeDefaultNode } from '../color/nodeEdits';
+import { refusalText } from '../inspector/refusal';
 import '../color/color.css';
 
 /** Narrower than this, the left and center palettes are merged into one group (Reference Manual 20, p. 2976). */
@@ -84,6 +87,7 @@ function useRealTime(state: TimelineState | null): 'stopped' | 'realtime' | 'dro
  */
 export function ColorPage({
   bridge, native, session, revision, pool, media, timelines, groups = NO_GROUPS, selected, onSelect, timelineMonitor, noticeOf, onRetry, onProblem, color,
+  nextId,
 }: {
   bridge: Pick<EngineBridge, 'call' | 'onEvent' | 'viewRect' | 'viewShow'>;
   native: boolean;
@@ -103,6 +107,8 @@ export function ColorPage({
   onProblem: (said: string, failure: unknown) => void;
   /** The colour management of the project, whose Color Viewer LUT the viewer's menu sets (T18). */
   color?: ColorSettings;
+  /** The project's `next_id`: a grade without nodes is shown with the node 01 that the engine would add to it (T3d). */
+  nextId?: number;
 }) {
   const words = useWords();
   const labels = words.label.studio.colorPage;
@@ -168,20 +174,34 @@ export function ColorPage({
   const shownLevel = levels.includes(level) ? level : 'clip';
   const grade = gradeOf(shownLevel, selected, current?.clip ?? null, groups);
   const gradeKey = `${shownLevel}:${shownLevel === 'timeline' ? selected?.id ?? '' : current?.clip.id ?? ''}`;
-  const currentNode = grade === null ? null
-    : grade.nodes.some(node => node.id === nodes[gradeKey]) ? nodes[gradeKey] : grade.nodes[0]?.id ?? null;
-  const onCurrentNode = useCallback((node: string) => setNodes(old => ({ ...old, [gradeKey]: node })), [gradeKey]);
   // The grade shown, as the edits name it; undo and redo, = and -, whole grades copied and pasted, and the menu of a thumbnail.
+  // A grade without nodes is shown with DaVinci's default node 01 (T3d), which the first change to it makes.
   const visibleClips = useMemo(() => visible.map(each => each.clip), [visible]);
   const grades = useColorPageGrades({
     bridge, revision, session, area, level: shownLevel, timeline: selected, clips: visibleClips, current: current?.clip ?? null, chosen: chosenClips,
+    grade, nextId,
   });
-  // The node that the palettes edit: the current node, where it is, with its grade and the playhead as its keys count it (T17).
-  const placed = placeOf(shownLevel, selected?.id ?? null, current?.clip ?? null, frame ?? 0);
-  const editedNode = grade?.nodes.find(node => node.id === currentNode) ?? null;
+  const shownGrade = grades.shown;
+  const currentNode = shownGrade === null ? null
+    : shownGrade.nodes.some(node => node.id === nodes[gradeKey]) ? nodes[gradeKey] : shownGrade.nodes[0]?.id ?? null;
+  const onCurrentNode = useCallback((node: string) => setNodes(old => ({ ...old, [gradeKey]: node })), [gradeKey]);
+  // The node that the palettes edit: the current node, where it is, with its grade and the playhead as its keys count it (T17):
+  // the frame of the clip's media whose picture is shown (T3c, `keyClockOf`).
+  const clock = current && selected ? keyClockOf(current.clip, selected.rate, current.clip.source.kind === 'media' ? mediaById.get(current.clip.source.media) : undefined) : undefined;
+  const placed = placeOf(shownLevel, selected?.id ?? null, current?.clip ?? null, frame ?? 0, clock);
+  const editedNode = shownGrade?.nodes.find(node => node.id === currentNode) ?? null;
+  const defaultNode = grades.defaultNode;
+  // A refusal of the palettes' edit (a locked node) is said where the node editor says one, in the page's words.
+  const paletteFailed = useCallback((failure: unknown) => {
+    if (failure instanceof EngineError) grades.editing.setProblem(refusalText(failure, now.current.words.hint.studio));
+    else failed(failure);
+  }, [grades.editing.setProblem, failed]);
   const edited = useMemo<EditedNode | null>(() => (placed === null || editedNode === null ? null
-    : { bridge, revision, target: placed.target, node: editedNode, frame: placed.frame, onFailure: failed }),
-  [bridge, revision, JSON.stringify(placed), editedNode, failed]);
+    : {
+      bridge, revision, target: placed.target, node: editedNode, frame: placed.frame, onFailure: paletteFailed,
+      before: defaultNode !== null && editedNode.id === defaultNode.id ? [makeDefaultNode(defaultNode.target)] : undefined,
+    }),
+  [bridge, revision, JSON.stringify(placed), editedNode, paletteFailed, defaultNode]);
   // The LUTs of nodes (T18): Apply LUT to Current Node and drags from the browser, the node menu's LUT ▸, and Reveal Selected LUT.
   const lutLibrary = useLutLibrary(bridge).library;
   const favoriteLuts = useFavoriteLuts();
@@ -338,7 +358,7 @@ export function ColorPage({
     </section>}
     {viewerMode === 'cinema' ? createPortal(<div className="color-cinema" data-studio-portal="">{viewer}</div>, document.body) : viewer}
     {nodesOpen && <section className="color-nodes" aria-label={labels.nodeEditor} data-test="node-editor" {...focusOf('nodes')}>
-      <NodeEditor grade={grade} level={shownLevel} levels={levels} onLevel={setLevel} current={currentNode} onCurrent={onCurrentNode}
+      <NodeEditor grade={grade} defaultNode={defaultNode?.id ?? null} level={shownLevel} levels={levels} onLevel={setLevel} current={currentNode} onCurrent={onCurrentNode}
         hint={noTimeline} target={grades.target} gradeKey={gradeKey} views={grades.views} focused={area === 'nodes'} editing={grades.editing}
         luts={nodeLuts} />
       <button type="button" className="icon-btn color-expand" aria-pressed={nodesExpanded} aria-label={labels.nodeEditor} title={labels.nodeEditor}

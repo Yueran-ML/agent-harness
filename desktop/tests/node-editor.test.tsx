@@ -18,8 +18,10 @@ import {
 } from '../src/studio/engine';
 import { inputPoint, layoutGrade, linkHalves, linkNear, nodesIn, outputPoint, portAt, type Layout, type PlacedNode } from '../src/studio/color/graph';
 import {
-  addNode, applyPrior, deleteNodes, newCorrector, nodeKey, pageKey, reset, stepNode, swapNodes, toggleAll, type NodeCommand,
+  addInput, addLoose, addNode, applyPrior, cleanupNodes, defaultNodeOf, deleteNodes, morph, moveNodes, newCorrector, nodeKey, onDefaultNode, pageKey, pasteNode,
+  reset, stepNode, swapNodes, toggleAll, toggleLock, withDefaultNode, type DefaultNode, type NodeCommand,
 } from '../src/studio/color/nodeEdits';
+import { setNodeLut } from '../src/studio/color/luts';
 import { clip, media } from './timeline-fixture';
 import { likeABrowser } from './mounted';
 
@@ -381,19 +383,74 @@ describe('choosing nodes', () => {
     expect(nodesIn(layout, { x: n3.x - 10, y: n3.y - 5 }, { x: n4.x + 100, y: n4.y + 60 })).toEqual(['n3', 'n4']);
   });
 
-  it('moves nodes by dragging, as the view keeps them, and Cleanup Node Graph puts them back', async () => {
+  it('moves nodes by dragging into the project, one step to undo for the drag, and Cleanup Node Graph puts them back in one', async () => {
     const { bridge } = await mount();
     const layout = layoutGrade(parallelGrade());
     const was = placedOf(layout, 'n3');
-    bridge.call.mockClear();
-    dragFrom(nodeOf('n3'), center(layout, 'n3'), { x: center(layout, 'n3').x + 40, y: center(layout, 'n3').y + 120 });
     const card = () => nodeOf('n3').querySelector('.color-node-card')!;
-    expect([Number(card().getAttribute('x')), Number(card().getAttribute('y'))]).toEqual([was.x + 40, was.y + 120]);
+    const at = () => [Number(card().getAttribute('x')), Number(card().getAttribute('y'))];
+    bridge.call.mockClear();
+    // Nothing is sent while the node goes along with the pointer; one set_node of pos is sent as it is dropped (T3d, p. 3321).
+    fireEvent.pointerDown(nodeOf('n3'), { button: 0, clientX: center(layout, 'n3').x, clientY: center(layout, 'n3').y });
+    fireEvent.pointerMove(canvas(), { clientX: center(layout, 'n3').x + 20, clientY: center(layout, 'n3').y + 60 });
+    fireEvent.pointerMove(canvas(), { clientX: center(layout, 'n3').x + 40, clientY: center(layout, 'n3').y + 120 });
     expect(sent(bridge)).toEqual([]);
+    expect(at()).toEqual([was.x + 40, was.y + 120]);
+    fireEvent.pointerUp(canvas(), { clientX: center(layout, 'n3').x + 40, clientY: center(layout, 'n3').y + 120 });
+    // Until the engine tells of it, the node stays where it was dropped.
+    expect(at()).toEqual([was.x + 40, was.y + 120]);
+    await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'set_node', grade: C1, id: 'n3', pos: { x: was.x + 40, y: was.y + 120 } }]]);
+    expect(at()).toEqual([was.x + 40, was.y + 120]);
+    // Two chosen nodes dragged together: one transaction of two.
+    press(nodeOf('n1'));
+    press(nodeOf('n2'), { x: 1, y: 1 }, { ctrlKey: true });
+    bridge.call.mockClear();
+    const one = placedOf(layout, 'n1');
+    dragFrom(nodeOf('n2'), center(layout, 'n2'), { x: center(layout, 'n2').x + 10, y: center(layout, 'n2').y + 200 });
+    await settle();
+    expect(sent(bridge)).toEqual([[
+      { op: 'set_node', grade: C1, id: 'n1', pos: { x: one.x + 10, y: one.y + 200 } },
+      { op: 'set_node', grade: C1, id: 'n2', pos: { x: placedOf(layout, 'n2').x + 10, y: placedOf(layout, 'n2').y + 200 } },
+    ]]);
+    // Cleanup Node Graph: every node where the editor lays it out, in one set_grade.
+    bridge.call.mockClear();
     fireEvent.contextMenu(graph(), { clientX: 5, clientY: 280 });
     fireEvent.click(screen.getByRole('menuitem', { name: 'Cleanup Node Graph' }));
-    expect([Number(card().getAttribute('x')), Number(card().getAttribute('y'))]).toEqual([was.x, was.y]);
+    await settle();
+    const [[cleanup]] = sent(bridge) as [[{ op: string; value: Grade }]];
+    expect(cleanup.op).toBe('set_grade');
+    expect(cleanup.value.nodes.map(node => node.pos)).toEqual([null, null, null, null, null]);
+    expect(cleanup.value.nodes.map(node => node.id)).toEqual(['n1', 'n2', 'n3', 'n4', 'n5']);
+    expect(at()).toEqual([was.x, was.y]);
+    // A grade laid out already sends nothing.
+    bridge.call.mockClear();
+    fireEvent.contextMenu(graph(), { clientX: 5, clientY: 280 });
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Cleanup Node Graph' }));
+    await settle();
     expect(sent(bridge)).toEqual([]);
+  });
+
+  it('puts a node back where it was where the engine refuses the move', async () => {
+    const { bridge, refuse } = await mount();
+    const layout = layoutGrade(parallelGrade());
+    const was = placedOf(layout, 'n3');
+    refuse({ reason: 'out_of_range', what: 'pos' });
+    dragFrom(nodeOf('n3'), center(layout, 'n3'), { x: center(layout, 'n3').x + 40, y: center(layout, 'n3').y + 120 });
+    await settle();
+    expect(sent(bridge).length).toBeGreaterThan(0);
+    const card = nodeOf('n3').querySelector('.color-node-card')!;
+    expect([Number(card.getAttribute('x')), Number(card.getAttribute('y'))]).toEqual([was.x, was.y]);
+  });
+
+  it('lays out the nodes where the project puts them', async () => {
+    const grade = parallelGrade();
+    grade.nodes[2] = { ...grade.nodes[2], pos: { x: 400, y: 250 } };
+    await mount({ timeline: timelineOf(grade) });
+    const card = nodeOf('n3').querySelector('.color-node-card')!;
+    expect([Number(card.getAttribute('x')), Number(card.getAttribute('y'))]).toEqual([400, 250]);
+    const auto = placedOf(layoutGrade(parallelGrade()), 'n1');
+    expect(Number(nodeOf('n1').querySelector('.color-node-card')!.getAttribute('x'))).toBe(auto.x);
   });
 
   it('enables or disables a node by a click on its number', async () => {
@@ -473,6 +530,8 @@ describe('the menus', () => {
     const menu = screen.getByRole('menu', { name: 'Node menu' });
     expect(within(menu).getAllByRole('menuitem').map(each => [each.getAttribute('aria-label'), each.getAttribute('aria-keyshortcuts')])).toEqual([
       ['Add Node', null], ['Add Outside Node', 'Alt+O'], ['Change Label', null], ['Delete Node', 'Delete'], ['Reset Node Grade', 'Shift+Home'],
+      // Lock Node (T3d, p. 3382).
+      ['Lock Node', null],
       // The LUT of the node (T18, p. 3412).
       ['LUT', null], ['Reveal Selected LUT', null],
       ['Reset Shot Match', null],
@@ -505,7 +564,7 @@ describe('the menus', () => {
     const ops = sent(bridge);
     expect(ops[0]).toEqual([{ op: 'set_node', grade: C1, id: 'm', params: { inputs: 3 } }]);
     expect(ops[1]).toEqual([{ op: 'set_node', grade: C1, id: 'm', params: { composite: 'screen' } }]);
-    expect(ops[2]).toEqual([{ op: 'set_grade', grade: C1, value: { ...mixed, nodes: [mixed.nodes[0], mixed.nodes[1], { ...parallel('m', 3) }] } }]);
+    expect(ops[2]).toEqual([{ op: 'set_grade', grade: C1, value: { ...mixed, nodes: [mixed.nodes[0], mixed.nodes[1], { ...parallel('m', 3), locked: false, pos: null }] } }]);
   });
 
   it('of the background add a loose corrector where it was asked for, and reset all; of a link, delete it', async () => {
@@ -519,7 +578,8 @@ describe('the menus', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Reset All Grades and Nodes' }));
     await settle();
     const ops = sent(bridge);
-    expect(ops[0]).toEqual([{ op: 'add_node', grade: C1, node: { id: '', kind: 'corrector', label: '', enabled: true, params: newCorrector() } }]);
+    // It lies where the menu was opened, which the project keeps (T3d).
+    expect(ops[0]).toEqual([{ op: 'add_node', grade: C1, node: { id: '', kind: 'corrector', label: '', enabled: true, locked: false, pos: { x: 300, y: 250 }, params: newCorrector() } }]);
     expect(ops[1]).toEqual([{ op: 'set_grade', grade: C1, value: { nodes: [], links: [link('source', 'output')] } }]);
   });
 
@@ -545,7 +605,13 @@ describe('the menus', () => {
     bridge.call.mockClear();
     dragFrom(nodeOf('x'), center(layout, 'x'), { x: middle[0], y: middle[1] });
     await settle();
-    expect(sent(bridge)).toEqual([[{ op: 'connect', grade: C1, link: link('a', 'x') }, { op: 'connect', grade: C1, link: link('x', 'b') }]]);
+    // Where it was dropped and its links: one transaction, one step to undo.
+    const x = placedOf(layout, 'x');
+    const moved = { x: Math.round(x.x + middle[0] - center(layout, 'x').x), y: Math.round(x.y + middle[1] - center(layout, 'x').y) };
+    expect(sent(bridge)).toEqual([[
+      { op: 'set_node', grade: C1, id: 'x', pos: moved },
+      { op: 'connect', grade: C1, link: link('a', 'x') }, { op: 'connect', grade: C1, link: link('x', 'b') },
+    ]]);
   });
 });
 
@@ -590,9 +656,12 @@ describe('refusals and the history', () => {
   });
 
   it('are said by the editor itself where it knows the engine would refuse, and nothing is sent', async () => {
-    const { bridge } = await mount({ timeline: timelineOf({ nodes: [], links: [link('source', 'output')] }), words: zhCN });
+    const mixers: Grade = { nodes: [parallel('m1', 1), parallel('m2', 1)], links: [link('source', 'm1'), link('m1', 'm2'), link('m2', 'output')] };
+    const { bridge } = await mount({ timeline: timelineOf(mixers), words: zhCN });
+    const layout = layoutGrade(mixers);
     bridge.call.mockClear();
-    letter('l', { altKey: true }); await settle();
+    // Two mixers swapped with Ctrl+drag: only correctors swap what they do.
+    dragFrom(nodeOf('m1'), center(layout, 'm1'), center(layout, 'm2'), { ctrlKey: true }); await settle();
     expect(sent(bridge)).toEqual([]);
     expect(problem()).toBe('所选节点不能做这个操作。');
   });
@@ -681,5 +750,184 @@ describe('the rules of the node editor', () => {
     expect([placedOf(moved, 'n5').x, placedOf(moved, 'n5').y]).toEqual([2000, 400]);
     expect(moved.output.x).toBeGreaterThan(2000 + 92);
     expect(moved.height).toBeGreaterThanOrEqual(400 + 58);
+  });
+});
+
+describe('Lock Node (T3d, p. 3382)', () => {
+  const lockedGrade = (): Grade => {
+    const grade = parallelGrade();
+    grade.nodes[1] = { ...grade.nodes[1], locked: true };
+    return grade;
+  };
+
+  it('draws a lock on a locked node, and locks and unlocks a node from its menu, one transaction each', async () => {
+    const { bridge } = await mount({ timeline: timelineOf(lockedGrade()) });
+    expect(nodeOf('n2').hasAttribute('data-locked')).toBe(true);
+    expect(nodeOf('n2').querySelector('[data-test="node-locked"]')).not.toBeNull();
+    expect(nodeOf('n2').querySelector('title')!.textContent).toContain('Locked');
+    expect(nodeOf('n1').querySelector('[data-test="node-locked"]')).toBeNull();
+    bridge.call.mockClear();
+    fireEvent.contextMenu(nodeOf('n2'), { clientX: 200, clientY: 60 });
+    const item = screen.getByRole('menuitem', { name: 'Lock Node' });
+    expect(item.dataset.checked).toBe('true');
+    fireEvent.click(item); await settle();
+    fireEvent.contextMenu(nodeOf('n1'), { clientX: 200, clientY: 60 });
+    expect(screen.getByRole('menuitem', { name: 'Lock Node' }).dataset.checked).toBeUndefined();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Lock Node' })); await settle();
+    expect(sent(bridge)).toEqual([
+      [{ op: 'set_node', grade: C1, id: 'n2', locked: false }],
+      [{ op: 'set_node', grade: C1, id: 'n1', locked: true }],
+    ]);
+    expect(nodeOf('n2').hasAttribute('data-locked')).toBe(false);
+    expect(nodeOf('n1').hasAttribute('data-locked')).toBe(true);
+  });
+
+  it('keeps the settings of a locked node: a reset of it is refused by the editor, and the reset of every node passes it over', async () => {
+    const { bridge } = await mount({ timeline: timelineOf(lockedGrade()), words: zhCN });
+    press(nodeOf('n2'));
+    bridge.call.mockClear();
+    key('Home', { shiftKey: true }); await settle();
+    expect(sent(bridge)).toEqual([]);
+    expect(problem()).toBe('这个节点已锁定，解锁后才能修改它的设置。');
+    key('Home', { shiftKey: true, ctrlKey: true }); await settle();
+    expect(sent(bridge)).toEqual([['n1', 'n3', 'n4', 'n5'].map(node => ({ edit: 'reset_node', grade: C1, node }))]);
+    // Pasted onto, or swapped with, it is refused too.
+    press(nodeOf('n1'));
+    letter('c', { ctrlKey: true });
+    press(nodeOf('n2'));
+    bridge.call.mockClear();
+    focusNodes(); press(nodeOf('n2'));
+    letter('v', { ctrlKey: true }); await settle();
+    const layout = layoutGrade(lockedGrade());
+    dragFrom(nodeOf('n3'), center(layout, 'n3'), center(layout, 'n2'), { ctrlKey: true }); await settle();
+    expect(sent(bridge)).toEqual([]);
+    expect(problem()).toBe('这个节点已锁定，解锁后才能修改它的设置。');
+  });
+
+  it('says the refusal of the engine of a locked node in the words of the page', async () => {
+    const { bridge, refuse } = await mount();
+    refuse({ reason: 'node_locked', node: 'n1' });
+    press(nodeOf('n1'));
+    bridge.call.mockClear();
+    key('Home', { shiftKey: true }); await settle();
+    expect(sent(bridge)).toEqual([[{ edit: 'reset_node', grade: C1, node: 'n1' }]]);
+    expect(problem()).toBe('This node is locked. Unlock it to change its settings.');
+  });
+});
+
+describe('the default node 01 (T3d, pp. 3309, 3312)', () => {
+  const empty = (): Grade => ({ nodes: [], links: [link('source', 'output')] });
+  const make = { edit: 'add_serial', grade: C1, node: 'source' };
+
+  it('shows a grade without nodes with an ungraded corrector 01, named as the engine will name it, which nothing that would leave it so makes', async () => {
+    const { bridge } = await mount({ timeline: timelineOf(empty()) });
+    expect([...graph().querySelectorAll<SVGElement>('[data-node]')].map(each => [each.dataset.node, each.querySelector('[data-test="node-number"]')!.textContent]))
+      .toEqual([['n10', '01']]);
+    expect(nodeOf('n10').hasAttribute('data-default')).toBe(true);
+    expect(currentNode()).toBe('n10');
+    expect(document.querySelector('[data-test="no-nodes"]')).toBeNull();
+    // Its thumbnail is not marked graded: the grade has no node.
+    expect(document.querySelector('[data-test="thumbnails"] > [data-clip="c1"] [data-test="thumb-number"]')!.hasAttribute('data-graded')).toBe(false);
+    focusNodes(); press(nodeOf('n10'));
+    bridge.call.mockClear();
+    key('Delete'); await settle();
+    key('Home', { shiftKey: true }); await settle();
+    key('Home', { shiftKey: true, ctrlKey: true }); await settle();
+    key('Home', { ctrlKey: true }); await settle();
+    fireEvent.contextMenu(graph(), { clientX: 5, clientY: 280 });
+    expect((screen.getByRole('menuitem', { name: 'Reset All Grades and Nodes' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Cleanup Node Graph' })); await settle();
+    expect(sent(bridge)).toEqual([]);
+  });
+
+  it('makes the node with the first change to it, in the transaction of the change: a drag, a label, a lock', async () => {
+    const { bridge } = await mount({ timeline: timelineOf(empty()) });
+    const layout = layoutGrade({ nodes: [corrector('n10')], links: [link('source', 'n10'), link('n10', 'output')] });
+    const was = placedOf(layout, 'n10');
+    bridge.call.mockClear();
+    dragFrom(nodeOf('n10'), center(layout, 'n10'), { x: center(layout, 'n10').x + 30, y: center(layout, 'n10').y + 50 });
+    await settle();
+    expect(sent(bridge)).toEqual([[make, { op: 'set_node', grade: C1, id: 'n10', pos: { x: was.x + 30, y: was.y + 50 } }]]);
+    // It is a node of the grade now: the next change is to it alone.
+    expect(nodeOf('n10').hasAttribute('data-default')).toBe(false);
+    bridge.call.mockClear();
+    fireEvent.contextMenu(nodeOf('n10'), { clientX: 200, clientY: 60 });
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Lock Node' })); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'set_node', grade: C1, id: 'n10', locked: true }]]);
+  });
+
+  it('makes the node before a label, and before a node added after it', async () => {
+    const first = await mount({ timeline: timelineOf(empty()) });
+    first.bridge.call.mockClear();
+    fireEvent.contextMenu(nodeOf('n10'), { clientX: 200, clientY: 60 });
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Change Label' }));
+    const field = screen.getByRole('textbox', { name: 'Node label' }) as HTMLInputElement;
+    fireEvent.change(field, { target: { value: 'Base' } });
+    fireEvent.keyDown(field, { key: 'Enter' });
+    await settle();
+    expect(sent(first.bridge)).toEqual([[make, { op: 'set_node', grade: C1, id: 'n10', label: 'Base' }]]);
+    cleanup();
+    const second = await mount({ timeline: timelineOf(empty()) });
+    second.bridge.call.mockClear();
+    // Alt+S on node 01 adds 02 after it, as in DaVinci: 01 is made first.
+    letter('s', { altKey: true }); await settle();
+    expect(sent(second.bridge)).toEqual([[make, { edit: 'add_serial', grade: C1, node: 'n10' }]]);
+  });
+});
+
+describe('the default node 01 and Lock Node, as rules', () => {
+  const empty: Grade = { nodes: [], links: [link('source', 'output')] };
+  const shown: DefaultNode = { target: C1, id: 'n10' };
+  const make = { edit: 'add_serial', grade: C1, node: 'source' };
+
+  it('take a grade without nodes, whose source goes to its output, for one with the node the engine will add', () => {
+    expect(defaultNodeOf(empty, C1, 10)).toEqual(shown);
+    expect(defaultNodeOf(empty, C1, undefined)).toBeNull();
+    expect(defaultNodeOf(parallelGrade(), C1, 10)).toBeNull();
+    expect(defaultNodeOf({ nodes: [], links: [] }, C1, 10)).toBeNull();
+    expect(withDefaultNode(empty, 'n10')).toEqual({ nodes: [{ ...corrector('n10'), locked: false, pos: null }], links: [link('source', 'n10'), link('n10', 'output')] });
+    expect(withDefaultNode(parallelGrade(), 'n10')).toEqual(parallelGrade());
+  });
+
+  it('make the node first where a change is to the grade shown, and nothing where it is to the node as it is', () => {
+    const lut = setNodeLut(C1, withDefaultNode(empty, 'n10').nodes[0], 'film.cube');
+    expect(onDefaultNode(lut, shown)).toEqual([make, { op: 'set_node', grade: C1, id: 'n10', params: { lut: 'film.cube' } }]);
+    expect(onDefaultNode([{ op: 'disconnect', grade: C1, to: 'output', kind: 'rgb', input: 0 }], shown))
+      .toEqual([make, { op: 'disconnect', grade: C1, to: 'output', kind: 'rgb', input: 0 }]);
+    expect(onDefaultNode([{ edit: 'append_node', grade: C1 }], shown)).toEqual([make, { edit: 'append_node', grade: C1 }]);
+    expect(onDefaultNode([{ op: 'remove_node', grade: C1, id: 'n10' }], shown)).toBeNull();
+    expect(onDefaultNode([{ edit: 'reset_node', grade: C1, node: 'n10' }], shown)).toBeNull();
+    // A whole grade put in place, or another grade, is sent as it is.
+    const whole = [{ op: 'set_grade' as const, grade: C1, value: empty }];
+    expect(onDefaultNode(whole, shown)).toEqual(whole);
+    const other: Target = { level: 'clip', timeline: 't1', clip: 'c2' };
+    expect(onDefaultNode([{ op: 'set_node', grade: other, id: 'x', enabled: false }], shown)).toEqual([{ op: 'set_node', grade: other, id: 'x', enabled: false }]);
+    // A node pasted onto it is pasted once it is made.
+    const paste = [{ edit: 'paste_node' as const, from: other, from_node: 'x', to: C1, to_node: 'n10' }];
+    expect(onDefaultNode(paste, shown)).toEqual([make, ...paste]);
+    expect(onDefaultNode({ refused: 'wrong_node' }, shown)).toEqual({ refused: 'wrong_node' });
+    expect(onDefaultNode(lut, null)).toEqual(lut);
+  });
+
+  it('lay out the first column and the step between columns as the engine moves appended nodes by (FIRST_COLUMN, NODE_STEP of grade.rs)', () => {
+    const layout = layoutGrade({ nodes: [corrector('a'), corrector('b')], links: [link('source', 'a'), link('a', 'b'), link('b', 'output')] });
+    expect(placedOf(layout, 'a').x).toBe(102);
+    expect(placedOf(layout, 'b').x - placedOf(layout, 'a').x).toBe(148);
+  });
+
+  it('move nodes, clean them up and lock them by set_node and set_grade, and refuse the settings of a locked node', () => {
+    const grade = parallelGrade();
+    grade.nodes[0] = { ...grade.nodes[0], pos: { x: 10, y: 20 } };
+    expect(moveNodes(C1, grade, { n1: { x: 10.2, y: 19.6 }, n2: { x: 300.4, y: 40 } })).toEqual([{ op: 'set_node', grade: C1, id: 'n2', pos: { x: 300, y: 40 } }]);
+    const [clean] = cleanupNodes(C1, grade) as unknown as [{ op: 'set_grade'; value: Grade }];
+    expect(clean.value.nodes.every(node => node.pos === null)).toBe(true);
+    expect(cleanupNodes(C1, parallelGrade())).toBeNull();
+    expect(toggleLock(C1, grade, 'n1')).toEqual([{ op: 'set_node', grade: C1, id: 'n1', locked: true }]);
+    grade.nodes[4] = { ...grade.nodes[4], locked: true };
+    expect(addInput(C1, grade, 'n5')).toEqual({ refused: 'node_locked' });
+    expect(morph(C1, grade, 'n5')).toEqual({ refused: 'node_locked' });
+    expect(pasteNode(C1, 'n1', C1, 'n5', grade)).toEqual({ refused: 'node_locked' });
+    expect(reset('node', C1, grade, 'n5')).toEqual({ refused: 'node_locked' });
+    expect(addLoose(C1, { x: 12.4, y: 7.6 })).toEqual([{ op: 'add_node', grade: C1, node: { id: '', kind: 'corrector', label: '', enabled: true, locked: false, pos: { x: 12, y: 8 }, params: newCorrector() } }]);
   });
 });

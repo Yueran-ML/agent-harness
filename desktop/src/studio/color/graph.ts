@@ -4,11 +4,11 @@
  * number, its RGB input and output at the top of its sides and its key input and output at the
  * foot (a mixer's inputs down its left side), and the links between them.
  *
- * The project keeps no place for a node (where a node lies is the view's, not the grade's), so the
- * editor places them: each node one column right of the furthest node that feeds it, the nodes of
- * a column in the order they were added, unless the user dragged them elsewhere (`Placed`, a state
- * of the view). The ports, the halves of links and the nodes under a point are found here too, for
- * the editor to draw links and choose nodes by. Pure.
+ * A node that the project gives a place (its `pos`, where it was dragged to, p. 3321) stands there;
+ * the editor places the others: each node one column right of the furthest node that feeds it, the
+ * nodes of a column in the order they were added (`Placed` holds the places given). The ports,
+ * the halves of links and the nodes under a point are found here too, for the editor to draw
+ * links and choose nodes by. Pure.
  */
 import { sortLinks, type Grade, type GradeNode, type Link, type LinkKind } from '../engine';
 
@@ -119,8 +119,8 @@ function columnsOf(grade: Grade): Map<string, number> {
 /** A point of the graph, in its own units (a pixel at zoom 1). */
 export interface Point { x: number; y: number }
 /**
- * Where nodes were dragged to, by their ids: a state of the view, which the project does not keep
- * (see `layoutGrade`). A node that is not in it stands where the editor places it.
+ * Where nodes lie, by their ids: the `pos` that the project keeps for them, and while a drag goes on
+ * where it takes them (see `layoutGrade`). A node that is not in it stands where the editor places it.
  */
 export type Placed = Readonly<Record<string, Point>>;
 /** The least room above a node that is dragged up, for its label. */

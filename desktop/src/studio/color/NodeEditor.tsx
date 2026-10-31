@@ -11,8 +11,9 @@ import {
   PORT_INSET, portAt, shownLabel, inputPoint, inputsOf, outputPoint, hasOutput, type Layout, type Placed, type PlacedNode, type Point, type Port,
 } from './graph';
 import {
-  addedCorrector, addInput, addLoose, addNode, composite, COMPOSITES, connect, deleteNodes, disconnect, extractNode, insertOnLink, linkIntoNewInput,
-  morph, nodeKey, pasteNode, reconnect, relabel, reset, resetShotMatch, restoreOriginal, stepNode, swapNodes, toggleAll, toggleNodes, type AddHow, type NodeCommand, type Worked,
+  addedCorrector, addInput, addLoose, addNode, cleanupNodes, composite, COMPOSITES, connect, deleteNodes, disconnect, extractNode, insertOnLink, isLocked,
+  linkIntoNewInput, morph, moveNodes, nodeKey, pasteNode, reconnect, relabel, reset, resetShotMatch, restoreOriginal, stepNode, swapNodes, toggleAll,
+  toggleLock, toggleNodes, withDefaultNode, type AddHow, type GradeChange, type NodeCommand, type Worked,
 } from './nodeEdits';
 import type { GradeEditing } from './useGradeEditing';
 import { carriesLut, draggedLut, LUT_MENU, lutMenuItems, setNodeLut } from './luts';
@@ -37,19 +38,27 @@ export interface NodeLuts {
 }
 
 /**
- * What the node editor keeps that the project does not: where nodes were dragged to, by grade (the
- * engine keeps no place for a node; Cleanup Node Graph forgets them), how far it is zoomed, and the
- * node copied with Ctrl+C. One for the page, so that they stay while the editor is closed and opened.
+ * What the node editor keeps that the project does not: how far it is zoomed, and the node copied
+ * with Ctrl+C (`defaults` where it was a default node 01, whose settings are the defaults). One for
+ * the page, so that they stay while the editor is closed and opened. Where nodes lie is the
+ * project's (each node's `pos`), as DaVinci keeps the layout with the grade (p. 3321).
  */
 export class NodeViews {
-  private places = new Map<string, Placed>();
   zoom = 1;
-  copied: { grade: Target; node: string } | null = null;
+  copied: { grade: Target; node: string; defaults?: boolean } | null = null;
+}
 
-  placed(grade: string): Placed { return this.places.get(grade) ?? NO_PLACES; }
-  place(grade: string, moved: Placed): void { this.places.set(grade, { ...this.placed(grade), ...moved }); }
-  /** Cleanup Node Graph (p. 3321): every node of the grade where the editor lays it out. */
-  cleanup(grade: string): void { this.places.delete(grade); }
+/** Where the nodes of a grade lie that the project gives a place (`pos`); the others the editor lays out. */
+export function placesOf(grade: Grade | null): Placed {
+  if (grade === null || !grade.nodes.some(node => node.pos != null)) return NO_PLACES;
+  return Object.fromEntries(grade.nodes.flatMap(node => (node.pos ? [[node.id, node.pos]] : [])));
+}
+
+/** The lock of a locked node (Lock Node, p. 3382: "Nodes that have been locked show a lock icon"). */
+export function LockMark({ x, y, title }: { x: number; y: number; title: string }) {
+  return <g className="color-node-locked" data-test="node-locked"><title>{title}</title>
+    <path d={`M ${x + 1.5} ${y + 4} v -1.5 a 2.5 2.5 0 0 1 5 0 v 1.5`} fill="none" />
+    <rect x={x} y={y + 4} width={8} height={6} rx={1} /></g>;
 }
 
 /** The badge of a shot match on a node, a small grid of dots as in p. 3048's picture. */
@@ -97,6 +106,8 @@ interface Shown {
   /** A link being drawn from a port to the pointer. */
   wire: { from: Point; to: Point; kind: LinkKind } | null;
   marquee: { a: Point; b: Point } | null;
+  /** The default node 01 that a grade without nodes is shown with, which is not in it yet. */
+  defaultNode?: string | null;
 }
 
 /**
@@ -141,11 +152,14 @@ const GradeGraph = memo(function GradeGraph({ layout, zoom, shown, onLabel }: {
       const { node, number, x, y } = placed;
       const name = node.kind === 'corrector' ? node.label : node.label || labels.kinds[node.kind];
       const matched = node.kind === 'corrector' && node.params.shot_match != null;
+      const locked = isLocked(node);
       const lit = shown.port?.node === node.id ? (shown.port.side === 'in' ? `in:${shown.port.kind}:${shown.port.input}` : `out:${shown.port.kind}`) : null;
       return <g key={node.id} className="color-node" data-node={node.id} data-number={number} data-kind={node.kind}
-        data-enabled={node.enabled} data-current={node.id === shown.current || undefined}
+        data-enabled={node.enabled} data-current={node.id === shown.current || undefined} data-locked={locked || undefined}
+        data-default={node.id === shown.defaultNode || undefined}
         data-chosen={(node.id !== shown.current && shown.others.has(node.id)) || undefined} data-target={shown.node === node.id || undefined}>
-        <title>{[`${numberText(number)}`, name, labels.kinds[node.kind], node.enabled ? '' : labels.disabled, matched ? labels.matched : ''].filter(Boolean).join(' · ')}</title>
+        <title>{[`${numberText(number)}`, name, labels.kinds[node.kind], node.enabled ? '' : labels.disabled, locked ? labels.locked : '', matched ? labels.matched : '']
+          .filter(Boolean).join(' · ')}</title>
         {name && <text className="color-node-label" x={x + NODE_WIDTH / 2} y={y - 6} textAnchor="middle" data-test="node-label"
           onDoubleClick={() => onLabel(node.id)}>{shownLabel(name)}</text>}
         <rect className="color-node-card" x={x} y={y} width={NODE_WIDTH} height={NODE_HEIGHT} rx={5} />
@@ -153,6 +167,7 @@ const GradeGraph = memo(function GradeGraph({ layout, zoom, shown, onLabel }: {
         <text className="color-node-number" x={x + 9} y={y + PORT_INSET + 4} data-test="node-number">{numberText(number)}</text>
         {node.kind !== 'corrector' && <text className="color-node-kind" x={x + NODE_WIDTH / 2} y={y + NODE_HEIGHT / 2 + 4} textAnchor="middle">{labels.kinds[node.kind]}</text>}
         {matched && <MatchedMark x={x + NODE_WIDTH - 20} y={y + NODE_HEIGHT - 13} title={labels.matched} />}
+        {locked && <LockMark x={x + NODE_WIDTH - 16} y={y + 4} title={labels.locked} />}
         <Ports placed={placed} lit={lit} />
       </g>;
     })}
@@ -196,11 +211,19 @@ const isMixerOf = (node: GradeNode | undefined, kind: LinkKind) => node !== unde
  * - a node's settings copied onto another with Alt+drag or Ctrl+C and Ctrl+V, swapped with
  *   Ctrl+drag (p. 3320); a loose node dropped on a link goes into it (p. 3319).
  *
- * Every change is one transaction, undone in the one history. Where a node lies, how far the editor
- * is zoomed and which nodes are chosen are the view's: the project keeps none of them.
+ * - a node locked and unlocked from its menu (Lock Node, p. 3382), drawn with a lock;
+ * - a grade without nodes shown with DaVinci's default node 01 (pp. 3309, 3312), made by the first
+ *   change to it (`withDefaultNode`, `onDefaultNode`).
+ *
+ * Every change is one transaction, undone in the one history. Where a node lies is the project's,
+ * as DaVinci keeps it with the grade (p. 3321): a drag is one `set_node` of each node moved, sent as
+ * it is dropped, and Cleanup Node Graph one `set_grade`. How far the editor is zoomed and which nodes
+ * are chosen are the view's.
  */
-export function NodeEditor({ grade, level, levels, onLevel, current, onCurrent, hint, target, gradeKey, views, focused, editing, luts }: {
+export function NodeEditor({ grade: real, defaultNode = null, level, levels, onLevel, current, onCurrent, hint, target, gradeKey, views, focused, editing, luts }: {
   grade: Grade | null;
+  /** The id of the default node 01 that a grade without nodes is shown with (`defaultNodeOf`), or null. */
+  defaultNode?: string | null;
   level: GradeLevel;
   levels: readonly GradeLevel[];
   onLevel: (level: GradeLevel) => void;
@@ -222,9 +245,10 @@ export function NodeEditor({ grade, level, levels, onLevel, current, onCurrent, 
   const labels = words.label.studio.colorPage;
   const menuWords = labels.nodeMenu;
   const said = words.hint.studio.colorPage;
-  const complete = grade === null || isComplete(grade);
+  // The grade as it is shown: with its default node where it has none.
+  const grade = useMemo(() => (real === null ? null : withDefaultNode(real, defaultNode)), [real, defaultNode]);
+  const complete = real === null || isComplete(real);
   const canvas = useRef<HTMLDivElement>(null);
-  const [, redraw] = useState(0);
   const [zoom, setZoomState] = useState(views.zoom);
   const [tool, setTool] = useState<'select' | 'pan'>('select');
   const [chosen, setChosen] = useState<{ key: string; ids: ReadonlySet<string> }>({ key: gradeKey, ids: NO_IDS });
@@ -236,9 +260,12 @@ export function NodeEditor({ grade, level, levels, onLevel, current, onCurrent, 
   const drag = useRef<Drag | null>(null);
   // The grade as it was when it was first shown, for Original Memory (p. 3317): another clip or level shown takes it anew.
   const original = useRef<{ key: string; grade: Grade } | null>(null);
-  if (grade !== null && original.current?.key !== gradeKey) original.current = { key: gradeKey, grade };
+  if (real !== null && original.current?.key !== gradeKey) original.current = { key: gradeKey, grade: real };
+  // Nodes dropped where the engine has not yet told of them stand where they were dropped, until it does or refuses.
+  const [held, setHeld] = useState<{ grade: Grade; moved: Placed } | null>(null);
 
-  const placed = views.placed(gradeKey);
+  const kept = useMemo(() => placesOf(grade), [grade]);
+  const placed = useMemo(() => (held !== null && held.grade === real ? { ...kept, ...held.moved } : kept), [kept, held, real]);
   const base = useMemo(() => (grade === null ? null : layoutGrade(grade, placed)), [grade, placed]);
   const layout = useMemo(() => (grade === null || !preview?.moved ? base : layoutGrade(grade, { ...placed, ...preview.moved })), [grade, base, placed, preview?.moved]);
   const others = chosen.key === gradeKey ? chosen.ids : NO_IDS;
@@ -265,19 +292,18 @@ export function NodeEditor({ grade, level, levels, onLevel, current, onCurrent, 
   }, [base, setZoom]);
 
   // What the handlers of keys and of the pointer read, as it is now.
-  const now = useRef({ grade, target, gradeKey, current, selected, pickedLink, focused, editing, onCurrent, zoom, menu, labelling, tool, base });
-  now.current = { grade, target, gradeKey, current, selected, pickedLink, focused, editing, onCurrent, zoom, menu, labelling, tool, base };
+  const now = useRef({ grade, real, defaultNode, target, gradeKey, current, selected, pickedLink, focused, editing, onCurrent, zoom, menu, labelling, tool, base });
+  now.current = { grade, real, defaultNode, target, gradeKey, current, selected, pickedLink, focused, editing, onCurrent, zoom, menu, labelling, tool, base };
 
-  /** Send a command; where it adds a corrector, that one becomes current (p. 3318), and goes where it was asked for. */
-  const run = useCallback((worked: Worked, at?: Point) => {
+  /** Send a command; where it adds a corrector, that one becomes current (p. 3318). `settled` is told once it is done, refused or not sent. */
+  const run = useCallback((worked: Worked, settled?: () => void) => {
     const { editing: sending, gradeKey: key, onCurrent: choose } = now.current;
     sending.run(worked, (applied) => {
+      settled?.();
       const added = addedCorrector(applied.done);
-      if (added === null) return;
-      if (at) { views.place(key, { [added]: at }); redraw(count => count + 1); }
-      if (now.current.gradeKey === key) choose(added);
-    });
-  }, [views]);
+      if (added !== null && now.current.gradeKey === key) choose(added);
+    }, settled);
+  }, []);
 
   const add = useCallback((how: AddHow) => {
     const { target: grade, current: node } = now.current;
@@ -311,9 +337,10 @@ export function NodeEditor({ grade, level, levels, onLevel, current, onCurrent, 
       case 'extract': run(extractNode(target, state.current)); return true;
       case 'enable': run(toggleNodes(target, grade, state.selected)); return true;
       case 'enableAll': run(toggleAll(target, grade)); return true;
-      case 'reset': run(reset(command.how, target, grade, state.current)); return true;
+      // Reset All Grades and Nodes and Original Memory put a whole grade in place of the grade itself, not of the one shown.
+      case 'reset': run(reset(command.how, target, command.how === 'all' ? state.real ?? grade : grade, state.current)); return true;
       case 'original':
-        if (original.current?.key === state.gradeKey) run(restoreOriginal(target, grade, original.current.grade));
+        if (original.current?.key === state.gradeKey) run(restoreOriginal(target, state.real ?? grade, original.current.grade));
         return true;
       case 'step': {
         const to = stepNode(grade, state.current, command.direction);
@@ -334,10 +361,15 @@ export function NodeEditor({ grade, level, levels, onLevel, current, onCurrent, 
         return true;
       }
       case 'copy':
-        if (state.current !== null) views.copied = { grade: target, node: state.current };
+        if (state.current !== null) views.copied = { grade: target, node: state.current, defaults: state.current === state.defaultNode };
         return true;
       case 'paste':
-        if (views.copied && state.current !== null) run(pasteNode(views.copied.grade, views.copied.node, target, state.current));
+        if (views.copied && state.current !== null) {
+          // A default node 01 copied has every setting at its default: pasted, it resets the node pasted onto.
+          const onto = grade.nodes.find(node => node.id === state.current);
+          if (views.copied.defaults) run(onto?.kind === 'corrector' ? reset('node', target, grade, state.current) : { refused: 'wrong_node' });
+          else run(pasteNode(views.copied.grade, views.copied.node, target, state.current, grade));
+        }
         return true;
       case 'tool': setTool(old => (old === 'select' ? 'pan' : 'select')); return true;
       default: return false;
@@ -514,21 +546,27 @@ export function NodeEditor({ grade, level, levels, onLevel, current, onCurrent, 
       if (press.mode !== 'move') {
         const on = nodeAt({ ...press.base, nodes: press.base.nodes.filter(each => each.node.id !== press.id) }, point)?.node.id;
         if (on) {
-          run(press.mode === 'copy' ? pasteNode(target, press.id, target, on) : swapNodes(target, grade, press.id, on));
+          run(press.mode === 'copy' ? pasteNode(target, press.id, target, on, grade) : swapNodes(target, grade, press.id, on));
           return;
         }
       }
       const moved: Record<string, Point> = {};
       for (const id of press.ids) {
         const was = press.base.nodes.find(each => each.node.id === id);
-        if (was) moved[id] = { x: was.x + dx, y: was.y + dy };
+        if (was) moved[id] = { x: Math.max(0, was.x + dx), y: Math.max(0, was.y + dy) };
       }
-      views.place(gradeKey, moved);
-      redraw(count => count + 1);
+      // Where the nodes lie and, for a loose node dropped on a link, its links: one transaction, one step to undo.
+      const changes: GradeChange[] = moveNodes(target, grade, moved);
       if (press.mode === 'move' && press.ids.length === 1) {
         const link = linkNear(press.base, point);
-        if (link) run(insertOnLink(target, grade, press.id, link));
+        const inserted = link ? insertOnLink(target, grade, press.id, link) : null;
+        if (Array.isArray(inserted)) changes.push(...inserted);
       }
+      if (changes.length === 0) return;
+      const was = real;
+      setHeld({ grade: was!, moved });
+      const letGo = () => setHeld(old => (old?.grade === was ? null : old));
+      run(changes, letGo);
       return;
     }
     if (press.kind === 'half') {
@@ -616,9 +654,9 @@ export function NodeEditor({ grade, level, levels, onLevel, current, onCurrent, 
       return;
     }
     setMenu({ ...place, label: menuWords.graphMenu, items: [
-      { id: 'add-node', label: menuWords.addNode, items: [{ id: 'add-loose', label: labels.kinds.corrector, run: () => run(addLoose(target), point) }] },
-      { id: 'reset-all', label: menuWords.resetAll, keys: 'Ctrl+Home', disabled: grade.nodes.length === 0, run: () => run(reset('all', target, grade, null)) },
-      { id: 'cleanup', label: menuWords.cleanup, run: () => { views.cleanup(gradeKey); redraw(count => count + 1); } },
+      { id: 'add-node', label: menuWords.addNode, items: [{ id: 'add-loose', label: labels.kinds.corrector, run: () => run(addLoose(target, point)) }] },
+      { id: 'reset-all', label: menuWords.resetAll, keys: 'Ctrl+Home', disabled: (real?.nodes.length ?? 0) === 0, run: () => run(reset('all', target, real ?? grade, null)) },
+      { id: 'cleanup', label: menuWords.cleanup, run: () => run(cleanupNodes(target, real ?? grade)) },
       { id: 'zoom-in', label: menuWords.zoomIn, run: () => setZoom(zoom * ZOOM_STEP) },
       { id: 'zoom-out', label: menuWords.zoomOut, run: () => setZoom(zoom / ZOOM_STEP) },
       { id: 'zoom-window', label: menuWords.zoomToWindow, run: zoomToWindow },
@@ -643,6 +681,7 @@ export function NodeEditor({ grade, level, levels, onLevel, current, onCurrent, 
       { id: 'label', label: menuWords.label, run: () => startLabel(node.id) },
       { id: 'delete', label: menuWords.deleteNode, keys: 'Delete', run: () => run(deleteNodes(target, grade, [node.id])) },
       { id: 'reset', label: menuWords.reset, keys: 'Shift+Home', run: () => run(reset('node', target, grade, node.id)) },
+      { id: 'lock', label: menuWords.lock, checked: isLocked(node), run: () => run(toggleLock(target, grade, node.id)) },
     ];
     if (node.kind === 'corrector' && luts) {
       const lut = node.params.lut;
@@ -669,7 +708,7 @@ export function NodeEditor({ grade, level, levels, onLevel, current, onCurrent, 
   const labelNode = labelling && labelling.key === gradeKey ? layout?.nodes.find(each => each.node.id === labelling.id) ?? null : null;
   const shown: Shown = {
     current, others, link: pickedLink, hover, replacing: preview?.replacing ?? null, detached: preview?.detached ?? null,
-    port: preview?.port ?? null, node: preview?.node ?? null, wire: preview?.wire ?? null, marquee: preview?.marquee ?? null,
+    port: preview?.port ?? null, node: preview?.node ?? null, wire: preview?.wire ?? null, marquee: preview?.marquee ?? null, defaultNode,
   };
 
   return <div className="color-nodes-body">

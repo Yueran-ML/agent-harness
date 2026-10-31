@@ -800,7 +800,7 @@ export const ja: Messages = {
           addInput: '入力をひとつ追加', toLayer: 'レイヤーミキサーノードに変換', toParallel: 'パラレルノードに変換', composite: 'コンポジットモード',
           deleteLink: 'リンクを削除', resetAll: 'すべてのグレードとノードをリセット', cleanup: 'ノードグラフをクリーンアップ',
           zoomIn: 'ズームイン', zoomOut: 'ズームアウト', zoomToWindow: 'ウィンドウに合わせる', originalSize: '元のサイズ', collapse: 'グループグレードを統合',
-          revealLut: '選択した LUT を表示',
+          revealLut: '選択した LUT を表示', lock: 'ノードをロック',
         },
         composites: {
           normal: '通常', add: '加算', color: 'カラー', color_burn: 'カラーバーン', color_dodge: 'カラードッジ', darken: '比較（暗）', darker_color: 'カラー比較（暗）',
@@ -809,7 +809,7 @@ export const ja: Messages = {
           multiply: '乗算', overlay: 'オーバーレイ', pin_light: 'ピンライト', saturation: '彩度', screen: 'スクリーン', softlight: 'ソフトライト',
           subtract: '減算', vivid_light: 'ビビッドライト',
         },
-        disabled: '無効', matched: 'ショットマッチ済み', graded: 'グレード済み', grouped: 'グループ', solidColor: '単色', title: 'タイトル',
+        disabled: '無効', locked: 'ロック中', matched: 'ショットマッチ済み', graded: 'グレード済み', grouped: 'グループ', solidColor: '単色', title: 'タイトル',
         palettes: 'パレット', leftPalettes: '左パレット', centerPalettes: '中央パレット', rightPanel: 'キーフレームとスコープ',
         palette: {
           primaries: 'プライマリー', curves: 'カーブ', qualifier: 'クオリファイアー', window: 'ウィンドウ', tracker: 'トラッカー', blur: 'ブラー', key: 'キー',
@@ -1427,6 +1427,7 @@ export const ja: Messages = {
         params: "この設定はこの種類のノードには使えません。",
         wrong_node: "選択したノードではこの操作はできません。",
         camera_raw: "カメラ RAW メディアのカラースペースはカメラが決めるため、手動では設定できません。",
+        node_locked: "このノードはロックされています。設定を変更するにはロックを解除してください。",
         unknown_space: "このカラースペースまたは変換はエンジンが認識できません。",
         inapplicable: "この設定は現在のカラーマネージメントには適用されません。",
         color_settings: "このカラー設定を読み取れませんでした。",

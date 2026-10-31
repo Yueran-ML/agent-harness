@@ -750,7 +750,7 @@ export const zhCN: Messages = {
           addInput: '添加一个输入', toLayer: '转换为图层混合器节点', toParallel: '转换为并行节点', composite: '合成模式',
           deleteLink: '删除连接线', resetAll: '重置所有调色和节点', cleanup: '清理节点图',
           zoomIn: '放大', zoomOut: '缩小', zoomToWindow: '缩放至窗口大小', originalSize: '原始大小', collapse: '折叠群组调色',
-          revealLut: '显示所选 LUT',
+          revealLut: '显示所选 LUT', lock: '锁定节点',
         },
         composites: {
           normal: '正常', add: '相加', color: '颜色', color_burn: '颜色加深', color_dodge: '颜色减淡', darken: '变暗', darker_color: '深色',
@@ -759,7 +759,7 @@ export const zhCN: Messages = {
           multiply: '正片叠底', overlay: '叠加', pin_light: '点光', saturation: '饱和度', screen: '滤色', softlight: '柔光',
           subtract: '相减', vivid_light: '亮光',
         },
-        disabled: '已禁用', matched: '已镜头匹配', graded: '已调色', grouped: '群组', solidColor: '纯色', title: '标题',
+        disabled: '已禁用', locked: '已锁定', matched: '已镜头匹配', graded: '已调色', grouped: '群组', solidColor: '纯色', title: '标题',
         palettes: '调板', leftPalettes: '左侧调板', centerPalettes: '中间调板', rightPanel: '关键帧与示波器',
         palette: {
           primaries: '一级校色', curves: '曲线', qualifier: '限定器', window: '窗口', tracker: '跟踪器', blur: '模糊', key: '键',
@@ -1349,6 +1349,7 @@ export const zhCN: Messages = {
         params: "这些设置不适用于这类节点。",
         wrong_node: "所选节点不能做这个操作。",
         camera_raw: "摄影机 RAW 媒体的色彩空间由摄影机决定，不能手动设置。",
+        node_locked: "这个节点已锁定，解锁后才能修改它的设置。",
         unknown_space: "引擎不认识这个色彩空间或转换。",
         inapplicable: "这项设置不适用于当前的色彩管理。",
         color_settings: "无法读取这些色彩设置。",

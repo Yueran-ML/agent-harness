@@ -14,7 +14,7 @@ import { Studio, studioPages } from '../src/studio/Studio';
 import { MERGE_PALETTES_PX } from '../src/studio/pages/ColorPage';
 import {
   applyOp, emptyGrade, ProjectCopy, sortLinks, type Corrector, type EngineEvent, type Grade, type GradeNode, type Link, type Media, type Op,
-  type Project, type Timeline, type TransportState,
+  type Project, type Target, type Timeline, type TransportState,
 } from '../src/studio/engine';
 import { currentClip, numberedClips, shownClips, sourceFrameAt, stepClip } from '../src/studio/color/clips';
 import { isComplete, layoutGrade, linkName, shownLabel } from '../src/studio/color/graph';
@@ -101,8 +101,23 @@ function fakeEngine(timelines: Timeline[] = [graded()]) {
         tell('transport.state', state); return { ok: true, result: {} };
       }
       if (method === 'transaction.apply') {
-        const done = (params!.ops as Op[]).filter(op => 'op' in op);
-        for (const op of done) project = applyOp(project, op);
+        // Add Serial after the source of a clip's grade is worked out as the engine does (T3d's
+        // default node 01); other edits are not.
+        const done: Op[] = [];
+        for (const change of params!.ops as Record<string, unknown>[]) {
+          let op: Op | null = 'op' in change ? change as unknown as Op : null;
+          if (change.edit === 'add_serial' && change.node === 'source') {
+            const grade = change.grade as { level: 'clip'; timeline: string; clip: string };
+            const clipNow = project.timelines[0].tracks.flatMap(track => (track.kind === 'subtitle' ? [] : track.clips)).find(each => each.id === grade.clip)!;
+            const id = `n${project.next_id}`;
+            const fed = clipNow.grade.links.filter(each => each.from === 'source');
+            op = { op: 'add_node', grade, node: corrector(id), index: clipNow.grade.nodes.length, links: [link('source', id), ...fed.map(each => ({ ...each, from: id }))] };
+            project = { ...project, next_id: project.next_id + 1 };
+          }
+          if (op === null) continue;
+          project = applyOp(project, op);
+          done.push(op);
+        }
         revision++;
         tell('project.changed', { revision, made_by: 'desktop', by: 'desktop', next_id: project.next_id, done });
         return { ok: true, result: { done, names: {}, revision, next_id: project.next_id, clamped: [] } };
@@ -314,11 +329,14 @@ describe('the Color page', () => {
     expect(numbersDrawn()).toEqual([['pre', '01']]);
     fireEvent.change(level(), { target: { value: 'post_clip' } });
     expect(numbersDrawn()).toEqual([['post', '01']]);
-    // A clip with no nodes shows its source linked to its output; the playhead in a gap shows none.
+    // A clip with no nodes shows DaVinci's default node 01, which the grade does not have yet (T3d,
+    // pp. 3309, 3312); it is named as the engine will name it, n and the project's next_id. The
+    // playhead in a gap shows none.
     fireEvent.change(level(), { target: { value: 'clip' } });
-    expect(numbersDrawn()).toEqual([]);
-    expect(linksDrawn()).toEqual(['source>output:rgb:0']);
-    expect(screen.getByText('This grade has no nodes yet.')).toBeDefined();
+    expect(numbersDrawn()).toEqual([['n10', '01']]);
+    expect(linksDrawn()).toEqual(['source>n10:rgb:0', 'n10>output:rgb:0']);
+    expect(graph().querySelector('[data-node="n10"]')!.hasAttribute('data-default')).toBe(true);
+    expect(screen.queryByText('This grade has no nodes yet.')).toBeNull();
     await notify({ frame: 400 });
     expect(document.querySelector('[data-test="grade-graph"]')).toBeNull();
     expect(screen.getByText('There is no clip at the playhead.')).toBeDefined();
@@ -426,6 +444,31 @@ describe('the Color page', () => {
     gesture: { id: expect.any(String), end: true } });
     expect(document.querySelector('[data-palette="primaries"] [data-test="changed-dot"]')).not.toBeNull();
     expect(document.querySelector('[data-palette="curves"] [data-test="changed-dot"]')).toBeNull();
+  });
+
+  it('edits the default node 01 of a clip without nodes from the palettes, making it in the same transaction (T3d)', async () => {
+    const { bridge, notify } = await mount();
+    await notify({ frame: 250 });
+    const c3: Target = { level: 'clip', timeline: 't1', clip: 'c3' };
+    expect(numbersDrawn()).toEqual([['n10', '01']]);
+    const name = document.querySelector('[data-field="primaries.saturation"] .color-number-name')!;
+    expect(name).not.toBeNull();
+    bridge.call.mockClear();
+    fireEvent.pointerDown(name, { button: 0, pointerId: 1, clientX: 0 });
+    fireEvent.pointerMove(name, { pointerId: 1, clientX: 40 });
+    fireEvent.pointerUp(name, { pointerId: 1, clientX: 40 });
+    await settle();
+    // A gesture: its first makes the node and sets it, the others set it by the id it was made with,
+    // the last ends it, so the drag is one step to undo (see node-default-gesture.test.tsx).
+    const sentNow = calls(bridge, 'transaction.apply') as { ops: unknown[]; gesture: { id: string; end?: boolean } }[];
+    expect(sentNow.length).toBeGreaterThanOrEqual(2);
+    expect(sentNow[0].ops).toEqual([
+      { edit: 'add_serial', grade: c3, node: 'source' },
+      { op: 'set_node', grade: c3, id: 'n10', params: { primaries: { saturation: 60 } } }]);
+    for (const each of sentNow.slice(1)) expect(each.ops).toEqual([{ op: 'set_node', grade: c3, id: 'n10', params: { primaries: { saturation: 60 } } }]);
+    expect(new Set(sentNow.map(each => each.gesture.id)).size).toBe(1);
+    expect(sentNow.at(-1)!.gesture.end).toBe(true);
+    expect(sentNow.slice(0, -1).every(each => each.gesture.end === undefined)).toBe(true);
   });
 
   it('is a page of the studio on Windows only', () => {

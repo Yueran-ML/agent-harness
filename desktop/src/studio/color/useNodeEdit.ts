@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { EngineBridge } from '../../bridge';
 import { callEngine, mergePatch, type Corrector, type GradeNode, type Param, type Target } from '../engine';
 import { fullCorrector, getAt, isKeyed, patchOf, shownValue, withValue } from './corrector';
+import type { KeyClock } from './keyFrames';
+import type { GradeChange } from './nodeEdits';
 
 /**
  * What an edit puts at a path of the node's params: a number, which goes where an edit at the
@@ -18,24 +20,35 @@ export interface EditedNode {
   revision: number;
   target: Target;
   node: GradeNode;
-  /** The frame of the playhead as the keys of the grade count it: from the clip's first frame (from 0 of the timeline, for its grade). */
+  /**
+   * The frame of the playhead as the keys of the grade count it (PROTOCOL.md, "Frames of keys"): the
+   * frame of the clip's media whose picture is shown, or of the clip from its first for a title, a
+   * colour or a still (`keyClockOf`); of the timeline, for its grade.
+   */
   frame: number;
   onFailure: (failure: unknown) => void;
+  /**
+   * What goes first in the transaction of an edit: where the grade has no node and the palettes edit
+   * the node 01 it is shown with (DaVinci's default node), the `add_serial` that makes it (`withDefaultNode`).
+   */
+  before?: readonly GradeChange[];
 }
 
 /**
  * Where a grade of a level is, for the current clip of a timeline, as an operation names it
- * (PROTOCOL.md, "Grades"); and the frame of the playhead as its keys count it: from the clip's first
- * frame for the clip's grade and its group's (PROTOCOL.md, "Frames of keys"), from 0 of the
- * timeline for the timeline's.
+ * (PROTOCOL.md, "Grades"); and the frame of the playhead as its keys count it (PROTOCOL.md, "Frames
+ * of keys"): for the clip's grade and its group's, the frame that `clock` (`keyClockOf` the clip)
+ * gives, the frame of its media whose picture is shown, or, without one, the frame of the clip from
+ * its first; from 0 of the timeline for the timeline's.
  */
 export function placeOf(level: 'pre_clip' | 'clip' | 'post_clip' | 'timeline', timeline: string | null,
-  clip: { id: string; start: number; group: string | null } | null, frame: number): { target: Target; frame: number } | null {
+  clip: { id: string; start: number; group: string | null } | null, frame: number, clock?: KeyClock): { target: Target; frame: number } | null {
   if (timeline === null) return null;
   if (level === 'timeline') return { target: { level, timeline }, frame };
   if (clip === null) return null;
-  if (level === 'clip') return { target: { level, timeline, clip: clip.id }, frame: frame - clip.start };
-  return clip.group === null ? null : { target: { level, group: clip.group }, frame: frame - clip.start };
+  const keyed = clock ? clock(frame) : frame - clip.start;
+  if (level === 'clip') return { target: { level, timeline, clip: clip.id }, frame: keyed };
+  return clip.group === null ? null : { target: { level, group: clip.group }, frame: keyed };
 }
 
 /** How long a value that was sent is shown, at most, until the engine tells of it, as the inspector's fields hold theirs. */
@@ -67,6 +80,10 @@ interface Gesture {
   failed: boolean;
   /** What each setting it changed was before it, to put back on Escape. */
   before: Map<string, unknown>;
+  /** Whether its first made the node it edits, the default node 01 of a grade without nodes (`EditedNode.before`). */
+  made: boolean;
+  /** Whether it was cancelled (Escape): its last takes back all it did. */
+  cancelled: boolean;
 }
 let gestures = 0;
 
@@ -141,10 +158,18 @@ export function useNodeEdit(edited: EditedNode | null) {
     going.started = true;
     going.ended = end;
     const params = patchOf(resolve(edits, now.current.committed, context.frame));
+    // The first of a gesture on the default node 01 makes it, in its transaction; the others name
+    // it by the id it was made with. Cancelled, the last takes the node away again, so that the
+    // drag leaves the grade without nodes as it was.
+    const making = !going.made && context.before !== undefined && context.before.length > 0;
+    if (making) going.made = true;
+    const set = { op: 'set_node', grade: context.target, id: context.node.id, params };
+    const ops = making ? [...context.before!, set]
+      : end && going.cancelled && going.made ? [{ op: 'remove_node', grade: context.target, id: context.node.id }] : [set];
     // Bound to the revision of the copy, which may lag behind the gesture's own changes: the
     // engine takes any since the gesture began, and refuses one from before another's change.
     callEngine(context.bridge, 'transaction.apply', {
-      revision: context.revision, ops: [{ op: 'set_node', grade: context.target, id: context.node.id, params }],
+      revision: context.revision, ops,
       gesture: end ? { id: going.id, end: true } : { id: going.id },
     }).then((applied) => {
       if (end && typeof applied?.revision === 'number') awaited.current = applied.revision;
@@ -178,7 +203,7 @@ export function useNodeEdit(edited: EditedNode | null) {
     const params = patchOf(resolve(edits, now.current.committed, context.frame));
     busy.current = true;
     callEngine(context.bridge, 'transaction.apply', {
-      revision: context.revision, ops: [{ op: 'set_node', grade: context.target, id: context.node.id, params }],
+      revision: context.revision, ops: [...(context.before ?? []), { op: 'set_node', grade: context.target, id: context.node.id, params }],
     }).then((applied) => {
       if (typeof applied?.revision === 'number') awaited.current = applied.revision;
     }).catch((failure: unknown) => {
@@ -203,7 +228,10 @@ export function useNodeEdit(edited: EditedNode | null) {
       // A drag that has changed nothing yet sends nothing (up and down on a master wheel).
       if (values.every(([path, value]) => same(getAt(baseRef.current, path), value))) return;
       gestures += 1;
-      going = { id: `palette-${gestures}`, next: null, sending: false, started: false, ending: false, ended: false, failed: false, before: new Map() };
+      going = {
+        id: `palette-${gestures}`, next: null, sending: false, started: false, ending: false, ended: false, failed: false, before: new Map(),
+        made: false, cancelled: false,
+      };
       gesture.current = going;
     }
     if (going.failed) return;
@@ -245,6 +273,7 @@ export function useNodeEdit(edited: EditedNode | null) {
     if (going.failed || !going.started) { gesture.current = null; return; }
     going.next = [...going.before].map(([path, value]) => [path, { whole: value }] as const);
     going.ending = true;
+    going.cancelled = true;
     sendGesture();
   }, [sendGesture]);
 

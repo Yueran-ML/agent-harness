@@ -10,8 +10,8 @@
  */
 import type { Key } from '../../app/keys';
 import {
-  emptyGrade, type Clip, type Composite, type Corrector, type Grade, type GradeNode, type KeyInput, type Link, type LinkKind, type Op, type Target,
-  type Timeline,
+  emptyGrade, sortLinks, type Clip, type Composite, type Corrector, type Grade, type GradeNode, type KeyInput, type Link, type LinkKind, type NodePos, type Op,
+  type Target, type Timeline,
 } from '../engine';
 import type { GradeLevel } from './clips';
 
@@ -30,7 +30,7 @@ export type GradeChange = Op | GradeEdit;
  * Why the editor sends nothing: a refusal of its own, in the words of the engine's (`hint.studio.edit`),
  * where it knows the engine would refuse.
  */
-export interface Refused { refused: 'wrong_node' | 'missing' }
+export interface Refused { refused: 'wrong_node' | 'missing' | 'node_locked' }
 /** A command worked out: the changes of one transaction, or why there are none to send, or nothing to do. */
 export type Worked = GradeChange[] | Refused | null;
 export const isRefused = (worked: Worked): worked is Refused => worked !== null && !Array.isArray(worked);
@@ -88,9 +88,52 @@ export function addNode(how: AddHow, grade: Target, current: string | null): Wor
   }
 }
 
-/** A corrector that nothing is linked to (p. 3318: Add Node › Corrector in the background of the editor). */
-export function addLoose(grade: Target): GradeChange[] {
-  return [{ op: 'add_node', grade, node: { id: '', kind: 'corrector', label: '', enabled: true, params: newCorrector() } }];
+/** A corrector as the engine makes a new one, with its id: unlocked, where the editor lays it out, every setting at its default. */
+export function newCorrectorNode(id: string, pos: NodePos | null = null): GradeNode {
+  return { id, kind: 'corrector', label: '', enabled: true, locked: false, pos, params: newCorrector() };
+}
+
+/** A place as the editor keeps it: to a whole pixel, which is as near as a pointer puts a node. */
+const placeAt = (at: NodePos): NodePos => ({ x: Math.round(at.x), y: Math.round(at.y) });
+
+/**
+ * A corrector that nothing is linked to (p. 3318: Add Node › Corrector in the background of the
+ * editor), lying where the menu was opened, which the project keeps (PROTOCOL.md, "A grade").
+ */
+export function addLoose(grade: Target, at?: NodePos): GradeChange[] {
+  return [{ op: 'add_node', grade, node: newCorrectorNode('', at ? placeAt(at) : null) }];
+}
+
+/** Whether a node is locked (Lock Node, p. 3382): its settings are not changed. */
+export const isLocked = (node: GradeNode | undefined): boolean => node?.locked === true;
+
+/**
+ * Nodes dragged to new places (p. 3321): one `set_node` of `pos` each, in one transaction, so that a
+ * drag is one step to undo; the project keeps where nodes lie, for the colourist who comes back to
+ * the grade and for another (p. 3321). A node put where it is sends nothing.
+ */
+export function moveNodes(grade: Target, of: Grade, moved: Readonly<Record<string, NodePos>>): GradeChange[] {
+  return of.nodes.flatMap((node): GradeChange[] => {
+    const to = moved[node.id];
+    if (to === undefined) return [];
+    const at = placeAt(to);
+    return node.pos?.x === at.x && node.pos.y === at.y ? [] : [{ op: 'set_node', grade, id: node.id, pos: at }];
+  });
+}
+
+/**
+ * Cleanup Node Graph (p. 3321): every node of the grade where the editor lays it out, in one
+ * `set_grade`, so one step to undo; a grade whose nodes all lie so sends nothing.
+ */
+export function cleanupNodes(grade: Target, of: Grade): Worked {
+  if (!of.nodes.some(node => node.pos != null)) return null;
+  return [{ op: 'set_grade', grade, value: { nodes: of.nodes.map(node => ({ ...node, pos: null })), links: of.links } }];
+}
+
+/** Lock Node, or unlock it (the right-click menu of a node, p. 3382): its label, links and place stay its to change. */
+export function toggleLock(grade: Target, of: Grade, id: string): Worked {
+  const node = nodeOf(of, id);
+  return node ? [{ op: 'set_node', grade, id, locked: !isLocked(node) }] : null;
 }
 
 /** The id of the corrector that a transaction added, which becomes the current node. */
@@ -143,8 +186,16 @@ export type ResetHow = 'node' | 'keepNodes' | 'all';
  * default, the clip ungraded), so the grade becomes that one again.
  */
 export function reset(how: ResetHow, grade: Target, of: Grade, current: string | null): Worked {
-  if (how === 'node') return current === null ? null : [{ edit: 'reset_node', grade, node: current }];
-  if (how === 'keepNodes') return of.nodes.length === 0 ? null : of.nodes.map(node => ({ edit: 'reset_node', grade, node: node.id }));
+  if (how === 'node') {
+    if (current === null) return null;
+    return isLocked(nodeOf(of, current)) ? { refused: 'node_locked' } : [{ edit: 'reset_node', grade, node: current }];
+  }
+  // A locked node keeps its settings; the others are reset (p. 3382).
+  if (how === 'keepNodes') {
+    if (of.nodes.length === 0) return null;
+    const open = of.nodes.filter(node => !isLocked(node));
+    return open.length === 0 ? { refused: 'node_locked' } : open.map(node => ({ edit: 'reset_node', grade, node: node.id }));
+  }
   const empty = emptyGrade();
   if (of.nodes.length === 0 && JSON.stringify(of.links) === JSON.stringify(empty.links)) return null;
   return [{ op: 'set_grade', grade, value: empty }];
@@ -196,6 +247,7 @@ function oneMoreInput(node: GradeNode, kind: LinkKind): { count: number; params:
 /** Add One Input to a mixer (the right-click menu of a Parallel, Layer or Key Mixer). */
 export function addInput(grade: Target, of: Grade, id: string): Worked {
   const node = nodeOf(of, id);
+  if (isLocked(node)) return { refused: 'node_locked' };
   const more = node && oneMoreInput(node, node.kind === 'key_mixer' ? 'key' : 'rgb');
   return more ? [{ op: 'set_node', grade, id, params: more.params }] : null;
 }
@@ -203,6 +255,7 @@ export function addInput(grade: Target, of: Grade, id: string): Worked {
 /** A link dropped on a mixer, not on one of its inputs: the mixer takes one more input for it (pp. 3319, 3335). */
 export function linkIntoNewInput(grade: Target, of: Grade, id: string, from: string, kind: LinkKind): Worked {
   const node = nodeOf(of, id);
+  if (isLocked(node)) return { refused: 'node_locked' };
   const more = node && oneMoreInput(node, kind);
   if (!more) return null;
   return [{ op: 'set_node', grade, id, params: more.params }, ...connect(grade, { from, to: id, kind, input: more.count })];
@@ -212,9 +265,11 @@ export function linkIntoNewInput(grade: Target, of: Grade, id: string, from: str
 export function morph(grade: Target, of: Grade, id: string): Worked {
   const node = nodeOf(of, id);
   if (!node || (node.kind !== 'parallel_mixer' && node.kind !== 'layer_mixer')) return null;
+  if (isLocked(node)) return { refused: 'node_locked' };
+  const kept = { id: node.id, label: node.label, enabled: node.enabled, locked: false, pos: node.pos ?? null };
   const into: GradeNode = node.kind === 'parallel_mixer'
-    ? { id: node.id, label: node.label, enabled: node.enabled, kind: 'layer_mixer', params: { inputs: node.params.inputs, composite: 'normal' } }
-    : { id: node.id, label: node.label, enabled: node.enabled, kind: 'parallel_mixer', params: { inputs: node.params.inputs } };
+    ? { ...kept, kind: 'layer_mixer', params: { inputs: node.params.inputs, composite: 'normal' } }
+    : { ...kept, kind: 'parallel_mixer', params: { inputs: node.params.inputs } };
   return [{ op: 'set_grade', grade, value: { nodes: of.nodes.map(each => (each.id === id ? into : each)), links: of.links } }];
 }
 
@@ -222,12 +277,18 @@ export function morph(grade: Target, of: Grade, id: string): Worked {
 export function composite(grade: Target, of: Grade, id: string, mode: Composite): Worked {
   const node = nodeOf(of, id);
   if (!node || node.kind !== 'layer_mixer' || node.params.composite === mode) return null;
+  if (isLocked(node)) return { refused: 'node_locked' };
   return [{ op: 'set_node', grade, id, params: { composite: mode } }];
 }
 
-/** Copy one node's settings onto another's (Alt+drag, or Ctrl+C and Ctrl+V in the node editor, pp. 3286, 3320). */
-export function pasteNode(from: Target, fromNode: string, to: Target, toNode: string): Worked {
+/**
+ * Copy one node's settings onto another's (Alt+drag, or Ctrl+C and Ctrl+V in the node editor,
+ * pp. 3286, 3320); `onto`, the grade of the node pasted onto where the editor has it, tells a locked
+ * one, which the engine would refuse.
+ */
+export function pasteNode(from: Target, fromNode: string, to: Target, toNode: string, onto?: Grade): Worked {
   if (fromNode === toNode && JSON.stringify(from) === JSON.stringify(to)) return null;
+  if (onto && isLocked(nodeOf(onto, toNode))) return { refused: 'node_locked' };
   return [{ edit: 'paste_node', from, from_node: fromNode, to, to_node: toNode }];
 }
 
@@ -241,6 +302,7 @@ export function swapNodes(grade: Target, of: Grade, a: string, b: string): Worke
   const other = nodeOf(of, b);
   if (!one || !other || a === b) return null;
   if (one.kind !== 'corrector' || other.kind !== 'corrector') return { refused: 'wrong_node' };
+  if (isLocked(one) || isLocked(other)) return { refused: 'node_locked' };
   return [
     { op: 'set_node', grade, id: a, params: other.params as unknown as Record<string, unknown> },
     { op: 'set_node', grade, id: b, params: one.params as unknown as Record<string, unknown> },
@@ -384,3 +446,71 @@ export const COMPOSITES: readonly Composite[] = [
   'hardlight', 'hue', 'lighten', 'lighter_color', 'linear_burn', 'linear_dodge', 'linear_light', 'luminosity', 'multiply', 'overlay',
   'pin_light', 'saturation', 'screen', 'softlight', 'subtract', 'vivid_light',
 ];
+
+/**
+ * DaVinci's default node (Reference Manual 20, pp. 3309, 3312): a clip new to the Color page has one
+ * corrector, 01, ungraded, between the source and the output. The project's grade of a new clip has
+ * no node, which colours the picture as that one does; so the editor shows such a grade with a node
+ * 01 that is not in it, and the first change to that node makes it, in the transaction of the
+ * change: `add_serial` after the source, which the engine gives the id `n` and the project's
+ * `next_id` (it passes over only the ids that the grade holds, and it holds none), and then the
+ * change, which names that id. Undone, the grade has no node again.
+ */
+export interface DefaultNode {
+  /** The grade, without nodes, as the edits name it. */
+  target: Target;
+  /** The id that the engine will give the node. */
+  id: string;
+}
+
+/** The default node of a grade, where it has no node and its source goes to its output; null where it has nodes, or `next_id` is not known. */
+export function defaultNodeOf(grade: Grade | null, target: Target | null, nextId: number | undefined): DefaultNode | null {
+  if (grade === null || target === null || nextId === undefined || grade.nodes.length > 0) return null;
+  const empty = emptyGrade();
+  return JSON.stringify(sortLinks(grade.links)) === JSON.stringify(empty.links) ? { target, id: `n${nextId}` } : null;
+}
+
+/** A grade as the editor shows it: one without nodes with its default node `id` between the source and the output. */
+export function withDefaultNode(grade: Grade, id: string | null): Grade {
+  if (id === null || grade.nodes.length > 0) return grade;
+  return {
+    nodes: [newCorrectorNode(id)],
+    links: sortLinks([{ from: 'source', to: id, kind: 'rgb', input: 0 }, { from: id, to: 'output', kind: 'rgb', input: 0 }]),
+  };
+}
+
+/** The change that makes the default node of a grade: Add Serial after its source. */
+export const makeDefaultNode = (target: Target): GradeChange => ({ edit: 'add_serial', grade: target, node: 'source' });
+
+const sameTarget = (a: Target, b: Target) => JSON.stringify(a) === JSON.stringify(b);
+
+/** Whether a change is to the grade as the editor shows it with its default node: its nodes or links, or the node itself. */
+function onShown(change: GradeChange, shown: DefaultNode): boolean {
+  if ('op' in change) {
+    switch (change.op) {
+      case 'add_node': case 'remove_node': case 'connect': case 'disconnect': case 'set_node': return sameTarget(change.grade, shown.target);
+      default: return false;
+    }
+  }
+  switch (change.edit) {
+    case 'paste_node': return sameTarget(change.to, shown.target) || (sameTarget(change.from, shown.target) && change.from_node === shown.id);
+    case 'copy_grade': case 'append_node_graph': case 'collapse_group_grades': return false;
+    default: return sameTarget(change.grade, shown.target);
+  }
+}
+
+/**
+ * A command worked out on a grade shown with its default node (`withDefaultNode`), as the engine is
+ * to be asked for it: where it changes that grade's nodes or links, the default node is made first,
+ * in the same transaction; taking the default node away, or resetting it, changes nothing, as it is
+ * a node of no settings that the grade does not have yet. A whole grade put in place (Reset All
+ * Grades and Nodes, Original Memory, a copied grade) is sent as it is.
+ */
+export function onDefaultNode(worked: Worked, shown: DefaultNode | null): Worked {
+  if (shown === null || worked === null || isRefused(worked)) return worked;
+  const own = (change: GradeChange) => ('op' in change && change.op === 'remove_node' && sameTarget(change.grade, shown.target) && change.id === shown.id)
+    || ('edit' in change && change.edit === 'reset_node' && sameTarget(change.grade, shown.target) && change.node === shown.id);
+  const kept = worked.filter(change => !own(change));
+  if (kept.length === 0) return null;
+  return kept.some(change => onShown(change, shown)) ? [makeDefaultNode(shown.target), ...kept] : kept;
+}

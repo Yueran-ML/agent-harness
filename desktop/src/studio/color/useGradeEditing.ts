@@ -10,7 +10,7 @@ import { useWords } from '../../app/locale';
 import type { EngineBridge } from '../../bridge';
 import { callEngine, type Applied } from '../engine';
 import { refusalText } from '../inspector/refusal';
-import { isRefused, type Worked } from './nodeEdits';
+import { isRefused, onDefaultNode, type DefaultNode, type Worked } from './nodeEdits';
 
 export type HistoryMethod = 'history.undo' | 'history.redo';
 
@@ -18,8 +18,10 @@ export interface GradeEditing {
   /**
    * Send a command worked out by `nodeEdits`: its changes as one transaction, then `then` with
    * what the engine did; or, where the editor refused it itself, say why. Nothing to do sends nothing.
+   * Where the grade shown has no node and is shown with its default node 01, the changes to it make
+   * that node first (`onDefaultNode`). `failed` is told where nothing was done.
    */
-  run: (worked: Worked, then?: (applied: Applied) => void) => void;
+  run: (worked: Worked, then?: (applied: Applied) => void, failed?: () => void) => void;
   /** Undo or redo in the one history of the engine (Ctrl+Z, Ctrl+Shift+Z). */
   step: (method: HistoryMethod) => void;
   /** Why the last change was not made, or null. */
@@ -27,25 +29,29 @@ export interface GradeEditing {
   setProblem: (problem: string | null) => void;
 }
 
-export function useGradeEditing({ bridge, revision, session }: {
+export function useGradeEditing({ bridge, revision, session, defaultNode = null }: {
   bridge: Pick<EngineBridge, 'call'>;
   revision: number;
   session: number;
+  /** The default node that the grade shown is shown with, where it has no node (`defaultNodeOf`). */
+  defaultNode?: DefaultNode | null;
 }): GradeEditing {
   const words = useWords().hint.studio;
   const [problem, setProblem] = useState<string | null>(null);
-  const now = useRef({ bridge, revision, session, words });
-  now.current = { bridge, revision, session, words };
+  const now = useRef({ bridge, revision, session, words, defaultNode });
+  now.current = { bridge, revision, session, words, defaultNode };
   const busy = useRef(false);
   const queued = useRef<HistoryMethod[]>([]);
   const live = useRef(true);
   useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
   useEffect(() => { setProblem(null); queued.current = []; }, [session]);
 
-  const send = useCallback(async (method: 'transaction.apply' | HistoryMethod, params?: Record<string, unknown>, then?: (applied: Applied) => void) => {
+  const send = useCallback(async (method: 'transaction.apply' | HistoryMethod, params?: Record<string, unknown>, then?: (applied: Applied) => void,
+    failed?: () => void) => {
     if (busy.current) {
       if (method !== 'transaction.apply') queued.current.push(method);
       else if (live.current) setProblem(now.current.words.edit.pending);
+      failed?.();
       return;
     }
     const asked = now.current;
@@ -56,6 +62,7 @@ export function useGradeEditing({ bridge, revision, session }: {
       if (then && live.current && asked.session === now.current.session) then(answer as Applied);
     } catch (error) {
       queued.current = [];
+      failed?.();
       if (live.current && asked.session === now.current.session) setProblem(refusalText(error, now.current.words));
     } finally {
       busy.current = false;
@@ -64,11 +71,11 @@ export function useGradeEditing({ bridge, revision, session }: {
     if (next && live.current && asked.session === now.current.session) void send(next);
   }, []);
 
-  const run = useCallback((worked: Worked, then?: (applied: Applied) => void) => {
-    if (worked === null) return;
-    if (isRefused(worked)) { setProblem(now.current.words.edit[worked.refused]); return; }
-    if (worked.length === 0) return;
-    void send('transaction.apply', { revision: now.current.revision, ops: worked }, then);
+  const run = useCallback((asked: Worked, then?: (applied: Applied) => void, failed?: () => void) => {
+    const worked = onDefaultNode(asked, now.current.defaultNode);
+    if (worked === null || (!isRefused(worked) && worked.length === 0)) { failed?.(); return; }
+    if (isRefused(worked)) { setProblem(now.current.words.edit[worked.refused]); failed?.(); return; }
+    void send('transaction.apply', { revision: now.current.revision, ops: worked }, then, failed);
   }, [send]);
   const step = useCallback((method: HistoryMethod) => { void send(method); }, [send]);
   return { run, step, problem, setProblem };

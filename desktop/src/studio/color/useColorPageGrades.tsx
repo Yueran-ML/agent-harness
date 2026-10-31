@@ -10,17 +10,24 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as R
 import { keyOf } from '../../app/keys';
 import { useWords } from '../../app/locale';
 import type { EngineBridge } from '../../bridge';
-import type { Clip, Target, Timeline } from '../engine';
+import type { Clip, Grade, Target, Timeline } from '../engine';
 import { editingAllowed, inStudio } from '../keys';
 import { ColorMenu, type Menu } from './ColorMenu';
 import { NodeViews } from './NodeEditor';
 import type { GradeLevel } from './clips';
-import { applyPrior, collapseGroups, pageKey, pasteGrade, targetOf } from './nodeEdits';
+import { applyPrior, collapseGroups, defaultNodeOf, pageKey, pasteGrade, targetOf, withDefaultNode, type DefaultNode } from './nodeEdits';
 import { useGradeEditing, type GradeEditing } from './useGradeEditing';
 
 export interface ColorPageGrades {
   /** The grade that the node editor shows, as the engine names it; null where there is none. */
   target: Target | null;
+  /**
+   * The default node 01 that the grade is shown with where it has no node (pp. 3309, 3312), which the
+   * first change to it makes (`onDefaultNode`); null where it has nodes.
+   */
+  defaultNode: DefaultNode | null;
+  /** The grade as the node editor and the palettes show it: with its default node where it has none. */
+  shown: Grade | null;
   editing: GradeEditing;
   views: NodeViews;
   /** The right-click of a thumbnail. */
@@ -29,7 +36,7 @@ export interface ColorPageGrades {
   menu: ReactNode;
 }
 
-export function useColorPageGrades({ bridge, revision, session, area, level, timeline, clips, current, chosen }: {
+export function useColorPageGrades({ bridge, revision, session, area, level, timeline, clips, current, chosen, grade = null, nextId }: {
   bridge: Pick<EngineBridge, 'call'>;
   revision: number;
   session: number;
@@ -43,9 +50,18 @@ export function useColorPageGrades({ bridge, revision, session, area, level, tim
   current: Clip | null;
   /** The clips chosen in the thumbnail timeline. */
   chosen: ReadonlySet<string>;
+  /** The grade of the level shown, as the project has it. */
+  grade?: Grade | null;
+  /** The project's `next_id`, which names the default node that a grade without nodes is shown with. */
+  nextId?: number;
 }): ColorPageGrades {
   const labels = useWords().label.studio.colorPage.nodeMenu;
-  const editing = useGradeEditing({ bridge, revision, session });
+  const target = targetOf(level, timeline, current);
+  const stable = useMemo(() => target, [JSON.stringify(target)]);
+  const found = defaultNodeOf(grade, stable, nextId);
+  const defaultNode = useMemo(() => found, [JSON.stringify(found)]);
+  const shown = useMemo(() => (grade === null ? null : withDefaultNode(grade, defaultNode?.id ?? null)), [grade, defaultNode]);
+  const editing = useGradeEditing({ bridge, revision, session, defaultNode });
   const views = useMemo(() => new NodeViews(), [session]);
   const copied = useRef<Target | null>(null);
   const [menu, setMenu] = useState<Menu | null>(null);
@@ -100,7 +116,5 @@ export function useColorPageGrades({ bridge, revision, session, area, level, tim
   }, [labels]);
 
   const close = useCallback(() => setMenu(null), []);
-  const target = targetOf(level, timeline, current);
-  const stable = useMemo(() => target, [JSON.stringify(target)]);
-  return { target: stable, editing, views, onThumbnailMenu, menu: menu && <ColorMenu menu={menu} onClose={close} /> };
+  return { target: stable, defaultNode, shown, editing, views, onThumbnailMenu, menu: menu && <ColorMenu menu={menu} onClose={close} /> };
 }

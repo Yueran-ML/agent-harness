@@ -234,7 +234,12 @@ export function keptOverride(media: Pick<Media, 'color_override'>): ColorOverrid
 
 /** How the value of a parameter goes from a key to the next: on a line, held, or along a curve. */
 export type Interp = 'linear' | 'hold' | { bezier: { out: [number, number]; in: [number, number] } };
-/** A keyframe: frames count the frames of the clip from 0 (of the timeline, for its grade). */
+/**
+ * A keyframe. Of a clip's grade (and its group's, as they apply to it): a frame of the clip's media
+ * at the media's own rate, the number of the picture shown (of a title, a colour or a still, a frame
+ * of the clip from 0); of a timeline's grade, a frame of the timeline. See the "Frames of keys" of
+ * engine/PROTOCOL.md.
+ */
 export interface Keyframe { frame: number; value: number; interp: Interp }
 /** A setting of a node: one value, or keyframes in the order of their frames, one at least. */
 export type Param = number | { keys: Keyframe[] };
@@ -277,11 +282,15 @@ export type Composite =
 export interface ParallelMixer { inputs: number }
 export interface LayerMixer { inputs: number; composite: Composite }
 export interface KeyMixer { inputs: KeyInput[]; output: KeyOutput }
+/** Where a node lies in the node editor: the top left corner of its card, a pixel at zoom 1 (PROTOCOL.md, "A grade"). */
+export interface NodePos { x: number; y: number }
 /**
  * A node of a grade (named so as not to hide the DOM's `Node`). Its id is unique within its grade
- * only, and never `source` or `output`; its `params` are those of its kind.
+ * only, and never `source` or `output`; its `params` are those of its kind. The engine always
+ * writes `locked` (Lock Node, p. 3382) and `pos` (`null` where the editor lays it out), and reads
+ * them as `false` and `null` where they are left out, as they are here.
  */
-export type GradeNode = { id: string; label: string; enabled: boolean } & (
+export type GradeNode = { id: string; label: string; enabled: boolean; locked?: boolean; pos?: NodePos | null } & (
   | { kind: 'corrector'; params: Corrector }
   | { kind: 'parallel_mixer'; params: ParallelMixer }
   | { kind: 'layer_mixer'; params: LayerMixer }
@@ -366,7 +375,7 @@ export type Op =
   | { op: 'connect'; grade: Target; link: Link }
   | { op: 'disconnect'; grade: Target; to: string; kind: LinkKind; input: number }
   /** `params` is a patch: each object is merged into the object of that name, any other value (null too) takes its place. */
-  | { op: 'set_node'; grade: Target; id: string; label?: string | null; enabled?: boolean | null; params?: Record<string, unknown> | null }
+  | { op: 'set_node'; grade: Target; id: string; label?: string | null; enabled?: boolean | null; locked?: boolean | null; pos?: NodePos | null; params?: Record<string, unknown> | null }
   | { op: 'set_grade'; grade: Target; value: Grade }
   | { op: 'add_group'; group: Group; index?: number | null }
   | { op: 'remove_group'; id: string }
@@ -977,7 +986,8 @@ export function mergePatch(base: unknown, patch: unknown): unknown {
 }
 
 function setNode(node: GradeNode, op: Extract<Op, { op: 'set_node' }>): GradeNode {
-  const changed = patched(node, op, ['label', 'enabled']);
+  // `pos: null` puts a node back where the editor lays it out; left out, it stays.
+  const changed = patched(node, op, ['label', 'enabled', 'locked', 'pos'], ['pos']);
   return op.params == null ? changed : { ...changed, params: mergePatch(changed.params, op.params) } as GradeNode;
 }
 

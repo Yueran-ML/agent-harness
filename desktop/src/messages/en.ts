@@ -873,7 +873,7 @@ export const en = {
           addInput: 'Add One Input', toLayer: 'Morph Into Layer Mixer Node', toParallel: 'Morph Into Parallel Node', composite: 'Composite Mode',
           deleteLink: 'Delete Link', resetAll: 'Reset All Grades and Nodes', cleanup: 'Cleanup Node Graph',
           zoomIn: 'Zoom In', zoomOut: 'Zoom Out', zoomToWindow: 'Zoom to Window', originalSize: 'Original Size', collapse: 'Collapse Group Grades',
-          revealLut: 'Reveal Selected LUT',
+          revealLut: 'Reveal Selected LUT', lock: 'Lock Node',
         },
         /** The composite modes of a Layer Mixer, as DaVinci Resolve names them (pp. 1055–1058). */
         composites: {
@@ -883,7 +883,7 @@ export const en = {
           multiply: 'Multiply', overlay: 'Overlay', pin_light: 'Pin Light', saturation: 'Saturation', screen: 'Screen', softlight: 'Softlight',
           subtract: 'Subtract', vivid_light: 'Vivid Light',
         },
-        disabled: 'Disabled', matched: 'Shot matched', graded: 'Graded', grouped: 'Group', solidColor: 'Solid color', title: 'Title',
+        disabled: 'Disabled', locked: 'Locked', matched: 'Shot matched', graded: 'Graded', grouped: 'Group', solidColor: 'Solid color', title: 'Title',
         palettes: 'Palettes', leftPalettes: 'Left palettes', centerPalettes: 'Center palettes', rightPanel: 'Keyframes and scopes',
         palette: {
           primaries: 'Primaries', curves: 'Curves', qualifier: 'Qualifier', window: 'Window', tracker: 'Tracker', blur: 'Blur', key: 'Key',
@@ -1547,6 +1547,7 @@ export const en = {
         params: "These settings do not fit this kind of node.",
         wrong_node: "This cannot be done with the chosen node.",
         camera_raw: "The color space of camera raw media comes from its camera and cannot be set.",
+        node_locked: "This node is locked. Unlock it to change its settings.",
         unknown_space: "That color space or transform is not one that the engine knows.",
         inapplicable: "This setting does not apply to the current color management.",
         color_settings: "These color settings could not be read.",

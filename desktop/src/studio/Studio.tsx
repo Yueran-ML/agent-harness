@@ -348,6 +348,7 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
       timelines={timelines}
       groups={project?.groups ?? NO_GROUPS}
       color={project?.color}
+      nextId={project?.next_id}
       selected={selected}
       onSelect={setChosenTimeline}
       timelineMonitor={timelineMonitor}

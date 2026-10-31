@@ -385,6 +385,7 @@ fn media(id: &str, path: &str) -> Value {
             "audio": { "rate": 48000, "channels": 2, "codec": "aac" },
         },
         "name": "a.mp4", "bin": null, "mark_in": null, "mark_out": null,
+        "color_override": { "input": null, "levels": "auto" },
     })
 }
 

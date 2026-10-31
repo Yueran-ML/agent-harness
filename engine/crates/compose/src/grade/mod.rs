@@ -151,6 +151,8 @@ use std::sync::Arc;
 use columbina_model::grade::Grade;
 
 use crate::{ColorOp, Stage};
+/// The cache and the folders that [`CardLuts`] reads LUTs by, from the LUT crate.
+pub use columbina_lut::{LutCache, Roots};
 use graph::Plan;
 pub use luts::CardLuts;
 use maths::Constants;
@@ -240,28 +242,81 @@ pub fn grade_ops(
     options: &GradeOptions,
     luts: &dyn Luts,
 ) -> Vec<ColorOp> {
-    let Some(plan) = Plan::of(grade, luts) else {
-        return Vec::new();
-    };
-    let mut ops = Vec::new();
-    let mut textures = Vec::with_capacity(plan.textures);
-    for lut in plan.luts() {
-        textures.extend(lut.op.textures.iter().cloned());
-        let shared = ops.iter().any(|op: &ColorOp| op.library == lut.op.library);
-        if !lut.op.library.is_empty() && !shared {
+    Prepared::new(grade, options, luts).ops_at(frame).collect()
+}
+
+/// A grade made ready for its frames: the code of its operations (its graph, its LUTs and the
+/// library of `options`) made once, so that each frame takes only its parameters
+/// ([`Prepared::ops_at`]), as [`grade_ops`] would give them. It keeps the grade it was made of
+/// ([`Prepared::grade`]), to be made again once the grade is another, or its LUTs are.
+#[derive(Clone, Debug)]
+pub struct Prepared {
+    grade: Grade,
+    luma: [f64; 3],
+    plan: Option<Plan>,
+    /// The operations of the libraries of its LUTs, and last that of the grade, its parameters
+    /// left empty; none where it changes nothing.
+    ops: Vec<ColorOp>,
+}
+
+impl Prepared {
+    /// `grade` made ready, in the space of `options`, with the LUTs that `luts` has.
+    #[must_use]
+    pub fn new(grade: &Grade, options: &GradeOptions, luts: &dyn Luts) -> Prepared {
+        let plan = Plan::of(grade, luts);
+        let mut ops = Vec::new();
+        if let Some(plan) = &plan {
+            let mut textures = Vec::with_capacity(plan.textures);
+            for lut in plan.luts() {
+                textures.extend(lut.op.textures.iter().cloned());
+                let shared = ops.iter().any(|op: &ColorOp| op.library == lut.op.library);
+                if !lut.op.library.is_empty() && !shared {
+                    ops.push(ColorOp {
+                        library: Arc::clone(&lut.op.library),
+                        ..ColorOp::default()
+                    });
+                }
+            }
             ops.push(ColorOp {
-                library: Arc::clone(&lut.op.library),
-                ..ColorOp::default()
+                body: plan.body().into(),
+                library: library(options).into(),
+                params: Vec::new(),
+                textures,
             });
         }
+        Prepared {
+            grade: grade.clone(),
+            luma: options.luma64(),
+            plan,
+            ops,
+        }
     }
-    ops.push(ColorOp {
-        body: plan.body().into(),
-        library: library(options).into(),
-        params: plan.params(grade, frame, options.luma64()),
-        textures,
-    });
-    ops
+
+    /// The grade that it was made of.
+    #[must_use]
+    pub fn grade(&self) -> &Grade {
+        &self.grade
+    }
+
+    /// Whether it changes nothing (a grade of no nodes, or not complete): it has no operations.
+    #[must_use]
+    pub fn is_identity(&self) -> bool {
+        self.ops.is_empty()
+    }
+
+    /// Its operations at `frame`: the code as it was made, and the parameters of the frame.
+    pub fn ops_at(&self, frame: f64) -> impl Iterator<Item = ColorOp> + '_ {
+        let last = self.ops.len().saturating_sub(1);
+        self.ops.iter().enumerate().map(move |(i, op)| {
+            let mut op = op.clone();
+            if i == last {
+                if let Some(plan) = &self.plan {
+                    op.params = plan.params(&self.grade, frame, self.luma);
+                }
+            }
+            op
+        })
+    }
 }
 
 /// The stage of `grade` at `frame` (see [`grade_ops`]).

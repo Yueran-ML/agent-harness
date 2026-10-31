@@ -2290,3 +2290,357 @@ fn collapse_group_grades_puts_the_clip_s_nodes_right_of_the_pre_clip_ones() {
     assert_eq!(g.nodes[1].pos, Some(at(250.0, 28.0)));
     assert_eq!(g.nodes[2].pos, None);
 }
+
+fn corrector_of(project: &Project, node: usize) -> columbina_model::Corrector {
+    grade(project, &c1()).nodes[node]
+        .as_corrector()
+        .unwrap()
+        .clone()
+}
+
+#[test]
+fn a_qualifier_is_set_whole_patched_keyframed_and_taken_away_by_set_node() {
+    use columbina_model::grade::{Morph, Qualifier, QualifierMode};
+    let mut project = serial();
+    assert_eq!(corrector_of(&project, 0).qualifier, None);
+    let node = serde_json::to_value(&grade(&project, &c1()).nodes[0]).unwrap();
+    assert_eq!(node["params"]["qualifier"], serde_json::Value::Null);
+    // As it is first: every pixel, written in full.
+    let first = serde_json::to_value(Qualifier::default()).unwrap();
+    assert_eq!(
+        first,
+        json!({
+            "mode": "hsl", "invert": false,
+            "hue": {"on": true, "center": 50.0, "width": 100.0, "soft": 0.0, "symmetry": 50.0},
+            "sat": {"on": true, "low": 0.0, "high": 100.0, "low_soft": 0.0, "high_soft": 0.0},
+            "lum": {"on": true, "low": 0.0, "high": 100.0, "low_soft": 0.0, "high_soft": 0.0},
+            "red": {"on": true, "low": 0.0, "high": 100.0, "low_soft": 0.0, "high_soft": 0.0},
+            "green": {"on": true, "low": 0.0, "high": 100.0, "low_soft": 0.0, "high_soft": 0.0},
+            "blue": {"on": true, "low": 0.0, "high": 100.0, "low_soft": 0.0, "high_soft": 0.0},
+            "finesse": {
+                "pre_filter": 0.0, "clean_black": 0.0, "black_clip": 0.0, "clean_white": 0.0,
+                "white_clip": 100.0, "blur_radius": 0.0, "in_out_ratio": 0.0,
+                "morph": "shrink", "morph_radius": 0.0,
+            },
+        })
+    );
+    let mut whole = first.clone();
+    whole["hue"]["center"] = json!(8.5);
+    whole["hue"]["width"] = json!(12);
+    whole["finesse"]["blur_radius"] = json!(40);
+    let (done, inverse) = applied(&mut project, set_params(json!({ "qualifier": whole })));
+    assert_eq!(inverse, set_params(json!({"qualifier": null})));
+    let Op::SetNode {
+        params: Some(done), ..
+    } = done
+    else {
+        unreachable!()
+    };
+    assert_eq!(done["qualifier"]["hue"]["center"], 8.5);
+    let set = corrector_of(&project, 0).qualifier.unwrap();
+    assert_eq!(set.mode, QualifierMode::Hsl);
+    assert_eq!(set.hue.width, Param::Fixed(12.0));
+    assert_eq!(set.finesse.blur_radius, Param::Fixed(40.0));
+    // In part where it is there: a mode, a toggle, a morph and a keyframed range.
+    let keyed = json!({"keys": [
+        {"frame": 0, "value": 20, "interp": "linear"},
+        {"frame": 24, "value": 35, "interp": "hold"},
+    ]});
+    let (_, inverse) = applied(
+        &mut project,
+        set_params(json!({"qualifier": {
+            "mode": "lum", "invert": true, "sat": {"on": false},
+            "lum": {"low": keyed.clone()},
+            "finesse": {"morph": "closing", "morph_radius": 3},
+        }})),
+    );
+    assert_eq!(
+        inverse,
+        set_params(json!({"qualifier": {
+            "mode": "hsl", "invert": false, "sat": {"on": true},
+            "lum": {"low": 0.0},
+            "finesse": {"morph": "shrink", "morph_radius": 0.0},
+        }}))
+    );
+    let set = corrector_of(&project, 0).qualifier.unwrap();
+    assert_eq!(set.mode, QualifierMode::Lum);
+    assert!(set.invert && !set.sat.on);
+    assert_eq!(set.finesse.morph, Morph::Closing);
+    assert!(set.lum.low.is_animated());
+    assert!(grade(&project, &c1()).has_keys());
+    // Reset with the node.
+    edited(
+        &mut project,
+        Edit::ResetNode {
+            grade: c1(),
+            node: "n3".into(),
+        },
+    );
+    assert_eq!(corrector_of(&project, 0).qualifier, None);
+}
+
+#[test]
+fn a_qualifier_is_refused_in_part_where_there_is_none_and_out_of_its_bounds() {
+    use columbina_model::grade::Qualifier;
+    let project = serial();
+    assert!(matches!(
+        refused(
+            &project,
+            set_params(json!({"qualifier": {"hue": {"center": 10}}}))
+        ),
+        OpError::Params { .. }
+    ));
+    let whole = serde_json::to_value(Qualifier::default()).unwrap();
+    for (path, value, what) in [
+        ("hue.center", json!(101), "qualifier.hue.center"),
+        ("hue.width", json!(-1), "qualifier.hue.width"),
+        ("hue.soft", json!(100.5), "qualifier.hue.soft"),
+        ("hue.symmetry", json!(-0.1), "qualifier.hue.symmetry"),
+        ("sat.low", json!(-2), "qualifier.sat.low"),
+        ("lum.high", json!(120), "qualifier.lum.high"),
+        ("red.low_soft", json!(101), "qualifier.red.low_soft"),
+        ("green.high_soft", json!(-1), "qualifier.green.high_soft"),
+        ("blue.high", json!(100.01), "qualifier.blue.high"),
+        (
+            "finesse.pre_filter",
+            json!(101),
+            "qualifier.finesse.pre_filter",
+        ),
+        (
+            "finesse.clean_black",
+            json!(-1),
+            "qualifier.finesse.clean_black",
+        ),
+        (
+            "finesse.black_clip",
+            json!(101),
+            "qualifier.finesse.black_clip",
+        ),
+        (
+            "finesse.clean_white",
+            json!(101),
+            "qualifier.finesse.clean_white",
+        ),
+        (
+            "finesse.white_clip",
+            json!(-5),
+            "qualifier.finesse.white_clip",
+        ),
+        (
+            "finesse.blur_radius",
+            json!(2001),
+            "qualifier.finesse.blur_radius",
+        ),
+        (
+            "finesse.in_out_ratio",
+            json!(-101),
+            "qualifier.finesse.in_out_ratio",
+        ),
+        (
+            "finesse.morph_radius",
+            json!(101),
+            "qualifier.finesse.morph_radius",
+        ),
+    ] {
+        let mut bad = whole.clone();
+        let (group, name) = path.split_once('.').unwrap();
+        bad[group][name] = value;
+        assert_eq!(
+            refused(&project, set_params(json!({ "qualifier": bad }))),
+            OpError::OutOfRange { what },
+            "{path}"
+        );
+    }
+    for (path, value) in [
+        ("mode", json!("3d")),
+        ("finesse", json!({"morph": "erode"})),
+        ("hue", json!({"on": 1})),
+    ] {
+        let mut bad = whole.clone();
+        bad[path] = value;
+        assert!(
+            matches!(
+                refused(&project, set_params(json!({ "qualifier": bad }))),
+                OpError::Params { .. }
+            ),
+            "{path}"
+        );
+    }
+    let mut bogus = whole;
+    bogus["denoise"] = json!(1);
+    assert!(matches!(
+        refused(&project, set_params(json!({ "qualifier": bogus }))),
+        OpError::Params { .. }
+    ));
+}
+
+#[test]
+fn the_key_palette_sets_the_key_of_the_qualifier_and_the_blur_of_the_key_coming_in() {
+    let mut project = serial();
+    let key = corrector_of(&project, 0).key;
+    assert!(key.qualifier.matte && !key.qualifier.invert);
+    assert_eq!(key.qualifier.gain, Param::Fixed(1.0));
+    assert_eq!(key.qualifier.offset, Param::Fixed(0.0));
+    assert_eq!(key.input_blur.radius, Param::Fixed(0.0));
+    assert_eq!(key.input_blur.ratio, Param::Fixed(0.5));
+    let written = serde_json::to_value(&key).unwrap();
+    assert_eq!(
+        written["qualifier"],
+        json!({"invert": false, "matte": true, "gain": 1.0, "offset": 0.0})
+    );
+    assert_eq!(written["input_blur"], json!({"radius": 0.0, "ratio": 0.5}));
+    let (_, inverse) = applied(
+        &mut project,
+        set_params(json!({"key": {
+            "qualifier": {"invert": true, "matte": false, "gain": 0.5, "offset": 0.2},
+            "input_blur": {"radius": 120, "ratio": 0.8},
+        }})),
+    );
+    assert_eq!(
+        inverse,
+        set_params(json!({"key": {
+            "qualifier": {"invert": false, "matte": true, "gain": 1.0, "offset": 0.0},
+            "input_blur": {"radius": 0.0, "ratio": 0.5},
+        }}))
+    );
+    for (patch, what) in [
+        (json!({"qualifier": {"gain": 2.5}}), "key.qualifier.gain"),
+        (
+            json!({"qualifier": {"offset": -1.5}}),
+            "key.qualifier.offset",
+        ),
+        (
+            json!({"input_blur": {"radius": 2500}}),
+            "key.input_blur.radius",
+        ),
+        (
+            json!({"input_blur": {"ratio": 1.5}}),
+            "key.input_blur.ratio",
+        ),
+    ] {
+        assert_eq!(
+            refused(&project, set_params(json!({ "key": patch }))),
+            OpError::OutOfRange { what }
+        );
+    }
+}
+
+#[test]
+fn a_corrector_written_before_qualifiers_is_read_without_one_and_with_its_key_as_at_first() {
+    let node = Node::corrector("n1");
+    let mut written = node.kind.params();
+    let params = written.as_object_mut().unwrap();
+    params.remove("qualifier");
+    let key = params["key"].as_object_mut().unwrap();
+    key.remove("qualifier");
+    key.remove("input_blur");
+    let read = NodeKind::from_params(Kind::Corrector, written).unwrap();
+    assert_eq!(read, node.kind);
+}
+
+#[test]
+fn add_outside_puts_a_corrector_after_the_chosen_one_on_its_picture_and_its_key_inverted() {
+    let mut project = serial();
+    let done = edited(
+        &mut project,
+        Edit::AddOutside {
+            grade: c1(),
+            node: "n3".into(),
+        },
+    );
+    assert_eq!(done.len(), 1);
+    // After n3, numbered last (p. 3318), on the picture and the key of n3 (p. 3342).
+    assert_eq!(ids(&project), ["n3", "n4", "n5"]);
+    let g = grade(&project, &c1());
+    assert_eq!(
+        g.links,
+        vec![
+            rgb("source", "n3", 0),
+            rgb("n5", "n4", 0),
+            rgb("n3", "n5", 0),
+            key("n3", "n5", 0),
+            rgb("n4", "output", 0)
+        ]
+    );
+    assert!(g.is_complete());
+    let outside = corrector_of(&project, 2);
+    assert!(outside.key.input.invert, "Key Input Invert is on (p. 3341)");
+    let mut plain = columbina_model::Corrector::default();
+    plain.key.input.invert = true;
+    assert_eq!(outside, plain);
+    // At the end of the tree: it takes the output.
+    edited(
+        &mut project,
+        Edit::AddOutside {
+            grade: c1(),
+            node: "n4".into(),
+        },
+    );
+    let g = grade(&project, &c1());
+    assert_eq!(
+        g.link_into("output", Port::Rgb, 0),
+        Some(&rgb("n6", "output", 0))
+    );
+    assert_eq!(g.link_into("n6", Port::Key, 0), Some(&key("n4", "n6", 0)));
+    // Only after a corrector, which has a key to give.
+    for (node, kind) in [("source", "source"), ("output", "output")] {
+        assert_eq!(
+            refused_edit(
+                &project,
+                Edit::AddOutside {
+                    grade: c1(),
+                    node: node.into(),
+                },
+            ),
+            EditError::Op(OpError::WrongNode {
+                node: node.into(),
+                kind,
+            })
+        );
+    }
+    assert!(matches!(
+        refused_edit(
+            &project,
+            Edit::AddOutside {
+                grade: c1(),
+                node: "n9".into(),
+            },
+        ),
+        EditError::Op(OpError::Missing { what: "node", .. })
+    ));
+    let mut beside = serial();
+    edited(
+        &mut beside,
+        Edit::AddParallel {
+            grade: c1(),
+            node: "n3".into(),
+        },
+    );
+    let mixer = grade(&beside, &c1())
+        .nodes
+        .iter()
+        .find(|n| n.kind.kind() == Kind::ParallelMixer)
+        .unwrap()
+        .id
+        .clone();
+    assert_eq!(
+        refused_edit(
+            &beside,
+            Edit::AddOutside {
+                grade: c1(),
+                node: mixer.clone(),
+            },
+        ),
+        EditError::Op(OpError::WrongNode {
+            node: mixer,
+            kind: "parallel_mixer",
+        })
+    );
+    let written = serde_json::to_value(Edit::AddOutside {
+        grade: c1(),
+        node: "n3".into(),
+    })
+    .unwrap();
+    assert_eq!(written["edit"], "add_outside");
+    assert_eq!(written["node"], "n3");
+}

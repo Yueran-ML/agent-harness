@@ -363,6 +363,7 @@ fn visit_edit<E>(
         | Edit::AddSerialBefore { grade, node }
         | Edit::AddParallel { grade, node }
         | Edit::AddLayer { grade, node }
+        | Edit::AddOutside { grade, node }
         | Edit::ExtractNode { grade, node }
         | Edit::ResetNode { grade, node } => {
             visit_target(grade, f)?;

@@ -651,6 +651,32 @@ fn set_shot_match(value: serde_json::Value) -> Op {
     }
 }
 
+/// Set n9, the node of `first_node`, by `params`.
+fn set_n9(params: serde_json::Value) -> Op {
+    Op::SetNode {
+        grade: c1(),
+        id: "n9".into(),
+        label: None,
+        enabled: None,
+        locked: None,
+        pos: None,
+        params: Some(params),
+    }
+}
+
+/// A qualifier, whole: the oranges of a picture, its edge blurred.
+fn qualifier() -> serde_json::Value {
+    let mut whole = serde_json::to_value(columbina_model::Qualifier::default()).unwrap();
+    whole["hue"]["center"] = 8.0.into();
+    whole["hue"]["width"] = 10.0.into();
+    whole["hue"]["soft"] = 4.0.into();
+    whole["sat"]["low"] = 30.0.into();
+    whole["sat"]["low_soft"] = 10.0.into();
+    whole["finesse"]["clean_black"] = 20.0.into();
+    whole["finesse"]["blur_radius"] = 30.0.into();
+    whole
+}
+
 /// Lock n9, the node of `first_node`, where it lies at (120, 30).
 fn lock_n9() -> Op {
     Op::SetNode {
@@ -818,6 +844,67 @@ fn grade_examples() -> Vec<(&'static str, Vec<Op>, Op)> {
             "set_node taking a shot match away",
             vec![first_node(), set_shot_match(shot_match())],
             set_shot_match(serde_json::Value::Null),
+        ),
+        (
+            "set_node with a qualifier, given whole",
+            vec![first_node()],
+            set_n9(serde_json::json!({ "qualifier": qualifier() })),
+        ),
+        (
+            "set_node of a part of a qualifier, a range keyframed",
+            vec![
+                first_node(),
+                set_n9(serde_json::json!({ "qualifier": qualifier() })),
+            ],
+            set_n9(serde_json::json!({"qualifier": {
+                "mode": "lum",
+                "lum": {"high": {"keys": [
+                    {"frame": 0, "value": 60, "interp": "linear"},
+                    {"frame": 12, "value": 80, "interp": "linear"},
+                ]}},
+                "finesse": {"morph": "grow", "morph_radius": 2},
+            }})),
+        ),
+        (
+            "set_node taking a qualifier away",
+            vec![
+                first_node(),
+                set_n9(serde_json::json!({ "qualifier": qualifier() })),
+            ],
+            set_n9(serde_json::json!({ "qualifier": null })),
+        ),
+        (
+            "add_node of an Outside node, as add_outside adds it after n9",
+            vec![first_node()],
+            Op::AddNode {
+                grade: c1(),
+                node: {
+                    let mut outside = Node::corrector("");
+                    if let columbina_model::NodeKind::Corrector(corrector) = &mut outside.kind {
+                        corrector.key.input.invert = true;
+                    }
+                    outside
+                },
+                index: None,
+                links: vec![
+                    Link::rgb("n9", ""),
+                    Link {
+                        from: "n9".into(),
+                        to: String::new(),
+                        kind: columbina_model::Port::Key,
+                        input: 0,
+                    },
+                    Link::rgb("", "output"),
+                ],
+            },
+        ),
+        (
+            "set_node of the key of a qualifier and the blur of the key coming in",
+            vec![first_node()],
+            set_n9(serde_json::json!({"key": {
+                "qualifier": {"invert": true, "gain": 0.8},
+                "input_blur": {"radius": 50, "ratio": 0.7},
+            }})),
         ),
         (
             "set_node moving a node and locking it",

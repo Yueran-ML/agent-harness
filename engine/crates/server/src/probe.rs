@@ -58,6 +58,9 @@ pub enum Place {
     /// What comes out of it.
     #[default]
     Output,
+    /// Its key, as Highlight BW shows it (`crate::highlight`): white where it is full and
+    /// black where it is none, in R, G and B alike.
+    Key,
 }
 
 /// A node of a grade, and where at it a picture is taken.
@@ -166,6 +169,26 @@ impl Probe {
             }
             drawn.grading.update(gpu, &project, index);
             drawn.grading.grade(&mut scene, &clips, frame);
+            if let Some(node) = node.filter(|node| node.place == Place::Key) {
+                let matte = crate::highlight::Highlight {
+                    mode: crate::highlight::Mode::Bw,
+                    grade: node.grade.clone(),
+                    node: node.node.clone(),
+                };
+                if !matte.show(
+                    &project,
+                    index,
+                    frame,
+                    &drawn.grading,
+                    &mut scene,
+                    &mut clips,
+                ) {
+                    return Err(missing(
+                        "node",
+                        format!("node {} gives no key in its grade", node.node),
+                    ));
+                }
+            }
             let output = drawn.grading.output();
             let signal = if at_node {
                 // The node sees the working space: no output transform.
@@ -433,6 +456,8 @@ pub fn cut(grade: &Grade, node: &str, place: Place) -> Result<Grade, Fault> {
             }
             node.to_owned()
         }
+        // The key is shown of the grade as it is, the node in it.
+        Place::Key => return Ok(grade.clone()),
         Place::Input => {
             if found.kind.inputs(Port::Rgb) == 0 {
                 return Err(refused(format!("node {node} takes no picture, only keys")));

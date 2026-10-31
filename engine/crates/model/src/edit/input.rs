@@ -56,6 +56,7 @@ pub(super) fn check(edit: &Edit) -> Result<(), OpError> {
         | Edit::AppendNode { .. }
         | Edit::AddParallel { .. }
         | Edit::AddLayer { .. }
+        | Edit::AddOutside { .. }
         | Edit::ExtractNode { .. }
         | Edit::ResetNode { .. }
         | Edit::CopyGrade { .. }

@@ -73,7 +73,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
-use columbina_compose::grade::{CardLuts, GradeOptions, LutCache, Prepared, Roots};
+use columbina_compose::grade::{CardLuts, GradeOptions, Look, LutCache, Prepared, Roots};
 use columbina_compose::ocio::CardOps;
 use columbina_compose::{
     ColorOp, Compositor, Gpu, Interpolation, LayerColor, Scene, Stage, Target,
@@ -154,6 +154,15 @@ fn library_of(named: Option<&std::ffi::OsStr>, home: Option<&Path>) -> Vec<PathB
 pub struct MissingLut {
     pub name: String,
     pub message: String,
+}
+
+/// Which of the grades of a clip's layer: its group's pre-clip grade, its own, or its group's
+/// post-clip grade.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Level {
+    Pre,
+    Own,
+    Post,
 }
 
 /// The grades that apply to a clip.
@@ -459,6 +468,45 @@ impl Grading {
             .flat_map(|grade| grade.ops_at(frame))
             .collect();
         Stage { ops }
+    }
+
+    /// The grade of the layer of clip `clip` at `frame` as [`Grading::layer`] gives it, but with
+    /// its grade of `level` showing what `look` asks of one of its nodes (the Highlight modes,
+    /// `crate::highlight`), and, where `alone`, without the grades after that one; none where the
+    /// clip has no such grade or the node is not one that it runs through.
+    pub fn layer_showing(
+        &self,
+        clip: &str,
+        frame: i64,
+        level: Level,
+        look: &Look,
+        alone: bool,
+    ) -> Option<Stage> {
+        let grades = self.clips.get(clip)?;
+        let frame = at(grades.clock.at(frame));
+        let mut ops: Vec<ColorOp> = Vec::new();
+        let mut shown = false;
+        for (here, grade) in [
+            (Level::Pre, &grades.pre),
+            (Level::Own, &grades.own),
+            (Level::Post, &grades.post),
+        ] {
+            let Some(grade) = grade else { continue };
+            if here == level {
+                ops.extend(grade.ops_showing(frame, look)?);
+                shown = true;
+            } else if !(alone && shown) {
+                ops.extend(grade.ops_at(frame));
+            }
+        }
+        shown.then_some(Stage { ops })
+    }
+
+    /// The timeline's grade at `frame` showing what `look` asks of one of its nodes; none where it
+    /// has no grade or the node is not one that it runs through.
+    pub fn timeline_showing(&self, frame: i64, look: &Look) -> Option<Stage> {
+        let ops = self.timeline.as_ref()?.ops_showing(at(frame), look)?;
+        Some(Stage { ops })
     }
 
     /// What the frames are put out as, by the colour management in force.

@@ -14,7 +14,8 @@
 //! card reads, between its points as the project says), through the node's key settings and the
 //! mixers as the grade links them. A node whose result depends on the pixels about each one, as
 //! Midtone Detail makes it (p. 3063), is left out whole, as though it were off, and said in the
-//! answer. (Qualifiers, windows and blur are to be left out so as they come, T21–T25.)
+//! answer; so is a node with a qualifier. (Windows and blur are to be left out so as they come,
+//! T23–T25.)
 //!
 //! The cube is in the timeline space, as the grade works there: over 0 to 1 of each channel
 //! (the domain of a cube that says none), what is beyond it clipped as any cube clips it
@@ -226,11 +227,15 @@ fn grade_at<'p>(
     })
 }
 
-/// Why a corrector cannot be baked, if it cannot: it reads the pixels about each one.
+/// Why a corrector cannot be baked, if it cannot: it reads the pixels about each one, or it has a
+/// qualifier, whose node "will be completely ignored" (p. 3413).
 fn unbakeable(node: &Node) -> Option<&'static str> {
     let NodeKind::Corrector(corrector) = &node.kind else {
         return None;
     };
+    if corrector.qualifier.is_some() {
+        return Some("qualifier");
+    }
     (!matches!(corrector.primaries.midtone_detail, Param::Fixed(value) if value == 0.0))
         .then_some("midtone_detail")
 }
@@ -707,6 +712,29 @@ mod tests {
         that.node = Some("n2".into());
         let error = export(&project, dir.path(), &places(dir.path()), &that).unwrap_err();
         assert_eq!(error.data.unwrap()["reason"], "cannot_bake");
+    }
+
+    #[test]
+    fn a_node_with_a_qualifier_is_left_out_and_said() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut grade = graded();
+        let NodeKind::Corrector(c) = &mut grade.nodes[1].kind else {
+            unreachable!()
+        };
+        c.qualifier = Some(columbina_model::Qualifier::default());
+        let project = project_with(grade);
+        let answer = export(
+            &project,
+            dir.path(),
+            &places(dir.path()),
+            &request(&project, "a.cube", 17),
+        )
+        .unwrap();
+        assert_eq!(
+            answer["ignored"],
+            json!([{"node": "n2", "why": "qualifier"}])
+        );
+        assert_eq!(answer["nodes"], json!(["n1"]));
     }
 
     #[test]

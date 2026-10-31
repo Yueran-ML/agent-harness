@@ -928,8 +928,8 @@ async fn dispatch(
         "view.sample" => view_sample(engine, connection, id, params).await,
         "view.pointer" => view_pointer(engine, connection, kind, id, params).await,
         "luts.list" | "grade.export_lut" => luts_call(engine, connection, id, method, params).await,
-        "viewer.wipe" | "viewer.split" => {
-            let result = crate::stills::compare(engine, &engine.transport, method, params).await?;
+        "viewer.wipe" | "viewer.split" | "viewer.highlight" => {
+            let result = viewer(engine, method, params).await?;
             Ok(match connection.queue(rpc::result_line(id, &result)) {
                 Ok(()) => Reply::Queued,
                 Err(refused) => Reply::Refused(refused),
@@ -1078,6 +1078,15 @@ struct StatisticsApart {
 
 fn bins() -> u32 {
     256
+}
+
+/// `viewer.wipe` and `viewer.split` (what the timeline monitor compares with), and
+/// `viewer.highlight` (what it shows of the key of a node).
+async fn viewer(engine: &Engine, method: &str, params: Option<&RawValue>) -> Result<Value, Fault> {
+    if method == "viewer.highlight" {
+        return engine.transport.highlight(params).await;
+    }
+    crate::stills::compare(engine, &engine.transport, method, params).await
 }
 
 /// The params of `view.sample`.
@@ -1322,7 +1331,7 @@ async fn view_sample(
         }
         if let (Some(node), Some((timeline, frame))) = (node, &at) {
             let mut values = Vec::new();
-            for place in [Place::Input, Place::Output] {
+            for place in [Place::Input, Place::Output, Place::Key] {
                 let at_node = NodeAt {
                     place,
                     ..node.clone()
@@ -1334,6 +1343,7 @@ async fn view_sample(
             written.as_object_mut().map(|object| object.remove("at"));
             written["input"] = json!(values[0]);
             written["output"] = json!(values[1]);
+            written["key"] = json!(values[2][0]);
             value["node"] = written;
         }
         Ok::<_, Fault>(value)

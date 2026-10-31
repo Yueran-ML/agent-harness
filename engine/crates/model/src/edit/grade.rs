@@ -95,6 +95,43 @@ pub(super) fn add(
     Ok(steps.finish())
 }
 
+/// Add an Outside node after the corrector `node` of `grade` (Add Outside Node, Option-O): "a
+/// new node is created immediately after the selected node, with the RGB and key outputs of the
+/// first node automatically connected to those of the new node", whose Key Input Invert "is on
+/// by default" (pp. 3341–3342). It takes what `node` gave its picture to, as Add Serial does.
+pub(super) fn add_outside(
+    project: &mut Project,
+    grade: &Target,
+    node: &str,
+) -> Result<Expansion, EditError> {
+    let mut steps = Steps::default();
+    let g = grade_at(project, grade)?.clone();
+    match g.node(node) {
+        Some(found) if matches!(found.kind, NodeKind::Corrector(_)) => {}
+        None if node != SOURCE && node != OUTPUT => return Err(missing(node).into()),
+        _ => return Err(wrong(&g, node).into()),
+    }
+    let mut outside = Node::corrector("");
+    if let NodeKind::Corrector(corrector) = &mut outside.kind {
+        corrector.key.input.invert = true;
+    }
+    let mut links = vec![
+        Link::rgb(node, ""),
+        Link {
+            from: node.into(),
+            to: String::new(),
+            kind: Port::Key,
+            input: 0,
+        },
+    ];
+    links.extend(g.links_from(node, Port::Rgb).map(|out| Link {
+        from: String::new(),
+        ..out.clone()
+    }));
+    steps.apply(project, add_node(grade, outside, links))?;
+    Ok(steps.finish())
+}
+
 /// Add a corrector beside `node` into a mixer of `kind`: into the one that `node` alone goes
 /// into, as a new input below its others, or into a new one that takes the place of `node` in
 /// what it went into (p. 3334).

@@ -117,13 +117,15 @@ proptest! {
 }
 
 /// The settings that `paste_value` is given, one of which no node has.
-const PARAMS: [&str; 6] = [
+const PARAMS: [&str; 8] = [
     "primaries.saturation",
     "primaries.lift",
     "curves",
     "lut",
     "inputs",
     "nothing",
+    "qualifier",
+    "key.qualifier",
 ];
 
 /// How the keys of a copied grade are put on the clip it is copied to: as `DaVinci` does at
@@ -180,8 +182,9 @@ fn edit_of(project: &Project, n: [usize; 5]) -> Edit {
             clips[k / 16 % clips.len()].clone()
         }
     };
-    match n[0] % 12 {
+    match n[0] % 13 {
         0 => Edit::AddSerial { grade, node },
+        12 => Edit::AddOutside { grade, node },
         1 => Edit::AddSerialBefore { grade, node },
         2 => Edit::AppendNode { grade },
         3 => Edit::AddParallel { grade, node },
@@ -292,7 +295,7 @@ fn the_random_operations_and_edits_of_grades_are_applied_as_well_as_refused() {
     let mut numbers = Numbers(7);
     let mut applied: BTreeMap<String, usize> = BTreeMap::new();
     let mut refused: BTreeMap<String, usize> = BTreeMap::new();
-    for _ in 0..40 {
+    for _ in 0..60 {
         let mut project = graded();
         for _ in 0..60 {
             let op = grade_op_of(&project, numbers.four());
@@ -360,6 +363,7 @@ fn the_random_operations_and_edits_of_grades_are_applied_as_well_as_refused() {
         "append_node",
         "add_parallel",
         "add_layer",
+        "add_outside",
         "extract_node",
         "reset_node",
         "copy_grade",

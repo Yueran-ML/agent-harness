@@ -432,6 +432,157 @@ fn grade_key_combine(sofar: f32, k: f32, matte: f32) -> f32 {
     return select(min(sofar + k, 1.0), sofar * k, matte != 0.0);
 }
 
+// How much `v` is within the range `r` of a qualifier (low, high, low soft and high soft).
+fn grade_range(v: f32, r: vec4<f32>) -> f32 {
+    var k = 1.0;
+    if (v < r.x) {
+        k = 0.0;
+        if (r.z > 0.0) {
+            k = grade_smoothstep(r.x - r.z, r.x, v);
+        }
+    }
+    if (v > r.y) {
+        var high = 0.0;
+        if (r.w > 0.0) {
+            high = 1.0 - grade_smoothstep(r.y, r.y + r.w, v);
+        }
+        k = k * high;
+    }
+    return k;
+}
+
+// How much the hue `h` (in turns) is within the range of hue `r` (its centre, half its width,
+// and its softness on the left and on the right), going round.
+fn grade_hue_range(h: f32, r: vec4<f32>) -> f32 {
+    if (r.y >= 0.5) {
+        return 1.0;
+    }
+    var d = h - r.x;
+    d = d - floor(d + 0.5);
+    let beyond = abs(d) - r.y;
+    if (beyond <= 0.0) {
+        return 1.0;
+    }
+    let soft = select(r.z, r.w, d > 0.0);
+    if (soft <= 0.0) {
+        return 0.0;
+    }
+    return 1.0 - grade_smoothstep(0.0, soft, beyond);
+}
+
+// The key that the qualifier of the corrector at `at` makes of `x`, before Matte Finesse.
+fn grade_qualify(x: vec3<f32>, at: u32) -> f32 {
+    let q = param(at + 31u);
+    var k = 1.0;
+    if (q.x == 1.0) {
+        let on = param(at + 32u);
+        if (on.x != 0.0) {
+            k = k * grade_range(clamp(x.r, 0.0, 1.0), param(at + 36u));
+        }
+        if (on.y != 0.0) {
+            k = k * grade_range(clamp(x.g, 0.0, 1.0), param(at + 37u));
+        }
+        if (on.z != 0.0) {
+            k = k * grade_range(clamp(x.b, 0.0, 1.0), param(at + 38u));
+        }
+        return k;
+    }
+    if (q.x == 0.0) {
+        if (q.y != 0.0) {
+            k = k * grade_hue_range(grade_hue(x), param(at + 33u));
+        }
+        if (q.z != 0.0) {
+            k = k * grade_range(grade_sat(x), param(at + 34u));
+        }
+    }
+    if (q.w != 0.0) {
+        k = k * grade_range(clamp(grade_luma(x), 0.0, 1.0), param(at + 35u));
+    }
+    return k;
+}
+
+// The colour that a qualifier keys: its corrector's input, or that blurred where its Pre-Filter
+// is on.
+fn grade_picked(input: vec3<f32>, around: vec3<f32>, at: u32) -> vec3<f32> {
+    let features = u32(param(at + 26u).x);
+    if ((features & 65536u) == 0u) {
+        return input;
+    }
+    return around;
+}
+
+// Clean Black and Clean White of the key `q`, `m` the mean of the key about the pixel.
+fn grade_clean(q: f32, m: f32, at: u32) -> f32 {
+    let features = u32(param(at + 26u).x);
+    if ((features & 8192u) == 0u) {
+        return q;
+    }
+    let f = param(at + 39u);
+    var k = q;
+    if (f.x > 0.0) {
+        k = k * grade_smoothstep(0.0, f.x, m);
+    }
+    if (f.y > 0.0) {
+        k = 1.0 - (1.0 - k) * grade_smoothstep(0.0, f.y, 1.0 - m);
+    }
+    return k;
+}
+
+// Black Clip and White Clip of the key `q`.
+fn grade_key_clip(q: f32, at: u32) -> f32 {
+    let f = param(at + 39u);
+    if (f.z == 0.0 && f.w == 1.0) {
+        return q;
+    }
+    if (f.w <= f.z) {
+        return select(0.0, 1.0, q > f.z);
+    }
+    return clamp((q - f.z) / (f.w - f.z), 0.0, 1.0);
+}
+
+// The key `q` blurred, `b` it through its Gaussian, with its In/Out Ratio.
+fn grade_spread(q: f32, b: f32, at: u32) -> f32 {
+    let features = u32(param(at + 26u).x);
+    if ((features & 16384u) == 0u) {
+        return q;
+    }
+    let t = param(at + 40u).x;
+    let low = max(-t, 0.0) * 0.5;
+    let high = 1.0 - max(t, 0.0) * 0.5;
+    return clamp((b - low) / (high - low), 0.0, 1.0);
+}
+
+// A pass of Morph Operation of the key `q` (`second` the second), `a` the mean of the key in the
+// box about the pixel.
+fn grade_morph(q: f32, a: f32, at: u32, second: bool) -> f32 {
+    let features = u32(param(at + 26u).x);
+    if ((features & 32768u) == 0u) {
+        return q;
+    }
+    let f = param(at + 40u);
+    let grow = select(f.y, f.z, second);
+    if (grow != 0.0) {
+        return max(q, clamp(a / f.w, 0.0, 1.0));
+    }
+    return min(q, 1.0 - clamp((1.0 - a) / f.w, 0.0, 1.0));
+}
+
+// The key of a qualifier refined: inverted where its palette says, and through the Key palette's
+// Qualifier controls.
+fn grade_qualified(q: f32, at: u32) -> f32 {
+    let k = select(q, 1.0 - q, param(at + 32u).w != 0.0);
+    return grade_key(k, param(at + 41u));
+}
+
+// The key coming into the corrector at `at`, or it blurred, `around`, where its blur is on.
+fn grade_key_blurred(k: f32, around: f32, at: u32) -> f32 {
+    let features = u32(param(at + 26u).x);
+    if ((features & 131072u) == 0u) {
+        return k;
+    }
+    return around;
+}
+
 fn grade_clip_colour(c: vec3<f32>) -> vec3<f32> {
     let l = grade_luma(c);
     let least = min(c.r, min(c.g, c.b));

@@ -22,6 +22,7 @@ use super::{Action, Notify};
 use crate::compare::{Change, Comparison};
 use crate::gpu::{Graphics, Subscription};
 use crate::grading::{Grading, LutPlaces, MissingLut};
+use crate::highlight::Highlight;
 use crate::log::log;
 use crate::rpc::{self, Fault};
 use crate::scopes::{Scopes, Shown};
@@ -53,6 +54,9 @@ pub struct Status {
     /// there are none).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub missing_luts: Vec<MissingLut>,
+    /// The Highlight mode that the monitor shows, where one is on (`viewer.highlight`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub highlight: Option<Highlight>,
 }
 
 impl Default for Status {
@@ -71,6 +75,7 @@ impl Default for Status {
             source: None,
             proxies: true,
             missing_luts: Vec::new(),
+            highlight: None,
         }
     }
 }
@@ -117,6 +122,8 @@ enum Command {
     Compare(Change, oneshot::Sender<Result<Value, Fault>>),
     /// The frame itself, not what it is compared with, for a still (`still.grab`).
     Original(oneshot::Sender<Result<crate::stills::Frame, Fault>>),
+    /// The Highlight mode that is shown (`viewer.highlight`).
+    Highlight(Option<Highlight>, oneshot::Sender<Value>),
     Stop,
 }
 
@@ -299,6 +306,13 @@ impl Timeline {
         let (reply, receiver) = oneshot::channel();
         self.send(Command::Original(reply))?;
         receiver.await.map_err(|_| stopped())?
+    }
+
+    /// Show a Highlight mode, or none, and give the mode shown now.
+    pub async fn highlight(&self, highlight: Option<Highlight>) -> Result<Value, Fault> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(Command::Highlight(highlight, reply))?;
+        receiver.await.map_err(|_| stopped())
     }
 }
 
@@ -686,6 +700,16 @@ impl Worker {
             Command::Original(reply) => {
                 self.finish_compiling();
                 let _ = reply.send(self.original());
+            }
+            Command::Highlight(highlight, reply) => {
+                if self.status.highlight != highlight {
+                    self.status.highlight = highlight;
+                    if !self.status.playing {
+                        let _ = self.draw(true, false);
+                    }
+                    self.tell(true);
+                }
+                let _ = reply.send(Highlight::written(self.status.highlight.as_ref()));
             }
             Command::Act(action) => self.action(action),
             Command::Stop => unreachable!("handled by run"),
@@ -1097,6 +1121,16 @@ impl Worker {
         // picture of every clip ever visited. At a late cut, that track's old picture stays.
         self.previous = previous;
         self.grade(&mut scene, &clips, frame)?;
+        if let Some(highlight) = &self.status.highlight {
+            highlight.show(
+                &project,
+                index,
+                frame,
+                &self.grading,
+                &mut scene,
+                &mut clips,
+            );
+        }
         self.compare.prepare(&project, index, frame, &self.grading);
         self.present(&scene, frame)?;
         self.status.shown = Some(frame);

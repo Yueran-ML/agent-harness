@@ -146,7 +146,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `view.show` | `{"monitor":"source" \| "timeline", "shown": true \| false}` | `{}` |
 | `view.detach` | `{"monitor":"source" \| "timeline"}` | `{"detached": true \| false}` |
 | `view.display` | `{"hdr"?: true \| false}` | `{"hdr": true, "source": {"hdr_on": true, "hdr_shown": true, "peak_nits": 400.0, "sdr_white_nits": 148.0} \| null, "timeline": ... \| null}` (see The view) |
-| `view.sample` | `{"monitor": m}` or `{"timeline": "t1", "frame": n}`, `"x": 960.5, "y": 540.5, "size"?: 1, "grade"?: target, "node"?: "n1", "clip"?: "c1"` | `{"frame", "x", "y", "size", "width", "height", "region", "rgb": [r, g, b], "node"?: {"grade", "node", "input", "output"}}` (see Samples and the pointer) |
+| `view.sample` | `{"monitor": m}` or `{"timeline": "t1", "frame": n}`, `"x": 960.5, "y": 540.5, "size"?: 1, "grade"?: target, "node"?: "n1", "clip"?: "c1"` | `{"frame", "x", "y", "size", "width", "height", "region", "rgb": [r, g, b], "node"?: {"grade", "node", "input", "output", "key"}}` (see Samples and the pointer) |
 | `view.pointer` | `{"monitor": m, "on": true \| false, "cursor"?: "arrow" \| "crosshair" \| "move" \| "resize_ew" \| "resize_ns"}` | `{"monitor", "on", "cursor"}`, then `view.pointer` notifications (see Samples and the pointer) |
 | `render.start` | `{"timeline":"t1", "path":"<file>", "codec":"h264", "quality":"high", "range"?:{"from":0,"to":250}, "subtitle_tracks"?:["S1"], "replace"?:false, "revision"?:n}` | `{"job": "render-1"}` (see Rendering a timeline) |
 | `render.cancel` | `{"job": "render-1"}` | `{}` |
@@ -174,6 +174,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `gallery.album.rename` | `{"album": "a1", "name": "Looks"}` | `{"id", "name"}` |
 | `gallery.album.delete` | `{"album": "a2"}` | `{"deleted": [still ids]}` |
 | `grade.append_node` | `{"from": target, "node": "n4", "to": [target, ...], "keyframes"?: "source_timecode" \| "start_frame", "revision"?: n}` | as `transaction.apply` (Append Node to Selected Clips, see The Gallery) |
+| `viewer.highlight` | `{"mode": "off" \| "highlight" \| "bw", "grade"?: target, "node"?: "n1", "monitor"?: "timeline"}` | `{"monitor": "timeline", "mode", "grade"?, "node"?}` (see Highlight) |
 
 - `hello` says once per connection what the client is; a second `hello` is refused (`-32600`).
   From then on the connection is sent every notification. `protocol` other than 2 is refused
@@ -675,7 +676,10 @@ the picture as it is shown (turned as its media says) for the source monitor.
 - Answer: `{"monitor": m` or `"timeline": "t1", "frame", "x", "y", "size", "width", "height"`
   (of the frame), `"region": {"x", "y", "width", "height"}` (the pixels averaged), `"rgb": [r,
   g, b]`, and with a node `"node": {"grade", "node", "input": [r, g, b], "output": [r, g,
-  b]}}`. Values are from 0 to 1, or beyond where the picture is.
+  b], "key": k}}`. Values are from 0 to 1, or beyond where the picture is. `key` is the node's
+  key there, 0 to 1, the mean of the square: what Highlight BW shows of the node (see
+  Highlight), where only the layers of the grade are drawn (0 about them). A picker of the
+  Qualifier palette samples `input`, the colour that the qualifier keys.
 
 **The picture at a node** (`view.sample` and `scopes.statistics` with `grade` and `node`) is the
 picture that goes into the node (its first picture input, `"at": "input"`) or comes out of it
@@ -687,7 +691,9 @@ the clip's grades and that grade up to the node; and for these, only the layer o
 drawn (for a grade of a group, the clip shown on top that is in the group, or `clip`), where it
 lies on the canvas, not laid over the others nor graded by the timeline. For a node of the
 timeline's grade, every layer is drawn and laid together, and that grade done up to the node.
-None has an output transform. Refused with `-32602` and `reason`: `node` (a node half named, no
+None has an output transform. Its key (`"at": "key"` of `scopes.statistics`, `key` of
+`view.sample`) is the grade not cut, its key shown in R, G and B alike as Highlight BW shows it,
+the grades after it left out as above. Refused with `-32602` and `reason`: `node` (a node half named, no
 such node, a node that gives no picture (a key mixer) or takes none, one whose input has nothing
 linked, a grade that cannot be cut there because a node leads to the node only by its key),
 `grade` (no such group), `timeline` (the grade is of another timeline than the frame), `clip`
@@ -1238,10 +1244,97 @@ without them as `false` and `null`:
 | `soft_clip.low` / `high` / `low_soft` / `high_soft` `{r,g,b}` | 0 / 100 / 0 / 0 | 0…100, a share of the 10-bit scale (pp. 3119–3121) |
 | `key.input` `{invert, matte, gain, offset}` | `false`, `true`, 1, 0 | gain 0…2, offset −1…1 (p. 3362) |
 | `key.output` `{invert, gain, offset}` | `false`, 1, 0 | gain 0…2 (p. 3362), offset −1…1 |
+| `key.qualifier` `{invert, matte, gain, offset}` | `false`, `true`, 1, 0 | as `key.input` (p. 3362) |
+| `key.input_blur` `{radius, ratio}` | 0, 0.5 | radius 0…2000, ratio 0…1 (p. 3362) |
 | `shot_match` | `null` | `null` or `{gamma, gain, offset, contrast, pivot}`, below |
+| `qualifier` | `null` | `null` or the Qualifier palette, below |
 
 An Outside node is a corrector with `key.input.invert: true` linked to the key of the node
-before it (p. 3361). Within a corrector the settings apply in the order of p. 3331.
+before it (p. 3361); `add_outside` adds one. Within a corrector the settings apply in the order
+of p. 3331. The engine writes `key.qualifier`, `key.input_blur` and `qualifier` always, and reads
+a corrector without them as they are at first.
+
+**`qualifier`** is the Qualifier palette (pp. 3157–3182): the node's own key, made of the
+picture that comes into the node (R'G'B' of the working space, held within 0…1). `null`, as a
+node is until a colour is picked, is no key of its own. As it is given first it is every pixel,
+written whole:
+
+```json
+{"mode": "hsl", "invert": false,
+ "hue": {"on": true, "center": 50, "width": 100, "soft": 0, "symmetry": 50},
+ "sat": {"on": true, "low": 0, "high": 100, "low_soft": 0, "high_soft": 0},
+ "lum": {...as sat}, "red": {...}, "green": {...}, "blue": {...},
+ "finesse": {"pre_filter": 0, "clean_black": 0, "black_clip": 0, "clean_white": 0,
+             "white_clip": 100, "blur_radius": 0, "in_out_ratio": 0,
+             "morph": "shrink", "morph_radius": 0}}
+```
+
+| field | default | range | what it is |
+|---|---|---|---|
+| `mode` | `hsl` (p. 3167) | `hsl`, `rgb`, `lum` | which components key: hue, saturation and luma; red, green and blue; or luma alone (p. 3175: `lum` is `hsl` with hue and saturation off, and shares its `lum`). The 3D qualifier is not kept. |
+| `invert` | `false` | | the palette's Invert (p. 3182), after Matte Finesse |
+| `hue.on`, `sat.on`, …, `blue.on` | `true` | | whether the component limits the key (the toggles of p. 3173) |
+| `hue.center` | 50 | 0…100 | a turn of hue: red 0, green 33.3, blue 66.7, going round |
+| `hue.width` | 100 | 0…100 | the hues kept, about the centre; 100 every hue |
+| `hue.soft` | 0 | 0…100 | the fall beyond them each side, in hundredths of a turn |
+| `hue.symmetry` | 50 | 0…100 | lower, the right (higher hues) steeper; higher, the left (p. 3173): the left fall is `soft · (100 − symmetry)/50`, the right `soft · symmetry/50` |
+| `sat`, `lum`, `red`, `green`, `blue` `.low` / `.high` | 0 / 100 | 0…100 | the range kept, black to white (saturation `(max − min)/max`, luma by the weights of the working space) |
+| `….low_soft` / `.high_soft` | 0 | 0…100 | the fall below `low` and above `high` |
+| `finesse.pre_filter` | 0 | 0…100 | a Gaussian of `0.05 ×` it pixels (of a frame 1080 high) over the picture before it is keyed (p. 3178) |
+| `finesse.clean_black`, `clean_white` | 0 | 0…100 | specks out of the black, holes out of the white (pp. 3178–3179), below |
+| `finesse.black_clip`, `white_clip` | 0, 100 (pp. 3179–3180) | 0…100 | the levels of the key from Black Clip to White Clip made 0 to 1 |
+| `finesse.blur_radius` | 0 (p. 3180) | 0…2000 | a Gaussian of `0.1 ×` it pixels over the key |
+| `finesse.in_out_ratio` | 0 | −100…100 | the blur both sides of the edge at 0, inside alone at −100, outside alone at 100 (p. 3180) |
+| `finesse.morph` | `shrink` | `shrink`, `grow`, `opening`, `closing` | Morph Operation (p. 3181) |
+| `finesse.morph_radius` | 0 | 0…100 | its radius, in pixels of a frame 1080 high |
+
+Each number is a parameter (keyframes too); `mode`, `invert`, the toggles and `morph` are not. A
+qualifier is set with `set_node`: given whole where the node has none (a part of one onto `null`
+is `params`), patched in part where it has one, and taken away with `{"qualifier": null}`; out
+of range is `out_of_range` with the path, such as `qualifier.finesse.blur_radius`. `reset_node`
+takes it away.
+
+**The key of a corrector**, in this order (the engine's `compose::grade` has the formulas; the
+manual gives none):
+
+1. The qualifier keys each pixel of the node's input (blurred first by Pre-Filter): the product
+   of how much each component that is on lies within its range, 1 within it, falling smoothly
+   (a smooth step) to 0 over the softness beyond, at once where the softness is 0; hue by its
+   distance round the circle from the centre.
+2. Clean Black and Clean White weigh the key `q` against its mean `m` about the pixel (a
+   Gaussian of 3 pixels of a frame 1080 high): `q · smoothstep(0, cb, m)`, then
+   `1 − (1 − q) · smoothstep(0, cw, 1 − m)`, `cb` and `cw` over 100: a speck in the black and a
+   hole in the white go, translucent edges are eroded or grown, and dark or light greys pushed
+   to black or white.
+3. Black Clip and White Clip: `clamp((q − bc)/(wc − bc))`.
+4. Blur Radius and In/Out Ratio `t` (over 100): the key through its Gaussian `b`, then
+   `clamp((b − lo)/(hi − lo))` with `lo = max(−t, 0)/2`, `hi = 1 − max(t, 0)/2`; with In/Out Ratio
+   not 0 the Gaussian is at least 2 pixels, so that it fills small holes or takes small specks
+   even without a blur (p. 3181).
+5. Morph Operation: the mean `a` of the key in the box of Morph Radius about the pixel; grown,
+   `max(q, clamp(a / 0.05))`, shrunk, `min(q, 1 − clamp((1 − a) / 0.05))`: the edge moves by the
+   radius, about `0.05 · (2r + 1)` pixels soft. Opening shrinks then grows, Closing grows then
+   shrinks.
+6. The palette's `invert`; then the Key palette's `key.qualifier` (invert, then offset with white
+   held, `k + o(1 − k)`, then gain, held within 0…1). `key.qualifier.matte` tells how it meets
+   the node's windows, which are not kept yet.
+7. The key coming in at the node's key input (if one is linked), blurred by `key.input_blur` (a
+   Gaussian of `0.1 × radius` pixels, `2 · ratio` of it across and `2 · (1 − ratio)` down),
+   through `key.input`, and met with the qualifier's key (`key.input.matte` true, Matte mode: the
+   product) or added to it (Mask mode: the sum, held at 1) (p. 3362). Without a qualifier, the key
+   coming in is the key; without either, the key is full.
+8. `key.output` (invert, offset, gain). The node gives `input + (made − input) · k` with this key,
+   and it is what goes out of its key output along key links, into other nodes' key inputs and
+   key mixers.
+
+Every part of it is the identity at its default, to the bit: a node without a qualifier, or with
+one as it is first, changes nothing that the rest of the node does not. Steps 1, 3 and 6–8 are of
+the pixel alone; Pre-Filter, Clean, the blur and Morph read the pixels about each (the
+neighbourhoods of `compose`), each only where its settings are ever other than their defaults
+(a setting keyframed through its default reads them at every frame). The shape of the grade (a
+qualifier or none, which of those neighbourhoods, one pass of Morph or two) makes the shader;
+every number, the mode, the toggles and the inverts are parameters, so a drag or a keyframe
+compiles nothing.
 
 **`shot_match`** is the adjustment that Shot Match puts on the node that was selected, "applied
 invisibly, as the very last adjustment to the node … similar to a LUT" (p. 3048): no palette
@@ -1386,6 +1479,7 @@ operations above when applied, as the other edits are.
 | `append_node` | `grade` | `add_serial_before` the output (Append Node, Option-K): the first node of an ungraded clip. |
 | `add_parallel` | `grade`, `node` (a corrector) | Add a corrector taking what the node takes; if the node's picture goes only into a parallel mixer, the mixer gets one more input for it, else a new parallel mixer takes the node at input 0, the new corrector at input 1, and the node's place (Option-P, pp. 3334–3335). |
 | `add_layer` | `grade`, `node` (a corrector) | As `add_parallel`, with a layer mixer; the new corrector is at the lowest input, on top (Option-L, p. 3336). |
+| `add_outside` | `grade`, `node` (a corrector) | Add an Outside node after it (Add Outside Node, Option-O, pp. 3318, 3341–3342): a corrector with `key.input.invert: true`, taking what the node's RGB output fed, with the node's picture linked into its RGB input and the node's key into its key input, so that it works where the node does not. Done as one `add_node`. |
 | `extract_node` | `grade`, `node` | Take the node out of the tree, bridged as by `remove_node`, and keep it unlinked (E, p. 3319). |
 | `reset_node` | `grade`, `node` | Set the node as a new one of its kind, keeping its label, `enabled`, `locked`, `pos` and inputs (`node_locked` where it is locked). |
 | `copy_grade` | `from`, `to: [target, ...]`, `preserve_nodes?` (0…10, default 0), `keyframes?` (`"source_timecode"`, the default, or `"start_frame"`) | `set_grade` each `to` to the grade `from`, ids kept (pp. 3286, 3290), its keys put on the frames of each `to` as `keyframes` says (above; kept nodes keep theirs). With `preserve_nodes` N (Copy Grade: Preserve number of nodes, p. 3285), a `to` of at least N nodes keeps its first N: they take the places of the first N nodes of the copy, whose links are kept, so "the first N nodes of a copied grade are ignored"; a node of the copy after them whose id one of them holds gets a new id. A `to` of fewer than N nodes gets the copy whole. Each kept node must be of the kind of the node of the copy it replaces, with as many inputs (`wrong_node` naming the kept node), and the copy must have N nodes (`out_of_range` `preserve_nodes`, as is N over 10). |
@@ -1470,6 +1564,8 @@ subtitles in. A grade that is not complete, or has no node, changes nothing.
   (left out where there is none, so a state without it has none missing; told again as soon as
   a change of the project's colour, made on a thread of its own, finds or loses one) and in each
   `render.progress` of an export of that timeline (left out likewise).
+- **Highlight**: the timeline state has `highlight: {"mode", "grade", "node"}` while a Highlight
+  mode is on (`viewer.highlight`, in Comparisons in the viewer), and none while it is off.
 
 ### Generate LUT
 
@@ -1498,7 +1594,8 @@ history; a headless engine has it too.
   them, with the luma of the timeline space. A node that reads the pixels about each one
   (Midtone Detail other than 0) is left out whole, as though it were off, and named in
   `ignored` (`{"node": "n2", "why": "midtone_detail"}`); asked for alone, it is refused.
-  Qualifiers, windows and blur, once there, are left out so too. The project's Input, Output
+  A node with a qualifier is left out so too (`"why": "qualifier"`); windows and blur, once
+  there, will be. The project's Input, Output
   and Viewer LUTs and the transforms of colour management are not of the grade, and are not
   baked.
 - **The cube**: a `TITLE`, `LUT_3D_SIZE` and `size`³ rows, red fastest (Adobe's form, as
@@ -1652,7 +1749,7 @@ scope:
 measures that frame of that timeline drawn off screen, as an export draws it (graded, without
 subtitles; see Samples and the pointer, in The view): in a headless engine too, as an agent that
 runs its own engine reads the figures of a shot. With `"grade": target, "node": "n1", "at"?:
-"input" | "output"` (and `"clip"?` for a grade of a group), with `{"view": "timeline"}` (the
+"input" | "output" | "key"` (and `"clip"?` for a grade of a group), with `{"view": "timeline"}` (the
 timeline and frame that the timeline monitor shows) or with `timeline` and `frame`, it measures
 the picture that goes into the node or comes out of it, drawn as The picture at a node says (the
 Auto Color of a node, and the histogram of the Curves palette, p. 3110). The answer is as above,
@@ -1737,6 +1834,43 @@ none.
 
 **The scopes** (`scopes.*`) and `transport.frame_digest` measure what the viewer shows: the
 comparison, where there is one.
+
+### Highlight
+
+**`viewer.highlight`** `{"mode": "off" | "highlight" | "bw", "grade"?: target, "node"?: "n1",
+"monitor"?: "timeline"}` shows the key of a node on the timeline monitor in place of its picture,
+as the Highlight modes of the viewer do (pp. 3170–3171): Shift-H is `highlight`, Alt-Shift-H
+`bw`, and the page sends the grade and the node chosen in the node editor, again whenever another
+is chosen. It answers `{"monitor": "timeline", "mode", "grade"?, "node"?}` (the mode now), and
+the monitor draws its frame again at once where it is not playing. It is of the preview alone: an
+export, a frame drawn off screen (`view.sample` and `scopes.statistics` of a timeline and frame)
+and the references of a wipe are drawn as they are; the comparison of a wipe or a split screen,
+and the scopes, are of the frame as it is shown, highlighted. The timeline state tells the mode
+(`highlight`, see Grades in the picture). A `--headless` engine answers `-32601`.
+
+- **`highlight`**: the picture where the node's key is, and a flat grey (0.5) where it is not,
+  "the selected portion of the image with the original colors, and the unselected portion of the
+  image with a flat gray", mixed by the key; the picture is the frame shown, every grade and
+  transform done, so the adjustments are seen as they are made. The grey is put in place in the
+  node's grade: the grades after it (a group's post-clip grade, the timeline's) and the output
+  transform do to it what they do to the picture, and with none of them, as in a project of
+  `DaVinci YRGB` whose timeline is not graded, it is flat. Layers that are not of the grade (a
+  clip's other layers, for a node of a clip's grade) are shown as they are. A node with no key of
+  its own (a corrector without a qualifier or a key linked into it; a parallel or layer mixer) is
+  shown alone instead: "if you turn on Highlight while you're selecting a node with no key, then
+  only the currently selected node is output" (p. 3171), the node's picture in place of its
+  grade's, the rest as it is.
+- **`bw`**: the key itself, a "high-contrast" highlight, white where it is full and black where
+  it is none. For a node of a clip's grade, or of its group's grades, only the layers of those
+  clips are drawn (opaque), without the grades after it, the timeline's grade, the output
+  transform or subtitles; for a node of the timeline's grade, every layer, the timeline's grade
+  showing the key, and no output transform or subtitles.
+- A node that its grade does not run through (no such node, a grade that is not complete, a grade
+  of another timeline, a clip not shown) leaves the picture as it is: the mode stays on, and shows
+  the node again once it is there.
+- **Refusals**: `-32602` for params that are not the method's, with `data` `{"reason":
+  "monitor"}` for the source monitor (it shows no grade) and `{"reason": "node"}` for a mode on
+  without both `grade` and `node`.
 
 **Refusals.** `-32602` for params that are not the method's, with `data` `{"reason": "range"}`
 for a value out of its range (or no items, more than 16, or `selected` not one of them),

@@ -312,7 +312,7 @@ impl Prepared {
                 library: library(options).into(),
                 params: Vec::new(),
                 textures,
-                neighbourhoods: plan.neighbourhoods(),
+                neighbourhoods: plan.neighbourhoods(grade, 0.0),
             });
         }
         Prepared {
@@ -335,7 +335,8 @@ impl Prepared {
         self.ops.is_empty()
     }
 
-    /// Its operations at `frame`: the code as it was made, and the parameters of the frame.
+    /// Its operations at `frame`: the code as it was made, and the parameters of the frame and
+    /// the filters of its neighbourhoods there.
     pub fn ops_at(&self, frame: f64) -> impl Iterator<Item = ColorOp> + '_ {
         let last = self.ops.len().saturating_sub(1);
         self.ops.iter().enumerate().map(move |(i, op)| {
@@ -343,11 +344,59 @@ impl Prepared {
             if i == last {
                 if let Some(plan) = &self.plan {
                     op.params = plan.params(&self.grade, frame, self.luma);
+                    for (kept, filter) in op
+                        .neighbourhoods
+                        .iter_mut()
+                        .zip(plan.filters(&self.grade, frame))
+                    {
+                        kept.filter = filter;
+                    }
                 }
             }
             op
         })
     }
+
+    /// Its operations at `frame` as [`Prepared::ops_at`] gives them, but showing what `look`
+    /// asks of one of its nodes in place of its picture; none where the node is not one that
+    /// the grade runs through (it is not there, or the grade changes nothing). The code of the
+    /// grade's operation is another, made once for the node and what is shown; its parameters
+    /// and neighbourhoods are the same.
+    #[must_use]
+    pub fn ops_showing(&self, frame: f64, look: &Look) -> Option<Vec<ColorOp>> {
+        let plan = self.plan.as_ref()?;
+        let node = self.grade.position(&look.node)?;
+        let step = plan.step_of(node)?;
+        let mut ops: Vec<ColorOp> = self.ops_at(frame).collect();
+        let last = ops.last_mut()?;
+        last.body = plan.body_showing(Some((step, look.show))).into();
+        Some(ops)
+    }
+}
+
+/// What the viewer shows of a node of a grade in place of the picture, as the Highlight modes of
+/// the viewer show the key of the node chosen (pp. 3170–3171).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Look {
+    /// The node, by its id.
+    pub node: String,
+    /// What is shown of it.
+    pub show: Show,
+}
+
+/// What is shown of a node (pp. 3170–3171).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Show {
+    /// Highlight (Shift-H): the picture of the grade where the node's key is, and a flat grey
+    /// ([`layout::HIGHLIGHT_GREY`]) where it is not, mixed by the key. A node with no key of its
+    /// own (a corrector without a qualifier or a key linked into it, a mixer of pictures) is
+    /// shown alone instead, its picture in place of the grade's ("if you turn on Highlight
+    /// while you're selecting a node with no key, then only the currently selected node is
+    /// output", p. 3171).
+    Highlight,
+    /// Highlight BW (Alt-Shift-H): the key of the node, white where it is full and black where
+    /// it is none, a "high-contrast" highlight.
+    Matte,
 }
 
 /// The stage of `grade` at `frame` (see [`grade_ops`]).
@@ -423,14 +472,54 @@ pub fn evaluate_picture(
     pixels: &[[f32; 3]],
     units: f32,
 ) -> Vec<[f32; 3]> {
+    evaluate_picture_showing(
+        grade,
+        frame,
+        options,
+        luts,
+        lut,
+        (width, height),
+        pixels,
+        units,
+        None,
+    )
+}
+
+/// What [`evaluate_picture`] gives, but showing what `look` asks of one of the grade's nodes in
+/// place of its picture where there is one (see [`Prepared::ops_showing`]); a node that the grade
+/// does not run through shows the picture of the grade.
+///
+/// # Panics
+/// `pixels` is not of `width` × `height`.
+#[must_use]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::cast_precision_loss,
+    reason = "a grade, its frame and options, its LUTs, a picture and a look; places of pixels"
+)]
+pub fn evaluate_picture_showing(
+    grade: &Grade,
+    frame: f64,
+    options: &GradeOptions,
+    luts: &dyn Luts,
+    lut: &dyn Fn(&str, [f32; 3]) -> [f32; 3],
+    (width, height): (u32, u32),
+    pixels: &[[f32; 3]],
+    units: f32,
+    look: Option<&Look>,
+) -> Vec<[f32; 3]> {
     assert_eq!(pixels.len(), width as usize * height as usize);
     let Some(plan) = Plan::of(grade, luts) else {
         return pixels.to_vec();
     };
+    let show = look.and_then(|look| {
+        let step = plan.step_of(grade.position(&look.node)?)?;
+        Some((step, look.show))
+    });
     let params = plan.params(grade, frame, options.luma64());
     let constants = options.constants();
     let mut around: Vec<Vec<[f32; 3]>> = vec![Vec::new(); pixels.len()];
-    for (number, kept) in plan.neighbourhoods().iter().enumerate() {
+    for (number, filter) in plan.filters(grade, frame).into_iter().enumerate() {
         let source = Image {
             width,
             height,
@@ -439,12 +528,12 @@ pub fn evaluate_picture(
                 .zip(&around)
                 .map(|(rgb, around)| {
                     let [r, g, b] =
-                        plan.detail_source(number, &constants, &params, *rgb, lut, around);
+                        plan.hood_source(number, &constants, &params, *rgb, lut, around);
                     [r, g, b, 1.0].map(neighbourhood::half)
                 })
                 .collect(),
         };
-        let filtered = neighbourhood::filtered(&source, kept.filter, units);
+        let filtered = neighbourhood::filtered(&source, filter, units);
         for (at, around) in around.iter_mut().enumerate() {
             let (x, y) = (at % width as usize, at / width as usize);
             let place = [
@@ -457,8 +546,32 @@ pub fn evaluate_picture(
     pixels
         .iter()
         .zip(&around)
-        .map(|(rgb, around)| plan.run_around(&constants, &params, *rgb, lut, around))
+        .map(|(rgb, around)| plan.run_showing(&constants, &params, *rgb, lut, Some(around), show))
         .collect()
+}
+
+/// What a grade gives of `rgb` at `frame` on the processor, showing what `look` asks of one of
+/// its nodes (see [`Prepared::ops_showing`]), with the LUTs that `luts` has, each done by `lut`:
+/// a pixel alone, a picture of one colour, as [`evaluate_with`] takes it.
+#[must_use]
+pub fn evaluate_showing(
+    grade: &Grade,
+    frame: f64,
+    options: &GradeOptions,
+    luts: &dyn Luts,
+    lut: &dyn Fn(&str, [f32; 3]) -> [f32; 3],
+    rgb: [f32; 3],
+    look: &Look,
+) -> [f32; 3] {
+    let Some(plan) = Plan::of(grade, luts) else {
+        return rgb;
+    };
+    let show = grade
+        .position(&look.node)
+        .and_then(|node| plan.step_of(node))
+        .map(|step| (step, look.show));
+    let params = plan.params(grade, frame, options.luma64());
+    plan.run_showing(&options.constants(), &params, rgb, lut, None, show)
 }
 
 #[cfg(test)]

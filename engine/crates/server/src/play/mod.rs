@@ -386,6 +386,21 @@ impl Transport {
         timeline.original().await
     }
 
+    /// `viewer.highlight`: show a Highlight mode on the timeline monitor, or none.
+    ///
+    /// # Errors
+    /// The engine is headless, or the params are not what the method takes.
+    pub async fn highlight(&self, params: Option<&RawValue>) -> Result<Value, Fault> {
+        let Some(timeline) = &self.timeline else {
+            return Err(Fault::new(
+                rpc::METHOD_NOT_FOUND,
+                "there is no method viewer.highlight in a headless engine: it has no monitor",
+            ));
+        };
+        let highlight = crate::highlight::Highlight::read(params)?;
+        timeline.highlight(highlight).await
+    }
+
     pub async fn frame_digest(&self, params: Option<&RawValue>) -> Result<Value, Fault> {
         let method = "transport.frame_digest";
         self.check(method)?;

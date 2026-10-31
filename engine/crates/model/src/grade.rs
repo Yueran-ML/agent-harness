@@ -343,6 +343,46 @@ pub mod bounds {
     pub const SHOT_CONTRAST: Bounds = Bounds::new(1.0, 0.0, 4.0);
     /// The pivot of the contrast of a shot match.
     pub const SHOT_PIVOT: Bounds = Bounds::new(0.435, 0.0, 1.0);
+    /// The blur of the key that comes into a corrector (Key Input Blur Radius, p. 3362), and of
+    /// the key of a qualifier (Matte Finesse Blur Radius, "0 to 2000, with 0 being the default",
+    /// p. 3180): 0 blurs nothing.
+    pub const KEY_BLUR: Bounds = Bounds::new(0.0, 0.0, 2000.0);
+    /// How a blur of the key that comes in is shared between across and down (Blur H/V Ratio,
+    /// p. 3362): 0.5, the same both ways, by default (the manual gives none), 1 across alone and
+    /// 0 down alone.
+    pub const KEY_BLUR_RATIO: Bounds = Bounds::new(0.5, 0.0, 1.0);
+    /// The centre of the hues of an HSL qualifier (Hue Center, p. 3173), a turn of hue from 0 to
+    /// 100, red at 0, green at 33.3 and blue at 66.7, going round.
+    pub const HUE_CENTER: Bounds = Bounds::new(50.0, 0.0, 100.0);
+    /// How wide the hues of an HSL qualifier are (Hue Width, p. 3173): 100, every hue, until a
+    /// colour is picked.
+    pub const HUE_WIDTH: Bounds = Bounds::new(100.0, 0.0, 100.0);
+    /// How softly the hues of an HSL qualifier fall off on both sides (Hue Soft, p. 3173), in
+    /// hundredths of a turn.
+    pub const HUE_SOFT: Bounds = Bounds::new(0.0, 0.0, 100.0);
+    /// How the softness of the hues is shared between their sides (Hue Symmetry, p. 3173): 50
+    /// alike; lower, the right side steeper; higher, the left.
+    pub const HUE_SYMMETRY: Bounds = Bounds::new(50.0, 0.0, 100.0);
+    /// The lowest of a range of a qualifier (Low, pp. 3173–3175), 0 to 100 of black to white.
+    pub const RANGE_LOW: Bounds = Bounds::new(0.0, 0.0, 100.0);
+    /// The highest of a range of a qualifier (High).
+    pub const RANGE_HIGH: Bounds = Bounds::new(100.0, 0.0, 100.0);
+    /// How softly a range of a qualifier falls off below its lowest or above its highest (Low
+    /// Soft, High Soft).
+    pub const RANGE_SOFT: Bounds = Bounds::new(0.0, 0.0, 100.0);
+    /// Matte Finesse's Pre-Filter, a blur of the picture before it is qualified (p. 3178).
+    pub const PRE_FILTER: Bounds = Bounds::new(0.0, 0.0, 100.0);
+    /// Clean Black and Clean White (pp. 3178–3179): 0 cleans nothing.
+    pub const CLEAN: Bounds = Bounds::new(0.0, 0.0, 100.0);
+    /// Black Clip: "The range is 0 to 100, with 0 being the default" (p. 3179).
+    pub const BLACK_CLIP: Bounds = Bounds::new(0.0, 0.0, 100.0);
+    /// White Clip: "The range is 0 to 100, with 100 being the default" (p. 3180).
+    pub const WHITE_CLIP: Bounds = Bounds::new(100.0, 0.0, 100.0);
+    /// In/Out Ratio (p. 3180): 0 blurs inside and outside the edge alike, below 0 inside alone
+    /// and above 0 outside alone.
+    pub const IN_OUT_RATIO: Bounds = Bounds::new(0.0, -100.0, 100.0);
+    /// Morph Radius (p. 3181), in pixels of a frame 1080 high: 0 shrinks or grows nothing.
+    pub const MORPH_RADIUS: Bounds = Bounds::new(0.0, 0.0, 100.0);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -665,6 +705,283 @@ pub struct Corrector {
     /// always written, and read as none where it is left out.
     #[serde(default)]
     pub shot_match: Option<ShotMatch>,
+    /// The Qualifier palette (pp. 3157–3182): the key that the node makes of its own picture,
+    /// or none, as a node has none until a colour is picked (see [`Qualifier`]). It is always
+    /// written, and read as none where it is left out.
+    #[serde(default)]
+    pub qualifier: Option<Qualifier>,
+}
+
+/// The Qualifier palette of a corrector: which pixels of the picture that comes into the node it
+/// works on, a key of 0 (not at all) to 1 (fully), made of the pixel's hue, saturation and luma
+/// (HSL), its red, green and blue (RGB), or its luma alone (LUM) (pp. 3160–3175); then refined by
+/// the Matte Finesse controls (pp. 3178–3181) and inverted if it is set to be (p. 3182).
+///
+/// Each range is set by its lowest and highest (from 0 to 100, black to white of the 0 to 1 of
+/// the node's input) and how softly it falls off beyond them; hue, which goes round, by its centre
+/// and width, how softly it falls off on both sides, and how that softness is shared between them.
+/// A component that is off (the toggles left of each name, p. 3173) does not limit the key; in
+/// LUM mode hue and saturation do not (p. 3175, "identical to the HSL qualifier with H and S
+/// turned off"), and LUM shares the range of luma with HSL. As a qualifier is first, it keeps
+/// every pixel: its key is 1 everywhere. To give a node one where it has none, `set_node` gives it
+/// whole; one that the node has is patched as any other setting, and `{"qualifier": null}` takes
+/// it away.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Qualifier {
+    /// Which components of the pixel it keys by.
+    pub mode: QualifierMode,
+    /// Whether its key is inverted (the Qualifier palette's Invert, p. 3182), after Matte
+    /// Finesse.
+    pub invert: bool,
+    /// Hue, of HSL.
+    pub hue: HueRange,
+    /// Saturation, of HSL.
+    pub sat: Range,
+    /// Luma, of HSL and LUM.
+    pub lum: Range,
+    /// Red, of RGB.
+    pub red: Range,
+    /// Green, of RGB.
+    pub green: Range,
+    /// Blue, of RGB.
+    pub blue: Range,
+    /// Matte Finesse, which refines the key (pp. 3178–3181).
+    pub finesse: MatteFinesse,
+}
+
+impl Default for Qualifier {
+    fn default() -> Self {
+        Self {
+            mode: QualifierMode::Hsl,
+            invert: false,
+            hue: HueRange::default(),
+            sat: Range::default(),
+            lum: Range::default(),
+            red: Range::default(),
+            green: Range::default(),
+            blue: Range::default(),
+            finesse: MatteFinesse::default(),
+        }
+    }
+}
+
+/// The modes of the Qualifier palette that are kept (pp. 3160–3175): HSL by default (p. 3167).
+/// The 3D qualifier is not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QualifierMode {
+    /// Hue, saturation and luma.
+    Hsl,
+    /// Red, green and blue.
+    Rgb,
+    /// Luma alone.
+    Lum,
+}
+
+/// The range of hue of an HSL qualifier (p. 3173): `center`, `width` (100 every hue), `soft` on
+/// both sides and its `symmetry` (50 alike), each a share of 100 of a turn.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HueRange {
+    /// Whether hue limits the key.
+    pub on: bool,
+    /// Hue Center.
+    pub center: Param,
+    /// Hue Width.
+    pub width: Param,
+    /// Hue Soft.
+    pub soft: Param,
+    /// Hue Symmetry.
+    pub symmetry: Param,
+}
+
+impl Default for HueRange {
+    fn default() -> Self {
+        use bounds::{HUE_CENTER, HUE_SOFT, HUE_SYMMETRY, HUE_WIDTH};
+        Self {
+            on: true,
+            center: HUE_CENTER.param(),
+            width: HUE_WIDTH.param(),
+            soft: HUE_SOFT.param(),
+            symmetry: HUE_SYMMETRY.param(),
+        }
+    }
+}
+
+/// A range of saturation, luma, red, green or blue of a qualifier (pp. 3173–3175): from `low` to
+/// `high` (0 to 100), falling off softly by `low_soft` below and `high_soft` above.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Range {
+    /// Whether it limits the key.
+    pub on: bool,
+    /// Low.
+    pub low: Param,
+    /// High.
+    pub high: Param,
+    /// Low Soft.
+    pub low_soft: Param,
+    /// High Soft.
+    pub high_soft: Param,
+}
+
+impl Default for Range {
+    fn default() -> Self {
+        use bounds::{RANGE_HIGH, RANGE_LOW, RANGE_SOFT};
+        Self {
+            on: true,
+            low: RANGE_LOW.param(),
+            high: RANGE_HIGH.param(),
+            low_soft: RANGE_SOFT.param(),
+            high_soft: RANGE_SOFT.param(),
+        }
+    }
+}
+
+impl Range {
+    fn check(&self, names: [&'static str; 4]) -> Result<(), OpError> {
+        use bounds::{RANGE_HIGH, RANGE_LOW, RANGE_SOFT};
+        RANGE_LOW.check(names[0], &self.low)?;
+        RANGE_HIGH.check(names[1], &self.high)?;
+        RANGE_SOFT.check(names[2], &self.low_soft)?;
+        RANGE_SOFT.check(names[3], &self.high_soft)
+    }
+}
+
+/// The Matte Finesse controls of a qualifier that are kept (pp. 3178–3181), in the order that
+/// they refine its key: Pre-Filter blurs the picture before it is qualified; Clean Black and
+/// Clean White take specks and holes out of the key; Black Clip and White Clip move its levels;
+/// Blur Radius blurs it, inside or outside its edge as In/Out Ratio says; and Morph Operation
+/// shrinks, grows, opens or closes it by Morph Radius. Each changes nothing at its default.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MatteFinesse {
+    /// Pre-Filter.
+    pub pre_filter: Param,
+    /// Clean Black.
+    pub clean_black: Param,
+    /// Black Clip.
+    pub black_clip: Param,
+    /// Clean White.
+    pub clean_white: Param,
+    /// White Clip.
+    pub white_clip: Param,
+    /// Blur Radius.
+    pub blur_radius: Param,
+    /// In/Out Ratio.
+    pub in_out_ratio: Param,
+    /// Morph Operation.
+    pub morph: Morph,
+    /// Morph Radius.
+    pub morph_radius: Param,
+}
+
+impl Default for MatteFinesse {
+    fn default() -> Self {
+        use bounds::{
+            BLACK_CLIP, CLEAN, IN_OUT_RATIO, KEY_BLUR, MORPH_RADIUS, PRE_FILTER, WHITE_CLIP,
+        };
+        Self {
+            pre_filter: PRE_FILTER.param(),
+            clean_black: CLEAN.param(),
+            black_clip: BLACK_CLIP.param(),
+            clean_white: CLEAN.param(),
+            white_clip: WHITE_CLIP.param(),
+            blur_radius: KEY_BLUR.param(),
+            in_out_ratio: IN_OUT_RATIO.param(),
+            morph: Morph::Shrink,
+            morph_radius: MORPH_RADIUS.param(),
+        }
+    }
+}
+
+/// Matte Finesse's Morph Operation (p. 3181): shrink or grow the key by Morph Radius, or open it
+/// (shrink, then grow: specks go and the rest is as it was) or close it (grow, then shrink:
+/// holes are filled).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Morph {
+    /// Shrink.
+    Shrink,
+    /// Grow.
+    Grow,
+    /// Opening.
+    Opening,
+    /// Closing.
+    Closing,
+}
+
+impl Qualifier {
+    fn check(&self) -> Result<(), OpError> {
+        use bounds::{
+            BLACK_CLIP, CLEAN, HUE_CENTER, HUE_SOFT, HUE_SYMMETRY, HUE_WIDTH, IN_OUT_RATIO,
+            KEY_BLUR, MORPH_RADIUS, PRE_FILTER, WHITE_CLIP,
+        };
+        let hue = &self.hue;
+        HUE_CENTER.check("qualifier.hue.center", &hue.center)?;
+        HUE_WIDTH.check("qualifier.hue.width", &hue.width)?;
+        HUE_SOFT.check("qualifier.hue.soft", &hue.soft)?;
+        HUE_SYMMETRY.check("qualifier.hue.symmetry", &hue.symmetry)?;
+        for (range, names) in [
+            (
+                &self.sat,
+                [
+                    "qualifier.sat.low",
+                    "qualifier.sat.high",
+                    "qualifier.sat.low_soft",
+                    "qualifier.sat.high_soft",
+                ],
+            ),
+            (
+                &self.lum,
+                [
+                    "qualifier.lum.low",
+                    "qualifier.lum.high",
+                    "qualifier.lum.low_soft",
+                    "qualifier.lum.high_soft",
+                ],
+            ),
+            (
+                &self.red,
+                [
+                    "qualifier.red.low",
+                    "qualifier.red.high",
+                    "qualifier.red.low_soft",
+                    "qualifier.red.high_soft",
+                ],
+            ),
+            (
+                &self.green,
+                [
+                    "qualifier.green.low",
+                    "qualifier.green.high",
+                    "qualifier.green.low_soft",
+                    "qualifier.green.high_soft",
+                ],
+            ),
+            (
+                &self.blue,
+                [
+                    "qualifier.blue.low",
+                    "qualifier.blue.high",
+                    "qualifier.blue.low_soft",
+                    "qualifier.blue.high_soft",
+                ],
+            ),
+        ] {
+            range.check(names)?;
+        }
+        let finesse = &self.finesse;
+        PRE_FILTER.check("qualifier.finesse.pre_filter", &finesse.pre_filter)?;
+        CLEAN.check("qualifier.finesse.clean_black", &finesse.clean_black)?;
+        BLACK_CLIP.check("qualifier.finesse.black_clip", &finesse.black_clip)?;
+        CLEAN.check("qualifier.finesse.clean_white", &finesse.clean_white)?;
+        WHITE_CLIP.check("qualifier.finesse.white_clip", &finesse.white_clip)?;
+        KEY_BLUR.check("qualifier.finesse.blur_radius", &finesse.blur_radius)?;
+        IN_OUT_RATIO.check("qualifier.finesse.in_out_ratio", &finesse.in_out_ratio)?;
+        MORPH_RADIUS.check("qualifier.finesse.morph_radius", &finesse.morph_radius)
+    }
 }
 
 /// The adjustment that Shot Match puts on the node that was chosen when it was used: "applied
@@ -1008,8 +1325,16 @@ impl Default for SoftClip {
     }
 }
 
-/// The Key palette of a corrector: the key coming in at its key input and the key going out
-/// (pp. 3361–3362). The qualifier comes with the qualifiers.
+/// The Key palette of a corrector (pp. 3361–3362): the key coming in at its key input, the key of
+/// its qualifier, and the key going out.
+///
+/// A node's key is made in this order: the key of its qualifier (if it has one) through
+/// `qualifier`; the key coming in (if a key is linked into its key input) blurred by `input_blur`
+/// and through `input`, and met with the qualifier's in Matte mode or added to it in Mask mode
+/// (`input.matte`); and the one key, or a full key where it has neither, through `output`. That
+/// key is what the node's adjustment is mixed by and what goes out of its key output.
+/// `qualifier` and `input_blur` are always written, and read as they are at first where they are
+/// left out.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KeyParams {
@@ -1018,6 +1343,14 @@ pub struct KeyParams {
     pub input: KeyInput,
     /// The key going out. Its gain is how strongly the node works (p. 3362).
     pub output: KeyOutput,
+    /// The key of the qualifier, as the Key palette's Qualifier controls set it (p. 3362):
+    /// inverted, its gain and offset; and whether it meets the key of the node's windows (Matte
+    /// mode, at first) or is added to it (Mask mode), which tells only once a node has windows.
+    #[serde(default = "KeyParams::qualifier_at_first")]
+    pub qualifier: KeyInput,
+    /// The blur of the key coming in (Blur Radius and Blur H/V Ratio, p. 3362).
+    #[serde(default)]
+    pub input_blur: KeyBlur,
 }
 
 impl Default for KeyParams {
@@ -1028,6 +1361,37 @@ impl Default for KeyParams {
                 ..KeyInput::default()
             },
             output: KeyOutput::default(),
+            qualifier: Self::qualifier_at_first(),
+            input_blur: KeyBlur::default(),
+        }
+    }
+}
+
+impl KeyParams {
+    fn qualifier_at_first() -> KeyInput {
+        KeyInput {
+            matte: true,
+            ..KeyInput::default()
+        }
+    }
+}
+
+/// A blur of a key (p. 3362): its radius (as Matte Finesse's Blur Radius) and how it is shared
+/// between across and down.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeyBlur {
+    /// Blur Radius.
+    pub radius: Param,
+    /// Blur H/V Ratio.
+    pub ratio: Param,
+}
+
+impl Default for KeyBlur {
+    fn default() -> Self {
+        Self {
+            radius: bounds::KEY_BLUR.param(),
+            ratio: bounds::KEY_BLUR_RATIO.param(),
         }
     }
 }
@@ -1061,8 +1425,12 @@ impl Default for KeyInput {
 
 impl KeyInput {
     fn check(&self) -> Result<(), OpError> {
-        bounds::KEY_GAIN.check("key.input.gain", &self.gain)?;
-        bounds::KEY_OFFSET.check("key.input.offset", &self.offset)
+        self.check_as("key.input.gain", "key.input.offset")
+    }
+
+    fn check_as(&self, gain: &'static str, offset: &'static str) -> Result<(), OpError> {
+        bounds::KEY_GAIN.check(gain, &self.gain)?;
+        bounds::KEY_OFFSET.check(offset, &self.offset)
     }
 }
 
@@ -1229,7 +1597,13 @@ impl Corrector {
         )?;
         self.key.input.check()?;
         self.key.output.check()?;
-        self.shot_match.as_ref().map_or(Ok(()), ShotMatch::check)
+        self.key
+            .qualifier
+            .check_as("key.qualifier.gain", "key.qualifier.offset")?;
+        bounds::KEY_BLUR.check("key.input_blur.radius", &self.key.input_blur.radius)?;
+        bounds::KEY_BLUR_RATIO.check("key.input_blur.ratio", &self.key.input_blur.ratio)?;
+        self.shot_match.as_ref().map_or(Ok(()), ShotMatch::check)?;
+        self.qualifier.as_ref().map_or(Ok(()), Qualifier::check)
     }
 }
 

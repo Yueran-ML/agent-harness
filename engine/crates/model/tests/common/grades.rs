@@ -3,7 +3,9 @@
 //! reserved, links that go round or into inputs that are not there, and settings out of their
 //! bounds.
 
-use columbina_model::grade::{Grade, Group, Interp, Key, Kind, Link, Node, Port, Pos, Target};
+use columbina_model::grade::{
+    Grade, Group, Interp, Key, Kind, Link, Node, Port, Pos, Qualifier, Target,
+};
 use columbina_model::{Op, Project};
 
 /// The grades of a project, each by its target, and one that is not there.
@@ -114,7 +116,7 @@ fn link_of(ends: &[String], n: usize) -> Link {
 /// of node now and then.
 fn params_of(n: usize) -> serde_json::Value {
     let value = f64::from(u32::try_from(n % 101).unwrap_or(0));
-    match n % 16 {
+    match n % 21 {
         0 => serde_json::json!({"primaries": {"saturation": value}}),
         1 => serde_json::json!({"primaries": {"lift": {"r": value / 100.0 - 0.5, "y": 0.1}}}),
         2 => serde_json::to_value(serde_json::json!({"primaries": {"contrast": {"keys": [
@@ -156,7 +158,38 @@ fn params_of(n: usize) -> serde_json::Value {
         }
         // A part of one, which a node without one refuses, and one out of its bounds.
         14 => serde_json::json!({"shot_match": {"gain": {"g": value / 50.0}, "pivot": 0.5}}),
-        _ => serde_json::json!({"shot_match": {"gamma": {"r": 0.0}}}),
+        15 => serde_json::json!({"shot_match": {"gamma": {"r": 0.0}}}),
+        // A qualifier given whole, or taken away.
+        16 => {
+            if n.is_multiple_of(4) {
+                serde_json::json!({"qualifier": null})
+            } else {
+                let mut whole = serde_json::to_value(Qualifier::default()).unwrap();
+                whole["mode"] = ["hsl", "rgb", "lum"][n / 3 % 3].into();
+                whole["hue"]["center"] = value.into();
+                whole["hue"]["width"] = (value / 4.0).into();
+                whole["sat"]["on"] = n.is_multiple_of(3).into();
+                whole["finesse"]["blur_radius"] = (value * 3.0).into();
+                whole["finesse"]["morph"] =
+                    ["shrink", "grow", "opening", "closing"][n / 7 % 4].into();
+                serde_json::json!({ "qualifier": whole })
+            }
+        }
+        // A part of one, which a node without one refuses; and keys of a range.
+        17 => serde_json::json!({"qualifier": {"lum": {"low": value / 2.0, "high_soft": 10}}}),
+        18 => serde_json::to_value(
+            serde_json::json!({"qualifier": {"finesse": {"clean_black": {"keys": [
+                Key { frame: 0, value: 0.0, interp: Interp::Linear },
+                Key { frame: i64::try_from(n % 40).unwrap_or(0) + 1, value, interp: Interp::Hold },
+            ]}}}}),
+        )
+        .unwrap(),
+        // Out of its bounds.
+        19 => serde_json::json!({"qualifier": {"finesse": {"in_out_ratio": -101}}}),
+        _ => serde_json::json!({"key": {
+            "qualifier": {"invert": n.is_multiple_of(2), "gain": value / 50.0},
+            "input_blur": {"radius": value * 30.0, "ratio": value / 100.0},
+        }}),
     }
 }
 

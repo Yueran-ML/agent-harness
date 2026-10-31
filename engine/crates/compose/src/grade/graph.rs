@@ -7,9 +7,13 @@
 //! `o`; a layer mixer lays the `c` of each input over the layers above it, as much as its `k`
 //! (pp. 3336–3338); a key input reads `k`.
 //!
-//! A corrector whose Midtone Detail is ever other than 0 reads a neighbourhood (`color.rs`): the
-//! colour that its Midtone Detail filters ([`Plan::detail_body`]) is made by the steps that its
-//! input comes of, and then its own Shadows and Highlights.
+//! A corrector reads the pixels about each one (a neighbourhood, `color.rs`) for its Midtone
+//! Detail, for the Pre-Filter, Clean Black and White, Blur Radius and In/Out Ratio, and Morph
+//! Operation of its qualifier, and for the blur of the key coming into it, each where its
+//! settings are ever other than those that do nothing ([`Reads`]). What a neighbourhood filters
+//! ([`Plan::hood_body`]) is made by the steps that the corrector's input comes of (or, for the
+//! key coming in, the step that gives it), and then the corrector up to what the neighbourhood is
+//! of; so a neighbourhood reads only those before it.
 
 #![allow(
     clippy::float_cmp,
@@ -24,7 +28,7 @@ use columbina_model::grade::{Grade, NodeKind, Port, OUTPUT, SOURCE};
 
 use super::layout::{self, CORRECTOR, KEY_INPUT, KEY_OUTPUT};
 use super::maths::{self, Constants, Params, Rgb};
-use super::Luts;
+use super::{Luts, Show};
 use crate::color::{Filter, Neighbourhood};
 use crate::ColorOp;
 
@@ -47,18 +51,57 @@ pub(crate) struct LutUse {
     pub texture: usize,
 }
 
+/// What a neighbourhood of a corrector is of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reads {
+    /// Its Midtone Detail: the luma of its input after Shadows and Highlights.
+    Detail,
+    /// Its qualifier's Pre-Filter: its input.
+    Pre,
+    /// Clean Black and Clean White: the key of its qualifier as it is picked.
+    Clean,
+    /// Blur Radius and In/Out Ratio: that key cleaned and clipped.
+    Spread,
+    /// The first pass of Morph Operation: that key blurred.
+    Morph,
+    /// The second pass of Morph Operation (Opening, Closing): that key through the first.
+    Morph2,
+    /// The blur of the key coming in: that key.
+    KeyBlur,
+}
+
+/// A neighbourhood that a step reads, numbered by its place in [`Plan::hoods`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Hood {
+    pub step: usize,
+    pub reads: Reads,
+}
+
+/// The numbers of the neighbourhoods that a corrector reads, each where it reads one.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Hoods {
+    pub detail: Option<usize>,
+    pub pre: Option<usize>,
+    pub clean: Option<usize>,
+    pub spread: Option<usize>,
+    pub morph: Option<usize>,
+    pub morph2: Option<usize>,
+    pub key_blur: Option<usize>,
+}
+
 /// A step of a grade.
 #[derive(Clone, Debug)]
 pub(crate) enum Step {
-    /// A corrector: node `node` of the grade, its block of parameters at `block`; `detail` the
-    /// number of the neighbourhood that its Midtone Detail reads, where it reads one.
+    /// A corrector: node `node` of the grade, its block of parameters at `block`; with a
+    /// qualifier or none, and the neighbourhoods that it reads.
     Corrector {
         node: usize,
         input: From,
         key: Option<usize>,
         block: u32,
         lut: Option<LutUse>,
-        detail: Option<usize>,
+        qualifier: bool,
+        hoods: Box<Hoods>,
     },
     /// A node of the picture that is disabled: it gives its first input as it is.
     Pass { input: From },
@@ -78,18 +121,39 @@ pub(crate) enum Step {
     PassKey { input: usize },
 }
 
+impl Step {
+    /// Whether the node of the step has a key that is its own to show: a corrector with a
+    /// qualifier or a key linked into it, and a key mixer. The others have a full key.
+    fn keyed(&self) -> bool {
+        match self {
+            Step::Corrector { qualifier, key, .. } => *qualifier || key.is_some(),
+            Step::KeyMix { .. } | Step::PassKey { .. } => true,
+            Step::Pass { .. } | Step::Parallel { .. } | Step::Layer { .. } => false,
+        }
+    }
+}
+
 /// A grade made into steps.
 #[derive(Clone, Debug)]
 pub(crate) struct Plan {
     pub steps: Vec<Step>,
+    /// The node of the grade that each step is of.
+    pub nodes: Vec<usize>,
     pub output: From,
     /// The size of the parameters of the blocks of the nodes and of the LUTs; the points of the
     /// curves come after.
     pub fixed: u32,
     /// The number of textures of the LUTs.
     pub textures: usize,
-    /// The steps whose Midtone Detail reads a neighbourhood, in the order of their numbers.
-    pub details: Vec<usize>,
+    /// The neighbourhoods that the steps read, in the order of their steps.
+    pub hoods: Vec<Hood>,
+}
+
+/// What the steps on the processor give: the picture of the grade, and the picture and the key
+/// of each step; or, where they stop at a neighbourhood, the colour that it filters.
+enum Walked {
+    Done { o: Vec<Rgb>, k: Vec<f32>, out: Rgb },
+    Stopped(Rgb),
 }
 
 impl Plan {
@@ -158,10 +222,11 @@ impl Plan {
         };
         let mut plan = Plan {
             steps: Vec::with_capacity(order.len()),
+            nodes: order.clone(),
             output: from(Some(output))?,
             fixed: 0,
             textures: 0,
-            details: Vec::new(),
+            hoods: Vec::new(),
         };
         let mut lut_params: Vec<(usize, usize)> = Vec::new();
         for &n in &order {
@@ -217,9 +282,28 @@ impl Plan {
                             texture,
                         })
                     });
-                    let detail = layout::reads_detail(corrector).then(|| {
-                        plan.details.push(plan.steps.len());
-                        plan.details.len() - 1
+                    let s = plan.steps.len();
+                    let mut hood = |reads: bool, what: Reads| {
+                        reads.then(|| {
+                            plan.hoods.push(Hood {
+                                step: s,
+                                reads: what,
+                            });
+                            plan.hoods.len() - 1
+                        })
+                    };
+                    let [pre, clean, spread, morph, morph2] = layout::qualifier_reads(corrector);
+                    let hoods = Box::new(Hoods {
+                        detail: hood(layout::reads_detail(corrector), Reads::Detail),
+                        pre: hood(pre, Reads::Pre),
+                        clean: hood(clean, Reads::Clean),
+                        spread: hood(spread, Reads::Spread),
+                        morph: hood(morph, Reads::Morph),
+                        morph2: hood(morph2, Reads::Morph2),
+                        key_blur: hood(
+                            key.is_some() && layout::reads_key_blur(corrector),
+                            Reads::KeyBlur,
+                        ),
                     });
                     Step::Corrector {
                         node: n,
@@ -227,7 +311,8 @@ impl Plan {
                         key,
                         block,
                         lut,
-                        detail,
+                        qualifier: corrector.qualifier.is_some(),
+                        hoods,
                     }
                 }
                 (NodeKind::ParallelMixer(mixer), true) => Step::Parallel {
@@ -256,6 +341,11 @@ impl Plan {
             Step::Corrector { lut, .. } => lut.as_ref(),
             _ => None,
         })
+    }
+
+    /// The step of node `node` (its place in the grade's nodes), if the grade has one.
+    pub(crate) fn step_of(&self, node: usize) -> Option<usize> {
+        self.nodes.iter().position(|n| *n == node)
     }
 
     /// The parameters of the grade at `frame`, as the body reads them.
@@ -304,42 +394,90 @@ impl Plan {
 
     /// The WGSL of the body of the operation of the grade, which changes `rgb`.
     pub(crate) fn body(&self) -> String {
+        self.body_showing(None)
+    }
+
+    /// The WGSL of the body of the operation of the grade, or, with `show`, what the viewer
+    /// shows of step `s` of it in place of its picture (see [`Show`]).
+    pub(crate) fn body_showing(&self, show: Option<(usize, Show)>) -> String {
         let mut code = String::from("let grade_source = rgb;\n");
         for s in 0..self.steps.len() {
             self.step_code(s, &mut code);
         }
-        let _ = writeln!(code, "rgb = {};", o(self.output));
+        let out = o(self.output);
+        let _ = match show {
+            None => writeln!(code, "rgb = {out};"),
+            Some((s, Show::Matte)) => writeln!(code, "rgb = vec3<f32>(k{s});"),
+            Some((s, Show::Highlight)) if self.steps[s].keyed() => {
+                writeln!(code, "rgb = mix(vec3<f32>({:?}), {out}, k{s});", grey())
+            }
+            Some((s, Show::Highlight)) => writeln!(code, "rgb = o{s};"),
+        };
         code
     }
 
-    /// The neighbourhoods that the grade reads: those of the Midtone Detail of its correctors,
-    /// in order.
-    pub(crate) fn neighbourhoods(&self) -> Vec<Neighbourhood> {
+    /// The neighbourhoods that the grade reads, their filters as they are at `frame`.
+    pub(crate) fn neighbourhoods(&self, grade: &Grade, frame: f64) -> Vec<Neighbourhood> {
+        self.filters(grade, frame)
+            .into_iter()
+            .enumerate()
+            .map(|(number, filter)| Neighbourhood {
+                body: self.hood_body(number).into(),
+                filter,
+            })
+            .collect()
+    }
+
+    /// The filters of the neighbourhoods that the grade reads, as they are at `frame`.
+    pub(crate) fn filters(&self, grade: &Grade, frame: f64) -> Vec<Filter> {
         #[allow(
             clippy::cast_possible_truncation,
             reason = "a constant of a few pixels"
         )]
-        let sigma = layout::MIDTONE_RADIUS as f32;
-        (0..self.details.len())
-            .map(|number| Neighbourhood {
-                body: self.detail_body(number).into(),
-                filter: Filter::Gaussian { sigma: [sigma; 2] },
+        let detail = layout::MIDTONE_RADIUS as f32;
+        self.hoods
+            .iter()
+            .map(|hood| {
+                let Step::Corrector { node, .. } = &self.steps[hood.step] else {
+                    unreachable!("a neighbourhood is of a corrector");
+                };
+                let NodeKind::Corrector(corrector) = &grade.nodes[*node].kind else {
+                    unreachable!("the node of a corrector is one");
+                };
+                let qualifier = corrector.qualifier.as_ref();
+                match (hood.reads, qualifier) {
+                    (Reads::Detail, _) => Filter::Gaussian { sigma: [detail; 2] },
+                    (Reads::KeyBlur, _) => layout::key_blur_filter(corrector, frame),
+                    (Reads::Clean, _) => layout::clean_filter(),
+                    (Reads::Pre, Some(qualifier)) => layout::pre_filter(qualifier, frame),
+                    (Reads::Spread, Some(qualifier)) => layout::spread_filter(qualifier, frame),
+                    (Reads::Morph | Reads::Morph2, Some(qualifier)) => {
+                        layout::morph_filter(qualifier, frame)
+                    }
+                    (_, None) => unreachable!("a neighbourhood of a qualifier is of one"),
+                }
             })
             .collect()
     }
 
     /// The WGSL of the body of neighbourhood `number`: the steps that the input of its corrector
-    /// comes of (and none other), and then what its Midtone Detail filters of that input.
-    pub(crate) fn detail_body(&self, number: usize) -> String {
-        let at = self.details[number];
-        let Step::Corrector { input, block, .. } = &self.steps[at] else {
+    /// comes of (and none other), or that the key coming into it does, and then what it filters
+    /// of them.
+    pub(crate) fn hood_body(&self, number: usize) -> String {
+        let hood = self.hoods[number];
+        let at = hood.step;
+        let Step::Corrector {
+            input, key, block, ..
+        } = &self.steps[at]
+        else {
             unreachable!("a neighbourhood is of a corrector");
         };
-        // The steps that the input reads, through any number of them.
+        // The steps that it reads, through any number of them.
         let mut needed = vec![false; at];
-        let mut stack: Vec<usize> = match input {
-            From::Step(s) => vec![*s],
-            From::Source => Vec::new(),
+        let mut stack: Vec<usize> = match (hood.reads, input) {
+            (Reads::KeyBlur, _) => key.iter().copied().collect(),
+            (_, From::Step(s)) => vec![*s],
+            (_, From::Source) => Vec::new(),
         };
         while let Some(s) = stack.pop() {
             if needed[s] {
@@ -352,12 +490,65 @@ impl Plan {
         for s in (0..at).filter(|s| needed[*s]) {
             self.step_code(s, &mut code);
         }
-        let _ = writeln!(
-            code,
-            "rgb = grade_detail_source({}, $P + {block}u);",
-            o(*input)
-        );
+        let _ = match hood.reads {
+            Reads::Detail => writeln!(
+                code,
+                "rgb = grade_detail_source({}, $P + {block}u);",
+                o(*input)
+            ),
+            Reads::Pre => writeln!(code, "rgb = {};", o(*input)),
+            Reads::KeyBlur => writeln!(
+                code,
+                "rgb = vec3<f32>(k{});",
+                key.expect("a blur of a key coming in")
+            ),
+            reads => {
+                let _ = writeln!(code, "{{\nlet input = {};", o(*input));
+                self.qualifier_code(at, Some(reads), &mut code);
+                writeln!(code, "rgb = vec3<f32>(q);\n}}")
+            }
+        };
         code
+    }
+
+    /// The WGSL of the qualifier of corrector `s`, which makes its key `q` of its `input`: all of
+    /// it, or, with `upto`, what the neighbourhood that `upto` names filters.
+    fn qualifier_code(&self, s: usize, upto: Option<Reads>, code: &mut String) {
+        let Step::Corrector { block, hoods, .. } = &self.steps[s] else {
+            unreachable!("a qualifier is of a corrector");
+        };
+        let at = format!("$P + {block}u");
+        let picked = hoods.pre.map_or_else(
+            || "input".to_owned(),
+            |n| format!("grade_picked(input, $N{n}, {at})"),
+        );
+        let _ = writeln!(code, "var q = grade_qualify({picked}, {at});");
+        if upto == Some(Reads::Clean) {
+            return;
+        }
+        if let Some(n) = hoods.clean {
+            let _ = writeln!(code, "q = grade_clean(q, $N{n}.x, {at});");
+        }
+        let _ = writeln!(code, "q = grade_key_clip(q, {at});");
+        if upto == Some(Reads::Spread) {
+            return;
+        }
+        if let Some(n) = hoods.spread {
+            let _ = writeln!(code, "q = grade_spread(q, $N{n}.x, {at});");
+        }
+        if upto == Some(Reads::Morph) {
+            return;
+        }
+        if let Some(n) = hoods.morph {
+            let _ = writeln!(code, "q = grade_morph(q, $N{n}.x, {at}, false);");
+        }
+        if upto == Some(Reads::Morph2) {
+            return;
+        }
+        if let Some(n) = hoods.morph2 {
+            let _ = writeln!(code, "q = grade_morph(q, $N{n}.x, {at}, true);");
+        }
+        let _ = writeln!(code, "q = grade_qualified(q, {at});");
     }
 
     /// The steps that step `s` reads.
@@ -389,32 +580,50 @@ impl Plan {
                 key,
                 block,
                 lut,
-                detail,
+                qualifier,
+                hoods,
                 ..
             } => {
-                let key_in = key.map_or_else(
-                    || "1.0".to_owned(),
-                    |k| format!("grade_key(k{k}, param($P + {}u))", block + KEY_INPUT),
-                );
+                let incoming = key.map(|k| {
+                    let k = hoods.key_blur.map_or_else(
+                        || format!("k{k}"),
+                        |n| format!("grade_key_blurred(k{k}, $N{n}.x, $P + {block}u)"),
+                    );
+                    format!("grade_key({k}, param($P + {}u))", block + KEY_INPUT)
+                });
+                let key_in = match (qualifier, incoming) {
+                    (false, None) => "1.0".to_owned(),
+                    (false, Some(incoming)) => incoming,
+                    (true, None) => "q".to_owned(),
+                    (true, Some(incoming)) => format!(
+                        "grade_key_combine(q, {incoming}, param($P + {}u).w)",
+                        block + KEY_INPUT
+                    ),
+                };
                 let lut = lut.as_ref().map_or_else(String::new, |lut| {
                     format!(
                         "    {{\n        var rgb = x;\n        {{\n{}\n        }}\n        x = rgb;\n    }}\n",
                         rewrite(&lut.op.body, lut.params, lut.texture)
                     )
                 });
-                let primary = match detail {
+                let primary = match hoods.detail {
                     None => format!("grade_primary(input, $P + {block}u)"),
                     Some(number) => {
                         format!("grade_primary_detailed(input, $P + {block}u, $N{number})")
                     }
                 };
+                let mut qualify = String::new();
+                if *qualifier {
+                    self.qualifier_code(s, None, &mut qualify);
+                }
                 write!(
                     code,
                     "var o{s}: vec3<f32>;\nvar c{s}: vec3<f32>;\nvar k{s}: f32;\n{{\n    \
                      let input = {input};\n    \
                      var x = {primary};\n\
                      {lut}    \
-                     x = grade_secondary(x, input, $P + {block}u);\n    \
+                     x = grade_secondary(x, input, $P + {block}u);\n\
+                     {qualify}    \
                      k{s} = grade_key({key_in}, param($P + {output}u));\n    \
                      c{s} = x;\n    \
                      o{s} = select(input + (x - input) * k{s}, x, k{s} == 1.0);\n}}\n",
@@ -486,8 +695,8 @@ impl Plan {
     }
 
     /// What the grade makes of `rgb` on the processor, with `params` as [`Plan::params`] makes
-    /// them; `lut` is what the LUT of each name makes of a colour. A pixel alone has nothing about
-    /// it: Midtone Detail is left out (as it leaves a picture of one colour).
+    /// them; `lut` is what the LUT of each name makes of a colour. A pixel alone is a picture of
+    /// one colour: each neighbourhood is what it filters there.
     pub(crate) fn run(
         &self,
         constants: &Constants,
@@ -495,25 +704,39 @@ impl Plan {
         rgb: Rgb,
         lut: &dyn Fn(&str, Rgb) -> Rgb,
     ) -> Rgb {
-        self.walk(constants, params, rgb, lut, None, None)
+        self.run_showing(constants, params, rgb, lut, None, None)
     }
 
-    /// What the grade makes of `rgb` on the processor as [`Plan::run`] does, the neighbourhoods
-    /// that it reads being `around` at the pixel (one for each of [`Plan::details`]).
-    pub(crate) fn run_around(
+    /// What the grade gives of `rgb` on the processor as [`Plan::body_showing`] does on the card:
+    /// its picture, or what the viewer shows of a step of it.
+    pub(crate) fn run_showing(
         &self,
         constants: &Constants,
         params: &[[f32; 4]],
         rgb: Rgb,
         lut: &dyn Fn(&str, Rgb) -> Rgb,
-        around: &[Rgb],
+        around: Option<&[Rgb]>,
+        show: Option<(usize, Show)>,
     ) -> Rgb {
-        self.walk(constants, params, rgb, lut, Some(around), None)
+        let Walked::Done { o, k, out } = self.walk(constants, params, rgb, lut, around, None)
+        else {
+            unreachable!("the steps stop only at a neighbourhood");
+        };
+        match show {
+            None => out,
+            Some((s, Show::Matte)) => [k[s]; 3],
+            Some((s, Show::Highlight)) if self.steps[s].keyed() => {
+                #[allow(clippy::cast_possible_truncation, reason = "a grey of 0 to 1")]
+                let grey = grey() as f32;
+                out.map(|v| grey * (1.0 - k[s]) + v * k[s])
+            }
+            Some((s, Show::Highlight)) => o[s],
+        }
     }
 
     /// The colour that neighbourhood `number` filters of `rgb` on the processor, those before it
     /// being `around` at the pixel.
-    pub(crate) fn detail_source(
+    pub(crate) fn hood_source(
         &self,
         number: usize,
         constants: &Constants,
@@ -522,7 +745,64 @@ impl Plan {
         lut: &dyn Fn(&str, Rgb) -> Rgb,
         around: &[Rgb],
     ) -> Rgb {
-        self.walk(constants, params, rgb, lut, Some(around), Some(number))
+        match self.walk(constants, params, rgb, lut, Some(around), Some(number)) {
+            Walked::Stopped(source) => source,
+            Walked::Done { .. } => unreachable!("every neighbourhood is of a step"),
+        }
+    }
+
+    /// The key that the qualifier of corrector `s` (its block at `block`) makes of its `input` on
+    /// the processor: all of it, or, with `upto`, what the neighbourhood that `upto` names
+    /// filters. Each neighbourhood is `around` it where there is one, and what it filters
+    /// otherwise.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the step, its settings, its input and its neighbourhoods"
+    )]
+    fn qualifier_key(
+        constants: &Constants,
+        p: Params,
+        block: u32,
+        hoods: &Hoods,
+        input: Rgb,
+        around: Option<&[Rgb]>,
+        upto: Option<Reads>,
+    ) -> f32 {
+        let hood = |number: Option<usize>, source: f32| match (number, around) {
+            (Some(n), Some(around)) => around[n][0],
+            _ => source,
+        };
+        let picked = match (hoods.pre, around) {
+            (Some(n), Some(around)) => maths::picked(p, block, input, around[n]),
+            _ => input,
+        };
+        let mut q = maths::qualify(constants, p, block, picked);
+        if upto == Some(Reads::Clean) {
+            return q;
+        }
+        if hoods.clean.is_some() {
+            q = maths::clean(p, block, q, hood(hoods.clean, q));
+        }
+        q = maths::key_clip(p, block, q);
+        if upto == Some(Reads::Spread) {
+            return q;
+        }
+        if hoods.spread.is_some() {
+            q = maths::spread(p, block, q, hood(hoods.spread, q));
+        }
+        if upto == Some(Reads::Morph) {
+            return q;
+        }
+        if hoods.morph.is_some() {
+            q = maths::morph(p, block, q, hood(hoods.morph, q), false);
+        }
+        if upto == Some(Reads::Morph2) {
+            return q;
+        }
+        if hoods.morph2.is_some() {
+            q = maths::morph(p, block, q, hood(hoods.morph2, q), true);
+        }
+        maths::qualified(p, block, q)
     }
 
     /// The steps on the processor: up to the corrector of neighbourhood `stop`, whose colour to
@@ -539,7 +819,7 @@ impl Plan {
         lut: &dyn Fn(&str, Rgb) -> Rgb,
         around: Option<&[Rgb]>,
         stop: Option<usize>,
-    ) -> Rgb {
+    ) -> Walked {
         let p = Params(params);
         let count = self.steps.len();
         let mut o = vec![[0.0_f32; 3]; count];
@@ -550,6 +830,7 @@ impl Plan {
             From::Step(s) => o[s],
         };
         let at4 = |index: u32| params.get(index as usize).copied().unwrap_or([0.0; 4]);
+        let stop = stop.map(|number| self.hoods[number]);
         for (s, step) in self.steps.iter().enumerate() {
             match step {
                 Step::Corrector {
@@ -557,16 +838,32 @@ impl Plan {
                     key,
                     block,
                     lut: used,
-                    detail,
+                    qualifier,
+                    hoods,
                     ..
                 } => {
                     let input = picture(&o, *input);
-                    if stop.is_some() && *detail == stop {
-                        return maths::detail_source(constants, p, *block, input);
+                    if let Some(hood) = stop.filter(|hood| hood.step == s) {
+                        return Walked::Stopped(match hood.reads {
+                            Reads::Detail => maths::detail_source(constants, p, *block, input),
+                            Reads::Pre => input,
+                            Reads::KeyBlur => [k[key.expect("a key coming in")]; 3],
+                            reads => {
+                                [Self::qualifier_key(
+                                    constants,
+                                    p,
+                                    *block,
+                                    hoods,
+                                    input,
+                                    around,
+                                    Some(reads),
+                                ); 3]
+                            }
+                        });
                     }
-                    let mut x = match (detail, around) {
+                    let mut x = match (hoods.detail, around) {
                         (Some(number), Some(around)) => {
-                            maths::primary_detailed(constants, p, *block, input, around[*number])
+                            maths::primary_detailed(constants, p, *block, input, around[number])
                         }
                         _ => maths::primary(constants, p, *block, input),
                     };
@@ -574,7 +871,26 @@ impl Plan {
                         x = lut(&used.name, x);
                     }
                     x = maths::secondary(constants, p, *block, x, input);
-                    let key_in = key.map_or(1.0, |j| maths::key(k[j], at4(block + KEY_INPUT)));
+                    let incoming = key.map(|j| {
+                        let blurred = match (hoods.key_blur, around) {
+                            (Some(n), Some(around)) => {
+                                maths::key_blurred(p, *block, k[j], around[n][0])
+                            }
+                            _ => k[j],
+                        };
+                        maths::key(blurred, at4(block + KEY_INPUT))
+                    });
+                    let own = qualifier.then(|| {
+                        Self::qualifier_key(constants, p, *block, hoods, input, around, None)
+                    });
+                    let key_in = match (own, incoming) {
+                        (None, None) => 1.0,
+                        (None, Some(incoming)) => incoming,
+                        (Some(q), None) => q,
+                        (Some(q), Some(incoming)) => {
+                            maths::key_combine(q, incoming, at4(block + KEY_INPUT)[3])
+                        }
+                    };
                     k[s] = maths::key(key_in, at4(block + KEY_OUTPUT));
                     c[s] = x;
                     o[s] = if k[s] == 1.0 {
@@ -635,8 +951,14 @@ impl Plan {
                 Step::PassKey { input } => k[s] = k[*input],
             }
         }
-        picture(&o, self.output)
+        let out = picture(&o, self.output);
+        Walked::Done { o, k, out }
     }
+}
+
+/// The flat grey of the Highlight mode.
+fn grey() -> f64 {
+    layout::HIGHLIGHT_GREY
 }
 
 /// The WGSL of the picture that `from` gives.

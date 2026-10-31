@@ -16,8 +16,11 @@
 use std::f64::consts::PI;
 
 use columbina_model::grade::{
-    Composite, Corrector, Curve, KeyInput, KeyOutput, Param, ShotMatch, Wheel,
+    Composite, Corrector, Curve, KeyInput, KeyOutput, Morph, Param, Qualifier, QualifierMode,
+    Range, ShotMatch, Wheel,
 };
+
+use crate::color::Filter;
 
 /// Lift of R, G, B and Y.
 pub const LIFT: u32 = 0;
@@ -83,8 +86,34 @@ pub const SHOT_GAIN: u32 = 28;
 pub const SHOT_OFFSET: u32 = 29;
 /// Midtone Detail: its amount (the setting over 100), [`MIDTONE_GAIN`] and [`MIDTONE_EDGE`].
 pub const DETAIL: u32 = 30;
+/// The qualifier: its mode (0 HSL, 1 RGB, 2 LUM), and whether hue, saturation and luma limit
+/// its key (1) or not (0).
+pub const QUALIFIER: u32 = 31;
+/// Whether red, green and blue limit the key of an RGB qualifier, and whether the qualifier's
+/// key is inverted (the Qualifier palette's Invert).
+pub const QUALIFIER_RGB: u32 = 32;
+/// The range of hue of a qualifier, in turns: its centre, half its width, and how softly it
+/// falls off on its left (lower hues) and on its right.
+pub const QUALIFIER_HUE: u32 = 33;
+/// The range of saturation of a qualifier, from 0 to 1: low, high, low soft and high soft.
+pub const QUALIFIER_SAT: u32 = 34;
+/// The range of luma.
+pub const QUALIFIER_LUM: u32 = 35;
+/// The range of red.
+pub const QUALIFIER_RED: u32 = 36;
+/// The range of green.
+pub const QUALIFIER_GREEN: u32 = 37;
+/// The range of blue.
+pub const QUALIFIER_BLUE: u32 = 38;
+/// Matte Finesse, from 0 to 1: Clean Black, Clean White, Black Clip and White Clip.
+pub const FINESSE: u32 = 39;
+/// Matte Finesse: In/Out Ratio (from -1 to 1); whether the first and the second pass of Morph
+/// Operation grow (1) or shrink (0); and [`MORPH_EDGE`].
+pub const FINESSE_MORE: u32 = 40;
+/// The Key palette's Qualifier controls: invert, gain, offset, matte.
+pub const KEY_QUALIFIER: u32 = 41;
 /// The size of the block of a corrector.
-pub const CORRECTOR: u32 = 31;
+pub const CORRECTOR: u32 = 42;
 
 /// Shadows or Highlights.
 pub const ZONES_ON: u32 = 1;
@@ -112,6 +141,16 @@ pub const CLIP_ON: u32 = 1024;
 pub const SHOT_ON: u32 = 2048;
 /// Midtone Detail.
 pub const DETAIL_ON: u32 = 4096;
+/// Clean Black or Clean White of a qualifier.
+pub const CLEAN_ON: u32 = 8192;
+/// Blur Radius or In/Out Ratio of a qualifier.
+pub const SPREAD_ON: u32 = 16384;
+/// Morph Radius of a qualifier.
+pub const MORPH_ON: u32 = 32768;
+/// Pre-Filter of a qualifier.
+pub const PRE_ON: u32 = 65536;
+/// The blur of the key coming in.
+pub const KEY_BLUR_ON: u32 = 131_072;
 
 /// How far Gamma bends: the exponent of a Gamma of `g` is `2^(-GAMMA_POWER · g)`.
 pub const GAMMA_POWER: f64 = 2.0;
@@ -138,6 +177,29 @@ pub const MIDTONE_GAIN: f64 = 1.0;
 /// one on regions as they fall from it to none ("regions of the image with low amounts of
 /// detail are softened while areas of high-detail are left alone").
 pub const MIDTONE_EDGE: f64 = 0.04;
+
+/// Pre-Filter (p. 3178): the standard deviation of the Gaussian that the picture is blurred by
+/// before it is qualified, in pixels of a frame 1080 high, for each unit of the setting: 5 pixels
+/// at 100, enough to take the blocks of MPEG out of what is keyed.
+pub const PRE_FILTER_SCALE: f64 = 0.05;
+/// Clean Black and Clean White (pp. 3178–3179): the standard deviation of the Gaussian, in pixels
+/// of a frame 1080 high, that a pixel's key is weighed against the key about it by: the size of
+/// the specks and holes that they take out.
+pub const CLEAN_RADIUS: f64 = 3.0;
+/// The Blur Radius of a key (pp. 3180, 3362), "0 to 2000": the standard deviation of its
+/// Gaussian, in pixels of a frame 1080 high, for each unit of the setting (200 pixels at 2000).
+pub const KEY_BLUR_SCALE: f64 = 0.1;
+/// In/Out Ratio "even in situations where no Blur Radius is applied at all" fills small holes or
+/// takes small specks away (p. 3181): it works over a Gaussian of at least this standard
+/// deviation, in pixels of a frame 1080 high.
+pub const IN_OUT_RADIUS: f64 = 2.0;
+/// Morph Operation (p. 3181): how much of the box of Morph Radius about a pixel is to be keyed
+/// for the pixel to be grown into the key, or not for it to be shrunk out of it; and so how soft
+/// the edge that it moves is.
+pub const MORPH_EDGE: f64 = 0.05;
+/// The flat grey of the Highlight mode of the viewer (p. 3170), "the unselected portion of the
+/// image with a flat gray".
+pub const HIGHLIGHT_GREY: f64 = 0.5;
 
 /// The number of a composite mode, as the maths numbers them: the place of each in
 /// [`Composite`], from `Normal` at 0 to `VividLight` at 26.
@@ -409,14 +471,190 @@ pub fn corrector(
         f(MIDTONE_EDGE),
         0.0,
     ];
+    if let Some(qualifier) = &corrector.qualifier {
+        qualifier_block(qualifier, frame, &mut out);
+    }
+    out[KEY_QUALIFIER as usize] = key_input(&corrector.key.qualifier, frame);
     let diagonal = |curve: &Curve| curve.points == [[0.0, 0.0], [1.0, 1.0]];
     let curved = if curves.ganged {
         !diagonal(&curves.y)
     } else {
         !custom.iter().all(|curve| diagonal(curve))
     };
-    out[FEATURES as usize] = [place(features(&out, curved) as usize), 0.0, 0.0, 0.0];
+    let mut on = features(&out, curved);
+    if let Some(qualifier) = &corrector.qualifier {
+        let finesse = &qualifier.finesse;
+        let spread =
+            at(&finesse.blur_radius, frame) > 0.0 || at(&finesse.in_out_ratio, frame) != 0.0;
+        for (feature, set) in [
+            (PRE_ON, at(&finesse.pre_filter, frame) > 0.0),
+            (
+                CLEAN_ON,
+                out[FINESSE as usize][0] > 0.0 || out[FINESSE as usize][1] > 0.0,
+            ),
+            (SPREAD_ON, spread),
+            (MORPH_ON, at(&finesse.morph_radius, frame) > 0.0),
+        ] {
+            if set {
+                on |= feature;
+            }
+        }
+    }
+    if at(&corrector.key.input_blur.radius, frame) > 0.0 {
+        on |= KEY_BLUR_ON;
+    }
+    out[FEATURES as usize] = [place(on as usize), 0.0, 0.0, 0.0];
     out
+}
+
+/// The settings of a qualifier at `frame`, put into the block `out` of its corrector.
+fn qualifier_block(qualifier: &Qualifier, frame: f64, out: &mut [[f32; 4]]) {
+    let mode = match qualifier.mode {
+        QualifierMode::Hsl => 0.0,
+        QualifierMode::Rgb => 1.0,
+        QualifierMode::Lum => 2.0,
+    };
+    out[QUALIFIER as usize] = [
+        mode,
+        flag(qualifier.hue.on),
+        flag(qualifier.sat.on),
+        flag(qualifier.lum.on),
+    ];
+    out[QUALIFIER_RGB as usize] = [
+        flag(qualifier.red.on),
+        flag(qualifier.green.on),
+        flag(qualifier.blue.on),
+        flag(qualifier.invert),
+    ];
+    let hue = &qualifier.hue;
+    let soft = at(&hue.soft, frame) / 100.0;
+    let symmetry = at(&hue.symmetry, frame) / 50.0;
+    out[QUALIFIER_HUE as usize] = [
+        f(at(&hue.center, frame) / 100.0),
+        f(at(&hue.width, frame) / 200.0),
+        f(soft * (2.0 - symmetry)),
+        f(soft * symmetry),
+    ];
+    let range = |range: &Range| {
+        [
+            f(at(&range.low, frame) / 100.0),
+            f(at(&range.high, frame) / 100.0),
+            f(at(&range.low_soft, frame) / 100.0),
+            f(at(&range.high_soft, frame) / 100.0),
+        ]
+    };
+    out[QUALIFIER_SAT as usize] = range(&qualifier.sat);
+    out[QUALIFIER_LUM as usize] = range(&qualifier.lum);
+    out[QUALIFIER_RED as usize] = range(&qualifier.red);
+    out[QUALIFIER_GREEN as usize] = range(&qualifier.green);
+    out[QUALIFIER_BLUE as usize] = range(&qualifier.blue);
+    let finesse = &qualifier.finesse;
+    out[FINESSE as usize] = [
+        f(at(&finesse.clean_black, frame) / 100.0),
+        f(at(&finesse.clean_white, frame) / 100.0),
+        f(at(&finesse.black_clip, frame) / 100.0),
+        f(at(&finesse.white_clip, frame) / 100.0),
+    ];
+    // Opening shrinks and then grows; closing grows and then shrinks (p. 3181).
+    let (first, second) = match finesse.morph {
+        Morph::Shrink | Morph::Opening => (false, matches!(finesse.morph, Morph::Opening)),
+        Morph::Grow | Morph::Closing => (true, false),
+    };
+    out[FINESSE_MORE as usize] = [
+        f(at(&finesse.in_out_ratio, frame) / 100.0),
+        flag(first),
+        flag(second),
+        f(MORPH_EDGE),
+    ];
+}
+
+/// Whether a setting is ever other than `neutral`: a fixed value of it is a part of the grade
+/// that does nothing at any frame.
+fn ever(param: &Param, neutral: f64) -> bool {
+    !matches!(param, Param::Fixed(value) if *value == neutral)
+}
+
+/// Which neighbourhoods the qualifier of a corrector reads (none where it has none): of its
+/// Pre-Filter, its Clean Black and Clean White, its Blur Radius and In/Out Ratio, and the first
+/// and the second pass of its Morph Operation. Each is read where its settings are ever other
+/// than those that do nothing, whatever they are at a frame.
+#[must_use]
+pub fn qualifier_reads(corrector: &Corrector) -> [bool; 5] {
+    let Some(qualifier) = &corrector.qualifier else {
+        return [false; 5];
+    };
+    let finesse = &qualifier.finesse;
+    let morph = ever(&finesse.morph_radius, 0.0);
+    [
+        ever(&finesse.pre_filter, 0.0),
+        ever(&finesse.clean_black, 0.0) || ever(&finesse.clean_white, 0.0),
+        ever(&finesse.blur_radius, 0.0) || ever(&finesse.in_out_ratio, 0.0),
+        morph,
+        morph && matches!(finesse.morph, Morph::Opening | Morph::Closing),
+    ]
+}
+
+/// Whether the key coming into a corrector is blurred at some frame: then it reads a
+/// neighbourhood of that key.
+#[must_use]
+pub fn reads_key_blur(corrector: &Corrector) -> bool {
+    ever(&corrector.key.input_blur.radius, 0.0)
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "radii of filters, far within f32"
+)]
+fn radius(value: f64) -> f32 {
+    value.max(0.0) as f32
+}
+
+/// The filter of the Pre-Filter of `qualifier` at `frame`.
+#[must_use]
+pub fn pre_filter(qualifier: &Qualifier, frame: f64) -> Filter {
+    let sigma = radius(at(&qualifier.finesse.pre_filter, frame) * PRE_FILTER_SCALE);
+    Filter::Gaussian { sigma: [sigma; 2] }
+}
+
+/// The filter of Clean Black and Clean White.
+#[must_use]
+pub fn clean_filter() -> Filter {
+    let sigma = radius(CLEAN_RADIUS);
+    Filter::Gaussian { sigma: [sigma; 2] }
+}
+
+/// The filter of the Blur Radius and the In/Out Ratio of `qualifier` at `frame`.
+#[must_use]
+pub fn spread_filter(qualifier: &Qualifier, frame: f64) -> Filter {
+    let finesse = &qualifier.finesse;
+    let mut sigma = at(&finesse.blur_radius, frame) * KEY_BLUR_SCALE;
+    if at(&finesse.in_out_ratio, frame) != 0.0 {
+        sigma = sigma.max(IN_OUT_RADIUS);
+    }
+    let sigma = radius(sigma);
+    Filter::Gaussian { sigma: [sigma; 2] }
+}
+
+/// The filter of the Morph Operation of `qualifier` at `frame`, each pass.
+#[must_use]
+pub fn morph_filter(qualifier: &Qualifier, frame: f64) -> Filter {
+    let reach = radius(at(&qualifier.finesse.morph_radius, frame));
+    Filter::Box { radius: [reach; 2] }
+}
+
+/// The filter of the blur of the key coming into `corrector` at `frame`: its Blur Radius,
+/// shared between across and down by its Blur H/V Ratio (0.5 alike, 1 across alone).
+#[must_use]
+pub fn key_blur_filter(corrector: &Corrector, frame: f64) -> Filter {
+    let blur = &corrector.key.input_blur;
+    let sigma = at(&blur.radius, frame) * KEY_BLUR_SCALE;
+    let ratio = at(&blur.ratio, frame).clamp(0.0, 1.0);
+    Filter::Gaussian {
+        sigma: [
+            radius(sigma * 2.0 * ratio),
+            radius(sigma * 2.0 * (1.0 - ratio)),
+        ],
+    }
 }
 
 /// Which steps of a block are not at their neutral settings (see [`FEATURES`]).

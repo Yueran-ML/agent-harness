@@ -486,6 +486,178 @@ pub fn key_combine(sofar: f32, k: f32, matte: f32) -> f32 {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Qualifiers
+// ---------------------------------------------------------------------------------------------
+
+/// How much `v` is within the range `r` of a qualifier (low, high, low soft and high soft): 1
+/// from low to high, falling off smoothly to 0 over the softness beyond each, at once where it
+/// is 0.
+#[must_use]
+pub fn range(v: f32, r: [f32; 4]) -> f32 {
+    let mut k = 1.0;
+    if v < r[0] {
+        k = if r[2] > 0.0 {
+            smoothstep(r[0] - r[2], r[0], v)
+        } else {
+            0.0
+        };
+    }
+    if v > r[1] {
+        k *= if r[3] > 0.0 {
+            1.0 - smoothstep(r[1], r[1] + r[3], v)
+        } else {
+            0.0
+        };
+    }
+    k
+}
+
+/// How much the hue `h` (in turns) is within the range of hue `r` (its centre, half its width,
+/// and its softness on the left and on the right, in turns), going round.
+#[must_use]
+pub fn hue_range(h: f32, r: [f32; 4]) -> f32 {
+    if r[1] >= 0.5 {
+        return 1.0;
+    }
+    let mut d = h - r[0];
+    d -= (d + 0.5).floor();
+    let beyond = d.abs() - r[1];
+    if beyond <= 0.0 {
+        return 1.0;
+    }
+    let soft = if d > 0.0 { r[3] } else { r[2] };
+    if soft <= 0.0 {
+        return 0.0;
+    }
+    1.0 - smoothstep(0.0, soft, beyond)
+}
+
+/// The key that the qualifier of a corrector makes of the colour `x` that it is given, before
+/// Matte Finesse: the product of how much each component that limits it is within its range.
+pub(crate) fn qualify(c: &Constants, p: Params, node: u32, x: Rgb) -> f32 {
+    let q = p.at(node + at::QUALIFIER);
+    let mut k = 1.0;
+    if q[0] == 1.0 {
+        let on = p.at(node + at::QUALIFIER_RGB);
+        if on[0] != 0.0 {
+            k *= range(x[0].clamp(0.0, 1.0), p.at(node + at::QUALIFIER_RED));
+        }
+        if on[1] != 0.0 {
+            k *= range(x[1].clamp(0.0, 1.0), p.at(node + at::QUALIFIER_GREEN));
+        }
+        if on[2] != 0.0 {
+            k *= range(x[2].clamp(0.0, 1.0), p.at(node + at::QUALIFIER_BLUE));
+        }
+        return k;
+    }
+    if q[0] == 0.0 {
+        if q[1] != 0.0 {
+            k *= hue_range(hue(x), p.at(node + at::QUALIFIER_HUE));
+        }
+        if q[2] != 0.0 {
+            k *= range(sat(x), p.at(node + at::QUALIFIER_SAT));
+        }
+    }
+    if q[3] != 0.0 {
+        k *= range(luma(c, x).clamp(0.0, 1.0), p.at(node + at::QUALIFIER_LUM));
+    }
+    k
+}
+
+fn features(p: Params, node: u32) -> u32 {
+    whole(p.at(node + at::FEATURES)[0])
+}
+
+/// The colour that a qualifier keys: its corrector's input, or that input blurred, `around`,
+/// where its Pre-Filter is on at the frame.
+pub(crate) fn picked(p: Params, node: u32, input: Rgb, around: Rgb) -> Rgb {
+    if features(p, node) & at::PRE_ON == 0 {
+        return input;
+    }
+    around
+}
+
+/// Clean Black and Clean White of the key `q`, `m` the mean of the key about the pixel: a pixel
+/// in a region keyed less than Clean Black is taken towards 0, as a speck is, and one in a region
+/// keyed more than 1 less Clean White towards 1, as a hole is.
+pub(crate) fn clean(p: Params, node: u32, q: f32, m: f32) -> f32 {
+    if features(p, node) & at::CLEAN_ON == 0 {
+        return q;
+    }
+    let f = p.at(node + at::FINESSE);
+    let mut k = q;
+    if f[0] > 0.0 {
+        k *= smoothstep(0.0, f[0], m);
+    }
+    if f[1] > 0.0 {
+        k = 1.0 - (1.0 - k) * smoothstep(0.0, f[1], 1.0 - m);
+    }
+    k
+}
+
+/// Black Clip and White Clip of the key `q`: its levels from Black Clip to White Clip made
+/// those from 0 to 1.
+pub(crate) fn key_clip(p: Params, node: u32, q: f32) -> f32 {
+    let f = p.at(node + at::FINESSE);
+    if f[2] == 0.0 && f[3] == 1.0 {
+        return q;
+    }
+    if f[3] <= f[2] {
+        return if q > f[2] { 1.0 } else { 0.0 };
+    }
+    ((q - f[2]) / (f[3] - f[2])).clamp(0.0, 1.0)
+}
+
+/// The key `q` blurred, `b` it through its Gaussian, with In/Out Ratio `t`: the blur kept on
+/// both sides of the edge at 0, and at 1 (or -1) all of it outside (or inside) the edge, as
+/// the blurred key from 0 to 1/2 (or 1/2 to 1) is stretched to 0 to 1.
+pub(crate) fn spread(p: Params, node: u32, q: f32, b: f32) -> f32 {
+    if features(p, node) & at::SPREAD_ON == 0 {
+        return q;
+    }
+    let t = p.at(node + at::FINESSE_MORE)[0];
+    let low = (-t).max(0.0) * 0.5;
+    let high = 1.0 - t.max(0.0) * 0.5;
+    ((b - low) / (high - low)).clamp(0.0, 1.0)
+}
+
+/// A pass of Morph Operation (`second` the second, of Opening and Closing) of the key `q`, `a`
+/// the mean of the key in the box of Morph Radius about the pixel: grown, a pixel is keyed as
+/// much as any of that box is, to [`super::layout::MORPH_EDGE`]; shrunk, as little.
+pub(crate) fn morph(p: Params, node: u32, q: f32, a: f32, second: bool) -> f32 {
+    if features(p, node) & at::MORPH_ON == 0 {
+        return q;
+    }
+    let f = p.at(node + at::FINESSE_MORE);
+    let grow = if second { f[2] } else { f[1] };
+    if grow == 0.0 {
+        q.min(1.0 - ((1.0 - a) / f[3]).clamp(0.0, 1.0))
+    } else {
+        q.max((a / f[3]).clamp(0.0, 1.0))
+    }
+}
+
+/// The key of a qualifier refined: inverted where its palette says, and through the Key
+/// palette's Qualifier controls.
+pub(crate) fn qualified(p: Params, node: u32, q: f32) -> f32 {
+    let k = if p.at(node + at::QUALIFIER_RGB)[3] == 0.0 {
+        q
+    } else {
+        1.0 - q
+    };
+    key(k, p.at(node + at::KEY_QUALIFIER))
+}
+
+/// The key coming into a corrector, `k`, or it blurred, `around`, where its blur is on at the
+/// frame.
+pub(crate) fn key_blurred(p: Params, node: u32, k: f32, around: f32) -> f32 {
+    if features(p, node) & at::KEY_BLUR_ON == 0 {
+        return k;
+    }
+    around
+}
+
+// ---------------------------------------------------------------------------------------------
 // Composite modes
 // ---------------------------------------------------------------------------------------------
 

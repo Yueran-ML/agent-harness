@@ -45,6 +45,7 @@ mod conn;
 mod gallery;
 mod gpu;
 mod grading;
+mod highlight;
 mod log;
 mod lut_export;
 mod luts;

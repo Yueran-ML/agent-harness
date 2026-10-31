@@ -538,6 +538,16 @@ pub enum Edit {
         /// The corrector.
         node: Id,
     },
+    /// Add an Outside node after a corrector of a grade: a corrector that takes what the
+    /// corrector gave its picture to, with the corrector's picture linked into its RGB input and
+    /// the corrector's key into its key input, inverted, so that it works on what the corrector
+    /// did not (Add Outside Node, Option-O; pp. 3318, 3341–3342).
+    AddOutside {
+        /// The grade.
+        grade: Target,
+        /// The corrector.
+        node: Id,
+    },
     /// Take a node out of the tree of its grade, keeping it, and link what was on either side
     /// of it (Extract, E; p. 3319).
     ExtractNode {
@@ -900,6 +910,7 @@ pub(crate) fn run(project: &mut Project, edit: Edit) -> Result<Expansion, EditEr
         Edit::AddLayer { grade, node } => {
             return grade::add(project, &grade, &node, grade::Beside::Layer)
         }
+        Edit::AddOutside { grade, node } => return grade::add_outside(project, &grade, &node),
         Edit::ExtractNode { grade, node } => return grade::extract(project, &grade, &node),
         Edit::ResetNode { grade, node } => return grade::reset(project, &grade, &node),
         Edit::CopyGrade {
@@ -1131,6 +1142,7 @@ pub fn timeline_of(edit: &Edit) -> Option<&Id> {
         | Edit::AppendNode { .. }
         | Edit::AddParallel { .. }
         | Edit::AddLayer { .. }
+        | Edit::AddOutside { .. }
         | Edit::ExtractNode { .. }
         | Edit::ResetNode { .. }
         | Edit::CopyGrade { .. }

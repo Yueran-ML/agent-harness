@@ -51,6 +51,14 @@ fn card() -> Option<Card> {
         }
         _ => wgpu::Dx12Compiler::Fxc,
     };
+    if matches!(
+        descriptor.backend_options.dx12.shader_compiler,
+        wgpu::Dx12Compiler::DynamicDxc { .. }
+    ) {
+        // Shaders of model 6.0, as the engine's (columbina_compose::gpu): every dxil.dll that
+        // Windows may find first signs them.
+        descriptor.backend_options.dx12.force_shader_model = dxc_shader_model();
+    }
     let instance = wgpu::Instance::new(descriptor);
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
@@ -91,6 +99,16 @@ fn card() -> Option<Card> {
         errors,
         float32_filterable,
     })
+}
+
+#[allow(
+    unsafe_code,
+    reason = "the token of wgpu that lowers the shader model is made by an unsafe function"
+)]
+fn dxc_shader_model() -> wgpu::ForceShaderModelToken {
+    // SAFETY: 6.0 is the least model that DXC compiles, and the translated shaders ask for no
+    // feature beyond it.
+    unsafe { wgpu::ForceShaderModelToken::with_shader_model(wgpu::DxcShaderModel::V6_0) }
 }
 
 fn require_card() -> Option<Card> {
@@ -557,6 +575,41 @@ fn how_long_output_transforms_take_on_a_frame_of_4k() {
         eprintln!(
             "{name}: {:.2} ms for a frame of 4K",
             dispatches(&card, &ready, &inputs, 10) * 2.0 * 1000.0
+        );
+    }
+}
+
+/// How long the pipeline of an output transform of ACES 2.0 takes to make (its shader compiled,
+/// by FXC unless `COLUMBINA_DX12_COMPILER` says otherwise), each on a card of its own, as a
+/// card keeps what it compiled: `cargo test --test gpu -- --ignored how_long`.
+#[test]
+#[ignore = "a measure, not a test"]
+fn how_long_output_transforms_take_to_compile() {
+    let config = Config::columbina().unwrap();
+    for (name, display, view) in [
+        (
+            "ACES 2.0 SDR (Rec.709)",
+            "Rec.1886 Rec.709 - Display",
+            "ACES 2.0 - SDR 100 nits (Rec.709)",
+        ),
+        (
+            "ACES 2.0 HDR 1000 (PQ)",
+            "Rec.2100-PQ - Display",
+            "ACES 2.0 - HDR 1000 nits (P3 D65)",
+        ),
+    ] {
+        let Some(card) = require_card() else { return };
+        let op = config
+            .display_view("ACEScct", display, view, Direction::Forward)
+            .unwrap()
+            .translated(TexelFormat::Rgba16Float)
+            .unwrap()
+            .unwrap();
+        let started = Instant::now();
+        let _ready = prepare(&card, &op);
+        eprintln!(
+            "{name}: compiled in {:.0} ms",
+            started.elapsed().as_secs_f64() * 1000.0
         );
     }
 }

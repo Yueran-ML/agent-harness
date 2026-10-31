@@ -17,7 +17,10 @@
 //!    derivatives: the tables have one level, and so the code runs anywhere, in a compute shader
 //!    and in non-uniform control flow too;
 //! 5. keeps the functions that the main function reaches, drops the entry point, names what is
-//!    left with the prefix, validates it, and writes it as WGSL.
+//!    left with the prefix, validates it, and writes it as WGSL;
+//! 6. reads a constant table (as the 363 hues of ACES 2.0) where it is, not from the copy of it
+//!    that the frontend makes in a variable of each function that indexes it: FXC, the
+//!    compiler of Direct3D 12, took as long again over each copy.
 //!
 //! It fails, rather than writing something doubtful, on what it does not know: uniforms (OCIO's
 //! dynamic properties), a texture used other than by `texture(t, …)`, and an index into a vector
@@ -28,8 +31,8 @@ use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
 
 use naga::{
-    AddressSpace, Block, Expression, Function, FunctionArgument, GlobalVariable, Handle, Module,
-    SampleLevel, Span, Statement, TypeInner,
+    AddressSpace, Block, Expression, Function, FunctionArgument, GlobalVariable, Handle,
+    LocalVariable, Module, SampleLevel, Span, Statement, TypeInner,
 };
 
 /// Why a shader could not be translated.
@@ -122,6 +125,7 @@ pub fn translate(glsl: &str, function: &str, split: bool) -> Result<Translated, 
     let info = validate(&module)?;
     check_vector_indices(&module, &info)?;
     check_signed_shifts(&module, &info)?;
+    index_tables_in_place(&mut module, &info);
     naga::compact::compact(&mut module, naga::compact::KeepUnused::Yes);
     let info = validate(&module)?;
     let library =
@@ -494,6 +498,101 @@ fn name_everything(module: &mut Module, main: &str) {
     }
 }
 
+/// Each element of a constant table read from the table itself, where naga's frontend of GLSL
+/// reads it from a copy in a variable of the function (`var t = table; … t[i]`): a variable
+/// that is set to a constant array and of which nothing is done but reading elements (its
+/// pointer used only to index it, and each element's only to load it) is left unset and unread,
+/// each load of an element made an index into the constant. FXC (the compiler of Direct3D 12)
+/// took some 0.07 s over each copy of a table of 363 values: an output transform of ACES 2.0,
+/// four copies, took 0.47 s to compile, and 0.2 s so.
+fn index_tables_in_place(module: &mut Module, info: &naga::valid::ModuleInfo) {
+    for (handle, function) in module.functions.iter_mut() {
+        let counts = &info[handle];
+        let mut tables: HashMap<Handle<LocalVariable>, Handle<Expression>> = HashMap::new();
+        for (local, variable) in function.local_variables.iter() {
+            let Some(init) = variable.init else { continue };
+            if matches!(function.expressions[init], Expression::Constant(_))
+                && matches!(module.types[variable.ty].inner, TypeInner::Array { .. })
+            {
+                tables.insert(local, init);
+            }
+        }
+        if tables.is_empty() {
+            continue;
+        }
+        // The pointers to each table, and to its elements; and how often each is used so.
+        let mut pointers: HashMap<Handle<Expression>, Handle<LocalVariable>> = HashMap::new();
+        for (expression, kind) in function.expressions.iter() {
+            if let Expression::LocalVariable(local) = *kind {
+                if tables.contains_key(&local) {
+                    pointers.insert(expression, local);
+                }
+            }
+        }
+        let mut elements: HashMap<Handle<Expression>, Handle<LocalVariable>> = HashMap::new();
+        let mut indexed: HashMap<Handle<Expression>, usize> = HashMap::new();
+        for (expression, kind) in function.expressions.iter() {
+            if let Expression::Access { base, .. } | Expression::AccessIndex { base, .. } = *kind {
+                if let Some(&local) = pointers.get(&base) {
+                    elements.insert(expression, local);
+                    *indexed.entry(base).or_default() += 1;
+                }
+            }
+        }
+        let mut loaded: HashMap<Handle<Expression>, usize> = HashMap::new();
+        for (_, kind) in function.expressions.iter() {
+            if let Expression::Load { pointer } = *kind {
+                if elements.contains_key(&pointer) {
+                    *loaded.entry(pointer).or_default() += 1;
+                }
+            }
+        }
+        // A table whose pointer, or the pointer to one of its elements, is used otherwise
+        // (written, handed to a function, loaded whole) is left as it is.
+        let mut kept: BTreeSet<Handle<LocalVariable>> = BTreeSet::new();
+        for (&pointer, &local) in &pointers {
+            if counts[pointer].ref_count != indexed.get(&pointer).copied().unwrap_or(0) {
+                kept.insert(local);
+            }
+        }
+        for (&element, &local) in &elements {
+            if counts[element].ref_count != loaded.get(&element).copied().unwrap_or(0) {
+                kept.insert(local);
+            }
+        }
+        let mut moved = BTreeSet::new();
+        let loads: Vec<Handle<Expression>> = function
+            .expressions
+            .iter()
+            .filter_map(|(expression, kind)| match *kind {
+                Expression::Load { pointer } => elements
+                    .get(&pointer)
+                    .filter(|local| !kept.contains(*local))
+                    .map(|_| expression),
+                _ => None,
+            })
+            .collect();
+        for load in loads {
+            let Expression::Load { pointer } = function.expressions[load] else {
+                continue;
+            };
+            let local = elements[&pointer];
+            let table = tables[&local];
+            function.expressions[load] = match function.expressions[pointer] {
+                Expression::Access { index, .. } => Expression::Access { base: table, index },
+                Expression::AccessIndex { index, .. } => {
+                    Expression::AccessIndex { base: table, index }
+                }
+                _ => continue,
+            };
+            moved.insert(local);
+        }
+        for local in moved {
+            function.local_variables[local].init = None;
+        }
+    }
+}
+
 /// No `v[i]` with `v` a vector and `i` not constant inside a loop: Direct3D 12's compiler of
 /// shaders crashed on it (see the crate of LUTs). Other indices into vectors are left as they are.
 fn check_vector_indices(
@@ -618,6 +717,30 @@ mod tests {
         );
         let unsigned = "  uint x = uint(outColor.r * 100.0);\n  x = (x + 16384u) >> 15u;\n  outColor.r = float(x);";
         translate(&glsl(unsigned), "t_main", true).unwrap();
+    }
+
+    #[test]
+    fn a_constant_table_is_indexed_where_it_is_and_not_copied() {
+        let text = format!(
+            "const float t_table[4] = float[4](0.0, 1.0, 4.0, 9.0);\n{}",
+            glsl(
+                "  int i = int(outColor.r);\n  outColor.g = t_table[i];\n  \
+                 outColor.b = t_table[i + 1] + t_table[2];"
+            )
+        );
+        let out = translate(&text, "t_main", true).unwrap();
+        assert!(!out.library.contains("= t_table;"), "{}", out.library);
+        assert!(out.library.contains("t_table["), "{}", out.library);
+        // A table that is written is copied, as the code says.
+        let written = format!(
+            "const float t_table[4] = float[4](0.0, 1.0, 4.0, 9.0);\n{}",
+            glsl(
+                "  float copy[4] = t_table;\n  copy[1] = outColor.r;\n  \
+                 outColor.g = copy[int(outColor.b)];"
+            )
+        );
+        let out = translate(&written, "t_main", true).unwrap();
+        assert!(out.library.contains("= t_table;"), "{}", out.library);
     }
 
     #[test]

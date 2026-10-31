@@ -1477,6 +1477,10 @@ impl Worker {
                 reply,
             } => {
                 self.unload();
+                // The view shows HDR media as HDR, as its file says it is.
+                if let Some(view) = lock(&self.world.view).as_ref() {
+                    view.set_content(crate::managed::content_of_media(&facts));
+                }
                 let opened = self.open(media.clone(), path, proxy, &facts, grid);
                 if opened.is_err() {
                     self.world.clear();

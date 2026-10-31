@@ -1,6 +1,8 @@
 //! One background export of an immutable project snapshot, using original media and the
 //! same compositor and mixer as playback. Subtitles are sidecars, never burned in.
 
+#[cfg(test)]
+mod colour;
 mod output;
 #[cfg(test)]
 mod pictures;
@@ -17,8 +19,8 @@ use columbina_compose::{
     Compositor, LayerColor, Scene, SceneLayer, Source, Target, Text, Transform, YuvCoding,
 };
 use columbina_media::{
-    AudioFormat, AudioSettings, Codec, Hardware, MediaError, NativePicture, Picture, Quality,
-    VideoSettings, Writer,
+    AudioFormat, AudioSettings, Codec, ColorTags, ContentLight, Hardware, Mastering, MediaError,
+    NativePicture, Picture, Quality, VideoSettings, Writer,
 };
 use columbina_model::{resolve, Project, TrackKind};
 use serde::Deserialize;
@@ -26,6 +28,7 @@ use serde_json::json;
 
 use crate::gpu::Graphics;
 use crate::grading::{Grading, LutPlaces, MissingLut};
+use crate::managed::{self, Output};
 use crate::play::{mix::Mixer, sources::Sources, Notify};
 use crate::rpc::{self, Fault};
 use crate::srt;
@@ -245,12 +248,19 @@ struct Plan {
     path: PathBuf,
     range: Range<i64>,
     video: VideoSettings,
+    /// What the frames are put out as, by the project's colour management: the tags of the
+    /// file, the matrix of its Y'CbCr, and of HDR its mastering.
+    output: Output,
     subtitle_tracks: Vec<String>,
     replace: bool,
     project_dir: PathBuf,
 }
 
 impl Plan {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each check of the request in turn, then what it makes"
+    )]
     fn new(project: Project, request: Request, dir: &Path) -> Result<Self, Fault> {
         let index = project
             .timelines
@@ -312,7 +322,19 @@ impl Plan {
             parts.extend(output::check(&path, dir, request.replace)?);
             output::not_a_source(&path, &project)?;
         }
+        let output = managed::output_of_settings(&project.color).map_err(|message| {
+            Fault::new(rpc::REFUSED, format!("colour management: {message}"))
+                .with_data(json!({"reason": "color"}))
+        })?;
+        // HDR is written in 10 bits, as HEVC Main 10 or ProRes; H.264 is written in 8 only.
+        if output.hdr.is_some() && codec == Codec::H264 {
+            return Err(Fault::params(
+                "an output of HDR (PQ or HLG) is exported as hevc or prores, in 10 bits",
+            )
+            .with_data(json!({"reason": "hdr_codec"})));
+        }
         let bits = if codec == Codec::ProRes
+            || output.hdr.is_some()
             || codec == Codec::Hevc
                 && project.media.iter().any(|media| {
                     media
@@ -340,6 +362,7 @@ impl Plan {
             path: request.path,
             range,
             video,
+            output,
             subtitle_tracks: request.subtitle_tracks,
             replace: request.replace,
             project_dir: dir.to_owned(),
@@ -404,7 +427,10 @@ impl Worker {
     }
 
     fn writer(&mut self, outputs: &mut output::Files, sound: bool) -> Result<Writer, String> {
-        self.writer_with(outputs, sound, Writer::create)
+        let tags = tags_of(&self.plan.output);
+        self.writer_with(outputs, sound, |path, video, audio| {
+            Writer::create_tagged(path, video, audio, &tags)
+        })
     }
 
     fn writer_with(
@@ -447,6 +473,10 @@ impl Worker {
         Ok(writer)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the files, then each frame and its sound, then the end, in order"
+    )]
     fn run(&mut self) -> Result<(), String> {
         self.cancelled()?;
         let project = Arc::clone(&self.plan.project);
@@ -494,6 +524,9 @@ impl Worker {
         let mut pending = VecDeque::new();
         let mut samples = 0;
         let mut picture = Picture::default();
+        // The light of the content of PQ, measured of each frame: MaxCLL and MaxFALL.
+        let pq = self.plan.output.hdr.is_some_and(|hdr| hdr.pq);
+        let mut light = (0.0f64, 0.0f64);
         self.tell("running");
         for frame in self.plan.range.clone() {
             self.cancelled()?;
@@ -504,6 +537,10 @@ impl Worker {
                 (&mut scene, &clips, frame),
                 &mut picture,
             )?;
+            if pq {
+                let (most, mean) = managed::light_of(&picture);
+                light = (light.0.max(most), light.1.max(mean));
+            }
             let encoder = self.encoder.clone().unwrap_or_default();
             writer.video(&picture).map_err(|error| {
                 format!(
@@ -544,6 +581,19 @@ impl Worker {
             });
         }
         self.cancelled()?;
+        if pq {
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "nits of at most 10000"
+            )]
+            writer
+                .set_content_light(ContentLight {
+                    max_cll: light.0.ceil() as u32,
+                    max_fall: light.1.ceil() as u32,
+                })
+                .map_err(|error| format!("the light of the movie could not be said: {error}"))?;
+        }
         writer
             .finish()
             .map_err(|error| format!("the movie could not be finished: {error}"))?;
@@ -557,6 +607,7 @@ impl Worker {
         let compositor = Compositor::new(Arc::clone(&gpu));
         let target = Target::export(&gpu, timeline.width, timeline.height, self.plan.video.bits)
             .map_err(|error| error.to_string())?;
+        target.set_matrix(self.plan.output.matrix);
         Ok(Drawing {
             grading: Grading::new(self.luts.clone()),
             gpu,
@@ -655,6 +706,23 @@ impl Worker {
     }
 }
 
+/// The tags of a file whose frames are put out as `output`.
+fn tags_of(output: &Output) -> ColorTags {
+    ColorTags {
+        primaries: output.primaries,
+        transfer: output.transfer,
+        matrix: output.matrix_code,
+        full_range: false,
+        // HDR10's static metadata, of PQ: HLG is relative to its display, and says none.
+        mastering: output.hdr.filter(|hdr| hdr.pq).map(|hdr| Mastering {
+            primaries: hdr.primaries,
+            white: hdr.white,
+            min_nits: hdr.min_nits,
+            max_nits: hdr.peak,
+        }),
+    }
+}
+
 /// How long an export waits for a card to be made again after one was lost.
 const RESTORE: Duration = Duration::from_secs(30);
 
@@ -745,7 +813,7 @@ mod tests {
     use super::*;
     use crate::test_media::{self, Sample};
 
-    fn worker(dir: &Path) -> Worker {
+    pub(super) fn worker(dir: &Path) -> Worker {
         let mut project = Project::sample();
         project.timelines[0].width = 64;
         project.timelines[0].height = 36;

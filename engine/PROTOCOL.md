@@ -1513,14 +1513,21 @@ kind's is refused.
 | `height` | histogram | 256 | 16–4096, shared by its strips |
 | `space` | chromaticity | `"rec709"` | the primaries of the signal: a gamut (`"rec709"`, `"rec2020"`, `"dci-p3"`, `"p3-d65"`, `"rec601-pal"`, `"rec601-ntsc"`), or `{"red": [x, y], "green", "blue", "white"}` |
 | `gamuts` | chromaticity | `[{"name": "Rec.709", "primaries": "rec709"}]` | the triangles drawn, each `{"name", "primaries"}` with primaries written as `space` is; the first is the space's own as a rule, and the next one is to compare with (p. 3017) |
+| `signal.project` | all | `true` where `signal` is left out | measure by the signal of the output space of the project's colour management, followed as it changes (the `luma` and `transfer` written are then Rec.709's, and not used); `false` to measure by `luma` and `transfer` |
 | `signal.luma` | all | `"rec709"` | the luma coefficients: `"rec709"`, `"rec601"`, `"rec2020"`, or `[red, green, blue]`, red and blue above 0 and at most 0.5 |
 | `signal.transfer` | all | `"rec709"` | a gamma of the model (`"rec709"`, `"gamma22"`, `"gamma26"`, `"gamma28"`, `"srgb"`, `"linear"`, `"st2084"`, `"hlg"`): what the chromaticity diagram makes the signal linear by, and the curve of a scale of nits |
 | `look.mapping` | all | `"log"` | how a count is made a brightness: `"log"`, or `"gamma"` (2.2), which keeps more of the strong parts apart |
 | `look.brightness` | all | 0.5 | 0–1; each 1/16 doubles the trace (DaVinci's slider of each scope) |
 | `look.graticule` | all | 0.5 | 0–1: how brightly the graticule is drawn into the picture; 0 for none, the client then drawing `graticule` itself |
 
-Until the colour settings of the project are in the protocol, `signal` is the client's to set,
-and is Rec.709 unless it says otherwise.
+A scope whose settings leave `signal` out (or give `"project": true`) measures the timeline
+monitor's frame by the luma coefficients and transfer of the project's output space (Rec.709 in
+`DaVinci YRGB` and for a space of a camera; BT.2020 and PQ for `Rec.2100 ST2084`; of a bypassed
+output, the timeline's), and is sent a frame by them as soon as a change of the colour
+management changes them. The source monitor's are Rec.709. `scopes.statistics` measures luma
+the same way; of a frame drawn off screen (`{timeline, frame}`), which is drawn through the same
+input and output transforms as the monitor shows it, by its output space; of the picture at a
+node, which is before the output transform, by the primaries of the timeline space.
 
 **The graticule** is `{"width", "height", "lines": [{"from": [x, y], "to": [x, y], "colour":
 [r, g, b]}], "labels": [{"at": [x, y], "text": "512", "colour": [r, g, b]}]}`, in pixels of the
@@ -1833,6 +1840,49 @@ are ours (marked *ours*), to be checked against Resolve.
   already changes nothing: alone in a transaction it is refused as `empty` and makes no step.
 - `set_media_color` may name media by a `$name` given in the same transaction.
 
+### What colour management does to the picture
+
+The timeline monitor and an export draw a project as its `color` says
+(`crates/server/src/managed.rs`; the transforms are OCIO's, the tone mappings ours):
+
+- **`yrgb`**: nothing. Decoded R'G'B' is held to 0..1, as before; an export is tagged BT.709:
+  a project that is not managed is drawn to the bit as before colour management.
+- **`yrgb_managed`** (RCM): each picture from its input space (`media_input`: by hand, else as
+  its file says, else the project's) into the timeline space, never clipped; through the Input
+  DRT where it maps (from the most of the space, 100 nits for SDR, 1000 for HLG, the mastering
+  display's or 10000 for PQ, 10000 for linear light and the spaces of cameras, to the working
+  luminance; up only with `inverse_drt`); titles and colours from Rec.709 Gamma 2.4, their white
+  at `graphics_white`. Grades are done in the timeline space, whose primaries give their luma.
+  Then into the output space: the Output DRT (from what the timeline holds to the most of the
+  output), the reference of 203 nits, `limit_gamut` (clipped below 0 in the smaller gamut) and,
+  where `white_point_adaptation` is off, the adaptation of white undone; then clipped to 0..1. A
+  preset other than Custom maps between SDR and HDR by the rule of pp. 232–233 where its output
+  is of the other range. `bypass` is no transform.
+- **`acescct`, `acescc`**: each picture by its IDT into the timeline (with the reference gamut
+  compression of ACES 1.3 where `gamut_compress`), titles as Rec.709, grades in AP1, and out
+  through the ODT, a view of the built-in config of `aces_version`, clipped.
+
+The DRTs (`simple`, `luminance`, `davinci`, `saturation_preserving`) are ours: the curve of the
+rule of pp. 232–233 (no change below half the target, then cubics of Hermite through its knots:
+for 1000 to 100 nits, 50 → 50, 100 → 90, 1000 → 100), on each channel (`simple`, from 55 times
+the target, as "5500 nits to 100", p. 2089) or on luminance (the others), `davinci` greying the
+brightest and darkest, `saturation_preserving` by its Sat. Rolloff (`crates/compose/src/tone.rs`).
+
+A change of the colour management, while a timeline is loaded in the monitor, is made ready on a
+thread of the engine's own and its shaders compiled there; the monitor shows the colour it had
+until then (up to a second and a half for an ODT of ACES 2.0), and then draws again. A load, and
+an export, wait for it. The timeline monitor's view is told to show HDR (PQ or HLG, and its most
+nits) where the output space is of HDR; the source monitor's where the media's file says PQ or
+HLG.
+
+An export is tagged with its output space: its primaries, transfer and matrix (BT.2020
+non-constant luminance for Rec.2020 and P3, the Y'CbCr made by that matrix), limited range; and
+of PQ, the mastering display (the primaries of `limit_gamut` or of the output, D65, 0.0001 to
+the most nits of the output) and the light of its content, `MaxCLL` and `MaxFALL`, measured of
+every frame it writes. An output of HDR is written in 10 bits (HEVC Main 10, or ProRes); H.264,
+which is written in 8, is refused for it (`render.start`, `-32602` with `{"reason":
+"hdr_codec"}`). A space of a camera or of grading as the output is tagged unspecified.
+
 ### Refusals of colour
 
 | reason | fields | meaning |
@@ -2118,7 +2168,9 @@ the export fails, saying so. An encoder that fails after it opened (a frame, the
 finishing the file) fails the export with a message naming the encoder and the frame; the
 ProRes fallback is only ever taken when no encoder opens, never in the middle of a file. Audio is AAC, 192 kb/s, 48 kHz stereo; a timeline with no enabled
 clip on an enabled audio track gives a file with no sound. H.264 uses 8-bit picture; HEVC uses
-10 bits when the project contains media of more than 8 bits; ProRes always 10 bits. If no hardware
+10 bits when the project contains media of more than 8 bits or its output is of HDR; ProRes always
+10 bits. The picture is tagged with the colours of the project's output space (Colour management,
+What colour management does to the picture). If no hardware
 encoder can open H.264/HEVC, the engine tries ProRes in a `.mov`, reports that change, and
 checks the new destination against the same overwrite rules.
 

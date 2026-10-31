@@ -110,17 +110,26 @@ struct Hub {
     next: u64,
     /// What each monitor shows (by [`Monitor::index`]), kept while a scope is subscribed to it.
     shown: [Option<Shown>; 2],
+    /// The signal of what each monitor shows, by the output space of the project's colour
+    /// management ([`Scopes::signal`]): what a scope that follows the project measures by.
+    signals: [compose::Signal; 2],
     /// Whether the thread of the scopes was started.
     started: bool,
     stopping: bool,
 }
 
 /// A scope subscribed by a connection.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "what a scope is owed, each on its own"
+)]
 struct Subscribed {
     connection: u64,
     queue: queue::Sender,
     view: Monitor,
     settings: compose::ScopeSettings,
+    /// Whether it measures by the signal of the project ([`Hub::signals`]).
+    follows: bool,
     /// Raised by each change of settings: a frame counted by settings before is not sent.
     version: u64,
     /// Whether a frame is to be counted and sent.
@@ -288,6 +297,7 @@ impl Scopes {
                     queue: sender.clone(),
                     view: asked.view,
                     settings: made,
+                    follows: written.signal.project,
                     version: 0,
                     owed: true,
                     reading: false,
@@ -346,6 +356,7 @@ impl Scopes {
         let answered = sender.push(line);
         let scope = hub.subscribed.get_mut(&id).expect("found above");
         scope.settings = made;
+        scope.follows = written.signal.project;
         scope.version += 1;
         scope.owed = true;
         scope.due = Instant::now();
@@ -418,6 +429,26 @@ impl Scopes {
         }
     }
 
+    /// The signal of what a monitor shows: of the output space of its project's colour
+    /// management. Each scope of the monitor that follows the project is owed a frame by it.
+    pub fn signal(&self, view: Monitor, signal: compose::Signal) {
+        let mut hub = self.hub();
+        if hub.signals[view.index()] == signal {
+            return;
+        }
+        hub.signals[view.index()] = signal;
+        let now = Instant::now();
+        for scope in hub.subscribed.values_mut() {
+            if scope.view == view && scope.follows {
+                scope.version += 1;
+                scope.owed = true;
+                scope.due = now;
+            }
+        }
+        drop(hub);
+        self.0.wake.notify_all();
+    }
+
     /// A monitor shows nothing (it was unloaded).
     pub fn cleared(&self, view: Monitor) {
         self.hub().shown[view.index()] = None;
@@ -439,6 +470,21 @@ impl Scopes {
     /// # Errors
     /// The bins are out of range, or the frame cannot be measured (the card was lost).
     pub fn statistics(&self, view: Monitor, shown: &Shown, bins: u32) -> Result<Value, Fault> {
+        self.statistics_by(view, shown, bins, None)
+    }
+
+    /// As [`Scopes::statistics`], luma measured by `signal` where it is given (a frame drawn off
+    /// screen, by the colour management it was drawn with), else by the monitor's.
+    ///
+    /// # Errors
+    /// As [`Scopes::statistics`].
+    pub fn statistics_by(
+        &self,
+        view: Monitor,
+        shown: &Shown,
+        bins: u32,
+        signal: Option<compose::Signal>,
+    ) -> Result<Value, Fault> {
         let drawing = |message: String| {
             Fault::new(rpc::TRANSPORT_FAILED, message).with_data(json!({"reason": "draw"}))
         };
@@ -459,8 +505,9 @@ impl Scopes {
             }
         };
         let pipelines = self.0.pipelines(&gpu);
+        let signal = signal.unwrap_or_else(|| self.hub().signals[view.index()]);
         let figures = pipelines
-            .statistics(&texture, &compose::Signal::default(), bins)
+            .statistics(&texture, &signal, bins)
             .map_err(|error| drawing(error.to_string()))?;
         let mut value = settings::statistics(&figures);
         value["view"] = json!(view);
@@ -602,7 +649,10 @@ impl Inner {
             let mut wait: Option<Duration> = None;
             let mut jobs = Vec::new();
             let Hub {
-                subscribed, shown, ..
+                subscribed,
+                shown,
+                signals,
+                ..
             } = &mut *hub;
             for (&id, scope) in subscribed.iter_mut() {
                 if !scope.owed || scope.reading {
@@ -630,7 +680,13 @@ impl Inner {
                     id,
                     version: scope.version,
                     view: scope.view,
-                    settings: scope.settings.clone(),
+                    settings: {
+                        let mut settings = scope.settings.clone();
+                        if scope.follows {
+                            settings.signal = signals[scope.view.index()];
+                        }
+                        settings
+                    },
                     shown: shown.clone(),
                 });
             }

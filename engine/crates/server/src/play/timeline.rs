@@ -150,6 +150,13 @@ impl Timeline {
                 let _ = inbox.send(Command::Redraw);
             }
         });
+        // The colour management of a project made ready on a thread of its own: draw again.
+        let wake: Arc<dyn Fn() + Send + Sync> = {
+            let inbox = Mutex::new(inbox.clone());
+            Arc::new(move || {
+                let _ = lock(&inbox).send(Command::Redraw);
+            })
+        };
         let started = std::thread::Builder::new()
             .name("columbina-timeline".into())
             .spawn({
@@ -166,8 +173,9 @@ impl Timeline {
                         view,
                         graphics,
                         sources: Sources::new(Hardware::Auto, again),
-                        grading: Grading::new(luts),
+                        grading: Grading::monitor(luts, wake),
                         scopes,
+                        output: None,
                         compare: Comparison::new(),
                         status: Status::default(),
                         project: None,
@@ -307,6 +315,8 @@ struct Worker {
     sources: Sources,
     /// The grades of the timeline loaded, ready on the card.
     grading: Grading,
+    /// What the frames are put out as, as the scopes and the view were last told.
+    output: Option<crate::managed::Output>,
     /// The scopes of the timeline monitor, told each frame shown.
     scopes: Scopes,
     /// What the frame is compared with: a wipe or a split screen.
@@ -678,7 +688,8 @@ impl Worker {
                     (
                         same_picture(before, was, &project, timeline),
                         same_sound(before, was, &project, timeline, from),
-                        same_grades(before, was, &project, timeline),
+                        same_grades(before, was, &project, timeline)
+                            && crate::managed::Key::of(before) == crate::managed::Key::of(&project),
                     )
                 });
         let last = (resolve::duration(timeline) - 1).max(0);
@@ -1025,10 +1036,24 @@ impl Worker {
             .graphics
             .gpu()
             .map_err(|error| drawing(&error.to_string()))?;
-        self.grading.update(&gpu, project, index);
+        let project = Arc::clone(project);
+        self.grading.update(&gpu, &project, index);
         self.grading.grade(scene, clips, frame);
+        self.grading
+            .make_ahead(&project, index, (scene, clips, frame));
         if self.status.missing_luts != self.grading.missing() {
             self.status.missing_luts = self.grading.missing().to_vec();
+        }
+        // The scopes measure the frame as its output space has it, and the view shows HDR as
+        // HDR (each frame, so that a view attached since is told too; it changes nothing where
+        // it is told the same).
+        let output = self.grading.output();
+        if self.output != Some(output) {
+            self.output = Some(output);
+            self.scopes.signal(Monitor::Timeline, output.signal);
+        }
+        if let Some(view) = lock(&self.view).as_ref() {
+            view.set_content(crate::managed::content(&output));
         }
         Ok(())
     }
@@ -1243,6 +1268,8 @@ fn drawing(message: &str) -> Fault {
 }
 
 #[cfg(test)]
+mod colour;
+#[cfg(test)]
 mod grades;
 
 #[cfg(test)]
@@ -1262,6 +1289,7 @@ mod tests {
             sources: Sources::new(Hardware::Off, Arc::new(|_, _| {})),
             grading: Grading::new(LutPlaces::with_library(std::path::Path::new("."), vec![])),
             scopes: Scopes::new(true, Graphics::new()),
+            output: None,
             compare: Comparison::new(),
             status: Status::default(),
             project: None,

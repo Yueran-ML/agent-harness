@@ -1210,12 +1210,13 @@ async fn statistics_apart(
     let (probe, scopes, bins) = (Arc::clone(&engine.probe), engine.scopes.clone(), asked.bins);
     let result = tokio::task::spawn_blocking(move || {
         let drawn = probe.draw(&project, &timeline, frame, node.as_ref())?;
+        let signal = drawn.signal;
         let shown = Shown::Target {
             gpu: drawn.gpu,
             target: drawn.target,
             frame,
         };
-        let mut value = scopes.statistics(Monitor::Timeline, &shown, bins)?;
+        let mut value = scopes.statistics_by(Monitor::Timeline, &shown, bins, Some(signal))?;
         if let Some(object) = value.as_object_mut() {
             object.remove("view");
             if let Some(monitor) = monitor {
@@ -1285,7 +1286,11 @@ async fn view_sample(
             probe::mean_of(drawn, region).map(|rgb| (rgb, region, (width, height)))
         };
         let drawn = match shown {
-            Some(Shown::Target { gpu, target, .. }) => probe::Drawn { gpu, target },
+            Some(Shown::Target { gpu, target, .. }) => probe::Drawn {
+                gpu,
+                target,
+                signal: columbina_compose::scopes::Signal::default(),
+            },
             Some(Shown::Picture { picture, rotation }) => probe.draw_picture(picture, rotation)?,
             None => {
                 let (timeline, frame) = at.as_ref().expect("named with the frame");

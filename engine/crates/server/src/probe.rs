@@ -8,7 +8,9 @@
 //!
 //! A frame of a timeline is drawn as an export draws it ([`crate::render::scene`] and
 //! [`Grading`], as the comparisons of the viewer draw theirs): its pictures read from the
-//! original media by decoders of its own, graded, without subtitles.
+//! original media by decoders of its own, through their input transforms, graded, and through
+//! the output transform of the project's colour management, as the monitor shows it; without
+//! subtitles. Its statistics measure luma by the output space, as the monitor's scopes do.
 //!
 //! # The picture at a node
 //!
@@ -22,7 +24,8 @@
 //! unless the clip is named), where it lies on the canvas, as the node sees it: not laid over the
 //! other layers, nor graded by the timeline. For a node of the timeline's grade, every layer is
 //! drawn and graded, laid together, and the timeline's grade done up to the node. Each is in the
-//! working space of the timeline, as the node sees it, before any output transform.
+//! working space of the timeline, as the node sees it, through the input transforms and before
+//! the output transform (and its statistics measure luma by the timeline's primaries).
 //!
 //! A node that leads to the node only by its key, and to nothing else, has nowhere for its picture
 //! to go in the grade cut there; that grade is not complete, and it is not drawn (`node`).
@@ -97,6 +100,9 @@ struct Drawing {
 pub struct Drawn {
     pub gpu: Arc<Gpu>,
     pub target: Arc<Target>,
+    /// What it is measured by: the signal of the output space, or of the timeline's working
+    /// space for a picture at a node.
+    pub signal: columbina_compose::scopes::Signal,
 }
 
 /// The refusal of params that do not name what there is.
@@ -142,6 +148,7 @@ impl Probe {
                     format!("there is no timeline {timeline} in the project"),
                 )
             })?;
+        let at_node = node.is_some();
         let (project, only) = match node {
             Some(node) => cut_at(project, index, frame, node)?,
             None => (project.clone(), None),
@@ -159,7 +166,18 @@ impl Probe {
             }
             drawn.grading.update(gpu, &project, index);
             drawn.grading.grade(&mut scene, &clips, frame);
-            Ok(scene)
+            let output = drawn.grading.output();
+            let signal = if at_node {
+                // The node sees the working space: no output transform.
+                scene.output = columbina_compose::Stage::default();
+                columbina_compose::scopes::Signal {
+                    luma: drawn.grading.luma(),
+                    ..output.signal
+                }
+            } else {
+                output.signal
+            };
+            Ok((scene, signal))
         })
     }
 
@@ -167,7 +185,10 @@ impl Probe {
     /// there or is of another card.
     fn with_drawing(
         &self,
-        make: impl FnOnce(&Arc<Gpu>, &mut Drawing) -> Result<Scene, Fault>,
+        make: impl FnOnce(
+            &Arc<Gpu>,
+            &mut Drawing,
+        ) -> Result<(Scene, columbina_compose::scopes::Signal), Fault>,
     ) -> Result<Drawn, Fault> {
         let gpu = self
             .graphics
@@ -186,7 +207,7 @@ impl Probe {
             });
         }
         let drawn = locked.as_mut().expect("made above");
-        let scene = make(&gpu, drawn)?;
+        let (scene, signal) = make(&gpu, drawn)?;
         let target = Target::preview(&gpu, scene.width, scene.height)
             .map_err(|error| drawing(&error.to_string()))?;
         let _turn = self.graphics.draw_turn(false);
@@ -197,6 +218,7 @@ impl Probe {
         Ok(Drawn {
             gpu,
             target: Arc::new(target),
+            signal,
         })
     }
 
@@ -212,12 +234,15 @@ impl Probe {
         self.with_drawing(|_, _| {
             let (width, height) =
                 columbina_compose::geometry::shown_size((picture.width, picture.height), rotation);
-            Ok(Scene {
-                width,
-                height,
-                layers: vec![crate::render::picture_layer(picture, rotation)],
-                ..Scene::default()
-            })
+            Ok((
+                Scene {
+                    width,
+                    height,
+                    layers: vec![crate::render::picture_layer(picture, rotation)],
+                    ..Scene::default()
+                },
+                columbina_compose::scopes::Signal::default(),
+            ))
         })
     }
 }

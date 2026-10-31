@@ -46,6 +46,7 @@ mod gpu;
 mod grading;
 mod log;
 mod luts;
+mod managed;
 mod names;
 mod play;
 mod probe;

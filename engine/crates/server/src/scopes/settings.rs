@@ -20,7 +20,8 @@ use serde_json::{json, Value};
 pub struct Settings {
     #[serde(flatten)]
     pub kind: Kind,
-    #[serde(default)]
+    /// Left out, the signal of the project's output space, followed as it changes.
+    #[serde(default = "Signal::of_project")]
     pub signal: Signal,
     #[serde(default)]
     pub look: Look,
@@ -251,12 +252,18 @@ impl Points {
     }
 }
 
-/// What the signal of the frame is: its luma coefficients and its transfer.
+/// What the signal of the frame is: its luma coefficients and its transfer; or, with `project`,
+/// those of the output space of the project's colour management, whatever they are (the luma and
+/// transfer written are then those of Rec.709, which `DaVinci YRGB` has).
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Signal {
     pub luma: Luma,
     pub transfer: Gamma,
+    /// Whether the scope measures by the signal of the project's output space, followed as it
+    /// changes, rather than by these.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub project: bool,
 }
 
 impl Default for Signal {
@@ -264,6 +271,17 @@ impl Default for Signal {
         Signal {
             luma: Luma::Named(LumaOf::Rec709),
             transfer: Gamma::Rec709,
+            project: false,
+        }
+    }
+}
+
+impl Signal {
+    /// The signal of a scope that says none: the project's.
+    fn of_project() -> Signal {
+        Signal {
+            project: true,
+            ..Signal::default()
         }
     }
 }
@@ -521,7 +539,7 @@ mod tests {
         assert_eq!(
             written,
             json!({"kind":"waveform","width":512,"levels":256,"channels":"luma","scale":"10-bit",
-                "signal":{"luma":"rec709","transfer":"rec709"},
+                "signal":{"luma":"rec709","transfer":"rec709","project":true},
                 "look":{"mapping":"log","brightness":0.5,"graticule":0.5}})
         );
     }

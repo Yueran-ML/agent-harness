@@ -36,6 +36,23 @@
 //! is over everything laid on the canvas, and under the subtitles, which come after it (p.
 //! 3330); an export burns no subtitles in.
 //!
+//! # Colour management
+//!
+//! The grades are done in the timeline space of the project's colour management, whose
+//! primaries give their luma, with the project's S-curve of contrast and interpolation of LUTs;
+//! each layer is given its input transform and the scene its output transform
+//! ([`crate::managed`]). A change of those settings makes every grade ready again.
+//!
+//! An export makes the colour management of its project before its first frame, and waits for
+//! it. A monitor ([`Grading::monitor`]) makes the first of a timeline that it loads so too; a
+//! later change (of the settings, of the input space or levels of media) is made on a thread of
+//! its own, which then draws the frame that the monitor last showed, by the new transforms and
+//! grades, small, with a compositor of its own: the shaders that the monitor will need are so
+//! compiled there, off its thread (Direct3D 12 keeps what it compiled for the device, by the
+//! text of the shader). Until that is done the monitor goes on with the colour it had, so that
+//! playing never waits on a compiler (an output transform of ACES 2.0 takes it up to a second);
+//! then it takes the new colour and is told to draw again.
+//!
 //! # LUTs
 //!
 //! A LUT that a corrector names is looked for in the folder of the project, then in the library
@@ -45,15 +62,23 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Instant;
 
 use columbina_compose::grade::{CardLuts, GradeOptions, LutCache, Prepared, Roots};
-use columbina_compose::{ColorOp, Gpu, Scene, Stage};
+use columbina_compose::ocio::CardOps;
+use columbina_compose::{
+    ColorOp, Compositor, Gpu, Interpolation, LayerColor, Scene, Stage, Target,
+};
+use columbina_model::color_management::LutInterpolation;
 use columbina_model::grade::{Grade, NodeKind};
 use columbina_model::keyframes::KeyClock;
-use columbina_model::project::TrackKind;
+use columbina_model::project::{Source as ClipSource, TrackKind};
 use columbina_model::{Project, Timeline};
 use serde::Serialize;
+use serde_json::json;
+
+use crate::managed::{Colour, Key, Output};
 
 /// How many bytes of tables of LUTs are kept read, for all the monitors and exports of an
 /// engine.
@@ -136,12 +161,38 @@ struct ClipGrades {
 /// The pre-clip and post-clip grades of a group, ready.
 type GroupGrades = (Option<Arc<Prepared>>, Option<Arc<Prepared>>);
 
+/// What a monitor's colour management is made on a thread of its own by.
+struct Background {
+    /// Tells the monitor to draw again: its colour is ready.
+    wake: Arc<dyn Fn() + Send + Sync>,
+    /// What the colour is to be made of, where it is not being made yet.
+    wanted: Option<Key>,
+    /// What is being made, and what came of it.
+    job: Option<(Key, Arc<Mutex<Option<Made>>>)>,
+    /// What could not be made, not to be tried again until the project changes it.
+    failed: Option<Key>,
+}
+
+/// What a thread made of colour management: the colour, or why not.
+type Made = Result<Arc<Colour>, String>;
+
+/// The size that the frame is drawn at to compile its shaders: small, as only its shaders count.
+const WARM: (u32, u32) = (64, 36);
+
 /// The grades of one timeline of a project, ready on one card.
 pub struct Grading {
     places: LutPlaces,
     options: GradeOptions,
-    /// The card, and its LUTs.
-    card: Option<(Arc<Gpu>, CardLuts)>,
+    /// The interpolation of the LUTs of the grades.
+    interpolation: LutInterpolation,
+    /// The card, its LUTs, and its operations of colour management.
+    card: Option<(Arc<Gpu>, CardLuts, Arc<CardOps>)>,
+    /// The colour management in force.
+    colour: Arc<Colour>,
+    /// A monitor's: the colour management made on a thread of its own; none for an export.
+    background: Option<Background>,
+    /// The media of each clip of media of the timeline, by the clip.
+    media: HashMap<String, String>,
     /// The project and the timeline that the grades are of.
     of: Option<(Arc<Project>, usize)>,
     clips: HashMap<String, ClipGrades>,
@@ -154,11 +205,16 @@ pub struct Grading {
 }
 
 impl Grading {
+    /// The grades of an export: its colour management made before its first frame.
     pub fn new(places: LutPlaces) -> Grading {
         Grading {
             places,
             options: GradeOptions::default(),
+            interpolation: LutInterpolation::default(),
             card: None,
+            colour: Arc::new(Colour::unmanaged()),
+            background: None,
+            media: HashMap::new(),
             of: None,
             clips: HashMap::new(),
             groups: HashMap::new(),
@@ -168,14 +224,34 @@ impl Grading {
         }
     }
 
-    /// Make ready the grades of timeline `index` of `project` on `gpu`: nothing to do where they
-    /// are of that project and card already. Gives whether anything was made again.
+    /// The grades of a monitor, whose colour management, once it has some, is made again on a
+    /// thread of its own; `wake` tells it to draw again when that is ready.
+    pub fn monitor(places: LutPlaces, wake: Arc<dyn Fn() + Send + Sync>) -> Grading {
+        let mut grading = Grading::new(places);
+        grading.background = Some(Background {
+            wake,
+            wanted: None,
+            job: None,
+            failed: None,
+        });
+        grading
+    }
+
+    /// Make ready the grades of timeline `index` of `project` on `gpu`, and its colour
+    /// management: nothing to do where they are of that project and card already. Gives whether
+    /// anything was made again.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the card, the colour, then each grade, in the order they depend on each other"
+    )]
     pub fn update(&mut self, gpu: &Arc<Gpu>, project: &Arc<Project>, index: usize) -> bool {
         let same_card = self
             .card
             .as_ref()
-            .is_some_and(|(card, _)| Arc::ptr_eq(card, gpu));
+            .is_some_and(|(card, _, _)| Arc::ptr_eq(card, gpu));
+        let ready = self.ready_colour();
         if same_card
+            && !ready
             && self
                 .of
                 .as_ref()
@@ -191,17 +267,49 @@ impl Grading {
                     Arc::clone(&self.places.cache),
                     self.places.roots.clone(),
                 ),
+                Arc::new(CardOps::new(Arc::clone(gpu))),
             ));
             self.clips.clear();
             self.groups.clear();
             self.timeline = None;
         }
+        self.update_colour(project, same_card);
+        // The options of the grades, by the colour in force: another luma, S-curve or
+        // interpolation makes every grade again.
+        let settings = self.colour.key().settings();
+        let options = GradeOptions {
+            luma: self.colour.luma(),
+            s_curve_contrast: settings.s_curve_contrast,
+        };
+        let interpolation = settings.lut_interpolation;
+        let fresh = options != self.options || interpolation != self.interpolation;
+        if fresh {
+            self.options = options;
+            self.interpolation = interpolation;
+            if let Some((_, luts, _)) = &mut self.card {
+                luts.set_interpolation(match interpolation {
+                    LutInterpolation::Trilinear => Interpolation::Trilinear,
+                    LutInterpolation::Tetrahedral => Interpolation::Tetrahedral,
+                });
+            }
+        }
         let made = self.made;
         let timeline = &project.timelines[index];
+        self.media = video_clips(timeline)
+            .filter_map(|clip| match &clip.source {
+                ClipSource::Media { media, .. } => Some((clip.id.clone(), media.clone())),
+                _ => None,
+            })
+            .collect();
         let mut missing = BTreeMap::new();
-        let old_groups = std::mem::take(&mut self.groups);
-        let old_clips = std::mem::take(&mut self.clips);
-        let old_timeline = self.timeline.take();
+        let mut old_groups = std::mem::take(&mut self.groups);
+        let mut old_clips = std::mem::take(&mut self.clips);
+        let mut old_timeline = self.timeline.take();
+        if fresh {
+            old_groups.clear();
+            old_clips.clear();
+            old_timeline = None;
+        }
         self.timeline = self.ready(&timeline.grade, old_timeline.as_ref(), &mut missing);
         for clip in video_clips(timeline) {
             let group = clip
@@ -270,7 +378,7 @@ impl Grading {
         if grade.nodes.is_empty() {
             return None;
         }
-        let (_, luts) = self
+        let (_, luts, _) = self
             .card
             .as_ref()
             .expect("a card is had before grades are made");
@@ -300,6 +408,11 @@ impl Grading {
     /// layer that of the clip named at its place in `clips` (one that is no clip, as the colour
     /// of a dip, has none).
     pub fn grade<S: AsRef<str>>(&self, scene: &mut Scene, clips: &[S], frame: i64) {
+        let media: Vec<Option<&str>> = clips
+            .iter()
+            .map(|clip| self.media.get(clip.as_ref()).map(String::as_str))
+            .collect();
+        self.colour.apply(scene, &media);
         for (layer, clip) in scene.layers.iter_mut().zip(clips) {
             layer.color.grade = self.layer(clip.as_ref(), frame);
         }
@@ -328,6 +441,144 @@ impl Grading {
         Stage { ops }
     }
 
+    /// What the frames are put out as, by the colour management in force.
+    pub fn output(&self) -> Output {
+        self.colour.output()
+    }
+
+    /// The luma coefficients of the timeline space, which the grades take.
+    pub fn luma(&self) -> [f32; 3] {
+        self.colour.luma()
+    }
+
+    /// The colour management of `project`: made here for an export, for the first project of a
+    /// monitor, and on a new card (`same_card` false); else wanted of a thread of its own
+    /// ([`Grading::make_ahead`]), the colour in force kept meanwhile.
+    fn update_colour(&mut self, project: &Project, same_card: bool) {
+        let key = Key::of(project);
+        let first = self.of.is_none() && !self.colour.key().managed();
+        if same_card && key == *self.colour.key() {
+            if let Some(background) = &mut self.background {
+                // Back to what is in force: nothing more is wanted.
+                background.wanted = None;
+            }
+            return;
+        }
+        if let Some(background) = &mut self.background {
+            if same_card && !first {
+                if background.failed.as_ref() != Some(&key)
+                    && background.job.as_ref().map(|(made, _)| made) != Some(&key)
+                {
+                    background.wanted = Some(key);
+                }
+                return;
+            }
+        }
+        let ops = Arc::clone(&self.card.as_ref().expect("a card is had").2);
+        let since = Instant::now();
+        match Colour::make(&ops, key) {
+            Ok(colour) => {
+                crate::log::log(
+                    "colour_made",
+                    &json!({"ms": since.elapsed().as_secs_f64() * 1e3, "waited": true}),
+                );
+                self.colour = Arc::new(colour);
+            }
+            Err(message) => crate::log::log("colour_error", &json!({ "message": message })),
+        }
+    }
+
+    /// Whether a colour management made on a thread of its own is ready, and taken in place of
+    /// the one in force.
+    fn ready_colour(&mut self) -> bool {
+        let Some(background) = &mut self.background else {
+            return false;
+        };
+        let made = match &background.job {
+            Some((_, done)) => done.lock().unwrap_or_else(PoisonError::into_inner).take(),
+            None => None,
+        };
+        let Some(made) = made else {
+            return false;
+        };
+        let (key, _) = background.job.take().expect("looked at above");
+        match made {
+            Ok(colour) => {
+                self.colour = colour;
+                true
+            }
+            Err(message) => {
+                crate::log::log("colour_error", &json!({ "message": message }));
+                background.failed = Some(key);
+                false
+            }
+        }
+    }
+
+    /// Whether a colour management is being made, or wanted, on a thread of its own.
+    #[cfg(test)]
+    pub fn making(&self) -> bool {
+        self.background
+            .as_ref()
+            .is_some_and(|background| background.job.is_some() || background.wanted.is_some())
+    }
+
+    /// Where another colour management is wanted and none is being made, make it on a thread of
+    /// its own, and draw `scene` (the frame just drawn, of the clips `clips` at `frame` of
+    /// timeline `index` of `project`) small by it there, so that its shaders are compiled off the
+    /// monitor's thread. A monitor calls it after each frame it grades.
+    pub fn make_ahead<S: AsRef<str>>(
+        &mut self,
+        project: &Arc<Project>,
+        index: usize,
+        (scene, clips, frame): (&Scene, &[S], i64),
+    ) {
+        let Some(background) = &mut self.background else {
+            return;
+        };
+        if background.job.is_some() {
+            return;
+        }
+        let Some(key) = background.wanted.take() else {
+            return;
+        };
+        let Some((gpu, _, ops)) = &self.card else {
+            return;
+        };
+        let done = Arc::new(Mutex::new(None));
+        background.job = Some((key.clone(), Arc::clone(&done)));
+        let warm = Warm {
+            gpu: Arc::clone(gpu),
+            ops: Arc::clone(ops),
+            places: self.places.clone(),
+            project: Arc::clone(project),
+            index,
+            scene: stripped(scene),
+            clips: clips.iter().map(|clip| clip.as_ref().to_owned()).collect(),
+            frame,
+        };
+        let wake = Arc::clone(&background.wake);
+        let finished = Arc::clone(&done);
+        let started = std::thread::Builder::new()
+            .name("columbina-colour".into())
+            .spawn(move || {
+                let since = Instant::now();
+                let made = warm.make(key);
+                crate::log::log(
+                    "colour_made",
+                    &json!({"ms": since.elapsed().as_secs_f64() * 1e3, "waited": false,
+                        "ok": made.is_ok()}),
+                );
+                *finished.lock().unwrap_or_else(PoisonError::into_inner) = Some(made);
+                wake();
+            });
+        if let Err(error) = started {
+            *done.lock().unwrap_or_else(PoisonError::into_inner) = Some(Err(format!(
+                "the thread of colour cannot be started: {error}"
+            )));
+        }
+    }
+
     /// Let go of the project and its grades (the LUTs read stay, on the card).
     pub fn clear(&mut self) {
         self.of = None;
@@ -346,6 +597,65 @@ impl Grading {
     #[cfg(test)]
     pub fn made(&self) -> u64 {
         self.made
+    }
+}
+
+/// What a thread of its own makes a monitor's colour management by.
+struct Warm {
+    gpu: Arc<Gpu>,
+    ops: Arc<CardOps>,
+    places: LutPlaces,
+    project: Arc<Project>,
+    index: usize,
+    scene: Scene,
+    clips: Vec<String>,
+    frame: i64,
+}
+
+impl Warm {
+    /// The colour management of `key`, its shaders and those of the grades by it compiled by
+    /// drawing the frame small.
+    fn make(mut self, key: Key) -> Made {
+        let colour = Arc::new(Colour::make(&self.ops, key)?);
+        let mut grading = Grading::new(self.places.clone());
+        grading.card = Some((
+            Arc::clone(&self.gpu),
+            CardLuts::new(
+                Arc::clone(&self.gpu),
+                Arc::clone(&self.places.cache),
+                self.places.roots.clone(),
+            ),
+            Arc::clone(&self.ops),
+        ));
+        grading.colour = Arc::clone(&colour);
+        grading.update(&self.gpu, &self.project, self.index);
+        grading.grade(&mut self.scene, &self.clips, self.frame);
+        let target = Target::preview(&self.gpu, WARM.0, WARM.1).map_err(|e| e.to_string())?;
+        Compositor::new(Arc::clone(&self.gpu))
+            .render(&self.scene, &target)
+            .map_err(|error| error.to_string())?;
+        Ok(colour)
+    }
+}
+
+/// A scene as it was before it was graded, small: its layers with their decoding only.
+fn stripped(scene: &Scene) -> Scene {
+    Scene {
+        width: WARM.0,
+        height: WARM.1,
+        layers: scene
+            .layers
+            .iter()
+            .map(|layer| {
+                let mut layer = layer.clone();
+                layer.color = LayerColor {
+                    coding: layer.color.coding,
+                    ..LayerColor::default()
+                };
+                layer
+            })
+            .collect(),
+        ..Scene::default()
     }
 }
 

@@ -22,6 +22,7 @@ mod gpu;
 pub mod grade;
 pub mod scopes;
 mod text;
+pub mod wipe;
 pub mod yuv;
 
 pub use color::{

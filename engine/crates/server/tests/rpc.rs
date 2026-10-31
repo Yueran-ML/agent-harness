@@ -27,6 +27,9 @@ mod grades;
 #[path = "rpc/scopes.rs"]
 mod scopes;
 
+#[path = "rpc/compare.rs"]
+mod compare;
+
 /// How long anything that should happen soon is waited for before the test fails.
 const WAIT: Duration = Duration::from_secs(30);
 

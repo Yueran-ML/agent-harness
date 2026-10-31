@@ -722,6 +722,13 @@ async fn dispatch(
             scopes_call(engine, connection, id, method, params).await
         }
         "luts.list" => luts_list(engine, connection, id, params).await,
+        "viewer.wipe" | "viewer.split" => {
+            let result = engine.transport.compare(method, params).await?;
+            Ok(match connection.queue(rpc::result_line(id, &result)) {
+                Ok(()) => Reply::Queued,
+                Err(refused) => Reply::Refused(refused),
+            })
+        }
         "view.attach" | "view.place" | "view.show" | "view.detach" => {
             let result = engine.viewer.call(kind, method, params).await?;
             if method == "view.attach" {

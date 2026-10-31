@@ -40,6 +40,7 @@
 mod address;
 mod analysis;
 mod audio;
+mod compare;
 mod conn;
 mod gpu;
 mod grading;

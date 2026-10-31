@@ -21,6 +21,7 @@ fn monitor(dir: &Path) -> Worker {
         sources: Sources::new(Hardware::Off, Arc::new(|_, _| {})),
         grading: Grading::new(LutPlaces::with_library(dir, vec![])),
         scopes: Scopes::new(true, Graphics::new()),
+        compare: Comparison::new(),
         status: Status {
             timeline: Some("t1".into()),
             ..Status::default()

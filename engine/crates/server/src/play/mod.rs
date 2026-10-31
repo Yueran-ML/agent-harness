@@ -349,6 +349,22 @@ impl Transport {
         }
     }
 
+    /// `viewer.wipe`, `viewer.split`: change what the timeline monitor compares its frame with.
+    ///
+    /// # Errors
+    /// The engine is headless, the params are not what the method takes, or what they name
+    /// cannot be found or read.
+    pub async fn compare(&self, method: &str, params: Option<&RawValue>) -> Result<Value, Fault> {
+        let Some(timeline) = &self.timeline else {
+            return Err(Fault::new(
+                rpc::METHOD_NOT_FOUND,
+                format!("there is no method {method} in a headless engine: it has no monitor"),
+            ));
+        };
+        let change = crate::compare::Change::read(method, params)?;
+        timeline.compare(change).await
+    }
+
     pub async fn frame_digest(&self, params: Option<&RawValue>) -> Result<Value, Fault> {
         let method = "transport.frame_digest";
         self.check(method)?;

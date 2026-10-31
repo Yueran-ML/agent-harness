@@ -19,6 +19,7 @@ use tokio::sync::oneshot;
 use super::ahead::{Request, TrackReader, Want};
 use super::sources::{Read, Sources};
 use super::{Action, Notify};
+use crate::compare::{Change, Comparison};
 use crate::gpu::{Graphics, Subscription};
 use crate::grading::{Grading, LutPlaces, MissingLut};
 use crate::log::log;
@@ -108,6 +109,8 @@ enum Command {
     Digest(oneshot::Sender<Result<Value, Fault>>),
     /// What is shown, for the scopes to measure.
     Shown(oneshot::Sender<Result<Shown, Fault>>),
+    /// What the frame is compared with (`viewer.wipe`, `viewer.split`).
+    Compare(Change, oneshot::Sender<Result<Value, Fault>>),
     Stop,
 }
 
@@ -165,6 +168,7 @@ impl Timeline {
                         sources: Sources::new(Hardware::Auto, again),
                         grading: Grading::new(luts),
                         scopes,
+                        compare: Comparison::new(),
                         status: Status::default(),
                         project: None,
                         timeline: None,
@@ -267,6 +271,13 @@ impl Timeline {
         self.send(Command::Digest(reply))?;
         receiver.await.map_err(|_| stopped())?
     }
+
+    /// Change what the frame is compared with, and give what it is compared with now.
+    pub async fn compare(&self, change: Change) -> Result<Value, Fault> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(Command::Compare(change, reply))?;
+        receiver.await.map_err(|_| stopped())?
+    }
 }
 
 struct Guard {
@@ -298,6 +309,8 @@ struct Worker {
     grading: Grading,
     /// The scopes of the timeline monitor, told each frame shown.
     scopes: Scopes,
+    /// What the frame is compared with: a wipe or a split screen.
+    compare: Comparison,
     status: Status,
     project: Option<Arc<Project>>,
     timeline: Option<usize>,
@@ -497,6 +510,7 @@ impl Worker {
         self.previous.clear();
         self.grading.clear();
         self.scopes.cleared(Monitor::Timeline);
+        self.compare.forget();
         self.current = None;
         self.targets.clear();
         self.status = Status {
@@ -601,9 +615,26 @@ impl Worker {
                 };
                 let _ = reply.send(shown);
             }
+            Command::Compare(change, reply) => {
+                let _ = reply.send(self.compare_with(change));
+            }
             Command::Act(action) => self.action(action),
             Command::Stop => unreachable!("handled by run"),
         }
+    }
+
+    /// Change what the frame is compared with, and draw it again where it is not playing.
+    fn compare_with(&mut self, change: Change) -> Result<Value, Fault> {
+        let loaded = self
+            .project
+            .as_ref()
+            .zip(self.timeline)
+            .map(|(project, index)| (project.as_ref(), index, self.status.frame.unwrap_or(0)));
+        let result = self.compare.change(change, loaded);
+        if result.is_ok() && !self.status.playing {
+            let _ = self.draw(true, false);
+        }
+        result
     }
 
     fn invalidate(&mut self) {
@@ -970,6 +1001,7 @@ impl Worker {
         // picture of every clip ever visited. At a late cut, that track's old picture stays.
         self.previous = previous;
         self.grade(&mut scene, &clips, frame)?;
+        self.compare.prepare(&project, index, frame, &self.grading);
         self.present(&scene, frame)?;
         self.status.shown = Some(frame);
         self.status.exact = exact;
@@ -1036,24 +1068,34 @@ impl Worker {
             target
         };
         let _turn = self.graphics.draw_turn(true);
-        self.compositor
-            .as_mut()
-            .expect("made above")
+        let compositor = self.compositor.as_mut().expect("made above");
+        compositor
             .render(scene, &target)
             .map_err(|error| drawing(&error.to_string()))?;
+        // What the viewer shows: the frame, or the frame compared with a reference.
+        let shown = self
+            .compare
+            .show(&gpu, compositor, &target)
+            .map_err(|error| drawing(&error))?
+            .unwrap_or_else(|| Arc::clone(&target));
         if let Some(view) = lock(&self.view).as_ref() {
-            view.present_texture(Arc::clone(target.texture()), Arc::clone(&gpu))
+            view.present_texture(Arc::clone(shown.texture()), Arc::clone(&gpu))
                 .map_err(|error| drawing(&error.to_string()))?;
         }
+        let measured = if crate::compare::SCOPES_SEE_COMPARISON {
+            &shown
+        } else {
+            &target
+        };
         self.scopes.shown(
             Monitor::Timeline,
             Shown::Target {
                 gpu,
-                target: Arc::clone(&target),
+                target: Arc::clone(measured),
                 frame,
             },
         );
-        self.current = Some(target);
+        self.current = Some(shown);
         Ok(())
     }
 
@@ -1220,6 +1262,7 @@ mod tests {
             sources: Sources::new(Hardware::Off, Arc::new(|_, _| {})),
             grading: Grading::new(LutPlaces::with_library(std::path::Path::new("."), vec![])),
             scopes: Scopes::new(true, Graphics::new()),
+            compare: Comparison::new(),
             status: Status::default(),
             project: None,
             timeline: None,

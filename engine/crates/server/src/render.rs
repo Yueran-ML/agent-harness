@@ -669,7 +669,7 @@ struct Drawing {
 
 /// What an export shows at `frame` of the timeline, not yet graded, and the clip of each of its
 /// layers (or the transition, for the colour of a dip), for [`Grading::grade`].
-fn scene(
+pub(crate) fn scene(
     project: &Project,
     timeline: &columbina_model::Timeline,
     frame: i64,

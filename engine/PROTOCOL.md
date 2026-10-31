@@ -147,6 +147,8 @@ Before `hello`, every other request is refused with `-32600`.
 | `scopes.unsubscribe` | `{"scope_id": "scope-1"}` | `{}` |
 | `scopes.statistics` | `{"view": "timeline" \| "source", "bins"?: 256}` | the figures of the frame shown (see Scopes) |
 | `luts.list` | none, or `{"folder"?: "Film"}` | `{"roots": [...], "luts": [...], "truncated": false}` (see The library of LUTs) |
+| `viewer.wipe` | `{"on"?: true, "style"?: "horizontal", "position"?: 0.5, ..., "reference": {"kind": "still", "path": "..."}}`, or `{"on": false}` | what the timeline monitor compares with (see Comparisons in the viewer) |
+| `viewer.split` | `{"on"?: true, "items": [{"kind": "current"}, ...], "selected"?: 0, "outline"?: true}`, or `{"on": false}` | as `viewer.wipe` |
 
 - `hello` says once per connection what the client is; a second `hello` is refused (`-32600`).
   From then on the connection is sent every notification. `protocol` other than 2 is refused
@@ -233,7 +235,8 @@ Before `hello`, every other request is refused with `-32600`.
   line of undo); `history.redo` does again the step undone last, with the same ids. A new
   transaction clears what could be redone. 1000 steps are kept.
 - `view.*`: the viewer, below; `transport.*`: playing a source, below; `scopes.*`: the scopes
-  of the monitors, below (Scopes); `luts.list`: below (The library of LUTs).
+  of the monitors, below (Scopes); `luts.list`: below (The library of LUTs); `viewer.*`: below
+  (Comparisons in the viewer).
 
 ## Thumbnails and waveforms
 
@@ -1309,6 +1312,81 @@ scope:
 "most": 16}`, and `{"reason": "bins"}`. `scopes.statistics` is `-32004` with `{"reason":
 "not_loaded"}` when the monitor shows nothing, and with `{"reason": "draw"}` when the frame could
 not be measured (the card was lost: ask again).
+
+## Comparisons in the viewer
+
+The timeline monitor can show its frame compared with a reference, as the viewer of the Color
+page of `DaVinci Resolve` does (Reference Manual p. 2999–3006, 3260–3261): a wipe of the frame
+(A) against one reference (B), or a split screen of up to 16 pictures in a grid. It is of the
+monitor alone: an export renders the timeline as it is, whatever is compared. The methods are of
+an engine that is not `--headless` (`-32601` there). A wipe and a split screen are one at a time:
+setting one turns the other off; turning one off leaves the other as it is. Each method answers
+what is compared now, and the monitor draws its frame again at once where it is not playing.
+
+**`viewer.wipe`** `{"on"?, "style"?, "position"?, "angle"?, "softness"?, "border"?,
+"border_color"?, "invert"?, "gain"?, "reference"}` sets the whole wipe (what is left out takes its
+default, not what was set before); `{"on": false}` turns it off.
+
+| Field | Default | What it is |
+|---|---|---|
+| `style` | `"horizontal"` | `"horizontal"` (an upright border, A on the left), `"vertical"` (a level border, A above), `"diagonal"` (a border at `angle`), `"mix"`, `"difference"`, `"box"` (A in a box about the centre, B about it), `"venetian_blind"`, `"checkerboard"` |
+| `position` | 0.5 | 0–1: where the border is across the canvas (1: all A, 0: all B, its softness included); the size of the box (1: all A); the share of B of a mix; the size of the strips (a pixel at 0, half the canvas at 1) and the width of the checks (a check is an eighth of the canvas high) |
+| `angle` | 45 | −360–360: of `"diagonal"`, the degrees of its border from upright, turned clockwise |
+| `softness` | 0 | 0–1: the width of a straight ramp across the border, as a share of the shorter side of the canvas (lines and box) |
+| `border` | 0 | 0–64: the width of a line drawn on the border, in pixels (lines and box) |
+| `border_color` | `[1, 1, 1]` | the R'G'B' of that line, each 0–1 |
+| `invert` | false | the sides swapped (Invert Wipe): B where A was |
+| `gain` | 1 | 0–100: of `"difference"`, which shows `\|A − B\| · gain` (black where they are alike), opaque |
+
+A wipe at 0 or 1, and a mix at 0 or 1, show A or B exactly. The Alpha style is not done (it needs
+the alpha output of the node graph). Softness, the border line and the gain are not in the manual
+for the viewer and are off unless set.
+
+**References** (`reference` of a wipe, each of `items` of a split screen):
+
+- `{"kind": "still", "path"}`: a picture file (PNG, TIFF, OpenEXR; the first picture of the
+  file), read when the method is called, shown as it is stored (a still holds its grade),
+  fitted to the canvas. It is not graded again.
+- `{"kind": "frame", "frame"}`: the timeline at that frame (held within it), graded as it is
+  there. It stays where it is as the playhead moves.
+- `{"kind": "clip", "clip", "frame"?: 0}`: the timeline at `frame` frames from the first frame of
+  `clip` (held within the clip), as Wipe Timeline Clip shows another clip.
+- `{"kind": "neighbour", "side": "previous" | "next", "current"?: "c2"}`: the clip before or
+  after the current one, at the same offset from its first frame as the playhead is from the
+  current clip's (held within it); it follows the playhead, as a timeline wipe ganged with the
+  current clip does. The current clip is `current` where it is given (the clip that the client
+  shows as current), else the one on top at the playhead; clips are in the order of their start,
+  then of their track from V1 up.
+- `{"kind": "current"}` (a split screen only): the frame of the playhead.
+
+A reference of the timeline is drawn as the frame is (its media read, not proxies; each clip and
+the timeline graded at that frame; no subtitles). One that is not there where the playhead has
+moved (the clip before the first) is black. What was drawn is kept until the project changes, or
+the frame that it is, so a wipe while playing costs a pass over the frame (under 0.4 ms at 4K on
+an RTX 4080 Laptop).
+
+**`viewer.split`** `{"on"?, "items", "selected"?, "outline"?: true}`: 1–16 items, laid in a grid
+in reading order, as many columns as the square root of their number rounded up and as many rows
+as they need; each fitted into its cell keeping its shape, black about it. The item at
+`selected` is outlined in grey where `outline` is true. The modes of `DaVinci Resolve` (Selected
+Clips, Selected Still Images, Neighbor Clips, Playheads, Current Group) are lists of items that
+the client makes; those of grades, LUTs and versions applied to the current clip are not done.
+
+**What it answers.** `{"mode": "off"}`, `{"mode": "wipe", "wipe": {every field, "reference"}}`
+or `{"mode": "split", "split": {"on", "items", "selected"?, "outline"}}`. A reference of the
+timeline is given with `"at"`: the frame of the timeline it shows now, or `null` where there is
+none.
+
+**The scopes** (`scopes.*`) and `transport.frame_digest` measure what the viewer shows: the
+comparison, where there is one.
+
+**Refusals.** `-32602` for params that are not the method's, with `data` `{"reason": "range"}`
+for a value out of its range (or no items, more than 16, or `selected` not one of them),
+`{"reason": "reference", "reference"?}` for a wipe that is on with no reference, with `current`,
+or with a reference not found in the timeline (no such clip, or none before the first or after
+the last), and `{"reason": "still", "path", "message"}` for a still that cannot be read. A
+reference of the timeline needs a timeline loaded: `-32004` with `{"reason": "not_loaded"}`
+otherwise. A refused call changes nothing.
 
 ## The library of LUTs
 

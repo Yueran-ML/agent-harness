@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { useWords } from '../../app/locale';
 import { Sheet } from '../../app/Sheet';
 import type { RenderOptions, SubtitleTrack, Timeline } from '../engine';
-import { timecode } from '../timecode';
+import { outFrame, timecode } from '../timecode';
 import { duration } from '../timeline/geometry';
 import type { Marks } from '../timeline/snap';
 import type { RenderRefusal, RenderStart } from './renders';
@@ -25,8 +25,9 @@ export function shownSubtitleTracks(timeline: Timeline | null): string[] {
 }
 
 /**
- * The frames between the In and Out points of the timeline, as the engine takes a range: half open,
- * not empty, and inside the timeline. An In alone goes to the end, an Out alone from the start.
+ * The frames between the In and Out points of the timeline, the Out frame among them, as the engine
+ * takes a range: half open (`to` is the frame after the Out, as the Out mark is kept), not empty,
+ * and inside the timeline. An In alone goes to the end, an Out alone from the start.
  * Null where there are no marks, or none that leave anything to export.
  */
 export function markedRange(marks: Marks | null, frames: number): { from: number; to: number } | null {
@@ -112,7 +113,7 @@ export function RenderDialog({ timelines, chosen, marks, running, onStart, onClo
         <label><input type="radio" name="render-range" checked={!marked} onChange={() => setPart('whole')} data-test="range-whole" />{labels.whole}</label>
         <label><input type="radio" name="render-range" checked={marked} disabled={range === null} onChange={() => setPart('marked')} data-test="range-marked" />
           {labels.marked}
-          {range !== null && timeline !== null && <span className="mono caption" data-test="range-marks">{timecode(range.from, timeline.rate)} – {timecode(range.to, timeline.rate)}</span>}
+          {range !== null && timeline !== null && <span className="mono caption" data-test="range-marks">{timecode(range.from, timeline.rate)} – {timecode(outFrame(range.to), timeline.rate)}</span>}
         </label>
         {range === null && <p className="caption" data-test="range-hint">{hints.marks}</p>}
       </fieldset>

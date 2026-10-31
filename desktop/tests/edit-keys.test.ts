@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Key } from '../src/app/keys';
 import { editKey, editCommand, liftRange, sourceTime, type EditContext } from '../src/studio/timeline/editKeys';
 import { clip, media, timeline } from './timeline-fixture';
+import { materialLength } from '../src/studio/timeline/drop';
 
 const key = (value: string, fields: Partial<Key> = {}): Key => ({ key: value, ctrl: false, meta: false, shift: false, alt: false, composing: false, repeat: false, ...fields });
 const context = (fields: Partial<EditContext> = {}): EditContext => ({
@@ -107,6 +108,40 @@ describe('DaVinci editing keys', () => {
     const marked = { ...media, mark_in: { ticks: 30, scale: 25 } };
     expect(command('i', {}, context({ focus: 'source', source: { media: marked, frame: 30, rate: { num: 25, den: 1 } } }))).toBeNull();
     expect(command('x', { alt: true }, context({ focus: 'source', source: { media, frame: 30, rate: { num: 25, den: 1 } } }))).toBeNull();
+  });
+  it('keeps the Out frame in the range, on the source and on the timeline, at 30 and at 29.97 fps', () => {
+    // DaVinci Resolve's Out point is the last frame of the range (Reference Manual 20, pp. 760, 824):
+    // In at frame 59 and Out at frame 180 are 122 frames. The Out is kept as the frame after it.
+    for (const rate of [{ num: 30, den: 1 }, { num: 30000, den: 1001 }]) {
+      const scale = rate.num === 30 ? 600 : 30000;
+      const at = (frame: number) => sourceTime(frame, rate, scale);
+      const m: typeof media = { ...media, facts: { ...media.facts, duration: at(2416), video: { ...media.facts.video!, rate } } };
+      const source = (frame: number, marked = m) => context({ focus: 'source', source: { media: marked, frame, rate } });
+      const inAt59 = command('i', {}, source(59)) as { transaction: { ops: { mark_in: unknown }[] } };
+      expect(inAt59.transaction.ops[0].mark_in).toEqual(at(59));
+      const outAt180 = command('o', {}, source(180, { ...m, mark_in: at(59) })) as { transaction: { ops: { mark_out: { ticks: number; scale: number } }[] } };
+      expect(outAt180.transaction.ops[0].mark_out).toEqual(at(181));
+      const marked = { ...m, mark_in: at(59), mark_out: at(181) };
+      // As the engine counts them for an edit with these marks, and as a drop takes them.
+      expect(materialLength(marked, rate)).toBe(122);
+      // On the timeline: In at 59, O at 180; Delete and Backspace take the Out frame too.
+      const t = { ...timeline([clip('c1', 0, 400)]), rate };
+      const inMark = command('i', {}, context({ timeline: t, frame: 59 })) as { marks: { in: number; out: number | null } };
+      const marks = (command('o', {}, context({ timeline: t, frame: 180, marks: inMark.marks })) as { marks: { in: number; out: number } }).marks;
+      expect(marks).toEqual({ in: 59, out: 181 });
+      expect(command('F9', {}, context({ timeline: t, marks, source: { media: m, frame: 0, rate } }))).toMatchObject({ transaction: { ops: [{ edit: 'insert', at: 59, source: { length: 122 } }] } });
+      expect(command('Delete', {}, context({ timeline: t, selected: [], marks }))).toMatchObject({ transaction: { ops: [{ edit: 'ripple_delete_range', from: 59, to: 181 }] } });
+      expect(command('Backspace', {}, context({ timeline: t, selected: [], marks }))).toMatchObject({ transaction: { ops: [
+        { edit: 'blade', at: 181 }, { edit: 'trim', clip: 'c1', edge: 'out', delta: -122 },
+      ] } });
+      // Ripple Overwrite (Shift+F10) puts the source in place of the 122 frames from 59 to 180.
+      expect(command('F10', { shift: true }, context({ timeline: t, marks, source: { media: m, frame: 0, rate } }))).toMatchObject({ transaction: { ops: [
+        { edit: 'ripple_delete_range', from: 59, to: 181 }, { edit: 'insert', at: 59 },
+      ] } });
+      // Backtimed to a timeline Out at 180: the last frame of the source lands on frame 180.
+      const backtimed = command('F10', {}, context({ timeline: t, marks: { in: null, out: 181 }, source: { media: marked, frame: 0, rate } }));
+      expect(backtimed).toMatchObject({ transaction: { ops: [{ at: 59 }] } });
+    }
   });
   it('uses shared undo and keeps destructive keys from repeating', () => {
     // Backspace lifts; Delete, and Shift with either, ripple deletes, as DaVinci Resolve has them.

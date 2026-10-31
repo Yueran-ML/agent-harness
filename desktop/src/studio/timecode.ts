@@ -33,6 +33,16 @@ export function rateText(rate: Rate): string {
   return String(Number((rate.num / rate.den).toFixed(3)));
 }
 
+/**
+ * The frame that an Out point marks, which is the last frame of the range and is in it, as in
+ * DaVinci Resolve, where the Out point is the last frame of a clip (Reference Manual 20, pp. 760,
+ * 824): a mark Out is kept as where the range ends, the frame after it (half open, as the engine
+ * takes every range), and is shown as the frame before that.
+ */
+export function outFrame(end: number): number {
+  return Math.max(0, Math.floor(end) - 1);
+}
+
 /** How many frames a time lasts at a rate, rounded as the engine counts the frames of media. */
 export function framesOf(time: Time, rate: Rate): number {
   if (!(time.scale > 0) || !(rate.den > 0)) return 0;

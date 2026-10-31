@@ -377,7 +377,11 @@ clients; a client must not write `project.json` itself.
 
 - A bin is `{id, name, parent}` (`parent: null` for the root). Bins cannot contain themselves,
   and a nonempty bin cannot be removed. Media adds `name`, nullable `bin`, `mark_in` and
-  `mark_out`; marks use the media duration's time scale. Nullable fields (`parent`, `bin`, the
+  `mark_out`; marks use the media duration's time scale. The range marked is half open:
+  `mark_in` is the start of its first frame and `mark_out` the start of the frame after its Out
+  frame, so that the Out frame is in it, as DaVinci Resolve's Out point is the last frame of
+  the range (Reference Manual 20, pp. 760, 824). A client that marks frame `n` as the Out keeps
+  the start of `n + 1`, and shows the Out as frame `n`. Nullable fields (`parent`, `bin`, the
   marks, a clip's `link`) must be written, as `null` if there is none; of media, only `proxy`
   may be left out, and `facts.video` / `facts.audio` may be `null` or left out.
 - A timeline is `{id, name, rate: {num, den}, width, height, sample_rate, tracks}`. Width and
@@ -840,7 +844,8 @@ below also requires `timeline`. `?` marks optional fields. Where present, `linke
 true and includes unlocked members of the selected clips' link groups. Naming a locked track
 or clip directly is refused; implicitly linked members on locked tracks are left untouched.
 
-A placement `source` is `{kind:"media", media, from?, to?, length?}` (from/to are media ticks),
+A placement `source` is `{kind:"media", media, from?, to?, length?}` (from/to are media ticks,
+`to` not included, as `mark_out`),
 `{kind:"color", color, length}`, or `{kind:"title", text, style, length}`. Media defaults to its
 marks or full duration; `length` overrides the span's timeline duration. `video_track` and
 `audio_track` omitted select the first track of that kind, explicit `null` suppresses it, and an
@@ -1116,7 +1121,9 @@ the expanded operation list. Refusal emits no `project.changed` and adds no hist
 ```
 
 `codec` is `h264`, `hevc`, or `prores`; `quality` is `high`, `medium`, or `small`.
-`range` is optional and half-open; when omitted, it covers the full timeline. It must be
+`range` is optional and half-open; when omitted, it covers the full timeline. A client that
+exports from a timeline In to an Out frame sends `to` as the frame after the Out, so that the Out
+frame is exported. It must be
 nonempty and inside the timeline. The first exported frame becomes frame zero in the file.
 `subtitle_tracks` lists the subtitle tracks of the timeline to write beside the film as SRT,
 as the checkboxes of DaVinci Resolve's Deliver page choose them; it defaults to none. Each must

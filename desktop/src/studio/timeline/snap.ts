@@ -1,5 +1,9 @@
 import type { Timeline } from '../engine';
 
+/**
+ * The In and Out points of a timeline: `in` is the first frame marked and `out` the frame after the
+ * Out frame (the range is half open, and the Out frame is in it, as in DaVinci Resolve).
+ */
 export interface Marks { in: number | null; out: number | null }
 /** Moving clips cannot snap to their own old edges. Marks use an exclusive out frame. */
 export function snapCandidates(timeline: Timeline, excluded: readonly string[], playhead: number, marks: Marks): number[] {

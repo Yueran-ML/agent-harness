@@ -205,13 +205,15 @@ class Transform(Data):
 class MediaSource(Data):
     """Media that an edit puts on a timeline.
 
-    From ``from_`` to ``to``: from its mark in, or its start, to its mark out, or its end, where
-    they are not given; or for ``length`` frames from ``from_``.
+    From ``from_`` to ``to``, ``to`` not included: from its mark in, or its start, to its mark
+    out, or its end, where they are not given; or for ``length`` frames from ``from_``. A mark out
+    is where the range marked ends, the start of the frame after its Out frame, so that the Out
+    frame is in it, as DaVinci Resolve's Out point is the last frame of the range.
 
     Attributes:
         media: The media.
         from_: Where in it the clip begins.
-        to: Where in it the clip ends.
+        to: Where in it the clip ends: the start of the frame after its last.
         length: How many frames the clip lasts, if not as far as ``to``.
     """
 
@@ -875,7 +877,11 @@ def set_media(
     mark_in: Time | _Kept | None = LEFT_OUT,
     mark_out: Time | _Kept | None = LEFT_OUT,
 ) -> dict[str, Any]:
-    """The settings of media that are given: ``None`` is the root for ``bin``, none for a mark."""
+    """The settings of media that are given: ``None`` is the root for ``bin``, none for a mark.
+
+    ``mark_out`` is where the range marked ends: to mark frame ``n`` as the Out, give the start
+    of frame ``n + 1``, and the Out frame is in the range, as in DaVinci Resolve.
+    """
     return _given(
         _set({"op": "set_media", "id": id}, name=name, still=still),
         bin=bin,

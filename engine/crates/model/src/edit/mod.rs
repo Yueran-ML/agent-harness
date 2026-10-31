@@ -496,12 +496,13 @@ pub enum Edit {
 
 /// What an edit puts on a timeline.
 ///
-/// Media is put from `from` to `to`, in ticks of the scale of its duration: from its mark in, or
-/// its start, to its mark out, or its end, where they are left out; or for `length` frames from
-/// `from`, as for an edit of three points that takes its length from the timeline. Its picture
-/// goes on `video_track` and its sound on `audio_track`, linked to each other if both go: a
-/// track that is left out is the first track of its kind, and one that is `null` is not used. A
-/// title or a colour lasts `length` frames, and goes on a track of picture.
+/// Media is put from `from` to `to`, in ticks of the scale of its duration, `to` not included:
+/// from its mark in, or its start, to its mark out (the end of the range marked, after its Out
+/// frame), or its end, where they are left out; or for `length` frames from `from`, as for an
+/// edit of three points that takes its length from the timeline. Its picture goes on
+/// `video_track` and its sound on `audio_track`, linked to each other if both go: a track that
+/// is left out is the first track of its kind, and one that is `null` is not used. A title or a
+/// colour lasts `length` frames, and goes on a track of picture.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Material {
@@ -512,7 +513,7 @@ pub enum Material {
         /// Where in it the clip begins.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         from: Option<Time>,
-        /// Where in it the clip ends.
+        /// Where in it the clip ends: the start of the frame after its last.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         to: Option<Time>,
         /// How many frames the clip lasts, if not as far as `to`.

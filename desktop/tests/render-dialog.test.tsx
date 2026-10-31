@@ -156,7 +156,8 @@ describe('the dialog of the export', () => {
     notify('timeline', { frame: 149, shown: 149 }); fireEvent.keyDown(document.body, { key: 'o' });
     openExport(); await settle();
     expect((one('range-marked') as HTMLInputElement).checked).toBe(true);
-    expect(one('range-marks')!.textContent).toBe('00:00:02:00 – 00:00:06:00');
+    // The Out frame, 149, is in the range and is shown as the Out, as DaVinci Resolve shows it.
+    expect(one('range-marks')!.textContent).toBe('00:00:02:00 – 00:00:05:24');
     expect(one('range-hint')).toBeNull();
     // Another timeline has no marks on the page.
     fireEvent.change(one('render-timeline')!, { target: { value: 't2' } });

@@ -68,7 +68,13 @@ export interface Media {
   id: string;
   name: string;
   bin: string | null;
+  /** The start of the first frame marked. */
   mark_in: Time | null;
+  /**
+   * Where the range marked ends: the start of the frame after the Out frame, which is in it, as
+   * DaVinci Resolve's Out point is the last frame (Reference Manual 20, pp. 760, 824). Pressing O
+   * at frame n keeps the start of n + 1; the Out is shown as frame n (see `outFrame`).
+   */
   mark_out: Time | null;
   path: string;
   identity: Identity;

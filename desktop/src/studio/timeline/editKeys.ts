@@ -131,7 +131,9 @@ function sourceSpan(frames: number, rate: Rate, scale: number): number {
  * DaVinci Resolve (Reference Manual 20, "The Rules of Three-Point Editing"):
  *
  * - Without an In on the source, its first frame is the In; without an Out, its last frame. The
- *   engine takes the marks of the media and these defaults itself, so they are not sent.
+ *   engine takes the marks of the media and these defaults itself, so they are not sent. The Out
+ *   frame is part of the edit, on the source and on the timeline: an Out mark is kept as the frame
+ *   after it (O at frame n keeps n + 1), so In 59 and Out 180 edit 122 frames.
  * - Timeline In and Out: they decide the length, and the source In goes to the timeline In. With
  *   only an Out on the source, the edit is backtimed: the source Out goes to the timeline Out. With
  *   all four marks, those of the timeline win and the source Out is passed over.

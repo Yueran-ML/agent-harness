@@ -132,7 +132,10 @@ pub struct Media {
     /// duration.
     #[serde(deserialize_with = "present")]
     pub mark_in: Option<Time>,
-    /// Where it is marked to end, in ticks of the scale of its duration; after `mark_in`.
+    /// Where it is marked to end, in ticks of the scale of its duration; after `mark_in`. The
+    /// range marked is half open: this is the start of the frame after the Out frame, which is in
+    /// it, as the Out point of `DaVinci Resolve` is the last frame of the range (Reference Manual
+    /// 20, pp. 760, 824). A client that marks frame `n` as the Out keeps the start of `n + 1`.
     #[serde(deserialize_with = "present")]
     pub mark_out: Option<Time>,
 }

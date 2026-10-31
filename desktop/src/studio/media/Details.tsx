@@ -1,6 +1,6 @@
 import { useWords } from '../../app/locale';
 import type { Media, ProxyEvent, Rate, Time } from '../engine';
-import { framesOf, rateOf, rateText, timecode } from '../timecode';
+import { framesOf, outFrame, rateOf, rateText, timecode } from '../timecode';
 import { ProxyLine, proxyStanding } from './facts';
 
 export function Details({ media, told, timelines, onMakeAgain }: { media: Media; told: ProxyEvent | undefined; timelines: readonly { rate: Rate }[]; onMakeAgain: () => void }) {
@@ -15,7 +15,8 @@ export function Details({ media, told, timelines, onMakeAgain }: { media: Media;
     ...(video ? [[words.videoCodec, video.codec], [words.dimensions, turned ? `${video.height}×${video.width}` : `${video.width}×${video.height}`],
       [words.frameRate, labels.fps(rateText(video.rate))], [words.depth, labels.bits(video.bits)]] as [string, string][] : []),
     ...(audio ? [[words.audioCodec, audio.codec], [words.sampleRate, `${audio.rate} Hz`], [words.channels, String(audio.channels)]] as [string, string][] : []),
-    [words.markIn, at(media.mark_in)], [words.markOut, at(media.mark_out)],
+    // The Out shown is the last frame marked: the mark is kept as the end of the range, after it.
+    [words.markIn, at(media.mark_in)], [words.markOut, media.mark_out ? timecode(outFrame(framesOf(media.mark_out, rate)), rate) : '—'],
   ];
   const standing = proxyStanding(media, told);
   return <section className="pool-details" aria-label={words.details}>

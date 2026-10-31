@@ -154,9 +154,11 @@ describe('the media pool used for editing', () => {
     pool();
     fireEvent.click(row('m1'));
     const details = screen.getByRole('region', { name: 'Media details' });
-    for (const text of ['C:/media/m1.mov', 'prores', 'pcm_s24le', '1920×1080', '48000', '00:00:01:00', '00:00:03:00']) {
+    // The mark Out is kept as the end of the range, 3 s; the Out shown is the last frame in it.
+    for (const text of ['C:/media/m1.mov', 'prores', 'pcm_s24le', '1920×1080', '48000', '00:00:01:00', '00:00:02:24']) {
       expect(details.textContent).toContain(text);
     }
+    expect(details.textContent).not.toContain('00:00:03:00');
   });
 
   it('requests thumbnails only for visible video and reuses them after switching views', async () => {

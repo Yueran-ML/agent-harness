@@ -625,6 +625,44 @@ mod tests {
     }
 
     #[test]
+    fn the_out_frame_marked_is_put_too_at_30_and_at_29_97_frames_a_second() {
+        // DaVinci Resolve's Out point is the last frame of the range (Reference Manual 20,
+        // pp. 760, 824): In at frame 59 and Out at frame 180 are 122 frames. The mark out is kept
+        // as where the range ends, the start of frame 181.
+        for (rate, scale) in [
+            (crate::time::Rate { num: 30, den: 1 }, 600),
+            (
+                crate::time::Rate {
+                    num: 30000,
+                    den: 1001,
+                },
+                30000,
+            ),
+        ] {
+            let frame = |n: i64| crate::time::Time {
+                ticks: n * i64::from(rate.den) * i64::from(scale) / i64::from(rate.num),
+                scale,
+            };
+            let mut project = project();
+            for track in &mut project.timelines[0].tracks {
+                track.clips.clear();
+                track.cues.clear();
+            }
+            project.timelines[0].rate = rate;
+            let media = &mut project.media[0];
+            media.facts.duration = frame(2416);
+            media.facts.video.as_mut().unwrap().rate = rate;
+            media.mark_in = Some(frame(59));
+            media.mark_out = Some(frame(181));
+            project.validate().unwrap();
+            edit(&mut project, insert(m1(None, None), 0));
+            let (id, start, length, _) = clips(&project, "V1")[0].clone();
+            assert_eq!((start, length), (0, 122), "{rate:?}");
+            assert_eq!(the(&project, &id).source_in(), Some(frame(59)), "{rate:?}");
+        }
+    }
+
+    #[test]
     fn media_with_no_marks_that_is_not_a_still_is_put_whole() {
         let mut project = project();
         edit(&mut project, overwrite(m1(None, None), 300));

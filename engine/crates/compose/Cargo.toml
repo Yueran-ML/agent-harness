@@ -8,6 +8,7 @@ version.workspace = true
 workspace = true
 
 [dependencies]
+columbina-lut = { path = "../lut" }
 columbina-media = { path = "../media" }
 columbina-model = { path = "../model" }
 cosmic-text.workspace = true

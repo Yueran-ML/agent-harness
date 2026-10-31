@@ -261,6 +261,7 @@ dependencies = [
 name = "columbina-compose"
 version = "0.1.0"
 dependencies = [
+ "columbina-lut",
  "columbina-media",
  "columbina-model",
  "cosmic-text",

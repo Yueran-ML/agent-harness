@@ -8,6 +8,7 @@ pub mod color_management;
 pub mod edit;
 pub mod grade;
 pub mod history;
+pub mod keyframes;
 pub mod ops;
 pub mod project;
 pub mod resolve;

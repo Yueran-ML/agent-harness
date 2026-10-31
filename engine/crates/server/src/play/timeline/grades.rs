@@ -1,11 +1,12 @@
 //! The grades of a timeline as its monitor draws them: each held to the maths of the grade on the
-//! processor (`columbina_compose::grade::evaluate`), at the frame of the clip.
+//! processor (`columbina_compose::grade::evaluate`), at the frame of its keys: of a clip of
+//! media, the frame of the picture shown; of a colour or a title, the frame of the clip.
 
 use std::path::Path;
 
 use columbina_compose::grade::{evaluate, GradeOptions};
 use columbina_model::grade::{Corrector, Interp, Key, Kind, Link, Node, NodeKind, Param};
-use columbina_model::{Clip, Cue, Group, Rgba, Source as ClipSource, Track};
+use columbina_model::{Clip, Cue, Group, Rgba, Source as ClipSource, Time, Track};
 
 use super::*;
 
@@ -174,7 +175,7 @@ fn a_grade_shows_as_it_is_set_and_goes_as_it_is_taken_away() {
 }
 
 #[test]
-fn keyed_gain_changes_over_the_frames_of_the_clip_whatever_its_speed() {
+fn keyed_gain_of_a_colour_changes_over_the_frames_of_the_clip_whatever_its_speed() {
     if columbina_compose::gpu_for_tests().is_none() {
         return;
     }
@@ -200,8 +201,8 @@ fn keyed_gain_changes_over_the_frames_of_the_clip_whatever_its_speed() {
         "{seen:?}"
     );
     assert_eq!(seen[2], [0, 0, 0, 255]);
-    // The keys count frames of the timeline from the clip's first: a clip played at another
-    // speed, or backwards, keeps them where they were.
+    // A colour has no frames of its own: its keys count the frames of the clip from its first,
+    // and a clip played at another speed, or backwards, keeps them where they were.
     let clip = &mut project.timelines[0].tracks[0].clips[0];
     clip.speed = columbina_model::Speed { num: 2, den: 1 };
     clip.reverse = true;
@@ -210,6 +211,173 @@ fn keyed_gain_changes_over_the_frames_of_the_clip_whatever_its_speed() {
         expected(ORANGE, &[(&fading, 20.0)]),
         "at another speed",
     );
+}
+
+/// The number that a frame of the numbered media carries, read from the picture of a timeline
+/// of its size that shows it whole and ungraded: three blocks of 64 pixels in its top left
+/// corner, each a hexadecimal digit `d`, least significant first, of luma `16 + 14·d` of limited
+/// range, which is `14·d·255/219` once made R'G'B' of full range.
+fn number_shown(rgba: &[u8], width: u32) -> i64 {
+    (0..3_u32).rev().fold(0, |number, block| {
+        let [r, g, b, _] = pixel(rgba, width, 64 * block + 32, 32);
+        assert!(
+            r.abs_diff(g) <= 3 && g.abs_diff(b) <= 3,
+            "a grey block: {r} {g} {b}"
+        );
+        let digit = (f64::from(r) * 219.0 / 255.0 / 14.0).round();
+        assert!((0.0..16.0).contains(&digit), "a digit: {r}");
+        #[allow(clippy::cast_possible_truncation)]
+        let digit = digit as i64;
+        number * 16 + digit
+    })
+}
+
+/// Places of the picture of the numbered media, away from its number, that are bright.
+fn bright_places(rgba: &[u8], width: u32, height: u32) -> Vec<(u32, u32)> {
+    let mut places = Vec::new();
+    for y in (height / 12..height).step_by((height / 12) as usize) {
+        for x in (width / 16..width).step_by((width / 16) as usize) {
+            let [r, g, b, _] = pixel(rgba, width, x, y);
+            if u32::from(r) + u32::from(g) + u32::from(b) > 150 {
+                places.push((x, y));
+            }
+        }
+    }
+    assert!(places.len() >= 3, "{places:?}");
+    places
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "each edit, and the frames it is seen at"
+)]
+fn a_clip_of_media_is_graded_at_the_frame_of_the_picture_it_shows() {
+    use columbina_model::edit::Edge;
+    use columbina_model::keyframes::KeyClock;
+    use columbina_model::{expand, Edit, Speed};
+    if columbina_compose::gpu_for_tests().is_none() {
+        return;
+    }
+    let Some(media) = crate::play::sources::tests::sample() else {
+        return;
+    };
+    let (width, height) = (1920, 1080);
+    let dir = tempfile::tempdir().unwrap();
+    let mut monitor = monitor(dir.path());
+    // The numbered media, 25 frames a second, from its frame 10 for 40 frames, on a timeline of
+    // 25 frames a second; its gain keyed at its frames 20 and 60.
+    let fading = gain(&[(20, 1.0), (60, 0.2)]);
+    let mut plain = timeline_of(vec![], width, height);
+    plain.media = vec![media.clone()];
+    let rate = media.facts.video.as_ref().unwrap().rate;
+    let from = Time {
+        ticks: rate.ticks_of(10, media.facts.duration.scale),
+        scale: media.facts.duration.scale,
+    };
+    let mut clip = Clip::of_media("c1", "m1", from, 0, 40);
+    clip.grade = fading.clone();
+    plain.timelines[0].tracks[0].clips = vec![clip];
+    plain.next_id = 100;
+    let edited = |edit: Edit| {
+        let mut project = plain.clone();
+        expand(&mut project, edit).unwrap();
+        project
+    };
+    let edits = [
+        ("as it is", plain.clone(), vec![0, 9, 25, 39]),
+        (
+            "its head trimmed",
+            edited(Edit::Trim {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                edge: Edge::In,
+                delta: 8,
+                ripple: false,
+                linked: true,
+            }),
+            vec![8, 12, 30],
+        ),
+        (
+            "slipped",
+            edited(Edit::Slip {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                delta: 6,
+                linked: true,
+            }),
+            vec![0, 14, 33],
+        ),
+        (
+            "cut",
+            edited(Edit::Blade {
+                timeline: "t1".into(),
+                at: 15,
+                tracks: None,
+                linked: true,
+            }),
+            vec![14, 15, 30],
+        ),
+        (
+            "twice as fast",
+            edited(Edit::SetSpeed {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                speed: Speed { num: 2, den: 1 },
+                reverse: None,
+                ripple: false,
+                linked: true,
+            }),
+            vec![0, 7, 19],
+        ),
+        (
+            "backward",
+            edited(Edit::SetSpeed {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                speed: Speed::ONE,
+                reverse: Some(true),
+                ripple: false,
+                linked: true,
+            }),
+            vec![0, 20, 39],
+        ),
+    ];
+    for (what, graded, frames) in edits {
+        let mut ungraded = graded.clone();
+        for clip in &mut ungraded.timelines[0].tracks[0].clips {
+            clip.grade = Grade::default();
+        }
+        for frame in frames {
+            let picture = shown(&mut monitor, &ungraded, frame);
+            let number = number_shown(&picture, width);
+            // The picture is the one that the model says the clip shows there, and its keys
+            // count that frame.
+            let timeline = &graded.timelines[0];
+            let clip = timeline.tracks[0]
+                .clips
+                .iter()
+                .find(|c| c.start <= frame && frame < c.end())
+                .unwrap();
+            let clock = KeyClock::of(clip, &graded, timeline.rate);
+            assert_eq!(clock.at(frame), number, "{what}, frame {frame}");
+            let places = bright_places(&picture, width, height);
+            let got = shown(&mut monitor, &graded, frame);
+            for (x, y) in places {
+                let before = pixel(&picture, width, x, y);
+                #[allow(clippy::cast_precision_loss)]
+                let wanted = expected(before, &[(&fading, number as f64)]);
+                let after = pixel(&got, width, x, y);
+                for i in 0..3 {
+                    assert!(
+                        after[i].abs_diff(wanted[i]) <= 2,
+                        "{what}, frame {frame} (picture {number}) at {x}, {y}: {after:?} from \
+                         {before:?}, and {wanted:?} was wanted"
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]

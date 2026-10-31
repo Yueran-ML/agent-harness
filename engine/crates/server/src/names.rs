@@ -369,7 +369,7 @@ fn visit_edit<E>(
             return f(node, Role::Names);
         }
         Edit::AppendNode { grade } => return visit_target(grade, f),
-        Edit::CopyGrade { from, to, .. } | Edit::AppendNodeGraph { from, to } => {
+        Edit::CopyGrade { from, to, .. } | Edit::AppendNodeGraph { from, to, .. } => {
             visit_target(from, f)?;
             for target in to {
                 visit_target(target, f)?;

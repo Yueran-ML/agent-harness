@@ -173,7 +173,7 @@ async fn a_grade_is_seen_in_the_monitor_and_the_export_and_its_undo_takes_it_awa
 }
 
 /// A grade of six nodes: three serial correctors, two of them in parallel into a layer mixer,
-/// and one after; its contrast keyed over the first 90 frames of the clip.
+/// and one after; its contrast keyed over the first 90 frames of the media.
 fn six_nodes(seed: f64) -> Grade {
     let node = |id: &str, set: &dyn Fn(&mut Corrector)| {
         let mut node = Node::corrector(id);

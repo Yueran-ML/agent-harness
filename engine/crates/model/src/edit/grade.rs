@@ -9,6 +9,7 @@ use super::{EditError, Expansion, MOST_PRESERVED_NODES};
 use crate::grade::{
     at_path, patch_at, Grade, Kind, Link, Node, NodeKind, Port, Target, OUTPUT, SOURCE,
 };
+use crate::keyframes::{aligned, Align, KeyBase};
 use crate::ops::{apply_done, grade_at, group_of_clip, reserve_node_ids, Op, OpError};
 use crate::project::{Id, Project};
 
@@ -233,12 +234,13 @@ pub(super) fn reset(
 
 /// Put the grade `from` in place of each grade of `to`, as Copy Grade does (p. 3286), keeping
 /// the first `preserve` nodes of each that has as many (Copy Grade: Preserve number of nodes,
-/// p. 3285).
+/// p. 3285), its keys put on the frames of each as `align` puts them (p. 3287).
 pub(super) fn copy_grade(
     project: &mut Project,
     from: &Target,
     to: &[Target],
     preserve: u32,
+    align: Align,
 ) -> Result<Expansion, EditError> {
     if to.is_empty() {
         return Err(OpError::OutOfRange { what: "to" }.into());
@@ -250,9 +252,11 @@ pub(super) fn copy_grade(
         .into());
     }
     let copied = grade_at(project, from)?.clone();
+    let base = KeyBase::of(project, from);
     let mut steps = Steps::default();
     for target in to {
         let had = grade_at(project, target)?;
+        let copied = aligned(&copied, base, KeyBase::of(project, target), align);
         let kept = preserve as usize;
         let value = if kept == 0 || had.nodes.len() < kept {
             copied.clone()
@@ -384,19 +388,23 @@ fn ids_of(grade: &Grade) -> HashSet<Id> {
 /// Add the nodes of the grade `from` to the end of each grade of `to`, as Append Node Graph
 /// does (p. 3290): what went into the output of the grade goes into what the source went into
 /// in `from`, and what went into the output of `from` goes into the output. The nodes added are
-/// given new ids, in their order.
+/// given new ids, in their order, and their keys are put on the frames of each as `align` puts
+/// them (p. 3287).
 pub(super) fn append_node_graph(
     project: &mut Project,
     from: &Target,
     to: &[Target],
+    align: Align,
 ) -> Result<Expansion, EditError> {
     if to.is_empty() {
         return Err(OpError::OutOfRange { what: "to" }.into());
     }
     let added = grade_at(project, from)?.clone();
+    let base = KeyBase::of(project, from);
     let mut steps = Steps::default();
     for target in to {
         let had = grade_at(project, target)?.clone();
+        let added = aligned(&added, base, KeyBase::of(project, target), align);
         let added = anew(project, &added, &ids_of(&had))?;
         let set = Op::SetGrade {
             grade: target.clone(),
@@ -413,7 +421,7 @@ pub(super) fn append_node_graph(
 ///
 /// The picture goes through the nodes in the order that it went through the three grades
 /// (p. 3330), and their keyframes are at the frames they were at, as the three count the frames
-/// of the clip alike. The nodes put in are given new ids, those of the pre-clip grade first;
+/// of the clip's source alike (see [`crate::keyframes`]). The nodes put in are given new ids, those of the pre-clip grade first;
 /// the clip's own keep theirs. A grade of the group without nodes puts none in; one that is not
 /// complete is put in as it is, which leaves the clip's grade not complete, as `DaVinci` copies
 /// "all nodes".

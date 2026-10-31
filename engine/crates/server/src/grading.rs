@@ -16,19 +16,15 @@
 //!
 //! # The frame of a key
 //!
-//! The keys of a clip's grade, and of the grades of its group as they apply to that clip, count
-//! the frames of the timeline from the clip's first frame, 0 (the model's `Param`); those of the
-//! timeline's grade count the frames of the timeline. So a key at 10 is where the playhead is
-//! ten frames into the clip, whatever the speed of the clip and whether it plays backwards: the
-//! Keyframe Editor of the Color page has a ruler that "mirrors the record timecode of the
-//! currently selected clip" (p. 3382), and a change of speed moves only the keys of the
-//! Composite, Transform and Cropping of the Edit page with it, and only when asked (p. 1073).
-//! `DaVinci` ties a key to the frame of the source under it (copied grades place their keys "at
-//! matching frames that correspond to the source timecode", p. 3393; the first key is "on the
-//! first frame of the master clip", p. 3383), so a trim of a clip's head there leaves its keys on
-//! the same pictures; here they stay at the same distance from the clip's first frame. Within a
-//! transition a clip is seen before its first frame or after its last, at frames below 0 or past
-//! its length, where a grade holds its first or last key.
+//! The keys of a clip's grade, and of the grades of its group as they apply to that clip, are on
+//! the frames of its source, as `DaVinci` ties them (pp. 3383, 3393; the model's `keyframes`): a
+//! clip of media is graded at the frame of its media whose picture its layer shows, found by the
+//! model's `KeyClock` from the same place in the media that the picture is read at (the model's
+//! `span::source_tick` and `span::media_frame`, which the readers of pictures use), so the
+//! picture and its grade are of one frame, whatever the clip's trim, slip, speed or direction,
+//! and in a transition, where a clip is seen beyond its ends. A title, a colour or a still is
+//! graded at the frame of the clip from its first, 0. The keys of the timeline's grade count the
+//! frames of the timeline.
 //!
 //! # What is graded
 //!
@@ -54,6 +50,7 @@ use std::sync::Arc;
 use columbina_compose::grade::{CardLuts, GradeOptions, LutCache, Prepared, Roots};
 use columbina_compose::{ColorOp, Gpu, Scene, Stage};
 use columbina_model::grade::{Grade, NodeKind};
+use columbina_model::keyframes::KeyClock;
 use columbina_model::project::TrackKind;
 use columbina_model::{Project, Timeline};
 use serde::Serialize;
@@ -129,8 +126,8 @@ pub struct MissingLut {
 /// The grades that apply to a clip.
 #[derive(Clone)]
 struct ClipGrades {
-    /// The first frame of the clip on the timeline, from which its keys count.
-    start: i64,
+    /// How the frame of its keys is found from a frame of the timeline.
+    clock: KeyClock,
     pre: Option<Arc<Prepared>>,
     own: Option<Arc<Prepared>>,
     post: Option<Arc<Prepared>>,
@@ -244,7 +241,7 @@ impl Grading {
                 self.clips.insert(
                     clip.id.clone(),
                     ClipGrades {
-                        start: clip.start,
+                        clock: KeyClock::of(clip, project, timeline.rate),
                         pre,
                         own,
                         post,
@@ -316,12 +313,13 @@ impl Grading {
     }
 
     /// The grade of the layer of clip `clip` at `frame` of the timeline: its group's pre-clip
-    /// grade, its own and its group's post-clip grade, each at the frame of the clip.
+    /// grade, its own and its group's post-clip grade, each at the frame of its keys there, that
+    /// of the picture of its source shown.
     pub fn layer(&self, clip: &str, frame: i64) -> Stage {
         let Some(grades) = self.clips.get(clip) else {
             return Stage::default();
         };
-        let frame = at(frame.saturating_sub(grades.start));
+        let frame = at(grades.clock.at(frame));
         let ops: Vec<ColorOp> = [&grades.pre, &grades.own, &grades.post]
             .into_iter()
             .flatten()

@@ -894,7 +894,7 @@ id targets that track. Both picture and sound placed together get a new link gro
 |---|---|---|
 | `insert` | `source`, `at`, `video_track?`, `audio_track?` | Cut every unlocked track at the insertion point and ripple later content by the source length. |
 | `overwrite` | same | Replace the covered range on target tracks, without rippling other tracks. |
-| `replace` | same | Replace the source of the clips at `at`, keeping their positions, lengths and settings; explicit source `from` aligns to `at`. |
+| `replace` | same | Replace the source of the clips at `at`, keeping their positions, lengths and settings; explicit source `from` aligns to `at`. Each clip's grade goes to the new source with its keys aligned by source timecode (see Grades, keys copied to another clip). |
 | `place_on_top` | `source`, `at` | Use an unlocked track above occupied tracks, creating one when needed. |
 | `append` | `source`, `video_track?`, `audio_track?` | Place after the latest clip end on the target tracks. |
 | `smart_insert` | `source`, `at`, `video_track?`, `audio_track?` | Insert at the nearest unlocked audio/video cut; ties choose the earlier cut. |
@@ -1089,14 +1089,68 @@ part where it has one, and taken away with `{"shot_match": null}`. Out of range 
 `out_of_range` with the path, such as `shot_match.gain.r`.
 
 Every number setting above is a **parameter**: a number, or keyframes
-`{"keys": [{"frame": 0, "value": 1.0, "interp": "linear"}, ...]}`. Frames count the frames of
-the clip from 0 (of the timeline, for its grade), rise strictly, are within ±(2^53−1), and there
-is at least one key; every value is within the range. Before the first key the value is the
+`{"keys": [{"frame": 0, "value": 1.0, "interp": "linear"}, ...]}`. Frames rise strictly, are
+within ±(2^53−1), and there is at least one key; every value is within the range. What a frame
+counts (below, **frames of keys**) depends on the grade: of a clip of media, a frame of its
+media; of a title, a colour or a still, a frame of the clip; of a timeline, a frame of the
+timeline. Before the first key the value is the
 first's, after the last the last's. `interp` says how the value goes to the next key: `"linear"`,
 `"hold"` (a static keyframe, p. 3384) or `{"bezier": {"out": [t, dv], "in": [t, dv]}}`, a cubic
 curve whose handles are each a share `t` (0…1) of the frames between the keys and a change of
 value `dv` (any finite number): `out` from this key forward, `in` from the next key back
 (`[0.33, 0]` for both eases out and in, p. 3385). `Param::value_at(frame)` evaluates it.
+
+**Frames of keys.** DaVinci ties the keys of the Color page to the source of a clip: a grade is
+linked to "a default one on the first frame of the master clip" (p. 3383), and a copied grade's
+keys are "placed at matching frames that correspond to the source timecode" (p. 3393); the
+Keyframe Editor's ruler only "mirrors the record timecode" of the clip (p. 3382). So
+(`crates/model/src/keyframes.rs`):
+
+- A key of a **clip's grade**, or of its group's pre-clip and post-clip grades as they apply to
+  that clip, is at a frame of the clip's **media**, numbered at the media's own rate from its
+  first frame (0), the number of the picture: key `n` is the setting at the moment that picture
+  `n` is shown. The picture shown at frame `f` of the timeline is the one read there:
+  `k = f − start` (backward, `k = length − 1 − k`); `tick = in.ticks + floor(k · speed.num ·
+  rate.den · scale / (speed.den · rate.num))` with `rate` the timeline's (`span::source_tick`);
+  then `n = ceil((tick + 1) · m.num / (scale · m.den)) − 1`, the tick clamped to
+  `0 … duration.ticks − 1`, `m` the media's rate and `scale` that of its duration
+  (`span::media_frame`). Frames are of the media, not the timeline, so a key names a picture
+  whatever the timeline's rate; a source of frames at changing times is numbered on the grid of
+  its rate, as its picture is read.
+- So an edit that changes which pictures a clip shows leaves every key on its picture: a trim of
+  either end, `slip`, `slide` and `roll` keep the keys of the pictures still shown where they
+  were (pictures newly shown before the first key or after the last hold it); `blade` gives both
+  halves the grade, each with the keys of its pictures, and the two play as the clip did (a
+  through edit runs "with continuous timecode", p. 804); a change of **speed** or **direction**
+  keeps each key on its picture, which is shown sooner or later: at 2× the keys come twice as
+  close on the timeline, played backward they come last first, and a picture shown on several
+  frames (slower than the media) has one setting on them all. The speed dialog's Maintain
+  Timing / Stretch Keyframes is for the keys of the Edit page's Composite, Transform and
+  Cropping only (p. 1073).
+- A **title**, a **colour** and a **still** (one picture held) have no frames of their own: the
+  keys of their grades count the frames of the clip from its first (0), and move with its head.
+- The keys of a **timeline's grade** count the frames of the timeline; they are apart from those
+  of clips (p. 3394).
+
+**Keys copied to another clip** follow the Gallery's "Apply Grades Using" setting (pp. 3264,
+3287), the edit's `keyframes`:
+
+- `"source_timecode"` (Keyframes Aligning Source Timecode; the default where it is left out, as
+  DaVinci places copied keys by source timecode, p. 3393): each key goes to the frame of the
+  other clip's media at the same time from the start of the media (the frame of that rate that
+  the key's time is in), so a grade copied to another clip of the same media keeps its keys on
+  the same pictures. "If there is no source timecode overlap" (the stretches of media that the
+  two clips show do not meet in time, or either clip has no media), the keys are aligned by
+  start frames, as below.
+- `"start_frame"` (Keyframes Aligning Start Frames): the frame at the start of the copied
+  grade's clip goes to the frame at the start of the other clip, and every key keeps its time
+  from it. A clip's start is the first picture of its media it shows, at its in point (shown
+  last where it plays backward), or frame 0 of a title, a colour, a still or a timeline.
+- Keys that come to one frame (from a higher rate to a lower) are one key there, the last. The
+  grades of a group are of no one clip: copied to or from one, keys stay at their frames.
+  `paste_node` and `paste_value` copy settings with their keys as they are. DaVinci's third
+  choice, No Keyframes, takes the settings at the frame a still was saved at, and comes with
+  stills.
 
 ### Operations
 
@@ -1152,8 +1206,8 @@ operations above when applied, as the other edits are.
 | `add_layer` | `grade`, `node` (a corrector) | As `add_parallel`, with a layer mixer; the new corrector is at the lowest input, on top (Option-L, p. 3336). |
 | `extract_node` | `grade`, `node` | Take the node out of the tree, bridged as by `remove_node`, and keep it unlinked (E, p. 3319). |
 | `reset_node` | `grade`, `node` | Set the node as a new one of its kind, keeping its label, `enabled` and inputs. |
-| `copy_grade` | `from`, `to: [target, ...]`, `preserve_nodes?` (0…10, default 0) | `set_grade` each `to` to the grade `from`, ids kept (pp. 3286, 3290). With `preserve_nodes` N (Copy Grade: Preserve number of nodes, p. 3285), a `to` of at least N nodes keeps its first N: they take the places of the first N nodes of the copy, whose links are kept, so "the first N nodes of a copied grade are ignored"; a node of the copy after them whose id one of them holds gets a new id. A `to` of fewer than N nodes gets the copy whole. Each kept node must be of the kind of the node of the copy it replaces, with as many inputs (`wrong_node` naming the kept node), and the copy must have N nodes (`out_of_range` `preserve_nodes`, as is N over 10). |
-| `append_node_graph` | `from`, `to: [target, ...]` | Add the nodes of `from` after the end of each `to`, with new ids: what fed the output feeds what the source fed, and what fed the output of `from` feeds the output (Append Node Graph, p. 3290). `append_grade`, its old name, is read as it. |
+| `copy_grade` | `from`, `to: [target, ...]`, `preserve_nodes?` (0…10, default 0), `keyframes?` (`"source_timecode"`, the default, or `"start_frame"`) | `set_grade` each `to` to the grade `from`, ids kept (pp. 3286, 3290), its keys put on the frames of each `to` as `keyframes` says (above; kept nodes keep theirs). With `preserve_nodes` N (Copy Grade: Preserve number of nodes, p. 3285), a `to` of at least N nodes keeps its first N: they take the places of the first N nodes of the copy, whose links are kept, so "the first N nodes of a copied grade are ignored"; a node of the copy after them whose id one of them holds gets a new id. A `to` of fewer than N nodes gets the copy whole. Each kept node must be of the kind of the node of the copy it replaces, with as many inputs (`wrong_node` naming the kept node), and the copy must have N nodes (`out_of_range` `preserve_nodes`, as is N over 10). |
+| `append_node_graph` | `from`, `to: [target, ...]`, `keyframes?` (as `copy_grade`) | Add the nodes of `from` after the end of each `to`, with new ids, their keys put on the frames of each `to` as `keyframes` says: what fed the output feeds what the source fed, and what fed the output of `from` feeds the output (Append Node Graph, p. 3290). `append_grade`, its old name, is read as it. |
 | `collapse_group_grades` | `timeline`, `clips: [clip id, ...]` | For each clip, in a group (`ungrouped` if not): put the nodes of the group's pre-clip grade before the clip's nodes and those of its post-clip grade after them, chained as `append_node_graph` chains (the picture goes through them in the order of p. 3330, keyframes at their frames), with new ids for the group's nodes, the clip's keeping theirs; then `set_clip_group` it to `null`. The group keeps its grades and other clips (Collapse Group Grades, pp. 3306–3307). A group grade without nodes adds none; one that is not complete is copied as it is, leaving the clip's grade not complete. The timeline grade is not touched. Done as `set_grade` (when there are nodes to add) and `set_clip_group`. |
 | `paste_value` | `from`, `from_node`, `to`, `to_node`, `param` | Set one field of `params`, by its path with dots (`primaries.saturation`, `primaries.lift`), to its value in the other node (Paste Value, p. 3286). A path that either node lacks is `out_of_range` `param`. |
 | `paste_node` | `from`, `from_node`, `to`, `to_node` | Set the `params` of `to_node` to those of `from_node`, of the same kind (p. 3320). |
@@ -1190,15 +1244,12 @@ subtitles in. A grade that is not complete, or has no node, changes nothing.
   model lets any clip carry a grade; DaVinci grades a Text+ title "like any other clip", p. 1047).
   The colour that a dip transition goes through is no clip and has no clip grade; the timeline
   grade is over it.
-- **Frames of keys**: a key of a clip's grade, and of its group's grades as they apply to that
-  clip, is at a frame of the timeline counted from the clip's first frame (0). The clip's speed
-  and `reverse` do not move them: the Color page's Keyframe Editor mirrors the record timecode
-  of the clip (p. 3382), and a speed change moves only Edit-page keys, when asked (p. 1073).
-  Within a transition a clip is seen before its first frame or after its last, where its grade
-  holds its first or last key. The keys of the timeline's grade count the frames of the
-  timeline. (DaVinci ties a clip's keys to the source frames under them, pp. 3383, 3393: there a
-  trim of the head leaves them on the same pictures, here at the same distance from the clip's
-  first frame.)
+- **Frames of keys**: a layer of a clip of media is graded at the frame of its media whose
+  picture it shows (Frames of keys, above), worked out from the same place in the media that
+  the picture is read at, so the picture and its grade are always of one frame, in the monitor
+  and in an export alike, at any trim, slip, speed or direction, and within a transition, where
+  a clip is seen beyond its ends. A title, a colour or a still is graded at the frame of the
+  clip from its first. The timeline's grade is at the frame of the timeline.
 - **Cost**: a grade is made into code once, when it changes (any of its settings, or the card);
   each frame takes only its parameters at that frame, so playing keyframes or dragging a setting
   compiles nothing, and a change of grades alone does not start the read-ahead again.

@@ -50,15 +50,13 @@ impl Input {
         if self.still {
             return 0;
         }
-        let tick = tick.clamp(0, (self.duration.ticks - 1).max(0));
         // Source frame n starts at floor(n * scale * den / num), as Rate::ticks_of and
-        // span::source_tick do. Invert those integer boundaries: ceil((tick+1)*num/per)-1.
-        // Flooring tick*num/per would show frame 0 at the first frame's boundary (614 ticks
-        // for 25 fps in scale 15360). This does not round fractional-speed positions up by
-        // half a frame: a tick before the boundary still belongs to the preceding frame.
-        let over = (i128::from(tick) + 1) * i128::from(self.rate.num);
-        let under = i128::from(self.duration.scale) * i128::from(self.rate.den);
-        i64::try_from((over - 1) / under).unwrap_or(i64::MAX)
+        // span::source_tick do; the model inverts those integer boundaries, and the grades
+        // count their keys by the same frames (span::media_frame). Flooring tick*num/per would
+        // show frame 0 at the first frame's boundary (614 ticks for 25 fps in scale 15360).
+        // This does not round fractional-speed positions up by half a frame: a tick before the
+        // boundary still belongs to the preceding frame.
+        columbina_model::span::media_frame(tick, self.rate, self.duration)
     }
 }
 

@@ -9,6 +9,7 @@ mod common;
 use std::collections::BTreeMap;
 
 use columbina_model::grade::{Node, Target};
+use columbina_model::keyframes::Align;
 use columbina_model::{apply, apply_done, expand, Edit, Group, Link, Op, Project};
 use common::grades::{grade_of, grade_op_of, targets};
 use common::{check, messy, op_of, spec, tidy, Spec};
@@ -123,6 +124,16 @@ const PARAMS: [&str; 6] = [
     "nothing",
 ];
 
+/// How the keys of a copied grade are put on the clip it is copied to: as `DaVinci` does at
+/// first, or either way named.
+fn align(k: usize) -> Option<Align> {
+    match k % 3 {
+        0 => None,
+        1 => Some(Align::SourceTimecode),
+        _ => Some(Align::StartFrame),
+    }
+}
+
 /// An edit of grades made of `n` against `project`.
 fn edit_of(project: &Project, n: [usize; 5]) -> Edit {
     let targets = targets(project);
@@ -179,10 +190,12 @@ fn edit_of(project: &Project, n: [usize; 5]) -> Edit {
             from: grade,
             to: others(n[3]),
             preserve_nodes: (!n[4].is_multiple_of(3)).then_some(u32::try_from(n[4] % 13).unwrap()),
+            keyframes: align(n[2] / 5),
         },
         8 => Edit::AppendNodeGraph {
             from: grade,
             to: others(n[3]),
+            keyframes: align(n[2] / 5),
         },
         9 => {
             let to = pick_target(n[3]);

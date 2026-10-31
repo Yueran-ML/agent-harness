@@ -1209,6 +1209,7 @@ fn copy_grade_puts_a_grade_in_place_of_others_and_append_node_graph_after_them()
             from: c1(),
             to: vec![c2.clone(), timeline.clone()],
             preserve_nodes: None,
+            keyframes: None,
         },
     );
     assert_eq!(done.len(), 2);
@@ -1219,6 +1220,7 @@ fn copy_grade_puts_a_grade_in_place_of_others_and_append_node_graph_after_them()
         Edit::AppendNodeGraph {
             from: c1(),
             to: vec![c2.clone()],
+            keyframes: None,
         },
     );
     let g = grade(&project, &c2);
@@ -1240,6 +1242,7 @@ fn copy_grade_puts_a_grade_in_place_of_others_and_append_node_graph_after_them()
             from: c1(),
             to: vec![],
             preserve_nodes: None,
+            keyframes: None,
         },
     );
     assert_eq!(error, EditError::Op(OpError::OutOfRange { what: "to" }));
@@ -1403,6 +1406,7 @@ fn copy(to: Vec<Target>, preserve_nodes: Option<u32>) -> Edit {
         from: c1(),
         to,
         preserve_nodes,
+        keyframes: None,
     }
 }
 
@@ -1585,6 +1589,7 @@ fn append_node_graph_is_written_by_its_name_and_read_by_its_old_one_too() {
         to: vec![Target::Timeline {
             timeline: "t1".into(),
         }],
+        keyframes: None,
     };
     for name in ["append_node_graph", "append_grade"] {
         let mut value = fields.clone();

@@ -53,8 +53,13 @@ pub const LONGEST_PATH: usize = 4096;
 /// A setting that may change over the frames of a clip: one value, or keyframes.
 ///
 /// A fixed value is written as a number, and keyframes as `{"keys": [...]}`, each key
-/// `{"frame": 12, "value": 1.2, "interp": "linear"}`. The frame of a key counts the frames of
-/// the clip from its first, 0, or of the timeline for its grade; keys are in the order of their
+/// `{"frame": 12, "value": 1.2, "interp": "linear"}`. The frame of a key of a clip's grade, or of
+/// its group's grades as they apply to it, is a frame of its source, as `DaVinci Resolve` ties
+/// the keys of the Color page to the source of a clip: for a clip of media with a picture, the
+/// number of the frame of the media, at the media's own rate, whose picture is shown; for a
+/// title, a colour or a still, which have no frames of their own, the frame of the clip from its
+/// first, 0 (see [`crate::keyframes`]). The frame of a key of a timeline's grade is a frame of the
+/// timeline. Keys are in the order of their
 /// frames, at most one at a frame, and there is at least one. Before the first key the value is
 /// that of the first, and after the last that of the last. How the value goes from a key to the
 /// next is told by the key's `interp` (see [`Interp`]).
@@ -1386,6 +1391,39 @@ impl Grade {
             .filter(move |l| l.from == from && l.kind == kind)
     }
 
+    /// The grade with each key of each setting of its nodes moved from frame `k` to `to(k)`,
+    /// which is not to go back as `k` goes on, clamped within [`LARGEST`] of 0. Keys that come
+    /// to one frame are one key there, the last of them: from that frame on the setting goes as
+    /// it went after them all.
+    ///
+    /// # Panics
+    /// Never: settings whose keys are at other frames are settings of the same kind.
+    #[must_use]
+    pub fn with_key_frames(&self, to: impl Fn(i64) -> i64) -> Grade {
+        let mut grade = self.clone();
+        for node in &mut grade.nodes {
+            let mut params = node.kind.params();
+            if move_keys(&mut params, &to) {
+                node.kind = NodeKind::from_params(node.kind.kind(), params)
+                    .expect("keys at other frames are settings of the same kind");
+            }
+        }
+        grade
+    }
+
+    /// Whether a setting of one of its nodes has keys.
+    #[must_use]
+    pub fn has_keys(&self) -> bool {
+        fn keyed(value: &serde_json::Value) -> bool {
+            match value {
+                serde_json::Value::Object(map) => keys_of(map).is_some() || map.values().any(keyed),
+                serde_json::Value::Array(items) => items.iter().any(keyed),
+                _ => false,
+            }
+        }
+        self.nodes.iter().any(|node| keyed(&node.kind.params()))
+    }
+
     /// Put its links in the order of the inputs that they go into.
     pub fn sort_links(&mut self) {
         self.links.sort_by(|a, b| a.target().cmp(&b.target()));
@@ -1692,6 +1730,55 @@ pub(crate) fn changed(base: &serde_json::Value, patch: &serde_json::Value) -> se
             .collect::<serde_json::Map<_, _>>()
             .into(),
         (base, _) => base.clone(),
+    }
+}
+
+/// The keys of a setting as it is written, `{"keys": [...]}`, if the object is one.
+fn keys_of(map: &serde_json::Map<String, serde_json::Value>) -> Option<&Vec<serde_json::Value>> {
+    match map.get("keys") {
+        Some(serde_json::Value::Array(keys)) if map.len() == 1 => Some(keys),
+        _ => None,
+    }
+}
+
+/// Move the keys of every setting in `value`, settings as they are written, from frame `k` to
+/// `to(k)` within [`LARGEST`] of 0, keeping the last of those that come to one frame (see
+/// [`Grade::with_key_frames`]). Gives whether there were any.
+fn move_keys(value: &mut serde_json::Value, to: &impl Fn(i64) -> i64) -> bool {
+    match value {
+        serde_json::Value::Object(map) => {
+            if keys_of(map).is_some() {
+                let keys: Vec<Key> = serde_json::from_value(map["keys"].clone())
+                    .expect("the keys of a setting are written as keys");
+                let mut moved: Vec<Key> = Vec::with_capacity(keys.len());
+                for key in keys {
+                    let frame = to(key.frame).clamp(-LARGEST, LARGEST);
+                    let key = Key { frame, ..key };
+                    match moved.last_mut() {
+                        Some(last) if last.frame >= frame => *last = key,
+                        _ => moved.push(key),
+                    }
+                }
+                map.insert(
+                    "keys".into(),
+                    serde_json::to_value(moved).expect("keys are written as JSON"),
+                );
+                return true;
+            }
+            let mut any = false;
+            for item in map.values_mut() {
+                any |= move_keys(item, to);
+            }
+            any
+        }
+        serde_json::Value::Array(items) => {
+            let mut any = false;
+            for item in items {
+                any |= move_keys(item, to);
+            }
+            any
+        }
+        _ => false,
     }
 }
 

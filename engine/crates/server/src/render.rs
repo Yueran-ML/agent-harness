@@ -743,6 +743,7 @@ pub(crate) fn picture_layer(picture: Arc<NativePicture>, rotation: i16) -> Scene
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_media::{self, Sample};
 
     fn worker(dir: &Path) -> Worker {
         let mut project = Project::sample();
@@ -944,6 +945,143 @@ mod tests {
                     "frame {frame}: {got:?}, and {rgb:?} was wanted"
                 );
             }
+        }
+    }
+
+    /// The frames of an export of `project`, of timeline t1 from frame 0 to `frames`, as R, G, B
+    /// and A of 8 bits, each `width` × `height`.
+    fn exported(project: &Project, frames: i64, width: u32, height: u32) -> Vec<Vec<u8>> {
+        let dir = tempfile::tempdir().unwrap();
+        let request = Request {
+            timeline: "t1".into(),
+            path: dir.path().join("graded.mov"),
+            codec: VideoCodec::Prores,
+            quality: VideoQuality::High,
+            range: Some(FrameRange {
+                from: 0,
+                to: frames,
+            }),
+            subtitle_tracks: vec![],
+            replace: false,
+            revision: None,
+        };
+        let mut worker = worker(dir.path());
+        worker.plan = Plan::new(project.clone(), request, dir.path()).unwrap();
+        worker.run().unwrap();
+        let mut decoder =
+            columbina_media::VideoDecoder::open(&worker.plan.path, Hardware::Off).unwrap();
+        (0..frames)
+            .map(|frame| {
+                let raw = decoder.decoded_at(frame).unwrap();
+                columbina_media::Converter::new()
+                    .rgba_scaled(&raw, width, height)
+                    .unwrap()
+                    .data
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_export_grades_a_clip_of_media_at_the_frame_of_the_picture_it_shows() {
+        use columbina_compose::grade::{evaluate, GradeOptions};
+        use columbina_model::keyframes::KeyClock;
+        use columbina_model::{Clip, Interp, Key, Param, Speed, Time};
+        if columbina_compose::gpu_for_tests().is_none() {
+            return;
+        }
+        let Some(made) = test_media::media(Sample::Fhd) else {
+            return;
+        };
+        let facts = columbina_media::probe(&made.path).unwrap();
+        let (width, height) = (1920, 1080);
+        let mut project = Project::sample();
+        project.media[0].path = made.path.to_string_lossy().into_owned();
+        project.media[0].facts = facts.clone();
+        let keyed = Param::Keys(vec![
+            Key {
+                frame: 20,
+                value: 1.0,
+                interp: Interp::Linear,
+            },
+            Key {
+                frame: 60,
+                value: 0.2,
+                interp: Interp::Linear,
+            },
+        ]);
+        let fading = corrector(|settings| {
+            let gain = &mut settings.primaries.gain;
+            (gain.r, gain.g, gain.b) = (keyed.clone(), keyed.clone(), keyed);
+        });
+        let timeline = &mut project.timelines[0];
+        (timeline.width, timeline.height) = (width, height);
+        timeline
+            .tracks
+            .retain(|track| track.kind == TrackKind::Video);
+        // The numbered media from its frame 10, twice as fast and backward: the export's frame
+        // k shows picture 10 + 2·(19 − k).
+        let rate = facts.video.as_ref().unwrap().rate;
+        let from = Time {
+            ticks: rate.ticks_of(10, facts.duration.scale),
+            scale: facts.duration.scale,
+        };
+        let mut clip = Clip::of_media("c1", "m1", from, 0, 20);
+        clip.speed = Speed { num: 2, den: 1 };
+        clip.reverse = true;
+        timeline.tracks[0].clips = vec![clip.clone()];
+        let ungraded = exported(&project, 20, width, height);
+        project.timelines[0].tracks[0].clips[0].grade = fading.clone();
+        let graded = exported(&project, 20, width, height);
+        let clock = KeyClock::of(&clip, &project, project.timelines[0].rate);
+        let at = |rgba: &[u8], x: u32, y: u32| rgba.as_chunks::<4>().0[(y * width + x) as usize];
+        for frame in 0..20 {
+            let (before, after) = (&ungraded[frame], &graded[frame]);
+            let frame = i64::try_from(frame).unwrap();
+            // The number of the picture shown, from its three blocks, as luma 16 + 14·d.
+            let number = (0..3_u32).rev().fold(0, |number, block| {
+                let [r, ..] = at(before, 64 * block + 32, 32);
+                #[allow(clippy::cast_possible_truncation)]
+                let digit = (f64::from(r) * 219.0 / 255.0 / 14.0).round() as i64;
+                number * 16 + digit
+            });
+            assert_eq!(number, 10 + 2 * (19 - frame), "frame {frame}");
+            assert_eq!(clock.at(frame), number);
+            let mut checked = 0;
+            let places =
+                (1..12).flat_map(|y| (1..16).map(move |x| (x * width / 16, y * height / 12)));
+            for (x, y) in places {
+                // Means of a patch, as each frame was coded on its own, its colour at half the
+                // resolution across.
+                let mean = |rgba: &[u8]| {
+                    let mut sum = [0.0_f32; 3];
+                    for dy in 0..16 {
+                        for dx in 0..16 {
+                            let pixel = at(rgba, x - 8 + dx, y - 8 + dy);
+                            for i in 0..3 {
+                                sum[i] += f32::from(pixel[i]) / 256.0;
+                            }
+                        }
+                    }
+                    sum
+                };
+                let (from, got) = (mean(before), mean(after));
+                // Away from the edges of the codes, where coding the colour again clips it.
+                if from.iter().any(|&c| !(30.0..=225.0).contains(&c)) {
+                    continue;
+                }
+                checked += 1;
+                let rgb = from.map(|c| c / 255.0);
+                #[allow(clippy::cast_precision_loss)]
+                let wanted = evaluate(&fading, number as f64, &GradeOptions::default(), rgb);
+                for i in 0..3 {
+                    assert!(
+                        (got[i] - wanted[i] * 255.0).abs() <= 2.5,
+                        "frame {frame} (picture {number}) at {x}, {y}: {got:?} from {from:?}, \
+                         and {wanted:?} was wanted"
+                    );
+                }
+            }
+            assert!(checked >= 3, "frame {frame}");
         }
     }
 

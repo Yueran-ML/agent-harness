@@ -17,7 +17,7 @@
 
 use crate::ops::LARGEST;
 use crate::project::Clip;
-use crate::time::{Rate, Speed};
+use crate::time::{Rate, Speed, Time};
 
 /// The ticks of `scale` that `frames` frames of `rate` show at `speed`, rounded down:
 /// `frames * speed * rate.den * scale / rate.num`.
@@ -48,14 +48,69 @@ pub fn source_span(clip: &Clip, rate: Rate, scale: u32) -> i64 {
 /// clip of a title or a colour begins at 0.
 #[must_use]
 pub fn source_tick(clip: &Clip, k: i64, rate: Rate, scale: u32) -> i64 {
-    let begins = clip.source_in().map_or(0, |time| time.ticks);
-    let frame = if clip.reverse {
-        clip.length.saturating_sub(1).saturating_sub(k)
-    } else {
-        k
-    };
-    let offset = ticks_of_scaled(frame, clip.speed, rate, scale);
-    saturated(i128::from(begins).checked_add(offset.into()), offset < 0)
+    Reading::of(clip).tick(k, rate, scale)
+}
+
+/// How a clip reads its source, as [`source_tick`] counts it: where it begins, how long it
+/// lasts, at what speed and which way. It is a copy of those fields of the clip, so that a
+/// reader may keep it without the clip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Reading {
+    /// Where it begins in its source, in ticks; 0 for a title or a colour.
+    pub begins: i64,
+    /// How many frames it lasts.
+    pub length: i64,
+    /// How fast it plays its source.
+    pub speed: Speed,
+    /// Whether it plays its source backward.
+    pub reverse: bool,
+}
+
+impl Reading {
+    /// How `clip` reads its source.
+    #[must_use]
+    pub fn of(clip: &Clip) -> Reading {
+        Reading {
+            begins: clip.source_in().map_or(0, |time| time.ticks),
+            length: clip.length,
+            speed: clip.speed,
+            reverse: clip.reverse,
+        }
+    }
+
+    /// The place in its source, in ticks of `scale`, that frame `k` of the clip shows, counted
+    /// from its first frame, at the rate of its timeline: [`source_tick`].
+    #[must_use]
+    pub fn tick(&self, k: i64, rate: Rate, scale: u32) -> i64 {
+        let frame = if self.reverse {
+            self.length.saturating_sub(1).saturating_sub(k)
+        } else {
+            k
+        };
+        let offset = ticks_of_scaled(frame, self.speed, rate, scale);
+        saturated(
+            i128::from(self.begins).checked_add(offset.into()),
+            offset < 0,
+        )
+    }
+}
+
+/// The frame of a picture of `rate` frames a second and `duration` long that the place `tick`,
+/// in ticks of the scale of its duration, is in, as its picture is read for that place: frame
+/// `n` begins at the tick that [`Rate::ticks_of`] counts for `n` frames, rounded down as it is,
+/// so the tick there is of frame `n`, and the one before it of frame `n - 1`. A place before the
+/// start is in the first frame, and one at the end or after it in the last.
+#[must_use]
+pub fn media_frame(tick: i64, rate: Rate, duration: Time) -> i64 {
+    let tick = tick.clamp(0, (duration.ticks - 1).max(0));
+    // Frame n begins at floor(n * scale * den / num): the frame of a tick is the most n whose
+    // beginning is no later, ceil((tick + 1) * num / (scale * den)) - 1.
+    let over = (i128::from(tick) + 1) * i128::from(rate.num);
+    let under = i128::from(duration.scale) * i128::from(rate.den);
+    if under == 0 {
+        return 0;
+    }
+    i64::try_from((over - 1) / under).unwrap_or(i64::MAX)
 }
 
 /// The most frames of `rate` at `speed` whose ticks of `scale`, as [`ticks_of_scaled`] counts
@@ -234,6 +289,31 @@ mod tests {
         // Its last sample is read from where it begins, and its first from 4 seconds on.
         assert_eq!(read(48000 + 96000 - 1), 88200);
         assert_eq!(read(48000), 88200 + 4 * 44100 - 2);
+    }
+
+    #[test]
+    fn the_frame_of_a_place_begins_where_its_ticks_are_counted_to_begin() {
+        let ten = |scale: u32| Time {
+            ticks: 10 * i64::from(scale),
+            scale,
+        };
+        let ntsc = Rate {
+            num: 30000,
+            den: 1001,
+        };
+        for (rate, scale) in [(PAL, SCALE), (ntsc, 1000), (ntsc, 90000)] {
+            for frame in 1..200 {
+                let begins = rate.ticks_of(frame, scale);
+                assert_eq!(media_frame(begins, rate, ten(scale)), frame, "{rate:?}");
+                assert_eq!(media_frame(begins - 1, rate, ten(scale)), frame - 1);
+            }
+        }
+        // 614 ticks of 15360 begin frame 1 of 25 a second, though 614 · 25 / 15360 < 1.
+        assert_eq!(media_frame(614, PAL, ten(SCALE)), 1);
+        // Before the start, the first frame; at the end or after it, the last.
+        assert_eq!(media_frame(-5, PAL, ten(SCALE)), 0);
+        assert_eq!(media_frame(10 * 15360, PAL, ten(SCALE)), 249);
+        assert_eq!(media_frame(i64::MAX, PAL, ten(SCALE)), 249);
     }
 
     #[test]

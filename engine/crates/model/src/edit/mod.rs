@@ -49,6 +49,7 @@ mod work;
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::grade::Target;
+use crate::keyframes::Align;
 use crate::ops::{apply_done, Op, OpError};
 use crate::project::{Alignment, Id, Project, Rgba, TitleStyle, TrackKind, TransitionKind};
 use crate::time::{Speed, Time};
@@ -568,6 +569,11 @@ pub enum Edit {
         /// many inputs, and the copy has that many nodes, or the edit is refused.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         preserve_nodes: Option<u32>,
+        /// How the keys of the copy are put on the frames of each clip of `to` (Apply Grades
+        /// Using, pp. 3264, 3287; see [`crate::keyframes`]): aligning source timecode if it is
+        /// left out, as `DaVinci` does at first. The nodes that are kept keep their keys.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        keyframes: Option<Align>,
     },
     /// Add the nodes of a grade to the end of other grades (Append Node Graph; p. 3290). It is
     /// read by its old name, `append_grade`, too.
@@ -577,6 +583,10 @@ pub enum Edit {
         from: Target,
         /// The grades that they are added to.
         to: Vec<Target>,
+        /// How the keys of the nodes added are put on the frames of each clip of `to`, as for
+        /// [`Edit::CopyGrade`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        keyframes: Option<Align>,
     },
     /// Put the nodes of the pre-clip and the post-clip grades of each clip's group into its own
     /// grade, before and after its nodes, and take the clip out of the group (Collapse Group
@@ -896,8 +906,16 @@ pub(crate) fn run(project: &mut Project, edit: Edit) -> Result<Expansion, EditEr
             from,
             to,
             preserve_nodes,
-        } => return grade::copy_grade(project, &from, &to, preserve_nodes.unwrap_or(0)),
-        Edit::AppendNodeGraph { from, to } => return grade::append_node_graph(project, &from, &to),
+            keyframes,
+        } => {
+            let (preserve, align) = (preserve_nodes.unwrap_or(0), keyframes.unwrap_or_default());
+            return grade::copy_grade(project, &from, &to, preserve, align);
+        }
+        Edit::AppendNodeGraph {
+            from,
+            to,
+            keyframes,
+        } => return grade::append_node_graph(project, &from, &to, keyframes.unwrap_or_default()),
         Edit::CollapseGroupGrades { timeline, clips } => {
             return grade::collapse_group_grades(project, &timeline, &clips)
         }

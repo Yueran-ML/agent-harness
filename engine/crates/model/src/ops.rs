@@ -114,7 +114,10 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize, Serializer};
 
-use crate::grade::{Grade, Group, Link, Node, Port, Target, LONGEST_LABEL, MOST_INPUTS};
+use crate::color_management::Levels;
+use crate::grade::{
+    Grade, Group, Link, Node, Port, Target, LONGEST_LABEL, LONGEST_PATH, MOST_INPUTS,
+};
 use crate::project::{
     Alignment, Bin, Clip, Cue, Id, Media, Project, Proxy, Source, Timeline, Track, TrackKind,
     Transform, Transition, TransitionKind,
@@ -122,6 +125,7 @@ use crate::project::{
 use crate::span;
 use crate::time::{Rate, Speed, Time};
 
+mod color;
 mod grade;
 
 pub(crate) use grade::{grade_at, group_of_clip, reserve_node_ids};
@@ -573,6 +577,29 @@ pub enum Op {
         /// The group, or `null` for none.
         group: Option<Id>,
     },
+    /// Set the colour management of the project (see [`crate::color_management`]) by a patch:
+    /// each object within it is put into the object of that name, and any other value takes the
+    /// place of the one there, whole. Only settings that apply to the colour management that
+    /// the project has, or to the one that the patch makes, may be in it.
+    SetColorSettings {
+        /// The settings that change, as an object of the fields of `color` that change.
+        settings: serde_json::Value,
+    },
+    /// Set the colour of media by hand: its input colour space and its data levels.
+    SetMediaColor {
+        /// The media.
+        id: Id,
+        /// A space of the catalogue, `bypass`, or `null` for the project's default.
+        #[serde(
+            default,
+            deserialize_with = "nullable",
+            skip_serializing_if = "Option::is_none"
+        )]
+        input: Option<Option<String>>,
+        /// Its data levels.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        levels: Option<Levels>,
+    },
 }
 
 /// Read a field of a change that may be `null`, to take a thing away, as well as left out, to
@@ -708,7 +735,9 @@ pub enum OpError {
     /// A setting is not one that it may be. `what` is `width`, `height`, `sample_rate`,
     /// `start`, `length`, `speed`, `transform`, `gain_db`, `pan`, `fade`, `text`, `size`,
     /// `position`, `language`, `still`, `digest` (of the identity of media: not 64 lowercase
-    /// hexadecimal digits), `by` (a shift by 0), `clips` or `cues` (a shift of none).
+    /// hexadecimal digits), `by` (a shift by 0), `clips` or `cues` (a shift of none); and of
+    /// colour management, `custom_luminance`, `graphics_white`, `input_sat_rolloff`,
+    /// `output_sat_rolloff`, `limit_gamut`, `input_lut`, `output_lut` or `viewer_lut`.
     #[error("{}", range_message(.what))]
     OutOfRange {
         /// The setting.
@@ -879,6 +908,40 @@ pub enum OpError {
         /// Its kind.
         kind: &'static str,
     },
+    /// A setting of colour names a colour space that is not of the catalogue (or not Bypass,
+    /// where it may be), or an output transform of ACES that its version does not have.
+    /// `setting` is `input`, `timeline`, `output`, `idt` or `odt` of the project's colour
+    /// management, or `input` of the colour of media.
+    #[error("{name} is not a colour space or transform that the {setting} may be")]
+    UnknownSpace {
+        /// The setting.
+        setting: &'static str,
+        /// The name that it was to be.
+        name: String,
+    },
+    /// A setting of colour management is set that applies neither to the colour management
+    /// that the project has nor to the one that the change makes it.
+    #[error(
+        "the colour setting {setting} applies neither to the colour management that the          project has nor to the one it is set to"
+    )]
+    Inapplicable {
+        /// The setting.
+        setting: String,
+    },
+    /// The colour settings that the project is to be set to are not colour settings: a field
+    /// that is not known, or a value of the wrong kind.
+    #[error("the colour settings cannot be set so: {why}")]
+    ColorSettings {
+        /// What is wrong with them.
+        why: String,
+    },
+    /// The input colour space of camera raw is to be set: its maker's colour science decides it
+    /// (p. 228).
+    #[error("media {media} is camera raw, whose colour space its maker's colour science decides")]
+    CameraRaw {
+        /// The media.
+        media: Id,
+    },
 }
 
 /// Why a project that is read is not one that the operations can work on: the thing of it that
@@ -1039,6 +1102,19 @@ enum Fields {
         node: Id,
         kind: &'static str,
     },
+    UnknownSpace {
+        setting: &'static str,
+        name: String,
+    },
+    Inapplicable {
+        setting: String,
+    },
+    ColorSettings {
+        why: String,
+    },
+    CameraRaw {
+        media: Id,
+    },
 }
 
 /// How [`OpError::NoPort`] names the input or the output.
@@ -1104,6 +1180,15 @@ fn range_message(what: &str) -> String {
             .into(),
         "lut" => "the path of the LUT is empty, too long or holds a NUL".into(),
         "param" => "the node has no such setting".into(),
+        "custom_luminance" | "graphics_white" => {
+            format!("the {what} is not a number of nits from 1 to 10000")
+        }
+        "input_sat_rolloff" | "output_sat_rolloff" => "the saturation rolloff does not start              below its limit, each a number of nits from 1 to 10000"
+            .into(),
+        "limit_gamut" => "the output gamut cannot be limited to camera native".into(),
+        "input_lut" | "output_lut" | "viewer_lut" => format!(
+            "a LUT of the {what} is not a name relative to the folders of LUTs: empty, longer              than {LONGEST_PATH} characters, absolute, going up, or holding a NUL or a colon"
+        ),
         _ => format!("the {what} is out of its range"),
     }
 }
@@ -1311,6 +1396,10 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
             clip,
             group,
         } => grade::set_clip_group(project, &timeline, &clip, group),
+        Op::SetColorSettings { settings } => color::set_color_settings(project, &settings),
+        Op::SetMediaColor { id, input, levels } => {
+            color::set_media_color(project, &id, input, levels)
+        }
     }
 }
 
@@ -1352,6 +1441,8 @@ pub fn apply_done(project: &mut Project, op: Op) -> Result<(Op, Op), OpError> {
             | Op::SetNode { .. }
             | Op::SetGrade { .. }),
         ) => grade::done(project, op, &inverse),
+        // The settings are given back as the engine writes them.
+        Some(Op::SetColorSettings { settings }) => color::done(project, &settings),
         // A group that the engine made is named as it was made.
         Some(Op::SetClip {
             timeline,
@@ -3027,7 +3118,8 @@ fn check_media(project: &Project, media: &Media) -> Result<(), OpError> {
     if let Some(bin) = &media.bin {
         bin_at(project, bin)?;
     }
-    check_marks(media)
+    check_marks(media)?;
+    crate::color_management::check_override(media)
 }
 
 /// Check the marks of media: each counts ticks of the scale of its duration and is within it,
@@ -3259,8 +3351,8 @@ impl Project {
     /// Everything is checked that an operation checks of what it adds: each clip as
     /// [`Op::InsertClip`] checks it, each media as [`Op::AddMedia`] does, the settings of each
     /// timeline, each track with its transitions and subtitles, that a timeline shows at most one
-    /// track of subtitles, the bins, the groups, every grade, and every integer against
-    /// [`LARGEST`]. Every thing has an id, and no two things of a kind share one: bins, media,
+    /// track of subtitles, the bins, the groups, every grade, the colour management, and every
+    /// integer against [`LARGEST`]. Every thing has an id, and no two things of a kind share one: bins, media,
     /// timelines and groups in the project, tracks in their timeline, clips, transitions and
     /// subtitles in the project, and nodes in their grade.
     ///
@@ -3334,6 +3426,7 @@ impl Project {
         if self.next_id > LARGEST_COUNT {
             return Err(wrong("project", "")(OpError::TooLarge { what: "next_id" }));
         }
+        self.color.check().map_err(wrong("project", ""))?;
         let mut bin_ids = HashSet::new();
         for bin in &self.bins {
             named("bin", &bin.id, &mut bin_ids)?;
@@ -4498,6 +4591,7 @@ mod tests {
                 "bin": null,
                 "mark_in": null,
                 "mark_out": null,
+                "color_override": { "input": null, "levels": "auto" },
             },
             "index": null,
         });

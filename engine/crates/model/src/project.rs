@@ -11,14 +11,17 @@
 //! on each timeline, and the groups that clips are graded in. They are always written, and may
 //! be left out where a clip, a timeline or a project is read, as by a client that builds one
 //! without knowing grades: a clip or a timeline is then read with a grade that changes nothing
-//! and in no group, and a project with no groups. Settings of the whole project that come later
-//! within schema 3, such as its colour management, are fields that may be left out so too: a
-//! project written before them is read with the values that leave it as it was.
+//! and in no group, and a project with no groups. Settings that came later within schema 3 are
+//! fields that may be left out so too: the colour management of the project (`color`, see
+//! [`crate::color_management`]), and the colour of media set by hand (`color_override`). A
+//! project written before them is read with the values that leave it as it was: not managed,
+//! and no media set.
 
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::color::ColorFacts;
+use crate::color_management::{ColorOverride, ColorSettings};
 use crate::grade::{Grade, Group};
 use crate::ops::Invalid;
 use crate::time::{Rate, Speed, Time};
@@ -65,6 +68,9 @@ pub struct Project {
     pub timelines: Vec<Timeline>,
     /// The groups that clips are graded in. It may be left out where a project is read.
     pub groups: Vec<Group>,
+    /// How its colours are managed (see [`crate::color_management`]). It may be left out where
+    /// a project is read, and so may any of its fields: the project is then not managed.
+    pub color: ColorSettings,
 }
 
 /// A project as it is written, before it is checked.
@@ -78,6 +84,8 @@ struct RawProject {
     timelines: Vec<Timeline>,
     #[serde(default)]
     groups: Vec<Group>,
+    #[serde(default)]
+    color: ColorSettings,
 }
 
 impl TryFrom<RawProject> for Project {
@@ -94,6 +102,7 @@ impl TryFrom<RawProject> for Project {
             media: raw.media,
             timelines: raw.timelines,
             groups: raw.groups,
+            color: raw.color,
         };
         project.validate()?;
         Ok(project)
@@ -154,6 +163,11 @@ pub struct Media {
     /// 20, pp. 760, 824). A client that marks frame `n` as the Out keeps the start of `n + 1`.
     #[serde(deserialize_with = "present")]
     pub mark_out: Option<Time>,
+    /// Its input colour space and data levels set by hand (see
+    /// [`crate::color_management::ColorOverride`]). It may be left out where it is read, as
+    /// none set.
+    #[serde(default)]
+    pub color_override: ColorOverride,
 }
 
 /// A copy of the picture of media whose every frame is a key frame, smaller where the picture is
@@ -663,6 +677,7 @@ impl Project {
             media: vec![],
             timelines: vec![],
             groups: vec![],
+            color: ColorSettings::default(),
         }
     }
 
@@ -897,9 +912,11 @@ impl Project {
                 bin: None,
                 mark_in: None,
                 mark_out: None,
+                color_override: ColorOverride::default(),
             }],
             timelines: vec![timeline],
             groups: vec![],
+            color: ColorSettings::default(),
         }
     }
 }
@@ -959,6 +976,7 @@ mod tests {
                 "bin": null,
                 "mark_in": null,
                 "mark_out": null,
+                "color_override": { "input": null, "levels": "auto" },
             }],
             "timelines": [{
                 "id": "t1",
@@ -990,6 +1008,7 @@ mod tests {
                 "grade": { "nodes": [], "links": [{ "from": "source", "to": "output", "kind": "rgb", "input": 0 }] },
             }],
             "groups": [],
+            "color": serde_json::to_value(ColorSettings::default()).unwrap(),
         });
         assert_eq!(written, expected);
     }

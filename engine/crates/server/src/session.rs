@@ -1513,5 +1513,6 @@ fn read(path: &str) -> Result<Media, MediaError> {
         bin: None,
         mark_in: None,
         mark_out: None,
+        color_override: columbina_model::ColorOverride::default(),
     })
 }

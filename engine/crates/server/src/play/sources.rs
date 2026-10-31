@@ -472,6 +472,7 @@ pub(super) mod tests {
             bin: None,
             mark_in: None,
             mark_out: None,
+            color_override: columbina_model::ColorOverride::default(),
         })
     }
 

@@ -435,6 +435,7 @@ mod tests {
                 grade: columbina_model::Grade::default(),
             }],
             groups: Vec::new(),
+            color: columbina_model::ColorSettings::default(),
         }))
     }
 

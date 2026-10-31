@@ -4,6 +4,7 @@
 //! every integer in it stays within 2^53.
 
 pub mod color;
+pub mod color_management;
 pub mod edit;
 pub mod grade;
 pub mod history;
@@ -18,6 +19,7 @@ pub use color::{
     input_space, Basis, ColorFacts, ColorRange, DisplayPrimaries, Gamma, Gamut, InputSpace,
     LightLevel, Luminance, MasteringDisplay,
 };
+pub use color_management::{ColorOverride, ColorSettings, Levels, Science};
 pub use edit::{expand, Change, CueItem, Edge, Edit, EditError, Expansion, Material, Straddling};
 pub use grade::{
     Composite, Corrector, Grade, Group, Interp, Key, Kind, Link, Node, NodeKind, Param, Port,

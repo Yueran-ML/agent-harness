@@ -73,6 +73,7 @@ fn media() -> Vec<Media> {
         bin: None,
         mark_in: None,
         mark_out: None,
+        color_override: columbina_model::ColorOverride::default(),
     };
     vec![
         make("m1", 20 * 15360, 15360, true, true),

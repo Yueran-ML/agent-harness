@@ -679,12 +679,14 @@ fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> 
             f(&mut media.id, Role::Gives(Place::Media))
         }
         Op::RemoveMedia { id }
+        | Op::SetMediaColor { id, .. }
         | Op::RemoveTimeline { id }
         | Op::SetTimeline { id, .. }
         | Op::RemoveBin { id }
         | Op::RemoveGroup { id }
         | Op::SetGroup { id, .. } => f(id, Role::Names),
         Op::SetProxy { media, .. } => f(media, Role::Names),
+        Op::SetColorSettings { .. } => Ok(()),
         Op::AddTimeline { timeline, .. } => {
             let of = Some(timeline.id.clone()).filter(|id| !id.is_empty());
             f(&mut timeline.id, Role::Gives(Place::Timeline))?;

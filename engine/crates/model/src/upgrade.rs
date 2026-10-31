@@ -9,7 +9,9 @@
 //!
 //! What schema 3 adds is given the value that leaves the picture as it was: every clip and
 //! every timeline has a grade with no node, whose source is linked to its output, and no clip
-//! is in a group, of which there are none. Nothing else of a project of schema 2 is changed.
+//! is in a group, of which there are none; the project is not colour managed, with every other
+//! setting of colour management at its default, and no media has its colour set by hand.
+//! Nothing else of a project of schema 2 is changed.
 //! The fields are written into the project of schema 2 before it is read, so that one that has
 //! any of them already, which schema 2 does not have, is refused.
 //!
@@ -17,6 +19,7 @@
 
 use serde::Deserialize;
 
+use crate::color_management::{ColorOverride, ColorSettings};
 use crate::grade::Grade;
 use crate::project::{
     schema_of, Clip, Facts, Id, Identity, Media, Project, Proxy, ReadError, Timeline, Track,
@@ -108,14 +111,16 @@ pub fn from_schema_1(value: serde_json::Value) -> Result<Project, ReadError> {
         media,
         timelines,
         groups: vec![],
+        color: ColorSettings::default(),
     };
     project.validate()?;
     Ok(project)
 }
 
 /// Read a project of schema 2 into this schema, and check it as a project that is read is
-/// checked: the project gets no groups, and each timeline and each clip of a track of picture
-/// or of sound a grade that changes nothing and no group.
+/// checked: the project gets no groups and the default colour settings, each media no colour
+/// set by hand, and each timeline and each clip of a track of picture or of sound a grade that
+/// changes nothing and no group.
 ///
 /// # Errors
 /// It is not an object, it names no schema or another one than 2, it has a field of schema 3
@@ -129,9 +134,21 @@ pub fn from_schema_2(mut value: serde_json::Value) -> Result<Project, ReadError>
         return Err(ReadError::Schema(schema));
     }
     let grade = serde_json::to_value(Grade::default()).expect("a grade is written as JSON");
+    let color = serde_json::to_value(ColorSettings::default()).expect("settings are JSON");
+    let color_override =
+        serde_json::to_value(ColorOverride::default()).expect("a colour of media is JSON");
     let project = value.as_object_mut().ok_or(ReadError::NotAnObject)?;
     project.insert("schema".into(), SCHEMA.into());
     add(project, "groups", serde_json::json!([]))?;
+    add(project, "color", color)?;
+    let media = project
+        .get_mut("media")
+        .and_then(serde_json::Value::as_array_mut);
+    for media in media.into_iter().flatten() {
+        if let Some(media) = media.as_object_mut() {
+            add(media, "color_override", color_override.clone())?;
+        }
+    }
     let timelines = project
         .get_mut("timelines")
         .and_then(serde_json::Value::as_array_mut);
@@ -183,6 +200,7 @@ fn media_of(old: Media1) -> Media {
         bin: None,
         mark_in: None,
         mark_out: None,
+        color_override: ColorOverride::default(),
     }
 }
 
@@ -264,6 +282,7 @@ mod tests {
         let project = from_schema_1(written()).unwrap();
         assert_eq!(project.schema, SCHEMA);
         assert_eq!(project.groups, []);
+        assert_eq!(project.color, ColorSettings::default());
         assert_eq!(project.next_id, 7);
         assert_eq!(project.bins, []);
 
@@ -276,6 +295,7 @@ mod tests {
         for media in &project.media {
             assert_eq!(media.bin, None);
             assert_eq!((media.mark_in, media.mark_out), (None, None));
+            assert_eq!(media.color_override, ColorOverride::default());
         }
 
         let sizes: Vec<_> = project
@@ -372,10 +392,21 @@ mod tests {
         let old = written_2();
         let project = from_schema_2(old.clone()).unwrap();
         assert_eq!(project.schema, SCHEMA);
+        assert_eq!(project.color, ColorSettings::default());
+        assert_eq!(
+            project.color.science,
+            crate::color_management::Science::Yrgb
+        );
         // What it is written as is what it was, with only the fields of schema 3 added.
         let mut expected = old;
         expected["schema"] = SCHEMA.into();
         expected["groups"] = serde_json::json!([]);
+        expected["color"] = serde_json::to_value(ColorSettings::default()).unwrap();
+        let media = expected["media"].as_array_mut().unwrap();
+        assert!(!media.is_empty(), "the project has media to upgrade");
+        for media in media {
+            media["color_override"] = serde_json::json!({ "input": null, "levels": "auto" });
+        }
         let grade = serde_json::to_value(Grade::default()).unwrap();
         let mut clips = 0;
         for timeline in expected["timelines"].as_array_mut().unwrap() {
@@ -402,6 +433,8 @@ mod tests {
     fn a_project_of_schema_2_with_a_field_of_schema_3_is_refused() {
         for path in [
             &["groups"][..],
+            &["color"],
+            &["media", "0", "color_override"],
             &["timelines", "0", "grade"],
             &["timelines", "0", "tracks", "0", "clips", "0", "group"],
         ] {

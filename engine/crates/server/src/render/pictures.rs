@@ -37,6 +37,7 @@ fn media_of(path: &Path) -> Media {
         bin: None,
         mark_in: None,
         mark_out: None,
+        color_override: columbina_model::ColorOverride::default(),
     }
 }
 
@@ -71,6 +72,7 @@ fn project_of(media: Media) -> Project {
             grade: columbina_model::Grade::default(),
         }],
         groups: Vec::new(),
+        color: columbina_model::ColorSettings::default(),
     }
 }
 

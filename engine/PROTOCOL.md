@@ -376,8 +376,9 @@ away before the project is checked, so the project is read without it and the en
 
 ### Schema 3
 
-The top level is `{schema: 3, next_id, bins: [...], media: [...], timelines: [...], groups: [...]}`.
-Schema 3 differs from schema 2 only by the grades (see Grades below). A schema 1 or schema 2
+The top level is `{schema: 3, next_id, bins: [...], media: [...], timelines: [...], groups: [...], color: {...}}`.
+Schema 3 differs from schema 2 by the grades (see Grades below) and by colour management: the
+project's `color` and each media item's `color_override` (see Colour management below). A schema 1 or schema 2
 project is upgraded on open; its original bytes are kept once in `project.schema1.json` or
 `project.schema2.json`.
 Unknown fields are refused. `project.get` and `project.changed` are the source of truth for
@@ -391,7 +392,8 @@ clients; a client must not write `project.json` itself.
   the range (Reference Manual 20, pp. 760, 824). A client that marks frame `n` as the Out keeps
   the start of `n + 1`, and shows the Out as frame `n`. Nullable fields (`parent`, `bin`, the
   marks, a clip's `link`) must be written, as `null` if there is none; of media, only `proxy`
-  may be left out, and `facts.video` / `facts.audio` may be `null` or left out.
+  and `color_override` may be left out, and `facts.video` / `facts.audio` may be `null` or left
+  out.
 - A timeline is `{id, name, rate: {num, den}, width, height, sample_rate, tracks, grade}`. Width and
   height are even integers, 16–16384; sample rate is 44100, 48000 or 96000. Frames are integers
   at the timeline rate. Video tracks stack in list order, the first at the bottom.
@@ -1340,6 +1342,174 @@ them:
   have the folder lists nothing.
 - At most 10000 files are listed, 100000 entries of folders looked at, and folders 16 deep; past
   that, `truncated` is `true` and what was found is given.
+
+## Colour management
+
+The colour management of a project is its `color` object, and the colour of media set by hand
+the `color_override` of each media item (`crates/model/src/color_management.rs`), as DaVinci
+Resolve's Project Settings › Color Management and its Media Pool menu set them (Reference Manual
+20, pp. 149–153, 220–252). These are settings: what they do to the picture is done by the
+compositor (see Grades in the picture), not by the model.
+
+Both are always written; any field of them, or the whole object, may be left out where a
+project is read, and is read as its default. A schema 2 project is upgraded with the defaults:
+not managed, no media set.
+
+### Spaces
+
+A colour space is named as the engine's catalogue names it, in the style of Resolve's menus, and
+is kept by that name, never by OCIO's. The catalogue has 68 spaces, and every one may be chosen
+wherever a space is:
+
+- the 48 spaces of media: each gamut of Rec.709, Rec.601 (PAL), Rec.601 (NTSC), Rec.2020,
+  DCI-P3 and P3-D65 with each gamma of Gamma 2.4, Gamma 2.2, Gamma 2.6, Gamma 2.8, sRGB,
+  Linear, ST2084 and HLG, named `<gamut> <gamma>` (`Rec.709 Gamma 2.4`, `P3-D65 ST2084`), but
+  `sRGB` (Rec.709 sRGB), `Rec.2100 ST2084` and `Rec.2100 HLG` (Rec.2020 with PQ or HLG);
+- the 20 spaces of cameras and of grading: `Rec.709 (Scene)`, `Apple Log`, `Apple Log 2`,
+  `DJI D-Gamut/D-Log`, `Sony S-Gamut3/S-Log3`, `Sony S-Gamut3.Cine/S-Log3`,
+  `Panasonic V-Gamut/V-Log`, `Canon Cinema Gamut/Canon Log 2`, `Canon Cinema Gamut/Canon Log 3`,
+  `ARRI Wide Gamut 3/LogC3`, `ARRI Wide Gamut 4/LogC4`, `FujiFilm F-Gamut/F-Log2`,
+  `Blackmagic Design Wide Gamut Gen 5/Film Gen 5`, `RED Wide Gamut RGB/Log3G10`,
+  `DaVinci Wide Gamut/DaVinci Intermediate`, `DaVinci Wide Gamut/Linear`, `ACEScct`, `ACEScc`,
+  `ACEScg`, `ACES (AP0) Linear`.
+
+The input and the output space, and the input of media, may also be `bypass` (Bypass, p. 245).
+The model's list and the catalogue of the OCIO crate are checked to be the same, one for one
+(`crates/ocio/tests/names.rs`).
+
+### The project's `color`
+
+A field applies only where it says (see Refusals): **all** = always; **RCM** = `science` is
+`yrgb_managed`; **manual** = RCM with `automatic` off; **Custom** = manual with `preset`
+`custom`; **ACES** = `science` is `acescct` or `acescc`. Defaults that the manual does not give
+are ours (marked *ours*), to be checked against Resolve.
+
+| field | values | default | applies | page |
+|---|---|---|---|---|
+| `science` | `yrgb` (DaVinci YRGB), `yrgb_managed` (DaVinci YRGB Color Managed), `acescct`, `acescc` | `yrgb` | all | 149, 224–226 |
+| `automatic` | Automatic color management | `false` *ours* | RCM | 230 |
+| `processing_mode` | `sdr`, `hdr` (Color processing mode) | `sdr` *ours* | RCM with `automatic` on | 230 |
+| `preset` | `sdr_rec709`, `sdr_p3_broadcast`, `sdr_p3_cinema`, `sdr_rec2020`, `davinci_wide_gamut`, `hdr_p3_broadcast`, `hdr_rec2020`, `custom` | `sdr_rec709` | manual | 230–232 |
+| `output` | a space, or `bypass` | `Rec.709 Gamma 2.4` *ours* | RCM | 227, 232 |
+| `separate_gamma` | Use Separate Color Space and Gamma (how the menus show a space; it is kept by one name) | `false` | Custom | 150, 234–235 |
+| `input` | a space, or `bypass`: of media that says none | `Rec.709 Gamma 2.4` | Custom | 230, 235 |
+| `timeline` | a space | `Rec.709 Gamma 2.4` | Custom | 226, 236 |
+| `working_luminance` | `sdr_100`, `hdr_500`, `hdr_1000`, `hdr_2000`, `hdr_4000`, `hdr_er_1000_2000`, `custom` | `sdr_100` *ours* | Custom | 238 |
+| `custom_luminance` | nits, 1–10000 | `100` *ours* | Custom, `working_luminance` `custom` | 238 |
+| `hdr_203_nits` | Use 203 nits reference for Rec.2100 HDR (a client shows it only for an HDR output and an SDR timeline) | `false` | Custom | 238–239 |
+| `limit_gamut` | `null` (None) or a gamut: `rec709`, `rec601-pal`, `rec601-ntsc`, `rec2020`, `dci-p3`, `p3-d65` | `null` | Custom | 239 |
+| `input_drt` | `none`, `simple`, `luminance`, `davinci`, `saturation_preserving` | `none` *ours* | Custom | 239–240 |
+| `input_sat_rolloff` | `{start, limit}` nits, 1–10000, `start < limit` | `{100, 1000}` *ours* | Custom, `input_drt` `saturation_preserving` | 240 |
+| `output_drt` | as `input_drt` | `none` *ours* | Custom | 240–242 |
+| `output_sat_rolloff` | as `input_sat_rolloff` | `{100, 1000}` *ours* | Custom, `output_drt` `saturation_preserving` | 242 |
+| `inverse_drt` | Use inverse DRT for SDR to HDR conversion | `false` *ours* | Custom | 242 |
+| `white_point_adaptation` | Use white point adaptation | `true` *ours* | Custom | 242 |
+| `color_space_aware_tools` | Use color space aware grading tools | `true` | Custom | 243 |
+| `resize_in` | `timeline`, `log`, `linear`, `linear_mapped`, `gamma`, `gamma_mapped` | `linear` | Custom | 243 |
+| `graphics_white` | Graphics white level, nits, 1–10000 | `100` *ours* | RCM | 243 |
+| `aces_version` | `1.3`, `2.0` | `2.0` *ours* | ACES | 150, 247 |
+| `idt` | a space (ACES Input Device Transform) | `Rec.709 Gamma 2.4` *ours* | ACES | 247–248 |
+| `odt` | an ODT of `aces_version` (below) | `Rec.709` *ours* | ACES | 248–250, 252 |
+| `gamut_compress` | Apply ACES reference gamut compress | `false` *ours* | ACES | 251 |
+| `node_luts_in` | `timeline` (ACEScc AP1 Timeline Space), `ap0_linear` (ACES AP0 Linear) | `timeline` | ACES | 250 |
+| `lut_interpolation` | `trilinear`, `tetrahedral` (3D Lookup Table Interpolation) | `trilinear` | all | 152–153 |
+| `input_lut`, `output_lut`, `viewer_lut` | `{"1d": name or null, "3d": name or null}`: Input, Output and Color Viewer Lookup Table; the 1D is done before the 3D | none | all | 151–152 |
+| `s_curve_contrast` | Use S-curve for contrast (General Options) | `true` | all | 156 |
+
+- A LUT is named relative to the folders of LUTs, as `luts.list` names it: not empty, at most
+  4096 characters, not absolute (no leading `/` or `\`), with no `:`, NUL or `..` part.
+- A **preset** other than Custom sets what is in force for the timeline, the working luminance,
+  the DRTs and the gamut limit, and keeps the input at `Rec.709 Gamma 2.4` (p. 230); the stored
+  Custom fields stay as they are and come back into force with Custom. The manual names each
+  preset's gamut and range but not its settings, so the table is ours
+  (`Preset::settings`, one place to change):
+
+  | preset | timeline | luminance | DRT in / out | limit | output chosen with it |
+  |---|---|---|---|---|---|
+  | `sdr_rec709` | Rec.709 Gamma 2.4 | SDR 100 | none / none | – | Rec.709 Gamma 2.4 |
+  | `sdr_p3_broadcast` | P3-D65 Gamma 2.4 | SDR 100 | none / none | – | the same |
+  | `sdr_p3_cinema` | DCI-P3 Gamma 2.6 (no P3-D60 in the catalogue) | SDR 100 | none / none | – | the same |
+  | `sdr_rec2020` | Rec.2020 Gamma 2.4 | SDR 100 | none / none | – | the same |
+  | `davinci_wide_gamut` | DaVinci Wide Gamut/DaVinci Intermediate | HDR ER 1000/2000 | davinci / davinci | – | Rec.709 Gamma 2.4 |
+  | `hdr_p3_broadcast` | P3-D65 ST2084 | HDR 1000 | davinci / none | P3-D65 | the same |
+  | `hdr_rec2020` | Rec.2100 ST2084 | HDR 1000 | davinci / none | – | the same |
+
+  Choosing a preset does not set `output`: a client that wants the output to follow it sends
+  both in one patch. Automatic colour management is taken as `sdr_rec709` (`processing_mode`
+  `sdr`) or `hdr_rec2020` (`hdr`) (ours; p. 230 only says it chooses for the media).
+- **Tone mapping**: `none` is a plain transform, clipped out of gamut. Resolve publishes the
+  mathematics of none of the others; `simple`, `luminance`, `davinci` and
+  `saturation_preserving` are the engine's own, made to behave as pp. 239–242 describe, and are
+  approximations of Resolve's. RED IPP2 (Output DRT) is not offered. The ODTs of ACES are OCIO's
+  own, exact.
+- **ACES versions and ODTs** are those of OCIO's built-in studio configs:
+  `ocio://studio-config-v2.2.0_aces-v1.3_ocio-v2.4` for `1.3` and
+  `ocio://studio-config-v5.0.0_aces-v2.1_ocio-v2.6` for `2.0` (Resolve's 1.0.3, 1.1 and 1.2 are
+  not offered). Each ODT is a display and a view of that config (every tone-mapped view of
+  every display), the spaces `ACEScct`, `ACEScc`, `ACEScg`, or `No Output Device Transform`
+  (ACES2065-1, p. 252). ADX and DCDM are not in the configs and not offered.
+  - `1.3`: `Rec.709`, `Rec.709 (D60 sim.)`, `sRGB`, `sRGB (D60 sim.)`, `Display P3`,
+    `Display P3 (D60 sim.)`, `P3-D60`, `P3-D65`, `P3-D65 (D60 sim.)`, `P3-D65 (Rec.709 Limited)`,
+    `P3-DCI (D60 sim.)`, `P3-DCI (D65 sim.)`, `Rec.2020`, `Rec.2020 (P3-D65 Limited)`,
+    `Rec.2020 (Rec.709 Limited)`, `Rec.2020 HLG (1000 nits)`, `Rec.2020 ST2084 (1000 nits)`,
+    `(2000 nits)`, `(4000 nits)`, `P3-D65 ST2084 (108 nits)`, `(1000 nits)`, `(2000 nits)`,
+    `(4000 nits)`.
+  - `2.0`: `Rec.709`, `Rec.709 (Gamma 2.2)`, `sRGB`, `Display P3`, `Display P3 HDR (1000 nits)`,
+    `P3-D65`, `P3-D65 (Rec.709 Limited)`, `P3-D65 ST2084 (108 nits)`, `(500 nits)`,
+    `(1000 nits)`, `(2000 nits)`, `(4000 nits)`, `Rec.2020 ST2084 (500 nits)`, `(1000 nits)`,
+    `(2000 nits)`, `(4000 nits)`, the same four `…, P3-D65 Limited)`,
+    `Rec.2020 HLG (1000 nits, P3-D65 Limited)`, `Display P3 HDR (100 nits, Rec.709 Limited)`,
+    `Rec.2020 ST2084 (100 nits, Rec.709 Limited)`, `P3-D65 ST2084 (100 nits, Rec.709 Limited)`.
+
+  The display and view of each are in `AcesVersion::odts` of the model.
+- Not modelled: Dolby Vision, HDR10+, HDR Vivid, HDR mastering, Broadcast Safe, ACES AMF, the
+  Video Monitor and Scopes LUTs, Display HDR On Viewers (a preference of the viewer, T12).
+
+### Media's `color_override`
+
+`{"input": null, "levels": "auto"}`:
+
+- `input`: a space, `bypass` (Bypass Color Management, p. 245) or `null` (the project's default,
+  the menu's Project Default). It decides the input space over the file's metadata and the
+  project's default, in the order of p. 228: camera raw (`prores_raw`, `braw`, `r3d`, `arriraw`)
+  is its maker's and cannot be set (`camera_raw`); a space set by hand; the file's metadata; the
+  project's `input` (or `Rec.709 Gamma 2.4` under a preset), or `idt` in ACES.
+- `levels`: `auto`, `video`, `full` (Data Levels, pp. 221–222).
+- Media without a picture keeps the defaults (`no_stream`).
+
+### Operations
+
+| op | fields | inverse |
+|---|---|---|
+| `set_color_settings` | `settings`: a patch of `color` | `set_color_settings` with the values as they were |
+| `set_media_color` | `id`, `input?` (a space, `bypass`, or `null`), `levels?` | `set_media_color` with the given fields as they were |
+
+- `settings` is merged as `set_node` merges `params`: each object in it (a LUT pair, a rolloff)
+  is put into the object of that name, and any other value takes the place of the one there,
+  whole. `{"output_lut": {"3d": "Film/Kodak 2383.cube"}}` keeps the 1D LUT. What it makes is
+  checked whole, every field whether it applies or not.
+- Its `done` and inverse carry the values at the patch's paths as the engine writes them (`500`
+  comes back as `500.0`). Every field stays as it was set when the science or preset changes,
+  as Resolve keeps them; switching back puts them in force again.
+- A `set_color_settings` or `set_media_color` that sets every given field to the value it has
+  already changes nothing: alone in a transaction it is refused as `empty` and makes no step.
+- `set_media_color` may name media by a `$name` given in the same transaction.
+
+### Refusals of colour
+
+| reason | fields | meaning |
+|---|---|---|
+| `unknown_space` | `setting`, `name` | `input`, `timeline`, `output` or `idt` names no space of the catalogue (or `bypass` where it may not be); `odt` names no ODT of `aces_version` (so does a change of `aces_version` alone, whose ODT the other version lacks: set both); media's `input` names no space |
+| `inapplicable` | `setting` | a field of the patch applies neither to the settings before nor to those after it (an `odt` while not in ACES, a `timeline` under a preset, `custom_luminance` while the working luminance is not `custom`). Before *or* after, so that the inverse of any change, which sets back what it set, is never refused |
+| `color_settings` | `why` | `settings` is not an object, or what it makes is not colour settings: an unknown field (`{"gamma": 2.4}`), a value of the wrong kind or out of its list (`"science": "legacy"`, `"aces_version": "1.2"`, `"input_drt": "red_ipp2"`), a LUT pair that is not an object; serde's message |
+| `camera_raw` | `media` | `set_media_color` of a space on camera raw (`bypass` and `null` are allowed) |
+
+`out_of_range` also names `custom_luminance` and `graphics_white` (not 1–10000 nits),
+`input_sat_rolloff` and `output_sat_rolloff` (not 1–10000, or not `start < limit`),
+`limit_gamut` (`camera-native`), and `input_lut`, `output_lut`, `viewer_lut` (a name that is not
+relative to the folders of LUTs). `missing` `media` and `no_stream` (media without a picture set
+to anything but the defaults) as elsewhere. A project read with colour settings or a colour of
+media that the operations would refuse is refused as invalid.
 
 ## Names of a transaction (`$name`)
 

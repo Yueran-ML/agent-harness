@@ -12,6 +12,7 @@ use columbina_model::{
 };
 use proptest::prelude::*;
 
+pub mod colors;
 pub mod grades;
 
 /// The rates of the timelines that are added.
@@ -29,11 +30,11 @@ const RATES: [Rate; 3] = [
 
 /// The kinds of operation, as `op_of` numbers them, each as often as it is wanted: clips are
 /// put in, moved, trimmed and set most often, and timelines are taken away least. 27 is an
-/// operation on grades or groups.
-const KINDS: [u8; 61] = [
+/// operation on grades or groups, and 28 one of colour management.
+const KINDS: [u8; 64] = [
     0, 0, 1, 2, 3, 4, 4, 5, 6, 6, 6, 6, 6, 6, 7, 7, 8, 8, 8, 8, 9, 9, 9, 9, 10, 10, 11, 12, 12, 13,
     13, 13, 13, 14, 15, 16, 17, 17, 18, 18, 18, 19, 20, 20, 21, 21, 22, 23, 24, 24, 24, 25, 26, 26,
-    26, 27, 27, 27, 27, 27, 27,
+    26, 27, 27, 27, 27, 27, 27, 28, 28, 28,
 ];
 
 /// The speeds that a clip is set to, the last of them too slow.
@@ -215,8 +216,8 @@ pub fn op_of(project: &Project, spec: &Spec) -> Op {
     let clips = placed(project);
     let no_tracks = project.timelines.iter().all(|t| t.tracks.is_empty());
     let kind = match KINDS[spec.kind] {
-        // A proxy, a bin and media are set whatever else there is.
-        kind @ (10 | 14..=17) => kind,
+        // A proxy, a bin, media and colours are set whatever else there is.
+        kind @ (10 | 14..=17 | 28) => kind,
         // With no timeline left, most operations could only be refused.
         kind if kind >= 3 && project.timelines.is_empty() => 2,
         // With no track left, there is nowhere to put a clip.
@@ -284,6 +285,7 @@ pub fn op_of(project: &Project, spec: &Spec) -> Op {
         24 => insert_after_of(project, spec, chosen),
         26 => shift_of(spec, chosen, clip_timeline, clip_id),
         27 => grades::grade_op_of(project, [spec.a, spec.b, spec.c, spec.d]),
+        28 => colors::color_op_of(project, [spec.a, spec.b, spec.c, spec.d]),
         _ => {
             let Op::InsertClip {
                 timeline,

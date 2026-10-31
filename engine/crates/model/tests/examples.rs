@@ -431,6 +431,64 @@ fn examples() -> Vec<(&'static str, Vec<Op>, Op)> {
             },
         ),
         (
+            "set_color_settings to Resolve Color Management, Custom",
+            vec![],
+            Op::SetColorSettings {
+                settings: serde_json::json!({
+                    "science": "yrgb_managed",
+                    "preset": "custom",
+                    "timeline": "DaVinci Wide Gamut/DaVinci Intermediate",
+                    "working_luminance": "custom",
+                    "custom_luminance": 600,
+                    "output_drt": "davinci",
+                }),
+            },
+        ),
+        (
+            "set_color_settings of a LUT of the project",
+            vec![],
+            Op::SetColorSettings {
+                settings: serde_json::json!({
+                    "lut_interpolation": "tetrahedral",
+                    "output_lut": { "3d": "Film/Kodak 2383.cube" },
+                }),
+            },
+        ),
+        (
+            "set_color_settings to ACEScct",
+            vec![],
+            Op::SetColorSettings {
+                settings: serde_json::json!({
+                    "science": "acescct",
+                    "aces_version": "1.3",
+                    "idt": "Apple Log",
+                    "odt": "P3-D65 ST2084 (1000 nits)",
+                }),
+            },
+        ),
+        (
+            "set_media_color",
+            vec![],
+            Op::SetMediaColor {
+                id: "m1".into(),
+                input: Some(Some("DJI D-Gamut/D-Log".into())),
+                levels: Some(columbina_model::Levels::Full),
+            },
+        ),
+        (
+            "set_media_color back to the project's default",
+            vec![Op::SetMediaColor {
+                id: "m1".into(),
+                input: Some(Some("bypass".into())),
+                levels: None,
+            }],
+            Op::SetMediaColor {
+                id: "m1".into(),
+                input: Some(None),
+                levels: None,
+            },
+        ),
+        (
             "set_media still classification",
             vec![Op::AddMedia {
                 media: still,
@@ -863,6 +921,8 @@ fn the_examples_of_the_operations_are_as_the_engine_applies_them() {
         "remove_group",
         "set_group",
         "set_clip_group",
+        "set_color_settings",
+        "set_media_color",
     ] {
         assert!(names.iter().any(|name| name == op), "no example of {op}");
     }

@@ -152,7 +152,22 @@ fn edit_of(project: &Project, n: [usize; 5]) -> Edit {
     };
     let node = node_of(&grade, n[2]);
     let others = |k: usize| (0..k % 3).map(|j| pick_target(n[4] / (j + 1))).collect();
-    match n[0] % 11 {
+    let clips: Vec<String> = project
+        .timelines
+        .iter()
+        .filter(|t| t.id == "t1")
+        .flat_map(|t| &t.tracks)
+        .flat_map(|r| &r.clips)
+        .map(|c| c.id.clone())
+        .collect();
+    let pick_clip = |k: usize| {
+        if clips.is_empty() || k.is_multiple_of(16) {
+            "c99".to_string()
+        } else {
+            clips[k / 16 % clips.len()].clone()
+        }
+    };
+    match n[0] % 12 {
         0 => Edit::AddSerial { grade, node },
         1 => Edit::AddSerialBefore { grade, node },
         2 => Edit::AppendNode { grade },
@@ -163,8 +178,9 @@ fn edit_of(project: &Project, n: [usize; 5]) -> Edit {
         7 => Edit::CopyGrade {
             from: grade,
             to: others(n[3]),
+            preserve_nodes: (!n[4].is_multiple_of(3)).then_some(u32::try_from(n[4] % 13).unwrap()),
         },
-        8 => Edit::AppendGrade {
+        8 => Edit::AppendNodeGraph {
             from: grade,
             to: others(n[3]),
         },
@@ -179,6 +195,14 @@ fn edit_of(project: &Project, n: [usize; 5]) -> Edit {
                 param: PARAMS[n[4] % PARAMS.len()].into(),
             }
         }
+        11 => Edit::CollapseGroupGrades {
+            timeline: if n[1].is_multiple_of(17) {
+                "t9".into()
+            } else {
+                "t1".into()
+            },
+            clips: (0..n[3] % 3).map(|j| pick_clip(n[4] / (j + 1))).collect(),
+        },
         _ => {
             let to = pick_target(n[3]);
             let to_node = node_of(&to, n[4]);
@@ -302,7 +326,8 @@ fn the_random_operations_and_edits_of_grades_are_applied_as_well_as_refused() {
         "extract_node",
         "reset_node",
         "copy_grade",
-        "append_grade",
+        "append_node_graph",
+        "collapse_group_grades",
         "paste_value",
         "paste_node",
     ] {

@@ -55,6 +55,10 @@ use crate::time::{Speed, Time};
 
 use work::Work;
 
+/// The most nodes that Copy Grade keeps of the grades it is put in place of: "0–10" (Reference
+/// Manual 20, p. 3285).
+pub const MOST_PRESERVED_NODES: u32 = 10;
+
 /// An edit of a timeline.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "edit", rename_all = "snake_case", deny_unknown_fields)]
@@ -548,19 +552,40 @@ pub enum Edit {
         /// The node.
         node: Id,
     },
-    /// Put a grade in place of other grades, whole (Copy Grade; pp. 3286, 3290).
+    /// Put a grade in place of other grades, whole, or but for the first nodes of each (Copy
+    /// Grade; pp. 3285–3286, 3290).
     CopyGrade {
         /// The grade that is copied.
         from: Target,
         /// The grades that it is put in place of.
         to: Vec<Target>,
+        /// How many of the first nodes of each grade of `to` are kept, from 0 to
+        /// [`MOST_PRESERVED_NODES`] (Copy Grade: Preserve number of nodes, p. 3285); none if it
+        /// is left out, as in `DaVinci` at first. A grade of `to` with fewer nodes is put in
+        /// place whole, as the manual keeps them only "as long as there are at least" that
+        /// many. Of one with as many, its first nodes, ids and all, take the places of the
+        /// first nodes of the copy, which keeps its links: each pair is of one kind, with as
+        /// many inputs, and the copy has that many nodes, or the edit is refused.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preserve_nodes: Option<u32>,
     },
-    /// Add the nodes of a grade to the end of other grades (Append Node Graph; p. 3290).
-    AppendGrade {
+    /// Add the nodes of a grade to the end of other grades (Append Node Graph; p. 3290). It is
+    /// read by its old name, `append_grade`, too.
+    #[serde(alias = "append_grade")]
+    AppendNodeGraph {
         /// The grade whose nodes are added.
         from: Target,
         /// The grades that they are added to.
         to: Vec<Target>,
+    },
+    /// Put the nodes of the pre-clip and the post-clip grades of each clip's group into its own
+    /// grade, before and after its nodes, and take the clip out of the group (Collapse Group
+    /// Grades; pp. 3306–3307). The group keeps its grades and its other clips.
+    CollapseGroupGrades {
+        /// The timeline of the clips.
+        timeline: Id,
+        /// The clips, each in a group.
+        clips: Vec<Id>,
     },
     /// Set one setting of a node to what it is in another node (Paste Value; p. 3286).
     PasteValue {
@@ -867,8 +892,15 @@ pub(crate) fn run(project: &mut Project, edit: Edit) -> Result<Expansion, EditEr
         }
         Edit::ExtractNode { grade, node } => return grade::extract(project, &grade, &node),
         Edit::ResetNode { grade, node } => return grade::reset(project, &grade, &node),
-        Edit::CopyGrade { from, to } => return grade::copy_grade(project, &from, &to),
-        Edit::AppendGrade { from, to } => return grade::append_grade(project, &from, &to),
+        Edit::CopyGrade {
+            from,
+            to,
+            preserve_nodes,
+        } => return grade::copy_grade(project, &from, &to, preserve_nodes.unwrap_or(0)),
+        Edit::AppendNodeGraph { from, to } => return grade::append_node_graph(project, &from, &to),
+        Edit::CollapseGroupGrades { timeline, clips } => {
+            return grade::collapse_group_grades(project, &timeline, &clips)
+        }
         Edit::PasteValue {
             from,
             from_node,
@@ -1084,7 +1116,8 @@ pub fn timeline_of(edit: &Edit) -> Option<&Id> {
         | Edit::ExtractNode { .. }
         | Edit::ResetNode { .. }
         | Edit::CopyGrade { .. }
-        | Edit::AppendGrade { .. }
+        | Edit::AppendNodeGraph { .. }
+        | Edit::CollapseGroupGrades { .. }
         | Edit::PasteValue { .. }
         | Edit::PasteNode { .. } => return None,
     };

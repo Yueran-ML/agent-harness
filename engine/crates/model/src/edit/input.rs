@@ -59,7 +59,8 @@ pub(super) fn check(edit: &Edit) -> Result<(), OpError> {
         | Edit::ExtractNode { .. }
         | Edit::ResetNode { .. }
         | Edit::CopyGrade { .. }
-        | Edit::AppendGrade { .. }
+        | Edit::AppendNodeGraph { .. }
+        | Edit::CollapseGroupGrades { .. }
         | Edit::PasteValue { .. }
         | Edit::PasteNode { .. } => Ok(()),
     }

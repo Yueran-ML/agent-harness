@@ -124,7 +124,7 @@ use crate::time::{Rate, Speed, Time};
 
 mod grade;
 
-pub(crate) use grade::{grade_at, reserve_node_ids};
+pub(crate) use grade::{grade_at, group_of_clip, reserve_node_ids};
 
 /// The largest integer that JavaScript holds exactly, 2^53 - 1. No integer that an operation
 /// writes into a project is further than this from 0.
@@ -856,6 +856,12 @@ pub enum OpError {
         /// A clip in it.
         clip: Id,
     },
+    /// A clip that is in no group is to have the grades of its group put into its own.
+    #[error("clip {clip} is in no group")]
+    Ungrouped {
+        /// The clip.
+        clip: Id,
+    },
     /// The settings that a node is to be set to are not those of a node of its kind.
     #[error("the settings of node {node} cannot be set so: {why}")]
     Params {
@@ -1020,6 +1026,9 @@ enum Fields {
     },
     Grouped {
         group: Id,
+        clip: Id,
+    },
+    Ungrouped {
         clip: Id,
     },
     Params {

@@ -1024,9 +1024,33 @@ passes its picture through. `params` by `kind`:
 | `soft_clip.low` / `high` / `low_soft` / `high_soft` `{r,g,b}` | 0 / 100 / 0 / 0 | 0…100, a share of the 10-bit scale (pp. 3119–3121) |
 | `key.input` `{invert, matte, gain, offset}` | `false`, `true`, 1, 0 | gain 0…2, offset −1…1 (p. 3362) |
 | `key.output` `{invert, gain, offset}` | `false`, 1, 0 | gain 0…2 (p. 3362), offset −1…1 |
+| `shot_match` | `null` | `null` or `{gamma, gain, offset, contrast, pivot}`, below |
 
 An Outside node is a corrector with `key.input.invert: true` linked to the key of the node
 before it (p. 3361). Within a corrector the settings apply in the order of p. 3331.
+
+**`shot_match`** is the adjustment that Shot Match puts on the node that was selected, "applied
+invisibly, as the very last adjustment to the node … similar to a LUT" (p. 3048): no palette
+shows it, but it is in the model, undone, copied, pasted and reset with the node, and evaluated
+after Soft Clip (and so after the LUT), inside the node's key mix. The engine always writes it
+(`null` for none) and reads a corrector without it as `null`. Its shape, for a solver to fill:
+
+| field | neutral | range |
+|---|---|---|
+| `gamma` `{r,g,b}` | 1 | 0.1…10, an exponent |
+| `gain` `{r,g,b}` | 1 | 0…16 |
+| `offset` `{r,g,b}` | 0 | −1…1, white being 1 |
+| `contrast` | 1 | 0…4 |
+| `pivot` | 0.435 | 0…1 |
+
+Each channel `x` goes to `S(gain · x^gamma + offset)` (the power keeps the sign of `x`), with `S`
+the S-curve of `contrast` `k` about `pivot` `p`: `p (v/p)^k` below `p`,
+`1 − (1 − p)((1 − v)/(1 − p))^k` above, black, white and beyond kept. `S` is the S-curve
+whatever the project's "Use S-curve for contrast" says. At its neutral values it is the
+identity, to the bit. It is set with `set_node`: given whole where the node has none
+(`{"shot_match": {...}}`, all five fields; a part of one onto `null` is `params`), patched in
+part where it has one, and taken away with `{"shot_match": null}`. Out of range is
+`out_of_range` with the path, such as `shot_match.gain.r`.
 
 Every number setting above is a **parameter**: a number, or keyframes
 `{"keys": [{"frame": 0, "value": 1.0, "interp": "linear"}, ...]}`. Frames count the frames of
@@ -1092,12 +1116,14 @@ operations above when applied, as the other edits are.
 | `add_layer` | `grade`, `node` (a corrector) | As `add_parallel`, with a layer mixer; the new corrector is at the lowest input, on top (Option-L, p. 3336). |
 | `extract_node` | `grade`, `node` | Take the node out of the tree, bridged as by `remove_node`, and keep it unlinked (E, p. 3319). |
 | `reset_node` | `grade`, `node` | Set the node as a new one of its kind, keeping its label, `enabled` and inputs. |
-| `copy_grade` | `from`, `to: [target, ...]` | `set_grade` each `to` to the grade `from`, ids kept (pp. 3286, 3290). |
-| `append_grade` | `from`, `to: [target, ...]` | Add the nodes of `from` after the end of each `to`, with new ids: what fed the output feeds what the source fed, and what fed the output of `from` feeds the output (Append Node Graph, p. 3290). |
+| `copy_grade` | `from`, `to: [target, ...]`, `preserve_nodes?` (0…10, default 0) | `set_grade` each `to` to the grade `from`, ids kept (pp. 3286, 3290). With `preserve_nodes` N (Copy Grade: Preserve number of nodes, p. 3285), a `to` of at least N nodes keeps its first N: they take the places of the first N nodes of the copy, whose links are kept, so "the first N nodes of a copied grade are ignored"; a node of the copy after them whose id one of them holds gets a new id. A `to` of fewer than N nodes gets the copy whole. Each kept node must be of the kind of the node of the copy it replaces, with as many inputs (`wrong_node` naming the kept node), and the copy must have N nodes (`out_of_range` `preserve_nodes`, as is N over 10). |
+| `append_node_graph` | `from`, `to: [target, ...]` | Add the nodes of `from` after the end of each `to`, with new ids: what fed the output feeds what the source fed, and what fed the output of `from` feeds the output (Append Node Graph, p. 3290). `append_grade`, its old name, is read as it. |
+| `collapse_group_grades` | `timeline`, `clips: [clip id, ...]` | For each clip, in a group (`ungrouped` if not): put the nodes of the group's pre-clip grade before the clip's nodes and those of its post-clip grade after them, chained as `append_node_graph` chains (the picture goes through them in the order of p. 3330, keyframes at their frames), with new ids for the group's nodes, the clip's keeping theirs; then `set_clip_group` it to `null`. The group keeps its grades and other clips (Collapse Group Grades, pp. 3306–3307). A group grade without nodes adds none; one that is not complete is copied as it is, leaving the clip's grade not complete. The timeline grade is not touched. Done as `set_grade` (when there are nodes to add) and `set_clip_group`. |
 | `paste_value` | `from`, `from_node`, `to`, `to_node`, `param` | Set one field of `params`, by its path with dots (`primaries.saturation`, `primaries.lift`), to its value in the other node (Paste Value, p. 3286). A path that either node lacks is `out_of_range` `param`. |
 | `paste_node` | `from`, `from_node`, `to`, `to_node` | Set the `params` of `to_node` to those of `from_node`, of the same kind (p. 3320). |
 
-A wrong node for an edit is `wrong_node`; an empty `to` is `out_of_range` `to`.
+A wrong node for an edit is `wrong_node`; an empty `to` is `out_of_range` `to`, empty `clips`
+`out_of_range` `clips`.
 
 ### Refusals of grades
 
@@ -1107,11 +1133,13 @@ A wrong node for an edit is `wrong_node`; an empty `to` is `out_of_range` `to`.
 | `input_taken` | `node`, `kind`, `input` | two links into one input |
 | `loop` | `node` | the links would go round in a loop through `node` |
 | `grouped` | `group`, `clip` | `remove_group` of a group that clip `clip` is in |
+| `ungrouped` | `clip` | `collapse_group_grades` of a clip that is in no group |
 | `params` | `node`, `why` | `set_node` params that are not those of the node's kind |
 | `wrong_node` | `node`, `kind` (the node's kind, `source` or `output`) | an edit that cannot be done to or about that node |
 
 `missing` also names `group`, `node` and `link`; `taken` `node` and `group`; `out_of_range` also
-`label`, `inputs`, `links`, `lut`, `param`, `to` and the paths of corrector settings.
+`label`, `inputs`, `links`, `lut`, `param`, `to`, `clips`, `preserve_nodes` and the paths of
+corrector settings.
 
 ### Grades in the picture
 

@@ -160,9 +160,17 @@ export interface HslCurves {
 export interface SoftClip { low: Rgb; high: Rgb; low_soft: Rgb; high_soft: Rgb }
 export interface KeyInput { invert: boolean; matte: boolean; gain: Param; offset: Param }
 export interface KeyOutput { invert: boolean; gain: Param; offset: Param }
+/**
+ * The adjustment Shot Match puts last in a node, which no palette shows (p. 3048): each channel
+ * `x` goes to `S(gain * x^gamma + offset)`, `S` an S-curve of `contrast` about `pivot`. Neutral:
+ * gamma 1, gain 1, offset 0, contrast 1 (pivot 0.435). See PROTOCOL.md, "Grades".
+ */
+export interface ShotMatch { gamma: Rgb; gain: Rgb; offset: Rgb; contrast: Param; pivot: Param }
 export interface Corrector {
   primaries: Primaries; log: LogWheels; curves: Curves; hsl: HslCurves; lut: string | null; soft_clip: SoftClip;
   key: { input: KeyInput; output: KeyOutput };
+  /** The engine always writes it; `null` for none. */
+  shot_match: ShotMatch | null;
 }
 export type Composite =
   | 'normal' | 'add' | 'color' | 'color_burn' | 'color_dodge' | 'darken' | 'darker_color' | 'difference' | 'divide'

@@ -21,7 +21,7 @@ pub use color::{
 pub use edit::{expand, Change, CueItem, Edge, Edit, EditError, Expansion, Material, Straddling};
 pub use grade::{
     Composite, Corrector, Grade, Group, Interp, Key, Kind, Link, Node, NodeKind, Param, Port,
-    Target,
+    ShotMatch, Target,
 };
 pub use history::{Applied, Changed, History, Step, TransactionError, HISTORY_MOST};
 pub use ops::{apply, apply_done, Invalid, Op, OpError, LARGEST};

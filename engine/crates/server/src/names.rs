@@ -369,10 +369,17 @@ fn visit_edit<E>(
             return f(node, Role::Names);
         }
         Edit::AppendNode { grade } => return visit_target(grade, f),
-        Edit::CopyGrade { from, to } | Edit::AppendGrade { from, to } => {
+        Edit::CopyGrade { from, to, .. } | Edit::AppendNodeGraph { from, to } => {
             visit_target(from, f)?;
             for target in to {
                 visit_target(target, f)?;
+            }
+            return Ok(());
+        }
+        Edit::CollapseGroupGrades { timeline, clips } => {
+            f(timeline, Role::Names)?;
+            for clip in clips {
+                f(clip, Role::Names)?;
             }
             return Ok(());
         }

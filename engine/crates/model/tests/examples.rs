@@ -567,6 +567,30 @@ fn group(name: &str) -> Op {
     }
 }
 
+/// A shot match, whole.
+fn shot_match() -> serde_json::Value {
+    serde_json::json!({
+        "gamma": {"r": 0.95, "g": 1, "b": 1.08},
+        "gain": {"r": 1.1, "g": 1, "b": 0.92},
+        "offset": {"r": 0.01, "g": 0, "b": -0.015},
+        "contrast": 1.1,
+        "pivot": 0.435,
+    })
+}
+
+/// Set the shot match of n9, the node of `first_node`.
+fn set_shot_match(value: serde_json::Value) -> Op {
+    let mut params = serde_json::Map::new();
+    params.insert("shot_match".into(), value);
+    Op::SetNode {
+        grade: c1(),
+        id: "n9".into(),
+        label: None,
+        enabled: None,
+        params: Some(params.into()),
+    }
+}
+
 /// The examples of the operations on grades and groups.
 #[allow(clippy::too_many_lines)]
 fn grade_examples() -> Vec<(&'static str, Vec<Op>, Op)> {
@@ -702,6 +726,21 @@ fn grade_examples() -> Vec<(&'static str, Vec<Op>, Op)> {
                 enabled: None,
                 params: Some(serde_json::json!({"primaries": {"contrast": {"keys": keys}}})),
             },
+        ),
+        (
+            "set_node with a shot match, given whole",
+            vec![first_node()],
+            set_shot_match(shot_match()),
+        ),
+        (
+            "set_node of a part of a shot match",
+            vec![first_node(), set_shot_match(shot_match())],
+            set_shot_match(serde_json::json!({"gain": {"g": 1.05}, "contrast": 1.2})),
+        ),
+        (
+            "set_node taking a shot match away",
+            vec![first_node(), set_shot_match(shot_match())],
+            set_shot_match(serde_json::Value::Null),
         ),
         (
             "set_grade of a timeline",

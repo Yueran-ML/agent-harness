@@ -1194,7 +1194,7 @@ fn extract_node_keeps_the_node_out_of_the_tree_and_reset_node_sets_it_anew() {
 }
 
 #[test]
-fn copy_grade_puts_a_grade_in_place_of_others_and_append_grade_after_them() {
+fn copy_grade_puts_a_grade_in_place_of_others_and_append_node_graph_after_them() {
     let mut project = serial();
     let c2 = Target::Clip {
         timeline: "t1".into(),
@@ -1208,6 +1208,7 @@ fn copy_grade_puts_a_grade_in_place_of_others_and_append_grade_after_them() {
         Edit::CopyGrade {
             from: c1(),
             to: vec![c2.clone(), timeline.clone()],
+            preserve_nodes: None,
         },
     );
     assert_eq!(done.len(), 2);
@@ -1215,7 +1216,7 @@ fn copy_grade_puts_a_grade_in_place_of_others_and_append_grade_after_them() {
     assert_eq!(grade(&project, &timeline), grade(&project, &c1()));
     edited(
         &mut project,
-        Edit::AppendGrade {
+        Edit::AppendNodeGraph {
             from: c1(),
             to: vec![c2.clone()],
         },
@@ -1238,6 +1239,7 @@ fn copy_grade_puts_a_grade_in_place_of_others_and_append_grade_after_them() {
         Edit::CopyGrade {
             from: c1(),
             to: vec![],
+            preserve_nodes: None,
         },
     );
     assert_eq!(error, EditError::Op(OpError::OutOfRange { what: "to" }));
@@ -1360,4 +1362,512 @@ fn a_grade_is_kept_on_both_halves_of_a_clip_that_is_bladed() {
     assert_eq!(clips.len(), 2);
     assert_eq!(clips[0].grade, clips[1].grade);
     assert_eq!(clips[1].grade.nodes.len(), 2);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Copy Grade: Preserve number of nodes; Append Node Graph; Collapse Group Grades; Shot Match
+// ---------------------------------------------------------------------------------------------
+
+fn c2() -> Target {
+    Target::Clip {
+        timeline: "t1".into(),
+        clip: "c2".into(),
+    }
+}
+
+/// A corrector of id `id` whose saturation is `saturation`, to be told apart.
+fn saturated(id: &str, saturation: f64) -> Node {
+    let mut node = Node::corrector(id);
+    let NodeKind::Corrector(c) = &mut node.kind else {
+        unreachable!()
+    };
+    c.primaries.saturation = Param::Fixed(saturation);
+    node
+}
+
+/// A grade of `nodes` in a row from the source to the output.
+fn in_a_row(nodes: Vec<Node>) -> Grade {
+    let mut ids = vec!["source".to_string()];
+    ids.extend(nodes.iter().map(|n| n.id.clone()));
+    ids.push("output".into());
+    let mut grade = Grade {
+        nodes,
+        links: ids.windows(2).map(|w| rgb(&w[0], &w[1], 0)).collect(),
+    };
+    grade.sort_links();
+    grade
+}
+
+fn copy(to: Vec<Target>, preserve_nodes: Option<u32>) -> Edit {
+    Edit::CopyGrade {
+        from: c1(),
+        to,
+        preserve_nodes,
+    }
+}
+
+/// The project of `serial` (c1: n3 then n4) with c2 graded by `nodes` in a row.
+fn with_c2(nodes: Vec<Node>) -> Project {
+    let mut project = serial();
+    applied(
+        &mut project,
+        Op::SetGrade {
+            grade: c2(),
+            value: in_a_row(nodes),
+        },
+    );
+    project
+}
+
+#[test]
+fn copy_grade_keeps_the_first_nodes_of_the_grades_it_is_put_in_place_of() {
+    // c2: three nodes of its own; c1, copied: n3 then n4.
+    let mine = || {
+        vec![
+            saturated("a1", 10.0),
+            saturated("a2", 20.0),
+            saturated("a3", 30.0),
+        ]
+    };
+    let mut project = with_c2(mine());
+    let done = edited(&mut project, copy(vec![c2()], Some(1)));
+    assert_eq!(done.len(), 1);
+    let g = grade(&project, &c2());
+    let c1_grade = grade(&project, &c1());
+    // "The first node of the copied grade is ignored, but all other nodes are copied" (p. 3285).
+    assert_eq!(g.nodes, vec![mine()[0].clone(), c1_grade.nodes[1].clone()]);
+    assert_eq!(
+        g.links,
+        vec![
+            rgb("source", "a1", 0),
+            rgb("a1", "n4", 0),
+            rgb("n4", "output", 0)
+        ]
+    );
+    assert!(g.is_complete());
+
+    // Two kept, and the copy has no more: the two in the links of the copy.
+    let mut project = with_c2(mine());
+    edited(&mut project, copy(vec![c2()], Some(2)));
+    let g = grade(&project, &c2());
+    assert_eq!(g, in_a_row(mine()[..2].to_vec()));
+
+    // A grade with fewer nodes than are kept is put in place whole, ids and all.
+    let mut project = with_c2(mine());
+    let timeline = Target::Timeline {
+        timeline: "t1".into(),
+    };
+    edited(&mut project, copy(vec![timeline.clone()], Some(3)));
+    assert_eq!(grade(&project, &timeline), grade(&project, &c1()));
+    // c2 has three, which the copy, of two, has no places for.
+    let mut project = with_c2(mine());
+    let error = refused_edit(&project, copy(vec![c2()], Some(3)));
+    assert_eq!(
+        error,
+        EditError::Op(OpError::OutOfRange {
+            what: "preserve_nodes"
+        })
+    );
+    // 0 is the whole copy, as no number is.
+    edited(&mut project, copy(vec![c2()], Some(0)));
+    assert_eq!(grade(&project, &c2()), grade(&project, &c1()));
+}
+
+#[test]
+fn copy_grade_gives_a_node_of_the_copy_a_new_id_where_a_node_kept_holds_its_own() {
+    // c2's first node is n4, as the second of c1, copied, is.
+    let mut project = with_c2(vec![saturated("n4", 10.0), saturated("x", 20.0)]);
+    let next = project.next_id;
+    edited(&mut project, copy(vec![c2()], Some(1)));
+    let g = grade(&project, &c2());
+    let fresh = format!("n{next}");
+    let ids: Vec<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
+    assert_eq!(ids, ["n4", fresh.as_str()]);
+    assert_eq!(
+        g.nodes[0].as_corrector().unwrap().primaries.saturation,
+        Param::Fixed(10.0)
+    );
+    assert_eq!(
+        g.links,
+        vec![
+            rgb("source", "n4", 0),
+            rgb("n4", fresh.as_str(), 0),
+            rgb(fresh.as_str(), "output", 0),
+        ]
+    );
+    assert!(g.is_complete());
+}
+
+#[test]
+fn copy_grade_refuses_to_keep_a_node_in_the_place_of_one_of_another_kind_or_too_many() {
+    let mut mixer = Node::new("m", Kind::ParallelMixer);
+    mixer.label = "Mix".into();
+    let mut project = with_c2(vec![]);
+    let value = Grade {
+        nodes: vec![mixer, Node::corrector("a")],
+        links: vec![
+            rgb("source", "a", 0),
+            rgb("a", "m", 0),
+            rgb("source", "m", 1),
+            rgb("m", "output", 0),
+        ],
+    };
+    applied(&mut project, Op::SetGrade { grade: c2(), value });
+    let error = refused_edit(&project, copy(vec![c2()], Some(1)));
+    assert_eq!(
+        error,
+        EditError::Op(OpError::WrongNode {
+            node: "m".into(),
+            kind: "parallel_mixer"
+        })
+    );
+    // A mixer of as many inputs is kept, of another number is not.
+    let error = refused_edit(&project, copy(vec![c2()], Some(11)));
+    assert_eq!(
+        error,
+        EditError::Op(OpError::OutOfRange {
+            what: "preserve_nodes"
+        })
+    );
+    let mut mixers = Project::sample();
+    for (target, inputs) in [(c1(), 2), (c2(), 3)] {
+        let mut m = Node::new("m", Kind::ParallelMixer);
+        m.kind = NodeKind::from_params(Kind::ParallelMixer, json!({ "inputs": inputs })).unwrap();
+        let mut links = vec![rgb("m", "output", 0)];
+        links.extend((0..inputs).map(|i| rgb("source", "m", i)));
+        let mut value = Grade {
+            nodes: vec![m],
+            links,
+        };
+        value.sort_links();
+        applied(
+            &mut mixers,
+            Op::SetGrade {
+                grade: target,
+                value,
+            },
+        );
+    }
+    let error = refused_edit(&mixers, copy(vec![c2()], Some(1)));
+    assert_eq!(
+        error,
+        EditError::Op(OpError::WrongNode {
+            node: "m".into(),
+            kind: "parallel_mixer"
+        })
+    );
+}
+
+#[test]
+fn preserve_nodes_is_written_only_where_it_is_given() {
+    let edit = copy(vec![c2()], None);
+    let written = serde_json::to_value(&edit).unwrap();
+    assert!(written.get("preserve_nodes").is_none(), "{written}");
+    let read: Edit = serde_json::from_value(json!({
+        "edit": "copy_grade",
+        "from": {"level": "clip", "timeline": "t1", "clip": "c1"},
+        "to": [{"level": "clip", "timeline": "t1", "clip": "c2"}],
+        "preserve_nodes": 2,
+    }))
+    .unwrap();
+    assert_eq!(read, copy(vec![c2()], Some(2)));
+    assert_eq!(serde_json::to_value(&read).unwrap()["preserve_nodes"], 2);
+}
+
+#[test]
+fn append_node_graph_is_written_by_its_name_and_read_by_its_old_one_too() {
+    let fields = json!({
+        "from": {"level": "clip", "timeline": "t1", "clip": "c1"},
+        "to": [{"level": "timeline", "timeline": "t1"}],
+    });
+    let edit = Edit::AppendNodeGraph {
+        from: c1(),
+        to: vec![Target::Timeline {
+            timeline: "t1".into(),
+        }],
+    };
+    for name in ["append_node_graph", "append_grade"] {
+        let mut value = fields.clone();
+        value["edit"] = name.into();
+        let read: Edit = serde_json::from_value(value).unwrap();
+        assert_eq!(read, edit);
+    }
+    assert_eq!(
+        serde_json::to_value(&edit).unwrap()["edit"],
+        "append_node_graph"
+    );
+}
+
+/// The project of `serial` with a group, c1 in it, a node in its
+/// pre-clip grade and two in its post-clip grade, all in a row.
+fn grouped() -> (Project, String) {
+    let mut project = serial();
+    applied(
+        &mut project,
+        Op::AddGroup {
+            group: Group::new("", "Interview"),
+            index: None,
+        },
+    );
+    let id = project.groups[0].id.clone();
+    applied(
+        &mut project,
+        Op::SetClipGroup {
+            timeline: "t1".into(),
+            clip: "c1".into(),
+            group: Some(id.clone()),
+        },
+    );
+    let pre = Target::PreClip { group: id.clone() };
+    let post = Target::PostClip { group: id.clone() };
+    applied(
+        &mut project,
+        Op::SetGrade {
+            grade: pre,
+            value: in_a_row(vec![saturated("n3", 40.0)]),
+        },
+    );
+    applied(
+        &mut project,
+        Op::SetGrade {
+            grade: post,
+            value: in_a_row(vec![saturated("p1", 60.0), saturated("p2", 70.0)]),
+        },
+    );
+    (project, id)
+}
+
+#[test]
+fn collapse_group_grades_puts_the_grades_of_the_group_about_the_clip_s_own() {
+    let (mut project, group) = grouped();
+    let own = grade(&project, &c1());
+    let next = project.next_id;
+    let done = edited(
+        &mut project,
+        Edit::CollapseGroupGrades {
+            timeline: "t1".into(),
+            clips: vec!["c1".into()],
+        },
+    );
+    assert_eq!(done.len(), 2);
+    let g = grade(&project, &c1());
+    let pre = format!("n{next}");
+    let (post1, post2) = (format!("n{}", next + 1), format!("n{}", next + 2));
+    let ids: Vec<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
+    // Pre-clip nodes "added before any pre-existing nodes in the Clip grade, and all
+    // Post-Group nodes … after" (p. 3306); the clip's own keep their ids.
+    assert_eq!(ids, [pre.as_str(), "n3", "n4", &post1, &post2]);
+    assert_eq!(g.nodes[1..3], own.nodes[..]);
+    let saturation = |i: usize| {
+        g.nodes[i]
+            .as_corrector()
+            .unwrap()
+            .primaries
+            .saturation
+            .clone()
+    };
+    assert_eq!(saturation(0), Param::Fixed(40.0));
+    assert_eq!(saturation(3), Param::Fixed(60.0));
+    assert_eq!(saturation(4), Param::Fixed(70.0));
+    let mut expected = in_a_row(g.nodes.clone());
+    expected.sort_links();
+    assert_eq!(g, expected);
+    assert!(g.is_complete());
+    // Out of the group, which is still there with its grades.
+    let clip = &project.timelines[0].tracks[0].clips[0];
+    assert_eq!(clip.group, None);
+    let k = project.groups.iter().find(|k| k.id == group).unwrap();
+    assert_eq!(k.pre.nodes.len(), 1);
+    assert_eq!(k.post.nodes.len(), 2);
+    assert_eq!(
+        done[1],
+        Op::SetClipGroup {
+            timeline: "t1".into(),
+            clip: "c1".into(),
+            group: None
+        }
+    );
+}
+
+#[test]
+fn collapse_group_grades_of_a_group_without_nodes_only_takes_the_clip_out() {
+    let mut project = serial();
+    applied(
+        &mut project,
+        Op::AddGroup {
+            group: Group::new("empty", "Empty"),
+            index: None,
+        },
+    );
+    applied(
+        &mut project,
+        Op::SetClipGroup {
+            timeline: "t1".into(),
+            clip: "c2".into(),
+            group: Some("empty".into()),
+        },
+    );
+    let own = grade(&project, &c2());
+    let done = edited(
+        &mut project,
+        Edit::CollapseGroupGrades {
+            timeline: "t1".into(),
+            clips: vec!["c2".into()],
+        },
+    );
+    assert_eq!(done.len(), 1);
+    assert_eq!(grade(&project, &c2()), own);
+}
+
+#[test]
+fn collapse_group_grades_refuses_a_clip_in_no_group_or_none() {
+    let (project, _) = grouped();
+    let collapse = |clips: Vec<&str>| Edit::CollapseGroupGrades {
+        timeline: "t1".into(),
+        clips: clips.into_iter().map(Into::into).collect(),
+    };
+    assert_eq!(
+        refused_edit(&project, collapse(vec![])),
+        EditError::Op(OpError::OutOfRange { what: "clips" })
+    );
+    assert_eq!(
+        refused_edit(&project, collapse(vec!["c1", "c2"])),
+        EditError::Op(OpError::Ungrouped { clip: "c2".into() })
+    );
+    // Twice: the second time it is in no group.
+    assert_eq!(
+        refused_edit(&project, collapse(vec!["c1", "c1"])),
+        EditError::Op(OpError::Ungrouped { clip: "c1".into() })
+    );
+    assert!(matches!(
+        refused_edit(&project, collapse(vec!["c9"])),
+        EditError::Op(OpError::Missing { what: "clip", .. })
+    ));
+    let written = serde_json::to_value(OpError::Ungrouped { clip: "c2".into() }).unwrap();
+    assert_eq!(written["reason"], "ungrouped");
+    assert_eq!(written["clip"], "c2");
+}
+
+fn set_params(params: serde_json::Value) -> Op {
+    Op::SetNode {
+        grade: c1(),
+        id: "n3".into(),
+        label: None,
+        enabled: None,
+        params: Some(params),
+    }
+}
+
+fn shot_match_of(project: &Project) -> Option<columbina_model::ShotMatch> {
+    grade(project, &c1()).nodes[0]
+        .as_corrector()
+        .unwrap()
+        .shot_match
+        .clone()
+}
+
+#[test]
+fn a_shot_match_is_set_whole_patched_and_taken_away_by_set_node() {
+    let mut project = serial();
+    assert_eq!(shot_match_of(&project), None);
+    let node = serde_json::to_value(&grade(&project, &c1()).nodes[0]).unwrap();
+    assert_eq!(node["params"]["shot_match"], serde_json::Value::Null);
+    let whole = json!({"shot_match": {
+        "gamma": {"r": 0.9, "g": 1, "b": 1.1},
+        "gain": {"r": 1.2, "g": 1, "b": 0.8},
+        "offset": {"r": 0.01, "g": 0, "b": -0.02},
+        "contrast": 1.1,
+        "pivot": 0.4,
+    }});
+    let (done, inverse) = applied(&mut project, set_params(whole));
+    assert_eq!(inverse, set_params(json!({"shot_match": null})));
+    let Op::SetNode {
+        params: Some(done), ..
+    } = done
+    else {
+        unreachable!()
+    };
+    assert_eq!(done["shot_match"]["gain"]["r"], 1.2);
+    assert_eq!(done["shot_match"]["pivot"], 0.4);
+    let set = shot_match_of(&project).unwrap();
+    assert_eq!(set.gain.r, Param::Fixed(1.2));
+    assert_eq!(set.contrast, Param::Fixed(1.1));
+    // In part where it is there.
+    let (_, inverse) = applied(
+        &mut project,
+        set_params(json!({"shot_match": {"gain": {"g": 1.05}}})),
+    );
+    assert_eq!(
+        inverse,
+        set_params(json!({"shot_match": {"gain": {"g": 1.0}}}))
+    );
+    assert_eq!(shot_match_of(&project).unwrap().gain.g, Param::Fixed(1.05));
+    // Reset with the node.
+    edited(
+        &mut project,
+        Edit::ResetNode {
+            grade: c1(),
+            node: "n3".into(),
+        },
+    );
+    assert_eq!(shot_match_of(&project), None);
+}
+
+#[test]
+fn a_shot_match_is_refused_in_part_where_there_is_none_and_out_of_its_bounds() {
+    let project = serial();
+    let mut copy = project.clone();
+    let error = apply(
+        &mut copy,
+        set_params(json!({"shot_match": {"gain": {"r": 1.1}}})),
+    )
+    .unwrap_err();
+    assert!(matches!(error, OpError::Params { .. }), "{error:?}");
+    assert_eq!(copy, project);
+    let mut whole = json!({"shot_match": columbina_model::ShotMatch::default()});
+    for (path, value, what) in [
+        (
+            "gamma",
+            json!({"r": 1, "g": 0.05, "b": 1}),
+            "shot_match.gamma.g",
+        ),
+        (
+            "gain",
+            json!({"r": 1, "g": 1, "b": 17}),
+            "shot_match.gain.b",
+        ),
+        (
+            "offset",
+            json!({"r": -1.5, "g": 0, "b": 0}),
+            "shot_match.offset.r",
+        ),
+        ("contrast", json!(4.5), "shot_match.contrast"),
+        ("pivot", json!(-0.1), "shot_match.pivot"),
+    ] {
+        let mut bad = whole.clone();
+        bad["shot_match"][path] = value;
+        let mut copy = project.clone();
+        let error = apply(&mut copy, set_params(bad)).unwrap_err();
+        assert_eq!(error, OpError::OutOfRange { what }, "{path}");
+    }
+    whole["shot_match"]["bogus"] = json!(1);
+    assert!(matches!(
+        apply(&mut project.clone(), set_params(whole)).unwrap_err(),
+        OpError::Params { .. }
+    ));
+}
+
+#[test]
+fn a_corrector_written_without_a_shot_match_is_read_as_having_none() {
+    let node = Node::corrector("n1");
+    let mut written = node.kind.params();
+    written.as_object_mut().unwrap().remove("shot_match");
+    let read = NodeKind::from_params(Kind::Corrector, written).unwrap();
+    assert_eq!(read, node.kind);
+    // The neutral settings are those of no shot match.
+    let neutral = columbina_model::ShotMatch::default();
+    assert_eq!(neutral.gamma.r, Param::Fixed(1.0));
+    assert_eq!(neutral.gain.b, Param::Fixed(1.0));
+    assert_eq!(neutral.offset.g, Param::Fixed(0.0));
+    assert_eq!(neutral.contrast, Param::Fixed(1.0));
 }

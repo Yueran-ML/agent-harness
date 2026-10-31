@@ -328,6 +328,16 @@ pub mod bounds {
     pub const KEY_GAIN: Bounds = Bounds::new(1.0, 0.0, 2.0);
     /// The offset of a key, which changes its contrast (pp. 3362–3363): 0 changes nothing.
     pub const KEY_OFFSET: Bounds = Bounds::new(0.0, -1.0, 1.0);
+    /// The exponent of a channel of a shot match (see [`super::ShotMatch`]): 1 changes nothing.
+    pub const SHOT_GAMMA: Bounds = Bounds::new(1.0, 0.1, 10.0);
+    /// The gain of a channel of a shot match: 1 changes nothing.
+    pub const SHOT_GAIN: Bounds = Bounds::new(1.0, 0.0, 16.0);
+    /// What a shot match adds to a channel, white being 1: 0 changes nothing.
+    pub const SHOT_OFFSET: Bounds = Bounds::new(0.0, -1.0, 1.0);
+    /// The contrast of a shot match, the slope of its S-curve at the pivot: 1 changes nothing.
+    pub const SHOT_CONTRAST: Bounds = Bounds::new(1.0, 0.0, 4.0);
+    /// The pivot of the contrast of a shot match.
+    pub const SHOT_PIVOT: Bounds = Bounds::new(0.435, 0.0, 1.0);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -568,7 +578,8 @@ impl Node {
 ///
 /// Within the node they are applied in the order of p. 3331: Shadows and Highlights, Midtone
 /// Detail, Color Boost, Temp and Tint, Lift, Gamma and Gain, Contrast and Pivot, the custom
-/// curves, the Log wheels, Hue and Saturation, the LUT, the HSL curves and Soft Clip.
+/// curves, the Log wheels, Hue and Saturation, the LUT, the HSL curves and Soft Clip; and last
+/// the adjustment of Shot Match, which no palette shows (p. 3048).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Corrector {
@@ -586,6 +597,92 @@ pub struct Corrector {
     pub soft_clip: SoftClip,
     /// The Key palette of a corrector (pp. 3361–3362).
     pub key: KeyParams,
+    /// The adjustment that Shot Match put on the node, or none (see [`ShotMatch`]). It is
+    /// always written, and read as none where it is left out.
+    #[serde(default)]
+    pub shot_match: Option<ShotMatch>,
+}
+
+/// The adjustment that Shot Match puts on the node that was chosen when it was used: "applied
+/// invisibly, as the very last adjustment to the node … similar to a LUT" (p. 3048). No palette
+/// shows it; it is undone, copied and reset with the rest of the node, and a node shows that it
+/// has one.
+///
+/// `DaVinci` does not say what it is. Ours is a small adjustment of each channel that a solver
+/// can fit to the statistics of two pictures (their levels at a few shares of their pixels, the
+/// mean of their grey), on R'G'B' after Soft Clip, each channel `c` of `x` going to
+///
+/// `S(gain_c · x^gamma_c + offset_c)`
+///
+/// where the power keeps the sign of `x`, and `S` is the contrast `contrast` about `pivot` as an
+/// S-curve: `p (v/p)^k` below the pivot `p` and `1 - (1 - p)((1 - v)/(1 - p))^k` above, values at
+/// or beyond black and white kept. So `gamma`, `gain` and `offset` move the black, the middle and
+/// the white of each channel apart, and `contrast` stretches all three about the pivot without
+/// clipping, which the others cannot do. `S` is always the S-curve, whatever the project says
+/// of the Contrast of the palette, so that what a solver fits does not change with the project.
+///
+/// Its settings as they are first are the identity, to the bit, as no shot match is. To set one
+/// where a node has none, `set_node` gives it whole; one that the node has is patched as any
+/// other setting.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShotMatch {
+    /// The exponent of each channel: 1 changes nothing.
+    pub gamma: Rgb,
+    /// The gain of each channel, after the exponent: 1 changes nothing.
+    pub gain: Rgb,
+    /// What is added to each channel, after the gain, on the scale where 1 is white: 0 changes
+    /// nothing.
+    pub offset: Rgb,
+    /// The contrast of the S-curve, the slope at its pivot: 1 changes nothing.
+    pub contrast: Param,
+    /// The pivot of the S-curve.
+    pub pivot: Param,
+}
+
+impl Default for ShotMatch {
+    fn default() -> Self {
+        use bounds::{SHOT_CONTRAST, SHOT_GAIN, SHOT_GAMMA, SHOT_OFFSET, SHOT_PIVOT};
+        Self {
+            gamma: Rgb::of(SHOT_GAMMA),
+            gain: Rgb::of(SHOT_GAIN),
+            offset: Rgb::of(SHOT_OFFSET),
+            contrast: SHOT_CONTRAST.param(),
+            pivot: SHOT_PIVOT.param(),
+        }
+    }
+}
+
+impl ShotMatch {
+    fn check(&self) -> Result<(), OpError> {
+        use bounds::{SHOT_CONTRAST, SHOT_GAIN, SHOT_GAMMA, SHOT_OFFSET, SHOT_PIVOT};
+        self.gamma.check(
+            [
+                "shot_match.gamma.r",
+                "shot_match.gamma.g",
+                "shot_match.gamma.b",
+            ],
+            SHOT_GAMMA,
+        )?;
+        self.gain.check(
+            [
+                "shot_match.gain.r",
+                "shot_match.gain.g",
+                "shot_match.gain.b",
+            ],
+            SHOT_GAIN,
+        )?;
+        self.offset.check(
+            [
+                "shot_match.offset.r",
+                "shot_match.offset.g",
+                "shot_match.offset.b",
+            ],
+            SHOT_OFFSET,
+        )?;
+        SHOT_CONTRAST.check("shot_match.contrast", &self.contrast)?;
+        SHOT_PIVOT.check("shot_match.pivot", &self.pivot)
+    }
 }
 
 /// The Primaries palette: the wheels, which the Bars mode shows as bars (p. 3065), and the
@@ -1066,7 +1163,8 @@ impl Corrector {
             bounds::CLIP_SOFT,
         )?;
         self.key.input.check()?;
-        self.key.output.check()
+        self.key.output.check()?;
+        self.shot_match.as_ref().map_or(Ok(()), ShotMatch::check)
     }
 }
 

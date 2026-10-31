@@ -32,6 +32,17 @@ pub(crate) fn grade_at<'a>(project: &'a Project, target: &Target) -> Result<&'a 
     }
 }
 
+/// The group that clip `clip` of timeline `timeline` is in, if it is in one.
+pub(crate) fn group_of_clip(
+    project: &Project,
+    timeline: &str,
+    clip: &str,
+) -> Result<Option<Id>, OpError> {
+    let t = &project.timelines[timeline_at(project, timeline)?];
+    let (r, at) = clip_at(t, clip)?;
+    Ok(t.tracks[r].clips[at].group.clone())
+}
+
 /// The grade that `target` names, to be changed.
 fn grade_mut<'a>(project: &'a mut Project, target: &Target) -> Result<&'a mut Grade, OpError> {
     match target {

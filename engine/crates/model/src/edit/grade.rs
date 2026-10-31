@@ -1,14 +1,15 @@
 //! The edits of grades: adding nodes as the keys of the Color page add them (Reference Manual
-//! 20, p. 3318), taking a node out of its tree, resetting one, and copying grades, nodes and
-//! single settings from one grade to others (pp. 3285–3297).
+//! 20, p. 3318), taking a node out of its tree, resetting one, copying grades, nodes and single
+//! settings from one grade to others (pp. 3285–3297), and putting the grades of a clip's group
+//! into its own (pp. 3306–3307).
 
 use std::collections::{HashMap, HashSet};
 
-use super::{EditError, Expansion};
+use super::{EditError, Expansion, MOST_PRESERVED_NODES};
 use crate::grade::{
     at_path, patch_at, Grade, Kind, Link, Node, NodeKind, Port, Target, OUTPUT, SOURCE,
 };
-use crate::ops::{apply_done, grade_at, reserve_node_ids, Op, OpError};
+use crate::ops::{apply_done, grade_at, group_of_clip, reserve_node_ids, Op, OpError};
 use crate::project::{Id, Project};
 
 /// The operations that an edit has been worked out into so far.
@@ -230,32 +231,161 @@ pub(super) fn reset(
     Ok(steps.finish())
 }
 
-/// Put the grade `from` in place of each grade of `to`, as Copy Grade does (p. 3286).
+/// Put the grade `from` in place of each grade of `to`, as Copy Grade does (p. 3286), keeping
+/// the first `preserve` nodes of each that has as many (Copy Grade: Preserve number of nodes,
+/// p. 3285).
 pub(super) fn copy_grade(
     project: &mut Project,
     from: &Target,
     to: &[Target],
+    preserve: u32,
 ) -> Result<Expansion, EditError> {
     if to.is_empty() {
         return Err(OpError::OutOfRange { what: "to" }.into());
     }
-    let value = grade_at(project, from)?.clone();
+    if preserve > MOST_PRESERVED_NODES {
+        return Err(OpError::OutOfRange {
+            what: "preserve_nodes",
+        }
+        .into());
+    }
+    let copied = grade_at(project, from)?.clone();
     let mut steps = Steps::default();
     for target in to {
+        let had = grade_at(project, target)?;
+        let kept = preserve as usize;
+        let value = if kept == 0 || had.nodes.len() < kept {
+            copied.clone()
+        } else {
+            let kept = had.nodes[..kept].to_vec();
+            preserved(project, &copied, kept)?
+        };
         let set = Op::SetGrade {
             grade: target.clone(),
-            value: value.clone(),
+            value,
         };
         steps.apply(project, set)?;
     }
     Ok(steps.finish())
 }
 
+/// The grade `copied` with `kept`, the first nodes of the grade it is put in place of, in the
+/// places of its first nodes: each of them of the kind of the node it takes the place of, with
+/// as many inputs, so that the links of `copied` fit it. A node of `copied` after them whose id
+/// one of `kept` holds is given a new one.
+fn preserved(project: &mut Project, copied: &Grade, kept: Vec<Node>) -> Result<Grade, EditError> {
+    if copied.nodes.len() < kept.len() {
+        return Err(OpError::OutOfRange {
+            what: "preserve_nodes",
+        }
+        .into());
+    }
+    let mut names: HashMap<Id, Id> = HashMap::new();
+    for (node, place) in kept.iter().zip(&copied.nodes) {
+        let fits = node.kind.kind() == place.kind.kind()
+            && [Port::Rgb, Port::Key]
+                .iter()
+                .all(|port| node.kind.inputs(*port) == place.kind.inputs(*port));
+        if !fits {
+            return Err(OpError::WrongNode {
+                node: node.id.clone(),
+                kind: node.kind.kind().name(),
+            }
+            .into());
+        }
+        names.insert(place.id.clone(), node.id.clone());
+    }
+    let rest = &copied.nodes[kept.len()..];
+    let held: HashSet<Id> = kept
+        .iter()
+        .chain(rest)
+        .map(|node| node.id.clone())
+        .collect();
+    let taken: Vec<Id> = rest
+        .iter()
+        .filter(|node| kept.iter().any(|k| k.id == node.id))
+        .map(|node| node.id.clone())
+        .collect();
+    let ids = reserve_node_ids(project, &held, taken.len())?;
+    names.extend(taken.into_iter().zip(ids));
+    let mut value = renamed(copied, &names);
+    value.nodes.splice(..kept.len(), kept);
+    Ok(value)
+}
+
+/// `grade` with the nodes that `names` names given the names it gives them, in its links too.
+fn renamed(grade: &Grade, names: &HashMap<Id, Id>) -> Grade {
+    let name = |id: &Id| names.get(id).unwrap_or(id).clone();
+    let mut value = Grade {
+        nodes: grade
+            .nodes
+            .iter()
+            .map(|node| Node {
+                id: name(&node.id),
+                ..node.clone()
+            })
+            .collect(),
+        links: grade
+            .links
+            .iter()
+            .map(|link| Link {
+                from: name(&link.from),
+                to: name(&link.to),
+                ..link.clone()
+            })
+            .collect(),
+    };
+    value.sort_links();
+    value
+}
+
+/// `then` after `first`, as one grade: the nodes of both, in their order, what went into the
+/// output of `first` going into what the source went into in `then`, and what went into the
+/// output of `then` into the output. Their nodes are of other ids. Where nothing went into the
+/// output of `first`, nothing goes into what the source went into in `then`.
+fn chain(first: Grade, then: &Grade) -> Grade {
+    let mut value = first;
+    let last = value
+        .link_into(OUTPUT, Port::Rgb, 0)
+        .map(|l| l.from.clone());
+    value.links.retain(|l| l.target() != (OUTPUT, Port::Rgb, 0));
+    value.nodes.extend(then.nodes.iter().cloned());
+    for link in &then.links {
+        let from = if link.from == SOURCE {
+            match &last {
+                Some(last) => last.clone(),
+                None => continue,
+            }
+        } else {
+            link.from.clone()
+        };
+        value.links.push(Link {
+            from,
+            ..link.clone()
+        });
+    }
+    value.sort_links();
+    value
+}
+
+/// `grade` with new ids for its nodes, of the shape of those the engine makes, in their order,
+/// for a grade whose nodes hold `held`.
+fn anew(project: &mut Project, grade: &Grade, held: &HashSet<Id>) -> Result<Grade, EditError> {
+    let ids = reserve_node_ids(project, held, grade.nodes.len())?;
+    let names = grade.nodes.iter().map(|n| n.id.clone()).zip(ids).collect();
+    Ok(renamed(grade, &names))
+}
+
+/// The ids of the nodes of `grade`.
+fn ids_of(grade: &Grade) -> HashSet<Id> {
+    grade.nodes.iter().map(|n| n.id.clone()).collect()
+}
+
 /// Add the nodes of the grade `from` to the end of each grade of `to`, as Append Node Graph
 /// does (p. 3290): what went into the output of the grade goes into what the source went into
 /// in `from`, and what went into the output of `from` goes into the output. The nodes added are
 /// given new ids, in their order.
-pub(super) fn append_grade(
+pub(super) fn append_node_graph(
     project: &mut Project,
     from: &Target,
     to: &[Target],
@@ -266,48 +396,73 @@ pub(super) fn append_grade(
     let added = grade_at(project, from)?.clone();
     let mut steps = Steps::default();
     for target in to {
-        let mut value = grade_at(project, target)?.clone();
-        let held: HashSet<Id> = value.nodes.iter().map(|n| n.id.clone()).collect();
-        let ids = reserve_node_ids(project, &held, added.nodes.len())?;
-        let names: HashMap<&str, &Id> = added
-            .nodes
-            .iter()
-            .map(|n| n.id.as_str())
-            .zip(&ids)
-            .collect();
-        let last = value
-            .link_into(OUTPUT, Port::Rgb, 0)
-            .map(|l| l.from.clone());
-        value.links.retain(|l| l.target() != (OUTPUT, Port::Rgb, 0));
-        value.nodes.extend(added.nodes.iter().map(|n| Node {
-            id: names[n.id.as_str()].clone(),
-            ..n.clone()
-        }));
-        for link in &added.links {
-            let from = if link.from == SOURCE {
-                match &last {
-                    Some(last) => last.clone(),
-                    None => continue,
-                }
-            } else {
-                names[link.from.as_str()].clone()
-            };
-            let to = if link.to == OUTPUT {
-                link.to.clone()
-            } else {
-                names[link.to.as_str()].clone()
-            };
-            value.links.push(Link {
-                from,
-                to,
-                ..link.clone()
-            });
-        }
+        let had = grade_at(project, target)?.clone();
+        let added = anew(project, &added, &ids_of(&had))?;
         let set = Op::SetGrade {
             grade: target.clone(),
-            value,
+            value: chain(had, &added),
         };
         steps.apply(project, set)?;
+    }
+    Ok(steps.finish())
+}
+
+/// Put the nodes of the pre-clip grade of the group of each of `clips` before the nodes of its
+/// grade, and those of the post-clip grade after them, and take it out of the group, as
+/// Collapse Group Grades does (pp. 3306–3307). The group keeps its grades, and its other clips.
+///
+/// The picture goes through the nodes in the order that it went through the three grades
+/// (p. 3330), and their keyframes are at the frames they were at, as the three count the frames
+/// of the clip alike. The nodes put in are given new ids, those of the pre-clip grade first;
+/// the clip's own keep theirs. A grade of the group without nodes puts none in; one that is not
+/// complete is put in as it is, which leaves the clip's grade not complete, as `DaVinci` copies
+/// "all nodes".
+pub(super) fn collapse_group_grades(
+    project: &mut Project,
+    timeline: &str,
+    clips: &[Id],
+) -> Result<Expansion, EditError> {
+    if clips.is_empty() {
+        return Err(OpError::OutOfRange { what: "clips" }.into());
+    }
+    let mut steps = Steps::default();
+    for clip in clips {
+        let group = group_of_clip(project, timeline, clip)?
+            .ok_or_else(|| OpError::Ungrouped { clip: clip.clone() })?;
+        let target = Target::Clip {
+            timeline: timeline.into(),
+            clip: clip.clone(),
+        };
+        let own = grade_at(project, &target)?.clone();
+        let pre_clip = Target::PreClip {
+            group: group.clone(),
+        };
+        let pre = grade_at(project, &pre_clip)?.clone();
+        let post = grade_at(project, &Target::PostClip { group })?.clone();
+        if !pre.nodes.is_empty() || !post.nodes.is_empty() {
+            let mut held = ids_of(&own);
+            let mut value = own;
+            if !pre.nodes.is_empty() {
+                let pre = anew(project, &pre, &held)?;
+                held.extend(ids_of(&pre));
+                value = chain(pre, &value);
+            }
+            if !post.nodes.is_empty() {
+                let post = anew(project, &post, &held)?;
+                value = chain(value, &post);
+            }
+            let set = Op::SetGrade {
+                grade: target,
+                value,
+            };
+            steps.apply(project, set)?;
+        }
+        let leave = Op::SetClipGroup {
+            timeline: timeline.into(),
+            clip: clip.clone(),
+            group: None,
+        };
+        steps.apply(project, leave)?;
     }
     Ok(steps.finish())
 }

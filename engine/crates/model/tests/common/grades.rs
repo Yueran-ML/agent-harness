@@ -114,7 +114,7 @@ fn link_of(ends: &[String], n: usize) -> Link {
 /// of node now and then.
 fn params_of(n: usize) -> serde_json::Value {
     let value = f64::from(u32::try_from(n % 101).unwrap_or(0));
-    match n % 13 {
+    match n % 16 {
         0 => serde_json::json!({"primaries": {"saturation": value}}),
         1 => serde_json::json!({"primaries": {"lift": {"r": value / 100.0 - 0.5, "y": 0.1}}}),
         2 => serde_json::to_value(serde_json::json!({"primaries": {"contrast": {"keys": [
@@ -139,7 +139,24 @@ fn params_of(n: usize) -> serde_json::Value {
             let input = serde_json::json!({"invert": true, "matte": false, "gain": 1, "offset": 0});
             serde_json::json!({ "inputs": vec![input; 3] })
         }
-        _ => serde_json::json!({"primaries": {"saturation": {"keys": []}}}),
+        12 => serde_json::json!({"primaries": {"saturation": {"keys": []}}}),
+        // A shot match given whole, or taken away.
+        13 => {
+            if n.is_multiple_of(4) {
+                serde_json::json!({"shot_match": null})
+            } else {
+                serde_json::json!({"shot_match": {
+                    "gamma": {"r": 0.9, "g": 1.0, "b": value / 50.0 + 0.5},
+                    "gain": {"r": 1.1, "g": 1.0, "b": 0.95},
+                    "offset": {"r": -0.02, "g": 0.0, "b": 0.01},
+                    "contrast": value / 40.0,
+                    "pivot": 0.4,
+                }})
+            }
+        }
+        // A part of one, which a node without one refuses, and one out of its bounds.
+        14 => serde_json::json!({"shot_match": {"gain": {"g": value / 50.0}, "pivot": 0.5}}),
+        _ => serde_json::json!({"shot_match": {"gamma": {"r": 0.0}}}),
     }
 }
 

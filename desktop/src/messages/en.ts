@@ -1394,6 +1394,8 @@ export const en = {
         stale_revision: "The project changed during this edit; try again.",
         pending: "The edit before is still being applied; try again in a moment.",
         no_edit_point: "No two clips meet on a video track near the playhead.",
+        no_edit_at_playhead: "No two clips meet at the playhead on the target tracks.",
+        no_edit_chosen: "The clips chosen meet no other clip.",
         missing: "An item used by this edit is no longer in the project.",
         taken: "Another item already uses this name.",
         out_of_list: "This position is outside the track list.",

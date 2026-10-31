@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Key } from '../src/app/keys';
-import { editKey, editCommand, liftRange, sourceTime, type EditContext } from '../src/studio/timeline/editKeys';
+import { editKey, editCommand, liftRange, shortened, sourceTime, type EditContext } from '../src/studio/timeline/editKeys';
 import { clip, media, timeline } from './timeline-fixture';
 import { materialLength } from '../src/studio/timeline/drop';
 
@@ -142,6 +142,31 @@ describe('DaVinci editing keys', () => {
       const backtimed = command('F10', {}, context({ timeline: t, marks: { in: null, out: 181 }, source: { media: marked, frame: 0, rate } }));
       expect(backtimed).toMatchObject({ transaction: { ops: [{ at: 59 }] } });
     }
+  });
+  it('shortens the transition that the engine names to the longest that fits, and nothing else', () => {
+    const t = timeline([clip('c1', 0, 100), clip('c2', 100, 100), clip('c3', 200, 100)]);
+    (t.tracks[0] as Extract<typeof t.tracks[number], { kind: 'video' | 'audio' }>).transitions = [{ id: 'x1', kind: 'dissolve', left: 'c2', right: 'c3', length: 10, align: 'center' }];
+    const add = (left: string, right: string) => ({ edit: 'add_transition' as const, timeline: 't1', left, right, kind: 'dissolve' as const, length: 25, align: 'center' as const });
+    const sent = { revision: 4, ops: [add('c1', 'c2'), { edit: 'set_transition' as const, timeline: 't1', id: 'x1', length: 25 }] };
+    const refusal = (clip: string, longest?: number) => ({ reason: 'no_handles', clip, need: 13, have: 6, ...(longest === undefined ? {} : { longest }) });
+    expect(shortened(sent, t, refusal('c1', 12))).toEqual({ revision: 4, ops: [{ ...add('c1', 'c2'), length: 12 }, sent.ops[1]] });
+    // c3 is a clip of the transition that is set, not of the one added.
+    expect(shortened(sent, t, refusal('c3', 7))).toEqual({ revision: 4, ops: [sent.ops[0], { ...sent.ops[1], length: 7 }] });
+    // c2 is of both: the first that is longer than the longest goes first.
+    expect(shortened(sent, t, refusal('c2', 7))!.ops.map(op => (op as { length: number }).length)).toEqual([7, 25]);
+    for (const other of [refusal('c1'), refusal('c1', 0), refusal('c1', 25), refusal('c9', 12), { reason: 'locked', track: 'v1' }, null, 'no_handles']) {
+      expect(shortened(sent, t, other)).toBeNull();
+    }
+  });
+  it('says why Ctrl+T adds no transition: no two clips meet at the playhead, or at a clip chosen', () => {
+    const apart = timeline([clip('c1', 0, 100), clip('c2', 120, 100)]);
+    expect(command('t', { ctrl: true }, context({ timeline: apart, selected: [] }))).toEqual({ kind: 'refused', reason: 'no_edit_at_playhead' });
+    expect(command('t', { ctrl: true }, context({ selected: [], frame: 90 }))).toEqual({ kind: 'refused', reason: 'no_edit_at_playhead' });
+    expect(command('t', { ctrl: true }, context({ timeline: apart }))).toEqual({ kind: 'refused', reason: 'no_edit_chosen' });
+    // The cut has its transition already: there is nothing to do, and nothing to say.
+    const done = timeline();
+    (done.tracks[0] as Extract<typeof done.tracks[number], { kind: 'video' | 'audio' }>).transitions = [{ id: 'x1', kind: 'dissolve', left: 'c1', right: 'c2', length: 25, align: 'center' }];
+    expect(command('t', { ctrl: true }, context({ timeline: done }))).toEqual({ kind: 'none' });
   });
   it('uses shared undo and keeps destructive keys from repeating', () => {
     // Backspace lifts; Delete, and Shift with either, ripple deletes, as DaVinci Resolve has them.

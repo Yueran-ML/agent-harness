@@ -1207,6 +1207,8 @@ export const zhCN: Messages = {
         stale_revision: "编辑期间工程发生了变化，请重试。",
         pending: "上一个编辑还在应用中，请稍后再试。",
         no_edit_point: "播放头附近的视频轨上没有两个相接的片段。",
+        no_edit_at_playhead: "播放头处的目标轨道上没有两个相接的片段。",
+        no_edit_chosen: "选中的片段没有与其他片段相接。",
         missing: "这次编辑使用的项目内容已不存在。",
         taken: "其他内容已占用这个名称。",
         out_of_list: "该位置超出了轨道列表。",

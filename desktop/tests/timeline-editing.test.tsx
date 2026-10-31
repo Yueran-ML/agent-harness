@@ -300,6 +300,36 @@ describe('timeline editing by pointer and keys', () => {
     expect(applied()).toEqual([]);
     expect(screen.getByRole('alert').textContent).toBe('A track affected by this edit is locked.');
   });
+  it('says why Ctrl+T adds nothing, and makes a transition as long as the clips allow, as DaVinci Resolve does', async () => {
+    // No two clips meet at the playhead (frame 20): nothing is sent, and the page says so.
+    const { props, rerender, call } = mount();
+    const applied = () => call.mock.calls.filter(([method]) => method === 'transaction.apply').map(([, params]) => params);
+    fireEvent.keyDown(root(), { key: 't', ctrlKey: true }); await settle();
+    expect(applied()).toEqual([]);
+    expect(screen.getByRole('alert').textContent).toBe('No two clips meet at the playhead on the target tracks.');
+    // A clip chosen that meets no other clip.
+    click(); fireEvent.keyDown(root(), { key: 't', ctrlKey: true }); await settle();
+    expect(applied()).toEqual([]);
+    expect(screen.getByRole('alert').textContent).toBe('The clips chosen meet no other clip.');
+    // Two clips meet at the playhead, with 12 frames of handles where the standard dissolve needs
+    // 25: the engine refuses and names the longest that fits, and the dissolve is made that long
+    // (Reference Manual 20, p. 1020), in one step and without a word.
+    const met = timeline([clip('c1', 0, 100), clip('c2', 100, 100)]);
+    rerender(<Timeline {...props} timeline={met} frame={100} />);
+    fireEvent.pointerDown(root(), pointer(300)); fireEvent.pointerUp(root(), pointer(300));
+    call.mockClear();
+    call.mockResolvedValueOnce({ ok: false, error: { code: -32001, message: 'refused', data: { reason: 'no_handles', clip: 'c2', need: 13, have: 6, longest: 12 } } });
+    fireEvent.keyDown(root(), { key: 't', ctrlKey: true }); await settle();
+    const dissolve = { edit: 'add_transition', timeline: 't1', left: 'c1', right: 'c2', kind: 'dissolve', align: 'center' };
+    expect(applied()).toEqual([{ revision: 17, ops: [{ ...dissolve, length: 25 }] }, { revision: 17, ops: [{ ...dissolve, length: 12 }] }]);
+    expect(screen.queryByRole('alert')).toBeNull();
+    // Without a frame to spare, the refusal is said, and nothing more is sent.
+    call.mockClear();
+    call.mockResolvedValueOnce({ ok: false, error: { code: -32001, message: 'refused', data: { reason: 'no_handles', clip: 'c2', need: 13, have: 0, longest: 0 } } });
+    fireEvent.keyDown(root(), { key: 't', ctrlKey: true }); await settle();
+    expect(applied()).toEqual([{ revision: 17, ops: [{ ...dissolve, length: 25 }] }]);
+    expect(screen.getByRole('alert').textContent).toBe('The source does not have enough frames for this edit.');
+  });
   it('does not start editing a locked clip or submit another transaction while one is pending', async () => {
     const { props, rerender, call } = mount();
     rerender(<Timeline {...props} timeline={{ ...props.timeline, tracks: props.timeline.tracks.map(t => ({ ...t, locked: true })) }} />);

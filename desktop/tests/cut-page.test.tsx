@@ -74,6 +74,8 @@ const cuts = (): Timeline => ({
  * the gap (unless `straddling` is 'stay'), or, with 'stay', where a clip after the gap would run
  * into one that stays. Other edits are not followed.
  */
+/** The most frames a transition may last at a cut, as the handles of its clips allow; none, no bound. */
+let handles: number | null = null;
 function refusalOf(project: Project, ops: readonly Record<string, unknown>[]): Record<string, unknown> | null {
   type Lane = { id: string; kind: string; locked: boolean; clips: { id: string; start: number; end: number; link: string | null }[] };
   const lanes = new Map<string, Lane[]>(project.timelines.map(timeline => [timeline.id, timeline.tracks.map(track => ({
@@ -83,6 +85,9 @@ function refusalOf(project: Project, ops: readonly Record<string, unknown>[]): R
   for (const op of ops) {
     const tracks = lanes.get(op.timeline as string);
     if (!tracks) continue;
+    if ((op.edit === 'add_transition' || op.edit === 'set_transition') && handles !== null && typeof op.length === 'number' && op.length > handles) {
+      return { reason: 'no_handles', clip: op.right ?? 'c2', need: Math.ceil(op.length / 2), have: Math.floor(handles / 2), longest: handles };
+    }
     if (op.edit === 'move') {
       // The clips named and, linked, those linked to them on open tracks, each going as many tracks
       // along its own kind as `to_track` is from the track of the first clip (Linked Move Across Tracks).
@@ -616,6 +621,23 @@ describe('the Cut page', () => {
     expect(sent(bridge)).toEqual([]);
     expect(await press('Dissolve')).toEqual([]);
     expect(document.querySelector('[data-test="studio-problem"]')).toBeNull();
+  });
+
+  it('makes a transition as long as the clips allow where they have too few frames for the standard one', async () => {
+    // Reference Manual 20, p. 1020: the standard transition, "or however long the overlapping
+    // handles of the selected edit point allow".
+    handles = 12;
+    try {
+      const { bridge, notify } = await mount();
+      notify('timeline', { frame: 130 }); await settle();
+      bridge.call.mockClear();
+      fireEvent.click(screen.getByRole('button', { name: 'Dissolve' })); await settle();
+      const dissolve = { edit: 'add_transition', timeline: 't1', left: 'c1', right: 'c2', kind: 'dissolve', align: 'center' };
+      expect(sent(bridge).map(each => each.ops)).toEqual([[{ ...dissolve, length: 25 }], [{ ...dissolve, length: 12 }]]);
+      bridge.call.mockClear(); key('t', { ctrlKey: true }); await settle();
+      expect(sent(bridge).map(each => each.ops)).toEqual([[{ ...dissolve, length: 25 }], [{ ...dissolve, length: 12 }]]);
+      expect(document.querySelector('[data-test="studio-problem"]')).toBeNull();
+    } finally { handles = null; }
   });
 
   it('says so where no two clips meet on a track of picture, and sends nothing', async () => {

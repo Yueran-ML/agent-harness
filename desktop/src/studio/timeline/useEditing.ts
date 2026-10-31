@@ -3,8 +3,8 @@ import type { Key } from '../../app/keys';
 import { overlayOpen } from '../../app/overlay';
 import { useWords } from '../../app/locale';
 import type { EngineBridge } from '../../bridge';
-import { callEngine, type Applied, type Media, type Monitor, type Op, type SubtitleTrack, type Timeline } from '../engine';
-import { editCommand, editKey, type EditAction, type EditContext } from './editKeys';
+import { callEngine, EngineError, type Applied, type Media, type Monitor, type Op, type SubtitleTrack, type Timeline } from '../engine';
+import { editCommand, editKey, shortened, type EditAction, type EditContext } from './editKeys';
 import type { Targets, Transaction } from './commands';
 import { frameAt, HEADER_WIDTH } from './geometry';
 import { beginDrag, dragTo, finishDrag, hitClip, type Dragged, type Gesture, type Hit, type Preview, type Tool } from './interact';
@@ -134,7 +134,12 @@ export function useEditing(options: Options) {
   // A clip chosen leaves the transition and the subtitle, as only one kind of thing is chosen at a time.
   useEffect(() => { if (selection.ids.length > 0) { setTransition(null); setCue(null); } }, [selection.ids]);
 
-  const run = useCallback(async (method: 'transaction.apply' | 'history.undo' | 'history.redo', transaction?: Transaction, then?: (applied: unknown) => void): Promise<boolean> => {
+  /**
+   * Send a transaction (or an undo or a redo), and say why where the engine refuses it. `retry`
+   * may give, for a refusal, another transaction to send in its place, as one step of the user.
+   */
+  const run = useCallback(async (method: 'transaction.apply' | 'history.undo' | 'history.redo', transaction?: Transaction, then?: (applied: unknown) => void,
+    retry?: (refusal: unknown, sent: Transaction) => Transaction | null): Promise<boolean> => {
     if (busy.current) {
       // Ctrl+Z pressed again while an edit is applied: it is not lost, but done after it.
       if (method !== 'transaction.apply') queued.current.push(method);
@@ -145,9 +150,19 @@ export function useEditing(options: Options) {
     const context = now.current;
     busy.current = true; setPending(true); setProblem(null);
     let done = false;
+    let sent = transaction;
     try {
-      const applied = await callEngine(context.bridge, method, transaction ? { ...transaction } : undefined); done = true;
-      if (then && live.current && context.session === now.current.session) then(applied);
+      for (;;) {
+        try {
+          const applied = await callEngine(context.bridge, method, sent ? { ...sent } : undefined); done = true;
+          if (then && live.current && context.session === now.current.session) then(applied);
+          break;
+        } catch (error) {
+          const again = retry && sent && error instanceof EngineError && live.current && context.session === now.current.session ? retry(error.data, sent) : null;
+          if (!again) throw error;
+          sent = again;
+        }
+      }
     }
     catch (error) {
       queued.current = [];
@@ -252,7 +267,12 @@ export function useEditing(options: Options) {
     // A quick transition with no two clips meeting on a track of picture: it says so.
     if (!result) { if (action.kind === 'quick' || (action.kind === 'transition' && context.cut)) setProblem(context.words.no_edit_point); return true; }
     switch (result.kind) {
-      case 'transaction': void apply(result.transaction); break;
+      // Ctrl+T, and the transitions of the Cut page, take as many frames as the clips have where
+      // they have too few for the standard length, as DaVinci Resolve does (Reference Manual 20,
+      // p. 1020): the engine's refusal names the longest, and the transition is sent again so.
+      case 'transaction': void (action.kind === 'transition' || action.kind === 'quick'
+        ? run('transaction.apply', result.transaction, undefined, (refusal, sent) => shortened(sent, context.timeline!, refusal))
+        : apply(result.transaction)); break;
       case 'history': void run(result.method); break;
       case 'marks': setMarks(result.marks); break;
       case 'seek': context.onSeek(result.frame, false); break;

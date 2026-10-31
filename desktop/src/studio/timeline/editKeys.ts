@@ -112,8 +112,11 @@ export type EditResult =
   | { kind: 'zoom'; direction: -1 | 1 }
   /** The key was for this page, and there is nothing to do: a transition of that kind and length is there already. */
   | { kind: 'none' }
-  /** The clips chosen are all on locked tracks: nothing is sent, and the page says why. */
-  | { kind: 'refused'; reason: 'locked' };
+  /**
+   * Nothing is sent, and the page says why: the clips chosen are all on locked tracks, or Ctrl+T
+   * finds no two clips that meet at the playhead (on the target tracks) or at a clip chosen.
+   */
+  | { kind: 'refused'; reason: 'locked' | 'no_edit_at_playhead' | 'no_edit_chosen' };
 
 /** Integer rational conversion prevents a frame boundary from rounding one source tick too early. */
 export function sourceTime(frame: number, rate: Rate, scale: number): Time {
@@ -215,6 +218,33 @@ export function nearestEditPoint(timeline: Timeline, frame: number): { at: numbe
     }
   }
   return at === null ? null : { at, meetings: meetings.filter(each => each.at === at).map(({ at: _, ...meeting }) => meeting) };
+}
+
+/**
+ * A transaction of transitions that the engine refused for want of frames (`no_handles`), with the
+ * transition it names made as long as it can be: Ctrl+T adds the standard transition, "or however
+ * long the overlapping handles of the selected edit point allow" (Reference Manual 20, p. 1020).
+ * Null where the refusal is another, where no frame fits, or where no transition of the
+ * transaction is of the clip that the engine names and longer than that.
+ */
+export function shortened(transaction: Transaction, timeline: Timeline, refusal: unknown): Transaction | null {
+  const data = refusal && typeof refusal === 'object' ? refusal as { reason?: unknown; clip?: unknown; longest?: unknown } : null;
+  if (data?.reason !== 'no_handles' || typeof data.clip !== 'string' || typeof data.longest !== 'number' || !(data.longest >= 1)) return null;
+  const { clip, longest } = data as { clip: string; longest: number };
+  const between = (id: string) => timeline.tracks.flatMap(track => track.kind === 'subtitle' ? [] : track.transitions).find(each => each.id === id);
+  const at = transaction.ops.findIndex(op => {
+    if (!('edit' in op)) return false;
+    if (op.edit === 'add_transition') return (op.left === clip || op.right === clip) && op.length > longest;
+    if (op.edit === 'set_transition' && op.length !== undefined) {
+      const old = between(op.id);
+      return old !== undefined && (old.left === clip || old.right === clip) && op.length > longest;
+    }
+    return false;
+  });
+  if (at < 0) return null;
+  const ops = transaction.ops.slice();
+  ops[at] = { ...ops[at], length: longest } as Change;
+  return { ...transaction, ops };
 }
 
 /**
@@ -364,14 +394,20 @@ export function editCommand(action: EditAction | null, context: EditContext): Ed
   if (action.kind === 'transition') {
     if (context.cut) return editCommand({ kind: 'quick', transition: 'dissolve' }, context);
     const edits: Edit[] = [];
+    // Whether two clips meet where the key looks: if all of them have a transition already, there
+    // is nothing to do; if none do, the page says so, rather than do nothing without a word.
+    let met = false;
     for (const track of timeline.tracks) if (track.kind !== 'subtitle') for (let i = 1; i < track.clips.length; i++) {
       const left = track.clips[i - 1];
       const right = track.clips[i];
-      if (left.start + left.length !== right.start || track.transitions.some(t => t.left === left.id && t.right === right.id)) continue;
+      if (left.start + left.length !== right.start) continue;
       if (selected.length ? !selected.includes(left.id) && !selected.includes(right.id) : right.start !== frame || !activeTracks.includes(track.id)) continue;
+      met = true;
+      if (track.transitions.some(t => t.left === left.id && t.right === right.id)) continue;
       edits.push({ edit: 'add_transition', timeline: timeline.id, left: left.id, right: right.id, kind: track.kind === 'audio' ? 'crossfade' : 'dissolve', length: Math.max(1, Math.round(timeline.rate.num / timeline.rate.den)), align: 'center' });
     }
-    return transaction(edits);
+    if (edits.length) return transaction(edits);
+    return met ? { kind: 'none' } : { kind: 'refused', reason: selected.length ? 'no_edit_chosen' : 'no_edit_at_playhead' };
   }
   return null;
 }

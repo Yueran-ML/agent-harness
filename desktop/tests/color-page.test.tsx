@@ -419,8 +419,11 @@ describe('the Color page', () => {
     fireEvent.pointerMove(name, { pointerId: 1, clientX: 40 });
     fireEvent.pointerUp(name, { pointerId: 1, clientX: 40 });
     await settle();
-    expect(calls(bridge, 'transaction.apply').at(-1)).toEqual({ revision: 0, ops: [
-      { op: 'set_node', grade: { level: 'clip', timeline: 't1', clip: 'c1' }, id: 'n1', params: { primaries: { saturation: 60 } } }] });
+    // The last of the drag, which ends its gesture: the drag is one step to undo. It is bound to
+    // the revision that the copy has then, after the first of the drag.
+    expect(calls(bridge, 'transaction.apply').at(-1)).toEqual({ revision: 1, ops: [
+      { op: 'set_node', grade: { level: 'clip', timeline: 't1', clip: 'c1' }, id: 'n1', params: { primaries: { saturation: 60 } } }],
+    gesture: { id: expect.any(String), end: true } });
     expect(document.querySelector('[data-palette="primaries"] [data-test="changed-dot"]')).not.toBeNull();
     expect(document.querySelector('[data-palette="curves"] [data-test="changed-dot"]')).toBeNull();
   });

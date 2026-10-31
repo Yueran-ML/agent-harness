@@ -152,6 +152,9 @@ const PAGE_METHODS = new Set([
   'scopes.statistics',
   // The scopes of the Color page, each a subscription of this connection (see `keepScopes`).
   'scopes.subscribe', 'scopes.set', 'scopes.unsubscribe',
+  // The colour of a point of the picture, and the pointer on a view, for the pickers of the Color
+  // page, the line of a wipe and the windows.
+  'view.sample', 'view.pointer',
 ]);
 /** The endings of the files that the engine reads as media, offered first in the dialog. */
 const MEDIA_ENDINGS = [

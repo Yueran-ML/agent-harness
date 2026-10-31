@@ -46,10 +46,38 @@ const WAIT_MS = 2000;
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
 /**
+ * A drag that is sent as it goes (PROTOCOL.md, "Gestures"): each preview a transaction of one
+ * gesture, at most one waiting for its answer, the newest edits taking the place of those not sent
+ * yet; the commit (or Escape) the last, which ends it. The engine draws each, and keeps them all as
+ * one step to undo.
+ */
+interface Gesture {
+  id: string;
+  /** The edits to send next, the newest; null where there are none. */
+  next: Edits | null;
+  /** Whether a transaction of it waits for its answer. */
+  sending: boolean;
+  /** Whether one of it was sent, and so the engine has it as a step. */
+  started: boolean;
+  /** Whether `next` is the last: the gesture ends with it. */
+  ending: boolean;
+  /** Whether the last was sent. */
+  ended: boolean;
+  /** Whether the engine refused one: nothing more of it is sent. */
+  failed: boolean;
+  /** What each setting it changed was before it, to put back on Escape. */
+  before: Map<string, unknown>;
+}
+let gestures = 0;
+
+/**
  * The editing of the current node by the palettes, as DaVinci Resolve's controls edit it: what a
- * control is dragged to is shown at once (`preview`), and sent once, as one transaction and so one
- * step to undo, when it is let go (`commit`); Escape puts back what was there (`cancel`). Until the
- * engine tells of what was sent, the palettes show it, so that a control does not jump back.
+ * control is dragged to is shown at once (`preview`) and sent as it goes, as transactions of one
+ * gesture, so that the viewer draws it while it is dragged; when it is let go (`commit`) the last
+ * is sent, and the engine keeps the whole drag as one step to undo; Escape puts back what was
+ * there (`cancel`), and the drag then leaves no step. An edit made at once, with no drag, is one
+ * transaction. Until the engine tells of what was sent, the palettes show it, so that a control
+ * does not jump back.
  *
  * Commits go in the order they were made, each worked out from the node as the copy has it once
  * the copy has taken in the one before, and bound to that revision, as the inspector's are; so a
@@ -92,6 +120,48 @@ export function useNodeEdit(edited: EditedNode | null) {
   const baseRef = useRef(base);
   baseRef.current = base;
 
+  const gesture = useRef<Gesture | null>(null);
+  /** Send the newest edits of the gesture going on, once the one before was answered. */
+  const sendGesture = useCallback((): void => {
+    const going = gesture.current;
+    if (going === null || going.sending || going.failed || going.next === null) return;
+    const context = now.current.edited;
+    if (context === null || context.node.kind !== 'corrector') { gesture.current = null; return; }
+    // The first waits, as a commit does, for the copy to have taken in what was sent before.
+    if (!going.started && (busy.current || queue.current.length > 0 || context.revision < awaited.current)) {
+      if (!busy.current && waiting.current === null) {
+        waiting.current = setTimeout(() => { waiting.current = null; awaited.current = -Infinity; sendGesture(); }, WAIT_MS);
+      }
+      return;
+    }
+    const edits = going.next;
+    const end = going.ending;
+    going.next = null;
+    going.sending = true;
+    going.started = true;
+    going.ended = end;
+    const params = patchOf(resolve(edits, now.current.committed, context.frame));
+    // Bound to the revision of the copy, which may lag behind the gesture's own changes: the
+    // engine takes any since the gesture began, and refuses one from before another's change.
+    callEngine(context.bridge, 'transaction.apply', {
+      revision: context.revision, ops: [{ op: 'set_node', grade: context.target, id: context.node.id, params }],
+      gesture: end ? { id: going.id, end: true } : { id: going.id },
+    }).then((applied) => {
+      if (end && typeof applied?.revision === 'number') awaited.current = applied.revision;
+    }).catch((failure: unknown) => {
+      going.failed = true;
+      if (!alive.current) return;
+      setHeld(new Map());
+      now.current.edited?.onFailure(failure);
+    }).finally(() => {
+      going.sending = false;
+      // One refused stays, sending nothing more, until the drag ends.
+      if (gesture.current !== going || going.failed) return;
+      if (going.ended) gesture.current = null;
+      else sendGesture();
+    });
+  }, []);
+
   const pump = useCallback((): void => {
     if (busy.current) return;
     const context = now.current.edited;
@@ -115,17 +185,49 @@ export function useNodeEdit(edited: EditedNode | null) {
       if (!alive.current) return;
       setHeld(new Map());
       now.current.edited?.onFailure(failure);
-    }).finally(() => { busy.current = false; pump(); });
-  }, []);
-  useEffect(() => { pump(); }, [edited?.revision, pump]);
+    }).finally(() => { busy.current = false; pump(); sendGesture(); });
+  }, [sendGesture]);
+  useEffect(() => { pump(); sendGesture(); }, [edited?.revision, pump, sendGesture]);
 
   const frame = edited?.frame ?? 0;
-  /** Show edits at once, over the node as it is: a gesture going on. Each call takes the place of the one before. */
+  /**
+   * Show edits at once, over the node as it is, and send them as part of the gesture going on (one
+   * is begun): a control being dragged. Each call takes the place of the one before.
+   */
   const preview = useCallback((edits: Edits) => {
-    setLive(new Map(resolve(edits, baseRef.current, now.current.edited?.frame ?? 0)));
-  }, []);
-  /** Send edits, as one step to undo: the end of a gesture. */
+    const values = resolve(edits, baseRef.current, now.current.edited?.frame ?? 0);
+    setLive(new Map(values));
+    if (now.current.edited?.node.kind !== 'corrector' || edits.length === 0) return;
+    let going = gesture.current;
+    if (going === null || going.ended) {
+      // A drag that has changed nothing yet sends nothing (up and down on a master wheel).
+      if (values.every(([path, value]) => same(getAt(baseRef.current, path), value))) return;
+      gestures += 1;
+      going = { id: `palette-${gestures}`, next: null, sending: false, started: false, ending: false, ended: false, failed: false, before: new Map() };
+      gesture.current = going;
+    }
+    if (going.failed) return;
+    for (const [path] of edits) if (!going.before.has(path)) going.before.set(path, getAt(baseRef.current, path));
+    going.next = edits;
+    sendGesture();
+  }, [sendGesture]);
+  /** Send edits, as one step to undo: the end of a gesture, or an edit made at once. */
   const commit = useCallback((edits: Edits) => {
+    const going = gesture.current;
+    // A drag none of which was sent yet is an edit made at once.
+    if (going !== null && !going.ended && !going.started && !going.failed) gesture.current = null;
+    else if (going !== null && !going.ended) {
+      // The last of a drag: sent even where it changes nothing more, since it ends the gesture.
+      setLive(new Map());
+      if (going.failed) { gesture.current = null; return; }
+      if (now.current.edited !== null && edits.length > 0) {
+        setHeld(old => new Map([...old, ...resolve(edits, baseRef.current, now.current.edited!.frame)]));
+        going.next = edits;
+      } else going.next ??= [...going.before].map(([path, value]) => [path, { whole: value }] as const);
+      going.ending = true;
+      sendGesture();
+      return;
+    }
     if (now.current.edited === null || now.current.edited.node.kind !== 'corrector' || edits.length === 0) { setLive(new Map()); return; }
     const values = resolve(edits, baseRef.current, now.current.edited.frame);
     setLive(new Map());
@@ -135,8 +237,16 @@ export function useNodeEdit(edited: EditedNode | null) {
     queue.current.push(edits);
     pump();
   }, [pump]);
-  /** Put back what the controls showed before a gesture (Escape). */
-  const cancel = useCallback(() => setLive(new Map()), []);
+  /** Put back what the controls showed before a gesture (Escape); one that was sent ends where it began, and leaves no step. */
+  const cancel = useCallback(() => {
+    setLive(new Map());
+    const going = gesture.current;
+    if (going === null || going.ended) return;
+    if (going.failed || !going.started) { gesture.current = null; return; }
+    going.next = [...going.before].map(([path, value]) => [path, { whole: value }] as const);
+    going.ending = true;
+    sendGesture();
+  }, [sendGesture]);
 
   return {
     /** Whether there is a corrector to edit: the current node of the grade shown is one. */

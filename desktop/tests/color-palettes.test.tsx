@@ -61,7 +61,14 @@ function mount(params: unknown = {}, given: { frame?: number; center?: 'curves' 
   const view = render(tree());
   return {
     bridge, onFailure,
-    sent: () => bridge.call.mock.calls.filter(([method]) => method === 'transaction.apply').map(([, each]) => each as { revision: number; ops: Record<string, unknown>[] }),
+    // The transactions that are steps: an edit made at once, or the last of a drag (those sent as
+    // it goes are drawn, and kept with the last as one step; see node-edit-gesture.test.tsx).
+    sent: () => bridge.call.mock.calls
+      .filter(([method, each]) => {
+        const gesture = (each as { gesture?: { end?: boolean } }).gesture;
+        return method === 'transaction.apply' && (gesture === undefined || gesture.end === true);
+      })
+      .map(([, each]) => each as { revision: number; ops: Record<string, unknown>[] }),
     params: () => (node.params as Corrector),
     /** The copy takes in what the engine did, as the project's would. */
     sync: () => view.rerender(tree()),

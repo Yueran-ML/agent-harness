@@ -4296,6 +4296,7 @@ describe('the engine of the studio', () => {
       'project.get', 'transaction.apply', 'history.undo', 'history.redo', 'media.make_proxy', 'luts.list', 'view.display', 'transport.load', 'transport.play',
       'transport.pause', 'transport.seek', 'transport.step', 'transport.state', 'transport.proxies',
       'timeline.duration', 'media.thumbnail', 'media.waveform', 'scopes.statistics', 'scopes.subscribe', 'scopes.set', 'scopes.unsubscribe',
+      'view.sample', 'view.pointer',
     ];
     for (const method of allowed) {
       const params = method === 'transaction.apply' ? { ops: [{ op: 'remove_clip', timeline: 't1', id: 'c1' }] } : { frame: 3, monitor: 'source' };

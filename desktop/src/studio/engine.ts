@@ -383,6 +383,11 @@ export type ClientKind = 'desktop' | 'agent' | 'cli' | 'engine';
 /** The notification `project.changed`. */
 export interface ProjectChanged {
   revision: number;
+  /**
+   * The revision that `done` applies to, where it is not the one before `revision`: the changes of
+   * a gesture told together (PROTOCOL.md, "Gestures").
+   */
+  base?: number;
   by: ClientKind;
   made_by: ClientKind;
   done: Op[];
@@ -544,6 +549,8 @@ export interface PageMethods {
   'scopes.subscribe': ScopeAnswer;
   'scopes.set': ScopeAnswer;
   'scopes.unsubscribe': Record<string, never>;
+  'view.sample': ViewSample;
+  'view.pointer': { monitor: Monitor; on: boolean; cursor: PointerCursor | null };
 }
 export type PageMethod = keyof PageMethods;
 
@@ -568,11 +575,103 @@ export interface ScopeFrame {
   scope_id: string; view: Monitor; frame: number; width: number; height: number; rgba: string;
 }
 
+/**
+ * The gesture that a transaction is part of (`transaction.apply` with `gesture`): a control
+ * dragged, sent as it goes. The engine applies and draws each, keeps them all as one step to undo,
+ * and takes a `revision` of any since the gesture began; `end` on the last ends it (PROTOCOL.md,
+ * "Gestures").
+ */
+export interface TransactionGesture { id: string; end?: boolean }
+
+/** Where at a node of a grade a picture is taken: what goes into it, or what comes out. */
+export type NodePlace = 'input' | 'output';
+
+/**
+ * What `view.sample` is asked: a point of the picture that a monitor shows (`monitor`), or of a
+ * frame of a timeline drawn off screen (`timeline` and `frame`), in pixels of the frame from its
+ * top left corner (as `view.pointer` tells them), the mean of a square of `size` pixels about it
+ * (odd, 1 to 31); and, with `grade` and `node`, the colour that goes into the node there and
+ * comes out of it.
+ */
+export interface ViewSampleParams {
+  monitor?: Monitor;
+  timeline?: string;
+  frame?: number;
+  x: number;
+  y: number;
+  size?: number;
+  grade?: Target;
+  node?: string;
+  /** For a grade of a group: the clip whose picture is taken, rather than the one on top. */
+  clip?: string;
+}
+
+/** The answer to `view.sample`: R'G'B' of the frame as it is shown, and of the node's input and output. */
+export interface ViewSample {
+  monitor?: Monitor;
+  timeline?: string;
+  frame: number | null;
+  x: number;
+  y: number;
+  size: number;
+  width: number;
+  height: number;
+  region: { x: number; y: number; width: number; height: number };
+  rgb: [number, number, number];
+  node?: { grade: Target; node: string; input: [number, number, number]; output: [number, number, number] };
+}
+
+/** The cursor that a view that takes the pointer shows. */
+export type PointerCursor = 'arrow' | 'crosshair' | 'move' | 'resize_ew' | 'resize_ns';
+
+/**
+ * The notification `view.pointer`: what the pointer did on a view that takes it (`view.pointer`
+ * with `on`), for a tool of the page used on the picture. `x` and `y` are pixels of the frame
+ * shown (of the timeline, for the timeline monitor), null where none is drawn; a drag that goes
+ * beyond the picture goes on, `inside` false.
+ */
+export interface ViewPointer {
+  monitor: Monitor;
+  kind: 'down' | 'move' | 'up' | 'cancel';
+  button: 'left' | 'right' | 'middle' | null;
+  buttons: ('left' | 'right' | 'middle')[];
+  x: number | null;
+  y: number | null;
+  inside: boolean;
+  window: { x: number; y: number };
+  shift: boolean;
+  ctrl: boolean;
+  alt: boolean;
+}
+
+/** The pointer on a view, where an event of the engine tells it. */
+export function viewPointerOf(event: EngineEvent): ViewPointer | null {
+  return event.kind === 'notification' && event.method === 'view.pointer' && event.params !== null && typeof event.params === 'object'
+    ? event.params as ViewPointer : null;
+}
+
+/** What `scopes.statistics` is asked, besides `bins`: the frame a monitor shows, or a frame of a timeline drawn off screen; and, with `grade` and `node`, the picture at the node. */
+export interface ScopeStatisticsParams {
+  view?: Monitor;
+  timeline?: string;
+  frame?: number;
+  bins?: number;
+  grade?: Target;
+  node?: string;
+  at?: NodePlace;
+  clip?: string;
+}
+
 /** A channel's figures in `scopes.statistics`: its least, greatest and mean signal (0 to 1, or beyond). */
 export interface ChannelFigures { min: number; max: number; mean: number }
 /** The figures of the frame that a monitor shows now (PROTOCOL.md, "Scopes"): the Primaries palette's Auto Color reads them. */
 export interface ScopeStatistics {
-  view: Monitor; frame: number; width: number; height: number; samples: number;
+  /** The monitor measured; left out for a frame of a timeline drawn off screen. */
+  view?: Monitor; frame: number; width: number; height: number; samples: number;
+  /** The timeline of the frame, where it was named or measured at a node. */
+  timeline?: string;
+  /** The node at which the picture was taken. */
+  node?: { grade: Target; node: string; at: NodePlace };
   red: ChannelFigures; green: ChannelFigures; blue: ChannelFigures; luma: ChannelFigures;
   chroma: { centroid: [number, number]; spread: [number, number]; radius: number; saturation: number; hue: number };
   /** The signal below which 1%, 50% and 99% of the pixels are. */
@@ -1053,7 +1152,7 @@ const RETRY_MOST_MS = 5_000;
  *
  * It fetches the project with `project.get` whenever an engine is opened (also again, as after the
  * page was loaded again), and then applies each `project.changed` whose revision is one above its
- * own. One at or below its own is passed over; one that skips a revision, or that the copy cannot
+ * own, or whose `base` is its own (the changes of a gesture, told together). One at or below its own is passed over; one that skips a revision, or that the copy cannot
  * apply, makes it fetch the project again. What is told while it fetches is applied after the
  * fetch, from the revision that the fetch answered. A fetch that fails is tried again, a little
  * later each time, while the engine is open. It also keeps what the transport, the proxies and the
@@ -1113,7 +1212,7 @@ export class ProjectCopy {
         let project: Project = { ...got.project, next_id: got.next_id };
         for (const change of this.held) {
           if (change.revision <= revision) continue;
-          if (change.revision !== revision + 1) {
+          if ((change.base ?? change.revision - 1) !== revision) {
             this.fetchAgain = true;
             break;
           }
@@ -1234,7 +1333,8 @@ export class ProjectCopy {
     // Before the copy was fetched, or once its engine ended, a fetch to come takes it in.
     if (status !== 'connected' || revision === null || project === null) return;
     if (change.revision <= revision) return;
-    if (change.revision !== revision + 1) {
+    // A change applies to the revision before it, or to its `base` (a gesture's, told together).
+    if ((change.base ?? change.revision - 1) !== revision) {
       void this.refetch();
       return;
     }

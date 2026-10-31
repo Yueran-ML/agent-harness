@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use columbina_compose::{Compositor, Scene, SceneLayer, Source, Target, Transform};
+use columbina_compose::{Compositor, LayerColor, Scene, SceneLayer, Source, Target, Transform};
 use columbina_media::{Hardware, VideoDecoder};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -164,12 +164,14 @@ async fn timeline_cuts_dissolve_and_reverse_speed_show_the_expected_frames() {
             source: Source::Picture(Arc::new(decoder.frame_at(left).unwrap()), 0),
             transform: Transform::NONE,
             opacity: 1.0,
+            color: LayerColor::default(),
         });
         if let Some((right, opacity)) = right {
             scene.layers.push(SceneLayer {
                 source: Source::Picture(Arc::new(decoder.frame_at(right).unwrap()), 0),
                 transform: Transform::NONE,
                 opacity,
+                color: LayerColor::default(),
             });
         }
         compose.render(&scene, &target).unwrap();
@@ -188,6 +190,7 @@ async fn timeline_cuts_dissolve_and_reverse_speed_show_the_expected_frames() {
                 source: Source::Picture(Arc::new(decoder.frame_at(source).unwrap()), 0),
                 transform: Transform::NONE,
                 opacity: 1.0,
+                color: LayerColor::default(),
             }],
             ..Scene::default()
         };

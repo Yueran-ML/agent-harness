@@ -772,6 +772,7 @@ fn composed_textures_share_the_device_and_are_replaced_after_a_device_change() {
                         source: Source::Color(color),
                         transform: columbina_compose::Transform::default(),
                         opacity: 1.0,
+                        color: columbina_compose::LayerColor::default(),
                     }],
                     ..Default::default()
                 },

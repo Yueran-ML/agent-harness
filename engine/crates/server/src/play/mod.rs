@@ -8,7 +8,7 @@ mod timeline;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use columbina_compose::{Compositor, Scene, SceneLayer, Source, Target, Transform};
+use columbina_compose::{Compositor, LayerColor, Scene, SceneLayer, Source, Target, Transform};
 use columbina_model::Project;
 use serde::Deserialize;
 use serde_json::{json, value::RawValue, Value};
@@ -349,6 +349,7 @@ impl Transport {
                             source: Source::Picture(snapshot.picture, snapshot.rotation),
                             transform: Transform::NONE,
                             opacity: 1.0,
+                            color: LayerColor::default(),
                         }],
                         ..Scene::default()
                     };

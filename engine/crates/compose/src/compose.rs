@@ -1,24 +1,29 @@
 //! The compositor: the layers of a frame put together on the card into a [`Target`], a texture
 //! that a view shows (a preview) or that is made Y'CbCr and read back for an encoder (an export).
 //!
-//! Each layer, from the bottom up, is fitted to the canvas, put on it by its transform, and laid
-//! over what is there by its opacity, premultiplied: `out = layer + (1 - alpha of layer) * under`.
-//! A picture is turned from Y'CbCr into R'G'B' as it is drawn (`yuv.wgsl`, BT.709 of limited
-//! range); a title is drawn into pixels on the processor (see `text.rs`) and kept, for as long as
-//! the same text is drawn; a colour covers the canvas. The canvas is black at first. Colours are
-//! mixed as they are coded, with their gamma (the working space of phase 1 is R'G'B' of Rec.709;
-//! colour is managed in phase 2).
+//! A frame goes through the stages of colour that `color.rs` lays out, in the order of
+//! `DaVinci Resolve`. Each layer, from the bottom up, is made R'G'B' (a picture from Y'CbCr as it is drawn,
+//! `yuv.wgsl`, by its matrix and range; a title drawn into pixels on the processor, see
+//! `text.rs`, and kept for as long as the same text is drawn; a colour), goes through its input
+//! transform and its grade, is fitted to the canvas, put on it by its transform, and laid over
+//! what is there by its opacity, premultiplied: `out = layer + (1 - alpha of layer) * under`. The
+//! canvas is black at first, and of half floats ([`WORKING_FORMAT`]) for a preview and an export
+//! alike: the working space of the timeline. Colours are mixed as they are coded, with their gamma
+//! (as long as there is no colour management, the working space is R'G'B' of Rec.709). Then the
+//! timeline grade is done over the canvas, the subtitles are drawn, and the output transform is
+//! done last.
 //!
-//! Subtitles are drawn over everything, in a preview only: white with a black outline, in the
-//! middle at the bottom, letters a twentieth of the height of the canvas high.
+//! Subtitles are drawn over the timeline grade, in a preview only: white with a black outline, in
+//! the middle at the bottom, letters a twentieth of the height of the canvas high.
 
 use std::collections::HashMap;
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use columbina_media::Picture;
 use columbina_model::project::{Rgba, TextAlign};
 
+use crate::color::{self, Inputs, LayerColor, Program, Stage, TextureKind};
 use crate::geometry::{
     fit, minification, picture_stride, placement, raster_scale, samples, shown_size,
     subtitle_origin, subtitle_size, text_window, title_origin, Affine, Transform,
@@ -32,6 +37,12 @@ const LAYER_SHADER: &str = include_str!("layer.wgsl");
 
 /// The shader that makes the canvas Y'CbCr for an encoder.
 const CONVERT_SHADER: &str = include_str!("convert.wgsl");
+
+/// The shader of a stage of colour over the canvas, which, as it is written, copies it.
+const STAGE_SHADER: &str = include_str!("stage.wgsl");
+
+/// The format of the canvas, the working space of the timeline, for a preview and an export.
+pub const WORKING_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// The bytes of the uniform of `layer.wgsl`.
 const LAYER_PARAMS_SIZE: u64 = 80;
@@ -73,10 +84,16 @@ pub struct Scene {
     pub layers: Vec<SceneLayer>,
     /// The texts of the subtitles shown, a line (or more) each, from the top down.
     pub subtitles: Vec<String>,
+    /// The timeline grade: done over the canvas once the layers are laid on it, under the
+    /// subtitles.
+    pub grade: Stage,
+    /// The output transform: from the working space of the timeline into the space of the
+    /// output, done last, over the subtitles too.
+    pub output: Stage,
 }
 
 impl Default for Scene {
-    /// Nothing, on a canvas of no size, as large as its timeline.
+    /// Nothing, on a canvas of no size, as large as its timeline, its colour left as it is.
     fn default() -> Self {
         Scene {
             width: 0,
@@ -84,6 +101,8 @@ impl Default for Scene {
             units: 1.0,
             layers: Vec::new(),
             subtitles: Vec::new(),
+            grade: Stage::default(),
+            output: Stage::default(),
         }
     }
 }
@@ -116,6 +135,8 @@ pub struct SceneLayer {
     pub transform: Transform,
     /// How opaque it is, from 0 to 1.
     pub opacity: f32,
+    /// How its picture is decoded, and its input transform and grade.
+    pub color: LayerColor,
 }
 
 /// Why a frame could not be composed, or read back.
@@ -135,6 +156,10 @@ pub enum ComposeError {
     /// The picture could not be read back from the card.
     #[error("the picture cannot be read back: {0}")]
     Read(String),
+    /// A stage of colour over the canvas cannot be done: its code is not WGSL that the card
+    /// takes. (That of a layer is an error of the layer.)
+    #[error("the colour of the frame cannot be done: {0}")]
+    Color(String),
 }
 
 impl ComposeError {
@@ -146,24 +171,29 @@ impl ComposeError {
             ComposeError::Target(_) => "target",
             ComposeError::Layer { .. } => "layer",
             ComposeError::Read(_) => "read",
+            ComposeError::Color(_) => "color",
         }
     }
 }
 
 /// What a frame is composed into.
 ///
-/// A **preview** target is an `Rgba8Unorm` texture of the size of the canvas, which a view on
-/// the same card can draw ([`Target::texture`]). An **export** target composes into a canvas of
-/// half floats, which is then made NV12 (8 bits) or P010 (10 bits) on the card, and read back
-/// into a [`Picture`] with [`Target::read_picture`].
+/// Both kinds compose into a canvas of half floats ([`WORKING_FORMAT`]) of the size of the
+/// frame. A **preview** target's canvas is the picture, which a view on the same card draws into
+/// its own format ([`Target::texture`]). An **export** target's canvas is then made NV12 (8 bits)
+/// or P010 (10 bits) on the card, and read back into a [`Picture`] with [`Target::read_picture`].
 ///
 /// A target is made for a size and kept from frame to frame; one that is being read must not
 /// be rendered into at the same time (render into another, to read one while the next is drawn).
+/// The frame always ends in [`Target::texture`]: a stage of colour over the canvas draws from
+/// one canvas into a second one of the target, made as it is first needed, and the stages are
+/// begun in whichever of the two makes them end there.
 pub struct Target {
     gpu: Arc<Gpu>,
     width: u32,
     height: u32,
     texture: Arc<wgpu::Texture>,
+    work: OnceLock<wgpu::Texture>,
     export: Option<Export>,
 }
 
@@ -204,25 +234,20 @@ fn check_size(gpu: &Gpu, width: u32, height: u32) -> Result<(), ComposeError> {
 }
 
 impl Target {
-    /// A target for a preview: a texture of `width` × `height`, `Rgba8Unorm`, that can be drawn
-    /// from and copied.
+    /// A target for a preview: a texture of `width` × `height`, of half floats
+    /// ([`WORKING_FORMAT`]), that can be drawn from and copied.
     ///
     /// # Errors
     /// The size is none, or more than the card takes.
     pub fn preview(gpu: &Arc<Gpu>, width: u32, height: u32) -> Result<Target, ComposeError> {
         check_size(gpu, width, height)?;
-        let texture = canvas(
-            gpu,
-            width,
-            height,
-            wgpu::TextureFormat::Rgba8Unorm,
-            "preview",
-        );
+        let texture = canvas(gpu, width, height, WORKING_FORMAT, "preview");
         Ok(Target {
             gpu: Arc::clone(gpu),
             width,
             height,
             texture: Arc::new(texture),
+            work: OnceLock::new(),
             export: None,
         })
     }
@@ -299,27 +324,28 @@ impl Target {
             chroma_read: buffer("columbina chroma read", chroma_size, read),
             params,
         };
-        let texture = canvas(
-            gpu,
-            width,
-            height,
-            wgpu::TextureFormat::Rgba16Float,
-            "export",
-        );
+        let texture = canvas(gpu, width, height, WORKING_FORMAT, "export");
         Ok(Target {
             gpu: Arc::clone(gpu),
             width,
             height,
             texture: Arc::new(texture),
+            work: OnceLock::new(),
             export: Some(export),
         })
     }
 
-    /// The texture that layers are composed into: for a preview, the picture itself, which a
-    /// view on the same card can draw.
+    /// The texture that a frame ends in, after its output transform: for a preview, the
+    /// picture itself, of half floats, which a view on the same card can draw.
     #[must_use]
     pub fn texture(&self) -> &Arc<wgpu::Texture> {
         &self.texture
+    }
+
+    /// The second canvas, for the stages over the canvas.
+    fn work(&self) -> &wgpu::Texture {
+        self.work
+            .get_or_init(|| canvas(&self.gpu, self.width, self.height, WORKING_FORMAT, "work"))
     }
 
     #[must_use]
@@ -381,9 +407,9 @@ impl Target {
         read
     }
 
-    /// Wait for what was last rendered into a preview, and read it back: R'G'B'A, 8 bits each,
-    /// a row after another, `width × 4` bytes a row. For the tests, and for checks of what a view
-    /// shows.
+    /// Wait for what was last rendered into a preview, and read it back as a view on a window of
+    /// 8 bits shows it at its own size: R'G'B'A, 8 bits each, a row after another, `width × 4`
+    /// bytes a row. For the tests, and for checks of what a view shows.
     ///
     /// # Errors
     /// It is an export, or the card could not give the picture back (it was lost).
@@ -393,8 +419,13 @@ impl Target {
                 "an export is read back as a picture".into(),
             ));
         }
+        if let Some(why) = self.gpu.lost_reason() {
+            return Err(ComposeError::Lost(why));
+        }
         let device = self.gpu.device();
-        let row = (self.width * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        // The half floats themselves, made 8 bits here: a pass on the card into a texture of 8
+        // bits would cost the thread that plays a timeline more, and it reads a frame so.
+        let row = (self.width * 8).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("columbina preview read"),
             size: u64::from(row) * u64::from(self.height),
@@ -422,15 +453,45 @@ impl Target {
             .slice(..)
             .get_mapped_range()
             .map_err(|error| ComposeError::Read(error.to_string()))?;
-        let width = self.width as usize * 4;
-        let mut pixels = Vec::with_capacity(width * self.height as usize);
+        let width = self.width as usize * 8;
+        let mut pixels = Vec::with_capacity(self.width as usize * 4 * self.height as usize);
         for line in mapped.chunks(row as usize) {
-            pixels.extend_from_slice(&line[..width]);
+            for half in line[..width].as_chunks::<2>().0 {
+                pixels.push(eight_bits(u16::from_le_bytes(*half)));
+            }
         }
         drop(mapped);
         buffer.unmap();
         Ok(pixels)
     }
+}
+
+/// The value of a half float; 0 for one that is not a number.
+fn half_value(half: u16) -> f32 {
+    let exponent = i32::from((half >> 10) & 0x1F);
+    let fraction = f32::from(half & 0x3FF);
+    let magnitude = match exponent {
+        0 => fraction * 2.0_f32.powi(-24),
+        31 if fraction == 0.0 => f32::INFINITY,
+        31 => return 0.0,
+        _ => (1.0 + fraction / 1024.0) * 2.0_f32.powi(exponent - 15),
+    };
+    if half & 0x8000 == 0 {
+        magnitude
+    } else {
+        -magnitude
+    }
+}
+
+/// A half float as a value of 8 bits, as a texture of 8 bits takes it: 0 to 1 made 0 to 255,
+/// rounded to the nearest (half way, to the even one), what is beyond clamped.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a value from 0 to 255"
+)]
+fn eight_bits(half: u16) -> u8 {
+    (half_value(half).clamp(0.0, 1.0) * 255.0).round_ties_even() as u8
 }
 
 /// A texture that layers are composed into.
@@ -533,11 +594,29 @@ fn wait_mapped(gpu: &Gpu, buffers: &[&wgpu::Buffer]) -> Result<(), ComposeError>
     Ok(())
 }
 
-/// The kinds of pipelines that draw layers.
+/// The kinds of pipelines: those that draw layers, and that of the stages over the canvas.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Pipe {
     Yuv(Texel),
     Rgba,
+    Stage,
+}
+
+/// The colour of a layer drawn, where it does something: the number of the layer in its scene,
+/// of its program, and what the program reads.
+struct Graded {
+    layer: usize,
+    program: usize,
+    inputs: Inputs,
+}
+
+/// A layer, or the subtitles, to be drawn.
+struct Call {
+    pipe: Pipe,
+    program: Option<usize>,
+    bind: wgpu::BindGroup,
+    offset: u32,
+    colour: Option<wgpu::BindGroup>,
 }
 
 /// The shape of the planes of a picture.
@@ -619,10 +698,21 @@ pub struct Compositor {
     gpu: Arc<Gpu>,
     yuv_layouts: HashMap<Texel, wgpu::BindGroupLayout>,
     rgba_layout: wgpu::BindGroupLayout,
+    stage_layout: wgpu::BindGroupLayout,
     convert_layout: wgpu::BindGroupLayout,
-    pipelines: HashMap<(Pipe, wgpu::TextureFormat), wgpu::RenderPipeline>,
+    /// What binds what a program of colour reads (group 1), by the kinds of its textures.
+    colour_layouts: HashMap<Vec<TextureKind>, wgpu::BindGroupLayout>,
+    /// The programs of colour met, by their code; each is known by its place here.
+    programs: Vec<Program>,
+    program_numbers: HashMap<String, usize>,
+    /// The pipelines, by their kind, the format they draw into, and their program of colour.
+    pipelines: HashMap<(Pipe, wgpu::TextureFormat, Option<usize>), wgpu::RenderPipeline>,
     convert: Option<(wgpu::ComputePipeline, wgpu::ComputePipeline)>,
     sampler: wgpu::Sampler,
+    /// The sampler that operations of colour read their textures with.
+    colour_sampler: wgpu::Sampler,
+    /// The parameters of the programs of colour of a frame, each at a place of its own.
+    colour_params: wgpu::Buffer,
     /// A texel of white, for colours.
     white: wgpu::TextureView,
     /// The uniforms of the layers of a frame, one slot of `slot` bytes each.
@@ -752,6 +842,12 @@ impl Compositor {
             min_filter: wgpu::FilterMode::Linear,
             ..wgpu::SamplerDescriptor::default()
         });
+        let colour_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("columbina colour"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..wgpu::SamplerDescriptor::default()
+        });
         let white = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("columbina white"),
             size: wgpu::Extent3d {
@@ -784,10 +880,16 @@ impl Compositor {
         Compositor {
             yuv_layouts,
             rgba_layout,
+            stage_layout: stage_layout(device),
             convert_layout,
+            colour_layouts: HashMap::new(),
+            programs: Vec::new(),
+            program_numbers: HashMap::new(),
             pipelines: HashMap::new(),
             convert: None,
             sampler,
+            colour_sampler,
+            colour_params: colour_buffer(device, 4096),
             white: white.create_view(&wgpu::TextureViewDescriptor::default()),
             uniform,
             slot,
@@ -832,11 +934,25 @@ impl Compositor {
         let whole = [0.0, 0.0, canvas.0, canvas.1];
         let mut draws: Vec<Draw> = Vec::new();
         let mut uniforms: Vec<Vec<f32>> = Vec::new();
-        let laid = self.layers(scene, canvas, whole, &mut draws, &mut uniforms);
+        let mut colours: Vec<Option<Graded>> = Vec::new();
+        let laid = self.layers(
+            scene,
+            canvas,
+            whole,
+            &mut draws,
+            &mut uniforms,
+            &mut colours,
+        );
         if let Err(error) = laid {
             self.give_back(draws);
             return Err(error);
         }
+        // The stages over the canvas, where they do something.
+        let grade =
+            color::program(&[&scene.grade]).map(|(program, inputs)| (self.number(program), inputs));
+        let output = color::program(&[&scene.output])
+            .map(|(program, inputs)| (self.number(program), inputs));
+        let layered = draws.len();
         if target.export.is_none() && !scene.subtitles.is_empty() {
             let size = subtitle_size(scene.height);
             let place = placement(canvas, canvas, &Transform::NONE);
@@ -860,6 +976,7 @@ impl Compositor {
                         Some([1.0; 4]),
                     ));
                     draws.push(Draw::Texture(view));
+                    colours.push(None);
                 }
                 Ok(None) => {}
                 Err(message) => {
@@ -882,16 +999,14 @@ impl Compositor {
         };
 
         let format = target.texture.format();
-        for draw in &draws {
-            let pipe = match draw {
-                Draw::Picture { shape, .. } => Pipe::Yuv(shape.texel),
-                Draw::Texture(_) => Pipe::Rgba,
-            };
-            self.pipeline(pipe, format);
+        let made = self.pipelines_of(&draws, &colours, [&grade, &output], format);
+        if let Err(error) = made {
+            self.give_back(draws);
+            return Err(error);
         }
-        let mut binds = Vec::with_capacity(draws.len());
-        for draw in &mut draws {
-            binds.push(match draw {
+        let mut calls = Vec::with_capacity(draws.len());
+        for (draw, offset) in draws.iter_mut().zip(offsets) {
+            let (pipe, bind) = match draw {
                 Draw::Picture { shape, planes } => {
                     let bind = match &planes.bind {
                         Some((generation, bind)) if *generation == self.generation => bind.clone(),
@@ -904,46 +1019,264 @@ impl Compositor {
                     (Pipe::Yuv(shape.texel), bind)
                 }
                 Draw::Texture(view) => (Pipe::Rgba, self.texture_bind(view)),
+            };
+            calls.push(Call {
+                pipe,
+                program: None,
+                bind,
+                offset,
+                colour: None,
             });
         }
+        // What the programs of colour read: those of the layers, then of the stages.
+        let mut blocks: Vec<(usize, &Inputs)> = Vec::new();
+        for colour in colours.iter().flatten() {
+            blocks.push((colour.program, &colour.inputs));
+        }
+        for (program, inputs) in [&grade, &output].into_iter().flatten() {
+            blocks.push((*program, inputs));
+        }
+        let mut colour_binds = self.colour_binds(&blocks).into_iter();
+        for (call, colour) in calls.iter_mut().zip(&colours) {
+            if let Some(colour) = colour {
+                call.program = Some(colour.program);
+                call.colour = colour_binds.next();
+            }
+        }
+        let stage_binds: Vec<(usize, wgpu::BindGroup)> = [&grade, &output]
+            .into_iter()
+            .flatten()
+            .map(|(program, _)| *program)
+            .zip(colour_binds)
+            .collect();
+        let (grade, output) = match (&grade, &output) {
+            (Some(_), _) => (stage_binds.first(), stage_binds.get(1)),
+            (None, _) => (None, stage_binds.first()),
+        };
 
+        // The canvases drawn into, one after the other: the frame ends in the target's texture.
+        let passes = usize::from(grade.is_some()) + usize::from(output.is_some());
+        let main: &wgpu::Texture = &target.texture;
+        let work = if passes > 0 { target.work() } else { main };
+        let other = |texture: &wgpu::Texture| -> &wgpu::Texture {
+            if std::ptr::eq(texture, main) {
+                work
+            } else {
+                main
+            }
+        };
+        let mut current = if passes % 2 == 1 { other(main) } else { main };
         let device = self.gpu.device();
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("columbina compose"),
         });
-        let canvas_view = target
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("columbina layers"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &canvas_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            for ((pipe, bind), offset) in binds.iter().zip(offsets) {
-                pass.set_pipeline(&self.pipelines[&(*pipe, format)]);
-                pass.set_bind_group(0, bind, &[offset]);
-                pass.draw(0..6, 0..1);
+        // The layers, and the subtitles over them where there is no timeline grade.
+        let first = if grade.is_some() {
+            layered
+        } else {
+            calls.len()
+        };
+        self.draw_calls(&mut encoder, current, &calls[..first], format, true);
+        if let Some((program, colour)) = grade {
+            let next = other(current);
+            self.stage_pass(&mut encoder, current, next, *program, colour);
+            current = next;
+            if first < calls.len() {
+                self.draw_calls(&mut encoder, current, &calls[first..], format, false);
             }
         }
+        if let Some((program, colour)) = output {
+            let next = other(current);
+            self.stage_pass(&mut encoder, current, next, *program, colour);
+            current = next;
+        }
+        debug_assert!(std::ptr::eq(current, main), "the frame ends in the target");
         if let Some(export) = &target.export {
-            self.convert(&mut encoder, &canvas_view, export, target.height);
+            let view = main.create_view(&wgpu::TextureViewDescriptor::default());
+            self.convert(&mut encoder, &view, export, target.height);
         }
         self.gpu.queue().submit([encoder.finish()]);
         self.give_back(draws);
         self.forget_unused();
         Ok(())
+    }
+
+    /// Draw `calls` into `canvas`, cleared to black first or drawn over.
+    fn draw_calls(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        canvas: &wgpu::Texture,
+        calls: &[Call],
+        format: wgpu::TextureFormat,
+        clear: bool,
+    ) {
+        let view = canvas.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("columbina layers"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: if clear {
+                        wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+                    } else {
+                        wgpu::LoadOp::Load
+                    },
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        for call in calls {
+            pass.set_pipeline(&self.pipelines[&(call.pipe, format, call.program)]);
+            pass.set_bind_group(0, &call.bind, &[call.offset]);
+            if let Some(colour) = &call.colour {
+                pass.set_bind_group(1, colour, &[]);
+            }
+            pass.draw(0..6, 0..1);
+        }
+    }
+
+    /// Do a stage of colour over the whole of `from`, into `to`.
+    fn stage_pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        from: &wgpu::Texture,
+        to: &wgpu::Texture,
+        program: usize,
+        colour: &wgpu::BindGroup,
+    ) {
+        let device = self.gpu.device();
+        let bind = stage_bind(device, &self.stage_layout, from);
+        let view = to.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("columbina stage"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.pipelines[&(Pipe::Stage, to.format(), Some(program))]);
+        pass.set_bind_group(0, &bind, &[]);
+        pass.set_bind_group(1, colour, &[]);
+        pass.draw(0..3, 0..1);
+    }
+
+    /// The number of a program of colour, given it the first time it is met.
+    fn number(&mut self, program: Program) -> usize {
+        if let Some(number) = self.program_numbers.get(&program.code) {
+            return *number;
+        }
+        let number = self.programs.len();
+        self.program_numbers.insert(program.code.clone(), number);
+        self.programs.push(program);
+        number
+    }
+
+    /// Make the pipelines that the draws and the stages of a frame need, where they are not
+    /// made yet.
+    fn pipelines_of(
+        &mut self,
+        draws: &[Draw],
+        colours: &[Option<Graded>],
+        stages: [&Option<(usize, Inputs)>; 2],
+        format: wgpu::TextureFormat,
+    ) -> Result<(), ComposeError> {
+        for (draw, colour) in draws.iter().zip(colours) {
+            let pipe = match draw {
+                Draw::Picture { shape, .. } => Pipe::Yuv(shape.texel),
+                Draw::Texture(_) => Pipe::Rgba,
+            };
+            self.pipeline(pipe, format, colour.as_ref().map(|colour| colour.program))
+                .map_err(|message| ComposeError::Layer {
+                    layer: colour.as_ref().map_or(0, |colour| colour.layer),
+                    message,
+                })?;
+        }
+        for (program, _) in stages.into_iter().flatten() {
+            self.pipeline(Pipe::Stage, format, Some(*program))
+                .map_err(ComposeError::Color)?;
+        }
+        Ok(())
+    }
+
+    /// Write what the programs of colour of a frame read, each block at a place of its own in
+    /// the buffer of parameters, made larger if it is too small; give what binds each.
+    fn colour_binds(&mut self, blocks: &[(usize, &Inputs)]) -> Vec<wgpu::BindGroup> {
+        if blocks.is_empty() {
+            return Vec::new();
+        }
+        let device = self.gpu.device();
+        let align = device.limits().min_storage_buffer_offset_alignment as usize;
+        let mut bytes: Vec<u8> = Vec::new();
+        let mut spans = Vec::with_capacity(blocks.len());
+        for (_, inputs) in blocks {
+            let start = bytes.len();
+            for value in inputs.params.iter().flatten() {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            spans.push((start as u64, (bytes.len() - start) as u64));
+            bytes.resize(bytes.len().next_multiple_of(align), 0);
+        }
+        if self.colour_params.size() < bytes.len() as u64 {
+            self.colour_params = colour_buffer(device, (bytes.len() as u64).next_power_of_two());
+        }
+        self.gpu
+            .queue()
+            .write_buffer(&self.colour_params, 0, &bytes);
+        for (program, _) in blocks {
+            let kinds = self.programs[*program].textures.clone();
+            if !self.colour_layouts.contains_key(&kinds) {
+                let layout = colour_layout(self.gpu.device(), &kinds);
+                self.colour_layouts.insert(kinds, layout);
+            }
+        }
+        let device = self.gpu.device();
+        blocks
+            .iter()
+            .zip(spans)
+            .map(|((program, inputs), (offset, size))| {
+                let layout = &self.colour_layouts[&self.programs[*program].textures];
+                let mut entries = vec![
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &self.colour_params,
+                            offset,
+                            size: wgpu::BufferSize::new(size),
+                        }),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.colour_sampler),
+                    },
+                ];
+                for (number, view) in (color::FIRST_TEXTURE_BINDING..).zip(&inputs.textures) {
+                    entries.push(wgpu::BindGroupEntry {
+                        binding: number,
+                        resource: wgpu::BindingResource::TextureView(view),
+                    });
+                }
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("columbina colour"),
+                    layout,
+                    entries: &entries,
+                })
+            })
+            .collect()
     }
 
     /// Write the uniforms of the layers of a frame, a slot each, into the buffer of uniforms,
@@ -981,6 +1314,7 @@ impl Compositor {
         whole: [f64; 4],
         draws: &mut Vec<Draw>,
         uniforms: &mut Vec<Vec<f32>>,
+        colours: &mut Vec<Option<Graded>>,
     ) -> Result<(), ComposeError> {
         for (index, layer) in scene.layers.iter().enumerate() {
             let opacity = if layer.opacity.is_nan() {
@@ -996,6 +1330,14 @@ impl Compositor {
                 layer: index,
                 message,
             };
+            // Its input transform and its grade, after it is decoded.
+            let graded = color::program(&[&layer.color.input, &layer.color.grade]).map(
+                |(program, inputs)| Graded {
+                    layer: index,
+                    program: self.number(program),
+                    inputs,
+                },
+            );
             match &layer.source {
                 Source::Picture(picture, rotation) => {
                     let ten = yuv::check(picture).map_err(failed)?;
@@ -1022,12 +1364,14 @@ impl Compositor {
                     let uploaded =
                         yuv::upload(self.gpu.queue(), &planes.luma, &planes.chroma, picture);
                     draws.push(Draw::Picture { shape, planes });
+                    colours.push(graded);
                     uploaded.map_err(failed)?;
                     let mut values = yuv::picture_params(
                         [0.0; 4],
                         (picture.width, picture.height),
                         ten,
                         shape.texel,
+                        layer.color.coding,
                         *rotation,
                     )
                     .to_vec();
@@ -1053,6 +1397,7 @@ impl Compositor {
                         Some(rgba.map(|channel| channel.clamp(0.0, 1.0))),
                     ));
                     draws.push(Draw::Texture(self.white.clone()));
+                    colours.push(graded);
                 }
                 Source::Title(title) => {
                     let style = &title.style;
@@ -1086,6 +1431,7 @@ impl Compositor {
                             Some([1.0; 4]),
                         ));
                         draws.push(Draw::Texture(view));
+                        colours.push(graded);
                     }
                 }
             }
@@ -1265,51 +1611,58 @@ impl Compositor {
         }
     }
 
-    /// The pipeline of `pipe` that draws into targets of `format`, made if it is not yet.
-    fn pipeline(&mut self, pipe: Pipe, format: wgpu::TextureFormat) {
-        if self.pipelines.contains_key(&(pipe, format)) {
-            return;
+    /// The pipeline of `pipe` that draws into targets of `format`, with a program of colour or
+    /// none, made if it is not yet.
+    ///
+    /// # Errors
+    /// The code of the program is not WGSL that the card takes, or reads what is not bound.
+    fn pipeline(
+        &mut self,
+        pipe: Pipe,
+        format: wgpu::TextureFormat,
+        program: Option<usize>,
+    ) -> Result<(), String> {
+        if self.pipelines.contains_key(&(pipe, format, program)) {
+            return Ok(());
+        }
+        if let Some(number) = program {
+            let kinds = &self.programs[number].textures;
+            if !self.colour_layouts.contains_key(kinds) {
+                let layout = colour_layout(self.gpu.device(), kinds);
+                self.colour_layouts.insert(kinds.clone(), layout);
+            }
         }
         let device = self.gpu.device();
-        let (source, layout) = match pipe {
+        let (shader, layout) = match pipe {
             Pipe::Yuv(texel) => (texel.shader(), &self.yuv_layouts[&texel]),
             Pipe::Rgba => (LAYER_SHADER.to_owned(), &self.rgba_layout),
+            Pipe::Stage => (STAGE_SHADER.to_owned(), &self.stage_layout),
         };
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("columbina layer"),
-            source: wgpu::ShaderSource::Wgsl(source.into()),
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("columbina layer"),
-            bind_group_layouts: &[Some(layout)],
-            immediate_size: 0,
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("columbina layer"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &module,
-                entry_point: Some("vs_layer"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[],
-            },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: Some("fs_layer"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
-        self.pipelines.insert((pipe, format), pipeline);
+        let (source, colour) = match program {
+            Some(number) => {
+                let program = &self.programs[number];
+                (
+                    color::with_program(&shader, program),
+                    Some(&self.colour_layouts[&program.textures]),
+                )
+            }
+            None => (shader, None),
+        };
+        // The code of a program is not the compositor's: what is wrong with it is caught here,
+        // and not left to the card's handler of errors.
+        let scope = program.map(|_| device.push_error_scope(wgpu::ErrorFilter::Validation));
+        let pipeline = if pipe == Pipe::Stage {
+            stage_pipeline(device, &source, layout, colour, format)
+        } else {
+            layer_pipeline(device, &source, layout, colour, format)
+        };
+        if let Some(scope) = scope {
+            if let Some(error) = pollster::block_on(scope.pop()) {
+                return Err(format!("its colour cannot be done: {error}"));
+            }
+        }
+        self.pipelines.insert((pipe, format, program), pipeline);
+        Ok(())
     }
 
     /// What binds the planes of a picture, and the uniform.
@@ -1444,6 +1797,180 @@ impl Compositor {
     }
 }
 
+/// A pipeline that draws layers of the shader `source` into targets of `format`, laid over what
+/// is there, premultiplied; with what a program of colour reads as group 1, where it has one.
+fn layer_pipeline(
+    device: &wgpu::Device,
+    source: &str,
+    layout: &wgpu::BindGroupLayout,
+    colour: Option<&wgpu::BindGroupLayout>,
+    format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("columbina layer"),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("columbina layer"),
+        bind_group_layouts: &[Some(layout), colour],
+        immediate_size: 0,
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("columbina layer"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some("vs_layer"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some("fs_layer"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+/// A pipeline of a stage over the canvas (`stage.wgsl`, with its program of colour put in, or as
+/// it is written, a copy) that writes into a texture of `format`.
+fn stage_pipeline(
+    device: &wgpu::Device,
+    source: &str,
+    layout: &wgpu::BindGroupLayout,
+    colour: Option<&wgpu::BindGroupLayout>,
+    format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("columbina stage"),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("columbina stage"),
+        bind_group_layouts: &[Some(layout), colour],
+        immediate_size: 0,
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("columbina stage"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some("vs"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some("fs"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+/// What binds the canvas that a stage reads.
+fn stage_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("columbina stage"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        }],
+    })
+}
+
+/// The canvas that a stage reads, bound.
+fn stage_bind(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    canvas: &wgpu::Texture,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("columbina stage"),
+        layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(
+                &canvas.create_view(&wgpu::TextureViewDescriptor::default()),
+            ),
+        }],
+    })
+}
+
+/// What binds what a program of colour reads, with textures of `kinds` (group 1): its
+/// parameters, a sampler, and its textures, in the order of `color::program`.
+fn colour_layout(device: &wgpu::Device, kinds: &[TextureKind]) -> wgpu::BindGroupLayout {
+    let mut entries = vec![
+        wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: wgpu::BufferSize::new(16),
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 1,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        },
+    ];
+    for (binding, kind) in (color::FIRST_TEXTURE_BINDING..).zip(kinds) {
+        entries.push(wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: kind.dimension(),
+                multisampled: false,
+            },
+            count: None,
+        });
+    }
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("columbina colour"),
+        entries: &entries,
+    })
+}
+
+/// A buffer of the parameters of programs of colour, of `size` bytes.
+fn colour_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("columbina colour"),
+        size,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
 /// A buffer of uniforms of `size` bytes.
 fn uniform_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
@@ -1552,7 +2079,7 @@ mod tests {
         );
         assert_eq!(u64::try_from(tinted.len() * 4).unwrap(), LAYER_PARAMS_SIZE);
         assert_eq!(
-            u64::try_from(values.len() * 4 + 64).unwrap(),
+            u64::try_from((values.len() + yuv::PICTURE_PARAMS) * 4).unwrap(),
             yuv::PARAMS_SIZE
         );
         assert_eq!(tinted[13], 2.0);
@@ -1594,6 +2121,28 @@ mod tests {
         let place = placement(canvas, canvas, &Transform::NONE);
         let put = compositor.put_text(&spec, 1.0, |_| (100.0, 100.0), &place, canvas);
         assert!(matches!(put, Put::Drawn(..)), "drawn smaller");
+    }
+
+    #[test]
+    fn half_floats_are_read_as_8_bits_rounded_and_clamped() {
+        // 0, 1, 0.5 (127.5, to the even 128), 0.25, 2, -1, a subnormal, infinity, not a number.
+        let halves = [
+            0x0000, 0x3C00, 0x3800, 0x3400, 0x4000, 0xBC00, 0x0001, 0x7C00, 0x7E00,
+        ];
+        assert_eq!(halves.map(eight_bits), [0, 255, 128, 64, 255, 0, 0, 255, 0]);
+        // Every code of 8 bits, as the canvas holds it (the nearest half float), comes back as
+        // it was.
+        for code in 0..=255_u8 {
+            let value = f32::from(code) / 255.0;
+            let nearest = (0..=0x3C00_u16)
+                .min_by(|a, b| {
+                    (half_value(*a) - value)
+                        .abs()
+                        .total_cmp(&(half_value(*b) - value).abs())
+                })
+                .unwrap();
+            assert_eq!(eight_bits(nearest), code, "{code}");
+        }
     }
 
     #[test]

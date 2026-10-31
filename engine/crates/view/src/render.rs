@@ -6,6 +6,7 @@
 //! for, a window's or one that the tests read back.
 
 use columbina_compose::yuv::{self, Texel};
+use columbina_compose::YuvCoding;
 use columbina_media::Picture;
 
 pub use columbina_compose::quarter_turns;
@@ -154,17 +155,23 @@ impl Painter {
         Ok(())
     }
 
-    /// Bind a composed RGBA frame on this same device, without a CPU readback or YUV roundtrip.
+    /// Bind a composed RGBA frame on this same device, without a CPU readback or YUV roundtrip:
+    /// one of half floats, as the compositor makes them ([`columbina_compose::WORKING_FORMAT`]),
+    /// or of 8 bits. It is drawn into the format of the target, values beyond 0..1 clamped.
     pub(crate) fn use_texture(&mut self, texture: &wgpu::Texture) -> Result<(), String> {
-        if texture.format() != wgpu::TextureFormat::Rgba8Unorm
-            || texture.dimension() != wgpu::TextureDimension::D2
+        if !matches!(
+            texture.format(),
+            wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba8Unorm
+        ) || texture.dimension() != wgpu::TextureDimension::D2
             || texture.depth_or_array_layers() != 1
             || texture.sample_count() != 1
             || !texture
                 .usage()
                 .contains(wgpu::TextureUsages::TEXTURE_BINDING)
         {
-            return Err("a composed frame must be a sampleable 2D Rgba8Unorm texture".into());
+            return Err(
+                "a composed frame must be a sampleable 2D Rgba16Float or Rgba8Unorm texture".into(),
+            );
         }
         let pipeline = self
             .rgb_pipeline
@@ -338,11 +345,14 @@ fn params(planes: &Planes, placement: Placement, rotation: i16) -> Vec<u8> {
         placement.width as f32,
         placement.height as f32,
     ];
+    // A picture shown by itself (the source monitor) is taken as BT.709 of limited range, as
+    // in phase 1; the timeline monitor's pictures are decoded by the compositor, each by its own.
     let values = yuv::picture_params(
         dest,
         (planes.width, planes.height),
         planes.ten,
         planes.texel,
+        YuvCoding::default(),
         rotation,
     );
     let mut bytes: Vec<u8> = values
@@ -685,6 +695,45 @@ mod tests {
         assert!(draw(&painter, &gpu, (2, 2), 0)
             .iter()
             .all(|pixel| *pixel == [255, 255, 255]));
+    }
+
+    #[test]
+    fn a_composed_frame_of_half_floats_is_drawn_into_8_bits_rounded_and_clamped() {
+        let Some(gpu) = gpu() else { return };
+        let mut painter = Painter::new(&gpu.device, &gpu.queue, wgpu::TextureFormat::Bgra8Unorm);
+        let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: 2,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        // Half floats: 0.25, 0.375, 0.75, 1; and 0.125, 0, 2 (beyond white), 1. None is half way
+        // between two codes, which a card rounds either way.
+        let halves: [u16; 8] = [
+            0x3400, 0x3600, 0x3A00, 0x3C00, 0x3000, 0x0000, 0x4000, 0x3C00,
+        ];
+        let bytes: Vec<u8> = halves.iter().flat_map(|half| half.to_le_bytes()).collect();
+        gpu.queue.write_texture(
+            texture.as_image_copy(),
+            &bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(16),
+                rows_per_image: Some(1),
+            },
+            texture.size(),
+        );
+        painter.use_texture(&texture).unwrap();
+        let pixels = draw(&painter, &gpu, (2, 1), 0);
+        assert_eq!(pixels, [[64, 96, 191], [32, 0, 255]]);
     }
 
     /// The pixels drawn into a target of `size`, as R'G'B', a row after another.

@@ -1,5 +1,6 @@
-// A picture of Y'CbCr 4:2:0 in two planes, drawn as R'G'B': BT.709, limited range, the gamma of
-// the file kept (the target is not sRGB, so nothing is encoded twice).
+// A picture of Y'CbCr 4:2:0 in two planes, drawn as R'G'B': by the matrix and range of the
+// picture (BT.601, BT.709 or BT.2020, limited or full, from the uniform), the gamma of the file
+// kept (the target is not sRGB, so nothing is encoded twice).
 //
 // Two ways of drawing share it:
 // - the view's (`vs`, `fs`): the picture fills the viewport, the rectangle of the target where it
@@ -27,6 +28,9 @@ struct Params {
     luma: vec4<f32>,
     // The code of no colour and the range of codes of chroma.
     chroma: vec4<f32>,
+    // What Cr and Cb, from -0.5 to 0.5, are multiplied by: R' from Cr, G' from Cb and from Cr
+    // (taken away), B' from Cb (`YuvMatrix::coefficients`).
+    matrix: vec4<f32>,
     // The compositor's: a point (x, y) of the frame, in its pixels, is put at
     // (row0.x * x + row0.y * y + row0.z, row1.x * x + row1.y * y + row1.z) of the canvas, whose
     // width is row0.w and height row1.w.
@@ -115,16 +119,26 @@ fn ycc_at(shown: vec2<f32>) -> vec3<f32> {
     return vec3<f32>(y, c.x, c.y);
 }
 
-// R'G'B' of Y', Cb and Cr: BT.709, Kr = 0.2126, Kb = 0.0722.
+// R'G'B' of Y', Cb and Cr, by the matrix of the picture; from 0 to 1, as in phase 1.
 fn rgb_of(ycc: vec3<f32>) -> vec3<f32> {
     let y = ycc.x;
     let cb = ycc.y;
     let cr = ycc.z;
-    let r = y + 1.5748 * cr;
-    let g = y - 0.187324 * cb - 0.468124 * cr;
-    let b = y + 1.8556 * cb;
+    let r = y + params.matrix.x * cr;
+    let g = y - params.matrix.y * cb - params.matrix.z * cr;
+    let b = y + params.matrix.w * cb;
     return clamp(vec3<f32>(r, g, b), vec3<f32>(0.0), vec3<f32>(1.0));
 }
+
+// The compositor's: the input transform and the grade of the layer, on R'G'B' once it is
+// decoded (`color.rs`). The lines from "colour: begin" to "colour: end" are put in place by
+// those of a layer that has them; as they are written, they do nothing.
+// colour: begin
+const colour_identity: bool = true;
+fn colour(rgb: vec3<f32>) -> vec3<f32> {
+    return rgb;
+}
+// colour: end
 
 // R'G'B' of the picture at `shown`.
 fn rgb_at(shown: vec2<f32>) -> vec3<f32> {
@@ -221,5 +235,5 @@ fn fs_layer(layer: Layer) -> @location(0) vec4<f32> {
         ycc = sum / weights;
     }
     let alpha = coverage(layer.local) * params.extra.x;
-    return vec4<f32>(rgb_of(ycc) * alpha, alpha);
+    return vec4<f32>(colour(rgb_of(ycc)) * alpha, alpha);
 }

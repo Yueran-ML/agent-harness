@@ -6,7 +6,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{mpsc, Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use columbina_compose::{Compositor, Scene, SceneLayer, Source as LayerSource, Target, Text};
+use columbina_compose::{
+    Compositor, LayerColor, Scene, SceneLayer, Source as LayerSource, Target, Text,
+};
 use columbina_media::Hardware;
 use columbina_model::project::TrackKind;
 use columbina_model::{resolve, Facts, Identity, Media, Project, Proxy};
@@ -853,10 +855,17 @@ impl Worker {
         let mut proxy = false;
         let mut previous = BTreeMap::new();
         for layer in resolve::video_at(timeline, &project, frame) {
-            let source = match layer.content {
-                resolve::Content::Color { rgba } => LayerSource::color(rgba),
-                resolve::Content::Title { text, style } => LayerSource::Title(Text { text, style }),
+            let (source, color) = match layer.content {
+                resolve::Content::Color { rgba } => {
+                    (LayerSource::color(rgba), LayerColor::default())
+                }
+                resolve::Content::Title { text, style } => (
+                    LayerSource::Title(Text { text, style }),
+                    LayerColor::default(),
+                ),
                 resolve::Content::Media { media, tick } => {
+                    let color = media_of(&project, &media)
+                        .map_or_else(LayerColor::default, crate::render::layer_color);
                     let want = Want {
                         clip: layer.clip.clone(),
                         media,
@@ -900,13 +909,14 @@ impl Worker {
                     original |= read.source == Source::Original;
                     proxy |= read.source == Source::Proxy;
                     previous.insert((layer.track, layer.clip), read.clone());
-                    LayerSource::Picture(read.picture, read.rotation)
+                    (LayerSource::Picture(read.picture, read.rotation), color)
                 }
             };
             scene.layers.push(SceneLayer {
                 source,
                 transform: layer.transform.into(),
                 opacity: layer.opacity,
+                color,
             });
         }
         // Keep only the layers being shown (at most two per track), not a full-resolution
@@ -1116,6 +1126,7 @@ mod tests {
                 source: LayerSource::color(Rgba(rgba)),
                 transform: Transform::NONE,
                 opacity: 1.0,
+                color: LayerColor::default(),
             }],
             ..Scene::default()
         }

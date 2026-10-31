@@ -3,7 +3,9 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use columbina_compose::{Compositor, Scene, SceneLayer, Source, Target, Text, Transform};
+use columbina_compose::{
+    Compositor, LayerColor, Scene, SceneLayer, Source, Target, Text, Transform,
+};
 use columbina_media::{AudioDecoder, Codec, Hardware, VideoDecoder};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -471,6 +473,7 @@ fn reference(frame: i64, decoder: &mut VideoDecoder, style: &Value) -> Scene {
         source: Source::Picture(Arc::new(picture), 0),
         transform: Transform::NONE,
         opacity,
+        color: LayerColor::default(),
     };
     let mut scene = Scene {
         width: 320,
@@ -493,6 +496,7 @@ fn reference(frame: i64, decoder: &mut VideoDecoder, style: &Value) -> Scene {
             }),
             transform: Transform::NONE,
             opacity: 1.0,
+            color: LayerColor::default(),
         });
     }
     scene
@@ -646,6 +650,7 @@ async fn render_h264_matches_preview_original_frames_dissolve_titles_and_stereo_
                         source: Source::Picture(Arc::new(picture), 0),
                         transform: Transform::NONE,
                         opacity: 1.0,
+                        color: LayerColor::default(),
                     }],
                     ..Scene::default()
                 },

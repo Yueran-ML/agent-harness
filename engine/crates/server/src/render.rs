@@ -11,12 +11,15 @@ use std::sync::{mpsc, Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use columbina_compose::{Compositor, Scene, SceneLayer, Source, Target, Text};
+use columbina_compose::{
+    ColorRange, Compositor, LayerColor, Scene, SceneLayer, Source, Target, Text, YuvCoding,
+    YuvMatrix,
+};
 use columbina_media::{
     AudioFormat, AudioSettings, Codec, Hardware, MediaError, Picture, Quality, VideoSettings,
     Writer,
 };
-use columbina_model::{resolve, Project, TrackKind};
+use columbina_model::{resolve, Media, Project, TrackKind};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -641,9 +644,11 @@ fn scene(
         ..Scene::default()
     };
     for layer in resolve::video_at(timeline, project, frame) {
-        let source = match layer.content {
-            resolve::Content::Color { rgba } => Source::color(rgba),
-            resolve::Content::Title { text, style } => Source::Title(Text { text, style }),
+        let (source, color) = match layer.content {
+            resolve::Content::Color { rgba } => (Source::color(rgba), LayerColor::default()),
+            resolve::Content::Title { text, style } => {
+                (Source::Title(Text { text, style }), LayerColor::default())
+            }
             resolve::Content::Media { media, tick } => {
                 let media = project
                     .media
@@ -654,16 +659,50 @@ fn scene(
                     .picture(media, &layer.clip, tick, false, false)
                     .map_err(|error| error.to_string())?
                     .ok_or("the export decoder pool is busy")?;
-                Source::Picture(read.picture, read.rotation)
+                (
+                    Source::Picture(read.picture, read.rotation),
+                    layer_color(media),
+                )
             }
         };
         scene.layers.push(SceneLayer {
             source,
             transform: layer.transform.into(),
             opacity: layer.opacity,
+            color,
         });
     }
     Ok(scene)
+}
+
+/// The colour of a layer of a clip of `media`, for the preview and the export alike: how its
+/// pictures are made R'G'B', and its input transform and grade (none yet).
+///
+/// The matrix is the one that the file says, or that players take where it says none
+/// (`YuvMatrix::of`): the pictures that the readers give ([`columbina_media::Picture`]) keep
+/// the matrix of the file, but for one stored as R'G'B' (a still), which libav makes Y'CbCr by
+/// BT.601. Their range is taken as limited, whatever the file says.
+// TODO(T8 → readers of `NativePicture`): libav makes the codes of a picture of full range
+// limited as it converts it on the processor, and keeps them full on the card (CUDA), so the
+// range of a `Picture` is not known from the file. Read `NativePicture`s, which keep the codes
+// of the file on both paths, and take the coding of each (`YuvCoding::of_native`) instead.
+pub(crate) fn layer_color(media: &Media) -> LayerColor {
+    let Some(video) = &media.facts.video else {
+        return LayerColor::default();
+    };
+    let color = video.color.clone().unwrap_or_default();
+    let matrix = if color.matrix == 0 {
+        YuvMatrix::Bt601
+    } else {
+        YuvMatrix::of(&color, video.width, video.height)
+    };
+    LayerColor {
+        coding: YuvCoding {
+            matrix,
+            range: ColorRange::Limited,
+        },
+        ..LayerColor::default()
+    }
 }
 
 #[cfg(test)]

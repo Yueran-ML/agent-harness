@@ -1,6 +1,11 @@
 //! Frames of phase 1 kept as they were composed before colour came in (phase 2 split composing
-//! into stages, each of which changes nothing yet): the same scenes are composed now, and must
-//! be within 1 of 255 of what was kept, a preview pixel by pixel and an export code by code.
+//! into stages, each of which changes nothing yet): the same scenes are composed now, and an
+//! export must be within 1 of 255 of what was kept, code by code.
+//!
+//! A preview of phase 1 laid its layers over each other in 8 bits, rounding after each; now it
+//! is composed in half floats, as an export was and is, and rounded once. Where layers that are
+//! partly opaque lie over each other, a pixel of a preview may so be 2 of 255 off what was kept
+//! (closer to the export); a few are, and all others are within 1.
 //!
 //! The frames were written by the compositor of phase 1 with `COLUMBINA_WRITE_GOLDEN=1`, on the
 //! card of the machine that wrote them (an NVIDIA one, by Direct3D 12). No text is drawn: what
@@ -9,7 +14,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use columbina_compose::{gpu_for_tests, Compositor, Scene, SceneLayer, Source, Target, Transform};
+use columbina_compose::{
+    gpu_for_tests, Compositor, LayerColor, Scene, SceneLayer, Source, Target, Transform,
+};
 use columbina_media::Picture;
 
 /// The codes of BT.709 of limited range of R'G'B' from 0 to 1.
@@ -80,6 +87,7 @@ fn layer(source: Source, transform: Transform, opacity: f32) -> SceneLayer {
         source,
         transform,
         opacity,
+        color: LayerColor::default(),
     }
 }
 
@@ -163,7 +171,8 @@ fn colours() -> Scene {
         let level = f64::from(x) / 127.0;
         codes([level, level * 0.5, 1.0 - level], true)
     }));
-    let colour = |rgba: [f32; 4], opacity: f32| layer(Source::Color(rgba), Transform::NONE, opacity);
+    let colour =
+        |rgba: [f32; 4], opacity: f32| layer(Source::Color(rgba), Transform::NONE, opacity);
     Scene {
         width: 128,
         height: 72,
@@ -186,13 +195,14 @@ fn path(name: &str) -> PathBuf {
 }
 
 /// Compare `bytes` with the frame kept as `name`, as values of `size` bytes (1, or 2 little-endian),
-/// within `most`; or keep them, with `COLUMBINA_WRITE_GOLDEN=1`. Gives the largest difference.
-fn against(name: &str, bytes: &[u8], size: usize, most: u16) -> u16 {
+/// within `most`; or keep them, with `COLUMBINA_WRITE_GOLDEN=1`. Gives the largest difference,
+/// and how many values are off by more than `most / 2`.
+fn against(name: &str, bytes: &[u8], size: usize, most: u16) -> (u16, usize) {
     let file = path(name);
     if std::env::var("COLUMBINA_WRITE_GOLDEN").as_deref() == Ok("1") {
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(&file, bytes).unwrap();
-        return 0;
+        return (0, 0);
     }
     let kept = std::fs::read(&file).unwrap_or_else(|error| panic!("{}: {error}", file.display()));
     assert_eq!(kept.len(), bytes.len(), "{name}: of another length");
@@ -203,14 +213,15 @@ fn against(name: &str, bytes: &[u8], size: usize, most: u16) -> u16 {
             u16::from(data[at])
         }
     };
-    let mut worst = 0;
+    let (mut worst, mut far) = (0, 0);
     for at in (0..bytes.len()).step_by(size) {
         let (was, is) = (value(&kept, at), value(bytes, at));
         let off = was.abs_diff(is);
         assert!(off <= most, "{name}: at byte {at}, {is}, not {was}");
         worst = worst.max(off);
+        far += usize::from(off > most / 2);
     }
-    worst
+    (worst, far)
 }
 
 #[test]
@@ -221,8 +232,10 @@ fn frames_composed_by_stages_that_change_nothing_are_those_of_phase_1() {
         let preview = Target::preview(&gpu, scene.width, scene.height).unwrap();
         compositor.render(&scene, &preview).unwrap();
         let rgba = preview.read_rgba().unwrap();
-        let worst = against(&format!("{name}.rgba"), &rgba, 1, 1);
-        eprintln!("{name}, a preview: at most {worst} of 255 off");
+        let (worst, two) = against(&format!("{name}.rgba"), &rgba, 1, 2);
+        eprintln!("{name}, a preview: at most {worst} of 255 off, {two} values 2 off");
+        // 65 of 36864 values of the pictures, on the card that wrote them; none of the colours.
+        assert!(two * 200 <= rgba.len(), "{name}: {two} values 2 off");
         for bits in [8, 10] {
             let export = Target::export(&gpu, scene.width, scene.height, bits).unwrap();
             compositor.render(&scene, &export).unwrap();
@@ -231,8 +244,8 @@ fn frames_composed_by_stages_that_change_nothing_are_those_of_phase_1() {
             // P010 keeps its 10 bits high in 16: a code of 10 bits is 64 of them, and 1 of 255
             // is 4 codes.
             let (size, most) = if bits == 8 { (1, 1) } else { (2, 4 << 6) };
-            let luma = against(&format!("{name}.{bits}.luma"), &read.luma, size, most);
-            let chroma = against(&format!("{name}.{bits}.chroma"), &read.chroma, size, most);
+            let (luma, _) = against(&format!("{name}.{bits}.luma"), &read.luma, size, most);
+            let (chroma, _) = against(&format!("{name}.{bits}.chroma"), &read.chroma, size, most);
             eprintln!(
                 "{name}, an export of {bits} bits: luma at most {luma}, chroma at most {chroma} \
                  off"

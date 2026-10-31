@@ -6,8 +6,8 @@ use std::time::Instant;
 
 use columbina_compose::geometry::picture_stride;
 use columbina_compose::{
-    gpu_for_tests, ComposeError, Compositor, Gpu, Preference, Scene, SceneLayer, Source, Target,
-    Text, Transform,
+    gpu_for_tests, ComposeError, Compositor, Gpu, LayerColor, Preference, Scene, SceneLayer,
+    Source, Target, Text, Transform, WORKING_FORMAT,
 };
 use columbina_media::Picture;
 use columbina_model::project::{Rgba, TextAlign, TitleStyle};
@@ -120,6 +120,7 @@ fn layer(source: Source, transform: Transform, opacity: f32) -> SceneLayer {
         source,
         transform,
         opacity,
+        color: LayerColor::default(),
     }
 }
 
@@ -668,7 +669,7 @@ fn the_texture_of_a_preview_is_one_that_a_view_on_the_same_card_can_draw() {
         )
         .unwrap();
     let texture = Arc::clone(first.texture());
-    assert_eq!(texture.format(), wgpu::TextureFormat::Rgba8Unorm);
+    assert_eq!(texture.format(), WORKING_FORMAT);
     assert!(texture
         .usage()
         .contains(wgpu::TextureUsages::TEXTURE_BINDING));

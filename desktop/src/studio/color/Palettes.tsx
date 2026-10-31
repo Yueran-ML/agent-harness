@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { keyOf } from '../../app/keys';
 import { useWords } from '../../app/locale';
 import { callEngine } from '../engine';
@@ -31,6 +31,8 @@ interface Filled {
   onAuto: () => void; status: string | null;
   /** The palettes in which the current node is adjusted, which show an orange dot (p. 2976). */
   changed: ReadonlySet<Palette>;
+  /** The docked video scopes (T19), shown where the Scopes panel is chosen. */
+  scopes?: ReactNode;
 }
 
 /** One group of palettes: its buttons along its top, and the palette chosen beneath them. */
@@ -51,6 +53,7 @@ function PaletteGroup<T extends Palette>({ name, palettes, chosen, onChoose, sid
   };
   const { edit } = filled;
   const body = (() => {
+    if (chosen === 'scopes' && filled.scopes !== undefined) return filled.scopes;
     if (chosen !== 'primaries' && chosen !== 'curves') return <p className="caption color-empty">{words.hint.studio.colorPage.palette}</p>;
     if (!edit.enabled) return <p className="caption color-empty" data-test="no-corrector">{words.hint.studio.colorPage.noCorrector}</p>;
     return chosen === 'primaries'
@@ -109,7 +112,7 @@ function useAutoColor(edited: EditedNode | null, edit: NodeEdit) {
  * corrector; their buttons carry an orange dot where that node is adjusted in them. Alt+Z switches
  * the Primaries palette between its Wheels and Log modes (p. 3068), and Alt+Shift+C is Auto Color.
  */
-export function Palettes({ merged, left, center, last, right, onLeft, onCenter, onRight, edited = null }: {
+export function Palettes({ merged, left, center, last, right, onLeft, onCenter, onRight, edited = null, scopes }: {
   merged: boolean;
   left: LeftPalette; center: CenterPalette;
   /** Which of the two groups was chosen from last. */
@@ -118,6 +121,8 @@ export function Palettes({ merged, left, center, last, right, onLeft, onCenter, 
   onLeft: (palette: LeftPalette) => void; onCenter: (palette: CenterPalette) => void; onRight: (panel: RightPanel) => void;
   /** The current node and where it is, or null where there is none. */
   edited?: EditedNode | null;
+  /** The docked video scopes, for the Scopes panel. */
+  scopes?: ReactNode;
 }) {
   const labels = useWords().label.studio.colorPage;
   const both: readonly (LeftPalette | CenterPalette)[] = [...LEFT_PALETTES, ...CENTER_PALETTES];
@@ -155,7 +160,7 @@ export function Palettes({ merged, left, center, last, right, onLeft, onCenter, 
     return () => window.removeEventListener('keydown', down);
   }, []);
 
-  const filled: Filled = { edit, primaries, onPrimaries: setPrimaries, curves, onCurves: setCurves, onAuto: auto.run, status: auto.status, changed };
+  const filled: Filled = { edit, primaries, onPrimaries: setPrimaries, curves, onCurves: setCurves, onAuto: auto.run, status: auto.status, changed, scopes };
   return <div className="color-palettes" data-merged={merged || undefined} role="region" aria-label={labels.palettes} data-test="palettes">
     {merged
       ? <PaletteGroup name={labels.palettes} palettes={both} chosen={last === 'left' ? left : center}

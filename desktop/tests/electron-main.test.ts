@@ -4262,6 +4262,31 @@ describe('the engine of the studio', () => {
     ]);
   });
 
+  it('lets go the scopes of a page that is loaded again or gone, and keeps those of the page that is there', async () => {
+    const shell = await shellHarness();
+    await openIn(shell);
+    const [main] = connections(shell);
+    let made = 0;
+    shell.engines.servers.get(main.address)!.answers.set('scopes.subscribe', () => ({ result: { scope_id: `scope-${++made}` } }));
+    for (let at = 0; at < 3; at++) await shell.invoke('engine-call', { method: 'scopes.subscribe', params: { view: 'timeline', settings: { kind: 'waveform' } } });
+    await shell.invoke('engine-call', { method: 'scopes.unsubscribe', params: { scope_id: 'scope-2' } });
+    const unsubscribed = () => main.written.filter(request => request.method === 'scopes.unsubscribe').map(request => request.params.scope_id);
+    // Navigations that load no other page let none go.
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: false, isSameDocument: false });
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true });
+    await settledAll();
+    expect(unsubscribed()).toEqual(['scope-2']);
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    await settledAll();
+    expect(unsubscribed()).toEqual(['scope-2', 'scope-1', 'scope-3']);
+    // Let go once: the new page's scopes are its own.
+    await shell.invoke('engine-call', { method: 'scopes.subscribe', params: { view: 'timeline', settings: { kind: 'parade' } } });
+    shell.window.webContents.emit('render-process-gone');
+    shell.window.webContents.emit('render-process-gone');
+    await settledAll();
+    expect(unsubscribed()).toEqual(['scope-2', 'scope-1', 'scope-3', 'scope-4']);
+  });
+
   it('lets the page call the methods that it may, and no other', async () => {
     const shell = await shellHarness();
     expect(await shell.invoke('engine-call', { method: 'project.get' })).toMatchObject({ ok: false, error: { code: null } });
@@ -4270,7 +4295,7 @@ describe('the engine of the studio', () => {
     const allowed = [
       'project.get', 'transaction.apply', 'history.undo', 'history.redo', 'media.make_proxy', 'transport.load', 'transport.play',
       'transport.pause', 'transport.seek', 'transport.step', 'transport.state', 'transport.proxies',
-      'timeline.duration', 'media.thumbnail', 'media.waveform', 'scopes.statistics',
+      'timeline.duration', 'media.thumbnail', 'media.waveform', 'scopes.statistics', 'scopes.subscribe', 'scopes.set', 'scopes.unsubscribe',
     ];
     for (const method of allowed) {
       const params = method === 'transaction.apply' ? { ops: [{ op: 'remove_clip', timeline: 't1', id: 'c1' }] } : { frame: 3, monitor: 'source' };

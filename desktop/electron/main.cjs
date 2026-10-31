@@ -147,6 +147,8 @@ const PAGE_METHODS = new Set([
   'view.place', 'view.show', 'timeline.duration', 'media.thumbnail', 'media.waveform', 'render.cancel',
   // The figures of the frame shown, which the Primaries palette's Auto Color reads.
   'scopes.statistics',
+  // The scopes of the Color page, each a subscription of this connection (see `keepScopes`).
+  'scopes.subscribe', 'scopes.set', 'scopes.unsubscribe',
 ]);
 /** The endings of the files that the engine reads as media, offered first in the dialog. */
 const MEDIA_ENDINGS = [
@@ -705,7 +707,8 @@ async function openStudio(cwd) {
   // `jobs`: the exports that the window started, by their job, with the file that each writes; the
   // page may cancel those, and no other (an agent's), and have the file of one shown in its folder.
   // `migration`: the run of `video migrate` for the folder, while it runs.
-  studio = { number, project, session, opened, jobs: new Map(), migration: null };
+  // `scopes`: the ids of the scopes that the page subscribed (see `keepScopes`).
+  studio = { number, project, session, opened, jobs: new Map(), migration: null, scopes: new Set() };
   tellStudio(number, { kind: 'opened', ...opened });
   // A view is made anew for every engine, where the page has said where the viewer is.
   forgetView();
@@ -840,6 +843,24 @@ async function closeStudio() {
   studio = null;
   forgetView();
   await open.session.close();
+}
+/**
+ * Subscribe a scope for the page, or let one go, keeping the ids of those it holds. The engine
+ * sends a scope's pictures to the connection, which is the shell's and outlives a page loaded
+ * again: the new page knows nothing of the old one's scopes, so `dropScopes` lets them go.
+ */
+async function keepScopes(open, method, params) {
+  const result = await open.session.call(method, params);
+  if (method === 'scopes.subscribe' && typeof result?.scope_id === 'string') open.scopes.add(result.scope_id);
+  if (method === 'scopes.unsubscribe') open.scopes.delete(params?.scope_id);
+  return result;
+}
+/** Let go the scopes of a page that is loaded again or gone, whose pictures would go to no one. */
+function dropScopes() {
+  const open = studio;
+  if (!open?.session.alive || !open.scopes?.size) return;
+  for (const id of open.scopes) void open.session.call('scopes.unsubscribe', { scope_id: id }).catch(() => {});
+  open.scopes.clear();
 }
 /** Forget the view of an engine that is gone: one is made anew for the next. */
 function forgetView() {
@@ -1994,6 +2015,7 @@ function installHandlers() {
     // The viewer goes through the shell, which remembers it for the next view that it makes.
     if (method === 'view.place') return answered(Promise.resolve().then(() => { takeViewRect(params); return {}; }));
     if (method === 'view.show') return answered(Promise.resolve().then(() => { takeViewShown(params); return {}; }));
+    if (method === 'scopes.subscribe' || method === 'scopes.unsubscribe') return answered(keepScopes(open, method, params));
     return answered(open.session.call(method, params));
   });
   ipcMain.handle('columbina:engine-import', async (event, asked) => {
@@ -2584,12 +2606,12 @@ app.whenReady().then(() => {
   if (preferences.petOn) openPet();
   if (hidden && wanted) showWindow();
   else if (hidden) toTray();
-  window.webContents.on('render-process-gone', () => { blankView(); stopSigningIn(); void enqueueService(stopService); });
+  window.webContents.on('render-process-gone', () => { blankView(); dropScopes(); stopSigningIn(); void enqueueService(stopService); });
   // The view of the engine is hidden while the page is loaded again, until the new page says where the viewer is.
   window.webContents.on('did-start-navigation', (details, _url, inPlace, mainFrame) => {
     const main = details?.isMainFrame ?? mainFrame;
     const same = details?.isSameDocument ?? inPlace;
-    if (main === true && same !== true) blankView();
+    if (main === true && same !== true) { blankView(); dropScopes(); }
   });
   void window.loadFile(indexPath);
   // An assistant runs again where it ran when the application was left.

@@ -525,8 +525,32 @@ export interface PageMethods {
   'view.place': Record<string, never>;
   'view.show': Record<string, never>;
   'scopes.statistics': ScopeStatistics;
+  'scopes.subscribe': ScopeAnswer;
+  'scopes.set': ScopeAnswer;
+  'scopes.unsubscribe': Record<string, never>;
 }
 export type PageMethod = keyof PageMethods;
+
+/**
+ * The graticule of a scope (PROTOCOL.md, "Scopes"): its lines and labels in pixels of its picture
+ * from the top left corner, a label written from `at`, its left at the middle of its height.
+ */
+export interface ScopeGraticule {
+  width: number; height: number;
+  lines: { from: [number, number]; to: [number, number]; colour: [number, number, number] }[];
+  labels: { at: [number, number]; text: string; colour: [number, number, number] }[];
+}
+/** What `scopes.subscribe` and `scopes.set` answer: the scope, the size of its pictures, its graticule and its settings whole. */
+export interface ScopeAnswer {
+  scope_id: string;
+  size: { width: number; height: number };
+  graticule: ScopeGraticule;
+  settings: Record<string, unknown>;
+}
+/** A picture of a scope, `scopes.frame`: RGBA of 8 bits by rows from the top, as base64. */
+export interface ScopeFrame {
+  scope_id: string; view: Monitor; frame: number; width: number; height: number; rgba: string;
+}
 
 /** A channel's figures in `scopes.statistics`: its least, greatest and mean signal (0 to 1, or beyond). */
 export interface ChannelFigures { min: number; max: number; mean: number }

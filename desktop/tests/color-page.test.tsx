@@ -161,11 +161,11 @@ describe('the Color page', () => {
     expect(tabsOf('left')).toEqual(['Primaries']);
     expect(tabsOf('center')).toEqual(['Curves', 'Qualifier', 'Window', 'Tracker', 'Blur', 'Key']);
     expect(tabsOf('right')).toEqual(['Keyframes', 'Scopes']);
-    // Primaries and Curves have their controls (T17); the right panel is a placeholder until T19.
+    // Primaries and Curves have their controls (T17), and the right panel the docked scope (T19).
     const [primariesPanel, curvesPanel, rightPanel] = screen.getAllByRole('tabpanel');
     expect(primariesPanel.querySelector('[data-test="primaries"]')).not.toBeNull();
     expect(curvesPanel.querySelector('[data-test="curves"]')).not.toBeNull();
-    expect(rightPanel.textContent).toBe('The controls of this palette come in a later version.');
+    expect(rightPanel.querySelector('[data-test="scopes-docked"] [data-test="scope-pane"]')).not.toBeNull();
     // The three places at the top left are one place: one opens in place of another, and pressed again it closes.
     fireEvent.click(within(toolbar).getByRole('button', { name: 'LUTs' }));
     expect(screen.queryByRole('region', { name: 'Gallery' })).toBeNull();
@@ -441,6 +441,38 @@ describe('the Color page', () => {
     await settle();
     expect([...document.querySelectorAll('.studio-pages [role="tab"]')].map(tab => tab.textContent)).toEqual(['Media', 'Cut', 'Edit']);
     expect(document.querySelector('[data-test="color-page"]')).toBeNull();
+  });
+});
+
+describe('the scopes of the Color page', () => {
+  it('measure the timeline monitor while the Scopes panel is shown, and the Keyframes panel lets them go', async () => {
+    (window as { columbina?: unknown }).columbina = { platform: 'win32' };
+    const { bridge } = await mount();
+    expect(calls(bridge, 'scopes.subscribe')).toEqual([{ view: 'timeline', settings: expect.objectContaining({ kind: 'parade' }) }]);
+    // The fake engine answers no scope: the pane says so, and nothing else breaks.
+    expect(document.querySelector('[data-test="scope-status"]')?.textContent).toBe('The scope could not be shown.');
+    fireEvent.click(screen.getByRole('tab', { name: 'Keyframes' }));
+    await settle();
+    expect(document.querySelector('[data-test="scope-pane"]')).toBeNull();
+    fireEvent.click(screen.getByRole('tab', { name: 'Scopes' }));
+    await settle();
+    expect(calls(bridge, 'scopes.subscribe')).toHaveLength(2);
+    // Ctrl+Shift+W opens the floating window over the page.
+    key('W', { code: 'KeyW', ctrlKey: true, shiftKey: true });
+    await settle();
+    expect(screen.getByRole('dialog', { name: 'Video Scopes' })).toBeDefined();
+    expect(calls(bridge, 'scopes.subscribe')).toHaveLength(6);
+  });
+
+  it('are not there where the studio is shown on macOS', async () => {
+    (window as { columbina?: unknown }).columbina = { platform: 'darwin' };
+    const engine = fakeEngine();
+    render(<Studio cwd="F:/film" engine={{ ...engine, native: true }} language="en" onClose={() => {}} />);
+    await settle();
+    key('W', { code: 'KeyW', ctrlKey: true, shiftKey: true });
+    await settle();
+    expect(document.querySelector('[data-test="scope-pane"]')).toBeNull();
+    expect(calls(engine.bridge, 'scopes.subscribe')).toEqual([]);
   });
 });
 

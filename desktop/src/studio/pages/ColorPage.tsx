@@ -20,6 +20,7 @@ import { MiniTimeline } from '../color/MiniTimeline';
 import { NodeEditor } from '../color/NodeEditor';
 import { useColorPageGrades } from '../color/useColorPageGrades';
 import { Palettes, type CenterPalette, type LeftPalette, type RightPanel } from '../color/Palettes';
+import { useColorScopes } from '../color/Scopes';
 import { ThumbnailTimeline } from '../color/ThumbnailTimeline';
 import { placeOf, type EditedNode } from '../color/useNodeEdit';
 import '../color/color.css';
@@ -239,6 +240,8 @@ export function ColorPage({
     return () => window.removeEventListener('keydown', down);
   }, []);
 
+  // The video scopes of the timeline monitor (T19): docked in the Scopes panel, or in their floating window.
+  const scopes = useColorScopes({ bridge, session, view: 'timeline', loaded: timelineState !== null && timelineMonitor.loaded, native, viewerMode });
   const realTime = useRealTime(timelineState);
   const missing = timelineState?.missing_luts ?? [];
   const currentMedia = current?.clip.source.kind === 'media' ? mediaById.get(current.clip.source.media) : undefined;
@@ -332,9 +335,10 @@ export function ColorPage({
         onClip={clipPressed} onSeek={timelineMonitor.seek} onEnable={enable} onSkip={skip} />
     </div>}
     <div className="color-palettes-area" {...focusOf('palettes')}>
-      <Palettes merged={merged} left={left} center={center} last={last} right={right} edited={edited}
+      <Palettes merged={merged} left={left} center={center} last={last} right={right} edited={edited} scopes={scopes.docked}
         onLeft={(each) => { setLeft(each); setLast('left'); }} onCenter={(each) => { setCenter(each); setLast('center'); }} onRight={setRight} />
     </div>
     {grades.menu}
+    {scopes.floating}
   </div>;
 }

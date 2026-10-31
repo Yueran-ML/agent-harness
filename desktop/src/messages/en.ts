@@ -893,6 +893,17 @@ export const en = {
           vectors: { red: 'Red', yellow: 'Yellow', green: 'Green', cyan: 'Cyan', blue: 'Blue', magenta: 'Magenta' },
           picker: 'Sample in the viewer',
         },
+        /** The video scopes (Reference Manual 20, pp. 3007–3022), in DaVinci Resolve's words. */
+        scopes: {
+          kinds: { waveform: 'Waveform', parade: 'Parade', vectorscope: 'Vectorscope', histogram: 'Histogram', chromaticity: 'CIE Chromaticity' },
+          scope: 'Scope', controls: 'Scope settings', menu: 'Video scope options', expand: 'Open in a floating window', close: 'Close',
+          window: 'Video Scopes', layout: 'Scope layout', layouts: { one: '1 Up', two: '2 Up', four: '4 Up', nine: '9 Up' },
+          waveformScale: 'Waveform Scale Style', tenBit: '10-bit', percent: 'Percentage',
+          vectorscopeScale: 'Vectorscope Scale Style', off: 'Off', standard: 'Standard', both: 'Both', hueLabels: 'Show Labels',
+          mode: 'Mode', tones: { all: 'ALL', low: 'Low', mid: 'Mid', high: 'High' }, lowRange: 'Low Range', highRange: 'High Range',
+          zoom2x: 'Show 2X Zoom', skinTone: 'Show Skin Tone Indicator', showGraticule: 'Show Graticule', graticule: 'Graticule', gain: 'Gain',
+          reference: 'Show Reference Levels', low: 'Low', high: 'High', extraGamut: 'Additional Gamut', none: 'None',
+        },
       },
       /** The fields of the inspector, as DaVinci Resolve names them. */
       inspector: {
@@ -1570,6 +1581,15 @@ export const en = {
         autoFlat: 'Auto Color found too little range in this frame to balance it.',
         picker: 'Sampling the viewer needs the engine to read the color at a point of the picture, which it cannot do yet.',
         keyed: 'This setting has keyframes: a change goes into the keyframe at the playhead or to its left.',
+        scopes: {
+          preparing: 'The scope is being prepared. The first time takes a while.',
+          empty: 'There is nothing in the viewer to measure.',
+          failed: 'The scope could not be shown.',
+          tooMany: 'No more scopes can be open at once.',
+          unavailable: 'This engine has no viewer, so it has no scopes.',
+          floating: 'The scopes are shown in their floating window.',
+          browser: 'The scopes appear only in the desktop app.',
+        },
       },
       windowsOnly: 'The editing studio runs only on Windows for now. macOS will come later.',
       browser: 'The viewers appear only in the desktop app.',

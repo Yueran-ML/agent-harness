@@ -6,7 +6,9 @@
 // On Windows the engine of the studio comes along too, with the LGPL FFmpeg that it is built with
 // (see engine-bundle.mjs): its build is engine/target/release, or --engine-build=<dir>, and the
 // FFmpeg is --ffmpeg=<dir>, else COLUMBINA_FFMPEG_LGPL, else FFMPEG_DIR, as in
-// `npm run package -- --ffmpeg=F:\toolchain\ffmpeg-lgpl-8.1`. On macOS it is left out, for now.
+// `npm run package -- --ffmpeg=F:\toolchain\ffmpeg-lgpl-8.1`. Beside it go dxcompiler.dll and
+// dxil.dll of Microsoft's DXC, of the Windows SDK installed, else of --dxc=<dir> or COLUMBINA_DXC
+// (--dxc=none for none: the engine then compiles its shaders with FXC). On macOS it is left out, for now.
 import { packager } from '@electron/packager';
 import { spawnSync } from 'node:child_process';
 import { cp, readdir, readFile, realpath, rm, stat } from 'node:fs/promises';

@@ -10,7 +10,8 @@ libraries that it links into the DLLs have no notices of their own here yet.
 The engine of the studio, `columbina-engine.exe`, is part of Columbina and is under its MIT
 license. The package brings it in `resources/engine/`, together with software of others that it
 needs, each under its own license. This file is copied there as well, followed by what only the
-build can tell: the exact build of FFmpeg, and the Rust crates in the engine.
+build can tell: the exact build of FFmpeg, the DirectX Shader Compiler of Microsoft that it compiles
+its shaders with, with its terms and version, and the Rust crates in the engine.
 
 ## FFmpeg
 

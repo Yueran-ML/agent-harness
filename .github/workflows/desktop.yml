@@ -107,8 +107,13 @@ jobs:
 
       # The page, the Python with Columbina built from this commit, the icon of the system, the
       # application around them, and a zip of it. On Windows also the engine, the libraries of
-      # FFmpeg and its ffmpeg (checked to be of the LGPL), and their notices, in resources/engine:
-      # the engine of engine/target/release, and the FFmpeg of FFMPEG_DIR.
+      # FFmpeg and its ffmpeg (checked to be of the LGPL), Microsoft's DXC, and their notices, in
+      # resources/engine: the engine of engine/target/release, the FFmpeg of FFMPEG_DIR, and
+      # dxcompiler.dll and dxil.dll of the Windows SDK of the image (Redist/D3D/x64, which the
+      # Windows 11 SDK 10.0.26100 of Visual Studio 2022 puts there), of 1.8.2502 or later, the
+      # newest found. Without one the packaging ends and says so, so that no package loses DXC
+      # unnoticed: set COLUMBINA_DXC to a folder with both files, or to none to package with FXC
+      # alone (and try the package with the same COLUMBINA_DXC).
       - name: Package
         run: npm run package
 
@@ -166,7 +171,8 @@ jobs:
             `xattr -dr com.apple.quarantine /Applications/Columbina.app`
 
           The engine of the studio in the package of Windows (`resources/engine`) brings the
-          libraries of FFmpeg, under the LGPL, and Rust crates under their own licenses: see
+          libraries of FFmpeg, under the LGPL, the DirectX Shader Compiler of Microsoft, under the
+          terms of the Windows SDK, and Rust crates under their own licenses: see
           `resources/engine/THIRD_PARTY_ENGINE.md` there. The package of macOS has no engine yet.
 
           The first start asks for the service of a model and its key. How to set up, and what

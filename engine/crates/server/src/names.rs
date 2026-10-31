@@ -21,7 +21,8 @@ use std::fmt;
 use columbina_model::edit::Created;
 use columbina_model::history::ChangeMapper;
 use columbina_model::{
-    Change, Edit, Expansion, Id, Material, Op, OpError, Source, Track, TrackKind,
+    Change, Edit, Expansion, Grade, Id, Link, Material, Op, OpError, Source, Target, Track,
+    TrackKind,
 };
 use serde::{Deserialize, Deserializer};
 
@@ -175,6 +176,10 @@ enum Place {
     Link(Option<usize>, i64),
     Transition(Option<usize>, Id),
     Cue(Option<usize>, i64),
+    /// A node that is added to a grade.
+    Node,
+    /// A group of clips graded together.
+    Group,
     Output(Output),
 }
 
@@ -353,6 +358,42 @@ fn visit_edit<E>(
     f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>,
 ) -> Result<(), E> {
     let timeline = match edit {
+        // The edits of grades name grades and nodes, and no timeline of their own.
+        Edit::AddSerial { grade, node }
+        | Edit::AddSerialBefore { grade, node }
+        | Edit::AddParallel { grade, node }
+        | Edit::AddLayer { grade, node }
+        | Edit::ExtractNode { grade, node }
+        | Edit::ResetNode { grade, node } => {
+            visit_target(grade, f)?;
+            return f(node, Role::Names);
+        }
+        Edit::AppendNode { grade } => return visit_target(grade, f),
+        Edit::CopyGrade { from, to } | Edit::AppendGrade { from, to } => {
+            visit_target(from, f)?;
+            for target in to {
+                visit_target(target, f)?;
+            }
+            return Ok(());
+        }
+        Edit::PasteValue {
+            from,
+            from_node,
+            to,
+            to_node,
+            ..
+        }
+        | Edit::PasteNode {
+            from,
+            from_node,
+            to,
+            to_node,
+        } => {
+            visit_target(from, f)?;
+            f(from_node, Role::Names)?;
+            visit_target(to, f)?;
+            return f(to_node, Role::Names);
+        }
         Edit::Insert { timeline, .. }
         | Edit::Overwrite { timeline, .. }
         | Edit::Replace { timeline, .. }
@@ -475,6 +516,45 @@ fn visit_edit<E>(
         | Edit::SetCue { id, .. }
         | Edit::RemoveCue { id, .. } => f(id, Role::Names)?,
         Edit::AddTrack { .. } => {}
+        _ => unreachable!("the edits of grades are visited above"),
+    }
+    Ok(())
+}
+
+/// Call `f` on the ids of the timeline, the clip or the group that a grade is of.
+fn visit_target<E>(
+    target: &mut Target,
+    f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>,
+) -> Result<(), E> {
+    match target {
+        Target::Clip { timeline, clip } => {
+            f(timeline, Role::Names)?;
+            f(clip, Role::Names)
+        }
+        Target::PreClip { group } | Target::PostClip { group } => f(group, Role::Names),
+        Target::Timeline { timeline } => f(timeline, Role::Names),
+    }
+}
+
+/// Call `f` on the ends of a link that are nodes. The ends of a grade are not names.
+fn visit_link<E>(
+    link: &mut Link,
+    f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>,
+) -> Result<(), E> {
+    f(&mut link.from, Role::Names)?;
+    f(&mut link.to, Role::Names)
+}
+
+/// Call `f` on the ids of the nodes of a grade that is put in whole, and the ends of its links.
+fn visit_grade<E>(
+    grade: &mut Grade,
+    f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>,
+) -> Result<(), E> {
+    for node in &mut grade.nodes {
+        f(&mut node.id, Role::Names)?;
+    }
+    for link in &mut grade.links {
+        visit_link(link, f)?;
     }
     Ok(())
 }
@@ -532,6 +612,14 @@ fn id_at<'a>(op: &'a Op, place: &Place) -> Option<&'a str> {
             Op::AddCue { cue, .. } => Some(&cue.id),
             _ => Some(&track_at(*at)?.cues.iter().find(|q| q.start == *start)?.id),
         },
+        Place::Node => match op {
+            Op::AddNode { node, .. } => Some(&node.id),
+            _ => None,
+        },
+        Place::Group => match op {
+            Op::AddGroup { group, .. } => Some(&group.id),
+            _ => None,
+        },
         Place::Output(_) => None,
     }
 }
@@ -546,6 +634,9 @@ fn visit_track<E>(
     for clip in &mut track.clips {
         if let Source::Media { media, .. } = &mut clip.source {
             f(media, Role::Names)?;
+        }
+        if let Some(group) = &mut clip.group {
+            f(group, Role::Names)?;
         }
     }
     for transition in &mut track.transitions {
@@ -583,7 +674,9 @@ fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> 
         Op::RemoveMedia { id }
         | Op::RemoveTimeline { id }
         | Op::SetTimeline { id, .. }
-        | Op::RemoveBin { id } => f(id, Role::Names),
+        | Op::RemoveBin { id }
+        | Op::RemoveGroup { id }
+        | Op::SetGroup { id, .. } => f(id, Role::Names),
         Op::SetProxy { media, .. } => f(media, Role::Names),
         Op::AddTimeline { timeline, .. } => {
             let of = Some(timeline.id.clone()).filter(|id| !id.is_empty());
@@ -624,6 +717,9 @@ fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> 
             f(track, Role::NamesTrack(of))?;
             if let Source::Media { media, .. } = &mut clip.source {
                 f(media, Role::Names)?;
+            }
+            if let Some(group) = &mut clip.group {
+                f(group, Role::Names)?;
             }
             let start = clip.start;
             f(&mut clip.id, Role::Gives(Place::Clip(None, start)))?;
@@ -724,6 +820,65 @@ fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> 
                 &mut transition.id,
                 Role::Gives(Place::Transition(None, transition.left.clone())),
             )
+        }
+        Op::AddNode {
+            grade, node, links, ..
+        } => {
+            visit_target(grade, f)?;
+            // A link names the node that is added by the id that it is given, which is a name
+            // that only the operations after it may name: so it is made empty with the id.
+            let own = node.id.clone();
+            for link in links {
+                for end in [&mut link.from, &mut link.to] {
+                    if *end == own && is_name(&own) {
+                        end.clear();
+                    } else {
+                        f(end, Role::Names)?;
+                    }
+                }
+            }
+            f(&mut node.id, Role::Gives(Place::Node))
+        }
+        Op::RemoveNode { grade, id, links } => {
+            visit_target(grade, f)?;
+            f(id, Role::Names)?;
+            for link in links.iter_mut().flatten() {
+                visit_link(link, f)?;
+            }
+            Ok(())
+        }
+        Op::Connect { grade, link } => {
+            visit_target(grade, f)?;
+            visit_link(link, f)
+        }
+        Op::Disconnect { grade, to, .. } => {
+            visit_target(grade, f)?;
+            f(to, Role::Names)
+        }
+        Op::SetNode { grade, id, .. } => {
+            visit_target(grade, f)?;
+            f(id, Role::Names)
+        }
+        Op::SetGrade { grade, value } => {
+            visit_target(grade, f)?;
+            visit_grade(value, f)
+        }
+        Op::AddGroup { group, .. } => {
+            visit_grade(&mut group.pre, f)?;
+            visit_grade(&mut group.post, f)?;
+            f(&mut group.id, Role::Gives(Place::Group))
+        }
+        Op::SetClipGroup {
+            timeline,
+            clip,
+            group,
+        } => {
+            f(timeline, Role::Names)?;
+            f(clip, Role::Names)?;
+            match group {
+                Some(group) => f(group, Role::Names),
+                None => Ok(()),
+            }
         }
     }
 }
@@ -1100,6 +1255,59 @@ mod tests {
         );
         assert_eq!(t.tracks[0].transitions[0].id, names["$transition"]);
         assert_eq!(t.tracks[0].transitions[0].length, 8);
+    }
+
+    #[test]
+    fn nodes_and_groups_of_grades_have_transaction_names() {
+        let mut history = History::new(Project::sample());
+        let corrector = serde_json::to_value(columbina_model::Node::corrector("$n")).unwrap();
+        let mut mixer = serde_json::to_value(columbina_model::Node::new(
+            "$mix",
+            columbina_model::Kind::ParallelMixer,
+        ))
+        .unwrap();
+        mixer["label"] = "$literal".into();
+        let c1 = json!({"level": "clip", "timeline": "t1", "clip": "c1"});
+        let (_, names) = apply(&mut history, ops(json!([
+            {"op": "add_node", "grade": c1, "node": corrector, "links": [
+                {"from": "source", "to": "$n", "kind": "rgb", "input": 0},
+                {"from": "$n", "to": "output", "kind": "rgb", "input": 0},
+            ]},
+            {"op": "add_node", "grade": c1, "node": mixer, "links": [
+                {"from": "$n", "to": "$mix", "kind": "rgb", "input": 1},
+            ]},
+            {"op": "set_node", "grade": c1, "id": "$n", "label": "Skin"},
+            {"op": "connect", "grade": c1, "link": {"from": "source", "to": "$mix", "kind": "rgb", "input": 0}},
+            {"op": "add_group", "group": {"id": "$k", "name": "$literal",
+                "pre": columbina_model::Grade::default(), "post": columbina_model::Grade::default()}},
+            {"op": "set_clip_group", "timeline": "t1", "clip": "c1", "group": "$k"},
+            {"op": "add_node", "grade": {"level": "post_clip", "group": "$k"}, "node": serde_json::to_value(columbina_model::Node::corrector("")).unwrap()},
+        ]))).unwrap();
+        let project = history.project();
+        let clip = &project.timelines[0].tracks[0].clips[0];
+        let (n, mix) = (&names["$n"], &names["$mix"]);
+        assert_eq!(clip.grade.nodes[0].id, *n);
+        assert_eq!(clip.grade.nodes[0].label, "Skin");
+        assert_eq!(clip.grade.nodes[1].id, *mix);
+        assert_eq!(clip.grade.nodes[1].label, "$literal");
+        assert_eq!(
+            clip.grade
+                .link_into(mix, columbina_model::Port::Rgb, 1)
+                .unwrap()
+                .from,
+            *n
+        );
+        assert_eq!(
+            clip.grade
+                .link_into(mix, columbina_model::Port::Rgb, 0)
+                .unwrap()
+                .from,
+            "source"
+        );
+        assert_eq!(clip.group.as_ref(), Some(&names["$k"]));
+        assert_eq!(project.groups[0].id, names["$k"]);
+        assert_eq!(project.groups[0].name, "$literal");
+        assert_eq!(project.groups[0].post.nodes.len(), 1);
     }
 
     #[test]

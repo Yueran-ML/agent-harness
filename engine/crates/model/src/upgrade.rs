@@ -1,14 +1,23 @@
-//! A project of schema 1, as the first engine wrote it, read into the schema of this one.
+//! A project of schema 1, as the first engine wrote it, or of schema 2, as the engine of the
+//! Edit page wrote it, read into the schema of this one.
 //!
 //! What schema 2 adds is given the value that leaves the project as it was: a timeline is as
 //! large as the picture of its first clip of picture, or 1920 by 1080 if it has none, and plays
 //! its sound at 48000 samples a second; a track is named by its id, is seen or heard, is not
 //! locked and has no transitions; a clip plays its media as it is; media is named by the name of
-//! its file, is kept at the root and has no marks; and there are no bins. The project is then
-//! checked as one that is read is.
+//! its file, is kept at the root and has no marks; and there are no bins.
+//!
+//! What schema 3 adds is given the value that leaves the picture as it was: every clip and
+//! every timeline has a grade with no node, whose source is linked to its output, and no clip
+//! is in a group, of which there are none. Nothing else of a project of schema 2 is changed.
+//! The fields are written into the project of schema 2 before it is read, so that one that has
+//! any of them already, which schema 2 does not have, is refused.
+//!
+//! The project is then checked as one that is read is.
 
 use serde::Deserialize;
 
+use crate::grade::Grade;
 use crate::project::{
     schema_of, Clip, Facts, Id, Identity, Media, Project, Proxy, ReadError, Timeline, Track,
     TrackKind, SCHEMA,
@@ -98,9 +107,69 @@ pub fn from_schema_1(value: serde_json::Value) -> Result<Project, ReadError> {
         bins: vec![],
         media,
         timelines,
+        groups: vec![],
     };
     project.validate()?;
     Ok(project)
+}
+
+/// Read a project of schema 2 into this schema, and check it as a project that is read is
+/// checked: the project gets no groups, and each timeline and each clip of a track of picture
+/// or of sound a grade that changes nothing and no group.
+///
+/// # Errors
+/// It is not an object, it names no schema or another one than 2, it has a field of schema 3
+/// already, or what it becomes is not a valid project.
+///
+/// # Panics
+/// Never: a grade is always written as JSON.
+pub fn from_schema_2(mut value: serde_json::Value) -> Result<Project, ReadError> {
+    let schema = schema_of(&value)?;
+    if schema != 2 {
+        return Err(ReadError::Schema(schema));
+    }
+    let grade = serde_json::to_value(Grade::default()).expect("a grade is written as JSON");
+    let project = value.as_object_mut().ok_or(ReadError::NotAnObject)?;
+    project.insert("schema".into(), SCHEMA.into());
+    add(project, "groups", serde_json::json!([]))?;
+    let timelines = project
+        .get_mut("timelines")
+        .and_then(serde_json::Value::as_array_mut);
+    for timeline in timelines.into_iter().flatten() {
+        let Some(timeline) = timeline.as_object_mut() else {
+            continue;
+        };
+        add(timeline, "grade", grade.clone())?;
+        let tracks = timeline
+            .get_mut("tracks")
+            .and_then(serde_json::Value::as_array_mut);
+        for track in tracks.into_iter().flatten() {
+            let clips = track
+                .get_mut("clips")
+                .and_then(serde_json::Value::as_array_mut);
+            for clip in clips.into_iter().flatten() {
+                if let Some(clip) = clip.as_object_mut() {
+                    add(clip, "grade", grade.clone())?;
+                    add(clip, "group", serde_json::Value::Null)?;
+                }
+            }
+        }
+    }
+    Project::from_value(value)
+}
+
+/// Add a field of schema 3 to an object of a project of schema 2, which may not have it.
+fn add(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    name: &str,
+    value: serde_json::Value,
+) -> Result<(), ReadError> {
+    if object.contains_key(name) {
+        let error = format!("unknown field `{name}` in a project of schema 2");
+        return Err(ReadError::Json(serde::de::Error::custom(error)));
+    }
+    object.insert(name.into(), value);
+    Ok(())
 }
 
 fn media_of(old: Media1) -> Media {
@@ -193,7 +262,8 @@ mod tests {
     #[test]
     fn a_project_of_schema_1_is_read_with_what_schema_2_adds_set_as_it_was() {
         let project = from_schema_1(written()).unwrap();
-        assert_eq!(project.schema, 2);
+        assert_eq!(project.schema, SCHEMA);
+        assert_eq!(project.groups, []);
         assert_eq!(project.next_id, 7);
         assert_eq!(project.bins, []);
 
@@ -249,6 +319,8 @@ mod tests {
         assert_eq!(clip.transform, Transform::NONE);
         assert_eq!((clip.gain_db, clip.pan), (0.0, 0.0));
         assert_eq!((clip.fade_in, clip.fade_out), (0, 0));
+        assert_eq!((&clip.grade, &clip.group), (&Grade::default(), &None));
+        assert_eq!(first.grade, Grade::default());
         assert_eq!(project.timelines[2].tracks[0].clips[0].id, "c3");
     }
 
@@ -257,29 +329,102 @@ mod tests {
         let project = from_schema_1(written()).unwrap();
         let text = serde_json::to_string_pretty(&project).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(value["schema"], 2);
+        assert_eq!(value["schema"], SCHEMA);
         let read = Project::from_value(value).unwrap();
         assert_eq!(read, project);
         assert_eq!(serde_json::to_string_pretty(&read).unwrap(), text);
     }
 
     #[test]
-    fn a_project_is_upgraded_only_from_schema_1() {
+    fn a_project_is_upgraded_only_from_schema_1_and_2() {
         let (project, upgraded) = Project::from_value_upgrading(written()).unwrap();
-        assert!(upgraded);
+        assert_eq!(upgraded, Some(1));
         let again = serde_json::to_value(&project).unwrap();
         let (read, upgraded) = Project::from_value_upgrading(again).unwrap();
-        assert!(!upgraded);
+        assert_eq!(upgraded, None);
         assert_eq!(read, project);
+        let (read, upgraded) = Project::from_value_upgrading(written_2()).unwrap();
+        assert_eq!(upgraded, Some(2));
+        assert_eq!(read, from_schema_2(written_2()).unwrap());
 
         let mut later = written();
-        later["schema"] = 3.into();
+        later["schema"] = 4.into();
         let error = Project::from_value_upgrading(later.clone()).unwrap_err();
-        assert!(matches!(error, ReadError::Schema(3)), "{error}");
-        let error = from_schema_1(later).unwrap_err();
-        assert!(matches!(error, ReadError::Schema(3)), "{error}");
+        assert!(matches!(error, ReadError::Schema(4)), "{error}");
+        let error = from_schema_1(later.clone()).unwrap_err();
+        assert!(matches!(error, ReadError::Schema(4)), "{error}");
+        let error = from_schema_2(later).unwrap_err();
+        assert!(matches!(error, ReadError::Schema(4)), "{error}");
+        let error = from_schema_2(written()).unwrap_err();
+        assert!(matches!(error, ReadError::Schema(1)), "{error}");
         let error = Project::from_value_upgrading(serde_json::json!({})).unwrap_err();
         assert!(matches!(error, ReadError::NoSchema), "{error}");
+    }
+
+    const WRITTEN_2: &str = include_str!("../tests/data/schema2.json");
+
+    fn written_2() -> serde_json::Value {
+        serde_json::from_str(WRITTEN_2).unwrap()
+    }
+
+    #[test]
+    fn a_project_of_schema_2_is_read_with_no_grade_and_no_group_and_nothing_else_changed() {
+        let old = written_2();
+        let project = from_schema_2(old.clone()).unwrap();
+        assert_eq!(project.schema, SCHEMA);
+        // What it is written as is what it was, with only the fields of schema 3 added.
+        let mut expected = old;
+        expected["schema"] = SCHEMA.into();
+        expected["groups"] = serde_json::json!([]);
+        let grade = serde_json::to_value(Grade::default()).unwrap();
+        let mut clips = 0;
+        for timeline in expected["timelines"].as_array_mut().unwrap() {
+            timeline["grade"] = grade.clone();
+            for track in timeline["tracks"].as_array_mut().unwrap() {
+                for clip in track
+                    .get_mut("clips")
+                    .into_iter()
+                    .flat_map(|c| c.as_array_mut().unwrap())
+                {
+                    clip["grade"] = grade.clone();
+                    clip["group"] = serde_json::Value::Null;
+                    clips += 1;
+                }
+            }
+        }
+        assert!(clips >= 4, "the project has clips of each kind to upgrade");
+        assert_eq!(serde_json::to_value(&project).unwrap(), expected);
+        // And it reads back as it is.
+        assert_eq!(Project::from_value(expected).unwrap(), project);
+    }
+
+    #[test]
+    fn a_project_of_schema_2_with_a_field_of_schema_3_is_refused() {
+        for path in [
+            &["groups"][..],
+            &["timelines", "0", "grade"],
+            &["timelines", "0", "tracks", "0", "clips", "0", "group"],
+        ] {
+            let mut value = written_2();
+            let (last, within) = path.split_last().unwrap();
+            let mut at = &mut value;
+            for part in within {
+                at = match part.parse::<usize>() {
+                    Ok(index) => &mut at[index],
+                    Err(_) => &mut at[*part],
+                };
+            }
+            at[*last] = serde_json::json!(null);
+            let error = from_schema_2(value).unwrap_err();
+            assert!(matches!(error, ReadError::Json(_)), "{error}");
+            assert!(error.to_string().contains(last), "{error}");
+        }
+        let mut invalid = written_2();
+        invalid["timelines"][0]["tracks"][0]["clips"][0]["source"]["media"] = "m99".into();
+        let error = from_schema_2(invalid).unwrap_err();
+        assert!(matches!(error, ReadError::Invalid(_)), "{error}");
+        let error = from_schema_2(serde_json::json!([2])).unwrap_err();
+        assert!(matches!(error, ReadError::NotAnObject), "{error}");
     }
 
     #[test]

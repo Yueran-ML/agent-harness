@@ -39,6 +39,7 @@
 //! and says that it was clamped. One that cannot go at all is refused, and so is a `delta` of 0.
 
 mod cut;
+mod grade;
 mod input;
 mod misc;
 mod place;
@@ -47,6 +48,7 @@ mod work;
 
 use serde::{Deserialize, Serialize, Serializer};
 
+use crate::grade::Target;
 use crate::ops::{apply_done, Op, OpError};
 use crate::project::{Alignment, Id, Project, Rgba, TitleStyle, TrackKind, TransitionKind};
 use crate::time::{Speed, Time};
@@ -492,6 +494,99 @@ pub enum Edit {
         /// The track.
         track: Id,
     },
+    /// Add a corrector after a node of a grade, or after its source: it takes what the node
+    /// gave its picture to (Add Serial, Option-S; Reference Manual 20, p. 3318).
+    AddSerial {
+        /// The grade.
+        grade: Target,
+        /// The node, or `source`.
+        node: Id,
+    },
+    /// Add a corrector before a corrector of a grade, or before its output: it takes what came
+    /// into the node (Add Before Current, Shift-S).
+    AddSerialBefore {
+        /// The grade.
+        grade: Target,
+        /// The corrector, or `output`.
+        node: Id,
+    },
+    /// Add a corrector at the end of the tree of a grade, before its output (Append Node,
+    /// Option-K).
+    AppendNode {
+        /// The grade.
+        grade: Target,
+    },
+    /// Add a corrector beside a corrector of a grade, taking what the corrector takes, and mix
+    /// the two in a parallel mixer: the one that the corrector alone goes into, or a new one in
+    /// its place (Add Parallel, Option-P; p. 3334).
+    AddParallel {
+        /// The grade.
+        grade: Target,
+        /// The corrector.
+        node: Id,
+    },
+    /// Add a corrector beside a corrector of a grade, as `add_parallel` does, into a layer
+    /// mixer, at its lowest input, which is on top (Add Layer, Option-L; p. 3336).
+    AddLayer {
+        /// The grade.
+        grade: Target,
+        /// The corrector.
+        node: Id,
+    },
+    /// Take a node out of the tree of its grade, keeping it, and link what was on either side
+    /// of it (Extract, E; p. 3319).
+    ExtractNode {
+        /// The grade.
+        grade: Target,
+        /// The node.
+        node: Id,
+    },
+    /// Set a node as a new node of its kind is set, keeping its label and its inputs.
+    ResetNode {
+        /// The grade.
+        grade: Target,
+        /// The node.
+        node: Id,
+    },
+    /// Put a grade in place of other grades, whole (Copy Grade; pp. 3286, 3290).
+    CopyGrade {
+        /// The grade that is copied.
+        from: Target,
+        /// The grades that it is put in place of.
+        to: Vec<Target>,
+    },
+    /// Add the nodes of a grade to the end of other grades (Append Node Graph; p. 3290).
+    AppendGrade {
+        /// The grade whose nodes are added.
+        from: Target,
+        /// The grades that they are added to.
+        to: Vec<Target>,
+    },
+    /// Set one setting of a node to what it is in another node (Paste Value; p. 3286).
+    PasteValue {
+        /// The grade of the node that it is copied from.
+        from: Target,
+        /// The node that it is copied from.
+        from_node: Id,
+        /// The grade of the node that it is set in.
+        to: Target,
+        /// The node that it is set in.
+        to_node: Id,
+        /// The setting, as a path of the fields of `params` written with dots, such as
+        /// `primaries.saturation` or `primaries.lift`.
+        param: String,
+    },
+    /// Set a node as another node of its kind is set (Copy and Paste of a node; p. 3320).
+    PasteNode {
+        /// The grade of the node that is copied.
+        from: Target,
+        /// The node that is copied.
+        from_node: Id,
+        /// The grade of the node that is set.
+        to: Target,
+        /// The node that is set.
+        to_node: Id,
+    },
 }
 
 /// What an edit puts on a timeline.
@@ -756,8 +851,43 @@ pub fn expand(project: &mut Project, edit: Edit) -> Result<Expansion, EditError>
 /// Work an edit out and apply it. A project that it is refused on may be left changed.
 #[allow(clippy::too_many_lines, reason = "an arm for each edit")]
 pub(crate) fn run(project: &mut Project, edit: Edit) -> Result<Expansion, EditError> {
+    let edit = match edit {
+        Edit::AddSerial { grade, node } => {
+            return grade::add(project, &grade, &node, grade::Beside::After)
+        }
+        Edit::AddSerialBefore { grade, node } => {
+            return grade::add(project, &grade, &node, grade::Beside::Before)
+        }
+        Edit::AppendNode { grade } => return grade::append_node(project, &grade),
+        Edit::AddParallel { grade, node } => {
+            return grade::add(project, &grade, &node, grade::Beside::Parallel)
+        }
+        Edit::AddLayer { grade, node } => {
+            return grade::add(project, &grade, &node, grade::Beside::Layer)
+        }
+        Edit::ExtractNode { grade, node } => return grade::extract(project, &grade, &node),
+        Edit::ResetNode { grade, node } => return grade::reset(project, &grade, &node),
+        Edit::CopyGrade { from, to } => return grade::copy_grade(project, &from, &to),
+        Edit::AppendGrade { from, to } => return grade::append_grade(project, &from, &to),
+        Edit::PasteValue {
+            from,
+            from_node,
+            to,
+            to_node,
+            param,
+        } => return grade::paste_value(project, (&from, &from_node), (&to, &to_node), &param),
+        Edit::PasteNode {
+            from,
+            from_node,
+            to,
+            to_node,
+        } => return grade::paste_node(project, (&from, &from_node), (&to, &to_node)),
+        edit => edit,
+    };
     input::check(&edit)?;
-    let timeline = timeline_of(&edit).clone();
+    let timeline = timeline_of(&edit)
+        .expect("an edit of a timeline names its timeline")
+        .clone();
     let mut work = Work::new(project, &timeline)?;
     match edit {
         Edit::Insert {
@@ -909,14 +1039,15 @@ pub(crate) fn run(project: &mut Project, edit: Edit) -> Result<Expansion, EditEr
             ..
         } => misc::add_track(&mut work, kind, index, name, language),
         Edit::RemoveTrack { track, .. } => misc::remove_track(&mut work, &track),
+        _ => unreachable!("the edits of grades are worked out above"),
     }?;
     work.finish()
 }
 
-/// The timeline that an edit is of.
+/// The timeline that an edit is of, or none for an edit of grades, which may be of none.
 #[must_use]
-pub fn timeline_of(edit: &Edit) -> &Id {
-    match edit {
+pub fn timeline_of(edit: &Edit) -> Option<&Id> {
+    let timeline = match edit {
         Edit::Insert { timeline, .. }
         | Edit::Overwrite { timeline, .. }
         | Edit::Replace { timeline, .. }
@@ -945,7 +1076,19 @@ pub fn timeline_of(edit: &Edit) -> &Id {
         | Edit::CuesFrom { timeline, .. }
         | Edit::AddTrack { timeline, .. }
         | Edit::RemoveTrack { timeline, .. } => timeline,
-    }
+        Edit::AddSerial { .. }
+        | Edit::AddSerialBefore { .. }
+        | Edit::AppendNode { .. }
+        | Edit::AddParallel { .. }
+        | Edit::AddLayer { .. }
+        | Edit::ExtractNode { .. }
+        | Edit::ResetNode { .. }
+        | Edit::CopyGrade { .. }
+        | Edit::AppendGrade { .. }
+        | Edit::PasteValue { .. }
+        | Edit::PasteNode { .. } => return None,
+    };
+    Some(timeline)
 }
 
 /// A change of a transaction: an operation, or an edit, which is told by its `edit` field.

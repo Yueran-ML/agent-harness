@@ -1,0 +1,246 @@
+{
+  "bins": [
+    {
+      "id": "b4",
+      "name": "Rushes",
+      "parent": null
+    }
+  ],
+  "media": [
+    {
+      "bin": null,
+      "facts": {
+        "audio": {
+          "channels": 2,
+          "codec": "aac",
+          "rate": 48000
+        },
+        "duration": {
+          "scale": 15360,
+          "ticks": 153600
+        },
+        "video": {
+          "bits": 8,
+          "codec": "h264",
+          "height": 1080,
+          "rate": {
+            "den": 1,
+            "num": 25
+          },
+          "rotation": 0,
+          "width": 1920
+        }
+      },
+      "id": "m1",
+      "identity": {
+        "digest": "0000000000000000000000000000000000000000000000000000000000000000",
+        "modified_us": 1790000000000000,
+        "size": 12500000
+      },
+      "mark_in": null,
+      "mark_out": null,
+      "name": "talk.mp4",
+      "path": "C:/media/talk.mp4"
+    }
+  ],
+  "next_id": 9,
+  "schema": 2,
+  "timelines": [
+    {
+      "height": 1080,
+      "id": "t1",
+      "name": "Timeline 1",
+      "rate": {
+        "den": 1,
+        "num": 25
+      },
+      "sample_rate": 48000,
+      "tracks": [
+        {
+          "clips": [
+            {
+              "enabled": true,
+              "fade_in": 0,
+              "fade_out": 0,
+              "gain_db": 0.0,
+              "id": "c1",
+              "length": 100,
+              "link": "g7",
+              "pan": 0.0,
+              "reverse": false,
+              "source": {
+                "in": {
+                  "scale": 15360,
+                  "ticks": 0
+                },
+                "kind": "media",
+                "media": "m1"
+              },
+              "speed": {
+                "den": 1,
+                "num": 1
+              },
+              "start": 0,
+              "transform": {
+                "opacity": 1.0,
+                "rotation": 0.0,
+                "scale": 1.0,
+                "x": 0.0,
+                "y": 0.0
+              }
+            },
+            {
+              "enabled": true,
+              "fade_in": 0,
+              "fade_out": 0,
+              "gain_db": 0.0,
+              "id": "c5",
+              "length": 50,
+              "link": null,
+              "pan": 0.0,
+              "reverse": false,
+              "source": {
+                "in": {
+                  "scale": 15360,
+                  "ticks": 61440
+                },
+                "kind": "media",
+                "media": "m1"
+              },
+              "speed": {
+                "den": 1,
+                "num": 1
+              },
+              "start": 100,
+              "transform": {
+                "opacity": 1.0,
+                "rotation": 0.0,
+                "scale": 1.0,
+                "x": 0.0,
+                "y": 0.0
+              }
+            }
+          ],
+          "enabled": true,
+          "id": "V1",
+          "kind": "video",
+          "locked": false,
+          "name": "V1",
+          "transitions": [
+            {
+              "align": "center",
+              "id": "x6",
+              "kind": "dissolve",
+              "left": "c1",
+              "length": 10,
+              "right": "c5"
+            }
+          ]
+        },
+        {
+          "clips": [
+            {
+              "enabled": true,
+              "fade_in": 0,
+              "fade_out": 0,
+              "gain_db": 0.0,
+              "id": "c8",
+              "length": 50,
+              "link": null,
+              "pan": 0.0,
+              "reverse": false,
+              "source": {
+                "kind": "title",
+                "style": {
+                  "align": "center",
+                  "color": "#ffffffff",
+                  "font": "",
+                  "size": 96,
+                  "x": 0.5,
+                  "y": 0.5
+                },
+                "text": "Hello"
+              },
+              "speed": {
+                "den": 1,
+                "num": 1
+              },
+              "start": 0,
+              "transform": {
+                "opacity": 1.0,
+                "rotation": 0.0,
+                "scale": 1.0,
+                "x": 0.0,
+                "y": 0.0
+              }
+            }
+          ],
+          "enabled": true,
+          "id": "V2",
+          "kind": "video",
+          "locked": false,
+          "name": "",
+          "transitions": []
+        },
+        {
+          "clips": [
+            {
+              "enabled": true,
+              "fade_in": 0,
+              "fade_out": 0,
+              "gain_db": 0.0,
+              "id": "c2",
+              "length": 100,
+              "link": "g7",
+              "pan": 0.0,
+              "reverse": false,
+              "source": {
+                "in": {
+                  "scale": 15360,
+                  "ticks": 0
+                },
+                "kind": "media",
+                "media": "m1"
+              },
+              "speed": {
+                "den": 1,
+                "num": 1
+              },
+              "start": 0,
+              "transform": {
+                "opacity": 1.0,
+                "rotation": 0.0,
+                "scale": 1.0,
+                "x": 0.0,
+                "y": 0.0
+              }
+            }
+          ],
+          "enabled": true,
+          "id": "A1",
+          "kind": "audio",
+          "locked": false,
+          "name": "A1",
+          "transitions": []
+        },
+        {
+          "cues": [
+            {
+              "id": "q3",
+              "length": 50,
+              "start": 0,
+              "text": "浣犲ソ"
+            }
+          ],
+          "enabled": true,
+          "id": "S1",
+          "kind": "subtitle",
+          "language": "zh",
+          "locked": false,
+          "name": ""
+        }
+      ],
+      "width": 1920
+    }
+  ]
+}

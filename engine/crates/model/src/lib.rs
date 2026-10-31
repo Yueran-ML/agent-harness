@@ -5,6 +5,7 @@
 
 pub mod color;
 pub mod edit;
+pub mod grade;
 pub mod history;
 pub mod ops;
 pub mod project;
@@ -18,6 +19,10 @@ pub use color::{
     LightLevel, Luminance, MasteringDisplay,
 };
 pub use edit::{expand, Change, CueItem, Edge, Edit, EditError, Expansion, Material, Straddling};
+pub use grade::{
+    Composite, Corrector, Grade, Group, Interp, Key, Kind, Link, Node, NodeKind, Param, Port,
+    Target,
+};
 pub use history::{Applied, Changed, History, Step, TransactionError, HISTORY_MOST};
 pub use ops::{apply, apply_done, Invalid, Op, OpError, LARGEST};
 pub use project::{

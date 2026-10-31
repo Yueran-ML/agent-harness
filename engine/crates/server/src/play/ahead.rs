@@ -398,7 +398,7 @@ mod tests {
             )
         };
         Some(Arc::new(Project {
-            schema: 2,
+            schema: columbina_model::SCHEMA,
             next_id: 20,
             bins: Vec::new(),
             media: vec![media],
@@ -431,7 +431,9 @@ mod tests {
                         align: Alignment::Center,
                     }],
                 }],
+                grade: columbina_model::Grade::default(),
             }],
+            groups: Vec::new(),
         }))
     }
 

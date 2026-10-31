@@ -3,24 +3,34 @@
 //!
 //! This is the form in which a project is written and read, by the engine and by every client
 //! of it, so the names of the fields are kept as they are. A field that is not known is refused,
-//! and so is one that is left out, but for the proxy of media; and so is a project of another
-//! schema. A project of schema 1 is read into this one by [`crate::upgrade`].
+//! and so is one that is left out, but for the proxy of media and what schema 3 adds; and so is
+//! a project of another schema. A project of schema 1 or 2 is read into this one by
+//! [`crate::upgrade`].
+//!
+//! Schema 3 added the grades of the Color page (see [`crate::grade`]): a grade on each clip and
+//! on each timeline, and the groups that clips are graded in. They are always written, and may
+//! be left out where a clip, a timeline or a project is read, as by a client that builds one
+//! without knowing grades: a clip or a timeline is then read with a grade that changes nothing
+//! and in no group, and a project with no groups. Settings of the whole project that come later
+//! within schema 3, such as its colour management, are fields that may be left out so too: a
+//! project written before them is read with the values that leave it as it was.
 
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::color::ColorFacts;
+use crate::grade::{Grade, Group};
 use crate::ops::Invalid;
 use crate::time::{Rate, Speed, Time};
 
 /// The schema of a project that this engine reads and writes.
-pub const SCHEMA: u32 = 2;
+pub const SCHEMA: u32 = 3;
 
 /// What a thing of a project is known by. It never changes.
 ///
-/// The id that the engine makes for a bin, media, a timeline, a clip, a transition, a subtitle
-/// or a group of linked clips is never made again, so it is never given to another thing by the
-/// engine. The id of a track is not kept so: it names the kind of the track and its place among
+/// The id that the engine makes for a bin, media, a timeline, a clip, a transition, a subtitle,
+/// a group of linked clips, a group of clips graded together or a node of a grade is never made
+/// again, so it is never given to another thing by the engine. The id of a track is not kept so: it names the kind of the track and its place among
 /// the tracks of that kind (`V1`, `A2`, `S1`), and a track that is added after `V2` was taken
 /// away may be `V2` again.
 pub type Id = String;
@@ -53,6 +63,8 @@ pub struct Project {
     pub media: Vec<Media>,
     /// The timelines of the project.
     pub timelines: Vec<Timeline>,
+    /// The groups that clips are graded in. It may be left out where a project is read.
+    pub groups: Vec<Group>,
 }
 
 /// A project as it is written, before it is checked.
@@ -64,6 +76,8 @@ struct RawProject {
     bins: Vec<Bin>,
     media: Vec<Media>,
     timelines: Vec<Timeline>,
+    #[serde(default)]
+    groups: Vec<Group>,
 }
 
 impl TryFrom<RawProject> for Project {
@@ -79,6 +93,7 @@ impl TryFrom<RawProject> for Project {
             bins: raw.bins,
             media: raw.media,
             timelines: raw.timelines,
+            groups: raw.groups,
         };
         project.validate()?;
         Ok(project)
@@ -247,6 +262,10 @@ pub struct Timeline {
     pub sample_rate: u32,
     /// Its tracks. Those of picture are stacked in their order, the first at the bottom.
     pub tracks: Vec<Track>,
+    /// Its grade, which colours the picture once its tracks are put together. It may be left out
+    /// where a timeline is read.
+    #[serde(default)]
+    pub grade: Grade,
 }
 
 /// What a track holds: picture, sound or subtitles.
@@ -407,6 +426,13 @@ pub struct Clip {
     pub fade_in: i64,
     /// How many frames its picture fades out over, or its sound falls over, to its end.
     pub fade_out: i64,
+    /// Its grade, which colours its picture before it is put on the tracks below it. It is kept
+    /// on a clip of sound too, as it was set. It may be left out where a clip is read.
+    #[serde(default)]
+    pub grade: Grade,
+    /// The group that it is graded in, if any. It may be left out where a clip is read.
+    #[serde(default)]
+    pub group: Option<Id>,
 }
 
 /// What a clip shows or plays.
@@ -636,6 +662,7 @@ impl Project {
             bins: vec![],
             media: vec![],
             timelines: vec![],
+            groups: vec![],
         }
     }
 
@@ -655,17 +682,20 @@ impl Project {
         Self::try_from(raw)
     }
 
-    /// Read a project of this schema, as [`Project::from_value`] does, or one of schema 1, as
-    /// [`crate::upgrade::from_schema_1`] does. Gives back whether it was of schema 1.
+    /// Read a project of this schema, as [`Project::from_value`] does, or one of an earlier
+    /// schema, as [`crate::upgrade::from_schema_1`] and [`crate::upgrade::from_schema_2`] do.
+    /// Gives back the schema that it was upgraded from, if it was.
     ///
     /// # Errors
-    /// It is not an object, it names no schema or one that is neither, it is not a project of
-    /// its schema, or it is not a valid one.
-    pub fn from_value_upgrading(value: serde_json::Value) -> Result<(Self, bool), ReadError> {
-        if schema_of(&value)? == 1 {
-            Ok((crate::upgrade::from_schema_1(value)?, true))
-        } else {
-            Ok((Self::from_value(value)?, false))
+    /// It is not an object, it names no schema or one that is none of these, it is not a project
+    /// of its schema, or it is not a valid one.
+    pub fn from_value_upgrading(
+        value: serde_json::Value,
+    ) -> Result<(Self, Option<u32>), ReadError> {
+        match schema_of(&value)? {
+            1 => Ok((crate::upgrade::from_schema_1(value)?, Some(1))),
+            2 => Ok((crate::upgrade::from_schema_2(value)?, Some(2))),
+            _ => Ok((Self::from_value(value)?, None)),
         }
     }
 }
@@ -698,6 +728,7 @@ impl Timeline {
             height: 1080,
             sample_rate: 48000,
             tracks: vec![],
+            grade: Grade::default(),
         }
     }
 }
@@ -731,7 +762,8 @@ impl Track {
 
 impl Clip {
     /// A clip of `source` at `start` for `length` frames, played as it is: seen and heard, at its
-    /// speed, forward, in no group, not moved, at its loudness, in the middle, and not faded.
+    /// speed, forward, in no group, not moved, at its loudness, in the middle, not faded and not
+    /// graded.
     #[must_use]
     pub fn new(id: impl Into<Id>, source: Source, start: i64, length: i64) -> Self {
         Self {
@@ -748,6 +780,8 @@ impl Clip {
             pan: 0.0,
             fade_in: 0,
             fade_out: 0,
+            grade: Grade::default(),
+            group: None,
         }
     }
 
@@ -865,6 +899,7 @@ impl Project {
                 mark_out: None,
             }],
             timelines: vec![timeline],
+            groups: vec![],
         }
     }
 }
@@ -892,10 +927,12 @@ mod tests {
                 "pan": 0.0,
                 "fade_in": 0,
                 "fade_out": 0,
+                "grade": { "nodes": [], "links": [{ "from": "source", "to": "output", "kind": "rgb", "input": 0 }] },
+                "group": null,
             })
         };
         let expected = serde_json::json!({
-            "schema": 2,
+            "schema": 3,
             "next_id": 3,
             "bins": [],
             "media": [{
@@ -950,7 +987,9 @@ mod tests {
                         "transitions": [],
                     },
                 ],
+                "grade": { "nodes": [], "links": [{ "from": "source", "to": "output", "kind": "rgb", "input": 0 }] },
             }],
+            "groups": [],
         });
         assert_eq!(written, expected);
     }
@@ -1000,9 +1039,9 @@ mod tests {
 
         // One of another schema.
         let mut value = serde_json::to_value(Project::sample()).unwrap();
-        value["schema"] = 3.into();
+        value["schema"] = 4.into();
         let error = serde_json::from_value::<Project>(value).unwrap_err();
-        assert!(error.to_string().contains("schema 3"), "{error}");
+        assert!(error.to_string().contains("schema 4"), "{error}");
 
         // One that validate puts right.
         let mut value = serde_json::to_value(Project::sample()).unwrap();
@@ -1152,6 +1191,22 @@ mod tests {
             error.to_string().contains("missing field `link`"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn what_schema_3_adds_may_be_left_out_and_is_read_as_changing_nothing() {
+        let mut value = serde_json::to_value(Project::sample()).unwrap();
+        value.as_object_mut().unwrap().remove("groups");
+        let timeline = value["timelines"][0].as_object_mut().unwrap();
+        timeline.remove("grade");
+        for track in timeline["tracks"].as_array_mut().unwrap() {
+            for clip in track["clips"].as_array_mut().unwrap() {
+                let clip = clip.as_object_mut().unwrap();
+                clip.remove("grade");
+                clip.remove("group");
+            }
+        }
+        assert_eq!(Project::from_value(value).unwrap(), Project::sample());
     }
 
     #[test]

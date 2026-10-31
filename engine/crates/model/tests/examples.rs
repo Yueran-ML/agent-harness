@@ -8,9 +8,11 @@
 
 use std::path::Path;
 
+use columbina_model::grade::{Interp, Key, Kind, Link, Node, Port, Target};
 use columbina_model::{
-    apply, apply_done, Alignment, Bin, Clip, Cue, Op, Project, Proxy, Rate, Rgba, Source, Speed,
-    TextAlign, Time, TitleStyle, Track, TrackKind, Transform, Transition, TransitionKind,
+    apply, apply_done, Alignment, Bin, Clip, Cue, Grade, Group, Op, Project, Proxy, Rate, Rgba,
+    Source, Speed, TextAlign, Time, TitleStyle, Track, TrackKind, Transform, Transition,
+    TransitionKind,
 };
 
 const FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/ops-examples.json");
@@ -216,7 +218,7 @@ fn examples() -> Vec<(&'static str, Vec<Op>, Op)> {
         },
         index: None,
     };
-    vec![
+    let mut all = vec![
         (
             "add_media",
             vec![],
@@ -534,6 +536,216 @@ fn examples() -> Vec<(&'static str, Vec<Op>, Op)> {
                 text: Some("你好！".into()),
             },
         ),
+    ];
+    all.extend(grade_examples());
+    all
+}
+
+/// The grade of c1.
+fn c1() -> Target {
+    Target::Clip {
+        timeline: "t1".into(),
+        clip: "c1".into(),
+    }
+}
+
+/// Put a corrector, n9 in the base, between the source and the output of the grade of c1.
+fn first_node() -> Op {
+    Op::AddNode {
+        grade: c1(),
+        node: Node::corrector(""),
+        index: None,
+        links: vec![Link::rgb("source", ""), Link::rgb("", "output")],
+    }
+}
+
+/// Add group k9 (k10 after `first_node`), with no clip in it.
+fn group(name: &str) -> Op {
+    Op::AddGroup {
+        group: Group::new("", name),
+        index: None,
+    }
+}
+
+/// The examples of the operations on grades and groups.
+#[allow(clippy::too_many_lines)]
+fn grade_examples() -> Vec<(&'static str, Vec<Op>, Op)> {
+    let after_n9 = Op::AddNode {
+        grade: c1(),
+        node: Node::corrector(""),
+        index: None,
+        links: vec![Link::rgb("n9", ""), Link::rgb("", "output")],
+    };
+    let keys = vec![
+        Key {
+            frame: 0,
+            value: 1.0,
+            interp: Interp::Linear,
+        },
+        Key {
+            frame: 50,
+            value: 1.4,
+            interp: Interp::Bezier {
+                out: [0.33, 0.0],
+                into: [0.33, 0.0],
+            },
+        },
+        Key {
+            frame: 100,
+            value: 1.2,
+            interp: Interp::Hold,
+        },
+    ];
+    let mut graded = Grade {
+        nodes: vec![Node::corrector("n3"), Node::new("n4", Kind::LayerMixer)],
+        links: vec![
+            Link::rgb("source", "n3"),
+            Link::rgb("n3", "n4"),
+            Link {
+                from: "source".into(),
+                to: "n4".into(),
+                kind: Port::Rgb,
+                input: 1,
+            },
+            Link::rgb("n4", "output"),
+        ],
+    };
+    graded.nodes[0].label = "Look".into();
+    vec![
+        (
+            "add_node between the source and the output",
+            vec![],
+            first_node(),
+        ),
+        (
+            "add_node of a parallel mixer, unlinked, at the start",
+            vec![first_node()],
+            Op::AddNode {
+                grade: Target::Timeline {
+                    timeline: "t1".into(),
+                },
+                node: Node::new("", Kind::ParallelMixer),
+                index: Some(0),
+                links: vec![],
+            },
+        ),
+        (
+            "remove_node, bridged",
+            vec![first_node(), after_n9.clone()],
+            Op::RemoveNode {
+                grade: c1(),
+                id: "n9".into(),
+                links: None,
+            },
+        ),
+        (
+            "remove_node with the links to put in its place",
+            vec![first_node(), after_n9.clone()],
+            Op::RemoveNode {
+                grade: c1(),
+                id: "n10".into(),
+                links: Some(vec![]),
+            },
+        ),
+        (
+            "connect a key",
+            vec![first_node(), after_n9.clone()],
+            Op::Connect {
+                grade: c1(),
+                link: Link {
+                    from: "n9".into(),
+                    to: "n10".into(),
+                    kind: Port::Key,
+                    input: 0,
+                },
+            },
+        ),
+        (
+            "connect in place of a link",
+            vec![first_node()],
+            Op::Connect {
+                grade: c1(),
+                link: Link::rgb("source", "output"),
+            },
+        ),
+        (
+            "disconnect",
+            vec![first_node()],
+            Op::Disconnect {
+                grade: c1(),
+                to: "output".into(),
+                kind: Port::Rgb,
+                input: 0,
+            },
+        ),
+        (
+            "set_node",
+            vec![first_node()],
+            Op::SetNode {
+                grade: c1(),
+                id: "n9".into(),
+                label: Some("Skin".into()),
+                enabled: Some(false),
+                params: Some(serde_json::json!({
+                    "primaries": {"saturation": 60, "lift": {"r": -0.05}},
+                    "lut": "LUTs/film.cube",
+                })),
+            },
+        ),
+        (
+            "set_node with keyframes",
+            vec![first_node()],
+            Op::SetNode {
+                grade: c1(),
+                id: "n9".into(),
+                label: None,
+                enabled: None,
+                params: Some(serde_json::json!({"primaries": {"contrast": {"keys": keys}}})),
+            },
+        ),
+        (
+            "set_grade of a timeline",
+            vec![],
+            Op::SetGrade {
+                grade: Target::Timeline {
+                    timeline: "t1".into(),
+                },
+                value: graded,
+            },
+        ),
+        ("add_group", vec![], group("Interview")),
+        (
+            "remove_group",
+            vec![group("Interview")],
+            Op::RemoveGroup { id: "k9".into() },
+        ),
+        (
+            "set_group",
+            vec![group("Interview")],
+            Op::SetGroup {
+                id: "k9".into(),
+                name: Some("Exteriors".into()),
+            },
+        ),
+        (
+            "set_clip_group",
+            vec![group("Interview")],
+            Op::SetClipGroup {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                group: Some("k9".into()),
+            },
+        ),
+        (
+            "add_node to the pre-clip grade of a group",
+            vec![group("Interview")],
+            Op::AddNode {
+                grade: Target::PreClip { group: "k9".into() },
+                node: Node::corrector(""),
+                index: None,
+                links: vec![Link::rgb("source", ""), Link::rgb("", "output")],
+            },
+        ),
     ]
 }
 
@@ -602,6 +814,16 @@ fn the_examples_of_the_operations_are_as_the_engine_applies_them() {
         "remove_cue",
         "set_cue",
         "shift_cues",
+        "add_node",
+        "remove_node",
+        "connect",
+        "disconnect",
+        "set_node",
+        "set_grade",
+        "add_group",
+        "remove_group",
+        "set_group",
+        "set_clip_group",
     ] {
         assert!(names.iter().any(|name| name == op), "no example of {op}");
     }

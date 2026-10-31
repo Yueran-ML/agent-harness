@@ -114,12 +114,17 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize, Serializer};
 
+use crate::grade::{Grade, Group, Link, Node, Port, Target, LONGEST_LABEL, MOST_INPUTS};
 use crate::project::{
     Alignment, Bin, Clip, Cue, Id, Media, Project, Proxy, Source, Timeline, Track, TrackKind,
     Transform, Transition, TransitionKind,
 };
 use crate::span;
 use crate::time::{Rate, Speed, Time};
+
+mod grade;
+
+pub(crate) use grade::{grade_at, reserve_node_ids};
 
 /// The largest integer that JavaScript holds exactly, 2^53 - 1. No integer that an operation
 /// writes into a project is further than this from 0.
@@ -129,7 +134,7 @@ pub const LARGEST: i64 = (1 << 53) - 1;
 const LARGEST_COUNT: u64 = LARGEST.unsigned_abs();
 
 /// The letters of the ids that the engine makes with `next_id`.
-const NUMBERED: [char; 7] = ['b', 'm', 't', 'c', 'x', 'q', 'g'];
+const NUMBERED: [char; 9] = ['b', 'm', 't', 'c', 'x', 'q', 'g', 'n', 'k'];
 
 /// The most characters of the text of a title or a subtitle.
 const LONGEST_TEXT: usize = 1000;
@@ -464,6 +469,110 @@ pub enum Op {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         text: Option<String>,
     },
+    /// Add a node to a grade, at `index` in its list of nodes or at the end, with links that
+    /// each come from it or go into it. A link into an input that has one already takes its
+    /// place, as dropping a connection on an input does in `DaVinci` (p. 3319).
+    AddNode {
+        /// The grade.
+        grade: Target,
+        /// The node, with an empty id for the engine to give it one.
+        node: Node,
+        /// Where it goes in the list of nodes.
+        #[serde(default)]
+        index: Option<usize>,
+        /// Its links, which name it by its id as it is given here: by an empty id where it has
+        /// none yet.
+        #[serde(default)]
+        links: Vec<Link>,
+    },
+    /// Take a node away from a grade, with its links. What came into it is linked to what it
+    /// went into, as `DaVinci` links the nodes on either side of a deleted node (p. 3318); or,
+    /// where `links` is given, those links are put into the inputs that it went into instead.
+    RemoveNode {
+        /// The grade.
+        grade: Target,
+        /// The node.
+        id: Id,
+        /// The links to put into the inputs that it went into, or none for the bridge of
+        /// `DaVinci`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        links: Option<Vec<Link>>,
+    },
+    /// Link an output to an input of a grade, in place of the link that the input had.
+    Connect {
+        /// The grade.
+        grade: Target,
+        /// The link.
+        link: Link,
+    },
+    /// Take away the link into an input of a grade.
+    Disconnect {
+        /// The grade.
+        grade: Target,
+        /// The node, or `output`, whose input it goes into.
+        to: Id,
+        /// What it carries.
+        kind: Port,
+        /// The input.
+        input: u32,
+    },
+    /// Set the settings of a node of a grade that are given.
+    SetNode {
+        /// The grade.
+        grade: Target,
+        /// The node.
+        id: Id,
+        /// Its label.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        /// Whether it does what it is set to.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enabled: Option<bool>,
+        /// Its settings that change, as an object of the fields of its `params` that change:
+        /// each object within it is put into the object of that name, and any other value takes
+        /// the place of the one there, whole.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        params: Option<serde_json::Value>,
+    },
+    /// Put a grade in place of a grade, whole, as copying a grade does.
+    SetGrade {
+        /// The grade that is replaced.
+        grade: Target,
+        /// What it becomes. Its nodes have their ids.
+        value: Grade,
+    },
+    /// Add a group of clips that are graded together, at `index` in the list of groups or at
+    /// the end.
+    AddGroup {
+        /// The group, with an empty id for the engine to give it one.
+        group: Group,
+        /// Where it goes in the list of groups.
+        #[serde(default)]
+        index: Option<usize>,
+    },
+    /// Take away a group that no clip is in.
+    RemoveGroup {
+        /// The group.
+        id: Id,
+    },
+    /// Set the settings of a group that are given. Its grades are set with `set_grade` and the
+    /// operations on nodes.
+    SetGroup {
+        /// The group.
+        id: Id,
+        /// Its name.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
+    /// Put a clip in a group, or take it out of the one that it is in.
+    SetClipGroup {
+        /// The timeline of the clip.
+        timeline: Id,
+        /// The clip.
+        clip: Id,
+        /// The group, or `null` for none.
+        group: Option<Id>,
+    },
 }
 
 /// Read a field of a change that may be `null`, to take a thing away, as well as left out, to
@@ -483,7 +592,7 @@ fn nullable<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum OpError {
     /// A thing that the operation names is not there. `what` is `bin`, `media`, `timeline`,
-    /// `track`, `clip`, `transition` or `cue`.
+    /// `track`, `clip`, `transition`, `cue`, `group`, `node` or `link`.
     #[error("there is no {what} {id}")]
     Missing {
         /// The kind of the thing.
@@ -712,6 +821,58 @@ pub enum OpError {
         /// A bin or media that it holds.
         holds: Id,
     },
+    /// A link comes from an output, or goes into an input, that a node or an end of a grade
+    /// does not have: `input` is none for an output.
+    #[error("{node} has no {} {}", .kind.name(), port_name(*.input))]
+    NoPort {
+        /// The node, `source` or `output`.
+        node: Id,
+        /// What the link carries.
+        kind: Port,
+        /// The input, or none for the output.
+        input: Option<u32>,
+    },
+    /// Two links of a grade go into one input.
+    #[error("two links go into {} input {input} of {node}", .kind.name())]
+    InputTaken {
+        /// The node or `output`.
+        node: Id,
+        /// What the links carry.
+        kind: Port,
+        /// The input.
+        input: u32,
+    },
+    /// The links of a grade would go round in a loop.
+    #[error("the links would go round in a loop through node {node}")]
+    Loop {
+        /// A node on the loop.
+        node: Id,
+    },
+    /// A group that a clip is in is to be taken away. The clip is to be taken out of it first.
+    #[error("clip {clip} is in group {group}")]
+    Grouped {
+        /// The group.
+        group: Id,
+        /// A clip in it.
+        clip: Id,
+    },
+    /// The settings that a node is to be set to are not those of a node of its kind.
+    #[error("the settings of node {node} cannot be set so: {why}")]
+    Params {
+        /// The node.
+        node: Id,
+        /// What is wrong with them.
+        why: String,
+    },
+    /// A node is not of a kind that the change can be made to or about. `kind` is the kind
+    /// that it is, or `source` or `output`.
+    #[error("node {node} is a {kind}, which this cannot be done to")]
+    WrongNode {
+        /// The node.
+        node: Id,
+        /// Its kind.
+        kind: &'static str,
+    },
 }
 
 /// Why a project that is read is not one that the operations can work on: the thing of it that
@@ -720,7 +881,7 @@ pub enum OpError {
 #[error("{} {}", thing_of(.what, .id), .error)]
 pub struct Invalid {
     /// The kind of the thing: `project`, `bin`, `media`, `timeline`, `track`, `clip`,
-    /// `transition` or `cue`.
+    /// `transition`, `cue` or `group`.
     pub what: &'static str,
     /// Its id, which is empty for the project.
     pub id: Id,
@@ -744,37 +905,139 @@ impl Serialize for OpError {
 #[derive(Serialize)]
 #[serde(remote = "OpError", tag = "reason", rename_all = "snake_case")]
 enum Fields {
-    Missing { what: &'static str, id: Id },
-    Taken { what: &'static str, id: Id },
-    OutOfList { at: usize, len: usize },
-    NoStream { media: Id, kind: TrackKind },
-    WrongKind { track: Id, kind: TrackKind },
-    WrongTrack { what: &'static str, kind: TrackKind },
-    OutOfSource { media: Id, why: &'static str },
-    Scale { scale: u32, media_scale: u32 },
-    Overlap { with: Id },
-    CueOverlap { with: Id },
-    SubtitleShown { track: Id },
-    OutOfTimeline { start: i64 },
-    InUse { id: Id, by: Id },
-    TooLarge { what: &'static str },
-    OutOfRange { what: &'static str },
+    Missing {
+        what: &'static str,
+        id: Id,
+    },
+    Taken {
+        what: &'static str,
+        id: Id,
+    },
+    OutOfList {
+        at: usize,
+        len: usize,
+    },
+    NoStream {
+        media: Id,
+        kind: TrackKind,
+    },
+    WrongKind {
+        track: Id,
+        kind: TrackKind,
+    },
+    WrongTrack {
+        what: &'static str,
+        kind: TrackKind,
+    },
+    OutOfSource {
+        media: Id,
+        why: &'static str,
+    },
+    Scale {
+        scale: u32,
+        media_scale: u32,
+    },
+    Overlap {
+        with: Id,
+    },
+    CueOverlap {
+        with: Id,
+    },
+    SubtitleShown {
+        track: Id,
+    },
+    OutOfTimeline {
+        start: i64,
+    },
+    InUse {
+        id: Id,
+        by: Id,
+    },
+    TooLarge {
+        what: &'static str,
+    },
+    OutOfRange {
+        what: &'static str,
+    },
     ZeroRate,
-    NegativeDuration { ticks: i64 },
-    Reserved { id: Id },
+    NegativeDuration {
+        ticks: i64,
+    },
+    Reserved {
+        id: Id,
+    },
     IdsExhausted,
-    Dollar { id: Id },
+    Dollar {
+        id: Id,
+    },
     NoId,
-    NotAbsolute { path: String },
-    NotAProxyPath { path: String },
-    HasTransition { transition: Id },
-    NotAdjacent { left: Id, right: Id },
-    CutTaken { with: Id },
-    TooLong { transition: Id, clip: Id },
-    Source { clip: Id },
-    Cycle { bin: Id },
-    FadeAtTransition { clip: Id, edge: &'static str },
-    NotEmpty { bin: Id, holds: Id },
+    NotAbsolute {
+        path: String,
+    },
+    NotAProxyPath {
+        path: String,
+    },
+    HasTransition {
+        transition: Id,
+    },
+    NotAdjacent {
+        left: Id,
+        right: Id,
+    },
+    CutTaken {
+        with: Id,
+    },
+    TooLong {
+        transition: Id,
+        clip: Id,
+    },
+    Source {
+        clip: Id,
+    },
+    Cycle {
+        bin: Id,
+    },
+    FadeAtTransition {
+        clip: Id,
+        edge: &'static str,
+    },
+    NotEmpty {
+        bin: Id,
+        holds: Id,
+    },
+    NoPort {
+        node: Id,
+        kind: Port,
+        input: Option<u32>,
+    },
+    InputTaken {
+        node: Id,
+        kind: Port,
+        input: u32,
+    },
+    Loop {
+        node: Id,
+    },
+    Grouped {
+        group: Id,
+        clip: Id,
+    },
+    Params {
+        node: Id,
+        why: String,
+    },
+    WrongNode {
+        node: Id,
+        kind: &'static str,
+    },
+}
+
+/// How [`OpError::NoPort`] names the input or the output.
+fn port_name(input: Option<u32>) -> String {
+    match input {
+        Some(input) => format!("input {input}"),
+        None => "output".into(),
+    }
 }
 
 /// How [`Invalid`] names the thing that is wrong.
@@ -825,6 +1088,13 @@ fn range_message(what: &str) -> String {
         "clips" => "it names no clip".into(),
         "cues" => "it names no subtitle".into(),
         "digest" => "the digest is not 64 lowercase hexadecimal digits".into(),
+        "label" => format!("the label or name is longer than {LONGEST_LABEL} characters"),
+        "inputs" => format!("a mixer does not have from 1 to {MOST_INPUTS} inputs"),
+        "links" => "a link of the node does not come from it or go into it, or two go into one \
+                    input, or one goes into an input that the node did not go into"
+            .into(),
+        "lut" => "the path of the LUT is empty, too long or holds a NUL".into(),
+        "param" => "the node has no such setting".into(),
         _ => format!("the {what} is out of its range"),
     }
 }
@@ -1002,6 +1272,36 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
             length,
             text,
         } => set_cue(project, &timeline, &id, start, length, text),
+        Op::AddNode {
+            grade,
+            node,
+            index,
+            links,
+        } => grade::add_node(project, &grade, node, index, links),
+        Op::RemoveNode { grade, id, links } => grade::remove_node(project, &grade, &id, links),
+        Op::Connect { grade, link } => grade::connect(project, &grade, link),
+        Op::Disconnect {
+            grade,
+            to,
+            kind,
+            input,
+        } => grade::disconnect(project, &grade, &to, kind, input),
+        Op::SetNode {
+            grade,
+            id,
+            label,
+            enabled,
+            params,
+        } => grade::set_node(project, &grade, &id, label, enabled, params.as_ref()),
+        Op::SetGrade { grade, value } => grade::set_grade(project, &grade, value),
+        Op::AddGroup { group, index } => grade::add_group(project, group, index),
+        Op::RemoveGroup { id } => grade::remove_group(project, &id),
+        Op::SetGroup { id, name } => grade::set_group(project, &id, name),
+        Op::SetClipGroup {
+            timeline,
+            clip,
+            group,
+        } => grade::set_clip_group(project, &timeline, &clip, group),
     }
 }
 
@@ -1030,11 +1330,19 @@ pub fn apply_done(project: &mut Project, op: Op) -> Result<(Op, Op), OpError> {
         | Op::InsertClip { .. }
         | Op::AddBin { .. }
         | Op::AddTransition { .. }
-        | Op::AddCue { .. } => None,
+        | Op::AddCue { .. }
+        | Op::AddGroup { .. } => None,
         _ => Some(op.clone()),
     };
     let inverse = apply(project, op)?;
     let done = match kept {
+        // The operations on grades that the engine fills in are read back from the project.
+        Some(
+            op @ (Op::AddNode { .. }
+            | Op::RemoveNode { .. }
+            | Op::SetNode { .. }
+            | Op::SetGrade { .. }),
+        ) => grade::done(project, op, &inverse),
         // A group that the engine made is named as it was made.
         Some(Op::SetClip {
             timeline,
@@ -1136,6 +1444,13 @@ fn added(project: &Project, inverse: &Op) -> Option<Op> {
                 cue: t.tracks[r].cues[at].clone(),
             })
         }
+        Op::RemoveGroup { id } => {
+            let at = project.groups.iter().position(|k| k.id == *id)?;
+            Some(Op::AddGroup {
+                group: project.groups[at].clone(),
+                index: Some(at),
+            })
+        }
         _ => None,
     }
 }
@@ -1209,6 +1524,9 @@ fn add_timeline(
         counter.check(&timeline.id)?;
     }
     let mut claims = claim(project, &counter, &[], &timeline.tracks)?;
+    timeline.grade.sort_links();
+    grade::check_ids(&counter, &timeline.grade)?;
+    timeline.grade.check()?;
     if timeline.id.is_empty() {
         timeline.id = counter.make('t', held)?;
     }
@@ -1296,6 +1614,8 @@ fn insert_clip(
         counter.check(&clip.id)?;
     }
     link(&mut counter, &mut clip.link, &links_of(project))?;
+    clip.grade.sort_links();
+    grade::check_ids(&counter, &clip.grade)?;
     check_clip(project, timeline.rate, track.kind, &clip)?;
     check_room(&track.clips, &clip)?;
     let id = clip.id.clone();
@@ -2163,6 +2483,7 @@ fn claim(
                 counter.check(group)?;
                 claims.groups.insert(group.clone());
             }
+            grade::check_ids(counter, &clip.grade)?;
         }
         for transition in &track.transitions {
             fresh("transition", &transition.id, &mut claims.transitions)?;
@@ -2265,9 +2586,13 @@ fn one_shown(tracks: &[Track]) -> Result<(), (&Track, OpError)> {
 }
 
 /// Put the clips of a track in the order of their start, its transitions in the order of their
-/// cuts, and its subtitles in the order of their start.
+/// cuts, its subtitles in the order of their start, and the links of the grades of its clips in
+/// the order of the inputs that they go into.
 fn order(track: &mut Track) {
     track.clips.sort_by_key(|c| c.start);
+    for clip in &mut track.clips {
+        clip.grade.sort_links();
+    }
     let starts: HashMap<&str, i64> = track
         .clips
         .iter()
@@ -2414,7 +2739,13 @@ fn check_clip(project: &Project, rate: Rate, kind: TrackKind, clip: &Clip) -> Re
         }
         (Source::Media { .. }, None) => unreachable!("the media of a clip was found above"),
     }
-    Ok(())
+    clip.grade.check()?;
+    match &clip.group {
+        Some(group) if !project.groups.iter().any(|k| k.id == *group) => {
+            Err(missing("group", group))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Check how a clip that lasts at least a frame is played: its speed, transform, gain, pan,
@@ -2919,14 +3250,16 @@ impl Project {
     /// Everything is checked that an operation checks of what it adds: each clip as
     /// [`Op::InsertClip`] checks it, each media as [`Op::AddMedia`] does, the settings of each
     /// timeline, each track with its transitions and subtitles, that a timeline shows at most one
-    /// track of subtitles, the bins, and every integer against [`LARGEST`]. Every thing has an
-    /// id, and no two things of a kind share one: bins, media and timelines in the project,
-    /// tracks in their timeline, and clips, transitions and subtitles in the project.
+    /// track of subtitles, the bins, the groups, every grade, and every integer against
+    /// [`LARGEST`]. Every thing has an id, and no two things of a kind share one: bins, media,
+    /// timelines and groups in the project, tracks in their timeline, clips, transitions and
+    /// subtitles in the project, and nodes in their grade.
     ///
     /// Two things are put right rather than refused. The things of each track are put in order:
     /// its clips and subtitles in the order of their start, and its transitions in the order of
-    /// their cuts. `next_id` is raised above the number of every id of the project that the
-    /// engine could have made, so that the engine never makes such an id again.
+    /// their cuts; and the links of each grade in the order of the inputs that they go into.
+    /// `next_id` is raised above the number of every id of the project that the engine could
+    /// have made, so that the engine never makes such an id again.
     ///
     /// # Errors
     /// A thing of the project is not as an operation would have made it. The things of the
@@ -2936,6 +3269,11 @@ impl Project {
             for track in &mut timeline.tracks {
                 order(track);
             }
+            timeline.grade.sort_links();
+        }
+        for group in &mut self.groups {
+            group.pre.sort_links();
+            group.post.sort_links();
         }
         self.check_all()?;
         let bins = self.bins.iter().map(|b| &b.id);
@@ -2947,7 +3285,15 @@ impl Project {
         let clip_ids = clips.clone().map(|c| &c.id);
         let groups = clips.filter_map(|c| c.link.as_ref());
         let transitions = tracks.clone().flat_map(|r| &r.transitions).map(|x| &x.id);
-        let cues = tracks.flat_map(|r| &r.cues).map(|q| &q.id);
+        let cues = tracks.clone().flat_map(|r| &r.cues).map(|q| &q.id);
+        let grade_groups = self.groups.iter().map(|k| &k.id);
+        let grades = self
+            .timelines
+            .iter()
+            .map(|t| &t.grade)
+            .chain(tracks.flat_map(|r| &r.clips).map(|c| &c.grade))
+            .chain(self.groups.iter().flat_map(|k| [&k.pre, &k.post]));
+        let nodes = grades.flat_map(|g| &g.nodes).map(|n| &n.id);
         let highest = bins
             .chain(media)
             .chain(timelines)
@@ -2956,6 +3302,8 @@ impl Project {
             .chain(groups)
             .chain(transitions)
             .chain(cues)
+            .chain(grade_groups)
+            .chain(nodes)
             .filter_map(|id| engine_number(id))
             .max();
         if let Some(highest) = highest {
@@ -2987,6 +3335,11 @@ impl Project {
             named("media", &media.id, &mut media_ids)?;
             check_media(self, media).map_err(wrong("media", &media.id))?;
         }
+        let mut group_ids = HashSet::new();
+        for group in &self.groups {
+            named("group", &group.id, &mut group_ids)?;
+            grade::check_group(group).map_err(wrong("group", &group.id))?;
+        }
         let mut timeline_ids = HashSet::new();
         let mut clip_ids = HashSet::new();
         let mut transition_ids = HashSet::new();
@@ -2994,6 +3347,10 @@ impl Project {
         for timeline in &self.timelines {
             named("timeline", &timeline.id, &mut timeline_ids)?;
             check_settings(timeline).map_err(wrong("timeline", &timeline.id))?;
+            timeline
+                .grade
+                .check()
+                .map_err(wrong("timeline", &timeline.id))?;
             let mut track_ids = HashSet::new();
             for track in &timeline.tracks {
                 named("track", &track.id, &mut track_ids)?;
@@ -4174,9 +4531,12 @@ mod tests {
                         "pan": 0.0,
                         "fade_in": 0,
                         "fade_out": 0,
+                        "grade": { "nodes": [], "links": [{ "from": "source", "to": "output", "kind": "rgb", "input": 0 }] },
+                        "group": null,
                     }],
                     "transitions": [],
                 }],
+                "grade": { "nodes": [], "links": [{ "from": "source", "to": "output", "kind": "rgb", "input": 0 }] },
             },
             "index": 1,
         });

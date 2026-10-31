@@ -7,6 +7,7 @@
 //! <project>/
 //!   project.json      the project
 //!   project.schema1.json  the project as it was, where it was of schema 1 when first opened
+//!   project.schema2.json  the project as it was, where it was of schema 2 when first opened
 //!   engine.lock       the engine that has it open: {"pid", "address", "started"}
 //!   cache/            what the engine has found out about the media, kept to be used again
 //!     engine.guard    the file whose lock of the system is the lock of the project
@@ -27,5 +28,6 @@ mod store;
 pub use lock::{Lock, LockError, LockInfo, GUARD_FILE, LOCK_FILE};
 pub use saver::{Saver, SAVE_PERIOD};
 pub use store::{
-    schema_1_file_of, Store, StoreError, CACHE_DIR, PROJECT_FILE, PROJECT_TMP, SCHEMA_1_FILE,
+    old_schema_file, old_schema_file_of, schema_1_file_of, Store, StoreError, CACHE_DIR,
+    PROJECT_FILE, PROJECT_TMP, SCHEMA_1_FILE,
 };

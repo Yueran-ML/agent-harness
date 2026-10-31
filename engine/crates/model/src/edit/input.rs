@@ -50,7 +50,18 @@ pub(super) fn check(edit: &Edit) -> Result<(), OpError> {
         | Edit::SetSpeed { .. }
         | Edit::RemoveCue { .. }
         | Edit::AddTrack { .. }
-        | Edit::RemoveTrack { .. } => Ok(()),
+        | Edit::RemoveTrack { .. }
+        | Edit::AddSerial { .. }
+        | Edit::AddSerialBefore { .. }
+        | Edit::AppendNode { .. }
+        | Edit::AddParallel { .. }
+        | Edit::AddLayer { .. }
+        | Edit::ExtractNode { .. }
+        | Edit::ResetNode { .. }
+        | Edit::CopyGrade { .. }
+        | Edit::AppendGrade { .. }
+        | Edit::PasteValue { .. }
+        | Edit::PasteNode { .. } => Ok(()),
     }
 }
 

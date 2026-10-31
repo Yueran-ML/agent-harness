@@ -12,6 +12,8 @@ use columbina_model::{
 };
 use proptest::prelude::*;
 
+pub mod grades;
+
 /// The rates of the timelines that are added.
 const RATES: [Rate; 3] = [
     Rate { num: 25, den: 1 },
@@ -26,11 +28,12 @@ const RATES: [Rate; 3] = [
 ];
 
 /// The kinds of operation, as `op_of` numbers them, each as often as it is wanted: clips are
-/// put in, moved, trimmed and set most often, and timelines are taken away least.
-const KINDS: [u8; 55] = [
+/// put in, moved, trimmed and set most often, and timelines are taken away least. 27 is an
+/// operation on grades or groups.
+const KINDS: [u8; 61] = [
     0, 0, 1, 2, 3, 4, 4, 5, 6, 6, 6, 6, 6, 6, 7, 7, 8, 8, 8, 8, 9, 9, 9, 9, 10, 10, 11, 12, 12, 13,
     13, 13, 13, 14, 15, 16, 17, 17, 18, 18, 18, 19, 20, 20, 21, 21, 22, 23, 24, 24, 24, 25, 26, 26,
-    26,
+    26, 27, 27, 27, 27, 27, 27,
 ];
 
 /// The speeds that a clip is set to, the last of them too slow.
@@ -280,6 +283,7 @@ pub fn op_of(project: &Project, spec: &Spec) -> Op {
         22 | 23 => cue_op_of(project, spec, kind),
         24 => insert_after_of(project, spec, chosen),
         26 => shift_of(spec, chosen, clip_timeline, clip_id),
+        27 => grades::grade_op_of(project, [spec.a, spec.b, spec.c, spec.d]),
         _ => {
             let Op::InsertClip {
                 timeline,
@@ -1092,11 +1096,55 @@ pub fn check(project: &Project) {
     for bin in &project.bins {
         note(&bin.id);
     }
+    for group in &project.groups {
+        note(&group.id);
+    }
+    for target in grades::targets(project) {
+        let grade = grades::grade_of(project, &target).unwrap();
+        let mut nodes = HashSet::new();
+        for node in &grade.nodes {
+            note(&node.id);
+            assert!(
+                nodes.insert(node.id.as_str()),
+                "node {} twice in {target:?}",
+                node.id
+            );
+        }
+        for pair in grade.links.windows(2) {
+            assert!(
+                pair[0].target() < pair[1].target(),
+                "links out of order: {pair:?}"
+            );
+        }
+        assert!(
+            goes_forward(grade),
+            "the links of {target:?} go round: {grade:?}"
+        );
+    }
+}
+
+/// Whether the links of a grade go round in no loop: the nodes can be taken one by one, each
+/// once nothing that goes into it is left.
+fn goes_forward(grade: &columbina_model::Grade) -> bool {
+    let mut left: Vec<&columbina_model::Link> = grade
+        .links
+        .iter()
+        .filter(|l| l.from != "source" && l.to != "output")
+        .collect();
+    let mut nodes: Vec<&str> = grade.nodes.iter().map(|n| n.id.as_str()).collect();
+    while let Some(at) = nodes
+        .iter()
+        .position(|node| !left.iter().any(|l| l.to == *node))
+    {
+        let node = nodes.remove(at);
+        left.retain(|l| l.from != node);
+    }
+    nodes.is_empty()
 }
 
 /// The number of an id of the shape of those that the engine makes.
 fn engine_number(id: &str) -> Option<u64> {
-    let digits = id.strip_prefix(['b', 'm', 't', 'c', 'x', 'q', 'g'])?;
+    let digits = id.strip_prefix(['b', 'm', 't', 'c', 'x', 'q', 'g', 'n', 'k'])?;
     let plain = !digits.is_empty()
         && digits.bytes().all(|b| b.is_ascii_digit())
         && (digits == "0" || !digits.starts_with('0'));

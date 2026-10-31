@@ -436,7 +436,7 @@ async fn the_engine_says_where_it_listens_and_answers_hello() {
     assert_eq!(got["next_id"], 1);
     assert_eq!(
         got["project"],
-        json!({ "schema": 2, "next_id": 1, "bins": [], "media": [], "timelines": [] })
+        json!({ "schema": 3, "next_id": 1, "bins": [], "media": [], "timelines": [], "groups": [] })
     );
     drop(client);
     assert_eq!(engine.ended().await, 0);

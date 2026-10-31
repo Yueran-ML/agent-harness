@@ -370,8 +370,10 @@ away before the project is checked, so the project is read without it and the en
 
 ### Schema 2
 
-The top level is `{schema: 2, next_id, bins: [...], media: [...], timelines: [...]}`. A schema 1
-project is upgraded on open; its original bytes are kept once in `project.schema1.json`.
+The top level is `{schema: 3, next_id, bins: [...], media: [...], timelines: [...], groups: [...]}`.
+Schema 3 differs from schema 2 only by the grades (see Grades below). A schema 1 or schema 2
+project is upgraded on open; its original bytes are kept once in `project.schema1.json` or
+`project.schema2.json`.
 Unknown fields are refused. `project.get` and `project.changed` are the source of truth for
 clients; a client must not write `project.json` itself.
 
@@ -827,7 +829,7 @@ changes nothing.
 Basic operations can change locked tracks, as undo/redo must. Interactive clients should send
 edits for clip manipulation; those implement locks, links, clamping and ripple rules.
 
-A thing added with an empty `id` is given one by the engine (`m`/`t`/`c`/`b`/`x`/`q`/`g` + a number from
+A thing added with an empty `id` is given one by the engine (`m`/`t`/`c`/`b`/`x`/`q`/`g`, and `n` for a node and `k` for a group, + a number from
 `next_id`, never reused; tracks `V<n>`/`A<n>`/`S<n>` within their timeline). An id that starts with `$` is never
 kept (see names below). The rules are in `crates/model/src/ops.rs`.
 
@@ -918,6 +920,197 @@ index in `clamped`; zero delta or an impossible movement is refused. Editing thr
 transition keeps it where its clips still meet, shortens it to available handles/coverage, or
 removes it if none fits. A repair shortened to zero removes the transition and is also reported as clamped. Transitions and same-end
 fades are not silently substituted. All changes are still one reversible transaction.
+
+## Grades
+
+Schema 3 adds the grades of the Color page (`crates/model/src/grade.rs`), as DaVinci Resolve
+builds them (Reference Manual 20, Chapters 143–147, pp. 3308–3379). The project gains
+`groups: [...]`; every timeline gains `grade`; every clip gains `grade` and `group` (a group id
+or `null`). The engine always writes them; a client that builds a clip, a timeline or a project
+without them (as one written for schema 2 does) may leave them out, and they are read as the
+empty grade, no group and no groups. A clip of sound keeps a grade as it was set, as it keeps its
+transform. A project of schema 2 is upgraded on open: each timeline and clip gets the empty
+grade below, each clip `group: null`, and the project `groups: []`; nothing else changes. Its
+original bytes are kept once in `project.schema2.json` (or `project.schema2-<digest>.json`
+where that holds another project), as a schema 1 project is kept in `project.schema1.json`.
+
+The picture goes through four levels, in this order (p. 3330): the pre-clip grade of the
+clip's group, the clip's grade, the post-clip grade of its group, and, after the tracks are
+put together, the timeline's grade. An operation names one with a `grade` target:
+
+```json
+{"level": "clip", "timeline": "t1", "clip": "c4"}
+{"level": "pre_clip", "group": "k7"}
+{"level": "post_clip", "group": "k7"}
+{"level": "timeline", "timeline": "t1"}
+```
+
+A **group** is `{id, name, pre, post}` (`pre`/`post` are grades; `name` at most 100
+characters). A clip is in at most one group, named by its `group`; a group that a clip is in
+cannot be taken away (`grouped`). Groups are of the project, so clips of several timelines may
+share one.
+
+### A grade
+
+```json
+{"nodes": [], "links": [{"from": "source", "to": "output", "kind": "rgb", "input": 0}]}
+```
+
+is the empty grade every new clip and timeline has: the source linked straight to the output.
+`nodes` are in the order they were added, which is how an editor numbers them (number = place
+among the nodes + 1): an added node goes to the end, so a node added between nodes 1 and 2 is
+number 4, and taking a node away moves the ones after it up a number (p. 3318).
+
+A **link** `{from, to, kind, input}` goes from the output of `kind` (`rgb` or `key`) of `from`
+(a node id or `source`) into input `input` (from 0) of that kind of `to` (a node id or
+`output`). An output may feed any number of inputs; an input takes at most one link
+(`input_taken`), as in DaVinci (p. 3319). Links never make a loop (`loop`). **Links are kept in
+one order**, by `to` (compared as strings, byte by byte), then `kind` (`rgb` before `key`), then
+`input`; the engine sorts the links of every grade it is given and of every project it reads,
+and a client copy must keep them so to stay equal to the engine's.
+
+Inputs and outputs of each kind of node (`no_port` for any other):
+
+| kind | RGB inputs | key inputs | outputs |
+|---|---|---|---|
+| `source` | — | — | rgb |
+| `output` | 1 | — | — |
+| `corrector` | 1 | 1 | rgb, key |
+| `parallel_mixer` | `params.inputs` | — | rgb |
+| `layer_mixer` | `params.inputs` | — | rgb |
+| `key_mixer` | — | `params.inputs.length` | key |
+
+A grade whose output has no link, or with a node whose every RGB input (key input, for a key
+mixer) is not linked or whose RGB output (key output) feeds nothing, is kept but leaves the
+picture as it is, as DaVinci disables such a grade (pp. 3312, 3319); the model's
+`Grade::is_complete` tells it.
+
+A **node** is `{id, kind, label, enabled, params}`. `id` is unique within its grade (not in the
+project: copying a grade keeps its ids), never `source` or `output`; the engine makes `n` +
+`next_id`. `label` is at most 100 characters (an editor shows 12, p. 3313). A disabled node
+passes its picture through. `params` by `kind`:
+
+- `parallel_mixer`: `{"inputs": 2}` — 1…256 inputs, mixed equally (pp. 3334–3335).
+- `layer_mixer`: `{"inputs": 2, "composite": "normal"}` — the lowest input is on top
+  (p. 3336); `composite` is one of the composite modes of pp. 1055–1058 in snake case
+  (`normal`, `add`, `color`, `color_burn`, `color_dodge`, `darken`, `darker_color`,
+  `difference`, `divide`, `exclusion`, `hard_mix`, `hardlight`, `hue`, `lighten`,
+  `lighter_color`, `linear_burn`, `linear_dodge`, `linear_light`, `luminosity`, `multiply`,
+  `overlay`, `pin_light`, `saturation`, `screen`, `softlight`, `subtract`, `vivid_light`).
+- `key_mixer`: `{"inputs": [{invert, matte, gain, offset}, ...], "output": {invert, gain,
+  offset}}` — two inputs at first, in Mask mode (`matte: false`), gains 1 (pp. 3358–3363).
+- `corrector`, in the units DaVinci shows (the page gives the manual's range or default; the
+  others are ours, as the manual gives none):
+
+| field | default | range |
+|---|---|---|
+| `primaries.lift` / `gamma` `{y,r,g,b}` | 0 | −1…1 |
+| `primaries.gain` `{y,r,g,b}` | 1 | 0…16 |
+| `primaries.offset` `{r,g,b}` | 25 | −75…125 |
+| `primaries.contrast` | 1 | 0…2 |
+| `primaries.pivot` | 0.435 | 0…1 |
+| `primaries.saturation` | 50 (p. 3064) | 0…100 |
+| `primaries.hue` | 50 (p. 3064) | 0…100 |
+| `primaries.lum_mix` | 100 (p. 3064) | 0…100 |
+| `primaries.temperature` | 0 | −4000…4000 (p. 3063) |
+| `primaries.tint`, `color_boost`, `midtone_detail`, `shadows`, `highlights` | 0 | −100…100 (pp. 3063–3064) |
+| `log.shadow` / `midtone` / `highlight` `{r,g,b}` | 0 | −1…1 |
+| `log.low_range`, `log.high_range` | 0.333, 0.55 | 0…1 (p. 3073) |
+| `curves.ganged` | `true` | |
+| `curves.y` / `r` / `g` / `b` | `{"points": [[0,0],[1,1]], "intensity": 100}` | points `[in, out]` in 0…1, `in` rising, ≥ 2; intensity 0…100 (p. 3116) |
+| `hsl.hue_vs_hue`, `hue_vs_sat`, `hue_vs_lum`, `lum_vs_sat`, `sat_vs_sat`, `sat_vs_lum` | `[]` (flat) | points `[in, out]`, `in` 0…1 rising, `out` −1…1, 0 changes nothing |
+| `lut` | `null` | a path or library name, 1…4096 characters, no NUL |
+| `soft_clip.low` / `high` / `low_soft` / `high_soft` `{r,g,b}` | 0 / 100 / 0 / 0 | 0…100, a share of the 10-bit scale (pp. 3119–3121) |
+| `key.input` `{invert, matte, gain, offset}` | `false`, `true`, 1, 0 | gain 0…2, offset −1…1 (p. 3362) |
+| `key.output` `{invert, gain, offset}` | `false`, 1, 0 | gain 0…2 (p. 3362), offset −1…1 |
+
+An Outside node is a corrector with `key.input.invert: true` linked to the key of the node
+before it (p. 3361). Within a corrector the settings apply in the order of p. 3331.
+
+Every number setting above is a **parameter**: a number, or keyframes
+`{"keys": [{"frame": 0, "value": 1.0, "interp": "linear"}, ...]}`. Frames count the frames of
+the clip from 0 (of the timeline, for its grade), rise strictly, are within ±(2^53−1), and there
+is at least one key; every value is within the range. Before the first key the value is the
+first's, after the last the last's. `interp` says how the value goes to the next key: `"linear"`,
+`"hold"` (a static keyframe, p. 3384) or `{"bezier": {"out": [t, dv], "in": [t, dv]}}`, a cubic
+curve whose handles are each a share `t` (0…1) of the frames between the keys and a change of
+value `dv` (any finite number): `out` from this key forward, `in` from the next key back
+(`[0.33, 0]` for both eases out and in, p. 3385). `Param::value_at(frame)` evaluates it.
+
+### Operations
+
+| op | fields | inverse |
+|---|---|---|
+| `add_node` | `grade`, `node` (empty `id` for the engine to make one), `index?`, `links?` | `remove_node` with `links` |
+| `remove_node` | `grade`, `id`, `links?` | `add_node` with its links |
+| `connect` | `grade`, `link` | `connect` of the link the input had, or `disconnect` |
+| `disconnect` | `grade`, `to`, `kind`, `input` | `connect` |
+| `set_node` | `grade`, `id`, `label?`, `enabled?`, `params?` | `set_node` with the values as they were |
+| `set_grade` | `grade`, `value` (a grade, its nodes with ids) | `set_grade` of the grade as it was |
+| `add_group` | `group` (empty `id` for `k` + `next_id`), `index?` | `remove_group` |
+| `remove_group` | `id` (no clip in it) | `add_group` |
+| `set_group` | `id`, `name?` | `set_group` |
+| `set_clip_group` | `timeline`, `clip`, `group` (an id or `null`) | `set_clip_group` |
+
+- `add_node` links each come from the node or go into it, and name it by its id as given (by
+  `""` when it is given none, or by its `$name`); a link into an input that has one takes its
+  place (p. 3319). Two links into one input, or one that does not touch the node, are
+  `out_of_range` `links`. Its `done` has the id the engine gave, the `index`, and the links in
+  order; its inverse is `remove_node` with `links` set to the links it took the place of.
+- `remove_node` without `links` links what came into the node's first linked input of each kind
+  into every input its output of that kind went into, as DaVinci links the nodes on either side
+  of a deleted node (p. 3318). With `links`, those are put instead: each must go into an input the
+  node fed, and not touch the node (`out_of_range` `links`). Its `done` always carries the
+  `links` it put.
+- `set_node` `params` is a patch of the node's `params`: each object in it is put into the
+  object of that name, and any other value (a number, a `{"keys"}` parameter put where a number
+  was, an array, a string, `null`) takes the place of the one there, whole. What it makes must
+  be the params of the node's kind (`params`, with serde's message) within their ranges
+  (`out_of_range` with the path, such as `primaries.saturation`); a mixer cannot lose inputs
+  that links go into (`no_port`). Its `done` and inverse carry the values at the patch's paths
+  as the engine writes them (`60` comes back as `60.0`).
+- Nodes of a grade put in whole (`set_grade`, `add_group`, a clip of `insert_clip`, `add_track`
+  or `add_timeline`, a timeline's) have ids (`no_id`), unique in the grade (`taken` `node`), of
+  which an `n…` id must be below `next_id` (`reserved`).
+
+`$names` (see below) may be given to a node by `add_node` — its links name it by the same
+`$name` — and to a group by `add_group`; later operations name them where they name a node, a
+group or a clip's `group`.
+
+### Edits
+
+Each names a `grade` target as above; none needs `timeline`. They are worked out into the
+operations above when applied, as the other edits are.
+
+| edit | fields | behavior |
+|---|---|---|
+| `add_serial` | `grade`, `node` (a node with an RGB output, or `source`) | Add a corrector after it, taking what its RGB output fed (Add Serial, Option-S, p. 3318). |
+| `add_serial_before` | `grade`, `node` (a corrector, or `output`) | Add a corrector before it, taking what came into it (Add Before Current, Shift-S). |
+| `append_node` | `grade` | `add_serial_before` the output (Append Node, Option-K): the first node of an ungraded clip. |
+| `add_parallel` | `grade`, `node` (a corrector) | Add a corrector taking what the node takes; if the node's picture goes only into a parallel mixer, the mixer gets one more input for it, else a new parallel mixer takes the node at input 0, the new corrector at input 1, and the node's place (Option-P, pp. 3334–3335). |
+| `add_layer` | `grade`, `node` (a corrector) | As `add_parallel`, with a layer mixer; the new corrector is at the lowest input, on top (Option-L, p. 3336). |
+| `extract_node` | `grade`, `node` | Take the node out of the tree, bridged as by `remove_node`, and keep it unlinked (E, p. 3319). |
+| `reset_node` | `grade`, `node` | Set the node as a new one of its kind, keeping its label, `enabled` and inputs. |
+| `copy_grade` | `from`, `to: [target, ...]` | `set_grade` each `to` to the grade `from`, ids kept (pp. 3286, 3290). |
+| `append_grade` | `from`, `to: [target, ...]` | Add the nodes of `from` after the end of each `to`, with new ids: what fed the output feeds what the source fed, and what fed the output of `from` feeds the output (Append Node Graph, p. 3290). |
+| `paste_value` | `from`, `from_node`, `to`, `to_node`, `param` | Set one field of `params`, by its path with dots (`primaries.saturation`, `primaries.lift`), to its value in the other node (Paste Value, p. 3286). A path that either node lacks is `out_of_range` `param`. |
+| `paste_node` | `from`, `from_node`, `to`, `to_node` | Set the `params` of `to_node` to those of `from_node`, of the same kind (p. 3320). |
+
+A wrong node for an edit is `wrong_node`; an empty `to` is `out_of_range` `to`.
+
+### Refusals of grades
+
+| reason | fields | meaning |
+|---|---|---|
+| `no_port` | `node`, `kind`, `input` (`null` for an output) | a link from an output, or into an input, that the node or end does not have |
+| `input_taken` | `node`, `kind`, `input` | two links into one input |
+| `loop` | `node` | the links would go round in a loop through `node` |
+| `grouped` | `group`, `clip` | `remove_group` of a group that clip `clip` is in |
+| `params` | `node`, `why` | `set_node` params that are not those of the node's kind |
+| `wrong_node` | `node`, `kind` (the node's kind, `source` or `output`) | an edit that cannot be done to or about that node |
+
+`missing` also names `group`, `node` and `link`; `taken` `node` and `group`; `out_of_range` also
+`label`, `inputs`, `links`, `lut`, `param`, `to` and the paths of corrector settings.
 
 ## Names of a transaction (`$name`)
 
@@ -1060,7 +1253,7 @@ refused only through a bug of the engine. The refusals that are not of a transac
 |---|---|---|
 | `missing` | `what` (`media`, `bin`, `timeline`, `track`, `clip`, `transition`, `cue`, `named output`), `id` | the thing named is not there |
 | `taken` | `what`, `id` | the id of an added thing is held by another of its kind |
-| `reserved` | `id` | an id of the engine's own form (`m`/`t`/`c`/`b`/`x`/`q`/`g` + number) not made yet |
+| `reserved` | `id` | an id of the engine's own form (`m`/`t`/`c`/`b`/`x`/`q`/`g`/`n`/`k` + number) not made yet |
 | `dollar` | `id` | an id that starts with `$` (only names of a transaction do; the engine replaces or refuses them before this) |
 | `out_of_list` | `at`, `len` | an `index` past the end of its list |
 | `no_stream` | `media`, `kind` (`video`, `audio`) | the media has no stream for the track |

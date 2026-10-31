@@ -4,7 +4,8 @@ use std::fs;
 
 use columbina_model::Project;
 use columbina_store::{
-    schema_1_file_of, Store, StoreError, CACHE_DIR, PROJECT_FILE, PROJECT_TMP, SCHEMA_1_FILE,
+    old_schema_file, old_schema_file_of, schema_1_file_of, Store, StoreError, CACHE_DIR,
+    PROJECT_FILE, PROJECT_TMP, SCHEMA_1_FILE,
 };
 
 fn pretty(project: &Project) -> String {
@@ -169,10 +170,10 @@ fn a_file_that_is_not_text_is_refused_and_left_as_it_was() {
 #[test]
 fn a_project_of_another_schema_is_refused_and_left_as_it_was() {
     let mut value = serde_json::to_value(Project::sample()).unwrap();
-    value["schema"] = 3.into();
+    value["schema"] = 4.into();
     let error = refused(
         &serde_json::to_vec_pretty(&value).unwrap(),
-        "the project is of schema 3",
+        "the project is of schema 4",
     );
     assert!(matches!(error, StoreError::NotAProject { .. }), "{error}");
 }
@@ -254,6 +255,45 @@ mod held_open {
 /// A project as the first engine wrote it, of schema 1.
 const SCHEMA_1: &str = include_str!("../../model/tests/data/schema1.json");
 
+/// A project as the engine of the Edit page wrote it, of schema 2.
+const SCHEMA_2: &str = include_str!("../../model/tests/data/schema2.json");
+
+#[test]
+fn a_project_of_schema_2_is_upgraded_and_its_file_is_kept_once_beside_it() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join(PROJECT_FILE), SCHEMA_2).unwrap();
+
+    let (store, project) = Store::open(dir.path()).unwrap();
+
+    assert_eq!(project.schema, columbina_model::SCHEMA);
+    assert_eq!(
+        project.timelines[0].grade,
+        columbina_model::Grade::default()
+    );
+    let kept = dir.path().join(old_schema_file(2));
+    assert_eq!(kept.file_name().unwrap(), "project.schema2.json");
+    assert_eq!(fs::read_to_string(&kept).unwrap(), SCHEMA_2);
+    assert!(!dir.path().join(SCHEMA_1_FILE).exists());
+    store.save(&project).unwrap();
+    assert_eq!(
+        fs::read_to_string(dir.path().join(PROJECT_FILE)).unwrap(),
+        pretty(&project)
+    );
+
+    // Another project of schema 2 put in its place is kept beside it.
+    let other = SCHEMA_2.replace("\"Rushes\"", "\"Selects\"");
+    fs::write(dir.path().join(PROJECT_FILE), &other).unwrap();
+    Store::open(dir.path()).unwrap();
+    assert_eq!(fs::read_to_string(&kept).unwrap(), SCHEMA_2);
+    let beside = dir.path().join(old_schema_file_of(2, other.as_bytes()));
+    assert!(beside
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .starts_with("project.schema2-"));
+    assert_eq!(fs::read_to_string(beside).unwrap(), other);
+}
+
 #[test]
 fn a_project_of_schema_1_is_upgraded_and_its_file_is_kept_once_beside_it() {
     let dir = tempfile::tempdir().unwrap();
@@ -261,10 +301,10 @@ fn a_project_of_schema_1_is_upgraded_and_its_file_is_kept_once_beside_it() {
 
     let (store, project) = Store::open(dir.path()).unwrap();
 
-    assert_eq!(project.schema, 2);
+    assert_eq!(project.schema, columbina_model::SCHEMA);
     let kept = dir.path().join(SCHEMA_1_FILE);
     assert_eq!(fs::read_to_string(&kept).unwrap(), SCHEMA_1);
-    // The project is written in schema 2 only when it is saved.
+    // The project is written in the schema of the engine only when it is saved.
     assert_eq!(
         fs::read_to_string(dir.path().join(PROJECT_FILE)).unwrap(),
         SCHEMA_1
@@ -274,7 +314,7 @@ fn a_project_of_schema_1_is_upgraded_and_its_file_is_kept_once_beside_it() {
     assert_eq!(text, pretty(&project));
     assert_eq!(fs::read_to_string(&kept).unwrap(), SCHEMA_1);
 
-    // Opened again, it is of schema 2, and what was kept is left as it is.
+    // Opened again, it is of the schema of the engine, and what was kept is left as it is.
     fs::write(&kept, "kept").unwrap();
     let (_, again) = Store::open(dir.path()).unwrap();
     assert_eq!(again, project);
@@ -291,7 +331,7 @@ fn a_project_of_schema_1_that_was_kept_before_is_not_kept_again() {
     // An engine that opened it before ended without saving it.
     let (_, project) = Store::open(dir.path()).unwrap();
 
-    assert_eq!(project.schema, 2);
+    assert_eq!(project.schema, columbina_model::SCHEMA);
     assert_eq!(fs::read_to_string(&kept).unwrap(), SCHEMA_1);
     assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 3, "and cache/");
 }

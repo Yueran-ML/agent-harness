@@ -93,9 +93,11 @@ fn gain(keys: &[(i64, f64)]) -> Grade {
             })
             .collect(),
     );
+    // The master ring, Y with R, G and B (p3062): with Lum Mix at 100 a gain of R, G and B alone
+    // keeps the luminance that Y sets.
     corrector(|settings| {
         let gain = &mut settings.primaries.gain;
-        (gain.r, gain.g, gain.b) = (param.clone(), param.clone(), param);
+        (gain.y, gain.r, gain.g, gain.b) = (param.clone(), param.clone(), param.clone(), param);
     })
 }
 

@@ -10,7 +10,7 @@ import { timecode } from './timecode';
 export const SCRUB_EVERY_MS = 1000 / 30;
 
 /** How long the frame that the playhead was let go at is shown, at most, before the transport tells it. */
-export const LET_GO_HOLD_MS = 1000;
+export { LET_GO_HOLD_MS } from './useMonitor';
 
 /**
  * The bar that the playhead is dragged along. While it is dragged, a seek that scrubs is sent at
@@ -146,34 +146,30 @@ function Sound({ sound, playing, speed }: { sound: TransportState['sound']; play
 /**
  * The controls of the source monitor: back a frame, play or pause, forward a frame, the timecode
  * of the playhead, the bar that it is dragged along, whether proxies are used and what the picture
- * is read from, and how the sound stands. What is shown follows what the transport tells; the
- * frame the playhead is dragged to is shown at once, and, once it is let go, until the transport
- * tells it (or a second has passed), so that the playhead does not jump back meanwhile.
+ * is read from, and how the sound stands. The playhead and its timecode are at `frame`, the frame
+ * the monitor shows (see `useMonitor`): the frame it is dragged to at once, and, once it is let go,
+ * until the transport tells it (or a second has passed), so that it does not jump back meanwhile
+ * and the marks are set at the frame that is shown.
  */
-export function Transport({ state, rate, last, onCommand, onSeek, onProxies }: {
+export function Transport({ state, rate, last, frame: shownFrame = state?.frame ?? null, held = false, onCommand, onSeek, onDrag, onProxies }: {
   state: TransportState | null;
   rate: Rate;
   /** The last frame of the media loaded, where it is known. */
   last: number | null;
+  /** The frame that the playhead shows: where it is dragged or was let go, until the transport tells it. */
+  frame?: number | null;
+  /** Whether `frame` is one the transport has not told yet. */
+  held?: boolean;
   onCommand: (command: TransportCommand) => void;
   onSeek: (frame: number, scrubbing: boolean) => void;
+  /** Where the playhead is being dragged to, or was let go at; null where the drag was given up. */
+  onDrag?: (frame: number | null, dragging: boolean) => void;
   onProxies: (on: boolean) => void;
 }) {
   const words = useWords();
-  const [held, setHeld] = useState<{ frame: number; dragging: boolean; item: string | null } | null>(null);
   const item = transportItem(state);
   const loaded = state !== null && item !== null;
-  // The frame let go at is shown until the transport is there, or has gone elsewhere.
-  useEffect(() => {
-    if (held === null || held.dragging) return;
-    if (!loaded || item !== held.item || state.frame === held.frame || state.playing) setHeld(null);
-  }, [held, state, loaded]);
-  useEffect(() => {
-    if (held === null || held.dragging) return undefined;
-    const timer = setTimeout(() => setHeld(null), LET_GO_HOLD_MS);
-    return () => clearTimeout(timer);
-  }, [held]);
-  const frame = held?.frame ?? state?.frame ?? 0;
+  const frame = shownFrame ?? 0;
   const playing = loaded && state.playing;
   const speed = state?.speed ?? 1;
   const space = words.label.studio.space;
@@ -181,8 +177,8 @@ export function Transport({ state, rate, last, onCommand, onSeek, onProxies }: {
     <div className="transport-row">
       <span
         className="timecode mono"
-        data-exact={!loaded || state.exact || held !== null ? undefined : 'no'}
-        title={loaded && !state.exact && held === null ? words.hint.studio.inexact : undefined}
+        data-exact={!loaded || state.exact || held ? undefined : 'no'}
+        title={loaded && !state.exact && !held ? words.hint.studio.inexact : undefined}
         data-test="timecode"
       >
         {timecode(frame, rate)}
@@ -233,7 +229,7 @@ export function Transport({ state, rate, last, onCommand, onSeek, onProxies }: {
       valueText={timecode(frame, rate)}
       onSeek={onSeek}
       key={item}
-      onDrag={(to, dragging) => setHeld(to === null ? null : { frame: to, dragging, item })}
+      onDrag={(to, dragging) => onDrag?.(to, dragging)}
     />
   </div>;
 }

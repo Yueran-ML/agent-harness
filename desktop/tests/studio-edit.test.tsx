@@ -403,6 +403,67 @@ describe('the Edit page', () => {
   });
 });
 
+describe('the frame that marks and edits take', () => {
+  // The bar of each monitor is 450 px wide, from x = 330 (source) or x = 800 (timeline).
+  const scrubber = (name: 'Source viewer' | 'Timeline viewer') => monitor(name).querySelector<HTMLElement>('[data-test="scrubber"]')!;
+  const timecodeOf = (name: 'Source viewer' | 'Timeline viewer') => monitor(name).querySelector('[data-test="timecode"]')?.textContent;
+  const letGo = (bar: HTMLElement, x: number) => {
+    act(() => { fireEvent.pointerDown(bar, { clientX: x, button: 0, pointerId: 1 }); });
+    act(() => { fireEvent.pointerUp(bar, { clientX: x, pointerId: 1 }); });
+  };
+
+  it('is on the source the frame shown where the playhead was let go, before the transport tells it', async () => {
+    const engine = await mount(); const { bridge } = engine;
+    fireEvent.pointerDown(monitor('Source viewer'));
+    bridge.call.mockClear();
+    // Let go at frame 125; the transport is still at 10, and then tells a frame of the drag.
+    letGo(scrubber('Source viewer'), 556);
+    expect(calls(bridge, 'transport.seek').at(-1)).toEqual({ monitor: 'source', frame: 125, scrubbing: false });
+    engine.notify('source', { frame: 60, shown: 60 });
+    expect(timecodeOf('Source viewer')).toBe('00:00:05:00');
+    expect(scrubber('Source viewer').getAttribute('aria-valuenow')).toBe('125');
+    key('i'); await settle();
+    expect(calls(bridge, 'transaction.apply').at(-1)).toEqual({ revision: 0, ops: [{ op: 'set_media', id: 'm1', mark_in: { ticks: 125, scale: 25 } }] });
+    // O keeps the frame shown: its Out is the start of the frame after it.
+    key('o'); await settle();
+    expect(calls(bridge, 'transaction.apply').at(-1)).toEqual({ revision: 1, ops: [{ op: 'set_media', id: 'm1', mark_out: { ticks: 126, scale: 25 } }] });
+    // A step while paused goes from the frame shown, and the timecode and the marks with it.
+    key('ArrowRight');
+    expect(calls(bridge, 'transport.step').at(-1)).toEqual({ monitor: 'source', frames: 1 });
+    expect(timecodeOf('Source viewer')).toBe('00:00:05:01');
+    key('o'); await settle();
+    expect(calls(bridge, 'transaction.apply').at(-1)).toEqual({ revision: 2, ops: [{ op: 'set_media', id: 'm1', mark_out: { ticks: 127, scale: 25 } }] });
+    // Once the transport tells it, it is followed again (an In past the Out takes the Out away).
+    engine.notify('source', { frame: 126, shown: 126 });
+    engine.notify('source', { frame: 140, shown: 140 });
+    expect(timecodeOf('Source viewer')).toBe('00:00:05:15');
+    key('i'); await settle();
+    expect(calls(bridge, 'transaction.apply').at(-1)).toEqual({ revision: 3, ops: [{ op: 'set_media', id: 'm1', mark_in: { ticks: 140, scale: 25 }, mark_out: null }] });
+  });
+
+  it('is on the timeline the frame shown, for the marks, the blade and the next edit', async () => {
+    const engine = await mount(); const { bridge } = engine;
+    fireEvent.pointerDown(monitor('Timeline viewer'));
+    bridge.call.mockClear();
+    // Let go at frame 50 of the timeline monitor, which is still at 0.
+    letGo(scrubber('Timeline viewer'), 913);
+    expect(calls(bridge, 'transport.seek').at(-1)).toEqual({ monitor: 'timeline', frame: 50, scrubbing: false });
+    expect(timecodeOf('Timeline viewer')).toBe('00:00:02:00');
+    key('i'); key('o');
+    expect(document.querySelector<HTMLElement>('.timeline-mark[data-edge="in"]')!.style.left).toBe(`${156 + 50 * 4}px`);
+    expect(document.querySelector<HTMLElement>('.timeline-mark[data-edge="out"]')!.style.left).toBe(`${156 + 51 * 4}px`);
+    key('x', { altKey: true });
+    key('b', { ctrlKey: true }); await settle();
+    expect(calls(bridge, 'transaction.apply').at(-1)).toMatchObject({ ops: [{ edit: 'blade', timeline: 't1', at: 50 }] });
+    // Down twice before the transport tells either: the second goes on from where the first went.
+    engine.notify('timeline', { frame: 50, shown: 50 });
+    key('ArrowDown'); key('ArrowDown');
+    expect(calls(bridge, 'transport.seek').slice(-2)).toEqual([{ monitor: 'timeline', frame: 100, scrubbing: false }, { monitor: 'timeline', frame: 199, scrubbing: false }]);
+    expect(timecodeOf('Timeline viewer')).toBe('00:00:07:24');
+    expect(document.querySelector<HTMLElement>('.timeline-playhead')!.style.left).toBe(`${156 + 199 * 4}px`);
+  });
+});
+
 describe('the settings of a new timeline', () => {
   const video = (fields: Partial<NonNullable<Media['facts']['video']>>, id = 'v'): Media => ({ ...media, id, facts: { ...media.facts, video: { ...media.facts.video!, ...fields } } });
   it('follow the first video of the pool, as it is shown', () => {

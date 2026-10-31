@@ -5,7 +5,7 @@ import { keyOf, type Key } from '../../app/keys';
 import type { EngineBridge } from '../../bridge';
 import type { Media, Monitor, Timeline as TimelineModel } from '../engine';
 import { editingAllowed } from '../keys';
-import { LET_GO_HOLD_MS } from '../Transport';
+import { LET_GO_HOLD_MS } from '../useMonitor';
 import { duration, fitZoom, frameAt, HEADER_WIDTH, RULER_HEIGHT, scrollWindow, zoomAt } from './geometry';
 import { Ruler } from './Ruler';
 import { Scrub } from './scrub';
@@ -70,7 +70,6 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   const [held, setHeld] = useState<{ frame: number; dragging: boolean } | null>(null);
   const drag = useRef<{ frame: number } | null>(null);
   const now = useRef({ view, onSeek, overview, frame, heights, trackHeight });
-  now.current = { view, onSeek, overview, frame, heights, trackHeight };
   const scrub = useMemo(() => new Scrub((to, scrubbing) => now.current.onSeek(to, scrubbing)), []);
   const waves = useMemo(() => new Waveforms(bridge, session), [bridge, session]);
   useEffect(() => { waves.connect(); return () => waves.disconnect(); }, [waves]);
@@ -78,7 +77,10 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   const byId = useMemo(() => new Map(media.map(item => [item.id, item])), [media]);
   const end = useMemo(() => timeline ? duration(timeline) : 0, [timeline]);
   const last = Math.max(0, end - 1);
+  // The frame under the playhead as it is shown: where it is dragged or was let go, until the
+  // transport tells it. The edits, the marks and the zoom take it, as DaVinci Resolve takes the frame shown.
   const shown = held?.frame ?? frame;
+  now.current = { view, onSeek, overview, frame: shown, heights, trackHeight };
   const tracks = useMemo(() => timeline ? [
     ...timeline.tracks.filter(track => track.kind === 'subtitle').reverse(),
     ...timeline.tracks.filter(track => track.kind === 'video').reverse(),
@@ -159,10 +161,10 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   const dragging = held?.dragging === true;
   useEffect(() => {
     if (!center || dragging) return;
-    setView(old => { const left = Math.max(0, Math.round(frame * old.scale - old.width / 2)); return old.left === left ? old : { ...old, left }; });
-  }, [center, dragging, frame, view.scale, view.width]);
+    setView(old => { const left = Math.max(0, Math.round(shown * old.scale - old.width / 2)); return old.left === left ? old : { ...old, left }; });
+  }, [center, dragging, shown, view.scale, view.width]);
   useEffect(() => { onView?.(view); }, [view, onView]);
-  const editing = useEditing({ timeline, media, bridge, session, revision, frame, focus, source, root, scroll, view, onSeek, fit, zoom, onSpeed, onSelection, onTransition, onCue, cut });
+  const editing = useEditing({ timeline, media, bridge, session, revision, frame: shown, focus, source, root, scroll, view, onSeek, fit, zoom, onSpeed, onSelection, onTransition, onCue, cut });
   useImperativeHandle(ref, () => ({ keyDown: editing.keyDown, perform: editing.perform, marks: () => editing.marks }));
   useEffect(() => {
     const element = scroll.current;

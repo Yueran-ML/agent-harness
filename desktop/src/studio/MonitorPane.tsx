@@ -33,6 +33,7 @@ export function MonitorPane({ controls, bridge, native, active, notice, onRetry,
     </header>}
     <Viewer bridge={bridge} native={native} monitor={monitor} active={active && !hidden} notice={notice} onRetry={onRetry} />
     {hint && !controls.loaded && (notice === null || notice.kind === 'browser') && <p className="caption monitor-hint" data-test="load-hint">{hint}</p>}
-    <Transport state={controls.state} rate={controls.rate} last={controls.last} onCommand={controls.run} onSeek={controls.seek} onProxies={controls.proxies} />
+    <Transport state={controls.state} rate={controls.rate} last={controls.last} frame={controls.frame} held={controls.held} onCommand={controls.run}
+      onSeek={controls.seek} onDrag={controls.drag} onProxies={controls.proxies} />
   </section>;
 }

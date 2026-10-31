@@ -107,9 +107,10 @@ export function CutPage({
 
   const playing = useTimelineLoad(bridge, selected, timelineMonitor, session, failed);
   const timelineState = timelineMonitor.state?.monitor === 'timeline' && selected !== null && playing === selected.id ? timelineMonitor.state : null;
-  const frame = timelineState?.frame ?? 0;
+  // The frame that the timeline monitor shows, which the edits and the indicator of Smart Insert take.
+  const frame = timelineState === null ? 0 : timelineMonitor.frame ?? 0;
   const sourceState = source.state?.monitor === 'source' ? source.state : null;
-  const sourceFrame = sourceState !== null && sourceMedia !== null && sourceState.media === sourceMedia.id ? sourceState.frame ?? 0 : null;
+  const sourceFrame = sourceState !== null && sourceMedia !== null && sourceState.media === sourceMedia.id ? source.frame ?? 0 : null;
   const sourceContext = useMemo(() => (sourceMedia === null || sourceFrame === null ? null : { media: sourceMedia, frame: sourceFrame, rate: source.rate }),
     [sourceMedia, sourceFrame, source.rate]);
 
@@ -186,7 +187,7 @@ export function CutPage({
     <div className="cut-viewer">
       {pane(source, sourceMedia?.name, words.hint.studio.loadSource)}
       {pane(timelineMonitor, selected?.name, words.hint.studio.timeline.empty)}
-      {mode === 'tape' && <SourceTape tape={reel} loaded={sourceState?.media ?? null} frame={sourceState?.frame ?? null} onGo={go} />}
+      {mode === 'tape' && <SourceTape tape={reel} loaded={sourceState?.media ?? null} frame={sourceState === null ? null : source.frame} onGo={go} />}
       <EditButtons onAction={perform} timeline={selected !== null} source={sourceContext !== null} />
     </div>
     <div className="cut-timelines" onPointerDownCapture={() => onFocus('timeline')} onFocusCapture={() => onFocus('timeline')}>

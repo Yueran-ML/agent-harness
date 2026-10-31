@@ -127,7 +127,7 @@ export function EditPage({
   }, [exportNow]);
 
   const sourceState = source.state?.monitor === 'source' ? source.state : null;
-  const sourceFrame = sourceState !== null && sourceMedia !== null && sourceState.media === sourceMedia.id ? sourceState.frame ?? 0 : null;
+  const sourceFrame = sourceState !== null && sourceMedia !== null && sourceState.media === sourceMedia.id ? source.frame ?? 0 : null;
   const sourceContext = useMemo(() => (sourceMedia === null || sourceFrame === null ? null : { media: sourceMedia, frame: sourceFrame, rate: source.rate }),
     [sourceMedia, sourceFrame, source.rate]);
   const timelineState = timelineMonitor.state?.monitor === 'timeline' && selected !== null && playing === selected.id ? timelineMonitor.state : null;
@@ -202,7 +202,7 @@ export function EditPage({
         bridge={bridge}
         session={session}
         revision={revision}
-        frame={timelineState?.frame ?? 0}
+        frame={timelineState === null ? 0 : timelineMonitor.frame ?? 0}
         playing={timelineState?.playing ?? false}
         onSeek={timelineMonitor.seek}
         source={sourceContext}

@@ -347,6 +347,12 @@ fn instance(backends: wgpu::Backends) -> Result<wgpu::Instance, GpuError> {
         ..wgpu::InstanceDescriptor::new_without_display_handle()
     };
     descriptor.backend_options.dx12.shader_compiler = dx12_compiler();
+    if matches!(
+        descriptor.backend_options.dx12.shader_compiler,
+        wgpu::Dx12Compiler::DynamicDxc { .. }
+    ) {
+        descriptor.backend_options.dx12.force_shader_model = dxc_shader_model();
+    }
     Ok(wgpu::Instance::new(descriptor))
 }
 
@@ -356,6 +362,15 @@ fn instance(backends: wgpu::Backends) -> Result<wgpu::Instance, GpuError> {
 /// wgpu would otherwise take whatever `dxcompiler.dll` is found on the `PATH`, and builds of it
 /// that other programs ship (as Obsidian and Electron ship Dawn's) crash the process as some of
 /// our shaders are compiled, with no error that could be caught.
+///
+/// A `dxcompiler.dll` named by its path (Microsoft's, of the Windows SDK or of a release of
+/// `DirectXShaderCompiler`) compiles the shaders some three times as fast as FXC does those of
+/// grades of many nodes. It signs them with the `dxil.dll` that Windows finds by its name: the
+/// one beside the executable, else in the folders of the system, else on the `PATH`, and not
+/// the one beside `dxcompiler.dll` (2026-10-31: Obsidian's, on the `PATH`, of version 1.7, which
+/// would not sign shaders of model 6.8, and every device failed to be made, "Parent device is
+/// lost"). So the shaders that it compiles are of model 6.0, which every `dxil.dll` signs and is
+/// all that ours need ([`dxc_shader_model`]).
 #[must_use]
 pub fn dx12_compiler() -> wgpu::Dx12Compiler {
     match std::env::var("COLUMBINA_DX12_COMPILER") {
@@ -365,6 +380,18 @@ pub fn dx12_compiler() -> wgpu::Dx12Compiler {
         }
         _ => wgpu::Dx12Compiler::Fxc,
     }
+}
+
+/// The shader model of the shaders that DXC compiles: 6.0 (see [`dx12_compiler`]).
+#[allow(
+    unsafe_code,
+    reason = "the token of wgpu that lowers the shader model is made by an unsafe function"
+)]
+fn dxc_shader_model() -> wgpu::ForceShaderModelToken {
+    // SAFETY: the token is to promise that the shaders compiled use no feature that the
+    // compiler cannot compile: 6.0 is the least model that DXC compiles, of every version, and
+    // our shaders, naga's HLSL of WGSL that asks for no feature, need no more.
+    unsafe { wgpu::ForceShaderModelToken::with_shader_model(wgpu::DxcShaderModel::V6_0) }
 }
 
 /// The features that are asked for where the adapter has them.

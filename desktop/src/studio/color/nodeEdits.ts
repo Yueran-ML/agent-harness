@@ -150,6 +150,14 @@ export function reset(how: ResetHow, grade: Target, of: Grade, current: string |
   return [{ op: 'set_grade', grade, value: empty }];
 }
 
+/**
+ * Original Memory (Alt+Shift+O, p. 3317): the grade as it was when its clip was chosen; a clip
+ * chosen again after another has its original taken anew.
+ */
+export function restoreOriginal(grade: Target, of: Grade, original: Grade): Worked {
+  return JSON.stringify(of) === JSON.stringify(original) ? null : [{ op: 'set_grade', grade, value: original }];
+}
+
 /** Change a node's label (Change Label, or a double-click on the label, p. 3313); an empty one takes it away. */
 export function relabel(grade: Target, of: Grade, id: string, label: string): Worked {
   const node = nodeOf(of, id);
@@ -280,7 +288,7 @@ export function collapseGroups(timeline: string, clips: readonly Clip[]): Worked
 export type NodeCommand =
   | { kind: 'add'; how: AddHow }
   | { kind: 'delete'; key: 'Delete' | 'Backspace' }
-  | { kind: 'extract' | 'enable' | 'enableAll' | 'copy' | 'paste' | 'tool' | 'cancel' }
+  | { kind: 'extract' | 'enable' | 'enableAll' | 'copy' | 'paste' | 'tool' | 'cancel' | 'original' }
   | { kind: 'reset'; how: ResetHow }
   | { kind: 'step'; direction: -1 | 1 };
 
@@ -288,7 +296,8 @@ export type NodeCommand =
  * The keys of the node editor, as DaVinci Resolve has them on Windows (pp. 3314–3319): Alt+S,
  * Shift+S, Alt+K, Alt+P and Alt+L add a node; Delete deletes the nodes chosen (Backspace only a
  * link chosen); E extracts; Ctrl+D enables or disables the nodes chosen and Alt+D all of them;
- * Shift+Home, Ctrl+Shift+Home and Ctrl+Home reset; Alt+Shift+; and Alt+Shift+' go to the
+ * Shift+Home, Ctrl+Shift+Home and Ctrl+Home reset; Alt+Shift+O goes back to the grade as it was
+ * when the clip was chosen (Original Memory, p. 3317); Alt+Shift+; and Alt+Shift+' go to the
  * previous and the next node; Ctrl+C and Ctrl+V copy and paste a node; H changes between the
  * selection tool and the hand. A letter is known by where it lies, as Alt changes what it types on
  * some layouts. Alt+O (an outside node) and the keys of nodes with windows wait for keys and windows.
@@ -307,7 +316,7 @@ export function nodeKey(key: Key): NodeCommand | null {
   if (only(false, true, true)) {
     if (key.code === 'Semicolon' || key.key === ';' || key.key === ':') return { kind: 'step', direction: -1 };
     if (key.code === 'Quote' || key.key === "'" || key.key === '"') return { kind: 'step', direction: 1 };
-    return null;
+    return letter === 'o' ? { kind: 'original' } : null;
   }
   if (only(false, true, false)) {
     switch (letter) {

@@ -214,6 +214,19 @@ describe('the keys of the node editor', () => {
     expect(calls(bridge, 'transport.seek')).toEqual([]);
   });
 
+  it('go back to the grade as it was when the clip was chosen with Alt+Shift+O (Original Memory)', async () => {
+    const { bridge } = await mount();
+    letter('s', { altKey: true }); await settle();
+    expect(graph().querySelectorAll('[data-node]')).toHaveLength(6);
+    bridge.call.mockClear();
+    letter('o', { altKey: true, shiftKey: true }); await settle();
+    expect(sent(bridge)).toEqual([[{ op: 'set_grade', grade: C1, value: parallelGrade() }]]);
+    expect(graph().querySelectorAll('[data-node]')).toHaveLength(5);
+    // As it was, there is nothing to go back to.
+    letter('o', { altKey: true, shiftKey: true }); await settle();
+    expect(sent(bridge)).toHaveLength(1);
+  });
+
   it('delete the nodes chosen with Delete where the node editor has the focus, and Backspace deletes none', async () => {
     const { bridge } = await mount();
     press(nodeOf('n3'));
@@ -625,6 +638,7 @@ describe('the rules of the node editor', () => {
       [k('Home'), null],
       [k(':', { alt: true, shift: true, code: 'Semicolon' }), { kind: 'step', direction: -1 }],
       [k('"', { alt: true, shift: true, code: 'Quote' }), { kind: 'step', direction: 1 }],
+      [k('O', { alt: true, shift: true, code: 'KeyO' }), { kind: 'original' }],
       [k('Delete'), { kind: 'delete', key: 'Delete' }],
       [k('Backspace'), { kind: 'delete', key: 'Backspace' }],
       [k('c', { ctrl: true, code: 'KeyC' }), { kind: 'copy' }],

@@ -12,7 +12,7 @@ import {
 } from './graph';
 import {
   addedCorrector, addInput, addLoose, addNode, composite, COMPOSITES, connect, deleteNodes, disconnect, extractNode, insertOnLink, linkIntoNewInput,
-  morph, nodeKey, pasteNode, reconnect, relabel, reset, resetShotMatch, stepNode, swapNodes, toggleAll, toggleNodes, type AddHow, type NodeCommand, type Worked,
+  morph, nodeKey, pasteNode, reconnect, relabel, reset, resetShotMatch, restoreOriginal, stepNode, swapNodes, toggleAll, toggleNodes, type AddHow, type NodeCommand, type Worked,
 } from './nodeEdits';
 import type { GradeEditing } from './useGradeEditing';
 import './nodes.css';
@@ -223,6 +223,9 @@ export function NodeEditor({ grade, level, levels, onLevel, current, onCurrent, 
   const [menu, setMenu] = useState<Menu | null>(null);
   const [labelling, setLabelling] = useState<{ key: string; id: string; value: string } | null>(null);
   const drag = useRef<Drag | null>(null);
+  // The grade as it was when it was first shown, for Original Memory (p. 3317): another clip or level shown takes it anew.
+  const original = useRef<{ key: string; grade: Grade } | null>(null);
+  if (grade !== null && original.current?.key !== gradeKey) original.current = { key: gradeKey, grade };
 
   const placed = views.placed(gradeKey);
   const base = useMemo(() => (grade === null ? null : layoutGrade(grade, placed)), [grade, placed]);
@@ -298,6 +301,9 @@ export function NodeEditor({ grade, level, levels, onLevel, current, onCurrent, 
       case 'enable': run(toggleNodes(target, grade, state.selected)); return true;
       case 'enableAll': run(toggleAll(target, grade)); return true;
       case 'reset': run(reset(command.how, target, grade, state.current)); return true;
+      case 'original':
+        if (original.current?.key === state.gradeKey) run(restoreOriginal(target, grade, original.current.grade));
+        return true;
       case 'step': {
         const to = stepNode(grade, state.current, command.direction);
         if (to !== null) { state.onCurrent(to); setOthers([]); }

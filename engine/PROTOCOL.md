@@ -1502,6 +1502,7 @@ A wrong node for an edit is `wrong_node`; an empty `to` is `out_of_range` `to`, 
 | `ungrouped` | `clip` | `collapse_group_grades` of a clip that is in no group |
 | `params` | `node`, `why` | `set_node` params that are not those of the node's kind |
 | `wrong_node` | `node`, `kind` (the node's kind, `source` or `output`) | an edit that cannot be done to or about that node |
+| `node_locked` | `node` | the `params` of a locked node set, by `set_node` or an edit that sets them (Lock Node, p. 3382). Not `locked`, which is the refusal of a locked track (`track`) |
 
 `missing` also names `group`, `node` and `link`; `taken` `node` and `group`; `out_of_range` also
 `label`, `inputs`, `links`, `lut`, `param`, `to`, `clips`, `preserve_nodes`, `pos` and the paths
@@ -1527,7 +1528,6 @@ it; the subtitles of the monitor are drawn over that, ungraded (p. 3330). An exp
 subtitles in. A grade that is not complete, or has no node, changes nothing.
 
 - **What is graded**: every clip of a track of picture, titles and colours as much as media (the
-| `node_locked` | `node` | the `params` of a locked node set, by `set_node` or an edit that sets them (Lock Node, p. 3382). Not `locked`, which is the refusal of a locked track (`track`) |
   model lets any clip carry a grade; DaVinci grades a Text+ title "like any other clip", p. 1047).
   The colour that a dip transition goes through is no clip and has no clip grade; the timeline
   grade is over it.

@@ -54,7 +54,7 @@ pub fn files(
                 number += 1;
                 let from = timestamp(from - range.start, timeline.rate);
                 let to = timestamp(to - range.start, timeline.rate);
-                writeln!(&mut text, "{number}\n{from} --> {to}").expect("writing a String");
+                write!(&mut text, "{number}{CRLF}{from} --> {to}{CRLF}").expect("writing a String");
                 let normalized = cue.text.replace("\r\n", "\n").replace('\r', "\n");
                 for line in normalized.split('\n') {
                     if line.trim().is_empty() {
@@ -62,14 +62,18 @@ pub fn files(
                     } else {
                         text.push_str(&untagged(line));
                     }
-                    text.push('\n');
+                    text.push_str(CRLF);
                 }
-                text.push('\n');
+                text.push_str(CRLF);
             }
             (path, text)
         })
         .collect()
 }
+
+/// Each line of an SRT ends with CR LF, as the program `SubRip` wrote it; the text is UTF-8
+/// without a BOM.
+const CRLF: &str = "\r\n";
 
 /// A word joiner (U+2060): it has no width and does not break the line.
 const JOINER: char = '\u{2060}';
@@ -186,7 +190,7 @@ mod tests {
         timeline.tracks = vec![track];
         let got = files(&timeline, &["S1".into()], Path::new("cut.mp4"), 25..100);
         assert_eq!(got, vec![(PathBuf::from("cut.srt"),
-            "1\n00:00:00,000 --> 00:00:01,000\n<\u{2060}b>&\n第二行\n \n最后\n\n2\n00:00:01,400 --> 00:00:03,000\ntail\n\n".into())]);
+            "1\r\n00:00:00,000 --> 00:00:01,000\r\n<\u{2060}b>&\r\n第二行\r\n \r\n最后\r\n\r\n2\r\n00:00:01,400 --> 00:00:03,000\r\ntail\r\n\r\n".into())]);
     }
 
     #[test]

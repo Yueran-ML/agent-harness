@@ -1173,8 +1173,10 @@ track uses `film.srt`; multiple tracks use `film.<language-or-track-name>.srt`. 
 replaced, the label is cut to 80 characters (`subtitles` if nothing is left), and names that
 are the same regardless of letter case get the suffixes `-2`, `-3`, …, without hashes. Cue times are clipped to
 the export range and rebased to zero; frame times use the exact rational frame rate, rounded
-down to milliseconds. Text is UTF-8 with normalized newlines (an empty line inside a cue is written as one space, so
-it does not end the cue early), written as it is: players do not
+down to milliseconds. The file is UTF-8 without a BOM, and every line ends with CRLF, as SubRip
+wrote it: the lines of a cue's text (its newlines, `\n`, `\r\n` or `\r`, are normalized), and the
+blank line between cues. An empty line inside a cue is written as one space, so
+it does not end the cue early. Text is written as it is: players do not
 decode entities, so `&`, `<` and `>` are not escaped. Only what a player would read as a tag is
 broken up: players (ffmpeg, mpv) read `<` up to the next `>` on a line as a tag (`<i>`, `</b>`,
 `<font color=…>`, and drop any other), so a word joiner (U+2060, invisible and zero-width) is

@@ -204,7 +204,7 @@ async fn render_works_headlessly_with_clipped_srt_and_no_burned_subtitles() {
     assert_eq!(done["path"], json!(path));
     assert_eq!(
         std::fs::read_to_string(path.with_extension("srt")).unwrap(),
-        "1\n00:00:00,000 --> 00:00:00,800\n旁边的字幕\n\n"
+        "1\r\n00:00:00,000 --> 00:00:00,800\r\n旁边的字幕\r\n\r\n"
     );
     assert!(!output.path().join("cut.mov.part").exists());
     let mut decoder =
@@ -411,11 +411,11 @@ async fn render_writes_an_srt_of_each_chosen_track_of_subtitles_shown_or_hidden(
     assert_eq!(written, ["cut.fr.srt", "cut.mov", "cut.zh.srt"]);
     assert_eq!(
         std::fs::read_to_string(output.path().join("cut.zh.srt")).unwrap(),
-        "1\n00:00:00,400 --> 00:00:00,800\n旁边的字幕\n\n"
+        "1\r\n00:00:00,400 --> 00:00:00,800\r\n旁边的字幕\r\n\r\n"
     );
     assert_eq!(
         std::fs::read_to_string(output.path().join("cut.fr.srt")).unwrap(),
-        "1\n00:00:00,000 --> 00:00:00,800\nÀ côté\n\n"
+        "1\r\n00:00:00,000 --> 00:00:00,800\r\nÀ côté\r\n\r\n"
     );
     drop(client);
     assert_eq!(engine.ended().await, 0);

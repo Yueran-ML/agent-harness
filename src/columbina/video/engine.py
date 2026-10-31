@@ -68,11 +68,17 @@ __all__ = [
     "Applied",
     "Changed",
     "Changes",
+    "Channel",
+    "Chroma",
     "Engine",
     "EngineError",
+    "Lut",
+    "LutLibrary",
+    "LutRoot",
     "Progress",
     "RenderState",
     "Rendering",
+    "Statistics",
     "not_found",
     "program_of",
     "unsupported",
@@ -273,6 +279,136 @@ class Progress:
             encoder=text("encoder"),
             message=text("message"),
         )
+
+
+View = Literal["timeline", "source"]
+"""A monitor of the engine: the timeline monitor or the source monitor."""
+
+_CHANNELS = ("red", "green", "blue", "luma")
+
+
+@dataclass(frozen=True)
+class Channel:
+    """The least, most and mean of a channel over a frame: R', G', B' or luma.
+
+    They are signals from 0 to 1, or beyond where the frame is.
+    """
+
+    min: float
+    max: float
+    mean: float
+
+
+@dataclass(frozen=True)
+class Chroma:
+    """The chroma of a frame in Cb and Cr, as the vectorscope shows it unzoomed.
+
+    Cb and Cr are from -0.5 to 0.5 within the gamut.
+
+    Attributes:
+        centroid: The means of Cb and Cr: a cast where it is off the centre.
+        spread: Their standard deviations.
+        radius: The root mean square distance from the centroid.
+        saturation: The mean distance from the centre.
+        hue: The angle of the centroid in degrees counterclockwise from Cb, 0 to 360 (the skin
+            tone line is at 123).
+    """
+
+    centroid: tuple[float, float]
+    spread: tuple[float, float]
+    radius: float
+    saturation: float
+    hue: float
+
+
+@dataclass(frozen=True)
+class Statistics:
+    """The figures of every pixel of the frame that a monitor shows.
+
+    They are what ``scopes.statistics`` answers (``PROTOCOL.md``, Scopes).
+
+    Attributes:
+        view: The monitor.
+        frame: The frame shown: of the timeline, or of the media for the source monitor.
+        width: Its width in pixels.
+        height: Its height.
+        samples: How many pixels were measured.
+        red: R'.
+        green: G'.
+        blue: B'.
+        luma: Luma, of Rec.709's coefficients until the project's colour settings say otherwise.
+        chroma: Its chroma.
+        percentiles: For each of ``red``, ``green``, ``blue`` and ``luma``, the signal below which
+            ``"1"``, ``"50"`` and ``"99"`` percent of the pixels are.
+        histogram: For each channel, how many pixels are in each of ``bins`` levels from 0 to 1.
+        bins: How many levels the histogram has.
+    """
+
+    view: View
+    frame: int
+    width: int
+    height: int
+    samples: int
+    red: Channel
+    green: Channel
+    blue: Channel
+    luma: Channel
+    chroma: Chroma
+    percentiles: dict[str, dict[str, float]]
+    histogram: dict[str, list[int]]
+    bins: int
+
+
+@dataclass(frozen=True)
+class LutRoot:
+    """A folder that LUTs are looked for in: the project's, or one of the library.
+
+    Attributes:
+        place: ``project`` or ``library``.
+        path: The folder, as the engine has it.
+        exists: Whether it is there.
+    """
+
+    place: Literal["project", "library"]
+    path: str
+    exists: bool
+
+
+@dataclass(frozen=True)
+class Lut:
+    """A ``.cube`` file under a root, by the name that a corrector's ``lut`` gives it.
+
+    Attributes:
+        name: Its path from its root, ``/`` between folders.
+        root: The index of its root in :attr:`LutLibrary.roots`.
+        size: Its size in bytes.
+        modified_us: When it was last written, in microseconds since 1970 (UTC).
+        shadowed: Whether a root before it has a file of the same name, which a node of that
+            name reads instead.
+    """
+
+    name: str
+    root: int
+    size: int
+    modified_us: int | None
+    shadowed: bool
+
+
+@dataclass(frozen=True)
+class LutLibrary:
+    """The roots of LUTs and the LUTs in them, as ``luts.list`` answers them.
+
+    The roots are in the order that a name is looked for in them.
+
+    Attributes:
+        roots: The folder of the project, then each folder of the library.
+        luts: The LUTs, by root, then by name.
+        truncated: Whether there were more than the engine lists.
+    """
+
+    roots: list[LutRoot]
+    luts: list[Lut]
+    truncated: bool
 
 
 class Rendering:
@@ -954,6 +1090,32 @@ class Engine:
             raise EngineError("the engine answered media.inspect with no media", code=UNEXPECTED)
         return cast("list[dict[str, Any]]", items)
 
+    async def statistics(self, view: View = "timeline", *, bins: int | None = None) -> Statistics:
+        """Return the figures of the frame that a monitor shows now, measured on the card.
+
+        Only an engine with monitors (the desktop's) has them. ``bins`` is the number of levels
+        of the histogram, 16 to 1024 (256 unless given).
+
+        Raises:
+            EngineError: The engine is headless (``-32601``), the monitor shows nothing
+                (``-32004``, ``not_loaded``), or ``bins`` is out of range (``-32602``).
+        """
+        params: dict[str, Any] = {"view": view}
+        if bins is not None:
+            params["bins"] = bins
+        return _statistics(await self._call("scopes.statistics", params))
+
+    async def luts(self, folder: str | None = None) -> LutLibrary:
+        """Return the folders that LUTs are looked for in, and the ``.cube`` files in them.
+
+        ``folder`` lists only that folder of each root: a relative path of plain names.
+
+        Raises:
+            EngineError: The folder leads out of the roots (``-32602``, ``outside_roots``).
+        """
+        said = await self._call("luts.list", {} if folder is None else {"folder": folder})
+        return _library(said)
+
     async def render(
         self,
         timeline: str,
@@ -1389,6 +1551,134 @@ def _whole(said: dict[str, Any], key: str) -> int:
     if type(number) is not int:
         raise EngineError(f"the engine answered with no {key}", code=UNEXPECTED)
     return number
+
+
+def _unexpected(method: str) -> EngineError:
+    return EngineError(
+        f"the engine answered {method} with what the protocol does not say", code=UNEXPECTED
+    )
+
+
+def _real(value: object, method: str) -> float:
+    """Read a number of an answer.
+
+    ``null`` is read as NaN: the engine writes it for a figure that is not a number.
+    """
+    if value is None:
+        return float("nan")
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise _unexpected(method)
+    return float(value)
+
+
+def _object(value: object, method: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise _unexpected(method)
+    return cast("dict[str, Any]", value)
+
+
+def _pair(value: object, method: str) -> tuple[float, float]:
+    if not isinstance(value, list) or len(cast("list[object]", value)) != 2:
+        raise _unexpected(method)
+    first, second = cast("list[object]", value)
+    return _real(first, method), _real(second, method)
+
+
+def _statistics(said: dict[str, Any]) -> Statistics:
+    """Read the answer of ``scopes.statistics``.
+
+    Raises:
+        EngineError: It is not what the protocol says.
+    """
+    method = "scopes.statistics"
+    view = said.get("view")
+    if view not in ("timeline", "source"):
+        raise _unexpected(method)
+
+    def channel(name: str) -> Channel:
+        figures = _object(said.get(name), method)
+        return Channel(*(_real(figures.get(key), method) for key in ("min", "max", "mean")))
+
+    chroma = _object(said.get("chroma"), method)
+    percentiles = _object(said.get("percentiles"), method)
+    histogram = _object(said.get("histogram"), method)
+    counts: dict[str, list[int]] = {}
+    shares: dict[str, dict[str, float]] = {}
+    for name in _CHANNELS:
+        each = histogram.get(name)
+        if not isinstance(each, list) or not all(
+            type(count) is int for count in cast("list[object]", each)
+        ):
+            raise _unexpected(method)
+        counts[name] = cast("list[int]", each)
+        shares[name] = {
+            share: _real(value, method)
+            for share, value in _object(percentiles.get(name), method).items()
+        }
+    return Statistics(
+        view=view,
+        frame=_whole(said, "frame"),
+        width=_whole(said, "width"),
+        height=_whole(said, "height"),
+        samples=_whole(said, "samples"),
+        red=channel("red"),
+        green=channel("green"),
+        blue=channel("blue"),
+        luma=channel("luma"),
+        chroma=Chroma(
+            centroid=_pair(chroma.get("centroid"), method),
+            spread=_pair(chroma.get("spread"), method),
+            radius=_real(chroma.get("radius"), method),
+            saturation=_real(chroma.get("saturation"), method),
+            hue=_real(chroma.get("hue"), method),
+        ),
+        percentiles=shares,
+        histogram=counts,
+        bins=_whole(histogram, "bins"),
+    )
+
+
+def _library(said: dict[str, Any]) -> LutLibrary:
+    """Read the answer of ``luts.list``.
+
+    Raises:
+        EngineError: It is not what the protocol says.
+    """
+    method = "luts.list"
+    roots, luts, truncated = said.get("roots"), said.get("luts"), said.get("truncated")
+    if not isinstance(roots, list) or not isinstance(luts, list) or not isinstance(truncated, bool):
+        raise _unexpected(method)
+    read_roots: list[LutRoot] = []
+    for root in cast("list[object]", roots):
+        each = _object(root, method)
+        place, path, exists = each.get("place"), each.get("path"), each.get("exists")
+        if place not in ("project", "library") or not isinstance(path, str):
+            raise _unexpected(method)
+        if not isinstance(exists, bool):
+            raise _unexpected(method)
+        read_roots.append(LutRoot(place=place, path=path, exists=exists))
+    read_luts: list[Lut] = []
+    for lut in cast("list[object]", luts):
+        each = _object(lut, method)
+        name, shadowed, modified = each.get("name"), each.get("shadowed"), each.get("modified_us")
+        root = _whole(each, "root")
+        if (
+            not isinstance(name, str)
+            or not isinstance(shadowed, bool)
+            or not (modified is None or type(modified) is int)
+            or not 0 <= root < len(read_roots)
+        ):
+            raise _unexpected(method)
+        read_luts.append(
+            Lut(
+                name=name,
+                root=root,
+                size=_whole(each, "size"),
+                modified_us=modified,
+                shadowed=shadowed,
+            )
+        )
+    return LutLibrary(roots=read_roots, luts=read_luts, truncated=truncated)
 
 
 def _same(written: Path, directory: Path) -> bool:

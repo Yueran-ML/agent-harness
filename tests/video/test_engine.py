@@ -22,8 +22,11 @@ from columbina.video.engine import (
     Applied,
     Changed,
     Changes,
+    Channel,
+    Chroma,
     Engine,
     EngineError,
+    Lut,
     Progress,
     not_found,
     program_of,
@@ -146,6 +149,62 @@ async def test_inspection_does_not_import_or_change_history(tmp_path: Path) -> N
         fake.results["media.inspect"] = {"media": [None]}
         with pytest.raises(EngineError, match="no media"):
             await connected.inspected([FAKE])
+
+
+async def test_the_statistics_of_a_monitor_are_read_into_their_figures(tmp_path: Path) -> None:
+    async with served(tmp_path / "film") as fake, await attached(tmp_path / "film") as connected:
+        with pytest.raises(EngineError) as headless:
+            await connected.statistics()
+        assert headless.value.code == -32601
+        fake.headless = False
+        figures = await connected.statistics("source", bins=16)
+        assert fake.looked[-1] == ("scopes.statistics", {"view": "source", "bins": 16})
+        assert (figures.view, figures.frame, figures.width, figures.height) == ("source", 12, 4, 2)
+        assert figures.samples == 8
+        grey = 128 / 255
+        assert figures.luma == Channel(min=grey, max=grey, mean=grey)
+        assert figures.chroma == Chroma(
+            centroid=(0.0, 0.0), spread=(0.0, 0.0), radius=0.0, saturation=0.0, hue=0.0
+        )
+        assert figures.percentiles["red"]["50"] == grey
+        assert figures.bins == 16
+        assert sum(figures.histogram["luma"]) == 8
+        await connected.statistics()
+        assert fake.looked[-1] == ("scopes.statistics", {"view": "timeline"})
+        fake.results["scopes.statistics"] = {"view": "timeline", "frame": 0}
+        with pytest.raises(EngineError) as odd:
+            await connected.statistics()
+        assert odd.value.code == UNEXPECTED
+
+
+async def test_the_library_of_luts_is_read_into_its_roots_and_files(tmp_path: Path) -> None:
+    async with served(tmp_path / "film") as fake, await attached(tmp_path / "film") as connected:
+        library = await connected.luts()
+        assert fake.looked[-1] == ("luts.list", {})
+        assert [(root.place, root.exists) for root in library.roots] == [
+            ("project", True),
+            ("library", False),
+        ]
+        assert library.luts == [
+            Lut(
+                name="LUTs/film.cube",
+                root=0,
+                size=120,
+                modified_us=1_790_000_000_000_000,
+                shadowed=False,
+            )
+        ]
+        assert not library.truncated
+        await connected.luts("LUTs")
+        assert fake.looked[-1] == ("luts.list", {"folder": "LUTs"})
+        with pytest.raises(EngineError) as outside:
+            await connected.luts("../elsewhere")
+        assert outside.value.code == -32602
+        assert outside.value.data == {"reason": "outside_roots", "folder": "../elsewhere"}
+        fake.results["luts.list"] = {"roots": [], "luts": [{"name": "x.cube"}], "truncated": False}
+        with pytest.raises(EngineError) as odd:
+            await connected.luts()
+        assert odd.value.code == UNEXPECTED
 
 
 async def test_a_refusal_keeps_what_the_engine_said_of_it(tmp_path: Path) -> None:
@@ -1205,3 +1264,33 @@ async def test_the_engine_renders_a_timeline_and_tells_how_far_it_has_come(
     assert ended.encoder
     assert all(one.job == rendering.job for one in heard)
     assert film.stat().st_size > 0
+
+
+async def test_the_engine_lists_the_luts_of_the_project_and_has_no_scopes_headless(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    program = real_engine()
+    project = tmp_path / "film"
+    library = tmp_path / "library"
+    cube = "LUT_3D_SIZE 2\n" + "0 0 0\n" * 8
+    (project / "LUTs").mkdir(parents=True)
+    (project / "LUTs" / "film.cube").write_text(cube, newline="\n")
+    (library / "looks").mkdir(parents=True)
+    (library / "looks" / "warm.cube").write_text(cube, newline="\n")
+    monkeypatch.setenv("COLUMBINA_LUTS", str(library))
+
+    async with await Engine.attach(project, program=program, idle_seconds=1) as one:
+        listed = await one.luts()
+        with pytest.raises(EngineError) as headless:
+            await one.statistics()
+        with pytest.raises(EngineError) as outside:
+            await one.luts("..")
+
+    assert [root.place for root in listed.roots] == ["project", "library"]
+    assert Path(listed.roots[1].path) == library
+    assert [(lut.name, lut.root, lut.size) for lut in listed.luts] == [
+        ("LUTs/film.cube", 0, len(cube)),
+        ("looks/warm.cube", 1, len(cube)),
+    ]
+    assert headless.value.code == -32601
+    assert outside.value.data == {"reason": "outside_roots", "folder": ".."}

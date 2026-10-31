@@ -169,6 +169,7 @@ class Fake:
         render_hold: Whether a render holds on after it begins, until it is cancelled.
         jobs: The state of each render, by its job.
         rendered: What each ``render.start`` was asked, in order.
+        looked: What each ``scopes.statistics`` and ``luts.list`` was asked, in order.
     """
 
     def __init__(self, directory: Path, address: str) -> None:
@@ -205,6 +206,7 @@ class Fake:
         self.render_hold = False
         self.jobs: dict[str, str] = {}
         self.rendered: list[dict[str, Any]] = []
+        self.looked: list[tuple[str, dict[str, Any]]] = []
         self.last_left = time.monotonic()
         self.log: Callable[[dict[str, Any]], None] = lambda line: None
 
@@ -397,6 +399,62 @@ class Fake:
         self.jobs[job] = "running"
         asyncio.get_running_loop().call_soon(self._progress, job, path, frames, 0)
         return {"job": job}
+
+    def scopes_statistics(self, _asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        """The figures of a grey frame of 4 x 2, as a monitor of the desktop's engine shows it."""
+        self.looked.append(("scopes.statistics", copy.deepcopy(params)))
+        if self.headless is not False:
+            raise RefusedError(-32601, "there is no method scopes.statistics in a headless engine")
+        bins = params.get("bins", 256)
+        grey = 128 / 255
+        channel = {"min": grey, "max": grey, "mean": grey}
+        level = round(grey * (bins - 1))
+        counts = [8 if each == level else 0 for each in range(bins)]
+        names = ("red", "green", "blue", "luma")
+        return {
+            "view": params["view"],
+            "frame": 12,
+            "width": 4,
+            "height": 2,
+            "samples": 8,
+            **dict.fromkeys(names, channel),
+            "chroma": {
+                "centroid": [0.0, 0.0],
+                "spread": [0.0, 0.0],
+                "radius": 0.0,
+                "saturation": 0.0,
+                "hue": 0.0,
+            },
+            "percentiles": {name: {"1": grey, "50": grey, "99": grey} for name in names},
+            "histogram": {"bins": bins, **dict.fromkeys(names, counts)},
+        }
+
+    def luts_list(self, _asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        """One LUT in the folder of the project, and a library that is not there."""
+        self.looked.append(("luts.list", copy.deepcopy(params)))
+        folder = params.get("folder")
+        if isinstance(folder, str) and ".." in folder.replace("\\", "/").split("/"):
+            raise RefusedError(
+                -32602,
+                f"the folder {folder} is not a path within the folders of LUTs",
+                {"reason": "outside_roots", "folder": folder},
+            )
+        return {
+            "roots": [
+                {"place": "project", "path": str(self.directory), "exists": True},
+                {"place": "library", "path": str(self.directory / "library"), "exists": False},
+            ],
+            "luts": [
+                {
+                    "name": "LUTs/film.cube",
+                    "root": 0,
+                    "size": 120,
+                    "modified_us": 1_790_000_000_000_000,
+                    "shadowed": False,
+                }
+            ],
+            "truncated": False,
+        }
 
     def render_cancel(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
         job = str(params.get("job"))

@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use columbina_model::grade::{
     Composite, Corrector, Grade, Interp, Key, KeyInput, KeyMixer, LayerMixer, Link, Node, NodeKind,
-    ParallelMixer, Param, Port, OUTPUT, SOURCE,
+    ParallelMixer, Param, Port, ShotMatch, OUTPUT, SOURCE,
 };
 
 use super::maths::{self, Constants};
@@ -183,6 +183,8 @@ fn nodes_as_they_are_made_change_nothing_to_the_bit() {
     key_mixed.sort_links();
     let grades = [
         one(|_| {}),
+        // A shot match at its neutral settings, as no shot match.
+        one(|c| c.shot_match = Some(ShotMatch::default())),
         serial(vec![
             Node::corrector("n1"),
             Node::corrector("n2"),
@@ -554,6 +556,78 @@ fn soft_clip_keeps_everything_until_it_is_set() {
         out[0] == -0.2 && out[1] == 0.1 && out[2] > 0.0 && out[2] < 0.01,
         "{out:?}"
     );
+}
+
+/// A shot match of `gamma`, `gain` and `offset` on each channel, and `contrast` about `pivot`.
+fn shot(gamma: [f64; 3], gain: [f64; 3], offset: [f64; 3], contrast: f64, pivot: f64) -> ShotMatch {
+    let mut m = ShotMatch::default();
+    (m.gamma.r, m.gamma.g, m.gamma.b) = (fixed(gamma[0]), fixed(gamma[1]), fixed(gamma[2]));
+    (m.gain.r, m.gain.g, m.gain.b) = (fixed(gain[0]), fixed(gain[1]), fixed(gain[2]));
+    (m.offset.r, m.offset.g, m.offset.b) = (fixed(offset[0]), fixed(offset[1]), fixed(offset[2]));
+    (m.contrast, m.pivot) = (fixed(contrast), fixed(pivot));
+    m
+}
+
+#[test]
+fn a_shot_match_moves_each_channel_by_its_power_gain_and_offset() {
+    let matched = one(|c| {
+        c.shot_match = Some(shot(
+            [0.5, 1.0, 2.0],
+            [1.0, 1.2, 1.0],
+            [0.0, 0.0, -0.1],
+            1.0,
+            0.4,
+        ));
+    });
+    let x = [0.25, 0.5, 0.6];
+    near(eval(&matched, x), [0.5, 0.6, 0.26], 1e-6);
+    // The power keeps the sign; black stays black where nothing is added.
+    near(eval(&matched, [-0.25, 0.0, 0.0]), [-0.5, 0.0, -0.1], 1e-6);
+    // A channel at its neutral settings is kept to the bit, the others moved.
+    let red = one(|c| c.shot_match = Some(shot([1.0; 3], [2.0, 1.0, 1.0], [0.0; 3], 1.0, 0.4)));
+    for rgb in colours() {
+        let out = eval(&red, rgb);
+        assert_eq!(out[1].to_bits(), rgb[1].to_bits(), "{rgb:?}");
+        assert_eq!(out[0], rgb[0] * 2.0, "{rgb:?}");
+    }
+}
+
+#[test]
+fn the_contrast_of_a_shot_match_is_an_s_curve_whatever_the_project_says() {
+    let matched = one(|c| c.shot_match = Some(shot([1.0; 3], [1.0; 3], [0.0; 3], 1.5, 0.4)));
+    for s_curve_contrast in [true, false] {
+        let options = GradeOptions {
+            s_curve_contrast,
+            ..GradeOptions::default()
+        };
+        let out = evaluate(&matched, 0.0, &options, [0.2, 0.4, 0.8]);
+        let s = |x: f32| maths::s_contrast(x, 1.5, 0.4);
+        near(out, [s(0.2), 0.4, s(0.8)], 1e-6);
+        assert!(out[0] < 0.2 && out[2] > 0.8 && out[2] < 1.0, "{out:?}");
+        // Black, white and beyond are kept.
+        near(
+            evaluate(&matched, 0.0, &options, [0.0, 1.0, 1.4]),
+            [0.0, 1.0, 1.4],
+            0.0,
+        );
+    }
+}
+
+#[test]
+fn a_shot_match_is_the_last_step_of_its_node_and_mixed_by_its_key() {
+    // Soft Clip at 50 before it, a gain of 2 after: white comes back out of the clip.
+    let after_clip = one(|c| {
+        let h = &mut c.soft_clip.high;
+        (h.r, h.g, h.b) = (fixed(50.0), fixed(50.0), fixed(50.0));
+        c.shot_match = Some(shot([1.0; 3], [2.0; 3], [0.0; 3], 1.0, 0.4));
+    });
+    near(eval(&after_clip, [0.8, 0.3, 0.1]), [1.0, 0.6, 0.2], 1e-6);
+    // Within the node, so its Key Output Gain weakens it with the rest.
+    let half = one(|c| {
+        c.key.output.gain = fixed(0.5);
+        c.shot_match = Some(shot([1.0; 3], [2.0; 3], [0.0; 3], 1.0, 0.4));
+    });
+    near(eval(&half, [0.4; 3]), [0.6; 3], 1e-6);
 }
 
 #[test]
@@ -1188,6 +1262,28 @@ fn random_corrector(rng: &mut Rng, id: &str) -> Node {
     node
 }
 
+/// `node`, a corrector, with a random shot match half the time.
+fn with_random_shot_match(rng: &mut Rng, mut node: Node) -> Node {
+    let NodeKind::Corrector(c) = &mut node.kind else {
+        unreachable!()
+    };
+    if rng.chance(0.5) {
+        let mut r = |low: f64, high: f64| rng.range(low, high);
+        c.shot_match = Some(shot(
+            [r(0.5, 2.0), r(0.5, 2.0), r(0.5, 2.0)],
+            [r(0.7, 1.4), r(0.7, 1.4), r(0.7, 1.4)],
+            [r(-0.1, 0.1), r(-0.1, 0.1), r(-0.1, 0.1)],
+            if rng.chance(0.3) {
+                1.0
+            } else {
+                rng.range(0.6, 1.8)
+            },
+            rng.range(0.3, 0.6),
+        ));
+    }
+    node
+}
+
 #[track_caller]
 fn assert_card_is_processor(card: &mut Card, grade: &Grade, options: &GradeOptions, rng: &mut Rng) {
     let stage = stage_of(grade, 0.0, options, &NoLuts);
@@ -1207,7 +1303,8 @@ fn the_card_does_each_corrector_as_the_processor_does() {
     let Some(mut card) = Card::new() else { return };
     let mut rng = Rng(0x5eed_1234_abcd_0001);
     for round in 0..300 {
-        let grade = serial(vec![random_corrector(&mut rng, "n1")]);
+        let node = random_corrector(&mut rng, "n1");
+        let grade = serial(vec![with_random_shot_match(&mut rng, node)]);
         let options = GradeOptions {
             s_curve_contrast: round % 3 != 0,
             ..GradeOptions::default()

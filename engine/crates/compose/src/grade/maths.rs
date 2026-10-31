@@ -142,6 +142,12 @@ pub fn contrast(c: &Constants, x: f32, k: f32, pivot: f32) -> f32 {
     if !c.s_curve {
         return x + (x - pivot) * (k - 1.0);
     }
+    s_contrast(x, k, pivot)
+}
+
+/// Contrast `k` about `pivot` as an S-curve that keeps black and white, and the values beyond.
+#[must_use]
+pub fn s_contrast(x: f32, k: f32, pivot: f32) -> f32 {
     if k == 1.0 || x <= 0.0 || x >= 1.0 {
         return x;
     }
@@ -149,6 +155,13 @@ pub fn contrast(c: &Constants, x: f32, k: f32, pivot: f32) -> f32 {
         return pivot * (x / pivot).powf(k);
     }
     1.0 - (1.0 - pivot) * ((1.0 - x) / (1.0 - pivot)).powf(k)
+}
+
+/// A channel through a shot match: its exponent `e`, its gain and its offset, then the S-curve
+/// of contrast `k` about `pivot` (`columbina_model::grade::ShotMatch`).
+#[must_use]
+pub fn shot_match(x: f32, e: f32, gain: f32, offset: f32, k: f32, pivot: f32) -> f32 {
+    s_contrast(gain * spow(x, e) + offset, k, pivot)
 }
 
 /// The value at `x` of the curve of `count` points from `from` (each its x, its y and its
@@ -362,7 +375,7 @@ pub fn clip_high(x: f32, high: f32, width: f32) -> f32 {
 }
 
 /// A corrector after its LUT: the HSL curves, which read the hue, saturation and luma of the
-/// picture that came into the node (p. 3122), and Soft Clip.
+/// picture that came into the node (p. 3122), Soft Clip, and last the shot match (p. 3048).
 pub(crate) fn secondary(c: &Constants, p: Params, node: u32, x0: Rgb, input: Rgb) -> Rgb {
     let mut x = x0;
     let features = whole(p.at(node + at::FEATURES)[0]);
@@ -394,6 +407,12 @@ pub(crate) fn secondary(c: &Constants, p: Params, node: u32, x0: Rgb, input: Rgb
         let high_width = p.at(node + at::CLIP_HIGH_SOFT);
         x = [0, 1, 2]
             .map(|i| clip_high(clip_low(x[i], low[i], low_width[i]), high[i], high_width[i]));
+    }
+    if features & at::SHOT_ON != 0 {
+        let e = p.at(node + at::SHOT_GAMMA);
+        let gain = p.at(node + at::SHOT_GAIN);
+        let offset = p.at(node + at::SHOT_OFFSET);
+        x = [0, 1, 2].map(|i| shot_match(x[i], e[i], gain[i], offset[i], gain[3], offset[3]));
     }
     x
 }

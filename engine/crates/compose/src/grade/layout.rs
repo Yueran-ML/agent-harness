@@ -15,7 +15,9 @@
 
 use std::f64::consts::PI;
 
-use columbina_model::grade::{Composite, Corrector, Curve, KeyInput, KeyOutput, Param, Wheel};
+use columbina_model::grade::{
+    Composite, Corrector, Curve, KeyInput, KeyOutput, Param, ShotMatch, Wheel,
+};
 
 /// Lift of R, G, B and Y.
 pub const LIFT: u32 = 0;
@@ -73,8 +75,14 @@ pub const KEY_OUTPUT: u32 = 25;
 /// in `x`. The card leaves the others out (each is the identity at its neutral settings, so
 /// leaving it out changes nothing).
 pub const FEATURES: u32 = 26;
+/// The shot match: the exponents of R, G and B.
+pub const SHOT_GAMMA: u32 = 27;
+/// The gains of R, G and B, and the contrast.
+pub const SHOT_GAIN: u32 = 28;
+/// What is added to R, G and B, and the pivot.
+pub const SHOT_OFFSET: u32 = 29;
 /// The size of the block of a corrector.
-pub const CORRECTOR: u32 = 27;
+pub const CORRECTOR: u32 = 30;
 
 /// Shadows or Highlights.
 pub const ZONES_ON: u32 = 1;
@@ -98,6 +106,8 @@ pub const SATURATION_ON: u32 = 256;
 pub const HSL_ON: u32 = 512;
 /// Soft Clip.
 pub const CLIP_ON: u32 = 1024;
+/// The shot match.
+pub const SHOT_ON: u32 = 2048;
 
 /// How far Gamma bends: the exponent of a Gamma of `g` is `2^(-GAMMA_POWER · g)`.
 pub const GAMMA_POWER: f64 = 2.0;
@@ -373,6 +383,15 @@ pub fn corrector(
     );
     out[KEY_INPUT as usize] = key_input(&corrector.key.input, frame);
     out[KEY_OUTPUT as usize] = key_output(&corrector.key.output, frame);
+    // No shot match is the neutral one.
+    let neutral = ShotMatch::default();
+    let shot = corrector.shot_match.as_ref().unwrap_or(&neutral);
+    let same = |v: f64| v;
+    out[SHOT_GAMMA as usize] = rgb(&shot.gamma.r, &shot.gamma.g, &shot.gamma.b, frame, same);
+    out[SHOT_GAIN as usize] = rgb(&shot.gain.r, &shot.gain.g, &shot.gain.b, frame, same);
+    out[SHOT_GAIN as usize][3] = f(at(&shot.contrast, frame));
+    out[SHOT_OFFSET as usize] = rgb(&shot.offset.r, &shot.offset.g, &shot.offset.b, frame, same);
+    out[SHOT_OFFSET as usize][3] = f(at(&shot.pivot, frame));
     let diagonal = |curve: &Curve| curve.points == [[0.0, 0.0], [1.0, 1.0]];
     let curved = if curves.ganged {
         !diagonal(&curves.y)
@@ -418,6 +437,13 @@ fn features(block: &[[f32; 4]], curved: bool) -> u32 {
                     || at(CLIP_HIGH)[i] < 1.0
                     || at(CLIP_HIGH_SOFT)[i] > 0.0
             }),
+        ),
+        (
+            SHOT_ON,
+            !all(SHOT_GAMMA, 3, 1.0)
+                || !all(SHOT_GAIN, 3, 1.0)
+                || !all(SHOT_OFFSET, 3, 0.0)
+                || at(SHOT_GAIN)[3] != 1.0,
         ),
     ];
     steps

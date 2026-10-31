@@ -73,6 +73,11 @@ fn grade_contrast(x: f32, c: f32, p: f32) -> f32 {
     if (!GRADE_S_CURVE) {
         return x + (x - p) * (c - 1.0);
     }
+    return grade_s_contrast(x, c, p);
+}
+
+// Contrast `c` about `p` as an S-curve that keeps black and white, and the values beyond.
+fn grade_s_contrast(x: f32, c: f32, p: f32) -> f32 {
     if (c == 1.0 || x <= 0.0 || x >= 1.0) {
         return x;
     }
@@ -259,8 +264,15 @@ fn grade_clip_high(x: f32, high: f32, width: f32) -> f32 {
     return knee + width * (1.0 - exp((knee - x) / width));
 }
 
+// A channel through a shot match: its exponent `e`, its gain and its offset, then the S-curve of
+// contrast `c` about `p`.
+fn grade_shot_match(x: f32, e: f32, gain: f32, offset: f32, c: f32, p: f32) -> f32 {
+    return grade_s_contrast(gain * grade_spow(x, e) + offset, c, p);
+}
+
 // A corrector after its LUT: the HSL curves, which read the hue, saturation and luma of the
-// picture that came into the node (p. 3122), and Soft Clip.
+// picture that came into the node (p. 3122), Soft Clip, and last the shot match, which no
+// palette shows (p. 3048).
 fn grade_secondary(x0: vec3<f32>, input: vec3<f32>, at: u32) -> vec3<f32> {
     var x = x0;
     let features = u32(param(at + 26u).x);
@@ -293,6 +305,16 @@ fn grade_secondary(x0: vec3<f32>, input: vec3<f32>, at: u32) -> vec3<f32> {
             grade_clip_high(grade_clip_low(x.r, low.r, low_width.r), high.r, high_width.r),
             grade_clip_high(grade_clip_low(x.g, low.g, low_width.g), high.g, high_width.g),
             grade_clip_high(grade_clip_low(x.b, low.b, low_width.b), high.b, high_width.b),
+        );
+    }
+    if ((features & 2048u) != 0u) {
+        let e = param(at + 27u);
+        let gain = param(at + 28u);
+        let offset = param(at + 29u);
+        x = vec3<f32>(
+            grade_shot_match(x.r, e.r, gain.r, offset.r, gain.w, offset.w),
+            grade_shot_match(x.g, e.g, gain.g, offset.g, gain.w, offset.w),
+            grade_shot_match(x.b, e.b, gain.b, offset.b, gain.w, offset.w),
         );
     }
     return x;

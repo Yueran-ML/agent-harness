@@ -135,6 +135,11 @@
 //!     there, "even by a single digit"; High Soft `s` compresses from `H - w` towards `H`
 //!     (`w = 0.5 s / 100`) along `H - w + w (1 - e^-((x - H + w)/w))`, of slope 1 at the knee,
 //!     and Low and Low Soft do the same below.
+//! 13. **Shot Match** (p. 3048), "applied invisibly, as the very last adjustment to the node …
+//!     similar to a LUT": on each channel `S(gain · x^gamma + offset)`, the power of the sign of
+//!     `x`, and `S` the S-curve of step 6 with the match's own contrast and pivot, whatever
+//!     [`GradeOptions::s_curve_contrast`] says (`columbina_model::grade::ShotMatch`). A node
+//!     without one, or with one at its neutral settings, leaves it out.
 //!
 //! The formulas are kept apart from the graph (the maths in `corrector.wgsl` and [`maths`],
 //! their units in [`layout`]) so that they can be replaced: colour-managed working spaces (Q2,

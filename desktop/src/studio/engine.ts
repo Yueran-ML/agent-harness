@@ -299,6 +299,27 @@ export interface Qualifier {
   hue: HueRange; sat: QualifierRange; lum: QualifierRange; red: QualifierRange; green: QualifierRange; blue: QualifierRange;
   finesse: MatteFinesse;
 }
+/** Power Window points are centred on the window: x right, y down, one unit one image height. */
+export interface WindowPoint { x: Param; y: Param }
+/** The handles are offsets from the anchor, in the same local space. */
+export interface WindowBezierPoint { position: WindowPoint; in: WindowPoint; out: WindowPoint }
+/**
+ * Transform controls (RM20 pp. 3185–3199): Size/Aspect/Pan/Tilt 50, Rotate 0.
+ * Pan goes right, Tilt goes up, Rotate clockwise. Numeric mapping/ranges are project choices
+ * documented in PROTOCOL.md; the model supplies the shared forward and inverse transform.
+ */
+export interface WindowTransform { size: Param; aspect: Param; pan: Param; tilt: Param; rotate: Param }
+export type WindowShape =
+  | { kind: 'linear'; points: [WindowPoint, WindowPoint, WindowPoint, WindowPoint]; softness: [Param, Param, Param, Param] }
+  | { kind: 'circular'; softness: Param }
+  | { kind: 'polygon'; points: WindowPoint[]; inside: Param; outside: Param }
+  | { kind: 'curve'; points: WindowBezierPoint[]; closed: boolean; inside: Param; outside: Param }
+  | { kind: 'gradient'; softness: Param };
+/** A window id is local to its node. Presets copy the complete list into the project. */
+export interface PowerWindow {
+  id: string; label: string; enabled: boolean; invert: boolean; combine: 'add' | 'subtract';
+  transform: WindowTransform; opacity: Param; shape: WindowShape;
+}
 export interface Corrector {
   primaries: Primaries; log: LogWheels; curves: Curves; hsl: HslCurves; lut: string | null; soft_clip: SoftClip;
   key: CorrectorKey;
@@ -306,6 +327,8 @@ export interface Corrector {
   shot_match: ShotMatch | null;
   /** The engine always writes it; `null` for none, as a node is until a colour is picked. */
   qualifier?: Qualifier | null;
+  /** The engine writes the whole list; omitted by older files, which have no windows. */
+  windows?: PowerWindow[];
 }
 
 /** A qualifier as the engine makes one first: every pixel, Matte Finesse at its defaults. */

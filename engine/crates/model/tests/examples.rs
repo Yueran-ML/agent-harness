@@ -677,6 +677,19 @@ fn qualifier() -> serde_json::Value {
     whole
 }
 
+/// A window list, containing all five shapes and keeping an unfinished Curve draft.
+fn windows() -> serde_json::Value {
+    use columbina_model::grade::{Window, WindowShape};
+    serde_json::to_value([
+        Window::new("w1", WindowShape::linear()),
+        Window::new("w2", WindowShape::circular()),
+        Window::new("w3", WindowShape::polygon()),
+        Window::new("w4", WindowShape::curve()),
+        Window::new("w5", WindowShape::gradient()),
+    ])
+    .unwrap()
+}
+
 /// Lock n9, the node of `first_node`, where it lies at (120, 30).
 fn lock_n9() -> Op {
     Op::SetNode {
@@ -872,6 +885,37 @@ fn grade_examples() -> Vec<(&'static str, Vec<Op>, Op)> {
                 set_n9(serde_json::json!({ "qualifier": qualifier() })),
             ],
             set_n9(serde_json::json!({ "qualifier": null })),
+        ),
+        (
+            "set_node with all five Power Window shapes, including a Curve draft",
+            vec![first_node()],
+            set_n9(serde_json::json!({ "windows": windows() })),
+        ),
+        (
+            "set_node replacing the window list with an animated subtractive window",
+            vec![
+                first_node(),
+                set_n9(serde_json::json!({ "windows": windows() })),
+            ],
+            set_n9({
+                let mut list = windows();
+                let window = &mut list[1];
+                window["combine"] = "subtract".into();
+                window["opacity"] = 75.0.into();
+                window["transform"]["pan"] = serde_json::json!({ "keys": [
+                    {"frame": 100, "value": 25, "interp": "linear"},
+                    {"frame": 120, "value": 75, "interp": "linear"},
+                ] });
+                serde_json::json!({ "windows": [window] })
+            }),
+        ),
+        (
+            "set_node removing all Power Windows",
+            vec![
+                first_node(),
+                set_n9(serde_json::json!({ "windows": windows() })),
+            ],
+            set_n9(serde_json::json!({ "windows": [] })),
         ),
         (
             "add_node of an Outside node, as add_outside adds it after n9",

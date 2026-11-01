@@ -31,6 +31,11 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::ops::{OpError, LARGEST};
 use crate::project::Id;
 
+pub mod window;
+pub use window::{
+    Window, WindowBezierPoint, WindowCombine, WindowPoint, WindowShape, WindowTransform,
+};
+
 /// The name of the source of a grade in its links.
 pub const SOURCE: &str = "source";
 
@@ -710,6 +715,10 @@ pub struct Corrector {
     /// written, and read as none where it is left out.
     #[serde(default)]
     pub qualifier: Option<Qualifier>,
+    /// The Power Window palette (pp. 3185–3199), in list order. Old projects without it read
+    /// as an empty list. A preset copies this whole list into the project.
+    #[serde(default)]
+    pub windows: Vec<Window>,
 }
 
 /// The Qualifier palette of a corrector: which pixels of the picture that comes into the node it
@@ -1603,7 +1612,8 @@ impl Corrector {
         bounds::KEY_BLUR.check("key.input_blur.radius", &self.key.input_blur.radius)?;
         bounds::KEY_BLUR_RATIO.check("key.input_blur.ratio", &self.key.input_blur.ratio)?;
         self.shot_match.as_ref().map_or(Ok(()), ShotMatch::check)?;
-        self.qualifier.as_ref().map_or(Ok(()), Qualifier::check)
+        self.qualifier.as_ref().map_or(Ok(()), Qualifier::check)?;
+        window::check_windows(&self.windows)
     }
 }
 

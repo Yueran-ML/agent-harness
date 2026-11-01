@@ -1248,10 +1248,11 @@ without them as `false` and `null`:
 | `key.input_blur` `{radius, ratio}` | 0, 0.5 | radius 0…2000, ratio 0…1 (p. 3362) |
 | `shot_match` | `null` | `null` or `{gamma, gain, offset, contrast, pivot}`, below |
 | `qualifier` | `null` | `null` or the Qualifier palette, below |
+| `windows` | `[]` | the ordered Power Window list, below |
 
 An Outside node is a corrector with `key.input.invert: true` linked to the key of the node
 before it (p. 3361); `add_outside` adds one. Within a corrector the settings apply in the order
-of p. 3331. The engine writes `key.qualifier`, `key.input_blur` and `qualifier` always, and reads
+of p. 3331. The engine writes `key.qualifier`, `key.input_blur`, `qualifier` and `windows` always, and reads
 a corrector without them as they are at first.
 
 **`qualifier`** is the Qualifier palette (pp. 3157–3182): the node's own key, made of the
@@ -1294,6 +1295,83 @@ is `params`), patched in part where it has one, and taken away with `{"qualifier
 of range is `out_of_range` with the path, such as `qualifier.finesse.blur_radius`. `reset_node`
 takes it away.
 
+**`windows`** keeps the Power Window palette (Resolve 20, pp. 3185–3199). Each corrector owns
+an ordered list of complete windows; `[]`, including an older file without this field, has no
+window key. A window's `id` is stable and unique only in that node; copying a grade or loading
+a preset keeps these ids without using the project's id counter. The schema is:
+
+```json
+{"id": "w1", "label": "Subject", "enabled": true, "invert": false, "combine": "add",
+ "opacity": 100,
+ "transform": {"size": 50, "aspect": 50, "pan": 50, "tilt": 50, "rotate": 0},
+ "shape": {"kind": "circular", "softness": 1}}
+```
+
+`combine` is `add` (Mask on, the default) or `subtract` (Mask off). This is the project's
+explicit interpretation of conflicting Mask descriptions on pp. 3190 and 3197. `label` has
+at most 100 characters; `id` is nonempty and cannot start with `$`. `enabled`, `invert`,
+`combine`, ids, labels and Curve's `closed` are not animated. Every geometry, transform,
+softness and opacity number is a `Param`: a fixed number or `{"keys": [...]}`. As with the
+rest of the grade, clip window keys use source frames, timeline window keys timeline frames.
+Keyframe-copy remapping includes points and Bezier handles. Tracking data is separate from
+the manual window transform; this schema does not specify the later tracking protocol.
+
+| field | default | range |
+|---|---|---|
+| `transform.size` | 50 | 0…1000 |
+| `transform.aspect` | 50 | 0…100 |
+| `transform.pan`, `transform.tilt` | 50 | −1000…1000 |
+| `transform.rotate` | 0 | −36000…36000 degrees |
+| `opacity` | 100 | 0…100 |
+| `shape.softness` (or each Linear element) | 1 | 0…100 |
+| `shape.inside`, `shape.outside` | 0 | 0…100 |
+| each point or handle `x`, `y` | shape-dependent | −16…16 image heights |
+
+Only the Transform defaults and increasing Pan right, Tilt up and Rotate clockwise are
+documented by the manual (pp. 3191–3192). **All ranges in this table, Opacity 100, Soft 1,
+the initial geometry and the coordinate formulas below are project choices, not published
+Resolve values.** They are centralized in `model::grade::window::bounds` for real-application
+comparison. Transform values are clamped to their ranges after interpolation, including
+Bezier overshoot. The stored parameters and key values themselves must be in range.
+
+`Point` below means `{"x": Param, "y": Param}`. Shapes are tagged by `kind`:
+
+| `kind` | additional fields | initial geometry and rules |
+|---|---|---|
+| `linear` | `points: [Point; 4]`, `softness: [Param; 4]` | corners top-left, top-right, bottom-right, bottom-left at `(±0.25, ±0.25)`; independent Soft 1–4 for edges 0→1, 1→2, 2→3, 3→0 |
+| `circular` | `softness: Param` | a local circle of radius 0.25; Transform Aspect makes it elliptical |
+| `polygon` | `points: Point[]`, `inside: Param`, `outside: Param` | starts as the same rectangle; 3…128 points (the upper limit is documented on p. 3194); insertion and deletion change the list |
+| `curve` | `points: {position: Point, in: Point, out: Point}[]`, `closed: bool`, `inside: Param`, `outside: Param` | starts empty and open; handles are offsets from their anchor, both zero makes a corner; a closed path has at least 2 anchors, without the Polygon-specific 128-point limit |
+| `gradient` | `softness: Param` | through the local origin, white on negative local y and black on positive local y; Transform sets its centre and direction |
+
+Outline point order is preserved, with even-odd filling for self-intersections. An unfinished
+Curve is saved as a draft and does not participate in the key, even if inverted; neither
+does a disabled window. Shape topology and point count are not interpolated. A preset
+applies a copy of the whole list; removing the user-level preset cannot change the project.
+
+Local coordinates have origin at the shape's centre, x right, y down, and one unit equal to
+the input picture's height. Let `A = picture width / height`, `s = size / 50`,
+`r = 2^((aspect − 50) / 50)`, and `R` be clockwise rotation in y-down coordinates. The map is:
+`q = R · (s·r·x, s/r·y)`, `u = pan/100 + q.x/A`, `v = 1 − tilt/100 + q.y`.
+This keeps the default circle round in landscape and portrait images. Clip grades use the
+source picture's dimensions; timeline grades use the canvas. Viewer controls then apply the
+same clip-to-canvas placement, black bars, zoom and display scaling as the picture. None of
+those viewer pixels is saved in the window. `WindowTransform.affine_at` and `inverse_at`
+share six coefficients `[a,b,c,d,tx,ty]`: `u=a*x+c*y+tx`, `v=b*x+d*y+ty`.
+
+Size 0 collapses the forward matrix to the centre; `inverse_at` returns `None`. Its raw mask
+is 0, then Invert, Opacity and Add/Subtract apply in that order, so an inverted collapsed
+window can cover the whole picture. This differs from an ignored draft or disabled window.
+Invalid aspect/frame inputs and unrepresentable transforms also return `None` from the
+helpers. No enabled complete windows leaves the node's previous key behavior unchanged.
+
+`set_node` applies `{"windows": [complete windows...]}` as one atomic list replacement.
+Adding, removing, reordering, editing a point or applying a preset all use that operation;
+an object patch indexed into the array is not supported. `{"windows": []}` clears the list
+and `reset_node` clears it with the other parameters. Undo restores the previous whole list;
+a locked node refuses the change. Unknown fields or malformed shapes are `params`, invalid
+numeric values or counts are `out_of_range`, duplicate ids are `taken` with `what: "window"`.
+
 **The key of a corrector**, in this order (the engine's `compose::grade` has the formulas; the
 manual gives none):
 
@@ -1317,7 +1395,8 @@ manual gives none):
    shrinks.
 6. The palette's `invert`; then the Key palette's `key.qualifier` (invert, then offset with white
    held, `k + o(1 − k)`, then gain, held within 0…1). `key.qualifier.matte` tells how it meets
-   the node's windows, which are not kept yet.
+   the node's windows. Their model is kept above; window rendering is a separate integration
+   step. Until that step, the existing qualifier and external-key behavior is unchanged.
 7. The key coming in at the node's key input (if one is linked), blurred by `key.input_blur` (a
    Gaussian of `0.1 × radius` pixels, `2 · ratio` of it across and `2 · (1 − ratio)` down),
    through `key.input`, and met with the qualifier's key (`key.input.matte` true, Matte mode: the

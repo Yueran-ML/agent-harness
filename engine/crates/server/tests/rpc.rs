@@ -192,13 +192,19 @@ async fn engine(dir: &Path, args: &[&str]) -> Engine {
     }
 }
 
-/// Start an engine on `dir` that must end at once, and give its code and its line of stderr.
+/// Start an engine on `dir` that must end at once, and give its code and its refusal on stderr.
 async fn refused(dir: &Path, args: &[&str]) -> (i32, Value) {
     match start(dir, args).await {
         Started::Listening(engine) => panic!("the engine listens at {}", engine.address),
         Started::Ended { code, stderr } => {
-            let line = stderr.lines().next().expect("a line on stderr");
-            (code, serde_json::from_str(line).unwrap())
+            // Logs such as shader_compiler can come before the refusal.
+            let mut lines = stderr
+                .lines()
+                .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                .filter(|line| line.get("event").is_none());
+            let line = lines.next().expect("a refusal on stderr");
+            assert!(lines.next().is_none(), "one refusal on stderr: {stderr}");
+            (code, line)
         }
     }
 }

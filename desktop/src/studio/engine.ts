@@ -834,6 +834,24 @@ export type PointerCursor = 'arrow' | 'crosshair' | 'move' | 'resize_ew' | 'resi
  */
 export interface ViewPointer {
   monitor: Monitor;
+  /** Engine-local native attachment identity; old queued events keep their old instance. */
+  instance?: number;
+  /** Successful native presentation copied with the pointer coordinates. */
+  presentation?: {
+    serial: number;
+    tag: number | null;
+    map: { surface: [number, number]; picture: [number, number]; dest: [number, number, number, number] } | null;
+  } | null;
+  /** Present only when this instance/tag resolves to a retained timeline frame. */
+  snapshot?: {
+    revision: number;
+    timeline: string;
+    frame: number;
+    canvas: [number, number];
+    ready: boolean;
+    editable: boolean;
+    comparison: 'off' | 'wipe' | 'split';
+  } | null;
   kind: 'down' | 'move' | 'up' | 'cancel';
   button: 'left' | 'right' | 'middle' | null;
   buttons: ('left' | 'right' | 'middle')[];

@@ -24,11 +24,13 @@ use crate::gpu::{Graphics, Subscription};
 use crate::grading::{Grading, LutPlaces, MissingLut};
 use crate::highlight::Highlight;
 use crate::log::log;
+use crate::presentation::{self, FrameSnapshot, Origin, Registry};
 use crate::rpc::{self, Fault};
 use crate::scopes::{Scopes, Shown};
 use crate::transport::clock::{self, Clock};
 use crate::transport::{Again, Sound, SoundSlot, Source, POOL_BYTES, SETTLE, TOLD_EVERY};
 use crate::view::{Monitor, ViewSlot};
+use columbina_model::keyframes::KeyClock;
 
 const SEEK_WAIT: Duration = Duration::from_secs(5);
 
@@ -106,12 +108,13 @@ fn not_loaded() -> Fault {
 
 enum Command {
     Load {
+        revision: u64,
         project: Arc<Project>,
         id: String,
         reply: oneshot::Sender<Result<Status, Fault>>,
     },
     Act(Action),
-    Project(Arc<Project>),
+    Project(u64, Arc<Project>),
     Proxy(String),
     Redraw,
     Pause(oneshot::Sender<()>),
@@ -146,9 +149,14 @@ impl Loading {
 }
 
 impl Timeline {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the existing monitor services plus its frame registry"
+    )]
     pub fn new(
         graphics: Arc<Graphics>,
         view: ViewSlot,
+        frames: Registry,
         notify: Notify,
         again: Again,
         sound: crate::audio::Kind,
@@ -156,6 +164,12 @@ impl Timeline {
         scopes: Scopes,
     ) -> Self {
         let (inbox, received) = mpsc::channel();
+        frames.redraw_on_invalidate(Monitor::Timeline, {
+            let inbox = inbox.clone();
+            Arc::new(move || {
+                let _ = inbox.send(Command::Redraw);
+            })
+        });
         let shared = Arc::new(Mutex::new(Shared::default()));
         let subscription = graphics.subscribe({
             let inbox = inbox.clone();
@@ -184,6 +198,8 @@ impl Timeline {
                         shared,
                         notify,
                         view,
+                        frames,
+                        revision: 0,
                         graphics,
                         sources: Sources::new(Hardware::Auto, again),
                         grading: Grading::monitor(luts, wake),
@@ -248,10 +264,20 @@ impl Timeline {
         }
     }
 
-    pub fn begin_load(&self, project: Arc<Project>, id: String) -> Result<Loading, Fault> {
+    pub fn begin_load(
+        &self,
+        revision: u64,
+        project: Arc<Project>,
+        id: String,
+    ) -> Result<Loading, Fault> {
         let (reply, receiver) = oneshot::channel();
         lock(&self.0.shared).loading += 1;
-        if let Err(error) = self.send(Command::Load { project, id, reply }) {
+        if let Err(error) = self.send(Command::Load {
+            revision,
+            project,
+            id,
+            reply,
+        }) {
             lock(&self.0.shared).loading -= 1;
             return Err(error);
         }
@@ -261,8 +287,8 @@ impl Timeline {
     pub fn act(&self, action: Action) {
         let _ = self.send(Command::Act(action));
     }
-    pub fn project_changed(&self, project: &Project) {
-        let _ = self.send(Command::Project(Arc::new(project.clone())));
+    pub fn project_changed(&self, revision: u64, project: &Project) {
+        let _ = self.send(Command::Project(revision, Arc::new(project.clone())));
     }
     pub fn proxy_ready(&self, media: &str) {
         let _ = self.send(Command::Proxy(media.into()));
@@ -334,11 +360,19 @@ impl Drop for Guard {
     }
 }
 
+#[derive(Clone)]
+struct Previous {
+    read: Read,
+    origin: Origin,
+}
+
 struct Worker {
     inbox: mpsc::Receiver<Command>,
     shared: Arc<Mutex<Shared>>,
     notify: Notify,
     view: ViewSlot,
+    frames: Registry,
+    revision: u64,
     graphics: Arc<Graphics>,
     sources: Sources,
     /// The grades of the timeline loaded, ready on the card.
@@ -355,7 +389,7 @@ struct Worker {
     generation: u64,
     readers: BTreeMap<String, TrackReader>,
     reader_budget: usize,
-    previous: BTreeMap<(String, String), Read>,
+    previous: BTreeMap<(String, String), Previous>,
     compositor: Option<Compositor>,
     targets: Vec<Arc<Target>>,
     current: Option<Arc<Target>>,
@@ -529,7 +563,7 @@ impl Worker {
                         Some(old @ Command::Act(Action::Seek { .. })),
                         new @ Command::Act(Action::Seek { .. }),
                     )
-                    | (Some(old @ Command::Project(_)), new @ Command::Project(_)) => *old = new,
+                    | (Some(old @ Command::Project(..)), new @ Command::Project(..)) => *old = new,
                     (
                         Some(Command::Act(Action::Step { frames })),
                         Command::Act(Action::Step { frames: more }),
@@ -597,29 +631,41 @@ impl Worker {
             proxies: self.status.proxies,
             ..Status::default()
         };
-        if let Some(view) = lock(&self.view).as_ref() {
-            view.clear();
+        let instance = {
+            let slot = lock(&self.view);
+            slot.as_ref().map(|view| {
+                view.clear();
+                view.instance
+            })
+        };
+        if let Some(instance) = instance {
+            self.frames.reset(Monitor::Timeline, instance);
         }
     }
 
     #[allow(clippy::too_many_lines, reason = "an arm for each command")]
     fn apply(&mut self, command: Command) {
         match command {
-            Command::Load { project, id, reply } => {
+            Command::Load {
+                revision,
+                project,
+                id,
+                reply,
+            } => {
                 self.unload();
                 self.status.timeline = Some(id);
                 self.status.frame = Some(0);
-                self.replace(project);
+                self.replace(revision, project);
                 let drawn = self.draw(true, false);
                 lock(&self.shared).loading -= 1;
                 self.tell(true);
                 let _ = reply.send(drawn.map(|()| self.status.clone()));
             }
-            Command::Project(project) => {
+            Command::Project(revision, project) => {
                 if self.status.timeline.is_none() {
                     return;
                 }
-                let changed = self.replace(project);
+                let changed = self.replace(revision, project);
                 if changed && !self.status.playing {
                     let _ = self.draw(true, false);
                 }
@@ -759,7 +805,7 @@ impl Worker {
     /// use keeps the pictures read ahead and the sound playing; one that changes only what is
     /// seen keeps the sound, and one that changes only what is heard keeps the pictures, as one
     /// that changes only grades does. Gives whether anything of the timeline loaded changed.
-    fn replace(&mut self, project: Arc<Project>) -> bool {
+    fn replace(&mut self, revision: u64, project: Arc<Project>) -> bool {
         let Some(id) = self.status.timeline.as_ref() else {
             return false;
         };
@@ -835,6 +881,7 @@ impl Worker {
                 }
             }
         }
+        self.revision = revision;
         self.project = Some(project);
         self.timeline = Some(index);
         if !picture || fresh {
@@ -1015,7 +1062,7 @@ impl Worker {
     }
 
     fn draw(&mut self, wait: bool, scrubbing: bool) -> Result<(), Fault> {
-        let result = self.draw_inner(wait, scrubbing);
+        let result = self.draw_inner(wait, scrubbing).map(|_| ());
         if let Err(error) = &result {
             self.status.exact = false;
             Self::error(&error.message);
@@ -1027,9 +1074,13 @@ impl Worker {
         clippy::too_many_lines,
         reason = "each kind of layer, then the grades, in the order they are drawn"
     )]
-    fn draw_inner(&mut self, blocking: bool, scrubbing: bool) -> Result<(), Fault> {
+    fn draw_inner(
+        &mut self,
+        blocking: bool,
+        scrubbing: bool,
+    ) -> Result<Option<Arc<FrameSnapshot>>, Fault> {
         let (Some(project), Some(index)) = (&self.project, self.timeline) else {
-            return Ok(());
+            return Ok(None);
         };
         let project = Arc::clone(project);
         let timeline = &project.timelines[index];
@@ -1051,8 +1102,22 @@ impl Worker {
         let mut proxy = false;
         let mut previous = BTreeMap::new();
         let mut clips = Vec::new();
+        let mut origins = Vec::new();
         for layer in resolve::video_at(timeline, &project, frame) {
             let clip = layer.clip.clone();
+            let clock = timeline
+                .tracks
+                .iter()
+                .flat_map(|track| &track.clips)
+                .find(|found| found.id == clip)
+                .map(|clip| KeyClock::of(clip, &project, timeline.rate));
+            let mut origin = Origin {
+                clip: clip.clone(),
+                timeline_frame: frame,
+                key_frame: clock.map_or(0, |clock| clock.at(frame)),
+                media: None,
+            };
+            let mut editable = clock.is_some();
             let (source, color) = match layer.content {
                 resolve::Content::Color { rgba } => {
                     (LayerSource::color(rgba), LayerColor::default())
@@ -1081,11 +1146,22 @@ impl Worker {
                         }
                     });
                     let read = match read {
-                        Some(Ok(read)) => Some(read),
+                        Some(Ok(read)) => {
+                            origin.clip.clone_from(&read.provenance.clip);
+                            if clock.is_some_and(|clock| clock.counts_source()) {
+                                origin.key_frame = read.provenance.decoded_frame;
+                            }
+                            origin.media = Some(read.provenance.clone());
+                            Some(Previous {
+                                read,
+                                origin: origin.clone(),
+                            })
+                        }
                         other => {
                             if let Some(Err(error)) = other {
                                 Self::error(&error);
                             }
+                            editable = false;
                             late = true;
                             exact = false;
                             self.previous
@@ -1098,13 +1174,22 @@ impl Worker {
                                 .cloned()
                         }
                     };
-                    let Some(read) = read else {
+                    let Some(previous_read) = read else {
                         continue;
                     };
+                    origin = previous_read.origin.clone();
+                    let read = previous_read.read.clone();
+                    editable &= read.exact
+                        && read.provenance.decoded_frame == read.provenance.requested_frame
+                        && read.provenance.clip == clip
+                        && project.media.iter().any(|media| {
+                            media.id == read.provenance.media
+                                && media.identity == read.provenance.identity
+                        });
                     exact &= read.exact;
                     original |= read.source == Source::Original;
                     proxy |= read.source == Source::Proxy;
-                    previous.insert((layer.track, layer.clip), read.clone());
+                    previous.insert((layer.track, layer.clip), previous_read);
                     let color = crate::render::layer_color(&read.picture);
                     (LayerSource::Picture(read.picture, read.rotation), color)
                 }
@@ -1115,6 +1200,7 @@ impl Worker {
                 opacity: layer.opacity,
                 color,
             });
+            origins.push((clip.clone(), origin, editable));
             clips.push(clip);
         }
         // Keep only the layers being shown (at most two per track), not a full-resolution
@@ -1132,7 +1218,17 @@ impl Worker {
             );
         }
         self.compare.prepare(&project, index, frame, &self.grading);
-        self.present(&scene, frame)?;
+        let snapshot = FrameSnapshot {
+            revision: self.revision,
+            project: Arc::clone(&project),
+            timeline: index,
+            timeline_frame: frame,
+            canvas: (scene.width, scene.height),
+            layers: presentation::layers(&scene, &clips, &origins),
+            comparison: json!({"mode":"off"}),
+            ready: false,
+        };
+        let snapshot = self.present(&scene, frame, Some(snapshot))?;
         self.status.shown = Some(frame);
         self.status.exact = exact;
         self.status.late += u64::from(late && self.status.playing);
@@ -1141,7 +1237,7 @@ impl Worker {
             (_, true) => Source::Proxy,
             _ => Source::Original,
         });
-        Ok(())
+        Ok(snapshot)
     }
 
     /// Grade the layers of `scene`, of the clips `clips`, and its timeline, as they are at
@@ -1178,7 +1274,12 @@ impl Worker {
     }
 
     /// Compose `scene`, the frame `frame`, hand it to the view, and tell the scopes.
-    fn present(&mut self, scene: &Scene, frame: i64) -> Result<(), Fault> {
+    fn present(
+        &mut self,
+        scene: &Scene,
+        frame: i64,
+        snapshot: Option<FrameSnapshot>,
+    ) -> Result<Option<Arc<FrameSnapshot>>, Fault> {
         let gpu = self
             .graphics
             .gpu()
@@ -1226,14 +1327,32 @@ impl Worker {
             .show(&gpu, compositor, &target)
             .map_err(|error| drawing(&error))?
             .unwrap_or_else(|| Arc::clone(&target));
-        if let Some(view) = lock(&self.view).as_ref() {
-            // The view alone has it through the project's Color Viewer LUT (p. 152).
-            let viewed = self
-                .grading
-                .viewed(compositor, &shown)
-                .map_err(|error| drawing(&error))?;
-            view.present_texture(Arc::clone(viewed.texture()), Arc::clone(&gpu))
-                .map_err(|error| drawing(&error.to_string()))?;
+        let attached = {
+            let slot = lock(&self.view);
+            slot.as_ref()
+                .map(|view| (view.instance, view.presentation()))
+        };
+        // Viewer LUT is composed before the final readiness is frozen. No ViewSlot is held
+        // during this GPU work, and no registry guard spans any view operation.
+        let viewed = if attached.is_some() {
+            Some(
+                self.grading
+                    .viewed(compositor, &shown)
+                    .map_err(|error| drawing(&error))?,
+            )
+        } else {
+            None
+        };
+        let snapshot = snapshot.map(|mut snapshot| {
+            snapshot.ready =
+                !compositor.is_provisional() && self.grading.colour_matches(&snapshot.project);
+            snapshot.comparison = self
+                .compare
+                .snapshot(&shown, Some((&snapshot.project, snapshot.timeline, frame)));
+            Arc::new(snapshot)
+        });
+        if let (Some((instance, _)), Some(viewed)) = (attached, viewed) {
+            self.submit_frame(instance, &viewed, &gpu, snapshot.as_ref())?;
         }
         let measured = if crate::compare::SCOPES_SEE_COMPARISON {
             &shown
@@ -1249,6 +1368,55 @@ impl Worker {
             },
         );
         self.current = Some(shown);
+        Ok(snapshot)
+    }
+
+    /// Register before submitting, releasing each short guard before taking another. A view
+    /// replacement during composition/submission cannot receive another instance's tag.
+    fn submit_frame(
+        &self,
+        instance: u64,
+        target: &Target,
+        gpu: &Arc<columbina_compose::Gpu>,
+        snapshot: Option<&Arc<FrameSnapshot>>,
+    ) -> Result<(), Fault> {
+        let presentation = {
+            let slot = lock(&self.view);
+            let Some(view) = slot.as_ref().filter(|view| view.instance == instance) else {
+                return Ok(());
+            };
+            view.presentation()
+        };
+        self.frames
+            .observe(Monitor::Timeline, instance, presentation);
+        let tag = snapshot.and_then(|snapshot| {
+            self.frames
+                .register(Monitor::Timeline, instance, Arc::clone(snapshot))
+        });
+        let result = {
+            let slot = lock(&self.view);
+            slot.as_ref()
+                .filter(|view| view.instance == instance)
+                .map(|view| match tag {
+                    Some(tag) => view.present_texture_tagged(
+                        Arc::clone(target.texture()),
+                        Arc::clone(gpu),
+                        tag,
+                    ),
+                    None => view.present_texture(Arc::clone(target.texture()), Arc::clone(gpu)),
+                })
+        };
+        if !matches!(result, Some(Ok(()))) {
+            if let Some(tag) = tag {
+                self.frames.discard(Monitor::Timeline, instance, tag);
+            }
+        }
+        if let Some(Err(error)) = result {
+            if error == columbina_view::ViewError::Gone {
+                self.frames.gone(Monitor::Timeline, instance);
+            }
+            return Err(drawing(&error.to_string()));
+        }
         Ok(())
     }
 
@@ -1413,6 +1581,8 @@ mod tests {
             shared: Arc::default(),
             notify: Arc::new(|_| {}),
             view: Arc::default(),
+            frames: Registry::default(),
+            revision: 0,
             graphics: Graphics::new(),
             sources: Sources::new(Hardware::Off, Arc::new(|_, _| {})),
             grading: Grading::new(LutPlaces::with_library(std::path::Path::new("."), vec![])),
@@ -1470,7 +1640,7 @@ mod tests {
         let mut worker = worker();
         worker.status.timeline = Some("t1".into());
         let project = Project::sample();
-        assert!(worker.replace(Arc::new(project.clone())));
+        assert!(worker.replace(0, Arc::new(project.clone())));
         let read_ahead = worker.generation;
         // Another timeline and the name of media change nothing that t1 shows.
         let mut other = project.clone();
@@ -1478,19 +1648,19 @@ mod tests {
         second.id = "t2".into();
         other.timelines.push(second);
         other.media[0].name = "Renamed".into();
-        assert!(!worker.replace(Arc::new(other.clone())));
+        assert!(!worker.replace(0, Arc::new(other.clone())));
         assert_eq!(worker.generation, read_ahead);
         // What is heard only keeps the pictures that were read.
         let mut louder = other.clone();
         louder.timelines[0].tracks[1].clips[0].gain_db = -3.0;
-        assert!(worker.replace(Arc::new(louder.clone())));
+        assert!(worker.replace(0, Arc::new(louder.clone())));
         assert_eq!(worker.generation, read_ahead);
         // A proxy of the media under the picture changes what is read.
-        assert!(worker.replace(Arc::new(proxied(louder.clone()))));
+        assert!(worker.replace(0, Arc::new(proxied(louder.clone()))));
         assert_eq!(worker.generation, read_ahead + 1);
         let mut moved = proxied(louder);
         moved.timelines[0].tracks[0].clips[0].transform.x = 0.25;
-        assert!(worker.replace(Arc::new(moved)));
+        assert!(worker.replace(0, Arc::new(moved)));
         assert_eq!(worker.generation, read_ahead + 2);
     }
 
@@ -1564,19 +1734,21 @@ mod tests {
             return;
         }
         let mut worker = worker();
-        worker.present(&filled([255, 0, 0, 255]), 0).unwrap();
+        worker.present(&filled([255, 0, 0, 255]), 0, None).unwrap();
         let shown = Arc::downgrade(worker.current.as_ref().unwrap());
         // A view holds the texture that it shows, as present_texture keeps it, until it shows
         // another; the monitor no longer holds the target once it draws the next frame.
         let held = Arc::clone(worker.current.as_ref().unwrap().texture());
-        worker.present(&filled([0, 255, 0, 255]), 0).unwrap();
-        worker.present(&filled([0, 0, 255, 255]), 0).unwrap();
+        worker.present(&filled([0, 255, 0, 255]), 0, None).unwrap();
+        worker.present(&filled([0, 0, 255, 255]), 0, None).unwrap();
         let red = shown.upgrade().expect("the monitor keeps its targets");
         assert_eq!(red.read_rgba().unwrap()[..4], [255, 0, 0, 255]);
         assert_eq!(worker.targets.len(), 3);
         // Once the view lets it go, the target is drawn on again.
         drop((held, red));
-        worker.present(&filled([255, 255, 255, 255]), 0).unwrap();
+        worker
+            .present(&filled([255, 255, 255, 255]), 0, None)
+            .unwrap();
         assert_eq!(worker.targets.len(), 3);
     }
 }

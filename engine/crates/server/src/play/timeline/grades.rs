@@ -18,6 +18,8 @@ fn monitor(dir: &Path) -> Worker {
         shared: Arc::default(),
         notify: Arc::new(|_| {}),
         view: Arc::default(),
+        frames: Registry::default(),
+        revision: 0,
         graphics: Graphics::new(),
         sources: Sources::new(Hardware::Off, Arc::new(|_, _| {})),
         grading: Grading::new(LutPlaces::with_library(dir, vec![])),
@@ -104,12 +106,188 @@ fn gain(keys: &[(i64, f64)]) -> Grade {
 
 /// What the monitor shows of `project` at `frame`, as R, G, B and A of 8 bits a pixel.
 fn shown(monitor: &mut Worker, project: &Project, frame: i64) -> Vec<u8> {
-    monitor.replace(Arc::new(project.clone()));
+    monitor.replace(0, Arc::new(project.clone()));
     monitor.status.frame = Some(frame);
     monitor.draw(true, false).unwrap();
     // Drawn again once the pipelines of its grades are made, as the monitor does.
     monitor.finish_compiling();
     monitor.current.as_ref().unwrap().read_rgba().unwrap()
+}
+
+#[test]
+fn presentation_of_a_missing_source_frame_is_not_editable() {
+    let Some(media) = crate::play::sources::tests::sample_of(crate::test_media::Sample::Collide)
+    else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut monitor = monitor(dir.path());
+    let rate = media.facts.video.as_ref().unwrap().rate;
+    let clip = Clip::of_media(
+        "c1",
+        &media.id,
+        Time {
+            ticks: 0,
+            scale: media.facts.duration.scale,
+        },
+        0,
+        30,
+    );
+    let mut project = timeline_of(vec![clip], 64, 36);
+    project.timelines[0].rate = rate;
+    project.media = vec![media];
+    monitor.replace(25, Arc::new(project));
+    // Collide has no frame numbered 4: decoded_at(4) legitimately gives frame 3.
+    // A later request with its own actual frame remains editable.
+    for (frame, decoded, editable) in [(4, 3, false), (6, 6, true)] {
+        monitor.status.frame = Some(frame);
+        let snapshot = monitor.draw_inner(true, false).unwrap().unwrap();
+        let read = &monitor
+            .previous
+            .get(&("V1".into(), "c1".into()))
+            .unwrap()
+            .read;
+        assert!(read.exact, "the decoder was asked for the requested frame");
+        assert!(
+            monitor.status.exact,
+            "the existing playback exact flag is unchanged"
+        );
+        assert_eq!(monitor.status.shown, Some(frame));
+        assert_eq!(read.picture.frame, decoded);
+        let layer = &snapshot.layers[0];
+        let source = layer.origin.media.as_ref().unwrap();
+        assert_eq!(source.requested_frame, frame);
+        assert_eq!(source.decoded_frame, decoded);
+        assert_eq!(layer.origin.key_frame, decoded);
+        assert!(snapshot.ready);
+        assert_eq!(layer.editable, editable);
+        assert_eq!(snapshot.editable(), editable);
+    }
+}
+
+#[test]
+fn presentation_fallback_keeps_the_original_clip_and_source_clock_across_two_cuts() {
+    let Some(media) = crate::play::sources::tests::sample() else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut monitor = monitor(dir.path());
+    let rate = media.facts.video.as_ref().unwrap().rate;
+    let scale = media.facts.duration.scale;
+    let clip = |id: &str, start, source| {
+        Clip::of_media(
+            id,
+            &media.id,
+            Time {
+                ticks: rate.ticks_of(source, scale),
+                scale,
+            },
+            start,
+            10,
+        )
+    };
+    let mut project = timeline_of(
+        vec![clip("c1", 0, 10), clip("c2", 10, 60), clip("c3", 20, 80)],
+        64,
+        36,
+    );
+    project.media = vec![media];
+    let project = Arc::new(project);
+    monitor.replace(17, Arc::clone(&project));
+    monitor.status.frame = Some(4);
+    let first = monitor.draw_inner(true, false).unwrap().unwrap();
+    assert_eq!(first.revision, 17);
+    assert!(Arc::ptr_eq(&first.project, &project));
+    let actual = first.layers[0].origin.media.as_ref().unwrap();
+    assert_eq!(actual.decoded_frame, 14);
+    assert_eq!(first.layers[0].origin.key_frame, 14);
+    // With no available readers both cuts must take the existing fallback path.
+    monitor.readers.clear();
+    for (frame, destination) in [(10, "c2"), (20, "c3")] {
+        monitor.status.frame = Some(frame);
+        let snapshot = monitor.draw_inner(false, false).unwrap().unwrap();
+        let layer = &snapshot.layers[0];
+        assert_eq!(layer.clip, destination);
+        assert_eq!(layer.origin.clip, "c1");
+        assert_eq!(layer.origin.timeline_frame, 4);
+        assert_eq!(layer.origin.key_frame, 14);
+        assert_eq!(layer.origin.media.as_ref().unwrap(), actual);
+        assert!(!layer.editable);
+        assert!(!snapshot.editable());
+    }
+}
+
+#[test]
+fn presentation_uses_the_highlight_filtered_scene_and_split_is_not_editable() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut monitor = monitor(dir.path());
+    let mut chosen = colour("c2", TEAL, 3, 30);
+    chosen.grade = grey();
+    let mut project = timeline_of(vec![colour("c1", ORANGE, 0, 40)], 64, 36);
+    project.timelines[0]
+        .tracks
+        .push(Track::new("V2", TrackKind::Video).with_clips(vec![chosen]));
+    monitor.replace(23, Arc::new(project));
+    monitor.status.frame = Some(7);
+    monitor.status.highlight = Some(Highlight {
+        mode: crate::highlight::Mode::Bw,
+        grade: columbina_model::grade::Target::Clip {
+            timeline: "t1".into(),
+            clip: "c2".into(),
+        },
+        node: "n1".into(),
+    });
+    let snapshot = monitor.draw_inner(true, false).unwrap().unwrap();
+    assert_eq!(snapshot.layers.len(), 1);
+    assert_eq!(snapshot.layers[0].clip, "c2");
+    assert_eq!(snapshot.layers[0].origin.key_frame, 4);
+    assert_eq!(snapshot.layers[0].opacity, 1.0);
+    let raw = serde_json::value::RawValue::from_string(r#"{"items":[{"kind":"current"}]}"#.into())
+        .unwrap();
+    let change = Change::read("viewer.split", Some(&raw)).unwrap();
+    monitor.compare_with(change).unwrap();
+    let split = monitor.draw_inner(true, false).unwrap().unwrap();
+    assert_eq!(split.comparison["mode"], "split");
+    assert!(!split.editable());
+    assert_eq!(
+        snapshot.comparison["mode"], "off",
+        "an earlier snapshot is immutable"
+    );
+}
+
+#[test]
+fn presentation_still_uses_the_clip_clock_while_its_decoded_frame_stays_zero() {
+    let Some(mut media) = crate::play::sources::tests::sample() else {
+        return;
+    };
+    media.facts.video.as_mut().unwrap().still = true;
+    let dir = tempfile::tempdir().unwrap();
+    let mut monitor = monitor(dir.path());
+    let clip = Clip::of_media(
+        "c1",
+        &media.id,
+        Time {
+            ticks: 0,
+            scale: media.facts.duration.scale,
+        },
+        5,
+        30,
+    );
+    let mut project = timeline_of(vec![clip], 64, 36);
+    project.media = vec![media];
+    monitor.replace(24, Arc::new(project));
+    monitor.status.frame = Some(12);
+    let snapshot = monitor.draw_inner(true, false).unwrap().unwrap();
+    assert_eq!(snapshot.layers[0].origin.key_frame, 7);
+    assert_eq!(
+        snapshot.layers[0]
+            .origin
+            .media
+            .as_ref()
+            .unwrap()
+            .decoded_frame,
+        0
+    );
 }
 
 /// The pixel at `x`, `y` of a picture `width` wide.
@@ -157,7 +335,10 @@ fn a_grade_shows_as_it_is_set_and_goes_as_it_is_taken_away() {
 
     let mut graded = plain.clone();
     graded.timelines[0].tracks[0].clips[0].grade = grey();
-    assert!(monitor.replace(Arc::new(graded.clone())), "a grade is seen");
+    assert!(
+        monitor.replace(0, Arc::new(graded.clone())),
+        "a grade is seen"
+    );
     assert_eq!(
         monitor.generation, read_ahead,
         "a grade reads no picture again"

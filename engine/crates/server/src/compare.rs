@@ -598,6 +598,20 @@ impl Comparison {
             _ => Arc::clone(shown),
         }
     }
+
+    /// Freeze the comparison that was actually applied to this target, including its resolved
+    /// reference positions. Kept server-side; pointer summaries expose only the mode.
+    pub fn snapshot(&self, shown: &Arc<Target>, loaded: Option<(&Project, usize, i64)>) -> Value {
+        if self
+            .compared
+            .as_ref()
+            .is_some_and(|(_, compared)| Arc::ptr_eq(compared, shown))
+        {
+            self.state(loaded)
+        } else {
+            json!({"mode":"off"})
+        }
+    }
 }
 
 /// Read a still: the first picture of the file, as it is stored.

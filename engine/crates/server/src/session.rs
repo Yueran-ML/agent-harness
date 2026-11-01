@@ -734,7 +734,7 @@ impl State {
             saver.changed(self.history.project().clone());
         }
         if let Some(transport) = &self.transport {
-            transport.project_changed(self.history.project());
+            transport.project_changed(self.history.project(), self.history.revision());
         }
     }
 
@@ -1470,7 +1470,7 @@ async fn transport_load(
         let state = engine.state.lock().await;
         engine
             .transport
-            .begin_load(state.history.project(), params)?
+            .begin_load(state.history.project(), state.history.revision(), params)?
     };
     loading.done().await
 }

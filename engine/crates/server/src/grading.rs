@@ -514,6 +514,12 @@ impl Grading {
         self.colour.output()
     }
 
+    /// Background colour preparation can leave the old colour in force. A successful render
+    /// of that colour is not evidence that this project's requested colour was displayed.
+    pub fn colour_matches(&self, project: &Project) -> bool {
+        *self.colour.key() == Key::of(project)
+    }
+
     /// The luma coefficients of the timeline space, which the grades take.
     pub fn luma(&self) -> [f32; 3] {
         self.colour.luma()

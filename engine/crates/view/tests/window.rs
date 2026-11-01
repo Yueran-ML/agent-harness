@@ -620,6 +620,15 @@ fn a_view_whose_parent_is_destroyed_is_gone() {
     assert_eq!(view.show(true), Err(ViewError::Gone));
     assert!(view.is_gone());
     drop(view);
+    assert_eq!(
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| matches!(event, Event::Gone))
+            .count(),
+        1
+    );
 }
 
 #[test]

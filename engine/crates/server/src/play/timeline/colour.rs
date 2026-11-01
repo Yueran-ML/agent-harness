@@ -24,6 +24,56 @@ fn waiting_monitor(dir: &Path) -> Worker {
     worker(Grading::new(LutPlaces::with_library(dir, vec![])))
 }
 
+#[test]
+fn presentation_readiness_follows_the_colour_in_force_and_the_composed_programs() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut monitor = monitor(dir.path());
+    let mut plain = graded_timeline(ColorSettings::default());
+    plain.timelines[0].width = 64;
+    plain.timelines[0].height = 36;
+    monitor.replace(41, Arc::new(plain.clone()));
+    monitor.status.frame = Some(0);
+    let first = monitor.draw_inner(true, false).unwrap().unwrap();
+    assert_eq!(
+        first.ready,
+        !monitor.compositor.as_ref().unwrap().is_provisional()
+    );
+    monitor.finish_compiling();
+    let ready = monitor.draw_inner(true, false).unwrap().unwrap();
+    assert!(ready.ready);
+    plain.color = ColorSettings {
+        science: Science::YrgbManaged,
+        preset: Preset::SdrRec709,
+        ..ColorSettings::default()
+    };
+    monitor.replace(42, Arc::new(plain));
+    let preparing = monitor.draw_inner(true, false).unwrap().unwrap();
+    assert_eq!(preparing.revision, 42);
+    assert!(
+        !preparing.ready,
+        "this draw still uses the old Colour while preparing the new one"
+    );
+    assert!(!preparing.editable());
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let next = monitor.draw_inner(true, false).unwrap().unwrap();
+        assert_eq!(
+            next.ready,
+            !monitor.compositor.as_ref().unwrap().is_provisional()
+                && monitor.grading.colour_matches(&next.project)
+        );
+        if next.ready {
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        !preparing.ready,
+        "later completion does not mutate an earlier snapshot"
+    );
+}
+
 fn worker(grading: Grading) -> Worker {
     let (_, inbox) = mpsc::channel();
     Worker {
@@ -31,6 +81,8 @@ fn worker(grading: Grading) -> Worker {
         shared: Arc::default(),
         notify: Arc::new(|_| {}),
         view: Arc::default(),
+        frames: Registry::default(),
+        revision: 0,
         graphics: Graphics::new(),
         sources: Sources::new(Hardware::Off, Arc::new(|_, _| {})),
         grading,
@@ -118,7 +170,7 @@ fn settings_changed_while_playing_are_made_ready_without_a_frame_waiting_for_the
         ..ColorSettings::default()
     };
     let mut monitor = monitor(dir.path());
-    monitor.replace(Arc::new(graded_timeline(sdr)));
+    monitor.replace(0, Arc::new(graded_timeline(sdr)));
     // Loaded: its colour made before its first frame, as a load waits for it.
     monitor.status.frame = Some(0);
     monitor.draw(true, false).unwrap();
@@ -140,7 +192,7 @@ fn settings_changed_while_playing_are_made_ready_without_a_frame_waiting_for_the
     let steady = times.iter().copied().fold(0.0, f64::max);
     // The settings change while it plays: it goes on drawing until the new colour is ready.
     let changed = Instant::now();
-    monitor.replace(Arc::new(graded_timeline(aces.clone())));
+    monitor.replace(0, Arc::new(graded_timeline(aces.clone())));
     let mut during = Vec::new();
     loop {
         assert!(changed.elapsed() < Duration::from_secs(60), "never made");
@@ -164,7 +216,7 @@ fn settings_changed_while_playing_are_made_ready_without_a_frame_waiting_for_the
     // What a monitor that waited for the compiler would have shown: the first frame of the new
     // colour on a compositor and grading of its own, made and compiled in the frame.
     let mut waiting = waiting_monitor(dir.path());
-    waiting.replace(Arc::new(graded_timeline(aces)));
+    waiting.replace(0, Arc::new(graded_timeline(aces)));
     waiting.status.frame = Some(0);
     let since = Instant::now();
     waiting.draw(true, false).unwrap();
@@ -208,7 +260,7 @@ fn a_frame_drawn_off_screen_is_measured_as_the_monitor_shows_it() {
     };
     let project = Arc::new(graded_timeline(managed));
     let mut monitor = monitor(dir.path());
-    monitor.replace(Arc::clone(&project));
+    monitor.replace(0, Arc::clone(&project));
     monitor.status.frame = Some(12);
     monitor.draw(true, false).unwrap();
     monitor.finish_compiling();

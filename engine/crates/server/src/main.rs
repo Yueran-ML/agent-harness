@@ -52,6 +52,7 @@ mod luts;
 mod managed;
 mod names;
 mod play;
+mod presentation;
 mod probe;
 mod proxy;
 mod queue;

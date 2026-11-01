@@ -177,6 +177,23 @@ pub struct Read {
     pub exact: bool,
     pub source: Source,
     pub rotation: i16,
+    pub provenance: Provenance,
+}
+
+/// The input and actual decoded frame of this picture, independent of any later request.
+/// Identity is the model's existing identity, not a new file digest, and stays server-side.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct Provenance {
+    pub clip: String,
+    pub media: String,
+    #[serde(skip)]
+    pub identity: Identity,
+    pub source: Source,
+    pub proxy_version: u64,
+    pub requested_tick: Time,
+    pub requested_frame: i64,
+    pub decoded_frame: i64,
+    pub decoded_tick: Time,
 }
 
 struct Lease {
@@ -201,7 +218,13 @@ impl Drop for Lease {
 }
 
 impl Lease {
-    fn read(&mut self, input: &Input, tick: i64, scrubbing: bool) -> Result<Read, MediaError> {
+    fn read(
+        &mut self,
+        input: &Input,
+        clip: &str,
+        tick: i64,
+        scrubbing: bool,
+    ) -> Result<Read, MediaError> {
         if self.reader.is_none() {
             let session = (self.sources.hardware == Hardware::Auto)
                 .then(|| self.sources.sessions.take())
@@ -257,6 +280,29 @@ impl Lease {
                 Source::Original
             },
             rotation: input.rotation,
+            provenance: Provenance {
+                clip: clip.into(),
+                media: input.media.clone(),
+                identity: input.identity.clone(),
+                source: if input.proxy {
+                    Source::Proxy
+                } else {
+                    Source::Original
+                },
+                proxy_version: input.proxy_version,
+                requested_tick: Time {
+                    ticks: tick,
+                    scale: input.duration.scale,
+                },
+                requested_frame: requested,
+                decoded_frame: reader.picture.frame,
+                decoded_tick: Time {
+                    ticks: input
+                        .rate
+                        .ticks_of(reader.picture.frame, input.duration.scale),
+                    scale: input.duration.scale,
+                },
+            },
         })
     }
 }
@@ -378,7 +424,7 @@ impl Sources {
                 let Some(mut lease) = self.borrow(&input, clip) else {
                     return Ok(None);
                 };
-                match lease.read(&input, tick, scrubbing) {
+                match lease.read(&input, clip, tick, scrubbing) {
                     Ok(read) => return Ok(Some(read)),
                     Err(MediaError::OutOfRange { .. }) => short_proxy = Some(input),
                     Err(_) => {
@@ -392,7 +438,7 @@ impl Sources {
         let Some(mut lease) = self.borrow(&input, clip) else {
             return Ok(None);
         };
-        let read = lease.read(&input, tick, scrubbing)?;
+        let read = lease.read(&input, clip, tick, scrubbing)?;
         drop(lease);
         // An ordinary end of video must not mark a proxy broken (audio may be longer).
         // It is truncated only if the original can actually supply the missing frame.
@@ -454,7 +500,11 @@ pub(super) mod tests {
     use columbina_model::{Identity, Proxy};
 
     pub(in crate::play) fn sample() -> Option<Media> {
-        let made = media(Sample::Fhd)?;
+        sample_of(Sample::Fhd)
+    }
+
+    pub(in crate::play) fn sample_of(sample: Sample) -> Option<Media> {
+        let made = media(sample)?;
         let facts = columbina_media::probe(&made.path).unwrap();
         Some(Media {
             id: "m1".into(),
@@ -720,12 +770,19 @@ pub(super) mod tests {
             .unwrap();
         assert_frame(&quick, 50);
         assert!(!quick.exact);
+        assert_eq!(quick.provenance.clip, "clip");
+        assert_eq!(quick.provenance.media, media.id);
+        assert_eq!(quick.provenance.identity, media.identity);
+        assert_eq!(quick.provenance.requested_frame, 73);
+        assert_eq!(quick.provenance.decoded_frame, 50);
+        assert_eq!(quick.provenance.requested_tick.ticks, tick);
         let exact = sources
             .picture(&media, "clip", tick, false, false)
             .unwrap()
             .unwrap();
         assert_frame(&exact, 73);
         assert!(exact.exact);
+        assert_eq!(exact.provenance.decoded_frame, 73);
     }
 
     #[test]
@@ -763,6 +820,11 @@ pub(super) mod tests {
             .unwrap();
         assert_frame(&read, 3);
         assert_eq!(read.source, Source::Proxy);
+        assert_eq!(read.provenance.source, Source::Proxy);
+        assert_eq!(read.provenance.proxy_version, 1);
+        assert_eq!(read.provenance.requested_frame, 3);
+        assert_eq!(read.provenance.decoded_frame, 3);
+        assert_eq!(read.provenance.decoded_tick.ticks, ticks(&media, 3));
     }
 
     #[test]

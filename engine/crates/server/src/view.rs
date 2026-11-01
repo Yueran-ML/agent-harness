@@ -25,7 +25,7 @@
 
 mod pointer;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, PoisonError};
 
 use columbina_compose::ShaderCompiler;
@@ -44,7 +44,19 @@ use pointer::Pointers;
 
 /// Where the view of the engine is, if one is attached: shared with the transport, which hands
 /// it pictures.
-pub type ViewSlot = Arc<std::sync::Mutex<Option<View>>>;
+pub type ViewSlot = Arc<std::sync::Mutex<Option<AttachedView>>>;
+
+/// One successful attachment, independent of its monitor or native handle.
+pub struct AttachedView {
+    pub instance: u64,
+    view: View,
+}
+impl std::ops::Deref for AttachedView {
+    type Target = View;
+    fn deref(&self) -> &View {
+        &self.view
+    }
+}
 
 /// The source and the edited timeline have separate pictures, windows and playheads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -78,6 +90,8 @@ pub struct Viewer {
     hdr: AtomicBool,
     /// Who is told what the pointer does on each view, while one takes it.
     pointers: Pointers,
+    pub frames: crate::presentation::Registry,
+    next_instance: AtomicU64,
     /// Viewer-only geometry, retained when a native window is replaced or detached.
     viewports: std::sync::Mutex<[Viewport; 2]>,
 }
@@ -213,6 +227,7 @@ impl Viewer {
                 }
             }
         });
+        let frames = crate::presentation::Registry::default();
         Self {
             headless,
             slots,
@@ -220,7 +235,9 @@ impl Viewer {
             _subscription: subscription,
             busy: Mutex::new(()),
             hdr: AtomicBool::new(true),
-            pointers: Pointers::new(),
+            pointers: Pointers::new(frames.clone()),
+            frames,
+            next_instance: AtomicU64::new(0),
             viewports: std::sync::Mutex::new([Viewport::Fit; 2]),
         }
     }
@@ -245,6 +262,9 @@ impl Viewer {
         if asked.on {
             // Only a view that is there takes it.
             taken?;
+            if let Some((instance, shown)) = self.presentation_snapshot(asked.monitor) {
+                self.frames.observe(asked.monitor, instance, shown);
+            }
             self.pointers
                 .tell(asked.monitor, connection, sender.clone(), cursor);
         } else {
@@ -293,12 +313,27 @@ impl Viewer {
         Arc::clone(&self.slots[monitor.index()])
     }
 
-    /// Take the view out of its slot.
-    fn take(&self, monitor: Monitor) -> Option<View> {
-        self.slots[monitor.index()]
+    /// Pure synchronous copy, with State -> `ViewSlot` -> View.shared. Registry guards must
+    /// already be released; consult the registry only after these view guards are released.
+    pub fn presentation_snapshot(
+        &self,
+        monitor: Monitor,
+    ) -> Option<(u64, Option<columbina_view::Presentation>)> {
+        let slot = self.slots[monitor.index()]
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        slot.as_ref()
+            .map(|view| (view.instance, view.presentation()))
+    }
+
+    fn take(&self, monitor: Monitor) -> Option<AttachedView> {
+        let old = self.slots[monitor.index()]
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .take()
+            .take();
+        self.frames.activate(monitor, None);
+        self.pointers.activate(monitor, None);
+        old
     }
 
     /// Call a method `view.*` for a client of `kind`, and give its result.
@@ -434,13 +469,19 @@ impl Viewer {
             height: attach.height,
         };
         let _busy = self.busy.lock().await;
-        let old = self.take(attach.monitor);
+        let instance = self.next_instance.fetch_add(1, Ordering::Relaxed) + 1;
         let graphics = Arc::clone(&self.graphics);
         let slot = self.slot(attach.monitor);
-        let reporter = reporter(&graphics, &slot, attach.monitor, &self.pointers);
+        let reporter = reporter(
+            &graphics,
+            &slot,
+            attach.monitor,
+            instance,
+            &self.pointers,
+            &self.frames,
+        );
         let hdr = self.hdr.load(Ordering::SeqCst);
         let made = tokio::task::spawn_blocking(move || {
-            drop(old);
             let gpu = graphics
                 .gpu()
                 .map_err(|error| ViewError::Gpu(error.to_string()))?;
@@ -471,7 +512,25 @@ impl Viewer {
             "view_attached",
             &json!({"monitor":attach.monitor, "adapter":view.adapter(), "backend":view.backend(), "compiler":compiler}),
         );
-        *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(view);
+        // Preparation above leaves the old view, settings and owner intact on failure.
+        // A candidate reporter cannot route pointer events before its instance is activated.
+        let old = slot
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .replace(AttachedView { instance, view });
+        self.frames.activate(attach.monitor, Some(instance));
+        self.pointers.activate(attach.monitor, Some(instance));
+        // Gone may have arrived during construction, before activation. Recheck after the
+        // switch as well so that such a callback cannot leave a live registry for a dead view.
+        let gone = {
+            let slot = slot.lock().unwrap_or_else(PoisonError::into_inner);
+            slot.as_ref().is_some_and(|view| view.is_gone())
+        };
+        if gone {
+            self.frames.gone(attach.monitor, instance);
+            self.pointers.gone(attach.monitor, instance);
+        }
+        drop_view(old).await;
         Ok(result)
     }
 
@@ -520,7 +579,7 @@ fn display_json(display: Option<columbina_view::Display>) -> serde_json::Value {
 }
 
 /// Destroy a view where blocking is allowed: its threads are waited for.
-async fn drop_view(view: Option<View>) {
+async fn drop_view(view: Option<AttachedView>) {
     if let Some(view) = view {
         let _ = tokio::task::spawn_blocking(move || drop(view)).await;
     }
@@ -536,7 +595,7 @@ fn fault(error: &ViewError) -> Fault {
 }
 
 /// Give the view in the slot, if any, the card `gpu`.
-fn give(slot: &std::sync::Weak<std::sync::Mutex<Option<View>>>, gpu: Arc<Gpu>) {
+fn give(slot: &std::sync::Weak<std::sync::Mutex<Option<AttachedView>>>, gpu: Arc<Gpu>) {
     if let Some(slot) = slot.upgrade() {
         if let Some(view) = slot.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
             view.use_gpu(gpu);
@@ -551,17 +610,29 @@ fn reporter(
     graphics: &Arc<Graphics>,
     slot: &ViewSlot,
     monitor: Monitor,
+    instance: u64,
     pointers: &Pointers,
+    frames: &crate::presentation::Registry,
 ) -> columbina_view::Report {
     let graphics = Arc::downgrade(graphics);
     let slot = Arc::downgrade(slot);
     let pointers = pointers.clone();
+    let frames = frames.clone();
     Arc::new(move |event: Event| {
         if let Event::Pointer(pointer) = event {
-            pointers.told(monitor, &pointer);
+            pointers.told(monitor, instance, &pointer);
             return;
         }
+        if matches!(event, Event::Gone) {
+            frames.gone(monitor, instance);
+            pointers.gone(monitor, instance);
+        }
         let lost = matches!(event, Event::DeviceLost { .. });
+        if lost || matches!(event, Event::SurfaceLost) {
+            frames.invalidate(monitor, instance);
+        }
+        // Device loss belongs to the shared GPU even if this reporter's window was replaced.
+        // Keep Graphics recovery and its subscription path for both monitors.
         report(event, monitor);
         let (Some(graphics), true) = (graphics.upgrade(), lost) else {
             return;
@@ -615,6 +686,7 @@ fn report(event: Event, monitor: Monitor) {
             "view_error",
             &json!({ "monitor":monitor, "message": message }),
         ),
+        Event::Gone => log("view_gone", &json!({"monitor": monitor})),
         Event::Pointer(_) => {}
     }
 }

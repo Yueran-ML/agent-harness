@@ -251,6 +251,8 @@ pub enum Event {
     DeviceLost { message: String },
     /// The surface of the window was lost, and is made again.
     SurfaceLost,
+    /// The native window was destroyed. Emitted once, after releasing the view state lock.
+    Gone,
     /// What the view shows changed, as the monitor or the view was set: whether Windows has HDR
     /// on for the monitor of the window, whether the view shows HDR, and the peak and white of
     /// SDR of the monitor, in nits, where it says them (rounded; [`View::display`] has them as
@@ -459,11 +461,18 @@ impl Shared {
     /// The window was destroyed, by its parent or by the view.
     #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn window_gone(&self) {
-        self.change(|state| {
+        let first = {
+            let mut state = self.lock();
+            let first = !state.gone;
             state.gone = true;
             state.presentation = None;
-        });
+            first
+        };
+        self.wake.notify_all();
         self.watch.notify_all();
+        if first {
+            self.report(Event::Gone);
+        }
     }
 
     /// Publish only after present returned, using that job's map and device. A device change
@@ -1001,6 +1010,37 @@ pub(crate) fn frame_ended(shared: &Shared, syncer: &native::Syncer) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gone_is_reported_once_and_without_the_view_state_lock() {
+        let Some(gpu) = columbina_compose::gpu_for_tests() else {
+            return;
+        };
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let shared = Arc::new_cyclic(|weak: &std::sync::Weak<Shared>| {
+            let weak = weak.clone();
+            let count = Arc::clone(&count);
+            Shared::new(
+                Rect::default(),
+                Arc::clone(&gpu),
+                Arc::new(move |event| {
+                    if matches!(event, Event::Gone) {
+                        let shared = weak.upgrade().unwrap();
+                        let state = shared
+                            .state
+                            .try_lock()
+                            .expect("Gone callback can reenter the view");
+                        assert!(state.gone);
+                        assert!(state.presentation.is_none());
+                        count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }),
+            )
+        });
+        shared.window_gone();
+        shared.window_gone();
+        assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
 
     #[test]
     fn a_lost_or_replaced_device_cannot_publish_a_presentation_from_its_old_job() {

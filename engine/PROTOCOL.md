@@ -742,6 +742,38 @@ reads them (the next once the one before was written, those between dropped), an
 the pointer stopped at is always told, before the next press or release. The view never takes
 the keyboard: keys stay the page's.
 
+Pointer notifications additionally carry `instance`, `presentation`, and `snapshot`.
+`instance` is an engine-local, increasing native attachment number; reattaching creates a
+new instance even on the same monitor. Moves still held by the server are discarded on
+replacement. Lines already queued to the connection retain their old instance: consumers
+must check it, and must not treat an old line as input for the new window.
+
+`presentation` is null before a successful native present or after invalidation; otherwise
+it is `{serial, tag, map}`. `serial` increases for each successful presentation in this
+instance. `tag` is the producer's opaque number, or null for an untagged frame. `map` is
+null for a successful black clear, otherwise `{surface:[w,h], picture:[w,h], dest:[x,y,w,h]}`;
+`dest` contains the same once-quantized values used by native rendering and pointer mapping.
+A pending texture or viewport request does not replace this successful presentation.
+
+`snapshot` is null for an unrecognized/invalidated/evicted tag or an untagged source-monitor
+frame. A known timeline tag gives `{revision,timeline,frame,canvas:[w,h],ready,editable,comparison}`,
+where `comparison` is `off`, `wipe`, or `split`. The server retains the matching immutable
+project, actual source-frame provenance and final scene placements internally; no source paths,
+file identities or project contents are added to pointer notifications. A candidate registration
+alone is never proof of display. Each monitor/instance retains its confirmed current frame and
+at most eight pending candidates; a late presentation of an evicted candidate remains unknown,
+never resolved using the latest project. Unloading retires those descriptions even while the
+native clear is pending. Surface/device loss requests a fresh producer redraw; native-window
+destruction releases descriptions without scheduling redraws.
+
+`ready` is false while the actual Colour differs from that project's requested Colour or
+composition/Viewer LUT used provisional programs. A layer with a late cross-clip/source-frame
+fallback or an inexact scrub is not editable, even though the existing preview fallback remains
+visible. Split Screen is not editable. The flag describes eligibility of the current scene;
+a wipe still contains a reference image, so it does not authorize edits on the reference portion.
+These fields do not create a Window input method or change the existing `x`/`y` meanings.
+The TypeScript fields are optional for compatibility with older recorded notifications.
+
 Pointer coordinates use the map of the last successful native presentation, including its
 viewport. Queuing a new frame, viewport, or clear does not change that map before it is shown.
 While a resized native window differs from the last presented surface size, `x`/`y` are null

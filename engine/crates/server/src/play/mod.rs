@@ -188,6 +188,7 @@ impl Transport {
             timeline::Timeline::new(
                 Arc::clone(&graphics),
                 viewer.slot(Monitor::Timeline),
+                viewer.frames.clone(),
                 notify,
                 repair,
                 setup.sound,
@@ -215,6 +216,7 @@ impl Transport {
     pub fn begin_load(
         &self,
         project: &Project,
+        revision: u64,
         params: Option<&RawValue>,
     ) -> Result<Loading, Fault> {
         self.check("transport.load")?;
@@ -253,7 +255,7 @@ impl Transport {
                 self.timeline
                     .as_ref()
                     .expect("not headless")
-                    .begin_load(Arc::new(project.clone()), timeline)
+                    .begin_load(revision, Arc::new(project.clone()), timeline)
                     .map(Loading::Timeline)
             }
         }
@@ -302,10 +304,10 @@ impl Transport {
         ))
     }
 
-    pub fn project_changed(&self, project: &Project) {
+    pub fn project_changed(&self, project: &Project, revision: u64) {
         self.source.project_changed(project);
         if let Some(timeline) = &self.timeline {
-            timeline.project_changed(project);
+            timeline.project_changed(revision, project);
         }
     }
     pub fn proxy_ready(&self, media: &str, path: PathBuf) {

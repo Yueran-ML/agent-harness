@@ -26,9 +26,16 @@ const POLL: Duration = Duration::from_millis(4);
 pub struct Pointers(Arc<Inner>);
 
 struct Inner {
-    sinks: Mutex<[Option<Sink>; 2]>,
+    sinks: Mutex<Sinks>,
+    frames: crate::presentation::Registry,
     /// Wakes the thread that tells the moves held.
     wake: Condvar,
+}
+
+#[derive(Default)]
+struct Sinks {
+    instances: [Option<u64>; 2],
+    sinks: [Option<Sink>; 2],
 }
 
 /// The connection told of the pointer on a view, and the cursor shown there.
@@ -45,15 +52,38 @@ struct Sink {
 }
 
 impl Pointers {
-    pub fn new() -> Pointers {
+    pub fn new(frames: crate::presentation::Registry) -> Pointers {
         Pointers(Arc::new(Inner {
-            sinks: Mutex::new([None, None]),
+            sinks: Mutex::default(),
+            frames,
             wake: Condvar::new(),
         }))
     }
 
-    fn sinks(&self) -> MutexGuard<'_, [Option<Sink>; 2]> {
+    fn sinks(&self) -> MutexGuard<'_, Sinks> {
         self.0.sinks.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Replace the view but keep its owner/cursor. Already queued RPC lines cannot be
+    /// recalled; the old instance remains on those lines for consumers to check.
+    pub fn activate(&self, monitor: Monitor, instance: Option<u64>) {
+        let mut sinks = self.sinks();
+        sinks.instances[monitor.index()] = instance;
+        if let Some(sink) = sinks.sinks[monitor.index()].as_mut() {
+            sink.held = None;
+            sink.queued = None;
+        }
+    }
+
+    pub fn gone(&self, monitor: Monitor, instance: u64) {
+        let mut sinks = self.sinks();
+        if sinks.instances[monitor.index()] == Some(instance) {
+            sinks.instances[monitor.index()] = None;
+            if let Some(sink) = sinks.sinks[monitor.index()].as_mut() {
+                sink.held = None;
+                sink.queued = None;
+            }
+        }
     }
 
     /// Tell `connection` what the pointer does on the view of `monitor` from now on.
@@ -65,8 +95,8 @@ impl Pointers {
         cursor: Option<Cursor>,
     ) {
         let mut sinks = self.sinks();
-        let started = sinks.iter().flatten().any(|sink| sink.started);
-        sinks[monitor.index()] = Some(Sink {
+        let started = sinks.sinks.iter().flatten().any(|sink| sink.started);
+        sinks.sinks[monitor.index()] = Some(Sink {
             connection,
             sender,
             cursor: cursor.unwrap_or_default(),
@@ -78,12 +108,12 @@ impl Pointers {
 
     /// Tell no one what the pointer does on the view of `monitor`.
     pub fn stop(&self, monitor: Monitor) {
-        self.sinks()[monitor.index()] = None;
+        self.sinks().sinks[monitor.index()] = None;
     }
 
     /// The cursor of the view of `monitor`, where it takes the pointer.
     pub fn cursor(&self, monitor: Monitor) -> Option<Cursor> {
-        self.sinks()[monitor.index()]
+        self.sinks().sinks[monitor.index()]
             .as_ref()
             .map(|sink| sink.cursor)
     }
@@ -94,7 +124,7 @@ impl Pointers {
         let mut sinks = self.sinks();
         let mut forgotten = Vec::new();
         for monitor in [Monitor::Source, Monitor::Timeline] {
-            let slot = &mut sinks[monitor.index()];
+            let slot = &mut sinks.sinks[monitor.index()];
             if slot
                 .as_ref()
                 .is_some_and(|sink| sink.connection == connection)
@@ -108,10 +138,20 @@ impl Pointers {
 
     /// What the pointer did on the view of `monitor`: told to whoever asked, if anyone did. It is
     /// called on the view's thread of its window, and never waits.
-    pub fn told(&self, monitor: Monitor, pointer: &Pointer) {
-        let line = rpc::notification_line("view.pointer", &written(monitor, pointer));
+    pub fn told(&self, monitor: Monitor, instance: u64, pointer: &Pointer) {
+        let snapshot = self
+            .0
+            .frames
+            .observe(monitor, instance, pointer.presentation);
+        let line = rpc::notification_line(
+            "view.pointer",
+            &written(monitor, instance, pointer, snapshot.as_deref()),
+        );
         let mut sinks = self.sinks();
-        let Some(sink) = sinks[monitor.index()].as_mut() else {
+        if sinks.instances[monitor.index()] != Some(instance) {
+            return;
+        }
+        let Some(sink) = sinks.sinks[monitor.index()].as_mut() else {
             return;
         };
         if pointer.kind == PointerKind::Move {
@@ -150,7 +190,7 @@ impl Pointers {
                 let Some(inner) = inner.upgrade() else { return };
                 let mut sinks = inner.sinks.lock().unwrap_or_else(PoisonError::into_inner);
                 let mut waiting = false;
-                for sink in sinks.iter_mut().flatten() {
+                for sink in sinks.sinks.iter_mut().flatten() {
                     let Some(held) = sink.held.take() else {
                         continue;
                     };
@@ -180,7 +220,12 @@ impl Pointers {
 }
 
 /// A pointer as `view.pointer` tells it.
-fn written(monitor: Monitor, pointer: &Pointer) -> serde_json::Value {
+fn written(
+    monitor: Monitor,
+    instance: u64,
+    pointer: &Pointer,
+    snapshot: Option<&crate::presentation::FrameSnapshot>,
+) -> serde_json::Value {
     let buttons: Vec<&str> = [(1, "left"), (2, "right"), (4, "middle")]
         .into_iter()
         .filter(|(bit, _)| pointer.buttons & bit != 0)
@@ -188,6 +233,9 @@ fn written(monitor: Monitor, pointer: &Pointer) -> serde_json::Value {
         .collect();
     json!({
         "monitor": monitor,
+        "instance": instance,
+        "presentation": crate::presentation::written(pointer.presentation),
+        "snapshot": snapshot.map(crate::presentation::FrameSnapshot::written),
         "kind": pointer.kind.name(),
         "button": pointer.button.map(columbina_view::Button::name),
         "buttons": buttons,
@@ -232,19 +280,65 @@ mod tests {
     }
 
     #[test]
+    fn pointer_keeps_the_successful_presentation_identity_and_map() {
+        let mut event = pointer(PointerKind::Down, 2.0);
+        event.presentation = Some(columbina_view::Presentation {
+            serial: 19,
+            tag: Some(71),
+            map: columbina_view::Viewport::Fit.map((320, 180), (640, 360), 0),
+        });
+        let value = written(Monitor::Timeline, 3, &event, None);
+        assert_eq!(value["presentation"]["serial"], 19);
+        assert_eq!(value["presentation"]["tag"], 71);
+        assert_eq!(value["presentation"]["map"]["picture"], json!([640, 360]));
+        assert_eq!(value["x"], 2.0);
+        assert_eq!(value["instance"], 3);
+        assert_eq!(value["snapshot"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn old_reporters_and_held_moves_cannot_enter_the_new_instance() {
+        let pointers = Pointers::new(crate::presentation::Registry::default());
+        let (sender, mut receiver) = queue::queue(queue::Limits {
+            messages: 100,
+            bytes: 1 << 20,
+        });
+        pointers.activate(Monitor::Timeline, Some(1));
+        pointers.tell(Monitor::Timeline, 7, sender, None);
+        pointers.told(Monitor::Timeline, 1, &pointer(PointerKind::Move, 1.0));
+        pointers.told(Monitor::Timeline, 1, &pointer(PointerKind::Move, 2.0));
+        // The already queued first move remains honestly attributed to the old instance.
+        pointers.activate(Monitor::Timeline, Some(2));
+        pointers.gone(Monitor::Timeline, 1);
+        pointers.told(Monitor::Timeline, 1, &pointer(PointerKind::Down, 3.0));
+        pointers.told(Monitor::Timeline, 2, &pointer(PointerKind::Down, 4.0));
+        let told = read(&mut receiver);
+        assert_eq!(told.len(), 2);
+        assert_eq!(told[0]["instance"], 1);
+        assert_eq!(told[1]["instance"], 2);
+        assert_eq!(told[1]["x"], 4.0);
+    }
+
+    #[test]
     fn moves_wait_for_the_one_before_to_be_written_and_the_last_is_always_told() {
         let (sender, mut receiver) = queue::queue(queue::Limits {
             messages: 100,
             bytes: 1 << 20,
         });
-        let pointers = Pointers::new();
+        let pointers = Pointers::new(crate::presentation::Registry::default());
+        pointers.activate(Monitor::Timeline, Some(3));
+        pointers.activate(Monitor::Source, Some(4));
         // No one asked: nothing is told.
-        pointers.told(Monitor::Timeline, &pointer(PointerKind::Down, 1.0));
+        pointers.told(Monitor::Timeline, 3, &pointer(PointerKind::Down, 1.0));
         pointers.tell(Monitor::Timeline, 7, sender, Some(Cursor::Crosshair));
         assert_eq!(pointers.cursor(Monitor::Timeline), Some(Cursor::Crosshair));
-        pointers.told(Monitor::Timeline, &pointer(PointerKind::Down, 1.0));
+        pointers.told(Monitor::Timeline, 3, &pointer(PointerKind::Down, 1.0));
         for x in 2..10 {
-            pointers.told(Monitor::Timeline, &pointer(PointerKind::Move, f64::from(x)));
+            pointers.told(
+                Monitor::Timeline,
+                3,
+                &pointer(PointerKind::Move, f64::from(x)),
+            );
         }
         // The press, and the first move: the others wait for it to be written.
         let told = read(&mut receiver);
@@ -257,7 +351,7 @@ mod tests {
         assert_eq!(told[1]["x"], 2.0);
         assert_eq!(told[1]["button"], serde_json::Value::Null);
         // The release tells the move held, the last one, first.
-        pointers.told(Monitor::Timeline, &pointer(PointerKind::Up, 9.5));
+        pointers.told(Monitor::Timeline, 3, &pointer(PointerKind::Up, 9.5));
         let told = read(&mut receiver);
         assert_eq!(told.len(), 2);
         assert_eq!(
@@ -268,11 +362,11 @@ mod tests {
         assert_eq!(told[1]["buttons"], json!([]));
         assert_eq!(told[1]["monitor"], "timeline");
         // Another monitor, and a connection forgotten.
-        pointers.told(Monitor::Source, &pointer(PointerKind::Down, 1.0));
+        pointers.told(Monitor::Source, 4, &pointer(PointerKind::Down, 1.0));
         assert_eq!(read(&mut receiver), Vec::<serde_json::Value>::new());
         assert_eq!(pointers.forget(8), Vec::<Monitor>::new());
         assert_eq!(pointers.forget(7), vec![Monitor::Timeline]);
-        pointers.told(Monitor::Timeline, &pointer(PointerKind::Down, 1.0));
+        pointers.told(Monitor::Timeline, 3, &pointer(PointerKind::Down, 1.0));
         assert_eq!(read(&mut receiver), Vec::<serde_json::Value>::new());
     }
 }

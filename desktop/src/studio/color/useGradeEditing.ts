@@ -58,7 +58,7 @@ export function useGradeEditing({ bridge, revision, session, defaultNode = null 
     busy.current = true;
     setProblem(null);
     try {
-      const answer = await callEngine(asked.bridge, method, params);
+      const answer = await callEngine(asked.bridge, method, params, { expectedSession: asked.session });
       if (then && live.current && asked.session === now.current.session) then(answer as Applied);
     } catch (error) {
       queued.current = [];

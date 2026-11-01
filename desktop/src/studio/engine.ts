@@ -652,6 +652,9 @@ export interface PageMethods {
   'scopes.unsubscribe': Record<string, never>;
   'view.sample': ViewSample;
   'view.pointer': { monitor: Monitor; on: boolean; cursor: PointerCursor | null };
+  'window.bind': { binding: number; sequence: number };
+  'window.input': WindowState;
+  'window.unbind': { binding: number; phase: 'ended' };
   // The Gallery and the comparisons of the viewer (PROTOCOL.md, "The Gallery", "Comparisons in the viewer").
   'viewer.wipe': Compared;
   'viewer.split': Compared;
@@ -832,7 +835,20 @@ export type PointerCursor = 'arrow' | 'crosshair' | 'move' | 'resize_ew' | 'resi
  * shown (of the timeline, for the timeline monitor), null where none is drawn; a drag that goes
  * beyond the picture goes on, `inside` false.
  */
+export type ViewerTool = 'none' | 'window' | 'image_wipe';
+export interface WindowKeys { pan: number | null; tilt: number | null; clock: 'source' | 'clip' | 'timeline'; frame: number }
+export interface WindowState {
+  binding: number; capture: number; sequence: number; phase: 'arming' | 'armed' | 'refused' | 'ended';
+  reason: string | null; selected: string; event: number; revision: number; keys: WindowKeys;
+}
+export interface WindowUnbound { binding: number; sequence: number; revision: number; reason: 'project_changed' }
+export interface WindowSelection {
+  monitor: 'timeline'; revision: number; timeline: string; target: Target; clip?: string;
+  node: string; selected: string | null; visible: boolean; outline: boolean; tool: ViewerTool;
+}
 export interface ViewPointer {
+  /** Native event evidence retained by the server; clients never synthesize coordinates for Window. */
+  event?: number;
   monitor: Monitor;
   /** Engine-local native attachment identity; old queued events keep their old instance. */
   instance?: number;
@@ -851,6 +867,7 @@ export interface ViewPointer {
     ready: boolean;
     editable: boolean;
     comparison: 'off' | 'wipe' | 'split';
+    window?: { binding: number; selected: string | null } | null;
   } | null;
   kind: 'down' | 'move' | 'up' | 'cancel';
   button: 'left' | 'right' | 'middle' | null;

@@ -322,6 +322,210 @@ mod ownership {
     }
 
     #[tokio::test]
+    async fn retired_binding_cleanup_releases_its_native_pointer_and_sink() {
+        let (_parent, viewer, state, selection) = attached().await;
+        let (a, _a_notes) = connection(7);
+        let bound = bind(&state, &viewer, &a, Kind::Desktop, selection)
+            .await
+            .unwrap();
+        disconnect_window_grade(&mut *state.lock().await);
+        assert!(state.lock().await.window.owner.is_none());
+        assert_eq!(viewer.test_pointer_owner(Monitor::Timeline), Some(a.id));
+        let native_pointer = || {
+            viewer
+                .slot(Monitor::Timeline)
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .pointer()
+        };
+        assert_eq!(native_pointer(), Some(columbina_view::Cursor::Move));
+        unbind(
+            &state,
+            &viewer,
+            &a,
+            Kind::Desktop,
+            bound["binding"].as_u64().unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(native_pointer(), None);
+        assert_eq!(viewer.test_pointer_owner(Monitor::Timeline), None);
+        assert!(state.lock().await.window.pointer_binding.is_none());
+    }
+
+    fn native_pointer(viewer: &crate::view::Viewer) -> Option<columbina_view::Cursor> {
+        viewer
+            .slot(Monitor::Timeline)
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .pointer()
+    }
+
+    async fn ordinary_pointer(engine: &Engine, connection: &Connection, value: Value) -> bool {
+        let id = RawValue::from_string("1".into()).unwrap();
+        let params = serde_json::value::to_raw_value(&value).unwrap();
+        crate::session::view_pointer(engine, connection, Kind::Desktop, &id, Some(&params))
+            .await
+            .is_ok()
+    }
+
+    #[tokio::test]
+    async fn retired_cleanup_cannot_disable_a_new_window_binding_even_for_the_same_connection() {
+        for successor in [7, 8] {
+            let (_parent, viewer, state, mut selection) = attached().await;
+            let (a, _a_notes) = connection(7);
+            let (b, _b_notes) = connection(successor);
+            let old = bind(&state, &viewer, &a, Kind::Desktop, selection.clone())
+                .await
+                .unwrap();
+            {
+                let mut state = state.lock().await;
+                disconnect_window_grade(&mut state);
+                state.apply_worked_out_locked(Kind::Agent, None, None, Instant::now(), |_| {
+                    Ok(vec![json!({"op":"connect","grade":{"level":"clip","timeline":"t1","clip":"c1"},"link":{"from":"source","to":"n1","kind":"rgb","input":0}})])
+                }).unwrap();
+                selection.revision = state.history.revision();
+            }
+            let new = bind(&state, &viewer, &b, Kind::Desktop, selection)
+                .await
+                .unwrap();
+            assert!(unbind(
+                &state,
+                &viewer,
+                &a,
+                Kind::Desktop,
+                old["binding"].as_u64().unwrap()
+            )
+            .await
+            .is_err());
+            assert_eq!(native_pointer(&viewer), Some(columbina_view::Cursor::Move));
+            assert_eq!(
+                viewer.test_pointer_owner(Monitor::Timeline),
+                Some(successor)
+            );
+            let state = state.lock().await;
+            assert_eq!(
+                state.window.selection.as_ref().unwrap().binding,
+                new["binding"].as_u64().unwrap()
+            );
+            assert_eq!(
+                state.window.pointer_binding,
+                Some((successor, new["binding"].as_u64().unwrap()))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn ordinary_pointer_takeover_before_or_after_retirement_revokes_old_cleanup() {
+        for before_retirement in [true, false] {
+            for successor in [7, 8] {
+                let (_dir, _parent, engine, selection) = native_engine().await;
+                let (a, _a_notes) = connection(7);
+                let (b, _b_notes) = connection(successor);
+                let old = bind(&engine.state, &engine.viewer, &a, Kind::Desktop, selection)
+                    .await
+                    .unwrap();
+                let pointer = json!({"monitor":"timeline","on":true,"cursor":"crosshair"});
+                if before_retirement {
+                    assert!(ordinary_pointer(&engine, &b, pointer.clone()).await);
+                }
+                disconnect_window_grade(&mut *engine.state.lock().await);
+                if !before_retirement {
+                    assert!(ordinary_pointer(&engine, &b, pointer).await);
+                }
+                assert!(engine.state.lock().await.window.pointer_binding.is_none());
+                assert!(unbind(
+                    &engine.state,
+                    &engine.viewer,
+                    &a,
+                    Kind::Desktop,
+                    old["binding"].as_u64().unwrap()
+                )
+                .await
+                .is_err());
+                assert_eq!(
+                    native_pointer(&engine.viewer),
+                    Some(columbina_view::Cursor::Crosshair)
+                );
+                assert_eq!(
+                    engine.viewer.test_pointer_owner(Monitor::Timeline),
+                    Some(successor)
+                );
+                engine.stop_background();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_timeline_and_successful_source_pointer_calls_preserve_cleanup_authority() {
+        let (_dir, _parent, engine, selection) = native_engine().await;
+        let (a, _a_notes) = connection(7);
+        let bound = bind(&engine.state, &engine.viewer, &a, Kind::Desktop, selection)
+            .await
+            .unwrap();
+        let binding = bound["binding"].as_u64().unwrap();
+        assert!(
+            !ordinary_pointer(
+                &engine,
+                &a,
+                json!({"monitor":"timeline","on":true,"cursor":"invalid"})
+            )
+            .await
+        );
+        assert!(ordinary_pointer(&engine, &a, json!({"monitor":"source","on":false})).await);
+        assert_eq!(
+            engine.state.lock().await.window.pointer_binding,
+            Some((a.id, binding))
+        );
+        disconnect_window_grade(&mut *engine.state.lock().await);
+        unbind(&engine.state, &engine.viewer, &a, Kind::Desktop, binding)
+            .await
+            .unwrap();
+        assert_eq!(native_pointer(&engine.viewer), None);
+        assert_eq!(engine.viewer.test_pointer_owner(Monitor::Timeline), None);
+        engine.stop_background();
+    }
+
+    #[tokio::test]
+    async fn binding_retiring_during_native_unbind_preparation_stays_released() {
+        let (_parent, viewer, state, selection) = attached().await;
+        let (a, _a_notes) = connection(7);
+        let bound = bind(&state, &viewer, &a, Kind::Desktop, selection)
+            .await
+            .unwrap();
+        let binding = bound["binding"].as_u64().unwrap();
+        let params =
+            serde_json::value::to_raw_value(&json!({"monitor":"timeline","on":false})).unwrap();
+        let change = viewer
+            .prepare_pointer(Kind::Desktop, a.id, a.sender(), Some(&params))
+            .await
+            .unwrap();
+        state
+            .lock()
+            .await
+            .window_check_binding(a.id, binding)
+            .unwrap();
+        assert!(change.owned_by(a.id));
+        change.apply().await.unwrap();
+        assert_eq!(native_pointer(&viewer), None);
+        disconnect_window_grade(&mut *state.lock().await);
+        finish_unbind(&state, &change, a.id, binding, true)
+            .await
+            .unwrap();
+        assert_eq!(
+            native_pointer(&viewer),
+            None,
+            "logical retirement must not roll back native release"
+        );
+        assert_eq!(viewer.test_pointer_owner(Monitor::Timeline), None);
+        assert!(state.lock().await.window.pointer_binding.is_none());
+    }
+
+    #[tokio::test]
     async fn queued_old_unbind_cannot_disable_the_next_binding_owner() {
         let (_parent, viewer, state, selection) = attached().await;
         let (a, _a_notes) = connection(7);
@@ -432,6 +636,10 @@ mod ownership {
             locked.window.selection.as_ref().unwrap().binding,
             original["binding"].as_u64().unwrap()
         );
+        assert_eq!(
+            locked.window.pointer_binding,
+            Some((7, original["binding"].as_u64().unwrap()))
+        );
         drop(locked);
         assert_eq!(viewer.test_pointer_owner(Monitor::Timeline), Some(7));
         parent.down();
@@ -480,6 +688,15 @@ mod ownership {
         assert_eq!(native_cursor(), Some(columbina_view::Cursor::Move));
         assert_eq!(state.lock().await.window.owner, Some(7));
         assert_eq!(viewer.test_pointer_owner(Monitor::Timeline), Some(7));
+        assert_eq!(
+            state
+                .lock()
+                .await
+                .window
+                .pointer_binding
+                .map(|(owner, _)| owner),
+            Some(7)
+        );
     }
 }
 
@@ -680,6 +897,165 @@ fn successful_external_edit_ends_capture_but_failed_edit_does_not() {
         .unwrap();
     assert!(state.window.active.is_none());
     assert!(!pin.live.load(Ordering::Acquire));
+}
+
+fn binding_peer(
+    state: &mut State,
+    owner: u64,
+) -> (crate::queue::Receiver, tokio::sync::watch::Receiver<bool>) {
+    let (sender, receiver) = crate::queue::queue(crate::queue::Limits {
+        messages: 100,
+        bytes: 1 << 20,
+    });
+    let (stop, stopped) = tokio::sync::watch::channel(false);
+    state.peers.insert(
+        owner,
+        crate::session::Peer {
+            kind: Kind::Desktop,
+            queue: sender,
+            stop,
+        },
+    );
+    (receiver, stopped)
+}
+
+fn window_notifications(receiver: &mut crate::queue::Receiver) -> Vec<Value> {
+    let mut notes = Vec::new();
+    while let Some(line) = receiver.try_recv() {
+        let note: Value = serde_json::from_slice(line.as_ref()).unwrap();
+        if note["method"]
+            .as_str()
+            .is_some_and(|method| method.starts_with("window."))
+        {
+            notes.push(note);
+        }
+    }
+    notes
+}
+
+fn disconnect_window_grade(state: &mut State) {
+    state.apply_worked_out_locked(Kind::Agent, None, None, Instant::now(), |_| {
+        Ok(vec![json!({"op":"disconnect","grade":{"level":"clip","timeline":"t1","clip":"c1"},"to":"n1","kind":"rgb","input":0})])
+    }).unwrap();
+}
+
+#[test]
+fn invalid_project_retires_idle_binding_once_for_its_owner() {
+    let (mut state, _, _, _) = fixture();
+    state.window_end("up");
+    let binding = state.window.selection.as_ref().unwrap().binding;
+    let sequence = state.window.sequence;
+    let (mut owner, _) = binding_peer(&mut state, 7);
+    let (mut observer, _) = binding_peer(&mut state, 8);
+    disconnect_window_grade(&mut state);
+    let revision = state.history.revision();
+    assert!(state.window.owner.is_none());
+    assert!(state.window.selection.is_none());
+    // A desktop refetch can see only the repaired final graph. Retirement must still be
+    // explicit even though neither project snapshot exposed the intermediate invalid grade.
+    state.apply_worked_out_locked(Kind::Agent, None, None, Instant::now(), |_| {
+        Ok(vec![json!({"op":"connect","grade":{"level":"clip","timeline":"t1","clip":"c1"},"link":{"from":"source","to":"n1","kind":"rgb","input":0}})])
+    }).unwrap();
+    assert!(state.history.project().timelines[0].tracks[0].clips[0]
+        .grade
+        .is_complete());
+    let notes = window_notifications(&mut owner);
+    assert_eq!(
+        notes.len(),
+        1,
+        "an idle invalidated binding must notify its owner once"
+    );
+    assert_eq!(notes[0]["method"], "window.unbound");
+    assert_eq!(
+        notes[0]["params"],
+        json!({"binding":binding,"sequence":state.window.sequence,"revision":revision,"reason":"project_changed"})
+    );
+    assert!(state.window.sequence > sequence);
+    assert_eq!(window_notifications(&mut observer), Vec::<Value>::new());
+}
+
+#[test]
+fn binding_retirement_follows_the_active_capture_end() {
+    let (mut state, registry, pin, frame) = fixture();
+    arm(&mut state);
+    movement(&mut state, &registry, &pin, &frame, 84);
+    let (mut owner, _) = binding_peer(&mut state, 7);
+    disconnect_window_grade(&mut state);
+    let notes = window_notifications(&mut owner);
+    assert_eq!(notes.len(), 2);
+    assert_eq!(notes[0]["method"], "window.state");
+    assert_eq!(notes[0]["params"]["phase"], "ended");
+    assert_eq!(notes[1]["method"], "window.unbound");
+    assert_eq!(notes[0]["params"]["binding"], notes[1]["params"]["binding"]);
+    assert!(notes[0]["params"]["sequence"].as_u64() < notes[1]["params"]["sequence"].as_u64());
+    assert_eq!(notes[1]["params"]["revision"], state.history.revision());
+    assert!(!pin.live.load(Ordering::Acquire));
+    assert!(state.window.active.is_none());
+    assert!(state.history.gesture().is_none());
+}
+
+#[test]
+fn valid_edits_and_explicit_unbind_do_not_report_binding_retirement() {
+    let (mut state, registry, pin, frame) = fixture();
+    let binding = state.window.selection.as_ref().unwrap().binding;
+    let (mut owner, _) = binding_peer(&mut state, 7);
+    arm(&mut state);
+    movement(&mut state, &registry, &pin, &frame, 84);
+    assert!(state
+        .apply_worked_out_locked(Kind::Agent, None, None, Instant::now(), |_| {
+            Ok(vec![json!({"op":"remove_bin","id":"missing"})])
+        })
+        .is_err());
+    state
+        .apply_worked_out_locked(Kind::Agent, None, None, Instant::now(), |_| {
+            Ok(vec![
+                json!({"op":"set_track","timeline":"t1","id":"V1","name":"still valid"}),
+            ])
+        })
+        .unwrap();
+    assert_eq!(state.window.selection.as_ref().unwrap().binding, binding);
+    assert_eq!(state.window.owner, Some(7));
+    state.window_unbind("unbind");
+    assert!(window_notifications(&mut owner)
+        .iter()
+        .all(|note| note["method"] != "window.unbound"));
+}
+
+#[test]
+fn binding_retirement_queue_failure_stops_only_the_owner() {
+    let (mut state, _, _, _) = fixture();
+    state.window_end("up");
+    let (_owner, stopped) = binding_peer(&mut state, 7);
+    let (mut observer, observer_stopped) = binding_peer(&mut state, 8);
+    for _ in 0..100 {
+        state.peers[&7]
+            .queue
+            .push(rpc::notification_line("test", &Value::Null))
+            .unwrap();
+    }
+    // Change history without publishing general project notifications, so only the
+    // retirement notification can cause the stop signal checked below.
+    state
+        .history
+        .apply_unrecorded(
+            vec![Op::Disconnect {
+                grade: Target::Clip {
+                    timeline: "t1".into(),
+                    clip: "c1".into(),
+                },
+                to: "n1".into(),
+                kind: columbina_model::grade::Port::Rgb,
+                input: 0,
+            }],
+            "engine",
+        )
+        .unwrap();
+    assert!(!*stopped.borrow());
+    state.window_project_changed();
+    assert!(*stopped.borrow());
+    assert!(!*observer_stopped.borrow());
+    assert_eq!(window_notifications(&mut observer), Vec::<Value>::new());
+    assert!(state.window.selection.is_none());
 }
 
 #[test]

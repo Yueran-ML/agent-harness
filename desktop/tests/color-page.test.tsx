@@ -166,6 +166,26 @@ const linksDrawn = () => [...graph().querySelectorAll<SVGElement>('[data-link]')
 const tabsOf = (side: string) => within(document.querySelector<HTMLElement>(`[data-test="palettes-${side}"]`)!).getAllByRole('tab').map(tab => tab.textContent);
 
 describe('the Color page', () => {
+  it('creates Circular on the real default node in one transaction before binding it', async () => {
+    const { bridge, notify, copy } = await mount();
+    await notify({ frame: 200, shown: 200 }); await settle();
+    fireEvent.click(screen.getByRole('tab', { name: 'Window' }));
+    expect(calls(bridge, 'window.bind')).toEqual([]);
+    const create = screen.getByRole('button', { name: 'Add Circular Window' });
+    fireEvent.click(create); fireEvent.click(create); await settle();
+    const requests = calls(bridge, 'transaction.apply');
+    expect(requests).toHaveLength(1);
+    expect(requests[0].ops).toEqual([
+      { edit: 'add_serial', grade: { level: 'clip', timeline: 't1', clip: 'c3' }, node: 'source' },
+      { op: 'set_node', grade: { level: 'clip', timeline: 't1', clip: 'c3' }, id: 'n10', params: { windows: [{ id: 'w1', label: '', enabled: true,
+        invert: false, combine: 'add', opacity: 100, transform: { size: 50, aspect: 50, pan: 50, tilt: 50, rotate: 0 }, shape: { kind: 'circular', softness: 1 } }] } },
+    ]);
+    expect(calls(bridge, 'window.bind')).toEqual([{ monitor: 'timeline', revision: 1, timeline: 't1', target: { level: 'clip', timeline: 't1', clip: 'c3' },
+      clip: 'c3', node: 'n10', selected: 'w1', visible: true, outline: true, tool: 'window' }]);
+    expect(copy.getSnapshot().revision).toBe(1);
+    expect(screen.getByRole('option', { name: 'w1 · Circular' }).getAttribute('aria-selected')).toBe('true');
+  });
+
   it('is laid out as DaVinci Resolve lays it out, the viewer playing the timeline', async () => {
     const { bridge } = await mount();
     expect(calls(bridge, 'transport.load')).toEqual([{ monitor: 'timeline', timeline: 't1' }]);

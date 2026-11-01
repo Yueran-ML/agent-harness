@@ -34,6 +34,10 @@ import { makeDefaultNode } from '../color/nodeEdits';
 import { refusalText } from '../inspector/refusal';
 import { useColorGallery } from '../color/Gallery';
 import { appendNodeParams, appendNodeTargets, KEYFRAMES_USING } from '../color/stills';
+import { WindowPalette, useWindows } from '../color/WindowPalette';
+import { isComplete } from '../color/graph';
+import { useViewerInput } from '../color/useViewerInput';
+import type { ViewerTool } from '../engine';
 import { useComparison, type Comparison } from '../color/useComparison';
 import { ComparisonBar, comparisonMenuItems, splitMenu } from '../color/ComparisonBar';
 import { CoveringMenu } from '../color/CoveringMenu';
@@ -126,6 +130,8 @@ export function ColorPage({
   const labels = words.label.studio.colorPage;
   const said = words.hint.studio.colorPage;
   const page = useRef<HTMLDivElement>(null);
+  const viewerElement = useRef<HTMLElement>(null);
+  const [viewerTool, setViewerTool] = useState<ViewerTool>('none');
   const [merged, setMerged] = useState(false);
   const [side, setSide] = useState<SidePanel | null>('gallery');
   const [clipsOpen, setClipsOpen] = useState(true);
@@ -299,7 +305,7 @@ export function ColorPage({
   }, []);
   // The right button on the picture while the view takes the pointer: the point of the view's window, in pixels of the screen.
   const onPointerMenu = useCallback((at: { x: number; y: number }) => {
-    const box = page.current?.querySelector('.color-viewer [data-test="viewer-box"]')?.getBoundingClientRect();
+    const box = viewerElement.current?.querySelector('[data-test="viewer-box"]')?.getBoundingClientRect();
     const ratio = typeof devicePixelRatio === 'number' && devicePixelRatio > 0 ? devicePixelRatio : 1;
     openViewerMenu((box?.left ?? 0) + at.x / ratio, (box?.top ?? 0) + at.y / ratio);
   }, [openViewerMenu]);
@@ -309,8 +315,14 @@ export function ColorPage({
     // A tile of Selected Clips: the playhead goes to the first frame of its clip, which is current, and the clips chosen stay chosen.
     onGo: (clip) => { const entry = numbered.find(each => each.clip.id === clip); if (entry) { setChosen(clip); timelineMonitor.seek(entry.clip.start, false); } },
     onProblem: (failure) => { if (failure instanceof EngineError) grades.editing.setProblem(refusalText(failure, now.current.words.hint.studio)); else failed(failure); },
-    onPointerMenu,
   });
+  const windows = useWindows({ session, revision, timeline: selected?.id ?? null, target: grades.target, clip: current?.clip.id ?? null,
+    node: editedNode, realNode: grade?.nodes.find(each => each.id === currentNode) ?? null, editing: grades.editing, tool: viewerTool,
+    complete: grade !== null && isComplete(grade),
+    frame: placed?.frame ?? 0, clock: shownLevel === 'timeline' ? 'timeline' : clockMedia?.facts.video && !clockMedia.facts.video.still ? 'source' : 'clip' });
+  const viewerInput = useViewerInput({ bridge, session, native, loaded: timelineState !== null && timelineMonitor.loaded,
+    timeline: selected?.id ?? null, tool: viewerTool, selection: windows.selection, intention: windows.intention,
+    creating: windows.pending, comparison, viewer: viewerElement, onMenu: onPointerMenu, onWindowState: windows.onState });
   comparisonRef.current = comparison;
   useEffect(() => { setWiped(comparison.wipedStill); }, [comparison.wipedStill]);
   // Append Node to Selected Clips (Color menu, p. 3297), from the menu of the node: the current node, after the grades of the other clips chosen.
@@ -422,6 +434,10 @@ export function ColorPage({
       data-test="head-timecode-kind">
       {(['source', 'record', 'sourceFrame', 'recordFrame'] as const).map(each => <option key={each} value={each}>{labels.timecodes[each]}</option>)}
     </select>
+    <select className="field color-osc" aria-label={labels.windowControls.osc} value={viewerTool}
+      onChange={event => setViewerTool(event.target.value as ViewerTool)} data-test="viewer-osc">
+      {(['none', 'window', 'image_wipe'] as const).map(tool => <option key={tool} value={tool}>{labels.windowControls[tool]}</option>)}
+    </select>
     <ViewerOptions bridge={bridge} color={keptColor({ color })} run={grades.editing.run} comparisons={comparisonMenuItems(comparison, labels.compare)} />
     <button type="button" className="icon-btn" aria-pressed={viewerMode === 'enhanced'} aria-label={labels.enhanced}
       title={`${labels.enhanced} (Alt+F)`}
@@ -433,7 +449,7 @@ export function ColorPage({
     title={missing.map(each => `${each.name}: ${each.message}`).join('\n')} data-test="missing-luts">
     {missing.length === 1 ? labels.missingLut(missing[0].name) : labels.missingLuts}
   </p>;
-  const viewer = <section className="color-viewer" aria-label={labels.viewer} data-test="color-viewer" data-split={comparison.splitting || undefined}
+  const viewer = <section ref={viewerElement} tabIndex={-1} className="color-viewer" aria-label={labels.viewer} data-test="color-viewer" data-split={comparison.splitting || undefined}
     {...focusOf('viewer')}
     onContextMenu={(event) => {
       if (!(event.target instanceof Element) || !event.target.closest('[data-test="viewer-box"]')) return;
@@ -495,7 +511,8 @@ export function ColorPage({
     </div>}
     <div className="color-palettes-area" {...focusOf('palettes')}>
       <Palettes merged={merged} left={left} center={center} last={last} right={right} edited={edited} scopes={scopes.docked}
-        onLeft={(each) => { setLeft(each); setLast('left'); }} onCenter={(each) => { setCenter(each); setLast('center'); }} onRight={setRight} />
+        windows={<WindowPalette controls={windows} capturing={viewerInput.capturing} busy={viewerInput.busy} status={viewerInput.status} />}
+        onLeft={(each) => { setLeft(each); setLast('left'); }} onCenter={(each) => { setCenter(each); setLast('center'); if (each === 'window') setViewerTool('window'); }} onRight={setRight} />
     </div>
     {grades.menu}
     {viewerMenu && <CoveringMenu menu={viewerMenu} onClose={closeViewerMenu} />}

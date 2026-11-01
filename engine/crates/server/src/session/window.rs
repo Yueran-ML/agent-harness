@@ -16,6 +16,9 @@ pub(super) struct WindowState {
     sequence: u64,
     next_capture: u64,
     selection: Option<Arc<Selection>>,
+    /// The successful Window bind that may release the timeline pointer, even after its
+    /// logical selection retires. Ordinary timeline pointer ownership consumes this proof.
+    pointer_binding: Option<(u64, u64)>,
     active: Option<Capture>,
     ended: Option<(u64, Value)>,
 }
@@ -34,17 +37,25 @@ struct Capture {
 
 impl State {
     fn window_check_binding(&self, owner: u64, binding: u64) -> Result<(), Fault> {
-        if self.window.owner == Some(owner)
+        let active = self.window.owner == Some(owner)
             && self
                 .window
                 .selection
                 .as_ref()
-                .is_some_and(|s| s.binding == binding)
-        {
+                .is_some_and(|s| s.binding == binding);
+        let retired = self.window.owner.is_none()
+            && self.window.selection.is_none()
+            && self.window.pointer_binding == Some((owner, binding));
+        if active || retired {
             Ok(())
         } else {
             Err(refused("binding"))
         }
+    }
+
+    pub(super) fn window_pointer_changed(&mut self) {
+        self.window.pointer_binding = None;
+        self.window_end("pointer_owner");
     }
 
     /// Rechecked after the orders turn is acquired. Cancellation of validated external
@@ -89,16 +100,20 @@ impl State {
         let value = json!({"binding":capture.binding,"capture":capture.id,"sequence":self.window.sequence,
             "phase":phase,"reason":reason,"event":capture.last_event,"revision":self.history.revision(),"selected":capture.movement.selected(),
             "keys":{"pan":capture.movement.pan.frame,"tilt":capture.movement.tilt.frame,"clock":capture.movement.clock,"frame":capture.movement.frame}});
-        if let Some(peer) = self.peers.get(&capture.owner) {
+        self.window_tell(capture.owner, "window.state", &value);
+        value
+    }
+
+    fn window_tell(&self, owner: u64, method: &str, value: &Value) {
+        if let Some(peer) = self.peers.get(&owner) {
             if peer
                 .queue
-                .push(rpc::notification_line("window.state", &value))
+                .push(rpc::notification_line(method, value))
                 .is_err()
             {
                 let _ = peer.stop.send(true);
             }
         }
-        value
     }
 
     pub(super) fn window_keeps_gesture(&self) -> bool {
@@ -146,6 +161,7 @@ impl State {
 
     pub(super) fn window_project_changed(&mut self) {
         self.window_end("project_changed");
+        let mut retired = None;
         if let Some(selection) = &mut self.window.selection {
             let selection = Arc::make_mut(selection);
             selection.revision = self.history.revision();
@@ -153,10 +169,22 @@ impl State {
                 .validate(self.history.project(), selection.revision)
                 .is_err()
             {
+                retired = self.window.owner.map(|owner| (owner, selection.binding));
                 self.window.selection = None;
                 self.window.owner = None;
             }
             self.window_update();
+        }
+        if let Some((owner, binding)) = retired {
+            self.window.sequence += 1;
+            self.window_tell(
+                owner,
+                "window.unbound",
+                &json!({
+                    "binding": binding, "sequence": self.window.sequence,
+                    "revision": self.history.revision(), "reason": "project_changed",
+                }),
+            );
         }
     }
 
@@ -462,6 +490,7 @@ async fn finish_bind(
     state.window_unbind("binding");
     selection.binding = state.window.sequence + 1;
     state.window.owner = Some(owner);
+    state.window.pointer_binding = Some((owner, selection.binding));
     state.window.selection = Some(Arc::new(selection));
     change.commit();
     state.window_update();
@@ -482,23 +511,38 @@ async fn unbind(
     let change = viewer
         .prepare_pointer(kind, connection.id, connection.sender(), Some(&pointer))
         .await?;
-    {
+    let release_pointer = {
         let state = state.lock().await;
         state.window_check_binding(connection.id, binding)?;
-    }
-    if change.owned_by(connection.id) {
+        state.window.pointer_binding == Some((connection.id, binding))
+            && change.owned_by(connection.id)
+    };
+    if release_pointer {
         change.apply().await?;
     }
+    finish_unbind(state, &change, connection.id, binding, release_pointer).await
+}
+
+async fn finish_unbind(
+    state: &Mutex<State>,
+    change: &crate::view::PointerChange<'_>,
+    owner: u64,
+    binding: u64,
+    release_pointer: bool,
+) -> Result<Value, Fault> {
     let mut state = state.lock().await;
-    if let Err(error) = state.window_check_binding(connection.id, binding) {
+    if let Err(error) = state.window_check_binding(owner, binding) {
         drop(state);
-        if change.owned_by(connection.id) {
+        if release_pointer {
             change.rollback().await;
         }
         return Err(error);
     }
     state.window_unbind("unbind");
-    if change.owned_by(connection.id) {
+    if state.window.pointer_binding == Some((owner, binding)) {
+        state.window.pointer_binding = None;
+    }
+    if release_pointer {
         change.commit();
     }
     Ok(json!({"phase":"ended","binding":binding}))

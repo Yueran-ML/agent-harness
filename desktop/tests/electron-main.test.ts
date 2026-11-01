@@ -4331,7 +4331,7 @@ describe('the engine of the studio', () => {
       'project.get', 'transaction.apply', 'history.undo', 'history.redo', 'media.make_proxy', 'luts.list', 'view.display', 'view.viewport', 'transport.load', 'transport.play',
       'transport.pause', 'transport.seek', 'transport.step', 'transport.state', 'transport.proxies',
       'timeline.duration', 'media.thumbnail', 'media.waveform', 'scopes.statistics', 'scopes.subscribe', 'scopes.set', 'scopes.unsubscribe',
-      'view.sample', 'view.pointer',
+      'view.sample', 'view.pointer', 'window.bind', 'window.input', 'window.unbind',
       // The Gallery and the comparisons of the viewer (T26, T27).
       'viewer.wipe', 'viewer.split', 'still.grab', 'still.get', 'still.apply', 'still.label', 'still.delete', 'still.move',
       'gallery.list', 'gallery.thumbnail', 'gallery.album.create', 'gallery.album.rename', 'gallery.album.delete', 'grade.append_node',
@@ -4395,6 +4395,10 @@ describe('the engine of the studio', () => {
     for (const [method, params, connection] of [
       ['transaction.apply', { revision: 0, ops: [{ op: 'set_node', grade: { level: 'clip', timeline: 't1', clip: 'c1' }, id: 'n1', label: '' }] }, main],
       ['scopes.statistics', { view: 'timeline' }, view],
+      ['window.bind', { monitor: 'timeline', revision: 0, timeline: 't1', target: { level: 'clip', timeline: 't1', clip: 'c1' }, clip: 'c1', node: 'n1', selected: 'w1', visible: true, outline: true, tool: 'window' }, main],
+      ['window.input', { binding: 1, kind: 'down', event: 2 }, main],
+      ['window.unbind', { binding: 1 }, main],
+      ['view.pointer', { monitor: 'timeline', on: false }, main],
     ] as const) {
       const before = main.written.length + view.written.length;
       expect(await shell.invoke('engine-call', { method, params, expectedSession: old })).toMatchObject({ ok: false });

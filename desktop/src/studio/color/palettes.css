@@ -431,3 +431,8 @@
   font-size: 10px;
   width: 1.2em;
 }
+
+.color-window-palette { padding: 10px; overflow: auto; height: 100%; }
+.color-window-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.color-window-list [aria-selected="true"] { outline: 1px solid var(--accent); }
+.color-window-palette p { margin: 5px 0; }

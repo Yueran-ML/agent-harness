@@ -151,7 +151,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `view.pointer` | `{"monitor": m, "on": true \| false, "cursor"?: "arrow" \| "crosshair" \| "move" \| "resize_ew" \| "resize_ns"}` | `{"monitor", "on", "cursor"}`, then `view.pointer` notifications (see Samples and the pointer) |
 | `window.bind` | `{monitor:"timeline",revision,timeline,target,clip?,node,selected,visible,outline,tool}` | `{binding,sequence}`; existing Circular Window controls (see Circular Window controls) |
 | `window.input` | `{binding,kind:"down"\|"move"\|"up"\|"cancel",event?,capture?}` | Down returns `arming` immediately; `window.state` reports the asynchronous result |
-| `window.unbind` | `{binding}` | Ends capture and clears this connection's Window selection |
+| `window.unbind` | `{binding}` | Ends capture and clears this connection's Window selection, or releases its still-owned retired binding's pointer |
 | `render.start` | `{"timeline":"t1", "path":"<file>", "codec":"h264", "quality":"high", "range"?:{"from":0,"to":250}, "subtitle_tracks"?:["S1"], "replace"?:false, "revision"?:n}` | `{"job": "render-1"}` (see Rendering a timeline) |
 | `render.cancel` | `{"job": "render-1"}` | `{}` |
 | `transport.frame_digest` | `{"monitor": m}` | test hook only, with `--test-hooks` (see The transport); `-32601` otherwise |
@@ -856,6 +856,37 @@ binding across server-owned project revisions; do not rebind on every `project.c
 palette interaction notice. Filter notifications by binding/capture and increasing sequence.
 `keys.pan` and `keys.tilt` separately name the key frames actually edited, or null for a static
 parameter. `clock` is `source`, `clip`, or `timeline`; `frame` is the clicked frame in that clock.
+
+If a project change invalidates the bound selection (for example, its grade becomes incomplete),
+the server retires that binding and sends its original owner **`window.unbound`**:
+
+```json
+{"binding":2,"sequence":8,"revision":13,"reason":"project_changed"}
+```
+
+This notification is sent even without an active capture. If a capture exists, its ended
+`window.state` comes first; the clear of the worker selection is queued before `window.unbound`.
+The sequence shares the increasing Window sequence. Filter by the current binding and sequence,
+discard the retired binding, and re-evaluate a project snapshot at least as new as `revision`
+before binding again. This event may precede the corresponding `project.changed` notification.
+It may also arrive before the matching `window.bind` reply. Retain it by binding/sequence while
+that reply is pending, then apply it when the reply identifies the binding; a late bind reply
+must not revive a retired binding.
+This is necessary even if a refetch already shows a repaired, complete grade. Valid project
+changes keep the binding and send no retirement notification; do not rebind on each revision.
+Only the original owner receives it. Repeated changes with no selection send no duplicate;
+explicit `window.unbind` and owner replacement do not add this notification.
+
+Retirement clears the logical selection, but the desktop must retain its old binding id long
+enough to call `window.unbind` and release that Window's native pointer. The server accepts a
+retired binding for this cleanup only while its exact connection/binding still owns the Window
+pointer claim. Cleanup consumes that claim. A successful new Window bind or an ordinary
+timeline `view.pointer` commit replaces or revokes it, including when the same connection takes
+the pointer for Image Wipe. Old cleanup must not disable that successor. Source-monitor pointer
+changes do not revoke the timeline claim, and failed bind/pointer requests do not consume it.
+If the binding retires while its native unbind is being prepared, cleanup still completes; it
+does not restore pointer capture. A rejected stale cleanup must not fall back to a global
+`view.pointer` off, which could disable a newer owner.
 
 Native moves are consumed by the server, with consecutive pending moves coalesced. The last
 held move is consumed before native up/lost capture, even if a client echo wins the session
@@ -2675,6 +2706,7 @@ real ids. For example:
 | `gallery.changed` | `{}`: the Gallery was changed; call `gallery.list` again (see The Gallery) |
 | `view.pointer` | `{"monitor", "kind": "down" \| "move" \| "up" \| "cancel", "button", "buttons", "x", "y", "inside", "window": {"x", "y"}, "shift", "ctrl", "alt"}`: what the pointer did on a view that takes it, to the connection that asked only (see Samples and the pointer) |
 | `window.state` | `{binding,capture,sequence,phase,reason,selected,event,revision,keys}`: owner-only arming, armed, refused and ended states (see Circular Window controls) |
+| `window.unbound` | `{binding,sequence,revision,reason:"project_changed"}`: original-owner-only retirement when a project change invalidates the binding, even without capture |
 
 - `by` is the kind of the client that asked (for an undo or a redo, the one that asked for
   that); `made_by` is the kind of the client that made the transaction (for an undo or a redo,

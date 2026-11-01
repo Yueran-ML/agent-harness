@@ -735,6 +735,13 @@ export const zhCN: Messages = {
         overview: '整条时间线', detail: '播放头附近的时间线', tapeStrip: '素材箱的源磁带',
       },
       colorPage: {
+        windowControls: {
+          osc: '屏上控制', none: '关闭', window: 'Power Window', image_wipe: '图像划像', add: '添加圆形窗口',
+          list: '窗口列表', editing: '正在编辑', static: '静态', key: '关键帧', frame: '帧', creating: '正在创建窗口…',
+          clock: { source: '源时钟', clip: '片段时钟', timeline: '时间线时钟' },
+          shapes: { circular: '圆形', linear: '线性', polygon: '多边形', curve: '曲线', gradient: '渐变' },
+          status: { idle: '', arming: '正在准备窗口拖动…', armed: '正在拖动窗口 · Esc 取消', refused: '当前帧无法使用窗口控制。请重新选择窗口后重试。' }
+        },
         toolbar: '界面工具栏', gallery: '画廊', luts: 'LUT 浏览器', clips: '片段', clipFilter: '片段筛选', timeline: '时间线', nodes: '节点',
         filter: { all: '所有片段', graded: '已调色片段', ungraded: '未调色片段', grouped: '群组片段', matched: '已镜头匹配片段' },
         viewer: '检视器', lutBrowser: 'LUT 浏览器', nodeEditor: '节点编辑器', thumbnails: '缩略图时间线', miniTimeline: '迷你时间线',

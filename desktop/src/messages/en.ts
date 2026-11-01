@@ -857,6 +857,13 @@ export const en = {
       },
       /** The Color page, in DaVinci Resolve's words (Reference Manual 20, Chapters 126–128 and 143). */
       colorPage: {
+        windowControls: {
+          osc: 'On-screen controls', none: 'Off', window: 'Power Window', image_wipe: 'Image Wipe', add: 'Add Circular Window',
+          list: 'Windows', editing: 'Editing', static: 'Static', key: 'Key frame', frame: 'Frame', creating: 'Creating window…',
+          clock: { source: 'Source clock', clip: 'Clip clock', timeline: 'Timeline clock' },
+          shapes: { circular: 'Circular', linear: 'Linear', polygon: 'Polygon', curve: 'Curve', gradient: 'Gradient' },
+          status: { idle: '', arming: 'Preparing window drag…', armed: 'Dragging window · Esc to cancel', refused: 'Window controls are unavailable for this frame. Select the window again to retry.' }
+        },
         toolbar: 'Interface toolbar', gallery: 'Gallery', luts: 'LUTs', clips: 'Clips', clipFilter: 'Clip filter', timeline: 'Timeline', nodes: 'Nodes',
         filter: { all: 'All Clips', graded: 'Graded Clips', ungraded: 'Ungraded Clips', grouped: 'Grouped Clips', matched: 'Shot Matched Clips' },
         viewer: 'Viewer', lutBrowser: 'LUT browser', nodeEditor: 'Node editor', thumbnails: 'Thumbnail timeline', miniTimeline: 'Mini-timeline',

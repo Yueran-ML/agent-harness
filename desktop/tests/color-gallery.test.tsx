@@ -22,6 +22,7 @@ import {
 import { calls, corrector, fakeEngine, projectOf, settle } from './colorEngine';
 import { clip, timeline } from './timeline-fixture';
 import { likeABrowser } from './mounted';
+import { circularWindow } from '../src/studio/color/WindowPalette';
 
 const rect = (left: number, top: number, w: number, h: number) => ({ left, top, width: w, height: h, right: left + w, bottom: top + h, x: left, y: top, toJSON() {} });
 beforeEach(() => {
@@ -75,6 +76,7 @@ async function mountGallery(project: Project = projectWith(), { albums = startin
   const tell = (method: string, params: unknown) => act(() => { listeners.forEach(listener => listener({ kind: 'notification', session: 1, method, params })); });
   let gallery = albums;
   let made = 0;
+  let binding = 0, sequence = 0;
   const changed = () => listeners.forEach(listener => listener({ kind: 'notification', session: 1, method: 'gallery.changed', params: {} }));
   const base = engine.bridge.call.getMockImplementation()!;
   engine.bridge.call.mockImplementation(async (method: string, params?: Record<string, any>) => {
@@ -132,6 +134,10 @@ async function mountGallery(project: Project = projectWith(), { albums = startin
       case 'viewer.split':
         if (params!.on === false) return ok({ mode: 'off' });
         return ok({ mode: 'split', split: { on: true, items: params!.items, selected: params!.selected, outline: params!.outline } });
+      case 'window.bind': return ok({ binding: ++binding, sequence: ++sequence });
+      case 'window.unbind': return ok({ binding: params!.binding, phase: 'ended' });
+      case 'window.input': return ok({ binding: params!.binding, capture: 1, sequence: ++sequence, phase: params!.kind === 'up' || params!.kind === 'cancel' ? 'ended' : 'arming',
+        reason: null, selected: 'w2', event: params!.event ?? 20, revision: 0, keys: { pan: 0, tilt: 3, clock: 'source', frame: 10 } });
       case 'view.pointer': return ok({ monitor: 'timeline', on: params!.on, cursor: params!.cursor ?? null });
       default: return base(method, params);
     }
@@ -167,6 +173,156 @@ const menuItems = (name: string) => within(screen.getByRole('menu', { name })).g
 const chooseItem = (name: string) => fireEvent.click(screen.getByRole('menuitem', { name }));
 const last = (bridge: { call: ReturnType<typeof vi.fn> }, method: string) => calls(bridge, method).at(-1) as Record<string, unknown>;
 const C = (id: string): Target => ({ level: 'clip', timeline: 't1', clip: id });
+
+describe('Circular Window controls', () => {
+  const windowProject = () => {
+    const project = projectWith();
+    const track = project.timelines[0].tracks[0];
+    if (track.kind === 'subtitle') throw new Error('fixture');
+    const node = track.clips[0].grade.nodes[0];
+    if (node.kind === 'corrector') node.params.windows = [circularWindow('w1'), circularWindow('w2')];
+    return project;
+  };
+  const nativePoint = (kind: string, event: number, more = {}) => ({ monitor: 'timeline', instance: 1, event, kind,
+    button: kind === 'down' || kind === 'up' ? 'left' : null, buttons: kind === 'up' ? [] : ['left'], x: 400, y: 300,
+    inside: true, window: { x: 10, y: 20 }, shift: false, ctrl: false, alt: false,
+    presentation: { serial: 1, tag: 1, map: null }, snapshot: { revision: 0, timeline: 't1', frame: 10, canvas: [1920, 1080],
+      ready: true, editable: true, comparison: 'wipe', window: { binding: 1, selected: 'w1' } }, ...more });
+
+  it('offers explicit OSC ownership; comparison commands keep the selected tool', async () => {
+    const { bridge } = await mountGallery();
+    const osc = screen.getByRole('combobox', { name: 'On-screen controls' });
+    expect((osc as HTMLSelectElement).value).toBe('none');
+    fireEvent.click(screen.getByRole('tab', { name: 'Window' }));
+    expect((osc as HTMLSelectElement).value).toBe('window');
+    fireEvent.doubleClick(stillTile('s1'));
+    await settle();
+    expect((osc as HTMLSelectElement).value).toBe('window');
+    await letterKey('w', { ctrlKey: true });
+    fireEvent.click(document.querySelector('[data-test="image-wipe"]')!);
+    await settle();
+    expect((osc as HTMLSelectElement).value).toBe('window');
+    expect(calls(bridge, 'view.pointer').filter(p => (p as any).on)).toEqual([]);
+    expect(screen.getByRole('button', { name: 'Add Circular Window' })).toBeDefined();
+  });
+
+  it('keeps Window ownership while wiping, accepts a server-selected row, and keeps the binding through own revisions', async () => {
+    const h = await mountGallery(windowProject());
+    fireEvent.click(screen.getByRole('tab', { name: 'Window' })); await settle();
+    expect(calls(h.bridge, 'window.bind')).toHaveLength(1);
+    fireEvent.doubleClick(stillTile('s1')); await settle();
+    expect(calls(h.bridge, 'view.pointer')).toEqual([]);
+    await h.tell('view.pointer', nativePoint('down', 20)); await settle();
+    expect(calls(h.bridge, 'window.input')[0]).toEqual({ binding: 1, kind: 'down', event: 20 });
+    expect(screen.getByRole('option', { name: 'w2 · Circular' }).getAttribute('aria-selected')).toBe('true');
+    expect(document.querySelector('[data-test="window-keys"]')!.textContent).toContain('Pan: Key frame 0 · Tilt: Key frame 3');
+    expect((screen.getByRole('button', { name: 'Add Circular Window' }) as HTMLButtonElement).disabled).toBe(true);
+    // C2 owns its project changes; the desktop retains the binding across copies, including coalesced revisions.
+    await h.outside([{ op: 'set_node', grade: C('c1'), id: 'n1', params: { windows: [circularWindow('w1'),
+      { ...circularWindow('w2'), transform: { ...circularWindow('w2').transform, pan: 62 } }] } }]);
+    await settle();
+    await h.tell('view.pointer', nativePoint('move', 21, { x: -600, y: 3000, inside: false, snapshot: null })); await settle();
+    expect(calls(h.bridge, 'window.input').at(-1)).toEqual({ binding: 1, capture: 1, kind: 'move', event: 21 });
+    expect(calls(h.bridge, 'window.bind')).toHaveLength(1);
+    expect(calls(h.bridge, 'viewer.wipe')).toHaveLength(1);
+    await h.tell('view.pointer', nativePoint('up', 22)); await settle();
+    fireEvent.click(screen.getByRole('option', { name: 'w1 · Circular' })); await settle();
+    expect(calls(h.bridge, 'window.bind')).toHaveLength(2);
+  });
+
+  it('does not bind an unacknowledged created row after choosing it or switching OSC away and back', async () => {
+    const h = await mountGallery(windowProject());
+    fireEvent.click(screen.getByRole('tab', { name: 'Window' })); await settle();
+    let release!: () => void;
+    const waiting = new Promise<void>(resolve => { release = resolve; });
+    const base = h.bridge.call.getMockImplementation()!;
+    h.bridge.call.mockImplementation(async (...args: any[]) => {
+      const answer = await base(...args);
+      if (args[0] === 'transaction.apply') await waiting;
+      return answer;
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Circular Window' })); await settle();
+    fireEvent.click(screen.getByRole('option', { name: 'w3 · Circular' })); await settle();
+    expect(calls(h.bridge, 'window.bind').some((each: any) => each.selected === 'w3')).toBe(false);
+    expect((screen.getByRole('button', { name: 'Add Circular Window' }) as HTMLButtonElement).disabled).toBe(true);
+    const osc = screen.getByRole('combobox', { name: 'On-screen controls' });
+    fireEvent.change(osc, { target: { value: 'none' } }); await settle();
+    fireEvent.change(osc, { target: { value: 'window' } }); await settle();
+    fireEvent.click(screen.getByRole('option', { name: 'w3 · Circular' })); await settle();
+    expect(calls(h.bridge, 'window.bind').some((each: any) => each.selected === 'w3')).toBe(false);
+    await act(async () => release()); await settle();
+    expect(screen.getByRole('option', { name: 'w1 · Circular' }).getAttribute('aria-selected')).toBe('true');
+    fireEvent.click(screen.getByRole('option', { name: 'w3 · Circular' })); await settle();
+    expect(calls(h.bridge, 'window.bind').at(-1)).toMatchObject({ selected: 'w3', revision: 1 });
+  });
+
+  it('releases Window when the real grade disconnects and rebinds after reconnection', async () => {
+    const project = windowProject();
+    const track = project.timelines[0].tracks[0];
+    if (track.kind === 'subtitle') throw new Error('fixture');
+    const grade = track.clips[0].grade;
+    const h = await mountGallery(project);
+    fireEvent.click(screen.getByRole('tab', { name: 'Window' })); await settle();
+    expect(calls(h.bridge, 'window.bind')).toHaveLength(1);
+    // C2 may already have invalidated this binding when the external disconnected graph arrived.
+    const base = h.bridge.call.getMockImplementation()!;
+    h.bridge.call.mockImplementation((...args: any[]) => args[0] === 'window.unbind'
+      ? Promise.resolve({ ok: false, error: { code: -32001, message: 'binding', data: { reason: 'binding' } } }) : base(...args));
+    await h.outside([{ op: 'set_grade', grade: C('c1'), value: { ...grade, links: grade.links.filter(each => each.to !== 'output') } }]);
+    await settle();
+    expect(calls(h.bridge, 'window.unbind')).toEqual([{ binding: 1 }]);
+    expect(calls(h.bridge, 'window.bind')).toHaveLength(1);
+    await h.outside([{ op: 'set_grade', grade: C('c1'), value: grade }]); await settle();
+    expect(calls(h.bridge, 'window.bind')).toHaveLength(2);
+    expect(calls(h.bridge, 'window.bind').at(-1)).toMatchObject({ selected: 'w1', revision: 2 });
+  });
+
+  it('recovers an idle retired binding when a held ProjectCopy refetch publishes only the final complete graph', async () => {
+    const project = windowProject();
+    const track = project.timelines[0].tracks[0];
+    if (track.kind === 'subtitle') throw new Error('fixture');
+    const grade = track.clips[0].grade;
+    const h = await mountGallery(project);
+    fireEvent.click(screen.getByRole('tab', { name: 'Window' })); await settle();
+    const oldCopy = h.copy.getSnapshot();
+    let reply!: (answer: unknown) => void;
+    const base = h.bridge.call.getMockImplementation()!;
+    h.bridge.call.mockImplementation((...args: any[]) => args[0] === 'project.get'
+      ? new Promise(resolve => { reply = resolve; }) : base(...args));
+    let fetching!: Promise<void>;
+    act(() => { fetching = h.copy.refetch(); });
+    await h.outside([{ op: 'set_grade', grade: C('c1'), value: { ...grade, links: grade.links.filter(each => each.to !== 'output') } }]);
+    await h.tell('window.unbound', { binding: 1, sequence: 2, revision: 1, reason: 'project_changed' });
+    await h.outside([{ op: 'set_grade', grade: C('c1'), value: grade }]);
+    await settle();
+    expect(h.copy.getSnapshot().revision).toBe(0);
+    expect(calls(h.bridge, 'window.bind')).toHaveLength(1);
+    await act(async () => { reply({ ok: true, result: { project: oldCopy.project, revision: 0, next_id: oldCopy.project!.next_id } }); await fetching; });
+    await settle();
+    expect(h.copy.getSnapshot().revision).toBe(2);
+    expect(calls(h.bridge, 'window.bind')).toHaveLength(2);
+    expect(calls(h.bridge, 'window.bind').at(-1)).toMatchObject({ revision: 2, selected: 'w1' });
+    await h.tell('view.pointer', nativePoint('down', 20, { snapshot: { ...nativePoint('down', 20).snapshot, revision: 2, window: { binding: 2, selected: 'w1' } } }));
+    await settle();
+    expect(calls(h.bridge, 'window.input')[0]).toEqual({ binding: 2, kind: 'down', event: 20 });
+  });
+
+  it('uses the portal viewer ref for native focus, capture Escape, and right-click coordinates in cinema', async () => {
+    const h = await mountGallery(windowProject());
+    fireEvent.click(screen.getByRole('tab', { name: 'Window' })); await settle();
+    await letterKey('p', {}); await settle();
+    const viewer = document.querySelector<HTMLElement>('.color-cinema [data-test="color-viewer"]')!;
+    await h.tell('view.pointer', nativePoint('down', 20)); await settle();
+    expect(document.activeElement).toBe(viewer);
+    fireEvent.keyDown(viewer, { key: 'Escape' }); await settle();
+    expect(calls(h.bridge, 'window.input').at(-1)).toEqual({ binding: 1, capture: 1, kind: 'cancel' });
+    expect(document.querySelector('.color-cinema')).not.toBeNull();
+    await h.tell('view.pointer', nativePoint('down', 21, { button: 'right', buttons: ['right'] })); await settle();
+    const menu = screen.getByRole('menu', { name: 'Viewer menu' });
+    expect(menu.style.left).toBe('310px'); expect(menu.style.top).toBe('120px');
+    expect(calls(h.bridge, 'window.input')).toHaveLength(2);
+  });
+});
 
 describe('the Gallery', () => {
   it('lists the albums, the PowerGrades at the bottom, and the stills of the current one with their numbers, labels and thumbnails', async () => {
@@ -481,6 +637,7 @@ describe('the wipe of the viewer', () => {
 
   it('turns on and off with Ctrl+W and the Image Wipe button, inverts with Alt+W, and steps from still to still', async () => {
     const { bridge } = await mountGallery();
+    fireEvent.change(screen.getByRole('combobox', { name: 'On-screen controls' }), { target: { value: 'image_wipe' } });
     // No still chosen: nothing to wipe.
     await letterKey('w', { ctrlKey: true });
     expect(wipes(bridge)).toEqual([]);
@@ -526,6 +683,7 @@ describe('the wipe of the viewer', () => {
 
   it('puts the border where the pointer drags it on the picture, sending the whole wipe each time, and turns a diagonal one with Alt', async () => {
     const { bridge, tell } = await mountGallery();
+    fireEvent.change(screen.getByRole('combobox', { name: 'On-screen controls' }), { target: { value: 'image_wipe' } });
     fireEvent.click(stillTile('s1'));
     await letterKey('w', { ctrlKey: true });
     await settle();
@@ -542,13 +700,13 @@ describe('the wipe of the viewer', () => {
     await tell('view.pointer', point('move', 2400, 100, { inside: false }));
     await settle();
     expect(wipes(bridge).at(-1)).toMatchObject({ position: 1 });
-    await tell('view.pointer', point('up', 2400, 100));
+    await tell('view.pointer', point('up', 960, 100));
     await tell('view.pointer', point('move', 0, 0));
     await settle();
-    expect(wipes(bridge).at(-1)).toMatchObject({ position: 1 });
+    expect(wipes(bridge).at(-1)).toMatchObject({ position: 0.5 });
     // Another monitor's pointer is not the viewer's.
     await tell('view.pointer', { ...point('down', 0, 0), monitor: 'source' });
-    expect(wipes(bridge).at(-1)).toMatchObject({ position: 1 });
+    expect(wipes(bridge).at(-1)).toMatchObject({ position: 0.5 });
     // Diagonal: the border through the pointer, and Alt turns it about the centre.
     fireEvent.change(document.querySelector('[data-test="wipe-style"]')!, { target: { value: 'diagonal' } });
     await settle();

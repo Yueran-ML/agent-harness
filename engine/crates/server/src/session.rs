@@ -1247,7 +1247,7 @@ async fn view_pointer(
     let mut state = engine.state.lock().await;
     let result = change.commit();
     if result["monitor"] == "timeline" {
-        state.window_end("pointer_owner");
+        state.window_pointer_changed();
     }
     Ok(match connection.queue(rpc::result_line(id, &result)) {
         Ok(()) => Reply::Queued,

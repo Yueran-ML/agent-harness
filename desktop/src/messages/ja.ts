@@ -784,6 +784,13 @@ export const ja: Messages = {
         overview: 'タイムライン全体', detail: '再生ヘッド付近のタイムライン', tapeStrip: 'ビンのソーステープ',
       },
       colorPage: {
+        windowControls: {
+          osc: 'オンスクリーンコントロール', none: 'オフ', window: 'Power Window', image_wipe: 'イメージワイプ', add: '円形ウィンドウを追加',
+          list: 'ウィンドウ', editing: '編集中', static: '静的', key: 'キーフレーム', frame: 'フレーム', creating: 'ウィンドウを作成中…',
+          clock: { source: 'ソース時間', clip: 'クリップ時間', timeline: 'タイムライン時間' },
+          shapes: { circular: '円形', linear: '線形', polygon: '多角形', curve: '曲線', gradient: 'グラデーション' },
+          status: { idle: '', arming: 'ウィンドウのドラッグを準備中…', armed: 'ウィンドウをドラッグ中 · Esc でキャンセル', refused: 'このフレームでは操作できません。ウィンドウを選び直してください。' }
+        },
         toolbar: 'インターフェースツールバー', gallery: 'ギャラリー', luts: 'LUT ブラウザー', clips: 'クリップ', clipFilter: 'クリップフィルター', timeline: 'タイムライン', nodes: 'ノード',
         filter: { all: 'すべてのクリップ', graded: 'グレード済みクリップ', ungraded: '未グレードのクリップ', grouped: 'グループのクリップ', matched: 'ショットマッチ済みクリップ' },
         viewer: 'ビューア', lutBrowser: 'LUT ブラウザー', nodeEditor: 'ノードエディター', thumbnails: 'サムネイルタイムライン', miniTimeline: 'ミニタイムライン',

@@ -7,8 +7,8 @@
  * - Image Wipe and Ctrl+W turn the wipe on and off: against the still chosen in the Gallery
  *   (Reference Wipe Mode Gallery, the default) or the clip of a Wipe Timeline Clip (Timeline).
  *   Alt+W inverts it. A double-click of a still wipes it.
- * - The border is dragged on the picture: while a wipe that has one is on, the view takes the
- *   pointer (`view.pointer`), and each move puts the border where the pointer is; Alt turns a
+ * - With Image Wipe selected as the OSC tool, the border is dragged on the picture. The sole
+ *   input owner forwards its native pointer; each move puts the border there, and Alt turns a
  *   diagonal one (p. 3000).
  * - A timeline wipe with Gang on keeps its distance from the current clip as another becomes
  *   current (p. 3002); Ctrl+Alt+Left and Right step its clip a frame.
@@ -18,7 +18,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { EngineBridge } from '../../bridge';
 import {
-  callEngine, viewPointerOf, type Clip, type Compared, type PointerCursor, type Timeline, type ViewerReference, type ViewPointer,
+  callEngine, type Clip, type Compared, type PointerCursor, type Timeline, type ViewerReference, type ViewPointer,
   type WipeSettings, type WipeStyle,
 } from '../engine';
 import {
@@ -29,6 +29,9 @@ import {
 export interface Comparison {
   /** What the viewer compares now, as the engine answered. */
   compared: Compared;
+  pointerCursor: PointerCursor | null;
+  handlePointer: (pointer: ViewPointer) => void;
+  resetPointer: () => void;
   wipe: WipeSettings;
   referenceMode: ReferenceMode;
   gang: boolean;
@@ -64,7 +67,7 @@ export interface Comparison {
 const OFF: Compared = { mode: 'off' };
 
 export function useComparison({ bridge, session, native, loaded, timeline, clips, current, frame, playing, chosen, stills, currentStill, onGo,
-  onProblem, onPointerMenu }: {
+  onProblem }: {
   bridge: Pick<EngineBridge, 'call' | 'onEvent'>;
   session: number;
   /** Whether the shell lays the engine's view over the viewer: only then is there a picture to drag on. */
@@ -85,8 +88,6 @@ export function useComparison({ bridge, session, native, loaded, timeline, clips
   /** Go to a clip, from a tile of Selected Clips (p. 3005): it is chosen, and the playhead goes to its first frame. */
   onGo: (clip: string) => void;
   onProblem: (failure: unknown) => void;
-  /** The right button pressed on the picture while the view takes the pointer: the viewer's menu, at that point of the view's window. */
-  onPointerMenu?: (at: { x: number; y: number }) => void;
 }): Comparison {
   const [compared, setCompared] = useState<Compared>(OFF);
   const [wipe, setWipe] = useState<WipeSettings>(DEFAULT_WIPE);
@@ -102,15 +103,18 @@ export function useComparison({ bridge, session, native, loaded, timeline, clips
   const [splitShown, setSplitShown] = useState<{ selected: number; clips: (string | null)[] } | null>(null);
 
   const now = useRef({ bridge, compared, wipe, referenceMode, gang, splitMode, outline, timelineWipe, ganged, clips, current, frame, timeline, chosen, stills,
-    currentStill, onGo, onProblem, onPointerMenu, splitShown });
+    currentStill, onGo, onProblem, splitShown });
   now.current = { bridge, compared, wipe, referenceMode, gang, splitMode, outline, timelineWipe, ganged, clips, current, frame, timeline, chosen, stills,
-    currentStill, onGo, onProblem, onPointerMenu, splitShown };
+    currentStill, onGo, onProblem, splitShown };
 
   // One call at a time; of those asked meanwhile only the last is sent, so that a drag sends as fast as the engine answers.
   const sending = useRef(false);
   const pending = useRef<{ method: 'viewer.wipe' | 'viewer.split'; params: Record<string, unknown> } | null>(null);
-  const live = useRef(session);
-  live.current = session;
+  const identity = JSON.stringify([session, timeline?.id, loaded]);
+  const live = useRef({ identity, generation: 0 });
+  if (live.current.identity !== identity) { live.current = { identity, generation: live.current.generation + 1 }; pending.current = null; }
+  useEffect(() => () => { live.current = { ...live.current, generation: live.current.generation + 1 }; pending.current = null; }, []);
+  const context = useRef(session); context.current = session;
   const send = useCallback((method: 'viewer.wipe' | 'viewer.split', params: Record<string, unknown>) => {
     pending.current = { method, params };
     if (sending.current) return;
@@ -120,8 +124,9 @@ export function useComparison({ bridge, session, native, loaded, timeline, clips
       if (asked === null) { sending.current = false; return; }
       sending.current = true;
       const from = live.current;
+      const expectedSession = context.current;
       try {
-        const answer = await callEngine(now.current.bridge, asked.method, asked.params);
+        const answer = await callEngine(now.current.bridge, asked.method, asked.params, { expectedSession });
         if (from === live.current && answer && typeof answer === 'object' && 'mode' in answer) setCompared(answer);
       } catch (failure) {
         if (from === live.current) now.current.onProblem(failure);
@@ -316,26 +321,13 @@ export function useComparison({ bridge, session, native, loaded, timeline, clips
 
   // The pointer on the picture: the view takes it while a wipe with a border to drag is on, or a split screen.
   const cursor: PointerCursor | null = !native || !loaded ? null : wiping ? wipeCursor(wipe.style) : splitting ? 'arrow' : null;
-  const took = useRef(false);
-  useEffect(() => {
-    if (cursor === null) {
-      if (took.current) { took.current = false; void callEngine(bridge, 'view.pointer', { monitor: 'timeline', on: false }).catch(() => {}); }
-      return;
-    }
-    took.current = true;
-    void callEngine(bridge, 'view.pointer', { monitor: 'timeline', on: true, cursor }).catch(() => {});
-  }, [bridge, cursor, session]);
-  useEffect(() => () => {
-    if (took.current) { took.current = false; void callEngine(bridge, 'view.pointer', { monitor: 'timeline', on: false }).catch(() => {}); }
-  }, [bridge]);
-
   const dragging = useRef(false);
-  useEffect(() => bridge.onEvent((event) => {
-    const pointer: ViewPointer | null = viewPointerOf(event);
-    if (pointer === null || pointer.monitor !== 'timeline') return;
+  const resetPointer = useCallback(() => { dragging.current = false; }, []);
+  const handlePointer = useCallback((pointer: ViewPointer) => {
     const state = now.current;
-    if (pointer.kind === 'up' || pointer.kind === 'cancel') { dragging.current = false; return; }
-    if (pointer.kind === 'down' && pointer.button === 'right') { state.onPointerMenu?.(pointer.window); return; }
+    if (pointer.kind === 'cancel') { dragging.current = false; return; }
+    const finishing = pointer.kind === 'up';
+    if (finishing) { const was = dragging.current; dragging.current = false; if (!was) return; }
     if (pointer.kind === 'down' && pointer.button !== 'left') return;
     if (pointer.kind === 'move' && (!dragging.current || !pointer.buttons.includes('left'))) return;
     if (pointer.x === null || pointer.y === null || state.timeline === null) return;
@@ -356,13 +348,13 @@ export function useComparison({ bridge, session, native, loaded, timeline, clips
     }
     const position = wipePositionAt(state.wipe, pointer.x, pointer.y, width, height);
     if (position !== null && position !== state.wipe.position) changeWipe({ ...state.wipe, position });
-  }), [bridge, changeWipe, pressTile]);
+  }, [changeWipe, pressTile]);
 
   const shownClip = compared.mode === 'wipe' && compared.wipe.reference.kind !== 'still'
     ? referenceClip(clips, compared.wipe.reference.at, sentReference.current?.clip ?? undefined) : null;
 
   return {
-    compared, wipe, referenceMode, gang, splitMode, outline, wiping, splitting, wipedStill, referenceClip: shownClip,
+    compared, pointerCursor: cursor, handlePointer, resetPointer, wipe, referenceMode, gang, splitMode, outline, wiping, splitting, wipedStill, referenceClip: shownClip,
     toggleWipe, wipeStill, showStill, wipeTimelineClip, stepReference, setStyle, invert, setReferenceMode, setGang, toggleSplit, setSplitMode, setOutline,
   };
 }

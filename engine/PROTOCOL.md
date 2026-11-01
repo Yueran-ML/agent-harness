@@ -149,6 +149,9 @@ Before `hello`, every other request is refused with `-32600`.
 | `view.display` | `{"hdr"?: true \| false}` | `{"hdr": true, "source": {"hdr_on": true, "hdr_shown": true, "peak_nits": 400.0, "sdr_white_nits": 148.0} \| null, "timeline": ... \| null}` (see The view) |
 | `view.sample` | `{"monitor": m}` or `{"timeline": "t1", "frame": n}`, `"x": 960.5, "y": 540.5, "size"?: 1, "grade"?: target, "node"?: "n1", "clip"?: "c1"` | `{"frame", "x", "y", "size", "width", "height", "region", "rgb": [r, g, b], "node"?: {"grade", "node", "input", "output", "key"}}` (see Samples and the pointer) |
 | `view.pointer` | `{"monitor": m, "on": true \| false, "cursor"?: "arrow" \| "crosshair" \| "move" \| "resize_ew" \| "resize_ns"}` | `{"monitor", "on", "cursor"}`, then `view.pointer` notifications (see Samples and the pointer) |
+| `window.bind` | `{monitor:"timeline",revision,timeline,target,clip?,node,selected,visible,outline,tool}` | `{binding,sequence}`; existing Circular Window controls (see Circular Window controls) |
+| `window.input` | `{binding,kind:"down"\|"move"\|"up"\|"cancel",event?,capture?}` | Down returns `arming` immediately; `window.state` reports the asynchronous result |
+| `window.unbind` | `{binding}` | Ends capture and clears this connection's Window selection |
 | `render.start` | `{"timeline":"t1", "path":"<file>", "codec":"h264", "quality":"high", "range"?:{"from":0,"to":250}, "subtitle_tracks"?:["S1"], "replace"?:false, "revision"?:n}` | `{"job": "render-1"}` (see Rendering a timeline) |
 | `render.cancel` | `{"job": "render-1"}` | `{}` |
 | `transport.frame_digest` | `{"monitor": m}` | test hook only, with `--test-hooks` (see The transport); `-32601` otherwise |
@@ -771,7 +774,8 @@ composition/Viewer LUT used provisional programs. A layer with a late cross-clip
 fallback or an inexact scrub is not editable, even though the existing preview fallback remains
 visible. Split Screen is not editable. The flag describes eligibility of the current scene;
 a wipe still contains a reference image, so it does not authorize edits on the reference portion.
-These fields do not create a Window input method or change the existing `x`/`y` meanings.
+These fields preserve the existing `x`/`y` meanings. The Window controller below additionally
+uses native evidence retained inside the engine.
 The TypeScript fields are optional for compatibility with older recorded notifications.
 
 Pointer coordinates use the map of the last successful native presentation, including its
@@ -781,6 +785,110 @@ and `inside` is false until a frame is successfully presented at the new size. A
 surface/device also has no pointer map until presentation resumes. `inside` requires both the
 picture bounds and the visible native surface bounds; captured drags outside a zoomed viewer
 remain outside even if their extrapolated picture coordinates are within the picture.
+
+### Circular Window controls
+
+`window.bind`, `window.input`, and `window.unbind` are desktop-only, non-headless methods for
+the timeline monitor. They control an existing corrector's Circular windows; they do not create
+nodes/windows, add keyframes, resize/rotate shapes, edit handles, or implement tracking.
+
+**`window.bind`** takes the complete selection:
+
+```json
+{"monitor":"timeline","revision":12,"timeline":"t1",
+ "target":{"level":"clip","timeline":"t1","clip":"c1"},
+ "clip":"c1","node":"n1","selected":"w1",
+ "visible":true,"outline":true,"tool":"window"}
+```
+
+`target` is the normal grade target. Clip and pre/post-group targets require `clip`, the
+current clip in this timeline; a group target requires that clip's membership. A timeline
+target uses the canvas and may omit `clip`. `selected` is a local window id or null. The node
+must be an enabled, unlocked corrector in a complete grade. `tool` is `window`, `image_wipe`,
+or `none`. The answer is `{binding,sequence}`; binding ids increase within the engine and
+belong to the connection that bound them. Rebinding ends the previous capture. With visible
+Window controls the native view takes the pointer for that connection, using the move cursor.
+Hidden controls, outline off, and the other tools release Window pointer ownership. Image Wipe
+may then use the existing `view.pointer` route for its divider. Enabling a comparison alone
+does not change the selected tool or steal Window OSC.
+
+The worker receives immutable selections. It draws enabled Circular outlines evaluated at the
+actual displayed frame, after final scene selection, Highlight, comparison and Viewer LUT.
+Unsupported/disabled shapes have no invented handles. Split Screen suppresses the overlay.
+An incompatible target, node, current clip, retained layer, revision, source provenance or
+Highlight also suppresses it for that frame. The same immutable overlay is retained by the
+frame snapshot and submitted native texture. `snapshot.window` is null or `{binding,selected}`.
+
+Each `view.pointer` also carries an increasing native `event` sequence. On a native left down,
+the engine retains that event's connection, instance, successful presentation and exact frame
+snapshot **before** sending the notification. The desktop claims it once:
+
+```json
+{"binding":2,"kind":"down","event":41}
+```
+
+Client coordinates, tags and project revisions cannot supply or replace down evidence. A down
+must hit a visible Circular interior/stroke inside the actual current-A picture. A soft or
+bilinearly mixed A/B sample remains eligible; pure B does not hit or draw a stroke. Mix is
+eligible except at pure B; Difference allows the whole picture. Blank/right clicks do not
+edit or create history. Hit priority is selected first, then the last Circular in the list.
+
+Down returns immediately with `{binding,capture,sequence,phase:"arming",selected,event,
+revision,keys}`. The server then freezes playback at the **clicked timeline frame**, waits for
+the worker acknowledgment and a matching successful native presentation, and sends
+`window.state` with `phase:"armed"`. Worker acknowledgment or a queued texture alone cannot
+arm or write history. Arming is bounded to 15 seconds; failure sends `phase:"refused"` and
+`reason`. The same RPC connection remains free to send up, Esc, unbind, or transport commands
+while this is pending. Legal external transport intent cancels arming before waiting for the
+transport command turn, so a late freeze cannot rewind a newer seek.
+
+`window.state` is sent only to the binding owner, on arming, armed, refused, or ended, with:
+
+```json
+{"binding":2,"capture":1,"sequence":5,"phase":"armed","reason":null,
+ "selected":"w2","event":41,"revision":12,
+ "keys":{"pan":0,"tilt":3,"clock":"source","frame":10}}
+```
+
+`selected` is the window actually hit, including when it differs from the originally selected
+row. Accept that server selection in the list **without sending another bind**. Keep the same
+binding across server-owned project revisions; do not rebind on every `project.changed` or
+palette interaction notice. Filter notifications by binding/capture and increasing sequence.
+`keys.pan` and `keys.tilt` separately name the key frames actually edited, or null for a static
+parameter. `clock` is `source`, `clip`, or `timeline`; `frame` is the clicked frame in that clock.
+
+Native moves are consumed by the server, with consecutive pending moves coalesced. The last
+held move is consumed before native up/lost capture, even if a client echo wins the session
+lock before the background task. The desktop may echo `{binding,capture,kind:"move",event}`
+to synchronize and obtain `phase:"arming"|"armed"`; the echo supplies no position. Moves
+during arming wait and cannot write. After capture begins, movement continues beyond the
+picture or comparison divider using the original native map and original values.
+
+Down copies the original **entire windows array** and independently selects the Pan/Tilt left
+key indices: the last key at/before the clicked clock frame, or the first key before all keys.
+Each move writes that original array with `pan = original_pan + 100*(u-down_u)` and
+`tilt = original_tilt - 100*(v-down_v)`, where `(u,v)` are normalized oriented-picture
+coordinates before clip placement. Other windows, keys, interpolation and Bezier handles are
+preserved. The outline/hit remains at the displayed interpolated mask; numeric controls edit
+the chosen left key. There is no interpolation compensation or auto-key, so between two keys
+the displayed movement may be partial.
+
+`{binding,capture,kind:"up"}` explicitly finishes without adding a final position. A repeated
+up/cancel for the last ended capture is acknowledged. `{binding,capture,kind:"cancel"}` is
+Esc: restore the original complete windows array through the same owned gesture, then finish;
+an empty restored step disappears from undo. Native lost capture keeps the last successful
+move. An external successful edit ends capture and never restores against a fresh revision;
+a failed edit does not end it. A live native capture can remain held beyond the normal wire
+gesture's 10-second idle limit; multiple moves remain one undo. A no-move click creates none.
+
+Up, lost capture, disconnect, view destruction/replacement, map/placement/source changes,
+tool/target changes, project changes and `{binding}` to **`window.unbind`** release capture.
+`window.unbind` also clears the selection/overlay. Mouse-up stays paused; playback never
+automatically resumes. Ordinary transaction replies and rendered/exported project pixels are
+unchanged. Refusals use `-32001` with a narrow `data.reason` such as `binding`, `capture`,
+`event`, `map`, `hit`, `selection`, `target` or `stale_revision`; invalid parameter schemas are
+`-32602`. This protocol provides the server controller; desktop Window palette/OSC wiring is
+a separate phase.
 
 ## The transport
 
@@ -2566,6 +2674,7 @@ real ids. For example:
 | `scopes.frame` | `{"scope_id": "scope-1", "view": "timeline", "frame": n, "width": w, "height": h, "rgba": "<base64>"}`: a picture of a scope, to the connection that subscribed it only (see Scopes) |
 | `gallery.changed` | `{}`: the Gallery was changed; call `gallery.list` again (see The Gallery) |
 | `view.pointer` | `{"monitor", "kind": "down" \| "move" \| "up" \| "cancel", "button", "buttons", "x", "y", "inside", "window": {"x", "y"}, "shift", "ctrl", "alt"}`: what the pointer did on a view that takes it, to the connection that asked only (see Samples and the pointer) |
+| `window.state` | `{binding,capture,sequence,phase,reason,selected,event,revision,keys}`: owner-only arming, armed, refused and ended states (see Circular Window controls) |
 
 - `by` is the kind of the client that asked (for an undo or a redo, the one that asked for
   that); `made_by` is the kind of the client that made the transaction (for an undo or a redo,

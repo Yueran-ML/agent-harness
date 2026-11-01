@@ -48,6 +48,7 @@ use crate::view::{Monitor, Viewer};
 
 #[cfg(test)]
 mod tests;
+mod window;
 
 /// The version of the engine that `hello` answers with.
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -146,6 +147,7 @@ struct Connections {
 /// What is changed only while it is locked.
 pub struct State {
     history: History,
+    window: window::WindowState,
     /// What saves the project after each change. It is taken when the engine ends.
     pub saver: Option<Saver>,
     /// The connections that said hello, each of which is sent every notification.
@@ -261,6 +263,7 @@ impl Engine {
         let proxies = Proxies::new(proxy_setup, Path::new(&project));
         let state = Arc::new(Mutex::new(State {
             history,
+            window: window::WindowState::default(),
             saver: Some(saver),
             peers: HashMap::new(),
             kicked: Vec::new(),
@@ -410,24 +413,29 @@ impl Engine {
     /// Forget a connection that has ended. A gesture that it was sending ends.
     pub async fn leave(&self, id: u64) {
         self.scopes.forget(id);
-        self.viewer.forget(id);
-        let mut state = self.state.lock().await;
-        state.peers.remove(&id);
-        let prefix = format!("{id}:");
-        let native_prefix = format!("native:{id}:");
-        if state
-            .history
-            .gesture()
-            .is_some_and(|(key, _)| key.starts_with(&prefix) || key.starts_with(&native_prefix))
-        {
-            state.finish_gesture();
-        }
-        let kicked = std::mem::take(&mut state.kicked);
-        drop(state);
+        // Retire the capture before native cleanup can wait behind another view operation.
+        // The remaining sink cannot write through an ended capture while busy is held.
+        let kicked =
+            {
+                let mut state = self.state.lock().await;
+                if state.window.owner == Some(id) {
+                    state.window_unbind("disconnect");
+                }
+                state.peers.remove(&id);
+                let prefix = format!("{id}:");
+                let native_prefix = format!("native:{id}:");
+                if state.history.gesture().is_some_and(|(key, _)| {
+                    key.starts_with(&prefix) || key.starts_with(&native_prefix)
+                }) {
+                    state.finish_gesture();
+                }
+                std::mem::take(&mut state.kicked)
+            };
         self.log_kicked(kicked);
         self.connections().stops.remove(&id);
         self.presence
             .send_modify(|presence| presence.connected -= 1);
+        self.viewer.forget(id).await;
     }
 
     /// Stop every connection, and take no more.
@@ -734,7 +742,8 @@ impl State {
     }
 
     /// Save the project as it is now, and have the transport draw it.
-    fn save_and_draw(&self) {
+    fn save_and_draw(&mut self) {
+        self.window_project_changed();
         if let Some(saver) = &self.saver {
             saver.changed(self.history.project().clone());
         }
@@ -784,6 +793,9 @@ impl State {
 
     /// End the gesture that is going on where it was sent nothing for [`GESTURE_IDLE`].
     fn end_idle_gesture(&mut self, now: Instant) {
+        if self.window_keeps_gesture() {
+            return;
+        }
         if self.history.gesture().is_some()
             && self
                 .gesture_last
@@ -801,10 +813,6 @@ impl State {
     }
 
     /// Reserve an owned token without writing the project or ending any current gesture.
-    #[allow(
-        dead_code,
-        reason = "T23 C connects native Window capture; remove this allow then"
-    )]
     fn begin_owned_gesture(&mut self, owner: u64, base: u64) -> Result<OwnedGesture, Fault> {
         if base != self.history.revision() {
             return Err(stale_revision(base, self.history.revision()));
@@ -819,10 +827,6 @@ impl State {
     }
 
     /// Finish without inventing a final operation. An unwritten token changes no history.
-    #[allow(
-        dead_code,
-        reason = "T23 C connects native Window capture; remove this allow then"
-    )]
     #[allow(
         clippy::needless_pass_by_value,
         reason = "finishing consumes the token so an unwritten token cannot subsequently write"
@@ -1110,9 +1114,15 @@ async fn dispatch(
         }
         "view.sample" => view_sample(engine, connection, id, params).await,
         "view.pointer" => view_pointer(engine, connection, kind, id, params).await,
+        "window.bind" | "window.input" | "window.unbind" => {
+            window::call(engine, connection, kind, id, method, params).await
+        }
         "luts.list" | "grade.export_lut" => luts_call(engine, connection, id, method, params).await,
         "viewer.wipe" | "viewer.split" | "viewer.highlight" => {
             let result = viewer(engine, method, params).await?;
+            if method == "viewer.highlight" || result["mode"] == "split" {
+                engine.state.lock().await.window_end("viewer_mode");
+            }
             Ok(match connection.queue(rpc::result_line(id, &result)) {
                 Ok(()) => Reply::Queued,
                 Err(refused) => Reply::Refused(refused),
@@ -1121,6 +1131,17 @@ async fn dispatch(
         "view.attach" | "view.place" | "view.show" | "view.detach" | "view.display"
         | "view.viewport" => {
             let result = engine.viewer.call(kind, method, params).await?;
+            let written: Value = params
+                .and_then(|p| serde_json::from_str(p.get()).ok())
+                .unwrap_or(Value::Null);
+            if written["monitor"] == "timeline"
+                && (matches!(method, "view.attach" | "view.place" | "view.detach")
+                    || method == "view.viewport" && written.get("mode").is_some()
+                    || method == "view.show" && written["shown"] == false)
+            {
+                engine.viewer.frames.stop_input(Monitor::Timeline);
+                engine.state.lock().await.window_end("view_changed");
+            }
             if method == "view.attach" {
                 let (monitor, _) = crate::play::monitor_params(method, params)?;
                 engine.transport.redraw(monitor);
@@ -1148,6 +1169,10 @@ async fn dispatch(
             // The answer is queued before the command is sent, so that the state that it makes
             // is told after the answer.
             let (result, order) = engine.transport.prepare(method, params)?;
+            if method != "transport.state" {
+                engine.viewer.frames.stop_input(Monitor::Timeline);
+                engine.state.lock().await.window_end("transport");
+            }
             let reply = match connection.queue(rpc::result_line(id, &result)) {
                 Ok(()) => Reply::Queued,
                 Err(refused) => Reply::Refused(refused),
@@ -1214,10 +1239,16 @@ async fn view_pointer(
     id: &RawValue,
     params: Option<&RawValue>,
 ) -> Result<Reply, Reply> {
-    let result = engine
+    let change = engine
         .viewer
-        .pointer(kind, connection.id, connection.sender(), params)
+        .prepare_pointer(kind, connection.id, connection.sender(), params)
         .await?;
+    change.apply().await?;
+    let mut state = engine.state.lock().await;
+    let result = change.commit();
+    if result["monitor"] == "timeline" {
+        state.window_end("pointer_owner");
+    }
     Ok(match connection.queue(rpc::result_line(id, &result)) {
         Ok(()) => Reply::Queued,
         Err(refused) => Reply::Refused(refused),
@@ -1646,10 +1677,15 @@ async fn transport_load(
     params: Option<&RawValue>,
 ) -> Result<serde_json::Value, Fault> {
     let loading = {
-        let state = engine.state.lock().await;
-        engine
-            .transport
-            .begin_load(state.history.project(), state.history.revision(), params)?
+        let mut state = engine.state.lock().await;
+        let loading = engine.transport.begin_load(
+            state.history.project(),
+            state.history.revision(),
+            params,
+        )?;
+        state.window_end("load");
+        engine.viewer.frames.stop_input(Monitor::Timeline);
+        loading
     };
     loading.done().await
 }

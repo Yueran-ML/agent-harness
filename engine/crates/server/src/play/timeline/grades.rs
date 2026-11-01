@@ -20,6 +20,8 @@ fn monitor(dir: &Path) -> Worker {
         view: Arc::default(),
         frames: Registry::default(),
         revision: 0,
+        window: crate::window::Update::default(),
+        frozen: 0,
         graphics: Graphics::new(),
         sources: Sources::new(Hardware::Off, Arc::new(|_, _| {})),
         grading: Grading::new(LutPlaces::with_library(dir, vec![])),

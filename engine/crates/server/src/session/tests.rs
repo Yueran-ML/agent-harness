@@ -2,9 +2,10 @@
 
 use super::*;
 
-fn state() -> State {
+pub(super) fn state() -> State {
     State {
         history: History::new(Project::sample()),
+        window: window::WindowState::default(),
         saver: None,
         peers: HashMap::new(),
         kicked: vec![],

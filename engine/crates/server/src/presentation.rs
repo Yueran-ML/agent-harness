@@ -3,6 +3,7 @@
 //! are retained here, and no registry guard is held while calling a view or the session.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use columbina_compose::{geometry, Scene, Source};
@@ -38,6 +39,7 @@ pub struct LayerSnapshot {
 
 /// A scene together with the model version it was built from. The colour readiness and
 /// comparison are frozen after composition and Viewer LUT, before this frame is submitted.
+#[derive(Clone)]
 pub struct FrameSnapshot {
     pub revision: u64,
     pub project: Arc<Project>,
@@ -47,6 +49,10 @@ pub struct FrameSnapshot {
     pub layers: Vec<LayerSnapshot>,
     pub comparison: Value,
     pub ready: bool,
+    pub selection: Option<Arc<crate::window::Selection>>,
+    pub overlay: Option<Arc<columbina_view::window_overlay::WindowOverlay>>,
+    pub frozen: u64,
+    pub highlight: Option<crate::highlight::Highlight>,
 }
 
 impl FrameSnapshot {
@@ -67,6 +73,7 @@ impl FrameSnapshot {
             "ready": self.ready,
             "editable": self.editable(),
             "comparison": self.comparison["mode"],
+            "window": self.selection.as_ref().zip(self.overlay.as_ref()).map(|(s,_)| json!({"binding":s.binding,"selected":s.selected})),
         })
     }
 }
@@ -124,19 +131,178 @@ struct MonitorFrames {
     observed: u64,
     current: Option<(Presentation, u64, Arc<FrameSnapshot>)>,
     pending: VecDeque<(u64, Arc<FrameSnapshot>)>,
+    input: Option<NativeInput>,
 }
 
 #[derive(Default)]
 struct Frames {
     next: u64,
+    next_event: u64,
     monitors: [MonitorFrames; 2],
     redraw: [Option<Arc<dyn Fn() + Send + Sync>>; 2],
+}
+
+#[derive(Clone)]
+pub struct Input {
+    pub sequence: u64,
+    pub owner: u64,
+    pub instance: u64,
+    pub pointer: columbina_view::Pointer,
+    pub frame: Option<Arc<FrameSnapshot>>,
+}
+
+/// Native evidence pins a down independently of the eight pending presentation candidates.
+/// It contains no controller decisions and never acquires session State.
+pub struct Pin {
+    pub down: Input,
+    pub live: AtomicBool,
+    pub wake: tokio::sync::Notify,
+}
+struct NativeInput {
+    pin: Arc<Pin>,
+    claimed: bool,
+    events: VecDeque<Input>,
+}
+impl Drop for NativeInput {
+    fn drop(&mut self) {
+        self.pin.live.store(false, Ordering::Release);
+        self.pin.wake.notify_one();
+    }
 }
 
 #[derive(Clone, Default)]
 pub struct Registry(Arc<Mutex<Frames>>);
 
 impl Registry {
+    pub fn input(
+        &self,
+        monitor: Monitor,
+        owner: u64,
+        instance: u64,
+        pointer: columbina_view::Pointer,
+        frame: Option<Arc<FrameSnapshot>>,
+    ) -> u64 {
+        use columbina_view::{Button, PointerKind};
+        let mut frames = self.lock();
+        frames.next_event += 1;
+        let sequence = frames.next_event;
+        let slot = &mut frames.monitors[monitor.index()];
+        if slot.instance != Some(instance) {
+            return sequence;
+        }
+        let input = Input {
+            sequence,
+            owner,
+            instance,
+            pointer,
+            frame,
+        };
+        if pointer.kind == PointerKind::Down && pointer.button == Some(Button::Left) {
+            slot.input = Some(NativeInput {
+                pin: Arc::new(Pin {
+                    down: input,
+                    live: AtomicBool::new(true),
+                    wake: tokio::sync::Notify::new(),
+                }),
+                claimed: false,
+                events: VecDeque::new(),
+            });
+        } else if let Some(active) = &mut slot.input {
+            if active.pin.down.owner == owner && active.pin.live.load(Ordering::Acquire) {
+                let terminal = pointer.kind == PointerKind::Cancel
+                    || (pointer.kind == PointerKind::Up && pointer.button == Some(Button::Left));
+                if pointer.kind == PointerKind::Move || terminal {
+                    if pointer.kind == PointerKind::Move
+                        && active
+                            .events
+                            .back()
+                            .is_some_and(|e| e.pointer.kind == PointerKind::Move)
+                    {
+                        active.events.pop_back();
+                    }
+                    active.events.push_back(input);
+                    if terminal {
+                        active.pin.live.store(false, Ordering::Release);
+                    }
+                    active.pin.wake.notify_one();
+                }
+            }
+        }
+        let retired = if slot
+            .input
+            .as_ref()
+            .is_some_and(|input| !input.claimed && !input.pin.live.load(Ordering::Acquire))
+        {
+            slot.input.take()
+        } else {
+            None
+        };
+        drop(frames);
+        drop(retired);
+        sequence
+    }
+
+    pub fn claim(&self, owner: u64, event: u64) -> Option<Arc<Pin>> {
+        let mut frames = self.lock();
+        let input = frames.monitors[Monitor::Timeline.index()].input.as_mut()?;
+        if input.claimed
+            || input.pin.down.owner != owner
+            || input.pin.down.sequence != event
+            || !input.pin.live.load(Ordering::Acquire)
+        {
+            return None;
+        }
+        input.claimed = true;
+        Some(Arc::clone(&input.pin))
+    }
+
+    pub fn events(&self, pin: &Arc<Pin>) -> Vec<Input> {
+        let mut frames = self.lock();
+        frames.monitors[Monitor::Timeline.index()]
+            .input
+            .as_mut()
+            .filter(|input| Arc::ptr_eq(&input.pin, pin))
+            .map_or_else(Vec::new, |input| input.events.iter().cloned().collect())
+    }
+
+    /// Acknowledge only after State consumes a copy. An echoed up still sees a task's
+    /// held move while the task is waiting to acquire State.
+    pub fn acknowledged(&self, pin: &Arc<Pin>, sequence: u64) {
+        let mut frames = self.lock();
+        if let Some(input) = frames.monitors[Monitor::Timeline.index()]
+            .input
+            .as_mut()
+            .filter(|input| Arc::ptr_eq(&input.pin, pin))
+        {
+            input.events.retain(|event| event.sequence > sequence);
+        }
+    }
+
+    pub fn release(&self, pin: &Arc<Pin>) {
+        let mut frames = self.lock();
+        let input = &mut frames.monitors[Monitor::Timeline.index()].input;
+        if input
+            .as_ref()
+            .is_some_and(|input| Arc::ptr_eq(&input.pin, pin))
+        {
+            *input = None;
+        }
+    }
+
+    pub fn stop_input(&self, monitor: Monitor) {
+        self.lock().monitors[monitor.index()].input = None;
+    }
+
+    pub fn current(
+        &self,
+        monitor: Monitor,
+        instance: u64,
+    ) -> Option<(Presentation, Arc<FrameSnapshot>)> {
+        let frames = self.lock();
+        let slot = &frames.monitors[monitor.index()];
+        (slot.instance == Some(instance)).then_some(())?;
+        slot.current.as_ref().map(|(p, _, f)| (*p, Arc::clone(f)))
+    }
     fn lock(&self) -> MutexGuard<'_, Frames> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -173,6 +339,7 @@ impl Registry {
         let mut frames = self.lock();
         let slot = &mut frames.monitors[monitor.index()];
         if slot.instance == Some(instance) {
+            slot.input = None;
             let retired = (slot.current.take(), std::mem::take(&mut slot.pending));
             drop(frames);
             drop(retired);
@@ -185,6 +352,7 @@ impl Registry {
         let mut frames = self.lock();
         let slot = &mut frames.monitors[monitor.index()];
         if slot.instance == Some(instance) {
+            slot.input = None;
             let retired = (slot.current.take(), std::mem::take(&mut slot.pending));
             let redraw = frames.redraw[monitor.index()].clone();
             drop(frames);
@@ -255,6 +423,7 @@ impl Registry {
                         .map(|(_, frame)| Arc::clone(frame))
                 })
         });
+        let advanced = shown.serial > slot.observed;
         let retired = if shown.serial >= slot.observed {
             slot.observed = shown.serial;
             let retired = slot.current.take();
@@ -266,6 +435,11 @@ impl Registry {
         } else {
             None
         };
+        if advanced {
+            if let Some(input) = &slot.input {
+                input.pin.wake.notify_one();
+            }
+        }
         drop(frames);
         drop(retired);
         snapshot
@@ -302,6 +476,10 @@ mod tests {
             layers: vec![],
             comparison: json!({"mode":"off"}),
             ready: true,
+            selection: None,
+            overlay: None,
+            frozen: 0,
+            highlight: None,
         })
     }
     fn shown(serial: u64, tag: u64) -> Presentation {

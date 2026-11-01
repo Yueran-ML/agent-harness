@@ -254,6 +254,8 @@ pub enum Event {
     SurfaceLost,
     /// The native window was destroyed. Emitted once, after releasing the view state lock.
     Gone,
+    /// Internal successful-present wakeup; emitted only after releasing Shared.
+    Presented(Presentation),
     /// What the view shows changed, as the monitor or the view was set: whether Windows has HDR
     /// on for the monitor of the window, whether the view shows HDR, and the peak and white of
     /// SDR of the monitor, in nits, where it says them (rounded; [`View::display`] has them as
@@ -488,6 +490,9 @@ impl Shared {
                 tag,
                 map,
             });
+            let shown = state.presentation.expect("set above");
+            drop(state);
+            self.report(Event::Presented(shown));
         }
     }
 

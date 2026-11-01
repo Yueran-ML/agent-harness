@@ -117,6 +117,14 @@ enum Command {
     Project(u64, Arc<Project>),
     Proxy(String),
     Redraw,
+    Window(crate::window::Update),
+    FreezeAt {
+        timeline: String,
+        revision: u64,
+        frame: i64,
+        capture: u64,
+        reply: oneshot::Sender<Result<(), Fault>>,
+    },
     Pause(oneshot::Sender<()>),
     Digest(oneshot::Sender<Result<Value, Fault>>),
     /// What is shown, for the scopes to measure.
@@ -200,6 +208,8 @@ impl Timeline {
                         view,
                         frames,
                         revision: 0,
+                        window: crate::window::Update::default(),
+                        frozen: 0,
                         graphics,
                         sources: Sources::new(Hardware::Auto, again),
                         grading: Grading::monitor(luts, wake),
@@ -296,6 +306,28 @@ impl Timeline {
     pub fn redraw(&self) {
         let _ = self.send(Command::Redraw);
     }
+
+    pub fn window(&self, update: crate::window::Update) {
+        let _ = self.send(Command::Window(update));
+    }
+
+    pub fn freeze_at(
+        &self,
+        timeline: String,
+        revision: u64,
+        frame: i64,
+        capture: u64,
+    ) -> Result<oneshot::Receiver<Result<(), Fault>>, Fault> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(Command::FreezeAt {
+            timeline,
+            revision,
+            frame,
+            capture,
+            reply,
+        })?;
+        Ok(receiver)
+    }
     pub fn stop(&self) {
         let _ = self.send(Command::Stop);
     }
@@ -373,6 +405,8 @@ struct Worker {
     view: ViewSlot,
     frames: Registry,
     revision: u64,
+    window: crate::window::Update,
+    frozen: u64,
     graphics: Arc<Graphics>,
     sources: Sources,
     /// The grades of the timeline loaded, ready on the card.
@@ -666,7 +700,7 @@ impl Worker {
                     return;
                 }
                 let changed = self.replace(revision, project);
-                if changed && !self.status.playing {
+                if (changed || self.window.selection.is_some()) && !self.status.playing {
                     let _ = self.draw(true, false);
                 }
                 self.tell(true);
@@ -683,6 +717,43 @@ impl Worker {
                 self.tell(true);
             }
             Command::Redraw => self.redraw(),
+            Command::Window(update) => {
+                if update.sequence > self.window.sequence {
+                    self.window = update;
+                    // A State-owned move sends its refreshed immutable selection before
+                    // Project. Do not present an intermediate old-project/no-overlay frame.
+                    if self
+                        .window
+                        .selection
+                        .as_ref()
+                        .is_none_or(|s| s.revision == self.revision)
+                    {
+                        self.redraw();
+                    }
+                }
+            }
+            Command::FreezeAt {
+                timeline,
+                revision,
+                frame,
+                capture,
+                reply,
+            } => {
+                let result = if self.status.timeline.as_ref() != Some(&timeline)
+                    || self.revision != revision
+                {
+                    Err(crate::window::refused("freeze_target"))
+                } else {
+                    self.pause();
+                    self.settle = None;
+                    self.status.frame = Some(frame);
+                    self.frozen = capture;
+                    let drawn = self.draw(true, false);
+                    self.tell(true);
+                    drawn
+                };
+                let _ = reply.send(result);
+            }
             Command::Pause(reply) => {
                 self.pause();
                 if self.status.timeline.is_some() {
@@ -1207,16 +1278,21 @@ impl Worker {
         // picture of every clip ever visited. At a late cut, that track's old picture stays.
         self.previous = previous;
         self.grade(&mut scene, &clips, frame)?;
-        if let Some(highlight) = &self.status.highlight {
-            highlight.show(
-                &project,
-                index,
-                frame,
-                &self.grading,
-                &mut scene,
-                &mut clips,
-            );
-        }
+        let highlight = self
+            .status
+            .highlight
+            .as_ref()
+            .filter(|highlight| {
+                highlight.show(
+                    &project,
+                    index,
+                    frame,
+                    &self.grading,
+                    &mut scene,
+                    &mut clips,
+                )
+            })
+            .cloned();
         self.compare.prepare(&project, index, frame, &self.grading);
         let snapshot = FrameSnapshot {
             revision: self.revision,
@@ -1227,6 +1303,10 @@ impl Worker {
             layers: presentation::layers(&scene, &clips, &origins),
             comparison: json!({"mode":"off"}),
             ready: false,
+            selection: None,
+            overlay: None,
+            frozen: self.frozen,
+            highlight,
         };
         let snapshot = self.present(&scene, frame, Some(snapshot))?;
         self.status.shown = Some(frame);
@@ -1349,6 +1429,13 @@ impl Worker {
             snapshot.comparison = self
                 .compare
                 .snapshot(&shown, Some((&snapshot.project, snapshot.timeline, frame)));
+            if let Some(selection) = &self.window.selection {
+                let coverage = self.compare.coverage(&shown);
+                snapshot.overlay = selection.overlay(&snapshot, coverage);
+                if snapshot.overlay.is_some() {
+                    snapshot.selection = Some(Arc::clone(selection));
+                }
+            }
             Arc::new(snapshot)
         });
         if let (Some((instance, _)), Some(viewed)) = (attached, viewed) {
@@ -1398,10 +1485,11 @@ impl Worker {
             slot.as_ref()
                 .filter(|view| view.instance == instance)
                 .map(|view| match tag {
-                    Some(tag) => view.present_texture_tagged(
+                    Some(tag) => view.present_texture_overlay(
                         Arc::clone(target.texture()),
                         Arc::clone(gpu),
                         tag,
+                        snapshot.and_then(|s| s.overlay.clone()),
                     ),
                     None => view.present_texture(Arc::clone(target.texture()), Arc::clone(gpu)),
                 })
@@ -1574,6 +1662,45 @@ mod tests {
     use columbina_compose::Transform;
     use columbina_model::Rgba;
 
+    #[test]
+    fn an_older_selection_or_clear_cannot_replace_a_newer_worker_selection() {
+        let mut worker = worker();
+        worker.apply(Command::Window(crate::window::Update {
+            sequence: 10,
+            selection: None,
+        }));
+        let selection = Arc::new(crate::window::Selection {
+            monitor: Monitor::Timeline,
+            revision: 0,
+            timeline: "t1".into(),
+            target: columbina_model::grade::Target::Timeline {
+                timeline: "t1".into(),
+            },
+            clip: None,
+            node: "n1".into(),
+            selected: None,
+            visible: true,
+            outline: true,
+            tool: crate::window::Tool::Window,
+            binding: 9,
+        });
+        worker.apply(Command::Window(crate::window::Update {
+            sequence: 9,
+            selection: Some(selection.clone()),
+        }));
+        assert!(worker.window.selection.is_none());
+        worker.apply(Command::Window(crate::window::Update {
+            sequence: 11,
+            selection: Some(selection),
+        }));
+        worker.apply(Command::Window(crate::window::Update {
+            sequence: 10,
+            selection: None,
+        }));
+        assert_eq!(worker.window.selection.as_ref().unwrap().binding, 9);
+        assert_eq!(worker.window.sequence, 11);
+    }
+
     fn worker() -> Worker {
         let (_, inbox) = mpsc::channel();
         Worker {
@@ -1583,6 +1710,8 @@ mod tests {
             view: Arc::default(),
             frames: Registry::default(),
             revision: 0,
+            window: crate::window::Update::default(),
+            frozen: 0,
             graphics: Graphics::new(),
             sources: Sources::new(Hardware::Off, Arc::new(|_, _| {})),
             grading: Grading::new(LutPlaces::with_library(std::path::Path::new("."), vec![])),

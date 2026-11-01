@@ -612,6 +612,22 @@ impl Comparison {
             json!({"mode":"off"})
         }
     }
+
+    /// Actual comparison coverage, without round-tripping a public reference with its
+    /// resolved `at` field through the strict request parser.
+    pub fn coverage(&self, shown: &Arc<Target>) -> Option<Wipe> {
+        if !self
+            .compared
+            .as_ref()
+            .is_some_and(|(_, target)| Arc::ptr_eq(target, shown))
+        {
+            return None;
+        }
+        match &self.mode {
+            Mode::Wipe(settings) => Some(settings.wipe()),
+            _ => None,
+        }
+    }
 }
 
 /// Read a still: the first picture of the file, as it is stored.

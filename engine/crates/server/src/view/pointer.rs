@@ -52,6 +52,12 @@ struct Sink {
 }
 
 impl Pointers {
+    pub fn owner(&self, monitor: Monitor) -> Option<u64> {
+        self.sinks().sinks[monitor.index()]
+            .as_ref()
+            .map(|s| s.connection)
+    }
+
     pub fn new(frames: crate::presentation::Registry) -> Pointers {
         Pointers(Arc::new(Inner {
             sinks: Mutex::default(),
@@ -94,6 +100,7 @@ impl Pointers {
         sender: queue::Sender,
         cursor: Option<Cursor>,
     ) {
+        self.0.frames.stop_input(monitor);
         let mut sinks = self.sinks();
         let started = sinks.sinks.iter().flatten().any(|sink| sink.started);
         sinks.sinks[monitor.index()] = Some(Sink {
@@ -109,6 +116,7 @@ impl Pointers {
     /// Tell no one what the pointer does on the view of `monitor`.
     pub fn stop(&self, monitor: Monitor) {
         self.sinks().sinks[monitor.index()] = None;
+        self.0.frames.stop_input(monitor);
     }
 
     /// The cursor of the view of `monitor`, where it takes the pointer.
@@ -133,20 +141,37 @@ impl Pointers {
                 forgotten.push(monitor);
             }
         }
+        drop(sinks);
+        for monitor in &forgotten {
+            self.0.frames.stop_input(*monitor);
+        }
         forgotten
     }
 
     /// What the pointer did on the view of `monitor`: told to whoever asked, if anyone did. It is
     /// called on the view's thread of its window, and never waits.
     pub fn told(&self, monitor: Monitor, instance: u64, pointer: &Pointer) {
+        let owner = {
+            let sinks = self.sinks();
+            if sinks.instances[monitor.index()] != Some(instance) {
+                return;
+            }
+            let Some(sink) = &sinks.sinks[monitor.index()] else {
+                return;
+            };
+            sink.connection
+        };
         let snapshot = self
             .0
             .frames
             .observe(monitor, instance, pointer.presentation);
-        let line = rpc::notification_line(
-            "view.pointer",
-            &written(monitor, instance, pointer, snapshot.as_deref()),
-        );
+        let sequence = self
+            .0
+            .frames
+            .input(monitor, owner, instance, *pointer, snapshot.clone());
+        let mut value = written(monitor, instance, pointer, snapshot.as_deref());
+        value["event"] = json!(sequence);
+        let line = rpc::notification_line("view.pointer", &value);
         let mut sinks = self.sinks();
         if sinks.instances[monitor.index()] != Some(instance) {
             return;
@@ -154,6 +179,9 @@ impl Pointers {
         let Some(sink) = sinks.sinks[monitor.index()].as_mut() else {
             return;
         };
+        if sink.connection != owner {
+            return;
+        }
         if pointer.kind == PointerKind::Move {
             if sink
                 .queued

@@ -52,6 +52,10 @@ mod viewport;
 #[path = "rpc/presentation.rs"]
 mod presentation;
 
+#[cfg(windows)]
+#[path = "rpc/window.rs"]
+mod window;
+
 /// How long anything that should happen soon is waited for before the test fails.
 const WAIT: Duration = Duration::from_secs(30);
 

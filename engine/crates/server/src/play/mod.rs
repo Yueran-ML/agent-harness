@@ -158,6 +158,29 @@ fn source_status(status: &transport::Status) -> Value {
 }
 
 impl Transport {
+    pub async fn window_turn(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.orders.lock().await
+    }
+
+    pub fn window(&self, update: crate::window::Update) {
+        if let Some(timeline) = &self.timeline {
+            timeline.window(update);
+        }
+    }
+
+    /// Enqueue synchronously while the caller holds the orders turn and has rechecked State.
+    pub fn freeze_at(
+        &self,
+        timeline: String,
+        revision: u64,
+        frame: i64,
+        capture: u64,
+    ) -> Result<tokio::sync::oneshot::Receiver<Result<(), Fault>>, Fault> {
+        self.timeline
+            .as_ref()
+            .ok_or_else(|| crate::window::refused("monitor"))?
+            .freeze_at(timeline, revision, frame, capture)
+    }
     #[allow(
         clippy::too_many_arguments,
         reason = "what the two monitors are made of, each from the engine"

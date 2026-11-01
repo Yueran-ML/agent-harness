@@ -96,6 +96,62 @@ pub struct Viewer {
     viewports: std::sync::Mutex<[Viewport; 2]>,
 }
 
+/// One pointer ownership change in the existing view-operation order. Native preparation
+/// happens without State; the caller publishes the sink while committing its State change.
+pub struct PointerChange<'a> {
+    viewer: &'a Viewer,
+    _busy: tokio::sync::MutexGuard<'a, ()>,
+    asked: TakePointer,
+    connection: u64,
+    sender: queue::Sender,
+    before: Option<Cursor>,
+    previous_owner: Option<u64>,
+}
+
+impl PointerChange<'_> {
+    pub fn owned_by(&self, connection: u64) -> bool {
+        self.previous_owner == Some(connection)
+    }
+
+    pub async fn apply(&self) -> Result<(), Fault> {
+        let cursor = self.asked.on.then_some(Cursor::from(self.asked.cursor));
+        let taken = self
+            .viewer
+            .with_view_ordered(self.asked.monitor, |view| view.take_pointer(cursor))
+            .await;
+        if self.asked.on {
+            taken?;
+        }
+        Ok(())
+    }
+
+    /// Restore the native cursor captured under this turn, with State already released.
+    pub async fn rollback(&self) {
+        let _ = self
+            .viewer
+            .with_view_ordered(self.asked.monitor, |view| view.take_pointer(self.before))
+            .await;
+    }
+
+    pub fn commit(&self) -> serde_json::Value {
+        let monitor = self.asked.monitor;
+        if self.asked.on {
+            if let Some((instance, shown)) = self.viewer.presentation_snapshot(monitor) {
+                self.viewer.frames.observe(monitor, instance, shown);
+            }
+            self.viewer.pointers.tell(
+                monitor,
+                self.connection,
+                self.sender.clone(),
+                Some(Cursor::from(self.asked.cursor)),
+            );
+        } else {
+            self.viewer.pointers.stop(monitor);
+        }
+        json!({"monitor":monitor,"on":self.asked.on,"cursor":self.asked.on.then_some(self.asked.cursor)})
+    }
+}
+
 /// The params of `view.attach`.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -217,6 +273,16 @@ const VIEWPORT: &str = r#"{"monitor":"source"|"timeline", "mode"?:"fit"|"scale",
 const POINTER: &str = r#"{"monitor":"source"|"timeline", "on": true | false, "cursor"?: "arrow" | "crosshair" | "move" | "resize_ew" | "resize_ns"}"#;
 
 impl Viewer {
+    #[cfg(test)]
+    pub async fn test_busy(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.busy.lock().await
+    }
+
+    #[cfg(test)]
+    pub fn test_pointer_owner(&self, monitor: Monitor) -> Option<u64> {
+        self.pointers.owner(monitor)
+    }
+
     pub fn new(headless: bool, graphics: Arc<Graphics>) -> Self {
         let slots: [ViewSlot; 2] = std::array::from_fn(|_| Arc::new(std::sync::Mutex::new(None)));
         let subscription = graphics.subscribe({
@@ -245,41 +311,37 @@ impl Viewer {
     /// `view.pointer`, of the connection `connection` of the desktop: have the view of a monitor
     /// take the pointer, and tell what it does there to this connection alone (in place of one
     /// that asked before), or let it go.
-    pub async fn pointer(
+    pub async fn prepare_pointer(
         &self,
         kind: Kind,
         connection: u64,
         sender: &queue::Sender,
         params: Option<&RawValue>,
-    ) -> Result<serde_json::Value, Fault> {
+    ) -> Result<PointerChange<'_>, Fault> {
         let method = "view.pointer";
         self.check(kind, method)?;
         let asked: TakePointer = rpc::params(method, POINTER, params)?;
-        let cursor = asked.on.then_some(Cursor::from(asked.cursor));
-        let taken = self
-            .with_view(asked.monitor, |view| view.take_pointer(cursor))
-            .await;
-        if asked.on {
-            // Only a view that is there takes it.
-            taken?;
-            if let Some((instance, shown)) = self.presentation_snapshot(asked.monitor) {
-                self.frames.observe(asked.monitor, instance, shown);
-            }
-            self.pointers
-                .tell(asked.monitor, connection, sender.clone(), cursor);
-        } else {
-            // Let go, whether or not a view is still there.
-            self.pointers.stop(asked.monitor);
-        }
-        Ok(json!({
-            "monitor": asked.monitor,
-            "on": asked.on,
-            "cursor": asked.on.then_some(asked.cursor),
-        }))
+        let busy = self.busy.lock().await;
+        let before = self.slots[asked.monitor.index()]
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .and_then(|v| v.pointer());
+        let previous_owner = self.pointers.owner(asked.monitor);
+        Ok(PointerChange {
+            viewer: self,
+            _busy: busy,
+            asked,
+            connection,
+            sender: sender.clone(),
+            before,
+            previous_owner,
+        })
     }
 
     /// Forget a connection that has ended: the views that took the pointer for it let it go.
-    pub fn forget(&self, connection: u64) {
+    pub async fn forget(&self, connection: u64) {
+        let _busy = self.busy.lock().await;
         for monitor in self.pointers.forget(connection) {
             if let Some(view) = self.slots[monitor.index()]
                 .lock()
@@ -542,6 +604,15 @@ impl Viewer {
         work: impl FnOnce(&View) -> Result<(), ViewError>,
     ) -> Result<serde_json::Value, Fault> {
         let _busy = self.busy.lock().await;
+        self.with_view_ordered(monitor, work).await
+    }
+
+    /// The caller already holds busy, including any later pointer/State publication.
+    async fn with_view_ordered(
+        &self,
+        monitor: Monitor,
+        work: impl FnOnce(&View) -> Result<(), ViewError>,
+    ) -> Result<serde_json::Value, Fault> {
         let done = {
             let slot = self.slots[monitor.index()]
                 .lock()
@@ -619,6 +690,10 @@ fn reporter(
     let pointers = pointers.clone();
     let frames = frames.clone();
     Arc::new(move |event: Event| {
+        if let Event::Presented(shown) = event {
+            frames.observe(monitor, instance, Some(shown));
+            return;
+        }
         if let Event::Pointer(pointer) = event {
             pointers.told(monitor, instance, &pointer);
             return;
@@ -687,6 +762,6 @@ fn report(event: Event, monitor: Monitor) {
             &json!({ "monitor":monitor, "message": message }),
         ),
         Event::Gone => log("view_gone", &json!({"monitor": monitor})),
-        Event::Pointer(_) => {}
+        Event::Pointer(_) | Event::Presented(_) => {}
     }
 }

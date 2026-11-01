@@ -4,6 +4,7 @@
 use crate::ViewportMap;
 use columbina_compose::wipe::Wipe;
 
+mod offset;
 pub(crate) mod render;
 
 /// Local to canvas pixels: `x = xx*u + xy*v + tx`, `y = yx*u + yy*v + ty`.
@@ -28,15 +29,22 @@ pub struct Shape {
     pub kind: ShapeKind,
     /// Half of the feather band in local image-height units.
     pub feather: f64,
+    /// Linear/Polygon local outline points in boundary order; empty for the other shapes.
+    pub points: Vec<[f64; 2]>,
+    /// Per outline edge `j` (point `j` to the next): the inside and outside feather extents.
+    pub feathers: Vec<[f64; 2]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShapeKind {
     Circular,
     Gradient,
+    Linear,
+    Polygon,
 }
 
-/// Indices are stable local corner/axis identifiers, also used to break equal-distance ties.
+/// Indices are stable local corner/axis/point/edge identifiers, also used to break
+/// equal-distance ties. `Insert(j)` is a selected Polygon's edge `j` outline, below handles.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Control {
     Move,
@@ -44,7 +52,15 @@ pub enum Control {
     Aspect(u8),
     Rotate,
     Softness(i8),
+    Point(u8),
+    Edge(u8),
+    EdgeSoftness(u8),
+    Insert(u8),
 }
+
+/// Where a Linear side's softness handle sits along its side, as a share from its first point.
+/// Away from the white middle side handle, so both stay grabbable at small softness.
+pub const EDGE_SOFT_SHARE: f64 = 0.75;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Hit<'a> {
@@ -98,31 +114,38 @@ impl WindowOverlay {
             return None;
         }
         for shape in self.ordered().rev() {
-            let Some(body) = shape.device(map) else {
+            if !shape.drawable(map) {
                 continue;
-            };
-            let primitives = self.primitives(shape, map);
-            let handle = primitives
-                .iter()
-                .filter(|p| p.control.is_some() && p.alpha(device, self.style.width) > 0.0)
-                .min_by(|a, b| {
-                    a.distance_to_handle(device)
-                        .total_cmp(&b.distance_to_handle(device))
-                });
-            if let Some(control) = handle.and_then(|handle| handle.control) {
-                return Some(Hit {
-                    id: &shape.id,
-                    control,
-                });
             }
-            let inside = match shape.kind {
-                ShapeKind::Circular => body.contains(device),
-                ShapeKind::Gradient => body.local(device).0[1] <= 0.0,
-            };
-            if inside
+            // Softness guides are display only: they are not even made for a hit.
+            let primitives = shape.layers(
+                map,
+                self.style,
+                self.selected.as_deref() == Some(shape.id.as_str()),
+                false,
+            );
+            // Explicit handles first, then a Polygon edge insertion, then the body.
+            for edge in [false, true] {
+                let control = primitives
+                    .iter()
+                    .filter(|p| {
+                        p.control.is_some()
+                            && p.edge == edge
+                            && p.alpha(device, self.style.width) > 0.0
+                    })
+                    .min_by(|a, b| a.distance(device).total_cmp(&b.distance(device)))
+                    .and_then(|p| p.control);
+                if let Some(control) = control {
+                    return Some(Hit {
+                        id: &shape.id,
+                        control,
+                    });
+                }
+            }
+            if shape.contains(map, device)
                 || primitives
                     .iter()
-                    .any(|p| p.alpha(device, self.style.width) > 0.0)
+                    .any(|p| !p.guide && p.alpha(device, self.style.width) > 0.0)
             {
                 return Some(Hit {
                     id: &shape.id,
@@ -248,9 +271,21 @@ pub(crate) struct Primitive {
     pub colour: [f32; 3],
     control: Option<Control>,
     anchor: [f32; 2],
+    /// An outline edge control, ranked below every handle.
+    edge: bool,
+    /// A softness guide: display only, never hit.
+    pub(crate) guide: bool,
 }
 impl Primitive {
-    fn distance_to_handle(&self, p: [f32; 2]) -> f32 {
+    /// Handles compare their centres; edges compare the device distance to the segment.
+    fn distance(&self, p: [f32; 2]) -> f32 {
+        if self.edge {
+            let segment = self.geometry;
+            let [x, y] = [p[0] - segment.centre[0], p[1] - segment.centre[1]];
+            let [dx, dy, _, _] = segment.inverse;
+            let share = ((x * dx + y * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+            return (x - share * dx).hypot(y - share * dy);
+        }
         (p[0] - self.anchor[0]).hypot(p[1] - self.anchor[1])
     }
     pub(crate) fn alpha(&self, p: [f32; 2], width: f32) -> f32 {
@@ -268,6 +303,89 @@ impl Primitive {
             (x - t * dx).hypot(y - t * dy)
         };
         (width * 0.5 + 0.5 - distance).clamp(0.0, 1.0)
+    }
+
+    fn into_guide(self) -> Self {
+        Self {
+            guide: true,
+            ..self
+        }
+    }
+
+    /// The device quad `[origin, first axis, second axis]` the GPU rasterizes for this
+    /// primitive. It holds every pixel centre where `alpha` is positive, with a pixel to
+    /// spare, so fragment work follows the covered pixels; none when nothing can be covered.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::many_single_char_names,
+        reason = "bounded device quads in plane geometry notation"
+    )]
+    pub(crate) fn quad(&self, map: ViewportMap, width: f32) -> Option<[f32; 6]> {
+        let g = self.geometry;
+        let c = g.centre.map(f64::from);
+        let reach = f64::from(width) * 0.5 + 0.5;
+        // The drawn picture on the surface; the fragment discards every other pixel.
+        let [left, top, w, h] = map.dest.map(f64::from);
+        let clip = [
+            left.max(0.0) - 1.0,
+            top.max(0.0) - 1.0,
+            (left + w).min(f64::from(map.surface.0)) + 1.0,
+            (top + h).min(f64::from(map.surface.1)) + 1.0,
+        ];
+        let boxed = |b: [f64; 4]| {
+            let b = if b.iter().all(|v| v.is_finite()) {
+                b
+            } else {
+                clip
+            };
+            let b = [
+                b[0].max(clip[0]),
+                b[1].max(clip[1]),
+                b[2].min(clip[2]),
+                b[3].min(clip[3]),
+            ];
+            (b[0] < b[2] && b[1] < b[3]).then_some([b[0], b[1], b[2] - b[0], 0.0, 0.0, b[3] - b[1]])
+        };
+        let quad = if self.kind < 0.5 {
+            // The estimate is |(|Kx| - S)| / |K^T u| with |K^T u| <= |K|_F, so a covered pixel
+            // has |Kx| < S + reach |K|_F: an ellipse whose box is that bound times K^-1's rows.
+            let k = g.inverse.map(f64::from);
+            let det = (k[0] * k[3] - k[1] * k[2]).abs();
+            let t = f64::from(g.scale) + reach * k.iter().map(|v| v * v).sum::<f64>().sqrt();
+            let half = [t * k[3].hypot(k[1]) / det, t * k[2].hypot(k[0]) / det];
+            boxed([
+                c[0] - half[0] - 1.0,
+                c[1] - half[1] - 1.0,
+                c[0] + half[0] + 1.0,
+                c[1] + half[1] + 1.0,
+            ])?
+        } else if self.kind < 1.5 {
+            boxed(clip)?
+        } else if self.kind < 2.5 {
+            let e = f64::from(g.scale) + 1.5;
+            boxed([c[0] - e, c[1] - e, c[0] + e, c[1] + e])?
+        } else {
+            // A segment's stadium within its rectangle grown by the reach.
+            let e = reach + 1.0;
+            let d = [f64::from(g.inverse[0]), f64::from(g.inverse[1])];
+            let length = d[0].hypot(d[1]);
+            let u = if length > 0.0 {
+                [d[0] / length, d[1] / length]
+            } else {
+                [1.0, 0.0]
+            };
+            let n = [-u[1], u[0]];
+            [
+                c[0] - e * (u[0] + n[0]),
+                c[1] - e * (u[1] + n[1]),
+                d[0] + 2.0 * e * u[0],
+                d[1] + 2.0 * e * u[1],
+                2.0 * e * n[0],
+                2.0 * e * n[1],
+            ]
+        };
+        let quad = quad.map(|v| v as f32);
+        quad.iter().all(|v| v.is_finite()).then_some(quad)
     }
 }
 
@@ -324,6 +442,8 @@ impl Shape {
                 colour,
                 control: None,
                 anchor: geometry.centre,
+                edge: false,
+                guide: false,
             });
         };
         if f > 0.0 && selected {
@@ -356,6 +476,21 @@ impl Shape {
         style: Style,
         selected: bool,
     ) -> Vec<Primitive> {
+        self.layers(map, style, selected, true)
+    }
+
+    /// Everything drawn, or with `guides` false only what can be hit: Linear and Polygon
+    /// softness guides are display only.
+    fn layers(
+        &self,
+        map: ViewportMap,
+        style: Style,
+        selected: bool,
+        guides: bool,
+    ) -> Vec<Primitive> {
+        if matches!(self.kind, ShapeKind::Linear | ShapeKind::Polygon) {
+            return self.path_primitives(map, style, selected, guides);
+        }
         if self.device(map).is_none() {
             return vec![];
         }
@@ -377,6 +512,8 @@ impl Shape {
                 colour,
                 control: Some(control),
                 anchor: centre,
+                edge: false,
+                guide: false,
             });
         };
         if self.kind == ShapeKind::Circular {
@@ -428,7 +565,361 @@ impl Shape {
                     colour: style.selected,
                     control: Some(Control::Rotate),
                     anchor: centre,
+                    edge: false,
+                    guide: false,
                 });
+            }
+        }
+        out
+    }
+}
+
+/// Device pixels kept around the surface when clipping outline segments and handles. Clipping
+/// in f64 first keeps every quantized coordinate near the surface at any legal zoom.
+const MARGIN: f64 = 16.0;
+const SOFT_COLOUR: [f32; 3] = [1.0, 0.1, 0.8];
+/// Device pixels a guide arc's chords may depart from the arc.
+const ARC_TOLERANCE: f64 = 1.0 / 16.0;
+
+impl Shape {
+    /// Inside test shared by pointer down for every shape. Linear and Polygon use even-odd on
+    /// the same device points as their drawn outline, without reordering self-intersections.
+    pub(crate) fn contains(&self, map: ViewportMap, p: [f32; 2]) -> bool {
+        match self.kind {
+            ShapeKind::Circular => self.device(map).is_some_and(|body| body.contains(p)),
+            ShapeKind::Gradient => self
+                .device(map)
+                .is_some_and(|body| body.local(p).0[1] <= 0.0),
+            ShapeKind::Linear | ShapeKind::Polygon => {
+                let [x, y] = p.map(f64::from);
+                let device: Vec<_> = self.points.iter().map(|&q| self.at(map, q)).collect();
+                let mut inside = false;
+                for (j, a) in device.iter().enumerate() {
+                    let b = device[(j + 1) % device.len()];
+                    if (a[1] > y) != (b[1] > y)
+                        && x < (b[0] - a[0]) * (y - a[1]) / (b[1] - a[1]) + a[0]
+                    {
+                        inside = !inside;
+                    }
+                }
+                inside
+            }
+        }
+    }
+
+    /// Whether the shape has invertible device geometry, even if all its strokes are clipped.
+    fn drawable(&self, map: ViewportMap) -> bool {
+        match self.kind {
+            ShapeKind::Circular | ShapeKind::Gradient => self.device(map).is_some(),
+            ShapeKind::Linear | ShapeKind::Polygon => {
+                self.points.len() >= 2 && self.invertible(map)
+            }
+        }
+    }
+
+    /// A local point in f64 device pixels.
+    fn at(&self, map: ViewportMap, local: [f64; 2]) -> [f64; 2] {
+        let a = self.to_canvas;
+        [
+            f64::from(map.dest[0])
+                + (a.xx * local[0] + a.xy * local[1] + a.tx) * f64::from(map.dest[2])
+                    / f64::from(map.picture.0),
+            f64::from(map.dest[1])
+                + (a.yx * local[0] + a.yy * local[1] + a.ty) * f64::from(map.dest[3])
+                    / f64::from(map.picture.1),
+        ]
+    }
+
+    /// Size 0 or another singular placement has no drawable outline and no controls.
+    fn invertible(&self, map: ViewportMap) -> bool {
+        let a = self.to_canvas;
+        let sx = f64::from(map.dest[2]) / f64::from(map.picture.0);
+        let sy = f64::from(map.dest[3]) / f64::from(map.picture.1);
+        let m = [a.xx * sx, a.xy * sx, a.yx * sy, a.yy * sy];
+        let scale = m.iter().fold(0.0_f64, |s, v| s.max(v.abs()));
+        let [xx, xy, yx, yy] = m.map(|v| v / scale);
+        let determinant = xx * yy - xy * yx;
+        scale > 0.0 && scale.is_finite() && determinant.is_finite() && determinant != 0.0
+    }
+
+    /// The local unit normal of each edge towards the inside of the outline's winding.
+    fn inward(&self, edge: usize) -> Option<[f64; 2]> {
+        let count = self.points.len();
+        let twice_area: f64 = (0..count)
+            .map(|i| {
+                let (from, to) = (self.points[i], self.points[(i + 1) % count]);
+                from[0] * to[1] - to[0] * from[1]
+            })
+            .sum();
+        let sign = if twice_area < 0.0 { -1.0 } else { 1.0 };
+        let (from, to) = (self.points[edge], self.points[(edge + 1) % count]);
+        let along = [to[0] - from[0], to[1] - from[1]];
+        let length = along[0].hypot(along[1]);
+        (length > 0.0 && length.is_finite())
+            .then(|| [-sign * along[1] / length, sign * along[0] / length])
+    }
+
+    /// A device segment clipped to the surface and its margin, or none when nothing is left.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "clipped device coordinates are quantized once for CPU and GPU"
+    )]
+    fn segment(
+        map: ViewportMap,
+        a: [f64; 2],
+        b: [f64; 2],
+        colour: [f32; 3],
+        control: Option<Control>,
+    ) -> Option<Primitive> {
+        let d = [b[0] - a[0], b[1] - a[1]];
+        let (mut low, mut high) = (0.0_f64, 1.0_f64);
+        let limits = [f64::from(map.surface.0), f64::from(map.surface.1)];
+        for axis in 0..2 {
+            for (p, q) in [
+                (-d[axis], a[axis] + MARGIN),
+                (d[axis], limits[axis] + MARGIN - a[axis]),
+            ] {
+                if p == 0.0 {
+                    if q < 0.0 {
+                        return None;
+                    }
+                } else if p < 0.0 {
+                    low = low.max(q / p);
+                } else {
+                    high = high.min(q / p);
+                }
+            }
+        }
+        if low >= high || low.is_nan() || high.is_nan() {
+            return None;
+        }
+        let start = [a[0] + low * d[0], a[1] + low * d[1]];
+        let vector = [(high - low) * d[0], (high - low) * d[1]];
+        if !vector[0].hypot(vector[1]).is_finite() || vector[0].hypot(vector[1]) < 1e-3 {
+            return None;
+        }
+        let centre = start.map(|v| v as f32);
+        Some(Primitive {
+            geometry: DeviceCircle {
+                inverse: [vector[0] as f32, vector[1] as f32, 0.0, 0.0],
+                centre,
+                scale: 1.0,
+            },
+            kind: 3.0,
+            colour,
+            control,
+            anchor: centre,
+            edge: control.is_some(),
+            guide: false,
+        })
+    }
+
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "device coordinates near the surface are quantized once for CPU and GPU"
+    )]
+    fn disk(
+        map: ViewportMap,
+        at: [f64; 2],
+        colour: [f32; 3],
+        control: Control,
+    ) -> Option<Primitive> {
+        let inside = (-MARGIN..f64::from(map.surface.0) + MARGIN).contains(&at[0])
+            && (-MARGIN..f64::from(map.surface.1) + MARGIN).contains(&at[1]);
+        let centre = at.map(|v| v as f32);
+        inside.then_some(Primitive {
+            geometry: DeviceCircle {
+                inverse: [0.0; 4],
+                centre,
+                scale: 4.0,
+            },
+            kind: 2.0,
+            colour,
+            control: Some(control),
+            anchor: centre,
+            edge: false,
+            guide: false,
+        })
+    }
+
+    /// A local circular arc as device chords: the image of a local circle is an ellipse
+    /// `C + M (cos t, sin t)`. Only its part within the surface and margin is split, into
+    /// chords at most `ARC_TOLERANCE` device pixels from it, each clipped like the outline.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::many_single_char_names,
+        reason = "a bounded positive chord count; ellipse notation"
+    )]
+    fn arc(
+        &self,
+        map: ViewportMap,
+        (centre, radius): ([f64; 2], f64),
+        [from, to]: [f64; 2],
+        colour: [f32; 3],
+        out: &mut Vec<Primitive>,
+    ) {
+        let a = self.to_canvas;
+        let sx = f64::from(map.dest[2]) / f64::from(map.picture.0);
+        let sy = f64::from(map.dest[3]) / f64::from(map.picture.1);
+        let m = [a.xx * sx, a.xy * sx, a.yx * sy, a.yy * sy].map(|v| v * radius);
+        let c = self.at(map, centre);
+        if !m.iter().chain(&c).all(|v| v.is_finite()) {
+            return;
+        }
+        let at = |t: f64| {
+            let (sin, cos) = t.sin_cos();
+            [
+                c[0] + m[0] * cos + m[1] * sin,
+                c[1] + m[2] * cos + m[3] * sin,
+            ]
+        };
+        let low = [-MARGIN, -MARGIN];
+        let high = [
+            f64::from(map.surface.0) + MARGIN,
+            f64::from(map.surface.1) + MARGIN,
+        ];
+        // Where the ellipse crosses each side of the margin box: `A cos(t - phase) = k`.
+        let mut cuts = vec![from, to];
+        for axis in 0..2 {
+            let (p, q) = (m[2 * axis], m[2 * axis + 1]);
+            let amplitude = p.hypot(q);
+            if amplitude == 0.0 {
+                continue;
+            }
+            let phase = q.atan2(p);
+            for line in [low[axis], high[axis]] {
+                let k = (line - c[axis]) / amplitude;
+                if k.abs() <= 1.0 {
+                    for t in [phase + k.acos(), phase - k.acos()] {
+                        let t = from + (t - from).rem_euclid(std::f64::consts::TAU);
+                        if t < to {
+                            cuts.push(t);
+                        }
+                    }
+                }
+            }
+        }
+        cuts.sort_by(f64::total_cmp);
+        // A chord over parameter step h is within h^2/8 |M| of the ellipse.
+        let stretch = m.iter().map(|v| v * v).sum::<f64>().sqrt();
+        let step = (8.0 * ARC_TOLERANCE / stretch).sqrt();
+        for pair in cuts.windows(2) {
+            let (t0, t1) = (pair[0], pair[1]);
+            let middle = at(t0.midpoint(t1));
+            if t1 <= t0 || (0..2).any(|i| !(low[i]..=high[i]).contains(&middle[i])) {
+                continue;
+            }
+            let count = ((t1 - t0) / step).ceil().clamp(1.0, 4096.0) as u32;
+            for i in 0..count {
+                let s = |i: u32| t0 + (t1 - t0) * f64::from(i) / f64::from(count);
+                out.extend(
+                    Self::segment(map, at(s(i)), at(s(i + 1)), colour, None)
+                        .map(Primitive::into_guide),
+                );
+            }
+        }
+    }
+
+    /// Linear and Polygon controls (RM20 p. 3193): white corner/point handles, Linear white side
+    /// handles and one magenta softness handle per side; a Polygon has no softness handles.
+    /// The selected window's grey guides are exactly where its mask becomes opaque inside and
+    /// zero outside (`offset`), drawn only when `guides`: they are never hit.
+    #[allow(clippy::cast_possible_truncation, reason = "at most 128 points")]
+    fn path_primitives(
+        &self,
+        map: ViewportMap,
+        style: Style,
+        selected: bool,
+        guides: bool,
+    ) -> Vec<Primitive> {
+        let n = self.points.len();
+        if !self.drawable(map) {
+            return vec![];
+        }
+        let mut out = vec![];
+        if selected && guides {
+            for (side, inside) in [(0, true), (1, false)] {
+                let radii: Vec<f64> = (0..n)
+                    .map(|j| self.feathers.get(j).map_or(0.0, |f| f[side]))
+                    .collect();
+                for piece in offset::guide(&self.points, &radii, inside) {
+                    match piece {
+                        offset::Piece::Line(a, b) => out.extend(
+                            Self::segment(
+                                map,
+                                self.at(map, a),
+                                self.at(map, b),
+                                style.unselected,
+                                None,
+                            )
+                            .map(Primitive::into_guide),
+                        ),
+                        offset::Piece::Arc {
+                            centre,
+                            radius,
+                            start,
+                            sweep,
+                        } => self.arc(
+                            map,
+                            (centre, radius),
+                            [start, start + sweep],
+                            style.unselected,
+                            &mut out,
+                        ),
+                    }
+                }
+            }
+        }
+        let colour = if selected {
+            style.selected
+        } else {
+            style.unselected
+        };
+        for j in 0..n {
+            let insert =
+                (selected && self.kind == ShapeKind::Polygon).then_some(Control::Insert(j as u8));
+            out.extend(Self::segment(
+                map,
+                self.at(map, self.points[j]),
+                self.at(map, self.points[(j + 1) % n]),
+                colour,
+                insert,
+            ));
+        }
+        if !selected {
+            return out;
+        }
+        for (i, &point) in self.points.iter().enumerate() {
+            out.extend(Self::disk(
+                map,
+                self.at(map, point),
+                style.selected,
+                Control::Point(i as u8),
+            ));
+        }
+        if self.kind == ShapeKind::Linear {
+            for j in 0..n {
+                let (a, b) = (self.points[j], self.points[(j + 1) % n]);
+                let middle = [a[0].midpoint(b[0]), a[1].midpoint(b[1])];
+                out.extend(Self::disk(
+                    map,
+                    self.at(map, middle),
+                    style.selected,
+                    Control::Edge(j as u8),
+                ));
+                let outer = self.feathers.get(j).map_or(0.0, |f| f[1]);
+                let normal = self.inward(j).unwrap_or_default();
+                let along = [
+                    a[0] + (b[0] - a[0]) * EDGE_SOFT_SHARE - normal[0] * outer,
+                    a[1] + (b[1] - a[1]) * EDGE_SOFT_SHARE - normal[1] * outer,
+                ];
+                out.extend(Self::disk(
+                    map,
+                    self.at(map, along),
+                    SOFT_COLOUR,
+                    Control::EdgeSoftness(j as u8),
+                ));
             }
         }
         out
@@ -477,6 +968,8 @@ mod tests {
             radius: 1.0,
             kind: ShapeKind::Circular,
             feather: 0.0,
+            points: vec![],
+            feathers: vec![],
             to_canvas: Affine {
                 xx: 20.0,
                 xy: 0.0,
@@ -712,5 +1205,299 @@ mod tests {
         // The adjacent pixel's footprint consists only of B, despite being in the stroke.
         assert!(shape.hit(map, [121.5, 80.5]).is_none());
         assert!(shape.outline(map, [121.5, 80.5]).is_none());
+    }
+
+    fn path(id: &str, kind: ShapeKind, points: Vec<[f64; 2]>, feather: f64) -> Shape {
+        Shape {
+            id: id.into(),
+            radius: 0.25,
+            kind,
+            feather: 0.0,
+            feathers: vec![[feather, feather]; points.len()],
+            points,
+            to_canvas: Affine {
+                xx: 80.0,
+                xy: 0.0,
+                yx: 0.0,
+                yy: 80.0,
+                tx: 60.0,
+                ty: 40.0,
+            },
+        }
+    }
+    fn rectangle() -> Vec<[f64; 2]> {
+        vec![[-0.25, -0.25], [0.25, -0.25], [0.25, 0.25], [-0.25, 0.25]]
+    }
+
+    #[test]
+    fn linear_corners_sides_and_softness_handles_win_and_only_the_body_moves() {
+        let map = Viewport::Fit.map((120, 80), (120, 80), 0).unwrap();
+        let mut shape = overlay(vec![path("w", ShapeKind::Linear, rectangle(), 0.05)]);
+        shape.selected = Some("w".into());
+        for (point, control) in [
+            ([40.0, 20.0], Control::Point(0)),
+            ([80.0, 20.0], Control::Point(1)),
+            ([80.0, 60.0], Control::Point(2)),
+            ([40.0, 60.0], Control::Point(3)),
+            ([60.0, 20.0], Control::Edge(0)),
+            ([80.0, 40.0], Control::Edge(1)),
+            ([60.0, 60.0], Control::Edge(2)),
+            ([40.0, 40.0], Control::Edge(3)),
+            // 3/4 along each side, on its outer softness line 4 device pixels out.
+            ([70.0, 16.0], Control::EdgeSoftness(0)),
+            ([84.0, 50.0], Control::EdgeSoftness(1)),
+            ([50.0, 64.0], Control::EdgeSoftness(2)),
+            ([36.0, 30.0], Control::EdgeSoftness(3)),
+            ([50.0, 20.0], Control::Move),
+            ([55.0, 45.0], Control::Move),
+        ] {
+            assert_eq!(
+                shape.hit_control(map, point),
+                Some(Hit { id: "w", control }),
+                "{point:?}"
+            );
+        }
+        assert_eq!(shape.hit(map, [10.0, 10.0]), None);
+        assert!(
+            shape.outline(map, [60.0, 16.0]).is_some(),
+            "outer feather line"
+        );
+        assert!(
+            shape.outline(map, [60.0, 24.0]).is_some(),
+            "inner feather line"
+        );
+        // Unselected: a grey outline whose stroke and body move it; no handles or feathers.
+        shape.selected = None;
+        assert_eq!(
+            shape.hit_control(map, [40.0, 20.0]),
+            Some(Hit {
+                id: "w",
+                control: Control::Move
+            })
+        );
+        assert_eq!(shape.hit(map, [70.0, 16.0]), None);
+        assert!(shape.outline(map, [60.0, 16.0]).is_none());
+        // Size 0 has neither outline nor controls.
+        shape.shapes[0].to_canvas.xx = 0.0;
+        shape.shapes[0].to_canvas.yy = 0.0;
+        assert_eq!(shape.hit(map, [60.0, 40.0]), None);
+        assert!(shape.outline(map, [60.0, 40.0]).is_none());
+    }
+
+    #[test]
+    fn polygon_points_win_edges_insert_and_even_odd_bodies_are_never_reordered() {
+        let map = Viewport::Fit.map((120, 80), (120, 80), 0).unwrap();
+        let mut shape = overlay(vec![path("p", ShapeKind::Polygon, rectangle(), 0.05)]);
+        shape.selected = Some("p".into());
+        let hit = |shape: &WindowOverlay, point| shape.hit_control(map, point).map(|h| h.control);
+        assert_eq!(hit(&shape, [41.0, 21.0]), Some(Control::Point(0)));
+        assert_eq!(hit(&shape, [50.0, 20.5]), Some(Control::Insert(0)));
+        assert_eq!(hit(&shape, [79.5, 45.0]), Some(Control::Insert(1)));
+        assert_eq!(hit(&shape, [55.0, 45.0]), Some(Control::Move));
+        // No softness handles on a Polygon (p. 3193); its guides are display only.
+        assert_eq!(hit(&shape, [70.0, 16.0]), None);
+        assert!(shape.outline(map, [70.0, 16.0]).is_some());
+        // Crossing diagonals: equal distance picks the lower edge; even-odd lobes.
+        shape.shapes[0].points = vec![[-0.25, -0.25], [0.25, 0.25], [0.25, -0.25], [-0.25, 0.25]];
+        assert_eq!(hit(&shape, [60.0, 40.0]), Some(Control::Insert(0)));
+        assert_eq!(hit(&shape, [70.0, 40.0]), Some(Control::Move));
+        assert_eq!(hit(&shape, [60.0, 30.0]), None);
+        // A pentagram's centre is outside by even-odd, though its winding number is two.
+        shape.shapes[0].points = (0..5)
+            .map(|k| {
+                let a = (f64::from(k) * 144.0 - 90.0).to_radians();
+                [0.25 * a.cos(), 0.25 * a.sin()]
+            })
+            .collect();
+        shape.shapes[0].feathers = vec![[0.0; 2]; 5];
+        assert_eq!(hit(&shape, [60.0, 40.0]), None);
+        assert_eq!(hit(&shape, [60.0, 30.0]), Some(Control::Move));
+        // Unselected: no point handles and no insertion.
+        shape.selected = None;
+        assert_eq!(hit(&shape, [60.0, 20.5]), Some(Control::Move));
+    }
+
+    /// Guide coverage at a device point, from the drawn primitives only.
+    fn guide_alpha(shape: &WindowOverlay, map: ViewportMap, p: [f32; 2]) -> f32 {
+        shape
+            .primitives(&shape.shapes[0], map)
+            .iter()
+            .filter(|q| q.guide)
+            .map(|q| q.alpha(p, shape.style.width))
+            .fold(0.0, f32::max)
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn guides_follow_the_exact_mask_contours_through_rotation_and_aspect() {
+        let map = Viewport::Scale {
+            scale: 1.25,
+            center: [0.5, 0.5],
+        }
+        .map((160, 120), (120, 80), 0)
+        .unwrap();
+        let (sin, cos) = 0.5_f64.sin_cos();
+        let mut shape = overlay(vec![path("p", ShapeKind::Polygon, rectangle(), 0.08)]);
+        // Rotated, with a different scale on each local axis.
+        shape.shapes[0].to_canvas = Affine {
+            xx: 90.0 * cos,
+            xy: -60.0 * sin,
+            yx: 90.0 * sin,
+            yy: 60.0 * cos,
+            tx: 60.0,
+            ty: 40.0,
+        };
+        shape.selected = Some("p".into());
+        let placed = shape.shapes[0].clone();
+        let device = |local: [f64; 2]| placed.at(map, local).map(|v| v as f32);
+        // The inner contour is the mitred rectangle ±.17; the outer one rounds each corner.
+        for local in [
+            [0.17, 0.17],
+            [-0.17, 0.0],
+            [0.0, -0.33],
+            [0.25 + 0.08 * 0.6, -0.25 - 0.08 * 0.8],
+            [0.33, 0.1],
+        ] {
+            assert!(guide_alpha(&shape, map, device(local)) > 0.5, "{local:?}");
+        }
+        // The per-edge offsets overshot the inner corners; the outer corners are not mitred.
+        for local in [[0.24, 0.17], [0.17, -0.245], [0.33, 0.33], [0.33, -0.33]] {
+            assert_eq!(guide_alpha(&shape, map, device(local)), 0.0, "{local:?}");
+        }
+        // A Linear side with no softness has no guide beside it; the others keep theirs.
+        shape.shapes[0].kind = ShapeKind::Linear;
+        shape.shapes[0].feathers[1] = [0.0; 2];
+        assert_eq!(guide_alpha(&shape, map, device([0.33, 0.0])), 0.0);
+        assert!(guide_alpha(&shape, map, device([-0.33, 0.0])) > 0.5);
+    }
+
+    #[test]
+    #[allow(clippy::cast_precision_loss)]
+    fn narrow_polygon_draws_no_inner_guide_and_its_guides_never_hit() {
+        let map = Viewport::Fit.map((120, 80), (120, 80), 0).unwrap();
+        let narrow = vec![[-0.4, -0.05], [0.4, -0.05], [0.4, 0.05], [-0.4, 0.05]];
+        let mut shape = overlay(vec![path("p", ShapeKind::Polygon, narrow, 0.0)]);
+        // Inside 40 and Outside 10: .2 and .05 image heights; the shape is .1 high.
+        shape.shapes[0].feathers = vec![[0.2, 0.05]; 4];
+        shape.selected = Some("p".into());
+        // Device: the window spans x 28..92, y 36..44; the outer guide is 4 pixels out.
+        for y in 0..80 {
+            for x in 0..120 {
+                let p = [x as f32 + 0.5, y as f32 + 0.5];
+                let inside_window = (28.0..92.0).contains(&p[0]) && (36.0..44.0).contains(&p[1]);
+                if guide_alpha(&shape, map, p) > 0.0 {
+                    // Only the outer guide: no pixel within the window, none beyond 4 + 1.5.
+                    assert!(!inside_window, "{p:?}");
+                    let gap = (28.0 - p[0])
+                        .max(p[0] - 92.0)
+                        .max(36.0 - p[1])
+                        .max(p[1] - 44.0);
+                    assert!(gap > 1.0, "{p:?}");
+                }
+            }
+        }
+        // The old per-edge inner offset drew a phantom line outside, at y = 40 + 12.
+        assert_eq!(guide_alpha(&shape, map, [60.0, 52.0]), 0.0);
+        assert!(shape.outline(map, [60.0, 32.0]).is_some());
+        assert_eq!(
+            shape.hit(map, [60.0, 32.0]),
+            None,
+            "a guide is display only"
+        );
+        assert_eq!(shape.hit(map, [60.0, 52.0]), None);
+        assert_eq!(
+            shape.hit_control(map, [60.0, 40.0]).map(|h| h.control),
+            Some(Control::Move)
+        );
+    }
+
+    #[test]
+    #[allow(clippy::cast_precision_loss, clippy::many_single_char_names)]
+    fn every_covered_pixel_lies_in_its_primitive_quad() {
+        let mut circular = circle("c", 60.0);
+        circular.feather = 0.4;
+        let mut gradient = circle("g", 60.0);
+        gradient.kind = ShapeKind::Gradient;
+        gradient.feather = 0.3;
+        gradient.to_canvas.xy = 7.0;
+        let star: Vec<_> = (0..5)
+            .map(|k| {
+                let a = (f64::from(k) * 144.0 - 90.0).to_radians();
+                [0.3 * a.cos(), 0.3 * a.sin()]
+            })
+            .collect();
+        let mut linear = path("l", ShapeKind::Linear, rectangle(), 0.05);
+        linear.to_canvas.xy = -30.0;
+        let shapes = [
+            circular,
+            gradient,
+            linear,
+            path("p", ShapeKind::Polygon, star, 0.03),
+        ];
+        for shape in shapes {
+            let mut osc = overlay(vec![shape]);
+            osc.selected = Some(osc.shapes[0].id.clone());
+            for scale in [0.3, 1.0, 3.5, 1e20] {
+                let map = Viewport::Scale {
+                    scale,
+                    center: [0.45, 0.55],
+                }
+                .map((100, 70), (120, 80), 0)
+                .unwrap();
+                for primitive in osc.primitives(&osc.shapes[0], map) {
+                    let quad = primitive
+                        .quad(map, osc.style.width)
+                        .map(|q| q.map(f64::from));
+                    for y in 0..70 {
+                        for x in 0..100 {
+                            let p = [x as f32 + 0.5, y as f32 + 0.5];
+                            if primitive.alpha(p, osc.style.width) <= 0.0 || !osc.visible(map, p) {
+                                continue;
+                            }
+                            let q = quad.unwrap_or_else(|| panic!("{p:?} has no quad"));
+                            let d = [f64::from(p[0]) - q[0], f64::from(p[1]) - q[1]];
+                            let det = q[2] * q[5] - q[3] * q[4];
+                            let s = (d[0] * q[5] - d[1] * q[4]) / det;
+                            let t = (q[2] * d[1] - q[3] * d[0]) / det;
+                            assert!(
+                                (0.0..=1.0).contains(&s) && (0.0..=1.0).contains(&t),
+                                "{} {scale} {p:?} kind {}",
+                                osc.shapes[0].id,
+                                primitive.kind
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn path_controls_stay_finite_and_clipped_at_legal_extreme_zooms() {
+        let mut shape = overlay(vec![path("p", ShapeKind::Polygon, rectangle(), 0.05)]);
+        shape.selected = Some("p".into());
+        for scale in [2.0_f64.powi(-126), 1e-20, 1e20, 2.0_f64.powi(112)] {
+            let map = Viewport::Scale {
+                scale,
+                center: [0.5, 0.5],
+            }
+            .map((100, 100), (120, 80), 0)
+            .unwrap();
+            for p in shape.primitives(&shape.shapes[0], map) {
+                assert!(p
+                    .geometry
+                    .inverse
+                    .iter()
+                    .chain(&p.geometry.centre)
+                    .all(|v| v.is_finite() && v.abs() < 1e6));
+            }
+            for point in [[0.5, 0.5], [50.5, 50.5], [99.5, 99.5]] {
+                assert_eq!(
+                    shape.hit(map, point),
+                    if scale > 1.0 { Some("p") } else { None },
+                    "{scale}, {point:?}"
+                );
+            }
+        }
     }
 }

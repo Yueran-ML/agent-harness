@@ -2,7 +2,7 @@
 use super::*;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    PostMessageW, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+    PostMessageW, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE,
 };
 
 #[allow(
@@ -532,4 +532,121 @@ async fn pure_reference_frame_wipe_has_neither_window_hit_nor_capture() {
         "pure reference B must not capture: {answer}"
     );
     assert_eq!(project(&mut desktop).await, before);
+}
+
+#[allow(
+    unsafe_code,
+    reason = "synthetic middle-button messages to a test-owned child window"
+)]
+async fn middle(client: &mut Client, window: isize, message: u32, x: i32, y: i32) -> Value {
+    client.take_notifications();
+    unsafe {
+        PostMessageW(
+            Some(HWND(window as *mut _)),
+            message,
+            WPARAM(if message == WM_MBUTTONDOWN { 16 } else { 0 }),
+            LPARAM(((x & 0xffff) | ((y & 0xffff) << 16)) as isize),
+        )
+    }
+    .unwrap();
+    loop {
+        let event = client.message().await;
+        if event["method"] == "view.pointer" {
+            return event["params"].clone();
+        }
+    }
+}
+
+async fn shown(client: &mut Client, window: isize, revision: &Value) {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let p = pointer(client, window, WM_MOUSEMOVE, 64, 36).await;
+        if p["snapshot"]["revision"] == *revision && p["snapshot"]["ready"] == true {
+            return;
+        }
+        assert!(Instant::now() < deadline, "revision not presented: {p}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+fn polygon_points(project: &Value, binding: &Value) -> usize {
+    windows(project, binding)[0]["shape"]["points"]
+        .as_array()
+        .unwrap()
+        .len()
+}
+
+#[tokio::test]
+async fn native_polygon_edge_click_inserts_once_and_a_middle_tap_deletes_whole_animation_points() {
+    let dir = project_dir();
+    let engine = engine(dir.path(), &[]).await;
+    let parent = parent::Parent::open();
+    let mut desktop = engine.client("desktop").await;
+    let mut binding = fixture(&mut desktop).await;
+    let mut all = windows(&project(&mut desktop).await, &binding);
+    all[0]["shape"] = json!({"kind":"polygon","inside":0,"outside":0,"points":[
+        {"x":-0.25,"y":-0.25},{"x":0.25,"y":-0.25},{"x":0.25,"y":0.25},{"x":-0.25,"y":0.25}]});
+    let changed = desktop.apply(json!([{"op":"set_node","grade":binding["target"],"id":binding["node"],"params":{"windows":all}}])).await;
+    binding["revision"] = changed["revision"].clone();
+    desktop.result("view.attach",Some(json!({"monitor":"timeline","parent":parent.hwnd.to_string(),"x":0,"y":0,"width":128,"height":72}))).await;
+    desktop
+        .result(
+            "transport.load",
+            Some(json!({"monitor":"timeline","timeline":binding["timeline"]})),
+        )
+        .await;
+    let bound = desktop.result("window.bind", Some(binding.clone())).await;
+    let window = until_views(&parent, "polygon view", |views| views.len() == 1).await[0].0;
+    ready(&mut desktop, window, &bound["binding"]).await;
+    // A quick click on the top edge inserts exactly once, whether or not arming finished first.
+    let down = pointer(&mut desktop, window, WM_LBUTTONDOWN, 64, 18).await;
+    let started = desktop
+        .result(
+            "window.input",
+            Some(json!({"binding":bound["binding"],"kind":"down","event":down["event"]})),
+        )
+        .await;
+    assert_eq!(started["keys"]["inserted"], 1);
+    pointer(&mut desktop, window, WM_LBUTTONUP, 64, 18).await;
+    let ended = desktop
+        .result(
+            "window.input",
+            Some(json!({"binding":bound["binding"],"capture":started["capture"],"kind":"up"})),
+        )
+        .await;
+    assert_eq!(ended["phase"], "ended", "{ended}");
+    let inserted = project(&mut desktop).await;
+    assert_eq!(polygon_points(&inserted, &binding), 5);
+    desktop.result("history.undo", None).await;
+    let restored = project(&mut desktop).await;
+    assert_eq!(polygon_points(&restored, &binding), 4);
+    // A middle tap on a point deletes it; a moving middle drag never reaches this route.
+    shown(&mut desktop, window, &restored["revision"]).await;
+    let down = middle(&mut desktop, window, WM_MBUTTONDOWN, 82, 54).await;
+    let up = middle(&mut desktop, window, WM_MBUTTONUP, 82, 54).await;
+    assert_eq!(up["middle_moved"], false);
+    let deleted = desktop
+        .result(
+            "window.input",
+            Some(json!({"binding":bound["binding"],"kind":"delete","event":down["event"]})),
+        )
+        .await;
+    assert_eq!(
+        (deleted["phase"].clone(), deleted["point"].clone()),
+        (json!("deleted"), json!(2))
+    );
+    let three = project(&mut desktop).await;
+    assert_eq!(polygon_points(&three, &binding), 3);
+    // Below three points the whole delete is refused and nothing changes.
+    shown(&mut desktop, window, &three["revision"]).await;
+    let down = middle(&mut desktop, window, WM_MBUTTONDOWN, 46, 18).await;
+    middle(&mut desktop, window, WM_MBUTTONUP, 46, 18).await;
+    let refused = desktop
+        .error(
+            "window.input",
+            Some(json!({"binding":bound["binding"],"kind":"delete","event":down["event"]})),
+        )
+        .await;
+    assert_eq!(refused["data"]["topology"]["why"], "minimum", "{refused}");
+    assert_eq!(project(&mut desktop).await, three);
 }

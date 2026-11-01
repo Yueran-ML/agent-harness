@@ -10,6 +10,8 @@ fn overlay(x: f64) -> Arc<WindowOverlay> {
             radius: 1.0,
             kind: ShapeKind::Circular,
             feather: 0.0,
+            points: vec![],
+            feathers: vec![],
             to_canvas: Affine {
                 xx: 10.0,
                 xy: 0.0,

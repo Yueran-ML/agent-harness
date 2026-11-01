@@ -842,6 +842,22 @@ fn control_window_fixture(
     window: Window,
     at: (i32, i32),
 ) -> (State, Registry, Arc<Pin>, Arc<FrameSnapshot>) {
+    let (state, registry, pin, frame, begun) = try_control_window(window, at);
+    begun.expect("visible control must capture");
+    (state, registry, pin, frame)
+}
+
+#[allow(clippy::type_complexity, reason = "one fixture tuple")]
+fn try_control_window(
+    window: Window,
+    at: (i32, i32),
+) -> (
+    State,
+    Registry,
+    Arc<Pin>,
+    Arc<FrameSnapshot>,
+    Result<Value, Fault>,
+) {
     let (mut state, registry, old_pin, old_frame) = fixture();
     state.window_end("fixture");
     let mut frame = (*old_frame).clone();
@@ -870,10 +886,408 @@ fn control_window_fixture(
     registry.observe(Monitor::Timeline, 1, pointer.presentation);
     let event = registry.input(Monitor::Timeline, 7, 1, pointer, Some(frame.clone()));
     let pin = registry.claim(7, event).unwrap();
-    state
-        .window_begin(7, 1, pin.clone(), registry.clone())
-        .expect("visible control must capture");
-    (state, registry, pin, frame)
+    let begun = state.window_begin(7, 1, pin.clone(), registry.clone());
+    (state, registry, pin, frame, begun)
+}
+
+/// Default transform on the 128x72 fixture: local (x, y) is device (64 + 72x, 36 + 72y).
+fn drag(
+    state: &mut State,
+    registry: &Registry,
+    pin: &Arc<Pin>,
+    frame: &Arc<FrameSnapshot>,
+    to: (i32, i32),
+) {
+    let mut pointer = pin.down.pointer;
+    pointer.kind = PointerKind::Move;
+    pointer.button = None;
+    pointer.window = to;
+    registry.input(Monitor::Timeline, 7, 1, pointer, Some(frame.clone()));
+    let id = state.window.active.as_ref().unwrap().id;
+    state.window_events(
+        id,
+        registry.events(pin),
+        registry.current(Monitor::Timeline, 1),
+    );
+}
+
+fn first_window(state: &State) -> Window {
+    let selection = state.window.selection.as_ref().unwrap();
+    selection
+        .corrector(state.history.project())
+        .unwrap()
+        .windows[0]
+        .clone()
+}
+
+fn path_points(window: &Window) -> Vec<columbina_model::grade::WindowPoint> {
+    match &window.shape {
+        WindowShape::Linear { points, .. } => points.to_vec(),
+        WindowShape::Polygon { points, .. } => points.clone(),
+        _ => panic!("not a path"),
+    }
+}
+
+/// The real arming step: begin the owned gesture, then write any insertion as its first step.
+fn arm_capture(state: &mut State) {
+    let mut capture = state.window.active.take().unwrap();
+    capture.gesture = Some(
+        state
+            .begin_owned_gesture(7, state.history.revision())
+            .unwrap(),
+    );
+    state.window_write_insertion(&mut capture).unwrap();
+    state.window.active = Some(capture);
+}
+
+#[test]
+fn linear_corner_drag_uses_the_displayed_corner_but_writes_only_its_left_keys() {
+    let mut window = Window::new("w1", WindowShape::linear());
+    let WindowShape::Linear { points, .. } = &mut window.shape else {
+        panic!()
+    };
+    // Displayed at -0.25 on frame 10 (E), its left key holds -0.5 (L).
+    points[0].x = Param::Keys(vec![
+        Key {
+            frame: 0,
+            value: -0.5,
+            interp: Interp::Linear,
+        },
+        Key {
+            frame: 20,
+            value: 0.0,
+            interp: Interp::Hold,
+        },
+    ]);
+    let before = window.clone();
+    let (mut state, registry, pin, frame) = control_window_fixture(window, (46, 18));
+    assert_eq!(
+        state.window.active.as_ref().unwrap().movement.keys(),
+        json!({"points":[{"point":0,"x":0,"y":null}],"clock":"source","frame":10})
+    );
+    arm(&mut state);
+    drag(&mut state, &registry, &pin, &frame, (64, 27));
+    let points = path_points(&first_window(&state));
+    let Param::Keys(keys) = &points[0].x else {
+        panic!()
+    };
+    assert!((keys[0].value - -0.25).abs() < 1e-12, "L + 18 px");
+    assert_eq!(keys[1].value, 0.0);
+    assert!((points[0].y.value_at(10.0) - -0.125).abs() < 1e-12);
+    assert_eq!(points[1..], path_points(&before)[1..]);
+    assert_eq!(first_window(&state).transform, before.transform);
+}
+
+#[test]
+fn linear_side_drag_moves_both_ends_and_its_softness_handle_edits_only_that_side() {
+    let (mut state, registry, pin, frame) =
+        control_window_fixture(Window::new("w1", WindowShape::linear()), (64, 18));
+    arm(&mut state);
+    drag(&mut state, &registry, &pin, &frame, (64, 36));
+    let points = path_points(&first_window(&state));
+    for (point, want) in points
+        .iter()
+        .zip([(-0.25, 0.0), (0.25, 0.0), (0.25, 0.25), (-0.25, 0.25)])
+    {
+        assert!((point.x.value_at(0.0) - want.0).abs() < 1e-12, "{point:?}");
+        assert!((point.y.value_at(0.0) - want.1).abs() < 1e-12, "{point:?}");
+    }
+    // Soft 1's handle is 3/4 along the top side, just outside it; up by 9 px is +50.
+    let (mut state, registry, pin, frame) =
+        control_window_fixture(Window::new("w1", WindowShape::linear()), (72, 17));
+    assert_eq!(
+        state.window.active.as_ref().unwrap().movement.keys(),
+        json!({"softness":null,"edge":0,"clock":"source","frame":10})
+    );
+    arm(&mut state);
+    drag(&mut state, &registry, &pin, &frame, (72, 8));
+    let WindowShape::Linear { softness, points } = first_window(&state).shape else {
+        panic!()
+    };
+    assert!((softness[0].value_at(0.0) - 51.0).abs() < 1e-9);
+    assert_eq!(
+        softness[1..],
+        [Param::Fixed(1.0), Param::Fixed(1.0), Param::Fixed(1.0)]
+    );
+    let WindowShape::Linear {
+        points: initial, ..
+    } = WindowShape::linear()
+    else {
+        unreachable!()
+    };
+    assert_eq!(points, initial);
+}
+
+#[test]
+fn polygon_point_drag_and_body_move_keep_the_point_order() {
+    let (mut state, registry, pin, frame) =
+        control_window_fixture(Window::new("w1", WindowShape::polygon()), (82, 54));
+    arm(&mut state);
+    drag(&mut state, &registry, &pin, &frame, (91, 63));
+    let points = path_points(&first_window(&state));
+    assert_eq!(
+        (points[2].x.value_at(0.0), points[2].y.value_at(0.0)),
+        (0.375, 0.375)
+    );
+    assert_eq!(points.len(), 4);
+    let (mut state, registry, pin, frame) =
+        control_window_fixture(Window::new("w1", WindowShape::polygon()), (60, 40));
+    arm(&mut state);
+    drag(&mut state, &registry, &pin, &frame, (76, 40));
+    let window = first_window(&state);
+    assert_eq!(window.transform.pan, Param::Fixed(62.5));
+    assert_eq!(path_points(&window).len(), 4);
+}
+
+#[test]
+fn polygon_edge_insertion_and_its_drag_are_one_undo_step_and_keep_the_down_original() {
+    let (mut state, registry, pin, frame) =
+        control_window_fixture(Window::new("w1", WindowShape::polygon()), (64, 18));
+    let before = state.history.project().clone();
+    let original = state
+        .window
+        .active
+        .as_ref()
+        .unwrap()
+        .movement
+        .original
+        .clone();
+    assert_eq!(
+        state.window.active.as_ref().unwrap().movement.keys(),
+        json!({"points":[{"point":1,"x":null,"y":null}],"inserted":1,"clock":"source","frame":10})
+    );
+    arm_capture(&mut state);
+    let points = path_points(&first_window(&state));
+    assert_eq!(points.len(), 5);
+    assert!(
+        (points[1].x.value_at(0.0) - 0.5 / 72.0).abs() < 1e-12,
+        "the clicked share"
+    );
+    assert!(matches!(points[1].y, Param::Fixed(y) if (y - -0.25).abs() < 1e-12));
+    drag(&mut state, &registry, &pin, &frame, (64, 27));
+    let points = path_points(&first_window(&state));
+    assert!(matches!(points[1].y, Param::Fixed(y) if (y - -0.125).abs() < 1e-12));
+    assert_eq!(
+        (points[0].clone(), points[2].clone()),
+        (
+            path_points(&original[0])[0].clone(),
+            path_points(&original[0])[1].clone()
+        )
+    );
+    assert_eq!(path_points(&original[0]).len(), 4, "Esc restores this list");
+    state.window_end("up");
+    state.history.undo("desktop").unwrap().unwrap();
+    assert_eq!(state.history.project(), &before);
+    assert!(!state.history.can_undo());
+}
+
+#[test]
+fn esc_after_an_edge_insertion_and_its_drag_restores_four_points_without_an_undo_step() {
+    let (mut state, registry, pin, frame) =
+        control_window_fixture(Window::new("w1", WindowShape::polygon()), (64, 18));
+    let before = state.history.project().clone();
+    arm_capture(&mut state);
+    drag(&mut state, &registry, &pin, &frame, (64, 27));
+    assert_eq!(path_points(&first_window(&state)).len(), 5);
+    assert!(state.history.can_undo());
+    // The same route as `window.input {kind:"cancel"}` once its capture is checked.
+    let capture = state.window.active.take().unwrap();
+    let ended = state.window_cancel(7, capture);
+    assert_eq!(
+        (ended["phase"].as_str(), ended["reason"].as_str()),
+        (Some("ended"), Some("cancel"))
+    );
+    assert_eq!(path_points(&first_window(&state)).len(), 4);
+    assert_eq!(state.history.project(), &before);
+    assert!(
+        !state.history.can_undo(),
+        "the cancelled gesture leaves no step"
+    );
+    assert!(state.history.gesture().is_none());
+    assert!(!pin.live.load(Ordering::Acquire));
+}
+
+#[test]
+fn a_released_edge_click_before_arming_inserts_once_and_an_unreleased_one_writes_nothing() {
+    for released in [true, false] {
+        let (mut state, registry, pin, frame) =
+            control_window_fixture(Window::new("w1", WindowShape::polygon()), (64, 18));
+        if released {
+            let mut pointer = pin.down.pointer;
+            pointer.kind = PointerKind::Up;
+            pointer.buttons = 0;
+            registry.input(Monitor::Timeline, 7, 1, pointer, Some(frame.clone()));
+        }
+        let capture = state.window.active.take().unwrap();
+        let ended = state.window_finish_unarmed(capture, "native_end");
+        assert_eq!(ended["phase"], if released { "ended" } else { "refused" });
+        assert_eq!(state.history.revision(), u64::from(released));
+        assert_eq!(
+            path_points(&first_window(&state)).len(),
+            if released { 5 } else { 4 }
+        );
+    }
+}
+
+#[test]
+fn an_animated_edge_that_cannot_keep_its_shape_refuses_the_whole_insertion_at_down() {
+    let mut window = Window::new("w1", WindowShape::polygon());
+    let WindowShape::Polygon { points, .. } = &mut window.shape else {
+        panic!()
+    };
+    let keys = |interp| {
+        Param::Keys(vec![
+            Key {
+                frame: 0,
+                value: -0.25,
+                interp,
+            },
+            Key {
+                frame: 20,
+                value: 0.0,
+                interp: Interp::Linear,
+            },
+        ])
+    };
+    points[0].y = keys(Interp::Hold);
+    points[1].y = keys(Interp::Linear);
+    let (state, _, _, _, begun) = try_control_window(window, (64, 22));
+    let fault = begun.unwrap_err();
+    assert_eq!(
+        fault.data,
+        Some(
+            json!({"reason":"insert","topology":{"why":"jump","axis":"y","points":[0,1],
+            "frames":[0,20],"clock":"source"}})
+        )
+    );
+    assert!(state.window.active.is_none());
+    assert_eq!(state.history.revision(), 0);
+}
+
+fn middle_tap(
+    registry: &Registry,
+    pin: &Arc<Pin>,
+    frame: &Arc<FrameSnapshot>,
+    at: (i32, i32),
+    moved: bool,
+) -> Tap {
+    let mut pointer = pin.down.pointer;
+    pointer.kind = PointerKind::Down;
+    pointer.button = Some(Button::Middle);
+    pointer.buttons = 4;
+    pointer.window = at;
+    let event = registry.input(Monitor::Timeline, 7, 1, pointer, Some(frame.clone()));
+    pointer.kind = PointerKind::Up;
+    pointer.buttons = 0;
+    pointer.middle_moved = moved;
+    registry.input(Monitor::Timeline, 7, 1, pointer, Some(frame.clone()));
+    assert!(
+        registry.claim_tap(8, event).is_none(),
+        "only its owner claims it"
+    );
+    registry.claim_tap(7, event).unwrap()
+}
+
+#[test]
+fn a_waiting_middle_tap_keeps_no_project_and_a_pan_end_keeps_no_controls() {
+    let (mut state, registry, pin, frame) =
+        control_window_fixture(Window::new("w1", WindowShape::polygon()), (60, 40));
+    state.window_end("fixture");
+    let held = Arc::strong_count(&frame.project);
+    let mut pointer = pin.down.pointer;
+    pointer.kind = PointerKind::Down;
+    pointer.button = Some(Button::Middle);
+    pointer.buttons = 4;
+    pointer.window = (82, 54);
+    let event = registry.input(Monitor::Timeline, 7, 1, pointer, Some(frame.clone()));
+    assert_eq!(
+        Arc::strong_count(&frame.project),
+        held,
+        "a tap waiting for its release or claim holds no Project"
+    );
+    pointer.kind = PointerKind::Up;
+    pointer.buttons = 0;
+    pointer.middle_moved = true;
+    registry.input(Monitor::Timeline, 7, 1, pointer, Some(frame.clone()));
+    assert_eq!(Arc::strong_count(&frame.project), held);
+    let tap = registry.claim_tap(7, event).unwrap();
+    assert!(tap.down.frame.is_none() && tap.up.as_ref().unwrap().frame.is_none());
+    assert!(
+        tap.shown.is_none(),
+        "a pan's end lets the down's controls go"
+    );
+    assert_eq!(
+        state.window_delete(7, 1, &tap).unwrap_err().data,
+        Some(json!({"reason":"moved"}))
+    );
+}
+
+#[test]
+fn a_middle_tap_deletes_a_polygon_point_for_the_whole_animation_in_one_step() {
+    let mut window = Window::new("w1", WindowShape::polygon());
+    let WindowShape::Polygon { points, .. } = &mut window.shape else {
+        panic!()
+    };
+    points[3].x = Param::Keys(vec![Key {
+        frame: 4,
+        value: -0.25,
+        interp: Interp::Linear,
+    }]);
+    let kept = [points[0].clone(), points[1].clone(), points[3].clone()];
+    let (mut state, registry, pin, frame) = control_window_fixture(window, (60, 40));
+    state.window_end("fixture");
+    let before = state.history.project().clone();
+    // A moved middle gesture is a pan, not a delete.
+    let moved = middle_tap(&registry, &pin, &frame, (82, 54), true);
+    assert_eq!(
+        state.window_delete(7, 1, &moved).unwrap_err().data,
+        Some(json!({"reason":"moved"}))
+    );
+    let tap = middle_tap(&registry, &pin, &frame, (82, 54), false);
+    assert!(
+        registry.claim_tap(7, tap.down.sequence).is_none(),
+        "claimed once"
+    );
+    let deleted = state.window_delete(7, 1, &tap).unwrap();
+    assert_eq!(deleted["point"], 2);
+    assert_eq!(deleted["selected"], "w1");
+    assert_eq!(path_points(&first_window(&state)), kept);
+    state.history.undo("desktop").unwrap().unwrap();
+    assert_eq!(state.history.project(), &before);
+}
+
+#[test]
+fn a_middle_tap_keeps_three_polygon_points_and_never_deletes_linear_corners() {
+    use columbina_model::grade::WindowPoint;
+    let triangle = Window::new(
+        "w1",
+        WindowShape::Polygon {
+            points: vec![
+                WindowPoint::new(-0.25, 0.25),
+                WindowPoint::new(0.0, -0.25),
+                WindowPoint::new(0.25, 0.25),
+            ],
+            inside: 0.0.into(),
+            outside: 0.0.into(),
+        },
+    );
+    let (mut state, registry, pin, frame) = control_window_fixture(triangle, (64, 40));
+    state.window_end("fixture");
+    let tap = middle_tap(&registry, &pin, &frame, (82, 54), false);
+    assert_eq!(
+        state.window_delete(7, 1, &tap).unwrap_err().data,
+        Some(json!({"reason":"delete","topology":{"why":"minimum","least":3}}))
+    );
+    assert_eq!(state.history.revision(), 0);
+    let (mut state, registry, pin, frame) =
+        control_window_fixture(Window::new("w1", WindowShape::linear()), (60, 40));
+    state.window_end("fixture");
+    let tap = middle_tap(&registry, &pin, &frame, (82, 54), false);
+    assert_eq!(
+        state.window_delete(7, 1, &tap).unwrap_err().data,
+        Some(json!({"reason":"hit"}))
+    );
+    assert_eq!(state.history.revision(), 0);
 }
 
 #[test]

@@ -2,7 +2,8 @@
 use std::sync::Arc;
 
 use columbina_model::grade::{
-    window::bounds, Bounds, Corrector, NodeKind, Param, Target, Window, WindowShape,
+    window::{bounds, topology::TopologyError, MOST_POLYGON_POINTS},
+    Bounds, Corrector, NodeKind, Param, Target, Window, WindowPoint, WindowShape,
 };
 use columbina_model::{Project, Timeline};
 use columbina_view::window_overlay::{
@@ -53,6 +54,36 @@ pub fn refused(reason: &str) -> Fault {
         format!("Window input is no longer valid: {reason}"),
     )
     .with_data(json!({"reason":reason}))
+}
+
+/// A refused whole-animation Polygon edit, with what the desktop needs to explain it. `points`
+/// are 0-based Polygon point indices; `frames` is the key interval in `clock` frames.
+pub fn topology_refused(reason: &str, error: &TopologyError, clock: &str) -> Fault {
+    let detail = match error {
+        TopologyError::Maximum => json!({"why":"maximum","most":MOST_POLYGON_POINTS}),
+        TopologyError::Minimum => json!({"why":"minimum","least":3}),
+        TopologyError::Unsupported => json!({"why":"unsupported"}),
+        TopologyError::Shape {
+            axis,
+            points,
+            why,
+            frames,
+        } => json!({"why":why,"axis":axis,"points":points,"frames":frames,"clock":clock}),
+    };
+    Fault::new(
+        rpc::REFUSED,
+        format!("Window input is no longer valid: {reason}"),
+    )
+    .with_data(json!({"reason":reason,"topology":detail}))
+}
+
+/// Why a down could not capture a control.
+#[derive(Debug)]
+pub enum Refusal {
+    /// The hit no longer names a supported, current control.
+    Target,
+    /// A Polygon edge insertion that the model refused as a whole, with the keys' clock.
+    Insert(TopologyError, &'static str),
 }
 
 impl Selection {
@@ -181,15 +212,48 @@ impl Selection {
         }
         let (placement, size, at) = self.placement(frame)?;
         let c = self.corrector(&frame.project)?;
+        let value = |p: &Param, b: Bounds| p.value_at(at as f64).clamp(b.low, b.high);
         let shapes = c
             .windows
             .iter()
             .filter(|w| w.enabled)
             .filter_map(|w| {
-                let (kind, softness) = match &w.shape {
-                    WindowShape::Circular { softness } => (ShapeKind::Circular, softness),
-                    WindowShape::Gradient { softness } => (ShapeKind::Gradient, softness),
-                    _ => return None,
+                // Linear Soft 1–4 span soft/200 across each side; Polygon inside/outside soft/200.
+                let (kind, feather, feathers) = match &w.shape {
+                    WindowShape::Circular { softness } => (
+                        ShapeKind::Circular,
+                        value(softness, bounds::SOFTNESS) / 400.0,
+                        vec![],
+                    ),
+                    WindowShape::Gradient { softness } => (
+                        ShapeKind::Gradient,
+                        value(softness, bounds::SOFTNESS) / 400.0,
+                        vec![],
+                    ),
+                    WindowShape::Linear { softness, .. } => (
+                        ShapeKind::Linear,
+                        0.0,
+                        softness
+                            .iter()
+                            .map(|s| [value(s, bounds::SOFTNESS) / 400.0; 2])
+                            .collect(),
+                    ),
+                    WindowShape::Polygon {
+                        points,
+                        inside,
+                        outside,
+                    } => (
+                        ShapeKind::Polygon,
+                        0.0,
+                        vec![
+                            [
+                                value(inside, bounds::FEATHER) / 200.0,
+                                value(outside, bounds::FEATHER) / 200.0
+                            ];
+                            points.len()
+                        ],
+                    ),
+                    WindowShape::Curve { .. } => return None,
                 };
                 let [xx, yx, xy, yy, tx, ty] = w
                     .transform
@@ -198,10 +262,9 @@ impl Selection {
                     id: w.id.clone(),
                     radius: columbina_model::grade::window::DEFAULT_EXTENT,
                     kind,
-                    feather: softness
-                        .value_at(at as f64)
-                        .clamp(bounds::SOFTNESS.low, bounds::SOFTNESS.high)
-                        / 400.0,
+                    feather,
+                    points: outline_at(&w.shape, at),
+                    feathers,
                     to_canvas: compose(
                         placement,
                         Affine {
@@ -280,7 +343,7 @@ impl LeftKey {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Field {
     Size,
     Aspect,
@@ -288,6 +351,11 @@ enum Field {
     Tilt,
     Rotate,
     Softness,
+    /// A Linear corner or Polygon point's local coordinates.
+    X(usize),
+    Y(usize),
+    /// Linear Soft 1–4, for side `j` from point `j` to the next.
+    EdgeSoftness(usize),
 }
 impl Field {
     fn name(self) -> &'static str {
@@ -297,7 +365,9 @@ impl Field {
             Self::Pan => "pan",
             Self::Tilt => "tilt",
             Self::Rotate => "rotate",
-            Self::Softness => "softness",
+            Self::Softness | Self::EdgeSoftness(_) => "softness",
+            Self::X(_) => "x",
+            Self::Y(_) => "y",
         }
     }
     fn bounds(self) -> Bounds {
@@ -307,21 +377,66 @@ impl Field {
             Self::Pan => bounds::PAN,
             Self::Tilt => bounds::TILT,
             Self::Rotate => bounds::ROTATE,
-            Self::Softness => bounds::SOFTNESS,
+            Self::Softness | Self::EdgeSoftness(_) => bounds::SOFTNESS,
+            Self::X(_) | Self::Y(_) => bounds::COORDINATE,
         }
     }
     fn param(self, window: &mut Window) -> &mut Param {
-        match self {
-            Self::Size => &mut window.transform.size,
-            Self::Aspect => &mut window.transform.aspect,
-            Self::Pan => &mut window.transform.pan,
-            Self::Tilt => &mut window.transform.tilt,
-            Self::Rotate => &mut window.transform.rotate,
-            Self::Softness => match &mut window.shape {
-                WindowShape::Circular { softness } | WindowShape::Gradient { softness } => softness,
-                _ => unreachable!("captured supported shape"),
-            },
+        match (self, &mut window.shape) {
+            (Self::Size, _) => &mut window.transform.size,
+            (Self::Aspect, _) => &mut window.transform.aspect,
+            (Self::Pan, _) => &mut window.transform.pan,
+            (Self::Tilt, _) => &mut window.transform.tilt,
+            (Self::Rotate, _) => &mut window.transform.rotate,
+            (
+                Self::Softness,
+                WindowShape::Circular { softness } | WindowShape::Gradient { softness },
+            ) => softness,
+            (Self::EdgeSoftness(j), WindowShape::Linear { softness, .. }) => &mut softness[j],
+            (Self::X(i), WindowShape::Linear { points, .. }) => &mut points[i].x,
+            (Self::Y(i), WindowShape::Linear { points, .. }) => &mut points[i].y,
+            (Self::X(i), WindowShape::Polygon { points, .. }) => &mut points[i].x,
+            (Self::Y(i), WindowShape::Polygon { points, .. }) => &mut points[i].y,
+            _ => unreachable!("captured supported shape"),
         }
+    }
+}
+
+/// Local Linear/Polygon outline points at the captured frame, clamped as they are drawn.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "the model evaluates keyframes as f64"
+)]
+fn outline_at(shape: &WindowShape, at: i64) -> Vec<[f64; 2]> {
+    let points: &[WindowPoint] = match shape {
+        WindowShape::Linear { points, .. } => points.as_ref(),
+        WindowShape::Polygon { points, .. } => points,
+        _ => &[],
+    };
+    let value = |p: &Param| {
+        p.value_at(at as f64)
+            .clamp(bounds::COORDINATE.low, bounds::COORDINATE.high)
+    };
+    points.iter().map(|p| [value(&p.x), value(&p.y)]).collect()
+}
+
+/// The outward local unit normal of `edge`, by the outline's winding; zero if degenerate.
+fn outward(points: &[[f64; 2]], edge: usize) -> [f64; 2] {
+    let count = points.len();
+    let twice_area: f64 = (0..count)
+        .map(|i| {
+            let (from, to) = (points[i], points[(i + 1) % count]);
+            from[0] * to[1] - to[0] * from[1]
+        })
+        .sum();
+    let sign = if twice_area < 0.0 { -1.0 } else { 1.0 };
+    let (from, to) = (points[edge], points[(edge + 1) % count]);
+    let along = [to[0] - from[0], to[1] - from[1]];
+    let length = along[0].hypot(along[1]);
+    if length > 0.0 && length.is_finite() {
+        [sign * along[1] / length, -sign * along[0] / length]
+    } else {
+        [0.0; 2]
     }
 }
 
@@ -373,7 +488,13 @@ impl RotationBasis {
 }
 
 pub struct Movement {
+    /// The complete list at down, restored by Esc.
     pub original: Vec<Window>,
+    /// What every update starts from: `original`, or it with an inserted Polygon point.
+    base: Vec<Window>,
+    inserted: Option<usize>,
+    /// The captured Linear side's outward local normal at down.
+    normal: [f64; 2],
     index: usize,
     keys: Vec<(Field, LeftKey)>,
     pub control: Control,
@@ -391,10 +512,41 @@ impl Movement {
     pub fn selected(&self) -> &str {
         &self.original[self.index].id
     }
+    /// The list with an inserted point, written by the first armed step, if this inserts.
+    pub fn inserted(&self) -> Option<&[Window]> {
+        self.inserted.map(|_| self.base.as_slice())
+    }
     pub fn keys(&self) -> Value {
         let mut keys = serde_json::Map::new();
+        let mut points: Vec<(usize, serde_json::Map<String, Value>)> = Vec::new();
         for (field, key) in &self.keys {
-            keys.insert(field.name().into(), json!(key.frame));
+            match *field {
+                Field::X(i) | Field::Y(i) => {
+                    let at = points.iter().position(|(p, _)| *p == i).unwrap_or_else(|| {
+                        let mut entry = serde_json::Map::new();
+                        entry.insert("point".into(), json!(i));
+                        points.push((i, entry));
+                        points.len() - 1
+                    });
+                    points[at].1.insert(field.name().into(), json!(key.frame));
+                }
+                Field::EdgeSoftness(j) => {
+                    keys.insert("softness".into(), json!(key.frame));
+                    keys.insert("edge".into(), json!(j));
+                }
+                _ => {
+                    keys.insert(field.name().into(), json!(key.frame));
+                }
+            }
+        }
+        if !points.is_empty() {
+            keys.insert(
+                "points".into(),
+                Value::Array(points.into_iter().map(|(_, e)| Value::Object(e)).collect()),
+            );
+        }
+        if let Some(i) = self.inserted {
+            keys.insert("inserted".into(), json!(i));
         }
         keys.insert("clock".into(), json!(self.clock));
         keys.insert("frame".into(), json!(self.frame));
@@ -406,13 +558,61 @@ impl Movement {
         id: &str,
         canvas: (f64, f64),
     ) -> Option<Self> {
-        Self::capture(selection, frame, id, Control::Move, canvas)
+        Self::capture(selection, frame, id, Control::Move, canvas).ok()
+    }
+    /// Capture one control. A Polygon `Insert` also inserts its point into `base` for the whole
+    /// animation at the clicked share of the displayed edge, or refuses as a whole.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal::Insert`] says why the model cannot insert this point exactly.
+    pub fn capture(
+        selection: &Selection,
+        frame: &FrameSnapshot,
+        id: &str,
+        control: Control,
+        canvas: (f64, f64),
+    ) -> Result<Self, Refusal> {
+        let mut movement =
+            Self::locate(selection, frame, id, control, canvas).ok_or(Refusal::Target)?;
+        if let Control::Insert(edge) = control {
+            movement.insert(usize::from(edge))?;
+        }
+        Ok(movement)
+    }
+    fn insert(&mut self, edge: usize) -> Result<(), Refusal> {
+        let points = outline_at(&self.original[self.index].shape, self.frame);
+        let (a, b) = (points[edge], points[(edge + 1) % points.len()]);
+        let d = [b[0] - a[0], b[1] - a[1]];
+        let q = [self.local_down.0 - a[0], self.local_down.1 - a[1]];
+        let length = d[0] * d[0] + d[1] * d[1];
+        // The clicked spot on the displayed edge; its ends are point handles.
+        let share = if length > 0.0 && length.is_finite() {
+            ((q[0] * d[0] + q[1] * d[1]) / length).clamp(1e-3, 1.0 - 1e-3)
+        } else {
+            0.5
+        };
+        let inserted = self.base[self.index]
+            .shape
+            .insert_polygon_point(edge, share)
+            .map_err(|error| Refusal::Insert(error, self.clock))?;
+        self.inserted = Some(inserted);
+        self.keys = [Field::X(inserted), Field::Y(inserted)]
+            .into_iter()
+            .map(|field| {
+                (
+                    field,
+                    LeftKey::of(field.param(&mut self.base[self.index]), self.frame),
+                )
+            })
+            .collect();
+        Ok(())
     }
     #[allow(
         clippy::cast_precision_loss,
         reason = "the model evaluates keyframes as f64"
     )]
-    pub fn capture(
+    fn locate(
         selection: &Selection,
         frame: &FrameSnapshot,
         id: &str,
@@ -422,21 +622,42 @@ impl Movement {
         let (placement, picture, at) = selection.placement(frame)?;
         let mut original = selection.corrector(&frame.project)?.windows.clone();
         let index = original.iter().position(|w| {
-            w.id == id
-                && w.enabled
-                && matches!(
-                    w.shape,
-                    WindowShape::Circular { .. } | WindowShape::Gradient { .. }
-                )
+            w.id == id && w.enabled && !matches!(w.shape, WindowShape::Curve { .. })
         })?;
-        let gradient = matches!(original[index].shape, WindowShape::Gradient { .. });
-        let fields: &[Field] = match control {
-            Control::Move => &[Field::Pan, Field::Tilt],
-            Control::Size(i) if !gradient && i < 4 => &[Field::Size],
-            Control::Aspect(i) if !gradient && i < 4 => &[Field::Aspect],
-            Control::Rotate => &[Field::Rotate],
-            Control::Softness(side) if side == 1 || gradient && side == -1 => &[Field::Softness],
+        let shape = &original[index].shape;
+        let gradient = matches!(shape, WindowShape::Gradient { .. });
+        let circular = matches!(shape, WindowShape::Circular { .. });
+        let linear = matches!(shape, WindowShape::Linear { .. });
+        let points = outline_at(shape, at);
+        let n = points.len();
+        let fields: Vec<Field> = match control {
+            Control::Move => vec![Field::Pan, Field::Tilt],
+            Control::Size(i) if circular && i < 4 => vec![Field::Size],
+            Control::Aspect(i) if circular && i < 4 => vec![Field::Aspect],
+            Control::Rotate if circular || gradient => vec![Field::Rotate],
+            Control::Softness(side) if circular && side == 1 || gradient && side.abs() == 1 => {
+                vec![Field::Softness]
+            }
+            Control::Point(i) if usize::from(i) < n => {
+                vec![Field::X(usize::from(i)), Field::Y(usize::from(i))]
+            }
+            Control::Edge(j) if linear && usize::from(j) < n => {
+                let (j, k) = (usize::from(j), (usize::from(j) + 1) % n);
+                vec![Field::X(j), Field::Y(j), Field::X(k), Field::Y(k)]
+            }
+            Control::EdgeSoftness(j) if linear && usize::from(j) < n => {
+                vec![Field::EdgeSoftness(usize::from(j))]
+            }
+            Control::Insert(j)
+                if matches!(shape, WindowShape::Polygon { .. }) && usize::from(j) < n =>
+            {
+                vec![]
+            }
             _ => return None,
+        };
+        let normal = match control {
+            Control::EdgeSoftness(j) => outward(&points, usize::from(j)),
+            _ => [0.0; 2],
         };
         let keys = fields
             .iter()
@@ -477,7 +698,10 @@ impl Movement {
             }
         };
         Some(Self {
+            base: original.clone(),
             original,
+            inserted: None,
+            normal,
             index,
             keys,
             control,
@@ -505,7 +729,10 @@ impl Movement {
         let delta = [local.0 - self.local_down.0, local.1 - self.local_down.1];
         let extent = columbina_model::grade::window::DEFAULT_EXTENT;
         let amount = match self.control {
-            Control::Move => 0.0,
+            Control::Move | Control::Point(_) | Control::Edge(_) | Control::Insert(_) => 0.0,
+            Control::EdgeSoftness(_) => {
+                400.0 * (delta[0] * self.normal[0] + delta[1] * self.normal[1])
+            }
             Control::Size(i) => {
                 let corner = CORNERS[usize::from(i)].map(|x| x * extent);
                 let stretch = (1.0
@@ -536,11 +763,13 @@ impl Movement {
                     }
             }
         };
-        let mut windows = self.original.clone();
+        let mut windows = self.base.clone();
         for &(field, key) in &self.keys {
             let amount = match field {
                 Field::Pan => 100.0 * (picture.0 - self.down.0),
                 Field::Tilt => -100.0 * (picture.1 - self.down.1),
+                Field::X(_) => delta[0],
+                Field::Y(_) => delta[1],
                 _ => amount,
             };
             key.write(

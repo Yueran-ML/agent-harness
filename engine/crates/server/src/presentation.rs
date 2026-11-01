@@ -132,6 +132,42 @@ struct MonitorFrames {
     current: Option<(Presentation, u64, Arc<FrameSnapshot>)>,
     pending: VecDeque<(u64, Arc<FrameSnapshot>)>,
     input: Option<NativeInput>,
+    tap: Option<Tap>,
+}
+
+/// The last native middle down and its release, kept apart from a left capture's pin. Only an
+/// unmoved release (the native latch, not client coordinates) can be claimed, once. Neither
+/// input keeps its frame: a tap waiting to be claimed holds no Project, only what the down's
+/// own frame showed, and a moved (panning) release lets that go too.
+#[derive(Clone)]
+pub struct Tap {
+    pub down: Input,
+    pub up: Option<Input>,
+    pub shown: Option<TapFrame>,
+}
+
+impl Tap {
+    /// A middle down's tap: its frame's selection and controls, not its Project.
+    fn begin(down: &Input) -> Self {
+        Self {
+            down: Input {
+                frame: None,
+                ..down.clone()
+            },
+            up: None,
+            shown: down.frame.as_ref().map(|frame| TapFrame {
+                selection: frame.selection.clone(),
+                overlay: frame.overlay.clone(),
+            }),
+        }
+    }
+}
+
+/// The selection and controls of the frame a middle down was made on.
+#[derive(Clone)]
+pub struct TapFrame {
+    pub selection: Option<Arc<crate::window::Selection>>,
+    pub overlay: Option<Arc<columbina_view::window_overlay::WindowOverlay>>,
 }
 
 #[derive(Default)]
@@ -288,6 +324,29 @@ impl Registry {
             frame,
             rotation: None,
         };
+        // A replaced tap's controls, and those of a pan's end, are dropped after the lock.
+        let mut panned = None;
+        let replaced_tap = match (pointer.kind, pointer.button) {
+            (PointerKind::Down, Some(Button::Middle)) => slot.tap.replace(Tap::begin(&input)),
+            (PointerKind::Up, Some(Button::Middle)) => {
+                if let Some(tap) = slot
+                    .tap
+                    .as_mut()
+                    .filter(|tap| tap.down.owner == owner && tap.up.is_none())
+                {
+                    tap.up = Some(Input {
+                        frame: None,
+                        ..input.clone()
+                    });
+                    if pointer.middle_moved {
+                        panned = tap.shown.take();
+                    }
+                }
+                None
+            }
+            (PointerKind::Cancel, _) => slot.tap.take(),
+            _ => None,
+        };
         if pointer.kind == PointerKind::Down && pointer.button == Some(Button::Left) {
             let rotation = RotationTrace::begin(&input);
             slot.input = Some(NativeInput {
@@ -338,6 +397,8 @@ impl Registry {
         };
         drop(frames);
         drop(retired);
+        drop(replaced_tap);
+        drop(panned);
         sequence
     }
 
@@ -353,6 +414,20 @@ impl Registry {
         }
         input.claimed = true;
         Some(Arc::clone(&input.pin))
+    }
+
+    /// Consume a released middle tap whose down was this owner's `event`.
+    pub fn claim_tap(&self, owner: u64, event: u64) -> Option<Tap> {
+        let mut frames = self.lock();
+        let slot = &mut frames.monitors[Monitor::Timeline.index()];
+        let claimed = slot.tap.as_ref().is_some_and(|tap| {
+            tap.down.owner == owner && tap.down.sequence == event && tap.up.is_some()
+        });
+        if claimed {
+            slot.tap.take()
+        } else {
+            None
+        }
     }
 
     pub fn events(&self, pin: &Arc<Pin>) -> Vec<Input> {

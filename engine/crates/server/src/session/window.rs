@@ -4,8 +4,10 @@ use super::{
     json, rpc, Arc, Connection, Deserialize, Duration, Engine, Fault, Instant, Kind, Monitor,
     Mutex, Ordering, OwnedGesture, RawValue, Reply, State, Transport, Value, WorkedOutError,
 };
-use crate::presentation::{FrameSnapshot, Input, Pin, Registry};
-use crate::window::{refused, Movement, Selection, Tool, Update};
+use crate::presentation::{FrameSnapshot, Input, Pin, Registry, Tap};
+use crate::window::{refused, topology_refused, Movement, Refusal, Selection, Tool, Update};
+use columbina_model::grade::WindowShape;
+use columbina_view::window_overlay::Control;
 use columbina_view::{Button, PointerKind, Presentation};
 #[cfg(test)]
 mod tests;
@@ -146,6 +148,27 @@ impl State {
         result
     }
 
+    /// Esc: an owned gesture that wrote puts back the Windows captured at down (before any
+    /// insertion) within the same gesture, then the capture ends as cancelled.
+    fn window_cancel(&mut self, owner: u64, mut capture: Capture) -> Value {
+        if let (Some(gesture), Some(selection)) =
+            (&mut capture.gesture, self.window.selection.clone())
+        {
+            if self.check_owned_gesture(owner, gesture).is_ok() && gesture.last_own.is_some() {
+                self.gesture_last = Some(Instant::now());
+                let op = Movement::op(&selection, &capture.movement.original);
+                let _ = self.apply_worked_out_locked(
+                    Kind::Desktop,
+                    None,
+                    Some((owner, gesture)),
+                    Instant::now(),
+                    |_| Ok(vec![op]),
+                );
+            }
+        }
+        self.finish_capture(capture, "cancel")
+    }
+
     pub(super) fn window_end(&mut self, reason: &str) {
         if let Some(capture) = self.window.active.take() {
             self.finish_capture(capture, reason);
@@ -237,12 +260,16 @@ impl State {
             .ok_or_else(|| refused("hit"))?;
         let selected = hit.id.to_owned();
         let canvas = map.on_picture(down.pointer.window).0;
-        let movement = if hit.control == columbina_view::window_overlay::Control::Move {
-            Movement::new(selection, frame, &selected, canvas)
+        let movement = if hit.control == Control::Move {
+            Movement::new(selection, frame, &selected, canvas).ok_or_else(|| refused("target"))
         } else {
-            Movement::capture(selection, frame, &selected, hit.control, canvas)
-        }
-        .ok_or_else(|| refused("target"))?;
+            Movement::capture(selection, frame, &selected, hit.control, canvas).map_err(|refusal| {
+                match refusal {
+                    Refusal::Target => refused("target"),
+                    Refusal::Insert(error, clock) => topology_refused("insert", &error, clock),
+                }
+            })
+        }?;
         self.window_end("new_down");
         Arc::make_mut(self.window.selection.as_mut().expect("validated selection")).selected =
             Some(selected);
@@ -262,6 +289,162 @@ impl State {
         let result = self.window_note(&capture, "arming", None);
         self.window.active = Some(capture);
         Ok(result)
+    }
+
+    /// A Polygon edge insertion is the capture's first owned step, written once arming has
+    /// begun its gesture, so a following drag moves the new point within the same undo step.
+    fn window_write_insertion(&mut self, capture: &mut Capture) -> Result<(), Fault> {
+        let Some(windows) = capture.movement.inserted().map(<[_]>::to_vec) else {
+            return Ok(());
+        };
+        let selection = self
+            .window
+            .selection
+            .clone()
+            .ok_or_else(|| refused("binding"))?;
+        let gesture = capture.gesture.as_mut().ok_or_else(|| refused("arming"))?;
+        self.gesture_last = Some(Instant::now());
+        self.apply_worked_out_locked(
+            Kind::Desktop,
+            None,
+            Some((capture.owner, gesture)),
+            Instant::now(),
+            |_| Ok(vec![Movement::op(&selection, &windows)]),
+        )
+        .map_err(|error| match error {
+            WorkedOutError::Input(f) | WorkedOutError::Apply(f) => f,
+        })?;
+        Ok(())
+    }
+
+    /// Whether this capture's native left button has actually been released.
+    fn window_released(capture: &Capture) -> bool {
+        capture.registry.events(&capture.pin).iter().any(|event| {
+            event.pointer.kind == PointerKind::Up && event.pointer.button == Some(Button::Left)
+        })
+    }
+
+    /// A click on a Polygon edge released before arming completed still inserts its point, as
+    /// one plain step against the unchanged down revision. Otherwise it ends like any click.
+    fn window_finish_unarmed(&mut self, capture: Capture, reason: &str) -> Value {
+        let inserts = capture.gesture.is_none() && capture.movement.inserted().is_some();
+        if !inserts {
+            return self.finish_capture(capture, reason);
+        }
+        let op = match (
+            Self::window_released(&capture),
+            capture.movement.inserted(),
+            self.window.selection.clone(),
+            capture.pin.down.frame.as_ref(),
+        ) {
+            (true, Some(windows), Some(selection), Some(frame))
+                if selection
+                    .validate(self.history.project(), self.history.revision())
+                    .is_ok() =>
+            {
+                Some((frame.revision, Movement::op(&selection, windows)))
+            }
+            _ => None,
+        };
+        let Some((revision, op)) = op else {
+            return self.close_capture(capture, "refused", reason);
+        };
+        if self
+            .apply_worked_out_locked(Kind::Desktop, Some(revision), None, Instant::now(), |_| {
+                Ok(vec![op])
+            })
+            .is_ok()
+        {
+            self.finish_capture(capture, "up")
+        } else {
+            self.close_capture(capture, "refused", "stale_revision")
+        }
+    }
+
+    /// Middle-click deletion of a selected Polygon point (RM20 p. 3193), from native evidence:
+    /// the middle down's own frame, overlay and map, released without moving. One plain step.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "native pixel coordinates are converted to the overlay's f32 device space"
+    )]
+    fn window_delete(&mut self, owner: u64, binding: u64, tap: &Tap) -> Result<Value, Fault> {
+        let selection = self
+            .window
+            .selection
+            .clone()
+            .filter(|s| s.binding == binding && self.window.owner == Some(owner))
+            .ok_or_else(|| refused("binding"))?;
+        selection.validate(self.history.project(), self.history.revision())?;
+        if self.window.active.is_some() {
+            return Err(refused("capture"));
+        }
+        let (down, up) = (&tap.down, tap.up.as_ref().ok_or_else(|| refused("event"))?);
+        let map = down
+            .pointer
+            .presentation
+            .and_then(|p| p.map)
+            .ok_or_else(|| refused("map"))?;
+        if up.pointer.middle_moved
+            || down.pointer.button != Some(Button::Middle)
+            || !down.pointer.inside
+            || up.instance != down.instance
+            || up.pointer.presentation.and_then(|p| p.map) != Some(map)
+        {
+            return Err(refused("moved"));
+        }
+        let frame = tap.shown.as_ref().ok_or_else(|| refused("presentation"))?;
+        if frame
+            .selection
+            .as_ref()
+            .is_none_or(|s| s.binding != binding || s.revision != selection.revision)
+        {
+            return Err(refused("selection"));
+        }
+        let point = [
+            down.pointer.window.0 as f32 + 0.5,
+            down.pointer.window.1 as f32 + 0.5,
+        ];
+        let hit = frame
+            .overlay
+            .as_ref()
+            .and_then(|o| o.hit_control(map, point))
+            .ok_or_else(|| refused("hit"))?;
+        let Control::Point(index) = hit.control else {
+            return Err(refused("hit"));
+        };
+        let id = hit.id.to_owned();
+        let mut windows = selection
+            .corrector(self.history.project())
+            .ok_or_else(|| refused("target"))?
+            .windows
+            .clone();
+        let window = windows
+            .iter_mut()
+            .find(|w| w.id == id && matches!(w.shape, WindowShape::Polygon { .. }))
+            .ok_or_else(|| refused("hit"))?;
+        window
+            .shape
+            .remove_polygon_point(usize::from(index))
+            .map_err(|error| topology_refused("delete", &error, ""))?;
+        let op = Movement::op(&selection, &windows);
+        self.apply_worked_out_locked(
+            Kind::Desktop,
+            Some(selection.revision),
+            None,
+            Instant::now(),
+            |_| Ok(vec![op]),
+        )
+        .map_err(|error| match error {
+            WorkedOutError::Input(f) | WorkedOutError::Apply(f) => f,
+        })?;
+        if let Some(selection) = self.window.selection.as_mut() {
+            Arc::make_mut(selection).selected = Some(id.clone());
+            self.window_update();
+        }
+        Ok(
+            json!({"binding":binding,"phase":"deleted","selected":id,"point":index,
+            "revision":self.history.revision()}),
+        )
     }
 
     #[allow(
@@ -470,6 +653,7 @@ enum InputKind {
     Move,
     Up,
     Cancel,
+    Delete,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -610,7 +794,15 @@ pub(super) async fn call(
         "window.input" => {
             let asked: InputRequest =
                 rpc::params(method, "{binding,kind,event?,capture?}", params)?;
-            if asked.kind == InputKind::Down {
+            if asked.kind == InputKind::Delete {
+                let tap = engine
+                    .viewer
+                    .frames
+                    .claim_tap(connection.id, asked.event.ok_or_else(|| refused("event"))?)
+                    .ok_or_else(|| refused("event"))?;
+                let mut state = engine.state.lock().await;
+                state.window_delete(connection.id, asked.binding, &tap)?
+            } else if asked.kind == InputKind::Down {
                 let pin = engine
                     .viewer
                     .frames
@@ -714,34 +906,14 @@ pub(super) async fn call(
                 if asked.kind == InputKind::Move {
                     result
                 } else {
-                    let mut capture = state.window.active.take().expect("checked capture");
+                    let capture = state.window.active.take().expect("checked capture");
                     if asked.kind == InputKind::Cancel {
-                        if let (Some(gesture), Some(selection)) =
-                            (&mut capture.gesture, state.window.selection.clone())
-                        {
-                            if state.check_owned_gesture(connection.id, gesture).is_ok()
-                                && gesture.last_own.is_some()
-                            {
-                                state.gesture_last = Some(Instant::now());
-                                let op = Movement::op(&selection, &capture.movement.original);
-                                let _ = state.apply_worked_out_locked(
-                                    Kind::Desktop,
-                                    None,
-                                    Some((connection.id, gesture)),
-                                    Instant::now(),
-                                    |_| Ok(vec![op]),
-                                );
-                            }
-                        }
+                        state.window_cancel(connection.id, capture)
+                    } else if capture.gesture.is_none() {
+                        state.window_finish_unarmed(capture, "up")
+                    } else {
+                        state.finish_capture(capture, "up")
                     }
-                    state.finish_capture(
-                        capture,
-                        if asked.kind == InputKind::Cancel {
-                            "cancel"
-                        } else {
-                            "up"
-                        },
-                    )
                 }
             }
         }
@@ -803,7 +975,11 @@ impl Task {
                     .as_ref()
                     .and_then(|d| d["reason"].as_str())
                     .unwrap_or("freeze");
-                state.close_capture(capture, "refused", reason);
+                if capture.movement.inserted().is_some() && State::window_released(&capture) {
+                    state.window_finish_unarmed(capture, reason);
+                } else {
+                    state.close_capture(capture, "refused", reason);
+                }
             }
             return;
         }
@@ -889,6 +1065,11 @@ impl Task {
                     if state.window_current(&capture, &current) {
                         let revision = state.history.revision();
                         capture.gesture = Some(state.begin_owned_gesture(capture.owner, revision)?);
+                        if let Err(fault) = state.window_write_insertion(&mut capture) {
+                            capture.gesture = None;
+                            state.window.active = Some(capture);
+                            return Err(fault);
+                        }
                         // FreezeAt has actually presented. Take this event boundary once;
                         // all later native moves retain their per-event frame/source checks.
                         capture.arming_through = self

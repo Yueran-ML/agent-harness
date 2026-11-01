@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import type { EngineBridge } from '../../bridge';
 import { callEngine, EngineError, viewPointerOf, type ViewerTool, type WindowSelection, type WindowState, type WindowUnbound,
-  type Viewport, type PreparedViewport, type ViewNavigation } from '../engine';
+  type Viewport, type PreparedViewport, type ViewNavigation, type WindowDeleted, type WindowTopology } from '../engine';
 import type { Comparison } from './useComparison';
+import type { WindowNotice } from './WindowPalette';
 
 interface Capture {
   event: number; instance: number; id: number | null; terminal: 'up' | 'cancel' | null;
@@ -15,7 +16,8 @@ interface Owner {
   navigation: Promise<void>; navigationRevision: number; leftHeld: boolean; inheritedButtons: number; pan: Pan | null;
 }
 type Point = { x: number; y: number };
-interface Pan { instance: number; from: Point; prepared: PreparedViewport | null; valid: boolean; sent: Point; moved: boolean }
+/** `deletes` is the native middle down event of an unmoved tap that may delete a Polygon point. */
+interface Pan { instance: number; from: Point; prepared: PreparedViewport | null; valid: boolean; sent: Point; moved: boolean; deletes: number | null }
 // Project defaults, to be calibrated with a real mouse in T29.
 export const VIEWER_ZOOM_STEP = 1.1;
 export const VIEWER_WHEEL_UNIT = 120;
@@ -28,13 +30,15 @@ export type WindowInputStatus = 'idle' | 'arming' | 'armed' | 'refused';
  * Window coordinates and hits belong to the engine; Image Wipe coordinates belong to comparison.
  */
 export function useViewerInput({ bridge, session, native, loaded, timeline, tool, selection, intention, creating = false, comparison, viewer,
-  onMenu, onWindowState }: {
+  onMenu, onWindowState, onDeleted }: {
   bridge: Pick<EngineBridge, 'call' | 'onEvent'>; session: number; native: boolean; loaded: boolean; timeline: string | null;
   tool: ViewerTool; selection: WindowSelection | null; intention: number; creating?: boolean; comparison: Comparison;
   viewer: RefObject<HTMLElement | null>; onMenu: (point: { x: number; y: number }) => void;
-  onWindowState: (state: WindowState) => void;
+  onWindowState: (state: WindowState) => void; onDeleted?: (answer: WindowDeleted) => void;
 }) {
   const [status, setStatus] = useState<WindowInputStatus>('idle');
+  // Why the engine refused a Polygon point insertion (at down) or a middle-click deletion.
+  const [notice, setNotice] = useState<WindowNotice | null>(null);
   const [capturing, setCapturing] = useState(false);
   const [closing, setClosing] = useState(false);
   const [retry, setRetry] = useState(0);
@@ -44,8 +48,8 @@ export function useViewerInput({ bridge, session, native, loaded, timeline, tool
   const cursor = native && loaded ? (comparison.splitting || tool === 'image_wipe' ? comparison.pointerCursor ?? 'arrow' : 'arrow') : null;
   // Revision, server selection, edited object and palette interaction are deliberately absent.
   const key = JSON.stringify([session, timeline, tool, windowOn ? [selection!.target, selection!.node, selection!.clip, intention] : null, cursor]);
-  const now = useRef({ key, session, timeline, selection, windowOn, creating, comparison, tool, onMenu, onWindowState });
-  now.current = { key, session, timeline, selection, windowOn, creating, comparison, tool, onMenu, onWindowState };
+  const now = useRef({ key, session, timeline, selection, windowOn, creating, comparison, tool, onMenu, onWindowState, onDeleted });
+  now.current = { key, session, timeline, selection, windowOn, creating, comparison, tool, onMenu, onWindowState, onDeleted };
   const owner = useRef<Owner | null>(null);
   const switching = useRef<Promise<void>>(Promise.resolve());
   const nativeSeen = useRef({ session, instance: -1, event: -1, buttons: 0 });
@@ -165,13 +169,25 @@ export function useViewerInput({ bridge, session, native, loaded, timeline, tool
     });
   }, [enqueue, publish]);
 
+  /** The engine hit-tests the middle down's own frame; this only names that native event. */
+  const remove = useCallback((of: Owner, event: number) => {
+    if (!current(of) || of.binding === null || of.retryAt !== null || of.capture) return;
+    callEngine(of.bridge, 'window.input', { binding: of.binding, kind: 'delete', event }, { expectedSession: of.session }).then(answer => {
+      if (!current(of)) return;
+      setNotice(null); now.current.onDeleted?.(answer as unknown as WindowDeleted);
+    }).catch(failure => {
+      const topology = failure instanceof EngineError ? (failure.data as { topology?: WindowTopology } | null)?.topology : undefined;
+      if (current(of) && topology) setNotice({ action: 'delete', topology });
+    });
+  }, []);
+
   useEffect(() => {
     const of: Owner = { key, session, bridge, binding: null, sequence: -1, lastCapture: -1, capture: null, retired: false, pointer: false,
       bindingPending: false, earlyRetirements: new Map(), retryAt: null, retryScheduled: false,
       navigation: Promise.resolve(), navigationRevision: 0, leftHeld: (nativeSeen.current.buttons & 1) !== 0,
       inheritedButtons: nativeSeen.current.buttons, pan: null };
     owner.current = of;
-    setStatus('idle'); setCapturing(false); comparison.resetPointer();
+    setStatus('idle'); setCapturing(false); setNotice(null); comparison.resetPointer();
     // Cleanup and activation share this queue. A late bind is unbound before its successor takes the pointer.
     switching.current = switching.current.then(async () => {
       if (!current(of)) return;
@@ -273,7 +289,10 @@ export function useViewerInput({ bridge, session, native, loaded, timeline, tool
       const geometry = pointer.presentation?.map;
       if (of.leftHeld || of.pan || pointer.instance === undefined || !geometry) return;
       viewer.current?.focus({ preventScroll: true });
-      const pan: Pan = { instance: pointer.instance, from: pointer.window, sent: pointer.window, prepared: null, valid: true, moved: false };
+      // Only an idle Window binding's tap may delete; a tap during a closing left capture just navigates.
+      const deletes = of.binding !== null && !of.capture && pointer.event !== undefined
+        && pointer.snapshot?.window?.binding === of.binding ? pointer.event : null;
+      const pan: Pan = { instance: pointer.instance, from: pointer.window, sent: pointer.window, prepared: null, valid: true, moved: false, deletes };
       of.pan = pan;
       enqueue(of, pan.instance, async () => {
         pan.prepared = await prepared(of, pan.instance);
@@ -286,6 +305,8 @@ export function useViewerInput({ bridge, session, native, loaded, timeline, tool
       if (pointer.kind === 'move' || pointer.kind === 'cancel' || (pointer.kind === 'up' && pointer.button === 'middle')) {
         movePan(of, pan, pointer.window, pointer.middle_moved ?? false);
         if (pointer.kind !== 'move') of.pan = null;
+        // An unmoved release (native latch and position) is a tap: delete the Polygon point under its down.
+        if (pointer.kind === 'up' && !pan.moved && pan.deletes !== null) remove(of, pan.deletes);
       }
       return;
     }
@@ -300,7 +321,7 @@ export function useViewerInput({ bridge, session, native, loaded, timeline, tool
       if (pointer.button !== 'left' || of.capture || now.current.creating || pointer.event === undefined || pointer.instance === undefined
         || !pointer.presentation || pointer.snapshot?.window?.binding !== of.binding) return;
       const capture: Capture = { event: pointer.event, instance: pointer.instance, id: null, terminal: null, finishing: null, done: false, request: null };
-      of.capture = capture; setCapturing(true); setStatus('arming');
+      of.capture = capture; setCapturing(true); setStatus('arming'); setNotice(null);
       capture.request = callEngine(bridge, 'window.input', { binding: of.binding, kind: 'down', event: pointer.event },
         { expectedSession: of.session }).then(async answer => {
         if (answer.binding !== of.binding || answer.event < capture.event || answer.capture <= of.lastCapture) return;
@@ -312,7 +333,10 @@ export function useViewerInput({ bridge, session, native, loaded, timeline, tool
         capture.done = true;
         if (current(of) && of.capture === capture) {
           of.capture = null; setCapturing(false);
-          setStatus(failure instanceof EngineError && (failure.data as { reason?: string } | null)?.reason === 'hit' ? 'idle' : 'refused');
+          const data = failure instanceof EngineError ? failure.data as { reason?: string; topology?: WindowTopology } | null : null;
+          // A refused Polygon edge insertion is explained, not reported as unavailable controls.
+          if (data?.reason === 'insert' && data.topology) setNotice({ action: 'insert', topology: data.topology });
+          setStatus(data?.reason === 'hit' || data?.reason === 'insert' ? 'idle' : 'refused');
         }
       });
       return;
@@ -326,7 +350,7 @@ export function useViewerInput({ bridge, session, native, loaded, timeline, tool
       void callEngine(bridge, 'window.input', { binding: of.binding, capture: capture.id, kind: 'move', event: pointer.event },
         { expectedSession: of.session }).then(answer => accept(of, capture, answer)).catch(() => {});
     }
-  }), [bridge, accept, terminal, unbound, viewer, navigate, enqueue, prepared, movePan]);
+  }), [bridge, accept, terminal, unbound, viewer, navigate, enqueue, prepared, movePan, remove]);
 
   useEffect(() => {
     const down = (event: KeyboardEvent) => {
@@ -354,5 +378,5 @@ export function useViewerInput({ bridge, session, native, loaded, timeline, tool
   }, [terminal]);
   const busy = useCallback(() => owner.current?.capture != null || retiring.current.size > 0, []);
   const setZoom = useCallback((value: number | 'fit') => navigate(value === 'fit' ? { operation: 'fit' } : { operation: 'scale', scale: value }), [navigate]);
-  return { status, capturing: capturing || closing, busy, viewport, setZoom };
+  return { status, capturing: capturing || closing, busy, viewport, setZoom, notice };
 }

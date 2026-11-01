@@ -859,7 +859,23 @@ export const en = {
       colorPage: {
         viewerZoom: 'Viewer zoom', viewerFit: 'Fit',
         windowControls: {
-          addGradient: 'Add Gradient Window', fields: { size: 'Size', aspect: 'Aspect', pan: 'Pan', tilt: 'Tilt', rotate: 'Rotate', opacity: 'Opacity', softness: 'Soft 1' },
+          addGradient: 'Add Gradient Window', addLinear: 'Add Linear Window', addPolygon: 'Add Polygon Window',
+          fields: { size: 'Size', aspect: 'Aspect', pan: 'Pan', tilt: 'Tilt', rotate: 'Rotate', opacity: 'Opacity', softness: 'Soft 1',
+            soft1: 'Soft 1', soft2: 'Soft 2', soft3: 'Soft 3', soft4: 'Soft 4', inside: 'Inside Softness', outside: 'Outside Softness' },
+          point: 'Point', inserted: 'New point',
+          /** Why a Polygon point was not added or deleted; nothing was changed. */
+          topology: {
+            joiner: ', ',
+            frames: '{clock} frames {from}–{to}', allFrames: 'every frame',
+            maximum: 'A polygon window holds at most {most} points, so no point was added.',
+            minimum: 'A polygon window keeps at least {least} points, so the point was not deleted.',
+            unsupported: 'This point cannot be added or deleted.',
+            jump: 'No point was added: the {axis} of points {points} mixes a held jump with a continuous change ({frames}), so a new point would change the shape between keyframes. Give those keyframes the same times and interpolation (for example Linear), then add the point. The animation was not changed.',
+            timing: 'No point was added: the {axis} of points {points} uses different easing curves ({frames}), so a new point would change the shape between keyframes. Give those fields the same easing, then add the point. The animation was not changed.',
+            overshoot: 'No point was added: the {axis} curve of point {points} overshoots the coordinate range and is clipped ({frames}). Reduce that overshoot, or use an interpolation without overshoot, then add the point. The animation was not changed.',
+            range: 'No point was added: the new point would lie outside the coordinate range ({frames}). Adjust the window shape or click elsewhere on this edge. The animation was not changed.',
+            encoding: 'No point was added: splitting the easing of the {axis} of points {points} ({frames}) needs a keyframe handle that keyframes cannot store. Ask the agent to align those keyframes, or adjust that easing, then add the point. The animation was not changed.',
+          },
           osc: 'On-screen controls', none: 'Off', window: 'Power Window', image_wipe: 'Image Wipe', add: 'Add Circular Window',
           list: 'Windows', editing: 'Editing', static: 'Static', key: 'Key frame', frame: 'Frame', creating: 'Creating window…',
           clock: { source: 'Source clock', clip: 'Clip clock', timeline: 'Timeline clock' },

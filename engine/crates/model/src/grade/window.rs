@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use super::{check_label, Bounds, Param};
 use crate::{Id, OpError};
 
+pub mod topology;
+
 /// The Polygon limit documented on p. 3194; it is not a limit on Curve windows.
 pub const MOST_POLYGON_POINTS: usize = 128;
 

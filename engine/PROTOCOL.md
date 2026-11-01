@@ -149,8 +149,8 @@ Before `hello`, every other request is refused with `-32600`.
 | `view.display` | `{"hdr"?: true \| false}` | `{"hdr": true, "source": {"hdr_on": true, "hdr_shown": true, "peak_nits": 400.0, "sdr_white_nits": 148.0} \| null, "timeline": ... \| null}` (see The view) |
 | `view.sample` | `{"monitor": m}` or `{"timeline": "t1", "frame": n}`, `"x": 960.5, "y": 540.5, "size"?: 1, "grade"?: target, "node"?: "n1", "clip"?: "c1"` | `{"frame", "x", "y", "size", "width", "height", "region", "rgb": [r, g, b], "node"?: {"grade", "node", "input", "output", "key"}}` (see Samples and the pointer) |
 | `view.pointer` | `{"monitor": m, "on": true \| false, "cursor"?: "arrow" \| "crosshair" \| "move" \| "resize_ew" \| "resize_ns"}` | `{"monitor", "on", "cursor"}`, then `view.pointer` notifications (see Samples and the pointer) |
-| `window.bind` | `{monitor:"timeline",revision,timeline,target,clip?,node,selected,visible,outline,tool}` | `{binding,sequence}`; existing Circular/Gradient Window controls (see Circular and Gradient Window controls) |
-| `window.input` | `{binding,kind:"down"\|"move"\|"up"\|"cancel",event?,capture?}` | Down returns `arming` immediately; `window.state` reports the asynchronous result |
+| `window.bind` | `{monitor:"timeline",revision,timeline,target,clip?,node,selected,visible,outline,tool}` | `{binding,sequence}`; existing Circular/Gradient/Linear/Polygon Window controls (see Circular and Gradient Window controls, Linear and Polygon Window controls) |
+| `window.input` | `{binding,kind:"down"\|"move"\|"up"\|"cancel"\|"delete",event?,capture?}` | Down returns `arming` immediately; `window.state` reports the asynchronous result. `delete` names a native middle-button down and answers `{binding,phase:"deleted",selected,point,revision}` |
 | `window.unbind` | `{binding}` | Ends capture and clears this connection's Window selection, or releases its still-owned retired binding's pointer |
 | `render.start` | `{"timeline":"t1", "path":"<file>", "codec":"h264", "quality":"high", "range"?:{"from":0,"to":250}, "subtitle_tracks"?:["S1"], "replace"?:false, "revision"?:n}` | `{"job": "render-1"}` (see Rendering a timeline) |
 | `render.cancel` | `{"job": "render-1"}` | `{}` |
@@ -844,8 +844,9 @@ remain outside even if their extrapolated picture coordinates are within the pic
 
 `window.bind`, `window.input`, and `window.unbind` are desktop-only, non-headless methods for
 the timeline monitor. They control an existing corrector's Circular and Gradient windows,
-including movement, Circular Size/Aspect, rotation and Soft 1. They do not create nodes/windows,
-add keyframes, edit Polygon/Curve topology, or implement tracking.
+including movement, Circular Size/Aspect, rotation and Soft 1, and its Linear and Polygon windows
+(see Linear and Polygon Window controls). They do not create nodes/windows, add keyframes, edit
+Curve windows, or implement tracking.
 
 **`window.bind`** takes the complete selection:
 
@@ -1005,6 +1006,66 @@ automatically resumes. Ordinary transaction replies and rendered/exported projec
 unchanged. Refusals use `-32001` with a narrow `data.reason` such as `binding`, `capture`,
 `event`, `map`, `hit`, `selection`, `target` or `stale_revision`; invalid parameter schemas are
 `-32602`. The desktop shares one native pointer owner with viewer navigation and Image Wipe.
+
+### Linear and Polygon Window controls
+
+The same binding, native down evidence, arming/freeze, owned gesture, left-key, Esc and undo rules
+as Circular and Gradient apply. The worker draws enabled Linear and Polygon outlines through the
+displayed (interpolated, clamped) local points, in their stored order; a self-intersecting outline
+is filled even-odd and never reordered. Only the selected window draws white handles and grey
+feather guides, exactly where its key becomes opaque inside and zero outside: the boundary of the
+points on that side at least each edge's extent from that edge (Linear Soft *j*/400 on both
+sides, Polygon Inside/Outside Softness/200, local units, so they follow rotation and aspect).
+Edge offsets meet in mitres; about a vertex where the outline turns away they are arcs (drawn as
+device chords within 1/16 pixel); pieces nearer another edge are dropped, so an inner guide never
+leaves the window and disappears when the shape cannot hold its inside softness. Guides are
+display only and never hit. Every other window is a grey outline. Size 0 draws nothing.
+
+Handles (RM20 p. 3193): **Linear** has white corner handles, white side handles at each side's
+middle, and one magenta softness handle per side on its outer guide, 3/4 of the way from that
+side's first point. A **Polygon** has a white handle at each point and no softness handles; its
+Inside/Outside Softness are numbers only. Within the selected window, an explicit handle wins,
+then a Polygon edge (insert), then the body (move); overlapping candidates choose the nearest
+device distance (to a handle's centre, or to an edge segment), then the lower local index.
+Linear edge strokes and every unselected window's stroke and even-odd body move the window.
+
+Down `keys` report the participating left keys. A corner or point reports
+`"points":[{"point":i,"x":frame|null,"y":frame|null}]`; a Linear side handle reports its two
+points; a Linear softness handle reports `"softness"` and `"edge":j` (Soft *j*+1, the side from
+point *j* to the next). Points and side handles write `L + delta` to each participating x/y left
+key, where delta is the pointer displacement through the captured displayed transform's inverse,
+clamped to the coordinate bounds. A softness handle writes `L + 400 * (delta . n)`, n the side's
+outward local unit normal at down, clamped to 0–100.
+
+**Insertion.** A down on a selected Polygon's edge inserts one point into that edge for the whole
+animation, at the share s (clamped to .001–.999) of the clicked spot along the displayed edge.
+The point count is the same on every frame; every other Param is kept. The new x and y are the
+exact sums `(1-s)*A + s*B` on the union of the two ends' existing key frames (Fixed, Linear,
+Hold, and Bezier easings sharing one time parameterization are supported, including mixtures
+that reduce to these), so the shape is unchanged at every instant. Otherwise the whole down is
+refused with `data.reason:"insert"` and
+`data.topology:{why,axis,points,frames,clock}`: `why` is `jump` (a held jump during a continuous
+change), `timing` (different non-linear easings), `overshoot` (an original curve leaves the
+coordinate range and is clipped), `range` (the new coordinate would), or `encoding` (the exact
+split needs a key handle outside 0–1); `points` are 0-based point indices, `frames` the key
+interval in `clock` frames. A Polygon at 128 points refuses with `{why:"maximum",most:128}`.
+Nothing is baked, dropped or approximated. The successful down reports `"inserted":i` with the new
+point's keys. The insertion is the capture's first owned step once armed, so a drag moves the new
+point in the same undo step and Esc restores the original list. A click released before arming
+completes still inserts once, as one step against the unchanged down revision, if the native left
+button was actually released; otherwise nothing is written.
+
+**Deletion.** A native middle-button down is retained apart from left captures, with its frame
+snapshot, until its release. `{binding,kind:"delete",event}` names that down; it is claimed once
+by its own connection and only after an unmoved release (`middle_moved` false and the same map).
+The engine hit-tests the down's own frame and overlay: only a selected Polygon's point handle
+deletes, removing that point (and its Params) from the whole animation as one plain step. A
+deletion that would leave fewer than three points is refused entirely with
+`data.reason:"delete"` and `data.topology:{why:"minimum",least:3}`; the window is not deleted.
+A moved middle gesture is viewer pan (`data.reason:"moved"` if named), another hit is `hit`, and
+an active capture is `capture`. These handle positions, increments, the insertion rule and the
+point-count rule are project choices; Resolve instead makes an animated Polygon's points pop on
+and off at keyframes (p. 3194).
 
 ## The transport
 

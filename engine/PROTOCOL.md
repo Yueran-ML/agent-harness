@@ -2513,7 +2513,10 @@ those of the `set_grade` worked out.
   written before the files are moved: where a file cannot be moved (another program holds it
   open), those moved are put back, the index is as it was and the call is refused (`-32002`
   `{"reason": "gallery"}`), nothing deleted; where the engine ends between the two, the gallery
-  is set right the next time it is opened (logged as `gallery_settled`).
+  is set right the next time it is opened (logged as `gallery_settled`). A still of the album of
+  the memories is deleted for good and takes none of the 64 places: it goes when its memory is
+  saved over or cleared ("the previous memory is overwritten", p. 3272), not as the user's
+  deletion.
   `still.restore` undoes it (Ctrl+Z in the Gallery, the interaction reference §9.2): each still
   back in its album at its place (the last deleted first, so that stills deleted together go back
   as they were; at the end where the album has fewer now; in the first album shown where its

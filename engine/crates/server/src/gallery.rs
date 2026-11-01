@@ -618,15 +618,27 @@ impl Opened {
     /// as it was, and the deletion is refused; where the engine ends between the two, opening the
     /// gallery moves the rest (see [`Opened::settle`]). The files of the stills forgotten are
     /// deleted once all is done.
+    ///
+    /// A still of the album of the memories is deleted for good and takes no place of the stills
+    /// deleted: it goes when its memory is saved over or cleared ("the previous memory is
+    /// overwritten", p. 3272), which is not a deletion of the user's.
     pub fn recycle_stills(&mut self, ids: &[String]) -> Result<(), Fault> {
         for id in ids {
             self.album_of(id).ok_or_else(|| missing("still", id))?;
         }
         own_dir(&self.root.join("recycle"))?;
         let before = self.index.clone();
+        let mut memories = Vec::new();
+        let mut recycled = Vec::new();
         for id in ids {
             let (album, at) = self.place_of(id)?;
-            self.album_mut(&album)?.stills.remove(at);
+            let holding = self.album_mut(&album)?;
+            holding.stills.remove(at);
+            if holding.memories {
+                memories.push(id);
+                continue;
+            }
+            recycled.push(id);
             self.index.recycled.retain(|each| each.id != *id);
             self.index.recycled.push(Recycled {
                 id: id.clone(),
@@ -647,7 +659,7 @@ impl Opened {
             .saturating_sub(MOST_RECYCLED)
             .min(earlier);
         let forgotten: Vec<Recycled> = self.index.recycled.drain(..over).collect();
-        let moves: Vec<(PathBuf, PathBuf)> = ids
+        let moves: Vec<(PathBuf, PathBuf)> = recycled
             .iter()
             .flat_map(|id| {
                 MOVED_IN_ORDER
@@ -659,6 +671,9 @@ impl Opened {
             for extension in EXTENSIONS {
                 delete_file(&self.recycled_file(&each.id, extension));
             }
+        }
+        for id in memories {
+            self.delete_files(id);
         }
         Ok(())
     }
@@ -1917,6 +1932,34 @@ mod tests {
         assert!(!stills.join(format!("{gone}.png")).exists());
         // What was settled is written: the index no longer names the one lost.
         assert_eq!(index_on_disk(&places)["format"], 1);
+    }
+
+    #[test]
+    fn a_still_of_the_memories_is_deleted_for_good_and_takes_no_place_of_a_still_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let places = places(dir.path());
+        let (kept, memory) = with(&places, Kind::Stills, |opened| {
+            let kept = grabbed(opened, "a1");
+            let memories = opened.memories_album(None);
+            let memory = grabbed(opened, &memories);
+            opened.recycle_stills(std::slice::from_ref(&kept))?;
+            // A memory saved over or cleared (p. 3272): not one the user deleted.
+            opened.recycle_stills(std::slice::from_ref(&memory))?;
+            assert!(!opened.is_recycled(&memory));
+            assert!(opened.album_of(&memory).is_none());
+            Ok((kept, memory))
+        })
+        .unwrap();
+        let opened = Opened::open(&places, Kind::Stills).unwrap();
+        assert!(opened.is_recycled(&kept));
+        assert_eq!(opened.index.recycled.len(), 1);
+        for extension in EXTENSIONS {
+            assert!(!opened.file(&memory, extension).exists(), "{extension}");
+            assert!(
+                !opened.recycled_file(&memory, extension).exists(),
+                "{extension}"
+            );
+        }
     }
 
     #[test]

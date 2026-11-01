@@ -22,8 +22,15 @@
 //!   current clip (p3002: "the offset between the timeline wiped clip and the current clip is
 //!   maintained"). The current clip is the one that the client names (`"current"`, as the
 //!   desktop has one clicked), else the one on top at the playhead; the clips are in the order
-//!   of the thumbnail timeline, by their start, then by their track from V1 up.
+//!   of the thumbnail timeline, by their start, then by their track from V1 up. `steps` reaches
+//!   further: 2 is the clip two before or after, as the Neighbor Clips split screen shows "the
+//!   previous two clips" (p3004), up to [`MOST_STEPS`].
 //! - **The frame shown** (`{"kind": "current"}`), in a split screen: the picture of the playhead.
+//! - **Black** (`{"kind": "black"}`), in a split screen: a cell with nothing in it, as Neighbor
+//!   Clips shows where there is no clip before the first.
+//!
+//! What each reference shows as the frame is drawn, the frame of the timeline or none, is told in
+//! the state of the transport (`compared`), as it moves with the playhead.
 //!
 //! A reference of the timeline is drawn as the frame is: its pictures read (from the media, not
 //! its proxies), its clips and the timeline graded by their grades at that frame, its subtitles
@@ -88,6 +95,10 @@ impl From<StyleName> for Style {
     }
 }
 
+/// How far a neighbour reaches at most: 7 each side of the current clip fill the 16 cells of a
+/// split screen but one.
+pub const MOST_STEPS: u32 = 7;
+
 /// Which clip next to the current one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -119,12 +130,28 @@ pub enum Reference {
     },
     Neighbour {
         side: Side,
+        /// How many clips away, 1 to [`MOST_STEPS`]: 1, the next to it, where left out.
+        #[serde(default = "one_step", skip_serializing_if = "is_one_step")]
+        steps: u32,
         /// The current clip, where the client chose it (the one clicked in its thumbnails);
         /// the one on top at the playhead where left out.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         current: Option<String>,
     },
     Current,
+    Black,
+}
+
+fn one_step() -> u32 {
+    1
+}
+
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes a reference"
+)]
+fn is_one_step(steps: &u32) -> bool {
+    *steps == 1
 }
 
 fn yes() -> bool {
@@ -226,13 +253,11 @@ impl Change {
                         return Err(Fault::params("a wipe that is on needs a reference")
                             .with_data(json!({"reason": "reference"})))
                     }
-                    Some(Reference::Current) => {
-                        return Err(Fault::params(
-                            "a wipe compares the frame shown with another picture, not itself",
-                        )
-                        .with_data(json!({"reason": "reference"})))
-                    }
-                    Some(_) => {}
+                    Some(Reference::Current | Reference::Black) => return Err(Fault::params(
+                        "a wipe compares the frame shown with another picture, not itself or black",
+                    )
+                    .with_data(json!({"reason": "reference"}))),
+                    Some(reference) => check_steps(reference).map_err(range)?,
                 }
             }
             Ok(Change::Wipe(settings))
@@ -255,9 +280,22 @@ impl Change {
                 {
                     return Err(range("selected is the index of one of the items".into()));
                 }
+                for item in &settings.items {
+                    check_steps(item).map_err(range)?;
+                }
             }
             Ok(Change::Split(settings))
         }
+    }
+}
+
+/// Check how far a neighbour reaches.
+fn check_steps(reference: &Reference) -> Result<(), String> {
+    match reference {
+        Reference::Neighbour { steps, .. } if !(1..=MOST_STEPS).contains(steps) => Err(format!(
+            "a neighbour is 1 to {MOST_STEPS} clips away, not {steps}"
+        )),
+        _ => Ok(()),
     }
 }
 
@@ -311,6 +349,9 @@ pub struct Comparison {
     /// The frame last compared, and the picture of the comparison shown for it: what a still
     /// is grabbed of while the frame is compared ([`Comparison::original`]).
     compared: Option<(Arc<Target>, Arc<Target>)>,
+    /// The frame of the timeline that each reference shows for the frame being drawn, or none
+    /// (`prepare`).
+    at: Vec<Option<i64>>,
 }
 
 impl Default for Comparison {
@@ -331,6 +372,7 @@ impl Comparison {
             scenes: Vec::new(),
             shown: Vec::new(),
             compared: None,
+            at: Vec::new(),
         }
     }
 
@@ -341,6 +383,7 @@ impl Comparison {
         self.scenes.clear();
         self.shown.clear();
         self.compared = None;
+        self.at.clear();
     }
 
     /// Take a change, the timeline `index` of `project` being loaded with its playhead at
@@ -373,7 +416,7 @@ impl Comparison {
                     .with_data(json!({"reason": "still", "path": path, "message": message}))
                 })?;
                 stills.insert(path, Arc::new(picture));
-            } else if !matches!(reference, Reference::Current) {
+            } else if !matches!(reference, Reference::Current | Reference::Black) {
                 let (project, index, frame) = loaded.ok_or_else(|| {
                     Fault::new(
                         rpc::TRANSPORT_FAILED,
@@ -414,7 +457,10 @@ impl Comparison {
         let at = |reference: &Reference| {
             let mut value = json!(reference);
             if let Some((project, index, frame)) = loaded {
-                if !matches!(reference, Reference::Still { .. } | Reference::Current) {
+                if !matches!(
+                    reference,
+                    Reference::Still { .. } | Reference::Current | Reference::Black
+                ) {
                     value["at"] = match find(reference, project, index, frame) {
                         Ok(Found::Frame(frame)) => json!(frame),
                         _ => Value::Null,
@@ -446,6 +492,7 @@ impl Comparison {
     pub fn prepare(&mut self, project: &Arc<Project>, index: usize, frame: i64, grading: &Grading) {
         self.wanted.clear();
         self.scenes.clear();
+        self.at.clear();
         let references: Vec<&Reference> = match &self.mode {
             Mode::Off => return,
             Mode::Wipe(settings) => settings.reference.iter().collect(),
@@ -455,6 +502,10 @@ impl Comparison {
         let size = (timeline.width, timeline.height);
         for reference in references {
             let found = find(reference, project, index, frame).unwrap_or(Found::Nothing);
+            self.at.push(match found {
+                Found::Frame(at) => Some(at),
+                _ => None,
+            });
             let key = Key {
                 project: match found {
                     Found::Frame(_) => Arc::as_ptr(project) as usize,
@@ -589,6 +640,14 @@ impl Comparison {
         Ok(Some(out))
     }
 
+    /// The frame of the timeline that each reference of the comparison shows for the frame drawn
+    /// last, in their order (one of a wipe), or none where it is no frame of the timeline (a
+    /// still, the frame shown, black, a neighbour beyond the ends); `None` where nothing is
+    /// compared: what the state of the transport tells as `compared`.
+    pub fn compared(&self) -> Option<Vec<Option<i64>>> {
+        (self.mode != Mode::Off).then(|| self.at.clone())
+    }
+
     /// The frame itself of `shown`, what the viewer shows: where it is the comparison last
     /// drawn, the frame that was compared (image A, never the wipe or the split screen); else
     /// `shown` itself.
@@ -679,6 +738,7 @@ fn find(
             path.as_deref().unwrap_or_default(),
         ))),
         Reference::Current => Ok(Found::Current),
+        Reference::Black => Ok(Found::Nothing),
         Reference::Frame { frame } => {
             let last = (resolve::duration(timeline) - 1).max(0);
             Ok(Found::Frame((*frame).clamp(0, last)))
@@ -688,7 +748,11 @@ fn find(
             .find(|(_, found)| found.id == *clip)
             .map(|(_, found)| Found::Frame(within(found, *frame)))
             .ok_or_else(|| format!("there is no clip {clip} on a track of picture that is on")),
-        Reference::Neighbour { side, current } => {
+        Reference::Neighbour {
+            side,
+            steps,
+            current,
+        } => {
             let clips = clips_in_order(timeline);
             // The current clip: the one named, or the one on top at the playhead.
             let current = if let Some(named) = current {
@@ -709,17 +773,18 @@ fn find(
                     .map(|(place, _)| place)
                     .ok_or_else(|| format!("no clip is at frame {frame}, so none is next to it"))?
             };
+            let steps = *steps as usize;
             let other = match side {
-                Side::Previous => current.checked_sub(1),
-                Side::Next => Some(current + 1).filter(|next| *next < clips.len()),
+                Side::Previous => current.checked_sub(steps),
+                Side::Next => Some(current + steps).filter(|next| *next < clips.len()),
             }
             .ok_or_else(|| {
                 format!(
-                    "the clip at frame {frame} is the {} of the timeline",
+                    "there is no clip {steps} {} the clip at frame {frame}",
                     if *side == Side::Previous {
-                        "first"
+                        "before"
                     } else {
-                        "last"
+                        "after"
                     }
                 )
             })?;
@@ -766,6 +831,7 @@ mod tests {
             find(
                 &Reference::Neighbour {
                     side,
+                    steps: 1,
                     current: None,
                 },
                 &project,
@@ -790,6 +856,7 @@ mod tests {
             find(
                 &Reference::Neighbour {
                     side,
+                    steps: 1,
                     current: Some(current.into()),
                 },
                 &project,
@@ -800,6 +867,23 @@ mod tests {
         assert_eq!(named(Side::Next, "c2"), Ok(Found::Frame(39)));
         assert_eq!(named(Side::Previous, "c2"), Ok(Found::Frame(9)));
         assert!(named(Side::Previous, "nope").is_err());
+        // Two away: from c3 (at 33, 3 frames in), c1 before (at 3) and none after c4.
+        let two = |side, frame| {
+            find(
+                &Reference::Neighbour {
+                    side,
+                    steps: 2,
+                    current: None,
+                },
+                &project,
+                0,
+                frame,
+            )
+        };
+        assert_eq!(two(Side::Previous, 33), Ok(Found::Frame(3)));
+        assert!(two(Side::Next, 33).is_err());
+        assert_eq!(two(Side::Next, 2), Ok(Found::Frame(32)));
+        assert_eq!(find(&Reference::Black, &project, 0, 33), Ok(Found::Nothing));
         // A clip at a frame, held within it; a frame of the timeline, held within it.
         let clip = |clip: &str, frame| {
             find(
@@ -894,5 +978,48 @@ mod tests {
             vec![r#"{"kind": "current"}"#; 17].join(",")
         );
         assert_eq!(reason(read("viewer.split", &many)), "range");
+    }
+
+    #[test]
+    fn neighbours_are_one_to_seven_steps_away_and_black_is_of_a_split_screen() {
+        let read = |method: &str, params: &str| {
+            let raw = RawValue::from_string(params.into()).unwrap();
+            Change::read(method, Some(&raw))
+        };
+        let reason =
+            |result: Result<Change, Fault>| result.unwrap_err().data.unwrap()["reason"].clone();
+        // Neighbours of 1 to 7 steps; black in a split screen, not in a wipe.
+        let Ok(Change::Split(split)) = read(
+            "viewer.split",
+            r#"{"items": [{"kind": "neighbour", "side": "previous", "steps": 2}, {"kind": "black"}]}"#,
+        ) else {
+            panic!("a split");
+        };
+        assert_eq!(
+            json!(split.items),
+            json!([{"kind": "neighbour", "side": "previous", "steps": 2}, {"kind": "black"}])
+        );
+        assert_eq!(
+            json!(Reference::Neighbour {
+                side: Side::Next,
+                steps: 1,
+                current: None
+            }),
+            json!({"kind": "neighbour", "side": "next"})
+        );
+        for steps in [0, 8] {
+            let params = format!(
+                r#"{{"items": [{{"kind": "neighbour", "side": "next", "steps": {steps}}}]}}"#
+            );
+            assert_eq!(reason(read("viewer.split", &params)), "range", "{steps}");
+            let params = format!(
+                r#"{{"reference": {{"kind": "neighbour", "side": "next", "steps": {steps}}}}}"#
+            );
+            assert_eq!(reason(read("viewer.wipe", &params)), "range", "{steps}");
+        }
+        assert_eq!(
+            reason(read("viewer.wipe", r#"{"reference": {"kind": "black"}}"#)),
+            "reference"
+        );
     }
 }

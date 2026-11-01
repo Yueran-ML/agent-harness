@@ -1155,6 +1155,8 @@ notification `transport.state`):
   key frame while scrubbing, or their track's previous picture when decoding is late. `exact`
   is true only when every media layer is exact. `late` counts playback frames for which at
   least one layer was unavailable, once per frame, and resets when playback starts from pause.
+- `compared` (where a wipe or split screen is on): the frame of the timeline that each of its
+  references shows for the frame shown (see Comparisons in the viewer).
 - `source` is `"original"`, `"proxy"`, or `"mixed"` when the composition contains both. A frame
   of only titles/colours or black uses `"original"`. Proxy switches and repairs of media that
   the timeline shows invalidate read-ahead and take effect on the next composition,
@@ -2278,13 +2280,18 @@ for the viewer and are off unless set.
   there. It stays where it is as the playhead moves.
 - `{"kind": "clip", "clip", "frame"?: 0}`: the timeline at `frame` frames from the first frame of
   `clip` (held within the clip), as Wipe Timeline Clip shows another clip.
-- `{"kind": "neighbour", "side": "previous" | "next", "current"?: "c2"}`: the clip before or
-  after the current one, at the same offset from its first frame as the playhead is from the
-  current clip's (held within it); it follows the playhead, as a timeline wipe ganged with the
-  current clip does. The current clip is `current` where it is given (the clip that the client
-  shows as current), else the one on top at the playhead; clips are in the order of their start,
-  then of their track from V1 up.
+- `{"kind": "neighbour", "side": "previous" | "next", "steps"?: 1, "current"?: "c2"}`: the clip
+  before or after the current one (`steps` 1–7 clips away, 1 where left out: 2 is the clip two
+  before or after, as the Neighbor Clips split screen shows "the previous two clips", p. 3004), at
+  the same offset from its first frame as the playhead is from the current clip's (held within
+  it); it follows the playhead, as a timeline wipe ganged with the current clip does. The current
+  clip is `current` where it is given (the clip that the client shows as current), else the one on
+  top at the playhead; clips are in the order of their start, then of their track from V1 up.
+  `steps` is written back only where it is not 1.
 - `{"kind": "current"}` (a split screen only): the frame of the playhead.
+- `{"kind": "black"}` (a split screen only): a black cell, as Neighbor Clips leaves one where
+  there is no clip (before the first, after the last), since a neighbour that is not there is
+  refused when it is set.
 
 A reference of the timeline is drawn as the frame is (its media read, not proxies; each clip and
 the timeline graded at that frame; no subtitles). One that is not there where the playhead has
@@ -2302,7 +2309,13 @@ the client makes; those of grades, LUTs and versions applied to the current clip
 **What it answers.** `{"mode": "off"}`, `{"mode": "wipe", "wipe": {every field, "reference"}}`
 or `{"mode": "split", "split": {"on", "items", "selected"?, "outline"}}`. A reference of the
 timeline is given with `"at"`: the frame of the timeline it shows now, or `null` where there is
-none.
+none. That `at` is of the moment of the answer: as the playhead moves (playing), the **timeline
+state** tells `compared`, the frame of the timeline that each reference shows for the frame shown
+now, in their order (one of a wipe), `null` for one that is no frame of the timeline (a still,
+the frame shown, black, a neighbour beyond the ends), told with the frame as the state is told
+(at most 30 times a second while playing), and at once when a wipe or split screen is set; left
+out where nothing is compared. A wipe of `"steps": 2` before frame 61 of the blue clip of green,
+red and blue of 24 frames each: `"compared": [13]`.
 
 **The scopes** (`scopes.*`) and `transport.frame_digest` measure what the viewer shows: the
 comparison, where there is one.

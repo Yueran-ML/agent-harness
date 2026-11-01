@@ -59,6 +59,11 @@ pub struct Status {
     /// The Highlight mode that the monitor shows, where one is on (`viewer.highlight`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub highlight: Option<Highlight>,
+    /// The frame of the timeline that each reference of the wipe or split screen shows for the
+    /// frame shown, as it moves with the playhead (`viewer.wipe`, `viewer.split`); left out
+    /// where nothing is compared.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compared: Option<Vec<Option<i64>>>,
 }
 
 impl Default for Status {
@@ -78,6 +83,7 @@ impl Default for Status {
             proxies: true,
             missing_luts: Vec::new(),
             highlight: None,
+            compared: None,
         }
     }
 }
@@ -858,9 +864,19 @@ impl Worker {
             .as_ref()
             .zip(self.timeline)
             .map(|(project, index)| (project.as_ref(), index, self.status.frame.unwrap_or(0)));
+        let before = self.status.compared.clone();
         let result = self.compare.change(change, loaded);
         if result.is_ok() && !self.status.playing {
             let _ = self.draw(true, false);
+        }
+        if result.is_ok() {
+            // Told at once, as the references change; while playing, as each frame is drawn.
+            if self.compare.compared().is_none() {
+                self.status.compared = None;
+            }
+            if self.status.compared != before {
+                self.tell(true);
+            }
         }
         result
     }
@@ -1294,6 +1310,7 @@ impl Worker {
             })
             .cloned();
         self.compare.prepare(&project, index, frame, &self.grading);
+        self.status.compared = self.compare.compared();
         let snapshot = FrameSnapshot {
             revision: self.revision,
             project: Arc::clone(&project),

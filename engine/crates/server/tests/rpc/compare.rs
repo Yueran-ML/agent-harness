@@ -359,6 +359,105 @@ async fn a_timeline_wipe_against_the_clip_before_shows_it_graded_at_the_same_off
     assert_eq!(digest(&mut client).await["hash"], before["hash"]);
 }
 
+/// The timeline monitor's state once it shows `frame`.
+async fn shown_at(client: &mut Client, frame: i64) -> Value {
+    client
+        .result(
+            "transport.seek",
+            Some(json!({"monitor": "timeline", "frame": frame})),
+        )
+        .await;
+    client
+        .until_state("the frame sought", |state| {
+            state["monitor"] == "timeline" && state["shown"] == frame && state["exact"] == true
+        })
+        .await;
+    client
+        .result("transport.state", Some(json!({"monitor": "timeline"})))
+        .await
+}
+
+#[tokio::test]
+async fn neighbours_two_away_and_black_cells_are_compared_and_the_state_tells_where_they_are() {
+    if columbina_compose::gpu_for_tests().is_none() {
+        return;
+    }
+    let dir = project_dir();
+    let engine = engine(
+        dir.path(),
+        &["--no-proxies", "--sound", "null", "--test-hooks"],
+    )
+    .await;
+    let mut client = engine.client("desktop").await;
+    timeline(
+        &mut client,
+        vec![
+            colour("$green", "#20c040ff", 0, 24),
+            colour("$red", "#ff0000ff", 24, 24),
+            colour("$blue", "#0000ffff", 48, 24),
+        ],
+    )
+    .await;
+    let state = shown_at(&mut client, 54).await;
+    assert!(state.get("compared").is_none(), "{state}");
+
+    // Neighbor Clips: the two before the blue clip, six frames into each, the frame shown, and
+    // a black cell where there is nothing.
+    let split = client
+        .result(
+            "viewer.split",
+            Some(json!({"items": [
+                {"kind": "neighbour", "side": "previous", "steps": 2},
+                {"kind": "neighbour", "side": "previous"},
+                {"kind": "current"},
+                {"kind": "black"},
+            ]})),
+        )
+        .await;
+    let items = &split["split"]["items"];
+    assert_eq!(
+        items[0],
+        json!({"kind": "neighbour", "side": "previous", "steps": 2, "at": 6}),
+        "{split}"
+    );
+    assert_eq!(items[1]["at"], 30, "{split}");
+    assert_eq!(items[3], json!({"kind": "black"}), "{split}");
+    let (told, _) = client
+        .until_state("the references told", |state| {
+            state.get("compared").is_some()
+        })
+        .await;
+    assert_eq!(told["compared"], json!([6, 30, null, null]), "{told}");
+    // They follow the playhead, and the state with them.
+    let state = shown_at(&mut client, 60).await;
+    assert_eq!(state["compared"], json!([12, 36, null, null]), "{state}");
+    // None two after the blue one, nor black, in a wipe.
+    for reference in [
+        json!({"kind": "neighbour", "side": "next", "steps": 2}),
+        json!({"kind": "black"}),
+    ] {
+        let error = client
+            .error("viewer.wipe", Some(json!({"reference": reference})))
+            .await;
+        assert_eq!(error["data"]["reason"], "reference", "{error}");
+    }
+    // A wipe against the clip two before; off, nothing is compared.
+    let wiped = client
+        .result(
+            "viewer.wipe",
+            Some(json!({"reference": {"kind": "neighbour", "side": "previous", "steps": 2}})),
+        )
+        .await;
+    assert_eq!(wiped["wipe"]["reference"]["at"], 12, "{wiped}");
+    let state = shown_at(&mut client, 61).await;
+    assert_eq!(state["compared"], json!([13]), "{state}");
+    client
+        .result("viewer.wipe", Some(json!({"on": false})))
+        .await;
+    let state = shown_at(&mut client, 62).await;
+    assert!(state.get("compared").is_none(), "{state}");
+}
+
 #[tokio::test]
 async fn a_headless_engine_has_no_viewer_to_compare_in() {
     let dir = project_dir();

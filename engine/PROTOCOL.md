@@ -2389,6 +2389,13 @@ still `<id>.json` (what it holds, below), its picture `<id>.png` or `<id>.exr`, 
 deleted that can be restored (see Albums and stills). Ids are never given twice in a gallery,
 nor taken back from a still deleted. A still is named by its id only.
 
+`format` 2 adds `recycled` and `"memories": true` to format 1, whose engines read no field they
+do not know. An index is written as format 2 only while it holds one of them, else as format 1,
+so that the PowerGrades, which every engine of the user shares, stay readable by an engine of
+format 1 until a still is deleted from them. An engine reads formats 1 and 2, and refuses any
+other (`-32002` `{"reason": "gallery", "path", "message"}`, the message naming the formats it
+reads).
+
 ### What a still holds
 
 `still.get` gives it whole; `gallery.list` and the other methods give it without `grades`,

@@ -365,7 +365,7 @@ fn gallery_change(places: &Places, method: &str, params: Value) -> Result<Value,
                         opened[of].recycle_still(id)?;
                     }
                 }
-                opened.iter().try_for_each(|one| one.save())
+                opened.iter_mut().try_for_each(|one| one.save())
             };
             let kinds: HashSet<Kind> = ids.iter().map(|(_, kind)| *kind).collect();
             if kinds.len() == 2 {
@@ -1151,7 +1151,7 @@ fn move_stills(places: &Places, stills: &[String], album: &str) -> Result<Value,
                 moved.insert(id.clone(), json!(new));
             }
         }
-        for opened in &both {
+        for opened in &mut both {
             opened.save()?;
         }
         Ok(json!({"moved": moved}))

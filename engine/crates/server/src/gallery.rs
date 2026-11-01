@@ -17,6 +17,7 @@
 //!
 //! ```text
 //! <root>/gallery.json         {"format": 1, "next": 7, "albums": [{"id", "name", "stills": [...]}]}
+//!                             (format 2 where it has what format 1 lacks: see below)
 //! <root>/stills/<id>.json     what the still holds (see `crate::stills`)
 //! <root>/stills/<id>.png      its picture: R'G'B' of 16 bits; or
 //! <root>/stills/<id>.exr      its picture: half floats, where it has values beyond 0..1
@@ -39,6 +40,15 @@
 //! (`memories` in the index), which `gallery.list` tells apart from the albums that the Gallery
 //! shows; a grab or an import goes into it only where it is named.
 //!
+//! # The format of the index
+//!
+//! Format 2 adds to format 1 the stills deleted (`recycled`) and the album of the memories
+//! (`"memories": true`), which an engine of format 1 does not read (its index takes no field it
+//! does not know) and refuses as it refuses an index of any other format. An index is written as
+//! format 2 only while it holds one of them, and as format 1 otherwise, so that the `PowerGrades`
+//! that every engine of the user shares stay readable by an older one until something is deleted.
+//! An index of a later format is refused, saying which formats this engine reads.
+//!
 //! The ids are the engine's own: albums `a<n>` and stills `s<n>` of the project, `pa<n>` and
 //! `ps<n>` of the `PowerGrades`, `n` from the root's `next`, never given twice. A still is named by
 //! its id only, and its files are only ever those above: the engine makes the folders, does
@@ -60,8 +70,13 @@ use serde_json::{json, Value};
 use crate::log::log;
 use crate::rpc::{self, Fault};
 
-/// The format of `gallery.json` and of the file of a still.
+/// The format of the file of a still.
 pub const FORMAT: u32 = 1;
+/// The format of `gallery.json`: 2 where it holds stills deleted or an album of the memories,
+/// else 1 (see the module's doc).
+const INDEX_FORMAT: u32 = 2;
+/// The earliest format of `gallery.json` that is read.
+const INDEX_FORMAT_LEAST: u32 = 1;
 /// The most height of a thumbnail, as of `media.thumbnail`.
 pub const MOST_THUMBNAIL: u32 = 270;
 /// How long a lock of a gallery that is not let go is waited for before it is taken as left
@@ -336,15 +351,7 @@ impl Opened {
         let lock = take_lock(&root)?;
         let path = root.join("gallery.json");
         let index = match read_file(&path) {
-            Some(bytes) => serde_json::from_slice::<Index>(&bytes)
-                .ok()
-                .filter(|index| index.format == FORMAT)
-                .ok_or_else(|| {
-                    gallery_fault(
-                        &format!("{} is not an index of a gallery", path.display()),
-                        Some(&path),
-                    )
-                })?,
+            Some(bytes) => read_index(&bytes, &path)?,
             None if path.exists() => {
                 return Err(gallery_fault(
                     &format!("{} is not a plain file", path.display()),
@@ -352,7 +359,7 @@ impl Opened {
                 ))
             }
             None => Index {
-                format: FORMAT,
+                format: INDEX_FORMAT_LEAST,
                 next: 1,
                 albums: vec![],
                 recycled: vec![],
@@ -376,8 +383,15 @@ impl Opened {
         self.kind
     }
 
-    /// Write the index back.
-    pub fn save(&self) -> Result<(), Fault> {
+    /// Write the index back, of the earliest format that holds it.
+    pub fn save(&mut self) -> Result<(), Fault> {
+        let later =
+            !self.index.recycled.is_empty() || self.index.albums.iter().any(|album| album.memories);
+        self.index.format = if later {
+            INDEX_FORMAT
+        } else {
+            INDEX_FORMAT_LEAST
+        };
         let bytes = serde_json::to_vec_pretty(&self.index).expect("an index is written as JSON");
         write_whole(&self.root.join("gallery.json"), &bytes)
     }
@@ -726,6 +740,29 @@ impl Opened {
         self.album_mut(album)?.stills.push(id.to_string());
         Ok(())
     }
+}
+
+/// The index of a gallery in `bytes`, read from `path`: of a format from [`INDEX_FORMAT_LEAST`] to
+/// [`INDEX_FORMAT`], which is looked at before anything else.
+fn read_index(bytes: &[u8], path: &Path) -> Result<Index, Fault> {
+    let not_an_index = || {
+        gallery_fault(
+            &format!("{} is not an index of a gallery", path.display()),
+            Some(path),
+        )
+    };
+    let value: Value = serde_json::from_slice(bytes).map_err(|_| not_an_index())?;
+    let format = value["format"].as_u64().ok_or_else(not_an_index)?;
+    if !(u64::from(INDEX_FORMAT_LEAST)..=u64::from(INDEX_FORMAT)).contains(&format) {
+        return Err(gallery_fault(
+            &format!(
+                "{} is of format {format}, and this engine reads formats {INDEX_FORMAT_LEAST} and                  {INDEX_FORMAT}",
+                path.display()
+            ),
+            Some(path),
+        ));
+    }
+    serde_json::from_value(value).map_err(|_| not_an_index())
 }
 
 /// Take the lock folder of the gallery in `root`: one change at a time, of this engine and of
@@ -1411,6 +1448,92 @@ mod tests {
             read,
             [halves[2], halves[6], halves[1], halves[5], halves[0], halves[4]]
         );
+    }
+
+    /// The galleries of a project in `dir`, and its `PowerGrades` beside it.
+    fn places(dir: &Path) -> Places {
+        Places {
+            project: dir.join("gallery"),
+            power: Some(dir.join("powergrades")),
+        }
+    }
+
+    /// A still of a picture of 2 × 2 put into `album`; gives its id.
+    fn grabbed(opened: &mut Opened, album: &str) -> String {
+        let picture = Picture {
+            width: 2,
+            height: 2,
+            pixels: Pixels::Words(vec![30_000; 16]),
+        };
+        opened
+            .add_still(album, json!({}), &picture, ImageFormat::Png)
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    fn index_on_disk(places: &Places) -> Value {
+        serde_json::from_slice(&fs::read(places.project.join("gallery.json")).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn an_index_says_format_2_only_where_an_engine_of_format_1_cannot_read_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let places = places(dir.path());
+        let still = with(&places, Kind::Stills, |opened| Ok(grabbed(opened, "a1"))).unwrap();
+        // Of albums and stills alone, as format 1 has them: an older engine reads it.
+        assert_eq!(index_on_disk(&places)["format"], 1);
+        with(&places, Kind::Stills, |opened| {
+            opened.recycle_still(&still)?;
+            opened.save()
+        })
+        .unwrap();
+        let index = index_on_disk(&places);
+        assert_eq!(index["format"], 2, "{index}");
+        assert!(index["recycled"].is_array(), "{index}");
+        // Restored, nothing is left that format 1 lacks.
+        with(&places, Kind::Stills, |opened| {
+            opened.restore_still(&still)?;
+            opened.save()
+        })
+        .unwrap();
+        assert_eq!(index_on_disk(&places)["format"], 1);
+        // An album of the memories is of format 2 too.
+        with(&places, Kind::Stills, |opened| {
+            opened.memories_album(None);
+            opened.save()
+        })
+        .unwrap();
+        assert_eq!(index_on_disk(&places)["format"], 2);
+    }
+
+    #[test]
+    fn an_index_of_a_later_format_is_refused_saying_which_formats_are_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let places = places(dir.path());
+        fs::create_dir_all(&places.project).unwrap();
+        fs::write(
+            places.project.join("gallery.json"),
+            r#"{"format": 3, "next": 2, "albums": [{"id": "a1", "name": "Stills 1", "stills": []}], "tags": []}"#,
+        )
+        .unwrap();
+        let Err(fault) = Opened::open(&places, Kind::Stills) else {
+            panic!("an index of format 3 is read");
+        };
+        let said = &fault.message;
+        assert!(
+            said.contains("format 3") && said.contains("1 and 2"),
+            "{said}"
+        );
+        // One of format 1, as an older engine wrote it, is read.
+        fs::write(
+            places.project.join("gallery.json"),
+            r#"{"format": 1, "next": 2, "albums": [{"id": "a1", "name": "Stills 1", "stills": []}]}"#,
+        )
+        .unwrap();
+        let opened = Opened::open(&places, Kind::Stills).unwrap();
+        assert_eq!(opened.albums()[0].name, "Stills 1");
     }
 
     #[test]

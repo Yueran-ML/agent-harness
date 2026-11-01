@@ -646,6 +646,18 @@ async fn a_stills_grade_is_applied_or_appended_each_way_of_keyframes_in_one_undo
         );
         client.result("history.undo", None).await;
     }
+    // A frame given with keys put on frames is refused, not left unread.
+    let error = client
+        .error(
+            "grade.append_node",
+            Some(
+                json!({"from": a, "node": from_a, "to": [b], "keyframes": "start_frame", "at": 6}),
+            ),
+        )
+        .await;
+    assert_eq!(error["code"], -32602, "{error}");
+    assert_eq!(error["data"]["reason"], "at", "{error}");
+    assert_eq!(grade_of(&mut client, &names["$b"]).await, had);
 }
 
 /// A PNG of 4 × 2 of one colour, 8 bits.

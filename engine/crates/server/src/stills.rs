@@ -172,7 +172,8 @@ pub async fn call(
                 method,
                 r#"{"from": {"level": "clip", "timeline": "t1", "clip": "c3"}, "node": "n4", "to": [...], "keyframes"?: "none" | "source_timecode" | "start_frame", "at"?: 120}"#,
                 params,
-            )?;
+            )
+            .and_then(AppendNodeRequest::checked)?;
             let revision = request.revision;
             return session::apply_worked_out(engine, connection, kind, id, revision, |project| {
                 work_append_node(project, &request)
@@ -896,6 +897,20 @@ struct AppendNodeRequest {
     revision: Option<u64>,
 }
 
+impl AppendNodeRequest {
+    /// The request, unless it gives `at` with keys put on frames: `at` is of No Keyframes alone,
+    /// and would be left unread otherwise (`-32602` `{"reason": "at"}`).
+    fn checked(self) -> Result<AppendNodeRequest, Fault> {
+        if self.at.is_some() && self.keyframes.align().is_some() {
+            return Err(Fault::params(
+                "at is the frame of No Keyframes (\"keyframes\": \"none\"); with keys put on frames it is not taken",
+            )
+            .with_data(json!({"reason": "at"})));
+        }
+        Ok(self)
+    }
+}
+
 /// The grade `target` names, or the refusal `missing`.
 fn grade_of<'a>(project: &'a Project, target: &Target) -> Result<&'a Grade, Fault> {
     let missing = |what: &str, id: &str| {
@@ -1487,6 +1502,36 @@ mod tests {
         let mut frames = Vec::new();
         key_frames(&value, &mut frames);
         assert_eq!(frames, [10, 20, 5]);
+    }
+
+    #[test]
+    fn a_frame_to_keep_the_node_at_is_taken_with_no_keyframes_only() {
+        let request = |params: Value| -> AppendNodeRequest {
+            let mut whole =
+                json!({"from": {"level": "timeline", "timeline": "t1"}, "node": "n1", "to": []});
+            whole
+                .as_object_mut()
+                .unwrap()
+                .extend(params.as_object().unwrap().clone());
+            serde_json::from_value(whole).unwrap()
+        };
+        assert!(request(json!({"keyframes": "none", "at": 12}))
+            .checked()
+            .is_ok());
+        assert!(request(json!({"keyframes": "start_frame"}))
+            .checked()
+            .is_ok());
+        for params in [
+            json!({"keyframes": "source_timecode", "at": 12}),
+            json!({"keyframes": "start_frame", "at": 0}),
+            json!({"at": 12}),
+        ] {
+            let Err(fault) = request(params.clone()).checked() else {
+                panic!("{params} is taken");
+            };
+            assert_eq!(fault.code, rpc::INVALID_PARAMS, "{params}");
+            assert_eq!(fault.data.unwrap()["reason"], "at", "{params}");
+        }
     }
 
     #[test]

@@ -2478,8 +2478,9 @@ corrector, of the grade `from`, alone, after the end of each grade of `to`, chai
 new id as above, its keys put as `keyframes` says (`"source_timecode"` by default, as
 `copy_grade`). With `"none"` (No Keyframes, p. 3393) each keyed setting of the node is the value of
 its key at the frame `at` of the timeline (the playhead; for a clip's grade, the frame of its
-source there) or the nearest before it, and of its first key where `at` is left out. One
-`set_grade` of each, one undo step.
+source there) or the nearest before it, and of its first key where `at` is left out. `at` is
+of No Keyframes alone: given with `"source_timecode"` or `"start_frame"` (or no `keyframes`), it
+is refused (`-32602` `{"reason": "at"}`). One `set_grade` of each, one undo step.
 
 Refusals are those of a transaction (`-32001`, the project as it was): `{"reason":
 "out_of_range", "what": "to" | "preserve_nodes"}`, `{"reason": "missing", "what": "timeline" |

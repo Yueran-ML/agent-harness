@@ -126,10 +126,10 @@ export function applyParams(still: string, to: readonly Target[], mode: 'apply' 
 /**
  * What Append Node to Selected Clips sends (p. 3297): the current node of the grade shown, after
  * the end of the grades of the clips chosen other than the current one. Its keys go as Apply Grades
- * Using says, where it says where they go (the engine has no "no keyframes" for a node).
+ * Using says; with No Keyframes each keyed setting is what it is at the playhead `at` (p. 3393).
  */
-export function appendNodeParams(from: Target, node: string, to: readonly Target[], settings: ApplySettings, revision: number): Record<string, unknown> {
-  return { from, node, to: [...to], ...(settings.keyframes === 'none' ? {} : { keyframes: settings.keyframes }), revision };
+export function appendNodeParams(from: Target, node: string, to: readonly Target[], settings: ApplySettings, revision: number, at: number): Record<string, unknown> {
+  return { from, node, to: [...to], keyframes: settings.keyframes, ...(settings.keyframes === 'none' ? { at } : {}), revision };
 }
 
 /** The clips that Append Node to Selected Clips goes to: those chosen, but the current one (p. 3297, "selected red"). */

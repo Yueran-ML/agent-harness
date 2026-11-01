@@ -513,7 +513,8 @@ describe('the Gallery', () => {
     fireEvent.contextMenu(node, { clientX: 5, clientY: 5 });
     chooseItem('Append Node to Selected Clips');
     await settle();
-    expect(last(bridge, 'grade.append_node')).toEqual({ from: C('c1'), node: 'n1', to: [C('c2'), C('c3')], revision: 0 });
+    // No Keyframes (the Gallery's default): the node as it is at the playhead.
+    expect(last(bridge, 'grade.append_node')).toEqual({ from: C('c1'), node: 'n1', to: [C('c2'), C('c3')], keyframes: 'none', at: 0, revision: 0 });
     fireEvent.contextMenu(document.querySelector('[data-test="stills"]')!);
     chooseItem('Apply Grades Using');
     chooseItem('Keyframes Aligning Source Timecode');
@@ -971,7 +972,9 @@ describe('the rules of the Gallery', () => {
     expect(applyTargets('clip', tl, clips, new Set(), null, groups)).toEqual([]);
     expect(applyParams('s1', [C('c1')], 'append', { keyframes: 'none', preserve: 3 }, 7)).toEqual({ still: 's1', to: [C('c1')], mode: 'append', keyframes: 'none', revision: 7 });
     expect(appendNodeTargets(tl, clips, new Set(['c1', 'c3']), clips[0])).toEqual([C('c3')]);
-    expect(appendNodeParams(C('c1'), 'n2', [C('c3')], { keyframes: 'start_frame', preserve: 0 }, 2)).toEqual({ from: C('c1'), node: 'n2', to: [C('c3')], keyframes: 'start_frame', revision: 2 });
+    expect(appendNodeParams(C('c1'), 'n2', [C('c3')], { keyframes: 'start_frame', preserve: 0 }, 2, 40)).toEqual({ from: C('c1'), node: 'n2', to: [C('c3')], keyframes: 'start_frame', revision: 2 });
+    // No Keyframes: the node as it is at the playhead.
+    expect(appendNodeParams(C('c1'), 'n2', [C('c3')], { keyframes: 'none', preserve: 0 }, 2, 40)).toEqual({ from: C('c1'), node: 'n2', to: [C('c3')], keyframes: 'none', at: 40, revision: 2 });
   });
 
   it('choose stills by click, Ctrl and Shift, step through them to the ends, and search their labels', () => {

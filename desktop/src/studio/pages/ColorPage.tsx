@@ -332,9 +332,9 @@ export function ColorPage({
     label: labels.galleryPanel.appendToSelected, can: appendTo.length > 0 && grades.target !== null,
     run: (node: string) => {
       if (grades.target === null || appendTo.length === 0) return;
-      callEngine(bridge, 'grade.append_node', appendNodeParams(grades.target, node, appendTo, gallery.settings, revision)).catch(paletteFailed);
+      callEngine(bridge, 'grade.append_node', appendNodeParams(grades.target, node, appendTo, gallery.settings, revision, frame ?? 0)).catch(paletteFailed);
     },
-  }), [labels, JSON.stringify(appendTo), grades.target, bridge, gallery.settings, revision, paletteFailed]);
+  }), [labels, JSON.stringify(appendTo), grades.target, bridge, gallery.settings, revision, paletteFailed, frame]);
 
   // The keys of the transport go to the timeline monitor; Up and Down go from clip to clip, and three keys make the viewer larger.
   useStudioKeys(timelineMonitor.loaded, timelineMonitor.context, timelineMonitor.run);

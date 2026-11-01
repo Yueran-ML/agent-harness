@@ -174,6 +174,7 @@ mod graph;
 pub mod layout;
 mod luts;
 pub mod maths;
+mod windows;
 
 use std::sync::Arc;
 
@@ -307,9 +308,16 @@ impl Prepared {
                     });
                 }
             }
+            if plan.spatial() {
+                ops.push(ColorOp {
+                    library: windows::LIBRARY.into(),
+                    ..ColorOp::default()
+                });
+            }
             ops.push(ColorOp {
                 body: plan.body().into(),
                 library: library(options).into(),
+                spatial: plan.spatial(),
                 params: Vec::new(),
                 textures,
                 neighbourhoods: plan.neighbourhoods(grade, 0.0),
@@ -422,13 +430,15 @@ pub fn stage_of_grades(grades: &[(&Grade, f64)], options: &GradeOptions, luts: &
 /// What `grade` makes of `rgb` at `frame`, on the processor: the reference that the card is held
 /// to. LUTs are left out, as with [`NoLuts`]; and Midtone Detail, which has no pixels about
 /// `rgb` to work on (it leaves a picture of one colour as it is), see [`evaluate_picture`].
+/// Power Windows are ignored by this positionless API, not sampled at an invented position.
+/// Use [`evaluate_picture`] for spatial keys; LUT export excludes the whole windowed node.
 #[must_use]
 pub fn evaluate(grade: &Grade, frame: f64, options: &GradeOptions, rgb: [f32; 3]) -> [f32; 3] {
     evaluate_with(grade, frame, options, &NoLuts, &|_, rgb| rgb, rgb)
 }
 
 /// What `grade` makes of `rgb` at `frame` on the processor, with the LUTs that `luts` has, each
-/// done by `lut` (given its name and a colour).
+/// done by `lut` (given its name and a colour). Power Windows are ignored, as in [`evaluate`].
 #[must_use]
 pub fn evaluate_with(
     grade: &Grade,
@@ -518,6 +528,13 @@ pub fn evaluate_picture_showing(
     });
     let params = plan.params(grade, frame, options.luma64());
     let constants = options.constants();
+    let position = |at: usize| windows::Position {
+        uv: [
+            ((at % width as usize) as f32 + 0.5) / width as f32,
+            ((at / width as usize) as f32 + 0.5) / height as f32,
+        ],
+        size: [width as f32, height as f32],
+    };
     let mut around: Vec<Vec<[f32; 3]>> = vec![Vec::new(); pixels.len()];
     for (number, filter) in plan.filters(grade, frame).into_iter().enumerate() {
         let source = Image {
@@ -526,9 +543,17 @@ pub fn evaluate_picture_showing(
             pixels: pixels
                 .iter()
                 .zip(&around)
-                .map(|(rgb, around)| {
-                    let [r, g, b] =
-                        plan.hood_source(number, &constants, &params, *rgb, lut, around);
+                .enumerate()
+                .map(|(at, (rgb, around))| {
+                    let [r, g, b] = plan.hood_source(
+                        number,
+                        &constants,
+                        &params,
+                        *rgb,
+                        lut,
+                        around,
+                        position(at),
+                    );
                     [r, g, b, 1.0].map(neighbourhood::half)
                 })
                 .collect(),
@@ -546,7 +571,18 @@ pub fn evaluate_picture_showing(
     pixels
         .iter()
         .zip(&around)
-        .map(|(rgb, around)| plan.run_showing(&constants, &params, *rgb, lut, Some(around), show))
+        .enumerate()
+        .map(|(at, (rgb, around))| {
+            plan.run_showing(
+                &constants,
+                &params,
+                *rgb,
+                lut,
+                Some(around),
+                show,
+                Some(position(at)),
+            )
+        })
         .collect()
 }
 
@@ -571,7 +607,7 @@ pub fn evaluate_showing(
         .and_then(|node| plan.step_of(node))
         .map(|step| (step, look.show));
     let params = plan.params(grade, frame, options.luma64());
-    plan.run_showing(&options.constants(), &params, rgb, lut, None, show)
+    plan.run_showing(&options.constants(), &params, rgb, lut, None, show, None)
 }
 
 #[cfg(test)]

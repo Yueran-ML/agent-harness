@@ -15,6 +15,10 @@ fn colour(rgb: vec3<f32>) -> vec3<f32> {
 }
 // colour: end
 
+// The dimensions in the same space as colour_at, before clip placement.
+fn colour_size() -> vec2<f32> { return vec2<f32>(textureDimensions(canvas)); }
+fn colour_window_at() -> vec2<f32> { return colour_at; }
+
 // One triangle that covers the target.
 @vertex
 fn vs(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {

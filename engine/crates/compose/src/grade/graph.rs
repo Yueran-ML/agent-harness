@@ -28,7 +28,8 @@ use columbina_model::grade::{Grade, NodeKind, Port, OUTPUT, SOURCE};
 
 use super::layout::{self, CORRECTOR, KEY_INPUT, KEY_OUTPUT};
 use super::maths::{self, Constants, Params, Rgb};
-use super::{Luts, Show};
+use super::windows::Position;
+use super::{windows, Luts, Show};
 use crate::color::{Filter, Neighbourhood};
 use crate::ColorOp;
 
@@ -101,6 +102,7 @@ pub(crate) enum Step {
         block: u32,
         lut: Option<LutUse>,
         qualifier: bool,
+        windows: Option<u32>,
         hoods: Box<Hoods>,
     },
     /// A node of the picture that is disabled: it gives its first input as it is.
@@ -124,9 +126,14 @@ pub(crate) enum Step {
 impl Step {
     /// Whether the node of the step has a key that is its own to show: a corrector with a
     /// qualifier or a key linked into it, and a key mixer. The others have a full key.
-    fn keyed(&self) -> bool {
+    fn keyed(&self, spatial: bool) -> bool {
         match self {
-            Step::Corrector { qualifier, key, .. } => *qualifier || key.is_some(),
+            Step::Corrector {
+                qualifier,
+                key,
+                windows,
+                ..
+            } => *qualifier || key.is_some() || (spatial && windows.is_some()),
             Step::KeyMix { .. } | Step::PassKey { .. } => true,
             Step::Pass { .. } | Step::Parallel { .. } | Step::Layer { .. } => false,
         }
@@ -263,6 +270,11 @@ impl Plan {
                 (NodeKind::Corrector(corrector), true) => {
                     let block = plan.fixed;
                     plan.fixed += CORRECTOR;
+                    let windows = corrector.windows.iter().any(windows::active).then(|| {
+                        let at = plan.fixed;
+                        plan.fixed += 1;
+                        at
+                    });
                     let key = match into(&node.id, Port::Key, 0) {
                         None => None,
                         Some(link) => match from(Some(link))? {
@@ -312,6 +324,7 @@ impl Plan {
                         block,
                         lut,
                         qualifier: corrector.qualifier.is_some(),
+                        windows,
                         hoods,
                     }
                 }
@@ -335,6 +348,18 @@ impl Plan {
         Some(plan)
     }
 
+    pub(crate) fn spatial(&self) -> bool {
+        self.steps.iter().any(|s| {
+            matches!(
+                s,
+                Step::Corrector {
+                    windows: Some(_),
+                    ..
+                }
+            )
+        })
+    }
+
     /// The LUTs of its correctors, in the order of their textures.
     pub(crate) fn luts(&self) -> impl Iterator<Item = &LutUse> {
         self.steps.iter().filter_map(|step| match step {
@@ -355,7 +380,11 @@ impl Plan {
         for step in &self.steps {
             match step {
                 Step::Corrector {
-                    node, block, lut, ..
+                    node,
+                    block,
+                    lut,
+                    windows,
+                    ..
                 } => {
                     let NodeKind::Corrector(corrector) = &grade.nodes[*node].kind else {
                         continue;
@@ -370,6 +399,15 @@ impl Plan {
                         &mut tail,
                     );
                     params[at..at + values.len()].copy_from_slice(&values);
+                    if let Some(w) = windows {
+                        params[*w as usize] = windows::pack(
+                            &corrector.windows,
+                            frame,
+                            *w as usize,
+                            self.fixed as usize,
+                            &mut tail,
+                        );
+                    }
                     if let Some(lut) = lut {
                         let at = lut.params as usize;
                         params[at..at + lut.op.params.len()].copy_from_slice(&lut.op.params);
@@ -408,7 +446,7 @@ impl Plan {
         let _ = match show {
             None => writeln!(code, "rgb = {out};"),
             Some((s, Show::Matte)) => writeln!(code, "rgb = vec3<f32>(k{s});"),
-            Some((s, Show::Highlight)) if self.steps[s].keyed() => {
+            Some((s, Show::Highlight)) if self.steps[s].keyed(true) => {
                 writeln!(code, "rgb = mix(vec3<f32>({:?}), {out}, k{s});", grey())
             }
             Some((s, Show::Highlight)) => writeln!(code, "rgb = o{s};"),
@@ -581,6 +619,7 @@ impl Plan {
                 block,
                 lut,
                 qualifier,
+                windows,
                 hoods,
                 ..
             } => {
@@ -591,12 +630,18 @@ impl Plan {
                     );
                     format!("grade_key({k}, param($P + {}u))", block + KEY_INPUT)
                 });
-                let key_in = match (qualifier, incoming) {
-                    (false, None) => "1.0".to_owned(),
-                    (false, Some(incoming)) => incoming,
-                    (true, None) => "q".to_owned(),
-                    (true, Some(incoming)) => format!(
-                        "grade_key_combine(q, {incoming}, param($P + {}u).w)",
+                let own = match (*qualifier, windows) {
+                    (false, None) => None,
+                    (true, None) => Some("q".to_owned()),
+                    (false, Some(w)) => Some(format!("window_key($P + {w}u, colour_window_at(), colour_size())")),
+                    (true, Some(w)) => Some(format!("grade_key_combine(q, window_key($P + {w}u, colour_window_at(), colour_size()), param($P + {}u).w)", block + layout::KEY_QUALIFIER)),
+                };
+                let key_in = match (own, incoming) {
+                    (None, None) => "1.0".to_owned(),
+                    (None, Some(incoming)) => incoming,
+                    (Some(q), None) => q,
+                    (Some(q), Some(incoming)) => format!(
+                        "grade_key_combine({q}, {incoming}, param($P + {}u).w)",
                         block + KEY_INPUT
                     ),
                 };
@@ -704,11 +749,15 @@ impl Plan {
         rgb: Rgb,
         lut: &dyn Fn(&str, Rgb) -> Rgb,
     ) -> Rgb {
-        self.run_showing(constants, params, rgb, lut, None, None)
+        self.run_showing(constants, params, rgb, lut, None, None, None)
     }
 
     /// What the grade gives of `rgb` on the processor as [`Plan::body_showing`] does on the card:
     /// its picture, or what the viewer shows of a step of it.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a pixel's colour, position and neighbourhoods, with the grade context and look"
+    )]
     pub(crate) fn run_showing(
         &self,
         constants: &Constants,
@@ -717,15 +766,17 @@ impl Plan {
         lut: &dyn Fn(&str, Rgb) -> Rgb,
         around: Option<&[Rgb]>,
         show: Option<(usize, Show)>,
+        position: Option<Position>,
     ) -> Rgb {
-        let Walked::Done { o, k, out } = self.walk(constants, params, rgb, lut, around, None)
+        let Walked::Done { o, k, out } =
+            self.walk(constants, params, rgb, lut, around, None, position)
         else {
             unreachable!("the steps stop only at a neighbourhood");
         };
         match show {
             None => out,
             Some((s, Show::Matte)) => [k[s]; 3],
-            Some((s, Show::Highlight)) if self.steps[s].keyed() => {
+            Some((s, Show::Highlight)) if self.steps[s].keyed(position.is_some()) => {
                 #[allow(clippy::cast_possible_truncation, reason = "a grey of 0 to 1")]
                 let grey = grey() as f32;
                 out.map(|v| grey * (1.0 - k[s]) + v * k[s])
@@ -736,6 +787,10 @@ impl Plan {
 
     /// The colour that neighbourhood `number` filters of `rgb` on the processor, those before it
     /// being `around` at the pixel.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a neighbourhood and the same pixel context used by the final grade"
+    )]
     pub(crate) fn hood_source(
         &self,
         number: usize,
@@ -744,8 +799,17 @@ impl Plan {
         rgb: Rgb,
         lut: &dyn Fn(&str, Rgb) -> Rgb,
         around: &[Rgb],
+        position: Position,
     ) -> Rgb {
-        match self.walk(constants, params, rgb, lut, Some(around), Some(number)) {
+        match self.walk(
+            constants,
+            params,
+            rgb,
+            lut,
+            Some(around),
+            Some(number),
+            Some(position),
+        ) {
             Walked::Stopped(source) => source,
             Walked::Done { .. } => unreachable!("every neighbourhood is of a step"),
         }
@@ -809,6 +873,7 @@ impl Plan {
     /// filter it gives, or all of them.
     #[allow(
         clippy::too_many_lines,
+        clippy::too_many_arguments,
         reason = "each kind of step, one after another"
     )]
     fn walk(
@@ -819,6 +884,7 @@ impl Plan {
         lut: &dyn Fn(&str, Rgb) -> Rgb,
         around: Option<&[Rgb]>,
         stop: Option<usize>,
+        position: Option<Position>,
     ) -> Walked {
         let p = Params(params);
         let count = self.steps.len();
@@ -839,6 +905,7 @@ impl Plan {
                     block,
                     lut: used,
                     qualifier,
+                    windows,
                     hoods,
                     ..
                 } => {
@@ -883,6 +950,18 @@ impl Plan {
                     let own = qualifier.then(|| {
                         Self::qualifier_key(constants, p, *block, hoods, input, around, None)
                     });
+                    let window = windows
+                        .zip(position)
+                        .map(|(w, position)| windows::key(params, w as usize, position));
+                    let own = match (own, window) {
+                        (Some(q), Some(w)) => Some(maths::key_combine(
+                            q,
+                            w,
+                            at4(block + layout::KEY_QUALIFIER)[3],
+                        )),
+                        (None, Some(w)) => Some(w),
+                        (own, None) => own,
+                    };
                     let key_in = match (own, incoming) {
                         (None, None) => 1.0,
                         (None, Some(incoming)) => incoming,

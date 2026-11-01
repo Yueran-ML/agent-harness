@@ -62,7 +62,7 @@ const SPARES_KEPT_FOR: u64 = 60;
 pub const WORKING_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// The bytes of the uniform of `layer.wgsl`.
-const LAYER_PARAMS_SIZE: u64 = 80;
+const LAYER_PARAMS_SIZE: u64 = 96;
 
 /// The bytes of the uniform of `convert.wgsl`.
 const CONVERT_PARAMS_SIZE: u64 = 32;
@@ -2227,6 +2227,10 @@ impl Compositor {
             // known.
             let stages = [&layer.color.input, &layer.color.grade];
             let filters = color::filters(&stages);
+            let spatial = stages
+                .iter()
+                .flat_map(|stage| &stage.ops)
+                .any(|op| op.spatial);
             let mut graded = if filters.is_empty() {
                 color::program(&stages).map(|(program, inputs)| Graded {
                     layer: index,
@@ -2327,19 +2331,25 @@ impl Compositor {
                 }
                 Source::Color(rgba) => {
                     let tint = rgba.map(|channel| channel.clamp(0.0, 1.0));
-                    // A texel, which a filter keeps as it is.
+                    // Uniform colour stays one texel unless a spatial key changes it.
+                    let pixels = if spatial {
+                        (scene.width, scene.height)
+                    } else {
+                        (1, 1)
+                    };
+                    let own = (f64::from(pixels.0), f64::from(pixels.1));
                     let alone = layer_uniform(
-                        &placement((1.0, 1.0), (1.0, 1.0), &Transform::NONE),
-                        (1.0, 1.0),
-                        [0.0, 0.0, 1.0, 1.0],
+                        &placement(own, own, &Transform::NONE),
+                        own,
+                        [0.0, 0.0, own.0, own.1],
                         1.0,
                         1.0,
                         1,
                         Some(tint),
                     );
-                    let units = neighbourhood::units(1.0, canvas.1, canvas.1);
+                    let units = neighbourhood::units(own.1, canvas.1, canvas.1);
                     let draw = laid.draws.len();
-                    neighbourhoods(self, laid, draw, (1, 1), units, alone);
+                    neighbourhoods(self, laid, draw, pixels, units, alone);
                     laid.uniforms.push(layer_uniform(
                         &placement(canvas, canvas, &layer.transform),
                         canvas,
@@ -2375,7 +2385,7 @@ impl Compositor {
                     );
                     if let Some((quad, view, pixels)) = put.map_err(failed)? {
                         let own = (f64::from(pixels.0), f64::from(pixels.1));
-                        let alone = layer_uniform(
+                        let mut alone = layer_uniform(
                             &placement(own, own, &Transform::NONE),
                             own,
                             [0.0, 0.0, own.0, own.1],
@@ -2384,18 +2394,14 @@ impl Compositor {
                             1,
                             Some([1.0; 4]),
                         );
+                        window_canvas(&mut alone, quad, canvas);
                         let units = neighbourhood::units(own.1, quad[3] - quad[1], canvas.1);
                         let draw = laid.draws.len();
                         neighbourhoods(self, laid, draw, pixels, units, alone);
-                        laid.uniforms.push(layer_uniform(
-                            &place,
-                            canvas,
-                            quad,
-                            opacity,
-                            scale,
-                            1,
-                            Some([1.0; 4]),
-                        ));
+                        let mut values =
+                            layer_uniform(&place, canvas, quad, opacity, scale, 1, Some([1.0; 4]));
+                        window_canvas(&mut values, quad, canvas);
+                        laid.uniforms.push(values);
                         laid.draws.push(Draw::Texture(view));
                         laid.colours.push(graded);
                     }
@@ -3087,8 +3093,24 @@ fn layer_uniform(
     values.extend([opacity, scale as f32, samples as f32, 0.0]);
     if let Some(tint) = tint {
         values.extend(tint);
+        values.extend([0.0, 0.0, 1.0, 1.0]);
     }
     values
+}
+
+/// Map a title's visible texture into its complete transparent source canvas. The same map
+/// is used while rendering its cropped neighbourhood texture and while placing it on canvas.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "normalized source coordinates for the shader"
+)]
+fn window_canvas(uniform: &mut [f32], quad: [f64; 4], canvas: (f64, f64)) {
+    uniform[20..24].copy_from_slice(&[
+        (quad[0] / canvas.0) as f32,
+        (quad[1] / canvas.1) as f32,
+        ((quad[2] - quad[0]) / canvas.0) as f32,
+        ((quad[3] - quad[1]) / canvas.1) as f32,
+    ]);
 }
 
 #[cfg(test)]
@@ -3129,7 +3151,8 @@ mod tests {
             yuv::PARAMS_SIZE
         );
         assert_eq!(tinted[13], 2.0);
-        assert_eq!(tinted[16..], [0.1; 4]);
+        assert_eq!(tinted[16..20], [0.1; 4]);
+        assert_eq!(tinted[20..24], [0.0, 0.0, 1.0, 1.0]);
     }
 
     #[test]

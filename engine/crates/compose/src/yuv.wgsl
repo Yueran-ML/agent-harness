@@ -239,6 +239,10 @@ fn colour(rgb: vec3<f32>) -> vec3<f32> {
 }
 // colour: end
 
+// The dimensions in the same space as colour_at, before clip placement.
+fn colour_size() -> vec2<f32> { return select(params.planes.xy, params.planes.yx, (u32(params.luma.w) & 1u) != 0u); }
+fn colour_window_at() -> vec2<f32> { return colour_at; }
+
 // R'G'B' of the picture at `shown`, over black where it has alpha.
 fn rgb_at(shown: vec2<f32>) -> vec3<f32> {
     let sampled = sample_at(shown);

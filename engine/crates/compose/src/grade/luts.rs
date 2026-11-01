@@ -273,6 +273,7 @@ impl CardLuts {
             params: named.params.clone(),
             textures,
             neighbourhoods: Vec::new(),
+            spatial: false,
         }
     }
 

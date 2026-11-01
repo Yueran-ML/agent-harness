@@ -14,8 +14,8 @@
 //! card reads, between its points as the project says), through the node's key settings and the
 //! mixers as the grade links them. A node whose result depends on the pixels about each one, as
 //! Midtone Detail makes it (p. 3063), is left out whole, as though it were off, and said in the
-//! answer; so is a node with a qualifier. (Windows and blur are to be left out so as they come,
-//! T23–T25.)
+//! answer; so is a node with a qualifier or an enabled complete Power Window, including one
+//! whose Size or Opacity is zero. Disabled windows and open Curve drafts are ignored.
 //!
 //! The cube is in the timeline space, as the grade works there: over 0 to 1 of each channel
 //! (the domain of a cube that says none), what is beyond it clipped as any cube clips it
@@ -236,6 +236,13 @@ fn unbakeable(node: &Node) -> Option<&'static str> {
     if corrector.qualifier.is_some() {
         return Some("qualifier");
     }
+    if corrector
+        .windows
+        .iter()
+        .any(|w| w.enabled && !w.shape.is_draft())
+    {
+        return Some("windows");
+    }
     (!matches!(corrector.primaries.midtone_detail, Param::Fixed(value) if value == 0.0))
         .then_some("midtone_detail")
 }
@@ -274,7 +281,7 @@ fn alone(grade: &Grade, id: &str) -> Result<Grade, Fault> {
     }
     if let Some(why) = unbakeable(node) {
         return Err(refused(
-            format!("node {id} reads the pixels about each one ({why}), which no cube can do"),
+            format!("node {id} uses {why}, whose whole node is excluded from Generate LUT"),
             json!({"reason": "cannot_bake", "node": id, "why": why}),
         ));
     }
@@ -735,6 +742,50 @@ mod tests {
             json!([{"node": "n2", "why": "qualifier"}])
         );
         assert_eq!(answer["nodes"], json!(["n1"]));
+    }
+
+    #[test]
+    fn complete_windows_exclude_the_whole_node_even_when_collapsed_or_transparent() {
+        use columbina_model::grade::{Window, WindowShape};
+        let mut grade = graded();
+        let NodeKind::Corrector(c) = &mut grade.nodes[1].kind else {
+            unreachable!()
+        };
+        let mut window = Window::new("w", WindowShape::circular());
+        window.transform.size = 0.0.into();
+        window.opacity = 0.0.into();
+        c.windows.push(window);
+        c.primaries.midtone_detail = 40.0.into();
+        let (baked, ignored) = without_filters(&grade);
+        assert!(!baked.nodes[1].enabled);
+        assert_eq!(ignored, vec![json!({"node":"n2","why":"windows"})]);
+        assert_eq!(
+            alone(&grade, "n2").unwrap_err().data.unwrap()["why"],
+            "windows"
+        );
+        let NodeKind::Corrector(c) = &mut grade.nodes[1].kind else {
+            unreachable!()
+        };
+        c.qualifier = Some(columbina_model::Qualifier::default());
+        let (baked, ignored) = without_filters(&grade);
+        assert!(
+            !baked.nodes[1].enabled,
+            "all corrections in the node are excluded"
+        );
+        assert!(baked.nodes[0].enabled);
+        assert_eq!(ignored, vec![json!({"node":"n2","why":"qualifier"})]);
+        assert_eq!(
+            alone(&grade, "n2").unwrap_err().data.unwrap()["why"],
+            "qualifier"
+        );
+        let NodeKind::Corrector(c) = &mut grade.nodes[1].kind else {
+            unreachable!()
+        };
+        c.qualifier = None;
+        c.primaries.midtone_detail = 0.0.into();
+        c.windows[0].shape = WindowShape::curve();
+        c.windows[0].invert = true;
+        assert!(without_filters(&grade).1.is_empty());
     }
 
     #[test]

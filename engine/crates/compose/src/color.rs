@@ -235,6 +235,8 @@ pub struct ColorOp {
     pub params: Vec<[f32; 4]>,
     pub textures: Vec<OpTexture>,
     pub neighbourhoods: Vec<Neighbourhood>,
+    /// Reads the position in the input picture, even if its colours are uniform.
+    pub spatial: bool,
 }
 
 /// A stage of colour: its operations, in the order they are done. None is the identity: nothing
@@ -386,8 +388,18 @@ pub(crate) fn program_of(
          fn param(index: u32) -> vec4<f32> {\n    return colour_params[index];\n}\n",
     );
     let mut kinds = Vec::new();
+    // Window geometry has a variable-length tail. Keep every operation's base in data,
+    // including library-only and parameterless operations, so growing that tail cannot
+    // change the code of the operations after it. A neighbourhood uses this same rule for
+    // its own prefix of operations. Programs without spatial operations keep their original
+    // parameter layout and literal bases, preserving their generated source to the bit.
+    let indirect = ops.iter().any(|op| op.spatial);
     let mut inputs = Inputs {
-        params: Vec::new(),
+        params: if indirect {
+            vec![[0.0; 4]; ops.len()]
+        } else {
+            Vec::new()
+        },
         textures: Vec::new(),
     };
     for (index, op) in ops.iter().enumerate() {
@@ -395,7 +407,22 @@ pub(crate) fn program_of(
             Some(body) if index + 1 == ops.len() => body,
             _ => &op.body,
         };
-        let mut body = body.replace("$P", &format!("{}u", inputs.params.len()));
+        let base = inputs.params.len();
+        let mut body = if indirect {
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "storage-buffer indices use the existing float parameter representation"
+            )]
+            {
+                inputs.params[index][0] = base as f32;
+            }
+            format!(
+                "let colour_param_base = u32(param({index}u).x);\n{}",
+                body.replace("$P", "colour_param_base")
+            )
+        } else {
+            body.replace("$P", &format!("{base}u"))
+        };
         // From the last, so that $T1 is not taken for the start of $T10.
         for number in (0..op.textures.len()).rev() {
             let binding = kinds.len() + number;
@@ -622,6 +649,131 @@ mod tests {
         other.ops[0].params = vec![[2.0; 4]];
         let (again, _) = super::program(&[&other, &second]).unwrap();
         assert_eq!(again, program);
+    }
+
+    #[test]
+    fn window_tail_growth_keeps_later_grade_and_stage_parameter_addresses_in_data() {
+        use crate::grade::{stage_of, stage_of_grades, GradeOptions, NoLuts};
+        use columbina_model::grade::{
+            Grade, Link, Node, NodeKind, Port, Window, WindowShape, OUTPUT, SOURCE,
+        };
+        let grade = |id: &str, window: bool| {
+            let mut node = Node::corrector(id);
+            let NodeKind::Corrector(c) = &mut node.kind else {
+                unreachable!()
+            };
+            c.primaries.gain.r = 1.4.into();
+            if window {
+                c.windows
+                    .push(Window::new("circle", WindowShape::circular()));
+            }
+            Grade {
+                nodes: vec![node],
+                links: vec![
+                    Link {
+                        from: SOURCE.into(),
+                        to: id.into(),
+                        kind: Port::Rgb,
+                        input: 0,
+                    },
+                    Link {
+                        from: id.into(),
+                        to: OUTPUT.into(),
+                        kind: Port::Rgb,
+                        input: 0,
+                    },
+                ],
+            }
+        };
+        let mut a = grade("a", true);
+        let b = grade("b", false);
+        let options = GradeOptions::default();
+        let joined = |a: &Grade| stage_of_grades(&[(a, 0.0), (&b, 0.0)], &options, &NoLuts);
+        let first = joined(&a);
+        let (before, before_inputs) = program(&[&first]).unwrap();
+        let NodeKind::Corrector(c) = &mut a.nodes[0].kind else {
+            unreachable!()
+        };
+        c.windows
+            .push(Window::new("second", WindowShape::circular()));
+        let second = joined(&a);
+        let (after, after_inputs) = program(&[&second]).unwrap();
+        assert_ne!(before_inputs.params.len(), after_inputs.params.len());
+        assert!(before==after,"adding a window to the first grade must not rewrite the following grade's parameter base");
+        let first_stage = stage_of(&a, 0.0, &options, &NoLuts);
+        let second_stage = stage_of(&b, 0.0, &options, &NoLuts);
+        let (split, split_inputs) = program(&[&first_stage, &second_stage]).unwrap();
+        assert_eq!(split, after);
+        assert_eq!(split_inputs.params, after_inputs.params);
+    }
+
+    #[test]
+    fn spatial_parameter_bases_include_empty_operations_and_neighbourhood_prefixes() {
+        let library = ColorOp {
+            library: "fn parameter_table_library() {}".into(),
+            ..ColorOp::default()
+        };
+        let spatial = ColorOp {
+            body: "rgb *= param($P).rgb;".into(),
+            params: vec![[2.0; 4], [7.0; 4]],
+            spatial: true,
+            ..ColorOp::default()
+        };
+        let after = ColorOp {
+            body: "rgb += param($P).rgb + param($P + 1u).rgb;".into(),
+            params: vec![[0.1; 4], [0.2; 4]],
+            neighbourhoods: vec![Neighbourhood {
+                body: "rgb = param($P + 1u).rgb;".into(),
+                filter: Filter::Gaussian { sigma: [0.0; 2] },
+            }],
+            ..ColorOp::default()
+        };
+        let mut stages = [
+            Stage {
+                ops: vec![library, spatial],
+            },
+            Stage {
+                ops: vec![after, ColorOp::default()],
+            },
+        ];
+        // The first neighbourhood reads no previous neighbourhood texture, so its prefix
+        // can be inspected without a GPU. The fourth, parameterless op is not in that prefix.
+        let (before, inputs) =
+            program_of(&[&stages[0], &stages[1]], Part::Neighbourhood(0), &[]).unwrap();
+        assert_eq!(
+            inputs.params,
+            vec![
+                [3.0, 0.0, 0.0, 0.0],
+                [3.0, 0.0, 0.0, 0.0],
+                [5.0, 0.0, 0.0, 0.0],
+                [2.0; 4],
+                [7.0; 4],
+                [0.1; 4],
+                [0.2; 4]
+            ]
+        );
+        stages[0].ops[1].params.push([9.0; 4]);
+        let (after, inputs) =
+            program_of(&[&stages[0], &stages[1]], Part::Neighbourhood(0), &[]).unwrap();
+        assert_eq!(before, after);
+        assert_eq!(inputs.params[2], [6.0, 0.0, 0.0, 0.0]);
+        assert_eq!(inputs.params[6], [0.1; 4]);
+        assert_eq!(inputs.params[7], [0.2; 4]);
+        // Clearing the texture requirement lets the complete program, including an empty
+        // final op, be inspected with exactly the same parameter-table ordering rule.
+        stages[1].ops[0].neighbourhoods.clear();
+        let (whole, inputs) = program(&[&stages[0], &stages[1]]).unwrap();
+        assert_eq!(
+            inputs.params[..4],
+            [
+                [4.0, 0.0, 0.0, 0.0],
+                [4.0, 0.0, 0.0, 0.0],
+                [7.0, 0.0, 0.0, 0.0],
+                [9.0, 0.0, 0.0, 0.0]
+            ]
+        );
+        assert!(!whole.code.contains("$P"));
+        assert_eq!(inputs.params[7..], [[0.1; 4], [0.2; 4]]);
     }
 
     #[test]

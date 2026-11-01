@@ -15,6 +15,9 @@ struct Params {
     extra: vec4<f32>,
     // What the colour of each texel is multiplied by, and its opacity.
     tint: vec4<f32>,
+    // The sampled quad's offset and scale in the logical source canvas. Only spatial keys
+    // use this: neighbourhoods keep colour_at in the actual cropped texture.
+    window_uv: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -69,6 +72,12 @@ fn colour(rgb: vec3<f32>) -> vec3<f32> {
     return rgb;
 }
 // colour: end
+
+// The dimensions in the same space as colour_at, before clip placement.
+// Only the aspect is consumed by windows. Offscreen title taps are raster-scaled, so this
+// is not an API for the original pixel height or a future antialiasing footprint.
+fn colour_size() -> vec2<f32> { return (params.quad.zw-params.quad.xy)/params.window_uv.zw; }
+fn colour_window_at() -> vec2<f32> { return params.window_uv.xy+colour_at*params.window_uv.zw; }
 
 // The colour of a texel premultiplied by `alpha`, graded as the colour it stands for.
 fn graded(rgb: vec3<f32>, alpha: f32) -> vec3<f32> {

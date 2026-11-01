@@ -1365,6 +1365,53 @@ window can cover the whole picture. This differs from an ignored draft or disabl
 Invalid aspect/frame inputs and unrepresentable transforms also return `None` from the
 helpers. No enabled complete windows leaves the node's previous key behavior unchanged.
 
+**Window rendering (project formulas).** Masks use the shown input picture after metadata
+rotation, before clip placement/scaling; timeline masks use the canvas. Generated Title and
+Color clips use their complete transparent source canvas, not the visible glyph/texture
+bounding box. Cropping a title for rasterization keeps its original canvas coordinates for
+windows; neighbourhood lookup remains in the cropped texture. Its dimensions used by windows
+provide the source aspect ratio, not an antialiasing pixel-size estimate. All feather distances
+are local image-height units and therefore follow the Window Transform. Circular and Gradient
+Soft `s` have total transition width `0.5*s/100`, centered on the boundary. Circular uses signed
+radial distance, positive inside; Gradient uses `-local_y`, with negative y white at Soft 0.
+Polygon and Curve use nearest-outline distance, positive for even-odd inside: their inside
+and outside reaches are `0.5*inside/100` and `0.5*outside/100`. Each uses
+`smoothstep(-outside_reach, inside_reach, signed_distance)`; zero total reach is a hard fill.
+Linear uses its four segment distances independently with half of each edge's transition
+width on either side: inside takes the minimum of the four inward ramps, outside the maximum
+of the four outward ramps. This avoids nearest-edge switching seams. At corners a soft edge
+can contribute beyond the adjacent hard edge's extension; this is the project's corner
+blend, not a published Resolve algorithm.
+
+Each enabled complete window's raw mask is inverted if requested, then multiplied by
+`opacity/100`. Starting at 0, Add is `min(1, accumulated + mask)` and Subtract is
+`max(0, accumulated - mask)`, in list order. The resulting window key meets the processed
+qualifier key by `key.qualifier.matte`: product in Matte mode, saturated sum in Mask mode.
+With only one of these internal keys, that key is used. The internal key next meets the
+processed external key via `key.input.matte`, then `key.output` applies. These same keys feed
+Highlight/BW, Key Mixers and Layer Mixers. Windows limit the correction's RGB contribution;
+they neither change image alpha nor clamp HDR RGB. Later neighbourhood operations read the
+preceding windowed result at each input-image position, including uniform colour sources.
+
+Curve cubics use their relative handles and adaptive double-precision de Casteljau subdivision.
+The control-hull-to-chord bound after the largest Window Transform scale is at most
+`1/(8*16384)` image heights: at most 0.125 pixels for an image 16384 pixels high, scaling with
+height beyond that. This is the tessellation bound; f32 packing and evaluation have additional
+rounding (the extreme-control/40x-scale regression measured about 0.267 pixels at 16384 high).
+A threaded bounding-box tree prunes even-odd crossing and distance queries; distances beyond
+the feather support do not need searching. Window/Curve counts have no extra rendering cap.
+Geometry, transforms, softness, opacity and point counts are parameter-buffer data, so animated
+values and point-count edits do not compile pipelines. A node with no enabled complete windows
+keeps the original corrector block and shader path.
+
+The positionless CPU `evaluate`, `evaluate_with` and `evaluate_showing` APIs ignore spatial
+window constraints; they do not invent a sample position. `evaluate_picture[_showing]` evaluates
+positions throughout the graph, including neighbourhood sources. Generate LUT excludes an
+entire enabled node with any enabled complete window, including Size 0 or Opacity 0. When
+several exclusion reasons apply, `why` reports the first in the order `qualifier`, `windows`,
+`midtone_detail`; a windowed node without a qualifier therefore reports `why: "windows"`.
+Disabled windows and open Curve drafts do not cause exclusion.
+
 `set_node` applies `{"windows": [complete windows...]}` as one atomic list replacement.
 Adding, removing, reordering, editing a point or applying a preset all use that operation;
 an object patch indexed into the array is not supported. `{"windows": []}` clears the list
@@ -1395,13 +1442,13 @@ manual gives none):
    shrinks.
 6. The palette's `invert`; then the Key palette's `key.qualifier` (invert, then offset with white
    held, `k + o(1 − k)`, then gain, held within 0…1). `key.qualifier.matte` tells how it meets
-   the node's windows. Their model is kept above; window rendering is a separate integration
-   step. Until that step, the existing qualifier and external-key behavior is unchanged.
+   the node's windows by product in Matte mode or saturated sum in Mask mode (formulas above).
+   With only one internal key, that key is used.
 7. The key coming in at the node's key input (if one is linked), blurred by `key.input_blur` (a
    Gaussian of `0.1 × radius` pixels, `2 · ratio` of it across and `2 · (1 − ratio)` down),
-   through `key.input`, and met with the qualifier's key (`key.input.matte` true, Matte mode: the
-   product) or added to it (Mask mode: the sum, held at 1) (p. 3362). Without a qualifier, the key
-   coming in is the key; without either, the key is full.
+   through `key.input`, and met with the internal qualifier/window key (`key.input.matte` true, Matte mode: the
+   product) or added to it (Mask mode: the sum, held at 1) (p. 3362). Without an internal key, the
+   key coming in is the key; without either, the key is full.
 8. `key.output` (invert, offset, gain). The node gives `input + (made − input) · k` with this key,
    and it is what goes out of its key output along key links, into other nodes' key inputs and
    key mixers.

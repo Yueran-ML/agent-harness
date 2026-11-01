@@ -26,6 +26,9 @@ use columbina_model::grade::{
     Param, Port, OUTPUT, SOURCE,
 };
 
+#[path = "support/windows_gpu.rs"]
+mod windows_gpu;
+
 fn fixed(value: f64) -> Param {
     Param::Fixed(value)
 }

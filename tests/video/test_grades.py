@@ -724,6 +724,49 @@ async def test_the_engine_grades_as_the_tools_ask(
     assert "Key Output gain (how strongly the node works): 0 to 2" in refused.text
 
 
+async def test_video_edit_sends_edits_of_grades_as_the_engine_reads_them(
+    ctx: Context, tmp_path: Path
+) -> None:
+    from columbina.video import edits
+    from support.media import real_engine
+
+    desk = await desk_of(ctx, tmp_path, engine=real_engine())
+    rate = edits.Rate(num=25, den=1)
+    batch = [
+        edits.add_timeline(
+            "Film", rate, id="$film", width=160, height=120, tracks=[edits.track("video")]
+        ),
+        edits.insert("$film", edits.of_color("#808080ff", 50), 0, audio_track=None),
+        edits.insert("$film", edits.of_color("#406080ff", 50), 50, audio_track=None),
+    ]
+    result(await desk.call("video_edit", edits=batch))
+    timeline = result(await desk.call("video_info"))["timelines"][0]
+    first, second = (one["id"] for one in timeline["tracks"][0]["clips"])
+
+    # An edit of a grade names its grade by a target and takes no timeline of its own: none is
+    # added to it.
+    target = {"level": "clip", "timeline": timeline["id"], "clip": first}
+    result(await desk.call("video_edit", edits=[{"edit": "append_node", "grade": target}]))
+    assert len(result(await desk.call("video_grade_info", grade=first))["nodes"]) == 1
+
+    # A target of a clip that leaves its timeline out is given the tool's, as an edit is.
+    result(
+        await desk.call(
+            "video_edit",
+            edits=[
+                {"edit": "append_node", "grade": {"level": "clip", "clip": first}},
+                {
+                    "edit": "copy_grade",
+                    "from": {"level": "clip", "clip": first},
+                    "to": [{"level": "clip", "clip": second}],
+                },
+            ],
+        )
+    )
+    assert len(result(await desk.call("video_grade_info", grade=first))["nodes"]) == 2
+    assert len(result(await desk.call("video_grade_info", grade=second))["nodes"]) == 2
+
+
 async def test_a_grade_is_exported_as_a_cube_that_the_engine_bakes(
     ctx: Context, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -12,7 +12,7 @@ import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from columbina.video import edits, grading, media, story, textcut, words
 from columbina.video.edits import CueItem
@@ -127,6 +127,56 @@ def _media(project: Mapping[str, Any], id: str) -> dict[str, Any]:
     raise _missing(f"there is no media {id}; video_info lists the media")
 
 
+_TIMELINE_OPERATIONS = frozenset(
+    {"set_clip", "set_track", "insert_clip", "remove_clip", "add_track", "remove_track"}
+)
+"""The basic operations whose ``timeline`` the tool's fills where it is left out."""
+
+_GRADE_EDITS = frozenset(
+    {
+        "add_serial", "add_serial_before", "append_node", "add_parallel", "add_layer",
+        "add_outside", "extract_node", "reset_node", "copy_grade", "append_node_graph",
+        "paste_value", "paste_node",
+    }
+)  # fmt: skip
+"""The edits of grades that name their grades by targets (``grade``, ``from``, ``to``) and take
+no ``timeline``; the engine refuses one given them. ``collapse_group_grades`` names clips, and
+takes the timeline of its clips."""
+
+_TIMELINE_LEVELS = frozenset({"clip", "timeline"})
+"""The levels of a target of a grade that name a timeline."""
+
+
+def _with_timeline(target: object, timeline: str) -> object:
+    """A target of a grade, or a list of them, with the timeline it leaves out filled."""
+    if isinstance(target, list):
+        return [_with_timeline(one, timeline) for one in cast("list[object]", target)]
+    if isinstance(target, Mapping):
+        given = dict(cast("Mapping[str, Any]", target))
+        if given.get("level") in _TIMELINE_LEVELS:
+            given.setdefault("timeline", timeline)
+        return given
+    return target
+
+
+def _timeline_left_out(item: Mapping[str, Any]) -> bool:
+    """Whether an item leaves out a timeline that the tool's is to fill."""
+    if item.get("edit") in _GRADE_EDITS:
+        targets = [item.get(field) for field in ("grade", "from", "to")]
+        flat = [
+            one
+            for target in targets
+            for one in (cast("list[object]", target) if isinstance(target, list) else [target])
+        ]
+        return any(
+            isinstance(one, Mapping)
+            and cast("Mapping[str, Any]", one).get("level") in _TIMELINE_LEVELS
+            and "timeline" not in one
+            for one in flat
+        )
+    return ("edit" in item or item.get("op") in _TIMELINE_OPERATIONS) and "timeline" not in item
+
+
 def _applied(change: Applied) -> dict[str, Any]:
     return asdict(change)
 
@@ -193,35 +243,20 @@ class Editor:
     async def edited(
         self, operations: Sequence[Mapping[str, Any]], timeline: str | None = None
     ) -> str:
-        """Only fill omitted timeline targets; the engine interprets every edit."""
+        """Only fill omitted timeline targets; the engine interprets every edit.
+
+        An edit of a grade takes no timeline of its own: its grades are named by targets, and
+        a target of a clip or a timeline that leaves its timeline out is given the tool's.
+        """
         batch = [dict(one) for one in operations]
-        needs_timeline = any(
-            (
-                "edit" in one
-                or one.get("op")
-                in {
-                    "set_clip",
-                    "set_track",
-                    "insert_clip",
-                    "remove_clip",
-                    "add_track",
-                    "remove_track",
-                }
-            )
-            and "timeline" not in one
-            for one in batch
-        )
-        if needs_timeline:
+        if any(_timeline_left_out(one) for one in batch):
             target = (await self.timeline(timeline))["id"]
             for one in batch:
-                if "edit" in one or one.get("op") in {
-                    "set_clip",
-                    "set_track",
-                    "insert_clip",
-                    "remove_clip",
-                    "add_track",
-                    "remove_track",
-                }:
+                if one.get("edit") in _GRADE_EDITS:
+                    for field in ("grade", "from", "to"):
+                        if field in one:
+                            one[field] = _with_timeline(one[field], target)
+                elif "edit" in one or one.get("op") in _TIMELINE_OPERATIONS:
                     one.setdefault("timeline", target)
         return receipt(_applied(await self.engine.apply(batch)))
 

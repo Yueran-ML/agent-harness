@@ -12,7 +12,7 @@
  *   album is moved there, and onto a memory is copied into it (pp. 3265, 3272).
  * - The right-click menu of a still: Apply Grade, Append Node Graph, Delete Selected (not confirmed:
  *   Ctrl+Z while the Gallery has the focus brings the stills deleted last back, the interaction
- *   reference §9.2), Properties, Change Label, Export; of the Gallery behind them: Apply Grades
+ *   reference §9.2, and Ctrl+Shift+Z there deletes them again), Properties, Change Label, Export; of the Gallery behind them: Apply Grades
  *   Using ▸, Copy Grade: Preserve number of nodes ▸, Import.
  * - The Memories button shows the memories A–H at the foot (pp. 3271–3272): Alt+1…8 grabs the
  *   current clip's grade into one, Ctrl+1…8 applies it, as does the middle button; its menu applies,
@@ -125,14 +125,16 @@ export function useColorGallery({ bridge, session, project, language, revision, 
   const [problem, setProblem] = useState<string | null>(null);
   // What was said of the last deletion: that Ctrl+Z brings it back.
   const [notice, setNotice] = useState<string | null>(null);
-  // The stills of each deletion of this session, the last last, that Ctrl+Z in the Gallery restores.
+  // The stills of each deletion of this session, the last last, that Ctrl+Z in the Gallery restores,
+  // and of each restored, that Ctrl+Shift+Z there deletes again until another deletion is made.
   const deletions = useRef<string[][]>([]);
+  const restorations = useRef<string[][]>([]);
   const [settings, setSettingsState] = useState<ApplySettings>(readApplySettings);
   const [memories, setMemoriesState] = useState<Memories>(() => readMemories(project));
   const dragged = useRef<string[] | null>(null);
   const panelBox = useRef<HTMLDivElement>(null);
   useEffect(() => { setMemoriesState(readMemories(project)); }, [project]);
-  useEffect(() => { setChosen([]); setCurrentStill(null); setProblem(null); setNotice(null); deletions.current = []; }, [session]);
+  useEffect(() => { setChosen([]); setCurrentStill(null); setProblem(null); setNotice(null); deletions.current = []; restorations.current = []; }, [session]);
   const setSettings = (next: ApplySettings) => { setSettingsState(next); keepApplySettings(next); };
   const setMemories = useCallback((next: Memories) => { setMemoriesState(next); keepMemories(project, next); }, [project]);
 
@@ -265,9 +267,10 @@ export function useColorGallery({ bridge, session, project, language, revision, 
   };
 
   /** Delete Selected (p. 3258), not confirmed: Ctrl+Z in the Gallery brings them back (§9.2). */
-  const deleteStills = async (stills: string[]) => {
+  const deleteStills = async (stills: string[], again = false) => {
     const done = await galleryCall(callEngine(bridge, 'still.delete', { stills }));
     if (done === null) return;
+    if (!again) restorations.current = [];
     deletions.current = [...deletions.current, done.deleted];
     setChosen([]);
     setNotice(said.deleted);
@@ -278,16 +281,26 @@ export function useColorGallery({ bridge, session, project, language, revision, 
     if (stills === undefined) return false;
     deletions.current = deletions.current.slice(0, -1);
     void galleryCall(callEngine(bridge, 'still.restore', { stills })).then((done) => {
-      if (done !== null) { setChosen(stills); setCurrentStill(stills.at(-1) ?? null); }
+      if (done === null) return;
+      restorations.current = [...restorations.current, stills];
+      setChosen(stills); setCurrentStill(stills.at(-1) ?? null);
     });
+    return true;
+  };
+  /** Ctrl+Shift+Z while the Gallery has the focus: the stills restored last deleted again. Whether there were any. */
+  const deleteAgain = () => {
+    const stills = restorations.current.at(-1);
+    if (stills === undefined) return false;
+    restorations.current = restorations.current.slice(0, -1);
+    void deleteStills(stills, true);
     return true;
   };
   const galleryKey = (event: ReactKeyboardEvent) => {
     const target = event.target as HTMLElement;
     if (target.closest('input, textarea, select, [contenteditable="true"]')) return;
     const z = event.code === 'KeyZ' || event.key.toLowerCase() === 'z';
-    if (!z || !(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
-    if (restoreLast()) { event.preventDefault(); event.stopPropagation(); }
+    if (!z || !(event.ctrlKey || event.metaKey) || event.altKey) return;
+    if (event.shiftKey ? deleteAgain() : restoreLast()) { event.preventDefault(); event.stopPropagation(); }
   };
 
   const stillItems = (still: string): MenuItem[] => {

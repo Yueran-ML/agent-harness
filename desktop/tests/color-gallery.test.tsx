@@ -675,6 +675,36 @@ describe('the Gallery', () => {
     expect(stillIds()).toEqual(['s1', 's2', 's3']);
   });
 
+  it('deletes again with Ctrl+Shift+Z in the Gallery what Ctrl+Z restored there, and the project redoes once none is left', async () => {
+    const { bridge } = await mountGallery();
+    const gallery = () => document.querySelector<HTMLElement>('[data-test="gallery"]')!;
+    const z = (shiftKey: boolean) => act(() => { fireEvent.keyDown(gallery(), { key: shiftKey ? 'Z' : 'z', code: 'KeyZ', ctrlKey: true, shiftKey }); });
+    fireEvent.click(stillTile('s1'));
+    fireEvent.contextMenu(stillTile('s1'));
+    chooseItem('Delete Selected');
+    await settle();
+    await z(false);
+    await settle();
+    expect(stillIds()).toEqual(['s1', 's2', 's3']);
+    await z(true);
+    await settle();
+    expect(calls(bridge, 'still.delete')).toEqual([{ stills: ['s1'] }, { stills: ['s1'] }]);
+    expect(stillIds()).toEqual(['s2', 's3']);
+    expect(calls(bridge, 'history.redo')).toEqual([]);
+    // Deleted again, Ctrl+Z restores it again; then nothing is left to do again in the Gallery.
+    await z(false);
+    await settle();
+    expect(calls(bridge, 'still.restore')).toHaveLength(2);
+    // A deletion of the user's own forgets what could be deleted again.
+    fireEvent.contextMenu(stillTile('s3'));
+    chooseItem('Delete Selected');
+    await settle();
+    await z(true);
+    await settle();
+    expect(calls(bridge, 'still.delete')).toHaveLength(3);
+    expect(calls(bridge, 'history.redo')).toHaveLength(1);
+  });
+
   it('keeps grades in memories A–H: Alt+number saves, Ctrl+number and the middle button load, the menu clears, a still dragged on keeps it', async () => {
     const { bridge } = await mountGallery();
     // Hidden at first (p. 3271).

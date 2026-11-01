@@ -522,8 +522,11 @@ struct GrabRequest {
     format: Choice,
 }
 
-/// Grab a still of `frame` into the album asked for, or the first of the project's.
+/// Grab a still of `frame` into the album asked for, or the first of the project's; logged as
+/// `still_grabbed` with how long its picture took to be read back from the card and to be written
+/// (a frame of 3840 × 2160 is 66 MB of half floats).
 fn grab(places: &Places, request: &GrabRequest, frame: &Frame) -> Result<Value, Fault> {
+    let started = std::time::Instant::now();
     let (width, height) = frame.target.size();
     let halves = frame.target.read_halves().map_err(|error| {
         Fault::new(rpc::TRANSPORT_FAILED, error.to_string()).with_data(json!({"reason": "draw"}))
@@ -555,14 +558,26 @@ fn grab(places: &Places, request: &GrabRequest, frame: &Frame) -> Result<Value, 
         Some(album) => gallery::kind_of(album, false)?,
         None => Kind::Stills,
     };
-    gallery::with(places, kind, |opened| {
+    let read = started.elapsed();
+    let grabbed = gallery::with(places, kind, |opened| {
         let album = match &request.album {
             Some(album) => album.clone(),
             None => first_album(opened)?,
         };
         let still = opened.add_still(&album, still, &picture, format)?;
         Ok(gallery::summary(&still, &album))
-    })
+    })?;
+    crate::log::log(
+        "still_grabbed",
+        &json!({
+            "width": width,
+            "height": height,
+            "format": grabbed["image"]["format"],
+            "read_ms": read.as_secs_f64() * 1000.0,
+            "written_ms": started.elapsed().saturating_sub(read).as_secs_f64() * 1000.0,
+        }),
+    );
+    Ok(grabbed)
 }
 
 /// The clip a still is of: the one named, or the one on top at `frame`; with its place in the

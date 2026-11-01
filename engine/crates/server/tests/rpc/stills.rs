@@ -1035,3 +1035,71 @@ async fn a_still_deleted_is_restored_where_it_was_and_memories_are_an_album_of_t
         .await;
     assert_eq!(error["data"]["reason"], "missing", "{error}");
 }
+
+#[tokio::test]
+#[ignore = "measures how long a still of 4K takes: run alone, with --release"]
+async fn a_still_of_4k_is_grabbed_in_a_time_measured() {
+    columbina_compose::gpu_for_tests().expect("a card");
+    let path = support::media(support::Sample::Fhd)
+        .expect("the media")
+        .path
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let dir = project_dir();
+    let power = project_dir();
+    let engine = engine_with(
+        dir.path(),
+        power.path(),
+        &["--no-proxies", "--sound", "null", "--test-hooks"],
+    )
+    .await;
+    let mut client = engine.client("desktop").await;
+    let media = client
+        .result("media.import", Some(json!({"paths": [path]})))
+        .await["added"][0]
+        .clone();
+    let scale = project(&mut client).await["project"]["media"][0]["facts"]["duration"]["scale"]
+        .as_i64()
+        .unwrap();
+    let mut a = clip("$a", media.as_str().unwrap(), 0, 20);
+    a["source"]["in"] = json!({"ticks": 0, "scale": scale});
+    let names = client
+        .apply(json!([{"op": "add_timeline", "timeline": {
+            "id": "$timeline", "name": "UHD", "width": 3840, "height": 2160,
+            "rate": {"num": 25, "den": 1}, "sample_rate": 48000,
+            "tracks": [{"id": "$v", "kind": "video", "name": "V1", "enabled": true,
+                "locked": false, "clips": [a], "transitions": []}],
+        }}]))
+        .await["names"]
+        .clone();
+    client
+        .result(
+            "transport.load",
+            Some(json!({"monitor": "timeline", "timeline": names["$timeline"]})),
+        )
+        .await;
+    seek(&mut client, 6).await;
+    for format in ["png", "exr", "png", "exr", "png", "exr"] {
+        let start = std::time::Instant::now();
+        let still = client
+            .result("still.grab", Some(json!({"format": format})))
+            .await;
+        let took = start.elapsed();
+        let size = std::fs::metadata(still_file(
+            &dir.path().join("gallery"),
+            still["id"].as_str().unwrap(),
+            format,
+        ))
+        .unwrap()
+        .len();
+        println!(
+            "still.grab {format}: {:.0} ms, {:.1} MB",
+            took.as_secs_f64() * 1000.0,
+            f64::from(u32::try_from(size).unwrap()) / 1e6
+        );
+    }
+    for line in super::logged(&engine, "still_grabbed") {
+        println!("{line}");
+    }
+}

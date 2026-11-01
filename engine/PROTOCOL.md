@@ -2429,7 +2429,10 @@ Editor's mode; `pre_clip` and `post_clip` need the clip in a group, `-32602` `{"
 timeline monitor: `-32601` in a headless engine; `-32004` `{"reason": "not_loaded"}` where no
 timeline is loaded, `{"reason": "draw"}` where the frame cannot be read back. `view` is
 `"timeline"` (`-32602` `{"reason": "view"}` otherwise). Grab All Stills, Grab Missing Stills and
-One Still Per Scene are not done.
+One Still Per Scene are not done. Each grab is logged as `still_grabbed` `{"width", "height",
+"format", "read_ms", "written_ms"}`: of a frame of 3840 × 2160 (66 MB of half floats), a release
+build reads it back in some 30 ms and writes it in some 0.3 s as a PNG (deflated fast) or 0.2 s
+as an OpenEXR (RTX 4080 Laptop).
 
 ### Applying a still's grade
 

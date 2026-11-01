@@ -955,6 +955,9 @@ impl Picture {
         let mut encoder = png::Encoder::new(&mut png, self.width, self.height);
         encoder.set_color(png::ColorType::Rgb);
         encoder.set_depth(png::BitDepth::Sixteen);
+        // Fast, not the default Balanced: a grab of 3840 × 2160 takes some 0.35 s and not 0.7 s
+        // (a release build; its frame read back in 30 ms of that), its file a third larger.
+        encoder.set_compression(png::Compression::Fast);
         encoder
             .write_header()
             .and_then(|mut writer| writer.write_image_data(&data))

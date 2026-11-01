@@ -1,6 +1,9 @@
 """Shot Match and Auto Color worked out from the figures of frames, with no engine."""
 
+import json
 import random
+from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -18,6 +21,29 @@ def largest_gap(one: Figures, other: Figures) -> float:
 
 
 TARGET = figures_of(SCENE)
+
+
+@pytest.mark.parametrize(
+    "vector",
+    json.loads((Path(__file__).parents[1] / "fixtures" / "shotmatch.json").read_text()),
+    ids=lambda vector: vector["name"],
+)
+def test_the_shared_desktop_reference_vectors(vector: dict[str, Any]) -> None:
+    def frame(value: dict[str, Any]) -> Figures:
+        red, green, blue = value["levels"]
+        r, g, b = value["means"]
+        return Figures((tuple(red), tuple(green), tuple(blue)), (r, g, b))
+
+    solved = shotmatch.solve(frame(vector["clip"]), frame(vector["target"]))
+    expected = ShotMatch.of(vector["match"])
+    assert solved.match.gamma == pytest.approx(expected.gamma, abs=1e-6)
+    assert solved.match.gain == pytest.approx(expected.gain, abs=1e-6)
+    assert solved.match.offset == pytest.approx(expected.offset, abs=1e-6)
+    assert solved.match.contrast == pytest.approx(expected.contrast, abs=1e-6)
+    assert solved.match.pivot == pytest.approx(expected.pivot, abs=1e-10)
+    assert solved.before == pytest.approx(vector["before"], abs=1e-10)
+    assert solved.after == pytest.approx(vector["after"], abs=1e-8)
+    assert list(solved.limited) == vector["limited"]
 
 
 @pytest.mark.parametrize(

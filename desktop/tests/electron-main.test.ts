@@ -4339,7 +4339,7 @@ describe('the engine of the studio', () => {
     for (const method of allowed) {
       const params = method === 'transaction.apply' ? { ops: [{ op: 'remove_clip', timeline: 't1', id: 'c1' }] } : { frame: 3, monitor: 'source' };
       expect(await shell.invoke('engine-call', { method, params })).toEqual({ ok: true, result: {} });
-      expect(main.written.at(-1)).toMatchObject({ method, params });
+      expect((method === 'scopes.statistics' ? view : main).written.at(-1)).toMatchObject({ method, params });
     }
     const sent = main.written.length + view.written.length;
     for (const method of ['render.start', 'view.attach', 'view.detach', 'media.import', 'still.import', 'still.export', 'hello', 'project.changed', 'transport', '', 7, undefined, 'constructor']) {
@@ -4356,6 +4356,33 @@ describe('the engine of the studio', () => {
     expect(await shell.invoke('engine-call', { method: 'transaction.apply', params: { ops: [] } })).toEqual({
       ok: false, error: { code: -32001, message: 'the clip covers frames that clip c1 covers', data: { reason: 'overlap', with: 'c1', index: 0 } },
     });
+  });
+
+  it('measures through the view connection while gesture transactions use the main connection', async () => {
+    const shell = await shellHarness();
+    await openIn(shell);
+    const [main, view] = connections(shell);
+    const server = shell.engines.servers.get(main.address)!;
+    server.answers.set('scopes.statistics', () => 'hold');
+    const measuring = shell.invoke('engine-call', { method: 'scopes.statistics', params: { timeline: 't1', frame: 0, bins: 1024 } });
+    await settledAll();
+    expect(view.written.at(-1)).toMatchObject({ method: 'scopes.statistics' });
+    expect(main.methods()).not.toContain('scopes.statistics');
+    const params = { revision: 0, gesture: { id: 'match-1' }, ops: [{ op: 'set_node', grade: { level: 'clip', timeline: 't1', clip: 'c1' }, id: 'n1', label: '' }] };
+    expect(await shell.invoke('engine-call', { method: 'transaction.apply', params })).toEqual({ ok: true, result: {} });
+    expect(main.written.at(-1)).toMatchObject({ method: 'transaction.apply', params });
+    expect(server.held).toHaveLength(1);
+    server.answerHeld('scopes.statistics', { result: { frame: 0 } });
+    expect(await measuring).toEqual({ ok: true, result: { frame: 0 } });
+    // A pending measurement belongs to this engine, and is rejected when a new project opens.
+    const interrupted = shell.invoke('engine-call', { method: 'scopes.statistics', params: { timeline: 't1', frame: 1 } });
+    await settledAll();
+    await openIn(shell, '/next-film');
+    expect(await interrupted).toMatchObject({ ok: false });
+    expect(view.destroyed).toBe(true);
+    const [, freshView] = connections(shell).slice(-2);
+    expect(await shell.invoke('engine-call', { method: 'scopes.statistics', params: { timeline: 't1', frame: 2 } })).toEqual({ ok: true, result: {} });
+    expect(freshView.written.at(-1)).toMatchObject({ method: 'scopes.statistics', params: { timeline: 't1', frame: 2 } });
   });
 
   it('lets a comparison of the viewer name a still by its id, never a file', async () => {

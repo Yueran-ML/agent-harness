@@ -24,6 +24,7 @@ import {
 import { MiniTimeline } from '../color/MiniTimeline';
 import { NodeEditor } from '../color/NodeEditor';
 import { useColorPageGrades } from '../color/useColorPageGrades';
+import { useShotMatch } from '../color/useShotMatch';
 import { Palettes, type CenterPalette, type LeftPalette, type RightPanel } from '../color/Palettes';
 import { useColorScopes } from '../color/Scopes';
 import { ThumbnailTimeline } from '../color/ThumbnailTimeline';
@@ -188,12 +189,16 @@ export function ColorPage({
   // The grade shown, as the edits name it; undo and redo, = and -, whole grades copied and pasted, and the menu of a thumbnail.
   // A grade without nodes is shown with DaVinci's default node 01 (T3d), which the first change to it makes.
   const visibleClips = useMemo(() => visible.map(each => each.clip), [visible]);
+  const shotMatch = useShotMatch({ bridge, session, revision, timeline: selected, clips: visibleClips, chosen: chosenClips,
+    current: current?.clip.id ?? null, nodes, color });
   // Wipe Timeline Clip, in the menu of a thumbnail other than the current one's (p. 3002).
   const comparisonRef = useRef<Comparison | null>(null);
   const currentId = useRef<string | null>(null);
   currentId.current = current?.clip.id ?? null;
-  const thumbnailItems = useCallback((clip: string) => (clip === currentId.current ? []
-    : [{ id: 'wipe-timeline-clip', label: labels.galleryPanel.wipeTimelineClip, run: () => comparisonRef.current?.wipeTimelineClip(clip) }]), [labels]);
+  const thumbnailItems = useCallback((clip: string) => [
+    ...(clip === currentId.current ? [] : [{ id: 'wipe-timeline-clip', label: labels.galleryPanel.wipeTimelineClip, run: () => comparisonRef.current?.wipeTimelineClip(clip) }]),
+    ...shotMatch.items(clip),
+  ], [labels, shotMatch.items]);
   const grades = useColorPageGrades({
     bridge, revision, session, area, level: shownLevel, timeline: selected, clips: visibleClips, current: current?.clip ?? null, chosen: chosenClips,
     grade, nextId, thumbnailItems,
@@ -433,7 +438,9 @@ export function ColorPage({
     }}>
     <MonitorPane controls={timelineMonitor} bridge={bridge} native={native} active hidden={nodesOpen && nodesExpanded && viewerMode === 'normal'}
       notice={noticeOf('timeline')} onRetry={onRetry} hint={words.hint.studio.timeline.empty}
-      switcher={<div className="color-viewer-heads">{viewerHead}<ComparisonBar comparison={comparison} /></div>} footer={missingNotice || undefined} />
+      switcher={<div className="color-viewer-heads">{viewerHead}<ComparisonBar comparison={comparison} /></div>}
+      footer={missingNotice || shotMatch.notice ? <>{missingNotice}{shotMatch.notice && <p role="status" aria-busy={shotMatch.busy}
+        className="color-missing-luts" data-test="shot-match-notice">{shotMatch.notice}</p>}</> : undefined} />
     {viewerMode === 'cinema' && <button type="button" className="btn color-cinema-exit" onClick={() => setViewerMode('normal')} data-test="exit-cinema">
       {labels.exitCinema}</button>}
   </section>;

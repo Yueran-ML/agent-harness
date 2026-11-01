@@ -274,6 +274,22 @@ async def test_a_node_with_a_match_is_matched_again_from_its_picture_without_it(
     assert "none of the clips has a shot match" in refused.text
 
 
+async def test_shot_match_keeps_the_reference_existing_match_in_its_picture(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    reference = corrector("n8")
+    reference["params"]["shot_match"] = CAST.params()
+    clip_grade(fake, "c1").update(graded(reference))
+    original = copy.deepcopy(clip_grade(fake, "c1"))
+    # c2 already has the same cast as the reference's visible match. It needs no adjustment.
+    told = result(await desk.call("video_shot_match", clips=["c2"], target="c1"))
+    match = told["matched"][0]
+    assert match["before"] == pytest.approx(0, abs=1e-8)
+    assert match["shot_match"] == ShotMatch().params()
+    assert clip_grade(fake, "c1") == original
+
+
 async def test_auto_color_goes_into_the_visible_lift_and_gain(studio: tuple[Desk, Fake]) -> None:
     desk, fake = studio
     fake.measure = measured({"c4": CAST})

@@ -1956,7 +1956,7 @@ class Grader:
             )
         wanted: shotmatch.Figures | None = None
         if probe is not None:
-            wanted = await self._figures(timeline, probe, project)
+            wanted = await self._figures(timeline, probe, project, replacing=False)
             told["target"] = {"clip": probe.clip, "frame": probe.frame, **wanted.told()}
         elif still is not None:
             wanted = await self._still_figures(still)
@@ -2028,9 +2028,14 @@ class Grader:
         return ops, told
 
     async def _figures(
-        self, timeline: str, plan: "_Plan", project: Mapping[str, Any]
+        self,
+        timeline: str,
+        plan: "_Plan",
+        project: Mapping[str, Any],
+        *,
+        replacing: bool = True,
     ) -> shotmatch.Figures:
-        """The figures of the picture coming out of a plan's node, without its shot match."""
+        """The node's figures, undoing its old match only when that match will be replaced."""
         assert plan.node is not None
         measured = await self.engine.statistics(
             timeline=timeline, frame=plan.frame, grade=plan.target, node=plan.node, bins=_BINS
@@ -2039,7 +2044,7 @@ class Grader:
         held = _object(_node(grade_at(project, plan.target), plan.node).get("params")).get(
             "shot_match"
         )
-        if held is None:
+        if held is None or not replacing:
             return figures
         try:
             return shotmatch.ShotMatch.of(_object(held)).unmapped(figures)

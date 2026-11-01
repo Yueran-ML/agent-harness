@@ -2045,6 +2045,10 @@ function installHandlers() {
     if (method === 'view.place') return answered(Promise.resolve().then(() => { takeViewRect(params); return {}; }));
     if (method === 'view.show') return answered(Promise.resolve().then(() => { takeViewShown(params); return {}; }));
     if (method === 'scopes.subscribe' || method === 'scopes.unsubscribe') return answered(keepScopes(open, method, params));
+    // Statistics can compile and draw for longer than the engine's gesture idle timeout.
+    // Keep the main connection free for edits/gesture keep-alives while that draw runs. Other
+    // requests of the view connection wait behind the draw; both connections belong to `open`.
+    if (method === 'scopes.statistics') return answered(open.session.view(method, params));
     return answered(open.session.call(method, params));
   });
   ipcMain.handle('columbina:engine-import', async (event, asked) => {

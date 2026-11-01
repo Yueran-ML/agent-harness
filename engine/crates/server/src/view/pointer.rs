@@ -267,6 +267,9 @@ fn written(
         "kind": pointer.kind.name(),
         "button": pointer.button.map(columbina_view::Button::name),
         "buttons": buttons,
+        "delta": pointer.delta,
+        "clicks": pointer.clicks,
+        "middle_moved": pointer.middle_moved,
         "x": pointer.picture.map(|(x, _)| x),
         "y": pointer.picture.map(|(_, y)| y),
         "inside": pointer.inside,
@@ -288,6 +291,9 @@ mod tests {
             kind,
             button: (kind != PointerKind::Move).then_some(Button::Left),
             buttons: u8::from(kind != PointerKind::Up),
+            delta: 0,
+            clicks: u8::from(kind == PointerKind::Down),
+            middle_moved: false,
             picture: Some((x, 2.5)),
             inside: true,
             window: (1, 2),
@@ -322,6 +328,56 @@ mod tests {
         assert_eq!(value["x"], 2.0);
         assert_eq!(value["instance"], 3);
         assert_eq!(value["snapshot"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn a_wheel_flushes_the_last_held_move_and_never_loses_high_precision_deltas() {
+        let pointers = Pointers::new(crate::presentation::Registry::default());
+        let (sender, mut receiver) = queue::queue(queue::Limits {
+            messages: 100,
+            bytes: 1 << 20,
+        });
+        pointers.activate(Monitor::Timeline, Some(1));
+        pointers.tell(Monitor::Timeline, 7, sender, None);
+        let mut event = pointer(PointerKind::Down, 10.0);
+        event.button = Some(Button::Middle);
+        event.buttons = 4;
+        pointers.told(Monitor::Timeline, 1, &event);
+        event.kind = PointerKind::Move;
+        event.button = None;
+        event.middle_moved = true;
+        event.picture = Some((20.0, 2.5));
+        pointers.told(Monitor::Timeline, 1, &event);
+        event.picture = Some((30.0, 2.5));
+        pointers.told(Monitor::Timeline, 1, &event);
+        event.picture = Some((10.0, 2.5));
+        pointers.told(Monitor::Timeline, 1, &event);
+        event.kind = PointerKind::Wheel;
+        for delta in [30, -30, 120, -120] {
+            event.delta = delta;
+            pointers.told(Monitor::Timeline, 1, &event);
+        }
+        event.kind = PointerKind::Up;
+        event.button = Some(Button::Middle);
+        event.buttons = 0;
+        pointers.told(Monitor::Timeline, 1, &event);
+        let told = read(&mut receiver);
+        assert_eq!(
+            told.iter()
+                .map(|p| p["kind"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["down", "move", "move", "wheel", "wheel", "wheel", "wheel", "up"]
+        );
+        assert_eq!(told[2]["x"], 10.0);
+        assert_eq!(told[2]["middle_moved"], true);
+        assert_eq!(told.last().unwrap()["middle_moved"], true);
+        assert_eq!(
+            told[3..7]
+                .iter()
+                .map(|p| p["delta"].as_i64().unwrap())
+                .collect::<Vec<_>>(),
+            [30, -30, 120, -120]
+        );
     }
 
     #[test]

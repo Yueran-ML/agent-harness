@@ -824,7 +824,10 @@ async fn a_headless_engine_measures_a_frame_drawn_off_screen() {
 async fn the_pointer_on_a_view_is_told_only_while_it_is_asked_for() {
     use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
     use windows::Win32::UI::WindowsAndMessaging::{
-        PostMessageW, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+        GetClassLongW, GetWindowLongPtrW, PostMessageW, CS_DBLCLKS, GCL_STYLE, GWL_STYLE,
+        WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN,
+        WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP,
+        WS_DISABLED,
     };
     if columbina_compose::gpu_for_tests().is_none() {
         return;
@@ -946,6 +949,195 @@ async fn the_pointer_on_a_view_is_told_only_while_it_is_asked_for() {
         .iter()
         .all(|message| message["method"] != "view.pointer"));
 
+    // Posting tests decoding, not Windows' generation of a real double-click.
+    #[allow(unsafe_code, reason = "inspect the class of the controlled test child")]
+    let class_style = unsafe { GetClassLongW(HWND(view as *mut core::ffi::c_void), GCL_STYLE) };
+    assert_ne!(class_style & CS_DBLCLKS.0, 0);
+    for (down, double, up, flag, name) in [
+        (WM_LBUTTONDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONUP, 1, "left"),
+        (WM_RBUTTONDOWN, WM_RBUTTONDBLCLK, WM_RBUTTONUP, 2, "right"),
+        (WM_MBUTTONDOWN, WM_MBUTTONDBLCLK, WM_MBUTTONUP, 16, "middle"),
+    ] {
+        post(down, flag, (20, 40));
+        post(up, 0, (20, 40));
+        post(double, flag, (20, 40));
+        post(up, 0, (20, 40));
+        changes_for(&mut desktop, Duration::from_millis(100)).await;
+        let clicks = pointer_events(&mut desktop);
+        assert_eq!(
+            clicks
+                .iter()
+                .map(|p| p["kind"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["down", "up", "down", "up"]
+        );
+        assert_eq!(clicks[0]["clicks"], 1);
+        assert_eq!(clicks[2]["clicks"], 2);
+        assert_eq!(clicks[2]["button"], name);
+    }
+    post(WM_MBUTTONDOWN, 16, (20, 40));
+    post(WM_MOUSEMOVE, 16, (30, 40));
+    post(WM_MOUSEMOVE, 16, (20, 40));
+    post(WM_MBUTTONUP, 0, (20, 40));
+    changes_for(&mut desktop, Duration::from_millis(100)).await;
+    let middle = pointer_events(&mut desktop);
+    assert_eq!(middle.first().unwrap()["middle_moved"], false);
+    assert_eq!(middle.last().unwrap()["middle_moved"], true);
+    post(WM_MBUTTONDOWN, 16, (20, 40));
+    post(WM_MBUTTONUP, 0, (20, 40));
+    changes_for(&mut desktop, Duration::from_millis(100)).await;
+    assert_eq!(
+        pointer_events(&mut desktop).last().unwrap()["middle_moved"],
+        false
+    );
+    for delta in [30_i16, -30, 120, -120] {
+        let mut screen = windows::Win32::Foundation::POINT { x: -7, y: -3 };
+        #[allow(unsafe_code, reason = "convert a point of the controlled test child")]
+        unsafe {
+            assert!(windows::Win32::Graphics::Gdi::ClientToScreen(
+                HWND(view as *mut core::ffi::c_void),
+                &raw mut screen
+            )
+            .as_bool());
+        }
+        post(
+            WM_MOUSEWHEEL,
+            (usize::from(delta.cast_unsigned()) << 16) | 4 | 8,
+            (screen.x as isize, screen.y as isize),
+        );
+        changes_for(&mut desktop, Duration::from_millis(100)).await;
+        let wheel = pointer_events(&mut desktop);
+        assert_eq!(wheel.len(), 1);
+        assert_eq!(wheel[0]["kind"], "wheel");
+        assert_eq!(wheel[0]["delta"], delta);
+        assert_eq!(wheel[0]["window"], json!({"x":-7,"y":-3}));
+        assert_eq!(wheel[0]["shift"], true);
+        assert_eq!(wheel[0]["ctrl"], true);
+    }
+
+    // A tool/cursor handoff really disables and re-enables the child while held.
+    // The next physical release must synchronize the new owner without a fake press/cancel.
+    // PostMessage does not set OS physical state: on-boundary sampling observes these
+    // synthetic presses as released. The decoder's retained-held case is unit-tested too.
+    for (down, up, flag, button, up_while_off) in [
+        (WM_MBUTTONDOWN, WM_MBUTTONUP, 16, "middle", false),
+        (WM_LBUTTONDOWN, WM_LBUTTONUP, 1, "left", false),
+        (WM_MBUTTONDOWN, WM_MBUTTONUP, 16, "middle", true),
+        (WM_LBUTTONDOWN, WM_LBUTTONUP, 1, "left", true),
+    ] {
+        post(down, flag, (20, 40));
+        changes_for(&mut desktop, Duration::from_millis(100)).await;
+        let pressed = pointer_events(&mut desktop);
+        assert_eq!(pressed.len(), 1, "{pressed:?}");
+        assert_eq!(pressed[0]["kind"], "down");
+        for on in [false, true] {
+            desktop
+                .result(
+                    "view.pointer",
+                    Some(json!({"monitor":"timeline","on":on,"cursor":"arrow"})),
+                )
+                .await;
+            let deadline = Instant::now() + super::WAIT;
+            loop {
+                #[allow(
+                    unsafe_code,
+                    reason = "observe actual native enable/disable in the controlled child"
+                )]
+                let style =
+                    unsafe { GetWindowLongPtrW(HWND(view as *mut core::ffi::c_void), GWL_STYLE) };
+                if (style & isize::try_from(WS_DISABLED.0).unwrap() == 0) == on {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "native pointer on={on} was not applied"
+                );
+                changes_for(&mut desktop, Duration::from_millis(10)).await;
+            }
+            if !on && up_while_off {
+                post(up, 0, (20, 40));
+                changes_for(&mut desktop, Duration::from_millis(100)).await;
+                assert_eq!(pointer_events(&mut desktop), Vec::<Value>::new());
+            }
+        }
+        if !up_while_off {
+            post(up, 0, (20, 40));
+        }
+        changes_for(&mut desktop, Duration::from_millis(100)).await;
+        let released = pointer_events(&mut desktop);
+        assert_eq!(released.len(), 1, "{button}: {released:?}");
+        assert_eq!(released[0]["kind"], "up");
+        assert_eq!(released[0]["button"], button);
+        assert_eq!(released[0]["buttons"], json!([]));
+        assert_eq!(released[0]["clicks"], 0);
+        // The retained release is consumed once; unrelated or duplicate releases are ignored.
+        post(up, 0, (20, 40));
+        changes_for(&mut desktop, Duration::from_millis(100)).await;
+        assert_eq!(pointer_events(&mut desktop), Vec::<Value>::new());
+    }
+
+    let before_navigation = desktop.result("project.get", None).await;
+    let prepared = desktop
+        .result(
+            "view.viewport",
+            Some(json!({"monitor":"timeline","operation":"prepare"})),
+        )
+        .await;
+    let instance = prepared["instance"].clone();
+    assert_eq!(prepared["buttons"], json!([]));
+    assert_eq!(
+        prepared["geometry"],
+        json!({"surface":[256,144],"picture":[128,72]})
+    );
+    let zoom = json!({"monitor":"timeline","operation":"zoom","instance":instance,"factor":1.1,"at":{"x":-6.5,"y":-2.5}});
+    desktop.result("view.viewport", Some(zoom.clone())).await;
+    let twice = desktop.result("view.viewport", Some(zoom)).await;
+    assert!((twice["scale"].as_f64().unwrap() - 2.42).abs() < 1e-12);
+    let base = json!({"mode":twice["mode"],"scale":twice["scale"],"center":twice["center"]});
+    let pan = json!({"monitor":"timeline","operation":"pan","instance":instance,"base":base,"geometry":prepared["geometry"],"offset":{"x":12,"y":-6}});
+    let panned = desktop.result("view.viewport", Some(pan.clone())).await;
+    assert_eq!(
+        desktop.result("view.viewport", Some(pan.clone())).await,
+        panned
+    );
+    let original = desktop
+        .result(
+            "view.viewport",
+            Some(json!({"monitor":"timeline","operation":"scale","instance":instance,"scale":1})),
+        )
+        .await;
+    assert_eq!(original["center"], panned["center"]);
+    assert_eq!(
+        desktop
+            .error(
+                "view.viewport",
+                Some(
+                    json!({"monitor":"timeline","operation":"zoom","instance":999_999,"factor":1.1})
+                )
+            )
+            .await["data"]["reason"],
+        "instance"
+    );
+    let mut bad_pan = pan;
+    bad_pan["geometry"]["picture"] = json!([129, 72]);
+    assert_eq!(
+        desktop.error("view.viewport", Some(bad_pan)).await["code"],
+        -32602
+    );
+    desktop
+        .result(
+            "view.viewport",
+            Some(json!({"monitor":"timeline","operation":"fit","instance":instance})),
+        )
+        .await;
+    assert_eq!(
+        desktop
+            .result("view.viewport", Some(json!({"monitor":"timeline"})))
+            .await,
+        json!({"monitor":"timeline","mode":"fit"})
+    );
+    assert_eq!(desktop.result("project.get", None).await, before_navigation);
+
     // Let go: nothing more is told.
     let off = desktop
         .result(
@@ -959,6 +1151,7 @@ async fn the_pointer_on_a_view_is_told_only_while_it_is_asked_for() {
     );
     post(WM_LBUTTONDOWN, 1, (20, 40));
     post(WM_LBUTTONUP, 0, (20, 40));
+    post(WM_MOUSEWHEEL, 120 << 16, (20, 40));
     changes_for(&mut desktop, Duration::from_millis(300)).await;
     assert_eq!(pointer_events(&mut desktop), Vec::<Value>::new());
 }

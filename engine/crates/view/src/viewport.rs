@@ -12,6 +12,108 @@ pub enum Viewport {
     Scale { scale: f64, center: [f64; 2] },
 }
 
+/// A viewer-only intention, resolved against requested geometry, never pointer.picture.
+#[derive(Clone, Copy, Debug)]
+pub enum Navigation {
+    Zoom {
+        factor: f64,
+        at: Option<(f64, f64)>,
+    },
+    Pan {
+        base: Viewport,
+        surface: (u32, u32),
+        picture: (u32, u32),
+        offset: (f64, f64),
+    },
+    Scale(f64),
+    Fit,
+}
+
+impl Navigation {
+    /// Resolve with the dimensions of a successful presentation. The current setting can
+    /// already be newer than that presentation: pending wheel steps must compose.
+    ///
+    /// # Errors
+    /// Nonfinite input, invalid resulting geometry, or a pan whose original dimensions changed.
+    pub fn apply(self, current: Viewport, shown: ViewportMap) -> Result<Viewport, &'static str> {
+        let layout = |setting: Viewport| {
+            setting
+                .map(shown.surface, shown.picture, 0)
+                .ok_or("navigation has no valid picture geometry")
+        };
+        let fit_scale = || {
+            (f64::from(shown.surface.0) / f64::from(shown.picture.0))
+                .min(f64::from(shown.surface.1) / f64::from(shown.picture.1))
+        };
+        let scale_of = |setting| match setting {
+            Viewport::Fit => fit_scale(),
+            Viewport::Scale { scale, .. } => scale,
+        };
+        let result = match self {
+            Self::Fit => Viewport::Fit,
+            Self::Scale(scale) => Viewport::Scale {
+                scale,
+                center: match current {
+                    Viewport::Fit => [0.5, 0.5],
+                    Viewport::Scale { center, .. } => center,
+                },
+            },
+            Self::Zoom { factor, at } => {
+                if !factor.is_finite() || factor <= 0.0 {
+                    return Err("zoom factor must be positive and finite");
+                }
+                let at = at.unwrap_or((
+                    f64::from(shown.surface.0) * 0.5,
+                    f64::from(shown.surface.1) * 0.5,
+                ));
+                if !at.0.is_finite() || !at.1.is_finite() {
+                    return Err("zoom anchor must be finite");
+                }
+                // Fit's integer width/height can have slightly different effective ratios.
+                // Its own inverse, rather than the scalar fit ratio, defines the anchor.
+                let anchor = layout(current)?.to_picture(at);
+                let scale = scale_of(current) * factor;
+                Viewport::Scale {
+                    scale,
+                    center: [
+                        (anchor.0 - (at.0 - f64::from(shown.surface.0) * 0.5) / scale)
+                            / f64::from(shown.picture.0),
+                        (anchor.1 - (at.1 - f64::from(shown.surface.1) * 0.5) / scale)
+                            / f64::from(shown.picture.1),
+                    ],
+                }
+            }
+            Self::Pan {
+                base,
+                surface,
+                picture,
+                offset,
+            } => {
+                if surface != shown.surface || picture != shown.picture {
+                    return Err("pan picture geometry changed");
+                }
+                if !offset.0.is_finite() || !offset.1.is_finite() {
+                    return Err("pan offset must be finite");
+                }
+                if offset == (0.0, 0.0) {
+                    return base.checked();
+                }
+                let middle = (f64::from(surface.0) * 0.5, f64::from(surface.1) * 0.5);
+                let anchor = layout(base)?.to_picture(middle);
+                let scale = scale_of(base);
+                Viewport::Scale {
+                    scale,
+                    center: [
+                        (anchor.0 - offset.0 / scale) / f64::from(picture.0),
+                        (anchor.1 - offset.1 / scale) / f64::from(picture.1),
+                    ],
+                }
+            }
+        };
+        result.checked()
+    }
+}
+
 impl Viewport {
     /// Check that the setting can produce finite shader coordinates for every supported size.
     ///
@@ -162,6 +264,57 @@ pub struct Presentation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn navigation_composes_requested_zoom_and_uses_the_integer_fit_inverse() {
+        let shown = Viewport::Fit.map((101, 73), (37, 19), 90).unwrap();
+        let at = (0.5, 10.5); // A black bar of a rotated, nonsquare picture.
+        let anchor = shown.to_picture(at);
+        let zoom = Navigation::Zoom {
+            factor: 1.1,
+            at: Some(at),
+        };
+        let first = zoom.apply(Viewport::Fit, shown).unwrap();
+        let second = zoom.apply(first, shown).unwrap(); // Presentation deliberately stays Fit.
+        let Viewport::Scale { scale, .. } = second else {
+            panic!("scaled")
+        };
+        assert!((scale - 73.0 / 37.0 * 1.21).abs() < 1e-12);
+        let mapped = second.map(shown.surface, shown.picture, 0).unwrap();
+        let still = mapped.to_device(anchor);
+        assert!((still.0 - at.0).abs() < 1e-5 && (still.1 - at.1).abs() < 1e-5);
+        let pan = Navigation::Pan {
+            base: second,
+            surface: shown.surface,
+            picture: shown.picture,
+            offset: (13.0, -7.0),
+        };
+        let moved = pan.apply(second, shown).unwrap();
+        assert_eq!(
+            pan.apply(moved, shown).unwrap(),
+            moved,
+            "cumulative device displacement does not accumulate old picture error"
+        );
+        let Viewport::Scale { center, .. } = moved else {
+            panic!("scaled")
+        };
+        assert_eq!(
+            Navigation::Scale(1.0).apply(moved, shown).unwrap(),
+            Viewport::Scale { scale: 1.0, center }
+        );
+        assert_eq!(Navigation::Fit.apply(moved, shown).unwrap(), Viewport::Fit);
+        let fit_zoom = zoom.apply(Viewport::Fit, mapped).unwrap();
+        assert_eq!(
+            fit_zoom, first,
+            "Fit then zoom uses the new request, even before it is drawn"
+        );
+        assert!(pan
+            .apply(moved, Viewport::Fit.map((102, 73), (37, 19), 90).unwrap())
+            .is_err());
+        assert!(pan
+            .apply(moved, Viewport::Fit.map((101, 73), (38, 19), 90).unwrap())
+            .is_err());
+    }
 
     #[test]
     fn fit_keeps_the_integer_layout_and_oriented_picture_coordinates() {

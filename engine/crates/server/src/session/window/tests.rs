@@ -796,6 +796,9 @@ fn fixture() -> (State, Registry, Arc<Pin>, Arc<FrameSnapshot>) {
     registry.observe(Monitor::Timeline, 1, Some(shown));
     let pointer = columbina_view::Pointer {
         kind: PointerKind::Down,
+        delta: 0,
+        clicks: 1,
+        middle_moved: false,
         button: Some(Button::Left),
         buttons: 1,
         inside: true,
@@ -1081,6 +1084,46 @@ fn unrecorded_external_revision_flushes_only_the_captures_old_key() {
     assert!(state.window.active.is_none());
     assert!(state.history.gesture().is_none());
     assert!(state.held.is_none());
+}
+
+#[test]
+fn native_wheel_does_not_move_or_end_a_left_window_capture() {
+    let (mut state, registry, pin, frame) = fixture();
+    arm(&mut state);
+    let binding = state.window.selection.as_ref().unwrap().binding;
+    let mut wheel = pin.down.pointer;
+    wheel.kind = PointerKind::Wheel;
+    wheel.button = None;
+    wheel.delta = 30;
+    wheel.window.0 = 110;
+    registry.input(Monitor::Timeline, 7, 1, wheel, Some(frame.clone()));
+    assert!(registry.events(&pin).is_empty());
+    state.window_events(
+        1,
+        registry.events(&pin),
+        registry.current(Monitor::Timeline, 1),
+    );
+    assert!(state.window.active.is_some());
+    assert_eq!(state.history.revision(), 0);
+    movement(&mut state, &registry, &pin, &frame, 92);
+    wheel.kind = PointerKind::Up;
+    wheel.button = Some(Button::Left);
+    wheel.buttons = 0;
+    registry.input(Monitor::Timeline, 7, 1, wheel, Some(frame));
+    state.window_events(
+        1,
+        registry.events(&pin),
+        registry.current(Monitor::Timeline, 1),
+    );
+    assert!(state.window.active.is_none());
+    assert_eq!(state.history.revision(), 1);
+    state.window_end("view_changed");
+    assert_eq!(
+        state.history.revision(),
+        1,
+        "navigation after native up does not create history"
+    );
+    assert_eq!(state.window.selection.as_ref().unwrap().binding, binding);
 }
 
 #[test]
@@ -1389,6 +1432,9 @@ fn clicking_a_different_circle_reports_its_local_id_without_rebinding() {
     registry.observe(Monitor::Timeline, 1, Some(shown));
     let pointer = columbina_view::Pointer {
         kind: PointerKind::Down,
+        delta: 0,
+        clicks: 1,
+        middle_moved: false,
         button: Some(Button::Left),
         buttons: 1,
         inside: true,

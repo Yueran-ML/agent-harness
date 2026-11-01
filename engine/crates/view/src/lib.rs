@@ -119,7 +119,7 @@ pub use columbina_media::{NativePicture, Picture};
 pub use display::{Content, Display, HdrTransfer, Monitor, Output};
 pub use pointer::{Button, Pointer, PointerKind};
 pub use render::{letterbox, quarter_turns, Placement};
-pub use viewport::{Presentation, Viewport, ViewportMap};
+pub use viewport::{Navigation, Presentation, Viewport, ViewportMap};
 
 /// How long a frame may take before the window is hidden.
 pub const STALL: Duration = Duration::from_secs(1);
@@ -337,6 +337,10 @@ pub(crate) struct Shared {
 pub(crate) struct State {
     /// The picture to draw next, if a new one was asked for.
     pending: Pending,
+    /// Oriented dimensions of the latest submitted picture, retained when the drawer takes
+    /// Pending into an in-flight job. Clear means no next picture. Device replacement keeps
+    /// this evidence because a CPU picture may be uploaded again without a new submission.
+    submitted_picture: Option<(u32, u32)>,
     /// Where the caller wants the window.
     rect: Rect,
     /// Whether the caller wants the window shown.
@@ -416,6 +420,7 @@ impl Shared {
         Self {
             state: Mutex::new(State {
                 pending: Pending::Nothing,
+                submitted_picture: None,
                 rect,
                 shown: true,
                 stalled: false,
@@ -470,6 +475,7 @@ impl Shared {
             let first = !state.gone;
             state.gone = true;
             state.presentation = None;
+            state.submitted_picture = None;
             first
         };
         self.wake.notify_all();
@@ -695,6 +701,11 @@ impl View {
                 state.odd_rotation = Some(rotation);
                 odd = Some(rotation);
             }
+            state.submitted_picture = Some(if quarter_turns(rotation) % 2 == 1 {
+                (picture.height, picture.width)
+            } else {
+                (picture.width, picture.height)
+            });
             state.pending = Pending::Frame(Frame::Picture(picture, rotation, tag));
             state.dirty = true;
         });
@@ -768,6 +779,7 @@ impl View {
                 "the composed frame is not on the view's current device".into(),
             ));
         }
+        state.submitted_picture = Some((texture.width(), texture.height()));
         state.pending = Pending::Frame(Frame::Texture {
             texture,
             gpu,
@@ -819,6 +831,7 @@ impl View {
     pub fn clear(&self) {
         self.shared.change(|state| {
             state.pending = Pending::Clear;
+            state.submitted_picture = None;
             state.dirty = true;
         });
     }
@@ -900,6 +913,45 @@ impl View {
     #[must_use]
     pub fn presentation(&self) -> Option<Presentation> {
         self.shared.lock().presentation
+    }
+
+    /// Prepare or accept navigation while checking the actual surface and successful map
+    /// under the same state lock. Returning a setting acknowledges the request, not a present.
+    ///
+    /// # Errors
+    /// A lost window, absent/stale presentation, changed pan dimensions, or invalid input.
+    pub fn navigate(
+        &self,
+        operation: Option<Navigation>,
+    ) -> Result<(Viewport, ViewportMap), ViewError> {
+        let mut state = self.shared.lock();
+        if state.gone {
+            return Err(ViewError::Gone);
+        }
+        let shown = state
+            .presentation
+            .and_then(|p| p.map)
+            .filter(|map| {
+                map.surface == state.size && map.surface == (state.rect.width, state.rect.height)
+                    && state.submitted_picture == Some(map.picture)
+            })
+            .ok_or_else(|| {
+                ViewError::Viewport(
+                    "navigation needs a successful map of the current surface and submitted picture".into(),
+                )
+            })?;
+        if let Some(operation) = operation {
+            state.viewport = operation
+                .apply(state.viewport, shown)
+                .map_err(|message| ViewError::Viewport(message.into()))?;
+            state.dirty = true;
+        }
+        let requested = state.viewport;
+        drop(state);
+        if operation.is_some() {
+            self.shared.wake.notify_all();
+        }
+        Ok((requested, shown))
     }
 
     /// Change only the viewer geometry. The old map remains current until the redraw presents.

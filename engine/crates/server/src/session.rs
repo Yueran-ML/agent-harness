@@ -1136,7 +1136,12 @@ async fn dispatch(
                 .unwrap_or(Value::Null);
             if written["monitor"] == "timeline"
                 && (matches!(method, "view.attach" | "view.place" | "view.detach")
-                    || method == "view.viewport" && written.get("mode").is_some()
+                    || method == "view.viewport"
+                        && (written.get("mode").is_some()
+                            || matches!(
+                                written["operation"].as_str(),
+                                Some("zoom" | "pan" | "scale" | "fit")
+                            ))
                     || method == "view.show" && written["shown"] == false)
             {
                 engine.viewer.frames.stop_input(Monitor::Timeline);

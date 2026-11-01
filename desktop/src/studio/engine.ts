@@ -530,7 +530,13 @@ export interface ViewDisplay { hdr: boolean; source: ViewShows | null; timeline:
 export type Viewport = { mode: 'fit' } | { mode: 'scale'; scale: number; center: { x: number; y: number } };
 export type ViewViewport = { monitor: Monitor } & Viewport;
 /** Omit mode to query the requested setting; native presentation may still be pending. */
-export type ViewportParams = { monitor: Monitor } | ViewViewport;
+export type ViewportParams = { monitor: Monitor } | ViewViewport | ViewNavigation | { monitor: Monitor; operation: 'prepare'; instance?: number };
+export interface ViewGeometry { surface: [number, number]; picture: [number, number] }
+export type ViewNavigation = { monitor: Monitor; instance: number } & (
+  { operation: 'zoom'; factor: number; at?: { x: number; y: number } }
+  | { operation: 'pan'; base: Viewport; geometry: ViewGeometry; offset: { x: number; y: number } }
+  | { operation: 'scale'; scale: number } | { operation: 'fit' });
+export type PreparedViewport = ViewViewport & { instance: number; geometry: ViewGeometry; buttons?: ViewPointer['buttons'] };
 
 /** The notification `media.proxy`: how the proxy of media is being made. */
 export interface ProxyEvent {
@@ -635,7 +641,7 @@ export interface PageMethods {
   'media.waveform': { rate: number; channels: number; peaks: string } | { pending: true };
   'luts.list': LutLibrary;
   'view.display': ViewDisplay;
-  'view.viewport': ViewViewport;
+  'view.viewport': ViewViewport & Partial<{ instance: number; geometry: ViewGeometry; buttons: ViewPointer['buttons'] }>;
   'render.cancel': Record<string, never>;
   'transport.load': TransportState;
   'transport.play': Record<string, never>;
@@ -869,7 +875,12 @@ export interface ViewPointer {
     comparison: 'off' | 'wipe' | 'split';
     window?: { binding: number; selected: string | null } | null;
   } | null;
-  kind: 'down' | 'move' | 'up' | 'cancel';
+  kind: 'down' | 'move' | 'up' | 'cancel' | 'wheel';
+  /** Raw signed wheel units (120 per detent), including high precision +/-30 input. */
+  delta?: number;
+  /** Native double-click is the second down; no renderer timer synthesizes it. */
+  clicks?: number;
+  middle_moved?: boolean;
   button: 'left' | 'right' | 'middle' | null;
   buttons: ('left' | 'right' | 'middle')[];
   x: number | null;

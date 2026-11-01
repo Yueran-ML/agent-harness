@@ -8,6 +8,20 @@
 //! the picture that it is over and the keys held, for the tools of the page that are used on the
 //! picture: the pickers of colour, the line of a wipe, the windows.
 
+/// Current logical mouse buttons, sampled once. Unsupported platforms have no snapshot.
+/// The bits match [`Pointer::buttons`]; this neither captures nor dispatches input.
+#[must_use]
+pub fn held_buttons() -> Option<u8> {
+    #[cfg(windows)]
+    {
+        Some(crate::native::held_buttons())
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 /// What the pointer did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PointerKind {
@@ -15,6 +29,8 @@ pub enum PointerKind {
     Down,
     /// It moved.
     Move,
+    /// The vertical wheel turned; its signed native delta is retained.
+    Wheel,
     /// A button was released.
     Up,
     /// The window lost the mouse while a button was held (another window took it): the drag
@@ -29,6 +45,7 @@ impl PointerKind {
         match self {
             Self::Down => "down",
             Self::Move => "move",
+            Self::Wheel => "wheel",
             Self::Up => "up",
             Self::Cancel => "cancel",
         }
@@ -63,10 +80,16 @@ impl Button {
 )]
 pub struct Pointer {
     pub kind: PointerKind,
-    /// The button pressed or released; none for a move.
+    /// The button pressed or released; none for a move or wheel.
     pub button: Option<Button>,
     /// The buttons held once it was done, a bit each: 1 left, 2 right, 4 middle.
     pub buttons: u8,
+    /// Signed native wheel units (120 per detent), zero for other messages.
+    pub delta: i16,
+    /// One for an ordinary down, two for the system's double-click down, zero otherwise.
+    pub clicks: u8,
+    /// A middle-button gesture has visited a different device pixel, even if it returned.
+    pub middle_moved: bool,
     /// Where it is on the picture shown, in pixels of the frame drawn from its top left corner
     /// (of the picture turned as it is shown), the centre of the first pixel at 0.5; none where
     /// no picture is drawn.

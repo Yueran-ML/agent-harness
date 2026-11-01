@@ -73,10 +73,15 @@ async function mountGallery(project: Project = projectWith(), { albums = startin
   const listeners = new Set<(event: EngineEvent) => void>();
   const baseOn = engine.bridge.onEvent;
   engine.bridge.onEvent = (listener) => { listeners.add(listener); const off = baseOn(listener); return () => { listeners.delete(listener); off(); }; };
-  const tell = (method: string, params: unknown) => act(() => { listeners.forEach(listener => listener({ kind: 'notification', session: 1, method, params })); });
+  let physicalButtons: string[] = [];
+  const tell = (method: string, params: unknown) => act(() => {
+    if (method === 'view.pointer') physicalButtons = (params as { buttons: string[] }).buttons;
+    listeners.forEach(listener => listener({ kind: 'notification', session: 1, method, params }));
+  });
   let gallery = albums;
   let made = 0;
   let binding = 0, sequence = 0;
+  let viewport: Record<string, unknown> = { mode: 'fit' };
   const changed = () => listeners.forEach(listener => listener({ kind: 'notification', session: 1, method: 'gallery.changed', params: {} }));
   const base = engine.bridge.call.getMockImplementation()!;
   engine.bridge.call.mockImplementation(async (method: string, params?: Record<string, any>) => {
@@ -139,6 +144,13 @@ async function mountGallery(project: Project = projectWith(), { albums = startin
       case 'window.input': return ok({ binding: params!.binding, capture: 1, sequence: ++sequence, phase: params!.kind === 'up' || params!.kind === 'cancel' ? 'ended' : 'arming',
         reason: null, selected: 'w2', event: params!.event ?? 20, revision: 0, keys: { pan: 0, tilt: 3, clock: 'source', frame: 10 } });
       case 'view.pointer': return ok({ monitor: 'timeline', on: params!.on, cursor: params!.cursor ?? null });
+      case 'view.viewport': {
+        if (params!.operation === 'zoom') viewport = { mode: 'scale', scale: 1.027, center: { x: 0.4, y: 0.6 } };
+        else if (params!.operation === 'scale') viewport = { mode: 'scale', scale: params!.scale, center: { x: 0.4, y: 0.6 } };
+        else if (params!.operation === 'fit') viewport = { mode: 'fit' };
+        return ok({ monitor: 'timeline', ...viewport, instance: 1, geometry: { surface: [960, 540], picture: [1920, 1080] },
+          ...(params!.operation === 'prepare' ? { buttons: physicalButtons } : {}) });
+      }
       default: return base(method, params);
     }
   });
@@ -175,6 +187,21 @@ const last = (bridge: { call: ReturnType<typeof vi.fn> }, method: string) => cal
 const C = (id: string): Target => ({ level: 'clip', timeline: 't1', clip: id });
 
 describe('Circular Window controls', () => {
+  it('shows wheel custom percentages and offers Fit and 100% while OSC is Off', async () => {
+    const h = await mountGallery();
+    const zoom = screen.getByRole('combobox', { name: 'Viewer zoom' }) as HTMLSelectElement;
+    expect(zoom.value).toBe('fit');
+    await h.tell('view.pointer', { monitor: 'timeline', instance: 1, event: 1, kind: 'wheel', button: null, buttons: [], delta: 30,
+      x: 500, y: 200, window: { x: 250, y: 100 }, shift: false, ctrl: false, alt: false, inside: true, snapshot: null }); await settle();
+    expect(zoom.value).toBe('1.027'); expect(zoom.selectedOptions[0].textContent).toBe('102.7%');
+    expect(last(h.bridge, 'view.viewport')).toMatchObject({ operation: 'zoom', at: { x: 250.5, y: 100.5 } });
+    expect(calls(h.bridge, 'viewer.wipe')).toHaveLength(0);
+    fireEvent.change(zoom, { target: { value: '1' } }); await settle();
+    expect(last(h.bridge, 'view.viewport')).toMatchObject({ operation: 'scale', scale: 1 });
+    expect(zoom.value).toBe('1');
+    fireEvent.change(zoom, { target: { value: 'fit' } }); await settle(); expect(zoom.value).toBe('fit');
+  });
+
   const windowProject = () => {
     const project = projectWith();
     const track = project.timelines[0].tracks[0];
@@ -202,7 +229,7 @@ describe('Circular Window controls', () => {
     fireEvent.click(document.querySelector('[data-test="image-wipe"]')!);
     await settle();
     expect((osc as HTMLSelectElement).value).toBe('window');
-    expect(calls(bridge, 'view.pointer').filter(p => (p as any).on)).toEqual([]);
+    expect(calls(bridge, 'view.pointer').filter(p => (p as any).on).every(p => (p as any).cursor === 'arrow')).toBe(true);
     expect(screen.getByRole('button', { name: 'Add Circular Window' })).toBeDefined();
   });
 
@@ -210,8 +237,9 @@ describe('Circular Window controls', () => {
     const h = await mountGallery(windowProject());
     fireEvent.click(screen.getByRole('tab', { name: 'Window' })); await settle();
     expect(calls(h.bridge, 'window.bind')).toHaveLength(1);
+    const pointerCalls = calls(h.bridge, 'view.pointer');
     fireEvent.doubleClick(stillTile('s1')); await settle();
-    expect(calls(h.bridge, 'view.pointer')).toEqual([]);
+    expect(calls(h.bridge, 'view.pointer')).toEqual(pointerCalls);
     await h.tell('view.pointer', nativePoint('down', 20)); await settle();
     expect(calls(h.bridge, 'window.input')[0]).toEqual({ binding: 1, kind: 'down', event: 20 });
     expect(screen.getByRole('option', { name: 'w2 · Circular' }).getAttribute('aria-selected')).toBe('true');
@@ -635,6 +663,30 @@ describe('the wipe of the viewer', () => {
     x, y, inside: true, window: { x: 10, y: 20 }, shift: false, ctrl: false, alt: false, ...more,
   });
 
+  it.each(['middle', 'left'])('keeps navigation blocked through a held %s Wipe-to-Split handoff and restores it on release', async button => {
+    const h = await mountGallery();
+    fireEvent.change(screen.getByRole('combobox', { name: 'On-screen controls' }), { target: { value: 'image_wipe' } });
+    fireEvent.click(stillTile('s1')); await letterKey('w', { ctrlKey: true }); await settle();
+    expect(pointers(h.bridge).at(-1)).toEqual({ monitor: 'timeline', on: true, cursor: 'resize_ew' });
+    await h.tell('view.pointer', point('down', 960, 540, { button, buttons: [button], instance: 1, event: 20,
+      presentation: { serial: 1, tag: 1, map: { surface: [960, 540], picture: [1920, 1080], dest: [0, 0, 960, 540] } } })); await settle();
+    await letterKey('w', { ctrlKey: true, altKey: true }); await settle();
+    expect(pointers(h.bridge).slice(-2)).toEqual([{ monitor: 'timeline', on: false }, { monitor: 'timeline', on: true, cursor: 'arrow' }]);
+    const viewer = document.querySelector('[data-test="viewer-box"]')!;
+    const zoom = screen.getByRole('combobox', { name: 'Viewer zoom' });
+    const mutations = () => calls(h.bridge, 'view.viewport').filter((p: any) => p.operation && p.operation !== 'prepare');
+    fireEvent.keyDown(viewer, { key: 'Z', code: 'KeyZ', shiftKey: true });
+    fireEvent.change(zoom, { target: { value: '2' } }); await settle();
+    expect(mutations()).toEqual([]);
+    await h.tell('view.pointer', point('up', 960, 540, { button, buttons: [], instance: 1, event: 21 })); await settle();
+    fireEvent.keyDown(viewer, { key: 'Z', code: 'KeyZ', shiftKey: true }); await settle();
+    fireEvent.change(zoom, { target: { value: '2' } }); await settle();
+    expect(mutations()).toEqual([
+      { monitor: 'timeline', instance: 1, operation: 'fit' }, { monitor: 'timeline', instance: 1, operation: 'scale', scale: 2 },
+    ]);
+    expect(calls(h.bridge, 'window.input')).toEqual([]);
+  });
+
   it('turns on and off with Ctrl+W and the Image Wipe button, inverts with Alt+W, and steps from still to still', async () => {
     const { bridge } = await mountGallery();
     fireEvent.change(screen.getByRole('combobox', { name: 'On-screen controls' }), { target: { value: 'image_wipe' } });
@@ -671,7 +723,7 @@ describe('the wipe of the viewer', () => {
     fireEvent.click(document.querySelector('[data-test="image-wipe"]')!);
     await settle();
     expect(wipes(bridge).at(-1)).toEqual({ on: false });
-    expect(pointers(bridge).at(-1)).toEqual({ monitor: 'timeline', on: false });
+    expect(pointers(bridge).at(-1)).toEqual({ monitor: 'timeline', on: true, cursor: 'arrow' });
     // A double-click of a still wipes it, and again puts it away.
     fireEvent.doubleClick(stillTile('s3'));
     await settle();

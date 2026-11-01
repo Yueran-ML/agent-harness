@@ -857,6 +857,7 @@ export const en = {
       },
       /** The Color page, in DaVinci Resolve's words (Reference Manual 20, Chapters 126–128 and 143). */
       colorPage: {
+        viewerZoom: 'Viewer zoom', viewerFit: 'Fit',
         windowControls: {
           osc: 'On-screen controls', none: 'Off', window: 'Power Window', image_wipe: 'Image Wipe', add: 'Add Circular Window',
           list: 'Windows', editing: 'Editing', static: 'Static', key: 'Key frame', frame: 'Frame', creating: 'Creating window…',

@@ -36,7 +36,7 @@ import { useColorGallery } from '../color/Gallery';
 import { appendNodeParams, appendNodeTargets, KEYFRAMES_USING } from '../color/stills';
 import { WindowPalette, useWindows } from '../color/WindowPalette';
 import { isComplete } from '../color/graph';
-import { useViewerInput } from '../color/useViewerInput';
+import { useViewerInput, VIEWER_ZOOM_CHOICES } from '../color/useViewerInput';
 import type { ViewerTool } from '../engine';
 import { useComparison, type Comparison } from '../color/useComparison';
 import { ComparisonBar, comparisonMenuItems, splitMenu } from '../color/ComparisonBar';
@@ -429,6 +429,15 @@ export function ColorPage({
     </select>
     <span className="color-realtime" data-state={realTime} role="img" aria-label={labels[realTime]} title={labels[realTime]} data-test="realtime" />
     <span className="color-gap" />
+    <select className="field color-viewer-zoom" aria-label={labels.viewerZoom} data-test="viewer-zoom"
+      value={viewerInput.viewport.mode === 'fit' ? 'fit' : String(viewerInput.viewport.scale)}
+      disabled={!native || !timelineMonitor.loaded}
+      onChange={event => { viewerInput.setZoom(event.target.value === 'fit' ? 'fit' : Number(event.target.value)); event.currentTarget.blur(); viewerElement.current?.focus({ preventScroll: true }); }}>
+      <option value="fit">{labels.viewerFit}</option>
+      {viewerInput.viewport.mode === 'scale' && !VIEWER_ZOOM_CHOICES.includes(viewerInput.viewport.scale)
+        && <option value={String(viewerInput.viewport.scale)}>{Number((viewerInput.viewport.scale * 100).toPrecision(7))}%</option>}
+      {VIEWER_ZOOM_CHOICES.map(scale => <option key={scale} value={String(scale)}>{scale * 100}%</option>)}
+    </select>
     <output className="color-head-timecode" aria-label={labels.timecode} data-test="head-timecode">{headValue}</output>
     <select className="field color-head-kind" aria-label={labels.timecode} value={headTimecode} onChange={event => setHeadTimecode(event.target.value as HeadTimecode)}
       data-test="head-timecode-kind">

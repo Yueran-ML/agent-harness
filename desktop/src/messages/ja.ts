@@ -784,6 +784,7 @@ export const ja: Messages = {
         overview: 'タイムライン全体', detail: '再生ヘッド付近のタイムライン', tapeStrip: 'ビンのソーステープ',
       },
       colorPage: {
+        viewerZoom: 'ビューアのズーム', viewerFit: '全体を表示',
         windowControls: {
           osc: 'オンスクリーンコントロール', none: 'オフ', window: 'Power Window', image_wipe: 'イメージワイプ', add: '円形ウィンドウを追加',
           list: 'ウィンドウ', editing: '編集中', static: '静的', key: 'キーフレーム', frame: 'フレーム', creating: 'ウィンドウを作成中…',

@@ -29,7 +29,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, PoisonError};
 
 use columbina_compose::ShaderCompiler;
-use columbina_view::{Cursor, Event, Gpu, Output, RawParent, Rect, View, ViewError, Viewport};
+use columbina_view::{
+    Cursor, Event, Gpu, Navigation, Output, RawParent, Rect, View, ViewError, Viewport,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serde_json::value::RawValue;
@@ -237,11 +239,67 @@ struct ViewportQuery {
     monitor: Monitor,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Copy, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Center {
     x: f64,
     y: f64,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "mode", rename_all = "lowercase", deny_unknown_fields)]
+enum ViewportBase {
+    Fit,
+    Scale { scale: f64, center: Center },
+}
+impl From<ViewportBase> for Viewport {
+    fn from(base: ViewportBase) -> Self {
+        match base {
+            ViewportBase::Fit => Self::Fit,
+            ViewportBase::Scale { scale, center } => Self::Scale {
+                scale,
+                center: [center.x, center.y],
+            },
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NavigationGeometry {
+    surface: (u32, u32),
+    picture: (u32, u32),
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "operation", rename_all = "lowercase", deny_unknown_fields)]
+enum ViewportNavigation {
+    Prepare {
+        monitor: Monitor,
+        instance: Option<u64>,
+    },
+    Zoom {
+        monitor: Monitor,
+        instance: u64,
+        factor: f64,
+        at: Option<Center>,
+    },
+    Pan {
+        monitor: Monitor,
+        instance: u64,
+        base: ViewportBase,
+        geometry: NavigationGeometry,
+        offset: Center,
+    },
+    Scale {
+        monitor: Monitor,
+        instance: u64,
+        scale: f64,
+    },
+    Fit {
+        monitor: Monitor,
+        instance: u64,
+    },
 }
 
 #[derive(Deserialize)]
@@ -262,6 +320,7 @@ enum ViewportSetting {
 enum ViewportParams {
     Query(ViewportQuery),
     Set(ViewportSetting),
+    Navigate(ViewportNavigation),
 }
 
 const ATTACH: &str = r#"{"monitor":"source"|"timeline", "parent": "<handle in decimal>", "x": 0, "y": 0, "width": 640, "height": 360}"#;
@@ -269,7 +328,7 @@ const PLACE: &str =
     r#"{"monitor":"source"|"timeline", "x": 0, "y": 0, "width": 640, "height": 360}"#;
 const SHOW: &str = r#"{"monitor":"source"|"timeline", "shown": true | false}"#;
 const DISPLAY: &str = r#"{"hdr"?: true | false}"#;
-const VIEWPORT: &str = r#"{"monitor":"source"|"timeline", "mode"?:"fit"|"scale", "scale":positive number, "center":{"x":number,"y":number}}; scale and center are required only with mode scale"#;
+const VIEWPORT: &str = "query {monitor}; absolute {monitor,mode:fit|scale,...}; navigation {monitor,operation:prepare|zoom|pan|scale|fit,instance,...}; see PROTOCOL.md";
 const POINTER: &str = r#"{"monitor":"source"|"timeline", "on": true | false, "cursor"?: "arrow" | "crosshair" | "move" | "resize_ew" | "resize_ns"}"#;
 
 impl Viewer {
@@ -449,6 +508,7 @@ impl Viewer {
 
     async fn viewport(&self, params: ViewportParams) -> Result<serde_json::Value, Fault> {
         let (monitor, requested) = match params {
+            ViewportParams::Navigate(operation) => return self.navigate(operation).await,
             ViewportParams::Query(query) => (query.monitor, None),
             ViewportParams::Set(ViewportSetting::Fit { monitor }) => (monitor, Some(Viewport::Fit)),
             ViewportParams::Set(ViewportSetting::Scale {
@@ -484,12 +544,84 @@ impl Viewer {
             }
             settings[monitor.index()] = viewport;
         }
-        Ok(match settings[monitor.index()] {
-            Viewport::Fit => json!({"monitor":monitor,"mode":"fit"}),
-            Viewport::Scale { scale, center } => {
-                json!({"monitor":monitor,"mode":"scale","scale":scale,"center":{"x":center[0],"y":center[1]}})
+        Ok(viewport_written(monitor, settings[monitor.index()]))
+    }
+
+    async fn navigate(&self, operation: ViewportNavigation) -> Result<serde_json::Value, Fault> {
+        let (monitor, instance, intention) = match operation {
+            ViewportNavigation::Prepare { monitor, instance } => (monitor, instance, None),
+            ViewportNavigation::Zoom {
+                monitor,
+                instance,
+                factor,
+                at,
+            } => (
+                monitor,
+                Some(instance),
+                Some(Navigation::Zoom {
+                    factor,
+                    at: at.map(|p| (p.x, p.y)),
+                }),
+            ),
+            ViewportNavigation::Pan {
+                monitor,
+                instance,
+                base,
+                geometry,
+                offset,
+            } => (
+                monitor,
+                Some(instance),
+                Some(Navigation::Pan {
+                    base: base.into(),
+                    surface: geometry.surface,
+                    picture: geometry.picture,
+                    offset: (offset.x, offset.y),
+                }),
+            ),
+            ViewportNavigation::Scale {
+                monitor,
+                instance,
+                scale,
+            } => (monitor, Some(instance), Some(Navigation::Scale(scale))),
+            ViewportNavigation::Fit { monitor, instance } => {
+                (monitor, Some(instance), Some(Navigation::Fit))
             }
-        })
+        };
+        let _busy = self.busy.lock().await;
+        let slot = self.slots[monitor.index()]
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let unavailable = || {
+            Fault::new(
+                rpc::VIEW_FAILED,
+                "navigation native instance is unavailable",
+            )
+            .with_data(json!({"reason":"instance"}))
+        };
+        let view = slot.as_ref().ok_or_else(unavailable)?;
+        if instance.is_some_and(|instance| instance != view.instance) {
+            return Err(unavailable());
+        }
+        let (requested, shown) = view.navigate(intention).map_err(|error| fault(&error))?;
+        if intention.is_some() {
+            self.viewports
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)[monitor.index()] = requested;
+        }
+        let mut answer = viewport_written(monitor, requested);
+        answer["instance"] = json!(view.instance);
+        answer["geometry"] = json!({"surface":shown.surface,"picture":shown.picture});
+        if intention.is_none() {
+            if let Some(buttons) = columbina_view::pointer::held_buttons() {
+                answer["buttons"] = json!([(1, "left"), (2, "right"), (4, "middle")]
+                    .into_iter()
+                    .filter(|(bit, _)| buttons & bit != 0)
+                    .map(|(_, name)| name)
+                    .collect::<Vec<_>>());
+            }
+        }
+        Ok(answer)
     }
 
     /// `view.display`: allow HDR or not, where `hdr` is given, and say what each view shows.
@@ -631,6 +763,15 @@ impl Viewer {
                 }
                 Err(fault(&error))
             }
+        }
+    }
+}
+
+fn viewport_written(monitor: Monitor, setting: Viewport) -> serde_json::Value {
+    match setting {
+        Viewport::Fit => json!({"monitor":monitor,"mode":"fit"}),
+        Viewport::Scale { scale, center } => {
+            json!({"monitor":monitor,"mode":"scale","scale":scale,"center":{"x":center[0],"y":center[1]}})
         }
     }
 }

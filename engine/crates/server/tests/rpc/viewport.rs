@@ -36,6 +36,21 @@ async fn the_viewport_is_remembered_without_a_window() {
         json!({"monitor":"timeline","mode":"fit"})
     );
     assert_eq!(desktop.result("project.get", None).await, before);
+    for operation in [
+        json!({"monitor":"source","operation":"prepare"}),
+        json!({"monitor":"source","operation":"zoom","instance":1,"factor":1.1}),
+    ] {
+        assert_eq!(
+            desktop.error("view.viewport", Some(operation)).await["data"]["reason"],
+            "instance"
+        );
+    }
+    assert_eq!(
+        desktop
+            .result("view.viewport", Some(json!({"monitor":"source"})))
+            .await,
+        custom
+    );
     assert_eq!(
         desktop
             .result(

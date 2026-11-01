@@ -578,6 +578,45 @@ picture.
   in the project, do not change revision/history, and do not survive engine restart. The
   response reports the **requested** setting; drawing is asynchronous. This method is only
   for a desktop client in a non-headless engine. The page may call it through Electron's allowlist.
+  Navigation uses the same method with an `operation` instead of `mode`:
+  - `{monitor,operation:"prepare",instance?}` reads the requested setting plus the current
+    native `instance` and `geometry:{surface:[w,h],picture:[w,h]}`. It requires a successful map
+    matching both the actual surface size and requested native rectangle; it changes nothing.
+    The latest submitted oriented picture dimensions must also match, even when that picture
+    has left the pending slot and is still being drawn. A submitted clear is not a picture.
+    An optional instance must match. This lets keyboard/header actions work before any mouse move.
+    On Windows, prepare also returns `buttons:["left"|"right"|"middle",...]`, one current
+    logical-button snapshot; unsupported platforms omit it (absence is not a release).
+  - `{monitor,instance,operation:"zoom",factor,at?:{x,y}}` multiplies the latest requested
+    scale. `at` is a device coordinate (native integer pointer coordinates plus 0.5); when omitted
+    it is the surface centre. Fit starts with the smaller surface/picture ratio and finds its
+    anchor through the existing integer Fit map's inverse, including black bars and rotation.
+  - `{monitor,instance,operation:"pan",base,geometry,offset:{x,y}}` applies total device-pixel
+    displacement from down to the prepared `base` (`{mode:"fit"}` or `{mode:"scale",scale,center}`).
+    The original surface/picture dimensions must still match; changing either ends the old pan.
+    A normal new frame with the same dimensions does not end it. The client checks prepare's
+    dimensions against those of the native down, retains the final position even if Up arrives
+    before prepare, and sends no mutation for an unmoved middle click.
+  - `{monitor,instance,operation:"scale",scale}` selects a percentage while preserving the
+    requested normalized centre; `{monitor,instance,operation:"fit"}` restores centred Fit.
+  All mutations resolve and publish in the monitor's view-operation order against the latest
+  requested setting, so navigation accumulates while presentation is pending. Every navigation
+  reply describes an accepted request, not a completed present. Replaced/missing instances fail
+  with `-32003`, reason `instance`; invalid/stale geometry is `-32602`, reason `viewport`.
+  The old absolute/query forms still work without a window or picture.
+  Color's project defaults are 1.1 per 120 wheel units (fractional units retained), pointer-centred
+  wheel zoom, centre-anchored Ctrl+=/-; Alt+Shift+Z is 100%, Shift+Z is Fit. Its sole input owner
+  keeps basic navigation active with OSC Off/hidden; Window obtains the pointer only via bind,
+  and Wipe/Split alone receive comparison input. While left is physically held navigation is
+  ignored; after native Up it waits for that capture's normal ending. A MiddleDown after LeftUp
+  may wait for the same capture to finish
+  normally while retaining the new pan's Move/Up positions. Middle pan excludes other
+  navigation until release. These operations never write project/history or resume playback.
+  Keyboard/header intentions pin any instance already known when queued. After a tool handoff,
+  an inherited held bit without a current capture/pan may be confirmed once by read-only prepare
+  on a navigation intention: still-held or unavailable state discards that intention. A changed
+  owner, instance, or pointer event during the query discards the answer; it cannot clear a new
+  press. This also handles a release outside the child after the old capture was relinquished.
 - **`view.show`** hides the view, and shows it again. A native window covers whatever of the
   page lies over its rectangle ("airspace"): an HTML menu, dialog or tooltip that opens over the
   viewer is hidden under it. So the page hides each affected monitor (`{"monitor":"source",
@@ -733,7 +772,8 @@ as it always did, and nothing is told.
 
 While it takes it, the view is the target of the mouse over the picture, and the engine tells
 `view.pointer` `{"monitor", "kind", "button", "buttons", "x", "y", "inside", "window", "shift",
-"ctrl", "alt"}` for each press (`down`), move (`move`) and release (`up`) of a button: `button` the
+"ctrl", "alt", "delta", "clicks", "middle_moved"}` for each press (`down`), move (`move`),
+wheel (`wheel`) and release (`up`) of a button: `button` the
 one pressed or released (`"left"`, `"right"`, `"middle"`, null for a move), `buttons` those held
 after it, `x` and `y` where it is on the frame drawn (as `view.sample` takes them; null where no
 frame is drawn), `inside` whether that is on the picture (not on the black about it), `window`
@@ -742,8 +782,22 @@ view captures the mouse until the last button is released, so a drag goes on bey
 (`inside` false, `x` and `y` beyond the frame); if another window takes the mouse meanwhile, the
 drag ends with `cancel`. Presses and releases are each told; moves as fast as the connection
 reads them (the next once the one before was written, those between dropped), and the last place
-the pointer stopped at is always told, before the next press or release. The view never takes
+the pointer stopped at is always told, before the next press, wheel, or release. Each wheel is
+told; `delta` is its signed native high-resolution delta (120 per detent, zero otherwise).
+Wheel screen coordinates are converted to this child window's client coordinates before the
+same pixel-centre mapping. `clicks` is 1 for an ordinary down, 2 for the system's double-click
+second down (all three buttons), and 0 otherwise. `middle_moved` latches any device-pixel
+movement from middle down before move coalescing, remains true when the pointer returns to
+the origin, and is included on Up/Cancel before clearing. The view never takes
 the keyboard: keys stay the page's.
+
+Pointer off relinquishes capture but remembers which formerly captured buttons still need a
+release. On re-enable, one physical snapshot (mapped to logical left/right) synchronizes any
+release that happened while off with `up`, `clicks:0`, current `buttons`, and the last known
+window point. Still-held buttons retain their pending release until a native Up or later button
+snapshot; no Down or Cancel is invented and old capture is never reacquired. Physical state
+updates are accepted before the desktop owner's activation reply, with the usual session,
+instance and event ordering; gesture dispatch still requires the active owner/binding.
 
 Pointer notifications additionally carry `instance`, `presentation`, and `snapshot`.
 `instance` is an engine-local, increasing native attachment number; reattaching creates a
@@ -2704,7 +2758,7 @@ real ids. For example:
 | `render.progress` | `{"job", "state": "running" \| "done" \| "failed" \| "cancelled", "frame", "frames", "fps", "path", "encoder"?, "message"?, "missing_luts"?}` (see Rendering a timeline, and Grades in the picture) |
 | `scopes.frame` | `{"scope_id": "scope-1", "view": "timeline", "frame": n, "width": w, "height": h, "rgba": "<base64>"}`: a picture of a scope, to the connection that subscribed it only (see Scopes) |
 | `gallery.changed` | `{}`: the Gallery was changed; call `gallery.list` again (see The Gallery) |
-| `view.pointer` | `{"monitor", "kind": "down" \| "move" \| "up" \| "cancel", "button", "buttons", "x", "y", "inside", "window": {"x", "y"}, "shift", "ctrl", "alt"}`: what the pointer did on a view that takes it, to the connection that asked only (see Samples and the pointer) |
+| `view.pointer` | `{"monitor", "kind": "down" \| "move" \| "wheel" \| "up" \| "cancel", "button", "buttons", "delta", "clicks", "middle_moved", "x", "y", "inside", "window": {"x", "y"}, "shift", "ctrl", "alt"}`: what the pointer did on a view that takes it, to the connection that asked only (see Samples and the pointer) |
 | `window.state` | `{binding,capture,sequence,phase,reason,selected,event,revision,keys}`: owner-only arming, armed, refused and ended states (see Circular Window controls) |
 | `window.unbound` | `{binding,sequence,revision,reason:"project_changed"}`: original-owner-only retirement when a project change invalidates the binding, even without capture |
 

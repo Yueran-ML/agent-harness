@@ -10,17 +10,23 @@ afterEach(cleanup);
 const state = (extra: Partial<WindowState> = {}): WindowState => ({ binding: 10, capture: 1, sequence: 12, phase: 'arming', reason: null,
   selected: 'w1', event: 20, revision: 1, keys: { pan: 0, tilt: 3, clock: 'source', frame: 10 }, ...extra });
 const point = (kind: ViewPointer['kind'], event = 20, extra: Partial<ViewPointer> = {}): ViewPointer => ({ monitor: 'timeline', instance: 1, event,
-  presentation: { serial: 1, tag: 1, map: null }, snapshot: { revision: 1, timeline: 't1', frame: 10, canvas: [1920, 1080], ready: true,
+  presentation: { serial: 1, tag: 1, map: { surface: [256, 144], picture: [128, 72], dest: [0, 0, 256, 144] } }, snapshot: { revision: 1, timeline: 't1', frame: 10, canvas: [1920, 1080], ready: true,
     editable: true, comparison: 'wipe', window: { binding: 10, selected: 'w1' } },
   kind, button: kind === 'down' || kind === 'up' ? 'left' : null, buttons: kind === 'up' ? [] : ['left'], x: 300, y: 200,
   inside: true, window: { x: 10, y: 20 }, shift: false, ctrl: false, alt: false, ...extra });
 
-function mount({ holdBind = false } = {}) {
+function mount({ holdBind = false, holdPrepare = false, holdNavigation = false, holdQuery = false } = {}) {
   const listeners = new Set<(event: EngineEvent) => void>();
   const held: { method: string; params: any; resolve: (answer: any) => void }[] = [];
   let nextBinding = 10;
   const call = vi.fn((method: string, params: any, _context?: unknown) => {
     const binding = method === 'window.bind' ? nextBinding++ : null;
+    if (method === 'view.viewport') {
+      if ((params.operation === 'prepare' && holdPrepare) || (params.operation && params.operation !== 'prepare' && holdNavigation) || (!params.operation && holdQuery)) {
+        return new Promise<any>(resolve => held.push({ method, params, resolve }));
+      }
+      return Promise.resolve({ ok: true, result: { monitor: 'timeline', mode: 'fit', instance: 1, geometry: { surface: [256, 144], picture: [128, 72] } } });
+    }
     if (method === 'window.bind' && holdBind) return new Promise<any>(resolve => held.push({ method, params, resolve }));
     if (method === 'window.input' || method === 'window.unbind') return new Promise<any>(resolve => held.push({ method, params, resolve }));
     return Promise.resolve({ ok: true, result: binding === null ? {} : { binding, sequence: (binding - 9) * 10 } });
@@ -48,6 +54,321 @@ function mount({ holdBind = false } = {}) {
 }
 
 describe('the sole viewer input owner', () => {
+  it('ignores a fresh wheel reporting inherited middle held without querying or mutating', async () => {
+    const h = mount({ holdPrepare: true }); await settle(); h.update({ tool: 'image_wipe' }); await settle();
+    await h.answer('window.unbind', { binding: 10, phase: 'ended' }); await settle();
+    h.notify('view.pointer', point('down', 20, { button: 'middle', buttons: ['middle'], snapshot: null, presentation: null }));
+    h.update({ comparison: { ...h.props().comparison, splitting: true, pointerCursor: 'arrow' } }); await settle();
+    h.notify('view.pointer', point('wheel', 21, { button: null, buttons: ['middle'], delta: 120, snapshot: null })); await settle();
+    expect(h.call.mock.calls.filter(([method, p]) => method === 'view.viewport' && p.operation)).toEqual([]);
+    expect(h.held).toEqual([]);
+  });
+
+  it('retains both wheels accepted before a held middle pan and prepares their cumulative base', async () => {
+    const h = mount({ holdNavigation: true, holdPrepare: true }); await settle();
+    const navigation = () => h.call.mock.calls.filter(([method, p]) => method === 'view.viewport' && p.operation).map(([, p]) => p);
+    const first = { mode: 'scale', scale: 2.2, center: { x: 0.3, y: 0.7 } };
+    const base = { ...first, scale: 2.42 };
+    const geometry = { surface: [256, 144], picture: [128, 72] };
+    h.notify('view.pointer', point('wheel', 20, { buttons: [], button: null, delta: 120 })); await settle();
+    h.notify('view.pointer', point('wheel', 21, { buttons: [], button: null, delta: 120 }));
+    h.notify('view.pointer', point('down', 22, { button: 'middle', buttons: ['middle'] })); await settle();
+    // Only intentions accepted before this Down survive. New navigation during the pan is ignored.
+    h.notify('view.pointer', point('wheel', 23, { buttons: ['middle'], button: null, delta: 120 }));
+    fireEvent.keyDown(h.element, { key: '+', ctrlKey: true });
+    act(() => h.hook.result.current.setZoom(4));
+    await h.answer('view.viewport', { monitor: 'timeline', ...first }); await settle();
+    expect(navigation().map(p => p.operation)).toEqual(['zoom', 'zoom']);
+    await h.answer('view.viewport', { monitor: 'timeline', ...base }); await settle();
+    expect(navigation().map(p => p.operation)).toEqual(['zoom', 'zoom', 'prepare']);
+    await h.answer('view.viewport', { monitor: 'timeline', instance: 1, geometry, buttons: ['middle'], ...base }); await settle();
+    h.notify('view.pointer', point('move', 24, { button: null, buttons: ['middle'], window: { x: 22, y: 20 }, middle_moved: true })); await settle();
+    expect(navigation().at(-1)).toEqual({ monitor: 'timeline', instance: 1, operation: 'pan', base, geometry, offset: { x: 12, y: 0 } });
+    await h.answer('view.viewport', { monitor: 'timeline', ...base });
+    h.notify('view.pointer', point('up', 25, { button: 'middle', buttons: [], window: { x: 22, y: 20 }, middle_moved: true })); await settle();
+    expect(navigation().map(p => p.operation)).toEqual(['zoom', 'zoom', 'prepare', 'pan']);
+    expect(h.inputs()).toEqual([]);
+  });
+
+  it('finishes keyboard and header accepted before a held middle pan in their original order', async () => {
+    const h = mount({ holdNavigation: true, holdPrepare: true }); await settle();
+    const navigation = () => h.call.mock.calls.filter(([method, p]) => method === 'view.viewport' && p.operation).map(([, p]) => p);
+    const geometry = { surface: [256, 144], picture: [128, 72] };
+    const first = { mode: 'scale', scale: 2.2, center: { x: 0.3, y: 0.7 } };
+    const second = { ...first, scale: 2.42 }, base = { ...first, scale: 1.5 };
+    const prepared = (setting: typeof first) => ({ monitor: 'timeline', instance: 1, geometry, buttons: ['middle'], ...setting });
+    h.notify('view.pointer', point('wheel', 20, { buttons: [], button: null, delta: 120 })); await settle();
+    fireEvent.keyDown(h.element, { key: '+', ctrlKey: true });
+    act(() => h.hook.result.current.setZoom(1.5));
+    h.notify('view.pointer', point('down', 21, { button: 'middle', buttons: ['middle'] }));
+    await h.answer('view.viewport', { monitor: 'timeline', ...first }); await settle();
+    await h.answer('view.viewport', prepared(first)); await settle();
+    expect(navigation().map(p => p.operation)).toEqual(['zoom', 'prepare', 'zoom']);
+    await h.answer('view.viewport', { monitor: 'timeline', ...second }); await settle();
+    await h.answer('view.viewport', prepared(second)); await settle();
+    expect(navigation().at(-1)).toEqual({ monitor: 'timeline', instance: 1, operation: 'scale', scale: 1.5 });
+    await h.answer('view.viewport', { monitor: 'timeline', ...base }); await settle();
+    expect(navigation().map(p => p.operation)).toEqual(['zoom', 'prepare', 'zoom', 'prepare', 'scale', 'prepare']);
+    await h.answer('view.viewport', prepared(base)); await settle();
+    h.notify('view.pointer', point('move', 22, { button: null, buttons: ['middle'], window: { x: 22, y: 20 }, middle_moved: true })); await settle();
+    expect(navigation().at(-1)).toEqual({ monitor: 'timeline', instance: 1, operation: 'pan', base, geometry, offset: { x: 12, y: 0 } });
+    await h.answer('view.viewport', { monitor: 'timeline', ...base });
+    h.notify('view.pointer', point('up', 23, { button: 'middle', buttons: [], window: { x: 22, y: 20 }, middle_moved: true })); await settle();
+    expect(navigation().map(p => p.operation)).toEqual(['zoom', 'prepare', 'zoom', 'prepare', 'scale', 'prepare', 'pan']);
+    expect(h.inputs()).toEqual([]);
+  });
+
+  it.each(['left', 'middle'] as const)('checks inherited %s state once on a navigation intention after release outside the child', async button => {
+    const h = mount({ holdPrepare: true }); await settle(); h.update({ tool: 'image_wipe' }); await settle();
+    await h.answer('window.unbind', { binding: 10, phase: 'ended' }); await settle();
+    h.notify('view.pointer', point('down', 20, { button, buttons: [button], snapshot: null, presentation: null }));
+    h.update({ comparison: { ...h.props().comparison, splitting: true, pointerCursor: 'arrow' } }); await settle();
+    const mutation = () => h.call.mock.calls.filter(([method, p]) => method === 'view.viewport' && p.operation && p.operation !== 'prepare');
+    for (const buttons of [[button], undefined, []]) {
+      fireEvent.keyDown(h.element, { key: 'Z', code: 'KeyZ', shiftKey: true }); await settle();
+      expect(h.held).toHaveLength(1);
+      expect(h.held[0].params).toEqual({ monitor: 'timeline', operation: 'prepare', instance: 1 });
+      await h.answer('view.viewport', { monitor: 'timeline', mode: 'fit', instance: 1, buttons,
+        geometry: { surface: [256, 144], picture: [128, 72] } }); await settle();
+      expect(mutation()).toHaveLength(buttons?.length === 0 ? 1 : 0);
+    }
+    expect(mutation()[0][1]).toEqual({ monitor: 'timeline', instance: 1, operation: 'fit' });
+    expect(h.call.mock.calls.filter(([method]) => method === 'view.pointer')).toHaveLength(3);
+    expect(h.inputs()).toEqual([]);
+  });
+
+  it.each(['event', 'instance', 'session', 'tool'] as const)('drops an inherited-button confirmation after a newer %s', async change => {
+    const h = mount({ holdPrepare: true }); await settle(); h.update({ tool: 'image_wipe' }); await settle();
+    await h.answer('window.unbind', { binding: 10, phase: 'ended' }); await settle();
+    h.notify('view.pointer', point('down', 20, { snapshot: null, presentation: null }));
+    h.update({ comparison: { ...h.props().comparison, splitting: true, pointerCursor: 'arrow' } }); await settle();
+    act(() => h.hook.result.current.setZoom(2)); await settle();
+    expect(h.held).toHaveLength(1);
+    if (change === 'event') h.notify('view.pointer', point('down', 21, { snapshot: null }));
+    else if (change === 'instance') h.notify('view.pointer', point('move', 21, { instance: 2, button: null, buttons: [], snapshot: null }));
+    else h.update(change === 'session' ? { session: 2 } : { tool: 'none' });
+    await h.answer('view.viewport', { monitor: 'timeline', mode: 'fit', instance: 1, buttons: [],
+      geometry: { surface: [256, 144], picture: [128, 72] } }); await settle();
+    expect(h.call.mock.calls.filter(([method, p]) => method === 'view.viewport' && p.operation && p.operation !== 'prepare')).toHaveLength(0);
+    if (change === 'event') {
+      act(() => h.hook.result.current.setZoom(2)); await settle();
+      expect(h.held).toHaveLength(0); // The new physical Down is still held; the old snapshot did not clear it.
+    }
+  });
+
+  it.each(['middle', 'left'] as const)('synchronizes %s release before the new pointer owner is acknowledged', async button => {
+    const h = mount(); await settle(); h.update({ tool: 'image_wipe' }); await settle();
+    await h.answer('window.unbind', { binding: 10, phase: 'ended' }); await settle();
+    h.notify('view.pointer', point('down', 20, { button, buttons: [button], snapshot: null })); await settle();
+    const original = h.call.getMockImplementation()!;
+    h.call.mockImplementation((method, params, context) => method === 'view.pointer' && params.on && params.cursor === 'arrow'
+      ? new Promise(resolve => h.held.push({ method, params, resolve })) : original(method, params, context));
+    h.update({ comparison: { ...h.props().comparison, splitting: true, pointerCursor: 'arrow' } }); await settle();
+    const mutations = () => h.call.mock.calls.filter(([method, params]) => method === 'view.viewport' && params.operation && params.operation !== 'prepare').map(([, params]) => params);
+    fireEvent.keyDown(h.element, { key: 'Z', code: 'KeyZ', shiftKey: true });
+    act(() => h.hook.result.current.setZoom(2)); await settle();
+    expect(mutations()).toEqual([]);
+    expect(h.call.mock.calls.filter(([method]) => method === 'view.pointer').slice(-2).map(([, params]) => params)).toEqual([
+      { monitor: 'timeline', on: false }, { monitor: 'timeline', on: true, cursor: 'arrow' },
+    ]);
+    // Native on-boundary synchronization can overtake the RPC response. It only updates
+    // physical state here; the new owner cannot receive an old gesture.
+    h.notify('view.pointer', point('up', 21, { button, buttons: [], snapshot: null }));
+    await h.answer('view.pointer', { monitor: 'timeline', on: true, cursor: 'arrow' }); await settle();
+    fireEvent.keyDown(h.element, { key: 'Z', code: 'KeyZ', shiftKey: true }); await settle();
+    act(() => h.hook.result.current.setZoom(2)); await settle();
+    expect(mutations()).toEqual([
+      { monitor: 'timeline', instance: 1, operation: 'fit' }, { monitor: 'timeline', instance: 1, operation: 'scale', scale: 2 },
+    ]);
+    expect(h.inputs()).toEqual([]);
+  });
+
+  it.each(['keyboard', 'header'] as const)('keeps queued %s navigation with its known instance behind a delayed wheel', async source => {
+    const h = mount({ holdNavigation: true }); await settle();
+    h.notify('view.pointer', point('wheel', 20, { buttons: [], button: null, delta: 120 })); await settle();
+    if (source === 'keyboard') fireEvent.keyDown(h.element, { key: 'Z', code: 'KeyZ', shiftKey: true });
+    else act(() => h.hook.result.current.setZoom(1));
+    h.notify('view.pointer', point('move', 21, { instance: 2, button: null, buttons: [] }));
+    const original = h.call.getMockImplementation()!;
+    h.call.mockImplementation((method, params, context) => method === 'view.viewport' && params.operation === 'prepare'
+      ? Promise.resolve({ ok: true, result: { monitor: 'timeline', mode: 'fit', instance: 2, geometry: { surface: [256, 144], picture: [128, 72] } } })
+      : original(method, params, context));
+    await h.answer('view.viewport', { monitor: 'timeline', mode: 'scale', scale: 2.2, center: { x: 0.5, y: 0.5 }, instance: 1 }); await settle();
+    const navigation = h.call.mock.calls.filter(([method, params]) => method === 'view.viewport' && params.operation).map(([, params]) => params);
+    if (h.held.length) await h.answer('view.viewport', { monitor: 'timeline', mode: 'fit', instance: 2 });
+    expect(navigation).toEqual([{ monitor: 'timeline', instance: 1, operation: 'zoom', factor: 1.1, at: { x: 10.5, y: 20.5 } }]);
+    expect(h.hook.result.current.viewport).toEqual({ mode: 'fit' });
+  });
+
+  it.each([0, 12])('retains a middle gesture started after native LeftUp while that capture is closing (dx=%s)', async dx => {
+    const h = mount(); await settle();
+    h.notify('view.pointer', point('down', 20));
+    h.notify('view.pointer', point('up', 21));
+    h.notify('view.pointer', point('down', 22, { button: 'middle', buttons: ['middle'] }));
+    h.notify('view.pointer', point('move', 23, { button: null, buttons: ['middle'], window: { x: 10 + dx, y: 20 }, middle_moved: dx !== 0 }));
+    h.notify('view.pointer', point('up', 24, { button: 'middle', buttons: [], window: { x: 10 + dx, y: 20 }, middle_moved: dx !== 0 }));
+    await settle();
+    const navigation = () => h.call.mock.calls.filter(([method, p]) => method === 'view.viewport' && p.operation).map(([, p]) => p);
+    expect(navigation()).toEqual([]);
+    await h.answer('down', state()); await settle();
+    expect(h.inputs()).toEqual([{ binding: 10, kind: 'down', event: 20 }, { binding: 10, capture: 1, kind: 'up' }]);
+    expect(navigation()).toEqual([]);
+    await h.answer('up', state({ phase: 'ended', sequence: 14, event: 21 })); await settle();
+    expect(navigation()).toEqual([
+      { monitor: 'timeline', operation: 'prepare', instance: 1 },
+      ...(dx === 0 ? [] : [{ monitor: 'timeline', instance: 1, operation: 'pan', base: { mode: 'fit' },
+        geometry: { surface: [256, 144], picture: [128, 72] }, offset: { x: dx, y: 0 } }]),
+    ]);
+    expect(h.call.mock.calls.filter(([method]) => method === 'window.bind')).toHaveLength(1);
+    expect(h.call.mock.calls.some(([method]) => method === 'view.pointer' || method === 'transaction.apply')).toBe(false);
+    expect(h.hook.result.current.capturing).toBe(false);
+  });
+
+  it('orders a wheel ahead of middle preparation even when its reply is delayed', async () => {
+    const h = mount({ holdNavigation: true, holdPrepare: true }); await settle();
+    h.notify('view.pointer', point('wheel', 20, { buttons: [], button: null, delta: 120 })); await settle();
+    h.notify('view.pointer', point('down', 21, { button: 'middle', buttons: ['middle'] }));
+    h.notify('view.pointer', point('up', 22, { button: 'middle', buttons: [], window: { x: 20, y: 25 } })); await settle();
+    expect(h.call.mock.calls.filter(([method, p]) => method === 'view.viewport' && p.operation === 'prepare')).toHaveLength(0);
+    const base = { mode: 'scale', scale: 2.2, center: { x: 0.3, y: 0.7 } };
+    await h.answer('view.viewport', { monitor: 'timeline', ...base }); await settle();
+    await h.answer('view.viewport', { monitor: 'timeline', instance: 1, geometry: { surface: [256, 144], picture: [128, 72] }, ...base }); await settle();
+    expect(h.call.mock.calls.filter(([method, p]) => method === 'view.viewport' && p.operation === 'pan').at(-1)?.[1]).toMatchObject({ base, offset: { x: 10, y: 5 } });
+    await h.answer('view.viewport', { monitor: 'timeline', ...base });
+  });
+
+  it('keeps navigation enabled for Image Wipe with no active divider', async () => {
+    const h = mount(); await settle(); h.update({ tool: 'image_wipe', comparison: { ...h.props().comparison, pointerCursor: null } }); await settle();
+    await h.answer('window.unbind', { binding: 10, phase: 'ended' }); await settle();
+    expect(h.call.mock.calls.at(-1)).toEqual(['view.pointer', { monitor: 'timeline', on: true, cursor: 'arrow' }, { expectedSession: 1 }]);
+    h.notify('view.pointer', point('wheel', 20, { buttons: [], button: null, delta: 30, snapshot: null })); await settle();
+    expect(h.call.mock.calls.filter(([method, p]) => method === 'view.viewport' && p.operation === 'zoom')).toHaveLength(1);
+    expect(h.handlePointer).not.toHaveBeenCalled();
+  });
+
+  it('uses only the base navigation pointer while Window controls are hidden', async () => {
+    const h = mount(); await settle(); h.update({ selection: { ...h.props().selection!, visible: false } }); await settle();
+    await h.answer('window.unbind', { binding: 10, phase: 'ended' }); await settle();
+    expect(h.call.mock.calls.at(-1)).toEqual(['view.pointer', { monitor: 'timeline', on: true, cursor: 'arrow' }, { expectedSession: 1 }]);
+    h.notify('view.pointer', point('down', 20, { snapshot: null }));
+    expect(h.inputs()).toEqual([]); expect(h.handlePointer).not.toHaveBeenCalled();
+  });
+
+  it('rejects a pan if prepare finds resized geometry after the native down', async () => {
+    const h = mount({ holdPrepare: true }); await settle();
+    h.notify('view.pointer', point('down', 20, { button: 'middle', buttons: ['middle'] })); await settle();
+    h.notify('view.pointer', point('up', 21, { button: 'middle', buttons: [], window: { x: 80, y: 50 } }));
+    await h.answer('view.viewport', { monitor: 'timeline', instance: 1, mode: 'fit', geometry: { surface: [300, 144], picture: [128, 72] } }); await settle();
+    expect(h.call.mock.calls.filter(([method, p]) => method === 'view.viewport' && p.operation === 'pan')).toHaveLength(0);
+  });
+
+  it.each(['up', 'cancel'] as const)('retains the last pan device position when %s arrives before prepare', async terminal => {
+    const h = mount({ holdPrepare: true }); await settle();
+    h.notify('view.pointer', point('down', 20, { button: 'middle', buttons: ['middle'], window: { x: 10, y: 20 } })); await settle();
+    h.notify('view.pointer', point('move', 21, { button: null, buttons: ['middle'], window: { x: 30, y: 45 }, middle_moved: true }));
+    h.notify('view.pointer', point(terminal, 22, { button: terminal === 'up' ? 'middle' : null, buttons: [], window: { x: 40, y: 50 }, middle_moved: true }));
+    expect(h.call.mock.calls.filter(([method, p]) => method === 'view.viewport' && p.operation === 'pan')).toHaveLength(0);
+    const base = { mode: 'scale', scale: 2.42, center: { x: 0.2, y: 0.7 } };
+    const geometry = { surface: [256, 144], picture: [128, 72] };
+    await h.answer('view.viewport', { monitor: 'timeline', instance: 1, geometry, ...base }); await settle();
+    const pans = h.call.mock.calls.filter(([method, p]) => method === 'view.viewport' && p.operation === 'pan').map(([, p]) => p);
+    expect(pans).toEqual([
+      { monitor: 'timeline', instance: 1, operation: 'pan', base, geometry, offset: { x: 20, y: 25 } },
+      { monitor: 'timeline', instance: 1, operation: 'pan', base, geometry, offset: { x: 30, y: 30 } },
+    ]);
+    expect(h.inputs()).toEqual([]);
+  });
+
+  it('keeps a middle gesture exclusive and a zero-displacement click free of viewport mutations', async () => {
+    const h = mount(); await settle();
+    h.notify('view.pointer', point('down', 20, { button: 'middle', buttons: ['middle'] })); await settle();
+    h.notify('view.pointer', point('wheel', 21, { button: null, buttons: ['middle'], delta: 120 }));
+    h.notify('view.pointer', point('down', 22, { button: 'left', buttons: ['left', 'middle'] }));
+    fireEvent.keyDown(h.element, { key: '+', ctrlKey: true });
+    act(() => h.hook.result.current.setZoom(2));
+    h.notify('view.pointer', point('up', 23, { button: 'left', buttons: ['middle'] }));
+    // The native queue may coalesce an excursion back to its origin. That is not a future delete click.
+    h.notify('view.pointer', point('move', 24, { button: null, buttons: ['middle'], middle_moved: true }));
+    h.notify('view.pointer', point('up', 25, { button: 'middle', buttons: [], middle_moved: true })); await settle();
+    expect(h.call.mock.calls.filter(([method, p]) => method === 'view.viewport' && p.operation && p.operation !== 'prepare')).toHaveLength(0);
+    expect(h.inputs()).toEqual([]); expect(h.handlePointer).not.toHaveBeenCalled();
+  });
+
+  it('prepares keyboard and header navigation before any native mouse event, respecting focus and percentages', async () => {
+    const h = mount(); await settle();
+    fireEvent.keyDown(document.body, { key: '+', ctrlKey: true });
+    const field = document.createElement('input'); h.element.append(field);
+    fireEvent.keyDown(field, { key: '+', ctrlKey: true }); await settle();
+    expect(h.call.mock.calls.filter(([method, p]) => method === 'view.viewport' && p.operation)).toHaveLength(0);
+    for (const keys of [{ key: '=', ctrlKey: true }, { key: '-', ctrlKey: true }, { key: 'Z', code: 'KeyZ', shiftKey: true, altKey: true },
+      { key: 'Z', code: 'KeyZ', shiftKey: true }]) { fireEvent.keyDown(h.element, keys); await settle(); }
+    act(() => h.hook.result.current.setZoom(1.5)); await settle();
+    expect(h.call.mock.calls.filter(([method, p]) => method === 'view.viewport' && p.operation !== 'prepare' && p.operation).map(([, p]) => p)).toEqual([
+      { monitor: 'timeline', instance: 1, operation: 'zoom', factor: 1.1 }, { monitor: 'timeline', instance: 1, operation: 'zoom', factor: 1 / 1.1 },
+      { monitor: 'timeline', instance: 1, operation: 'scale', scale: 1 }, { monitor: 'timeline', instance: 1, operation: 'fit' },
+      { monitor: 'timeline', instance: 1, operation: 'scale', scale: 1.5 },
+    ]);
+  });
+
+  it.each(['session', 'timeline', 'tool', 'instance'] as const)('drops a pan preparation after changing %s', async change => {
+    const h = mount({ holdPrepare: true }); await settle();
+    h.notify('view.pointer', point('down', 20, { button: 'middle', buttons: ['middle'] })); await settle();
+    h.notify('view.pointer', point('up', 21, { button: 'middle', buttons: [], window: { x: 50, y: 60 }, middle_moved: true }));
+    if (change === 'instance') h.notify('view.pointer', point('move', 22, { instance: 2, buttons: [] }));
+    else h.update(change === 'session' ? { session: 2 } : change === 'timeline' ? { timeline: 't2' } : { tool: 'none' });
+    await h.answer('view.viewport', { monitor: 'timeline', mode: 'scale', scale: 3, center: { x: 0.2, y: 0.7 }, instance: 1,
+      geometry: { surface: [256, 144], picture: [128, 72] } }); await settle();
+    expect(h.call.mock.calls.filter(([method, p]) => method === 'view.viewport' && p.operation === 'pan')).toHaveLength(0);
+  });
+
+  it('does not let an initial late query overwrite an accepted wheel setting or a retired instance reply', async () => {
+    const h = mount({ holdQuery: true, holdNavigation: true }); await settle();
+    h.notify('view.pointer', point('wheel', 20, { buttons: [], button: null, delta: 120 })); await settle();
+    await act(async () => h.held.find(each => each.params.operation === 'zoom')!.resolve({ ok: true, result: { monitor: 'timeline', mode: 'scale', scale: 2.2, center: { x: 0.4, y: 0.6 } } }));
+    await settle();
+    await h.answer('view.viewport', { monitor: 'timeline', mode: 'fit' }); await settle();
+    expect(h.hook.result.current.viewport).toMatchObject({ mode: 'scale', scale: 2.2 });
+    h.notify('view.pointer', point('wheel', 21, { buttons: [], button: null, delta: 120 })); await settle();
+    h.notify('view.pointer', point('move', 22, { instance: 2, buttons: [] }));
+    await act(async () => h.held.at(-1)!.resolve({ ok: true, result: { monitor: 'timeline', mode: 'scale', scale: 9, center: { x: 0.4, y: 0.6 } } }));
+    await settle();
+    expect(h.hook.result.current.viewport).toMatchObject({ mode: 'scale', scale: 2.2 });
+  });
+
+  it('keeps navigation pointer input with OSC off without dispatching a hidden wipe', async () => {
+    const h = mount(); await settle();
+    h.update({ tool: 'none' }); await settle();
+    await h.answer('window.unbind', { binding: 10, phase: 'ended' }); await settle();
+    expect(h.call.mock.calls.at(-1)).toEqual(['view.pointer', { monitor: 'timeline', on: true, cursor: 'arrow' }, { expectedSession: 1 }]);
+    h.notify('view.pointer', point('down', 21, { snapshot: null }));
+    expect(h.handlePointer).not.toHaveBeenCalled();
+    h.notify('view.pointer', point('up', 22, { snapshot: null }));
+    h.notify('view.pointer', point('wheel' as ViewPointer['kind'], 23, { snapshot: null, buttons: [], button: null, delta: 30 } as Partial<ViewPointer>));
+    await settle();
+    expect(h.call.mock.calls.filter(([method]) => method === 'view.viewport').at(-1)?.[1]).toMatchObject({
+      monitor: 'timeline', instance: 1, operation: 'zoom', factor: 1.1 ** 0.25, at: { x: 10.5, y: 20.5 },
+    });
+  });
+
+  it('waits for the same Window up to finish before wheel navigation and keeps the binding', async () => {
+    const h = mount(); await settle();
+    h.notify('view.pointer', point('down'));
+    h.notify('view.pointer', point('wheel' as ViewPointer['kind'], 21, { delta: 120 } as Partial<ViewPointer>));
+    await settle();
+    expect(h.call.mock.calls.filter(([method, params]) => method === 'view.viewport' && params.operation)).toHaveLength(0);
+    h.notify('view.pointer', point('up', 22));
+    h.notify('view.pointer', point('wheel' as ViewPointer['kind'], 23, { buttons: [], button: null, delta: 120 } as Partial<ViewPointer>));
+    await settle();
+    expect(h.call.mock.calls.filter(([method, params]) => method === 'view.viewport' && params.operation)).toHaveLength(0);
+    await h.answer('down', state()); await settle();
+    await h.answer('up', state({ phase: 'ended', sequence: 14, event: 22 })); await settle();
+    expect(h.call.mock.calls.filter(([method, params]) => method === 'view.viewport' && params.operation).map(([, params]) => params)).toEqual([
+      { monitor: 'timeline', instance: 1, operation: 'zoom', factor: 1.1, at: { x: 10.5, y: 20.5 } },
+    ]);
+    expect(h.call.mock.calls.filter(([method]) => method === 'window.bind')).toHaveLength(1);
+    expect(h.call.mock.calls.some(([method]) => method === 'view.pointer')).toBe(false);
+  });
+
   it('remembers retirement before the pending bind reply and waits for the matching copy before rebinding', async () => {
     const h = mount({ holdBind: true }); await settle();
     h.notify('window.unbound', { binding: 10, sequence: 12, revision: 2, reason: 'project_changed' });
@@ -217,7 +538,10 @@ describe('the sole viewer input owner', () => {
     expect(h.call.mock.calls.at(-1)).toEqual(['view.pointer', { monitor: 'timeline', on: true, cursor: 'resize_ew' }, { expectedSession: 1 }]);
     h.notify('view.pointer', point('down', 21, { snapshot: null })); expect(h.handlePointer).toHaveBeenCalledTimes(1);
     h.update({ tool: 'none' }); await settle();
-    expect(h.call.mock.calls.at(-1)).toEqual(['view.pointer', { monitor: 'timeline', on: false }, { expectedSession: 1 }]);
+    expect(h.call.mock.calls.filter(([method]) => method === 'view.pointer').slice(-2)).toEqual([
+      ['view.pointer', { monitor: 'timeline', on: false }, { expectedSession: 1 }],
+      ['view.pointer', { monitor: 'timeline', on: true, cursor: 'arrow' }, { expectedSession: 1 }],
+    ]);
   });
 
   it('suppresses Window under Split and dispatches tiles, then restores the chosen Window tool', async () => {
@@ -227,7 +551,7 @@ describe('the sole viewer input owner', () => {
     h.notify('view.pointer', point('down', 20, { snapshot: { ...point('down').snapshot!, comparison: 'split', window: null } }));
     expect(h.handlePointer).toHaveBeenCalledTimes(1); expect(h.inputs()).toEqual([]);
     h.update({ comparison: { ...h.props().comparison, splitting: false } }); await settle();
-    expect(h.call.mock.calls.slice(-2).map(([method]) => method)).toEqual(['view.pointer', 'window.bind']);
+    expect(h.call.mock.calls.filter(([method]) => method !== 'view.viewport').slice(-2).map(([method]) => method)).toEqual(['view.pointer', 'window.bind']);
   });
 
   it('keeps cleanup on the originating session while a replacement waits for the old down', async () => {
@@ -266,16 +590,16 @@ describe('the sole viewer input owner', () => {
   });
 
   it('cleans a late bind before starting a new owner, and drops an intermediate wipe owner superseded by Off', async () => {
-    const h = mount();
-    let bound!: (answer: any) => void;
-    h.call.mockImplementationOnce(() => new Promise(resolve => { bound = resolve; }));
+    const h = mount({ holdBind: true });
     await settle(); h.update({ tool: 'image_wipe' }); await settle(); h.update({ tool: 'none' });
-    await act(async () => bound({ ok: true, result: { binding: 10, sequence: 10 } })); await settle();
+    await h.answer('window.bind', { binding: 10, sequence: 10 }); await settle();
     expect(h.call.mock.calls.at(-1)![0]).toBe('window.unbind');
     await h.answer('window.unbind', { binding: 10, phase: 'ended' }); await settle();
-    expect(h.call.mock.calls.some(([method]) => method === 'view.pointer')).toBe(false);
-    h.notify('view.pointer', point('down', 30, { button: 'right' }));
-    expect(h.menu).not.toHaveBeenCalled();
+    expect(h.call.mock.calls.filter(([method]) => method === 'view.pointer')).toEqual([
+      ['view.pointer', { monitor: 'timeline', on: true, cursor: 'arrow' }, { expectedSession: 1 }],
+    ]);
+    h.notify('view.pointer', point('down', 30, { button: 'right', snapshot: null }));
+    expect(h.menu).toHaveBeenCalledOnce();
   });
 
   it('treats a hit refusal as a blank click and reports an unavailable frame in UI state', async () => {

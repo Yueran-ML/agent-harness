@@ -735,6 +735,7 @@ export const zhCN: Messages = {
         overview: '整条时间线', detail: '播放头附近的时间线', tapeStrip: '素材箱的源磁带',
       },
       colorPage: {
+        viewerZoom: '检视器缩放', viewerFit: '适合窗口',
         windowControls: {
           osc: '屏上控制', none: '关闭', window: 'Power Window', image_wipe: '图像划像', add: '添加圆形窗口',
           list: '窗口列表', editing: '正在编辑', static: '静态', key: '关键帧', frame: '帧', creating: '正在创建窗口…',

@@ -537,6 +537,13 @@ async fn a_stills_grade_is_applied_or_appended_each_way_of_keyframes_in_one_undo
                     .unwrap()["from"]
                     .clone();
                 assert_eq!(into_output, nodes[1]["id"], "{grade}");
+                // Given a new id of the engine's, as Append Node Graph gives one.
+                let appended = nodes[1]["id"].as_str().unwrap();
+                assert!(
+                    appended.starts_with('n') && appended[1..].parse::<u64>().is_ok(),
+                    "{grade}"
+                );
+                assert_ne!(nodes[1]["id"], still_node);
             }
             let added = nodes.last().unwrap();
             assert_eq!(saturation(added), frames, "{keyframes} {mode}: {grade}");
@@ -619,6 +626,26 @@ async fn a_stills_grade_is_applied_or_appended_each_way_of_keyframes_in_one_undo
     assert_eq!(saturation(&grade["nodes"][1]), json!([6, 14]));
     client.result("history.undo", None).await;
     assert_eq!(grade_of(&mut client, &names["$b"]).await, had);
+    // No Keyframes: the setting as it is at the playhead, frames 6 and 12 of the timeline (of
+    // A's media too): the key at 2, 50, and the key at 10, 0 (p. 3393).
+    for (at, value) in [(6, 50.0), (12, 0.0)] {
+        client
+            .result(
+                "grade.append_node",
+                Some(
+                    json!({"from": a, "node": from_a, "to": [b], "keyframes": "none",
+                    "at": at}),
+                ),
+            )
+            .await;
+        let grade = grade_of(&mut client, &names["$b"]).await;
+        assert_eq!(
+            saturation(&grade["nodes"][1]),
+            json!(value),
+            "{at}: {grade}"
+        );
+        client.result("history.undo", None).await;
+    }
 }
 
 /// A PNG of 4 × 2 of one colour, 8 bits.
@@ -843,4 +870,168 @@ async fn albums_are_the_projects_own_and_powergrade_albums_are_shared_between_pr
         drop(third);
         std::fs::remove_dir(three.path().join("gallery")).unwrap();
     }
+}
+
+/// The ids of the stills of an album as `gallery.list` tells it.
+fn stills_of(album: &Value) -> Vec<String> {
+    album["stills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|still| still["id"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "deleting and restoring, then the memories, from start to end"
+)]
+async fn a_still_deleted_is_restored_where_it_was_and_memories_are_an_album_of_their_own() {
+    let power = project_dir();
+    let dir = project_dir();
+    let files = project_dir();
+    let engine = engine_with(dir.path(), power.path(), &["--headless"]).await;
+    let mut a = engine.client("agent").await;
+    let paths: Vec<_> = [[255, 0, 0], [0, 255, 0], [0, 0, 255]]
+        .iter()
+        .enumerate()
+        .map(|(n, rgb)| {
+            let path = files.path().join(format!("{n}.png"));
+            picture(&path, *rgb);
+            path
+        })
+        .collect();
+    let added = a
+        .result("still.import", Some(json!({"paths": paths})))
+        .await["added"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|still| still["id"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    let gallery = dir.path().join("gallery");
+
+    // Deleted, the second is gone from its album and its files are in the recycle folder.
+    let deleted = a
+        .result("still.delete", Some(json!({"stills": [added[1]]})))
+        .await;
+    assert_eq!(deleted["deleted"], json!([added[1]]));
+    let list = a.result("gallery.list", None).await;
+    assert_eq!(
+        stills_of(album(&list, "Stills 1")),
+        [added[0].clone(), added[2].clone()]
+    );
+    assert!(!still_file(&gallery, &added[1], "png").exists());
+    assert!(gallery
+        .join("recycle")
+        .join(format!("{}.png", added[1]))
+        .is_file());
+    // Restored, it is back where it was, under its id, its thumbnail with it.
+    let restored = a
+        .result("still.restore", Some(json!({"stills": [added[1]]})))
+        .await;
+    assert_eq!(restored["restored"][&added[1]], "a1", "{restored}");
+    let list = a.result("gallery.list", None).await;
+    assert_eq!(stills_of(album(&list, "Stills 1")), added);
+    assert!(still_file(&gallery, &added[1], "png").is_file());
+    a.result(
+        "gallery.thumbnail",
+        Some(json!({"still": added[1], "height": 1})),
+    )
+    .await;
+    // What was not deleted cannot be restored, nor the same twice; nothing is restored then.
+    a.result("still.delete", Some(json!({"stills": [added[0]]})))
+        .await;
+    for stills in [
+        json!([added[1]]),
+        json!([added[0], added[1]]),
+        json!(["s99"]),
+    ] {
+        let error = a
+            .error("still.restore", Some(json!({"stills": stills})))
+            .await;
+        assert_eq!(error["code"], -32602, "{stills}: {error}");
+        assert_eq!(error["data"]["reason"], "missing", "{error}");
+    }
+    let list = a.result("gallery.list", None).await;
+    assert_eq!(
+        stills_of(album(&list, "Stills 1")),
+        [added[1].clone(), added[2].clone()]
+    );
+    a.result("still.restore", Some(json!({"stills": [added[0]]})))
+        .await;
+
+    // The album of the memories: made once, not among the albums listed, apart from them.
+    let memories = a
+        .result("gallery.album.create", Some(json!({"kind": "memories"})))
+        .await;
+    assert_eq!(memories["kind"], "memories", "{memories}");
+    assert_eq!(memories["name"], "Memories");
+    let again = a
+        .result("gallery.album.create", Some(json!({"kind": "memories"})))
+        .await;
+    assert_eq!(again["id"], memories["id"]);
+    // A still dragged onto a memory is copied into it; the one in the album stays.
+    let copied = a
+        .result(
+            "still.copy",
+            Some(json!({"stills": [added[2]], "album": memories["id"]})),
+        )
+        .await;
+    let copy = copied["copied"][&added[2]].as_str().unwrap().to_owned();
+    assert_ne!(copy, added[2]);
+    let list = a.result("gallery.list", None).await;
+    let names: Vec<&str> = list["albums"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|album| album["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["Stills 1", "PowerGrade 1"], "{list}");
+    assert_eq!(stills_of(album(&list, "Stills 1")), added);
+    assert_eq!(list["memories"]["id"], memories["id"], "{list}");
+    assert_eq!(list["memories"]["kind"], "memories");
+    assert_eq!(stills_of(&list["memories"]), std::slice::from_ref(&copy));
+    // Named, it is listed; an import that names no album goes into the first shown.
+    let by_id = a
+        .result("gallery.list", Some(json!({"album": memories["id"]})))
+        .await;
+    assert_eq!(stills_of(&by_id["albums"][0]), std::slice::from_ref(&copy));
+    let imported = a
+        .result("still.import", Some(json!({"paths": [paths[0]]})))
+        .await;
+    assert_eq!(imported["added"][0]["album"], "a1", "{imported}");
+    // The project's last album shown stays, however many memories; the memories' goes.
+    let error = a
+        .error("gallery.album.delete", Some(json!({"album": "a1"})))
+        .await;
+    assert_eq!(error["data"]["reason"], "last_album", "{error}");
+    a.result(
+        "gallery.album.delete",
+        Some(json!({"album": memories["id"]})),
+    )
+    .await;
+    assert_eq!(
+        a.result("gallery.list", None).await["memories"],
+        Value::Null
+    );
+    // Copied into the PowerGrades, a still of them under their own id.
+    let shared = a
+        .result(
+            "still.copy",
+            Some(json!({"stills": [added[0]], "album": "pa1"})),
+        )
+        .await["copied"][&added[0]]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(shared.starts_with("ps"), "{shared}");
+    let error = a
+        .error(
+            "still.copy",
+            Some(json!({"stills": ["s99"], "album": "a1"})),
+        )
+        .await;
+    assert_eq!(error["data"]["reason"], "missing", "{error}");
 }

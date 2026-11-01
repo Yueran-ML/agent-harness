@@ -118,6 +118,16 @@ impl<'de> Deserialize<'de> for Input {
     }
 }
 
+impl From<Change> for Input {
+    /// A change that the engine made, which binds no names.
+    fn from(change: Change) -> Self {
+        Self {
+            change,
+            bindings: vec![],
+        }
+    }
+}
+
 /// The most characters of a name after its `$`.
 const LONGEST: usize = 32;
 

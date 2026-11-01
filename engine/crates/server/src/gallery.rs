@@ -10,8 +10,8 @@
 //!   "shared among all projects" (p. 3266), so every engine of this user sees them. It starts
 //!   with `PowerGrade 1`, and its last album cannot be removed (p. 3266).
 //!
-//! Neither is in `project.json`, and neither is undone: as in `DaVinci`, the Gallery is apart from
-//! the project's history (the manual tells no undo of stills or albums).
+//! Neither is in `project.json`, and neither is undone with the project: as in `DaVinci`, the
+//! Gallery is apart from the project's history. A still deleted is restored on its own (below).
 //!
 //! # The folders
 //!
@@ -21,8 +21,23 @@
 //! <root>/stills/<id>.png      its picture: R'G'B' of 16 bits; or
 //! <root>/stills/<id>.exr      its picture: half floats, where it has values beyond 0..1
 //! <root>/stills/<id>.thumb.png  a picture of it at most 270 high, R'G'B'A of 8 bits
+//! <root>/recycle/<id>.*       the files of a still deleted, until it is restored or forgotten
 //! <root>/.lock                held while the gallery is changed (a folder)
 //! ```
+//!
+//! # Deleting and restoring
+//!
+//! Delete Selected can be undone (the interaction reference, §9.2; the manual, p. 3258, tells no
+//! confirmation): a still deleted is taken out of its album, its files moved into `recycle`, and
+//! where it was is kept in the index (`recycled`), so that `still.restore` puts it back, its id
+//! and all, where it was. The last [`MOST_RECYCLED`] stills deleted are kept; one before them is
+//! deleted for good. Removing an album, which is confirmed (p. 3265), deletes its stills for good.
+//!
+//! # The memories
+//!
+//! The memories A–H (pp. 3271–3272) are stills of the project kept in an album of their own
+//! (`memories` in the index), which `gallery.list` tells apart from the albums that the Gallery
+//! shows; a grab or an import goes into it only where it is named.
 //!
 //! The ids are the engine's own: albums `a<n>` and stills `s<n>` of the project, `pa<n>` and
 //! `ps<n>` of the `PowerGrades`, `n` from the root's `next`, never given twice. A still is named by
@@ -54,6 +69,10 @@ pub const MOST_THUMBNAIL: u32 = 270;
 const STALE_LOCK: Duration = Duration::from_secs(30);
 /// How long a lock is waited for at most.
 const LOCK_WITHIN: Duration = Duration::from_secs(5);
+/// How many stills deleted a gallery keeps, to be restored.
+pub const MOST_RECYCLED: usize = 64;
+/// The name of the album of the memories where none is given.
+const MEMORIES: &str = "Memories";
 /// The variable that names the folder of the `PowerGrades`.
 pub const POWERGRADES_VARIABLE: &str = "COLUMBINA_POWERGRADES";
 
@@ -162,6 +181,19 @@ pub struct Album {
     pub name: String,
     /// Its stills, in the order they were put in it.
     pub stills: Vec<String>,
+    /// Whether it is the album of the memories, which the Gallery does not show (p. 3271).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub memories: bool,
+}
+
+/// A still deleted, and where it was.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Recycled {
+    id: String,
+    album: String,
+    /// Its place in the album, from 0.
+    at: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -171,6 +203,9 @@ struct Index {
     /// The number of the next id of an album or a still.
     next: u64,
     albums: Vec<Album>,
+    /// The stills deleted that can be restored, the last deleted last.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    recycled: Vec<Recycled>,
 }
 
 /// A gallery opened to be read or changed: its index, read while its lock is held.
@@ -265,6 +300,23 @@ fn delete_file(path: &Path) -> bool {
     }
 }
 
+/// The extensions of the files of a still.
+const EXTENSIONS: [&str; 4] = ["json", "png", "exr", "thumb.png"];
+
+/// Move `from` to `to` where it is a plain file (not a link); nothing where it is not there.
+fn move_file(from: &Path, to: &Path) -> Result<(), Fault> {
+    match fs::symlink_metadata(from) {
+        Ok(meta) if meta.is_file() && !meta.is_symlink() => {
+            fs::rename(from, to).map_err(|error| io_fault("cannot move", from, &error))
+        }
+        Ok(_) => Err(gallery_fault(
+            &format!("{} is not a plain file", from.display()),
+            Some(from),
+        )),
+        Err(_) => Ok(()),
+    }
+}
+
 /// Read a file of the gallery, not through a link.
 fn read_file(path: &Path) -> Option<Vec<u8>> {
     let meta = fs::symlink_metadata(path).ok()?;
@@ -303,6 +355,7 @@ impl Opened {
                 format: FORMAT,
                 next: 1,
                 albums: vec![],
+                recycled: vec![],
             },
         };
         let mut opened = Opened {
@@ -311,7 +364,7 @@ impl Opened {
             index,
             _lock: lock,
         };
-        if opened.index.albums.is_empty() {
+        if opened.first_album().is_none() {
             opened.add_album(None);
             opened.save()?;
         }
@@ -331,6 +384,22 @@ impl Opened {
 
     pub fn albums(&self) -> &[Album] {
         &self.index.albums
+    }
+
+    /// The first album that the Gallery shows (not the memories'): where a grab or an import
+    /// goes where no album is named.
+    pub fn first_album(&self) -> Option<&Album> {
+        self.index.albums.iter().find(|album| !album.memories)
+    }
+
+    /// The album of the memories, made where there is none (named `name`, else `Memories`).
+    pub fn memories_album(&mut self, name: Option<String>) -> String {
+        if let Some(album) = self.index.albums.iter().find(|album| album.memories) {
+            return album.id.clone();
+        }
+        let id = self.add_album(Some(name.unwrap_or_else(|| MEMORIES.to_string())));
+        self.album_mut(&id).expect("added above").memories = true;
+        id
     }
 
     fn make_id(&mut self, prefix: &str) -> String {
@@ -363,6 +432,7 @@ impl Opened {
             id: id.clone(),
             name,
             stills: vec![],
+            memories: false,
         });
         id
     }
@@ -391,7 +461,8 @@ impl Opened {
             .iter()
             .position(|album| album.id == id)
             .ok_or_else(|| missing("album", id))?;
-        if self.index.albums.len() == 1 {
+        let shown = self.index.albums.iter().filter(|album| !album.memories);
+        if !self.index.albums[at].memories && shown.count() == 1 {
             return Err(Fault::new(
                 rpc::REFUSED,
                 "the last album of a gallery cannot be removed",
@@ -499,29 +570,136 @@ impl Opened {
     }
 
     fn delete_files(&self, id: &str) {
-        for extension in ["json", "png", "exr", "thumb.png"] {
+        for extension in EXTENSIONS {
             delete_file(&self.file(id, extension));
         }
+    }
+
+    /// The file of the still `id` deleted, with `extension`.
+    fn recycled_file(&self, id: &str, extension: &str) -> PathBuf {
+        self.root.join("recycle").join(format!("{id}.{extension}"))
+    }
+
+    /// Take the still `id` out of its album and move its files into `recycle`, where
+    /// [`Opened::restore_still`] finds them; forget the stills deleted before the last
+    /// [`MOST_RECYCLED`], deleting their files.
+    pub fn recycle_still(&mut self, id: &str) -> Result<(), Fault> {
+        let album = self
+            .index
+            .albums
+            .iter()
+            .find(|album| album.stills.iter().any(|s| s == id))
+            .ok_or_else(|| missing("still", id))?;
+        let at = album
+            .stills
+            .iter()
+            .position(|s| s == id)
+            .expect("found above");
+        let recycled = Recycled {
+            id: id.to_string(),
+            album: album.id.clone(),
+            at,
+        };
+        own_dir(&self.root.join("recycle"))?;
+        for extension in EXTENSIONS {
+            move_file(
+                &self.file(id, extension),
+                &self.recycled_file(id, extension),
+            )?;
+        }
+        self.album_mut(&recycled.album)?.stills.remove(at);
+        self.index.recycled.retain(|each| each.id != id);
+        self.index.recycled.push(recycled);
+        let over = self.index.recycled.len().saturating_sub(MOST_RECYCLED);
+        let forgotten: Vec<Recycled> = self.index.recycled.drain(..over).collect();
+        for each in forgotten {
+            for extension in EXTENSIONS {
+                delete_file(&self.recycled_file(&each.id, extension));
+            }
+        }
+        Ok(())
+    }
+
+    /// Put the still `id` that was deleted back where it was: its files, and its place in its
+    /// album (at its end where the album has fewer stills now), or at the end of the first album
+    /// where its album is gone. Gives the album it is in.
+    pub fn restore_still(&mut self, id: &str) -> Result<String, Fault> {
+        let place = self
+            .index
+            .recycled
+            .iter()
+            .position(|each| each.id == id)
+            .ok_or_else(|| missing("deleted still", id))?;
+        let recycled = self.index.recycled[place].clone();
+        let album = if self
+            .index
+            .albums
+            .iter()
+            .any(|album| album.id == recycled.album)
+        {
+            recycled.album.clone()
+        } else {
+            self.first_album()
+                .map(|album| album.id.clone())
+                .ok_or_else(|| missing("album", &recycled.album))?
+        };
+        for extension in EXTENSIONS {
+            move_file(
+                &self.recycled_file(id, extension),
+                &self.file(id, extension),
+            )?;
+        }
+        self.index.recycled.remove(place);
+        let stills = &mut self.album_mut(&album)?.stills;
+        stills.insert(recycled.at.min(stills.len()), id.to_string());
+        Ok(album)
+    }
+
+    /// Whether the still `id` was deleted and can be restored.
+    pub fn is_recycled(&self, id: &str) -> bool {
+        self.index.recycled.iter().any(|each| each.id == id)
     }
 
     /// Copy the still `id` of `from` (another gallery, or this one) into `album` of this one,
     /// under a new id; gives the new id. The still of `from` is left as it is.
     pub fn copy_in(&mut self, from: &Opened, id: &str, album: &str) -> Result<String, Fault> {
-        self.album_mut(album)?;
-        let mut still = from.still(id)?;
-        let picture = from.picture_file(id, &still);
+        let source = from.source(id)?;
+        self.copy_source(source, id, album)
+    }
+
+    /// Copy the still `id` of this gallery into `album` of it, under a new id; gives the new id.
+    pub fn copy_within(&mut self, id: &str, album: &str) -> Result<String, Fault> {
+        let source = self.source(id)?;
+        self.copy_source(source, id, album)
+    }
+
+    /// The JSON of the still `id`, the extension of its picture, and the files of its picture
+    /// and its thumbnail, as a copy of it reads them.
+    fn source(&self, id: &str) -> Result<(Value, String, [PathBuf; 2]), Fault> {
+        let still = self.still(id)?;
+        let picture = self.picture_file(id, &still);
         let extension = picture
             .extension()
             .and_then(|extension| extension.to_str())
             .unwrap_or("png")
             .to_string();
+        Ok((still, extension, [picture, self.file(id, "thumb.png")]))
+    }
+
+    fn copy_source(
+        &mut self,
+        (mut still, extension, files): (Value, String, [PathBuf; 2]),
+        id: &str,
+        album: &str,
+    ) -> Result<String, Fault> {
+        self.album_mut(album)?;
         let new = self.make_id(self.kind.still_prefix());
         let copied = (|| {
-            for extension in [extension.as_str(), "thumb.png"] {
-                let bytes = read_file(&from.file(id, extension)).ok_or_else(|| {
+            for (file, extension) in files.iter().zip([extension.as_str(), "thumb.png"]) {
+                let bytes = read_file(file).ok_or_else(|| {
                     gallery_fault(
                         &format!("the still {id} has no file .{extension}"),
-                        Some(&from.file(id, extension)),
+                        Some(file),
                     )
                 })?;
                 write_whole(&self.file(&new, extension), &bytes)?;
@@ -645,38 +823,55 @@ pub fn summary(still: &Value, album: &str) -> Value {
 }
 
 /// The galleries as `gallery.list` answers: the project's albums, then the `PowerGrade` albums
-/// at the bottom (p. 3265), each with its stills; only `album` where it is named.
+/// at the bottom (p. 3265), each with its stills, and apart from them the album of the memories
+/// (`memories`, null where there is none); only `album` where it is named.
 pub fn list(places: &Places, album: Option<&str>) -> Result<Value, Fault> {
     let kinds: Vec<Kind> = match album {
         Some(album) => vec![kind_of(album, false)?],
         None => vec![Kind::Stills, Kind::Powergrade],
     };
     let mut albums = Vec::new();
+    let mut memories = Value::Null;
     for kind in kinds {
         with(places, kind, |opened| {
             if let Some(album) = album {
                 opened.album_mut(album)?;
             }
             for each in opened.albums() {
-                if album.is_some_and(|album| album != each.id) {
-                    continue;
+                let listed = match album {
+                    Some(album) => album == each.id,
+                    None => !each.memories,
+                };
+                if listed {
+                    albums.push(album_json(opened, each));
+                } else if album.is_none() && each.memories {
+                    memories = album_json(opened, each);
                 }
-                let stills: Vec<Value> = each
-                    .stills
-                    .iter()
-                    .filter_map(|id| opened.still(id).ok().map(|still| summary(&still, &each.id)))
-                    .collect();
-                albums.push(json!({
-                    "id": each.id,
-                    "name": each.name,
-                    "kind": kind,
-                    "stills": stills,
-                }));
             }
             Ok(())
         })?;
     }
-    Ok(json!({"albums": albums}))
+    Ok(json!({"albums": albums, "memories": memories}))
+}
+
+/// An album as `gallery.list` tells it, with its stills.
+fn album_json(opened: &Opened, album: &Album) -> Value {
+    let stills: Vec<Value> = album
+        .stills
+        .iter()
+        .filter_map(|id| {
+            opened
+                .still(id)
+                .ok()
+                .map(|still| summary(&still, &album.id))
+        })
+        .collect();
+    let kind = if album.memories {
+        json!("memories")
+    } else {
+        json!(opened.kind())
+    };
+    json!({"id": album.id, "name": album.name, "kind": kind, "stills": stills})
 }
 
 // ---------------------------------------------------------------------------------------------

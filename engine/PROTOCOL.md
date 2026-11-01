@@ -169,15 +169,17 @@ Before `hello`, every other request is refused with `-32600`.
 | `still.apply` | `{"still": "s1", "to": [target, ...], "mode"?: "apply" \| "append", "keyframes"?: "none" \| "source_timecode" \| "start_frame", "preserve_nodes"?: 0, "revision"?: n}` | as `transaction.apply` |
 | `still.label` | `{"still": "s1", "label": "Day exterior"}` | `{"id", "label"}` |
 | `still.delete` | `{"stills": ["s1", ...]}` | `{"deleted": [...]}` |
+| `still.restore` | `{"stills": ["s1", ...]}` | `{"restored": {"s1": "a1", ...}}` |
+| `still.copy` | `{"stills": ["s1", ...], "album": "a3"}` | `{"copied": {"s1": "s9", ...}}` |
 | `still.move` | `{"stills": ["s1", ...], "album": "pa1"}` | `{"moved": {"s1": "ps4", ...}}` |
 | `still.export` | `{"stills": ["s1", ...], "dir": "<folder>", "prefix"?: "Show", "replace"?: false}` | `{"written": [{"image", "json"}, ...]}` |
 | `still.import` | `{"paths": ["<file>", ...], "album"?: "a1"}` | `{"added": [still, ...]}` |
-| `gallery.list` | none, or `{"album"?: "a1"}` | `{"albums": [{"id", "name", "kind", "stills": [still, ...]}, ...]}` |
+| `gallery.list` | none, or `{"album"?: "a1"}` | `{"albums": [{"id", "name", "kind", "stills": [still, ...]}, ...], "memories": album \| null}` |
 | `gallery.thumbnail` | `{"still": "s1", "height"?: 90}` | `{"width": 160, "height": 90, "png": "<base64>"}` |
-| `gallery.album.create` | none, or `{"kind"?: "stills" \| "powergrade", "name"?: "Looks"}` | `{"id", "name", "kind"}` |
+| `gallery.album.create` | none, or `{"kind"?: "stills" \| "powergrade" \| "memories", "name"?: "Looks"}` | `{"id", "name", "kind"}` |
 | `gallery.album.rename` | `{"album": "a1", "name": "Looks"}` | `{"id", "name"}` |
 | `gallery.album.delete` | `{"album": "a2"}` | `{"deleted": [still ids]}` |
-| `grade.append_node` | `{"from": target, "node": "n4", "to": [target, ...], "keyframes"?: "source_timecode" \| "start_frame", "revision"?: n}` | as `transaction.apply` (Append Node to Selected Clips, see The Gallery) |
+| `grade.append_node` | `{"from": target, "node": "n4", "to": [target, ...], "keyframes"?: "none" \| "source_timecode" \| "start_frame", "at"?: 120, "revision"?: n}` | as `transaction.apply` (Append Node to Selected Clips, see The Gallery) |
 | `viewer.highlight` | `{"mode": "off" \| "highlight" \| "bw", "grade"?: target, "node"?: "n1", "monitor"?: "timeline"}` | `{"monitor": "timeline", "mode", "grade"?, "node"?}` (see Highlight) |
 
 - `hello` says once per connection what the client is; a second `hello` is refused (`-32600`).
@@ -2355,7 +2357,7 @@ otherwise. A refused call changes nothing.
 Stills of the timeline monitor, with the grades that made them, kept in albums, as the Gallery
 of the Color page of `DaVinci Resolve` keeps them (Reference Manual ch. 141–142, pp. 3256–3297,
 3393). Two galleries, neither in `project.json` and neither undone by `history.undo` (the
-manual tells no undo of the Gallery):
+Gallery is apart from the project's history; a still deleted is restored by `still.restore`):
 
 - **The project's**, in `<project>/gallery`: its still albums (ids `a1`, `a2`, …; stills `s1`,
   `s2`, …), "available only to the project in which they were saved" (p. 3266). It starts with
@@ -2368,9 +2370,11 @@ manual tells no undo of the Gallery):
   30 s as left by an engine that ended).
 
 Each holds `gallery.json` (`{"format": 1, "next": n, "albums": [{"id", "name", "stills": [ids in
-order]}]}`), and in `stills/` for each still `<id>.json` (what it holds, below), its picture
-`<id>.png` or `<id>.exr`, and `<id>.thumb.png` (at most 270 high, R'G'B'A of 8 bits). Ids are
-never given twice in a gallery. A still is named by its id only.
+order], "memories"?: true}], "recycled"?: [{"id", "album", "at"}]}`), and in `stills/` for each
+still `<id>.json` (what it holds, below), its picture `<id>.png` or `<id>.exr`, and
+`<id>.thumb.png` (at most 270 high, R'G'B'A of 8 bits); in `recycle/` the files of the stills
+deleted that can be restored (see Albums and stills). Ids are never given twice in a gallery,
+nor taken back from a still deleted. A still is named by its id only.
 
 ### What a still holds
 
@@ -2418,7 +2422,9 @@ One Still Per Scene are not done.
 
 `still.apply` sets the grades of `to` (targets as in Grades) from the still, as one transaction:
 one `set_grade` of each target (each once), worked out while the project is locked, so one undo
-step, answered and told as `transaction.apply` is (with `revision` as there). A timeline's grade
+step, answered and told as `transaction.apply` is (with `revision` as there). It is worked out
+exactly as `copy_grade` and `append_node_graph` work out a grade of the project, from the still's
+grade given whole. A timeline's grade
 takes the still's timeline grade, any other its clip grade: which grade is applied depends on
 the Node Editor's mode, and a group's grade takes the clip grade (p. 3287). A still without that
 grade is refused (`-32001` `{"reason": "no_grade", "still", "grade"}`).
@@ -2429,8 +2435,9 @@ grade is refused (`-32001` `{"reason": "no_grade", "still", "grade"}`).
   the first N of the still's, each of their kind and inputs (`wrong_node` otherwise; a still of
   fewer nodes is `out_of_range` `preserve_nodes`).
 - `mode` `"append"` (Append Node Graph, p. 3290): its nodes after the target's, chained as
-  `append_node_graph` chains them, laid out where the editor lays them (`pos` null).
-  `preserve_nodes` is of applying (`-32602` `{"reason": "preserve_nodes"}`).
+  `append_node_graph` chains them, with new ids, and those that lie somewhere of their own moved
+  right of the target's nodes as `append_node_graph` moves them. `preserve_nodes` is of applying
+  (`-32602` `{"reason": "preserve_nodes"}`).
 - `keyframes` (Apply Grades Using, pp. 3264, 3287; `"none"` by default, as the Gallery's own
   setting): `"none"` sets `frozen` (No Keyframes); `"source_timecode"` and `"start_frame"` set
   `grades` with its keys put on the frames of the target as `copy_grade` puts them, from the clip
@@ -2438,14 +2445,18 @@ grade is refused (`-32001` `{"reason": "no_grade", "still", "grade"}`).
   from the start; where the two show no time of the source alike (or one has no source), from
   the start. A grade of a group, and one applied to a group, keeps its keys where they are.
 
-The ids of the still's nodes are kept where the grade holds no other node of them and the
-project could have made them; else a node is given `<id>.<n>` (`n4.1`), never of the engine's own
-shape, so that a still of another project (a PowerGrade) applies whatever its ids.
+Applied, the ids of the still's nodes are kept where the project could have made them, as
+`copy_grade` keeps them; one of the engine's shape that this project has not made yet (of a still
+of another project, a PowerGrade) is given a new id of the engine's, in the order of the nodes.
+Appended, every node is given a new id of the engine's, as `append_node_graph` gives them.
 
 `grade.append_node` is Append Node to Selected Clips (Color menu, p. 3297): the node `node`, a
-corrector, of the grade `from`, alone, after the end of each grade of `to`, chained as above, its
-keys put as `keyframes` says (`"source_timecode"` by default, as `copy_grade`): one `set_grade`
-of each, one undo step.
+corrector, of the grade `from`, alone, after the end of each grade of `to`, chained and given a
+new id as above, its keys put as `keyframes` says (`"source_timecode"` by default, as
+`copy_grade`). With `"none"` (No Keyframes, p. 3393) each keyed setting of the node is the value of
+its key at the frame `at` of the timeline (the playhead; for a clip's grade, the frame of its
+source there) or the nearest before it, and of its first key where `at` is left out. One
+`set_grade` of each, one undo step.
 
 Refusals are those of a transaction (`-32001`, the project as it was): `{"reason":
 "out_of_range", "what": "to" | "preserve_nodes"}`, `{"reason": "missing", "what": "timeline" |
@@ -2455,20 +2466,35 @@ those of the `set_grade` worked out.
 ### Albums and stills
 
 - `gallery.list`: the project's albums, then the PowerGrade albums at the bottom (p. 3265), each
-  `{"id", "name", "kind": "stills" | "powergrade", "stills"}` with its stills in order; the one
-  album where it is named.
+  `{"id", "name", "kind": "stills" | "powergrade", "stills"}` with its stills in order, and apart
+  from them the project's album of the memories (`memories`, `"kind": "memories"`, or null where
+  there is none), which the Gallery does not show; the one album where it is named, the memories'
+  too.
 - `gallery.thumbnail`: the thumbnail of a still `height` high (1–270, 90 by default, at most its
   own), as `media.thumbnail` answers.
 - `gallery.album.create`: an album of the project (`"stills"`, the default) or of the
   PowerGrades, named `name` (1–100 characters), else `Stills N` or `PowerGrade N`, N one more
-  than the most of that name ("numbered incrementally", p. 3265). `gallery.album.rename` renames
-  one; `gallery.album.delete` removes one with its stills (Remove Current Album, p. 3265), but
-  not the last of its gallery (`-32001` `{"reason": "last_album", "album"}`; the manual says so
-  of the PowerGrades, and the project keeps one too, for a grab to go into).
+  than the most of that name ("numbered incrementally", p. 3265). `"memories"` gives the
+  project's album of the memories A–H (pp. 3271–3272), made the first time (named `name`, else
+  `Memories`): one a project, kept as a still album is, not listed among the albums, and taken by
+  a grab or an import only where it is named. `gallery.album.rename` renames one;
+  `gallery.album.delete` removes one with its stills for good (Remove Current Album, p. 3265), but
+  not the last of its gallery that the Gallery shows (`-32001` `{"reason": "last_album",
+  "album"}`; the manual says so of the PowerGrades, and the project keeps one too, for a grab to
+  go into).
 - `still.label` (Change Label; at most 100 characters, may be empty); `still.delete` (Delete
-  Selected, p. 3258), every id checked first; `still.move` to another album (a still dragged
-  onto an album, p. 3265): within a gallery it keeps its id, into the other it is copied under a
-  new id and taken out of the first; `moved` gives where each is now.
+  Selected, p. 3258), every id checked first: each taken out of its album, its files moved into
+  the gallery's `recycle/`, and where it was kept, so that it can be undone; the last 64 stills
+  deleted of a gallery are kept so, and one deleted before them is deleted for good.
+  `still.restore` undoes it (Ctrl+Z in the Gallery, the interaction reference §9.2): each still
+  back in its album at its place (at the end where the album has fewer now; in the first album
+  shown where its album is gone), under its id, every one of a gallery checked first (`missing`
+  `"what": "deleted still"` for one not deleted, or restored already); `restored` gives the album
+  of each. `still.move` to another album (a still dragged onto an album, p. 3265): within a
+  gallery it keeps its id, into the other it is copied under a new id and taken out of the first;
+  `moved` gives where each is now. `still.copy` copies each into `album` under a new id (a still
+  dragged onto a memory, p. 3272), within its gallery or into the other; `copied` gives the id of
+  each copy.
 - `still.export` (p. 3271): for each still its picture and its JSON into `dir` (absolute, a
   folder that is there), as `<prefix>_<name>.png|exr` and `.json` (`<name>` its number, or its id
   where it has none; without `prefix`, the name alone). A file there is `-32001` `{"reason":

@@ -31,16 +31,17 @@
 //! still's timeline grade, any other its clip grade (p. 3286: which grade "depends on which mode
 //! the Node Editor is in").
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use columbina_compose::Target as Canvas;
 use columbina_model::grade::{OUTPUT, SOURCE};
-use columbina_model::keyframes::{aligned, Align, KeyBase, KeyClock};
+use columbina_model::keyframes::{Align, KeyBase, KeyClock};
 use columbina_model::project::{Source, TrackKind};
 use columbina_model::{
-    Clip, Grade, Kind as NodeKind, Link, Media, Project, Rate, Target, Timeline,
+    Change, Clip, Edit, Given, Grade, Kind as NodeKind, Link, Media, Project, Rate, Target,
+    Timeline,
 };
 use serde::Deserialize;
 use serde_json::value::RawValue;
@@ -169,7 +170,7 @@ pub async fn call(
         "grade.append_node" => {
             let request: AppendNodeRequest = rpc::params(
                 method,
-                r#"{"from": {"level": "clip", "timeline": "t1", "clip": "c3"}, "node": "n4", "to": [...]}"#,
+                r#"{"from": {"level": "clip", "timeline": "t1", "clip": "c3"}, "node": "n4", "to": [...], "keyframes"?: "none" | "source_timecode" | "start_frame", "at"?: 120}"#,
                 params,
             )?;
             let revision = request.revision;
@@ -274,26 +275,45 @@ fn gallery_change(places: &Places, method: &str, params: Value) -> Result<Value,
     };
     match method {
         "gallery.album.create" => {
+            /// The kinds of album: of the gallery of each, and the project's album of the
+            /// memories.
+            #[derive(Clone, Copy, Default, Deserialize)]
+            #[serde(rename_all = "snake_case")]
+            enum AlbumKind {
+                #[default]
+                Stills,
+                Powergrade,
+                Memories,
+            }
             #[derive(Deserialize)]
             #[serde(deny_unknown_fields)]
             struct Create {
-                #[serde(default = "stills")]
-                kind: Kind,
+                #[serde(default)]
+                kind: AlbumKind,
                 name: Option<String>,
             }
-            fn stills() -> Kind {
-                Kind::Stills
-            }
-            let takes = r#"{"kind"?: "stills" | "powergrade", "name"?: "Looks"}"#;
+            let takes = r#"{"kind"?: "stills" | "powergrade" | "memories", "name"?: "Looks"}"#;
             let request: Create = serde_json::from_value(params).map_err(read(takes))?;
             if let Some(name) = &request.name {
                 check_name(name, false)?;
             }
-            gallery::with(places, request.kind, |opened| {
+            let kind = match request.kind {
+                AlbumKind::Stills => Kind::Stills,
+                AlbumKind::Powergrade => Kind::Powergrade,
+                AlbumKind::Memories => {
+                    return gallery::with(places, Kind::Stills, |opened| {
+                        let id = opened.memories_album(request.name.clone());
+                        opened.save()?;
+                        let name = opened.album_mut(&id)?.name.clone();
+                        Ok(json!({"id": id, "name": name, "kind": "memories"}))
+                    });
+                }
+            };
+            gallery::with(places, kind, |opened| {
                 let id = opened.add_album(request.name.clone());
                 opened.save()?;
                 let name = opened.album_mut(&id)?.name.clone();
-                Ok(json!({"id": id, "name": name, "kind": request.kind}))
+                Ok(json!({"id": id, "name": name, "kind": kind}))
             })
         }
         "gallery.album.rename" => {
@@ -342,7 +362,7 @@ fn gallery_change(places: &Places, method: &str, params: Value) -> Result<Value,
                 }
                 for (id, kind) in &ids {
                     if let Some(of) = opened.iter().position(|one| one.kind() == *kind) {
-                        opened[of].remove_still(id)?;
+                        opened[of].recycle_still(id)?;
                     }
                 }
                 opened.iter().try_for_each(|one| one.save())
@@ -354,6 +374,22 @@ fn gallery_change(places: &Places, method: &str, params: Value) -> Result<Value,
                 gallery::with(places, kind, |opened| delete(&mut [opened]))?;
             }
             Ok(json!({"deleted": ids.into_iter().map(|(id, _)| id).collect::<Vec<_>>()}))
+        }
+        "still.restore" => {
+            let request: Stills =
+                serde_json::from_value(params).map_err(read(r#"{"stills": ["s1", ...]}"#))?;
+            restore(places, &request.stills)
+        }
+        "still.copy" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Copy {
+                stills: Vec<String>,
+                album: String,
+            }
+            let takes = r#"{"stills": ["s1", ...], "album": "a3"}"#;
+            let request: Copy = serde_json::from_value(params).map_err(read(takes))?;
+            copy_stills(places, &request.stills, &request.album)
         }
         "still.label" => {
             #[derive(Deserialize)]
@@ -522,7 +558,7 @@ fn grab(places: &Places, request: &GrabRequest, frame: &Frame) -> Result<Value, 
     gallery::with(places, kind, |opened| {
         let album = match &request.album {
             Some(album) => album.clone(),
-            None => opened.albums()[0].id.clone(),
+            None => first_album(opened)?,
         };
         let still = opened.add_still(&album, still, &picture, format)?;
         Ok(gallery::summary(&still, &album))
@@ -789,6 +825,24 @@ enum Keyframes {
     StartFrame,
 }
 
+impl Keyframes {
+    /// How the keys are put on the frames of another grade; none for No Keyframes, whose grade
+    /// has no keys left.
+    fn align(self) -> Option<Align> {
+        match self {
+            Keyframes::None => None,
+            Keyframes::SourceTimecode => Some(Align::SourceTimecode),
+            Keyframes::StartFrame => Some(Align::StartFrame),
+        }
+    }
+}
+
+/// Apply Grades Using of `grade.append_node`: aligning source timecode where it is left out, as
+/// `copy_grade` does.
+fn source_timecode() -> Keyframes {
+    Keyframes::SourceTimecode
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ApplyRequest {
@@ -809,8 +863,10 @@ struct AppendNodeRequest {
     from: Target,
     node: String,
     to: Vec<Target>,
-    #[serde(default)]
-    keyframes: Align,
+    #[serde(default = "source_timecode")]
+    keyframes: Keyframes,
+    /// Of No Keyframes: the frame of the timeline whose values are kept (the playhead).
+    at: Option<i64>,
     revision: Option<u64>,
 }
 
@@ -864,12 +920,14 @@ fn targets_once(to: &[Target]) -> Result<Vec<&Target>, Fault> {
     Ok(to.iter().filter(|target| seen.insert(*target)).collect())
 }
 
-/// The `set_grade` operations of `still.apply`, worked out of `project` as it is.
+/// The edits of `still.apply`, worked out of `project` as it is: Copy Grade or Append Node Graph
+/// of the still's grade, given whole (p. 3290), one of its clip grade and one of its timeline
+/// grade where they go, worked out as those of a grade of the project are.
 fn work_apply(
     project: &Project,
     still: &Value,
     request: &ApplyRequest,
-) -> Result<Vec<Value>, Fault> {
+) -> Result<Vec<Change>, Fault> {
     if request.preserve_nodes > MOST_PRESERVED_NODES {
         return Err(refused(
             "out_of_range",
@@ -883,13 +941,20 @@ fn work_apply(
                 .with_data(json!({"reason": "preserve_nodes"})),
         );
     }
-    let mut ops = Vec::new();
-    for target in targets_once(&request.to)? {
-        let slot = if matches!(target, Target::Timeline { .. }) {
-            "timeline"
-        } else {
-            "clip"
-        };
+    let targets = targets_once(&request.to)?;
+    let mut changes = Vec::new();
+    for slot in ["clip", "timeline"] {
+        let to: Vec<Target> = targets
+            .iter()
+            .filter(|target| matches!(target, Target::Timeline { .. }) == (slot == "timeline"))
+            .map(|target| (*target).clone())
+            .collect();
+        if to.is_empty() {
+            continue;
+        }
+        for target in &to {
+            grade_of(project, target)?;
+        }
         let kept = if request.keyframes == Keyframes::None {
             &still["frozen"][slot]
         } else {
@@ -912,35 +977,21 @@ fn work_apply(
             )
             .with_data(json!({"reason": "gallery", "still": request.still}))
         })?;
-        let grade = match request.keyframes {
-            Keyframes::None => grade,
-            Keyframes::SourceTimecode | Keyframes::StartFrame => {
-                let align = if request.keyframes == Keyframes::StartFrame {
-                    Align::StartFrame
-                } else {
-                    Align::SourceTimecode
-                };
-                aligned(
-                    &grade,
-                    still_base(still, slot),
-                    KeyBase::of(project, target),
-                    align,
-                )
-            }
-        };
-        let had = grade_of(project, target)?;
-        let value = match request.mode {
-            Mode::Apply => fit_apply(
-                &grade,
-                had,
-                request.preserve_nodes as usize,
-                project.next_id,
-            )?,
-            Mode::Append => chain(had.clone(), &fit_append(&grade, had, project.next_id)),
-        };
-        ops.push(json!({"op": "set_grade", "grade": target, "value": value}));
+        let given = Box::new(Given {
+            grade,
+            keys: still_base(still, slot),
+            align: request.keyframes.align(),
+        });
+        changes.push(Change::Edit(match request.mode {
+            Mode::Apply => Edit::CopyGivenGrade {
+                given,
+                to,
+                preserve_nodes: request.preserve_nodes,
+            },
+            Mode::Append => Edit::AppendGivenGraph { given, to },
+        }));
     }
-    Ok(ops)
+    Ok(changes)
 }
 
 /// The frames that the keys of the still's `slot` grade count, as a copy of it needs them: of
@@ -970,10 +1021,12 @@ fn still_base(still: &Value, slot: &str) -> Option<KeyBase> {
     Some(KeyBase::of_clip(&clip, &project, &timeline))
 }
 
-/// The `set_grade` operations of `grade.append_node`: the node `node` of the grade `from`, alone,
-/// appended to the end of each grade of `to`, as Append Node to Selected Clips does (p. 3297).
-fn work_append_node(project: &Project, request: &AppendNodeRequest) -> Result<Vec<Value>, Fault> {
-    let targets = targets_once(&request.to)?;
+/// The edit of `grade.append_node`: the node `node` of the grade `from`, alone, appended to the
+/// end of each grade of `to`, as Append Node to Selected Clips does (p. 3297), and as Append Node
+/// Graph appends a grade (`AppendGivenGraph`). With No Keyframes, each keyed setting of the node is
+/// the value of its key at the frame `at` of the timeline or the nearest before it (p. 3393).
+fn work_append_node(project: &Project, request: &AppendNodeRequest) -> Result<Vec<Change>, Fault> {
+    let to: Vec<Target> = targets_once(&request.to)?.into_iter().cloned().collect();
     let from = grade_of(project, &request.from)?;
     let node = from.node(&request.node).ok_or_else(|| {
         refused(
@@ -996,174 +1049,54 @@ fn work_append_node(project: &Project, request: &AppendNodeRequest) -> Result<Ve
         Link::rgb(node.id.clone(), OUTPUT),
     ];
     alone.sort_links();
-    let base = KeyBase::of(project, &request.from);
-    let mut ops = Vec::new();
-    for target in targets {
-        let had = grade_of(project, target)?;
-        let added = aligned(
-            &alone,
-            base,
-            KeyBase::of(project, target),
-            request.keyframes,
-        );
-        let value = chain(had.clone(), &fit_append(&added, had, project.next_id));
-        ops.push(json!({"op": "set_grade", "grade": target, "value": value}));
-    }
-    Ok(ops)
-}
-
-/// The number of an id of the shape of those the engine makes (a letter and a number).
-fn engine_number(id: &str) -> Option<u64> {
-    let (first, rest) = id.split_at_checked(1)?;
-    if !first.bytes().all(|b| b.is_ascii_lowercase())
-        || rest.is_empty()
-        || !rest.bytes().all(|b| b.is_ascii_digit())
-    {
-        return None;
-    }
-    rest.parse().ok()
-}
-
-/// Whether a node may not be given `id` in a project whose `next_id` is `next`: one of the
-/// engine's shape that it has not made yet (`reserved`), as of a still from another project.
-fn reserved(id: &str, next: u64) -> bool {
-    engine_number(id).is_some_and(|number| number >= next)
-}
-
-/// An id for a node that would be `id`, that none of `taken` is: `id.1`, `id.2`, … — not of the
-/// shape of the engine's, so never one it makes.
-fn fresh(id: &str, taken: &HashSet<String>) -> String {
-    let mut n = 1_u64;
-    loop {
-        let candidate = format!("{id}.{n}");
-        if !taken.contains(&candidate) {
-            return candidate;
+    let given = if let Some(align) = request.keyframes.align() {
+        Given {
+            grade: alone,
+            keys: KeyBase::of(project, &request.from),
+            align: Some(align),
         }
-        n += 1;
-    }
-}
-
-/// `grade` with the nodes that `names` names given the names it gives them, in its links too.
-fn renamed(grade: &Grade, names: &HashMap<String, String>) -> Grade {
-    let name = |id: &String| names.get(id).unwrap_or(id).clone();
-    let mut value = grade.clone();
-    for node in &mut value.nodes {
-        node.id = name(&node.id);
-    }
-    for link in &mut value.links {
-        link.from = name(&link.from);
-        link.to = name(&link.to);
-    }
-    value.sort_links();
-    value
-}
-
-/// The grade `copied`, put in place of `had`, as `copy_grade` puts it: its ids kept (but those
-/// the project cannot take), and with `preserve` (Copy Grade: Preserve number of nodes, p. 3285)
-/// the first `preserve` nodes of `had`, where it has as many, in the places of the first nodes of
-/// `copied`, each of the kind of the node it takes the place of with as many inputs.
-fn fit_apply(copied: &Grade, had: &Grade, preserve: usize, next: u64) -> Result<Grade, Fault> {
-    let kept = if preserve == 0 || had.nodes.len() < preserve {
-        &[][..]
     } else {
-        &had.nodes[..preserve]
+        let frame = request
+            .at
+            .map_or(i64::MIN, |at| key_frame(project, &request.from, at));
+        let frozen = freeze(&json!(alone), frame);
+        Given {
+            grade: serde_json::from_value(frozen).map_err(|error| {
+                Fault::new(
+                    rpc::CANNOT_READ,
+                    format!("the node cannot be frozen: {error}"),
+                )
+            })?,
+            keys: None,
+            align: None,
+        }
     };
-    if copied.nodes.len() < kept.len() {
-        return Err(refused(
-            "out_of_range",
-            "the grade copied has fewer nodes than are to be preserved",
-            json!({"what": "preserve_nodes"}),
-        ));
-    }
-    let mut names = HashMap::new();
-    for (node, place) in kept.iter().zip(&copied.nodes) {
-        let fits = node.kind.kind() == place.kind.kind()
-            && [columbina_model::Port::Rgb, columbina_model::Port::Key]
-                .iter()
-                .all(|port| node.kind.inputs(*port) == place.kind.inputs(*port));
-        if !fits {
-            return Err(refused(
-                "wrong_node",
-                &format!(
-                    "the node {} that is preserved is not of the kind of the node copied in its place",
-                    node.id
-                ),
-                json!({"node": node.id, "kind": node.kind.kind().name()}),
-            ));
-        }
-        names.insert(place.id.clone(), node.id.clone());
-    }
-    let kept_ids: HashSet<String> = kept.iter().map(|node| node.id.clone()).collect();
-    let mut taken: HashSet<String> = copied.nodes.iter().map(|node| node.id.clone()).collect();
-    taken.extend(kept_ids.iter().cloned());
-    for node in &copied.nodes[kept.len()..] {
-        if kept_ids.contains(&node.id) || reserved(&node.id, next) {
-            let new = fresh(&node.id, &taken);
-            taken.insert(new.clone());
-            names.insert(node.id.clone(), new);
-        }
-    }
-    let mut value = renamed(copied, &names);
-    value.nodes.splice(..kept.len(), kept.iter().cloned());
-    Ok(value)
+    Ok(vec![Change::Edit(Edit::AppendGivenGraph {
+        given: Box::new(given),
+        to,
+    })])
 }
 
-/// The grade `added`, to be put after the nodes of `had`: its nodes keep their ids where `had`
-/// holds none of them and the project can take them, and lie where the editor lays them out.
-fn fit_append(added: &Grade, had: &Grade, next: u64) -> Grade {
-    let held: HashSet<String> = had.nodes.iter().map(|node| node.id.clone()).collect();
-    let mut taken: HashSet<String> = added.nodes.iter().map(|node| node.id.clone()).collect();
-    taken.extend(held.iter().cloned());
-    let mut names = HashMap::new();
-    for node in &added.nodes {
-        if held.contains(&node.id) || reserved(&node.id, next) {
-            let new = fresh(&node.id, &taken);
-            taken.insert(new.clone());
-            names.insert(node.id.clone(), new);
-        }
+/// The frame that the keys of the grade `target` count at the frame `at` of its timeline: of the
+/// clip's source for a clip of media, of the timeline for its grade; `at` itself where it is of a
+/// group, whose keys count the frames of whatever clip it is on.
+fn key_frame(project: &Project, target: &Target, at: i64) -> i64 {
+    if let Target::Clip { timeline, clip } = target {
+        let found = project
+            .timelines
+            .iter()
+            .find(|each| each.id == *timeline)
+            .and_then(|timeline| {
+                timeline
+                    .tracks
+                    .iter()
+                    .flat_map(|track| &track.clips)
+                    .find(|each| each.id == *clip)
+                    .map(|clip| KeyClock::of(clip, project, timeline.rate).at(at))
+            });
+        return found.unwrap_or(at);
     }
-    let mut value = renamed(added, &names);
-    // Where a node lies in the editor is of the grade it was in.
-    for node in &mut value.nodes {
-        let mut written = json!(node);
-        if let Some(pos) = written.get_mut("pos") {
-            *pos = Value::Null;
-            if let Ok(read) = serde_json::from_value(written) {
-                *node = read;
-            }
-        }
-    }
-    value
-}
-
-/// `then` after `first`, as one grade, as Append Node Graph chains them (p. 3290): the nodes of
-/// both, what went into the output of `first` going into what the source went into in `then`,
-/// and what went into the output of `then` into the output. Their nodes are of other ids.
-fn chain(first: Grade, then: &Grade) -> Grade {
-    let mut value = first;
-    let last = value
-        .link_into(OUTPUT, columbina_model::Port::Rgb, 0)
-        .map(|link| link.from.clone());
-    value
-        .links
-        .retain(|link| link.target() != (OUTPUT, columbina_model::Port::Rgb, 0));
-    value.nodes.extend(then.nodes.iter().cloned());
-    for link in &then.links {
-        let from = if link.from == SOURCE {
-            match &last {
-                Some(last) => last.clone(),
-                None => continue,
-            }
-        } else {
-            link.from.clone()
-        };
-        value.links.push(Link {
-            from,
-            ..link.clone()
-        });
-    }
-    value.sort_links();
-    value
+    at
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1207,6 +1140,77 @@ fn move_stills(places: &Places, stills: &[String], album: &str) -> Result<Value,
             opened.save()?;
         }
         Ok(json!({"moved": moved}))
+    })
+}
+
+/// The first album that the Gallery shows, where a grab or an import goes where none is named.
+fn first_album(opened: &Opened) -> Result<String, Fault> {
+    opened
+        .first_album()
+        .map(|album| album.id.clone())
+        .ok_or_else(|| gallery::missing("album", "of stills"))
+}
+
+/// Restore stills deleted (Ctrl+Z in the Gallery, the interaction reference §9.2): each back in
+/// its album where it was, its id kept. Every one of a gallery is checked before any of it is
+/// restored. Gives the album of each.
+fn restore(places: &Places, stills: &[String]) -> Result<Value, Fault> {
+    let ids = gallery::still_ids(stills)?;
+    let mut restored = serde_json::Map::new();
+    for kind in [Kind::Stills, Kind::Powergrade] {
+        let of: Vec<&String> = ids
+            .iter()
+            .filter(|(_, each)| *each == kind)
+            .map(|(id, _)| id)
+            .collect();
+        if of.is_empty() {
+            continue;
+        }
+        gallery::with(places, kind, |opened| {
+            if let Some(id) = of.iter().find(|id| !opened.is_recycled(id)) {
+                return Err(gallery::missing("deleted still", id));
+            }
+            for id in &of {
+                let album = opened.restore_still(id)?;
+                restored.insert((*id).clone(), json!(album));
+            }
+            opened.save()
+        })?;
+    }
+    Ok(json!({"restored": restored}))
+}
+
+/// Copy stills into `album` under new ids, as a still dragged onto a memory is copied into it
+/// (p. 3272): within a gallery or into the other. Gives the id of each copy.
+fn copy_stills(places: &Places, stills: &[String], album: &str) -> Result<Value, Fault> {
+    let to = gallery::kind_of(album, false)?;
+    let ids = gallery::still_ids(stills)?;
+    gallery::with_both(places, |project, power| {
+        let gallery_of = |kind: Kind| usize::from(kind != Kind::Stills);
+        let mut both = [project, power];
+        both[gallery_of(to)].album_mut(album)?;
+        for (id, kind) in &ids {
+            both[gallery_of(*kind)]
+                .album_of(id)
+                .ok_or_else(|| gallery::missing("still", id))?;
+        }
+        let mut copied = serde_json::Map::new();
+        for (id, kind) in &ids {
+            let new = if *kind == to {
+                both[gallery_of(to)].copy_within(id, album)?
+            } else {
+                let [project, power] = &mut both;
+                let (from, into): (&mut Opened, &mut Opened) = if to == Kind::Stills {
+                    (power, project)
+                } else {
+                    (project, power)
+                };
+                into.copy_in(from, id, album)?
+            };
+            copied.insert(id.clone(), json!(new));
+        }
+        both[gallery_of(to)].save()?;
+        Ok(json!({"copied": copied}))
     })
 }
 
@@ -1355,7 +1359,7 @@ fn import(places: &Places, paths: &[String], album: Option<&str>) -> Result<Valu
     gallery::with(places, kind, |opened| {
         let album = match album {
             Some(album) => album.to_string(),
-            None => opened.albums()[0].id.clone(),
+            None => first_album(opened)?,
         };
         opened.album_mut(&album)?;
         let mut added = Vec::new();
@@ -1444,33 +1448,7 @@ fn still_fault(fault: &Fault, id: &str) -> Fault {
 
 #[cfg(test)]
 mod tests {
-    use columbina_model::Node;
-
     use super::*;
-
-    fn corrector(id: &str) -> Node {
-        Node::corrector(id)
-    }
-
-    fn serial(ids: &[&str]) -> Grade {
-        let mut grade = Grade {
-            nodes: ids.iter().map(|id| corrector(id)).collect(),
-            ..Grade::default()
-        };
-        grade.links.clear();
-        let mut from = SOURCE.to_string();
-        for id in ids {
-            grade.links.push(Link::rgb(from.clone(), (*id).to_string()));
-            from = (*id).to_string();
-        }
-        grade.links.push(Link::rgb(from, OUTPUT));
-        grade.sort_links();
-        grade
-    }
-
-    fn ids(grade: &Grade) -> Vec<&str> {
-        grade.nodes.iter().map(|node| node.id.as_str()).collect()
-    }
 
     #[test]
     fn a_setting_with_keys_is_frozen_at_the_key_at_or_before_the_frame() {
@@ -1496,54 +1474,5 @@ mod tests {
         assert_eq!(timecode(25 * 3661 + 7, rate(25, 1)), "01:01:01:07");
         assert_eq!(timecode(30, rate(30000, 1001)), "00:00:01:00");
         assert_eq!(timecode(-4, rate(24, 1)), "00:00:00:00");
-    }
-
-    #[test]
-    fn ids_the_project_cannot_take_are_made_anew() {
-        assert_eq!(engine_number("n12"), Some(12));
-        assert_eq!(engine_number("n12.1"), None);
-        assert_eq!(engine_number("Look"), None);
-        let copied = serial(&["n3", "n40"]);
-        // n40 is not made yet in a project whose next id is 10.
-        let applied = fit_apply(&copied, &serial(&["n7"]), 0, 10).unwrap();
-        assert_eq!(ids(&applied), ["n3", "n40.1"]);
-        assert!(applied
-            .links
-            .iter()
-            .any(|link| link.from == "n40.1" && link.to == OUTPUT));
-        // Appended after a grade that holds n3, it is n3.1.
-        let appended = chain(
-            serial(&["n3"]),
-            &fit_append(&serial(&["n3", "n4"]), &serial(&["n3"]), 10),
-        );
-        assert_eq!(ids(&appended), ["n3", "n3.1", "n4"]);
-        let into = |to: &str| {
-            appended
-                .links
-                .iter()
-                .find(|link| link.to == to)
-                .map(|link| link.from.clone())
-        };
-        assert_eq!(into("n3.1").as_deref(), Some("n3"));
-        assert_eq!(into("n4").as_deref(), Some("n3.1"));
-        assert_eq!(into(OUTPUT).as_deref(), Some("n4"));
-    }
-
-    #[test]
-    fn preserved_nodes_take_the_places_of_the_first_copied() {
-        let mut had = serial(&["n1", "n2", "n5"]);
-        had.nodes[0].label = "balance".into();
-        let applied = fit_apply(&serial(&["n2", "n9"]), &had, 1, 20).unwrap();
-        // n1 of the target in place of n2 of the copy; n9 kept.
-        assert_eq!(ids(&applied), ["n1", "n9"]);
-        assert_eq!(applied.nodes[0].label, "balance");
-        // A target of fewer nodes takes the copy whole.
-        let whole = fit_apply(&serial(&["n2", "n9"]), &serial(&["n1"]), 2, 20).unwrap();
-        assert_eq!(ids(&whole), ["n2", "n9"]);
-        // The copy of fewer nodes than are kept is refused.
-        assert!(fit_apply(&serial(&["n2"]), &had, 2, 20).is_err());
-        // A node of the copy that a kept one holds the id of is made anew.
-        let clash = fit_apply(&serial(&["n2", "n1"]), &had, 1, 20).unwrap();
-        assert_eq!(ids(&clash), ["n1", "n1.1"]);
     }
 }

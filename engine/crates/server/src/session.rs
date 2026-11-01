@@ -918,6 +918,19 @@ impl State {
         now: Instant,
         work: impl FnOnce(&Project) -> Result<Vec<Value>, Fault>,
     ) -> Result<PreparedResult, WorkedOutError> {
+        self.apply_changes_locked(kind, revision, owned, now, work)
+    }
+
+    /// [`State::apply_worked_out_locked`] of operations and edits written as JSON, or of changes
+    /// that the engine made (see [`WorkedOut`]).
+    fn apply_changes_locked<W: WorkedOut>(
+        &mut self,
+        kind: Kind,
+        revision: Option<u64>,
+        owned: Option<(u64, &mut OwnedGesture)>,
+        now: Instant,
+        work: impl FnOnce(&Project) -> Result<Vec<W>, Fault>,
+    ) -> Result<PreparedResult, WorkedOutError> {
         if let Some((owner, gesture)) = &owned {
             self.check_owned_gesture(*owner, gesture)
                 .map_err(WorkedOutError::Apply)?;
@@ -943,13 +956,7 @@ impl State {
             .into_iter()
             .enumerate()
         {
-            let op: names::Input = serde_json::from_value(op).map_err(|error| {
-                WorkedOutError::Input(
-                    Fault::params(format!("operation {index} is not an operation: {error}"))
-                        .with_data(json!({"index":index, "reason":"invalid_op"})),
-                )
-            })?;
-            ops.push(op);
+            ops.push(op.input(index).map_err(WorkedOutError::Input)?);
         }
         let names = names::prepare(&mut ops).map_err(|error| {
             WorkedOutError::Input(
@@ -2013,20 +2020,43 @@ pub(crate) async fn tell_everyone(engine: &Engine, method: &str, params: &serde_
     engine.log_kicked(kicked);
 }
 
+/// What a transaction worked out by the engine is made of: operations and edits written as the
+/// wire writes them, or changes made by the engine itself (the edits of a grade given whole, which
+/// the wire does not name).
+pub(crate) trait WorkedOut {
+    /// The change, the `index`th of its transaction.
+    fn input(self, index: usize) -> Result<names::Input, Fault>;
+}
+
+impl WorkedOut for Value {
+    fn input(self, index: usize) -> Result<names::Input, Fault> {
+        serde_json::from_value(self).map_err(|error| {
+            Fault::params(format!("operation {index} is not an operation: {error}"))
+                .with_data(json!({"index":index, "reason":"invalid_op"}))
+        })
+    }
+}
+
+impl WorkedOut for Change {
+    fn input(self, _index: usize) -> Result<names::Input, Fault> {
+        Ok(self.into())
+    }
+}
+
 /// Apply, as one transaction made by `kind`, the operations and edits that `work` makes of the
 /// project as it is (`still.apply`, `grade.append_node`), worked out while the project is locked
 /// so that it does not change in between; and answer as `transaction.apply` does. `revision`,
 /// where given, binds the request as it binds `transaction.apply`.
-pub(crate) async fn apply_worked_out(
+pub(crate) async fn apply_worked_out<W: WorkedOut>(
     engine: &Engine,
     connection: &Connection,
     kind: Kind,
     id: &RawValue,
     revision: Option<u64>,
-    work: impl FnOnce(&Project) -> Result<Vec<serde_json::Value>, Fault>,
+    work: impl FnOnce(&Project) -> Result<Vec<W>, Fault>,
 ) -> Result<Reply, Reply> {
     let mut state = engine.state.lock().await;
-    let result = match state.apply_worked_out_locked(kind, revision, None, Instant::now(), work) {
+    let result = match state.apply_changes_locked(kind, revision, None, Instant::now(), work) {
         Ok(result) => result,
         Err(WorkedOutError::Input(fault)) => return Err(fault.into()),
         Err(WorkedOutError::Apply(fault)) => {

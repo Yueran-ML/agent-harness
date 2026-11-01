@@ -737,6 +737,7 @@ export const zhCN: Messages = {
       colorPage: {
         viewerZoom: '检视器缩放', viewerFit: '适合窗口',
         windowControls: {
+          addGradient: '添加渐变窗口', fields: { size: '大小', aspect: '宽高比', pan: '平移', tilt: '倾斜', rotate: '旋转', opacity: '不透明度', softness: '柔化 1' },
           osc: '屏上控制', none: '关闭', window: 'Power Window', image_wipe: '图像划像', add: '添加圆形窗口',
           list: '窗口列表', editing: '正在编辑', static: '静态', key: '关键帧', frame: '帧', creating: '正在创建窗口…',
           clock: { source: '源时钟', clip: '片段时钟', timeline: '时间线时钟' },

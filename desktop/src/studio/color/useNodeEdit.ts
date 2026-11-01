@@ -4,13 +4,14 @@ import { callEngine, mergePatch, type Corrector, type GradeNode, type Param, typ
 import { fullCorrector, getAt, isKeyed, keyAt, patchOf, shownValue, withValue } from './corrector';
 import type { KeyClock } from './keyFrames';
 import type { GradeChange } from './nodeEdits';
+import { windowPath, windowValue, type WindowEdit, type EditScope } from './windowEdits';
 
 /**
  * What an edit puts at a path of the node's params: a number, which goes where an edit at the
  * playhead goes (into a value, or into a keyframe, p. 3391), or a value put there whole (the
  * points of a curve, a switch).
  */
-export type EditValue = number | { whole: unknown };
+export type EditValue = number | { whole: unknown } | WindowEdit;
 export type Edits = readonly (readonly [string, EditValue])[];
 
 /** The corrector node that the palettes edit, where the current node is one, and where its grade is. */
@@ -63,18 +64,31 @@ export function placeOf(level: 'pre_clip' | 'clip' | 'post_clip' | 'timeline', t
 /** How long a value that was sent is shown, at most, until the engine tells of it, as the inspector's fields hold theirs. */
 export const HOLD_MS = 1500;
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
-const resolve = (edits: Edits, base: Corrector, frame: number): [string, unknown][] => edits.map(([path, value]) => [
-  path, typeof value === 'number' ? withValue(getAt(base, path) as Param | undefined, frame, value) : value.whole,
-]);
+const resolve = (edits: Edits, base: Corrector, frame: number): [string, unknown][] => {
+  const values = new Map<string, unknown>();
+  let current = base;
+  for (const [path, edit] of edits) {
+    const value = typeof edit === 'number' ? withValue(getAt(current, path) as Param | undefined, frame, edit)
+      : 'window' in edit ? windowValue(current, edit, frame) : edit.whole;
+    if (typeof edit === 'object' && 'window' in edit && value === null) continue;
+    values.set(path, value);
+    current = mergePatch(current, patchOf([[path, value]])) as Corrector;
+  }
+  return [...values];
+};
+const scopeOf = (edits: Edits) => edits.reduce<EditScope | null>((scope, [, value]) => typeof value === 'object' && 'window' in value ? value.scope ?? scope : scope, null);
+const validScope = (edits: Edits) => scopeOf(edits)?.live !== false;
+/** A plain commit resolves by window id against its confirmed predecessor, so it outlives its control. */
+const unscoped = (edits: Edits): Edits => edits.map(([path, value]) => typeof value === 'object' && 'window' in value ? [path, { window: value.window }] as const : [path, value] as const);
 /** The actual key an edit changes; moving within its interval does not change ownership. */
 const keysOf = (params: Corrector, frame: number, paths: readonly string[]) => JSON.stringify(paths.map(path => {
   const param = getAt(params, path) as Param | undefined;
   return [path, isKeyed(param) && Array.isArray(param.keys) && param.keys.length ? param.keys[keyAt(param.keys, frame)].frame : null];
 }));
-const pathsOf = (edits: Edits) => edits.map(([path]) => path);
+const pathsOf = (edits: Edits, base: Corrector) => edits.map(([path, value]) => typeof value === 'object' && 'window' in value ? windowPath(base, value) : path);
 const identityOf = (at: EditedNode | null) => at === null ? '' : JSON.stringify([at.session, at.target, at.node.id, at.clip, at.clock]);
 
-interface Queued { edits: Edits; frame: number; keys: string }
+interface Queued { edits: Edits; frame: number; keys: string; preview?: boolean }
 interface Gesture {
   id: string;
   context: EditedNode;
@@ -84,6 +98,8 @@ interface Gesture {
   params: Corrector;
   before: Map<string, unknown>;
   keys: string;
+  dependencies: string[];
+  scope: EditScope | null;
   next: Edits | null;
   last: Map<string, unknown>;
   ending: boolean;
@@ -138,18 +154,25 @@ export function useNodeEdit(edited: EditedNode | null) {
   const previous = owner?.context;
   const seek = previous && edited && (previous.timelineFrame ?? previous.frame) !== (edited.timelineFrame ?? edited.frame)
     && !(previous.playing && edited.playing);
-  const changedKey = owner?.gesture && edited && owner.gesture.keys !== keysOf(committed, edited.frame, [...owner.gesture.before.keys()]);
+  const changedKey = owner?.gesture && edited && owner.gesture.keys !== keysOf(committed, edited.frame, owner.gesture.dependencies);
   const external = owner && edited && !owner.sending && edited.revision > owner.confirmed;
-  if (!owner || owner.identity !== identityOf(edited) || seek || changedKey || external) {
+  if (!owner || owner.identity !== identityOf(edited) || seek || (changedKey && !owner.gesture?.scope) || external) {
     if (owner) retire(owner, !external);
     owner = makeOwner();
     active.current = owner;
+  } else if (changedKey && owner.gesture?.scope?.live) {
+    // A Window key crossing changes the control, not this node's in-flight transaction lane.
+    // Finish its accepted value before the new scope can use the confirmed ProjectCopy.
+    // A released value is kept: it resolves at the gesture's own frame, so its key is the captured one.
+    owner.gesture.scope.live = false;
+    if (!owner.gesture.ending) owner.gesture.next = null;
+    owner.live.clear();
   }
   owner.context = edited;
   owner.committed = committed;
   // A queued value keeps its original key. A static value survives continuous playback.
   owner.queue = owner.queue.filter(item => {
-    const valid = edited && item.keys === keysOf(committed, edited.frame, pathsOf(item.edits));
+    const valid = edited && validScope(item.edits) && item.keys === keysOf(committed, edited.frame, pathsOf(item.edits, committed));
     if (!valid) for (const [path] of item.edits) owner.held.delete(path);
     return valid;
   });
@@ -167,7 +190,16 @@ export function useNodeEdit(edited: EditedNode | null) {
 
   const drive = (who: Owner): void => {
     if (!alive.current || who.sending || who.context === null) return;
-    const going = who.gesture;
+    let going = who.gesture;
+    // A retired control drops its unsent continuation, never a release or Escape already asked for.
+    if (going?.scope?.live === false && !going.ended && !going.ending) {
+      going.next = null;
+      if (going.revision === null || going.failed) { who.gesture = null; going = null; }
+      else {
+        going.ending = true; going.cancelled = false;
+        going.next = [...going.last].map(([path, whole]) => [path, { whole }] as const);
+      }
+    }
     if (who.retired) {
       if (!going || going.failed || going.ended || going.revision === null || going.last.size === 0) return;
       going.next = [...going.last].map(([path, whole]) => [path, { whole }] as const);
@@ -183,6 +215,11 @@ export function useNodeEdit(edited: EditedNode | null) {
     let end = false;
     let gesture: Gesture | null = null;
     const queued = !who.retired && (!going || going.revision === null) ? who.queue.shift() : undefined;
+    if (queued && !validScope(queued.edits)) { drive(who); return; }
+    if (queued?.preview) {
+      who.gesture = makeGesture(who.context, who.committed, queued.edits, queued.frame);
+      drive(who); return;
+    }
     if (queued) {
       context = who.context;
       revision = context.revision;
@@ -199,7 +236,7 @@ export function useNodeEdit(edited: EditedNode | null) {
         going.initial = who.committed;
         going.params = who.committed;
         for (const path of going.before.keys()) going.before.set(path, getAt(going.initial, path));
-        going.keys = keysOf(going.initial, going.frame, [...going.before.keys()]);
+        going.keys = keysOf(going.initial, going.frame, going.dependencies);
       }
       context = going.context;
       revision = going.revision;
@@ -259,8 +296,22 @@ export function useNodeEdit(edited: EditedNode | null) {
   const shown = mergePatch(base, patchOf(owner.live)) as Corrector;
   const frame = edited?.frame ?? 0;
   // Also reject callbacks retained by callers across a key change, even before React unmounts a control.
-  const accepts = (edits: Edits) => current(owner) && owner.context?.node.kind === 'corrector'
-    && keysOf(committed, frame, pathsOf(edits)) === keysOf(owner.committed, owner.context.frame, pathsOf(edits));
+  const accepts = (edits: Edits) => validScope(edits) && current(owner) && owner.context?.node.kind === 'corrector'
+    && keysOf(committed, frame, pathsOf(edits, committed)) === keysOf(owner.committed, owner.context.frame, pathsOf(edits, owner.committed));
+  const makeGesture = (context: EditedNode, initial: Corrector, edits: Edits, at: number): Gesture => ({
+    id: `palette-${renderer}-${++gestures}`, context, revision: null, frame: at, initial, params: initial,
+    before: new Map(edits.map(([path]) => [path, getAt(initial, path)])),
+    dependencies: pathsOf(edits, initial), scope: scopeOf(edits), keys: keysOf(initial, at, pathsOf(edits, initial)),
+    next: edits, last: new Map(), ending: false, ended: false, failed: false, made: false, cancelled: false,
+  });
+  const enqueue = (edits: Edits, preview = false) => {
+    const scope = scopeOf(edits);
+    const waiting = owner.queue.find(item => item.preview && scopeOf(item.edits) === scope);
+    // Retiring a control drops its queued previews only; a commit keeps its place and key.
+    const queued = preview ? edits : unscoped(edits);
+    if (waiting) { waiting.edits = queued; waiting.preview = preview; }
+    else owner.queue.push({ edits: queued, frame, keys: keysOf(committed, frame, pathsOf(edits, committed)), preview });
+  };
   const preview = (edits: Edits) => {
     if (!accepts(edits) || !edits.length) return;
     owner.local += 1;
@@ -268,14 +319,16 @@ export function useNodeEdit(edited: EditedNode | null) {
     let going = owner.gesture;
     if (!going || going.ended) {
       if (values.every(([path, value]) => same(getAt(base, path), value))) return;
-      going = { id: `palette-${renderer}-${++gestures}`, context: owner.context!, revision: null, frame,
-        initial: base, params: base, before: new Map(), keys: '', next: null, last: new Map(),
-        ending: false, ended: false, failed: false, made: false, cancelled: false };
+      going = makeGesture(owner.context!, base, edits, frame);
       owner.gesture = going;
     }
+    if (going.scope !== scopeOf(edits)) {
+      enqueue(edits, true); owner.live = new Map(values); refresh(owner); drive(owner); return;
+    }
     if (going.failed) return;
+    going.dependencies = [...new Set([...going.dependencies, ...pathsOf(edits, going.initial)])];
     for (const [path] of edits) if (!going.before.has(path)) going.before.set(path, getAt(going.initial, path));
-    going.keys = keysOf(going.initial, going.frame, [...going.before.keys()]);
+    going.keys = keysOf(going.initial, going.frame, going.dependencies);
     going.next = edits;
     owner.live = new Map(values);
     refresh(owner); drive(owner);
@@ -285,6 +338,10 @@ export function useNodeEdit(edited: EditedNode | null) {
     owner.local += 1;
     const going = owner.gesture;
     owner.live.clear();
+    if (going && !going.ended && going.scope !== scopeOf(edits)) {
+      enqueue(edits); for (const [path, value] of resolve(edits, base, frame)) owner.held.set(path, value);
+      refresh(owner); drive(owner); return;
+    }
     if (going && !going.ended) {
       if (going.failed) { owner.gesture = null; refresh(owner); return; }
       if (going.revision !== null) {
@@ -299,11 +356,17 @@ export function useNodeEdit(edited: EditedNode | null) {
     const values = resolve(edits, base, frame);
     if (values.every(([path, value]) => same(getAt(base, path), value))) { refresh(owner); return; }
     for (const [path, value] of values) owner.held.set(path, value);
-    owner.queue.push({ edits, frame, keys: keysOf(committed, frame, pathsOf(edits)) });
+    enqueue(edits);
     refresh(owner); drive(owner);
   };
-  const cancel = () => {
+  const cancel = (scope?: EditScope) => {
     if (!current(owner)) return;
+    if (scope && owner.gesture?.scope !== scope) {
+      const waiting = owner.queue.some(item => item.preview && scopeOf(item.edits) === scope);
+      owner.queue = owner.queue.filter(item => !item.preview || scopeOf(item.edits) !== scope);
+      if (waiting) { owner.live.delete('windows'); refresh(owner); }
+      return;
+    }
     owner.local += 1;
     owner.live.clear(); owner.held.clear();
     const going = owner.gesture;
@@ -327,6 +390,13 @@ export function useNodeEdit(edited: EditedNode | null) {
     pending: () => owner.sending || owner.queue.length > 0 || owner.gesture !== null || (owner.context?.revision ?? 0) < owner.confirmed,
     value: (path: string) => shownValue(getAt(shown, path) as Param | undefined, frame),
     keyed: (path: string) => isKeyed(getAt(shown, path) as Param | undefined),
+    retireScope: (scope: EditScope) => {
+      scope.live = false;
+      if (!current(owner)) return;
+      owner.queue = owner.queue.filter(item => scopeOf(item.edits) !== scope);
+      if (owner.gesture?.scope === scope) owner.live.clear();
+      refresh(owner); drive(owner);
+    },
     preview, commit, cancel,
   };
 }

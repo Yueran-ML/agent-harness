@@ -2,15 +2,17 @@ use super::tests::{draw_using, gpu, halves_using, near_mapped};
 use super::Painter;
 use crate::display::{mapping, Content, HdrTransfer, Output};
 use crate::window_overlay::render::OverlayPainter;
-use crate::window_overlay::{Affine, Circular, Style, WindowOverlay};
+use crate::window_overlay::{Affine, Shape, ShapeKind, Style, WindowOverlay};
 use crate::Viewport;
 use columbina_compose::wipe::{Style as WipeStyle, Wipe};
 
 fn overlay() -> WindowOverlay {
     WindowOverlay {
-        circles: vec![Circular {
+        shapes: vec![Shape {
             id: "w1".into(),
             radius: 1.0,
+            kind: ShapeKind::Circular,
+            feather: 0.0,
             to_canvas: Affine {
                 xx: 20.0,
                 xy: 0.0,
@@ -77,8 +79,8 @@ fn window_overlay_loads_the_display_surface_and_never_changes_the_composed_textu
     });
     assert_eq!(
         drawn[60 * 120 + 80],
-        [255; 3],
-        "the right outline is a surface control"
+        [38, 115, 255],
+        "the blue Aspect handle is a surface control"
     );
     assert_eq!(
         drawn[60 * 120 + 60],
@@ -130,9 +132,9 @@ fn window_overlay_uses_actual_output_sdr_white_independently_of_hdr_content() {
         let wanted =
             mapping(Content::Sdr, output).map_or(osc.style.selected, |m| m.map(osc.style.selected));
         assert!(
-            near_mapped(pixels[40 * 120 + 80], wanted),
+            near_mapped(pixels[33 * 120 + 60], wanted),
             "{output:?}: {:?}, {wanted:?}",
-            pixels[40 * 120 + 80]
+            pixels[33 * 120 + 60]
         );
     }
 }
@@ -182,9 +184,11 @@ fn window_overlay_gpu_clips_each_outline_fragment_like_cpu_hit_for_all_wipes() {
                     #[allow(clippy::cast_precision_loss)]
                     let point = [(i % 120) as f32 + 0.5, (i / 120) as f32 + 0.5];
                     let alpha = osc.outline(map, point).map_or(0.0, |(_, alpha)| alpha);
-                    let wanted = 26.0 + (255.0 - 26.0) * alpha;
-                    assert!((f32::from(pixel[0])-wanted).abs() < 1.1,
-                        "{style:?}, invert={invert}, position={position}, point={point:?}, actual={pixel:?}, wanted={wanted}");
+                    let wanted = cpu_pixel(&osc, map, point, [26.0, 51.0, 77.0]);
+                    assert!(
+                        (0..3).all(|ch| (f32::from(pixel[ch]) - wanted[ch]).abs() < 2.1),
+                        "{style:?}, invert={invert}, position={position}, point={point:?}, actual={pixel:?}, wanted={wanted:?}"
+                    );
                     if alpha > 0.0 {
                         assert_eq!(osc.hit(map, point), Some("w1"));
                     }
@@ -203,7 +207,7 @@ fn window_overlay_gpu_matches_rotated_zoomed_geometry_and_extreme_legal_viewport
     painter.use_texture(&frame).unwrap();
     let overlay_painter = OverlayPainter::new(&gpu.device, wgpu::TextureFormat::Bgra8Unorm);
     let mut osc = overlay();
-    osc.circles[0].to_canvas = Affine {
+    osc.shapes[0].to_canvas = Affine {
         xx: 0.0,
         xy: -10.0,
         yx: 20.0,
@@ -229,11 +233,10 @@ fn window_overlay_gpu_matches_rotated_zoomed_geometry_and_extreme_legal_viewport
         for (i, pixel) in drawn.iter().enumerate() {
             #[allow(clippy::cast_precision_loss)]
             let point = [(i % 100) as f32 + 0.5, (i / 100) as f32 + 0.5];
-            let alpha = osc.outline(map, point).map_or(0.0, |(_, alpha)| alpha);
-            let wanted = f32::from(base[i][0]) + (255.0 - f32::from(base[i][0])) * alpha;
+            let wanted = cpu_pixel(&osc, map, point, base[i].map(f32::from));
             assert!(
-                (f32::from(pixel[0]) - wanted).abs() < 1.1,
-                "scale={scale}, point={point:?}: {pixel:?}, {wanted}"
+                (0..3).all(|ch| (f32::from(pixel[ch]) - wanted[ch]).abs() < 2.1),
+                "scale={scale}, point={point:?}: {pixel:?}, {wanted:?}"
             );
         }
     }
@@ -316,7 +319,7 @@ fn window_overlay_bilinear_footprint_follows_actual_composed_image_samples() {
         let device = pixel.map(|value| value as f32 + 0.5);
         let canvas = map.to_picture((f64::from(device[0]), f64::from(device[1])));
         // Put a full-opacity right stroke precisely on this device sample.
-        osc.circles[0].to_canvas = Affine {
+        osc.shapes[0].to_canvas = Affine {
             xx: 10.0,
             xy: 0.0,
             yx: 0.0,
@@ -331,12 +334,142 @@ fn window_overlay_bilinear_footprint_follows_actual_composed_image_samples() {
             })
         });
         let allowed = share > 0.0 || style == WipeStyle::Difference;
-        assert!((drawn[sample][1]-if allowed {1.0}else{0.0}).abs()<1e-3,
-            "stroke must follow actual current contribution: {wipe:?}, {pixel:?}, base={:?}, drawn={:?}",base[sample],drawn[sample]);
+        assert!(
+            (drawn[sample][1] - if allowed { 0.45 } else { 0.0 }).abs() < 1e-3,
+            "stroke must follow actual current contribution: {wipe:?}, {pixel:?}, base={:?}, drawn={:?}",
+            base[sample],
+            drawn[sample]
+        );
         assert_eq!(
             osc.hit(map, device),
             allowed.then_some("w1"),
             "{wipe:?}, {pixel:?}"
+        );
+    }
+}
+
+// Use the CPU's shared primitive coverage, not a second implementation of ellipse/line maths.
+fn cpu_pixel(
+    osc: &WindowOverlay,
+    map: crate::ViewportMap,
+    point: [f32; 2],
+    base: [f32; 3],
+) -> [f32; 3] {
+    if osc.outline(map, point).is_none() {
+        return base;
+    }
+    osc.ordered()
+        .flat_map(|shape| osc.primitives(shape, map))
+        .fold(base, |pixel, primitive| {
+            let alpha = primitive.alpha(point, osc.style.width);
+            std::array::from_fn(|ch| {
+                pixel[ch] * (1.0 - alpha) + primitive.colour[ch] * 255.0 * alpha
+            })
+        })
+}
+
+#[test]
+fn window_overlay_gradient_controls_share_rotated_device_geometry_and_wipe_coverage() {
+    let Some(gpu) = gpu() else { return };
+    let size = (120, 80);
+    let frame = source(&gpu);
+    let map = Viewport::Scale {
+        scale: 1.5,
+        center: [0.5, 0.5],
+    }
+    .map(size, size, 0)
+    .unwrap();
+    let mut painter = Painter::new(&gpu.device, &gpu.queue, wgpu::TextureFormat::Bgra8Unorm);
+    painter.use_texture(&frame).unwrap();
+    let overlay_painter = OverlayPainter::new(&gpu.device, wgpu::TextureFormat::Bgra8Unorm);
+    let mut osc = overlay();
+    osc.shapes[0].kind = ShapeKind::Gradient;
+    osc.shapes[0].to_canvas = Affine {
+        xx: 20.0,
+        xy: -10.0,
+        yx: 10.0,
+        yy: 20.0,
+        tx: 60.5,
+        ty: 40.5,
+    };
+    for feather in [0.0, 0.25] {
+        osc.shapes[0].feather = feather;
+        for style in [WipeStyle::Horizontal, WipeStyle::Mix, WipeStyle::Difference] {
+            osc.coverage = Some(Wipe {
+                style,
+                softness: 0.25,
+                ..Wipe::default()
+            });
+            let base = draw_using(&gpu, size, |v| painter.draw_mapped(v, size, 0, Some(map)));
+            let drawn = draw_using(&gpu, size, |target| {
+                painter.draw_mapped_with(target, size, 0, Some(map), |encoder| {
+                    overlay_painter.encode(&gpu.device, encoder, target, &osc, map, Output::Sdr);
+                })
+            });
+            for (i, pixel) in drawn.iter().enumerate() {
+                #[allow(clippy::cast_precision_loss)]
+                let point = [(i % 120) as f32 + 0.5, (i / 120) as f32 + 0.5];
+                let wanted = cpu_pixel(&osc, map, point, base[i].map(f32::from));
+                assert!(
+                    (0..3).all(|ch| (f32::from(pixel[ch]) - wanted[ch]).abs() < 2.1),
+                    "{point:?} {pixel:?} {wanted:?}"
+                );
+                if osc.outline(map, point).is_some() {
+                    assert_eq!(osc.hit(map, point), Some("w1"));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn window_overlay_draws_controls_only_on_the_selected_window_and_greys_the_others() {
+    let Some(gpu) = gpu() else { return };
+    let size = (120, 80);
+    let frame = source(&gpu);
+    let map = Viewport::Fit.map(size, size, 0).unwrap();
+    let mut painter = Painter::new(&gpu.device, &gpu.queue, wgpu::TextureFormat::Bgra8Unorm);
+    painter.use_texture(&frame).unwrap();
+    let overlay_painter = OverlayPainter::new(&gpu.device, wgpu::TextureFormat::Bgra8Unorm);
+    let mut osc = overlay();
+    let mut other = osc.shapes[0].clone();
+    osc.shapes[0].to_canvas.tx = 30.5;
+    other.id = "w2".into();
+    other.to_canvas.tx = 90.5;
+    other.feather = 0.25;
+    osc.shapes = vec![osc.shapes[0].clone(), other].into();
+    let base = draw_using(&gpu, size, |v| painter.draw_mapped(v, size, 0, Some(map)));
+    let drawn = draw_using(&gpu, size, |target| {
+        painter.draw_mapped_with(target, size, 0, Some(map), |encoder| {
+            overlay_painter.encode(&gpu.device, encoder, target, &osc, map, Output::Sdr);
+        })
+    });
+    let at = |x: usize, y: usize| drawn[y * 120 + x];
+    // The selected window's corner Size handle is blue; the other window's corner is untouched.
+    assert!(
+        at(10, 30)
+            .iter()
+            .zip([38, 115, 255])
+            .all(|(&c, want)| c.abs_diff(want) <= 1),
+        "{:?}",
+        at(10, 30)
+    );
+    assert_eq!(at(70, 30), base[30 * 120 + 70]);
+    // The unselected window's outline is grey where the selected one would put an Aspect handle,
+    // and its outer soft edge is not drawn.
+    assert!(
+        at(70, 40).iter().all(|&c| c.abs_diff(128) <= 1),
+        "{:?}",
+        at(70, 40)
+    );
+    assert_eq!(at(115, 40), base[40 * 120 + 115]);
+    for (i, pixel) in drawn.iter().enumerate() {
+        #[allow(clippy::cast_precision_loss)]
+        let point = [(i % 120) as f32 + 0.5, (i / 120) as f32 + 0.5];
+        let wanted = cpu_pixel(&osc, map, point, base[i].map(f32::from));
+        assert!(
+            (0..3).all(|ch| (f32::from(pixel[ch]) - wanted[ch]).abs() < 2.1),
+            "{point:?} {pixel:?} {wanted:?}"
         );
     }
 }

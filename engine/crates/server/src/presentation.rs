@@ -149,6 +149,95 @@ pub struct Input {
     pub instance: u64,
     pub pointer: columbina_view::Pointer,
     pub frame: Option<Arc<FrameSnapshot>>,
+    pub rotation: Option<RotationEvidence>,
+}
+
+/// Consecutive samples with the same actual map/frame share one proof. The sequence marks
+/// the last sample in that run, so pre-arm playback is distinguished from post-arm changes.
+#[derive(Clone)]
+pub struct RotationSample {
+    pub sequence: u64,
+    pub owner: u64,
+    pub instance: u64,
+    pub shown: Option<Presentation>,
+    pub frame: Option<Arc<FrameSnapshot>>,
+}
+#[derive(Clone)]
+pub struct RotationEvidence {
+    pub basis: crate::window::RotationBasis,
+    pub degrees: f64,
+    pub samples: Vec<RotationSample>,
+}
+struct RotationTrace {
+    evidence: RotationEvidence,
+    previous: Option<f64>,
+}
+impl RotationTrace {
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "native pixel centres share overlay device coordinates"
+    )]
+    fn begin(down: &Input) -> Option<Self> {
+        use columbina_view::window_overlay::Control;
+        let frame = down.frame.as_ref()?;
+        let map = down.pointer.presentation?.map?;
+        let hit = frame.overlay.as_ref()?.hit_control(
+            map,
+            [
+                down.pointer.window.0 as f32 + 0.5,
+                down.pointer.window.1 as f32 + 0.5,
+            ],
+        )?;
+        if hit.control != Control::Rotate {
+            return None;
+        }
+        let basis = crate::window::RotationBasis::of(frame.selection.as_ref()?, frame, hit.id)?;
+        Some(Self {
+            evidence: RotationEvidence {
+                basis,
+                degrees: 0.0,
+                samples: vec![],
+            },
+            previous: basis.angle_at(map, down.pointer.window),
+        })
+    }
+    fn observe(&mut self, down: &Input, input: &Input) -> RotationEvidence {
+        let map = down
+            .pointer
+            .presentation
+            .and_then(|p| p.map)
+            .expect("rotation down map");
+        let angle = self.evidence.basis.angle_at(map, input.pointer.window);
+        if let (Some(previous), Some(angle)) = (self.previous, angle) {
+            let delta = (angle - previous + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU)
+                - std::f64::consts::PI;
+            self.evidence.degrees += delta.to_degrees();
+        }
+        self.previous = angle;
+        let sample = RotationSample {
+            sequence: input.sequence,
+            owner: input.owner,
+            instance: input.instance,
+            shown: input.pointer.presentation,
+            frame: input.frame.clone(),
+        };
+        let same = self.evidence.samples.last().is_some_and(|last| {
+            last.owner == sample.owner
+                && last.instance == sample.instance
+                && last.shown.and_then(|p| p.map) == sample.shown.and_then(|p| p.map)
+                && match (&last.frame, &sample.frame) {
+                    (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                    (None, None) => true,
+                    _ => false,
+                }
+        });
+        if same {
+            *self.evidence.samples.last_mut().expect("last proof") = sample;
+        } else {
+            self.evidence.samples.push(sample);
+        }
+        self.evidence.clone()
+    }
 }
 
 /// Native evidence pins a down independently of the eight pending presentation candidates.
@@ -162,6 +251,7 @@ struct NativeInput {
     pin: Arc<Pin>,
     claimed: bool,
     events: VecDeque<Input>,
+    rotation: Option<RotationTrace>,
 }
 impl Drop for NativeInput {
     fn drop(&mut self) {
@@ -190,14 +280,16 @@ impl Registry {
         if slot.instance != Some(instance) {
             return sequence;
         }
-        let input = Input {
+        let mut input = Input {
             sequence,
             owner,
             instance,
             pointer,
             frame,
+            rotation: None,
         };
         if pointer.kind == PointerKind::Down && pointer.button == Some(Button::Left) {
+            let rotation = RotationTrace::begin(&input);
             slot.input = Some(NativeInput {
                 pin: Arc::new(Pin {
                     down: input,
@@ -206,12 +298,19 @@ impl Registry {
                 }),
                 claimed: false,
                 events: VecDeque::new(),
+                rotation,
             });
         } else if let Some(active) = &mut slot.input {
             if active.pin.down.owner == owner && active.pin.live.load(Ordering::Acquire) {
                 let terminal = pointer.kind == PointerKind::Cancel
                     || (pointer.kind == PointerKind::Up && pointer.button == Some(Button::Left));
                 if pointer.kind == PointerKind::Move || terminal {
+                    if pointer.kind == PointerKind::Move {
+                        input.rotation = active
+                            .rotation
+                            .as_mut()
+                            .map(|trace| trace.observe(&active.pin.down, &input));
+                    }
                     if pointer.kind == PointerKind::Move
                         && active
                             .events
@@ -275,6 +374,12 @@ impl Registry {
             .filter(|input| Arc::ptr_eq(&input.pin, pin))
         {
             input.events.retain(|event| event.sequence > sequence);
+            if let Some(rotation) = &mut input.rotation {
+                rotation
+                    .evidence
+                    .samples
+                    .retain(|sample| sample.sequence > sequence);
+            }
         }
     }
 

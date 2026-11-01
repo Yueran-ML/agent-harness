@@ -66,6 +66,91 @@ fn windows(project: &Value, binding: &Value) -> Value {
 }
 
 #[tokio::test]
+async fn native_transform_controls_preserve_left_keys_and_restore_the_whole_list() {
+    for gradient in [false, true] {
+        let dir = project_dir();
+        let engine = engine(dir.path(), &[]).await;
+        let parent = parent::Parent::open();
+        let mut desktop = engine.client("desktop").await;
+        let mut binding = fixture(&mut desktop).await;
+        let mut all = windows(&project(&mut desktop).await, &binding);
+        let mut other = all[0].clone();
+        other["id"] = json!("w2");
+        other["enabled"] = json!(false);
+        all.as_array_mut().unwrap().push(other);
+        let (field, path, down_at, moved_at, expected) = if gradient {
+            all[0]["shape"] = json!({"kind":"gradient","softness":{"keys":[{"frame":0,"value":10,"interp":"linear"},{"frame":20,"value":50,"interp":"hold"}]}});
+            ("softness", "shape", (82, 41), (82, 50), 60.0)
+        } else {
+            all[0]["transform"]["size"] = json!({"keys":[{"frame":0,"value":20,"interp":"linear"},{"frame":20,"value":80,"interp":"hold"}]});
+            ("size", "transform", (82, 54), (91, 63), 45.0)
+        };
+        let changed = desktop.apply(json!([{"op":"set_node","grade":binding["target"],"id":binding["node"],"params":{"windows":all}}])).await;
+        binding["revision"] = changed["revision"].clone();
+        desktop.result("view.attach",Some(json!({"monitor":"timeline","parent":parent.hwnd.to_string(),"x":0,"y":0,"width":128,"height":72}))).await;
+        desktop
+            .result(
+                "transport.load",
+                Some(json!({"monitor":"timeline","timeline":binding["timeline"]})),
+            )
+            .await;
+        desktop
+            .result(
+                "transport.seek",
+                Some(json!({"monitor":"timeline","frame":10})),
+            )
+            .await;
+        let mut bound = desktop.result("window.bind", Some(binding.clone())).await;
+        let window = until_views(&parent, "transform view", |views| views.len() == 1).await[0].0;
+        ready(&mut desktop, window, &bound["binding"]).await;
+        let before = project(&mut desktop).await;
+        let all = windows(&before, &binding);
+        for cancel in [false, true] {
+            let down = pointer(&mut desktop, window, WM_LBUTTONDOWN, down_at.0, down_at.1).await;
+            let started = desktop
+                .result(
+                    "window.input",
+                    Some(json!({"binding":bound["binding"],"kind":"down","event":down["event"]})),
+                )
+                .await;
+            let armed = phase(&mut desktop, "armed").await;
+            assert_eq!(armed["keys"][field], 0);
+            assert!(armed["keys"].get("pan").is_none());
+            let moved = pointer(&mut desktop, window, WM_MOUSEMOVE, moved_at.0, moved_at.1).await;
+            desktop.result("window.input",Some(json!({"binding":bound["binding"],"capture":started["capture"],"kind":"move","event":moved["event"]}))).await;
+            let actual = windows(&project(&mut desktop).await, &binding);
+            assert!(
+                (actual[0][path][field]["keys"][0]["value"].as_f64().unwrap() - expected).abs()
+                    < 1e-8
+            );
+            assert_eq!(
+                actual[0][path][field]["keys"][1],
+                all[0][path][field]["keys"][1]
+            );
+            assert_eq!(actual[1], all[1]);
+            if !cancel {
+                pointer(&mut desktop, window, WM_LBUTTONUP, moved_at.0, moved_at.1).await;
+            }
+            desktop.result("window.input",Some(json!({"binding":bound["binding"],"capture":started["capture"],"kind":if cancel {"cancel"} else {"up"}}))).await;
+            if !cancel {
+                desktop.result("history.undo", None).await;
+            }
+            let restored = project(&mut desktop).await;
+            assert_eq!(restored["project"], before["project"]);
+            binding["revision"] = restored["revision"].clone();
+            bound = desktop.result("window.bind", Some(binding.clone())).await;
+            ready(&mut desktop, window, &bound["binding"]).await;
+        }
+        assert_eq!(
+            desktop
+                .result("transport.state", Some(json!({"monitor":"timeline"})))
+                .await["playing"],
+            false
+        );
+    }
+}
+
+#[tokio::test]
 async fn native_drag_freezes_clicked_playback_frame_survives_hold_and_has_one_undo() {
     let dir = project_dir();
     let engine = engine(dir.path(), &[]).await;
@@ -247,12 +332,12 @@ async fn native_outline_is_interpolated_while_numeric_movement_writes_the_left_k
     ready(&mut desktop, window, &bound["binding"]).await;
     let (pixels, width) = parent.grey();
     assert!(
-        pixels[36 * width + 81] > 220,
-        "the circle's right edge is at x=82, interpolated Pan=50"
+        pixels[27 * width + 79] > 220,
+        "the white arc near (80,27) follows interpolated Pan=50"
     );
     assert!(
-        pixels[36 * width + 69] < 150,
-        "the left key's Pan=40 edge must not be drawn"
+        pixels[27 * width + 66] < 150,
+        "the left key's Pan=40 arc must not be drawn"
     );
     let down = pointer(&mut desktop, window, WM_LBUTTONDOWN, 64, 36).await;
     let started = desktop
@@ -280,8 +365,8 @@ async fn native_outline_is_interpolated_while_numeric_movement_writes_the_left_k
     }
     let (pixels, width) = parent.grey();
     assert!(
-        pixels[36 * width + 89] > 220,
-        "editing the left key by 12.5 gives the displayed half-way Pan=56.25, edge x=90"
+        pixels[27 * width + 87] > 220,
+        "editing the left key by 12.5 gives displayed half-way Pan=56.25, arc near (88,27)"
     );
     desktop
         .result(

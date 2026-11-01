@@ -149,7 +149,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `view.display` | `{"hdr"?: true \| false}` | `{"hdr": true, "source": {"hdr_on": true, "hdr_shown": true, "peak_nits": 400.0, "sdr_white_nits": 148.0} \| null, "timeline": ... \| null}` (see The view) |
 | `view.sample` | `{"monitor": m}` or `{"timeline": "t1", "frame": n}`, `"x": 960.5, "y": 540.5, "size"?: 1, "grade"?: target, "node"?: "n1", "clip"?: "c1"` | `{"frame", "x", "y", "size", "width", "height", "region", "rgb": [r, g, b], "node"?: {"grade", "node", "input", "output", "key"}}` (see Samples and the pointer) |
 | `view.pointer` | `{"monitor": m, "on": true \| false, "cursor"?: "arrow" \| "crosshair" \| "move" \| "resize_ew" \| "resize_ns"}` | `{"monitor", "on", "cursor"}`, then `view.pointer` notifications (see Samples and the pointer) |
-| `window.bind` | `{monitor:"timeline",revision,timeline,target,clip?,node,selected,visible,outline,tool}` | `{binding,sequence}`; existing Circular Window controls (see Circular Window controls) |
+| `window.bind` | `{monitor:"timeline",revision,timeline,target,clip?,node,selected,visible,outline,tool}` | `{binding,sequence}`; existing Circular/Gradient Window controls (see Circular and Gradient Window controls) |
 | `window.input` | `{binding,kind:"down"\|"move"\|"up"\|"cancel",event?,capture?}` | Down returns `arming` immediately; `window.state` reports the asynchronous result |
 | `window.unbind` | `{binding}` | Ends capture and clears this connection's Window selection, or releases its still-owned retired binding's pointer |
 | `render.start` | `{"timeline":"t1", "path":"<file>", "codec":"h264", "quality":"high", "range"?:{"from":0,"to":250}, "subtitle_tracks"?:["S1"], "replace"?:false, "revision"?:n}` | `{"job": "render-1"}` (see Rendering a timeline) |
@@ -840,11 +840,12 @@ surface/device also has no pointer map until presentation resumes. `inside` requ
 picture bounds and the visible native surface bounds; captured drags outside a zoomed viewer
 remain outside even if their extrapolated picture coordinates are within the picture.
 
-### Circular Window controls
+### Circular and Gradient Window controls
 
 `window.bind`, `window.input`, and `window.unbind` are desktop-only, non-headless methods for
-the timeline monitor. They control an existing corrector's Circular windows; they do not create
-nodes/windows, add keyframes, resize/rotate shapes, edit handles, or implement tracking.
+the timeline monitor. They control an existing corrector's Circular and Gradient windows,
+including movement, Circular Size/Aspect, rotation and Soft 1. They do not create nodes/windows,
+add keyframes, edit Polygon/Curve topology, or implement tracking.
 
 **`window.bind`** takes the complete selection:
 
@@ -866,8 +867,10 @@ Hidden controls, outline off, and the other tools release Window pointer ownersh
 may then use the existing `view.pointer` route for its divider. Enabling a comparison alone
 does not change the selected tool or steal Window OSC.
 
-The worker receives immutable selections. It draws enabled Circular outlines evaluated at the
+The worker receives immutable selections. It draws enabled Circular/Gradient outlines and handles evaluated at the
 actual displayed frame, after final scene selection, Highlight, comparison and Viewer LUT.
+Only the selected window draws a white outline, its feather lines and handles; every other window
+is a grey outline without feather lines or handles, whose outline and body still hit as Move.
 Unsupported/disabled shapes have no invented handles. Split Screen suppresses the overlay.
 An incompatible target, node, current clip, retained layer, revision, source provenance or
 Highlight also suppresses it for that frame. The same immutable overlay is retained by the
@@ -882,10 +885,11 @@ snapshot **before** sending the notification. The desktop claims it once:
 ```
 
 Client coordinates, tags and project revisions cannot supply or replace down evidence. A down
-must hit a visible Circular interior/stroke inside the actual current-A picture. A soft or
+must hit a visible control, outline or shape body inside the actual current-A picture. A soft or
 bilinearly mixed A/B sample remains eligible; pure B does not hit or draw a stroke. Mix is
 eligible except at pure B; Difference allows the whole picture. Blank/right clicks do not
-edit or create history. Hit priority is selected first, then the last Circular in the list.
+edit or create history. Hit priority is selected first, then the last supported Window in the list. Within a window, explicit handles win;
+overlapping handles choose the nearest device centre, with stable local order breaking ties.
 
 Down returns immediately with `{binding,capture,sequence,phase:"arming",selected,event,
 revision,keys}`. The server then freezes playback at the **clicked timeline frame**, waits for
@@ -908,8 +912,10 @@ transport command turn, so a late freeze cannot rewind a newer seek.
 row. Accept that server selection in the list **without sending another bind**. Keep the same
 binding across server-owned project revisions; do not rebind on every `project.changed` or
 palette interaction notice. Filter notifications by binding/capture and increasing sequence.
-`keys.pan` and `keys.tilt` separately name the key frames actually edited, or null for a static
-parameter. `clock` is `source`, `clip`, or `timeline`; `frame` is the clicked frame in that clock.
+`keys.size`, `keys.aspect`, `keys.pan`, `keys.tilt`, `keys.rotate` and `keys.softness`
+are optional: an absent field did not participate, while null names a static parameter. Each
+present field independently names its captured left key frame. Move retains the original
+Pan/Tilt fields. Other controls report only their own participating field. `clock` is `source`, `clip`, or `timeline`; `frame` is the clicked frame in that clock.
 
 If a project change invalidates the bound selection (for example, its grade becomes incomplete),
 the server retires that binding and sends its original owner **`window.unbound`**:
@@ -949,14 +955,40 @@ to synchronize and obtain `phase:"arming"|"armed"`; the echo supplies no positio
 during arming wait and cannot write. After capture begins, movement continues beyond the
 picture or comparison divider using the original native map and original values.
 
-Down copies the original **entire windows array** and independently selects the Pan/Tilt left
-key indices: the last key at/before the clicked clock frame, or the first key before all keys.
-Each move writes that original array with `pan = original_pan + 100*(u-down_u)` and
+Down copies the original **entire windows array** and independently selects the participating
+parameter left key indices: the last key at/before the clicked clock frame, or the first key before all keys.
+For Move, each update writes that original array with `pan = original_pan + 100*(u-down_u)` and
 `tilt = original_tilt - 100*(v-down_v)`, where `(u,v)` are normalized oriented-picture
 coordinates before clip placement. Other windows, keys, interpolation and Bezier handles are
 preserved. The outline/hit remains at the displayed interpolated mask; numeric controls edit
 the chosen left key. There is no interpolation compensation or auto-key, so between two keys
 the displayed movement may be partial.
+
+Circular uses the model's local radius r=.25, and both shapes use half feather f=Soft1/400.
+Circular Size handles lie at (+/-r,+/-r), Aspect handles on the four axes, Rotate at (0,-.75r),
+and Soft1 on the outer boundary at a local 30-degree ray. Gradient uses its y=0 boundary,
+y=+/-f feather lines, centre Move, bottom Rotate arrow at (0,r), and Soft1 handles at (-r,-f)
+and (r,f). These positions and increments are project choices, not published Resolve algorithms.
+Size0 has no invertible control geometry; numeric Size restores it. Soft0 handles remain
+available; a collapsed inner feather circle at Soft100 is not drawn.
+
+Drag geometry uses the actual down-frame interpolated/clamped transform E; writes use the
+original left-key value L plus the observed delta, clamped to the model bounds. Size scales
+about the centre; Aspect changes by +/-50*log2(axis stretch) with a positive bounded stretch.
+Soft1 changes by 400 times the local normal displacement (the captured side for Gradient).
+Rotation removes clip placement, measures in picture-height units about the evaluated centre,
+and accumulates adjacent observed angles **before native Move coalescing**. Its compact frame/map
+proof runs retain event sequences: the existing arming boundary permits pre-arm playback,
+while every post-arm contributing run must satisfy the original frozen-frame/source checks.
+Passing through the centre (within one device pixel of it) holds the accumulated angle and
+resets its next angular baseline.
+No client coordinates or control/angle declarations are accepted by `window.input`.
+
+The desktop's numeric controls show/edit left-key values through the shared palette gesture
+queue. A Window field intention resolves to a whole-array wire edit only against the confirmed
+predecessor; key ownership follows the actual array field, not just the `windows` container.
+Esc snapshots that confirmed whole array. Window selection or a participating key change
+permanently retires old callbacks. Grade completeness gates native binding, not numeric editing.
 
 `{binding,capture,kind:"up"}` explicitly finishes without adding a final position. A repeated
 up/cancel for the last ended capture is acknowledged. `{binding,capture,kind:"cancel"}` is
@@ -972,8 +1004,7 @@ tool/target changes, project changes and `{binding}` to **`window.unbind`** rele
 automatically resumes. Ordinary transaction replies and rendered/exported project pixels are
 unchanged. Refusals use `-32001` with a narrow `data.reason` such as `binding`, `capture`,
 `event`, `map`, `hit`, `selection`, `target` or `stale_revision`; invalid parameter schemas are
-`-32602`. This protocol provides the server controller; desktop Window palette/OSC wiring is
-a separate phase.
+`-32602`. The desktop shares one native pointer owner with viewer navigation and Image Wipe.
 
 ## The transport
 
@@ -2759,7 +2790,7 @@ real ids. For example:
 | `scopes.frame` | `{"scope_id": "scope-1", "view": "timeline", "frame": n, "width": w, "height": h, "rgba": "<base64>"}`: a picture of a scope, to the connection that subscribed it only (see Scopes) |
 | `gallery.changed` | `{}`: the Gallery was changed; call `gallery.list` again (see The Gallery) |
 | `view.pointer` | `{"monitor", "kind": "down" \| "move" \| "wheel" \| "up" \| "cancel", "button", "buttons", "delta", "clicks", "middle_moved", "x", "y", "inside", "window": {"x", "y"}, "shift", "ctrl", "alt"}`: what the pointer did on a view that takes it, to the connection that asked only (see Samples and the pointer) |
-| `window.state` | `{binding,capture,sequence,phase,reason,selected,event,revision,keys}`: owner-only arming, armed, refused and ended states (see Circular Window controls) |
+| `window.state` | `{binding,capture,sequence,phase,reason,selected,event,revision,keys}`: owner-only arming, armed, refused and ended states (see Circular and Gradient Window controls) |
 | `window.unbound` | `{binding,sequence,revision,reason:"project_changed"}`: original-owner-only retirement when a project change invalidates the binding, even without capture |
 
 - `by` is the kind of the client that asked (for an undo or a redo, the one that asked for

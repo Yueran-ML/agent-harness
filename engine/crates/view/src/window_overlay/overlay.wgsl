@@ -26,10 +26,25 @@ fn fs_overlay(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
     let canvas = offset * overlay.sampling.xy;
     if (!sample_has_current(overlay.wipe, canvas)) { discard; }
     let delta = p.xy - overlay.shape.xy;
+    let kind = overlay.colour.w;
+    let inv = overlay.inverse;
+    if (kind > 0.5) {
+        var distance = abs(dot(delta, inv.xy));
+        var reach = overlay.shape.w * 0.5;
+        if (kind > 1.5 && kind < 2.5) {
+            distance = length(delta);
+            reach = overlay.shape.z;
+        } else if (kind > 2.5) {
+            let t = clamp(dot(delta, inv.xy) / dot(inv.xy, inv.xy), 0.0, 1.0);
+            distance = length(delta - t * inv.xy);
+        }
+        let alpha = clamp(reach + 0.5 - distance, 0.0, 1.0);
+        if (alpha <= 0.0) { discard; }
+        return vec4<f32>(overlay.colour.rgb, alpha);
+    }
     let scale = overlay.shape.z;
     let magnitude = max(scale, max(abs(delta.x), abs(delta.y)));
     let at = delta / magnitude;
-    let inv = overlay.inverse;
     let local = vec2<f32>(inv.x*at.x + inv.y*at.y, inv.z*at.x + inv.w*at.y);
     let radius = length(local);
     if (radius == 0.0 || overlay.shape.w <= 0.0) { discard; }

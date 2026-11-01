@@ -573,8 +573,11 @@ mod ownership {
             pending(first.as_mut()).await;
             pending(second.as_mut()).await;
             assert_eq!(locked.window.owner, Some(7));
-            assert_eq!(viewer.test_pointer_owner(Monitor::Timeline), Some(7),
-                "a later bind cannot change the pointer while the earlier turn is waiting for State");
+            assert_eq!(
+                viewer.test_pointer_owner(Monitor::Timeline),
+                Some(7),
+                "a later bind cannot change the pointer while the earlier turn is waiting for State"
+            );
             drop(locked);
             let (first, second) = tokio::join!(first, second);
             assert!(first.unwrap()["binding"].as_u64() < second.unwrap()["binding"].as_u64());
@@ -826,6 +829,383 @@ fn arm(state: &mut State) {
             .unwrap(),
     );
     state.window.active = Some(capture);
+}
+
+fn control_fixture(
+    shape: WindowShape,
+    at: (i32, i32),
+) -> (State, Registry, Arc<Pin>, Arc<FrameSnapshot>) {
+    control_window_fixture(Window::new("w1", shape), at)
+}
+
+fn control_window_fixture(
+    window: Window,
+    at: (i32, i32),
+) -> (State, Registry, Arc<Pin>, Arc<FrameSnapshot>) {
+    let (mut state, registry, old_pin, old_frame) = fixture();
+    state.window_end("fixture");
+    let mut frame = (*old_frame).clone();
+    let mut project = (*frame.project).clone();
+    let NodeKind::Corrector(c) = &mut project.timelines[0].tracks[0].clips[0].grade.nodes[0].kind
+    else {
+        panic!()
+    };
+    c.windows[0] = window;
+    state.history = History::new(project.clone());
+    frame.project = Arc::new(project);
+    frame.overlay = state
+        .window
+        .selection
+        .as_ref()
+        .unwrap()
+        .overlay(&frame, None);
+    let frame = Arc::new(frame);
+    let tag = registry
+        .register(Monitor::Timeline, 1, frame.clone())
+        .unwrap();
+    let mut pointer = old_pin.down.pointer;
+    pointer.window = at;
+    pointer.presentation.as_mut().unwrap().tag = Some(tag);
+    pointer.presentation.as_mut().unwrap().serial += 1;
+    registry.observe(Monitor::Timeline, 1, pointer.presentation);
+    let event = registry.input(Monitor::Timeline, 7, 1, pointer, Some(frame.clone()));
+    let pin = registry.claim(7, event).unwrap();
+    state
+        .window_begin(7, 1, pin.clone(), registry.clone())
+        .expect("visible control must capture");
+    (state, registry, pin, frame)
+}
+
+#[test]
+fn transform_corner_scales_without_moving_the_centre() {
+    let (mut state, registry, pin, frame) = control_fixture(WindowShape::circular(), (82, 54));
+    arm(&mut state);
+    let mut pointer = pin.down.pointer;
+    pointer.kind = PointerKind::Move;
+    pointer.window = (91, 63);
+    registry.input(Monitor::Timeline, 7, 1, pointer, Some(frame));
+    let id = state.window.active.as_ref().unwrap().id;
+    state.window_events(
+        id,
+        registry.events(&pin),
+        registry.current(Monitor::Timeline, 1),
+    );
+    let selection = state.window.selection.as_ref().unwrap();
+    let changed = &selection
+        .corrector(state.history.project())
+        .unwrap()
+        .windows[0];
+    assert_eq!(changed.transform.size, Param::Fixed(75.0));
+    assert_eq!(changed.transform.pan, Param::Fixed(50.0));
+    assert_eq!(changed.transform.tilt, Param::Fixed(50.0));
+}
+
+#[test]
+fn transform_gradient_centre_is_a_native_move_control() {
+    let (mut state, registry, pin, frame) = control_fixture(WindowShape::gradient(), (64, 36));
+    arm(&mut state);
+    let mut pointer = pin.down.pointer;
+    pointer.kind = PointerKind::Move;
+    pointer.window = (80, 36);
+    registry.input(Monitor::Timeline, 7, 1, pointer, Some(frame));
+    let id = state.window.active.as_ref().unwrap().id;
+    state.window_events(
+        id,
+        registry.events(&pin),
+        registry.current(Monitor::Timeline, 1),
+    );
+    let selection = state.window.selection.as_ref().unwrap();
+    let changed = &selection
+        .corrector(state.history.project())
+        .unwrap()
+        .windows[0];
+    assert_eq!(changed.transform.pan, Param::Fixed(62.5));
+}
+
+#[test]
+fn transform_rotation_retains_a_whole_observed_turn_before_move_coalescing() {
+    let (mut state, registry, pin, frame) = control_fixture(WindowShape::circular(), (64, 22));
+    arm(&mut state);
+    for point in [
+        (74, 26),
+        (78, 36),
+        (74, 46),
+        (64, 50),
+        (54, 46),
+        (50, 36),
+        (54, 26),
+        (64, 22),
+    ] {
+        let mut pointer = pin.down.pointer;
+        pointer.kind = PointerKind::Move;
+        pointer.window = point;
+        registry.input(Monitor::Timeline, 7, 1, pointer, Some(frame.clone()));
+    }
+    assert_eq!(registry.events(&pin).len(), 1);
+    let id = state.window.active.as_ref().unwrap().id;
+    state.window_events(
+        id,
+        registry.events(&pin),
+        registry.current(Monitor::Timeline, 1),
+    );
+    let selection = state.window.selection.as_ref().unwrap();
+    let changed = &selection
+        .corrector(state.history.project())
+        .unwrap()
+        .windows[0];
+    assert!((changed.transform.rotate.value_at(10.0) - 360.0).abs() < 1e-9);
+    assert_eq!(changed.transform.pan, Param::Fixed(50.0));
+}
+
+#[test]
+fn transform_rotation_rebases_after_an_observed_centre_without_inventing_a_turn() {
+    let mut window = Window::new("w1", WindowShape::circular());
+    window.transform.pan = Param::Fixed(50.0 + 100.0 * 0.5 / 128.0);
+    window.transform.tilt = Param::Fixed(50.0 - 100.0 * 0.5 / 72.0);
+    let (mut state, registry, pin, frame) = control_window_fixture(window, (64, 22));
+    arm(&mut state);
+    for point in [(78, 36), (64, 36), (50, 36), (64, 22)] {
+        let mut pointer = pin.down.pointer;
+        pointer.kind = PointerKind::Move;
+        pointer.window = point;
+        registry.input(Monitor::Timeline, 7, 1, pointer, Some(frame.clone()));
+    }
+    let id = state.window.active.as_ref().unwrap().id;
+    state.window_events(
+        id,
+        registry.events(&pin),
+        registry.current(Monitor::Timeline, 1),
+    );
+    let selection = state.window.selection.as_ref().unwrap();
+    let changed = &selection
+        .corrector(state.history.project())
+        .unwrap()
+        .windows[0];
+    assert!((changed.transform.rotate.value_at(10.0) - 180.0).abs() < 1e-9);
+}
+
+#[test]
+fn transform_rotation_removes_picture_placement_but_keeps_window_aspect_out_of_angle_basis() {
+    let (state, _, _, frame) = control_fixture(WindowShape::circular(), (64, 22));
+    let selection = state.window.selection.as_ref().unwrap();
+    let mut frame = (*frame).clone();
+    frame.layers[0].shown_size = (640, 360);
+    frame.layers[0].picture_to_canvas = [0.0, -360.0, 640.0, 0.0, 900.0, 0.0];
+    let NodeKind::Corrector(c) = &mut Arc::make_mut(&mut frame.project).timelines[0].tracks[0]
+        .clips[0]
+        .grade
+        .nodes[0]
+        .kind
+    else {
+        panic!()
+    };
+    c.windows[0].transform.aspect = Param::Fixed(100.0);
+    let basis = crate::window::RotationBasis::of(selection, &frame, "w1").unwrap();
+    assert!(basis.angle((720.0, 356.0)).unwrap().abs() < 1e-9);
+    assert!((basis.angle((684.0, 320.0)).unwrap().to_degrees() - 90.0).abs() < 1e-9);
+    assert!((basis.angle((684.0, 356.0)).unwrap().to_degrees() - 45.0).abs() < 1e-9);
+    assert!(basis.angle((720.0, 320.0)).is_none());
+}
+
+#[test]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "test pixels near the centre"
+)]
+fn transform_rotation_ignores_pointers_within_one_device_pixel_of_the_centre() {
+    let (state, _, pin, frame) = control_fixture(WindowShape::circular(), (64, 22));
+    let selection = state.window.selection.as_ref().unwrap();
+    let map = pin.down.pointer.presentation.unwrap().map.unwrap();
+    let basis = crate::window::RotationBasis::of(selection, &frame, "w1").unwrap();
+    let shape = &frame.overlay.as_ref().unwrap().shapes[0];
+    let (cx, cy) = map.to_device((shape.to_canvas.tx, shape.to_canvas.ty));
+    let (px, py) = ((cx - 0.5).round() as i32, (cy - 0.5).round() as i32);
+    let mut inside = 0;
+    for dy in -2..=2 {
+        for dx in -2..=2 {
+            let point = (px + dx, py + dy);
+            let distance = (f64::from(point.0) + 0.5 - cx).hypot(f64::from(point.1) + 0.5 - cy);
+            if distance > 1e-9 && distance < 1.0 {
+                inside += 1;
+            }
+            assert_eq!(
+                basis.angle_at(map, point).is_none(),
+                distance < 1.0,
+                "{point:?} at {distance} px from the centre"
+            );
+        }
+    }
+    assert!(
+        inside > 0,
+        "the fixture centre must fall between pixel centres"
+    );
+    // Away from the dead zone the device reading is the canvas angle.
+    let far = (px + 6, py);
+    assert_eq!(basis.angle_at(map, far), basis.angle(map.on_picture(far).0));
+}
+
+#[test]
+fn transform_rotation_keeps_pre_arm_frame_advancement_but_rejects_hidden_post_arm_changes() {
+    for pre_arm in [false, true] {
+        let (mut state, registry, pin, frame) = control_fixture(WindowShape::circular(), (64, 22));
+        let mut intervening = (*frame).clone();
+        intervening.timeline_frame += 1;
+        intervening.layers[0].origin.key_frame += 1;
+        let mut pointer = pin.down.pointer;
+        pointer.kind = PointerKind::Move;
+        pointer.window = (74, 26);
+        let event = registry.input(
+            Monitor::Timeline,
+            7,
+            1,
+            pointer,
+            Some(Arc::new(intervening)),
+        );
+        if pre_arm {
+            state.window.active.as_mut().unwrap().arming_through = event;
+        }
+        arm(&mut state);
+        pointer.window = (78, 36);
+        registry.input(Monitor::Timeline, 7, 1, pointer, Some(frame));
+        let id = state.window.active.as_ref().unwrap().id;
+        state.window_events(
+            id,
+            registry.events(&pin),
+            registry.current(Monitor::Timeline, 1),
+        );
+        assert_eq!(state.window.active.is_some(), pre_arm);
+        assert_eq!(state.history.revision() > 0, pre_arm);
+    }
+}
+
+#[test]
+fn transform_rotation_does_not_hide_an_intermediate_changed_map() {
+    let (mut state, registry, pin, frame) = control_fixture(WindowShape::circular(), (64, 22));
+    arm(&mut state);
+    let mut pointer = pin.down.pointer;
+    pointer.kind = PointerKind::Move;
+    pointer.window = (74, 26);
+    pointer.presentation.as_mut().unwrap().map =
+        columbina_view::Viewport::Fit.map((256, 144), (128, 72), 0);
+    registry.input(Monitor::Timeline, 7, 1, pointer, Some(frame.clone()));
+    pointer.presentation = pin.down.pointer.presentation;
+    pointer.window = (78, 36);
+    registry.input(Monitor::Timeline, 7, 1, pointer, Some(frame));
+    let id = state.window.active.as_ref().unwrap().id;
+    state.window_events(
+        id,
+        registry.events(&pin),
+        registry.current(Monitor::Timeline, 1),
+    );
+    assert!(state.window.active.is_none());
+    assert_eq!(state.history.revision(), 0);
+}
+
+#[test]
+fn transform_controls_use_evaluated_geometry_but_write_only_their_left_key() {
+    use columbina_view::window_overlay::Control;
+    let (state, _, _, frame) = fixture();
+    let selection = state.window.selection.as_ref().unwrap();
+    let mut frame = (*frame).clone();
+    let NodeKind::Corrector(c) = &mut Arc::make_mut(&mut frame.project).timelines[0].tracks[0]
+        .clips[0]
+        .grade
+        .nodes[0]
+        .kind
+    else {
+        panic!()
+    };
+    c.windows[0] = Window::new("w1", WindowShape::circular());
+    c.windows[0].transform.size = Param::Keys(vec![
+        Key {
+            frame: 0,
+            value: 0.0,
+            interp: Interp::Linear,
+        },
+        Key {
+            frame: 20,
+            value: 100.0,
+            interp: Interp::Hold,
+        },
+    ]);
+    let size = Movement::capture(selection, &frame, "w1", Control::Size(2), (82.0, 54.0)).unwrap();
+    let changed = size.at((91.0, 63.0)).unwrap();
+    assert_eq!(size.keys(), json!({"size":0,"clock":"source","frame":10}));
+    let Param::Keys(keys) = &changed[0].transform.size else {
+        panic!()
+    };
+    assert_eq!(keys[0].value, 25.0, "L=0, E=50 and delta=25");
+    assert_eq!(keys[1].value, 100.0);
+    assert_eq!(changed[0].transform.pan, size.original[0].transform.pan);
+    assert_eq!(changed[1], size.original[1]);
+    let NodeKind::Corrector(c) = &mut Arc::make_mut(&mut frame.project).timelines[0].tracks[0]
+        .clips[0]
+        .grade
+        .nodes[0]
+        .kind
+    else {
+        panic!()
+    };
+    c.windows[0].transform.aspect = Param::Keys(vec![
+        Key {
+            frame: 2,
+            value: 10.0,
+            interp: Interp::Linear,
+        },
+        Key {
+            frame: 18,
+            value: 90.0,
+            interp: Interp::Hold,
+        },
+    ]);
+    let aspect =
+        Movement::capture(selection, &frame, "w1", Control::Aspect(1), (82.0, 36.0)).unwrap();
+    let changed = aspect.at((100.0, 36.0)).unwrap();
+    assert_eq!(aspect.keys()["aspect"], 2);
+    assert_eq!(changed[0].transform.aspect.value_at(2.0), 60.0);
+    assert_eq!(changed[0].transform.size, aspect.original[0].transform.size);
+    assert_eq!(
+        aspect.at((-1000.0, 36.0)).unwrap()[0]
+            .transform
+            .aspect
+            .value_at(2.0),
+        0.0
+    );
+}
+
+#[test]
+fn transform_softness_controls_restore_zero_and_clamp_without_touching_transforms() {
+    use columbina_view::window_overlay::Control;
+    for shape in [WindowShape::circular(), WindowShape::gradient()] {
+        let (state, _, _, frame) = control_fixture(shape.clone(), (64, 36));
+        let selection = state.window.selection.as_ref().unwrap();
+        for side in [-1, 1] {
+            if matches!(shape, WindowShape::Circular { .. }) && side == -1 {
+                continue;
+            }
+            let movement = Movement::capture(
+                selection,
+                &frame,
+                "w1",
+                Control::Softness(side),
+                (64.0, 36.0),
+            )
+            .unwrap();
+            let changed = movement.at((64.0, 36.0 + f64::from(side) * 18.0)).unwrap();
+            let (WindowShape::Circular { softness: soft }
+            | WindowShape::Gradient { softness: soft }) = &changed[0].shape
+            else {
+                panic!()
+            };
+            let expected = if matches!(shape, WindowShape::Circular { .. }) {
+                51.0
+            } else {
+                100.0
+            };
+            assert!((soft.value_at(10.0) - expected).abs() < 1e-9);
+            assert_eq!(changed[0].transform, movement.original[0].transform);
+        }
+    }
 }
 fn movement(
     state: &mut State,
@@ -1241,7 +1621,7 @@ fn outline_evaluates_interpolation_while_move_edits_only_the_original_left_key()
     let original = &selection.corrector(&frame.project).unwrap().windows[0];
     let evaluated = original.transform.pan.value_at(10.0);
     let overlay = selection.overlay(&frame, None).unwrap();
-    assert!((overlay.circles[0].to_canvas.tx - evaluated * 1.28).abs() < 1e-10);
+    assert!((overlay.shapes[0].to_canvas.tx - evaluated * 1.28).abs() < 1e-10);
     let movement = Movement::new(selection, &frame, "w1", (64.0, 36.0)).unwrap();
     let moved = movement.at((80.0, 36.0)).unwrap();
     let Param::Keys(keys) = &moved[0].transform.pan else {
@@ -1293,7 +1673,7 @@ fn oriented_nonsquare_picture_and_ninety_degree_placement_use_named_affine_order
     frame.layers[0].shown_size = (360, 640);
     frame.layers[0].picture_to_canvas = [0.0, -360.0, 202.5, 0.0, 948.0, 258.75];
     let overlay = selection.overlay(&frame, None).unwrap();
-    let a = overlay.circles[0].to_canvas;
+    let a = overlay.shapes[0].to_canvas;
     for (actual, expected) in [a.xx, a.xy, a.yx, a.yy, a.tx, a.ty]
         .into_iter()
         .zip([-360.0, 0.0, 0.0, -360.0, 768.0, 360.0])

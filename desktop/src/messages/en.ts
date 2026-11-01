@@ -859,6 +859,7 @@ export const en = {
       colorPage: {
         viewerZoom: 'Viewer zoom', viewerFit: 'Fit',
         windowControls: {
+          addGradient: 'Add Gradient Window', fields: { size: 'Size', aspect: 'Aspect', pan: 'Pan', tilt: 'Tilt', rotate: 'Rotate', opacity: 'Opacity', softness: 'Soft 1' },
           osc: 'On-screen controls', none: 'Off', window: 'Power Window', image_wipe: 'Image Wipe', add: 'Add Circular Window',
           list: 'Windows', editing: 'Editing', static: 'Static', key: 'Key frame', frame: 'Frame', creating: 'Creating window…',
           clock: { source: 'Source clock', clip: 'Clip clock', timeline: 'Timeline clock' },

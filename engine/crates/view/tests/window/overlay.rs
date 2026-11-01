@@ -1,13 +1,15 @@
 use super::viewport::until_presentation;
 use super::*;
-use columbina_view::window_overlay::{Affine, Circular, Style, WindowOverlay};
+use columbina_view::window_overlay::{Affine, Shape, ShapeKind, Style, WindowOverlay};
 use columbina_view::Viewport;
 
 fn overlay(x: f64) -> Arc<WindowOverlay> {
     Arc::new(WindowOverlay {
-        circles: vec![Circular {
+        shapes: vec![Shape {
             id: "w1".into(),
             radius: 1.0,
+            kind: ShapeKind::Circular,
+            feather: 0.0,
             to_canvas: Affine {
                 xx: 10.0,
                 xy: 0.0,
@@ -119,7 +121,7 @@ fn overlay_and_texture_stay_in_the_same_frame_through_pending_redraw_and_device_
     let shown = until_presentation(&view, |p| p.tag == Some(101));
     parent.until(
         "first frame with its own overlay",
-        &[((70, 80), [255; 3]), ((110, 80), [255, 0, 0])],
+        &[((70, 80), [38, 115, 255]), ((110, 80), [255, 0, 0])],
     );
     assert!(
         first_weak.upgrade().is_some(),
@@ -137,15 +139,15 @@ fn overlay_and_texture_stay_in_the_same_frame_through_pending_redraw_and_device_
         Some(101),
         "pending is not presented"
     );
-    let pixels = parent.shown(&[((70, 80), [255; 3]), ((110, 80), [255, 0, 0])]);
+    let pixels = parent.shown(&[((70, 80), [38, 115, 255]), ((110, 80), [255, 0, 0])]);
     assert!(
-        near(pixels[0], [255; 3]) && near(pixels[1], [255, 0, 0]),
+        near(pixels[0], [38, 115, 255]) && near(pixels[1], [255, 0, 0]),
         "pending must leave the successful surface alone: {pixels:?}"
     );
     let second = until_presentation(&view, |p| p.serial > shown.serial && p.tag == Some(102));
     parent.until(
         "second frame replaces texture and overlay together",
-        &[((70, 80), [0, 255, 0]), ((110, 80), [255; 3])],
+        &[((70, 80), [0, 255, 0]), ((110, 80), [38, 115, 255])],
     );
     assert!(first_weak.upgrade().is_none());
 
@@ -155,7 +157,7 @@ fn overlay_and_texture_stay_in_the_same_frame_through_pending_redraw_and_device_
     assert_eq!(exposed.tag, Some(102));
     parent.until(
         "expose redraw keeps the same overlay",
-        &[((110, 80), [255; 3])],
+        &[((110, 80), [38, 115, 255])],
     );
     view.set_viewport(Viewport::Scale {
         scale: 1.0,
@@ -166,7 +168,7 @@ fn overlay_and_texture_stay_in_the_same_frame_through_pending_redraw_and_device_
     assert_eq!(panned.tag, Some(102));
     parent.until(
         "viewport redraw transforms the same overlay",
-        &[((120, 80), [0, 255, 0]), ((130, 80), [255; 3])],
+        &[((120, 80), [0, 255, 0]), ((130, 80), [38, 115, 255])],
     );
     assert!(second_weak.upgrade().is_some());
 

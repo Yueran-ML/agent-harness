@@ -79,20 +79,12 @@ impl OverlayPainter {
         });
         let coverage = wipe.coverage_params(map.picture);
         // Selected is last, so the same shape wins drawing and pointer-down overlaps.
-        let binds: Vec<_> = [false, true]
-            .into_iter()
-            .flat_map(|selected| {
-                overlay.circles.iter().filter(move |circle| {
-                    (overlay.selected.as_deref() == Some(circle.id.as_str())) == selected
-                })
-            })
-            .filter_map(|circle| {
-                let shape = circle.device(map)?;
-                let colour = if overlay.selected.as_deref() == Some(circle.id.as_str()) {
-                    overlay.style.selected
-                } else {
-                    overlay.style.unselected
-                };
+        let binds: Vec<_> = overlay
+            .ordered()
+            .flat_map(|shape| overlay.primitives(shape, map))
+            .map(|primitive| {
+                let shape = primitive.geometry;
+                let colour = primitive.colour;
                 let colour =
                     mapping(Content::Sdr, output).map_or(colour, |mapping| mapping.map(colour));
                 let mut params: Vec<u8> = shape
@@ -107,7 +99,7 @@ impl OverlayPainter {
                     .chain(map.dest)
                     .chain(sample_scale(map))
                     .chain([0.0; 2])
-                    .chain([colour[0], colour[1], colour[2], 1.0])
+                    .chain([colour[0], colour[1], colour[2], primitive.kind])
                     .flat_map(f32::to_le_bytes)
                     .collect();
                 params.extend_from_slice(&coverage);
@@ -116,14 +108,14 @@ impl OverlayPainter {
                     contents: &params,
                     usage: wgpu::BufferUsages::UNIFORM,
                 });
-                Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("columbina-view Window geometry"),
                     layout: &self.layout,
                     entries: &[wgpu::BindGroupEntry {
                         binding: 0,
                         resource: buffer.as_entire_binding(),
                     }],
-                }))
+                })
             })
             .collect();
         if !binds.is_empty() {

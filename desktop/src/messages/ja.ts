@@ -786,6 +786,7 @@ export const ja: Messages = {
       colorPage: {
         viewerZoom: 'ビューアのズーム', viewerFit: '全体を表示',
         windowControls: {
+          addGradient: 'グラデーションウィンドウを追加', fields: { size: 'サイズ', aspect: 'アスペクト', pan: 'パン', tilt: 'ティルト', rotate: '回転', opacity: '不透明度', softness: 'ソフト 1' },
           osc: 'オンスクリーンコントロール', none: 'オフ', window: 'Power Window', image_wipe: 'イメージワイプ', add: '円形ウィンドウを追加',
           list: 'ウィンドウ', editing: '編集中', static: '静的', key: 'キーフレーム', frame: 'フレーム', creating: 'ウィンドウを作成中…',
           clock: { source: 'ソース時間', clip: 'クリップ時間', timeline: 'タイムライン時間' },

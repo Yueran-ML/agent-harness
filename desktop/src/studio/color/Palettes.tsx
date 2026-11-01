@@ -33,7 +33,7 @@ interface Filled {
   changed: ReadonlySet<Palette>;
   /** The docked video scopes (T19), shown where the Scopes panel is chosen. */
   scopes?: ReactNode;
-  windows?: ReactNode;
+  windows?: (edit: NodeEdit) => ReactNode;
 }
 
 /** One group of palettes: its buttons along its top, and the palette chosen beneath them. */
@@ -54,7 +54,7 @@ function PaletteGroup<T extends Palette>({ name, palettes, chosen, onChoose, sid
   };
   const { edit } = filled;
   const body = (() => {
-    if (chosen === 'window' && filled.windows !== undefined) return filled.windows;
+    if (chosen === 'window' && filled.windows !== undefined) return filled.windows(edit);
     if (chosen === 'scopes' && filled.scopes !== undefined) return filled.scopes;
     if (chosen !== 'primaries' && chosen !== 'curves') return <p className="caption color-empty">{words.hint.studio.colorPage.palette}</p>;
     if (!edit.enabled) return <p className="caption color-empty" data-test="no-corrector">{words.hint.studio.colorPage.noCorrector}</p>;
@@ -133,7 +133,7 @@ export function Palettes({ merged, left, center, last, right, onLeft, onCenter, 
   edited?: EditedNode | null;
   /** The docked video scopes, for the Scopes panel. */
   scopes?: ReactNode;
-  windows?: ReactNode;
+  windows?: (edit: NodeEdit) => ReactNode;
 }) {
   const labels = useWords().label.studio.colorPage;
   const both: readonly (LeftPalette | CenterPalette)[] = [...LEFT_PALETTES, ...CENTER_PALETTES];

@@ -99,7 +99,7 @@ impl State {
         self.window.sequence += 1;
         let value = json!({"binding":capture.binding,"capture":capture.id,"sequence":self.window.sequence,
             "phase":phase,"reason":reason,"event":capture.last_event,"revision":self.history.revision(),"selected":capture.movement.selected(),
-            "keys":{"pan":capture.movement.pan.frame,"tilt":capture.movement.tilt.frame,"clock":capture.movement.clock,"frame":capture.movement.frame}});
+            "keys":capture.movement.keys()});
         self.window_tell(capture.owner, "window.state", &value);
         value
     }
@@ -230,18 +230,18 @@ impl State {
             down.pointer.window.0 as f32 + 0.5,
             down.pointer.window.1 as f32 + 0.5,
         ];
-        let selected = frame
+        let hit = frame
             .overlay
             .as_ref()
-            .and_then(|o| o.hit(map, point))
-            .ok_or_else(|| refused("hit"))?
-            .to_owned();
-        let movement = Movement::new(
-            selection,
-            frame,
-            &selected,
-            map.on_picture(down.pointer.window).0,
-        )
+            .and_then(|o| o.hit_control(map, point))
+            .ok_or_else(|| refused("hit"))?;
+        let selected = hit.id.to_owned();
+        let canvas = map.on_picture(down.pointer.window).0;
+        let movement = if hit.control == columbina_view::window_overlay::Control::Move {
+            Movement::new(selection, frame, &selected, canvas)
+        } else {
+            Movement::capture(selection, frame, &selected, hit.control, canvas)
+        }
         .ok_or_else(|| refused("target"))?;
         self.window_end("new_down");
         Arc::make_mut(self.window.selection.as_mut().expect("validated selection")).selected =
@@ -338,10 +338,38 @@ impl State {
             .selection
             .clone()
             .ok_or_else(|| refused("binding"))?;
-        let windows = capture
-            .movement
-            .at(original.on_picture(input.pointer.window).0)
-            .ok_or_else(|| refused("point"))?;
+        let rotation =
+            if capture.movement.control == columbina_view::window_overlay::Control::Rotate {
+                let evidence = input
+                    .rotation
+                    .as_ref()
+                    .filter(|e| e.basis == capture.movement.rotation)
+                    .ok_or_else(|| refused("rotation"))?;
+                for sample in &evidence.samples {
+                    if sample.owner != capture.owner
+                        || sample.instance != capture.pin.down.instance
+                        || sample.shown.and_then(|p| p.map) != Some(original)
+                        || (sample.sequence > capture.arming_through
+                            && sample
+                                .shown
+                                .zip(sample.frame.clone())
+                                .as_ref()
+                                .is_none_or(|s| !self.window_current(capture, s)))
+                    {
+                        return Err(refused("presentation"));
+                    }
+                }
+                Some(evidence.degrees)
+            } else {
+                None
+            };
+        let canvas = original.on_picture(input.pointer.window).0;
+        let windows = if rotation.is_some() {
+            capture.movement.at_rotation(canvas, rotation)
+        } else {
+            capture.movement.at(canvas)
+        }
+        .ok_or_else(|| refused("point"))?;
         if selection
             .corrector(self.history.project())
             .is_some_and(|c| c.windows == windows)

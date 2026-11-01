@@ -520,7 +520,7 @@ export function ColorPage({
     </div>}
     <div className="color-palettes-area" {...focusOf('palettes')}>
       <Palettes merged={merged} left={left} center={center} last={last} right={right} edited={edited} scopes={scopes.docked}
-        windows={<WindowPalette controls={windows} capturing={viewerInput.capturing} busy={viewerInput.busy} status={viewerInput.status} />}
+        windows={edit => <WindowPalette edit={edit} controls={windows} capturing={viewerInput.capturing} busy={viewerInput.busy} status={viewerInput.status} />}
         onLeft={(each) => { setLeft(each); setLast('left'); }} onCenter={(each) => { setCenter(each); setLast('center'); if (each === 'window') setViewerTool('window'); }} onRight={setRight} />
     </div>
     {grades.menu}

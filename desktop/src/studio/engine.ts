@@ -842,7 +842,7 @@ export type PointerCursor = 'arrow' | 'crosshair' | 'move' | 'resize_ew' | 'resi
  * beyond the picture goes on, `inside` false.
  */
 export type ViewerTool = 'none' | 'window' | 'image_wipe';
-export interface WindowKeys { pan: number | null; tilt: number | null; clock: 'source' | 'clip' | 'timeline'; frame: number }
+export interface WindowKeys { size?: number | null; aspect?: number | null; pan?: number | null; tilt?: number | null; rotate?: number | null; softness?: number | null; clock: 'source' | 'clip' | 'timeline'; frame: number }
 export interface WindowState {
   binding: number; capture: number; sequence: number; phase: 'arming' | 'armed' | 'refused' | 'ended';
   reason: string | null; selected: string; event: number; revision: number; keys: WindowKeys;

@@ -22,6 +22,17 @@ function mount(virtual = false) {
 }
 
 describe('Window creation and selection intent', () => {
+  it('creates a Gradient through the same acknowledgment and real-copy gate', () => {
+    const h = mount(true);
+    act(() => (h.hook.result.current.create as (busy: () => boolean, kind: string) => void)(() => false, 'gradient'));
+    const created = h.run.mock.calls[0][0][0].params.windows as PowerWindow[];
+    expect(created[0].shape.kind).toBe('gradient');
+    h.ack();
+    expect(h.hook.result.current.selection).toBeNull();
+    h.copy(created);
+    expect(h.hook.result.current.selected?.shape.kind).toBe('gradient');
+  });
+
   it('keeps the creation gate when its new row is chosen before acknowledgment', () => {
     const h = mount(); h.create();
     const created = h.run.mock.calls[0][0][0].params.windows as PowerWindow[];

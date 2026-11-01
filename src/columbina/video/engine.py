@@ -314,8 +314,9 @@ source timecode or by start frames."""
 KeyAlign = Literal["source_timecode", "start_frame"]
 """How keys copied to another clip are put on its frames."""
 
-AlbumKind = Literal["stills", "powergrade"]
-"""An album of the project's stills, or of the PowerGrades that every project shares."""
+AlbumKind = Literal["stills", "powergrade", "memories"]
+"""An album of the project's stills, of the PowerGrades that every project shares, or the
+project's one album of the memories A-H, which the Gallery does not list."""
 
 _CHANNELS = ("red", "green", "blue", "luma")
 
@@ -1337,12 +1338,15 @@ class Engine:
         node: str,
         to: Sequence[Mapping[str, Any]],
         *,
-        keyframes: KeyAlign = "source_timecode",
+        keyframes: StillKeyframes = "source_timecode",
+        at: int | None = None,
         revision: int | None = None,
     ) -> Applied:
         """Append the corrector ``node`` of ``grade`` to the end of each grade of ``to``.
 
-        It is Append Node to Selected Clips, as one step of the history.
+        It is Append Node to Selected Clips, as one step of the history. With ``keyframes``
+        ``none`` each keyed setting is the value of its key at the frame ``at`` of the timeline
+        (the playhead) or the nearest before it.
 
         Raises:
             EngineError: It was refused (``-32001``).
@@ -1353,6 +1357,8 @@ class Engine:
             "to": [dict(target) for target in to],
             "keyframes": keyframes,
         }
+        if at is not None:
+            params["at"] = at
         if revision is not None:
             params["revision"] = revision
         said = await self._call("grade.append_node", params)
@@ -1363,10 +1369,24 @@ class Engine:
         await self._call("still.label", {"still": still, "label": label})
 
     async def delete_stills(self, stills: Sequence[str]) -> list[str]:
-        """Delete stills from the Gallery, all or none; return their ids. It is not undone."""
+        """Delete stills from the Gallery, all or none; return their ids.
+
+        ``restore_stills`` puts them back (the last 64 deleted of a gallery).
+        """
         method = "still.delete"
         said = await self._call(method, {"stills": list(stills)})
         return _strings(said.get("deleted"), method)
+
+    async def restore_stills(self, stills: Sequence[str]) -> dict[str, str]:
+        """Put stills deleted back where they were, under their ids; return the album of each."""
+        method = "still.restore"
+        return _ids(await self._call(method, {"stills": list(stills)}), "restored", method)
+
+    async def copy_stills(self, stills: Sequence[str], album: str) -> dict[str, str]:
+        """Copy stills into an album under new ids; return the id of each copy."""
+        method = "still.copy"
+        params = {"stills": list(stills), "album": album}
+        return _ids(await self._call(method, params), "copied", method)
 
     async def move_stills(self, stills: Sequence[str], album: str) -> dict[str, str]:
         """Move stills to another album; return the id of each where it is now.
@@ -1374,20 +1394,16 @@ class Engine:
         A still moved between the project's albums and the PowerGrades' is given a new id.
         """
         method = "still.move"
-        moved = _object(
-            (await self._call(method, {"stills": list(stills), "album": album})).get("moved"),
-            method,
-        )
-        if not all(isinstance(id, str) for id in moved.values()):
-            raise _unexpected(method)
-        return cast("dict[str, str]", moved)
+        params = {"stills": list(stills), "album": album}
+        return _ids(await self._call(method, params), "moved", method)
 
     async def create_album(
         self, kind: AlbumKind = "stills", name: str | None = None
     ) -> dict[str, Any]:
         """Add an album of the project's stills or of the PowerGrades; return it.
 
-        It is ``{"id", "name", "kind"}``; without a name, ``Stills N`` or ``PowerGrade N``.
+        It is ``{"id", "name", "kind"}``; without a name, ``Stills N`` or ``PowerGrade N``. Of
+        ``memories``, the project's album of the memories, made the first time.
         """
         params: dict[str, Any] = {"kind": kind}
         if name is not None:
@@ -1917,6 +1933,14 @@ def _strings(value: object, method: str) -> list[str]:
     ):
         raise _unexpected(method)
     return cast("list[str]", value)
+
+
+def _ids(said: object, field: str, method: str) -> dict[str, str]:
+    """Read an object of ids by id, ``field`` of an answer (``moved``, ``copied``, ``restored``)."""
+    ids = _object(_object(said, method).get(field), method)
+    if not all(isinstance(id, str) for id in ids.values()):
+        raise _unexpected(method)
+    return cast("dict[str, str]", ids)
 
 
 def _pair(value: object, method: str) -> tuple[float, float]:

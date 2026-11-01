@@ -62,6 +62,8 @@ def answering(fake: Fake, asked: list[tuple[str, dict[str, Any]]]) -> None:
     method("still.label", lambda params: {"id": params["still"], "label": params["label"]})
     method("still.delete", lambda params: {"deleted": params["stills"]})
     method("still.move", lambda params: {"moved": {"s1": "ps3"}})
+    method("still.restore", lambda params: {"restored": {"s1": "a1"}})
+    method("still.copy", lambda params: {"copied": {"s1": "s7"}})
     method(
         "gallery.album.create",
         lambda params: {"id": "pa2", "name": "PowerGrade 2", "kind": params["kind"]},
@@ -151,6 +153,11 @@ async def test_a_stills_grade_is_applied_and_a_node_appended_as_one_change(tmp_p
             {"from": source, "node": "n4", "to": [target], "keyframes": "source_timecode"},
         )
         assert appended.next_id == 9
+        await connected.append_node(source, "n4", [target], keyframes="none", at=12)
+        assert asked[-1] == (
+            "grade.append_node",
+            {"from": source, "node": "n4", "to": [target], "keyframes": "none", "at": 12},
+        )
         fake.refusals["still.apply"] = {
             "code": -32001,
             "message": "the still s1 has no timeline grade",
@@ -171,6 +178,12 @@ async def test_albums_and_stills_are_kept_by_the_wrappers(tmp_path: Path) -> Non
         assert await connected.delete_stills(["s1", "s2"]) == ["s1", "s2"]
         assert await connected.move_stills(["s1"], "pa1") == {"s1": "ps3"}
         assert asked[-1] == ("still.move", {"stills": ["s1"], "album": "pa1"})
+        assert await connected.restore_stills(["s1"]) == {"s1": "a1"}
+        assert asked[-1] == ("still.restore", {"stills": ["s1"]})
+        assert await connected.copy_stills(["s1"], "a3") == {"s1": "s7"}
+        assert asked[-1] == ("still.copy", {"stills": ["s1"], "album": "a3"})
+        await connected.create_album("memories")
+        assert asked[-1] == ("gallery.album.create", {"kind": "memories"})
         made = await connected.create_album("powergrade")
         assert made == {"id": "pa2", "name": "PowerGrade 2", "kind": "powergrade"}
         assert asked[-1] == ("gallery.album.create", {"kind": "powergrade"})
@@ -191,6 +204,10 @@ async def test_albums_and_stills_are_kept_by_the_wrappers(tmp_path: Path) -> Non
         fake.results["still.move"] = {"moved": {"s1": 3}}
         with pytest.raises(EngineError) as odd:
             await connected.move_stills(["s1"], "pa1")
+        assert odd.value.code == UNEXPECTED
+        fake.results["still.copy"] = {"copied": ["s7"]}
+        with pytest.raises(EngineError) as odd:
+            await connected.copy_stills(["s1"], "a3")
         assert odd.value.code == UNEXPECTED
         fake.results["still.delete"] = {"deleted": "s1"}
         with pytest.raises(EngineError) as odd:

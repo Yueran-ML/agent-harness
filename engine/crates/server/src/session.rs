@@ -877,6 +877,10 @@ pub async fn handle(
 }
 
 /// Call a method. The methods of later tasks are added here.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one explicit branch for each RPC route"
+)]
 async fn dispatch(
     engine: &Engine,
     connection: &mut Connection,
@@ -935,7 +939,8 @@ async fn dispatch(
                 Err(refused) => Reply::Refused(refused),
             })
         }
-        "view.attach" | "view.place" | "view.show" | "view.detach" | "view.display" => {
+        "view.attach" | "view.place" | "view.show" | "view.detach" | "view.display"
+        | "view.viewport" => {
             let result = engine.viewer.call(kind, method, params).await?;
             if method == "view.attach" {
                 let (monitor, _) = crate::play::monitor_params(method, params)?;

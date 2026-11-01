@@ -17,6 +17,7 @@ use columbina_compose::YuvCoding;
 use columbina_media::NativePicture;
 
 use crate::display::{self, Mapping};
+use crate::{Viewport, ViewportMap};
 
 pub use columbina_compose::quarter_turns;
 
@@ -66,7 +67,8 @@ pub fn letterbox(target: (u32, u32), picture: (u32, u32), rotation: i16) -> Opti
 /// A pipeline for planes of one kind of texel.
 struct Pipeline {
     layout: wgpu::BindGroupLayout,
-    pipeline: wgpu::RenderPipeline,
+    draw: wgpu::RenderPipeline,
+    viewport: Option<wgpu::RenderPipeline>,
 }
 
 /// The textures of the planes of the last picture, kept for the next one of the same shape, and
@@ -181,6 +183,7 @@ pub(crate) struct Painter {
     rgb_pipeline: Option<Pipeline>,
     rgb_frame: Option<RgbFrame>,
     rgb_sampler: Option<wgpu::Sampler>,
+    viewport_uniform: wgpu::Buffer,
 }
 
 impl Painter {
@@ -198,6 +201,12 @@ impl Painter {
             mapped_at_creation: false,
         });
         Self {
+            viewport_uniform: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("columbina-view viewport"),
+                size: 16,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
             sixteen_norm: device
                 .features()
                 .contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM),
@@ -303,6 +312,10 @@ impl Painter {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.viewport_uniform.as_entire_binding(),
+                },
             ],
         });
         self.rgb_frame = Some(RgbFrame {
@@ -391,11 +404,41 @@ impl Painter {
     /// Draw into `target`, of `size` pixels: black, and the picture that was uploaded last, if
     /// any, fitted into it and turned `rotation` degrees clockwise. Gives the commands, to be
     /// submitted.
+    #[cfg(test)]
     pub(crate) fn draw(
         &self,
         target: &wgpu::TextureView,
         size: (u32, u32),
         rotation: i16,
+    ) -> wgpu::CommandBuffer {
+        self.draw_mapped(
+            target,
+            size,
+            rotation,
+            self.viewport_map(size, rotation, Viewport::Fit),
+        )
+    }
+
+    pub(crate) fn viewport_map(
+        &self,
+        size: (u32, u32),
+        rotation: i16,
+        viewport: Viewport,
+    ) -> Option<ViewportMap> {
+        if let Some(rgb) = &self.rgb_frame {
+            viewport.map(size, (rgb.width, rgb.height), 0)
+        } else {
+            let planes = self.planes.as_ref()?;
+            viewport.map(size, (planes.layout.width, planes.layout.height), rotation)
+        }
+    }
+
+    pub(crate) fn draw_mapped(
+        &self,
+        target: &wgpu::TextureView,
+        size: (u32, u32),
+        rotation: i16,
+        map: Option<ViewportMap>,
     ) -> wgpu::CommandBuffer {
         let mut encoder = self
             .device
@@ -413,34 +456,9 @@ impl Painter {
             self.queue.write_buffer(&pass.uniform, 0, &params);
             pass.prepare(&self.device, size);
             let drawn = pass.drawn.as_ref().expect("made by prepare");
-            (&pass.pipeline.pipeline, &drawn.view, &drawn.bind)
+            (&pass.pipeline.draw, &drawn.view, &drawn.bind)
         });
-        let drawn = if let Some(rgb) = &self.rgb_frame {
-            letterbox(size, (rgb.width, rgb.height), 0).map(|placement| {
-                (
-                    &rgb.bind,
-                    &self
-                        .rgb_pipeline
-                        .as_ref()
-                        .expect("made with the frame")
-                        .pipeline,
-                    placement,
-                )
-            })
-        } else {
-            self.planes.as_ref().and_then(|planes| {
-                let shape = (planes.layout.width, planes.layout.height);
-                letterbox(size, shape, rotation).map(|placement| {
-                    self.queue
-                        .write_buffer(&self.uniform, 0, &params(planes, placement, rotation));
-                    let pipeline = match planes.texel {
-                        Texel::Float => &self.float,
-                        Texel::Uint => self.uint.as_ref().expect("made with the planes"),
-                    };
-                    (&planes.bind, &pipeline.pipeline, placement)
-                })
-            })
-        };
+        let drawn = self.picture_bind(map, rotation);
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("columbina-view"),
@@ -458,16 +476,18 @@ impl Painter {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            if let Some((bind, pipeline, placement)) = drawn {
-                #[allow(clippy::cast_precision_loss, reason = "sizes of at most 16384")]
-                pass.set_viewport(
-                    placement.x as f32,
-                    placement.y as f32,
-                    placement.width as f32,
-                    placement.height as f32,
-                    0.0,
-                    1.0,
-                );
+            if let Some((bind, pipeline, map)) = drawn {
+                if let Some(placement) = map.fit {
+                    #[allow(clippy::cast_precision_loss, reason = "sizes of at most 16384")]
+                    pass.set_viewport(
+                        placement.x as f32,
+                        placement.y as f32,
+                        placement.width as f32,
+                        placement.height as f32,
+                        0.0,
+                        1.0,
+                    );
+                }
                 pass.set_pipeline(pipeline);
                 pass.set_bind_group(0, bind, &[]);
                 pass.draw(0..3, 0..1);
@@ -497,7 +517,44 @@ impl Painter {
         encoder.finish()
     }
 
-    /// The queue that the commands of [`Painter::draw`] are submitted to.
+    fn picture_bind(
+        &self,
+        map: Option<ViewportMap>,
+        rotation: i16,
+    ) -> Option<(&wgpu::BindGroup, &wgpu::RenderPipeline, ViewportMap)> {
+        if let Some(rgb) = &self.rgb_frame {
+            map.map(|map| {
+                let params: Vec<u8> = map
+                    .dest
+                    .iter()
+                    .flat_map(|value| value.to_le_bytes())
+                    .collect();
+                self.queue.write_buffer(&self.viewport_uniform, 0, &params);
+                (
+                    &rgb.bind,
+                    selected(
+                        self.rgb_pipeline.as_ref().expect("made with the frame"),
+                        map,
+                    ),
+                    map,
+                )
+            })
+        } else {
+            self.planes.as_ref().and_then(|planes| {
+                map.map(|map| {
+                    self.queue
+                        .write_buffer(&self.uniform, 0, &params(planes, map.dest, rotation));
+                    let pipeline = match planes.texel {
+                        Texel::Float => &self.float,
+                        Texel::Uint => self.uint.as_ref().expect("made with the planes"),
+                    };
+                    (&planes.bind, selected(pipeline, map), map)
+                })
+            })
+        }
+    }
+
+    /// The queue that the commands of [`Painter::draw_mapped`] are submitted to.
     pub(crate) fn queue(&self) -> &wgpu::Queue {
         &self.queue
     }
@@ -506,13 +563,7 @@ impl Painter {
 /// The uniform of the shader (`Params` in `yuv.wgsl`), as bytes: the half of it that the view
 /// uses, and nothing in the half that the compositor uses.
 #[allow(clippy::cast_precision_loss, reason = "sizes of at most 16384")]
-fn params(planes: &Planes, placement: Placement, rotation: i16) -> Vec<u8> {
-    let dest = [
-        placement.x as f32,
-        placement.y as f32,
-        placement.width as f32,
-        placement.height as f32,
-    ];
+fn params(planes: &Planes, dest: [f32; 4], rotation: i16) -> Vec<u8> {
     // A picture shown by itself (the source monitor) is decoded by the matrix and range that it
     // says, as the compositor decodes it as a layer (the timeline monitor, an export).
     let values = yuv::picture_params(dest, planes.layout, planes.texel, planes.coding, rotation);
@@ -529,9 +580,31 @@ fn params(planes: &Planes, placement: Placement, rotation: i16) -> Vec<u8> {
 
 /// The pipeline for planes of a kind of texel, drawing into targets of `format`.
 fn pipeline(device: &wgpu::Device, format: wgpu::TextureFormat, texel: Texel) -> Pipeline {
+    yuv_pipeline(device, format, texel, true)
+}
+
+fn selected(pipeline: &Pipeline, map: ViewportMap) -> &wgpu::RenderPipeline {
+    if map.fit.is_some() {
+        &pipeline.draw
+    } else {
+        pipeline.viewport.as_ref().expect("viewport pipeline")
+    }
+}
+
+fn yuv_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    texel: Texel,
+    viewport: bool,
+) -> Pipeline {
+    let source = if viewport {
+        format!("{}\n{}", texel.shader(), include_str!("yuv_viewport.wgsl"))
+    } else {
+        texel.shader()
+    };
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("columbina-view yuv"),
-        source: wgpu::ShaderSource::Wgsl(texel.shader().into()),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
     });
     let plane = |binding| wgpu::BindGroupLayoutEntry {
         binding,
@@ -566,38 +639,55 @@ fn pipeline(device: &wgpu::Device, format: wgpu::TextureFormat, texel: Texel) ->
         bind_group_layouts: &[Some(&layout)],
         immediate_size: 0,
     });
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("columbina-view"),
-        layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &module,
-            entry_point: Some("vs"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            buffers: &[],
-        },
-        primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
-        fragment: Some(wgpu::FragmentState {
-            module: &module,
-            entry_point: Some("fs"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            targets: &[Some(wgpu::ColorTargetState {
-                format,
-                blend: None,
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-        }),
-        multiview_mask: None,
-        cache: None,
-    });
-    Pipeline { layout, pipeline }
+    let make = |entry_point| {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("columbina-view"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some(entry_point),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        })
+    };
+    let pipeline = make("fs");
+    let viewport = viewport.then(|| make("fs_viewport"));
+    Pipeline {
+        layout,
+        draw: pipeline,
+        viewport,
+    }
 }
 
 fn rgb_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> Pipeline {
+    rgb_pipeline_source(device, format, include_str!("rgb.wgsl"), true)
+}
+
+fn rgb_pipeline_source(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    source: &str,
+    viewport: bool,
+) -> Pipeline {
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("columbina-view composed frame"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("rgb.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
     });
     let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("columbina-view composed frame"),
@@ -618,6 +708,16 @@ fn rgb_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> Pipeline 
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(16),
+                },
+                count: None,
+            },
         ],
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -625,32 +725,40 @@ fn rgb_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> Pipeline 
         bind_group_layouts: &[Some(&layout)],
         immediate_size: 0,
     });
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("columbina-view composed frame"),
-        layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &module,
-            entry_point: Some("vs"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            buffers: &[],
-        },
-        primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
-        fragment: Some(wgpu::FragmentState {
-            module: &module,
-            entry_point: Some("fs"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            targets: &[Some(wgpu::ColorTargetState {
-                format,
-                blend: None,
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-        }),
-        multiview_mask: None,
-        cache: None,
-    });
-    Pipeline { layout, pipeline }
+    let make = |entry_point| {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("columbina-view composed frame"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some(entry_point),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        })
+    };
+    let pipeline = make("fs");
+    let viewport = viewport.then(|| make("fs_viewport"));
+    Pipeline {
+        layout,
+        draw: pipeline,
+        viewport,
+    }
 }
 
 /// The pipeline that maps the picture drawn in [`MAPPED_FORMAT`] onto targets of `format`.
@@ -714,12 +822,240 @@ fn display_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> Pipel
         multiview_mask: None,
         cache: None,
     });
-    Pipeline { layout, pipeline }
+    Pipeline {
+        layout,
+        draw: pipeline,
+        viewport: None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fit_matches_the_original_shaders_and_draw_path_pixel_for_pixel() {
+        let Some(gpu) = gpu() else { return };
+        for mapped in [false, true] {
+            let mut before = Painter::new(&gpu.device, &gpu.queue, wgpu::TextureFormat::Bgra8Unorm);
+            let mut now = Painter::new(&gpu.device, &gpu.queue, wgpu::TextureFormat::Bgra8Unorm);
+            if mapped {
+                let mapping = mapping(
+                    Content::Hdr {
+                        transfer: HdrTransfer::Pq,
+                        peak_nits: 1000.0,
+                    },
+                    Output::Sdr,
+                );
+                before.set_mapping(mapping);
+                now.set_mapping(mapping);
+            }
+            before.float = yuv_pipeline(&gpu.device, before.stage, Texel::Float, false);
+            for ten in [false, true] {
+                let picture = picture(64, 32, ten, |x, y| {
+                    codes(BARS[((x / 8 + y / 8) % 8) as usize], ten)
+                });
+                before.upload(&picture).unwrap();
+                now.upload(&picture).unwrap();
+                for (size, rotation) in [
+                    ((97, 67), 0),
+                    ((37, 89), 90),
+                    ((99, 71), 180),
+                    ((31, 65), 270),
+                ] {
+                    let old = draw_using(&gpu, size, |target| {
+                        before.legacy_draw(target, size, rotation)
+                    });
+                    assert_eq!(
+                        draw(&now, &gpu, size, rotation),
+                        old,
+                        "YUV {ten} {mapped} {size:?} {rotation}"
+                    );
+                }
+            }
+            let values: Vec<[f64; 3]> = (0..32)
+                .map(|x| [f64::from(x) / 31.0, 0.25, 1.0 - f64::from(x) / 31.0])
+                .collect();
+            let (texture, _) = halves(&gpu, &values);
+            before.rgb_pipeline = Some(rgb_pipeline_source(
+                &gpu.device,
+                before.stage,
+                include_str!("render/legacy_rgb.wgsl"),
+                false,
+            ));
+            before.use_texture(&texture).unwrap();
+            now.use_texture(&texture).unwrap();
+            for size in [(53, 17), (31, 65)] {
+                assert_eq!(
+                    draw(&now, &gpu, size, 0),
+                    draw_using(&gpu, size, |target| before.legacy_draw(target, size, 0)),
+                    "RGB {mapped} {size:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn custom_viewports_clip_rotated_yuv_to_the_pointer_map() {
+        let Some(gpu) = gpu() else { return };
+        let size = (32, 24);
+        let picture = picture(16, 8, false, |_, _| [235, 128, 128]);
+        let mut painter = Painter::new(&gpu.device, &gpu.queue, wgpu::TextureFormat::Bgra8Unorm);
+        for rotation in [0, 90, 180, 270] {
+            painter.upload(&picture).unwrap();
+            for viewport in [
+                Viewport::Scale {
+                    scale: 4.0,
+                    center: [0.5, 0.5],
+                },
+                Viewport::Scale {
+                    scale: 1.25,
+                    center: [0.0, 0.5],
+                },
+                Viewport::Scale {
+                    scale: 0.5,
+                    center: [0.5, 0.5],
+                },
+                Viewport::Scale {
+                    scale: 2.0,
+                    center: [-4.0, 3.0],
+                },
+            ] {
+                let map = painter.viewport_map(size, rotation, viewport).unwrap();
+                let pixels = draw_using(&gpu, size, |target| {
+                    painter.draw_mapped(target, size, rotation, Some(map))
+                });
+                for y in 0..size.1 {
+                    for x in 0..size.0 {
+                        let inside = map
+                            .on_picture((i32::try_from(x).unwrap(), i32::try_from(y).unwrap()))
+                            .1;
+                        assert_eq!(
+                            pixels[(y * size.0 + x) as usize],
+                            if inside { [255; 3] } else { [0; 3] },
+                            "{rotation} {viewport:?} ({x},{y})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn negative_viewports_sample_oriented_pixels_and_keep_the_display_background_black() {
+        let Some(gpu) = gpu() else { return };
+        let mut painter = Painter::new(&gpu.device, &gpu.queue, wgpu::TextureFormat::Bgra8Unorm);
+        // A cropped ramp checks which oriented pixels were sampled, not only the outline.
+        let ramp = picture(16, 8, false, |x, y| {
+            [16 + u16::try_from(8 * x + 6 * y).unwrap(), 128, 128]
+        });
+        painter.upload(&ramp).unwrap();
+        for rotation in [0, 90, 180, 270] {
+            let oriented = if rotation % 180 == 0 {
+                (16, 8)
+            } else {
+                (8, 16)
+            };
+            let baseline = draw(&painter, &gpu, oriented, rotation);
+            let size = (8, 6);
+            let map = painter
+                .viewport_map(
+                    size,
+                    rotation,
+                    Viewport::Scale {
+                        scale: 1.0,
+                        center: [0.5, 0.5],
+                    },
+                )
+                .unwrap();
+            let cropped = draw_using(&gpu, size, |target| {
+                painter.draw_mapped(target, size, rotation, Some(map))
+            });
+            for y in 0..size.1 {
+                for x in 0..size.0 {
+                    let source_x = x + (oriented.0 - size.0) / 2;
+                    let source_y = y + (oriented.1 - size.1) / 2;
+                    assert_eq!(
+                        cropped[(y * size.0 + x) as usize],
+                        baseline[(source_y * oriented.0 + source_x) as usize],
+                        "cropped {rotation} ({x},{y})"
+                    );
+                }
+            }
+        }
+        // With 100% zoom and negative destination, source pixel centres must be preserved.
+        let values: Vec<[f64; 3]> = (0..16).map(|x| [f64::from(x) / 15.0, 0.0, 0.0]).collect();
+        let (texture, held) = halves(&gpu, &values);
+        painter.use_texture(&texture).unwrap();
+        let size = (8, 3);
+        let map = painter
+            .viewport_map(
+                size,
+                0,
+                Viewport::Scale {
+                    scale: 1.0,
+                    center: [0.5, 0.5],
+                },
+            )
+            .unwrap();
+        assert_eq!(map.dest, [-4.0, 1.0, 16.0, 1.0]);
+        let pixels = draw_using(&gpu, size, |target| {
+            painter.draw_mapped(target, size, 0, Some(map))
+        });
+        for (index, pixel) in pixels.iter().enumerate() {
+            if index / 8 == 1 {
+                assert!((f32::from(pixel[0]) - held[index % 8 + 4][0] * 255.0).abs() <= 0.51);
+            } else {
+                assert_eq!(*pixel, [0; 3]);
+            }
+        }
+        let mut hdr = Painter::new(&gpu.device, &gpu.queue, wgpu::TextureFormat::Rgba16Float);
+        hdr.set_mapping(mapping(
+            Content::Sdr,
+            Output::Hdr {
+                peak_nits: 400.0,
+                sdr_white_nits: 160.0,
+            },
+        ));
+        hdr.use_texture(&texture).unwrap();
+        let pixels = halves_using(&gpu, size, |target| {
+            hdr.draw_mapped(target, size, 0, Some(map))
+        });
+        for pixel in pixels[..8].iter().chain(&pixels[16..]) {
+            assert_eq!(*pixel, [0.0; 3]);
+        }
+        assert!(pixels[12][0] > 0.0);
+    }
+
+    #[test]
+    fn the_smallest_normal_scale_keeps_rgb_and_yuv_outside_pixels_black() {
+        let Some(gpu) = gpu() else { return };
+        let size = (64, 32);
+        let viewport = Viewport::Scale {
+            scale: f64::from(f32::MIN_POSITIVE),
+            center: [0.5, 0.5],
+        };
+        assert!(viewport.checked().is_ok());
+        let map = viewport.map(size, (1, 1), 0).unwrap();
+        // The former divide-then-clip expression overflows for this valid map. WGSL does
+        // not define the overflow result; a driver may still happen to produce black.
+        let old_uv = (0.5_f32 - map.dest[0]) / map.dest[2];
+        assert!(!old_uv.is_finite());
+        let mut painter = Painter::new(&gpu.device, &gpu.queue, wgpu::TextureFormat::Bgra8Unorm);
+        painter
+            .upload(&picture(1, 1, false, |_, _| [235, 128, 128]))
+            .unwrap();
+        let yuv = draw_using(&gpu, size, |target| {
+            painter.draw_mapped(target, size, 0, Some(map))
+        });
+        assert!(yuv.iter().all(|pixel| *pixel == [0; 3]));
+        let (texture, _) = halves(&gpu, &[[1.0; 3]]);
+        painter.use_texture(&texture).unwrap();
+        let rgb = draw_using(&gpu, size, |target| {
+            painter.draw_mapped(target, size, 0, Some(map))
+        });
+        assert!(rgb.iter().all(|pixel| *pixel == [0; 3]));
+    }
     use columbina_media::PictureFormat;
     use std::sync::Arc;
 
@@ -966,6 +1302,14 @@ mod tests {
 
     /// The pixels drawn into a target of `size`, as R'G'B', a row after another.
     fn draw(painter: &Painter, gpu: &Gpu, size: (u32, u32), rotation: i16) -> Vec<[u8; 3]> {
+        draw_using(gpu, size, |target| painter.draw(target, size, rotation))
+    }
+
+    fn draw_using(
+        gpu: &Gpu,
+        size: (u32, u32),
+        commands: impl FnOnce(&wgpu::TextureView) -> wgpu::CommandBuffer,
+    ) -> Vec<[u8; 3]> {
         let (width, height) = size;
         let target = gpu.device.create_texture(&wgpu::TextureDescriptor {
             label: None,
@@ -982,7 +1326,7 @@ mod tests {
             view_formats: &[],
         });
         let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-        let drawn = painter.draw(&view, size, rotation);
+        let drawn = commands(&view);
         let row = (width * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
         let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
@@ -1662,6 +2006,14 @@ mod tests {
 
     /// The pixels drawn into a target of half floats of `size`, a row after another.
     fn draw_halves(painter: &Painter, gpu: &Gpu, size: (u32, u32)) -> Vec<[f32; 3]> {
+        halves_using(gpu, size, |target| painter.draw(target, size, 0))
+    }
+
+    fn halves_using(
+        gpu: &Gpu,
+        size: (u32, u32),
+        commands: impl FnOnce(&wgpu::TextureView) -> wgpu::CommandBuffer,
+    ) -> Vec<[f32; 3]> {
         let (width, height) = size;
         let target = gpu.device.create_texture(&wgpu::TextureDescriptor {
             label: None,
@@ -1678,7 +2030,7 @@ mod tests {
             view_formats: &[],
         });
         let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-        let drawn = painter.draw(&view, size, 0);
+        let drawn = commands(&view);
         let row = (width * 8).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
         let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
@@ -1918,3 +2270,7 @@ mod tests {
         assert_eq!(drawn[8], [255, 255, 255]);
     }
 }
+
+#[cfg(test)]
+#[path = "render/legacy.rs"]
+mod legacy;

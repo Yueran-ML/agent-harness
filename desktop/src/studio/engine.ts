@@ -526,6 +526,12 @@ export interface ViewShows { hdr_on: boolean; hdr_shown: boolean; peak_nits: num
 /** The answer of `view.display` (Display HDR On Viewers If Available, p. 244), for each monitor that has a view. */
 export interface ViewDisplay { hdr: boolean; source: ViewShows | null; timeline: ViewShows | null }
 
+/** Viewer-only geometry. Scale is device pixels per oriented picture pixel; center may lie outside 0..1. */
+export type Viewport = { mode: 'fit' } | { mode: 'scale'; scale: number; center: { x: number; y: number } };
+export type ViewViewport = { monitor: Monitor } & Viewport;
+/** Omit mode to query the requested setting; native presentation may still be pending. */
+export type ViewportParams = { monitor: Monitor } | ViewViewport;
+
 /** The notification `media.proxy`: how the proxy of media is being made. */
 export interface ProxyEvent {
   media: string;
@@ -629,6 +635,7 @@ export interface PageMethods {
   'media.waveform': { rate: number; channels: number; peaks: string } | { pending: true };
   'luts.list': LutLibrary;
   'view.display': ViewDisplay;
+  'view.viewport': ViewViewport;
   'render.cancel': Record<string, never>;
   'transport.load': TransportState;
   'transport.play': Record<string, never>;

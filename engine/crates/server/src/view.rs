@@ -29,7 +29,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, PoisonError};
 
 use columbina_compose::ShaderCompiler;
-use columbina_view::{Cursor, Event, Gpu, Output, RawParent, Rect, View, ViewError};
+use columbina_view::{Cursor, Event, Gpu, Output, RawParent, Rect, View, ViewError, Viewport};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serde_json::value::RawValue;
@@ -78,6 +78,8 @@ pub struct Viewer {
     hdr: AtomicBool,
     /// Who is told what the pointer does on each view, while one takes it.
     pointers: Pointers,
+    /// Viewer-only geometry, retained when a native window is replaced or detached.
+    viewports: std::sync::Mutex<[Viewport; 2]>,
 }
 
 /// The params of `view.attach`.
@@ -159,11 +161,45 @@ struct DisplayParams {
     hdr: Option<bool>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ViewportQuery {
+    monitor: Monitor,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Center {
+    x: f64,
+    y: f64,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "mode", rename_all = "lowercase", deny_unknown_fields)]
+enum ViewportSetting {
+    Fit {
+        monitor: Monitor,
+    },
+    Scale {
+        monitor: Monitor,
+        scale: f64,
+        center: Center,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ViewportParams {
+    Query(ViewportQuery),
+    Set(ViewportSetting),
+}
+
 const ATTACH: &str = r#"{"monitor":"source"|"timeline", "parent": "<handle in decimal>", "x": 0, "y": 0, "width": 640, "height": 360}"#;
 const PLACE: &str =
     r#"{"monitor":"source"|"timeline", "x": 0, "y": 0, "width": 640, "height": 360}"#;
 const SHOW: &str = r#"{"monitor":"source"|"timeline", "shown": true | false}"#;
 const DISPLAY: &str = r#"{"hdr"?: true | false}"#;
+const VIEWPORT: &str = r#"{"monitor":"source"|"timeline", "mode"?:"fit"|"scale", "scale":positive number, "center":{"x":number,"y":number}}; scale and center are required only with mode scale"#;
 const POINTER: &str = r#"{"monitor":"source"|"timeline", "on": true | false, "cursor"?: "arrow" | "crosshair" | "move" | "resize_ew" | "resize_ns"}"#;
 
 impl Viewer {
@@ -185,6 +221,7 @@ impl Viewer {
             busy: Mutex::new(()),
             hdr: AtomicBool::new(true),
             pointers: Pointers::new(),
+            viewports: std::sync::Mutex::new([Viewport::Fit; 2]),
         }
     }
 
@@ -305,11 +342,57 @@ impl Viewer {
                 let params: DisplayParams = rpc::params(method, DISPLAY, params)?;
                 Ok(self.display(params.hdr).await)
             }
+            "view.viewport" => self.viewport(rpc::params(method, VIEWPORT, params)?).await,
             _ => Err(Fault::new(
                 rpc::METHOD_NOT_FOUND,
                 format!("there is no method {method}"),
             )),
         }
+    }
+
+    async fn viewport(&self, params: ViewportParams) -> Result<serde_json::Value, Fault> {
+        let (monitor, requested) = match params {
+            ViewportParams::Query(query) => (query.monitor, None),
+            ViewportParams::Set(ViewportSetting::Fit { monitor }) => (monitor, Some(Viewport::Fit)),
+            ViewportParams::Set(ViewportSetting::Scale {
+                monitor,
+                scale,
+                center,
+            }) => (
+                monitor,
+                Some(Viewport::Scale {
+                    scale,
+                    center: [center.x, center.y],
+                }),
+            ),
+        };
+        let requested = requested
+            .map(Viewport::checked)
+            .transpose()
+            .map_err(Fault::params)?;
+        let _busy = self.busy.lock().await;
+        let mut settings = self
+            .viewports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(viewport) = requested {
+            let slot = self.slots[monitor.index()]
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if let Some(view) = slot.as_ref() {
+                match view.set_viewport(viewport) {
+                    Ok(()) | Err(ViewError::Gone) => {}
+                    Err(error) => return Err(fault(&error)),
+                }
+            }
+            settings[monitor.index()] = viewport;
+        }
+        Ok(match settings[monitor.index()] {
+            Viewport::Fit => json!({"monitor":monitor,"mode":"fit"}),
+            Viewport::Scale { scale, center } => {
+                json!({"monitor":monitor,"mode":"scale","scale":scale,"center":{"x":center[0],"y":center[1]}})
+            }
+        })
     }
 
     /// `view.display`: allow HDR or not, where `hdr` is given, and say what each view shows.
@@ -373,6 +456,11 @@ impl Viewer {
             .with_data(json!({ "reason": "failed" }))
         })?;
         let (view, compiler) = made.map_err(|error| fault(&error))?;
+        let viewport = self
+            .viewports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)[attach.monitor.index()];
+        view.set_viewport(viewport).map_err(|error| fault(&error))?;
         // A view made in place of one that took the pointer takes it too.
         if let Some(cursor) = self.pointers.cursor(attach.monitor) {
             let _ = view.take_pointer(Some(cursor));
@@ -441,7 +529,7 @@ async fn drop_view(view: Option<View>) {
 /// The error that a request is answered with when the view fails.
 fn fault(error: &ViewError) -> Fault {
     let code = match error {
-        ViewError::Parent(_) | ViewError::Rect(_) => rpc::INVALID_PARAMS,
+        ViewError::Parent(_) | ViewError::Rect(_) | ViewError::Viewport(_) => rpc::INVALID_PARAMS,
         _ => rpc::VIEW_FAILED,
     };
     Fault::new(code, error.to_string()).with_data(json!({ "reason": error.reason() }))

@@ -71,6 +71,9 @@ pub struct Pointer {
     /// (of the picture turned as it is shown), the centre of the first pixel at 0.5; none where
     /// no picture is drawn.
     pub picture: Option<(f64, f64)>,
+    /// Captured under the same state lock as `picture`, for native tools bound to a frame.
+    /// Kept inside the engine; the current pointer protocol does not serialize it.
+    pub presentation: Option<crate::Presentation>,
     /// Whether it is over the picture, not over the black bars about it or beyond the window.
     pub inside: bool,
     /// Where it is in the window, in device pixels from its top left corner.
@@ -89,13 +92,11 @@ pub fn on_picture(
     frame: (u32, u32),
     point: (i32, i32),
 ) -> Option<((f64, f64), bool)> {
-    let placement = crate::letterbox(window, frame, 0)?;
-    let scale_x = f64::from(frame.0) / f64::from(placement.width);
-    let scale_y = f64::from(frame.1) / f64::from(placement.height);
-    let x = (f64::from(point.0) + 0.5 - f64::from(placement.x)) * scale_x;
-    let y = (f64::from(point.1) + 0.5 - f64::from(placement.y)) * scale_y;
-    let inside = (0.0..f64::from(frame.0)).contains(&x) && (0.0..f64::from(frame.1)).contains(&y);
-    Some(((x, y), inside))
+    Some(
+        crate::Viewport::Fit
+            .map(window, frame, 0)?
+            .on_picture(point),
+    )
 }
 
 #[cfg(test)]

@@ -148,7 +148,7 @@ const PAGE_METHODS = new Set([
   'project.get', 'transaction.apply', 'history.undo', 'history.redo', 'media.make_proxy',
   // The LUTs of the folders that a node's LUT is looked for in (names only, nothing outside them),
   // and Display HDR On Viewers If Available, which the page sends again at each connect.
-  'luts.list', 'view.display',
+  'luts.list', 'view.display', 'view.viewport',
   'transport.load', 'transport.play', 'transport.pause', 'transport.seek', 'transport.step', 'transport.state', 'transport.proxies',
   'view.place', 'view.show', 'timeline.duration', 'media.thumbnail', 'media.waveform', 'render.cancel',
   // The figures of the frame shown, which the Primaries palette's Auto Color reads.

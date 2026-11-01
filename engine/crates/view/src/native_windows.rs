@@ -448,12 +448,16 @@ fn report(kind: PointerKind, button: Option<Button>, buttons: u8, point: (i32, i
     // SAFETY: it reads the state of a key of this thread's input, which is joined to the page's.
     let alt = unsafe { GetKeyState(i32::from(VK_MENU.0)) } < 0;
     with_shared(|shared| {
-        let on = shared.lock().on_picture(point);
+        let (on, presentation) = {
+            let state = shared.lock();
+            (state.on_picture(point), state.presentation)
+        };
         shared.report(Event::Pointer(Pointer {
             kind,
             button,
             buttons,
             picture: on.map(|(at, _)| at),
+            presentation,
             inside: on.is_some_and(|(_, inside)| inside),
             window: point,
             shift: keys & MK_SHIFT != 0,

@@ -9,7 +9,7 @@ use columbina_compose::Gpu;
 use crate::display::{self, choose_surface, Content, Display, Monitor, Output};
 use crate::native::{self, Syncer};
 use crate::render::Painter;
-use crate::{frame_begun, frame_ended, Event, Frame, Pending, Shared};
+use crate::{frame_begun, frame_ended, Event, Frame, Pending, Shared, Viewport};
 
 /// How long a frame that was not shown waits before it is tried again.
 const RETRY: Duration = Duration::from_millis(50);
@@ -177,7 +177,7 @@ pub(crate) fn run(
             std::thread::sleep(hang);
         }
         let outcome = screen.frame(&mut shown, job.size, job.wish);
-        frame_ended(shared, syncer, outcome == Outcome::Presented);
+        frame_ended(shared, syncer);
         if screen.is_lost() {
             // Lost in the frame: drawn again once the view is given another card.
             continue;
@@ -208,6 +208,7 @@ pub(crate) struct Wish {
     hdr_allowed: bool,
     /// What the pictures hold.
     content: Content,
+    viewport: Viewport,
 }
 
 /// What there is to do.
@@ -240,6 +241,7 @@ fn next(shared: &Shared, again_at: &mut Option<Instant>, check_at: Option<Instan
         let wish = Wish {
             hdr_allowed: state.hdr_allowed,
             content: state.content,
+            viewport: state.viewport,
         };
         let drawable = state.dirty && state.visible() && state.size.0 > 0 && state.size.1 > 0;
         if drawable || state.lose_device {
@@ -494,7 +496,7 @@ impl Screen {
                 let number = *number;
                 if self.uploaded != Some(number) {
                     let uploaded = match frame {
-                        Frame::Picture(picture, _) => self.painter.upload(picture),
+                        Frame::Picture(picture, _, _) => self.painter.upload(picture),
                         Frame::Texture { texture, .. } => self.painter.use_texture(texture),
                     };
                     if let Err(message) = uploaded {
@@ -514,7 +516,7 @@ impl Screen {
             }
         }
         let rotation = match shown {
-            Some((Frame::Picture(_, rotation), _)) => *rotation,
+            Some((Frame::Picture(_, rotation, _), _)) => *rotation,
             _ => 0,
         };
         if !self.configured || (self.config.width, self.config.height) != size {
@@ -563,9 +565,14 @@ impl Screen {
             let view = texture
                 .texture
                 .create_view(&wgpu::TextureViewDescriptor::default());
-            let commands = self.painter.draw(&view, size, rotation);
+            let map = self.painter.viewport_map(size, rotation, wish.viewport);
+            let commands = self.painter.draw_mapped(&view, size, rotation, map);
             self.painter.queue().submit([commands]);
             self.painter.queue().present(texture);
+            let tag = shown.as_ref().and_then(|(frame, _)| match frame {
+                Frame::Picture(_, _, tag) | Frame::Texture { tag, .. } => *tag,
+            });
+            self.shared.presented(&self.gpu, tag, map);
             return Outcome::Presented;
         }
         Outcome::Failed
@@ -573,6 +580,7 @@ impl Screen {
 
     /// Make the surface of the window again, on the same device.
     fn remake_surface(&mut self) -> Result<(), String> {
+        self.shared.lock().presentation = None;
         self.configured = false;
         let surface = native::create_surface(self.gpu.instance(), self.handle)?;
         if !self.gpu.adapter().is_surface_supported(&surface) {

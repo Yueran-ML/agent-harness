@@ -4328,7 +4328,7 @@ describe('the engine of the studio', () => {
     await openIn(shell);
     const [main, view] = connections(shell);
     const allowed = [
-      'project.get', 'transaction.apply', 'history.undo', 'history.redo', 'media.make_proxy', 'luts.list', 'view.display', 'transport.load', 'transport.play',
+      'project.get', 'transaction.apply', 'history.undo', 'history.redo', 'media.make_proxy', 'luts.list', 'view.display', 'view.viewport', 'transport.load', 'transport.play',
       'transport.pause', 'transport.seek', 'transport.step', 'transport.state', 'transport.proxies',
       'timeline.duration', 'media.thumbnail', 'media.waveform', 'scopes.statistics', 'scopes.subscribe', 'scopes.set', 'scopes.unsubscribe',
       'view.sample', 'view.pointer',

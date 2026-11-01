@@ -99,6 +99,7 @@ pub mod display;
 pub mod pointer;
 mod render;
 mod screen;
+mod viewport;
 
 #[cfg(windows)]
 #[allow(unsafe_code)]
@@ -117,6 +118,7 @@ pub use columbina_media::{NativePicture, Picture};
 pub use display::{Content, Display, HdrTransfer, Monitor, Output};
 pub use pointer::{Button, Pointer, PointerKind};
 pub use render::{letterbox, quarter_turns, Placement};
+pub use viewport::{Presentation, Viewport, ViewportMap};
 
 /// How long a frame may take before the window is hidden.
 pub const STALL: Duration = Duration::from_secs(1);
@@ -195,6 +197,9 @@ pub enum ViewError {
     /// The rectangle is not one that a view can have.
     #[error("{0}")]
     Rect(String),
+    /// The viewport cannot be represented by the drawing coordinates.
+    #[error("{0}")]
+    Viewport(String),
     /// The window could not be made.
     #[error("the window of the view cannot be made: {0}")]
     Window(String),
@@ -216,6 +221,7 @@ impl ViewError {
         match self {
             ViewError::Parent(_) => "parent",
             ViewError::Rect(_) => "rect",
+            ViewError::Viewport(_) => "viewport",
             ViewError::Window(_) => "window",
             ViewError::Gpu(_) => "gpu",
             ViewError::Gone => "gone",
@@ -298,11 +304,12 @@ enum Pending {
 }
 
 enum Frame {
-    Picture(Arc<NativePicture>, i16),
+    Picture(Arc<NativePicture>, i16, Option<u64>),
     /// The device identity prevents recovery from binding an old texture to a new device.
     Texture {
         texture: Arc<wgpu::Texture>,
         gpu: Arc<Gpu>,
+        tag: Option<u64>,
     },
 }
 
@@ -358,9 +365,10 @@ pub(crate) struct State {
     content: Content,
     /// What the view shows, as its drawer last found.
     display: Option<Display>,
-    /// The size of the frame that it draws, as it is shown (a picture turned); none where it
-    /// draws none.
-    frame: Option<(u32, u32)>,
+    /// Requested geometry, captured by the drawer with each job.
+    viewport: Viewport,
+    /// Geometry and identity of the last successful presentation, never of a pending frame.
+    presentation: Option<Presentation>,
     /// Whether it takes the pointer, and the cursor that it shows then.
     pointer: Option<Cursor>,
 }
@@ -385,7 +393,8 @@ impl State {
     /// Where a point of the window is on the frame drawn, and whether it is on it.
     #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn on_picture(&self, point: (i32, i32)) -> Option<((f64, f64), bool)> {
-        pointer::on_picture(self.size, self.frame?, point)
+        let map = self.presentation?.map?;
+        (self.size == map.surface).then(|| map.on_picture(point))
     }
 
     /// The window has been given the size of its rectangle by its thread.
@@ -418,7 +427,8 @@ impl Shared {
                 hdr_allowed: true,
                 content: Content::Sdr,
                 display: None,
-                frame: None,
+                viewport: Viewport::Fit,
+                presentation: None,
                 pointer: None,
             }),
             wake: Condvar::new(),
@@ -449,8 +459,25 @@ impl Shared {
     /// The window was destroyed, by its parent or by the view.
     #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn window_gone(&self) {
-        self.change(|state| state.gone = true);
+        self.change(|state| {
+            state.gone = true;
+            state.presentation = None;
+        });
         self.watch.notify_all();
+    }
+
+    /// Publish only after present returned, using that job's map and device. A device change
+    /// or window destruction during drawing must not resurrect an invalidated presentation.
+    fn presented(&self, gpu: &Arc<Gpu>, tag: Option<u64>, map: Option<ViewportMap>) {
+        let mut state = self.lock();
+        state.presented += 1;
+        if !state.gone && !gpu.is_lost() && Arc::ptr_eq(&state.gpu, gpu) {
+            state.presentation = Some(Presentation {
+                serial: state.presented,
+                tag,
+                map,
+            });
+        }
     }
 
     pub(crate) fn report(&self, event: Event) {
@@ -635,6 +662,15 @@ impl View {
     /// picture it drew last, to draw it again as the window changes, until the next one or
     /// [`View::clear`].
     pub fn present(&self, picture: Arc<NativePicture>, rotation: i16) {
+        self.present_picture(picture, rotation, None);
+    }
+
+    /// As [`View::present`], carrying an opaque producer frame identity through redraws.
+    pub fn present_tagged(&self, picture: Arc<NativePicture>, rotation: i16, tag: u64) {
+        self.present_picture(picture, rotation, Some(tag));
+    }
+
+    fn present_picture(&self, picture: Arc<NativePicture>, rotation: i16, tag: Option<u64>) {
         let mut odd = None;
         self.shared.change(|state| {
             if rotation.rem_euclid(90) == 0 {
@@ -643,13 +679,7 @@ impl View {
                 state.odd_rotation = Some(rotation);
                 odd = Some(rotation);
             }
-            let shown = if rotation.rem_euclid(90) == 0 {
-                columbina_compose::geometry::shown_size((picture.width, picture.height), rotation)
-            } else {
-                (picture.width, picture.height)
-            };
-            state.frame = Some(shown);
-            state.pending = Pending::Frame(Frame::Picture(picture, rotation));
+            state.pending = Pending::Frame(Frame::Picture(picture, rotation, tag));
             state.dirty = true;
         });
         if let Some(rotation) = odd {
@@ -674,6 +704,28 @@ impl View {
         texture: Arc<wgpu::Texture>,
         gpu: Arc<Gpu>,
     ) -> Result<(), ViewError> {
+        self.present_rgb(texture, gpu, None)
+    }
+
+    /// As [`View::present_texture`], carrying an opaque producer frame identity.
+    ///
+    /// # Errors
+    /// As for [`View::present_texture`].
+    pub fn present_texture_tagged(
+        &self,
+        texture: Arc<wgpu::Texture>,
+        gpu: Arc<Gpu>,
+        tag: u64,
+    ) -> Result<(), ViewError> {
+        self.present_rgb(texture, gpu, Some(tag))
+    }
+
+    fn present_rgb(
+        &self,
+        texture: Arc<wgpu::Texture>,
+        gpu: Arc<Gpu>,
+        tag: Option<u64>,
+    ) -> Result<(), ViewError> {
         let mut state = self.shared.lock();
         if state.gone {
             return Err(ViewError::Gone);
@@ -683,8 +735,7 @@ impl View {
                 "the composed frame is not on the view's current device".into(),
             ));
         }
-        state.frame = Some((texture.width(), texture.height()));
-        state.pending = Pending::Frame(Frame::Texture { texture, gpu });
+        state.pending = Pending::Frame(Frame::Texture { texture, gpu, tag });
         state.dirty = true;
         drop(state);
         self.shared.wake.notify_all();
@@ -712,6 +763,7 @@ impl View {
         let old = {
             let mut state = self.shared.lock();
             state.gpu = gpu;
+            state.presentation = None;
             state.dirty = true;
             state.gpu_watch.replace(watch)
         };
@@ -728,7 +780,6 @@ impl View {
     /// Draw black, and let the last picture go.
     pub fn clear(&self) {
         self.shared.change(|state| {
-            state.frame = None;
             state.pending = Pending::Clear;
             state.dirty = true;
         });
@@ -805,6 +856,26 @@ impl View {
     #[must_use]
     pub fn presented(&self) -> u64 {
         self.shared.lock().presented
+    }
+
+    /// The last successful presentation; none before the first, or after surface invalidation.
+    #[must_use]
+    pub fn presentation(&self) -> Option<Presentation> {
+        self.shared.lock().presentation
+    }
+
+    /// Change only the viewer geometry. The old map remains current until the redraw presents.
+    ///
+    /// # Errors
+    /// Invalid numeric geometry, or a window that has gone.
+    pub fn set_viewport(&self, viewport: Viewport) -> Result<(), ViewError> {
+        let viewport = viewport
+            .checked()
+            .map_err(|message| ViewError::Viewport(message.into()))?;
+        self.alive(|state| {
+            state.viewport = viewport;
+            state.dirty = true;
+        })
     }
 
     /// Lose the device of the card that the view draws with, as a driver reset would: for the
@@ -884,10 +955,17 @@ fn watch_gpu(shared: &Arc<Shared>, gpu: &Gpu) -> Watch {
     let shared = Arc::downgrade(shared);
     gpu.when_lost(move |why: &str| {
         if let Some(shared) = shared.upgrade() {
+            // Clear before the reporter can supply a replacement device. A late callback
+            // from the previous device must not erase a healthy device's presentation.
+            shared.change(|state| {
+                state.dirty = true;
+                if state.gpu.is_lost() {
+                    state.presentation = None;
+                }
+            });
             shared.report(Event::DeviceLost {
                 message: why.to_owned(),
             });
-            shared.change(|state| state.dirty = true);
         }
     })
 }
@@ -900,12 +978,9 @@ pub(crate) fn frame_begun(shared: &Shared) {
 
 /// A frame has ended, presented or not: a window that the watchdog hid is shown again, if it is
 /// meant to be, and drawn.
-pub(crate) fn frame_ended(shared: &Shared, syncer: &native::Syncer, presented: bool) {
+pub(crate) fn frame_ended(shared: &Shared, syncer: &native::Syncer) {
     let mut state = shared.lock();
     let since = state.busy_since.take();
-    if presented {
-        state.presented += 1;
-    }
     let recovered = state.stalled;
     if recovered {
         state.stalled = false;
@@ -926,6 +1001,69 @@ pub(crate) fn frame_ended(shared: &Shared, syncer: &native::Syncer, presented: b
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_lost_or_replaced_device_cannot_publish_a_presentation_from_its_old_job() {
+        let Some(old_gpu) = columbina_compose::gpu_for_tests() else {
+            return;
+        };
+        let new_gpu = Gpu::new(columbina_compose::Preference::HighPerformance).unwrap();
+        let shared = Arc::new(Shared::new(
+            Rect::default(),
+            Arc::clone(&old_gpu),
+            Arc::new(|_| {}),
+        ));
+        let map = Viewport::Fit.map((100, 100), (100, 50), 0);
+        shared.presented(&old_gpu, Some(1), map);
+        {
+            let mut state = shared.lock();
+            state.gpu = Arc::clone(&new_gpu);
+            state.presentation = None;
+        }
+        shared.presented(&old_gpu, Some(2), map);
+        assert!(shared.lock().presentation.is_none());
+        let _watch = watch_gpu(&shared, &new_gpu);
+        shared.presented(&new_gpu, Some(3), map);
+        assert_eq!(shared.lock().presentation.unwrap().tag, Some(3));
+        new_gpu.mark_lost("presentation regression test");
+        assert!(shared.lock().presentation.is_none());
+        shared.presented(&new_gpu, Some(4), map);
+        assert!(shared.lock().presentation.is_none());
+    }
+
+    #[test]
+    fn only_a_successful_presentation_publishes_its_geometry_and_old_jobs_cannot_restore_a_gone_surface(
+    ) {
+        let Some(gpu) = columbina_compose::gpu_for_tests() else {
+            return;
+        };
+        let shared = Shared::new(Rect::default(), Arc::clone(&gpu), Arc::new(|_| {}));
+        let old = Viewport::Fit.map((100, 100), (100, 50), 0).unwrap();
+        shared.lock().sized((100, 100));
+        assert!(shared.lock().on_picture((0, 25)).is_none());
+        shared.presented(&gpu, Some(7), Some(old));
+        let first = shared.lock().presentation.unwrap();
+        {
+            let mut state = shared.lock();
+            state.viewport = Viewport::Scale {
+                scale: 3.0,
+                center: [0.0, 0.0],
+            };
+            state.pending = Pending::Clear;
+            assert_eq!(state.presentation, Some(first));
+            assert_eq!(state.on_picture((0, 25)), Some(((0.5, 0.5), true)));
+            state.sized((101, 100));
+            assert!(state.on_picture((0, 25)).is_none());
+        }
+        let next = Viewport::Fit.map((101, 100), (50, 100), 0).unwrap();
+        shared.presented(&gpu, Some(8), Some(next));
+        assert_eq!(shared.lock().presentation.unwrap().tag, Some(8));
+        shared.presented(&gpu, None, None);
+        assert!(shared.lock().presentation.unwrap().map.is_none());
+        shared.window_gone();
+        shared.presented(&gpu, Some(7), Some(old));
+        assert!(shared.lock().presentation.is_none());
+    }
 
     #[test]
     fn a_parent_is_read_in_decimal_as_this_platform_has_it() {

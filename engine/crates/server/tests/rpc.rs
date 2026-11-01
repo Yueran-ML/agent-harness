@@ -45,6 +45,9 @@ mod project_luts;
 #[path = "rpc/highlight.rs"]
 mod highlight;
 
+#[path = "rpc/viewport.rs"]
+mod viewport;
+
 /// How long anything that should happen soon is waited for before the test fails.
 const WAIT: Duration = Duration::from_secs(30);
 

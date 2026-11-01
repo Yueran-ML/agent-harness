@@ -50,6 +50,9 @@ const BACKGROUND: [u8; 3] = [30, 160, 60];
 /// How long anything that should happen soon is waited for.
 const WAIT: Duration = Duration::from_secs(3);
 
+#[path = "window/viewport.rs"]
+mod viewport;
+
 static CLICKS: AtomicU32 = AtomicU32::new(0);
 static CLICKED_X: AtomicI32 = AtomicI32::new(-1);
 static CLICKED_Y: AtomicI32 = AtomicI32::new(-1);

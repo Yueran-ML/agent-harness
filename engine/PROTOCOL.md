@@ -143,6 +143,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `media.waveform` | `{"media": "m1"}` | `{"rate": 100, "channels": 2, "peaks": "<base64>"}`, or `{"pending": true}` |
 | `view.attach` | `{"monitor":"source" \| "timeline", "parent": "<handle>", "x": x, "y": y, "width": w, "height": h}` | `{"adapter": "<name>", "backend": "Dx12", "compiler": "dxc" \| "fxc" \| "auto" \| null}` |
 | `view.place` | `{"monitor":"source" \| "timeline", "x": x, "y": y, "width": w, "height": h}` | `{}` |
+| `view.viewport` | `{"monitor": m}` to query; `{"monitor": m, "mode": "fit"}` or `{"monitor": m, "mode": "scale", "scale": 1.0, "center": {"x": 0.5, "y": 0.5}}` to set | The requested setting: `{"monitor", "mode"}` or `{"monitor", "mode", "scale", "center"}` |
 | `view.show` | `{"monitor":"source" \| "timeline", "shown": true \| false}` | `{}` |
 | `view.detach` | `{"monitor":"source" \| "timeline"}` | `{"detached": true \| false}` |
 | `view.display` | `{"hdr"?: true \| false}` | `{"hdr": true, "source": {"hdr_on": true, "hdr_shown": true, "peak_nits": 400.0, "sdr_white_nits": 148.0} \| null, "timeline": ... \| null}` (see The view) |
@@ -522,7 +523,7 @@ picture.
   process** sends them: it owns the window and its handle. The page (the renderer) never gets
   the handle and never calls the engine for the view: it tells the main process where the
   viewer is (over IPC), and the main process sends `view.place`. A `--headless` engine draws in
-  no window: every `view.*` is answered `-32601`. `view.sample` and `view.pointer` are the
+  no window: every `view.*` is answered `-32601`. `view.sample`, `view.pointer`, `view.display`, and `view.viewport` are the
   exceptions: they touch no window of the desktop's, so the page calls them (through the main
   process, which lets them by), and any client may call `view.sample` (below, Samples and the
   pointer).
@@ -556,6 +557,24 @@ picture.
   a panel dragged). It is answered at once; the window follows a moment later (it is moved by
   a thread of the engine that serves it, and drawn again at its new size). Send it whenever the
   viewer's rectangle changes, and after the parent's DPI changes.
+- **`view.viewport`** changes the picture geometry inside one monitor, independently of
+  `view.place` and of project transforms. The default is `mode: "fit"`, keeping the existing
+  integer letterbox layout. With `mode: "scale"`, `scale` is physical device pixels per pixel
+  of the oriented picture (1 means 100%), and `center` is the normalized picture point at the
+  centre of the surface. Its coordinates may lie outside 0..1. The source picture's metadata
+  quarter-turn is applied before this map; a timeline canvas is already oriented. Areas outside
+  the picture are black, and a magnified picture is clipped to the native surface.
+  `{monitor}` queries the setting; `mode: "fit"` accepts no scale or center, and `mode: "scale"`
+  requires both. Unknown fields, nulls, nonfinite numbers and invalid numeric geometry are
+  `-32602`; values are never silently clamped. Scale must remain a positive normal f32, and
+  destination extents for every supported 1..16384-pixel picture/surface must be in
+  [2^-126, 2^126], with finite f32 edges. These bounds keep shader division defined, including
+  hardware that flushes subnormals to zero (WGSL 15.7.2 and 15.7.4.1).
+  Settings can be read or changed before attach and survive detach/replacement/reattach for
+  this engine's lifetime. Source and timeline settings are independent; they are not stored
+  in the project, do not change revision/history, and do not survive engine restart. The
+  response reports the **requested** setting; drawing is asynchronous. This method is only
+  for a desktop client in a non-headless engine. The page may call it through Electron's allowlist.
 - **`view.show`** hides the view, and shows it again. A native window covers whatever of the
   page lies over its rectangle ("airspace"): an HTML menu, dialog or tooltip that opens over the
   viewer is hidden under it. So the page hides each affected monitor (`{"monitor":"source",
@@ -722,6 +741,14 @@ drag ends with `cancel`. Presses and releases are each told; moves as fast as th
 reads them (the next once the one before was written, those between dropped), and the last place
 the pointer stopped at is always told, before the next press or release. The view never takes
 the keyboard: keys stay the page's.
+
+Pointer coordinates use the map of the last successful native presentation, including its
+viewport. Queuing a new frame, viewport, or clear does not change that map before it is shown.
+While a resized native window differs from the last presented surface size, `x`/`y` are null
+and `inside` is false until a frame is successfully presented at the new size. An invalidated
+surface/device also has no pointer map until presentation resumes. `inside` requires both the
+picture bounds and the visible native surface bounds; captured drags outside a zoomed viewer
+remain outside even if their extrapolated picture coordinates are within the picture.
 
 ## The transport
 

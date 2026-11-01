@@ -1,6 +1,7 @@
 // The compositor has already produced gamma-encoded Rec.709 RGB. Present it unchanged.
 @group(0) @binding(0) var picture: texture_2d<f32>;
 @group(0) @binding(1) var filtering: sampler;
+@group(0) @binding(2) var<uniform> dest: vec4<f32>;
 
 struct Vertex { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> }
 
@@ -12,4 +13,13 @@ struct Vertex { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f3
 
 @fragment fn fs(vertex: Vertex) -> @location(0) vec4<f32> {
     return vec4(textureSample(picture, filtering, vertex.uv).rgb, 1.0);
+}
+
+@fragment fn fs_viewport(vertex: Vertex) -> @location(0) vec4<f32> {
+    let relative = vertex.position.xy - dest.xy;
+    if any(relative < vec2(0.0)) || any(relative >= dest.zw) {
+        return vec4(0.0, 0.0, 0.0, 1.0);
+    }
+    let uv = relative / dest.zw;
+    return vec4(textureSampleLevel(picture, filtering, uv, 0.0).rgb, 1.0);
 }

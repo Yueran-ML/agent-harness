@@ -785,7 +785,7 @@ mod tests {
         c.primaries.midtone_detail = 0.0.into();
         c.windows[0].shape = WindowShape::curve();
         c.windows[0].invert = true;
-        assert!(without_filters(&grade).1.is_empty());
+        assert_eq!(without_filters(&grade).1, [] as [serde_json::Value; 0]);
     }
 
     #[test]

@@ -208,6 +208,7 @@ mod tests {
 
     fn pointer(kind: PointerKind, x: f64) -> Pointer {
         Pointer {
+            presentation: None,
             kind,
             button: (kind != PointerKind::Move).then_some(Button::Left),
             buttons: u8::from(kind != PointerKind::Up),

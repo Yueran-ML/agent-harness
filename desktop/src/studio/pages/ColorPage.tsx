@@ -328,13 +328,16 @@ export function ColorPage({
   useEffect(() => { setWiped(comparison.wipedStill); }, [comparison.wipedStill]);
   // Append Node to Selected Clips (Color menu, p. 3297), from the menu of the node: the current node, after the grades of the other clips chosen.
   const appendTo = appendNodeTargets(selected, visibleClips, chosenClips, current?.clip ?? null);
+  // The playhead when it is run (No Keyframes keeps the node as it is there), read then: the item is not made again each frame played.
+  const playhead = useRef(frame);
+  playhead.current = frame;
   const appendNode = useMemo(() => ({
     label: labels.galleryPanel.appendToSelected, can: appendTo.length > 0 && grades.target !== null,
     run: (node: string) => {
       if (grades.target === null || appendTo.length === 0) return;
-      callEngine(bridge, 'grade.append_node', appendNodeParams(grades.target, node, appendTo, gallery.settings, revision, frame ?? 0)).catch(paletteFailed);
+      callEngine(bridge, 'grade.append_node', appendNodeParams(grades.target, node, appendTo, gallery.settings, revision, playhead.current ?? 0)).catch(paletteFailed);
     },
-  }), [labels, JSON.stringify(appendTo), grades.target, bridge, gallery.settings, revision, paletteFailed, frame]);
+  }), [labels, JSON.stringify(appendTo), grades.target, bridge, gallery.settings, revision, paletteFailed]);
 
   // The keys of the transport go to the timeline monitor; Up and Down go from clip to clip, and three keys make the viewer larger.
   useStudioKeys(timelineMonitor.loaded, timelineMonitor.context, timelineMonitor.run);

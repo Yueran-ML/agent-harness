@@ -506,7 +506,7 @@ describe('the Gallery', () => {
   });
 
   it('appends the current node to the other clips chosen, from the menu of the node', async () => {
-    const { bridge } = await mountGallery();
+    const { bridge, notify } = await mountGallery();
     pressThumb('c2', { ctrlKey: true });
     pressThumb('c3', { ctrlKey: true });
     const node = document.querySelector('[data-test="grade-graph"] [data-node="n1"]')!;
@@ -515,6 +515,13 @@ describe('the Gallery', () => {
     await settle();
     // No Keyframes (the Gallery's default): the node as it is at the playhead.
     expect(last(bridge, 'grade.append_node')).toEqual({ from: C('c1'), node: 'n1', to: [C('c2'), C('c3')], keyframes: 'none', at: 0, revision: 0 });
+    // The playhead where it is when the item is chosen.
+    await notify({ frame: 42, shown: 42 });
+    await settle();
+    fireEvent.contextMenu(node, { clientX: 5, clientY: 5 });
+    chooseItem('Append Node to Selected Clips');
+    await settle();
+    expect(last(bridge, 'grade.append_node')).toEqual({ from: C('c1'), node: 'n1', to: [C('c2'), C('c3')], keyframes: 'none', at: 42, revision: 0 });
     fireEvent.contextMenu(document.querySelector('[data-test="stills"]')!);
     chooseItem('Apply Grades Using');
     chooseItem('Keyframes Aligning Source Timecode');

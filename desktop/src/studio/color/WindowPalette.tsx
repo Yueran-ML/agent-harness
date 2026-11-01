@@ -27,14 +27,18 @@ export function windowShape(kind: 'circular' | 'gradient' | 'linear' | 'polygon'
 export interface WindowNotice { action: 'insert' | 'delete'; topology: WindowTopology }
 type WindowWords = Messages['label']['studio']['colorPage']['windowControls'];
 const fill = (template: string, values: Record<string, string | number>) => template.replace(/\{(\w+)\}/g, (all, name: string) => String(values[name] ?? all));
-/** Points are 1-based for people; the engine reports 0-based indices and the actual key interval. */
-export function topologyText(words: WindowWords, notice: WindowNotice): string {
-  const topology = notice.topology; const text = words.topology;
+/** Points are 1-based for people; the engine reports 0-based indices and the actual key interval.
+ * An edge has two ends, so a refusal names one point or two. */
+export function topologyText(messages: Messages, notice: WindowNotice): string {
+  const topology = notice.topology; const words = messages.label.studio.colorPage.windowControls;
+  const part = words.topology; const text = messages.hint.studio.colorPage.windowControls.topology;
   if (topology.why === 'maximum') return fill(text.maximum, { most: topology.most });
   if (topology.why === 'minimum') return fill(text.minimum, { least: topology.least });
   if (topology.why === 'unsupported') return text.unsupported;
-  const frames = topology.frames ? fill(text.frames, { clock: words.clock[topology.clock], from: topology.frames[0], to: topology.frames[1] }) : text.allFrames;
-  return fill(text[topology.why], { axis: topology.axis.toUpperCase(), points: topology.points.map(point => point + 1).join(text.joiner), frames });
+  const frames = topology.frames ? fill(part.frames, { clock: words.clock[topology.clock], from: topology.frames[0], to: topology.frames[1] }) : part.allFrames;
+  const [first, second] = topology.points.map(point => point + 1);
+  const points = second === undefined ? fill(part.one, { point: first }) : fill(part.two, { first, second });
+  return fill(text[topology.why], { axis: topology.axis.toUpperCase(), points, frames });
 }
 
 interface Creation { identity: string; object: string; session: number; generation: number; id: string; revision: number | null }
@@ -147,7 +151,7 @@ export function WindowPalette({ controls, capturing, busy, status, edit, notice 
   edit: NodeEdit; controls: ReturnType<typeof useWindows>; capturing: boolean; busy: () => boolean; status: WindowInputStatus;
   notice?: WindowNotice | null;
 }) {
-  const words = useWords().label.studio.colorPage.windowControls;
+  const messages = useWords(); const words = messages.label.studio.colorPage.windowControls;
   const { selected, keys } = controls;
   const blocked = !controls.enabled || controls.pending || capturing || edit.pending();
   const fields = selected ? [...TRANSFORM_FIELDS, ...SOFTNESS_FIELDS[selected.shape.kind]] : [];
@@ -175,7 +179,7 @@ export function WindowPalette({ controls, capturing, busy, status, edit, notice 
         name={words.fields[name]} neutral={neutral} low={low} high={high} perPx={perPx} disabled={capturing || controls.pending || !edit.enabled}
         clock={`${words.clock[keys.clock]}`} />)}
     </div>}
-    <p role="status">{controls.pending ? words.creating : notice ? topologyText(words, notice) : words.status[status]}</p>
+    <p role="status">{controls.pending ? words.creating : notice ? topologyText(messages, notice) : words.status[status]}</p>
   </div>;
 }
 

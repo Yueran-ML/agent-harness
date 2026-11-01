@@ -96,11 +96,13 @@ it('names captured points, an inserted point and a Linear side in the key hints'
 
 it('explains a refused insertion or deletion with its points, field, interval and a next step', () => {
   const jump = { action: 'insert' as const, topology: { why: 'jump' as const, axis: 'y' as const, points: [0, 1], frames: [0, 20] as [number, number], clock: 'source' as const } };
-  const text = topologyText(words, jump);
-  expect(text).toContain('Y of points 1, 2'); expect(text).toContain('Source clock frames 0–20');
+  const text = topologyText(en, jump);
+  expect(text).toContain('Y of points 1 and 2'); expect(text).toContain('Source clock frames 0–20');
   expect(text).toContain('Linear'); expect(text).toContain('not changed');
-  expect(topologyText(words, { action: 'delete', topology: { why: 'minimum', least: 3 } })).toContain('at least 3 points');
-  expect(topologyText(words, { action: 'insert', topology: { why: 'maximum', most: 128 } })).toContain('128');
+  expect(topologyText(en, { action: 'insert', topology: { why: 'overshoot', axis: 'x', points: [2], frames: [4, 8], clock: 'clip' } }))
+    .toContain('X curve of point 3 overshoots');
+  expect(topologyText(en, { action: 'delete', topology: { why: 'minimum', least: 3 } })).toContain('at least 3 points');
+  expect(topologyText(en, { action: 'insert', topology: { why: 'maximum', most: 128 } })).toContain('128');
   mountPalette([polygon], jump);
   expect(screen.getByRole('status').textContent).toBe(text);
 });
@@ -109,8 +111,10 @@ it('names the new Window fields in each language', () => {
   for (const locale of [ja, zhCN]) {
     const local = locale.label.studio.colorPage.windowControls;
     for (const name of ['soft2', 'inside', 'outside'] as const) expect(local.fields[name]).not.toBe(words.fields[name]);
-    expect(local.addLinear).not.toBe(words.addLinear); expect(local.topology.jump).not.toBe(words.topology.jump);
-    expect(local.topology.jump).toContain('{points}'); expect(local.topology.jump).toContain('{frames}');
+    const said = locale.hint.studio.colorPage.windowControls.topology;
+    expect(local.addLinear).not.toBe(words.addLinear); expect(said.jump).not.toBe(en.hint.studio.colorPage.windowControls.topology.jump);
+    expect(said.jump).toContain('{points}'); expect(said.jump).toContain('{frames}');
+    expect(local.topology.two).toContain('{first}'); expect(local.topology.two).toContain('{second}');
   }
 });
 

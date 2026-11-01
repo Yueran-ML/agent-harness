@@ -1553,7 +1553,7 @@ export const ja: Messages = {
           empty: 'このアルバムにはスチルがありません。Ctrl+Alt+G で取り込めます。',
           noneFound: 'このようなラベルのスチルはここにありません。',
           failed: 'ギャラリーを読み込めませんでした。',
-          confirmDelete: '選択したスチルを削除します。元に戻すことはできません。',
+          deleted: '削除しました。ギャラリーで Ctrl+Z を押すと元に戻せます。',
           confirmRemoveAlbum: 'アルバムを、中のスチルもすべて含めて削除します。元に戻すことはできません。',
           refusals: {
             last_album: '最後のアルバムは削除できません。',

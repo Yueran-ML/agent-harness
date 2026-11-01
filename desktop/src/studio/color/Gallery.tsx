@@ -9,16 +9,19 @@
  *   number and its label beneath, and those whose label holds what is searched for (p. 3263). A
  *   click chooses one, Ctrl+click and Shift+click more (p. 3258); a double-click wipes it (p. 3260);
  *   the middle button applies its grade to the clips chosen (p. 3288); a still dragged onto an
- *   album is moved there, and onto a memory is kept in it (pp. 3265, 3272).
- * - The right-click menu of a still: Apply Grade, Append Node Graph, Delete Selected (confirmed: the
- *   engine cannot undo it yet), Properties, Change Label, Export; of the Gallery behind them: Apply
- *   Grades Using ▸, Copy Grade: Preserve number of nodes ▸, Import.
+ *   album is moved there, and onto a memory is copied into it (pp. 3265, 3272).
+ * - The right-click menu of a still: Apply Grade, Append Node Graph, Delete Selected (not confirmed:
+ *   Ctrl+Z while the Gallery has the focus brings the stills deleted last back, the interaction
+ *   reference §9.2), Properties, Change Label, Export; of the Gallery behind them: Apply Grades
+ *   Using ▸, Copy Grade: Preserve number of nodes ▸, Import.
  * - The Memories button shows the memories A–H at the foot (pp. 3271–3272): Alt+1…8 grabs the
  *   current clip's grade into one, Ctrl+1…8 applies it, as does the middle button; its menu applies,
  *   appends or clears it.
  * - Grab Still (Ctrl+Alt+G) puts a still of the frame shown into the current album.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
+import {
+  useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode,
+} from 'react';
 import { Bookmark, Images, Search } from 'lucide-react';
 import { Sheet } from '../../app/Sheet';
 import { useWords } from '../../app/locale';
@@ -39,7 +42,6 @@ type GalleryBridge = Pick<EngineBridge, 'call' | 'onEvent'> & Partial<Pick<Engin
 
 /** What is asked to be confirmed, or set, in a window over the page. */
 type Asking =
-  | { kind: 'delete'; stills: string[] }
   | { kind: 'removeAlbum'; album: string }
   | { kind: 'label'; still: string; value: string }
   | { kind: 'properties'; still: StillWhole };
@@ -121,19 +123,24 @@ export function useColorGallery({ bridge, session, project, language, revision, 
   const [menu, setMenu] = useState<Menu | null>(null);
   const [asking, setAsking] = useState<Asking | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  // What was said of the last deletion: that Ctrl+Z brings it back.
+  const [notice, setNotice] = useState<string | null>(null);
+  // The stills of each deletion of this session, the last last, that Ctrl+Z in the Gallery restores.
+  const deletions = useRef<string[][]>([]);
   const [settings, setSettingsState] = useState<ApplySettings>(readApplySettings);
   const [memories, setMemoriesState] = useState<Memories>(() => readMemories(project));
   const dragged = useRef<string[] | null>(null);
   useEffect(() => { setMemoriesState(readMemories(project)); }, [project]);
-  useEffect(() => { setChosen([]); setCurrentStill(null); setProblem(null); }, [session]);
+  useEffect(() => { setChosen([]); setCurrentStill(null); setProblem(null); setNotice(null); deletions.current = []; }, [session]);
   const setSettings = (next: ApplySettings) => { setSettingsState(next); keepApplySettings(next); };
   const setMemories = useCallback((next: Memories) => { setMemoriesState(next); keepMemories(project, next); }, [project]);
 
-  // The albums that the list shows: all but the one that the memories are kept in.
-  const listed = useMemo(() => gallery.albums.filter(album => album.id !== memories.album), [gallery.albums, memories.album]);
+  // The albums that the list shows: the engine lists the album of the memories apart.
+  const listed = gallery.albums;
   const album: GalleryAlbum | null = listed.find(each => each.id === albumId) ?? listed[0] ?? null;
   const shown = useMemo(() => searched(album?.stills ?? [], search), [album, search]);
-  const everyStill = useMemo(() => gallery.albums.flatMap(each => each.stills), [gallery.albums]);
+  const everyStill = useMemo(() => [...gallery.albums, ...(gallery.memories ? [gallery.memories] : [])].flatMap(each => each.stills),
+    [gallery.albums, gallery.memories]);
   // Stills that are gone are no longer chosen.
   useEffect(() => {
     if (!gallery.loaded) return;
@@ -153,6 +160,7 @@ export function useColorGallery({ bridge, session, project, language, revision, 
   }, [said, words, onFailed]);
   const galleryCall = useCallback(async <T,>(asking: Promise<T>): Promise<T | null> => {
     setProblem(null);
+    setNotice(null);
     try { return await asking; } catch (failure) { refused(failure); return null; }
   }, [refused]);
 
@@ -184,29 +192,36 @@ export function useColorGallery({ bridge, session, project, language, revision, 
   /** A still kept in a memory no longer, where only the memory had it: taken out of the album of the memories. */
   const forget = useCallback((still: string | null, slots: (string | null)[]) => {
     const state = now.current;
-    if (still === null || slots.includes(still) || state.memories.album === null) return;
-    const kept = gallery.albums.find(each => each.id === state.memories.album)?.stills.some(each => each.id === still);
+    if (still === null || slots.includes(still)) return;
+    const kept = gallery.memories?.stills.some(each => each.id === still);
     if (kept) void callEngine(state.bridge, 'still.delete', { stills: [still] }).catch(() => {});
-  }, [gallery.albums]);
+  }, [gallery.memories]);
+
+  /** The project's album of the memories, made the first time a memory is kept (`gallery.album.create` of kind `memories`). */
+  const memoryAlbum = useCallback(async (): Promise<string | null> => {
+    if (gallery.memories) return gallery.memories.id;
+    const made = await galleryCall(callEngine(now.current.bridge, 'gallery.album.create', { kind: 'memories', name: now.current.labels.memoriesAlbum }));
+    return made === null ? null : made.id;
+  }, [galleryCall, gallery.memories]);
+
+  /** Keep `still` in memory `slot`, the still it held forgotten. */
+  const keepInMemory = useCallback((slot: number, still: string, album: string) => {
+    const old = now.current.memories.slots[slot];
+    const slots = now.current.memories.slots.map((each, at) => (at === slot ? still : each));
+    setMemories({ album, slots });
+    forget(old, slots);
+  }, [setMemories, forget]);
 
   const storeMemory = useCallback((slot: number) => {
     const state = now.current;
     if (state.timeline === null || slot < 0 || slot >= MEMORY_LETTERS.length) return;
     void (async () => {
-      let memoryAlbum = state.memories.album;
-      if (memoryAlbum === null || !gallery.albums.some(each => each.id === memoryAlbum)) {
-        const made = await galleryCall(callEngine(state.bridge, 'gallery.album.create', { kind: 'stills', name: state.labels.memoriesAlbum }));
-        if (made === null) return;
-        memoryAlbum = made.id;
-      }
-      const still = await galleryCall(callEngine(state.bridge, 'still.grab', grabParams(memoryAlbum, state.current, state.level)));
-      if (still === null) return;
-      const old = now.current.memories.slots[slot];
-      const slots = now.current.memories.slots.map((each, at) => (at === slot ? still.id : each));
-      setMemories({ album: memoryAlbum, slots });
-      forget(old, slots);
+      const album = await memoryAlbum();
+      if (album === null) return;
+      const still = await galleryCall(callEngine(state.bridge, 'still.grab', grabParams(album, state.current, state.level)));
+      if (still !== null) keepInMemory(slot, still.id, album);
     })();
-  }, [galleryCall, gallery.albums, setMemories, forget]);
+  }, [galleryCall, memoryAlbum, keepInMemory]);
 
   const recallMemory = useCallback((slot: number) => {
     const still = now.current.memories.slots[slot];
@@ -248,13 +263,39 @@ export function useColorGallery({ bridge, session, project, language, revision, 
     if (whole !== null) setAsking({ kind: 'properties', still: whole });
   };
 
+  /** Delete Selected (p. 3258), not confirmed: Ctrl+Z in the Gallery brings them back (§9.2). */
+  const deleteStills = async (stills: string[]) => {
+    const done = await galleryCall(callEngine(bridge, 'still.delete', { stills }));
+    if (done === null) return;
+    deletions.current = [...deletions.current, done.deleted];
+    setChosen([]);
+    setNotice(said.deleted);
+  };
+  /** Ctrl+Z while the Gallery has the focus: the stills deleted last back where they were. Whether there were any. */
+  const restoreLast = () => {
+    const stills = deletions.current.at(-1);
+    if (stills === undefined) return false;
+    deletions.current = deletions.current.slice(0, -1);
+    void galleryCall(callEngine(bridge, 'still.restore', { stills })).then((done) => {
+      if (done !== null) { setChosen(stills); setCurrentStill(stills.at(-1) ?? null); }
+    });
+    return true;
+  };
+  const galleryKey = (event: ReactKeyboardEvent) => {
+    const target = event.target as HTMLElement;
+    if (target.closest('input, textarea, select, [contenteditable="true"]')) return;
+    const z = event.code === 'KeyZ' || event.key.toLowerCase() === 'z';
+    if (!z || !(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
+    if (restoreLast()) { event.preventDefault(); event.stopPropagation(); }
+  };
+
   const stillItems = (still: string): MenuItem[] => {
     const of = chosen.includes(still) ? chosen : [still];
     const canApply = timeline !== null;
     return [
       { id: 'apply-grade', label: labels.applyGrade, disabled: !canApply, run: () => apply(still, 'apply') },
       { id: 'append-graph', label: labels.appendNodeGraph, disabled: !canApply, run: () => apply(still, 'append') },
-      { id: 'delete-selected', label: labels.deleteSelected, run: () => setAsking({ kind: 'delete', stills: of }) },
+      { id: 'delete-selected', label: labels.deleteSelected, run: () => void deleteStills(of) },
       { id: 'properties', label: labels.properties, run: () => void properties(still) },
       { id: 'change-label', label: labels.changeLabel, run: () => setAsking({ kind: 'label', still, value: wholeOf(everyStill, still)?.label ?? '' }) },
       { id: 'export', label: labels.export, disabled: !bridge.exportStills, run: () => void exportStills(of) },
@@ -304,24 +345,25 @@ export function useColorGallery({ bridge, session, project, language, revision, 
     if (!stills || stills.length === 0 || stills.every(id => target.stills.some(still => still.id === id))) return;
     void galleryCall(callEngine(bridge, 'still.move', { stills, album: target.id }));
   };
+  /** A still dropped on a memory is copied into the album of the memories (p. 3272), so that the memory keeps it whatever is done to the still. */
   const dropOnMemory = (event: DragEvent, slot: number) => {
     event.preventDefault();
     const stills = dragged.current;
     dragged.current = null;
     if (!stills || stills.length === 0) return;
-    const old = memories.slots[slot];
-    const slots = memories.slots.map((each, at) => (at === slot ? stills[0] : each));
-    setMemories({ ...memories, slots });
-    forget(old, slots);
+    void (async () => {
+      const album = await memoryAlbum();
+      if (album === null) return;
+      const copied = await galleryCall(callEngine(bridge, 'still.copy', { stills: [stills[0]], album }));
+      const copy = copied?.copied[stills[0]];
+      if (copy) keepInMemory(slot, copy, album);
+    })();
   };
 
   const confirm = async () => {
     const asked = asking;
     setAsking(null);
-    if (asked?.kind === 'delete') {
-      const done = await galleryCall(callEngine(bridge, 'still.delete', { stills: asked.stills }));
-      if (done !== null) setChosen([]);
-    } else if (asked?.kind === 'removeAlbum') {
+    if (asked?.kind === 'removeAlbum') {
       const done = await galleryCall(callEngine(bridge, 'gallery.album.delete', { album: asked.album }));
       if (done !== null) setAlbumId(null);
     } else if (asked?.kind === 'label') {
@@ -366,14 +408,14 @@ export function useColorGallery({ bridge, session, project, language, revision, 
             onChange={event => setAsking({ ...asked, value: event.target.value })} data-test="still-label" />
         </form>
       </Sheet>
-        : <Sheet title={asked.kind === 'delete' ? labels.deleteSelected : labels.removeAlbum} onClose={() => setAsking(null)} foot={<>
+        : <Sheet title={labels.removeAlbum} onClose={() => setAsking(null)} foot={<>
           <button type="button" className="btn" onClick={() => setAsking(null)} data-first>{words.label.cancel}</button>
           <button type="button" className="btn btn-main" onClick={() => void confirm()} data-test="confirm-delete">{labels.delete}</button>
         </>}>
-          <p data-test="confirm-words">{asked.kind === 'delete' ? said.confirmDelete : said.confirmRemoveAlbum}</p>
+          <p data-test="confirm-words">{said.confirmRemoveAlbum}</p>
         </Sheet>;
 
-  const panel = <div className="gallery" data-test="gallery">
+  const panel = <div className="gallery" data-test="gallery" tabIndex={-1} onKeyDown={galleryKey}>
     <div className="gallery-head">
       <button type="button" className="icon-btn" aria-pressed={albumsShown} aria-label={labels.albums} title={labels.albums}
         onClick={() => setAlbumsShown(open => !open)} data-test="toggle-albums"><Images size={14} /></button>
@@ -443,6 +485,7 @@ export function useColorGallery({ bridge, session, project, language, revision, 
       })}
     </ol>}
     {problem && <p className="gallery-problem" role="alert" data-test="gallery-problem">{problem}</p>}
+    {!problem && notice && <p className="caption gallery-notice" role="status" data-test="gallery-notice">{notice}</p>}
     {menu && <ColorMenu menu={menu} onClose={closeMenu} />}
     {sheet}
   </div>;

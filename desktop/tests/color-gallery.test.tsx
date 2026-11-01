@@ -4,7 +4,8 @@
  * ch. 141–142 and pp. 2999–3006; the interaction reference, §9): the albums and stills as the
  * engine lists them, listed again as it says the Gallery changed; what a grab, an apply, an append
  * and Append Node to Selected Clips send for each mode of the node editor; the menus of albums and
- * stills, a still dragged onto an album, a delete that is confirmed first; the memories A–H; and
+ * stills, a still dragged onto an album, a delete that Ctrl+Z in the Gallery undoes; the memories
+ * A–H, kept in the album of the memories that the engine lists apart; and
  * the wipe and split screen of the viewer: on and off, inverted, stepped from still to still,
  * dragged on the picture by the pointer the view tells, a timeline wipe with Gang on and off, and
  * the layouts of a split screen.
@@ -17,7 +18,7 @@ import {
   applyParams, applyTargets, appendNodeParams, appendNodeTargets, grabParams, pickStills, readApplySettings, readMemories, searched, stepStill, thumbnailHeight,
 } from '../src/studio/color/stills';
 import {
-  referenceClip, splitGrid, splitItems, tileAt, timelineReference, wipeAngleAt, wipeCursor, wipePositionAt, DEFAULT_WIPE,
+  neighbourClip, referenceClip, splitGrid, splitItems, tileAt, timelineReference, wipeAngleAt, wipeCursor, wipePositionAt, DEFAULT_WIPE,
 } from '../src/studio/color/comparison';
 import { calls, corrector, fakeEngine, projectOf, settle } from './colorEngine';
 import { clip, timeline } from './timeline-fixture';
@@ -79,6 +80,9 @@ async function mountGallery(project: Project = projectWith(), { albums = startin
     listeners.forEach(listener => listener({ kind: 'notification', session: 1, method, params }));
   });
   let gallery = albums;
+  // The album of the memories, which the engine lists apart, and the stills deleted with where they were.
+  let memories: GalleryAlbum | null = null;
+  let recycled: Still[] = [];
   let made = 0;
   let binding = 0, sequence = 0;
   let viewport: Record<string, unknown> = { mode: 'fit' };
@@ -87,17 +91,24 @@ async function mountGallery(project: Project = projectWith(), { albums = startin
   engine.bridge.call.mockImplementation(async (method: string, params?: Record<string, any>) => {
     const ok = (result: unknown) => ({ ok: true, result });
     switch (method) {
-      case 'gallery.list': return ok({ albums: gallery });
+      case 'gallery.list': return ok({ albums: gallery, memories });
       case 'gallery.thumbnail': return ok({ width: Math.round((params!.height * 16) / 9), height: params!.height, png: 'iVBORw0KGgo=' });
       case 'still.grab': {
         made += 1;
         const album = params!.album ?? gallery[0].id;
         const grabbed = still(`s${10 + made}`, album, `1.1.${made}`);
         gallery = gallery.map(each => (each.id === album ? { ...each, stills: [...each.stills, grabbed] } : each));
+        const held = memories;
+        if (held !== null && held.id === album) memories = { ...held, stills: [...held.stills, grabbed] };
         changed();
         return ok(grabbed);
       }
       case 'gallery.album.create': {
+        if (params!.kind === 'memories') {
+          memories ??= { id: 'a9', name: params!.name ?? 'Memories', kind: 'memories', stills: [] };
+          changed();
+          return ok({ id: memories.id, name: memories.name, kind: 'memories' });
+        }
         made += 1;
         const album: GalleryAlbum = { id: params!.kind === 'powergrade' ? `pa${made + 1}` : `a${made + 2}`, name: params!.name ?? 'Stills 3', kind: params!.kind ?? 'stills', stills: [] };
         gallery = params!.kind === 'powergrade' ? [...gallery, album] : [...gallery.filter(each => each.kind === 'stills'), album, ...gallery.filter(each => each.kind === 'powergrade')];
@@ -117,8 +128,27 @@ async function mountGallery(project: Project = projectWith(), { albums = startin
         gallery = gallery.map(each => ({ ...each, stills: each.stills.map(one => (one.id === params!.still ? { ...one, label: params!.label } : one)) })); changed();
         return ok({ id: params!.still, label: params!.label });
       case 'still.delete':
-        gallery = gallery.map(each => ({ ...each, stills: each.stills.filter(one => !params!.stills.includes(one.id)) })); changed();
+        recycled = [...recycled, ...[...gallery, ...(memories ? [memories] : [])].flatMap(each => each.stills).filter(one => params!.stills.includes(one.id))];
+        gallery = gallery.map(each => ({ ...each, stills: each.stills.filter(one => !params!.stills.includes(one.id)) }));
+        if (memories) memories = { ...memories, stills: memories.stills.filter(one => !params!.stills.includes(one.id)) };
+        changed();
         return ok({ deleted: params!.stills });
+      case 'still.restore': {
+        const back = recycled.filter(one => params!.stills.includes(one.id));
+        recycled = recycled.filter(one => !params!.stills.includes(one.id));
+        gallery = gallery.map(each => ({ ...each, stills: [...each.stills, ...back.filter(one => one.album === each.id)].sort((a, b) => a.id.localeCompare(b.id)) }));
+        changed();
+        return ok({ restored: Object.fromEntries(back.map(one => [one.id, one.album])) });
+      }
+      case 'still.copy': {
+        made += 1;
+        const source = gallery.flatMap(each => each.stills).find(one => one.id === params!.stills[0])!;
+        const copy = { ...source, id: `s${10 + made}`, album: params!.album };
+        const held = memories;
+        if (held !== null && held.id === params!.album) memories = { ...held, stills: [...held.stills, copy] };
+        changed();
+        return ok({ copied: { [source.id]: copy.id } });
+      }
       case 'still.move': {
         const moving = gallery.flatMap(each => each.stills).filter(one => params!.stills.includes(one.id));
         gallery = gallery.map(each => ({
@@ -586,23 +616,37 @@ describe('the Gallery', () => {
     expect(calls(bridge, 'still.move')).toHaveLength(1);
   });
 
-  it('deletes stills only once the deletion is confirmed, as the engine cannot undo it yet', async () => {
+  it('deletes stills at once, and Ctrl+Z in the Gallery brings them back, the project\'s undo elsewhere', async () => {
     const { bridge } = await mountGallery();
     fireEvent.click(stillTile('s1'));
     fireEvent.click(stillTile('s2'), { ctrlKey: true });
     fireEvent.contextMenu(stillTile('s2'));
     chooseItem('Delete Selected');
-    expect(screen.getByRole('dialog', { name: 'Delete Selected' }).textContent).toContain('The selected stills will be deleted. This cannot be undone.');
-    expect(calls(bridge, 'still.delete')).toEqual([]);
-    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
-    expect(calls(bridge, 'still.delete')).toEqual([]);
-    expect(stillIds()).toEqual(['s1', 's2', 's3']);
-    fireEvent.contextMenu(stillTile('s2'));
-    chooseItem('Delete Selected');
-    fireEvent.click(document.querySelector('[data-test="confirm-delete"]')!);
     await settle();
+    // Not confirmed (§9.2): it can be undone.
+    expect(screen.queryByRole('dialog')).toBeNull();
     expect(calls(bridge, 'still.delete')).toEqual([{ stills: ['s1', 's2'] }]);
     expect(stillIds()).toEqual(['s3']);
+    expect(document.querySelector('[data-test="gallery-notice"]')!.textContent).toBe('Deleted. Press Ctrl+Z in the Gallery to bring them back.');
+    fireEvent.contextMenu(stillTile('s3'));
+    chooseItem('Delete Selected');
+    await settle();
+    expect(stillIds()).toEqual([]);
+    // Ctrl+Z in the Gallery: the last deletion back, then the one before; the project's history is not stepped.
+    await act(() => { fireEvent.keyDown(document.querySelector('[data-test="gallery"]')!, { key: 'z', code: 'KeyZ', ctrlKey: true }); });
+    await settle();
+    expect(last(bridge, 'still.restore')).toEqual({ stills: ['s3'] });
+    expect(stillIds()).toEqual(['s3']);
+    await act(() => { fireEvent.keyDown(stillTile('s3'), { key: 'z', code: 'KeyZ', ctrlKey: true }); });
+    await settle();
+    expect(last(bridge, 'still.restore')).toEqual({ stills: ['s1', 's2'] });
+    expect(stillIds()).toEqual(['s1', 's2', 's3']);
+    expect(calls(bridge, 'history.undo')).toEqual([]);
+    // With nothing left to restore, Ctrl+Z is the project's again.
+    await act(() => { fireEvent.keyDown(stillTile('s3'), { key: 'z', code: 'KeyZ', ctrlKey: true }); });
+    await settle();
+    expect(calls(bridge, 'still.restore')).toHaveLength(2);
+    expect(calls(bridge, 'history.undo')).toHaveLength(1);
   });
 
   it('keeps grades in memories A–H: Alt+number saves, Ctrl+number and the middle button load, the menu clears, a still dragged on keeps it', async () => {
@@ -613,39 +657,43 @@ describe('the Gallery', () => {
     expect([...document.querySelectorAll<HTMLElement>('[data-test="memory"]')].map(each => each.dataset.slot)).toEqual(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']);
     await key('1', { code: 'Digit1', altKey: true });
     await settle();
-    // An album of its own for the memories, which the list of albums does not show.
-    expect(last(bridge, 'gallery.album.create')).toEqual({ kind: 'stills', name: 'Memories' });
-    expect(last(bridge, 'still.grab')).toEqual({ view: 'timeline', album: 'a3', clip: 'c1', level: 'clip' });
+    // The album of the memories, which the engine lists apart from the albums.
+    expect(last(bridge, 'gallery.album.create')).toEqual({ kind: 'memories', name: 'Memories' });
+    expect(last(bridge, 'still.grab')).toEqual({ view: 'timeline', album: 'a9', clip: 'c1', level: 'clip' });
     expect(albumNames()).toEqual(['Stills 1', 'Looks', 'PowerGrade 1']);
-    expect(readMemories('F:/film')).toEqual({ album: 'a3', slots: ['s12', null, null, null, null, null, null, null] });
+    expect(readMemories('F:/film')).toEqual({ album: 'a9', slots: ['s11', null, null, null, null, null, null, null] });
     expect(document.querySelector<HTMLElement>('[data-test="memory"][data-slot="A"]')!.dataset.filled).toBeDefined();
     await key('1', { code: 'Digit1', ctrlKey: true });
     await settle();
-    expect(last(bridge, 'still.apply')).toEqual({ still: 's12', to: [C('c1')], mode: 'apply', keyframes: 'none', revision: 0 });
+    expect(last(bridge, 'still.apply')).toEqual({ still: 's11', to: [C('c1')], mode: 'apply', keyframes: 'none', revision: 0 });
     // Saved again, the memory takes the new grade, and the still it had goes from the album of the memories.
     await key('1', { code: 'Digit1', altKey: true });
     await settle();
     expect(calls(bridge, 'gallery.album.create')).toHaveLength(1);
-    expect(last(bridge, 'still.delete')).toEqual({ stills: ['s12'] });
-    expect(readMemories('F:/film').slots[0]).toBe('s13');
-    // A still dragged onto memory C is kept there; the middle button applies it.
+    expect(last(bridge, 'still.delete')).toEqual({ stills: ['s11'] });
+    expect(readMemories('F:/film').slots[0]).toBe('s12');
+    // A still dragged onto memory C is copied into the album of the memories; the middle button applies the copy.
     fireEvent.dragStart(stillTile('s2'));
     fireEvent.drop(document.querySelector('[data-test="memory"][data-slot="C"]')!);
-    expect(readMemories('F:/film').slots[2]).toBe('s2');
+    await settle();
+    expect(last(bridge, 'still.copy')).toEqual({ stills: ['s2'], album: 'a9' });
+    expect(readMemories('F:/film').slots[2]).toBe('s13');
+    expect(stillIds()).toEqual(['s1', 's2', 's3']);
     fireEvent.pointerDown(document.querySelector('[data-test="memory"][data-slot="C"]')!, { button: 1 });
     await settle();
-    expect(last(bridge, 'still.apply')).toMatchObject({ still: 's2', mode: 'apply' });
+    expect(last(bridge, 'still.apply')).toMatchObject({ still: 's13', mode: 'apply' });
     fireEvent.contextMenu(document.querySelector('[data-test="memory"][data-slot="C"]')!);
     expect(menuItems('Memory menu')).toEqual(['Apply Grade', 'Append Node Graph', 'Clear']);
     chooseItem('Append Node Graph');
     await settle();
-    expect(last(bridge, 'still.apply')).toMatchObject({ still: 's2', mode: 'append' });
+    expect(last(bridge, 'still.apply')).toMatchObject({ still: 's13', mode: 'append' });
     fireEvent.contextMenu(document.querySelector('[data-test="memory"][data-slot="C"]')!);
     chooseItem('Clear');
     await settle();
     expect(readMemories('F:/film').slots[2]).toBeNull();
-    // A still of an album is not deleted as a memory is cleared.
-    expect(calls(bridge, 'still.delete')).toHaveLength(1);
+    // Cleared, its copy goes from the album of the memories; the still of the album stays.
+    expect(last(bridge, 'still.delete')).toEqual({ stills: ['s13'] });
+    expect(stillIds()).toEqual(['s1', 's2', 's3']);
     // An empty memory loads nothing; the memories are the project's.
     const applied = calls(bridge, 'still.apply').length;
     await key('5', { code: 'Digit5', ctrlKey: true });
@@ -778,7 +826,7 @@ describe('the wipe of the viewer', () => {
   });
 
   it('wipes a clip of the timeline, outlined in blue, steps it a frame, and with Gang keeps it as far from the current clip as another becomes current', async () => {
-    const { bridge } = await mountGallery();
+    const { bridge, notify } = await mountGallery();
     // Wipe Timeline Clip is of a clip other than the current one.
     fireEvent.contextMenu(thumb('c1').querySelector('.color-thumb-frame')!);
     expect(menuItems('Clip menu')).not.toContain('Wipe Timeline Clip');
@@ -812,6 +860,13 @@ describe('the wipe of the viewer', () => {
     await settle();
     expect(wipes(bridge).at(-1)).toMatchObject({ reference: { kind: 'neighbour', side: 'next', current: 'c1' } });
     expect(thumb('c2').dataset.reference).toBeDefined();
+    // As it plays, the state of the transport tells where the reference is now (`compared`), which the outline follows.
+    await notify({ compared: [250] });
+    await settle();
+    expect(thumb('c3').dataset.reference).toBeDefined();
+    expect(thumb('c2').dataset.reference).toBeUndefined();
+    await notify({ compared: undefined });
+    await settle();
     pressThumb('c2');
     await settle();
     expect(wipes(bridge).at(-1)).toMatchObject({ reference: { kind: 'neighbour', side: 'next', current: 'c2' } });
@@ -851,8 +906,10 @@ describe('the wipe of the viewer', () => {
     expect([...mode().options].map(option => option.textContent)).toEqual(['Current Group', 'Neighbor Clips', 'Selected Clips', 'Selected Still Images']);
     fireEvent.change(mode(), { target: { value: 'neighbor_clips' } });
     await settle();
+    // The two before above, the current and the next below (p. 3004), each following the playhead; black where there is none.
     expect(splits().at(-1)).toEqual({ on: true, items: [
-      { kind: 'clip', clip: 'c1', frame: 0 }, { kind: 'neighbour', side: 'previous', current: 'c3' }, { kind: 'current' },
+      { kind: 'neighbour', side: 'previous', steps: 2, current: 'c3' }, { kind: 'neighbour', side: 'previous', current: 'c3' }, { kind: 'current' },
+      { kind: 'black' },
     ], selected: 2, outline: true });
     fireEvent.click(stillTile('s1'));
     fireEvent.click(stillTile('s3'), { ctrlKey: true });
@@ -981,9 +1038,13 @@ describe('the rules of comparisons', () => {
     const clips = [clip('c1', 0, 100, { group: 'g' }), clip('c2', 100, 100), clip('c3', 200, 100, { group: 'g' }), clip('c4', 300, 10)];
     const base = { clips, chosen: new Set<string>(), current: clips[2], stills: ['s1'], frame: 230 };
     expect(splitItems('neighbor_clips', base)).toEqual({ items: [
-      { kind: 'clip', clip: 'c1', frame: 30 }, { kind: 'neighbour', side: 'previous', current: 'c3' }, { kind: 'current' }, { kind: 'neighbour', side: 'next', current: 'c3' },
+      { kind: 'neighbour', side: 'previous', steps: 2, current: 'c3' }, { kind: 'neighbour', side: 'previous', current: 'c3' }, { kind: 'current' },
+      { kind: 'neighbour', side: 'next', current: 'c3' },
     ], selected: 2, clips: ['c1', 'c2', 'c3', 'c4'] });
-    expect(splitItems('neighbor_clips', { ...base, current: clips[0], frame: 5 }).items).toEqual([{ kind: 'current' }, { kind: 'neighbour', side: 'next', current: 'c1' }]);
+    // At the first clip the cells before it are black, each in its place.
+    expect(splitItems('neighbor_clips', { ...base, current: clips[0], frame: 5 })).toEqual({ items: [
+      { kind: 'black' }, { kind: 'black' }, { kind: 'current' }, { kind: 'neighbour', side: 'next', current: 'c1' },
+    ], selected: 2, clips: [null, null, 'c1', 'c2'] });
     expect(splitItems('current_group', base).items).toEqual([{ kind: 'clip', clip: 'c1', frame: 0 }, { kind: 'current' }]);
     expect(splitItems('current_group', { ...base, current: clips[1] }).items).toEqual([{ kind: 'current' }]);
     expect(splitItems('selected_stills', { ...base, stills: Array.from({ length: 20 }, (_, at) => `s${at}`) }).items).toHaveLength(16);
@@ -995,6 +1056,10 @@ describe('the rules of comparisons', () => {
     expect(timelineReference({ clip: 'c2', frame: 0 }, { distance: 1, shift: 0 }, clips, clips[1], 120)).toEqual({ kind: 'neighbour', side: 'next', current: 'c2' });
     expect(timelineReference({ clip: 'c2', frame: 0 }, { distance: 2, shift: 3 }, clips, clips[0], 20)).toEqual({ kind: 'clip', clip: 'c3', frame: 23 });
     expect(timelineReference({ clip: 'c2', frame: 0 }, { distance: -1, shift: 0 }, clips, clips[0], 20)).toBeNull();
+    // Two away and unmoved, a neighbour of two steps, which follows the playhead too.
+    expect(timelineReference({ clip: 'c3', frame: 0 }, { distance: 2, shift: 0 }, clips, clips[0], 20)).toEqual({ kind: 'neighbour', side: 'next', steps: 2, current: 'c1' });
+    expect(neighbourClip(clips, clips[3], { kind: 'neighbour', side: 'previous', steps: 2 })?.id).toBe('c2');
+    expect(neighbourClip(clips, clips[0], { kind: 'neighbour', side: 'previous' })).toBeNull();
     expect(referenceClip(clips, 150)).toBe('c2');
     expect(referenceClip(clips, null)).toBeNull();
   });

@@ -198,6 +198,16 @@
   color: var(--danger, var(--accent));
 }
 
+.gallery-notice {
+  margin: 0;
+  padding: var(--s1) var(--s2);
+  font-size: var(--text-caption);
+}
+
+.gallery:focus {
+  outline: none;
+}
+
 .gallery-properties {
   display: grid;
   gap: var(--s1);

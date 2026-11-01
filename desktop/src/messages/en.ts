@@ -1681,7 +1681,7 @@ export const en = {
           empty: 'There are no stills in this album. Press Ctrl+Alt+G to grab one.',
           noneFound: 'No still here has a label like this.',
           failed: 'The Gallery could not be read.',
-          confirmDelete: 'The selected stills will be deleted. This cannot be undone.',
+          deleted: 'Deleted. Press Ctrl+Z in the Gallery to bring them back.',
           confirmRemoveAlbum: 'The album will be removed with all its stills. This cannot be undone.',
           /** Why the engine refused a change of the Gallery, or of grades from it, by its reason. */
           refusals: {

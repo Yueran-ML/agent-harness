@@ -47,8 +47,9 @@ export function keepApplySettings(settings: ApplySettings): void {
 
 /**
  * The memories of a project: the still that each of A–H holds (or null), and the album that the
- * page grabs them into. A memory is a still that keys reach (p. 3271), kept in an album of its own
- * that the Gallery's list does not show, so that it is not one of the stills of an album.
+ * page grabs them into. A memory is a still that keys reach (p. 3271), kept in the project's album
+ * of the memories, which the engine lists apart from the albums (`gallery.list`'s `memories`), so
+ * that it is not one of the stills of an album; a still dragged onto a memory is copied into it.
  */
 export interface Memories { album: string | null; slots: (string | null)[] }
 export const NO_MEMORIES: Memories = { album: null, slots: MEMORY_LETTERS.map(() => null) };
@@ -167,6 +168,8 @@ export const thumbnailHeight = (size: number, ratio = 1): number => Math.min(THU
 
 export interface GalleryState {
   albums: GalleryAlbum[];
+  /** The project's album of the memories, where there is one. */
+  memories: GalleryAlbum | null;
   loaded: boolean;
   /** What the engine said where the Gallery could not be listed. */
   error: string | null;
@@ -178,15 +181,17 @@ export interface GalleryState {
  * engine is opened. Thumbnails are kept by still and height: an id is never given twice.
  */
 export function useGallery(bridge: Pick<EngineBridge, 'call' | 'onEvent'>, session: number) {
-  const [state, setState] = useState<GalleryState>({ albums: [], loaded: false, error: null });
+  const [state, setState] = useState<GalleryState>({ albums: [], memories: null, loaded: false, error: null });
   const asking = useRef(0);
   const thumbnails = useRef(new Map<string, Promise<string | null>>());
   const list = useCallback(async () => {
     const asked = ++asking.current;
     try {
       const answer = await callEngine(bridge, 'gallery.list');
-      const albums = Array.isArray(answer?.albums) ? answer.albums.map(album => ({ ...album, stills: Array.isArray(album.stills) ? album.stills : [] })) : [];
-      if (asked === asking.current) setState({ albums, loaded: true, error: null });
+      const withStills = (album: GalleryAlbum) => ({ ...album, stills: Array.isArray(album.stills) ? album.stills : [] });
+      const albums = Array.isArray(answer?.albums) ? answer.albums.map(withStills) : [];
+      const memories = answer?.memories && typeof answer.memories === 'object' ? withStills(answer.memories) : null;
+      if (asked === asking.current) setState({ albums, memories, loaded: true, error: null });
     } catch (failure) {
       if (asked === asking.current) setState(old => ({ ...old, loaded: true, error: failure instanceof Error ? failure.message : String(failure) }));
     }

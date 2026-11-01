@@ -22,7 +22,7 @@ import {
   type WipeSettings, type WipeStyle,
 } from '../engine';
 import {
-  DEFAULT_SPLIT, DEFAULT_WIPE, referenceClip, splitItems, tileAt, timelineReference, wipeAngleAt, wipeCursor, wipeParams, wipePositionAt,
+  DEFAULT_SPLIT, DEFAULT_WIPE, neighbourClip, referenceClip, splitItems, tileAt, timelineReference, wipeAngleAt, wipeCursor, wipeParams, wipePositionAt,
   type ReferenceMode, type SplitMode, type TimelineWipe,
 } from './comparison';
 
@@ -66,7 +66,7 @@ export interface Comparison {
 
 const OFF: Compared = { mode: 'off' };
 
-export function useComparison({ bridge, session, native, loaded, timeline, clips, current, frame, playing, chosen, stills, currentStill, onGo,
+export function useComparison({ bridge, session, native, loaded, timeline, clips, current, frame, playing, comparedAt, chosen, stills, currentStill, onGo,
   onProblem }: {
   bridge: Pick<EngineBridge, 'call' | 'onEvent'>;
   session: number;
@@ -80,6 +80,8 @@ export function useComparison({ bridge, session, native, loaded, timeline, clips
   current: Clip | null;
   frame: number;
   playing: boolean;
+  /** The frames that the references show for the frame shown, as the state of the transport tells them (`compared`): the `at` of an answer is stale once the playhead moves. */
+  comparedAt?: readonly (number | null)[];
   /** The clips chosen in the thumbnail timeline. */
   chosen: ReadonlySet<string>;
   /** The stills chosen in the Gallery, in its order, and the one chosen last. */
@@ -158,9 +160,8 @@ export function useComparison({ bridge, session, native, loaded, timeline, clips
     if (state.timelineWipe === null) return null;
     const reference = timelineReference(state.timelineWipe, state.gang ? state.ganged : null, state.clips, state.current, state.frame);
     if (reference === null) return null;
-    const at = state.current === null ? -1 : state.clips.findIndex(clip => clip.id === state.current!.id);
     const clip = reference.kind === 'clip' ? reference.clip
-      : reference.kind === 'neighbour' ? state.clips[at + (reference.side === 'previous' ? -1 : 1)]?.id ?? null : null;
+      : reference.kind === 'neighbour' ? neighbourClip(state.clips, state.current, reference)?.id ?? null : null;
     return { reference, clip };
   }, []);
 
@@ -259,8 +260,7 @@ export function useComparison({ bridge, session, native, loaded, timeline, clips
       const reference = timelineReference(state.timelineWipe ?? { clip: '', frame: 0 }, state.ganged, state.clips, state.current, state.frame);
       if (reference !== null && reference.kind === 'clip') { setTimelineWipe({ clip: reference.clip, frame: reference.frame ?? 0 }); now.current.timelineWipe = { clip: reference.clip, frame: reference.frame ?? 0 }; }
       if (reference !== null && reference.kind === 'neighbour') {
-        const at = state.clips.findIndex(each => each.id === state.current!.id);
-        const clip = state.clips[at + (reference.side === 'previous' ? -1 : 1)];
+        const clip = neighbourClip(state.clips, state.current, reference);
         if (clip) {
           const kept = { clip: clip.id, frame: Math.max(0, Math.min(clip.length - 1, state.frame - state.current.start)) };
           setTimelineWipe(kept); now.current.timelineWipe = kept;
@@ -284,9 +284,8 @@ export function useComparison({ bridge, session, native, loaded, timeline, clips
     sendWipe(now.current.wipe, found.reference, found.clip);
   }, [gangKey]);
 
-  // A split screen: its items, made again from what is chosen as that changes.
-  const splitNow = useMemo(() => splitItems(splitMode, { clips, chosen, current, stills, frame }), [splitMode, clips, chosen, current, stills,
-    splitMode === 'neighbor_clips' && !playing ? frame : 0]);
+  // A split screen: its items, made again from what is chosen as that changes; its neighbours follow the playhead in the engine.
+  const splitNow = useMemo(() => splitItems(splitMode, { clips, chosen, current, stills }), [splitMode, clips, chosen, current, stills]);
   const sendSplit = useCallback((shown: ReturnType<typeof splitItems>, selected = shown.selected) => {
     setSplitShown({ selected, clips: shown.clips });
     send('viewer.split', { on: true, items: shown.items, selected, outline: now.current.outline });
@@ -351,7 +350,7 @@ export function useComparison({ bridge, session, native, loaded, timeline, clips
   }, [changeWipe, pressTile]);
 
   const shownClip = compared.mode === 'wipe' && compared.wipe.reference.kind !== 'still'
-    ? referenceClip(clips, compared.wipe.reference.at, sentReference.current?.clip ?? undefined) : null;
+    ? referenceClip(clips, comparedAt?.length === 1 ? comparedAt[0] : compared.wipe.reference.at, sentReference.current?.clip ?? undefined) : null;
 
   return {
     compared, pointerCursor: cursor, handlePointer, resetPointer, wipe, referenceMode, gang, splitMode, outline, wiping, splitting, wipedStill, referenceClip: shownClip,

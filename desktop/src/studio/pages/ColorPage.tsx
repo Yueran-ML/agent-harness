@@ -311,7 +311,8 @@ export function ColorPage({
   }, [openViewerMenu]);
   const comparison = useComparison({
     bridge, session, native, loaded: timelineState !== null && timelineMonitor.loaded, timeline: selected, clips: visibleClips, current: current?.clip ?? null,
-    frame: frame ?? 0, playing: timelineState?.playing ?? false, chosen: chosenClips, stills: gallery.chosenStills, currentStill: gallery.currentStill,
+    frame: frame ?? 0, playing: timelineState?.playing ?? false, comparedAt: timelineState?.compared, chosen: chosenClips, stills: gallery.chosenStills,
+    currentStill: gallery.currentStill,
     // A tile of Selected Clips: the playhead goes to the first frame of its clip, which is current, and the clips chosen stay chosen.
     onGo: (clip) => { const entry = numbered.find(each => each.clip.id === clip); if (entry) { setChosen(clip); timelineMonitor.seek(entry.clip.start, false); } },
     onProblem: (failure) => { if (failure instanceof EngineError) grades.editing.setProblem(refusalText(failure, now.current.words.hint.studio)); else failed(failure); },

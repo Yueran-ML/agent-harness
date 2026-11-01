@@ -500,6 +500,8 @@ export interface TimelineTransportState extends TransportBase {
   late: number;
   /** The Highlight mode shown (`viewer.highlight`), while one is on. */
   highlight?: { mode: 'highlight' | 'bw'; grade: Target; node: string };
+  /** The frame of the timeline that each reference of the wipe or split screen shows for the frame shown, in their order; while one is on. */
+  compared?: (number | null)[];
 }
 export type TransportState = SourceTransportState | TimelineTransportState;
 
@@ -669,8 +671,10 @@ export interface PageMethods {
   'still.apply': Applied;
   'still.label': { id: string; label: string };
   'still.delete': { deleted: string[] };
+  'still.restore': { restored: Record<string, string> };
   'still.move': { moved: Record<string, string> };
-  'gallery.list': { albums: GalleryAlbum[] };
+  'still.copy': { copied: Record<string, string> };
+  'gallery.list': { albums: GalleryAlbum[]; memories?: GalleryAlbum | null };
   'gallery.thumbnail': { width: number; height: number; png: string };
   'gallery.album.create': { id: string; name: string; kind: AlbumKind };
   'gallery.album.rename': { id: string; name: string };
@@ -680,8 +684,11 @@ export interface PageMethods {
 }
 export type PageMethod = keyof PageMethods;
 
-/** An album of the project's gallery, or of the PowerGrades that every project shares (p. 3266). */
-export type AlbumKind = 'stills' | 'powergrade';
+/**
+ * An album of the project's gallery, or of the PowerGrades that every project shares (p. 3266), or
+ * the project's one album of the memories A–H (pp. 3271–3272), which `gallery.list` gives apart.
+ */
+export type AlbumKind = 'stills' | 'powergrade' | 'memories';
 /** Which grade of its clip a still holds: the Node Editor's mode when it was grabbed (p. 3306). */
 export type StillLevel = 'clip' | 'pre_clip' | 'post_clip';
 /** Apply Grades Using (pp. 3264, 3287): how the keys of a still's grade are put on a clip. */
@@ -737,14 +744,16 @@ export type WipeStyle = 'horizontal' | 'vertical' | 'diagonal' | 'mix' | 'differ
 /**
  * What the viewer compares its frame with (PROTOCOL.md, "Comparisons in the viewer"): a still of
  * the Gallery by its id (the page names no file), the timeline at a frame or a clip, the clip
- * before or after the current one following the playhead, or (of a split screen) the frame shown.
+ * `steps` (1–7, 1 where left out) before or after the current one following the playhead, or (of a
+ * split screen) the frame shown or a black cell.
  */
 export type ViewerReference =
   | { kind: 'still'; still: string }
   | { kind: 'frame'; frame: number }
   | { kind: 'clip'; clip: string; frame?: number }
-  | { kind: 'neighbour'; side: 'previous' | 'next'; current?: string }
-  | { kind: 'current' };
+  | { kind: 'neighbour'; side: 'previous' | 'next'; steps?: number; current?: string }
+  | { kind: 'current' }
+  | { kind: 'black' };
 /** A reference as the engine answers it: of the timeline, with the frame it shows now (`at`). */
 export type ComparedReference = ViewerReference & { at?: number | null; path?: string };
 /** The whole of a wipe: every setting is sent each time, what is left out taking its default. */

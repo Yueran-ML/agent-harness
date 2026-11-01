@@ -25,6 +25,8 @@ export const SPLIT_MODES: readonly SplitMode[] = ['current_group', 'neighbor_cli
 export const DEFAULT_SPLIT: SplitMode = 'selected_clips';
 /** The most pictures that a split screen shows (p. 3005). */
 export const SPLIT_MOST = 16;
+/** The furthest a `neighbour` reference reaches from the current clip, which follows the playhead (PROTOCOL.md). */
+export const NEIGHBOUR_MOST = 7;
 
 const clamp = (value: number, least: number, most: number) => Math.min(most, Math.max(least, value));
 
@@ -89,8 +91,8 @@ export interface TimelineWipe { clip: string; frame: number }
  * A wipe of the timeline as the engine is asked for it. Gang off: the clip at its frame, which
  * stays where it is whatever clip is current. Gang on (p. 3002): the clip as far from the current
  * one as it was when the wipe began, at the playhead's offset into the current clip moved as far as
- * it was then; the clip just before or after, unmoved, as `neighbour`, which follows the playhead
- * as it plays. Null where the ganged clip is beyond the first or the last.
+ * it was then; a clip up to seven before or after, unmoved, as `neighbour` with its `steps`, which
+ * follows the playhead as it plays. Null where the ganged clip is beyond the first or the last.
  */
 export function timelineReference(wipe: TimelineWipe, gang: { distance: number; shift: number } | null, clips: readonly Clip[],
   current: Clip | null, frame: number): ViewerReference | null {
@@ -101,11 +103,26 @@ export function timelineReference(wipe: TimelineWipe, gang: { distance: number; 
   const at = clips.findIndex(each => each.id === current.id);
   const clip = at < 0 ? undefined : clips[at + gang.distance];
   if (!clip) return null;
-  if (gang.shift === 0 && Math.abs(gang.distance) === 1) return { kind: 'neighbour', side: gang.distance < 0 ? 'previous' : 'next', current: current.id };
+  const steps = Math.abs(gang.distance);
+  if (gang.shift === 0 && steps >= 1 && steps <= NEIGHBOUR_MOST) {
+    return { kind: 'neighbour', side: gang.distance < 0 ? 'previous' : 'next', ...(steps === 1 ? {} : { steps }), current: current.id };
+  }
   return { kind: 'clip', clip: clip.id, frame: clamp(frame - current.start + gang.shift, 0, Math.max(0, clip.length - 1)) };
 }
 
-/** The clip of the timeline that a reference shows now, where the engine answered its frame (`at`): to be outlined in blue (p. 3261). */
+/** The clip that a `neighbour` reference names, counted from the current clip in the order of the thumbnail timeline. */
+export function neighbourClip(clips: readonly Clip[], current: Clip | null, reference: Extract<ViewerReference, { kind: 'neighbour' }>): Clip | null {
+  const at = current === null ? -1 : clips.findIndex(clip => clip.id === current.id);
+  if (at < 0) return null;
+  const steps = reference.steps ?? 1;
+  return clips[at + (reference.side === 'previous' ? -steps : steps)] ?? null;
+}
+
+/**
+ * The clip of the timeline that a reference shows now, where the engine told its frame (`at`): of
+ * the state of the transport as the playhead moves (`compared`), else of its answer; to be outlined
+ * in blue (p. 3261).
+ */
 export function referenceClip(clips: readonly Clip[], at: number | null | undefined, named?: string): string | null {
   if (at === null || at === undefined) return null;
   const covering = clips.filter(clip => clip.start <= at && at < clip.start + clip.length);
@@ -120,12 +137,13 @@ export interface SplitItems { items: ViewerReference[]; selected: number; clips:
  * - Selected Clips: the clips chosen in the thumbnail timeline (the current one where none is), the
  *   current one at the playhead and each other at its first frame;
  * - Selected Still Images: the current clip, then the stills chosen in the Gallery;
- * - Neighbor Clips: the two clips before the current one above, the current one and the next below;
- *   those that are not there (before the first, after the last) are left out;
+ * - Neighbor Clips: the two clips before the current one above, the current one and the next below
+ *   (p. 3004), each following the playhead as `neighbour` does; a cell where there is no clip (before
+ *   the first, after the last) is black, so that each keeps its place;
  * - Current Group: the clips of the current clip's group, or the current clip where it has none.
  */
-export function splitItems(mode: SplitMode, { clips, chosen, current, stills, frame }: {
-  clips: readonly Clip[]; chosen: ReadonlySet<string>; current: Clip | null; stills: readonly string[]; frame: number;
+export function splitItems(mode: SplitMode, { clips, chosen, current, stills }: {
+  clips: readonly Clip[]; chosen: ReadonlySet<string>; current: Clip | null; stills: readonly string[]; frame?: number;
 }): SplitItems {
   const ofClips = (shown: readonly Clip[]): SplitItems => {
     const kept = shown.slice(0, SPLIT_MOST);
@@ -145,16 +163,13 @@ export function splitItems(mode: SplitMode, { clips, chosen, current, stills, fr
     case 'neighbor_clips': {
       const at = current === null ? -1 : clips.findIndex(clip => clip.id === current.id);
       if (at < 0) return alone();
-      const offset = current === null ? 0 : frame - current.start;
-      const items: ViewerReference[] = [];
-      const shown: (string | null)[] = [];
-      const before = clips[at - 2];
-      if (before) { items.push({ kind: 'clip', clip: before.id, frame: clamp(offset, 0, Math.max(0, before.length - 1)) }); shown.push(before.id); }
-      if (clips[at - 1]) { items.push({ kind: 'neighbour', side: 'previous', current: current!.id }); shown.push(clips[at - 1].id); }
-      items.push({ kind: 'current' }); shown.push(current!.id);
-      const selected = items.length - 1;
-      if (clips[at + 1]) { items.push({ kind: 'neighbour', side: 'next', current: current!.id }); shown.push(clips[at + 1].id); }
-      return { items, selected, clips: shown };
+      const cell = (side: 'previous' | 'next', steps: number): [ViewerReference, string | null] => {
+        const clip = clips[at + (side === 'previous' ? -steps : steps)];
+        if (!clip) return [{ kind: 'black' }, null];
+        return [{ kind: 'neighbour', side, ...(steps === 1 ? {} : { steps }), current: current!.id }, clip.id];
+      };
+      const cells = [cell('previous', 2), cell('previous', 1), [{ kind: 'current' }, current!.id] as [ViewerReference, string | null], cell('next', 1)];
+      return { items: cells.map(([item]) => item), selected: 2, clips: cells.map(([, clip]) => clip) };
     }
     case 'current_group': {
       if (current === null || current.group === null) return alone();

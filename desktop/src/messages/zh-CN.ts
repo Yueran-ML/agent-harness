@@ -1475,7 +1475,7 @@ export const zhCN: Messages = {
           empty: '这个相册里没有静帧。按 Ctrl+Alt+G 抓取一张。',
           noneFound: '这里没有静帧的标签与之相符。',
           failed: '无法读取画廊。',
-          confirmDelete: '所选静帧将被删除，且无法撤销。',
+          deleted: '已删除。在画廊中按 Ctrl+Z 可以恢复。',
           confirmRemoveAlbum: '相册将连同其中的所有静帧一起被移除，且无法撤销。',
           refusals: {
             last_album: '最后一个相册不能移除。',

@@ -952,8 +952,10 @@ fn read_index(bytes: &[u8], path: &Path) -> Result<Index, Fault> {
     if !(u64::from(INDEX_FORMAT_LEAST)..=u64::from(INDEX_FORMAT)).contains(&format) {
         return Err(gallery_fault(
             &format!(
-                "{} is of format {format}, and this engine reads formats {INDEX_FORMAT_LEAST} and                  {INDEX_FORMAT}",
-                path.display()
+                "{} is of format {format}, and this engine reads formats {} and {}",
+                path.display(),
+                INDEX_FORMAT_LEAST,
+                INDEX_FORMAT
             ),
             Some(path),
         ));

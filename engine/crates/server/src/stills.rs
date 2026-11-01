@@ -360,10 +360,13 @@ fn gallery_change(places: &Places, method: &str, params: Value) -> Result<Value,
                     of.and_then(|of| opened[of].album_of(id))
                         .ok_or_else(|| gallery::missing("still", id))?;
                 }
-                for (id, kind) in &ids {
-                    if let Some(of) = opened.iter().position(|one| one.kind() == *kind) {
-                        opened[of].recycle_still(id)?;
-                    }
+                for one in opened.iter_mut() {
+                    let of: Vec<String> = ids
+                        .iter()
+                        .filter(|(_, kind)| *kind == one.kind())
+                        .map(|(id, _)| id.clone())
+                        .collect();
+                    one.recycle_stills(&of)?;
                 }
                 opened.iter_mut().try_for_each(|one| one.save())
             };
@@ -1173,21 +1176,17 @@ fn restore(places: &Places, stills: &[String]) -> Result<Value, Fault> {
     let ids = gallery::still_ids(stills)?;
     let mut restored = serde_json::Map::new();
     for kind in [Kind::Stills, Kind::Powergrade] {
-        let of: Vec<&String> = ids
+        let of: Vec<String> = ids
             .iter()
             .filter(|(_, each)| *each == kind)
-            .map(|(id, _)| id)
+            .map(|(id, _)| id.clone())
             .collect();
         if of.is_empty() {
             continue;
         }
         gallery::with(places, kind, |opened| {
-            if let Some(id) = of.iter().find(|id| !opened.is_recycled(id)) {
-                return Err(gallery::missing("deleted still", id));
-            }
-            for id in &of {
-                let album = opened.restore_still(id)?;
-                restored.insert((*id).clone(), json!(album));
+            for (id, album) in opened.restore_stills(&of)? {
+                restored.insert(id, json!(album));
             }
             opened.save()
         })?;

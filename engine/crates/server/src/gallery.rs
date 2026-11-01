@@ -31,8 +31,9 @@
 //! Delete Selected can be undone (the interaction reference, §9.2; the manual, p. 3258, tells no
 //! confirmation): a still deleted is taken out of its album, its files moved into `recycle`, and
 //! where it was is kept in the index (`recycled`), so that `still.restore` puts it back, its id
-//! and all, where it was. The last [`MOST_RECYCLED`] stills deleted are kept; one before them is
-//! deleted for good. Removing an album, which is confirmed (p. 3265), deletes its stills for good.
+//! and all, where it was. The last [`MOST_RECYCLED`] stills deleted are kept, and all of one
+//! deletion however many it deletes; one deleted before them is deleted for good. Removing an
+//! album, which is confirmed (p. 3265), deletes its stills for good.
 //!
 //! # The memories
 //!
@@ -594,37 +595,44 @@ impl Opened {
         self.root.join("recycle").join(format!("{id}.{extension}"))
     }
 
-    /// Take the still `id` out of its album and move its files into `recycle`, where
-    /// [`Opened::restore_still`] finds them; forget the stills deleted before the last
-    /// [`MOST_RECYCLED`], deleting their files.
-    pub fn recycle_still(&mut self, id: &str) -> Result<(), Fault> {
-        let album = self
-            .index
-            .albums
-            .iter()
-            .find(|album| album.stills.iter().any(|s| s == id))
-            .ok_or_else(|| missing("still", id))?;
-        let at = album
-            .stills
-            .iter()
-            .position(|s| s == id)
-            .expect("found above");
-        let recycled = Recycled {
-            id: id.to_string(),
-            album: album.id.clone(),
-            at,
-        };
-        own_dir(&self.root.join("recycle"))?;
-        for extension in EXTENSIONS {
-            move_file(
-                &self.file(id, extension),
-                &self.recycled_file(id, extension),
-            )?;
+    /// Delete the stills `ids` of this gallery as one deletion (Delete Selected): each taken out
+    /// of its album and its files moved into `recycle`, where [`Opened::restore_stills`] finds
+    /// them, every one checked first. The stills of earlier deletions beyond the last
+    /// [`MOST_RECYCLED`] are forgotten, their files deleted; those of this one never are, so that
+    /// it is always restored whole, however many it deletes.
+    pub fn recycle_stills(&mut self, ids: &[String]) -> Result<(), Fault> {
+        for id in ids {
+            self.album_of(id).ok_or_else(|| missing("still", id))?;
         }
-        self.album_mut(&recycled.album)?.stills.remove(at);
-        self.index.recycled.retain(|each| each.id != id);
-        self.index.recycled.push(recycled);
-        let over = self.index.recycled.len().saturating_sub(MOST_RECYCLED);
+        own_dir(&self.root.join("recycle"))?;
+        for id in ids {
+            let (album, at) = self.place_of(id)?;
+            for extension in EXTENSIONS {
+                move_file(
+                    &self.file(id, extension),
+                    &self.recycled_file(id, extension),
+                )?;
+            }
+            self.album_mut(&album)?.stills.remove(at);
+            self.index.recycled.retain(|each| each.id != *id);
+            self.index.recycled.push(Recycled {
+                id: id.clone(),
+                album,
+                at,
+            });
+        }
+        let earlier = self
+            .index
+            .recycled
+            .iter()
+            .filter(|each| !ids.contains(&each.id))
+            .count();
+        let over = self
+            .index
+            .recycled
+            .len()
+            .saturating_sub(MOST_RECYCLED)
+            .min(earlier);
         let forgotten: Vec<Recycled> = self.index.recycled.drain(..over).collect();
         for each in forgotten {
             for extension in EXTENSIONS {
@@ -634,10 +642,52 @@ impl Opened {
         Ok(())
     }
 
+    /// The album that the still `id` is in, and its place there.
+    fn place_of(&self, id: &str) -> Result<(String, usize), Fault> {
+        self.index
+            .albums
+            .iter()
+            .find_map(|album| {
+                let at = album.stills.iter().position(|s| s == id)?;
+                Some((album.id.clone(), at))
+            })
+            .ok_or_else(|| missing("still", id))
+    }
+
+    /// Put the stills `ids` that were deleted back where they were, every one checked first: the
+    /// last deleted first, so that each goes back to its place as it was when it was deleted.
+    /// Gives the album that each is in, in the order of `ids`.
+    pub fn restore_stills(&mut self, ids: &[String]) -> Result<Vec<(String, String)>, Fault> {
+        let mut places = Vec::with_capacity(ids.len());
+        for id in ids {
+            let place = self
+                .index
+                .recycled
+                .iter()
+                .position(|each| each.id == *id)
+                .ok_or_else(|| missing("deleted still", id))?;
+            places.push(place);
+        }
+        places.sort_unstable_by(|a, b| b.cmp(a));
+        let ordered: Vec<String> = places
+            .iter()
+            .map(|place| self.index.recycled[*place].id.clone())
+            .collect();
+        let mut albums = std::collections::HashMap::new();
+        for id in ordered {
+            let album = self.restore_still(&id)?;
+            albums.insert(id, album);
+        }
+        Ok(ids
+            .iter()
+            .map(|id| (id.clone(), albums.remove(id).unwrap_or_default()))
+            .collect())
+    }
+
     /// Put the still `id` that was deleted back where it was: its files, and its place in its
     /// album (at its end where the album has fewer stills now), or at the end of the first album
     /// where its album is gone. Gives the album it is in.
-    pub fn restore_still(&mut self, id: &str) -> Result<String, Fault> {
+    fn restore_still(&mut self, id: &str) -> Result<String, Fault> {
         let place = self
             .index
             .recycled
@@ -670,7 +720,8 @@ impl Opened {
     }
 
     /// Whether the still `id` was deleted and can be restored.
-    pub fn is_recycled(&self, id: &str) -> bool {
+    #[cfg(test)]
+    fn is_recycled(&self, id: &str) -> bool {
         self.index.recycled.iter().any(|each| each.id == id)
     }
 
@@ -1485,7 +1536,7 @@ mod tests {
         // Of albums and stills alone, as format 1 has them: an older engine reads it.
         assert_eq!(index_on_disk(&places)["format"], 1);
         with(&places, Kind::Stills, |opened| {
-            opened.recycle_still(&still)?;
+            opened.recycle_stills(std::slice::from_ref(&still))?;
             opened.save()
         })
         .unwrap();
@@ -1494,7 +1545,7 @@ mod tests {
         assert!(index["recycled"].is_array(), "{index}");
         // Restored, nothing is left that format 1 lacks.
         with(&places, Kind::Stills, |opened| {
-            opened.restore_still(&still)?;
+            opened.restore_stills(std::slice::from_ref(&still))?;
             opened.save()
         })
         .unwrap();
@@ -1506,6 +1557,72 @@ mod tests {
         })
         .unwrap();
         assert_eq!(index_on_disk(&places)["format"], 2);
+    }
+
+    #[test]
+    fn a_deletion_of_more_stills_than_are_kept_is_kept_whole_and_restored_in_its_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let places = places(dir.path());
+        let ids: Vec<String> = with(&places, Kind::Stills, |opened| {
+            Ok((0..MOST_RECYCLED + 6)
+                .map(|_| grabbed(opened, "a1"))
+                .collect())
+        })
+        .unwrap();
+        let (first, rest) = ids.split_first().unwrap();
+        with(&places, Kind::Stills, |opened| {
+            opened.recycle_stills(std::slice::from_ref(first))?;
+            opened.save()
+        })
+        .unwrap();
+        // One deletion of more than are kept: the one before it is forgotten, none of its own.
+        with(&places, Kind::Stills, |opened| {
+            opened.recycle_stills(rest)?;
+            opened.save()
+        })
+        .unwrap();
+        let recycle = places.project.join("recycle");
+        assert!(!recycle.join(format!("{first}.png")).exists());
+        for id in rest {
+            assert!(recycle.join(format!("{id}.json")).is_file(), "{id}");
+        }
+        let restored = with(&places, Kind::Stills, |opened| {
+            assert!(!opened.is_recycled(first));
+            let restored = opened.restore_stills(rest)?;
+            opened.save()?;
+            Ok(restored)
+        })
+        .unwrap();
+        assert_eq!(restored.len(), rest.len());
+        assert!(restored
+            .iter()
+            .zip(rest)
+            .all(|((id, album), was)| id == was && album == "a1"));
+        let opened = Opened::open(&places, Kind::Stills).unwrap();
+        assert_eq!(opened.albums()[0].stills, rest);
+        for id in rest {
+            assert!(opened.file(id, "png").is_file(), "{id}");
+        }
+    }
+
+    #[test]
+    fn stills_deleted_together_go_back_each_to_its_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let places = places(dir.path());
+        let ids: Vec<String> = with(&places, Kind::Stills, |opened| {
+            Ok((0..4).map(|_| grabbed(opened, "a1")).collect())
+        })
+        .unwrap();
+        // The first two and the last, deleted in the order of the album, restored in another.
+        let deleted = [ids[0].clone(), ids[1].clone(), ids[3].clone()];
+        with(&places, Kind::Stills, |opened| {
+            opened.recycle_stills(&deleted)?;
+            assert_eq!(opened.albums()[0].stills, [ids[2].clone()]);
+            opened.restore_stills(&[ids[3].clone(), ids[0].clone(), ids[1].clone()])?;
+            assert_eq!(opened.albums()[0].stills, ids);
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]

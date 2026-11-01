@@ -2507,11 +2507,13 @@ those of the `set_grade` worked out.
   go into).
 - `still.label` (Change Label; at most 100 characters, may be empty); `still.delete` (Delete
   Selected, p. 3258), every id checked first: each taken out of its album, its files moved into
-  the gallery's `recycle/`, and where it was kept, so that it can be undone; the last 64 stills
-  deleted of a gallery are kept so, and one deleted before them is deleted for good.
+  the gallery's `recycle/`, and where it was kept, so that it can be undone; a gallery keeps so
+  the last 64 stills deleted, and one deleted before them is deleted for good, but never one of
+  the same call, so that a call is always restored whole, however many it deletes.
   `still.restore` undoes it (Ctrl+Z in the Gallery, the interaction reference §9.2): each still
-  back in its album at its place (at the end where the album has fewer now; in the first album
-  shown where its album is gone), under its id, every one of a gallery checked first (`missing`
+  back in its album at its place (the last deleted first, so that stills deleted together go back
+  as they were; at the end where the album has fewer now; in the first album shown where its
+  album is gone), under its id, every one of a gallery checked first (`missing`
   `"what": "deleted still"` for one not deleted, or restored already); `restored` gives the album
   of each. `still.move` to another album (a still dragged onto an album, p. 3265): within a
   gallery it keeps its id, into the other it is copied under a new id and taken out of the first;

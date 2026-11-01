@@ -440,6 +440,18 @@ impl Painter {
         rotation: i16,
         map: Option<ViewportMap>,
     ) -> wgpu::CommandBuffer {
+        self.draw_mapped_with(target, size, rotation, map, |_| {})
+    }
+
+    /// Append display-only controls after mapping, in the same submission/surface lifetime.
+    pub(crate) fn draw_mapped_with(
+        &self,
+        target: &wgpu::TextureView,
+        size: (u32, u32),
+        rotation: i16,
+        map: Option<ViewportMap>,
+        overlay: impl FnOnce(&mut wgpu::CommandEncoder),
+    ) -> wgpu::CommandBuffer {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -514,6 +526,7 @@ impl Painter {
             pass.set_bind_group(0, bind, &[]);
             pass.draw(0..3, 0..1);
         }
+        overlay(&mut encoder);
         encoder.finish()
     }
 
@@ -1192,12 +1205,12 @@ mod tests {
     // What follows draws with the graphics card, into a texture that is read back. Without an
     // adapter or backend the tests are skipped, unless COLUMBINA_REQUIRE_GPU is 1.
 
-    struct Gpu {
-        device: wgpu::Device,
-        queue: wgpu::Queue,
+    pub(super) struct Gpu {
+        pub(super) device: wgpu::Device,
+        pub(super) queue: wgpu::Queue,
     }
 
-    fn gpu() -> Option<Gpu> {
+    pub(super) fn gpu() -> Option<Gpu> {
         let gpu = columbina_compose::gpu_for_tests()?;
         Some(Gpu {
             device: gpu.device().clone(),
@@ -1305,7 +1318,7 @@ mod tests {
         draw_using(gpu, size, |target| painter.draw(target, size, rotation))
     }
 
-    fn draw_using(
+    pub(super) fn draw_using(
         gpu: &Gpu,
         size: (u32, u32),
         commands: impl FnOnce(&wgpu::TextureView) -> wgpu::CommandBuffer,
@@ -2009,7 +2022,7 @@ mod tests {
         halves_using(gpu, size, |target| painter.draw(target, size, 0))
     }
 
-    fn halves_using(
+    pub(super) fn halves_using(
         gpu: &Gpu,
         size: (u32, u32),
         commands: impl FnOnce(&wgpu::TextureView) -> wgpu::CommandBuffer,
@@ -2130,7 +2143,7 @@ mod tests {
 
     /// Whether `drawn` is what `wanted` is, within the rounding of half floats and the
     /// approximations of the card's `pow` and `exp`.
-    fn near_mapped(drawn: [f32; 3], wanted: [f32; 3]) -> bool {
+    pub(super) fn near_mapped(drawn: [f32; 3], wanted: [f32; 3]) -> bool {
         drawn
             .iter()
             .zip(wanted)
@@ -2274,3 +2287,7 @@ mod tests {
 #[cfg(test)]
 #[path = "render/legacy.rs"]
 mod legacy;
+
+#[cfg(test)]
+#[path = "render/overlay_tests.rs"]
+mod overlay_tests;

@@ -182,6 +182,83 @@ fn every_style() -> [Style; 8] {
     ]
 }
 
+/// The pre-overlay shader is kept verbatim, so extraction cannot silently change image math.
+fn legacy_wiper(gpu: &Arc<Gpu>) -> Wiper {
+    let mut wiper = Wiper::new(Arc::clone(gpu));
+    let device = gpu.device();
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("pre-overlay wipe"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("legacy.wgsl").into()),
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &[Some(&wiper.wipe_layout)],
+        immediate_size: 0,
+    });
+    wiper.wipe = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: None,
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some("vs"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some("fs_wipe"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: WORKING_FORMAT,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+    wiper
+}
+
+#[test]
+fn extracting_overlay_coverage_keeps_the_image_wipe_bitwise_unchanged() {
+    let Some(gpu) = gpu_for_tests() else { return };
+    let before = legacy_wiper(&gpu);
+    let after = Wiper::new(Arc::clone(&gpu));
+    let (width, height) = (97, 61);
+    let (a, b) = gradients(width, height);
+    let (a, b) = (
+        texture(&gpu, width, height, &a),
+        texture(&gpu, width, height, &b),
+    );
+    let old = texture(&gpu, width, height, &[]);
+    let new = texture(&gpu, width, height, &[]);
+    for style in every_style() {
+        for invert in [false, true] {
+            for position in [0.0, 0.37, 1.0] {
+                for softness in [0.0, 0.25] {
+                    let wipe = Wipe {
+                        style,
+                        invert,
+                        position,
+                        softness,
+                        angle: -31.0,
+                        border: 3.0,
+                        border_colour: [0.7, 0.2, 0.9],
+                        gain: 4.0,
+                    };
+                    before.wipe(&a, &b, &wipe, &old).unwrap();
+                    after.wipe(&a, &b, &wipe, &new).unwrap();
+                    assert_eq!(read(&gpu, &old), read(&gpu, &new), "{wipe:?}");
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn a_split_screen_is_a_grid_of_cells_in_reading_order_each_picture_fitted_in_its_own() {
     let (width, height) = (1920, 1080);

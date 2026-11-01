@@ -56,6 +56,9 @@ use std::sync::Arc;
 use crate::{ComposeError, Gpu, WORKING_FORMAT};
 
 const SHADER: &str = include_str!("wipe.wgsl");
+/// The same shape and reference-weight functions used by the image wipe and view controls.
+/// Bindless WGSL, to prepend to a shader using [`Wipe::coverage_params`].
+pub const COVERAGE_WGSL: &str = include_str!("wipe_coverage.wgsl");
 
 /// The most pictures in a split screen.
 pub const MOST_TILES: usize = 16;
@@ -126,6 +129,47 @@ impl Default for Wipe {
 }
 
 impl Wipe {
+    /// Whether current picture A contributes at this canvas pixel centre. Difference always
+    /// permits editing A; a soft mix permits it until its weight is entirely B.
+    #[must_use]
+    pub fn has_current(&self, canvas: (u32, u32), at: [f32; 2]) -> bool {
+        self.style == Style::Difference
+            || Shape::of(self, canvas.0, canvas.1).weight(at[0], at[1]).0 < 1.0
+    }
+
+    /// Whether the clamped bilinear footprint at a canvas sample contains any current A.
+    /// Only texels with positive sampling weight count; their wipe weights are evaluated
+    /// at their centres, as in the composed image. Difference permits editing everywhere.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss, reason = "dimensions of a canvas")]
+    pub fn sample_has_current(&self, canvas: (u32, u32), at: [f32; 2]) -> bool {
+        if canvas.0 == 0 || canvas.1 == 0 {
+            return false;
+        }
+        if self.style == Style::Difference {
+            return true;
+        }
+        let taps = |sample: f32, side: u32| {
+            let sample = sample.clamp(0.5, side as f32 - 0.5);
+            let low = (sample - 0.5).floor() + 0.5;
+            let fraction = sample - low;
+            [(low, 1.0 - fraction), (low + 1.0, fraction)]
+        };
+        let shape = Shape::of(self, canvas.0, canvas.1);
+        taps(at[0], canvas.0).into_iter().any(|(x, x_weight)| {
+            x_weight > 0.0
+                && taps(at[1], canvas.1)
+                    .into_iter()
+                    .any(|(y, y_weight)| y_weight > 0.0 && shape.weight(x, y).0 < 1.0)
+        })
+    }
+
+    /// The unchanged `WipeParams` uniform layout of [`COVERAGE_WGSL`], shared with the image.
+    #[must_use]
+    pub fn coverage_params(&self, canvas: (u32, u32)) -> Vec<u8> {
+        Shape::of(self, canvas.0, canvas.1).bytes()
+    }
+
     /// Check that each value is in its range.
     ///
     /// # Errors
@@ -496,7 +540,7 @@ impl Wiper {
         });
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("columbina wipe"),
-            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+            source: wgpu::ShaderSource::Wgsl(format!("{COVERAGE_WGSL}\n{SHADER}").into()),
         });
         let pipeline = |layout: &wgpu::BindGroupLayout, entry: &str, label: &str| {
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {

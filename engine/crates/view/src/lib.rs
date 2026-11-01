@@ -100,6 +100,7 @@ pub mod pointer;
 mod render;
 mod screen;
 mod viewport;
+pub mod window_overlay;
 
 #[cfg(windows)]
 #[allow(unsafe_code)]
@@ -312,6 +313,7 @@ enum Frame {
         texture: Arc<wgpu::Texture>,
         gpu: Arc<Gpu>,
         tag: Option<u64>,
+        overlay: Option<Arc<window_overlay::WindowOverlay>>,
     },
 }
 
@@ -713,7 +715,7 @@ impl View {
         texture: Arc<wgpu::Texture>,
         gpu: Arc<Gpu>,
     ) -> Result<(), ViewError> {
-        self.present_rgb(texture, gpu, None)
+        self.present_rgb(texture, gpu, None, None)
     }
 
     /// As [`View::present_texture`], carrying an opaque producer frame identity.
@@ -726,7 +728,23 @@ impl View {
         gpu: Arc<Gpu>,
         tag: u64,
     ) -> Result<(), ViewError> {
-        self.present_rgb(texture, gpu, Some(tag))
+        self.present_rgb(texture, gpu, Some(tag), None)
+    }
+
+    /// Submit one composed frame with its evaluated Window controls. The overlay shares the
+    /// texture's lifetime and producer tag; it is drawn only on the final display surface.
+    /// `None` suppresses Window OSC (for example when Image Wipe or Split owns the view).
+    ///
+    /// # Errors
+    /// As for [`View::present_texture`].
+    pub fn present_texture_overlay(
+        &self,
+        texture: Arc<wgpu::Texture>,
+        gpu: Arc<Gpu>,
+        tag: u64,
+        overlay: Option<Arc<window_overlay::WindowOverlay>>,
+    ) -> Result<(), ViewError> {
+        self.present_rgb(texture, gpu, Some(tag), overlay)
     }
 
     fn present_rgb(
@@ -734,6 +752,7 @@ impl View {
         texture: Arc<wgpu::Texture>,
         gpu: Arc<Gpu>,
         tag: Option<u64>,
+        overlay: Option<Arc<window_overlay::WindowOverlay>>,
     ) -> Result<(), ViewError> {
         let mut state = self.shared.lock();
         if state.gone {
@@ -744,7 +763,12 @@ impl View {
                 "the composed frame is not on the view's current device".into(),
             ));
         }
-        state.pending = Pending::Frame(Frame::Texture { texture, gpu, tag });
+        state.pending = Pending::Frame(Frame::Texture {
+            texture,
+            gpu,
+            tag,
+            overlay,
+        });
         state.dirty = true;
         drop(state);
         self.shared.wake.notify_all();

@@ -6,24 +6,6 @@
 
 // --- The wipe --------------------------------------------------------------------------------
 
-struct WipeParams {
-    // The width and height of the canvas, and its centre, in pixels.
-    canvas: vec4<f32>,
-    // The normal of the border of a line (x, y), how far the border is from the centre along
-    // it, and the width of the softness, in pixels (0: a hard edge).
-    line: vec4<f32>,
-    // Half the width and height of the box, the weight of the reference of a mix (or the gain
-    // of a difference), and the width of the border line, in pixels.
-    box_: vec4<f32>,
-    // The width and height of a strip of the blinds or a check of the board, in pixels.
-    cell: vec4<f32>,
-    // The colour of the border line.
-    colour: vec4<f32>,
-    // The style (0 a line, 1 a box, 2 a mix, 3 a difference, 4 blinds, 5 a checkerboard), and
-    // whether the sides are swapped.
-    kind: vec4<u32>,
-}
-
 @group(0) @binding(0) var current: texture_2d<f32>;
 @group(0) @binding(1) var reference: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> wipe: WipeParams;
@@ -36,16 +18,6 @@ fn vs(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
     return vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
 }
 
-// The weight of the reference at a signed distance `d` from the border: 0 before it, 1 after
-// it, a straight ramp across the softness about it.
-fn ramp(d: f32) -> f32 {
-    let soft = wipe.line.w;
-    if (soft > 0.0) {
-        return clamp(d / soft + 0.5, 0.0, 1.0);
-    }
-    return select(0.0, 1.0, d >= 0.0);
-}
-
 @fragment
 fn fs_wipe(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let texel = vec2<i32>(position.xy);
@@ -55,32 +27,10 @@ fn fs_wipe(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     if (style == 3u) {
         return vec4<f32>(abs(a.rgb - b.rgb) * wipe.box_.z, 1.0);
     }
-    let from_centre = position.xy - wipe.canvas.zw;
-    var w = 0.0;
-    var d = 0.0;
-    var edged = false;
-    if (style == 0u) {
-        d = dot(from_centre, wipe.line.xy) - wipe.line.z;
-        w = ramp(d);
-        edged = true;
-    } else if (style == 1u) {
-        let outside = abs(from_centre) - wipe.box_.xy;
-        d = max(outside.x, outside.y);
-        w = ramp(d);
-        edged = true;
-    } else if (style == 2u) {
-        w = wipe.box_.z;
-    } else if (style == 4u) {
-        let strip = u32(floor(position.y / wipe.cell.y));
-        w = f32(strip & 1u);
-    } else {
-        let across = u32(floor(position.x / wipe.cell.x));
-        let down = u32(floor(position.y / wipe.cell.y));
-        w = f32((across + down) & 1u);
-    }
-    if (wipe.kind.y != 0u) {
-        w = 1.0 - w;
-    }
+    let weight = reference_weight(wipe, position.xy);
+    let w = weight.x;
+    let d = weight.y;
+    let edged = style <= 1u;
     var shown = a;
     if (w >= 1.0) {
         shown = b;

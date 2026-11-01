@@ -50,6 +50,8 @@ const BACKGROUND: [u8; 3] = [30, 160, 60];
 /// How long anything that should happen soon is waited for.
 const WAIT: Duration = Duration::from_secs(3);
 
+#[path = "window/overlay.rs"]
+mod overlay;
 #[path = "window/viewport.rs"]
 mod viewport;
 

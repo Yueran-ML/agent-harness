@@ -2,7 +2,10 @@ use super::*;
 use columbina_view::{Cursor, Pointer, Presentation, Viewport};
 use windows::Win32::UI::WindowsAndMessaging::WM_MOUSEMOVE;
 
-fn until_presentation(view: &View, wanted: impl Fn(Presentation) -> bool) -> Presentation {
+pub(super) fn until_presentation(
+    view: &View,
+    wanted: impl Fn(Presentation) -> bool,
+) -> Presentation {
     let deadline = Instant::now() + WAIT;
     loop {
         if let Some(presented) = view.presentation() {

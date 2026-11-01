@@ -9,6 +9,7 @@ use columbina_compose::Gpu;
 use crate::display::{self, choose_surface, Content, Display, Monitor, Output};
 use crate::native::{self, Syncer};
 use crate::render::Painter;
+use crate::window_overlay::render::OverlayPainter;
 use crate::{frame_begun, frame_ended, Event, Frame, Pending, Shared, Viewport};
 
 /// How long a frame that was not shown waits before it is tried again.
@@ -54,6 +55,28 @@ impl Card {
             .as_ref()
             .is_some_and(|screen| screen.is_lost() || !Arc::ptr_eq(&screen.gpu, gpu))
         {
+            // Drain completed submissions before replacing a live device's swapchain.
+            // A single view can otherwise leave its last surface commands uncollected.
+            // Do not wait for a lost device, or hold Shared while waiting for the GPU.
+            if let Some(screen) = self.screen.as_ref().filter(|screen| !screen.is_lost()) {
+                // The old screen is retained on timeout: this backoff must also apply
+                // while screen is Some, including when the producer keeps sending frames.
+                if self.remake_at.is_some_and(|at| Instant::now() < at) {
+                    return None;
+                }
+                if screen
+                    .gpu
+                    .device()
+                    .poll(wgpu::PollType::Wait {
+                        submission_index: None,
+                        timeout: Some(RETRY),
+                    })
+                    .is_err()
+                {
+                    self.remake_at = Some(Instant::now() + REMAKE);
+                    return None;
+                }
+            }
             self.screen = None;
             self.remake_at = None;
         }
@@ -311,6 +334,9 @@ struct Screen {
     gpu: Arc<Gpu>,
     surface: wgpu::Surface<'static>,
     painter: Painter,
+    /// Made only for frames with Window controls, and only for the final surface format.
+    overlay: Option<OverlayPainter>,
+    output: Output,
     config: wgpu::SurfaceConfiguration,
     /// What the surface takes, to choose its format and colour space again as the monitor
     /// changes.
@@ -373,6 +399,8 @@ impl Screen {
             shared: Arc::clone(shared),
             handle,
             painter: Painter::new(gpu.device(), gpu.queue(), choice.format),
+            overlay: None,
+            output: choice.output,
             gpu: Arc::clone(gpu),
             surface,
             config,
@@ -429,6 +457,7 @@ impl Screen {
         if (choice.format, choice.color_space) != (self.config.format, self.config.color_space) {
             if choice.format != self.config.format {
                 self.painter = Painter::new(self.gpu.device(), self.gpu.queue(), choice.format);
+                self.overlay = None;
                 self.uploaded = None;
             }
             self.config.format = choice.format;
@@ -441,6 +470,7 @@ impl Screen {
         {
             self.uploaded = None;
         }
+        self.output = choice.output;
         let shown = Display {
             monitor: self.monitor,
             output: choice.output,
@@ -566,7 +596,11 @@ impl Screen {
                 .texture
                 .create_view(&wgpu::TextureViewDescriptor::default());
             let map = self.painter.viewport_map(size, rotation, wish.viewport);
-            let commands = self.painter.draw_mapped(&view, size, rotation, map);
+            let overlay = shown.as_ref().and_then(|(frame, _)| match frame {
+                Frame::Texture { overlay, .. } => overlay.as_deref(),
+                Frame::Picture(..) => None,
+            });
+            let commands = self.draw(&view, size, rotation, map, overlay);
             self.painter.queue().submit([commands]);
             self.painter.queue().present(texture);
             let tag = shown.as_ref().and_then(|(frame, _)| match frame {
@@ -576,6 +610,33 @@ impl Screen {
             return Outcome::Presented;
         }
         Outcome::Failed
+    }
+
+    fn draw(
+        &mut self,
+        target: &wgpu::TextureView,
+        size: (u32, u32),
+        rotation: i16,
+        map: Option<crate::ViewportMap>,
+        overlay: Option<&crate::window_overlay::WindowOverlay>,
+    ) -> wgpu::CommandBuffer {
+        let (Some(overlay), Some(map)) = (overlay, map) else {
+            return self.painter.draw_mapped(target, size, rotation, map);
+        };
+        let painter = self
+            .overlay
+            .get_or_insert_with(|| OverlayPainter::new(self.gpu.device(), self.config.format));
+        self.painter
+            .draw_mapped_with(target, size, rotation, Some(map), |encoder| {
+                painter.encode(
+                    self.gpu.device(),
+                    encoder,
+                    target,
+                    overlay,
+                    map,
+                    self.output,
+                );
+            })
     }
 
     /// Make the surface of the window again, on the same device.

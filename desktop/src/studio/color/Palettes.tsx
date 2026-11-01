@@ -57,8 +57,8 @@ function PaletteGroup<T extends Palette>({ name, palettes, chosen, onChoose, sid
     if (chosen !== 'primaries' && chosen !== 'curves') return <p className="caption color-empty">{words.hint.studio.colorPage.palette}</p>;
     if (!edit.enabled) return <p className="caption color-empty" data-test="no-corrector">{words.hint.studio.colorPage.noCorrector}</p>;
     return chosen === 'primaries'
-      ? <PrimariesPalette edit={edit} mode={filled.primaries} onMode={filled.onPrimaries} onAuto={filled.onAuto} status={filled.status} />
-      : <CurvesPalette edit={edit} mode={filled.curves} onMode={filled.onCurves} />;
+      ? <PrimariesPalette key={edit.interaction} edit={edit} mode={filled.primaries} onMode={filled.onPrimaries} onAuto={filled.onAuto} status={filled.status} />
+      : <CurvesPalette key={edit.interaction} edit={edit} mode={filled.curves} onMode={filled.onCurves} />;
   })();
   return <section className="color-palette-group" data-side={side} aria-label={name} data-test={`palettes-${side}`}>
     <div className="color-palette-tabs" role="tablist" aria-label={name} onKeyDown={keys}>
@@ -69,7 +69,8 @@ function PaletteGroup<T extends Palette>({ name, palettes, chosen, onChoose, sid
           title={words.label.studio.colorPage.changed} data-test="changed-dot" />}
       </button>)}
     </div>
-    <div className="color-palette" role="tabpanel" aria-label={labels[chosen]} data-palette-shown={chosen}>{body}</div>
+    <div className="color-palette" role="tabpanel" aria-label={labels[chosen]} data-palette-shown={chosen}
+      onPointerDownCapture={edit.touch} onChangeCapture={edit.touch} onKeyDownCapture={edit.touch}>{body}</div>
   </section>;
 }
 
@@ -84,21 +85,28 @@ function useAutoColor(edited: EditedNode | null, edit: NodeEdit) {
   const [status, setStatus] = useState<string | null>(null);
   const now = useRef({ edited, edit, said });
   now.current = { edited, edit, said };
-  useEffect(() => { setStatus(null); }, [edited?.node.id]);
+  const request = useRef(0);
+  useEffect(() => { request.current += 1; setStatus(null); }, [edit.interaction, edited?.revision, edited?.timelineFrame]);
   const run = useCallback(() => {
     const { edited: context, edit: editing } = now.current;
-    if (context === null || !editing.enabled) return;
+    const generation = ++request.current;
+    if (context === null || !editing.enabled || editing.pending()) return;
+    const local = editing.localVersion();
+    const valid = () => generation === request.current && editing.isCurrent() && local === editing.localVersion()
+      && now.current.edited?.revision === context.revision && now.current.edited?.timelineFrame === context.timelineFrame;
+    const channels = ['r', 'g', 'b'] as const;
+    const original = {
+      lift: channels.map(ch => editing.value(`primaries.lift.${ch}`)) as [number, number, number],
+      gain: channels.map(ch => editing.value(`primaries.gain.${ch}`)) as [number, number, number],
+    };
     setStatus(null);
-    void callEngine(context.bridge, 'scopes.statistics', { view: 'timeline' }).then((stats) => {
-      const { edit: latest, said: words } = now.current;
-      const channels = ['r', 'g', 'b'] as const;
-      const result = autoColor(stats, {
-        lift: channels.map(ch => latest.value(`primaries.lift.${ch}`)) as [number, number, number],
-        gain: channels.map(ch => latest.value(`primaries.gain.${ch}`)) as [number, number, number],
-      });
-      if (result === null) { setStatus(words.autoFlat); return; }
-      latest.commit(channels.flatMap((ch, i) => [[`primaries.lift.${ch}`, result.lift[i]], [`primaries.gain.${ch}`, result.gain[i]]] as const));
-    }).catch(failure => now.current.edited?.onFailure(failure));
+    void callEngine(context.bridge, 'scopes.statistics', { view: 'timeline' },
+      context.session === undefined ? undefined : { expectedSession: context.session }).then((stats) => {
+      if (!valid() || (context.timelineFrame !== undefined && stats.frame !== undefined && stats.frame !== context.timelineFrame)) return;
+      const result = autoColor(stats, original);
+      if (result === null) { setStatus(now.current.said.autoFlat); return; }
+      editing.commit(channels.flatMap((ch, i) => [[`primaries.lift.${ch}`, result.lift[i]], [`primaries.gain.${ch}`, result.gain[i]]] as const));
+    }).catch(failure => { if (valid()) context.onFailure(failure); });
   }, []);
   return { run, status };
 }

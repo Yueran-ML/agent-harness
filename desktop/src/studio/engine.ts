@@ -6,7 +6,7 @@
  * The page reaches the engine only through the shell (`window.columbina.engine`): it names no
  * path to it, and holds no handle of the window.
  */
-import type { EngineBridge } from '../bridge';
+import type { EngineBridge, EngineCallContext } from '../bridge';
 
 /** A rate of frames, as a fraction: 24000/1001 is 23.976 frames a second. */
 export interface Rate {
@@ -966,8 +966,9 @@ export class EngineError extends Error {
 /** Call a method of the engine, and get its result, or an `EngineError`. */
 export async function callEngine<M extends PageMethod>(
   bridge: Pick<EngineBridge, 'call'>, method: M, params?: Record<string, unknown>,
+  context?: EngineCallContext,
 ): Promise<PageMethods[M]> {
-  const answer = await bridge.call(method, params);
+  const answer = await (context === undefined ? bridge.call(method, params) : bridge.call(method, params, context));
   if (!answer.ok) throw new EngineError(answer.error);
   return answer.result as PageMethods[M];
 }

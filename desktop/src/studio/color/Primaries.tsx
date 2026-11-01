@@ -111,7 +111,9 @@ function Wheel({ wheel, edit, title, picker }: { wheel: WheelSpec; edit: NodeEdi
   const ring = useRef<HTMLDivElement>(null);
   const gesture = useRef<{ start: Record<Channel, number>; master: boolean } | null>(null);
   const lastEdits = useRef<Edits | null>(null);
-  const drag = useDrag(() => { gesture.current = null; lastEdits.current = null; edit.cancel(); });
+  const drag = useDrag(() => { gesture.current = null; lastEdits.current = null; edit.cancel(); },
+    () => edit.controlKey((gesture.current?.master ? wheel.channels : RGB).map(ch => `${wheel.path}.${ch}`)),
+    () => { gesture.current = null; lastEdits.current = null; });
   const values = valuesOf(edit, wheel);
   const disabled = !edit.enabled;
   const neutral = wheel.bounds.neutral;
@@ -163,6 +165,7 @@ function Wheel({ wheel, edit, title, picker }: { wheel: WheelSpec; edit: NodeEdi
   };
   const up = (event: PointerEvent<HTMLDivElement>) => {
     const moved = drag.up(event);
+    if (moved === null) return;
     const edits = lastEdits.current;
     gesture.current = null; lastEdits.current = null;
     // A Shift click without a drag still jumps, and is sent.
@@ -186,6 +189,7 @@ function Wheel({ wheel, edit, title, picker }: { wheel: WheelSpec; edit: NodeEdi
       <span className="color-ring-indicator" data-test="indicator" style={{ left: `${50 + x * 50}%`, top: `${50 - y * 50}%` }} />
     </div>
     <MasterWheel name={`${labels.master}: ${title}`} turned={(master - neutral) / wheel.feel.master} disabled={disabled}
+      identity={edit.controlKey(wheel.channels.map(ch => `${wheel.path}.${ch}`))}
       onDrag={(dx) => {
         masterStart.current ??= valuesOf(edit, wheel);
         edit.preview(masterEdits(wheel, masterStart.current, dx));
@@ -195,9 +199,10 @@ function Wheel({ wheel, edit, title, picker }: { wheel: WheelSpec; edit: NodeEdi
         masterStart.current = null;
         edit.commit(masterEdits(wheel, start, dx));
       }}
+      onInvalidate={() => { masterStart.current = null; }}
       onCancel={() => { masterStart.current = null; edit.cancel(); }} />
     <div className="color-wheel-numbers">
-      {wheel.channels.map(ch => <NumberControl key={ch} bare name={`${title} ${LETTER[ch]}`} field={`${wheel.path}.${ch}`} value={values[ch]} neutral={neutral}
+      {wheel.channels.map(ch => <NumberControl key={edit.controlKey([`${wheel.path}.${ch}`])} bare name={`${title} ${LETTER[ch]}`} field={`${wheel.path}.${ch}`} value={values[ch]} neutral={neutral}
         low={wheel.bounds.low} high={wheel.bounds.high} digits={2} perPx={wheel.feel.field} keyed={edit.keyed(`${wheel.path}.${ch}`)}
         keyedTitle={words.hint.studio.colorPage.keyed} disabled={disabled}
         onPreview={value => edit.preview([[`${wheel.path}.${ch}`, value]])} onCommit={value => edit.commit([[`${wheel.path}.${ch}`, value]])}
@@ -223,7 +228,7 @@ function Bars({ wheel, edit, title, picker }: { wheel: WheelSpec; edit: NodeEdit
   return <div className="color-bars" data-wheel={wheel.name}>
     <WheelHead title={title} picker={picker} disabled={disabled} onReset={resetAll} />
     <div className="color-bars-row">
-      {wheel.channels.map(ch => <div key={ch} className="color-bar-column">
+      {wheel.channels.map(ch => <div key={edit.controlKey([`${wheel.path}.${ch}`])} className="color-bar-column">
         <Bar name={`${title} ${LETTER[ch]}`} channel={ch} value={values[ch]} neutral={neutral} low={feel.low} high={feel.high} perPx={feel.perPx} disabled={disabled}
           onPreview={value => edit.preview([[`${wheel.path}.${ch}`, fit(value, wheel.bounds)]])}
           onCommit={value => edit.commit([[`${wheel.path}.${ch}`, fit(value, wheel.bounds)]])} onCancel={edit.cancel} />
@@ -236,8 +241,10 @@ function Bars({ wheel, edit, title, picker }: { wheel: WheelSpec; edit: NodeEdit
       </div>)}
     </div>
     {wheel.name === 'offset' && <MasterWheel name={`${labels.master}: ${title}`} turned={(master - neutral) / wheel.feel.master} disabled={disabled}
+      identity={edit.controlKey(wheel.channels.map(ch => `${wheel.path}.${ch}`))}
       onDrag={(dx) => { masterStart.current ??= valuesOf(edit, wheel); edit.preview(masterEdits(wheel, masterStart.current, dx)); }}
       onEnd={(dx) => { const start = masterStart.current ?? valuesOf(edit, wheel); masterStart.current = null; edit.commit(masterEdits(wheel, start, dx)); }}
+      onInvalidate={() => { masterStart.current = null; }}
       onCancel={() => { masterStart.current = null; edit.cancel(); }} />}
   </div>;
 }
@@ -256,7 +263,7 @@ function Settings({ settings, edit, row }: { settings: readonly Setting[]; edit:
   return <div className="color-settings" data-row={row}>
     {settings.map((setting) => {
       const path = pathOf(setting);
-      return <NumberControl key={setting} name={names[setting]} field={path} value={edit.value(path)} neutral={BOUNDS[setting].neutral}
+      return <NumberControl key={edit.controlKey([path])} name={names[setting]} field={path} value={edit.value(path)} neutral={BOUNDS[setting].neutral}
         low={BOUNDS[setting].low} high={BOUNDS[setting].high} digits={SETTING_FEEL[setting].digits} perPx={SETTING_FEEL[setting].perPx}
         keyed={edit.keyed(path)} keyedTitle={words.hint.studio.colorPage.keyed} disabled={!edit.enabled}
         onPreview={value => edit.preview([[path, value]])} onCommit={value => edit.commit([[path, value]])} onCancel={edit.cancel} />;
@@ -303,7 +310,7 @@ export function PrimariesPalette({ edit, mode, onMode, onAuto, status }: {
         : <Wheel key={name} wheel={WHEELS[name]} edit={edit} title={names[name]} picker={mode === 'wheels' ? pickerOf(name) : undefined} />))}
     </div>
     <div className="color-palette-foot">
-      <button type="button" className="btn color-auto" disabled={!edit.enabled} aria-label={labels.auto} title={`${labels.auto} (Alt+Shift+C)`}
+      <button type="button" className="btn color-auto" disabled={!edit.enabled || edit.pending()} aria-label={labels.auto} title={`${labels.auto} (Alt+Shift+C)`}
         onClick={onAuto} data-test="auto-color">A</button>
       <Settings settings={BOTTOM} edit={edit} row="bottom" />
     </div>

@@ -211,6 +211,8 @@ describe('the bridge of the main window', () => {
     expect(handed('open', 'C:/work', more)).toEqual(['columbina:engine-open', { cwd: 'C:/work' }]);
     expect(handed('call', 'transaction.apply', { ops: [] }, more))
       .toEqual(['columbina:engine-call', { method: 'transaction.apply', params: { ops: [] } }]);
+    expect(handed('call', 'transaction.apply', { ops: [] }, { expectedSession: 7, ...more }))
+      .toEqual(['columbina:engine-call', { method: 'transaction.apply', params: { ops: [] }, expectedSession: 7 }]);
     expect(handed('importFiles', more)).toEqual(['columbina:engine-import', { language: 'ja' }]);
     expect(handed('importFiles', { ...more, bin: 'b3', paths: ['secret.mp4'] }))
       .toEqual(['columbina:engine-import', { language: 'ja', bin: 'b3' }]);

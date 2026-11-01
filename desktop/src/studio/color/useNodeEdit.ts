@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { EngineBridge } from '../../bridge';
 import { callEngine, mergePatch, type Corrector, type GradeNode, type Param, type Target } from '../engine';
-import { fullCorrector, getAt, isKeyed, patchOf, shownValue, withValue } from './corrector';
+import { fullCorrector, getAt, isKeyed, keyAt, patchOf, shownValue, withValue } from './corrector';
 import type { KeyClock } from './keyFrames';
 import type { GradeChange } from './nodeEdits';
 
@@ -16,6 +16,15 @@ export type Edits = readonly (readonly [string, EditValue])[];
 /** The corrector node that the palettes edit, where the current node is one, and where its grade is. */
 export interface EditedNode {
   bridge: Pick<EngineBridge, 'call'>;
+  session?: number;
+  /** The current clip matters even when two clips edit the same group/node. */
+  clip?: string | null;
+  /** Stable, serialized inputs of keyClockOf, not the freshly-created clock function. */
+  clock?: string;
+  /** Timeline sampling and manual seeks; frame below is the grade's source-key clock. */
+  timelineFrame?: number;
+  /** Continuous playback; false while a manually sought/scrubbed frame is held. */
+  playing?: boolean;
   /** The revision of the copy of the project that `node` is of. */
   revision: number;
   target: Target;
@@ -53,241 +62,270 @@ export function placeOf(level: 'pre_clip' | 'clip' | 'post_clip' | 'timeline', t
 
 /** How long a value that was sent is shown, at most, until the engine tells of it, as the inspector's fields hold theirs. */
 export const HOLD_MS = 1500;
-/** How long a commit waits for the copy to take in the one before it, as the inspector's do. */
-const WAIT_MS = 2000;
-
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+const resolve = (edits: Edits, base: Corrector, frame: number): [string, unknown][] => edits.map(([path, value]) => [
+  path, typeof value === 'number' ? withValue(getAt(base, path) as Param | undefined, frame, value) : value.whole,
+]);
+/** The actual key an edit changes; moving within its interval does not change ownership. */
+const keysOf = (params: Corrector, frame: number, paths: readonly string[]) => JSON.stringify(paths.map(path => {
+  const param = getAt(params, path) as Param | undefined;
+  return [path, isKeyed(param) && Array.isArray(param.keys) && param.keys.length ? param.keys[keyAt(param.keys, frame)].frame : null];
+}));
+const pathsOf = (edits: Edits) => edits.map(([path]) => path);
+const identityOf = (at: EditedNode | null) => at === null ? '' : JSON.stringify([at.session, at.target, at.node.id, at.clip, at.clock]);
 
-/**
- * A drag that is sent as it goes (PROTOCOL.md, "Gestures"): each preview a transaction of one
- * gesture, at most one waiting for its answer, the newest edits taking the place of those not sent
- * yet; the commit (or Escape) the last, which ends it. The engine draws each, and keeps them all as
- * one step to undo.
- */
+interface Queued { edits: Edits; frame: number; keys: string }
 interface Gesture {
   id: string;
-  /** The edits to send next, the newest; null where there are none. */
-  next: Edits | null;
-  /** Whether a transaction of it waits for its answer. */
-  sending: boolean;
-  /** Whether one of it was sent, and so the engine has it as a step. */
-  started: boolean;
-  /** Whether `next` is the last: the gesture ends with it. */
-  ending: boolean;
-  /** Whether the last was sent. */
-  ended: boolean;
-  /** Whether the engine refused one: nothing more of it is sent. */
-  failed: boolean;
-  /** What each setting it changed was before it, to put back on Escape. */
+  context: EditedNode;
+  revision: number | null;
+  frame: number;
+  initial: Corrector;
+  params: Corrector;
   before: Map<string, unknown>;
-  /** Whether its first made the node it edits, the default node 01 of a grade without nodes (`EditedNode.before`). */
+  keys: string;
+  next: Edits | null;
+  last: Map<string, unknown>;
+  ending: boolean;
+  ended: boolean;
+  failed: boolean;
   made: boolean;
-  /** Whether it was cancelled (Escape): its last takes back all it did. */
   cancelled: boolean;
 }
+interface Owner {
+  id: number;
+  identity: string;
+  context: EditedNode | null;
+  committed: Corrector;
+  /** The furthest revision confirmed by our responses, starting at the copy we began from. */
+  confirmed: number;
+  sending: boolean;
+  retired: boolean;
+  queue: Queued[];
+  gesture: Gesture | null;
+  live: Map<string, unknown>;
+  held: Map<string, unknown>;
+  local: number;
+}
+// Reload can reopen the same engine connection. This ID keeps the new renderer's first drag
+// out of an unfinished gesture (and undo step) left by the previous renderer.
+const renderer = crypto.randomUUID();
 let gestures = 0;
 
-/**
- * The editing of the current node by the palettes, as DaVinci Resolve's controls edit it: what a
- * control is dragged to is shown at once (`preview`) and sent as it goes, as transactions of one
- * gesture, so that the viewer draws it while it is dragged; when it is let go (`commit`) the last
- * is sent, and the engine keeps the whole drag as one step to undo; Escape puts back what was
- * there (`cancel`), and the drag then leaves no step. An edit made at once, with no drag, is one
- * transaction. Until the engine tells of what was sent, the palettes show it, so that a control
- * does not jump back.
- *
- * Commits go in the order they were made, each worked out from the node as the copy has it once
- * the copy has taken in the one before, and bound to that revision, as the inspector's are; so a
- * second control set at once does not undo the first, and a change by someone else in between is
- * refused rather than overwritten.
- */
+/** Edits and replies belong to one owner; a gesture keeps its first revision until its end. */
 export function useNodeEdit(edited: EditedNode | null) {
-  const node = edited?.node.kind === 'corrector' ? edited.node : null;
-  const committed = useMemo(() => fullCorrector(node?.params), [node?.params]);
-  const [live, setLive] = useState<ReadonlyMap<string, unknown>>(new Map());
-  const [held, setHeld] = useState<ReadonlyMap<string, unknown>>(new Map());
-  const now = useRef({ edited, committed });
-  now.current = { edited, committed };
-  const queue = useRef<Edits[]>([]);
-  const busy = useRef(false);
-  const awaited = useRef(-Infinity);
-  const waiting = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [, redraw] = useState(0);
   const alive = useRef(true);
-  useEffect(() => { alive.current = true; return () => { alive.current = false; if (waiting.current !== null) clearTimeout(waiting.current); }; }, []);
-
-  // What was sent and is now in the node is shown from the node; the rest a while longer.
-  useEffect(() => {
-    setHeld(old => (old.size === 0 ? old : new Map([...old].filter(([path, value]) => !same(getAt(committed, path), value)))));
-  }, [committed]);
-  useEffect(() => {
-    if (held.size === 0) return undefined;
-    const timer = setTimeout(() => setHeld(new Map()), HOLD_MS);
-    return () => clearTimeout(timer);
-  }, [held]);
-  // Another node, or another grade: nothing of the one before is shown over it.
-  const identity = node === null || edited === null ? '' : `${JSON.stringify(edited.target)}#${node.id}`;
-  useEffect(() => { setLive(new Map()); setHeld(new Map()); }, [identity]);
-
-  /** The values of edits, worked out from `base`: a number into its value or its key at the playhead. */
-  const resolve = (edits: Edits, base: Corrector, frame: number): [string, unknown][] => edits.map(([path, value]) => [
-    path, typeof value === 'number' ? withValue(getAt(base, path) as Param | undefined, frame, value) : value.whole,
-  ]);
-  const base = useMemo(() => (held.size === 0 ? committed : mergePatch(committed, patchOf(held)) as Corrector), [committed, held]);
-  const shown = useMemo(() => (live.size === 0 ? base : mergePatch(base, patchOf(live)) as Corrector), [base, live]);
-  const baseRef = useRef(base);
-  baseRef.current = base;
-
-  const gesture = useRef<Gesture | null>(null);
-  /** Send the newest edits of the gesture going on, once the one before was answered. */
-  const sendGesture = useCallback((): void => {
-    const going = gesture.current;
-    if (going === null || going.sending || going.failed || going.next === null) return;
-    const context = now.current.edited;
-    if (context === null || context.node.kind !== 'corrector') { gesture.current = null; return; }
-    // The first waits, as a commit does, for the copy to have taken in what was sent before.
-    if (!going.started && (busy.current || queue.current.length > 0 || context.revision < awaited.current)) {
-      if (!busy.current && waiting.current === null) {
-        waiting.current = setTimeout(() => { waiting.current = null; awaited.current = -Infinity; sendGesture(); }, WAIT_MS);
-      }
-      return;
+  const serial = useRef(0);
+  const active = useRef<Owner | null>(null);
+  const retired = useRef<Owner[]>([]);
+  const committed = fullCorrector(edited?.node.kind === 'corrector' ? edited.node.params : undefined);
+  const makeOwner = (): Owner => ({ id: ++serial.current, identity: identityOf(edited), context: edited, committed,
+    confirmed: edited?.revision ?? 0, sending: false, retired: false, queue: [], gesture: null,
+    live: new Map(), held: new Map(), local: 0 });
+  const retire = (owner: Owner, finish: boolean) => {
+    owner.retired = true;
+    owner.queue = [];
+    if (owner.gesture) {
+      owner.gesture.next = null;
+      owner.gesture.ending = true;
+      owner.gesture.cancelled = false;
+      if (!finish) owner.gesture.failed = true;
     }
-    const edits = going.next;
-    const end = going.ending;
-    going.next = null;
-    going.sending = true;
-    going.started = true;
-    going.ended = end;
-    const params = patchOf(resolve(edits, now.current.committed, context.frame));
-    // The first of a gesture on the default node 01 makes it, in its transaction; the others name
-    // it by the id it was made with. Cancelled, the last takes the node away again, so that the
-    // drag leaves the grade without nodes as it was.
-    const making = !going.made && context.before !== undefined && context.before.length > 0;
-    if (making) going.made = true;
-    const set = { op: 'set_node', grade: context.target, id: context.node.id, params };
-    const ops = making ? [...context.before!, set]
-      : end && going.cancelled && going.made ? [{ op: 'remove_node', grade: context.target, id: context.node.id }] : [set];
-    // Bound to the revision of the copy, which may lag behind the gesture's own changes: the
-    // engine takes any since the gesture began, and refuses one from before another's change.
-    callEngine(context.bridge, 'transaction.apply', {
-      revision: context.revision, ops,
-      gesture: end ? { id: going.id, end: true } : { id: going.id },
-    }).then((applied) => {
-      if (end && typeof applied?.revision === 'number') awaited.current = applied.revision;
+    retired.current.push(owner);
+  };
+  let owner = active.current;
+  const previous = owner?.context;
+  const seek = previous && edited && (previous.timelineFrame ?? previous.frame) !== (edited.timelineFrame ?? edited.frame)
+    && !(previous.playing && edited.playing);
+  const changedKey = owner?.gesture && edited && owner.gesture.keys !== keysOf(committed, edited.frame, [...owner.gesture.before.keys()]);
+  const external = owner && edited && !owner.sending && edited.revision > owner.confirmed;
+  if (!owner || owner.identity !== identityOf(edited) || seek || changedKey || external) {
+    if (owner) retire(owner, !external);
+    owner = makeOwner();
+    active.current = owner;
+  }
+  owner.context = edited;
+  owner.committed = committed;
+  // A queued value keeps its original key. A static value survives continuous playback.
+  owner.queue = owner.queue.filter(item => {
+    const valid = edited && item.keys === keysOf(committed, edited.frame, pathsOf(item.edits));
+    if (!valid) for (const [path] of item.edits) owner.held.delete(path);
+    return valid;
+  });
+  for (const [path, value] of owner.held) if (same(getAt(committed, path), value)) owner.held.delete(path);
+  const current = (who: Owner) => alive.current && active.current === who && !who.retired;
+  const refresh = (who: Owner) => { if (current(who)) redraw(n => n + 1); };
+  const discardExternal = (who: Owner) => {
+    if (!current(who) || who.context === null || who.context.revision <= who.confirmed) return false;
+    // The response has now identified our progress; anything beyond it belongs to someone else.
+    retire(who, false);
+    active.current = null;
+    redraw(n => n + 1);
+    return true;
+  };
+
+  const drive = (who: Owner): void => {
+    if (!alive.current || who.sending || who.context === null) return;
+    const going = who.gesture;
+    if (who.retired) {
+      if (!going || going.failed || going.ended || going.revision === null || going.last.size === 0) return;
+      going.next = [...going.last].map(([path, whole]) => [path, { whole }] as const);
+    } else if (discardExternal(who)) return;
+    if (going?.failed) return;
+    // Ordinary commits wait for their predecessor's acknowledged revision in the project copy.
+    // No timer clears this gate: a late copy is not permission to rebase onto a new revision.
+    if ((!going || going.revision === null) && who.context.revision < who.confirmed) return;
+    let context: EditedNode;
+    let revision: number;
+    let values: [string, unknown][];
+    let ops: unknown[];
+    let end = false;
+    let gesture: Gesture | null = null;
+    const queued = !who.retired && (!going || going.revision === null) ? who.queue.shift() : undefined;
+    if (queued) {
+      context = who.context;
+      revision = context.revision;
+      values = resolve(queued.edits, who.committed, queued.frame);
+      ops = [...(context.before ?? []), { op: 'set_node', grade: context.target, id: context.node.id, params: patchOf(values) }];
+    } else {
+      if (!going || going.next === null || going.ended) return;
+      gesture = going;
+      if (going.revision === null) {
+        going.context = who.context;
+        going.revision = who.context.revision;
+        // A preceding ordinary commit may have completed while this drag waited (and its
+        // optimistic display may have expired). Escape restores this confirmed starting state.
+        going.initial = who.committed;
+        going.params = who.committed;
+        for (const path of going.before.keys()) going.before.set(path, getAt(going.initial, path));
+        going.keys = keysOf(going.initial, going.frame, [...going.before.keys()]);
+      }
+      context = going.context;
+      revision = going.revision;
+      end = going.ending;
+      values = resolve(going.next, going.params, going.frame);
+      going.next = null;
+      going.ended = end;
+      const set = { op: 'set_node', grade: context.target, id: context.node.id, params: patchOf(values) };
+      const making = !going.made && (context.before?.length ?? 0) > 0;
+      ops = making ? [...context.before!, set] : end && going.cancelled && going.made
+        ? [{ op: 'remove_node', grade: context.target, id: context.node.id }] : [set];
+      if (making) going.made = true;
+    }
+    who.sending = true;
+    void callEngine(context.bridge, 'transaction.apply', {
+      revision, ops, ...(gesture ? { gesture: { id: gesture.id, ...(end ? { end: true } : {}) } } : {}),
+    }, context.session === undefined ? undefined : { expectedSession: context.session }).then(applied => {
+      if (typeof applied?.revision === 'number') who.confirmed = Math.max(who.confirmed, applied.revision);
+      if (gesture) {
+        gesture.params = mergePatch(gesture.params, patchOf(values)) as Corrector;
+        for (const [path, value] of values) gesture.last.set(path, value);
+      }
     }).catch((failure: unknown) => {
-      going.failed = true;
-      if (!alive.current) return;
-      setHeld(new Map());
-      now.current.edited?.onFailure(failure);
+      // A drag waiting behind a refused ordinary edit was prepared from that edit too.
+      if (who.gesture) who.gesture.failed = true;
+      who.queue = [];
+      if (!current(who)) return;
+      who.live.clear(); who.held.clear();
+      context.onFailure(failure);
     }).finally(() => {
-      going.sending = false;
-      // One refused stays, sending nothing more, until the drag ends.
-      if (gesture.current !== going || going.failed) return;
-      if (going.ended) gesture.current = null;
-      else sendGesture();
-    });
-  }, []);
-
-  const pump = useCallback((): void => {
-    if (busy.current) return;
-    const context = now.current.edited;
-    if (context === null) { queue.current = []; return; }
-    if (context.revision < awaited.current) {
-      if (queue.current.length > 0 && waiting.current === null) {
-        waiting.current = setTimeout(() => { waiting.current = null; awaited.current = -Infinity; pump(); }, WAIT_MS);
-      }
-      return;
-    }
-    if (waiting.current !== null) { clearTimeout(waiting.current); waiting.current = null; }
-    const edits = queue.current.shift();
-    if (!edits) return;
-    const params = patchOf(resolve(edits, now.current.committed, context.frame));
-    busy.current = true;
-    callEngine(context.bridge, 'transaction.apply', {
-      revision: context.revision, ops: [...(context.before ?? []), { op: 'set_node', grade: context.target, id: context.node.id, params }],
-    }).then((applied) => {
-      if (typeof applied?.revision === 'number') awaited.current = applied.revision;
-    }).catch((failure: unknown) => {
+      who.sending = false;
       if (!alive.current) return;
-      setHeld(new Map());
-      now.current.edited?.onFailure(failure);
-    }).finally(() => { busy.current = false; pump(); sendGesture(); });
-  }, [sendGesture]);
-  useEffect(() => { pump(); sendGesture(); }, [edited?.revision, pump, sendGesture]);
+      if (gesture?.ended && who.gesture === gesture) who.gesture = null;
+      if (!who.retired && discardExternal(who)) return;
+      refresh(who);
+      drive(who);
+    });
+  };
 
+  useEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; };
+  }, []);
+  useEffect(() => {
+    for (const old of retired.current) drive(old);
+    retired.current = retired.current.filter(old => old.sending);
+    drive(owner);
+  });
+  const heldStamp = JSON.stringify([...owner.held]);
+  useEffect(() => {
+    if (!owner.held.size) return;
+    const timer = setTimeout(() => { if (current(owner)) { owner.held.clear(); refresh(owner); } }, HOLD_MS);
+    return () => clearTimeout(timer);
+  }, [owner, heldStamp]);
+
+  const base = mergePatch(committed, patchOf(owner.held)) as Corrector;
+  const shown = mergePatch(base, patchOf(owner.live)) as Corrector;
   const frame = edited?.frame ?? 0;
-  /**
-   * Show edits at once, over the node as it is, and send them as part of the gesture going on (one
-   * is begun): a control being dragged. Each call takes the place of the one before.
-   */
-  const preview = useCallback((edits: Edits) => {
-    const values = resolve(edits, baseRef.current, now.current.edited?.frame ?? 0);
-    setLive(new Map(values));
-    if (now.current.edited?.node.kind !== 'corrector' || edits.length === 0) return;
-    let going = gesture.current;
-    if (going === null || going.ended) {
-      // A drag that has changed nothing yet sends nothing (up and down on a master wheel).
-      if (values.every(([path, value]) => same(getAt(baseRef.current, path), value))) return;
-      gestures += 1;
-      going = {
-        id: `palette-${gestures}`, next: null, sending: false, started: false, ending: false, ended: false, failed: false, before: new Map(),
-        made: false, cancelled: false,
-      };
-      gesture.current = going;
+  // Also reject callbacks retained by callers across a key change, even before React unmounts a control.
+  const accepts = (edits: Edits) => current(owner) && owner.context?.node.kind === 'corrector'
+    && keysOf(committed, frame, pathsOf(edits)) === keysOf(owner.committed, owner.context.frame, pathsOf(edits));
+  const preview = (edits: Edits) => {
+    if (!accepts(edits) || !edits.length) return;
+    owner.local += 1;
+    const values = resolve(edits, base, frame);
+    let going = owner.gesture;
+    if (!going || going.ended) {
+      if (values.every(([path, value]) => same(getAt(base, path), value))) return;
+      going = { id: `palette-${renderer}-${++gestures}`, context: owner.context!, revision: null, frame,
+        initial: base, params: base, before: new Map(), keys: '', next: null, last: new Map(),
+        ending: false, ended: false, failed: false, made: false, cancelled: false };
+      owner.gesture = going;
     }
     if (going.failed) return;
-    for (const [path] of edits) if (!going.before.has(path)) going.before.set(path, getAt(baseRef.current, path));
+    for (const [path] of edits) if (!going.before.has(path)) going.before.set(path, getAt(going.initial, path));
+    going.keys = keysOf(going.initial, going.frame, [...going.before.keys()]);
     going.next = edits;
-    sendGesture();
-  }, [sendGesture]);
-  /** Send edits, as one step to undo: the end of a gesture, or an edit made at once. */
-  const commit = useCallback((edits: Edits) => {
-    const going = gesture.current;
-    // A drag none of which was sent yet is an edit made at once.
-    if (going !== null && !going.ended && !going.started && !going.failed) gesture.current = null;
-    else if (going !== null && !going.ended) {
-      // The last of a drag: sent even where it changes nothing more, since it ends the gesture.
-      setLive(new Map());
-      if (going.failed) { gesture.current = null; return; }
-      if (now.current.edited !== null && edits.length > 0) {
-        setHeld(old => new Map([...old, ...resolve(edits, baseRef.current, now.current.edited!.frame)]));
-        going.next = edits;
-      } else going.next ??= [...going.before].map(([path, value]) => [path, { whole: value }] as const);
-      going.ending = true;
-      sendGesture();
-      return;
+    owner.live = new Map(values);
+    refresh(owner); drive(owner);
+  };
+  const commit = (edits: Edits) => {
+    if (!accepts(edits)) return;
+    owner.local += 1;
+    const going = owner.gesture;
+    owner.live.clear();
+    if (going && !going.ended) {
+      if (going.failed) { owner.gesture = null; refresh(owner); return; }
+      if (going.revision !== null) {
+        going.next = edits.length ? edits : [...going.last].map(([path, whole]) => [path, { whole }] as const);
+        going.ending = true;
+        for (const [path, value] of resolve(going.next, going.params, going.frame)) owner.held.set(path, value);
+        refresh(owner); drive(owner); return;
+      }
+      owner.gesture = null;
     }
-    if (now.current.edited === null || now.current.edited.node.kind !== 'corrector' || edits.length === 0) { setLive(new Map()); return; }
-    const values = resolve(edits, baseRef.current, now.current.edited.frame);
-    setLive(new Map());
-    // Nothing that would change nothing is sent.
-    if (values.every(([path, value]) => same(getAt(baseRef.current, path), value))) return;
-    setHeld(old => new Map([...old, ...values]));
-    queue.current.push(edits);
-    pump();
-  }, [pump]);
-  /** Put back what the controls showed before a gesture (Escape); one that was sent ends where it began, and leaves no step. */
-  const cancel = useCallback(() => {
-    setLive(new Map());
-    const going = gesture.current;
-    if (going === null || going.ended) return;
-    if (going.failed || !going.started) { gesture.current = null; return; }
-    going.next = [...going.before].map(([path, value]) => [path, { whole: value }] as const);
-    going.ending = true;
-    going.cancelled = true;
-    sendGesture();
-  }, [sendGesture]);
-
+    if (!edits.length) { refresh(owner); return; }
+    const values = resolve(edits, base, frame);
+    if (values.every(([path, value]) => same(getAt(base, path), value))) { refresh(owner); return; }
+    for (const [path, value] of values) owner.held.set(path, value);
+    owner.queue.push({ edits, frame, keys: keysOf(committed, frame, pathsOf(edits)) });
+    refresh(owner); drive(owner);
+  };
+  const cancel = () => {
+    if (!current(owner)) return;
+    owner.local += 1;
+    owner.live.clear(); owner.held.clear();
+    const going = owner.gesture;
+    if (going && !going.ended) {
+      if (going.failed || going.revision === null) owner.gesture = null;
+      else {
+        going.next = [...going.before].map(([path, whole]) => [path, { whole }] as const);
+        going.ending = true; going.cancelled = true;
+        drive(owner);
+      }
+    }
+    refresh(owner);
+  };
   return {
-    /** Whether there is a corrector to edit: the current node of the grade shown is one. */
-    enabled: node !== null,
-    /** The node's settings as the palettes show them, a gesture's and those sent laid over it. */
-    corrector: shown,
-    /** The settings without the gesture going on: where a gesture starts from. */
-    base,
-    frame,
-    /** The value that a control of a number shows at the playhead (p. 3384: the value of the key that an edit goes into). */
+    enabled: edited?.node.kind === 'corrector', corrector: shown, base, frame,
+    interaction: owner.id,
+    controlKey: (paths: readonly string[]) => `${owner.id}:${keysOf(committed, frame, paths)}`,
+    isCurrent: () => current(owner),
+    localVersion: () => owner.local,
+    touch: () => { if (current(owner)) owner.local += 1; },
+    pending: () => owner.sending || owner.queue.length > 0 || owner.gesture !== null || (owner.context?.revision ?? 0) < owner.confirmed,
     value: (path: string) => shownValue(getAt(shown, path) as Param | undefined, frame),
-    /** Whether a setting has keyframes. */
     keyed: (path: string) => isKeyed(getAt(shown, path) as Param | undefined),
     preview, commit, cancel,
   };

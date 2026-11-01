@@ -209,7 +209,10 @@ export function ColorPage({
   const onCurrentNode = useCallback((node: string) => setNodes(old => ({ ...old, [gradeKey]: node })), [gradeKey]);
   // The node that the palettes edit: the current node, where it is, with its grade and the playhead as its keys count it (T17):
   // the frame of the clip's media whose picture is shown (T3c, `keyClockOf`).
-  const clock = current && selected ? keyClockOf(current.clip, selected.rate, current.clip.source.kind === 'media' ? mediaById.get(current.clip.source.media) : undefined) : undefined;
+  const clockMedia = current?.clip.source.kind === 'media' ? mediaById.get(current.clip.source.media) : undefined;
+  const clock = current && selected ? keyClockOf(current.clip, selected.rate, clockMedia) : undefined;
+  const clockInputs = JSON.stringify([selected?.rate, current?.clip.start, current?.clip.length, current?.clip.source,
+    current?.clip.speed, current?.clip.reverse, clockMedia?.facts.video?.rate, clockMedia?.facts.video?.still, clockMedia?.facts.duration]);
   const placed = placeOf(shownLevel, selected?.id ?? null, current?.clip ?? null, frame ?? 0, clock);
   const editedNode = shownGrade?.nodes.find(node => node.id === currentNode) ?? null;
   const defaultNode = grades.defaultNode;
@@ -220,10 +223,11 @@ export function ColorPage({
   }, [grades.editing.setProblem, failed]);
   const edited = useMemo<EditedNode | null>(() => (placed === null || editedNode === null ? null
     : {
-      bridge, revision, target: placed.target, node: editedNode, frame: placed.frame, onFailure: paletteFailed,
+      bridge, session, revision, target: placed.target, node: editedNode, frame: placed.frame, onFailure: paletteFailed,
+      clip: current?.clip.id ?? null, clock: clockInputs, timelineFrame: frame ?? 0, playing: !!timelineState?.playing && !timelineMonitor.held,
       before: defaultNode !== null && editedNode.id === defaultNode.id ? [makeDefaultNode(defaultNode.target)] : undefined,
     }),
-  [bridge, revision, JSON.stringify(placed), editedNode, paletteFailed, defaultNode]);
+  [bridge, session, revision, JSON.stringify(placed), editedNode, paletteFailed, defaultNode, current?.clip.id, clockInputs, frame, timelineState?.playing, timelineMonitor.held]);
   // The LUTs of nodes (T18): Apply LUT to Current Node and drags from the browser, the node menu's LUT ▸, and Reveal Selected LUT.
   const lutLibrary = useLutLibrary(bridge).library;
   const favoriteLuts = useFavoriteLuts();

@@ -2041,6 +2041,9 @@ function installHandlers() {
     if (method.startsWith('transport.')) monitorOf(params?.monitor);
     const open = studio;
     if (!open) return { ok: false, error: { code: null, message: 'No project is open in the studio.', data: null } };
+    if (asked?.expectedSession !== undefined && asked.expectedSession !== open.number) {
+      return { ok: false, error: { code: null, message: 'The project of this request is no longer open in the studio.', data: { reason: 'stale_session' } } };
+    }
     // The viewer goes through the shell, which remembers it for the next view that it makes.
     if (method === 'view.place') return answered(Promise.resolve().then(() => { takeViewRect(params); return {}; }));
     if (method === 'view.show') return answered(Promise.resolve().then(() => { takeViewShown(params); return {}; }));

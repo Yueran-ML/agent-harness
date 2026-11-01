@@ -355,6 +355,11 @@ describe('the copy of the project', () => {
 });
 
 describe('calling the engine from the page', () => {
+  it('carries an expected session outside the engine params', async () => {
+    const call = vi.fn(async () => ({ ok: true as const, result: {} }));
+    await callEngine({ call }, 'transaction.apply', { ops: [] }, { expectedSession: 7 });
+    expect(call).toHaveBeenCalledWith('transaction.apply', { ops: [] }, { expectedSession: 7 });
+  });
   it('gives the result, or an error with the code and data that the engine gave', async () => {
     const call = vi.fn(async (): Promise<EngineAnswer> => ({ ok: true, result: { revision: 3, done: [], next_id: 4, names: { $c: 'c3' } } }));
     await expect(callEngine({ call }, 'transaction.apply', { ops: [] })).resolves.toEqual({ revision: 3, done: [], next_id: 4, names: { $c: 'c3' } });

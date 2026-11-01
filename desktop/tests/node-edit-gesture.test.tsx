@@ -61,7 +61,7 @@ describe('a drag of a palette control', () => {
     const [first] = edit.sent();
     expect(first.revision).toBe(10);
     expect(first.ops).toEqual([{ op: 'set_node', grade: TARGET, id: 'n1', params: { primaries: { saturation: 60 } } }]);
-    expect(first.gesture).toEqual({ id: expect.stringMatching(/^palette-\d+$/) });
+    expect(first.gesture).toEqual({ id: expect.stringMatching(/^palette-[\da-f-]+-\d+$/) });
     // While it waits, three more previews: only the newest is sent, once it is answered.
     act(() => { for (const value of [61, 62, 63]) edit.hook.result.current.preview(saturation(value)); });
     expect(edit.sent()).toHaveLength(1);

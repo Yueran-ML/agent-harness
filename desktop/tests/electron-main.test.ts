@@ -4385,6 +4385,26 @@ describe('the engine of the studio', () => {
     expect(freshView.written.at(-1)).toMatchObject({ method: 'scopes.statistics', params: { timeline: 't1', frame: 2 } });
   });
 
+  it('refuses a late old-session edit or measurement before touching either new-engine connection', async () => {
+    const shell = await shellHarness();
+    await openIn(shell);
+    const old = told(shell).filter(each => each.kind === 'opened').at(-1)!.session;
+    await openIn(shell, '/next-film');
+    const fresh = told(shell).filter(each => each.kind === 'opened').at(-1)!.session;
+    const [main, view] = connections(shell).slice(-2);
+    for (const [method, params, connection] of [
+      ['transaction.apply', { revision: 0, ops: [{ op: 'set_node', grade: { level: 'clip', timeline: 't1', clip: 'c1' }, id: 'n1', label: '' }] }, main],
+      ['scopes.statistics', { view: 'timeline' }, view],
+    ] as const) {
+      const before = main.written.length + view.written.length;
+      expect(await shell.invoke('engine-call', { method, params, expectedSession: old })).toMatchObject({ ok: false });
+      expect(main.written.length + view.written.length).toBe(before);
+      expect(await shell.invoke('engine-call', { method, params, expectedSession: fresh })).toMatchObject({ ok: true });
+      expect(connection.written.at(-1)).toMatchObject({ method, params });
+      expect(connection.written.at(-1)!.params).not.toHaveProperty('expectedSession');
+    }
+  });
+
   it('lets a comparison of the viewer name a still by its id, never a file', async () => {
     const shell = await shellHarness();
     await openIn(shell);

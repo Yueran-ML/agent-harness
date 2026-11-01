@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
 
 /**
  * The number controls of the palettes, as DaVinci Resolve's on the Color page (Reference Manual
@@ -49,18 +49,43 @@ const clamp = (value: number, low: number, high: number) => Math.min(high, Math.
 const keep = (value: number) => Math.round(value * 1000) / 1000;
 
 /** The pointer dragging a control sideways: where it began and what it began at. */
-interface Drag { x: number; y: number; start: number; pointer: number; moved: boolean; last: number }
+interface Drag { x: number; y: number; start: number; pointer: number; moved: boolean; last: number; identity?: string }
 
 /** A drag of a control that tells of each move and of its end; Escape while it lasts puts back what was there. */
-export function useDrag(onCancel: () => void) {
+export function useDrag(onCancel: () => void, identity?: () => string, onInvalidate?: () => void) {
   const drag = useRef<Drag | null>(null);
   const [dragging, setDragging] = useState(false);
   const cancel = useRef(onCancel);
   cancel.current = onCancel;
+  const owner = useRef(identity);
+  owner.current = identity;
+  const invalidated = useRef(onInvalidate);
+  invalidated.current = onInvalidate;
+  const drop = () => {
+    drag.current = null; setDragging(false);
+    // Forget the control's local starting values too, without cancelling an engine edit.
+    invalidated.current?.();
+  };
+  const observedIdentity = identity?.();
+  useLayoutEffect(() => {
+    // Playback can cross a key and return without any pointer event. Once observed, that key
+    // change ends this down permanently; coming back cannot revive its old starting value.
+    if (drag.current && drag.current.identity !== observedIdentity) {
+      drop();
+    }
+  }, [observedIdentity]);
+  const read = () => {
+    if (drag.current && drag.current.identity !== owner.current?.()) {
+      // A down before the first preview still owns its original parameter/key. Dropping that
+      // pointer must not cancel a gesture that now belongs to another key or control.
+      drop();
+    }
+    return drag.current;
+  };
   useEffect(() => {
     if (!dragging) return undefined;
     const key = (event: globalThis.KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
+      if (event.key !== 'Escape' || !read()) return;
       event.preventDefault(); event.stopPropagation();
       drag.current = null; setDragging(false); cancel.current();
     };
@@ -69,12 +94,12 @@ export function useDrag(onCancel: () => void) {
   }, [dragging]);
   return {
     down(event: PointerEvent<Element>, start: number) {
-      drag.current = { x: event.clientX, y: event.clientY, start, pointer: event.pointerId, moved: false, last: start };
+      drag.current = { x: event.clientX, y: event.clientY, start, pointer: event.pointerId, moved: false, last: start, identity: owner.current?.() };
       (event.currentTarget as Element).setPointerCapture?.(event.pointerId);
     },
     /** How far the pointer is from where it began, once it has gone 3 pixels; null before, or for another pointer. */
     move(event: PointerEvent<Element>): { dx: number; dy: number; start: number } | null {
-      const now = drag.current;
+      const now = read();
       if (!now || now.pointer !== event.pointerId) return null;
       const dx = event.clientX - now.x;
       const dy = event.clientY - now.y;
@@ -82,10 +107,10 @@ export function useDrag(onCancel: () => void) {
       if (!now.moved) { now.moved = true; setDragging(true); }
       return { dx, dy, start: now.start };
     },
-    /** The end of a drag: whether it moved. */
-    up(event: PointerEvent<Element>): boolean {
-      const now = drag.current;
-      if (!now || now.pointer !== event.pointerId) return false;
+    /** Null for an invalid capture; otherwise whether this valid click/drag moved. */
+    up(event: PointerEvent<Element>): boolean | null {
+      const now = read();
+      if (!now || now.pointer !== event.pointerId) return null;
       drag.current = null; setDragging(false);
       const element = event.currentTarget as Element;
       if (element.hasPointerCapture?.(event.pointerId)) element.releasePointerCapture(event.pointerId);
@@ -94,7 +119,7 @@ export function useDrag(onCancel: () => void) {
     /** Remember the last value shown, to send at the end. */
     set last(value: number) { if (drag.current) drag.current.last = value; },
     get last() { return drag.current?.last ?? NaN; },
-    cancel() { if (drag.current) { drag.current = null; setDragging(false); cancel.current(); } },
+    cancel() { if (read()) { drag.current = null; setDragging(false); cancel.current(); } },
   };
 }
 
@@ -198,16 +223,20 @@ export function NumberControl(props: NumberProps) {
  * A wheel to drag left or right (a Master Wheel, p. 3062): left darker, right lighter. It tells how
  * far it was dragged; up and down do nothing. Its ridges turn as it is dragged.
  */
-export function MasterWheel({ name, turned, disabled, onDrag, onEnd, onCancel }: {
+export function MasterWheel({ name, turned, disabled, identity, onDrag, onEnd, onCancel, onInvalidate }: {
   name: string;
   /** How far it is turned, to draw its ridges: the change it has made, in pixels of dragging. */
   turned: number;
   disabled?: boolean;
+  /** The parameters/keys this master adjusts, captured even before its first move. */
+  identity?: string;
   onDrag: (dx: number) => void;
   onEnd: (dx: number) => void;
   onCancel: () => void;
+  /** Clear local starting values when their parameter/key identity is lost. */
+  onInvalidate?: () => void;
 }) {
-  const drag = useDrag(onCancel);
+  const drag = useDrag(onCancel, () => identity ?? '', onInvalidate);
   return <div className="color-master" role="slider" aria-label={name} aria-valuenow={Math.round(turned)} aria-disabled={disabled || undefined}
     tabIndex={-1} data-test="master-wheel" style={{ backgroundPositionX: `${turned}px` }}
     onPointerDown={(event) => { if (disabled || event.button !== 0) return; event.preventDefault(); drag.down(event, 0); }}

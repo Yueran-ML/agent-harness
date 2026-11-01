@@ -194,7 +194,7 @@ function SoftClip({ edit }: { edit: NodeEdit }) {
       {fields.map(({ key, name, bounds, feel, shown }) => {
         const paths = channels.map(ch => `soft_clip.${key}.${ch}`);
         const set = (value: number): Edits => paths.map(path => [path, value] as const);
-        return <NumberControl key={key} name={name} field={paths[0]} value={edit.value(paths[0])} neutral={bounds.neutral} low={bounds.low} high={bounds.high}
+        return <NumberControl key={edit.controlKey(paths)} name={name} field={paths[0]} value={edit.value(paths[0])} neutral={bounds.neutral} low={bounds.low} high={bounds.high}
           digits={feel.digits} perPx={feel.perPx} shown={shown} keyed={paths.some(path => edit.keyed(path))} keyedTitle={words.hint.studio.colorPage.keyed}
           disabled={!edit.enabled} onPreview={value => edit.preview(set(value))} onCommit={value => edit.commit(set(value))} onCancel={edit.cancel} />;
       })}
@@ -277,7 +277,7 @@ export function CurvesPalette({ edit, mode, onMode }: { edit: NodeEdit; mode: Cu
             {CHANNELS.map((ch) => {
               const path = `curves.${ch}.intensity`;
               return <div key={ch} className="color-intensity" data-channel={ch}>
-                <NumberControl name={`${labels.intensity} ${LETTER[ch]}`} label={LETTER[ch]} field={path} value={edit.value(path)}
+                <NumberControl key={edit.controlKey([path])} name={`${labels.intensity} ${LETTER[ch]}`} label={LETTER[ch]} field={path} value={edit.value(path)}
                   neutral={BOUNDS.intensity.neutral} low={BOUNDS.intensity.low} high={BOUNDS.intensity.high}
                   digits={SETTING_FEEL.intensity.digits} perPx={SETTING_FEEL.intensity.perPx} keyed={edit.keyed(path)}
                   keyedTitle={words.hint.studio.colorPage.keyed} disabled={disabled}

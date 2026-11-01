@@ -109,7 +109,9 @@ contextBridge.exposeInMainWorld('columbina', {
   // media comes from the dialog of the system, and the view is made by the shell.
   engine: {
     open: (cwd) => ipcRenderer.invoke('columbina:engine-open', { cwd }),
-    call: (method, params) => ipcRenderer.invoke('columbina:engine-call', { method, params }),
+    call: (method, params, context) => ipcRenderer.invoke('columbina:engine-call', {
+      method, params, ...(context?.expectedSession === undefined ? {} : { expectedSession: context.expectedSession }),
+    }),
     importFiles: (asked) => ipcRenderer.invoke('columbina:engine-import', { language: asked?.language, ...(asked?.bin === undefined ? {} : { bin: asked.bin }) }),
     // Stills of the Gallery come from pictures chosen in the dialog of the system, and go where Save As says.
     importStills: (asked) => ipcRenderer.invoke('columbina:engine-still-import', { language: asked?.language, ...(asked?.album === undefined ? {} : { album: asked.album }) }),

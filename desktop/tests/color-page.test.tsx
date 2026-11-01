@@ -130,6 +130,12 @@ function fakeEngine(timelines: Timeline[] = [graded()]) {
   const copy = new ProjectCopy(bridge);
   return {
     bridge, copy,
+    /** A refreshed project can carry new source facts (set_media itself does not edit facts). */
+    replaceMedia: async (updated: Media) => act(async () => {
+      project = { ...project, media: project.media.map(each => each.id === updated.id ? updated : each) };
+      revision++;
+      await copy.refetch();
+    }),
     /** The transport tells something of the timeline monitor. */
     notify: (fields: Record<string, unknown>) => act(() => { state = { ...state, ...fields } as TransportState; tell('transport.state', state); }),
     /** Another client changes the project. */
@@ -438,12 +444,49 @@ describe('the Color page', () => {
     fireEvent.pointerUp(name, { pointerId: 1, clientX: 40 });
     await settle();
     // The last of the drag, which ends its gesture: the drag is one step to undo. It is bound to
-    // the revision that the copy has then, after the first of the drag.
-    expect(calls(bridge, 'transaction.apply').at(-1)).toEqual({ revision: 1, ops: [
+    // the first revision of the drag, even after its own copy advances.
+    expect(calls(bridge, 'transaction.apply').at(-1)).toEqual({ revision: 0, ops: [
       { op: 'set_node', grade: { level: 'clip', timeline: 't1', clip: 'c1' }, id: 'n1', params: { primaries: { saturation: 60 } } }],
     gesture: { id: expect.any(String), end: true } });
     expect(document.querySelector('[data-palette="primaries"] [data-test="changed-dot"]')).not.toBeNull();
     expect(document.querySelector('[data-palette="curves"] [data-test="changed-dot"]')).toBeNull();
+  });
+
+  it('keeps a static control through continuous playback, but invalidates it on a paused seek', async () => {
+    const { bridge, notify } = await mount();
+    await notify({ playing: true });
+    const selector = '[data-field="primaries.saturation"] .color-number-name';
+    const name = document.querySelector(selector)!;
+    fireEvent.pointerDown(name, { button: 0, pointerId: 1, clientX: 0 });
+    await notify({ frame: 1, playing: true });
+    expect(document.querySelector(selector)).toBe(name);
+    fireEvent.pointerMove(name, { pointerId: 1, clientX: 40 });
+    fireEvent.pointerUp(name, { pointerId: 1, clientX: 40 });
+    await settle();
+    expect(bridge.call.mock.calls.filter(([method]) => method === 'transaction.apply').every(([, , context]) => context?.expectedSession === 1)).toBe(true);
+    await notify({ playing: false });
+    const paused = document.querySelector(selector)!;
+    fireEvent.pointerDown(paused, { button: 0, pointerId: 1, clientX: 0 });
+    const before = calls(bridge, 'transaction.apply').length;
+    await notify({ frame: 2 });
+    fireEvent.pointerMove(paused, { pointerId: 1, clientX: 80 }); fireEvent.pointerUp(paused, { pointerId: 1, clientX: 80 });
+    await settle();
+    expect(calls(bridge, 'transaction.apply')).toHaveLength(before);
+  });
+
+  it.each(['slip', 'speed', 'reverse', 'source rate'] as const)('invalidates an in-flight drag immediately when its %s clock input changes', async kind => {
+    const { bridge, change, replaceMedia } = await mount();
+    const original = bridge.call.getMockImplementation()!;
+    bridge.call.mockImplementation((method: string, params?: Record<string, unknown>) => method === 'transaction.apply' ? new Promise(() => {}) : original(method, params));
+    const selector = '[data-field="primaries.saturation"] .color-number-name';
+    const name = document.querySelector(selector)!;
+    fireEvent.pointerDown(name, { button: 0, pointerId: 1, clientX: 0 }); fireEvent.pointerMove(name, { pointerId: 1, clientX: 40 });
+    if (kind === 'source rate') await replaceMedia({ ...m1, facts: { ...m1.facts, video: { ...m1.facts.video!, rate: { num: 30, den: 1 } } } });
+    else change([{ op: 'set_clip', timeline: 't1', id: 'c1', ...(kind === 'slip' ? { source: { kind: 'media', media: 'm1', in: { ticks: 25, scale: 25 } } }
+      : kind === 'speed' ? { speed: { num: 2, den: 1 } } : { reverse: true }) } as Op]);
+    expect(document.querySelector(selector)).not.toBe(name);
+    fireEvent.pointerMove(name, { pointerId: 1, clientX: 80 }); fireEvent.pointerUp(name, { pointerId: 1, clientX: 80 });
+    expect(calls(bridge, 'transaction.apply')).toHaveLength(1);
   });
 
   it('edits the default node 01 of a clip without nodes from the palettes, making it in the same transaction (T3d)', async () => {

@@ -267,6 +267,9 @@ export interface ColumbinaBridge {
   engine: EngineBridge;
 }
 
+/** Renderer ownership of a call; carried by IPC, never passed to an engine method. */
+export interface EngineCallContext { expectedSession: number }
+
 /**
  * The engine of the studio, as the shell lets the page reach it. The page names no path to the
  * engine (media comes from the dialog of the system) and never attaches the view itself: it says
@@ -284,7 +287,7 @@ export interface EngineBridge {
    * Call a method of the engine that the page may call (not `view.attach`, `view.detach` or
    * `media.import`). The answer holds the result, or the error as the engine gave it.
    */
-  call(method: PageMethod, params?: Record<string, unknown>): Promise<EngineAnswer>;
+  call(method: PageMethod, params?: Record<string, unknown>, context?: EngineCallContext): Promise<EngineAnswer>;
   /**
    * Let the user choose media in the dialog of the system, titled in the language that is named,
    * and import it into the project. The result is null where nothing was chosen.

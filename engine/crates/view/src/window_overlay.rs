@@ -406,14 +406,22 @@ impl Shape {
         ]
     }
 
-    fn boundaries(&self, map: ViewportMap, style: Style, selected: bool) -> Vec<Primitive> {
+    /// The main boundary, and on the selected window its two softness rings when `guides`:
+    /// like Linear/Polygon guides those are display only and never hit (author decision 2026-11-02).
+    fn boundaries(
+        &self,
+        map: ViewportMap,
+        style: Style,
+        selected: bool,
+        guides: bool,
+    ) -> Vec<Primitive> {
         let Some(body) = self.device(map) else {
             return vec![];
         };
         let mut out = vec![];
         let r = self.radius;
         let f = self.feather;
-        let mut boundary = |offset: f64, colour| {
+        let mut boundary = |offset: f64, colour, guide: bool| {
             let geometry = if self.kind == ShapeKind::Circular {
                 let circle = Self {
                     radius: offset,
@@ -443,17 +451,17 @@ impl Shape {
                 control: None,
                 anchor: geometry.centre,
                 edge: false,
-                guide: false,
+                guide,
             });
         };
-        if f > 0.0 && selected {
+        if f > 0.0 && selected && guides {
             let base = if self.kind == ShapeKind::Circular {
                 r
             } else {
                 0.0
             };
-            boundary(base - f, style.unselected);
-            boundary(base + f, style.unselected);
+            boundary(base - f, style.unselected, true);
+            boundary(base + f, style.unselected, true);
         }
         boundary(
             if self.kind == ShapeKind::Circular {
@@ -466,6 +474,7 @@ impl Shape {
             } else {
                 style.unselected
             },
+            false,
         );
         out
     }
@@ -479,8 +488,8 @@ impl Shape {
         self.layers(map, style, selected, true)
     }
 
-    /// Everything drawn, or with `guides` false only what can be hit: Linear and Polygon
-    /// softness guides are display only.
+    /// Everything drawn, or with `guides` false only what can be hit: softness guides and
+    /// rings of every shape are display only.
     fn layers(
         &self,
         map: ViewportMap,
@@ -494,7 +503,7 @@ impl Shape {
         if self.device(map).is_none() {
             return vec![];
         }
-        let mut out = self.boundaries(map, style, selected);
+        let mut out = self.boundaries(map, style, selected, guides);
         if !selected {
             return out;
         }
@@ -1068,6 +1077,44 @@ mod tests {
             })
         );
         assert_eq!(shape.hit_control(map, [10.0, 30.0]), None);
+    }
+
+    #[test]
+    fn circular_and_gradient_softness_rings_are_drawn_but_never_hit() {
+        let map = Viewport::Fit.map((120, 80), (120, 80), 0).unwrap();
+        let mut shape = overlay(vec![circle("w", 60.0)]);
+        shape.selected = Some("w".into());
+        shape.shapes[0].feather = 0.4;
+        // The outer Soft 1 ring, outside the body and away from its handle: display only.
+        assert!(shape.outline(map, [88.0, 40.0]).is_some());
+        assert_eq!(shape.hit_control(map, [88.0, 40.0]), None);
+        // The explicit softness handle on that ring is still grabbable.
+        assert_eq!(
+            shape.hit_control(map, [84.249_04, 47.0]),
+            Some(Hit {
+                id: "w",
+                control: Control::Softness(1)
+            })
+        );
+        // Gradient: the line on the dark side is drawn but not hit; its handle is.
+        shape.shapes[0].kind = ShapeKind::Gradient;
+        assert!(shape.outline(map, [30.0, 44.0]).is_some());
+        assert_eq!(shape.hit_control(map, [30.0, 44.0]), None);
+        assert_eq!(
+            shape.hit_control(map, [80.0, 44.0]),
+            Some(Hit {
+                id: "w",
+                control: Control::Softness(1)
+            })
+        );
+        // The main boundary still moves the window.
+        assert_eq!(
+            shape.hit_control(map, [30.0, 40.0]),
+            Some(Hit {
+                id: "w",
+                control: Control::Move
+            })
+        );
     }
 
     #[test]

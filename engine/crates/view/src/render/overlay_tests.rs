@@ -416,7 +416,8 @@ fn window_overlay_gradient_controls_share_rotated_device_geometry_and_wipe_cover
                     (0..3).all(|ch| (f32::from(pixel[ch]) - wanted[ch]).abs() < 2.1),
                     "{point:?} {pixel:?} {wanted:?}"
                 );
-                if osc.outline(map, point).is_some() {
+                // Its feather lines are display only (author decision 2026-11-02).
+                if osc.outline(map, point).is_some() && controls(&osc, map, point) {
                     assert_eq!(osc.hit(map, point), Some("w1"));
                 }
             }

@@ -1621,6 +1621,46 @@ fn transform_softness_controls_restore_zero_and_clamp_without_touching_transform
         }
     }
 }
+/// Author decision 2026-11-02: a Circular/Gradient softness ring is drawn but never hit, like
+/// the Linear/Polygon guides; the explicit softness handles still drag the softness.
+#[test]
+fn softness_rings_never_capture_but_their_handles_still_drag_softness() {
+    let soft = |shape: WindowShape| {
+        let mut window = Window::new("w1", shape);
+        let (WindowShape::Circular { softness } | WindowShape::Gradient { softness }) =
+            &mut window.shape
+        else {
+            panic!()
+        };
+        // 40 is .1 image heights each side: 7.2 device pixels on the 128x72 fixture.
+        *softness = Param::Fixed(40.0);
+        window
+    };
+    // Circular: radius 18 px, outer ring at 25.2 px; its handle at 30° on that ring.
+    let (_, _, _, _, ring) = try_control_window(soft(WindowShape::circular()), (64 + 25, 36));
+    assert_eq!(ring.unwrap_err().data, Some(json!({"reason":"hit"})));
+    let (mut state, registry, pin, frame) =
+        control_window_fixture(soft(WindowShape::circular()), (85, 48));
+    assert_eq!(
+        state.window.active.as_ref().unwrap().movement.control,
+        columbina_view::window_overlay::Control::Softness(1)
+    );
+    arm_capture(&mut state);
+    drag(&mut state, &registry, &pin, &frame, (89, 48));
+    let WindowShape::Circular { softness } = &first_window(&state).shape else {
+        panic!()
+    };
+    assert!(softness.value_at(10.0) > 40.0, "{softness:?}");
+    // Gradient: the line 7.2 px on the dark side, away from the handle at (82, 43).
+    let (_, _, _, _, ring) = try_control_window(soft(WindowShape::gradient()), (30, 43));
+    assert_eq!(ring.unwrap_err().data, Some(json!({"reason":"hit"})));
+    let (state, _, _, _) = control_window_fixture(soft(WindowShape::gradient()), (82, 43));
+    assert_eq!(
+        state.window.active.as_ref().unwrap().movement.control,
+        columbina_view::window_overlay::Control::Softness(1)
+    );
+}
+
 fn movement(
     state: &mut State,
     registry: &Registry,

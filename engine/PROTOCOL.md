@@ -973,7 +973,10 @@ and Soft1 on the outer boundary at a local 30-degree ray. Gradient uses its y=0 
 y=+/-f feather lines, centre Move, bottom Rotate arrow at (0,r), and Soft1 handles at (-r,-f)
 and (r,f). These positions and increments are project choices, not published Resolve algorithms.
 Size0 has no invertible control geometry; numeric Size restores it. Soft0 handles remain
-available; a collapsed inner feather circle at Soft100 is not drawn.
+available; a collapsed inner feather circle at Soft100 is not drawn. The feather circles and
+lines are display only, like the Linear/Polygon guides: a click on one hits only what lies
+under it otherwise (the body, a handle, or nothing), never the ring itself; the Soft1 handles
+are the softness controls.
 
 Drag geometry uses the actual down-frame interpolated/clamped transform E; writes use the
 original left-key value L plus the observed delta, clamped to the model bounds. Size scales

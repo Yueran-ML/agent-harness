@@ -179,7 +179,8 @@ export function WindowPalette({ controls, capturing, busy, status, edit, notice 
         name={words.fields[name]} neutral={neutral} low={low} high={high} perPx={perPx} disabled={capturing || controls.pending || !edit.enabled}
         clock={`${words.clock[keys.clock]}`} />)}
     </div>}
-    <p role="status">{controls.pending ? words.creating : notice ? topologyText(messages, notice) : words.status[status]}</p>
+    <p role="status">{controls.pending ? words.creating : notice ? topologyText(messages, notice)
+      : status === 'refused' ? messages.hint.studio.colorPage.windowControls.refused : status === 'idle' ? '' : words.status[status]}</p>
   </div>;
 }
 

@@ -784,7 +784,7 @@ export const ja: Messages = {
         overview: 'タイムライン全体', detail: '再生ヘッド付近のタイムライン', tapeStrip: 'ビンのソーステープ',
       },
       colorPage: {
-        viewerZoom: 'ビューアのズーム', viewerFit: '全体を表示',
+        viewerZoom: 'ビューアのズーム', viewerFit: '全体を表示', matching: '選択したクリップをマッチしています…',
         windowControls: {
           addGradient: 'グラデーションウィンドウを追加', addLinear: '線形ウィンドウを追加', addPolygon: '多角形ウィンドウを追加',
           fields: { size: 'サイズ', aspect: 'アスペクト', pan: 'パン', tilt: 'ティルト', rotate: '回転', opacity: '不透明度', softness: 'ソフト 1',
@@ -794,11 +794,11 @@ export const ja: Messages = {
             one: 'ポイント {point}', two: 'ポイント {first} と {second}',
             frames: '{clock} {from}–{to} フレーム', allFrames: 'すべてのフレーム',
           },
-          osc: 'オンスクリーンコントロール', none: 'オフ', window: 'Power Window', image_wipe: 'イメージワイプ', add: '円形ウィンドウを追加',
+          osc: 'オンスクリーンコントロール', none: 'オフ', window: 'ウィンドウ', image_wipe: 'イメージワイプ', add: '円形ウィンドウを追加',
           list: 'ウィンドウ', editing: '編集中', static: '静的', key: 'キーフレーム', frame: 'フレーム', creating: 'ウィンドウを作成中…',
           clock: { source: 'ソース時間', clip: 'クリップ時間', timeline: 'タイムライン時間' },
           shapes: { circular: '円形', linear: '線形', polygon: '多角形', curve: '曲線', gradient: 'グラデーション' },
-          status: { idle: '', arming: 'ウィンドウのドラッグを準備中…', armed: 'ウィンドウをドラッグ中 · Esc でキャンセル', refused: 'このフレームでは操作できません。ウィンドウを選び直してください。' }
+          status: { arming: 'ウィンドウのドラッグを準備中…', armed: 'ウィンドウをドラッグ中 · Esc でキャンセル' }
         },
         toolbar: 'インターフェースツールバー', gallery: 'ギャラリー', luts: 'LUT ブラウザー', clips: 'クリップ', clipFilter: 'クリップフィルター', timeline: 'タイムライン', nodes: 'ノード',
         filter: { all: 'すべてのクリップ', graded: 'グレード済みクリップ', ungraded: '未グレードのクリップ', grouped: 'グループのクリップ', matched: 'ショットマッチ済みクリップ' },
@@ -1572,6 +1572,7 @@ export const ja: Messages = {
         noCorrector: 'ノードエディターでコレクターノードを選ぶと調整できます。',
         autoFlat: 'このフレームは明暗の幅が狭すぎるため、オートカラーで調整できません。',
         windowControls: {
+          refused: 'このフレームでは操作できません。ウィンドウを選び直してください。',
           topology: {
             maximum: '多角形ウィンドウのポイントは最大 {most} 個のため、追加しませんでした。',
             minimum: '多角形ウィンドウには {least} 個以上のポイントが必要なため、削除しませんでした。',
@@ -1584,7 +1585,7 @@ export const ja: Messages = {
           },
         },
         shotMatch: {
-          measuring: '選択したクリップをマッチしています…', done: (count: number) => `${count} 個のクリップをマッチしました。`,
+          done: (count: number) => `${count} 個のクリップをマッチしました。`,
           changed: '選択したクリップか参照クリップが見つかりません。クリップを選び直してください。',
           wrongNode: 'マッチする各クリップでコレクターノードを選んでください。', locked: '選択したノードのロックを解除してからマッチしてください。',
           animated: '既存のショットマッチにキーフレームがあります。リセットしてから再度マッチしてください。',

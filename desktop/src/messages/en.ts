@@ -857,7 +857,7 @@ export const en = {
       },
       /** The Color page, in DaVinci Resolve's words (Reference Manual 20, Chapters 126–128 and 143). */
       colorPage: {
-        viewerZoom: 'Viewer zoom', viewerFit: 'Fit',
+        viewerZoom: 'Viewer zoom', viewerFit: 'Fit', matching: 'Matching the selected clips…',
         windowControls: {
           addGradient: 'Add Gradient Window', addLinear: 'Add Linear Window', addPolygon: 'Add Polygon Window',
           fields: { size: 'Size', aspect: 'Aspect', pan: 'Pan', tilt: 'Tilt', rotate: 'Rotate', opacity: 'Opacity', softness: 'Soft 1',
@@ -872,7 +872,8 @@ export const en = {
           list: 'Windows', editing: 'Editing', static: 'Static', key: 'Key frame', frame: 'Frame', creating: 'Creating window…',
           clock: { source: 'Source clock', clip: 'Clip clock', timeline: 'Timeline clock' },
           shapes: { circular: 'Circular', linear: 'Linear', polygon: 'Polygon', curve: 'Curve', gradient: 'Gradient' },
-          status: { idle: '', arming: 'Preparing window drag…', armed: 'Dragging window · Esc to cancel', refused: 'Window controls are unavailable for this frame. Select the window again to retry.' }
+          /** While a window is dragged; nothing is said while none is. */
+          status: { arming: 'Preparing window drag…', armed: 'Dragging window · Esc to cancel' }
         },
         toolbar: 'Interface toolbar', gallery: 'Gallery', luts: 'LUTs', clips: 'Clips', clipFilter: 'Clip filter', timeline: 'Timeline', nodes: 'Nodes',
         filter: { all: 'All Clips', graded: 'Graded Clips', ungraded: 'Ungraded Clips', grouped: 'Grouped Clips', matched: 'Shot Matched Clips' },
@@ -1701,6 +1702,7 @@ export const en = {
         noCorrector: 'Choose a corrector node in the node editor to adjust it.',
         autoFlat: 'Auto Color found too little range in this frame to balance it.',
         windowControls: {
+          refused: 'Window controls are unavailable for this frame. Select the window again to retry.',
           /** Why a Polygon point was not added or deleted; nothing was changed. */
           topology: {
             maximum: 'A polygon window holds at most {most} points, so no point was added.',
@@ -1714,7 +1716,7 @@ export const en = {
           },
         },
         shotMatch: {
-          measuring: 'Matching the selected clips…', done: (count: number) => `Matched ${count} ${count === 1 ? 'clip' : 'clips'}.`,
+          done: (count: number) => `Matched ${count} ${count === 1 ? 'clip' : 'clips'}.`,
           changed: 'A selected clip or the reference is no longer available. Choose the clips again.',
           wrongNode: 'Choose a corrector node in each clip to match.', locked: 'Unlock the selected nodes before matching.',
           animated: 'The existing Shot Match has keyframes. Reset Shot Match before matching again.',

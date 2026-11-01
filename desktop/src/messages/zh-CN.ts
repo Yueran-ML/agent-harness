@@ -735,7 +735,7 @@ export const zhCN: Messages = {
         overview: '整条时间线', detail: '播放头附近的时间线', tapeStrip: '素材箱的源磁带',
       },
       colorPage: {
-        viewerZoom: '检视器缩放', viewerFit: '适合窗口',
+        viewerZoom: '检视器缩放', viewerFit: '适合窗口', matching: '正在匹配选中的片段…',
         windowControls: {
           addGradient: '添加渐变窗口', addLinear: '添加线性窗口', addPolygon: '添加多边形窗口',
           fields: { size: '大小', aspect: '宽高比', pan: '平移', tilt: '倾斜', rotate: '旋转', opacity: '不透明度', softness: '柔化 1',
@@ -745,11 +745,11 @@ export const zhCN: Messages = {
             one: '第 {point} 点', two: '第 {first} 点和第 {second} 点',
             frames: '{clock}第 {from}–{to} 帧', allFrames: '所有帧',
           },
-          osc: '屏上控制', none: '关闭', window: 'Power Window', image_wipe: '图像划像', add: '添加圆形窗口',
+          osc: '屏上控制', none: '关闭', window: '窗口', image_wipe: '图像划像', add: '添加圆形窗口',
           list: '窗口列表', editing: '正在编辑', static: '静态', key: '关键帧', frame: '帧', creating: '正在创建窗口…',
           clock: { source: '源时钟', clip: '片段时钟', timeline: '时间线时钟' },
           shapes: { circular: '圆形', linear: '线性', polygon: '多边形', curve: '曲线', gradient: '渐变' },
-          status: { idle: '', arming: '正在准备窗口拖动…', armed: '正在拖动窗口 · Esc 取消', refused: '当前帧无法使用窗口控制。请重新选择窗口后重试。' }
+          status: { arming: '正在准备窗口拖动…', armed: '正在拖动窗口 · Esc 取消' }
         },
         toolbar: '界面工具栏', gallery: '画廊', luts: 'LUT 浏览器', clips: '片段', clipFilter: '片段筛选', timeline: '时间线', nodes: '节点',
         filter: { all: '所有片段', graded: '已调色片段', ungraded: '未调色片段', grouped: '群组片段', matched: '已镜头匹配片段' },
@@ -1494,6 +1494,7 @@ export const zhCN: Messages = {
         noCorrector: '在节点编辑器里选一个校正器节点来调整。',
         autoFlat: '这一帧的明暗范围太窄，自动调色无从平衡。',
         windowControls: {
+          refused: '当前帧无法使用窗口控制。请重新选择窗口后重试。',
           topology: {
             maximum: '多边形窗口最多 {most} 个点，未添加该点。',
             minimum: '多边形窗口至少保留 {least} 个点，未删除该点。',
@@ -1506,7 +1507,7 @@ export const zhCN: Messages = {
           },
         },
         shotMatch: {
-          measuring: '正在匹配选中的片段…', done: (count: number) => `已匹配 ${count} 个片段。`,
+          done: (count: number) => `已匹配 ${count} 个片段。`,
           changed: '待匹配片段或参考片段已不在当前时间线上，请重新选择片段。',
           wrongNode: '请在每个待匹配片段中选择一个校正节点。', locked: '请先解锁选中的节点，再进行镜头匹配。',
           animated: '已有镜头匹配包含关键帧。请先重置镜头匹配，再重新匹配。',

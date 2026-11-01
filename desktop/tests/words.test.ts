@@ -152,15 +152,9 @@ const samples: Record<string, unknown[][]> = {
 
 type Said = { path: string; text: string };
 
-// What is written in every language as it is: the names of the platforms, the names of the
-// fields of an app or a bot, as their consoles write them, and the name of DaVinci Resolve's tool.
-const NAMES = new Set(['Feishu', 'Lark', 'WeCom', 'QQ', 'App ID', 'App Secret', 'Bot ID', 'Secret', 'AppID', 'AppSecret', 'Power Window']);
-// What says nothing on purpose: the status of the window controls while no window is dragged.
-const SILENT = new Set(['label.studio.colorPage.windowControls.status.idle']);
-// A line said while something is being done, which ends in an ellipsis as a label of progress does.
-const IN_PROGRESS = new Set(['hint.studio.colorPage.shotMatch.measuring']);
-// A label that is a whole sentence: why the window controls cannot be used.
-const SENTENCE_LABELS = new Set(['label.studio.colorPage.windowControls.status.refused']);
+// What is written in every language as it is: the names of the platforms, and the names of the
+// fields of an app or a bot, as their consoles write them.
+const NAMES = new Set(['Feishu', 'Lark', 'WeCom', 'QQ', 'App ID', 'App Secret', 'Bot ID', 'Secret', 'AppID', 'AppSecret']);
 // What is written with the units of an editor, as editors write them in every language: 29.97 fps, 10 bit.
 const UNITS = new Set(['label.studio.fps', 'label.studio.bits']);
 // What the Chinese one keeps in English, as the terms of the trade are said there: a label that is
@@ -230,7 +224,7 @@ describe('the catalogues', () => {
     const said = everythingSaid(messages);
 
     it('say something at every place', () => {
-      expect(said.filter(({ path, text }) => text.trim() === '' && !SILENT.has(path))).toEqual([]);
+      expect(said.filter(({ text }) => text.trim() === '')).toEqual([]);
       expect(said.length).toBeGreaterThan(80);
     });
 
@@ -269,9 +263,9 @@ describe('the catalogues', () => {
     // In the row of a call, `what` is a few words. The name of an action is the
     // face of a button, and so is a label. A duration and the time that a turn took
     // are parts of a line.
-    const isSentence = (path: string) => path.endsWith('.why') || SENTENCE_LABELS.has(path) || !(
+    const isSentence = (path: string) => path.endsWith('.why') || !(
       path.startsWith('tool.') || path.startsWith('actions.') || path.startsWith('label.')
-      || path === 'duration' || path === 'turn.took' || IN_PROGRESS.has(path)
+      || path === 'duration' || path === 'turn.took'
     );
     for (const [, messages] of catalogues) {
       const stop = messages === en ? '.' : '。';
@@ -317,7 +311,7 @@ describe('the catalogues', () => {
     expect(said.filter(({ text }) => text.includes('您'))).toEqual([]);
     // Every sentence is in Chinese: none was left as it is in English.
     const english = new Set(everythingSaid(en).map(({ text }) => text));
-    const translated = said.filter(({ path, text }) => !NAMES.has(text) && !UNITS.has(path) && !SILENT.has(path) && !KEPT_IN_ENGLISH.has(path));
+    const translated = said.filter(({ path, text }) => !NAMES.has(text) && !UNITS.has(path) && !KEPT_IN_ENGLISH.has(path));
     expect(translated.filter(({ text }) => english.has(text))).toEqual([]);
     expect(translated.filter(({ text }) => !new RegExp(chinese).test(text))).toEqual([]);
   });
@@ -337,7 +331,7 @@ describe('the catalogues', () => {
     expect(said.filter(({ text }) => touching.test(text))).toEqual([]);
     // Every line is in Japanese: none was left as it is in English.
     const english = new Set(everythingSaid(en).map(({ text }) => text));
-    const translated = said.filter(({ path, text }) => !NAMES.has(text) && !UNITS.has(path) && !SILENT.has(path));
+    const translated = said.filter(({ path, text }) => !NAMES.has(text) && !UNITS.has(path));
     expect(translated.filter(({ text }) => english.has(text))).toEqual([]);
     expect(translated.filter(({ text }) => !new RegExp(japanese).test(text))).toEqual([]);
     // And none was left as it is in Chinese, which has no kana. A sentence of Japanese has some.

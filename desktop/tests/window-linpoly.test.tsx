@@ -32,7 +32,8 @@ it('creates Linear and Polygon windows with the model defaults through the same 
   expect(windowShape('polygon')).toEqual({ kind: 'polygon', points: rectangle, inside: 0, outside: 0 });
 });
 
-function mountPalette(windows: PowerWindow[], notice: Parameters<typeof WindowPalette>[0]['notice'] = null) {
+function mountPalette(windows: PowerWindow[], notice: Parameters<typeof WindowPalette>[0]['notice'] = null,
+  status: Parameters<typeof WindowPalette>[0]['status'] = 'idle') {
   likeABrowser(); vi.stubGlobal('PointerEvent', MouseEvent);
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 1; });
   const sent: { ops: { params: { windows: PowerWindow[] } }[] }[] = [];
@@ -48,7 +49,7 @@ function mountPalette(windows: PowerWindow[], notice: Parameters<typeof WindowPa
       editing: { run: vi.fn(), step: vi.fn(), problem: null, setProblem: vi.fn() }, tool: 'window', frame: 5, clock: 'source' });
     return <Palettes merged={false} left="primaries" center="window" last="center" right="scopes" onLeft={() => {}} onCenter={() => {}} onRight={() => {}}
       edited={{ bridge: { call }, session: 1, revision: 10, target, node, frame: 5, timelineFrame: 5, playing: false, onFailure: vi.fn() }}
-      windows={edit => <WindowPalette edit={edit} controls={controls} capturing={false} busy={() => false} status="idle" notice={notice} />} />;
+      windows={edit => <WindowPalette edit={edit} controls={controls} capturing={false} busy={() => false} status={status} notice={notice} />} />;
   }
   render(<Harness />);
   return { sent, controls: () => controls! };
@@ -105,6 +106,15 @@ it('explains a refused insertion or deletion with its points, field, interval an
   expect(topologyText(en, { action: 'insert', topology: { why: 'maximum', most: 128 } })).toContain('128');
   mountPalette([polygon], jump);
   expect(screen.getByRole('status').textContent).toBe(text);
+});
+
+it('says nothing while no window is dragged, and why the controls are unavailable as a sentence', () => {
+  mountPalette([polygon]);
+  expect(screen.getByRole('status').textContent).toBe('');
+  cleanup();
+  mountPalette([polygon], null, 'refused');
+  expect(screen.getByRole('status').textContent).toBe(en.hint.studio.colorPage.windowControls.refused);
+  expect(en.hint.studio.colorPage.windowControls.refused).toMatch(/\.$/);
 });
 
 it('names the new Window fields in each language', () => {

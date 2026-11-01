@@ -48,7 +48,7 @@ export function useShotMatch({ bridge, session, revision, timeline, clips, chose
     active.current = abort;
     setBusy(true);
     const text = asked.words.hint.studio.colorPage.shotMatch;
-    setNotice(resetting ? null : text.measuring);
+    setNotice(resetting ? null : asked.words.label.studio.colorPage.matching);
     try {
       if (resetting) {
         const ops: Op[] = selected.flatMap(clip => clip.grade.nodes.flatMap(node => node.kind === 'corrector' && node.params.shot_match != null

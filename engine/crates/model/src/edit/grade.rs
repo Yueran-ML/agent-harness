@@ -11,7 +11,9 @@ use crate::grade::{
     FURTHEST_POS, NODE_STEP, OUTPUT, SOURCE,
 };
 use crate::keyframes::{aligned, Align, KeyBase};
-use crate::ops::{apply_done, grade_at, group_of_clip, reserve_node_ids, Op, OpError};
+use crate::ops::{
+    apply_done, grade_at, group_of_clip, keeps_node_id, reserve_node_ids, Op, OpError,
+};
 use crate::project::{Id, Project};
 
 /// The operations that an edit has been worked out into so far.
@@ -282,6 +284,49 @@ pub(super) fn copy_grade(
     preserve: u32,
     align: Align,
 ) -> Result<Expansion, EditError> {
+    let given = Given {
+        grade: grade_at(project, from)?.clone(),
+        keys: KeyBase::of(project, from),
+        align: Some(align),
+    };
+    copy_given(project, &given, to, preserve)
+}
+
+/// A grade that is copied or appended whole, given rather than named in the project: a still's
+/// of the Gallery (Apply Grade and Append Node Graph of a still, p. 3290).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Given {
+    /// The grade.
+    pub grade: Grade,
+    /// The frames that its keys count, where they count those of a clip or a timeline (see
+    /// [`KeyBase`]).
+    pub keys: Option<KeyBase>,
+    /// How its keys are put on the frames of each grade that it goes to (Apply Grades Using,
+    /// p. 3287), or `None` to put them where they are: No Keyframes, of a grade whose keys are
+    /// taken out already (p. 3393).
+    pub align: Option<Align>,
+}
+
+impl Given {
+    /// The grade as it goes to `target`, its keys put on its frames.
+    fn to(&self, project: &Project, target: &Target) -> Grade {
+        match self.align {
+            Some(align) => aligned(&self.grade, self.keys, KeyBase::of(project, target), align),
+            None => self.grade.clone(),
+        }
+    }
+}
+
+/// [`copy_grade`] of a grade given whole: what Copy Grade and Apply Grade of a still both are.
+/// A node keeps its id, as within a project, where the project can take it; one that the engine
+/// could make and has not made yet (of a grade of another project) is given a new id of the
+/// engine's, in its order.
+pub(super) fn copy_given(
+    project: &mut Project,
+    given: &Given,
+    to: &[Target],
+    preserve: u32,
+) -> Result<Expansion, EditError> {
     if to.is_empty() {
         return Err(OpError::OutOfRange { what: "to" }.into());
     }
@@ -291,15 +336,17 @@ pub(super) fn copy_grade(
         }
         .into());
     }
-    let copied = grade_at(project, from)?.clone();
-    let base = KeyBase::of(project, from);
+    let given = Given {
+        grade: kept_ids(project, &given.grade)?,
+        ..given.clone()
+    };
     let mut steps = Steps::default();
     for target in to {
         let had = grade_at(project, target)?;
-        let copied = aligned(&copied, base, KeyBase::of(project, target), align);
+        let copied = given.to(project, target);
         let kept = preserve as usize;
         let value = if kept == 0 || had.nodes.len() < kept {
-            copied.clone()
+            copied
         } else {
             let kept = had.nodes[..kept].to_vec();
             preserved(project, &copied, kept)?
@@ -311,6 +358,21 @@ pub(super) fn copy_grade(
         steps.apply(project, set)?;
     }
     Ok(steps.finish())
+}
+
+/// `grade` with each node whose id the project cannot take given a new one of the engine's.
+fn kept_ids(project: &mut Project, grade: &Grade) -> Result<Grade, EditError> {
+    let renamed_ones: Vec<Id> = grade
+        .nodes
+        .iter()
+        .filter(|node| !keeps_node_id(project, &node.id))
+        .map(|node| node.id.clone())
+        .collect();
+    if renamed_ones.is_empty() {
+        return Ok(grade.clone());
+    }
+    let ids = reserve_node_ids(project, &ids_of(grade), renamed_ones.len())?;
+    Ok(renamed(grade, &renamed_ones.into_iter().zip(ids).collect()))
 }
 
 /// The grade `copied` with `kept`, the first nodes of the grade it is put in place of, in the
@@ -485,15 +547,29 @@ pub(super) fn append_node_graph(
     to: &[Target],
     align: Align,
 ) -> Result<Expansion, EditError> {
+    let given = Given {
+        grade: grade_at(project, from)?.clone(),
+        keys: KeyBase::of(project, from),
+        align: Some(align),
+    };
+    append_given(project, &given, to)
+}
+
+/// [`append_node_graph`] of a grade given whole: what Append Node Graph of a grade, of a still
+/// and of one node (Append Node to Selected Clips, p. 3297) all are. The nodes added lie right of
+/// those of each grade (see [`chain`]).
+pub(super) fn append_given(
+    project: &mut Project,
+    given: &Given,
+    to: &[Target],
+) -> Result<Expansion, EditError> {
     if to.is_empty() {
         return Err(OpError::OutOfRange { what: "to" }.into());
     }
-    let added = grade_at(project, from)?.clone();
-    let base = KeyBase::of(project, from);
     let mut steps = Steps::default();
     for target in to {
         let had = grade_at(project, target)?.clone();
-        let added = aligned(&added, base, KeyBase::of(project, target), align);
+        let added = given.to(project, target);
         let added = anew(project, &added, &ids_of(&had))?;
         let set = Op::SetGrade {
             grade: target.clone(),

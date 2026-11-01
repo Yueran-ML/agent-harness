@@ -377,6 +377,12 @@ fn visit_edit<E>(
             }
             return Ok(());
         }
+        Edit::CopyGivenGrade { to, .. } | Edit::AppendGivenGraph { to, .. } => {
+            for target in to {
+                visit_target(target, f)?;
+            }
+            return Ok(());
+        }
         Edit::CollapseGroupGrades { timeline, clips } => {
             f(timeline, Role::Names)?;
             for clip in clips {

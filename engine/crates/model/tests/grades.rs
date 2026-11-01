@@ -5,7 +5,7 @@ use columbina_model::grade::{
     Composite, Interp, Key, Kind, Link, Node, NodeKind, Param, Port, Pos,
 };
 use columbina_model::{
-    apply, apply_done, expand, Edit, EditError, Grade, Group, Op, OpError, Project, Target,
+    apply, apply_done, expand, Edit, EditError, Given, Grade, Group, Op, OpError, Project, Target,
 };
 use serde_json::json;
 
@@ -1621,6 +1621,115 @@ fn append_node_graph_is_written_by_its_name_and_read_by_its_old_one_too() {
         serde_json::to_value(&edit).unwrap()["edit"],
         "append_node_graph"
     );
+}
+
+/// The grade of c1 given whole, as a still holds it, its keys where they are.
+#[allow(clippy::unnecessary_box_returns, reason = "the edits take it boxed")]
+fn given(grade: Grade) -> Box<Given> {
+    Box::new(Given {
+        grade,
+        keys: None,
+        align: None,
+    })
+}
+
+#[test]
+fn a_grade_given_whole_is_copied_and_appended_as_one_of_the_project_is() {
+    // Of the project's own grade: the same operations as Copy Grade and Append Node Graph.
+    for preserve in [0, 1] {
+        let mut by_target = with_c2(vec![saturated("a1", 10.0), saturated("a2", 20.0)]);
+        let mut by_given = by_target.clone();
+        let c1_grade = grade(&by_target, &c1());
+        let done = edited(&mut by_target, copy(vec![c2()], Some(preserve)));
+        let given_done = edited(
+            &mut by_given,
+            Edit::CopyGivenGrade {
+                given: given(c1_grade.clone()),
+                to: vec![c2()],
+                preserve_nodes: preserve,
+            },
+        );
+        assert_eq!(given_done, done, "preserve {preserve}");
+        assert_eq!(by_given, by_target);
+    }
+    let mut by_target = with_c2(vec![saturated("a1", 10.0)]);
+    let mut by_given = by_target.clone();
+    let c1_grade = grade(&by_target, &c1());
+    let done = edited(
+        &mut by_target,
+        Edit::AppendNodeGraph {
+            from: c1(),
+            to: vec![c2()],
+            keyframes: None,
+        },
+    );
+    let given_done = edited(
+        &mut by_given,
+        Edit::AppendGivenGraph {
+            given: given(c1_grade),
+            to: vec![c2()],
+        },
+    );
+    assert_eq!(given_done, done);
+    assert_eq!(by_given, by_target);
+}
+
+#[test]
+fn a_grade_of_another_project_takes_ids_of_the_engine_and_lies_right_of_the_nodes_before() {
+    // Ids that this project has not made yet (n90, n91) and one of no shape of the engine's.
+    let mut project = with_c2(vec![saturated("a1", 10.0)]);
+    let next = project.next_id;
+    assert!(next < 90);
+    let mut far = saturated("n90", 30.0);
+    far.pos = Some(Pos { x: 0.0, y: 40.0 });
+    let mut farther = saturated("n91", 40.0);
+    farther.pos = Some(Pos { x: 120.0, y: 40.0 });
+    let other = in_a_row(vec![far, saturated("Look", 50.0), farther]);
+    edited(
+        &mut project,
+        Edit::CopyGivenGrade {
+            given: given(other.clone()),
+            to: vec![c2()],
+            preserve_nodes: 0,
+        },
+    );
+    let ids: Vec<String> = grade(&project, &c2())
+        .nodes
+        .iter()
+        .map(|n| n.id.clone())
+        .collect();
+    assert_eq!(
+        ids,
+        [format!("n{next}"), "Look".into(), format!("n{}", next + 1)]
+    );
+    assert!(grade(&project, &c2()).is_complete());
+
+    // Appended after c2's own node, which lies at 100: new ids of the engine, and the leftmost
+    // a column (NODE_STEP) right of it, the rest as far apart as they were.
+    let mut project = with_c2(vec![{
+        let mut own = saturated("a1", 10.0);
+        own.pos = Some(Pos { x: 100.0, y: 0.0 });
+        own
+    }]);
+    let next = project.next_id;
+    edited(
+        &mut project,
+        Edit::AppendGivenGraph {
+            given: given(other),
+            to: vec![c2()],
+        },
+    );
+    let g = grade(&project, &c2());
+    let ids: Vec<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
+    let fresh: Vec<String> = (next..next + 3).map(|n| format!("n{n}")).collect();
+    assert_eq!(ids, ["a1", &fresh[0], &fresh[1], &fresh[2]]);
+    let xs: Vec<Option<f64>> = g.nodes.iter().map(|n| n.pos.map(|p| p.x)).collect();
+    let step = columbina_model::grade::NODE_STEP;
+    assert_eq!(
+        xs,
+        [Some(100.0), Some(100.0 + step), None, Some(220.0 + step)]
+    );
+    assert!(g.is_complete());
 }
 
 /// The project of `serial` with a group, c1 in it, a node in its

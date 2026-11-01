@@ -93,6 +93,13 @@ pub(super) fn check_group(group: &Group) -> Result<(), OpError> {
     group.post.check()
 }
 
+/// Whether a node of a grade that is put in whole may keep `id` in `project`: it is the id of
+/// a node, and not one that the engine could make and has not made yet (as of a grade of
+/// another project, a still of the `PowerGrades`).
+pub(crate) fn keeps_node_id(project: &Project, id: &str) -> bool {
+    check_node_id(id).is_ok() && Counter::of(project).check(id).is_ok()
+}
+
 /// Make `count` ids of new nodes for a grade whose nodes hold `held`, as an edit that puts
 /// nodes into a grade whole needs them. `next_id` goes up past them.
 pub(crate) fn reserve_node_ids(

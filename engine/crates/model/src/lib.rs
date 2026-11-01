@@ -21,7 +21,9 @@ pub use color::{
     LightLevel, Luminance, MasteringDisplay,
 };
 pub use color_management::{ColorOverride, ColorSettings, Levels, Science};
-pub use edit::{expand, Change, CueItem, Edge, Edit, EditError, Expansion, Material, Straddling};
+pub use edit::{
+    expand, Change, CueItem, Edge, Edit, EditError, Expansion, Given, Material, Straddling,
+};
 pub use grade::{
     Composite, Corrector, Grade, Group, Interp, Key, Kind, Link, Node, NodeKind, Param, Port, Pos,
     Qualifier, QualifierMode, ShotMatch, Target,

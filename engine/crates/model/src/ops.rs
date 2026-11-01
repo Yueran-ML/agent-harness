@@ -128,7 +128,7 @@ use crate::time::{Rate, Speed, Time};
 mod color;
 mod grade;
 
-pub(crate) use grade::{grade_at, group_of_clip, reserve_node_ids};
+pub(crate) use grade::{grade_at, group_of_clip, keeps_node_id, reserve_node_ids};
 
 /// The largest integer that JavaScript holds exactly, 2^53 - 1. No integer that an operation
 /// writes into a project is further than this from 0.

@@ -61,6 +61,8 @@ pub(super) fn check(edit: &Edit) -> Result<(), OpError> {
         | Edit::ResetNode { .. }
         | Edit::CopyGrade { .. }
         | Edit::AppendNodeGraph { .. }
+        | Edit::CopyGivenGrade { .. }
+        | Edit::AppendGivenGraph { .. }
         | Edit::CollapseGroupGrades { .. }
         | Edit::PasteValue { .. }
         | Edit::PasteNode { .. } => Ok(()),

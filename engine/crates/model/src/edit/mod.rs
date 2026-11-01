@@ -54,6 +54,7 @@ use crate::ops::{apply_done, Op, OpError};
 use crate::project::{Alignment, Id, Project, Rgba, TitleStyle, TrackKind, TransitionKind};
 use crate::time::{Speed, Time};
 
+pub use grade::Given;
 use work::Work;
 
 /// The most nodes that Copy Grade keeps of the grades it is put in place of: "0–10" (Reference
@@ -598,6 +599,28 @@ pub enum Edit {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         keyframes: Option<Align>,
     },
+    /// [`Edit::CopyGrade`] of a grade given whole rather than named in the project: Apply Grade
+    /// of a still of the Gallery (p. 3290), worked out exactly as Copy Grade is. The engine makes
+    /// it of a still; it is not read or written.
+    #[serde(skip)]
+    CopyGivenGrade {
+        /// The grade, the frames its keys count, and how they go.
+        given: Box<Given>,
+        /// The grades that it is put in place of.
+        to: Vec<Target>,
+        /// As of [`Edit::CopyGrade`].
+        preserve_nodes: u32,
+    },
+    /// [`Edit::AppendNodeGraph`] of a grade given whole: Append Node Graph of a still (p. 3290),
+    /// and Append Node to Selected Clips (p. 3297) of one node. The engine makes it; it is not
+    /// read or written.
+    #[serde(skip)]
+    AppendGivenGraph {
+        /// The grade, the frames its keys count, and how they go.
+        given: Box<Given>,
+        /// The grades that its nodes are added to.
+        to: Vec<Target>,
+    },
     /// Put the nodes of the pre-clip and the post-clip grades of each clip's group into its own
     /// grade, before and after its nodes, and take the clip out of the group (Collapse Group
     /// Grades; pp. 3306–3307). The group keeps its grades and its other clips.
@@ -927,6 +950,12 @@ pub(crate) fn run(project: &mut Project, edit: Edit) -> Result<Expansion, EditEr
             to,
             keyframes,
         } => return grade::append_node_graph(project, &from, &to, keyframes.unwrap_or_default()),
+        Edit::CopyGivenGrade {
+            given,
+            to,
+            preserve_nodes,
+        } => return grade::copy_given(project, &given, &to, preserve_nodes),
+        Edit::AppendGivenGraph { given, to } => return grade::append_given(project, &given, &to),
         Edit::CollapseGroupGrades { timeline, clips } => {
             return grade::collapse_group_grades(project, &timeline, &clips)
         }
@@ -1147,6 +1176,8 @@ pub fn timeline_of(edit: &Edit) -> Option<&Id> {
         | Edit::ResetNode { .. }
         | Edit::CopyGrade { .. }
         | Edit::AppendNodeGraph { .. }
+        | Edit::CopyGivenGrade { .. }
+        | Edit::AppendGivenGraph { .. }
         | Edit::CollapseGroupGrades { .. }
         | Edit::PasteValue { .. }
         | Edit::PasteNode { .. } => return None,

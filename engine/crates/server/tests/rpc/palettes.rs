@@ -469,6 +469,101 @@ async fn a_gesture_ends_as_another_change_comes_and_its_revisions_then_are_stale
 }
 
 #[tokio::test]
+async fn failed_wire_transactions_preserve_a_gesture_until_its_explicit_end() {
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut desktop = engine.client("desktop").await;
+    let mut agent = engine.client("agent").await;
+    let names = timeline(
+        &mut desktop,
+        vec![colour("$orange", "#c86e28ff", 50, 1.0, (0.0, 0.0))],
+        false,
+    )
+    .await;
+    let (target, node) =
+        grey_node(&mut desktop, &names["$timeline"], &names["$orange"], 50.0).await;
+    let base = project(&mut desktop).await["revision"].as_u64().unwrap();
+    let gesture = json!({"id":"wire"});
+    let first = desktop
+        .result(
+            "transaction.apply",
+            Some(saturation(&target, &node, 45.0, &gesture, Some(base))),
+        )
+        .await;
+    assert_eq!(
+        first
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["clamped", "done", "names", "next_id", "revision"]
+    );
+    let before = project(&mut desktop).await;
+    for (ops, data) in [
+        (
+            json!([{"op":"unknown"}]),
+            json!({"index":0,"reason":"invalid_op"}),
+        ),
+        (
+            json!([{"op":"set_node","grade":target,"id":"$unknown","label":"bad"}]),
+            json!({"index":0,"name":"$unknown","reason":"unknown_name"}),
+        ),
+    ] {
+        let error = agent
+            .error("transaction.apply", Some(json!({"ops":ops})))
+            .await;
+        assert_eq!(error["code"], -32602);
+        assert_eq!(error["data"], data);
+        assert_eq!(project(&mut desktop).await, before);
+    }
+    let invalid = json!([{"op":"set_node","grade":target,"id":"absent","label":"bad"}]);
+    let error = agent
+        .error(
+            "transaction.apply",
+            Some(json!({"ops":invalid,"gesture":{"id":"other","end":true}})),
+        )
+        .await;
+    assert_eq!(error["code"], -32001);
+    assert_eq!(project(&mut desktop).await, before);
+    // A continuation prepared at base succeeds only while the original wire gesture lives.
+    desktop
+        .result(
+            "transaction.apply",
+            Some(saturation(&target, &node, 40.0, &gesture, Some(base))),
+        )
+        .await;
+    let failed_end = desktop
+        .error(
+            "transaction.apply",
+            Some(json!({"ops":invalid,"gesture":{"id":"wire","end":true},"revision":base})),
+        )
+        .await;
+    assert_eq!(failed_end["code"], -32001);
+    let stale = desktop
+        .error(
+            "transaction.apply",
+            Some(saturation(&target, &node, 35.0, &gesture, Some(base))),
+        )
+        .await;
+    assert_eq!(
+        stale["data"],
+        json!({"reason":"stale_revision","expected":base,"actual":base+2})
+    );
+    // The ordinary wire contract still permits reopening the same id at the latest revision.
+    desktop
+        .result(
+            "transaction.apply",
+            Some(saturation(&target, &node, 35.0, &gesture, Some(base + 2))),
+        )
+        .await;
+    let undone = agent.result("history.undo", None).await;
+    assert_eq!(undone["done"].as_array().unwrap().len(), 1);
+    let undone = agent.result("history.undo", None).await;
+    assert_eq!(undone["done"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
 #[allow(
     clippy::too_many_lines,
     reason = "the samples of one frame, then their refusals"

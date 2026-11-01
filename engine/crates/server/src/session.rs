@@ -46,6 +46,9 @@ use crate::scopes::{Scopes, Shown, StatisticsRequest};
 use crate::transport;
 use crate::view::{Monitor, Viewer};
 
+#[cfg(test)]
+mod tests;
+
 /// The version of the engine that `hello` answers with.
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -158,6 +161,8 @@ pub struct State {
     proxies: Proxies,
     /// When the gesture that is going on was last sent a transaction.
     gesture_last: Option<Instant>,
+    /// Sequence for native gestures; their keys cannot be supplied by a wire client.
+    next_owned_gesture: u64,
     /// What the transactions of a gesture changed that is not told yet.
     held: Option<Held>,
     /// When a change was last told.
@@ -262,6 +267,7 @@ impl Engine {
             transport: None,
             proxies: proxies.clone(),
             gesture_last: None,
+            next_owned_gesture: 0,
             held: None,
             told_at: None,
             tell_at: None,
@@ -408,14 +414,13 @@ impl Engine {
         let mut state = self.state.lock().await;
         state.peers.remove(&id);
         let prefix = format!("{id}:");
+        let native_prefix = format!("native:{id}:");
         if state
             .history
             .gesture()
-            .is_some_and(|(key, _)| key.starts_with(&prefix))
+            .is_some_and(|(key, _)| key.starts_with(&prefix) || key.starts_with(&native_prefix))
         {
-            state.history.end_gesture();
-            state.gesture_last = None;
-            state.flush();
+            state.finish_gesture();
         }
         let kicked = std::mem::take(&mut state.kicked);
         drop(state);
@@ -784,10 +789,184 @@ impl State {
                 .gesture_last
                 .is_none_or(|last| last + GESTURE_IDLE <= now)
         {
-            self.history.end_gesture();
-            self.gesture_last = None;
-            self.flush();
+            self.finish_gesture();
         }
+    }
+
+    /// The shared tail of disconnect, idle, and an explicitly finished native gesture.
+    fn finish_gesture(&mut self) {
+        self.history.end_gesture();
+        self.gesture_last = None;
+        self.flush();
+    }
+
+    /// Reserve an owned token without writing the project or ending any current gesture.
+    #[allow(
+        dead_code,
+        reason = "T23 C connects native Window capture; remove this allow then"
+    )]
+    fn begin_owned_gesture(&mut self, owner: u64, base: u64) -> Result<OwnedGesture, Fault> {
+        if base != self.history.revision() {
+            return Err(stale_revision(base, self.history.revision()));
+        }
+        self.next_owned_gesture += 1;
+        Ok(OwnedGesture {
+            owner,
+            key: format!("native:{owner}:{}", self.next_owned_gesture),
+            base,
+            last_own: None,
+        })
+    }
+
+    /// Finish without inventing a final operation. An unwritten token changes no history.
+    #[allow(
+        dead_code,
+        reason = "T23 C connects native Window capture; remove this allow then"
+    )]
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "finishing consumes the token so an unwritten token cannot subsequently write"
+    )]
+    fn finish_owned_gesture(&mut self, owner: u64, gesture: OwnedGesture) -> Result<(), Fault> {
+        self.check_owned_gesture(owner, &gesture)?;
+        if gesture.last_own.is_some() {
+            self.finish_gesture();
+        }
+        Ok(())
+    }
+
+    fn check_owned_gesture(&self, owner: u64, gesture: &OwnedGesture) -> Result<(), Fault> {
+        if owner != gesture.owner {
+            return Err(
+                Fault::new(rpc::REFUSED, "the gesture belongs to another connection")
+                    .with_data(json!({"reason":"gesture_owner"})),
+            );
+        }
+        let expected = gesture.last_own.unwrap_or(gesture.base);
+        let actual = self.history.revision();
+        if actual != expected {
+            return Err(stale_revision(expected, actual));
+        }
+        if gesture.last_own.is_some()
+            && self.history.gesture() != Some((gesture.key.as_str(), gesture.base))
+        {
+            return Err(Fault::new(
+                rpc::REFUSED,
+                "the gesture has ended or another gesture replaced it",
+            )
+            .with_data(json!({"reason":"stale_gesture"})));
+        }
+        Ok(())
+    }
+
+    /// Commit prepared changes, finish their names, and publish through the same path for
+    /// both wire and worked-out transactions. The caller holds State throughout.
+    fn apply_prepared(
+        &mut self,
+        requested: Vec<Change>,
+        mut names: names::Names,
+        kind: Kind,
+        gesture: Option<(&str, bool)>,
+        now: Instant,
+    ) -> Result<PreparedResult, Fault> {
+        let changed = match gesture {
+            Some((key, end)) => {
+                self.history
+                    .change_in_gesture(requested, kind.as_str(), &mut names, key, end)
+            }
+            None => self
+                .history
+                .change_with(requested, kind.as_str(), &mut names),
+        }
+        .map_err(|error| {
+            // Wire end=true also ends a matching gesture when applying it fails.
+            if gesture.is_some() && self.history.gesture().is_none() {
+                self.gesture_last = None;
+                self.flush();
+            }
+            Fault::refused(&error)
+        })?;
+        let applied = &changed.applied;
+        let names = names.finish();
+        let (done, due) = if gesture.is_some() {
+            let going_on = self.history.gesture().is_some();
+            self.gesture_last = going_on.then_some(now);
+            self.publish_in_gesture(applied, !changed.merged, !going_on, now)
+        } else {
+            (self.publish(applied), None)
+        };
+        Ok(PreparedResult {
+            revision: applied.revision,
+            done,
+            next_id: applied.next_id,
+            names,
+            clamped: changed.clamped,
+            due,
+        })
+    }
+
+    /// Calculate against the locked project, then parse, prepare, and commit under that lock.
+    fn apply_worked_out_locked(
+        &mut self,
+        kind: Kind,
+        revision: Option<u64>,
+        owned: Option<(u64, &mut OwnedGesture)>,
+        now: Instant,
+        work: impl FnOnce(&Project) -> Result<Vec<Value>, Fault>,
+    ) -> Result<PreparedResult, WorkedOutError> {
+        if let Some((owner, gesture)) = &owned {
+            self.check_owned_gesture(*owner, gesture)
+                .map_err(WorkedOutError::Apply)?;
+        }
+        self.end_idle_gesture(now);
+        if let Some((owner, gesture)) = &owned {
+            // Idle may have ended an otherwise current token. Native input must not reopen it.
+            self.check_owned_gesture(*owner, gesture)
+                .map_err(WorkedOutError::Apply)?;
+        }
+        let key = owned.as_ref().map(|(_, gesture)| gesture.key.as_str());
+        if let Some(revision) =
+            revision.filter(|revision| !self.history.takes_revision(*revision, key))
+        {
+            return Err(WorkedOutError::Apply(stale_revision(
+                revision,
+                self.history.revision(),
+            )));
+        }
+        let mut ops = Vec::new();
+        for (index, op) in work(self.history.project())
+            .map_err(WorkedOutError::Input)?
+            .into_iter()
+            .enumerate()
+        {
+            let op: names::Input = serde_json::from_value(op).map_err(|error| {
+                WorkedOutError::Input(
+                    Fault::params(format!("operation {index} is not an operation: {error}"))
+                        .with_data(json!({"index":index, "reason":"invalid_op"})),
+                )
+            })?;
+            ops.push(op);
+        }
+        let names = names::prepare(&mut ops).map_err(|error| {
+            WorkedOutError::Input(
+                Fault::params(error.to_string()).with_data(json!({"reason":error.reason})),
+            )
+        })?;
+        // Native endings are explicit and only follow a successful commit. Never use the
+        // wire end=true semantics, which end even when applying the changes fails.
+        let result = self
+            .apply_prepared(
+                ops.into_iter().map(|input| input.change).collect(),
+                names,
+                kind,
+                key.map(|key| (key, false)),
+                now,
+            )
+            .map_err(WorkedOutError::Apply)?;
+        if let Some((_, gesture)) = owned {
+            gesture.last_own = Some(result.revision);
+        }
+        Ok(result)
     }
 }
 
@@ -1637,14 +1816,33 @@ struct GestureParams {
     end: bool,
 }
 
-/// The answer to `transaction.apply`.
-#[derive(Serialize)]
-struct TransactionResult<'a> {
+/// A committed transaction and the time its held notification needs to be flushed.
+/// Its serialized fields are the unchanged answer to `transaction.apply`.
+#[derive(Debug, Serialize)]
+struct PreparedResult {
     revision: u64,
-    done: &'a RawValue,
+    done: Box<RawValue>,
     next_id: u64,
-    names: &'a BTreeMap<String, String>,
-    clamped: &'a [usize],
+    names: BTreeMap<String, String>,
+    clamped: Vec<usize>,
+    #[serde(skip)]
+    due: Option<Instant>,
+}
+
+/// Kept by the native gesture's caller. The base never advances, even across retries.
+#[derive(Debug)]
+struct OwnedGesture {
+    owner: u64,
+    key: String,
+    base: u64,
+    last_own: Option<u64>,
+}
+
+/// Preserve the existing wrapper's early-input error and locked-commit reply paths.
+#[derive(Debug)]
+enum WorkedOutError {
+    Input(Fault),
+    Apply(Fault),
 }
 
 /// `render.start`: check an export against a snapshot of the project, at the revision that the
@@ -1727,7 +1925,7 @@ async fn transaction_apply(
         ops.push(op);
     }
     check_proxies(&ops, &proxy::proxy_dir(Path::new(&engine.project)))?;
-    let mut names = names::prepare(&mut ops).map_err(|error| {
+    let names = names::prepare(&mut ops).map_err(|error| {
         Fault::params(error.to_string()).with_data(json!({
             "index": error.index,
             "name": error.name,
@@ -1746,51 +1944,22 @@ async fn transaction_apply(
         let fault = stale_revision(revision, state.history.revision());
         return Ok(engine.finish(state, connection, rpc::error_line(Some(id), &fault)));
     }
-    let requested = ops.into_iter().map(|input| input.change).collect();
-    let changed = match &key {
-        Some((key, end)) => {
-            state
-                .history
-                .change_in_gesture(requested, kind.as_str(), &mut names, key, *end)
-        }
-        None => state
-            .history
-            .change_with(requested, kind.as_str(), &mut names),
-    };
-    let changed = match changed {
-        Ok(changed) => changed,
-        Err(error) => {
-            // A gesture that this ended is told of now.
-            if key.is_some() && state.history.gesture().is_none() {
-                state.gesture_last = None;
-                state.flush();
-            }
-            let fault = Fault::refused(&error);
+    let result = match state.apply_prepared(
+        ops.into_iter().map(|input| input.change).collect(),
+        names,
+        kind,
+        key.as_ref().map(|(key, end)| (key.as_str(), *end)),
+        now,
+    ) {
+        Ok(result) => result,
+        Err(fault) => {
             return Ok(engine.finish(state, connection, rpc::error_line(Some(id), &fault)));
         }
     };
-    let applied = &changed.applied;
-    let names = names.finish();
-    let (done, due) = if key.is_some() {
-        let going_on = state.history.gesture().is_some();
-        state.gesture_last = going_on.then_some(now);
-        state.publish_in_gesture(applied, !changed.merged, !going_on, now)
-    } else {
-        (state.publish(applied), None)
-    };
-    if let Some(due) = due {
+    if let Some(due) = result.due {
         tell_when_due(engine, due);
     }
-    let line = rpc::result_line(
-        id,
-        &TransactionResult {
-            revision: applied.revision,
-            done: &done,
-            next_id: applied.next_id,
-            names: &names,
-            clamped: &changed.clamped,
-        },
-    );
+    let line = rpc::result_line(id, &result);
     Ok(engine.finish(state, connection, line))
 }
 
@@ -1816,48 +1985,17 @@ pub(crate) async fn apply_worked_out(
     work: impl FnOnce(&Project) -> Result<Vec<serde_json::Value>, Fault>,
 ) -> Result<Reply, Reply> {
     let mut state = engine.state.lock().await;
-    state.end_idle_gesture(Instant::now());
-    if let Some(revision) =
-        revision.filter(|revision| !state.history.takes_revision(*revision, None))
-    {
-        let fault = stale_revision(revision, state.history.revision());
-        return Ok(engine.finish(state, connection, rpc::error_line(Some(id), &fault)));
-    }
-    let mut ops = Vec::new();
-    for (index, op) in work(state.history.project())?.into_iter().enumerate() {
-        let op: names::Input = serde_json::from_value(op).map_err(|error| {
-            Fault::params(format!("operation {index} is not an operation: {error}"))
-                .with_data(json!({ "index": index, "reason": "invalid_op" }))
-        })?;
-        ops.push(op);
-    }
-    let mut names = names::prepare(&mut ops).map_err(|error| {
-        Fault::params(error.to_string()).with_data(json!({"reason": error.reason}))
-    })?;
-    let changed = match state.history.change_with(
-        ops.into_iter().map(|input| input.change).collect(),
-        kind.as_str(),
-        &mut names,
-    ) {
-        Ok(changed) => changed,
-        Err(error) => {
-            let fault = Fault::refused(&error);
+    let result = match state.apply_worked_out_locked(kind, revision, None, Instant::now(), work) {
+        Ok(result) => result,
+        Err(WorkedOutError::Input(fault)) => return Err(fault.into()),
+        Err(WorkedOutError::Apply(fault)) => {
             return Ok(engine.finish(state, connection, rpc::error_line(Some(id), &fault)));
         }
     };
-    let applied = changed.applied;
-    let names = names.finish();
-    let done = state.publish(&applied);
-    let line = rpc::result_line(
-        id,
-        &TransactionResult {
-            revision: applied.revision,
-            done: &done,
-            next_id: applied.next_id,
-            names: &names,
-            clamped: &changed.clamped,
-        },
-    );
+    if let Some(due) = result.due {
+        tell_when_due(engine, due);
+    }
+    let line = rpc::result_line(id, &result);
     Ok(engine.finish(state, connection, line))
 }
 

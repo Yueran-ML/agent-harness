@@ -360,15 +360,23 @@ fn gallery_change(places: &Places, method: &str, params: Value) -> Result<Value,
                     of.and_then(|of| opened[of].album_of(id))
                         .ok_or_else(|| gallery::missing("still", id))?;
                 }
-                for one in opened.iter_mut() {
-                    let of: Vec<String> = ids
-                        .iter()
-                        .filter(|(_, kind)| *kind == one.kind())
+                // Each gallery writes its index and moves its files; where the second cannot,
+                // what the first deleted is put back, so that nothing is deleted.
+                let of = |kind: Kind| -> Vec<String> {
+                    ids.iter()
+                        .filter(|(_, each)| *each == kind)
                         .map(|(id, _)| id.clone())
-                        .collect();
-                    one.recycle_stills(&of)?;
+                        .collect()
+                };
+                for at in 0..opened.len() {
+                    if let Err(fault) = opened[at].recycle_stills(&of(opened[at].kind())) {
+                        for done in opened.iter_mut().take(at) {
+                            let _ = done.restore_stills(&of(done.kind()));
+                        }
+                        return Err(fault);
+                    }
                 }
-                opened.iter_mut().try_for_each(|one| one.save())
+                Ok(())
             };
             let kinds: HashSet<Kind> = ids.iter().map(|(_, kind)| *kind).collect();
             if kinds.len() == 2 {

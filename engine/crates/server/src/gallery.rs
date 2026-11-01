@@ -35,6 +35,10 @@
 //! deletion however many it deletes; one deleted before them is deleted for good. Removing an
 //! album, which is confirmed (p. 3265), deletes its stills for good.
 //!
+//! A deletion or a restoring writes the index first and then moves the files, the JSON of each
+//! still last; where a file cannot be moved, it is all put back as it was. Where the engine ends
+//! between the two, the files are made to agree with the index when the gallery is next opened.
+//!
 //! # The memories
 //!
 //! The memories A–H (pp. 3271–3272) are stills of the project kept in an album of their own
@@ -318,18 +322,22 @@ fn delete_file(path: &Path) -> bool {
 
 /// The extensions of the files of a still.
 const EXTENSIONS: [&str; 4] = ["json", "png", "exr", "thumb.png"];
+/// The order the files of a still are moved in when it is deleted or restored: its JSON last, so
+/// that where it has been moved, the others have.
+const MOVED_IN_ORDER: [&str; 4] = ["png", "exr", "thumb.png", "json"];
 
 /// Move `from` to `to` where it is a plain file (not a link); nothing where it is not there.
-fn move_file(from: &Path, to: &Path) -> Result<(), Fault> {
+/// Whether it was moved.
+fn move_file(from: &Path, to: &Path) -> Result<bool, Fault> {
     match fs::symlink_metadata(from) {
-        Ok(meta) if meta.is_file() && !meta.is_symlink() => {
-            fs::rename(from, to).map_err(|error| io_fault("cannot move", from, &error))
-        }
+        Ok(meta) if meta.is_file() && !meta.is_symlink() => fs::rename(from, to)
+            .map(|()| true)
+            .map_err(|error| io_fault("cannot move", from, &error)),
         Ok(_) => Err(gallery_fault(
             &format!("{} is not a plain file", from.display()),
             Some(from),
         )),
-        Err(_) => Ok(()),
+        Err(_) => Ok(false),
     }
 }
 
@@ -344,7 +352,8 @@ fn read_file(path: &Path) -> Option<Vec<u8>> {
 
 impl Opened {
     /// Open the gallery of `kind`: make its folders where they are not there, take its lock,
-    /// and read its index (made with its first album where there is none).
+    /// read its index (made with its first album where there is none), and make its files agree
+    /// with it where a deletion or a restoring was cut short ([`Opened::settle`]).
     pub fn open(places: &Places, kind: Kind) -> Result<Opened, Fault> {
         let root = places.root(kind)?.to_path_buf();
         own_dir(&root)?;
@@ -372,8 +381,11 @@ impl Opened {
             index,
             _lock: lock,
         };
+        let settled = opened.settle();
         if opened.first_album().is_none() {
             opened.add_album(None);
+            opened.save()?;
+        } else if settled {
             opened.save()?;
         }
         Ok(opened)
@@ -600,19 +612,20 @@ impl Opened {
     /// them, every one checked first. The stills of earlier deletions beyond the last
     /// [`MOST_RECYCLED`] are forgotten, their files deleted; those of this one never are, so that
     /// it is always restored whole, however many it deletes.
+    ///
+    /// The index is written first, then the files are moved, the JSON of each last: where a file
+    /// cannot be moved (another program has it open), the files moved are put back and the index
+    /// as it was, and the deletion is refused; where the engine ends between the two, opening the
+    /// gallery moves the rest (see [`Opened::settle`]). The files of the stills forgotten are
+    /// deleted once all is done.
     pub fn recycle_stills(&mut self, ids: &[String]) -> Result<(), Fault> {
         for id in ids {
             self.album_of(id).ok_or_else(|| missing("still", id))?;
         }
         own_dir(&self.root.join("recycle"))?;
+        let before = self.index.clone();
         for id in ids {
             let (album, at) = self.place_of(id)?;
-            for extension in EXTENSIONS {
-                move_file(
-                    &self.file(id, extension),
-                    &self.recycled_file(id, extension),
-                )?;
-            }
             self.album_mut(&album)?.stills.remove(at);
             self.index.recycled.retain(|each| each.id != *id);
             self.index.recycled.push(Recycled {
@@ -634,9 +647,52 @@ impl Opened {
             .saturating_sub(MOST_RECYCLED)
             .min(earlier);
         let forgotten: Vec<Recycled> = self.index.recycled.drain(..over).collect();
+        let moves: Vec<(PathBuf, PathBuf)> = ids
+            .iter()
+            .flat_map(|id| {
+                MOVED_IN_ORDER
+                    .map(|extension| (self.file(id, extension), self.recycled_file(id, extension)))
+            })
+            .collect();
+        self.change_files(before, &moves)?;
         for each in forgotten {
             for extension in EXTENSIONS {
                 delete_file(&self.recycled_file(&each.id, extension));
+            }
+        }
+        Ok(())
+    }
+
+    /// Write the index, then make `moves` (each from, to): where one fails, those made are put
+    /// back, the index is made `before` again and written, and the fault is given.
+    fn change_files(&mut self, before: Index, moves: &[(PathBuf, PathBuf)]) -> Result<(), Fault> {
+        if let Err(fault) = self.save() {
+            self.index = before;
+            return Err(fault);
+        }
+        let mut made = Vec::new();
+        for (from, to) in moves {
+            match move_file(from, to) {
+                Ok(true) => made.push((from, to)),
+                Ok(false) => {}
+                Err(fault) => {
+                    for (from, to) in made.into_iter().rev() {
+                        if let Err(error) = fs::rename(to, from) {
+                            log(
+                                "gallery_not_moved_back",
+                                &json!({"path": to.to_string_lossy(), "message": error.to_string()}),
+                            );
+                        }
+                    }
+                    self.index = before;
+                    if let Err(again) = self.save() {
+                        log(
+                            "gallery_not_saved",
+                            &json!({"root": self.root.to_string_lossy(), "message": again.message}),
+                        );
+                    }
+                    return Err(fault);
+                }
             }
         }
         Ok(())
@@ -655,8 +711,11 @@ impl Opened {
     }
 
     /// Put the stills `ids` that were deleted back where they were, every one checked first: the
-    /// last deleted first, so that each goes back to its place as it was when it was deleted.
-    /// Gives the album that each is in, in the order of `ids`.
+    /// last deleted first, so that each goes back to its place as it was when it was deleted; at
+    /// the end of its album where it has fewer stills now, or of the first album shown where its
+    /// album is gone. As a deletion, the index is written first and then the files moved back,
+    /// all put as they were where one cannot be. Gives the album that each is in, in the order of
+    /// `ids`.
     pub fn restore_stills(&mut self, ids: &[String]) -> Result<Vec<(String, String)>, Fault> {
         let mut places = Vec::with_capacity(ids.len());
         for id in ids {
@@ -669,54 +728,125 @@ impl Opened {
             places.push(place);
         }
         places.sort_unstable_by(|a, b| b.cmp(a));
-        let ordered: Vec<String> = places
-            .iter()
-            .map(|place| self.index.recycled[*place].id.clone())
-            .collect();
+        let before = self.index.clone();
         let mut albums = std::collections::HashMap::new();
-        for id in ordered {
-            let album = self.restore_still(&id)?;
-            albums.insert(id, album);
+        for place in places {
+            let recycled = self.index.recycled.remove(place);
+            let album = if self
+                .index
+                .albums
+                .iter()
+                .any(|album| album.id == recycled.album)
+            {
+                recycled.album.clone()
+            } else if let Some(album) = self.first_album() {
+                album.id.clone()
+            } else {
+                self.index = before;
+                return Err(missing("album", &recycled.album));
+            };
+            let stills = &mut self.album_mut(&album)?.stills;
+            stills.insert(recycled.at.min(stills.len()), recycled.id.clone());
+            albums.insert(recycled.id, album);
         }
+        let moves: Vec<(PathBuf, PathBuf)> = ids
+            .iter()
+            .flat_map(|id| {
+                MOVED_IN_ORDER
+                    .map(|extension| (self.recycled_file(id, extension), self.file(id, extension)))
+            })
+            .collect();
+        self.change_files(before, &moves)?;
         Ok(ids
             .iter()
             .map(|id| (id.clone(), albums.remove(id).unwrap_or_default()))
             .collect())
     }
 
-    /// Put the still `id` that was deleted back where it was: its files, and its place in its
-    /// album (at its end where the album has fewer stills now), or at the end of the first album
-    /// where its album is gone. Gives the album it is in.
-    fn restore_still(&mut self, id: &str) -> Result<String, Fault> {
-        let place = self
-            .index
-            .recycled
-            .iter()
-            .position(|each| each.id == id)
-            .ok_or_else(|| missing("deleted still", id))?;
-        let recycled = self.index.recycled[place].clone();
-        let album = if self
+    /// Make the files agree with the index where a deletion or a restoring was cut short (the
+    /// engine ended between writing the index and moving the files, or a file could not be put
+    /// back): the files of a still of an album that are in `recycle` are moved back to `stills`;
+    /// those of a still deleted that are still in `stills` are moved into `recycle`; a still
+    /// deleted whose JSON is in neither is forgotten; files in `recycle` of a still that the
+    /// index has nowhere (one forgotten whose files were not deleted) are deleted. Each is logged
+    /// as `gallery_settled`. Gives whether the index was changed.
+    fn settle(&mut self) -> bool {
+        let recycle = self.root.join("recycle");
+        let mut there: std::collections::HashMap<String, Vec<&'static str>> =
+            std::collections::HashMap::new();
+        let plain_dir =
+            fs::symlink_metadata(&recycle).is_ok_and(|meta| meta.is_dir() && !meta.is_symlink());
+        if plain_dir {
+            for entry in fs::read_dir(&recycle).into_iter().flatten().flatten() {
+                let name = entry.file_name();
+                let Some((id, extension)) = name.to_str().and_then(|name| name.split_once('.'))
+                else {
+                    continue;
+                };
+                let known = EXTENSIONS.into_iter().find(|each| *each == extension);
+                if let (Some(extension), Some(kind)) = (known, Kind::of_id(id, true)) {
+                    if kind == self.kind {
+                        there.entry(id.to_string()).or_default().push(extension);
+                    }
+                }
+            }
+        }
+        let settled = |id: &str, what: &str| {
+            log("gallery_settled", &json!({"still": id, "what": what}));
+        };
+        // A restoring cut short: its files back in `stills`.
+        let shown: HashSet<String> = self
             .index
             .albums
             .iter()
-            .any(|album| album.id == recycled.album)
-        {
-            recycled.album.clone()
-        } else {
-            self.first_album()
-                .map(|album| album.id.clone())
-                .ok_or_else(|| missing("album", &recycled.album))?
-        };
-        for extension in EXTENSIONS {
-            move_file(
-                &self.recycled_file(id, extension),
-                &self.file(id, extension),
-            )?;
+            .flat_map(|album| album.stills.iter().cloned())
+            .collect();
+        for (id, extensions) in &there {
+            if shown.contains(id) {
+                for extension in extensions {
+                    let _ = move_file(
+                        &self.recycled_file(id, extension),
+                        &self.file(id, extension),
+                    );
+                }
+                settled(id, "restored");
+            }
         }
-        self.index.recycled.remove(place);
-        let stills = &mut self.album_mut(&album)?.stills;
-        stills.insert(recycled.at.min(stills.len()), id.to_string());
-        Ok(album)
+        // A deletion cut short: its files into `recycle`; one whose JSON is nowhere, forgotten.
+        let mut changed = false;
+        let recycled = std::mem::take(&mut self.index.recycled);
+        for each in recycled {
+            let whole = there
+                .get(&each.id)
+                .is_some_and(|found| found.contains(&"json"));
+            if !whole {
+                if !self.file(&each.id, "json").is_file() {
+                    settled(&each.id, "forgotten, its files are gone");
+                    changed = true;
+                    continue;
+                }
+                if plain_dir || own_dir(&recycle).is_ok() {
+                    for extension in MOVED_IN_ORDER {
+                        let _ = move_file(
+                            &self.file(&each.id, extension),
+                            &self.recycled_file(&each.id, extension),
+                        );
+                    }
+                }
+                settled(&each.id, "deleted");
+            }
+            self.index.recycled.push(each);
+        }
+        // Files of a still forgotten.
+        for (id, extensions) in &there {
+            if !shown.contains(id) && !self.index.recycled.iter().any(|each| each.id == *id) {
+                for extension in extensions {
+                    delete_file(&self.recycled_file(id, extension));
+                }
+                settled(id, "files of a still forgotten deleted");
+            }
+        }
+        changed
     }
 
     /// Whether the still `id` was deleted and can be restored.
@@ -947,11 +1077,15 @@ fn album_json(opened: &Opened, album: &Album) -> Value {
     let stills: Vec<Value> = album
         .stills
         .iter()
-        .filter_map(|id| {
-            opened
-                .still(id)
-                .ok()
-                .map(|still| summary(&still, &album.id))
+        .filter_map(|id| match opened.still(id) {
+            Ok(still) => Some(summary(&still, &album.id)),
+            Err(fault) => {
+                log(
+                    "gallery_still_unread",
+                    &json!({"still": id, "message": fault.message}),
+                );
+                None
+            }
         })
         .collect();
     let kind = if album.memories {
@@ -1623,6 +1757,166 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    /// Hold `path` open as another program may, so that it cannot be moved or deleted.
+    #[cfg(windows)]
+    fn held(path: &Path) -> fs::File {
+        use std::os::windows::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(path)
+            .unwrap()
+    }
+
+    /// The gallery's index as it is on disk, changed by `change`, written back.
+    fn change_index(places: &Places, change: impl FnOnce(&mut Value)) {
+        let mut index = index_on_disk(places);
+        change(&mut index);
+        fs::write(
+            places.project.join("gallery.json"),
+            serde_json::to_vec(&index).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_deletion_that_cannot_move_a_file_leaves_the_still_where_it_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let places = places(dir.path());
+        let id = with(&places, Kind::Stills, |opened| Ok(grabbed(opened, "a1"))).unwrap();
+        let thumbnail = places
+            .project
+            .join("stills")
+            .join(format!("{id}.thumb.png"));
+        let holding = held(&thumbnail);
+        let fault = with(&places, Kind::Stills, |opened| {
+            opened.recycle_stills(std::slice::from_ref(&id))
+        })
+        .unwrap_err();
+        assert!(fault.message.contains("cannot move"), "{fault:?}");
+        // The picture moved before it is back, and the index is as it was.
+        let opened = Opened::open(&places, Kind::Stills).unwrap();
+        assert_eq!(opened.albums()[0].stills, std::slice::from_ref(&id));
+        assert!(!opened.is_recycled(&id));
+        for extension in ["json", "png", "thumb.png"] {
+            assert!(opened.file(&id, extension).is_file(), "{extension}");
+        }
+        assert_eq!(index_on_disk(&places)["format"], 1);
+        drop(opened);
+        drop(holding);
+        with(&places, Kind::Stills, |opened| {
+            opened.recycle_stills(std::slice::from_ref(&id))
+        })
+        .unwrap();
+        assert!(places
+            .project
+            .join("recycle")
+            .join(format!("{id}.thumb.png"))
+            .is_file());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_restoring_that_cannot_move_a_file_leaves_the_still_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let places = places(dir.path());
+        let id = with(&places, Kind::Stills, |opened| {
+            let id = grabbed(opened, "a1");
+            opened.recycle_stills(std::slice::from_ref(&id))?;
+            Ok(id)
+        })
+        .unwrap();
+        let holding = held(
+            &places
+                .project
+                .join("recycle")
+                .join(format!("{id}.thumb.png")),
+        );
+        with(&places, Kind::Stills, |opened| {
+            opened.restore_stills(std::slice::from_ref(&id))
+        })
+        .unwrap_err();
+        let opened = Opened::open(&places, Kind::Stills).unwrap();
+        assert_eq!(opened.albums()[0].stills, Vec::<String>::new());
+        assert!(opened.is_recycled(&id));
+        assert!(!opened.file(&id, "png").exists());
+        drop(opened);
+        drop(holding);
+        let restored = with(&places, Kind::Stills, |opened| {
+            opened.restore_stills(std::slice::from_ref(&id))
+        })
+        .unwrap();
+        assert_eq!(restored, [(id.clone(), "a1".to_string())]);
+        let opened = Opened::open(&places, Kind::Stills).unwrap();
+        assert!(opened.still(&id).is_ok());
+    }
+
+    #[test]
+    fn a_deletion_cut_short_after_its_index_is_finished_when_the_gallery_is_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        let places = places(dir.path());
+        let id = with(&places, Kind::Stills, |opened| Ok(grabbed(opened, "a1"))).unwrap();
+        // The index says it is deleted; the engine ended before any file was moved.
+        change_index(&places, |index| {
+            index["format"] = json!(2);
+            index["albums"][0]["stills"] = json!([]);
+            index["recycled"] = json!([{"id": id, "album": "a1", "at": 0}]);
+        });
+        let opened = Opened::open(&places, Kind::Stills).unwrap();
+        assert!(!opened.file(&id, "json").exists());
+        assert!(opened.recycled_file(&id, "json").is_file());
+        assert!(opened.recycled_file(&id, "png").is_file());
+        drop(opened);
+        with(&places, Kind::Stills, |opened| {
+            opened.restore_stills(std::slice::from_ref(&id))
+        })
+        .unwrap();
+        assert!(Opened::open(&places, Kind::Stills)
+            .unwrap()
+            .still(&id)
+            .is_ok());
+    }
+
+    #[test]
+    fn a_restoring_cut_short_and_files_left_behind_are_settled_when_the_gallery_is_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        let places = places(dir.path());
+        let (back, lost, gone) = with(&places, Kind::Stills, |opened| {
+            let ids = [
+                grabbed(opened, "a1"),
+                grabbed(opened, "a1"),
+                grabbed(opened, "a1"),
+            ];
+            opened.recycle_stills(&ids)?;
+            Ok((ids[0].clone(), ids[1].clone(), ids[2].clone()))
+        })
+        .unwrap();
+        let recycle = places.project.join("recycle");
+        let stills = places.project.join("stills");
+        // `back`: the index has it in its album again, its picture moved back but not its JSON.
+        // `lost`: deleted, its JSON gone from both folders. `gone`: forgotten, its files left.
+        change_index(&places, |index| {
+            index["albums"][0]["stills"] = json!([back]);
+            index["recycled"] = json!([{"id": lost, "album": "a1", "at": 0}]);
+        });
+        fs::rename(
+            recycle.join(format!("{back}.png")),
+            stills.join(format!("{back}.png")),
+        )
+        .unwrap();
+        fs::remove_file(recycle.join(format!("{lost}.json"))).unwrap();
+        let opened = Opened::open(&places, Kind::Stills).unwrap();
+        assert!(opened.still(&back).is_ok());
+        assert!(opened.file(&back, "thumb.png").is_file());
+        assert!(!opened.is_recycled(&lost));
+        let left: Vec<_> = fs::read_dir(&recycle).unwrap().flatten().collect();
+        assert!(left.is_empty(), "{left:?}");
+        assert!(!stills.join(format!("{gone}.png")).exists());
+        // What was settled is written: the index no longer names the one lost.
+        assert_eq!(index_on_disk(&places)["format"], 1);
     }
 
     #[test]

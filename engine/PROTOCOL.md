@@ -2509,11 +2509,16 @@ those of the `set_grade` worked out.
   Selected, p. 3258), every id checked first: each taken out of its album, its files moved into
   the gallery's `recycle/`, and where it was kept, so that it can be undone; a gallery keeps so
   the last 64 stills deleted, and one deleted before them is deleted for good, but never one of
-  the same call, so that a call is always restored whole, however many it deletes.
+  the same call, so that a call is always restored whole, however many it deletes. The index is
+  written before the files are moved: where a file cannot be moved (another program holds it
+  open), those moved are put back, the index is as it was and the call is refused (`-32002`
+  `{"reason": "gallery"}`), nothing deleted; where the engine ends between the two, the gallery
+  is set right the next time it is opened (logged as `gallery_settled`).
   `still.restore` undoes it (Ctrl+Z in the Gallery, the interaction reference §9.2): each still
   back in its album at its place (the last deleted first, so that stills deleted together go back
   as they were; at the end where the album has fewer now; in the first album shown where its
-  album is gone), under its id, every one of a gallery checked first (`missing`
+  album is gone), under its id, its index and files changed as a deletion changes them, every
+  one of a gallery checked first (`missing`
   `"what": "deleted still"` for one not deleted, or restored already); `restored` gives the album
   of each. `still.move` to another album (a still dragged onto an album, p. 3265): within a
   gallery it keeps its id, into the other it is copied under a new id and taken out of the first;

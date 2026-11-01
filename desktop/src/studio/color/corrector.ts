@@ -59,7 +59,12 @@ export function neutralCorrector(): Corrector {
     hsl: { hue_vs_hue: [], hue_vs_sat: [], hue_vs_lum: [], lum_vs_sat: [], sat_vs_sat: [], sat_vs_lum: [] },
     lut: null,
     soft_clip: { low: rgb(BOUNDS.clip_low), high: rgb(BOUNDS.clip_high), low_soft: rgb(BOUNDS.clip_soft), high_soft: rgb(BOUNDS.clip_soft) },
-    key: { input: { invert: false, matte: true, gain: 1, offset: 0 }, output: { invert: false, gain: 1, offset: 0 } },
+    key: {
+      input: { invert: false, matte: true, gain: 1, offset: 0 }, output: { invert: false, gain: 1, offset: 0 },
+      qualifier: { invert: false, matte: true, gain: 1, offset: 0 }, input_blur: { radius: 0, ratio: 0.5 },
+    },
+    qualifier: null,
+    windows: [],
     shot_match: null,
   };
 }

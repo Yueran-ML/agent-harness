@@ -1,9 +1,12 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { URL as FileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Studio } from '../src/studio/Studio';
-import { emptyGrade, type Grade, type ScopeStatistics } from '../src/studio/engine';
-import { newCorrectorNode, type GradeChange } from '../src/studio/color/nodeEdits';
+import { emptyGrade, type Corrector, type Grade, type Op, type ScopeStatistics } from '../src/studio/engine';
+import { newCorrector, newCorrectorNode, type GradeChange } from '../src/studio/color/nodeEdits';
+import { fullCorrector } from '../src/studio/color/corrector';
 import { neutralMatch } from '../src/studio/color/shotmatch';
 import { calls, corrector, fakeEngine, projectOf, settle, sent } from './colorEngine';
 import { clip, timeline } from './timeline-fixture';
@@ -32,11 +35,15 @@ const clickClip = (id: string, ctrlKey = false) => {
 };
 const openMenu = (id: string) => fireEvent.contextMenu(thumb(id), { clientX: 30, clientY: 20 });
 
-async function mount(empty = false) {
+async function mount(empty = false, receiverParams?: Corrector) {
   const project = projectOf({ timelines: [timeline([
     clip('c1', 0, 100, { grade: empty ? emptyGrade() : grade('n1', 'n2') }), clip('c2', 100, 100, { grade: grade('n3', 'n4') }),
     clip('c3', 200, 100, { grade: empty ? emptyGrade() : grade('n5') }),
   ])] });
+  if (receiverParams) {
+    const first = project.timelines[0].tracks.flatMap(track => track.kind === 'subtitle' ? [] : track.clips)[0];
+    for (const node of first.grade.nodes) if (node.kind === 'corrector') node.params = structuredClone(receiverParams);
+  }
   const engine = fakeEngine(project);
   const base = engine.bridge.call.getMockImplementation()!;
   let measured: Promise<void> | null = null;
@@ -69,6 +76,33 @@ async function mount(empty = false) {
 }
 
 describe('Shot Match in the thumbnail menu', () => {
+  for (const reversed of [false, true]) it.each(['neutral', 'contrast', 'key blur'] as const)(
+    `recognizes the engine's %s parameters with ${reversed ? 'reversed' : 'original'} JSON field order`, async change => {
+      const examples = JSON.parse(readFileSync(new FileURL('../../engine/crates/model/tests/data/ops-examples.json', import.meta.url), 'utf8')) as { name: string; done: Op }[];
+      const done = examples.find(example => example.name === 'add_node between the source and the output')!.done;
+      if (done.op !== 'add_node' || done.node.kind !== 'corrector') throw new Error('Expected the Rust model default corrector fixture.');
+      // T23 serializes an empty window list too; old projects may leave it out.
+      const params = { ...done.node.params, windows: [] };
+      expect(params).toMatchObject({ qualifier: null, key: { qualifier: { invert: false, matte: true, gain: 1, offset: 0 }, input_blur: { radius: 0, ratio: 0.5 } } });
+      if (change === 'neutral') {
+        expect(newCorrector()).toEqual(params);
+        const older: Corrector = structuredClone(params);
+        delete older.qualifier; delete older.windows; delete older.key.qualifier; delete older.key.input_blur;
+        expect(fullCorrector(older)).toEqual(params);
+      }
+      if (change === 'contrast') params.primaries.contrast = 1.2;
+      if (change === 'key blur') params.key.input_blur!.radius = 2;
+      const reorder = (value: unknown): unknown => Array.isArray(value) ? value.map(reorder)
+        : value !== null && typeof value === 'object' ? Object.fromEntries(Object.entries(value).reverse().map(([key, item]) => [key, reorder(item)])) : value;
+      await mount(false, (reversed ? reorder(params) : params) as Corrector);
+      clickClip('c1'); await settle(); openMenu('c3');
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Shot Match to This Clip' })); await settle();
+      const notice = document.querySelector('[data-test="shot-match-notice"]')!.textContent;
+      if (change === 'neutral') expect(notice).toBe('Matched 1 clip.');
+      else expect(notice).toContain('Some clips already had adjustments; these can affect the match.');
+    },
+  );
+
   it('keeps the multi-selection and matches each clip current node to the right-clicked clip', async () => {
     const { bridge } = await mount();
     clickClip('c1'); await settle();

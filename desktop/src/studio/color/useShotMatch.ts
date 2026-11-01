@@ -3,13 +3,14 @@ import type { EngineBridge } from '../../bridge';
 import { useWords } from '../../app/locale';
 import { callEngine, type Clip, type ColorSettings, type Op, type Timeline } from '../engine';
 import { refusalText } from '../inspector/refusal';
-import { fullCorrector } from './corrector';
-import { newCorrector } from './nodeEdits';
+import { fullCorrector, neutralCorrector } from './corrector';
 import type { MenuItem } from './ColorMenu';
 import { matchShots, ShotMatchError } from './shotMatching';
 
+// Filling the complete defaults also normalizes object field order before the comparison;
+// Rust's serialized order and omitted fields in older projects do not count as adjustments.
 const adjusted = (clip: Clip) => clip.grade.nodes.some(node => node.enabled && (node.kind !== 'corrector'
-  || JSON.stringify(fullCorrector(node.params)) !== JSON.stringify(newCorrector())));
+  || JSON.stringify(fullCorrector(node.params)) !== JSON.stringify(neutralCorrector())));
 
 /** The thumbnail command keeps the selection; the right-clicked clip is the reference, not a new selection. */
 export function useShotMatch({ bridge, session, revision, timeline, clips, chosen, current, nodes, color }: {

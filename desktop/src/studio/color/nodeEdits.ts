@@ -14,6 +14,7 @@ import {
   type Target, type Timeline,
 } from '../engine';
 import type { GradeLevel } from './clips';
+import { neutralCorrector } from './corrector';
 
 /** The edits of grades (PROTOCOL.md, "Grades", "Edits"): the engine works them out into operations. */
 export type GradeEdit =
@@ -46,22 +47,7 @@ export function targetOf(level: GradeLevel, timeline: Timeline | null, clip: Cli
 
 /** A corrector as the engine makes a new one: every setting at its default (PROTOCOL.md, "A grade"). */
 export function newCorrector(): Corrector {
-  const wheel = (value: number) => ({ y: value, r: value, g: value, b: value });
-  const rgb = (value: number) => ({ r: value, g: value, b: value });
-  const curve = () => ({ points: [[0, 0], [1, 1]] as [number, number][], intensity: 100 });
-  return {
-    primaries: {
-      lift: wheel(0), gamma: wheel(0), gain: wheel(1), offset: rgb(25), contrast: 1, pivot: 0.435, saturation: 50, hue: 50, lum_mix: 100,
-      temperature: 0, tint: 0, color_boost: 0, midtone_detail: 0, shadows: 0, highlights: 0,
-    },
-    log: { shadow: rgb(0), midtone: rgb(0), highlight: rgb(0), low_range: 0.333, high_range: 0.55 },
-    curves: { ganged: true, y: curve(), r: curve(), g: curve(), b: curve() },
-    hsl: { hue_vs_hue: [], hue_vs_sat: [], hue_vs_lum: [], lum_vs_sat: [], sat_vs_sat: [], sat_vs_lum: [] },
-    lut: null,
-    soft_clip: { low: rgb(0), high: rgb(100), low_soft: rgb(0), high_soft: rgb(0) },
-    key: { input: { invert: false, matte: true, gain: 1, offset: 0 }, output: { invert: false, gain: 1, offset: 0 } },
-    shot_match: null,
-  };
+  return neutralCorrector();
 }
 
 /** A new input of a key mixer, as the engine makes one: Mask mode, gain 1 (pp. 3358–3363). */

@@ -802,8 +802,9 @@ describe('the studio as a keyboard and a reader know it', () => {
     expect(document.activeElement).toBe(one('page-color'));
     await settle();
     // The arrows of the tabs are not steps of the transport. (The pool of the Cut page, in its
-    // thumbnail view, asks for pictures of its media, and the Color page for the LUTs of the library and the albums of the Gallery.)
-    expect(engine.asked().filter(([method]) => method !== 'media.thumbnail' && method !== 'luts.list' && method !== 'gallery.list')).toEqual([]);
+    // thumbnail view, asks for pictures of its media, and the Color page for the LUTs of the library, the albums of the Gallery
+    // and how the viewer is zoomed, which only reads it.)
+    expect(engine.asked().filter(([method]) => !['media.thumbnail', 'luts.list', 'gallery.list', 'view.viewport'].includes(method))).toEqual([]);
   });
 
   it('says where the playhead is in timecode, on a bar that the keyboard reaches', async () => {

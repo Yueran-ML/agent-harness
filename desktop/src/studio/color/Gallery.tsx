@@ -130,6 +130,7 @@ export function useColorGallery({ bridge, session, project, language, revision, 
   const [settings, setSettingsState] = useState<ApplySettings>(readApplySettings);
   const [memories, setMemoriesState] = useState<Memories>(() => readMemories(project));
   const dragged = useRef<string[] | null>(null);
+  const panelBox = useRef<HTMLDivElement>(null);
   useEffect(() => { setMemoriesState(readMemories(project)); }, [project]);
   useEffect(() => { setChosen([]); setCurrentStill(null); setProblem(null); setNotice(null); deletions.current = []; }, [session]);
   const setSettings = (next: ApplySettings) => { setSettingsState(next); keepApplySettings(next); };
@@ -327,6 +328,9 @@ export function useColorGallery({ bridge, session, project, language, revision, 
   const openMenu = (event: ReactMouseEvent, label: string, items: MenuItem[]) => {
     event.preventDefault();
     event.stopPropagation();
+    // The menu gives the focus back to the Gallery when it is put away, for Ctrl+Z to restore there.
+    const box = panelBox.current;
+    if (box && !box.contains(document.activeElement)) box.focus({ preventScroll: true });
     setMenu({ x: event.clientX, y: event.clientY, label, items });
   };
 
@@ -415,7 +419,7 @@ export function useColorGallery({ bridge, session, project, language, revision, 
           <p data-test="confirm-words">{said.confirmRemoveAlbum}</p>
         </Sheet>;
 
-  const panel = <div className="gallery" data-test="gallery" tabIndex={-1} onKeyDown={galleryKey}>
+  const panel = <div ref={panelBox} className="gallery" data-test="gallery" tabIndex={-1} onKeyDown={galleryKey}>
     <div className="gallery-head">
       <button type="button" className="icon-btn" aria-pressed={albumsShown} aria-label={labels.albums} title={labels.albums}
         onClick={() => setAlbumsShown(open => !open)} data-test="toggle-albums"><Images size={14} /></button>

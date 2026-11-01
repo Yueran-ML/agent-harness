@@ -650,6 +650,24 @@ describe('the Gallery', () => {
     expect(calls(bridge, 'history.undo')).toHaveLength(1);
   });
 
+  it('keeps the focus in the Gallery after Delete Selected from its menu, so that Ctrl+Z there restores and does not undo a grade', async () => {
+    const { bridge } = await mountGallery();
+    fireEvent.click(stillTile('s2'));
+    fireEvent.contextMenu(stillTile('s2'));
+    // The menu takes the focus while it is open.
+    expect(screen.getByRole('menu', { name: 'Still menu' }).contains(document.activeElement)).toBe(true);
+    chooseItem('Delete Selected');
+    await settle();
+    expect(stillIds()).toEqual(['s1', 's3']);
+    // Put away, it gives the focus back to the Gallery, where the deletion was asked for.
+    expect(document.querySelector('[data-test="gallery"]')!.contains(document.activeElement)).toBe(true);
+    await act(() => { fireEvent.keyDown(document.activeElement!, { key: 'z', code: 'KeyZ', ctrlKey: true }); });
+    await settle();
+    expect(calls(bridge, 'still.restore')).toEqual([{ stills: ['s2'] }]);
+    expect(calls(bridge, 'history.undo')).toEqual([]);
+    expect(stillIds()).toEqual(['s1', 's2', 's3']);
+  });
+
   it('keeps grades in memories A–H: Alt+number saves, Ctrl+number and the middle button load, the menu clears, a still dragged on keeps it', async () => {
     const { bridge } = await mountGallery();
     // Hidden at first (p. 3271).

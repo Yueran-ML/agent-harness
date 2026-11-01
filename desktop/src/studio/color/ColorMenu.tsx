@@ -65,10 +65,23 @@ function List({ items, label, onClose, onBack, style }: {
  * A right-click menu of the Color page, as DaVinci Resolve's: its items, each with its key, and
  * submenus (Add Node ▸, Composite Mode ▸). Escape, a choice, or a press elsewhere puts it away;
  * the arrows go along it, and into and out of a submenu. It is laid over the window (a portal of
- * the studio), so that the part of the page it was asked in does not cut it off.
+ * the studio), so that the part of the page it was asked in does not cut it off. It takes the
+ * focus while it is open and gives it back, put away, to what had it before (the panel it was
+ * asked in), so that the keys go on to that panel: Ctrl+Z in the Gallery after Delete Selected.
  */
 export function ColorMenu({ menu, onClose }: { menu: Menu; onClose: () => void }) {
   const root = useRef<HTMLDivElement>(null);
+  // What had the focus before the menu took it, read before its first item is focused.
+  const [opener] = useState(() => (document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null));
+  useLayoutEffect(() => {
+    const layer = root.current;
+    return () => {
+      // Where the focus went elsewhere (a press away from the menu), it stays there.
+      const at = document.activeElement;
+      const lost = at === null || at === document.body || (layer?.contains(at) ?? false);
+      if (lost && opener?.isConnected) opener.focus({ preventScroll: true });
+    };
+  }, [opener]);
   const [place, setPlace] = useState({ left: menu.x, top: menu.y });
   useLayoutEffect(() => {
     const box = root.current?.firstElementChild?.getBoundingClientRect();

@@ -28,13 +28,15 @@ use columbina_model::grade::{
 /// The most that the card may be off the processor, and the most but for 1 in 1000 of the
 /// values: the neighbourhoods go through textures of half floats (which the card may round
 /// towards 0, the processor to the nearest), and sharpening multiplies what they are off.
-const MOST: f32 = 5e-3;
-const NEARLY: f32 = 4e-3;
+/// Measured on an RTX 4080 under Direct3D 12: at most 3.5e-3, and 2.2e-3.
+const MOST: f32 = 4e-3;
+const NEARLY: f32 = 2.5e-3;
 /// The same for Sharpen with Level and Coring Softness: the soft threshold of the detail is
-/// steep (a slope of 37 over a Coring Softness of 0.2), and the sharpening is 4.8 times the
-/// detail, so that a half float off is some 20 times as far off.
-const MOST_CORED: f32 = 2e-2;
-const NEARLY_CORED: f32 = 1.2e-2;
+/// steep (a slope of 37 over a Coring Softness of 0.2), and the sharpening is 4.8 times
+/// the detail, so that a half float off is some 20 times as far off. Measured: 1.5e-2, and
+/// 9.9e-3.
+const MOST_CORED: f32 = 1.6e-2;
+const NEARLY_CORED: f32 = 1.1e-2;
 
 fn fixed(value: f64) -> Param {
     Param::Fixed(value)
@@ -440,6 +442,64 @@ fn blur_sharpen_and_mist_on_the_card_are_those_of_the_processor() {
                 "{what}: {most}, {nearly}"
             );
         }
+    }
+    assert_eq!(gpu.uncaught_errors(), (0, None));
+}
+
+#[test]
+fn the_card_sharpens_no_detail_out_of_a_flat_field_or_a_slow_gradient() {
+    let Some(gpu) = gpu_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    let options = GradeOptions::default();
+    // A gain that takes the colours off the half floats that the neighbourhoods keep, and the
+    // most sharpening there is: Radius 0, Scaling 1, twelve times the detail.
+    let grade = |sharpened: bool| {
+        serial(vec![corrector("n1", |c| {
+            c.primaries.gain.r = fixed(1.0123);
+            c.primaries.gain.g = fixed(0.9871);
+            c.primaries.gain.b = fixed(1.0377);
+            if sharpened {
+                c.blur.mode = BlurMode::Sharpen;
+                radius(&mut c.blur, 0.0);
+                c.blur.scaling.r = fixed(1.0);
+                c.blur.scaling.g = fixed(1.0);
+                c.blur.scaling.b = fixed(1.0);
+            }
+        })])
+    };
+    let (width, height) = (256, 1080);
+    let mut shown = |pixels: &(NativePicture, Vec<[f32; 3]>), sharpened: bool| {
+        let scene = whole_scene(
+            width,
+            height,
+            vec![layer(
+                Source::Picture(Arc::new(pixels.0.clone()), 0),
+                Transform::NONE,
+                1.0,
+                stage_of(&grade(sharpened), 0.0, &options, &NoLuts),
+            )],
+        );
+        rgb_of(&gpu, &mut compositor, &scene)
+    };
+    // Flat fields, within the range and beyond it: as they are without the palette, to the bit.
+    for colour in [
+        [0.3, 0.55, 0.7],
+        [0.123_456_7, 0.654_321, 0.9],
+        [0.001_234, 0.017, 0.044_44],
+        [1.11, 1.99, 2.02],
+        [3.3, 7.77, 12.345],
+        [100.3, 777.7, 4321.0],
+    ] {
+        let field = float_picture(width, height, |_, _| colour);
+        assert_eq!(shown(&field, true), shown(&field, false), "{colour:?}");
+    }
+    // Slopes so slow that a half float keeps each of their values for some 20 pixels, within
+    // the range and beyond it: no bands where the half floats step.
+    for (from, step) in [(0.3, 1e-5), (5.0, 2e-4)] {
+        let slope = float_picture(width, height, |x, _| {
+            [from + step * x as f32, 0.456_789, 2.345_678]
+        });
+        assert_eq!(shown(&slope, true), shown(&slope, false), "{from}");
     }
     assert_eq!(gpu.uncaught_errors(), (0, None));
 }

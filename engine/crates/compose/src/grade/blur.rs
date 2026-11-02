@@ -21,9 +21,12 @@
 //! - `r` = 0.5: `x`, to the bit ("no effect", p. 3454).
 //! - `r` > 0.5: `n`, a Gaussian of [`BLUR_SIGMA`] `· t^`[`BLUR_POWER`] pixels of a frame 1080
 //!   high, `t = (r − 0.5) / 0.5`: "raising the radius slider increases blur".
-//! - `r` < 0.5: an unsharp mask, `x + a · w · (x − n)`, `n` a Gaussian of [`SHARPEN_SIGMA`]
-//!   pixels, `a = `[`SHARPEN_GAIN`]` · u · s / 0.25`, `u = (0.5 − r) / 0.5`, so that 0 is the
-//!   "maximum sharpness". `s` is Scaling, which "multiplies the amount of scaling being applied by
+//! - `r` < 0.5: an unsharp mask, `x + a · w · D(x, n)`, `n` a Gaussian of [`SHARPEN_SIGMA`]
+//!   pixels and `D` the detail ([`detail`]: `x − n` of both in half floats, as the textures of
+//!   neighbourhoods keep them, less three steps of half floats, so that a flat field or a slow
+//!   gradient has none at all, rather than what half floats round off, multiplied by up to 12),
+//!   `a = `[`SHARPEN_GAIN`]` · u · s / 0.25`, `u = (0.5 − r) / 0.5`, so that 0 is the "maximum
+//!   sharpness". `s` is Scaling, which "multiplies the amount of scaling being applied by
 //!   the Radius control for sharpening operations" (p. 3455), 0.25 as it is at first; the Blur
 //!   mode, whose Scaling is grey (p. 3454), takes it as 0.25.
 //! - H/V Ratio `h` shares the filter between across and down, `2h` and `2(1 − h)` of it, as the
@@ -31,7 +34,7 @@
 //!   directional along the horizontal axis").
 //!
 //! Sharpen weighs the sharpening by `w`, which keeps out the pixels of little detail (p. 3455):
-//! with `d` the most of `|x − n|` of the channels sharpened, `w` is 0 up to Level `L` and 1 from
+//! with `d` the most of `|D(x, n)|` of the channels sharpened, `w` is 0 up to Level `L` and 1 from
 //! `L + C` on, smoothly between, `C` Coring Softness, both scaled by [`CORING_REACH`]; Level 0
 //! with Coring Softness 0 "sharpen[s] the entire image". Elsewhere `w` is 1.
 //!
@@ -63,6 +66,7 @@ use columbina_model::grade::{blur, Blur, BlurMode, Param};
 
 use super::maths::{smoothstep, Params, Rgb};
 use crate::color::Filter;
+use crate::neighbourhood::half;
 
 /// The maths of the palette on the card.
 pub(crate) const LIBRARY: &str = include_str!("blur.wgsl");
@@ -240,22 +244,23 @@ pub(crate) fn apply(p: Params, at: u32, x: Rgb, near: Rgb, wide: Rgb) -> Rgb {
     let kind = p.at(at);
     let amount = p.at(at + 1);
     let more = p.at(at + 2);
+    let detail = [0, 1, 2].map(|i| {
+        if kind[i] == SHARPENS {
+            detail(x[i], near[i])
+        } else {
+            0.0
+        }
+    });
     let mut w = 1.0;
     if kind[3] != 0.0 {
-        let detail = |i: usize| {
-            if kind[i] == SHARPENS {
-                (x[i] - near[i]).abs()
-            } else {
-                0.0
-            }
-        };
-        w = core(detail(0).max(detail(1).max(detail(2))), more[0], more[1]);
+        let d = detail[0].abs().max(detail[1].abs().max(detail[2].abs()));
+        w = core(d, more[0], more[1]);
     }
     let one = |i: usize| -> f32 {
         if kind[i] == BLURS {
             near[i]
         } else if kind[i] == SHARPENS {
-            x[i] + amount[i] * w * (x[i] - near[i])
+            x[i] + amount[i] * w * detail[i]
         } else {
             x[i]
         }
@@ -265,6 +270,31 @@ pub(crate) fn apply(p: Params, at: u32, x: Rgb, near: Rgb, wide: Rgb) -> Rgb {
         return made;
     }
     [0, 1, 2].map(|i| wide[i] + (made[i] - wide[i]) * more[2])
+}
+
+/// The most a half float keeps: the detail is taken of values within it, as on the card.
+const HALF_MOST: f32 = 65504.0;
+
+/// How many steps of half floats the detail leaves out either way. A card that rounds what it
+/// writes towards 0 (the RTX 4080 under Direct3D 12 does) keeps a flat field in the texture of a
+/// neighbourhood a step below `x` rounded to the nearest, and each of the two passes of its
+/// filter may take another step off: three in all, measured so.
+const DETAIL_STEPS: f32 = 3.0;
+
+/// The detail of `x`, a channel sharpened, about `near`, its neighbourhood: `x` in half floats
+/// less `near` in half floats, as the textures of neighbourhoods keep them, less three steps of
+/// half floats either way ([`DETAIL_STEPS`]). Where the picture is flat, or a gradient is too slow
+/// for half floats to tell, it is none, rather than what half floats round off (up to 12 times
+/// that, sharpened, a banding), however the card rounds what it writes into those textures.
+#[must_use]
+pub fn detail(x: f32, near: f32) -> f32 {
+    let kept = half(x.clamp(-HALF_MOST, HALF_MOST));
+    let held = half(near.clamp(-HALF_MOST, HALF_MOST));
+    let d = kept - held;
+    let size = kept.abs().max(held.abs());
+    let step =
+        (f32::from_bits(size.to_bits() & 0x7F80_0000) * 2.0_f32.powi(-10)).max(2.0_f32.powi(-24));
+    d - d.clamp(-DETAIL_STEPS * step, DETAIL_STEPS * step)
 }
 
 /// How much a pixel whose detail is `d` is sharpened, with a Level of `level` and a Coring

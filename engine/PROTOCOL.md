@@ -1944,10 +1944,10 @@ first, and as an old file without it reads:
 | field | default | range | used by | what it is |
 |---|---|---|---|---|
 | `mode` | `blur` | `blur`, `sharpen`, `mist` | | the tab shown |
-| `radius` `{r,g,b}` | 0.5 | 0…1 | all | 0.5 nothing; above, a Gaussian blur of `25 · t²` pixels (of a frame 1080 high), `t = (r − 0.5)/0.5`; below, an unsharp mask of a Gaussian of 1 pixel, `x + 3u · s/0.25 · w · (x − blur)`, `u = (0.5 − r)/0.5` |
+| `radius` `{r,g,b}` | 0.5 | 0…1 | all | 0.5 nothing; above, a Gaussian blur of `25 · t²` pixels (of a frame 1080 high), `t = (r − 0.5)/0.5`; below, an unsharp mask of a Gaussian of 1 pixel, `x + 3u · s/0.25 · w · D`, `u = (0.5 − r)/0.5`, the detail `D` being `x − blur` of both rounded to half floats (as the neighbourhood's texture keeps them), less 3 steps of half floats either way, so that a flat field or a slow gradient is not sharpened at all (no bands) |
 | `ratio` `{r,g,b}` | 0.5 | 0…1 | all | H/V Ratio: the filter `2h` of itself across and `2(1 − h)` down |
 | `scaling` `{r,g,b}` | 0.25 | 0…1 | `sharpen`, `mist` | `s` above, for a Radius below 0.5 (the Blur tab takes 0.25) |
-| `level` | 0 | 0…1 | `sharpen` | `w` is 0 where the detail `max(abs(x − blur))` of the channels sharpened is at most `0.2 · level` |
+| `level` | 0 | 0…1 | `sharpen` | `w` is 0 where the detail `max(abs(D))` of the channels sharpened is at most `0.2 · level` |
 | `coring_softness` | 0 | 0…1 | `sharpen` | and rises smoothly to 1 over `0.2 · coring_softness` above it |
 | `mix` | 100 | 0…100 | `mist` | each channel mixed with a Gaussian of 12 pixels of the picture, `m + (y − m) · mix/100` |
 | `linked.radius`, `.ratio`, `.scaling` | `true` | | | whether the three columns are ganged (p. 3454); it changes no picture |

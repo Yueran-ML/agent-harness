@@ -529,3 +529,87 @@ fn what_a_neighbourhood_of_the_palette_filters_is_what_its_node_made_before_its_
     assert_eq!(ops.len(), 2);
     assert!(ops[0].library.contains("fn grade_blur("));
 }
+
+/// A picture of `width` × 8 whose red rises by `step` a pixel from `from` across, green and blue
+/// level.
+#[allow(clippy::cast_precision_loss, reason = "places of pixels")]
+fn slope(width: u32, from: f32, step: f32) -> Vec<[f32; 3]> {
+    (0..8_u32)
+        .flat_map(|_| (0..width).map(move |x| [from + step * x as f32, 0.456_789, 2.345_678]))
+        .collect()
+}
+
+#[test]
+fn sharpening_finds_no_detail_in_a_flat_field_or_a_slow_gradient() {
+    use crate::neighbourhood::half;
+    // The most sharpening there is: Radius 0, Scaling 1, twelve times the detail.
+    let sharpest = [
+        blurred(BlurMode::Sharpen, |b| {
+            radius(0.0)(b);
+            b.scaling.r = fixed(1.0);
+            b.scaling.g = fixed(1.0);
+            b.scaling.b = fixed(1.0);
+        }),
+        blurred(BlurMode::Mist, |b| {
+            radius(0.0)(b);
+            b.scaling.r = fixed(1.0);
+            b.scaling.g = fixed(1.0);
+            b.scaling.b = fixed(1.0);
+        }),
+    ];
+    // Colours that half floats do not keep, as the neighbourhoods do, within the range and far
+    // beyond it: a flat field of each is left as it was, to the bit, and so is a pixel alone.
+    for grade in &sharpest {
+        for colour in [
+            [0.1, 0.3, 0.7],
+            [0.123_456_7, 0.654_321, 0.999],
+            [3.3, 7.77, 12.345],
+        ] {
+            assert_ne!(colour.map(half), colour);
+            for pixel in picture_of(grade, 0.0, (9, 7), &[colour; 63]) {
+                assert_eq!(pixel, colour);
+            }
+            assert_eq!(eval(grade, colour), colour);
+        }
+        // A slope so slow that a half float keeps each of its values for some 24 pixels, and
+        // one of HDR: no detail, where the half floats step as where they do not, so no bands.
+        for (from, step) in [(0.3, 1e-5), (5.0, 2e-4)] {
+            let pixels = slope(256, from, step);
+            assert_ne!(half(pixels[0][0]), half(pixels[255][0]));
+            assert_eq!(picture_of(grade, 0.0, (256, 8), &pixels), pixels);
+        }
+    }
+    // Detail of more than a step of half floats is sharpened, less that step.
+    let edge = slope(256, 0.3, 0.0)
+        .into_iter()
+        .enumerate()
+        .map(|(at, rgb)| {
+            if at % 256 < 128 {
+                rgb
+            } else {
+                [0.31, rgb[1], rgb[2]]
+            }
+        })
+        .collect::<Vec<_>>();
+    let out = picture_of(&sharpest[0], 0.0, (256, 8), &edge);
+    assert!(out[4 * 256 + 128][0] > 0.311, "{:?}", out[4 * 256 + 128]);
+}
+
+#[test]
+fn the_detail_is_none_within_three_steps_of_half_floats() {
+    use crate::neighbourhood::half;
+    let step = 2.0_f32.powi(-12);
+    // 0.3 and the half floats about it, a step apart.
+    let at = half(0.3);
+    assert_eq!(blur::detail(0.300_1, at), 0.0);
+    assert_eq!(blur::detail(at + step, at), 0.0);
+    assert_eq!(blur::detail(at - 3.0 * step, at), 0.0);
+    assert_eq!(blur::detail(at + 4.0 * step, at), step);
+    assert_eq!(blur::detail(at, at + 5.0 * step), -2.0 * step);
+    // In HDR, a step of its own: 2^-8 between 4 and 8.
+    assert_eq!(blur::detail(5.0 + 3.0 * 2.0_f32.powi(-8), 5.0), 0.0);
+    assert_eq!(blur::detail(5.0 + 0.5, 5.0), 0.5 - 3.0 * 2.0_f32.powi(-8));
+    // Beyond what half floats keep, as far as they keep.
+    assert_eq!(blur::detail(1e6, 1e6), 0.0);
+    assert_eq!(blur::detail(0.0, 0.0), 0.0);
+}

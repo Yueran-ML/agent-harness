@@ -396,6 +396,18 @@ fn the_curves_of_a_node_after_another_are_its_own() {
 }
 
 #[test]
+fn a_custom_curve_between_two_inner_points_is_the_cubic_of_hermite_through_them() {
+    // On (0.3, 0.5) to (0.6, 0.6): slopes 1 and 5/7, the lines through their neighbours.
+    let curve = one(|c| {
+        c.curves.y.points = vec![[0.0, 0.0], [0.3, 0.5], [0.6, 0.6], [1.0, 1.0]];
+    });
+    let (t, dx, dy) = (0.5_f32, 0.3_f32, 0.1_f32);
+    let (h10, h11) = (t * t * t - 2.0 * t * t + t, t * t * t - t * t);
+    let want = 0.5 + dy * t + h10 * (dx - dy) + h11 * (dx * 5.0 / 7.0 - dy);
+    near(eval(&curve, [0.45; 3]), [want; 3], 1e-6);
+}
+
+#[test]
 fn a_custom_curve_takes_the_slope_of_its_neighbours_at_a_point() {
     // At (0.5, 0.8) the slope is that of the line from (0, 0) to (1, 1); at (0, 0), that of its
     // segment.
@@ -1425,6 +1437,11 @@ fn luminosity_keeps_the_colour_of_the_back_and_clips_it_into_range_about_its_lum
         [0.0; 3],
         1e-6,
     );
+    // A grey beyond the range has no colour to clip: it stays as it is.
+    for grey in [-0.5, 1.5] {
+        let out = maths::composite(&c, 18, [0.2; 3], [grey; 3]);
+        near(out, [grey; 3], 1e-6);
+    }
 }
 
 fn gain_node(id: &str, gain: [f64; 3]) -> Node {

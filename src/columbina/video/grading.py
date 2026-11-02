@@ -311,6 +311,20 @@ CORRECTOR: Branch = {
         "low_soft": _rgb("Soft Clip Low Soft", 0.0, 0.0, 100.0),
         "high_soft": _rgb("Soft Clip High Soft", 0.0, 0.0, 100.0),
     },
+    "blur": {
+        "mode": Choice("Blur palette mode", "blur", ("blur", "sharpen", "mist")),
+        "radius": _rgb("Blur Radius (0.5 nothing, above blurs, below sharpens)", 0.5, 0.0, 1.0),
+        "ratio": _rgb("Blur H/V Ratio", 0.5, 0.0, 1.0),
+        "scaling": _rgb("Blur Scaling (Sharpen and Mist)", 0.25, 0.0, 1.0),
+        "coring_softness": Number("Blur Coring Softness (Sharpen)", 0.0, 0.0, 1.0),
+        "level": Number("Blur Level (Sharpen)", 0.0, 0.0, 1.0),
+        "mix": Number("Blur Mix (Mist)", 100.0, 0.0, 100.0),
+        "linked": {
+            "radius": Flag("Blur Radius ganged", True),
+            "ratio": Flag("Blur H/V Ratio ganged", True),
+            "scaling": Flag("Blur Scaling ganged", True),
+        },
+    },
     "key": {
         "input": _key_input(True, "Key Input"),
         "output": _KEY_OUTPUT,

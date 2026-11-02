@@ -230,6 +230,45 @@ async def test_a_shot_match_given_in_part_where_there_is_none_is_made_whole(
     assert told["grades"][0]["nodes"][0]["shot_match"] is True
 
 
+async def test_the_blur_palette_is_set_in_its_units_and_told_and_out_of_range_refused(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    assert grading.new_corrector()["blur"] == {
+        "mode": "blur",
+        "radius": {"r": 0.5, "g": 0.5, "b": 0.5},
+        "ratio": {"r": 0.5, "g": 0.5, "b": 0.5},
+        "scaling": {"r": 0.25, "g": 0.25, "b": 0.25},
+        "coring_softness": 0.0,
+        "level": 0.0,
+        "mix": 100.0,
+        "linked": {"radius": True, "ratio": True, "scaling": True},
+    }
+    told = result(
+        await desk.call(
+            "video_grade_set",
+            grade="c2",
+            node=1,
+            settings={"blur.mode": "mist", "blur.radius.r": 0.3, "blur.mix": 40},
+        )
+    )
+    (sent,) = fake.transactions[0]
+    assert sent["params"] == {"blur": {"mode": "mist", "radius": {"r": 0.3}, "mix": 40}}
+    settings = told["grades"][0]["nodes"][0]["settings"]
+    assert settings["blur.radius.r"] == 0.3
+    assert settings["blur.mix"] == 40
+    for refused_settings, said in [
+        ({"blur.radius.g": 1.5}, "Blur Radius"),
+        ({"blur.mode": "defocus"}, "blur, sharpen, mist"),
+        ({"blur.mix": -1}, "Blur Mix (Mist): 0 to 100"),
+        ({"blur.linked.radius": 1}, "is true or false"),
+    ]:
+        refused = await desk.call("video_grade_set", grade="c2", node=1, settings=refused_settings)
+        assert refused.error is not None, refused_settings
+        assert said in refused.text, refused.text
+    assert len(fake.transactions) == 1
+
+
 async def test_a_qualifier_given_in_part_where_there_is_none_is_made_whole_and_told(
     studio: tuple[Desk, Fake],
 ) -> None:

@@ -397,3 +397,34 @@ async fn an_undo_while_tracking_ends_the_track_and_takes_away_what_it_wrote() {
         .await;
     assert_eq!(point["data"]["reason"], "no_points");
 }
+
+#[tokio::test]
+async fn the_point_tracker_follows_its_crosshairs_through_the_engine() {
+    let Some(mut f) = fixture(16, 0.4).await else {
+        return;
+    };
+    // Four crosshairs on the corners of the window's middle, in normalized picture coordinates.
+    let points: Vec<[f64; 2]> = [[100.0, 70.0], [156.0, 70.0], [156.0, 122.0], [100.0, 122.0]]
+        .iter()
+        .map(|p| [(p[0] + 0.5) / 256.0, (p[1] + 0.5) / 192.0])
+        .collect();
+    f.edit("w1", json!({"kind":"crosshairs","points":points}))
+        .await;
+    let revision = revision(&mut f.client).await;
+    let started = f
+        .client
+        .result(
+            "track.start",
+            Some(
+                json!({"grade":f.target,"node":f.node,"window":"w1","revision":revision,
+                "frame":0,"direction":"forward","tracker":"point"}),
+            ),
+        )
+        .await;
+    let (_, end) = until_ended(&mut f.client, &started["job"]).await;
+    assert_eq!(end["phase"], "done", "{end}");
+    let data = data_of(&window(&mut f.client, "w1").await);
+    assert_eq!(data.points().len(), 4);
+    let err = worst(&data, &truths(16, 0.4), 0, 0, 15);
+    assert!(err < 0.3, "{err}");
+}

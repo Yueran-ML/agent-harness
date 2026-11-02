@@ -1155,3 +1155,61 @@ async fn the_pointer_on_a_view_is_told_only_while_it_is_asked_for() {
     changes_for(&mut desktop, Duration::from_millis(300)).await;
     assert_eq!(pointer_events(&mut desktop), Vec::<Value>::new());
 }
+
+#[tokio::test]
+async fn a_blur_dragged_in_its_palette_is_drawn_and_is_one_step_to_undo() {
+    if columbina_compose::gpu_for_tests().is_none() {
+        return;
+    }
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--no-proxies", "--sound", "null"]).await;
+    let mut client = engine.client("desktop").await;
+    let names = timeline(&mut client, bars(), true).await;
+    let timeline_id = names["$timeline"].clone();
+    // A node of the timeline's grade whose Blur palette is at rest in the Mist tab, with what
+    // does nothing there set: the canvas is drawn as it was.
+    let target = json!({"level": "timeline", "timeline": timeline_id});
+    let mut node = columbina_model::Node::corrector("$node");
+    let columbina_model::NodeKind::Corrector(settings) = &mut node.kind else {
+        unreachable!("a corrector")
+    };
+    settings.blur.mode = columbina_model::grade::BlurMode::Mist;
+    settings.blur.level = columbina_model::Param::Fixed(0.5);
+    let names = client
+        .apply(
+            json!([{"op": "add_node", "grade": target, "node": node, "links": [
+            {"from": "source", "to": "$node", "kind": "rgb", "input": 0},
+            {"from": "$node", "to": "output", "kind": "rgb", "input": 0}]}]),
+        )
+        .await["names"]
+        .clone();
+    let node = names["$node"].as_str().unwrap().to_owned();
+    // Two pixels left of where the red bar meets the green one.
+    let sample = json!({"timeline": timeline_id, "frame": 0, "x": 62.5, "y": 18.5});
+    let red = slow(&mut client, "view.sample", sample.clone()).await;
+    assert!(near(&red["rgb"], [BAR, 0.0, 0.0], 2e-3), "{red}");
+    let base = project(&mut client).await["revision"].as_u64().unwrap();
+    // A drag of Radius, ganged, from 0.5 to 0.9, as the palette sends it.
+    for (step, radius) in [0.7, 0.8, 0.9].into_iter().enumerate() {
+        client
+            .result(
+                "transaction.apply",
+                Some(json!({
+                    "revision": base,
+                    "ops": [{"op": "set_node", "grade": target, "id": node,
+                        "params": {"blur": {"radius": {"r": radius, "g": radius, "b": radius}}}}],
+                    "gesture": {"id": "blur-drag", "end": step == 2},
+                })),
+            )
+            .await;
+    }
+    let blurred = slow(&mut client, "view.sample", sample.clone()).await;
+    let rgb = &blurred["rgb"];
+    assert!(rgb[1].as_f64().unwrap() > 0.05, "{blurred}");
+    assert!(rgb[0].as_f64().unwrap() < BAR - 0.05, "{blurred}");
+    // One undo takes the drag back, and the picture with it.
+    let undone = client.result("history.undo", None).await;
+    assert_eq!(undone["done"].as_array().unwrap().len(), 3, "{undone}");
+    let back = slow(&mut client, "view.sample", sample).await;
+    assert!(near(&back["rgb"], [BAR, 0.0, 0.0], 2e-3), "{back}");
+}

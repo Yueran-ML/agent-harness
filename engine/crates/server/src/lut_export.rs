@@ -243,8 +243,10 @@ fn unbakeable(node: &Node) -> Option<&'static str> {
     {
         return Some("windows");
     }
-    (!matches!(corrector.primaries.midtone_detail, Param::Fixed(value) if value == 0.0))
-        .then_some("midtone_detail")
+    if !matches!(corrector.primaries.midtone_detail, Param::Fixed(value) if value == 0.0) {
+        return Some("midtone_detail");
+    }
+    corrector.blur.reads_neighbourhood().then_some("blur")
 }
 
 /// `grade` with the nodes that cannot be baked off; and those nodes, with why.
@@ -742,6 +744,40 @@ mod tests {
             json!([{"node": "n2", "why": "qualifier"}])
         );
         assert_eq!(answer["nodes"], json!(["n1"]));
+    }
+
+    #[test]
+    fn a_node_whose_blur_palette_changes_the_picture_is_left_out_and_one_at_rest_is_baked() {
+        use columbina_model::grade::BlurMode;
+        let mut grade = graded();
+        let NodeKind::Corrector(c) = &mut grade.nodes[1].kind else {
+            unreachable!()
+        };
+        // At rest in every way that does nothing: baked.
+        c.blur.mode = BlurMode::Sharpen;
+        c.blur.level = 0.4.into();
+        c.blur.scaling.r = 1.0.into();
+        c.blur.mix = 20.0.into();
+        assert_eq!(without_filters(&grade).1, [] as [serde_json::Value; 0]);
+        assert!(alone(&grade, "n2").is_ok());
+        // Mix in the Mist mode, or a Radius off 0.5: the whole node is left out.
+        for set in [
+            |c: &mut columbina_model::Corrector| c.blur.mode = BlurMode::Mist,
+            |c: &mut columbina_model::Corrector| c.blur.radius.g = 0.3.into(),
+        ] {
+            let mut grade = grade.clone();
+            let NodeKind::Corrector(c) = &mut grade.nodes[1].kind else {
+                unreachable!()
+            };
+            set(c);
+            let (baked, ignored) = without_filters(&grade);
+            assert!(!baked.nodes[1].enabled);
+            assert_eq!(ignored, vec![json!({"node": "n2", "why": "blur"})]);
+            assert_eq!(
+                alone(&grade, "n2").unwrap_err().data.unwrap()["why"],
+                "blur"
+            );
+        }
     }
 
     #[test]

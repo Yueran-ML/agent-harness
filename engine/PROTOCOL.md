@@ -1684,6 +1684,7 @@ without them as `false` and `null`:
 | `hsl.hue_vs_hue`, `hue_vs_sat`, `hue_vs_lum`, `lum_vs_sat`, `sat_vs_sat`, `sat_vs_lum` | `[]` (flat) | points `[in, out]`, `in` 0…1 rising, `out` −1…1, 0 changes nothing |
 | `lut` | `null` | a path or library name, 1…4096 characters, no NUL |
 | `soft_clip.low` / `high` / `low_soft` / `high_soft` `{r,g,b}` | 0 / 100 / 0 / 0 | 0…100, a share of the 10-bit scale (pp. 3119–3121) |
+| `blur` | at rest | the Blur palette, below (pp. 3454–3456) |
 | `key.input` `{invert, matte, gain, offset}` | `false`, `true`, 1, 0 | gain 0…2, offset −1…1 (p. 3362) |
 | `key.output` `{invert, gain, offset}` | `false`, 1, 0 | gain 0…2 (p. 3362), offset −1…1 |
 | `key.qualifier` `{invert, matte, gain, offset}` | `false`, `true`, 1, 0 | as `key.input` (p. 3362) |
@@ -1694,7 +1695,7 @@ without them as `false` and `null`:
 
 An Outside node is a corrector with `key.input.invert: true` linked to the key of the node
 before it (p. 3361); `add_outside` adds one. Within a corrector the settings apply in the order
-of p. 3331. The engine writes `key.qualifier`, `key.input_blur`, `qualifier` and `windows` always, and reads
+of p. 3331. The engine writes `key.qualifier`, `key.input_blur`, `qualifier`, `windows` and `blur` always, and reads
 a corrector without them as they are at first.
 
 **`qualifier`** is the Qualifier palette (pp. 3157–3182): the node's own key, made of the
@@ -1926,6 +1927,43 @@ identity, to the bit. It is set with `set_node`: given whole where the node has 
 (`{"shot_match": {...}}`, all five fields; a part of one onto `null` is `params`), patched in
 part where it has one, and taken away with `{"shot_match": null}`. Out of range is
 `out_of_range` with the path, such as `shot_match.gain.r`.
+
+**`blur`** is the Blur palette (pp. 3454–3456): one set of settings that its three tabs show,
+Blur, Sharpen and Mist (`mode`), each using a part of it; what one tab sets is kept, unused, in
+another (the manual does not say; going from tab to tab and back so changes nothing). As it is
+first, and as an old file without it reads:
+
+```json
+{"mode": "blur",
+ "radius": {"r": 0.5, "g": 0.5, "b": 0.5}, "ratio": {"r": 0.5, "g": 0.5, "b": 0.5},
+ "scaling": {"r": 0.25, "g": 0.25, "b": 0.25},
+ "coring_softness": 0, "level": 0, "mix": 100,
+ "linked": {"radius": true, "ratio": true, "scaling": true}}
+```
+
+| field | default | range | used by | what it is |
+|---|---|---|---|---|
+| `mode` | `blur` | `blur`, `sharpen`, `mist` | | the tab shown |
+| `radius` `{r,g,b}` | 0.5 | 0…1 | all | 0.5 nothing; above, a Gaussian blur of `25 · t²` pixels (of a frame 1080 high), `t = (r − 0.5)/0.5`; below, an unsharp mask of a Gaussian of 1 pixel, `x + 3u · s/0.25 · w · (x − blur)`, `u = (0.5 − r)/0.5` |
+| `ratio` `{r,g,b}` | 0.5 | 0…1 | all | H/V Ratio: the filter `2h` of itself across and `2(1 − h)` down |
+| `scaling` `{r,g,b}` | 0.25 | 0…1 | `sharpen`, `mist` | `s` above, for a Radius below 0.5 (the Blur tab takes 0.25) |
+| `level` | 0 | 0…1 | `sharpen` | `w` is 0 where the detail `max(abs(x − blur))` of the channels sharpened is at most `0.2 · level` |
+| `coring_softness` | 0 | 0…1 | `sharpen` | and rises smoothly to 1 over `0.2 · coring_softness` above it |
+| `mix` | 100 | 0…100 | `mist` | each channel mixed with a Gaussian of 12 pixels of the picture, `m + (y − m) · mix/100` |
+| `linked.radius`, `.ratio`, `.scaling` | `true` | | | whether the three columns are ganged (p. 3454); it changes no picture |
+
+The palette works on what the rest of the node made (after Soft Clip and Shot Match) and before
+its key, so a qualifier, windows, the key coming in and Key Output Gain limit it as any setting of
+the node (p. 3453), and a window draws nothing from outside it into its edge. The constants are
+the engine's (the manual publishes none), kept in `compose/src/grade/blur.rs` to be set against
+DaVinci. A node reads the pixels about each one (neighbourhoods, as Midtone Detail does) only
+where a Radius is ever off 0.5 or, in `mist`, Mix ever below 100: one for each different
+Radius and H/V Ratio of its channels (one when ganged), and one more for each H/V Ratio of Mist.
+At rest in any tab, with any Scaling, Level, Coring Softness, gang or Mix that does nothing, it
+is the node of before, to the bit, and makes no other shader; keyframes across 0.5 make none from
+frame to frame. Set by `set_node` as any setting (`{"blur": {"radius": {"r": 0.3}}}`); out of
+range is `out_of_range` with the path, such as `blur.radius.r`, and a `mode` not named, or a field
+not of it, is `params`.
 
 Every number setting above is a **parameter**: a number, or keyframes
 `{"keys": [{"frame": 0, "value": 1.0, "interp": "linear"}, ...]}`. Frames rise strictly, are
@@ -2172,8 +2210,10 @@ history; a headless engine has it too.
   them, with the luma of the timeline space. A node that reads the pixels about each one
   (Midtone Detail other than 0) is left out whole, as though it were off, and named in
   `ignored` (`{"node": "n2", "why": "midtone_detail"}`); asked for alone, it is refused.
-  A node with a qualifier is left out so too (`"why": "qualifier"`); windows and blur, once
-  there, will be. The project's Input, Output
+  A node with a qualifier is left out so too (`"why": "qualifier"`), and one whose Blur palette
+  changes the picture at some frame (`"why": "blur"`: a Radius ever off 0.50, or Mist with a Mix
+  ever below 100), named after `qualifier`, `windows` and `midtone_detail` where several apply;
+  a Blur palette at rest in any mode is baked as the rest of its node. The project's Input, Output
   and Viewer LUTs and the transforms of colour management are not of the grade, and are not
   baked.
 - **The cube**: a `TITLE`, `LUT_3D_SIZE` and `size`³ rows, red fastest (Adobe's form, as

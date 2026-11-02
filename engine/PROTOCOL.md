@@ -152,6 +152,9 @@ Before `hello`, every other request is refused with `-32600`.
 | `window.bind` | `{monitor:"timeline",revision,timeline,target,clip?,node,selected,visible,outline,tool}` | `{binding,sequence}`; existing Window controls of every shape (see Circular and Gradient Window controls, Linear and Polygon Window controls, Curve Window controls) |
 | `window.input` | `{binding,kind:"down"\|"move"\|"up"\|"cancel"\|"delete"\|"clear_points"\|"delete_points",event?,capture?}` | Down returns `arming` immediately; `window.state` reports the asynchronous result. `delete` names a native middle-button down and answers `{binding,phase:"deleted",selected,point,revision}`; `clear_points` and `delete_points` (Esc and Backspace on a Curve's point selection) answer `{binding,phase:"cleared",cleared}` and `{binding,phase:"deleted",selected,points,revision}` (see Curve Window controls) |
 | `window.unbind` | `{binding}` | Ends capture and clears this connection's Window selection, or releases its still-owned retired binding's pointer |
+| `track.start` | `{grade,node,window,revision,frame,direction,tracker?,components?}` | `{job,first,last,frame_size,direction}` at once, then `track.progress` and `track.state` (see Window tracking) |
+| `track.stop` | `{job}` | `{}`; the track ends between frames, keeping what it tracked |
+| `track.edit` | `{grade,node,window,revision?,edit:{kind,...}}` | `{revision}`; one step to undo (see Window tracking) |
 | `render.start` | `{"timeline":"t1", "path":"<file>", "codec":"h264", "quality":"high", "range"?:{"from":0,"to":250}, "subtitle_tracks"?:["S1"], "replace"?:false, "revision"?:n}` | `{"job": "render-1"}` (see Rendering a timeline) |
 | `render.cancel` | `{"job": "render-1"}` | `{}` |
 | `transport.frame_digest` | `{"monitor": m}` | test hook only, with `--test-hooks` (see The transport); `-32601` otherwise |
@@ -1210,6 +1213,115 @@ animation as one plain step, all or none: a closed Curve keeps at least two, oth
 `{reason:"points"}`; during a capture `{reason:"capture"}`. Box padding, the rotation reach, the
 centre pivot and the anchor radius of a band are project choices.
 
+## Window tracking
+
+T24: the window tracker of the Color page (Resolve 20, chapter 140, pp. 3229–3255), the cloud
+tracker and the point tracker of `columbina-track` (Q7). IntelliTrack is not offered; the
+stabilizer is phase 4.
+
+**What a window keeps.** A tracked window has
+
+```json
+"tracking": {"mode": "clip", "crosshairs": [[0.5, 0.5]],
+  "data": {"anchor": [639.5, 359.5], "frame_size": [1280, 720],
+    "components": {"pan": true, "tilt": true, "zoom": true, "rotate": true, "perspective": false},
+    "curves": {"pan": {"12": 3.25}, "tilt": {"12": -1.5}, "zoom": {"12": 1.01},
+               "rotate": {"12": 0.02}, "aspect": {"12": 1.0}, "shear": {"12": 0.0},
+               "yaw": {"12": 0.0}, "pitch": {"12": 0.0}},
+    "confidence": {"12": 0.97}, "points": [{"12": [600.0, 300.0]}],
+    "keys": {"20": {"pan": 4.0, "tilt": 0.0, "zoom": 1.0, "rotate": 0.0, "aspect": 1.0,
+                    "shear": 0.0, "yaw": 0.0, "pitch": 0.0}}}}
+```
+
+- `mode`: `clip` (the default) or `frame`, how a change made by hand applies (p. 3236), kept
+  with the window so that a drag in the viewer does what the palette shows.
+- `crosshairs`: the point tracker's crosshairs at the frame its next track starts from, in
+  normalized picture coordinates (0 to 1, y down); at most 64; left out when empty.
+- `data`: `curves` hold, per component, the motion from where the window was placed at each
+  tracked frame (the tracker graph, p. 3236); a frame between samples takes the line between
+  them, one before the first or after the last takes that sample (p. 3232). `pan`/`tilt` are
+  pixels of `frame_size`, `rotate` radians clockwise, `zoom`/`aspect` factors, `shear`,
+  `yaw`/`pitch` (per pixel) the rest of Perspective 3D. `confidence` is 0–1 per tracked frame;
+  `points` are the crosshairs' paths; `keys` are Frame mode's keyframes. Frames are those of
+  the grade's clock: source frames for a clip (T3c). Every number must be finite, zoom and
+  aspect positive, frames within ±(2^53−1), `frame_size` at most 16384 a side and not 0 once
+  anything is tracked; otherwise the edit is refused with `out_of_range` and
+  `what: "windows.tracking.*"`.
+
+**Where a tracked window is.** With `A(f)` the window's own Transform (the map above, local to
+normalized picture), `T(f)` the tracked motion and `K(f)` Frame mode's keyframe about the
+tracked anchor (both homographies in pixels of `frame_size`, see `Motion` in
+`columbina-track`), and `S` from those pixels to normalized coordinates (pixel `(i, j)`'s centre
+at `((i+0.5)/W, (j+0.5)/H)`):
+
+`picture(x, f) = S · K(f) · T(f) · S⁻¹ · A(f) · x`
+
+So the window's own Transform and its keyframes apply first, in the window's untracked place,
+then the track, then Frame mode. The frames are tracked upright at the picture's aspect, so
+this does not depend on the size the picture is shown at. A mask point is taken back through
+the inverse homography; beyond the vanishing line of a Perspective 3D track (where its third
+coordinate is not positive) none of the window is there, before Invert. This order is the
+project's reading of the manual (pp. 3232, 3236); Resolve publishes no formula.
+
+**On the viewer.** The window controls (above) are drawn, hit and dragged through the same
+composition. In **Clip** mode a drag is read back through the track and changes the window's
+own Transform (its left key, as before), so the window moves the same way along its whole
+path. In **Frame** mode a change of the whole window (Pan, Tilt, Size, Aspect, Rotate) becomes
+a tracker keyframe at the playhead, the change as it is seen there, and the Transform is kept;
+a change of one point of a Polygon or Curve has no tracker keyframe to go into and changes the
+shape as in Clip mode (a project choice). The controls are affine: a Perspective 3D track is
+drawn by its derivative at the window's centre, exact there; the mask follows the full
+homography.
+
+**`track.start`** `{grade, node, window, revision, frame, direction, tracker?, components?}`:
+
+- `grade` must be a clip's grade whose media has a moving picture: a timeline or group grade,
+  a title or colour, or a still is refused with `reason: "untrackable"`, as is a window that is
+  off or an unfinished Curve. `revision` must be the project's (`stale_revision`). `frame` is
+  the playhead in the grade's clock (source frames) and must be within the frames the clip
+  shows (`reason: "frame"`).
+- `direction`: `forward` (Ctrl+T), `reverse` (Alt+T), `forward_and_back`, `one_forward`
+  (Alt+→), `one_reverse` (Alt+←) (pp. 3231, 3236), on the timeline: a clip played backward is
+  tracked backward in its source. A track ends at the first or last frame the clip shows.
+- `tracker`: `cloud` (the default) or `point`; the point tracker needs at least one crosshair
+  (`reason: "no_points"`). `components` are the boxes (p. 3235), default Pan, Tilt, Zoom and
+  Rotate on and Perspective 3D off; a track writes all eight curves, those off at no motion.
+- One track goes on in an engine at a time (`reason: "busy"`).
+
+The answer comes at once: `{job, first, last, frame_size, direction}`. The track then runs on a
+thread of its own: the clip's media (its proxy where usable) decoded on the processor, upright,
+scaled to at most 720 lines at its own aspect (`frame_size`), as luma at a fixed scale. A
+window tracked before keeps its data and the track continues it from the motion at `frame`
+(p. 3232); the frames it reaches are overwritten (p. 3231). Every 150 ms the track so far is
+written into the window by `set_node` as a change of one native gesture of the connection
+(`project.changed` to everyone, `track.progress` to it): the viewer shows the window following,
+and the whole track is **one step to undo**.
+
+`track.state` ends it: `done`; `stopped` with `reason: "stop"` (`track.stop`, Ctrl+Alt+T),
+`"stale_revision"` (the project was changed by anyone, or Undo/Redo), or `"disconnected"`;
+`failed` with `no_features`, `no_points`, `missing_frame` or `cannot_read`, and a `message`.
+Whatever the end, what was written stays as its own undo step (an Undo during a track takes it
+away); a track that wrote nothing makes no step. Frames where the tracker lost the subject are
+taken off the curves (a line bridges them) and counted in `lost`.
+
+**`track.edit`** `{grade, node, window, revision?, edit}`, one step to undo each:
+
+| `edit` | does (manual) |
+|---|---|
+| `{"kind":"clear","from":f,"to":g,"components"?:[...]}` | Clear Selected Track Data: the samples of those curves (all where left out) taken away, a line across (p. 3238) |
+| `{"kind":"interpolate","from":f,"to":g,"components"?:[...]}` | the samples strictly between made the line between their values at `f` and `g` |
+| `{"kind":"reset"}` | Reset Track Data on Active Window; Frame mode's keyframes stay (p. 3238) |
+| `{"kind":"mode","mode":"clip" or "frame"}` | Clip/Frame (p. 3236) |
+| `{"kind":"add_key","frame":f}`, `{"kind":"delete_key","frame":f}` | a Frame mode keyframe at the motion there; Delete Keyframe (p. 3238); adding needs a tracked window (`reason: "untracked"`) |
+| `{"kind":"crosshairs","points":[[u,v],...]}` | the point tracker's crosshairs: Add Tracker puts one at `[0.5,0.5]`, Delete Tracker takes one away (p. 3238) |
+| `{"kind":"paste","from":"w2"}` | Paste Track Data from another window of the node, as the same motion of the frame about this window's own anchor (p. 3233); `reason: "nothing_to_paste"` if it has none |
+
+Copy Track Data is the client's: it remembers the window to paste from. A window preset never
+stores `tracking` (T23). Not yet: Interactive Mode's point cloud editing, the crosshairs and
+motion path drawn on the viewer (Show Track) and dragged there, the outline drawn through a
+Perspective 3D homography, tracking across a transition's handles, timeline and group grades,
+and the move of tracking frames when a grade is copied to another clip with its keyframes.
+
 ## The transport
 
 There are two independent transports: the **source monitor** loads one media item, and the
@@ -1804,7 +1916,8 @@ at most 100 characters; `id` is nonempty and cannot start with `$`. `enabled`, `
 softness and opacity number is a `Param`: a fixed number or `{"keys": [...]}`. As with the
 rest of the grade, clip window keys use source frames, timeline window keys timeline frames.
 Keyframe-copy remapping includes points and Bezier handles. Tracking data is separate from
-the manual window transform; this schema does not specify the later tracking protocol.
+the manual window transform: an optional `tracking` field, left out when there is none (see
+Window tracking).
 
 | field | default | range |
 |---|---|---|
@@ -3260,6 +3373,8 @@ real ids. For example:
 | `window.state` | `{binding,capture,sequence,phase,reason,selected,event,revision,keys,selected_points}`: owner-only arming, armed, refused and ended states (see Circular and Gradient Window controls) |
 | `window.unbound` | `{binding,sequence,revision,reason:"project_changed"}`: original-owner-only retirement when a project change invalidates the binding, even without capture |
 | `window.points` | `{binding,sequence,revision,selected_points:[]}`: owner-only, when a project change drops the selected Curve's point selection (see Curve Window controls) |
+| `track.progress` | `{job,frame,timeline_frame,done,total,lost,revision}`: to the connection that started the track, each time the track so far is written (see Window tracking) |
+| `track.state` | `{job,phase,reason,frames,lost,frame,revision,tracked,message?}`: how the track ended (`done`, `stopped`, `failed`), to the connection that started it |
 
 - `by` is the kind of the client that asked (for an undo or a redo, the one that asked for
   that); `made_by` is the kind of the client that made the transaction (for an undo or a redo,

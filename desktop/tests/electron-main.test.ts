@@ -4353,6 +4353,29 @@ describe('the engine of the studio', () => {
     expect(ended()).toBe(2);
   });
 
+  it('closes the window of the scopes as the main window is put away in the tray', async () => {
+    const shell = await shellHarness(undefined, { COLUMBINA_SERVICE_EXECUTABLE: python });
+    const set = { set_up: true, domain: 'feishu', app_id: 'cli_a1b2c3d4', console: 'https://open.feishu.cn/app', paired: true, running: false, state: null, code: null, error: null };
+    shell.setup.answer = (args) => (args.includes('--status')
+      ? { out: `${JSON.stringify(set)}\n`, code: 0 }
+      : { out: `${JSON.stringify({ writable: true })}\n`, code: 0 });
+    await openIn(shell);
+    const [main] = connections(shell);
+    shell.engines.servers.get(main.address)!.answers.set('scopes.subscribe', () => ({ result: { scope_id: 'scope-1' } }));
+    await shell.invoke('engine-scopes-window', { open: true, loaded: true });
+    const scopes = shell.windows.at(-1);
+    await shell.handlers.get('columbina-scopes:call')!({ sender: scopes.webContents, senderFrame: scopes.webContents.mainFrame },
+      { method: 'scopes.subscribe', params: { view: 'timeline', settings: { kind: 'waveform' } } });
+    await shell.invoke('feishu-start');
+    shell.window.emit('close', { preventDefault: vi.fn() });
+    expect(shell.window.hide).toHaveBeenCalledOnce();
+    // Over nothing, it would measure for no one.
+    expect(scopes.close).toHaveBeenCalledOnce();
+    await settledAll();
+    expect(main.written.filter(request => request.method === 'scopes.unsubscribe').map(request => request.params.scope_id)).toEqual(['scope-1']);
+    expect(told(shell).filter(event => event.kind === 'scopes-window')).toEqual([{ kind: 'scopes-window', open: false, session: 1 }]);
+  });
+
   it('lets go a scope that the window of the scopes subscribed as it was closed or loaded again', async () => {
     const shell = await shellHarness();
     await openIn(shell);

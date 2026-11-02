@@ -2710,6 +2710,8 @@ function toTray() {
   }
   window.hide();
   window.webContents.setAudioMuted(true);
+  // The floating scopes, a child of the window, would stay over nothing and measure for no one.
+  closeScopesWindow();
 }
 /** Show the window: from the tray, or where the application was started again while it ran. */
 function showWindow() {

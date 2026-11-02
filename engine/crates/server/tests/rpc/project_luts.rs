@@ -515,3 +515,88 @@ async fn a_grade_is_exported_as_a_cube_that_reads_back_as_the_grade() {
     }
     assert!(!dir.path().join("a.cube").exists());
 }
+
+/// The digest of frame `frame`, once two in a row are the same and not `not` (the colour of a
+/// change of the project's settings is made on a thread of its own, and taken a moment later).
+async fn settled_other_than(client: &mut Client, frame: i64, not: &Value) -> Value {
+    let deadline = Instant::now() + WAIT;
+    let mut last = Value::Null;
+    loop {
+        seek(client, frame).await;
+        let shown = digest(client).await;
+        if shown["hash"] != not["hash"] && shown["hash"] == last["hash"] {
+            return shown;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "frame {frame} does not settle: {shown}"
+        );
+        last = shown;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// The digest of frame `frame`, once it is `wanted` to the hash.
+async fn until_hash(client: &mut Client, frame: i64, wanted: &Value) {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        seek(client, frame).await;
+        let shown = digest(client).await;
+        if shown["hash"] == wanted["hash"] {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "frame {frame} is {shown}, not {wanted}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test]
+async fn bypass_color_keeps_the_colour_management_and_the_luts_of_the_project() {
+    if columbina_compose::gpu_for_tests().is_none() {
+        return;
+    }
+    let dir = project_dir();
+    let files = project_dir();
+    let (_engine, mut client, names) = orange_timeline(dir.path(), files.path()).await;
+    let plain = until_shown(&mut client, 0, ORANGE).await;
+    // Managed: the picture of media read as ARRI LogC3, and the project's Input and Output LUTs.
+    set(
+        &mut client,
+        json!({"science": "yrgb_managed", "preset": "custom", "input": "ARRI Wide Gamut 3/LogC3",
+            "input_lut": {"3d": "lift.cube"}, "output_lut": {"1d": "half.cube"}}),
+    )
+    .await;
+    let managed = settled_other_than(&mut client, 0, &plain).await;
+    // Graded: the clip's grade and the timeline's halve it.
+    let halving = || {
+        let mut node = serde_json::to_value(Node::corrector("$halve")).unwrap();
+        node["params"]["primaries"]["gain"] = json!({"y": 0.5, "r": 0.5, "g": 0.5, "b": 0.5});
+        node
+    };
+    for grade in [
+        json!({"level": "clip", "timeline": names["$timeline"], "clip": names["$still"]}),
+        json!({"level": "timeline", "timeline": names["$timeline"]}),
+    ] {
+        client
+            .apply(
+                json!([{"op": "add_node", "grade": grade, "node": halving(), "links": [
+                {"from": "source", "to": "$halve", "kind": "rgb", "input": 0},
+                {"from": "$halve", "to": "output", "kind": "rgb", "input": 0}]}]),
+            )
+            .await;
+    }
+    let graded = settled_other_than(&mut client, 0, &managed).await;
+
+    // Bypass Color: the grades left out, the colour management and the LUTs kept, to the bit.
+    client
+        .result("viewer.bypass", Some(json!({"on": true})))
+        .await;
+    until_hash(&mut client, 0, &managed).await;
+    client
+        .result("viewer.bypass", Some(json!({"on": false})))
+        .await;
+    until_hash(&mut client, 0, &graded).await;
+}

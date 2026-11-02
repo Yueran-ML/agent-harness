@@ -458,3 +458,119 @@ async fn a_thumbnail_is_of_the_frame_as_it_is_graded_or_of_a_clip_by_its_own_gra
         }
     }
 }
+
+/// The green of each pixel of the still `id`'s PNG of 16 bits, of 0..1.
+fn still_greens(dir: &std::path::Path, id: &str) -> Vec<f64> {
+    let path = dir.join("gallery").join("stills").join(format!("{id}.png"));
+    let bytes = std::fs::read(&path).unwrap();
+    let mut reader = png::Decoder::new(Cursor::new(&bytes)).read_info().unwrap();
+    let mut data = vec![0; reader.output_buffer_size().unwrap()];
+    reader.next_frame(&mut data).unwrap();
+    data.as_chunks::<6>()
+        .0
+        .iter()
+        .map(|pixel| f64::from(u16::from_be_bytes([pixel[2], pixel[3]])) / 65535.0)
+        .collect()
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn the_words_of_a_missing_lut_are_on_the_view_alone_never_in_a_still_or_the_scopes() {
+    if columbina_compose::gpu_for_tests().is_none() {
+        return;
+    }
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--no-proxies", "--sound", "null"]).await;
+    let mut client = engine.client("desktop").await;
+    // An orange colour clip over a frame large enough for the words.
+    let mut orange = clip("$c", "unused", 0, 10);
+    orange["source"] = json!({"kind": "color", "color": "#c86e28ff"});
+    let names = client
+        .apply(json!([{"op": "add_timeline", "timeline": {
+            "id": "$timeline", "name": "Missing", "width": 640, "height": 360,
+            "rate": {"num": 25, "den": 1}, "sample_rate": 48000, "tracks": [
+                {"id": "$v", "kind": "video", "name": "V1", "enabled": true, "locked": false,
+                 "transitions": [], "clips": [orange]},
+            ],
+        }}]))
+        .await["names"]
+        .clone();
+    client
+        .apply(json!([{"op": "set_color_settings",
+            "settings": {"output_lut": {"3d": "looks/gone.cube"}}}]))
+        .await;
+    client
+        .result(
+            "transport.load",
+            Some(json!({"monitor": "timeline", "timeline": names["$timeline"]})),
+        )
+        .await;
+    client
+        .until_state("the missing LUT told", |state| {
+            state["monitor"] == "timeline"
+                && state["missing_luts"]
+                    .as_array()
+                    .is_some_and(|missing| missing.len() == 1)
+        })
+        .await;
+    let parent = super::parent::Parent::shown();
+    client
+        .result("view.display", Some(json!({ "hdr": false })))
+        .await;
+    client
+        .result(
+            "view.attach",
+            Some(
+                json!({ "monitor": "timeline", "parent": parent.hwnd.to_string(),
+                "x": 0, "y": 0, "width": 960, "height": 540 }),
+            ),
+        )
+        .await;
+    // The view shows the words at its lower right: white letters on black, over the orange.
+    let deadline = Instant::now() + SLOW;
+    loop {
+        let (grey, width) = parent.grey();
+        let height = grey.len() / width;
+        let corner: Vec<u8> = (height * 3 / 4..height)
+            .flat_map(|y| (width / 2..width).map(move |x| (x, y)))
+            .map(|(x, y)| grey[y * width + x])
+            .collect();
+        let middle = grey[(height / 2) * width + width / 2];
+        if middle.abs_diff(110) <= 3
+            && corner.iter().any(|&v| v > 200)
+            && corner.iter().any(|&v| v < 10)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the view shows no words: middle {middle}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let orange_green = ORANGE[1];
+    // The scopes measure the frame without them.
+    let measured = slow(
+        &mut client,
+        "scopes.statistics",
+        json!({"view": "timeline"}),
+    )
+    .await;
+    for edge in ["min", "max"] {
+        let green = measured["green"][edge].as_f64().unwrap();
+        assert!(
+            (green - orange_green).abs() < 2.0 / 255.0,
+            "{edge}: {measured}"
+        );
+    }
+    // A still is the frame without them.
+    let still = slow(&mut client, "still.grab", json!({})).await;
+    let greens = still_greens(dir.path(), still["id"].as_str().unwrap());
+    assert_eq!(greens.len(), 640 * 360);
+    assert!(
+        greens
+            .iter()
+            .all(|green| (green - orange_green).abs() < 2.0 / 255.0),
+        "a still holds other than the orange"
+    );
+}

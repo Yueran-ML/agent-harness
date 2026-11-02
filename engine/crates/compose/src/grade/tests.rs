@@ -2338,6 +2338,9 @@ fn a_lut_is_put_in_its_place_in_the_node() {
     // The library of the LUT once, in an operation of its own; the textures of both nodes.
     assert_eq!(stage.ops.len(), 2);
     assert_eq!(stage.ops[1].textures.len(), 2);
+    // Each node reads its own texture.
+    let body = &stage.ops[1].body;
+    assert!(body.contains("$T0") && body.contains("$T1"), "{body}");
     let colours: Vec<[f32; 3]> = (0..64)
         .map(|i| {
             #[allow(clippy::cast_precision_loss, reason = "a small count")]

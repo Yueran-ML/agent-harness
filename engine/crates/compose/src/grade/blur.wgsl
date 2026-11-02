@@ -4,10 +4,14 @@
 // written out one by one: the compiler of Direct3D 12 crashes on vectors indexed in loops.
 
 fn grade_blur_core(d: f32, level: f32, soft: f32) -> f32 {
-    if soft > 0.0 {
-        return smoothstep(level, level + soft, d);
+    if level <= 0.0 {
+        return 1.0;
     }
-    if d > level || level <= 0.0 {
+    let low = max(level - soft, 0.0);
+    if low < level {
+        return smoothstep(low, level, d);
+    }
+    if d >= level {
         return 1.0;
     }
     return 0.0;

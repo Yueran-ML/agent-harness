@@ -34,9 +34,11 @@
 //!   directional along the horizontal axis").
 //!
 //! Sharpen weighs the sharpening by `w`, which keeps out the pixels of little detail (p. 3455):
-//! with `d` the most of `|D(x, n)|` of the channels sharpened, `w` is 0 up to Level `L` and 1 from
-//! `L + C` on, smoothly between, `C` Coring Softness, both scaled by [`CORING_REACH`]; Level 0
-//! with Coring Softness 0 "sharpen[s] the entire image". Elsewhere `w` is 1.
+//! with `d` the most of `|D(x, n)|` of the channels sharpened, `w` is 1 from Level `L` on and 0 up
+//! to `L − C` (0 at least), smoothly between, `C` Coring Softness, both scaled by
+//! [`CORING_REACH`]: the softness blends the border below the threshold, so that Level 0 sharpens
+//! the entire image ("The default setting of 0 sets the threshold low enough to sharpen the entire
+//! image", p. 3455) whatever the softness. Elsewhere `w` is 1.
 //!
 //! Mist then mixes each channel with a wider blur of the picture, `m` the channel filtered by a
 //! Gaussian of [`MIST_SIGMA`] pixels (the wide neighbourhood): `m + (y − m) · Mix / 100`, `y`
@@ -141,7 +143,8 @@ pub fn block(palette: &Blur, frame: f64) -> [[f32; 4]; 3] {
     let level = palette.level.value_at(frame).max(0.0);
     let coring = palette.coring_softness.value_at(frame).max(0.0);
     let mix = palette.mix.value_at(frame);
-    let cored = palette.mode == BlurMode::Sharpen && (level > 0.0 || coring > 0.0);
+    // Coring Softness without a Level keeps nothing out.
+    let cored = palette.mode == BlurMode::Sharpen && level > 0.0;
     let mist = palette.mode == BlurMode::Mist && mix != blur::MIX.default;
     out[0][3] = if cored { 1.0 } else { 0.0 };
     out[2] = [
@@ -298,13 +301,18 @@ pub fn detail(x: f32, near: f32) -> f32 {
 }
 
 /// How much a pixel whose detail is `d` is sharpened, with a Level of `level` and a Coring
-/// Softness of `soft` (both scaled).
+/// Softness of `soft` (both scaled): all of it from the Level on, none below `level − soft` (0 at
+/// least), smoothly between; all of it everywhere where the Level is 0.
 #[must_use]
 pub fn core(d: f32, level: f32, soft: f32) -> f32 {
-    if soft > 0.0 {
-        return smoothstep(level, level + soft, d);
+    if level <= 0.0 {
+        return 1.0;
     }
-    if d > level || level <= 0.0 {
+    let low = (level - soft).max(0.0);
+    if low < level {
+        return smoothstep(low, level, d);
+    }
+    if d >= level {
         1.0
     } else {
         0.0
@@ -357,11 +365,35 @@ mod tests {
 
     #[test]
     fn coring_keeps_out_the_detail_below_its_level_softly() {
-        assert_eq!(core(0.0, 0.0, 0.0), 1.0);
+        // Level 0 sharpens the whole image (p. 3455), whatever the softness.
+        for soft in [0.0, 0.1, 1.0] {
+            assert_eq!(core(0.0, 0.0, soft), 1.0);
+            assert_eq!(core(0.3, 0.0, soft), 1.0);
+        }
         assert_eq!(core(0.05, 0.1, 0.0), 0.0);
         assert_eq!(core(0.15, 0.1, 0.0), 1.0);
-        assert_eq!(core(0.1, 0.1, 0.1), 0.0);
-        assert_eq!(core(0.2, 0.1, 0.1), 1.0);
-        assert!((core(0.15, 0.1, 0.1) - 0.5).abs() < 1e-6);
+        // The softness is a band below the Level, from L − C up to L.
+        assert_eq!(core(0.0, 0.1, 0.05), 0.0);
+        assert_eq!(core(0.05, 0.1, 0.05), 0.0);
+        assert_eq!(core(0.1, 0.1, 0.05), 1.0);
+        assert!((core(0.075, 0.1, 0.05) - 0.5).abs() < 1e-6);
+        assert_eq!(core(0.12, 0.1, 0.05), 1.0);
+        // Wider than the Level, the band stops at 0.
+        assert_eq!(core(0.0, 0.1, 0.3), 0.0);
+        assert!((core(0.05, 0.1, 0.3) - 0.5).abs() < 1e-6);
+        assert_eq!(core(0.1, 0.1, 0.3), 1.0);
+    }
+
+    #[test]
+    fn coring_softness_alone_turns_no_coring_on() {
+        let mut palette = Blur {
+            mode: BlurMode::Sharpen,
+            ..Blur::default()
+        };
+        palette.radius.r = Param::Fixed(0.2);
+        palette.coring_softness = Param::Fixed(0.5);
+        assert_eq!(block(&palette, 0.0)[0][3], 0.0);
+        palette.level = Param::Fixed(0.1);
+        assert_eq!(block(&palette, 0.0)[0][3], 1.0);
     }
 }

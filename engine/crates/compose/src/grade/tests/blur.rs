@@ -285,9 +285,13 @@ fn level_omits_the_faint_detail_and_coring_softness_blends_its_border() {
     let outlines = graded(0.25, 0.0);
     assert!(noise(&outlines) < 1e-6, "{}", noise(&outlines));
     assert!(overshoot(&outlines) > 0.05);
-    // Softness between: some of the noise, less than all of it.
-    let soft = graded(0.0, 0.25);
+    // Softness below the Level: some of the noise, less than all of it, and the edge as it was.
+    let soft = graded(0.25, 0.25);
     assert!(noise(&soft) > 1e-4 && noise(&soft) < noise(&everything));
+    assert_eq!(overshoot(&soft), overshoot(&outlines));
+    // Level 0 sharpens the whole image (p. 3455), whatever the softness.
+    assert_eq!(graded(0.0, 0.25), everything);
+    assert_eq!(graded(0.0, 1.0), everything);
     // Level and Coring Softness are grey in the other modes.
     for mode in [BlurMode::Blur, BlurMode::Mist] {
         let other = picture_of(

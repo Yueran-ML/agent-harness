@@ -32,7 +32,7 @@ use columbina_model::grade::{
 const MOST: f32 = 4e-3;
 const NEARLY: f32 = 2.5e-3;
 /// The same for Sharpen with Level and Coring Softness: the soft threshold of the detail is
-/// steep (a slope of 37 over a Coring Softness of 0.2), and the sharpening is 4.8 times
+/// steep (a slope of 37 over its band, 0.02 to 0.06 of detail), and the sharpening is 4.8 times
 /// the detail, so that a half float off is some 20 times as far off. Measured: 1.5e-2, and
 /// 9.9e-3.
 const MOST_CORED: f32 = 1.6e-2;
@@ -277,7 +277,8 @@ fn blurred_grades() -> Vec<(&'static str, Grade)> {
         c.blur.mode = BlurMode::Sharpen;
         radius(&mut c.blur, 0.1);
         c.blur.scaling.g = fixed(0.5);
-        c.blur.level = fixed(0.1);
+        // A band of softness from 0.02 to 0.06 of detail (`CORING_REACH` 0.2).
+        c.blur.level = fixed(0.3);
         c.blur.coring_softness = fixed(0.2);
         c.primaries.saturation = fixed(60.0);
     })]);

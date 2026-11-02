@@ -4322,6 +4322,37 @@ describe('the engine of the studio', () => {
     expect(unsubscribed()).toEqual(['scope-2', 'scope-1', 'scope-3', 'scope-4']);
   });
 
+  it('ends a Live Preview that a page left on as it is loaded again or gone', async () => {
+    const shell = await shellHarness();
+    await openIn(shell);
+    const [main] = connections(shell);
+    const ended = () => main.written.filter(request => request.method === 'viewer.preview' && request.params?.on === false).length;
+    const preview = { method: 'viewer.preview', params: { grade: { level: 'clip', timeline: 't1', clip: 'c1' }, node: 'n1', lut: 'Film/Look.cube' } };
+    // A page that previewed nothing leaves nothing to end.
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    await settledAll();
+    expect(ended()).toBe(0);
+    await shell.invoke('engine-call', preview);
+    // Navigations that load no other page end none.
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: false, isSameDocument: false });
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true });
+    await settledAll();
+    expect(ended()).toBe(0);
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    await settledAll();
+    expect(ended()).toBe(1);
+    // Ended once: the new page's previews are its own.
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    await settledAll();
+    expect(ended()).toBe(1);
+    // A page that crashed is the same.
+    await shell.invoke('engine-call', preview);
+    shell.window.webContents.emit('render-process-gone', {}, { reason: 'crashed' });
+    shell.window.webContents.emit('render-process-gone', {}, { reason: 'crashed' });
+    await settledAll();
+    expect(ended()).toBe(2);
+  });
+
   it('opens the floating scopes in a window of their own, which reaches the engine for its own scopes alone and gets their pictures alone', async () => {
     const shell = await shellHarness();
     await openIn(shell);

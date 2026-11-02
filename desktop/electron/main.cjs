@@ -757,7 +757,8 @@ async function openStudio(cwd) {
   // page may cancel those, and no other (an agent's), and have the file of one shown in its folder.
   // `migration`: the run of `video migrate` for the folder, while it runs.
   // `scopes`: the ids of the scopes that the page subscribed (see `keepScopes`).
-  studio = { number, project, session, opened, jobs: new Map(), migration: null, scopes: new Set(), windowScopes: new Set() };
+  // `previewed`: whether the page asked for a Live Preview since one was last ended (see `endPreview`).
+  studio = { number, project, session, opened, jobs: new Map(), migration: null, scopes: new Set(), windowScopes: new Set(), previewed: false };
   tellStudio(number, { kind: 'opened', ...opened });
   tellScopesContext();
   // A view is made anew for every engine, where the page has said where the viewer is.
@@ -982,6 +983,16 @@ function dropScopes() {
   if (!open?.session.alive || !open.scopes?.size) return;
   for (const id of open.scopes) void open.session.call('scopes.unsubscribe', { scope_id: id }).catch(() => {});
   open.scopes.clear();
+}
+/**
+ * End the Live Preview of a page that is loaded again or gone (`viewer.preview`, p. 3411): the
+ * engine keeps it for the connection, which is the shell's, and the new page knows nothing of it.
+ */
+function endPreview() {
+  const open = studio;
+  if (!open?.session.alive || !open.previewed) return;
+  open.previewed = false;
+  void open.session.call('viewer.preview', { on: false }).catch(() => {});
 }
 /** Forget the view of an engine that is gone: one is made anew for the next. */
 function forgetView() {
@@ -2153,6 +2164,7 @@ function installHandlers() {
     if (method === 'view.place') return answered(Promise.resolve().then(() => { takeViewRect(params); return {}; }));
     if (method === 'view.show') return answered(Promise.resolve().then(() => { takeViewShown(params); return {}; }));
     if (method === 'scopes.subscribe' || method === 'scopes.unsubscribe') return answered(keepScopes(open, method, params));
+    if (method === 'viewer.preview' && params?.on !== false) open.previewed = true;
     // Statistics can compile and draw for longer than the engine's gesture idle timeout.
     // Keep the main connection free for edits/gesture keep-alives while that draw runs. Other
     // requests of the view connection wait behind the draw; both connections belong to `open`.
@@ -2883,12 +2895,12 @@ app.whenReady().then(() => {
   if (preferences.petOn) openPet();
   if (hidden && wanted) showWindow();
   else if (hidden) toTray();
-  window.webContents.on('render-process-gone', () => { blankView(); dropScopes(); closeScopesWindow(); stopSigningIn(); void enqueueService(stopService); });
+  window.webContents.on('render-process-gone', () => { blankView(); dropScopes(); endPreview(); closeScopesWindow(); stopSigningIn(); void enqueueService(stopService); });
   // The view of the engine is hidden while the page is loaded again, until the new page says where the viewer is.
   window.webContents.on('did-start-navigation', (details, _url, inPlace, mainFrame) => {
     const main = details?.isMainFrame ?? mainFrame;
     const same = details?.isSameDocument ?? inPlace;
-    if (main === true && same !== true) { blankView(); dropScopes(); closeScopesWindow(); }
+    if (main === true && same !== true) { blankView(); dropScopes(); endPreview(); closeScopesWindow(); }
   });
   void window.loadFile(indexPath);
   // An assistant runs again where it ran when the application was left.

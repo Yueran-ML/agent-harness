@@ -473,6 +473,8 @@ fn examples() -> Vec<(&'static str, Vec<Op>, Op)> {
                 id: "m1".into(),
                 input: Some(Some("DJI D-Gamut/D-Log".into())),
                 levels: Some(columbina_model::Levels::Full),
+                lut: None,
+                inverse_drt: None,
             },
         ),
         (
@@ -481,11 +483,29 @@ fn examples() -> Vec<(&'static str, Vec<Op>, Op)> {
                 id: "m1".into(),
                 input: Some(Some("bypass".into())),
                 levels: None,
+                lut: None,
+                inverse_drt: None,
             }],
             Op::SetMediaColor {
                 id: "m1".into(),
                 input: Some(None),
                 levels: None,
+                lut: None,
+                inverse_drt: None,
+            },
+        ),
+        (
+            "set_media_color of a source clip's LUTs and Inverse DRT",
+            vec![],
+            Op::SetMediaColor {
+                id: "m1".into(),
+                input: None,
+                levels: None,
+                lut: Some(columbina_model::color_management::LutPair {
+                    one: Some("Shapers/log.cube".into()),
+                    three: Some("Film/Look.cube".into()),
+                }),
+                inverse_drt: Some(false),
             },
         ),
         (

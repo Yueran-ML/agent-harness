@@ -114,7 +114,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize, Serializer};
 
-use crate::color_management::Levels;
+use crate::color_management::{Levels, LutPair};
 use crate::grade::{
     Grade, Group, Link, Node, Port, Pos, Target, LONGEST_LABEL, LONGEST_PATH, MOST_INPUTS,
 };
@@ -595,7 +595,8 @@ pub enum Op {
         /// The settings that change, as an object of the fields of `color` that change.
         settings: serde_json::Value,
     },
-    /// Set the colour of media by hand: its input colour space and its data levels.
+    /// Set the colour of media by hand: its input colour space, its data levels, the LUTs of
+    /// the source clip and its Inverse DRT for SDR to HDR Conversion.
     SetMediaColor {
         /// The media.
         id: Id,
@@ -609,6 +610,12 @@ pub enum Op {
         /// Its data levels.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         levels: Option<Levels>,
+        /// The LUTs of the source clip, both: `{"1d": null, "3d": "Film/Look.cube"}`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lut: Option<LutPair>,
+        /// Whether its Inverse DRT for SDR to HDR Conversion is on.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        inverse_drt: Option<bool>,
     },
 }
 
@@ -747,7 +754,8 @@ pub enum OpError {
     /// `position`, `language`, `still`, `digest` (of the identity of media: not 64 lowercase
     /// hexadecimal digits), `by` (a shift by 0), `clips` or `cues` (a shift of none); and of
     /// colour management, `custom_luminance`, `graphics_white`, `input_sat_rolloff`,
-    /// `output_sat_rolloff`, `limit_gamut`, `input_lut`, `output_lut` or `viewer_lut`.
+    /// `output_sat_rolloff`, `limit_gamut`, `input_lut`, `output_lut` or `viewer_lut`; and of
+    /// the colour of media, `media_lut`.
     #[error("{}", range_message(.what))]
     OutOfRange {
         /// The setting.
@@ -1208,6 +1216,11 @@ fn range_message(what: &str) -> String {
         "input_sat_rolloff" | "output_sat_rolloff" => "the saturation rolloff does not start              below its limit, each a number of nits from 1 to 10000"
             .into(),
         "limit_gamut" => "the output gamut cannot be limited to camera native".into(),
+        "media_lut" => format!(
+            "a LUT of the source clip is not a name relative to the folders of LUTs: empty, \
+             longer than {LONGEST_PATH} characters, absolute, going up, or holding a NUL or a \
+             colon"
+        ),
         "input_lut" | "output_lut" | "viewer_lut" => format!(
             "a LUT of the {what} is not a name relative to the folders of LUTs: empty, longer              than {LONGEST_PATH} characters, absolute, going up, or holding a NUL or a colon"
         ),
@@ -1432,9 +1445,22 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
             group,
         } => grade::set_clip_group(project, &timeline, &clip, group),
         Op::SetColorSettings { settings } => color::set_color_settings(project, &settings),
-        Op::SetMediaColor { id, input, levels } => {
-            color::set_media_color(project, &id, input, levels)
-        }
+        Op::SetMediaColor {
+            id,
+            input,
+            levels,
+            lut,
+            inverse_drt,
+        } => color::set_media_color(
+            project,
+            &id,
+            color::MediaColor {
+                input,
+                levels,
+                lut,
+                inverse_drt,
+            },
+        ),
     }
 }
 
@@ -4626,7 +4652,9 @@ mod tests {
                 "bin": null,
                 "mark_in": null,
                 "mark_out": null,
-                "color_override": { "input": null, "levels": "auto" },
+                "color_override": {
+                    "input": null, "levels": "auto", "lut": { "1d": null, "3d": null }, "inverse_drt": true,
+                },
             },
             "index": null,
         });

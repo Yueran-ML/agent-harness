@@ -201,8 +201,11 @@ export interface ColorSettings {
 }
 /** Data Levels of media (pp. 221-222). */
 export type DataLevels = 'auto' | 'video' | 'full';
-/** The colour of media set by hand: a space of the catalogue, `bypass`, or null for the project's default; and its data levels. */
-export interface ColorOverride { input: string | null; levels: DataLevels }
+/**
+ * The colour of media set by hand: a space of the catalogue, `bypass`, or null for the project's default; its data levels; the
+ * LUTs of the source clip (pp. 3409-3410); and whether its Inverse DRT for SDR to HDR Conversion is on (p. 233).
+ */
+export interface ColorOverride { input: string | null; levels: DataLevels; lut: LutPair; inverse_drt: boolean }
 
 /** The colour settings of a new project, as the engine writes them: not managed (DaVinci YRGB, p. 225). */
 export function defaultColorSettings(): ColorSettings {
@@ -226,7 +229,7 @@ export function keptColor(project: Pick<Project, 'color'>): ColorSettings {
 
 /** The colour of media as the engine reads it: what is left out is none set. */
 export function keptOverride(media: Pick<Media, 'color_override'>): ColorOverride {
-  return { input: null, levels: 'auto', ...media.color_override };
+  return { input: null, levels: 'auto', lut: { '1d': null, '3d': null }, inverse_drt: true, ...media.color_override };
 }
 
 // Grades (PROTOCOL.md, "Grades"; engine/crates/model/src/grade.rs), as DaVinci Resolve's Color
@@ -471,7 +474,7 @@ export type Op =
   /** `settings` is a patch of `color`, merged as `set_node` merges `params`; `done` and the inverse carry the values as the engine writes them. */
   | { op: 'set_color_settings'; settings: Record<string, unknown> }
   /** `input` left out keeps it; null sets it back to the project's default. */
-  | { op: 'set_media_color'; id: string; input?: string | null; levels?: DataLevels | null };
+  | { op: 'set_media_color'; id: string; input?: string | null; levels?: DataLevels | null; lut?: LutPair; inverse_drt?: boolean };
 
 /** Who asked for a change, or made the step that it takes back or does again. */
 export type ClientKind = 'desktop' | 'agent' | 'cli' | 'engine';
@@ -517,12 +520,24 @@ export interface TimelineTransportState extends TransportBase {
   missing_luts?: MissingLut[];
   /** Whether the picture is shown without its grades (`viewer.bypass`, Bypass Color), while it is. */
   bypass?: boolean;
+  /** The LUT shown on a node in place of its own (`viewer.preview`, Live Preview), while one is. */
+  preview?: LivePreview;
+  /** False while the view leaves the Color Viewer LUT out (`viewer.lut`), off the Color page. */
+  viewer_lut?: boolean;
+  /** True while a change of the project's colour management is being made, the colour before it still shown. */
+  color_pending?: boolean;
+  /** Why the colour management that the project asks for could not be made, while it cannot. */
+  color_error?: string;
   /** The frame of the timeline that each reference of the wipe or split screen shows for the frame shown, in their order; while one is on. */
   compared?: (number | null)[];
 }
 export type TransportState = SourceTransportState | TimelineTransportState;
 /** A LUT that a grade of the timeline names and the engine could not read (PROTOCOL.md, "Grades in the picture"). */
 export interface MissingLut { name: string; message: string }
+/** A LUT of the library shown on a node of a grade in place of its own, at a frame where Hover Scrub asks for one (PROTOCOL.md, "Live Preview and the Color Viewer LUT"). */
+export interface LivePreview { grade: Target; node: string; lut: string; frame?: number }
+/** A preview of a LUT (`luts.preview`): its picture, or why it cannot be read. */
+export type LutPreview = { lut: string; width: number; height: number; png: string } | { lut: string; error: string };
 
 /** A folder that a corrector's `lut` is looked for in, in the order of `luts.list` (PROTOCOL.md, "The library of LUTs"). */
 export interface LutRoot { place: 'project' | 'library'; path: string; exists: boolean }
@@ -708,6 +723,10 @@ export interface PageMethods {
   'window_presets.update': WindowPreset;
   'window_presets.delete': { deleted: string };
   'window_presets.apply': Applied;
+  // The LUT browser's thumbnails and Live Preview, and the Color Viewer LUT on the Color page alone (PROTOCOL.md, "Previews of LUTs").
+  'luts.preview': { previews: LutPreview[] };
+  'viewer.preview': { monitor: 'timeline'; preview: LivePreview | null };
+  'viewer.lut': { monitor: 'timeline'; on: boolean };
 }
 export type PageMethod = keyof PageMethods;
 
@@ -1416,7 +1435,9 @@ export function applyOp(project: Project, op: Op): Project {
     case 'set_media_color': {
       const at = placeOf(project.media, op.id, 'media');
       const media = project.media[at];
-      const override = patched(keptOverride(media), op, ['input', 'levels'], ['input']);
+      // A pair of LUTs is set whole, a LUT left out as none, as the engine reads it.
+      const set = op.lut ? { ...op, lut: { '1d': null, '3d': null, ...op.lut } } : op;
+      const override = patched(keptOverride(media), set, ['input', 'levels', 'lut', 'inverse_drt'], ['input']);
       return { ...project, media: replaced(project.media, at, { ...media, color_override: override }) };
     }
     default: throw new CopyMismatch(`the operation ${(op as { op: unknown }).op} is not known to the copy`);

@@ -166,5 +166,30 @@ pub fn color_op_of(project: &Project, n: [usize; 4]) -> Op {
         2 => Some(Levels::Video),
         _ => Some(Levels::Full),
     };
-    Op::SetMediaColor { id, input, levels }
+    // The LUTs of the source clip and its Inverse DRT, now and then; a LUT that goes up is
+    // refused.
+    let lut = match n[2] / 4 % 5 {
+        0 | 1 => None,
+        2 => Some(columbina_model::color_management::LutPair::default()),
+        3 => Some(columbina_model::color_management::LutPair {
+            one: None,
+            three: Some("Film/Look.cube".to_owned()),
+        }),
+        _ => Some(columbina_model::color_management::LutPair {
+            one: Some("../up.cube".to_owned()),
+            three: None,
+        }),
+    };
+    let inverse_drt = match n[1] / 7 % 3 {
+        0 => None,
+        1 => Some(true),
+        _ => Some(false),
+    };
+    Op::SetMediaColor {
+        id,
+        input,
+        levels,
+        lut,
+        inverse_drt,
+    }
 }

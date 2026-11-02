@@ -754,7 +754,7 @@ pub enum LutInterpolation {
 
 /// The LUTs of a stage of the project's Lookup Tables (pp. 151–152): a 1D and a 3D LUT, the
 /// 1D first, each by its name relative to the folders of LUTs, or none.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LutPair {
     /// The 1D LUT.
@@ -1163,11 +1163,12 @@ pub enum Levels {
     Full,
 }
 
-/// The colour of media set by hand in the media pool: its Input Color Space (pp. 228–230, 245)
-/// and its Data Levels (pp. 221–222).
+/// The colour of media set by hand in the media pool: its Input Color Space (pp. 228–230, 245),
+/// its Data Levels (pp. 221–222), the LUTs of the source clip (pp. 3409–3410) and whether its
+/// Inverse DRT for SDR to HDR Conversion is on (p. 233).
 ///
 /// It is always written; a field that is left out is read as its default, as is the whole of it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ColorOverride {
     /// A space of the catalogue that the picture is in, over what its file says and the
@@ -1176,6 +1177,26 @@ pub struct ColorOverride {
     pub input: Option<String>,
     /// Its data levels.
     pub levels: Levels,
+    /// The LUTs applied to the source clip, from the 1D LUT ▸ and 3D LUT ▸ menus of the media pool
+    /// and the thumbnails of the Color page (pp. 3409–3410), each by its name relative to the
+    /// folders of LUTs, the 1D first; none, the default. They are the media's, not a grade's:
+    /// "source clip LUTs cannot be copied from one timeline to another using `ColorTrace`".
+    pub lut: LutPair,
+    /// Inverse DRT for SDR to HDR Conversion of this media (p. 233): on, the default, where the
+    /// project's "Use inverse DRT for SDR to HDR conversion" maps it up; off, for a clip whose
+    /// "large flat expanses of bright colors" the expansion makes noisy.
+    pub inverse_drt: bool,
+}
+
+impl Default for ColorOverride {
+    fn default() -> Self {
+        ColorOverride {
+            input: None,
+            levels: Levels::default(),
+            lut: LutPair::default(),
+            inverse_drt: true,
+        }
+    }
 }
 
 /// Check the colour that media is set to: an input space of the catalogue, or Bypass, and none
@@ -1190,6 +1211,13 @@ pub(crate) fn check_override(media: &Media) -> Result<(), OpError> {
                 name: name.clone(),
             });
         }
+    }
+    if [&set.lut.one, &set.lut.three]
+        .into_iter()
+        .flatten()
+        .any(|name| !is_lut_name(name))
+    {
+        return Err(OpError::OutOfRange { what: "media_lut" });
     }
     let Some(video) = &media.facts.video else {
         if *set != ColorOverride::default() {

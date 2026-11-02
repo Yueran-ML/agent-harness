@@ -102,8 +102,20 @@ describe('the colour management of the copy, where the examples do not reach', (
     const strip = (project: Project): Project => ({ ...project, media: project.media.map(({ color_override: _o, ...media }) => media as Media) });
     expect(applyOp({ ...strip(example.before), next_id: example.after.next_id }, example.done)).toStrictEqual(example.after);
     const set = applyOp(example.after, { op: 'set_media_color', id: 'm1', levels: 'video' });
-    expect(set.media[0].color_override).toStrictEqual({ input: 'DJI D-Gamut/D-Log', levels: 'video' });
-    expect(applyOp(set, { op: 'set_media_color', id: 'm1', input: null }).media[0].color_override).toStrictEqual({ input: null, levels: 'video' });
+    const none = { '1d': null, '3d': null };
+    expect(set.media[0].color_override).toStrictEqual({ input: 'DJI D-Gamut/D-Log', levels: 'video', lut: none, inverse_drt: true });
+    expect(applyOp(set, { op: 'set_media_color', id: 'm1', input: null }).media[0].color_override)
+      .toStrictEqual({ input: null, levels: 'video', lut: none, inverse_drt: true });
     expect(() => applyOp(example.before, { op: 'set_media_color', id: 'm99', levels: 'full' })).toThrow(CopyMismatch);
+  });
+
+  it('sets the LUTs of a source clip as a pair, and its Inverse DRT, as the engine does', () => {
+    const example = at("set_media_color of a source clip's LUTs and Inverse DRT");
+    expect(applyOp(example.before, example.done)).toStrictEqual(example.after);
+    expect(applyOp(example.after, example.inverse)).toStrictEqual(example.before);
+    // A LUT left out of the pair is none.
+    const one = applyOp(example.after, { op: 'set_media_color', id: 'm1', lut: { '3d': 'b.cube' } as never });
+    expect(one.media[0].color_override?.lut).toStrictEqual({ '1d': null, '3d': 'b.cube' });
+    expect(one.media[0].color_override?.inverse_drt).toBe(false);
   });
 });

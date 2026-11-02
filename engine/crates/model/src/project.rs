@@ -977,7 +977,9 @@ mod tests {
                 "bin": null,
                 "mark_in": null,
                 "mark_out": null,
-                "color_override": { "input": null, "levels": "auto" },
+                "color_override": {
+                    "input": null, "levels": "auto", "lut": { "1d": null, "3d": null }, "inverse_drt": true,
+                },
             }],
             "timelines": [{
                 "id": "t1",

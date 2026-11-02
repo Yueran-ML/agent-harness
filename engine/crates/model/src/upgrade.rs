@@ -405,7 +405,9 @@ mod tests {
         let media = expected["media"].as_array_mut().unwrap();
         assert!(!media.is_empty(), "the project has media to upgrade");
         for media in media {
-            media["color_override"] = serde_json::json!({ "input": null, "levels": "auto" });
+            media["color_override"] = serde_json::json!({
+                "input": null, "levels": "auto", "lut": { "1d": null, "3d": null }, "inverse_drt": true,
+            });
         }
         let grade = serde_json::to_value(Grade::default()).unwrap();
         let mut clips = 0;

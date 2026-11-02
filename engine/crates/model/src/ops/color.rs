@@ -2,7 +2,7 @@
 //! project, and the colour of media set by hand.
 
 use super::{missing, swap, Op, OpError};
-use crate::color_management::{ColorSettings, Levels};
+use crate::color_management::{ColorSettings, Levels, LutPair};
 use crate::grade::{changed, merge};
 use crate::project::{Id, Project};
 
@@ -58,13 +58,21 @@ pub(super) fn done(project: &Project, patch: &serde_json::Value) -> Op {
     }
 }
 
-/// Set the input colour space and the data levels of media that are given.
+/// What `set_media_color` sets of the colour of media: each that is given.
 #[allow(clippy::option_option, reason = "left out and null are told apart")]
+pub(super) struct MediaColor {
+    pub input: Option<Option<String>>,
+    pub levels: Option<Levels>,
+    pub lut: Option<LutPair>,
+    pub inverse_drt: Option<bool>,
+}
+
+/// Set the input colour space, the data levels, the LUTs of the source clip and the Inverse DRT
+/// for SDR to HDR Conversion of media that are given.
 pub(super) fn set_media_color(
     project: &mut Project,
     id: &Id,
-    input: Option<Option<String>>,
-    levels: Option<Levels>,
+    set: MediaColor,
 ) -> Result<Op, OpError> {
     let at = project
         .media
@@ -73,13 +81,23 @@ pub(super) fn set_media_color(
         .ok_or_else(|| missing("media", id))?;
     let old = &project.media[at];
     let mut new = old.clone();
+    let MediaColor {
+        input,
+        levels,
+        lut,
+        inverse_drt,
+    } = set;
     swap(&mut new.color_override.input, input.clone());
     swap(&mut new.color_override.levels, levels);
+    swap(&mut new.color_override.lut, lut.clone());
+    swap(&mut new.color_override.inverse_drt, inverse_drt);
     crate::color_management::check_override(&new)?;
     let inverse = Op::SetMediaColor {
         id: id.clone(),
         input: input.map(|_| old.color_override.input.clone()),
         levels: levels.map(|_| old.color_override.levels),
+        lut: lut.map(|_| old.color_override.lut.clone()),
+        inverse_drt: inverse_drt.map(|_| old.color_override.inverse_drt),
     };
     project.media[at] = new;
     Ok(inverse)

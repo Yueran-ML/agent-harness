@@ -2,7 +2,7 @@
 //! what it refuses; and the colour settings of a project as it is read.
 
 use columbina_model::color_management::{
-    media_input, AcesVersion, ColorSettings, MediaInput, Pipeline, Preset, Science,
+    media_input, AcesVersion, ColorSettings, LutPair, MediaInput, Pipeline, Preset, Science,
 };
 use columbina_model::{
     apply, apply_done, Basis, Change, ColorOverride, History, Levels, Op, OpError, Project,
@@ -20,6 +20,8 @@ fn media_color(id: &str, input: Option<Option<&str>>, levels: Option<Levels>) ->
         id: id.into(),
         input: input.map(|input| input.map(Into::into)),
         levels,
+        lut: None,
+        inverse_drt: None,
     }
 }
 
@@ -345,7 +347,8 @@ fn media_has_its_input_space_and_data_levels_set_by_hand() {
     );
     assert_eq!(
         serde_json::to_value(&project.media[0]).unwrap()["color_override"],
-        json!({"input": "Apple Log", "levels": "full"})
+        json!({"input": "Apple Log", "levels": "full", "lut": {"1d": null, "3d": null},
+            "inverse_drt": true})
     );
     // Only what is given is set: null takes the space set by hand away.
     let (_, inverse) = applied(&mut project, media_color("m1", Some(None), None));
@@ -369,6 +372,88 @@ fn media_has_its_input_space_and_data_levels_set_by_hand() {
             id: "m9".into()
         }
     );
+}
+
+#[test]
+fn a_source_clip_has_its_luts_and_its_inverse_drt_set_by_hand() {
+    let mut project = Project::sample();
+    let set = |patch: serde_json::Value| -> Op {
+        let mut op = json!({"op": "set_media_color", "id": "m1"});
+        for (key, value) in patch.as_object().unwrap() {
+            op[key] = value.clone();
+        }
+        serde_json::from_value(op).unwrap()
+    };
+    // None, and the inverse DRT on, at first and where a file leaves them out.
+    assert_eq!(
+        serde_json::to_value(&project.media[0]).unwrap()["color_override"],
+        json!({"input": null, "levels": "auto", "lut": {"1d": null, "3d": null},
+            "inverse_drt": true})
+    );
+    let read: ColorOverride = serde_json::from_value(json!({"levels": "video"})).unwrap();
+    assert!(read.inverse_drt);
+    assert_eq!(read.lut, LutPair::default());
+
+    let (done, inverse) = applied(
+        &mut project,
+        set(json!({"lut": {"3d": "Film/Look.cube"}, "inverse_drt": false})),
+    );
+    assert_eq!(
+        serde_json::to_value(&done).unwrap(),
+        json!({"op": "set_media_color", "id": "m1",
+            "lut": {"1d": null, "3d": "Film/Look.cube"}, "inverse_drt": false})
+    );
+    assert_eq!(
+        serde_json::to_value(&inverse).unwrap(),
+        json!({"op": "set_media_color", "id": "m1", "lut": {"1d": null, "3d": null},
+            "inverse_drt": true})
+    );
+    assert_eq!(
+        project.media[0].color_override,
+        ColorOverride {
+            lut: LutPair {
+                one: None,
+                three: Some("Film/Look.cube".into()),
+            },
+            inverse_drt: false,
+            ..ColorOverride::default()
+        }
+    );
+    // Only what is given is set: the levels leave the LUTs as they are.
+    applied(&mut project, set(json!({"levels": "full"})));
+    assert_eq!(
+        project.media[0].color_override.lut.three.as_deref(),
+        Some("Film/Look.cube")
+    );
+    // A name of a LUT is relative to the folders of LUTs, as the project's LUTs are.
+    for bad in ["", "../up.cube", "C:/Looks/a.cube", "/a.cube", r"\\server\a.cube"] {
+        assert_eq!(
+            refused(&project, set(json!({"lut": {"1d": bad}}))),
+            OpError::OutOfRange { what: "media_lut" },
+            "{bad}"
+        );
+    }
+    // Media without a picture has none.
+    let mut sound = project.media[0].clone();
+    sound.id = "sound".into();
+    sound.facts.video = None;
+    sound.color_override = ColorOverride::default();
+    apply(&mut project, Op::AddMedia { media: sound, index: None }).unwrap();
+    let sound = |patch: serde_json::Value| -> Op {
+        let mut op = set(patch);
+        if let Op::SetMediaColor { id, .. } = &mut op {
+            *id = "sound".into();
+        }
+        op
+    };
+    assert!(matches!(
+        refused(&project, sound(json!({"inverse_drt": false}))),
+        OpError::NoStream { .. }
+    ));
+    assert!(matches!(
+        refused(&project, sound(json!({"lut": {"3d": "Film/Look.cube"}}))),
+        OpError::NoStream { .. }
+    ));
 }
 
 #[test]

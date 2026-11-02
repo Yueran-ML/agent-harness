@@ -34,8 +34,9 @@ editable stories; it does not build an ffmpeg filter graph or render a film of i
 *Studio* in the side bar of the desktop application opens the studio of the project folder. Its
 project is `.columbina/studio` in that folder, the same one the agent uses by default. The
 studio follows DaVinci Resolve: its pages, keys, mouse gestures and the names in its interface
-are those of Resolve, checked against the DaVinci Resolve 20 Reference Manual. Three pages are
-switched at the top, or with the left and right arrow keys on the page tabs.
+are those of Resolve, checked against the DaVinci Resolve 20 Reference Manual. Four pages, Media,
+Cut, Edit and Color, are switched at the top, or with the left and right arrow keys on the page
+tabs. The Color page has a section of its own below.
 
 **Media.** The media pool, with the master bin and bins inside bins. *Import* adds files to the
 chosen bin; files stay where they are, and the pool only names them. Clips are shown as a list
@@ -168,6 +169,165 @@ Resolve's other pages or common use.
 Keys are not taken while a field is being written in, while an input method composes, or while a
 dialog is open. Ctrl+M, which marks in Resolve, is left for markers; the export has its button.
 
+## The Color page
+
+The Color page grades the timeline as DaVinci Resolve's Color page does, and is laid out as it
+is: the viewer, with the Gallery, the LUT browser or the media pool on its left and the node
+editor on its right; below them the thumbnails of the clips and the mini timeline; and at the
+foot the palettes, with the video scopes at the right. The viewer shows the timeline's frame at
+the playhead; the up and down arrows go to the clip before or after. Where the window is narrow,
+the left and centre palettes share one row of buttons, as Resolve's do below 1920×1080. A
+palette in which the current node is adjusted shows an orange dot on its button.
+
+**Grades and nodes.** Each clip has its own grade, a tree of nodes; a new clip has one
+corrector, 01. A group of clips has a pre-clip and a post-clip grade, and the timeline a grade
+over every clip, applied in that order; the node editor switches between Clip, Timeline, Group
+Pre-Clip and Group Post-Clip. Nodes are added about the current one with Alt+S (serial), Shift+S
+(serial before), Alt+P (parallel), Alt+L (layer) and Alt+K (append at the end); a parallel or
+layer node brings its mixer. Links are dragged from an output to an input, the picture's in
+green and the key's in blue, and a loose node dropped on a link goes into it; Ctrl+drag swaps
+what two correctors do. A node is labelled, locked (Lock Node), turned off with Ctrl+D or a
+click on its number (all of them with Alt+D), extracted with E and deleted with Delete;
+Shift+Home, Ctrl+Shift+Home and Ctrl+Home reset the node, every node, or the whole grade. The
+right-click menu of a thumbnail makes groups and collapses them; = and - apply the grade of the
+clip one or two before, and Ctrl+C and Ctrl+V copy and paste a whole grade where the thumbnails
+have the focus. Every change is one step of undo, shared with the agent. A setting with
+keyframes (which the agent sets) shows and changes the key at the playhead or the one to its
+left.
+
+**Primaries and Curves.** Primaries has Resolve's three modes: Color Wheels (Lift, Gamma, Gain
+and Offset, with Contrast, Pivot, Saturation, Hue, Lum Mix, Temp, Tint, Color Boost and Midtone
+Detail), Color Bars, and Log Wheels (Alt+Z switches between the wheels and Log). A wheel is
+dragged; with Shift it jumps to where it is clicked, with Ctrl the master ring moves; a
+double-click resets it. The black and white point pickers take their colours from the viewer.
+Curves has the custom curves, ganged or not, the six HSL curves (Hue vs Hue, Hue vs Sat, Hue vs
+Lum, Lum vs Sat, Sat vs Sat, Sat vs Lum), whose points are also taken from the viewer, and Soft
+Clip.
+
+**Qualifier and Key.** The Qualifier palette keys a colour in HSL, RGB or LUM mode, with Matte
+Finesse; its pickers add or subtract what is clicked or dragged in the viewer. Shift+H shows the
+key of the current node as Resolve's Highlight does (the rest grey), and Alt+Shift+H in black
+and white. The Key palette sets a node's key input, output and qualifier (Invert, Matte or Mask,
+Gain, Offset, and the blur of the input), and the inputs and output of a key mixer; keys go from
+node to node along the blue links.
+
+**Power Windows.** The Window palette adds Linear, Circular, Polygon, Curve and Gradient windows
+to the current node, each with its Size, Aspect, Pan, Tilt, Rotate, Opacity and softness, and
+they are drawn and moved with their controls on the viewer: a Circular or Gradient window by its
+centre, size, softness and angle; a Linear or Polygon window by its corners, edges and points (a
+click on an edge adds a point, a middle-click removes one); a Curve window point by point, with
+Bézier handles dragged out of its points and closed by a click on its first point. Shift and a
+drag around the points of a Curve chooses several, to move, scale, rotate or delete together. A
+drag on a playing timeline pauses it. Windows are saved as presets (Save as New Preset, Update
+Preset, Delete Preset) in a library that every project of the user shares; a preset recalled on
+a node replaces its windows, as Resolve's does, and is kept in the project in full.
+
+**Tracker.** The Tracker palette makes the windows of a node follow the picture: the cloud
+tracker follows the whole of what the window covers, and the point tracker the points that are
+placed. It tracks Pan, Tilt, Zoom, Rotate and 3D, forward, backward or a frame at a time, in
+Clip or Frame mode; a track is cleared, interpolated, copied and pasted. The stabilizer comes in
+a later phase.
+
+**Blur.** The Blur palette has Resolve's three modes: Blur, Sharpen and Mist. Radius, H/V Ratio
+and Scaling are set for red, green and blue, ganged at first; Sharpen adds Coring Softness and
+Level, and Mist its Mix. Over Radius, a notch of the wheel changes it by 0.01. Blur works within
+the node's key, so it blurs or sharpens what a qualifier or a window keys.
+
+**LUTs.** The LUT browser lists the `.cube` files of the project's folder and of the LUT library
+(each marked 1D or 3D), with Favorites. A LUT is dragged onto a node, or applied from its
+right-click menu or from a node's LUT submenu. A LUT that a node names and that cannot be found
+is said over the viewer, at its lower right. Project Settings set an Input, an Output and a
+Color Viewer LUT for the whole project. *Generate LUT* in the right-click menu of a thumbnail
+writes the grade of that clip as a 17, 33 or 65 point cube; a node with a qualifier, a window,
+Midtone Detail or a blur that changes the picture cannot be baked and is left out, and the page
+says how many were.
+
+**The Gallery and comparisons.** Ctrl+Alt+G grabs a still of the frame shown, with its grade,
+into the current album. The project's albums are its own; the PowerGrade albums are shared by
+every project of the user. A still's grade is applied to the clips chosen, or its nodes appended
+(Append Node Graph), with keyframes as *Apply Grades Using* says. Alt+1 to Alt+8 keep the grade
+of the current clip as the memories A to H, and Ctrl+1 to Ctrl+8 apply them. Stills deleted are
+brought back with Ctrl+Z in the Gallery. Ctrl+W wipes the frame against the still chosen (a
+double-click on a still does too), in one of eight styles, its line dragged on the viewer; Alt+W
+inverts it, and Ctrl+Alt+B and Ctrl+Alt+N go to the still before or after. *Wipe Timeline Clip*
+on a thumbnail wipes against another clip. Ctrl+Alt+W shows a split screen of the selected
+clips, the selected stills, the clips about the current one or the current group, up to 16
+pictures. Comparisons are of the viewer only; an export never shows them.
+
+**Video scopes.** Waveform, Parade, Vectorscope, Histogram and CIE Chromaticity, docked at the
+right of the palettes or in a floating panel (Ctrl+Shift+W), one, two, four or nine at a time,
+each with its own settings (scale in 10-bit, percent or nits, channels, brightness, reference
+levels). They measure the frame as the timeline viewer shows it, before the Color Viewer LUT.
+
+**The viewer.** Alt+F enlarges the viewer, Shift+F shows it full screen and P as cinema (Esc
+leaves it). Ctrl+= and Ctrl+- zoom, Shift+Z fits and Alt+Shift+Z shows it at 100%; the wheel and
+the middle button zoom and pan. Shift+D turns Bypass Color on and off: the picture without its
+grades, as on the Edit and Cut pages.
+
+**Shot Match and Auto Color.** *Shot Match to This Clip* in the right-click menu of a thumbnail
+makes the clips chosen look like the one clicked, each by the node chosen in it; as in Resolve,
+the match is an adjustment that no palette shows, and the thumbnail and the node are marked as
+matched. *Reset Shot Match* takes it away. The A button of the Primaries palette (Alt+Shift+C)
+balances the blacks and whites of the current node into its Lift and Gain, where they can be
+seen. Shot Match is made for clips not graded yet, in Rec.709 Gamma 2.4 (pp. 3047–3048).
+
+### Colour management
+
+*Project Settings › Color Management* sets the colour of the project as Resolve's do, and its
+changes take effect when *Save* is pressed, as one step of undo. **Color science** is DaVinci
+YRGB by default: nothing is converted, as in a new project of Resolve. DaVinci YRGB Color
+Managed converts each clip from its input colour space into the timeline colour space, where it
+is graded, and from there into the output colour space, by a preset (SDR Rec.709, HDR Rec.2020
+and the others) or by spaces chosen one by one, with the working luminance, the Input and Output
+DRT and Limit Output Gamut. ACEScct and ACEScc grade in ACES, with ACES 1.3 or 2.0, an output
+device transform and the reference gamut compression. The transforms are those of OpenColorIO
+and its built-in ACES configs; the engine carries them, and nothing else needs to be installed.
+Every space may be chosen wherever a space is: Rec.709, Rec.2020, P3 and the other display
+spaces with each gamma, Rec.2100 HLG and ST2084 (PQ), and the spaces of cameras and of grading,
+such as Apple Log, DJI D-Log, Sony S-Log3, ARRI LogC, Canon Log, Panasonic V-Log, Blackmagic
+Film Gen 5 and DaVinci Intermediate. The right-click menu of media in the media pool sets their
+Input Color Space, Bypass and Data Levels; a phone's HLG or PQ video is known by what its file
+says. The 3D LUTs of the project are read between their points by Trilinear interpolation
+(Resolve's default) or Tetrahedral.
+
+**HDR.** Where the output colour space is HDR, the viewers show HDR on a display for which
+Windows has HDR on; *Display HDR On Viewers If Available*, in the viewer's options, turns that
+off, and is kept on this computer. An export to an HDR output space is written in 10 bits (HEVC
+Main 10 or ProRes; H.264 is refused) and tagged with its colour space, the mastering display and
+the light of its content (MaxCLL and MaxFALL), measured over every frame it writes. A project
+that is not managed exports Rec.709 as before.
+
+### Keys of the Color page
+
+These are the Color page's own keys; playback, In and Out and undo are those of the table above.
+
+| Key | What it does | RM |
+|---|---|---|
+| ↑ / ↓ | The clip before or after | 2991 |
+| Alt+S / Shift+S | Adds a serial node after or before the current one | 3318 |
+| Alt+P / Alt+L / Alt+K | Adds a parallel node, a layer node, a node at the end (Append) | 3318 |
+| Ctrl+D / Alt+D | Turns the nodes chosen, or all nodes, off or on | 3315 |
+| E, Delete | Extracts the node chosen; deletes the nodes chosen | 3318–3319 |
+| Shift+Home / Ctrl+Shift+Home / Ctrl+Home | Resets the current node, every node, the whole grade | 3316 |
+| Alt+Shift+O | The grade as it was when its clip was chosen (Original Memory) | 3317 |
+| Alt+Shift+; / Alt+Shift+' | The node before or after | 3314 |
+| Ctrl+C / Ctrl+V | Copies and pastes a node in the node editor, a whole grade in the thumbnails | 3286, 3318 |
+| = / - | Applies the grade of the clip one or two before | 3288 |
+| Alt+Z | Primaries: between the wheels and Log | 3068 |
+| Alt+Shift+C | Auto Color | 3045 |
+| Shift+H / Alt+Shift+H | Highlight, Highlight in black and white | 3170–3171 |
+| Shift+D | Bypass Color | 2987 |
+| Ctrl+Alt+G | Grabs a still | 3257 |
+| Ctrl+Alt+B / Ctrl+Alt+N | The still before or after | 3260 |
+| Alt+1–8 / Ctrl+1–8 | Saves the memory A–H, applies it | 3271–3272, 3289 |
+| Ctrl+W / Alt+W | Image wipe on or off, inverts the wipe | 3000–3002 |
+| Ctrl+Alt+← / → | The clip of a timeline wipe a frame back or on | 3002 |
+| Ctrl+Alt+W | Split screen on or off | 3003 |
+| Ctrl+Shift+W | The floating video scopes on or off | 3007–3008 |
+| Alt+F / Shift+F / P | Enhanced viewer, full screen viewer, cinema viewer | 2968–2969 |
+| Ctrl+= / Ctrl+- / Shift+Z / Alt+Shift+Z | Zooms the viewer in or out, fits it, shows it at 100% | — |
+| H | The node editor's selection tool or hand | 3311 |
+
 ## The agent's tools
 
 The editing tools are `video_import`, `video_info`, `video_edit`, `video_transcribe`,
@@ -237,15 +397,18 @@ grade's summary.
   descriptions keep only the essentials, so that they cost little on every request.
 - `video_grade_set` patches one node's settings, label or `enabled`. Values are checked before
   they are sent, so a value out of range is told with DaVinci's name, range and neutral value
-  (Saturation: 0 to 100, 50 changes nothing). A number may be keyframes,
-  `{"keys": [{"frame": 0, "value": 40, "interp": "linear"}, ...]}`, with `hold` for static
-  keyframes and `bezier` for eases. A key's frame is, for a clip of media, the frame of its
-  media (at the media's own rate, from 0) whose picture is shown, so keys stay on their pictures
-  through trims, slips and speed changes; for a title, a colour or a still, the clip's frame
-  from its first; for the timeline's grade, the timeline's frame.
+  (Saturation: 0 to 100, 50 changes nothing). A number may be keyframes, `{"keys": [{"frame": 0,
+  "value": 40, "interp": "linear"}, ...]}`, with `hold` for static keyframes and `bezier` for
+  eases. A key's frame is, for a clip of media, the frame of its media (at the media's own rate,
+  from 0) whose picture is shown, so keys stay on their pictures through trims, slips and speed
+  changes; for a title, a colour or a still, the clip's frame from its first; for the timeline's
+  grade, the timeline's frame. The settings are those of the Primaries, Curves, Qualifier, Blur
+  and Key palettes, Soft Clip and a node's LUT; Power Windows and their tracking are drawn on
+  the Color page.
 - `video_grade_node` adds a corrector as `append` (Append Node), `add_serial`,
-  `add_serial_before`, `add_parallel` or `add_layer` add one, with its label and settings in the
-  same step if given, or removes, resets or extracts a node.
+  `add_serial_before`, `add_parallel`, `add_layer` or `add_outside` (Add Outside Node, whose key
+  is the current node's inverted) add one, with its label and settings in the same step if
+  given, or removes, resets or extracts a node.
 - `video_grade_copy` copies a grade onto others (with `preserve_nodes`, each keeps its first N
   nodes), appends its nodes to theirs (Append Node Graph), or pastes one node's settings or one
   setting. `keyframes` says where copied keys go: `source_timecode` (the default, the same time
@@ -253,7 +416,9 @@ grade's summary.
 - `video_grade_lut` lists the `.cube` LUTs of the project folder and the LUT library
   (`COLUMBINA_LUTS`, otherwise the `luts` folder in `COLUMBINA_HOME` or in `~/.columbina`) with
   their kind (1D, 3D, shaper and 3D), and sets or clears a corrector's LUT by name; without a
-  node, the LUT goes on a new corrector at the end.
+  node, the LUT goes on a new corrector at the end. `export` is Generate LUT: it writes a grade,
+  or one of its correctors, as a 17, 33 or 65 point `.cube` at `path`, and names the nodes it
+  had to leave out.
 - `video_grade_group` makes a group of clips, adds or removes clips, renames or deletes it,
   copies a grade into its pre-clip or post-clip grade, or collapses its grades into each clip's
   own. A group's grades are edited further with the other tools and `pre_clip`/`post_clip`.
@@ -410,7 +575,9 @@ client has been absent for a while.
 
 ## Not in this version
 
-Keyframes and speed curves, the Color page of the studio (the agent already grades),
+Keyframes and speed curves on the Edit page, the Keyframe Editor of the Color page,
 Fairlight-style mixing (pitch kept at another speed, music
 ducking), markers, Fit to Fill, Close Up, multicam and lining clips up by timecode come in later
 phases. The desktop's export writes with hardware encoders only, with ProRes as the fallback.
+Of the Color page, the stabilizer, versions of grades, the 3D qualifier, Magic Mask, Color Warper,
+Sizing and the other Motion Effects, DCTL, Dolby Vision and HDR10+ are not in this version.

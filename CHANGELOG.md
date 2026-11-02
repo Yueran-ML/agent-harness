@@ -6,6 +6,53 @@ change what was there before.
 
 ## Unreleased
 
+- The editing studio has a Color page (phase 2), on Windows, made after DaVinci Resolve's. Each
+  clip has a tree of nodes (serial, parallel, layer and outside nodes, key mixers), and groups of
+  clips and the timeline have grades of their own; the node editor has Resolve's keys, links
+  dragged between nodes, labels, Lock Node, resets and Original Memory. The palettes are
+  Primaries (Color Wheels, Color Bars, Log Wheels, Auto Color and the black and white point
+  pickers), Curves (custom, the six HSL curves, Soft Clip), Qualifier (HSL, RGB, LUM, Matte
+  Finesse, pickers in the viewer, Highlight), Window, Tracker, Blur (Blur, Sharpen, Mist) and Key.
+  Thumbnails of the clips show their grades; grades are copied, pasted and taken from the clips
+  before. Every change is one step of undo, shared with the agent.
+- Power Windows: Linear, Circular, Polygon, Curve and Gradient, drawn and edited with their
+  controls on the viewer, with zoom and pan of the viewer; a Curve is drawn point by point, and
+  several of its points are moved, scaled, rotated or deleted together. Windows are kept as
+  presets in a library that every project of the user shares. The tracker makes them follow the
+  picture, with a cloud of points or with points placed (Pan, Tilt, Zoom, Rotate, 3D; forward,
+  backward, a frame at a time).
+- LUTs, stills and comparisons: a LUT browser with Favorites, LUTs dropped on nodes, the
+  project's Input, Output and Color Viewer LUTs, and Generate LUT (17, 33 or 65 point cubes) from
+  a clip's thumbnail. The Gallery keeps stills with their grades in the project's albums and in
+  PowerGrade albums shared by every project, applies or appends them, keeps the memories A to H,
+  and brings deleted stills back with Ctrl+Z. The viewer wipes the frame against a still or
+  another clip in eight styles, shows a split screen of up to 16 pictures, Highlight, and Bypass
+  Color, which the Edit and Cut pages have too.
+- Video scopes: waveform, parade, vectorscope, histogram and CIE chromaticity, drawn on the
+  graphics card, docked or floating, one, two, four or nine at a time.
+- Shot Match to This Clip, to another clip or to a still, as Resolve does it: an adjustment at
+  the end of a node that no palette shows, marked on the clip and its node, with Reset Shot Match.
+- Colour management, in Project Settings: DaVinci YRGB by default, as in Resolve, or DaVinci
+  YRGB Color Managed, ACEScct and ACEScc (ACES 1.3 or 2.0), with the transforms of OpenColorIO
+  and its ACES configs, built into the engine. The input colour space of media, Bypass and Data
+  Levels are set in the media pool; phones' HLG and PQ video, Apple Log, DJI D-Log and the log
+  spaces of other cameras are read. The viewers show HDR where Windows has HDR on, and an export
+  to an HDR output space is written in 10 bits with its HDR tags, mastering display, MaxCLL and
+  MaxFALL. A project made before is not managed, and looks and exports as it did.
+- Media: 4:2:2 and 4:4:4 video is decoded at full precision, the alpha of ProRes 4444 is
+  composited, and MXF files and TIFF and EXR pictures are read.
+- The engine's project is schema 3, which adds grades, groups, colour settings and the colour of
+  media; a schema 2 project is upgraded when it is opened. The protocol adds the methods of the
+  Color page: scopes and their figures, the viewer's pointer and samples, Power Window controls,
+  comparisons, Highlight and Bypass Color, the Gallery, the LUT library, Generate LUT and graded
+  thumbnails. `engine/PROTOCOL.md` describes all of it. The engine compiles its shaders with the
+  DirectX Shader Compiler of Microsoft that comes with it, and with FXC where it cannot.
+- The agent grades: `video_grade_info`, `video_grade_set`, `video_grade_node`,
+  `video_grade_copy`, `video_grade_lut` (with Generate LUT), `video_grade_group`,
+  `video_grade_scopes` (figures of a frame drawn off screen, so no desktop is needed),
+  `video_color_settings`, `video_media_color` and `video_shot_match` (with Auto Color), beside
+  the nine editing tools. Values are checked with DaVinci's names, ranges and neutral values
+  before they are sent. See `docs/video.md`.
 - The desktop application has an editing studio (phase 1), on Windows, made after DaVinci
   Resolve. The Media page holds the media pool, with bins inside bins, list and thumbnail views
   and the details of each clip. The Edit page has a source viewer and a timeline viewer, a

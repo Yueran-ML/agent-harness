@@ -1,0 +1,15 @@
+The notice at the head of src/contrib/dragonbox.h of yaml-cpp 0.9.0, which src/fptostring.cpp
+compiles into the library of yaml-cpp, unchanged:
+
+// SPDX-FileCopyrightText: 2020-2024 Junekey Jeon
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+// SPDX-License-Identifier: BSL-1.0
+// SPDX-License-Identifier: MIT
+
+// This file is an adjusted copy of https://github.com/jk-jeon/dragonbox
+// Junekey Jeon agreed to license this file under MIT license explicitly for
+// usage in yaml-cpp.
+//
+// Changes to the original dragonbox library:
+// - Added additional license information and information at top
+// - Wrapped the 'jkj' namespace in an additional 'YAML' namespace

@@ -434,3 +434,122 @@ fn an_open_curve_of_any_number_of_anchors_is_a_draft_that_keys_nothing() {
     assert_eq!(closed[20 * 80 + 40], 0.0);
     assert_eq!(closed[2 * 80 + 2], 1.0);
 }
+
+/// The place in a window's local units (image heights from the centre) of pixel `at` of a
+/// picture of `width` × `height`, with the transform as it is made.
+fn local(at: usize, width: u32, height: u32) -> [f64; 2] {
+    let (x, y) = ((at % width as usize) as f64, (at / width as usize) as f64);
+    let (w, h) = (f64::from(width), f64::from(height));
+    [((x + 0.5) / w - 0.5) * w / h, (y + 0.5) / h - 0.5]
+}
+
+fn smoothstep(low: f64, high: f64, x: f64) -> f64 {
+    let t = ((x - low) / (high - low)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn square(inside: f64, outside: f64) -> WindowShape {
+    WindowShape::Polygon {
+        points: vec![
+            WindowPoint::new(-0.25, -0.25),
+            WindowPoint::new(0.25, -0.25),
+            WindowPoint::new(0.25, 0.25),
+            WindowPoint::new(-0.25, 0.25),
+        ],
+        inside: inside.into(),
+        outside: outside.into(),
+    }
+}
+
+#[test]
+fn polygon_feathers_fall_off_by_the_distance_to_the_nearest_edge_each_side() {
+    // Inside and outside of 100 span 0.5 each; 0 is a hard edge on that side.
+    for (inside, outside) in [(50.0, 50.0), (100.0, 0.0), (0.0, 100.0), (30.0, 70.0)] {
+        let g = grade(square(inside, outside));
+        let (i, o) = (inside / 200.0, outside / 200.0);
+        for (at, got) in matte(&g, 100, 100).iter().enumerate() {
+            let [x, y] = local(at, 100, 100);
+            let (ax, ay) = (x.abs() - 0.25, y.abs() - 0.25);
+            let d = if ax < 0.0 && ay < 0.0 {
+                -ax.max(ay)
+            } else {
+                -ax.max(0.0).hypot(ay.max(0.0))
+            };
+            let want = if d >= 0.0 && i == 0.0 {
+                1.0
+            } else if d < 0.0 && o == 0.0 {
+                0.0
+            } else {
+                smoothstep(-o, i, d)
+            };
+            assert!(
+                (f64::from(*got) - want).abs() < 2e-4,
+                "{inside} {outside} at {x}, {y}: {got} not {want}"
+            );
+        }
+    }
+}
+
+#[test]
+fn circular_softness_100_spans_a_quarter_each_side_of_its_edge() {
+    let g = grade(WindowShape::Circular {
+        softness: 100.0.into(),
+    });
+    for (at, got) in matte(&g, 100, 100).iter().enumerate() {
+        let [x, y] = local(at, 100, 100);
+        let want = smoothstep(-0.25, 0.25, 0.25 - x.hypot(y));
+        assert!(
+            (f64::from(*got) - want).abs() < 2e-4,
+            "{x}, {y}: {got} not {want}"
+        );
+    }
+    // Inverted: none in the middle, all far out.
+    let mut inverted = g;
+    corrector(&mut inverted).windows[0].invert = true;
+    let out = matte(&inverted, 100, 100);
+    assert!(out[50 * 100 + 50] < 1e-3, "{}", out[50 * 100 + 50]);
+    assert_eq!(out[0], 1.0);
+}
+
+#[test]
+fn a_turned_polygon_is_the_polygon_of_its_points_turned() {
+    let points = [[0.1, -0.2], [0.3, 0.1], [-0.2, 0.15]];
+    let shape = |points: &[[f64; 2]]| WindowShape::Polygon {
+        points: points
+            .iter()
+            .map(|p| WindowPoint::new(p[0], p[1]))
+            .collect(),
+        inside: 20.0.into(),
+        outside: 20.0.into(),
+    };
+    let mut turned = grade(shape(&points));
+    corrector(&mut turned).windows[0].transform.rotate = 90.0.into();
+    // Clockwise a quarter: (x, y) to (-y, x), y down.
+    let moved: Vec<[f64; 2]> = points.iter().map(|p| [-p[1], p[0]]).collect();
+    let at_once = grade(shape(&moved));
+    for (a, b) in matte(&turned, 100, 60).iter().zip(matte(&at_once, 100, 60)) {
+        assert!((a - b).abs() < 1e-4, "{a} {b}");
+    }
+}
+
+#[test]
+fn the_window_of_a_node_before_another_is_its_own() {
+    let alone = grade(square(30.0, 30.0));
+    let mut before = alone.clone();
+    before.nodes.push(Node::corrector("x"));
+    before.links.retain(|l| l.to != OUTPUT);
+    before.links.push(Link {
+        from: "w".into(),
+        to: "x".into(),
+        kind: Port::Rgb,
+        input: 0,
+    });
+    before.links.push(Link {
+        from: "x".into(),
+        to: OUTPUT.into(),
+        kind: Port::Rgb,
+        input: 0,
+    });
+    before.sort_links();
+    assert_eq!(matte(&before, 80, 60), matte(&alone, 80, 60));
+}

@@ -465,22 +465,22 @@ fn square(inside: f64, outside: f64) -> WindowShape {
 fn polygon_feathers_fall_off_by_the_distance_to_the_nearest_edge_each_side() {
     // Inside and outside of 100 span 0.5 each; 0 is a hard edge on that side.
     for (inside, outside) in [(50.0, 50.0), (100.0, 0.0), (0.0, 100.0), (30.0, 70.0)] {
-        let g = grade(square(inside, outside));
-        let (i, o) = (inside / 200.0, outside / 200.0);
-        for (at, got) in matte(&g, 100, 100).iter().enumerate() {
+        let polygon = grade(square(inside, outside));
+        let (inner, outer) = (inside / 200.0, outside / 200.0);
+        for (at, got) in matte(&polygon, 100, 100).iter().enumerate() {
             let [x, y] = local(at, 100, 100);
-            let (ax, ay) = (x.abs() - 0.25, y.abs() - 0.25);
-            let d = if ax < 0.0 && ay < 0.0 {
-                -ax.max(ay)
+            let (across, down) = (x.abs() - 0.25, y.abs() - 0.25);
+            let signed = if across < 0.0 && down < 0.0 {
+                -across.max(down)
             } else {
-                -ax.max(0.0).hypot(ay.max(0.0))
+                -across.max(0.0).hypot(down.max(0.0))
             };
-            let want = if d >= 0.0 && i == 0.0 {
+            let want = if signed >= 0.0 && inner == 0.0 {
                 1.0
-            } else if d < 0.0 && o == 0.0 {
+            } else if signed < 0.0 && outer == 0.0 {
                 0.0
             } else {
-                smoothstep(-o, i, d)
+                smoothstep(-outer, inner, signed)
             };
             assert!(
                 (f64::from(*got) - want).abs() < 2e-4,

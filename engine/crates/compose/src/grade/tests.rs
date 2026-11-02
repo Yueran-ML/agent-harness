@@ -379,7 +379,7 @@ fn shadows_and_highlights_reach_a_quarter_at_black_and_white() {
 fn the_curves_of_a_node_after_another_are_its_own() {
     let curved = |id: &str| {
         corrector(id, |c| {
-            c.curves.y.points = vec![[0.0, 0.0], [0.5, 0.8], [1.0, 1.0]]
+            c.curves.y.points = vec![[0.0, 0.0], [0.5, 0.8], [1.0, 1.0]];
         })
     };
     let alone = serial(vec![curved("b")]);
@@ -476,7 +476,7 @@ fn unganged_curves_at_lum_mix_100_keep_the_luma_of_their_channels_mixed() {
 #[test]
 fn the_log_wheels_meet_half_way_at_their_ranges() {
     // Each wheel of 0.4 moves red by 0.1 where its zone is whole.
-    let wheel = |set: fn(&mut Corrector)| one(move |c| set(c));
+    let wheel = |set: fn(&mut Corrector)| one(set);
     let shadow = wheel(|c| c.log.shadow.r = fixed(0.4));
     let midtone = wheel(|c| c.log.midtone.r = fixed(0.4));
     let highlight = wheel(|c| c.log.highlight.r = fixed(0.4));
@@ -1603,11 +1603,14 @@ struct ParamLuts;
 
 impl Luts for ParamLuts {
     fn lut(&self, name: &str) -> Option<ColorOp> {
-        name.ends_with(".cube").then(|| ColorOp {
-            body: "rgb = rgb * param($P).x;".into(),
-            params: vec![[if name == "a.cube" { 2.0 } else { 3.0 }, 0.0, 0.0, 0.0]],
-            ..ColorOp::default()
-        })
+        std::path::Path::new(name)
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("cube"))
+            .then(|| ColorOp {
+                body: "rgb = rgb * param($P).x;".into(),
+                params: vec![[if name == "a.cube" { 2.0 } else { 3.0 }, 0.0, 0.0, 0.0]],
+                ..ColorOp::default()
+            })
     }
 }
 
@@ -1622,12 +1625,12 @@ fn the_parameters_of_the_luts_of_a_grade_each_have_their_own_place() {
     let grade = serial(vec![node("a", "a.cube"), node("b", "b.cube")]);
     let half = |_: &str, x: [f32; 3]| x.map(|v| v * 0.5);
     let x = [0.2, 0.4, 0.6];
-    let none = serial(vec![
+    let plain = serial(vec![
         corrector("a", |c| c.primaries.saturation = fixed(60.0)),
         corrector("b", |c| c.primaries.saturation = fixed(60.0)),
     ]);
     let made = evaluate_with(&grade, 0.0, &options(), &ParamLuts, &half, x);
-    let without = evaluate(&none, 0.0, &options(), x);
+    let without = evaluate(&plain, 0.0, &options(), x);
     // Saturation is linear: the two halvings come out as a quarter.
     near(made, without.map(|v| v * 0.25), 1e-6);
     let ops = grade_ops(&grade, 0.0, &options(), &ParamLuts);

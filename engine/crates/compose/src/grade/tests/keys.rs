@@ -385,9 +385,10 @@ fn the_key_of_matte_finesse_alone_is_that_of_a_node_that_also_changes_the_colour
         |q| q.finesse.blur_radius = fixed(30.0),
         |q| q.finesse.morph_radius = fixed(3.0),
     ] {
-        let mut q = Qualifier::default();
-        q.mode = QualifierMode::Lum;
-        q.lum.low = fixed(50.0);
+        let mut q = qualifier(|q| {
+            q.mode = QualifierMode::Lum;
+            q.lum.low = fixed(50.0);
+        });
         set(&mut q);
         let bare = serial(vec![corrector("n1", |c| c.qualifier = Some(q.clone()))]);
         let changing = serial(vec![keyed("n1", q.clone())]);
@@ -878,10 +879,10 @@ fn matte_finesse_keyframed_from_nothing_changes_nothing_where_it_is_nothing() {
             &(|q: &mut Qualifier| q.finesse.pre_filter = rising()) as &dyn Fn(&mut Qualifier),
         ),
         ("blur radius", &|q: &mut Qualifier| {
-            q.finesse.blur_radius = rising()
+            q.finesse.blur_radius = rising();
         }),
         ("morph radius", &|q: &mut Qualifier| {
-            q.finesse.morph_radius = rising()
+            q.finesse.morph_radius = rising();
         }),
     ] {
         assert_eq!(key_picture(&soft(set), &pixels), plain, "{what}");

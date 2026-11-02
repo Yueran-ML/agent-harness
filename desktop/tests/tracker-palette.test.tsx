@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TrackerPalette } from '../src/studio/color/TrackerPalette';
-import { graph, selected, trackerKey, tracked, withCrosshair, withoutCrosshair } from '../src/studio/color/tracker';
+import { GRAPH_COLUMNS, graph, selected, trackedRange, trackerKey, tracked, withCrosshair, withoutCrosshair } from '../src/studio/color/tracker';
 import { fullCorrector } from '../src/studio/color/corrector';
 import type { EditedNode } from '../src/studio/color/useNodeEdit';
 import type { EngineEvent, PowerWindow, TrackData } from '../src/studio/engine';
@@ -77,6 +77,28 @@ describe('the Tracker palette\'s model (pp. 3231–3238)', () => {
     const lines = graph(data(), 12).lines;
     expect(selected(lines, { from: 10.6, to: 12.4, top: -1.1, bottom: -0.4 })).toEqual({ from: 11, to: 12, components: ['pan', 'rotate'] });
     expect(selected(lines, { from: 11.2, to: 11.8, top: -2, bottom: 2 })).toBeNull();
+  });
+
+  it('measures and draws a track of 200 000 frames without spreading them into a call', () => {
+    const pan: Record<string, number> = {};
+    const tilt: Record<string, number> = {};
+    for (let f = 0; f < 200_000; f++) { pan[f] = Math.sin(f / 500) * 40; tilt[f] = f % 7; }
+    const long: TrackData = { ...data(), curves: { pan, tilt }, confidence: {} };
+    expect(trackedRange(long)).toEqual([0, 199_999]);
+    const drawn = graph(long, 5);
+    expect([drawn.from, drawn.to]).toEqual([0, 199_999]);
+    expect(drawn.lines.map(line => line.component)).toEqual(['pan', 'tilt']);
+    // Drawn by its least and most in each column of the graph: what a line of pixels shows.
+    for (const line of drawn.lines) expect(line.points.length).toBeLessThanOrEqual(4 * GRAPH_COLUMNS + 2);
+    const ys = drawn.lines[0].points.map(([, y]) => y);
+    expect(Math.min(...ys)).toBeCloseTo(-1, 3);
+    expect(Math.max(...ys)).toBeCloseTo(1, 3);
+    expect(drawn.lines[0].points[0][0]).toBe(0);
+    expect(drawn.lines[0].points.at(-1)![0]).toBe(199_999);
+  });
+
+  it('keeps every sample of a short track', () => {
+    expect(graph(data(), 12).lines[0].points).toEqual([[10, -0], [11, -0.5], [12, -1]]);
   });
 
   it('adds a crosshair at the centre of the frame and deletes the selected one', () => {

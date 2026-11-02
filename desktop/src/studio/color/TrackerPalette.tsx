@@ -5,12 +5,12 @@ import type { EngineBridge } from '../../bridge';
 import { callEngine, EngineError, type PowerWindow, type TrackComponents, type TrackDirection, type TrackEdit, type TrackEnded,
   type TrackProgress } from '../engine';
 import { editingAllowed, inStudio } from '../keys';
-import { DEFAULT_COMPONENTS, GRAPH_CURVES, graph, keyAt, selected as selectedCurves, trackerKey, withCrosshair, withoutCrosshair,
+import { DEFAULT_COMPONENTS, GRAPH_COLUMNS, GRAPH_CURVES, graph, keyAt, selected as selectedCurves, trackerKey, withCrosshair, withoutCrosshair,
   type Selection } from './tracker';
 import type { EditedNode } from './useNodeEdit';
 import './tracker.css';
 
-const VIEW = { width: 400, height: 120 };
+const VIEW = { width: GRAPH_COLUMNS, height: 120 };
 const BUTTONS: readonly { direction: TrackDirection | 'stop'; glyph: string; word: 'trackOneReverse' | 'trackReverse' | 'stop' | 'trackForward' | 'trackForwardBack' | 'trackOneForward' }[] = [
   { direction: 'one_reverse', glyph: '◀|', word: 'trackOneReverse' },
   { direction: 'reverse', glyph: '◀', word: 'trackReverse' },

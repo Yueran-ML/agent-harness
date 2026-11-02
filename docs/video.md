@@ -221,13 +221,13 @@ Bézier handles dragged out of its points and closed by a click on its first poi
 drag around the points of a Curve chooses several, to move, scale, rotate or delete together. A
 drag on a playing timeline pauses it. Windows are saved as presets (Save as New Preset, Update
 Preset, Delete Preset) in a library that every project of the user shares; a preset recalled on
-a node replaces its windows, as Resolve's does, and is kept in the project in full.
-
-**Tracker.** The Tracker palette makes the windows of a node follow the picture: the cloud
-tracker follows the whole of what the window covers, and the point tracker the points that are
-placed. It tracks Pan, Tilt, Zoom, Rotate and 3D, forward, backward or a frame at a time, in
-Clip or Frame mode; a track is cleared, interpolated, copied and pasted. The stabilizer comes in
-a later phase.
+a node replaces its windows, as Resolve's does, and is kept in the project in full. Each row of
+the window list has two switches (p. 3189): Invert turns the window inside out, and Mask, on at
+first, adds the window to the others, or takes it away from them when it is off; each click is
+one step of undo. Alt+C, Alt+Q, Alt+G and Alt+B, or *Add Serial Node + CPW*, *LPW*, *PPW* and
+*PCW* in a node's Add Node menu, add a serial node with a circular, linear, polygon or Curve
+window, in one step of undo, and open the Window palette on it; a Curve starts empty, to be
+drawn on the viewer (p. 3187).
 
 **Blur.** The Blur palette has Resolve's three modes: Blur, Sharpen and Mist. Radius, H/V Ratio
 and Scaling are set for red, green and blue, ganged at first; Sharpen adds Coring Softness and
@@ -235,13 +235,18 @@ Level, and Mist its Mix. Over Radius, a notch of the wheel changes it by 0.01. B
 the node's key, so it blurs or sharpens what a qualifier or a window keys.
 
 **LUTs.** The LUT browser lists the `.cube` files of the project's folder and of the LUT library
-(each marked 1D or 3D), with Favorites. A LUT is dragged onto a node, or applied from its
-right-click menu or from a node's LUT submenu. A LUT that a node names and that cannot be found
-is said over the viewer, at its lower right. Project Settings set an Input, an Output and a
-Color Viewer LUT for the whole project. *Generate LUT* in the right-click menu of a thumbnail
-writes the grade of that clip as a 17, 33 or 65 point cube; a node with a qualifier, a window,
-Midtone Detail or a blur that changes the picture cannot be baked and is left out, and the page
-says how many were.
+(each marked 1D or 3D), with Favorites; each thumbnail shows its LUT on a test image. The
+browser's options menu (…) turns on Live Preview: while the pointer is over a LUT, the viewer
+shows it on the current node and its thumbnail shows it on the current clip, and nothing is
+changed until it is applied. Hover Scrub Preview, set to Thumbnail and Viewer or Thumbnail Only,
+then shows the frame of the clip under the pointer as it moves across the thumbnail (pp. 3259,
+3410–3411). A LUT is dragged onto a node, or applied from its right-click menu or from a node's
+LUT submenu. A LUT that a node names and that cannot be found is said over the viewer, at its
+lower right. Project Settings set an Input, an Output and a Color Viewer LUT for the whole
+project; the Color Viewer LUT is shown on the Color page alone (p. 672). *Generate LUT* in the
+right-click menu of a thumbnail writes the grade of that clip as a 17, 33 or 65 point cube; a
+node with a qualifier, a window, Midtone Detail or a blur that changes the picture cannot be
+baked and is left out, and the page says how many were.
 
 **The Gallery and comparisons.** Ctrl+Alt+G grabs a still of the frame shown, with its grade,
 into the current album. The project's albums are its own; the PowerGrade albums are shared by
@@ -256,9 +261,11 @@ clips, the selected stills, the clips about the current one or the current group
 pictures. Comparisons are of the viewer only; an export never shows them.
 
 **Video scopes.** Waveform, Parade, Vectorscope, Histogram and CIE Chromaticity, docked at the
-right of the palettes or in a floating panel (Ctrl+Shift+W), one, two, four or nine at a time,
-each with its own settings (scale in 10-bit, percent or nits, channels, brightness, reference
-levels). They measure the frame as the timeline viewer shows it, before the Color Viewer LUT.
+right of the palettes or floating (Ctrl+Shift+W), in the desktop application in a window of
+their own that may be moved to another screen and that closes as the Color page is left; one,
+two, four or nine at a time, each with its own settings (scale in 10-bit, percent or nits,
+channels, brightness, reference levels). They measure the frame as the timeline viewer shows it,
+before the Color Viewer LUT.
 
 **The viewer.** Alt+F enlarges the viewer, Shift+F shows it full screen and P as cinema (Esc
 leaves it). Ctrl+= and Ctrl+- zoom, Shift+Z fits and Alt+Shift+Z shows it at 100%; the wheel and
@@ -287,9 +294,15 @@ Every space may be chosen wherever a space is: Rec.709, Rec.2020, P3 and the oth
 spaces with each gamma, Rec.2100 HLG and ST2084 (PQ), and the spaces of cameras and of grading,
 such as Apple Log, DJI D-Log, Sony S-Log3, ARRI LogC, Canon Log, Panasonic V-Log, Blackmagic
 Film Gen 5 and DaVinci Intermediate. The right-click menu of media in the media pool sets their
-Input Color Space, Bypass and Data Levels; a phone's HLG or PQ video is known by what its file
-says. The 3D LUTs of the project are read between their points by Trilinear interpolation
-(Resolve's default) or Tetrahedral.
+Input Color Space, Bypass and Data Levels, and, there or on a thumbnail of the Color page, the
+1D LUT and 3D LUT of the source clip, applied after its input transform and before its grade,
+and in DaVinci YRGB Color Managed its own Inverse DRT for SDR to HDR Conversion (pp. 233,
+3409–3410). A phone's HLG or PQ video is known by what its file says. The 3D LUTs of the project
+are read between their points by Trilinear interpolation (Resolve's default) or Tetrahedral.
+While the transforms of new settings are being made, a line below the timeline viewer says so;
+where they cannot be made, it says why, and the viewer keeps the colour of before. *Use color
+space aware grading tools*, *Apply resize transformations in* and *Process Node LUTs in* are
+kept with the project but greyed: they do not change the picture in this version.
 
 **HDR.** Where the output colour space is HDR, the viewers show HDR on a display for which
 Windows has HDR on; *Display HDR On Viewers If Available*, in the viewer's options, turns that
@@ -308,6 +321,7 @@ These are the Color page's own keys; playback, In and Out and undo are those of 
 | Alt+S / Shift+S | Adds a serial node after or before the current one | 3318 |
 | Alt+P / Alt+L / Alt+K | Adds a parallel node, a layer node, a node at the end (Append) | 3318 |
 | Alt+O | Adds an Outside node of the current one (its key inverted) | 3318, 3341 |
+| Alt+C / Alt+Q / Alt+G / Alt+B | Adds a serial node with a circular, linear, polygon or Curve window | 3187 |
 | Ctrl+D / Alt+D | Turns the nodes chosen, or all nodes, off or on | 3315 |
 | E, Delete | Extracts the node chosen; deletes the nodes chosen | 3318–3319 |
 | Shift+Home / Ctrl+Shift+Home / Ctrl+Home | Resets the current node, every node, the whole grade | 3316 |
@@ -405,8 +419,7 @@ grade's summary.
   from 0) whose picture is shown, so keys stay on their pictures through trims, slips and speed
   changes; for a title, a colour or a still, the clip's frame from its first; for the timeline's
   grade, the timeline's frame. The settings are those of the Primaries, Curves, Qualifier, Blur
-  and Key palettes, Soft Clip and a node's LUT; Power Windows and their tracking are drawn on
-  the Color page.
+  and Key palettes, Soft Clip and a node's LUT; Power Windows are drawn on the Color page.
 - `video_grade_node` adds a corrector as `append` (Append Node), `add_serial`,
   `add_serial_before`, `add_parallel`, `add_layer` or `add_outside` (Add Outside Node, whose key
   is the current node's inverted) add one, with its label and settings in the same step if
@@ -581,5 +594,6 @@ Keyframes and speed curves on the Edit page, the Keyframe Editor of the Color pa
 Fairlight-style mixing (pitch kept at another speed, music
 ducking), markers, Fit to Fill, Close Up, multicam and lining clips up by timecode come in later
 phases. The desktop's export writes with hardware encoders only, with ProRes as the fallback.
-Of the Color page, the stabilizer, versions of grades, the 3D qualifier, Magic Mask, Color Warper,
-Sizing and the other Motion Effects, DCTL, Dolby Vision and HDR10+ are not in this version.
+Of the Color page, the tracker, the stabilizer, versions of grades, the 3D qualifier, Magic Mask,
+Color Warper, Sizing and the other Motion Effects, DCTL, Dolby Vision and HDR10+ are not in this
+version.

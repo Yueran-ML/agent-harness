@@ -231,7 +231,7 @@ export function QualifierPalette({ edit }: { edit: NodeEdit }) {
   const hueRow = () => {
     const hue = shown.hue;
     const bar = (change: BarChange, end: boolean) => set({ ...committed, hue: { ...committed.hue, ...change } }, end);
-    return <div className="color-qualifier-row" data-component="hue">
+    return <div key="hue" className="color-qualifier-row" data-component="hue">
       {toggle('hue.on', hue.on, labels.components.hue)}
       <span className="color-qualifier-name">{labels.components.hue}</span>
       <RangeBar kind="hue" name={labels.components.hue} disabled={disabled || !hue.on}

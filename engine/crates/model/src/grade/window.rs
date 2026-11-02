@@ -72,7 +72,8 @@ pub struct Window {
     /// The shape and its editable geometry, including an unfinished Curve draft.
     pub shape: WindowShape,
     /// Its tracking (T24), apart from this manual shape and its keys; left out when there is
-    /// none. A window preset never stores it.
+    /// none. A window preset never stores it: a window built field by field for one (T23's
+    /// `Window::frozen_at`) writes `tracking: None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tracking: Option<WindowTracking>,
 }

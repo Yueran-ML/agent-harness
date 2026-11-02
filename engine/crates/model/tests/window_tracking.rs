@@ -105,6 +105,35 @@ fn an_untracked_window_is_written_without_tracking_and_a_tracked_one_reads_back_
     assert_eq!(read[0].tracking, window.tracking);
 }
 
+/// A window preset never keeps a track (its data is in pixels of one clip's frames; a preset is
+/// recalled on any node of any project). For the merge with T23's window presets: their
+/// `Window::frozen_at` builds a window field by field and must write `tracking: None`, with a
+/// test that a frozen tracked window has none and writes no `tracking` key. What it relies on:
+/// a tracked window without its tracking is written, and placed, as it was before it was
+/// tracked, whatever it was tracked with.
+#[test]
+fn a_tracked_window_without_its_tracking_is_the_window_it_was_before() {
+    let mut plain = Window::new("w1", WindowShape::polygon());
+    plain.transform.pan = 30.0.into();
+    let mut window = plain.clone();
+    window.tracking = Some(tracked());
+    assert!(window
+        .tracking
+        .as_ref()
+        .unwrap()
+        .picture_matrix(15.0)
+        .is_some());
+    window.tracking = None;
+    assert_eq!(
+        serde_json::to_value(&window).unwrap(),
+        serde_json::to_value(&plain).unwrap()
+    );
+    assert!(serde_json::to_value(&window)
+        .unwrap()
+        .get("tracking")
+        .is_none());
+}
+
 #[test]
 fn tracking_that_is_not_finite_or_out_of_range_is_refused_atomically() {
     let base = project();

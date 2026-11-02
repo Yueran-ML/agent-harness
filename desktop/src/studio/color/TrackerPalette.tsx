@@ -1,13 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
-import { keyOf } from '../../app/keys';
+import { useCallback, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { useWords } from '../../app/locale';
-import type { EngineBridge } from '../../bridge';
-import { callEngine, EngineError, type PowerWindow, type TrackComponents, type TrackDirection, type TrackEdit, type TrackEnded,
-  type TrackProgress } from '../engine';
-import { editingAllowed, inStudio } from '../keys';
-import { DEFAULT_COMPONENTS, GRAPH_COLUMNS, GRAPH_CURVES, graph, keyAt, selected as selectedCurves, trackerKey, withCrosshair, withoutCrosshair,
-  type Selection } from './tracker';
+import { callEngine, type PowerWindow, type TrackComponents, type TrackDirection, type TrackEdit } from '../engine';
+import { GRAPH_COLUMNS, GRAPH_CURVES, graph, keyAt, selected as selectedCurves, withCrosshair, withoutCrosshair, type Selection } from './tracker';
 import type { EditedNode } from './useNodeEdit';
+import type { Tracking } from './useTracking';
 import './tracker.css';
 
 const VIEW = { width: GRAPH_COLUMNS, height: 120 };
@@ -29,8 +25,9 @@ let copied: { target: string; node: string; window: string } | null = null;
  * "Window tracking"), for the window selected in the Window palette:
  *
  * - The analyze buttons, in the manual's order (p. 3236): Track One Frame Reverse, Track Reverse,
- *   Stop, Track Forward, Track Forward and Back, Track One Frame Forward; and the keys of the
- *   Color › Tracker menu while the palette is open (p. 3231): Ctrl+T, Alt+T, Ctrl+Alt+T, Alt+→, Alt+←.
+ *   Stop, Track Forward, Track Forward and Back, Track One Frame Forward. The keys of the
+ *   Color › Tracker menu (p. 3231) and the track going on are the page's ({@link Tracking}): Stop works after another
+ *   palette was opened, and the palette shows the track again when it is opened.
  *   The engine tracks off the page and writes the window as it goes: the viewer is taken to each
  *   frame it reaches, so the window is seen following, and the whole track is one step to undo.
  * - The five boxes of the transforms to track, set before the track (p. 3235).
@@ -42,13 +39,12 @@ let copied: { target: string; node: string; window: string } | null = null;
  * - The Options menu (p. 3238): Reset Track Data on Active Window, Clear Selected Track Data, Add and
  *   Delete Keyframe (Frame mode), Copy and Paste Track Data.
  */
-export function TrackerPalette({ edited, bridge, window: id, onSeek }: {
+export function TrackerPalette({ edited, window: id, run }: {
   edited: EditedNode | null;
-  bridge: Pick<EngineBridge, 'call' | 'onEvent'>;
   /** The window selected in the Window palette. */
   window: string | null;
-  /** Take the viewer to a frame of the timeline, as the track reaches it. */
-  onSeek?: (frame: number) => void;
+  /** The page's tracking: the track going on, the boxes, the kind of tracker and the keys of the Tracker menu. */
+  run: Tracking;
 }) {
   const words = useWords();
   const said = words.label.studio.colorPage.trackerPalette;
@@ -56,10 +52,7 @@ export function TrackerPalette({ edited, bridge, window: id, onSeek }: {
   const node = edited?.node.kind === 'corrector' ? edited.node : null;
   const window: PowerWindow | null = node?.params.windows?.find(each => each.id === id) ?? null;
   const tracking = window?.tracking;
-  const [components, setComponents] = useState<TrackComponents>(DEFAULT_COMPONENTS);
-  const [tracker, setTracker] = useState<'cloud' | 'point'>('cloud');
-  const [running, setRunning] = useState<{ job: string; session?: number } | null>(null);
-  const [status, setStatus] = useState<string | null>(null);
+  const { components, setComponents, tracker, setTracker, running, status, setStatus, start, stop, refused } = run;
   const [scale, setScale] = useState(1);
   const [box, setBox] = useState<Selection | null>(null);
   const [crosshair, setCrosshair] = useState(0);
@@ -68,34 +61,8 @@ export function TrackerPalette({ edited, bridge, window: id, onSeek }: {
   // The crosshair chosen, while the one just added is not in the project yet: the last there is.
   const pick = Math.max(0, Math.min(crosshair, crosshairs.length - 1));
 
-  const now = useRef({ edited, window, components, tracker, running, onSeek, hints });
-  now.current = { edited, window, components, tracker, running, onSeek, hints };
-
-  const refused = useCallback((failure: unknown) => {
-    const failed = now.current.hints.failed;
-    if (failure instanceof EngineError) {
-      const reason = (failure.data as { reason?: string } | undefined)?.reason;
-      setStatus(reason !== undefined && reason in failed ? failed[reason as keyof typeof failed] : failure.message);
-    } else now.current.edited?.onFailure(failure);
-  }, []);
-
-  const start = useCallback((direction: TrackDirection) => {
-    const { edited: context, window: chosen, components: boxes, tracker: kind, running: going } = now.current;
-    if (context === null || chosen === null || going !== null || context.node.kind !== 'corrector') return;
-    setStatus(null);
-    void callEngine(context.bridge, 'track.start', {
-      grade: context.target, node: context.node.id, window: chosen.id, revision: context.revision, frame: context.frame,
-      direction, tracker: kind, components: boxes,
-    }, context.session === undefined ? undefined : { expectedSession: context.session })
-      .then(started => setRunning({ job: started.job, session: context.session }))
-      .catch(refused);
-  }, [refused]);
-
-  const stop = useCallback(() => {
-    const { edited: context, running: going } = now.current;
-    if (context === null || going === null) return;
-    void callEngine(context.bridge, 'track.stop', { job: going.job }).catch(() => {});
-  }, []);
+  const now = useRef({ edited, window });
+  now.current = { edited, window };
 
   const edit = useCallback((change: TrackEdit, target: PowerWindow | null = now.current.window) => {
     const context = now.current.edited;
@@ -103,42 +70,6 @@ export function TrackerPalette({ edited, bridge, window: id, onSeek }: {
     void callEngine(context.bridge, 'track.edit', { grade: context.target, node: context.node.id, window: target.id, revision: context.revision, edit: change },
       context.session === undefined ? undefined : { expectedSession: context.session }).catch(refused);
   }, [refused]);
-
-  // What the engine tells of the track: the frame reached, shown in the viewer, and how it ended.
-  useEffect(() => bridge.onEvent(event => {
-    if (event.kind !== 'notification') return;
-    const going = now.current.running;
-    if (going === null || (going.session !== undefined && event.session !== going.session)) return;
-    if (event.method === 'track.progress') {
-      const told = event.params as TrackProgress;
-      if (told?.job !== going.job) return;
-      setStatus(now.current.hints.tracking(told.frame, told.done, told.total));
-      if (told.timeline_frame !== null && told.timeline_frame !== undefined) now.current.onSeek?.(told.timeline_frame);
-    } else if (event.method === 'track.state') {
-      const told = event.params as TrackEnded;
-      if (told?.job !== going.job) return;
-      setRunning(null);
-      const said = now.current.hints;
-      if (told.phase === 'done') setStatus(said.done(told.frames));
-      else if (told.phase === 'stopped') setStatus(told.reason === 'stop' ? said.stopped : said.changed);
-      else setStatus(said.failed[(told.reason ?? 'other') as keyof typeof said.failed] ?? said.failed.other);
-    }
-  }), [bridge]);
-
-  // The keys of the Color › Tracker menu (p. 3231), while the palette is open.
-  useEffect(() => {
-    const down = (event: globalThis.KeyboardEvent) => {
-      if (event.defaultPrevented || !inStudio(event.target)) return;
-      const key = keyOf(event);
-      if (!editingAllowed(event.target, key)) return;
-      const asked = trackerKey(key);
-      if (asked === null) return;
-      event.preventDefault();
-      if (asked === 'stop') stop(); else start(asked);
-    };
-    globalThis.addEventListener('keydown', down);
-    return () => globalThis.removeEventListener('keydown', down);
-  }, [start, stop]);
 
   // A box drawn over the graph, in frames and its own y.
   const svg = useRef<SVGSVGElement>(null);

@@ -7,6 +7,7 @@ import { fullCorrector } from '../src/studio/color/corrector';
 import type { EditedNode } from '../src/studio/color/useNodeEdit';
 import type { EngineEvent, PowerWindow, TrackData } from '../src/studio/engine';
 import { en } from '../src/messages/en';
+import { useTracking } from '../src/studio/color/useTracking';
 import { likeABrowser } from './mounted';
 
 beforeEach(() => { likeABrowser(); vi.stubGlobal('PointerEvent', MouseEvent); });
@@ -30,6 +31,12 @@ function windowOf(id: string, tracking?: PowerWindow['tracking']): PowerWindow {
     transform: { size: 50, aspect: 50, pan: 50, tilt: 50, rotate: 0 }, shape: { kind: 'circular', softness: 1 }, ...(tracking ? { tracking } : {}) };
 }
 
+/** The page's tracking with the palette in it, which `open(false)` closes as opening another palette does. */
+function Host({ edited, bridge, chosen, onSeek, shown }: { edited: EditedNode; bridge: never; chosen: string | null; onSeek: (frame: number) => void; shown: boolean }) {
+  const run = useTracking({ edited, bridge, window: chosen, onSeek });
+  return shown ? <TrackerPalette edited={edited} window={chosen} run={run} /> : <p data-test="other-palette" />;
+}
+
 function mount(windows: PowerWindow[], chosen: string | null = 'w1') {
   const listeners: ((event: EngineEvent) => void)[] = [];
   const call = vi.fn(async (method: string, _params?: Record<string, unknown>) => {
@@ -37,15 +44,16 @@ function mount(windows: PowerWindow[], chosen: string | null = 'w1') {
     if (method === 'track.edit') return { ok: true, result: { revision: 11 } };
     return { ok: true, result: {} };
   });
-  const bridge = { call, onEvent: (listener: (event: EngineEvent) => void) => { listeners.push(listener); return () => {}; } };
+  const bridge = { call, onEvent: (listener: (event: EngineEvent) => void) => { listeners.push(listener); return () => { listeners.splice(listeners.indexOf(listener), 1); }; } };
   const onSeek = vi.fn();
   const edited: EditedNode = { bridge: { call } as never, session: 1, revision: 10, target: { level: 'clip', timeline: 't1', clip: 'c1' },
     clip: 'c1', clock: 'source', timelineFrame: 40, playing: false,
     node: { id: 'n1', kind: 'corrector', label: '', enabled: true, params: fullCorrector({ windows }) }, frame: 11, onFailure: vi.fn() };
-  render(<TrackerPalette edited={edited} bridge={bridge as never} window={chosen} onSeek={onSeek} />);
-  const tell = (method: string, params: unknown) => act(() => { for (const each of listeners) each({ kind: 'notification', session: 1, method, params }); });
+  const view = render(<Host edited={edited} bridge={bridge as never} chosen={chosen} onSeek={onSeek} shown />);
+  const open = (shown: boolean) => view.rerender(<Host edited={edited} bridge={bridge as never} chosen={chosen} onSeek={onSeek} shown={shown} />);
+  const tell = (method: string, params: unknown, session = 1) => act(() => { for (const each of [...listeners]) each({ kind: 'notification', session, method, params }); });
   const sent = (method: string) => call.mock.calls.filter(([m]) => m === method).map(([, p]) => p as Record<string, any>);
-  return { call, onSeek, tell, sent };
+  return { call, onSeek, tell, sent, open };
 }
 
 describe('the Tracker palette\'s model (pp. 3231–3238)', () => {
@@ -143,7 +151,7 @@ describe('the Tracker palette', () => {
     expect((byTest('tracker-forward') as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it('takes the keys of the Color › Tracker menu while it is open', async () => {
+  it('takes the keys of the Color › Tracker menu', async () => {
     const { sent, tell } = mount([windowOf('w1')]);
     fireEvent.keyDown(document.body, { key: 't', code: 'KeyT', altKey: true });
     await settle();
@@ -201,6 +209,61 @@ describe('the Tracker palette', () => {
       { kind: 'crosshairs', points: [[0.3, 0.25]] },
       { kind: 'crosshairs', points: [] },
     ]);
+  });
+
+  it('keeps the track and its keys while another palette is open, and shows how it ended when opened again', async () => {
+    const { sent, tell, open, onSeek } = mount([windowOf('w1')]);
+    fireEvent.click(byTest('tracker-forward')!);
+    await settle();
+    open(false);
+    expect(byTest('tracker-palette')).toBeNull();
+    // The engine's news still takes the viewer to the frame reached, and Stop still stops it.
+    await tell('track.progress', { job: 'track-1', frame: 30, timeline_frame: 59, done: 19, total: 88, lost: 0, revision: 12 });
+    expect(onSeek).toHaveBeenCalledWith(59);
+    fireEvent.keyDown(document.body, { key: 't', code: 'KeyT', ctrlKey: true, altKey: true });
+    await settle();
+    expect(sent('track.stop')).toEqual([{ job: 'track-1' }]);
+    open(true);
+    expect((byTest('tracker-stop') as HTMLButtonElement).disabled).toBe(false);
+    expect(byTest('tracker-status')?.textContent).toBe(hints.tracking(30, 19, 88));
+    open(false);
+    await tell('track.state', { job: 'track-1', phase: 'stopped', reason: 'stop', frames: 19, lost: 0, frame: 30, revision: 12, tracked: [11, 30] });
+    open(true);
+    expect(byTest('tracker-status')?.textContent).toBe(hints.stopped);
+    expect((byTest('tracker-stop') as HTMLButtonElement).disabled).toBe(true);
+    // The keys of the menu track with the palette closed too.
+    open(false);
+    fireEvent.keyDown(document.body, { key: 't', code: 'KeyT', ctrlKey: true });
+    await settle();
+    expect(sent('track.start').map(p => p.direction)).toEqual(['forward', 'forward']);
+  });
+
+  it('takes as its own a track of this connection that it did not know of, from the engine\'s news', async () => {
+    const { sent, tell } = mount([windowOf('w1')]);
+    // News of another session's engine is not this page's.
+    await tell('track.progress', { job: 'track-3', frame: 5, timeline_frame: 5, done: 1, total: 9, lost: 0, revision: 4 }, 2);
+    expect((byTest('tracker-stop') as HTMLButtonElement).disabled).toBe(true);
+    await tell('track.progress', { job: 'track-7', frame: 5, timeline_frame: 5, done: 1, total: 9, lost: 0, revision: 4 });
+    expect((byTest('tracker-stop') as HTMLButtonElement).disabled).toBe(false);
+    expect((byTest('tracker-forward') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(byTest('tracker-stop')!);
+    await settle();
+    expect(sent('track.stop')).toEqual([{ job: 'track-7' }]);
+    await tell('track.state', { job: 'track-7', phase: 'done', reason: null, frames: 9, lost: 0, frame: 9, revision: 5, tracked: [0, 9] });
+    expect((byTest('tracker-forward') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('leaves the keys of the menu alone with no window selected or no track to stop', async () => {
+    const { sent } = mount([windowOf('w1')], null);
+    const forward = new KeyboardEvent('keydown', { key: 't', code: 'KeyT', ctrlKey: true, bubbles: true, cancelable: true });
+    document.body.dispatchEvent(forward);
+    const stop = new KeyboardEvent('keydown', { key: 't', code: 'KeyT', ctrlKey: true, altKey: true, bubbles: true, cancelable: true });
+    document.body.dispatchEvent(stop);
+    await settle();
+    expect(forward.defaultPrevented).toBe(false);
+    expect(stop.defaultPrevented).toBe(false);
+    expect(sent('track.start')).toEqual([]);
+    expect(sent('track.stop')).toEqual([]);
   });
 
   it('copies one window\'s track and pastes it to another of the node', async () => {

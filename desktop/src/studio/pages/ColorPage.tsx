@@ -48,6 +48,7 @@ import { PickerContext, usePickerHub } from '../color/pickers';
 import { QualifierPalette } from '../color/Qualifier';
 import { KeyPalette } from '../color/KeyPalette';
 import { TrackerPalette } from '../color/TrackerPalette';
+import { useTracking } from '../color/useTracking';
 import { useViewerModes, type HighlightMode } from '../color/useViewerModes';
 import { BypassButton } from '../BypassColor';
 import { useGenerateLut } from '../color/generateLut';
@@ -368,6 +369,8 @@ export function ColorPage({
     timeline: selected?.id ?? null, tool: viewerTool, selection: windows.selection, intention: windows.intention,
     creating: windows.pending, comparison, viewer: viewerElement, onMenu: onPointerMenu, onWindowState: windows.onState, onDeleted: windows.onDeleted,
     onIdleEscape: windows.leaveDraft, picker: pickers.active });
+  // The Color › Tracker menu and the track going on are the page's, as in DaVinci (p. 3231): Stop works whichever palette is open.
+  const tracking = useTracking({ edited, bridge, window: windows.selected?.id ?? null, onSeek: frame => timelineMonitor.seek(frame, false) });
   comparisonRef.current = comparison;
   useEffect(() => { setWiped(comparison.wipedStill); }, [comparison.wipedStill]);
   // Append Node to Selected Clips (Color menu, p. 3297), from the menu of the node: the current node, after the grades of the other clips chosen.
@@ -588,7 +591,7 @@ export function ColorPage({
       <Palettes merged={merged} left={left} center={center} last={last} right={right} edited={edited} scopes={scopes.docked}
         windows={edit => <WindowPalette edit={edit} controls={windows} capturing={viewerInput.capturing} busy={viewerInput.busy} status={viewerInput.status} notice={viewerInput.notice} points={viewerInput.points} />}
         bodies={{ qualifier: edit => <QualifierPalette key={edit.interaction} edit={edit} />, key: edit => <KeyPalette key={edit.interaction} edit={edit} edited={edited} />,
-          tracker: () => <TrackerPalette edited={edited} bridge={bridge} window={windows.selected?.id ?? null} onSeek={frame => timelineMonitor.seek(frame, false)} /> }}
+          tracker: () => <TrackerPalette edited={edited} window={windows.selected?.id ?? null} run={tracking} /> }}
         onLeft={(each) => { setLeft(each); setLast('left'); }} onCenter={(each) => { setCenter(each); setLast('center'); if (each === 'window' || each === 'tracker') setViewerTool('window'); if (each === 'qualifier') setViewerTool('qualifier'); }} onRight={setRight} />
       </PickerContext.Provider>
     </div>

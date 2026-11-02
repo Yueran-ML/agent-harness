@@ -13,9 +13,10 @@
 //! without knowing grades: a clip or a timeline is then read with a grade that changes nothing
 //! and in no group, and a project with no groups. Settings that came later within schema 3 are
 //! fields that may be left out so too: the colour management of the project (`color`, see
-//! [`crate::color_management`]), and the colour of media set by hand (`color_override`). A
-//! project written before them is read with the values that leave it as it was: not managed,
-//! and no media set.
+//! [`crate::color_management`]), the colour of media set by hand (`color_override`), and the
+//! Blur palette of a corrector (`blur`, see [`crate::grade::blur`]). A project written before
+//! them is read with the values that leave it as it was: not managed, no media set, and no
+//! blur.
 
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};

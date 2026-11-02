@@ -999,7 +999,6 @@ export const en = {
           modes: 'Mode', blur: 'Blur', sharpen: 'Sharpen', mist: 'Mist',
           radius: 'Radius', ratio: 'H/V Ratio', scaling: 'Scaling', coring_softness: 'Coring Softness', level: 'Level', mix: 'Mix',
           gang: 'Gang the red, green and blue sliders', reset: 'Reset', resetColumn: 'Reset',
-          channels: { r: 'Red', g: 'Green', b: 'Blue' },
         },
         /** The video scopes (Reference Manual 20, pp. 3007–3022), in DaVinci Resolve's words. */
         scopes: {

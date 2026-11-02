@@ -912,7 +912,6 @@ export const ja: Messages = {
           modes: 'モード', blur: 'ブラー', sharpen: 'シャープ', mist: 'ミスト',
           radius: '半径', ratio: 'H/V 比率', scaling: 'スケーリング', coring_softness: 'コアリングソフトネス', level: 'レベル', mix: 'ミックス',
           gang: '赤・緑・青のスライダーを連動', reset: 'リセット', resetColumn: 'リセット',
-          channels: { r: '赤', g: '緑', b: '青' },
         },
         scopes: {
           kinds: { waveform: '波形', parade: 'パレード', vectorscope: 'ベクトルスコープ', histogram: 'ヒストグラム', chromaticity: 'CIE 色度' },

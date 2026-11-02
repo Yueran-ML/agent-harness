@@ -214,6 +214,13 @@ fn an_hsl_qualifier_keys_a_wedge_of_hues_that_goes_round() {
     });
     assert_eq!(key_at(&green, hue_colour(1.0 / 3.0)), 1.0);
     assert_eq!(key_at(&green, hue_colour(0.0)), 0.0);
+    // A quarter of a turn: between yellow and green.
+    let quarter = qualifier(|q| {
+        q.hue.center = fixed(25.0);
+        q.hue.width = fixed(10.0);
+    });
+    assert_eq!(key_at(&quarter, hue_colour(0.25)), 1.0);
+    assert_eq!(key_at(&quarter, hue_colour(0.0)), 0.0);
     // Hue turned off keys every hue; a width of 100 too.
     let off = qualifier(|q| {
         q.hue.on = false;
@@ -704,6 +711,22 @@ fn the_key_coming_in_is_blurred_as_its_settings_say() {
     };
     let sharp = key(&grade(0.0, 0.5));
     assert_eq!((sharp[40 * 96 + 47][0], sharp[40 * 96 + 48][0]), (1.0, 0.0));
+    // Without a blur, the key coming in is read at its pixel: no neighbourhood.
+    assert!(grade_ops(&grade(0.0, 0.5), 0.0, &options(), &NoLuts)
+        .iter()
+        .all(|op| op.neighbourhoods.is_empty()));
+    // With one, the node still does its own change where the key is full.
+    let picture = evaluate_picture(
+        &grade(30.0, 0.5),
+        0.0,
+        &options(),
+        &NoLuts,
+        &|_, rgb| rgb,
+        (SIZE, SIZE),
+        &pixels,
+        1.0,
+    );
+    about(picture[40 * 96 + 2][2], pixels[40 * 96 + 2][2] + 0.5, 1e-3);
     let soft = key(&grade(30.0, 0.5));
     let middle = f32::midpoint(soft[40 * 96 + 47][0], soft[40 * 96 + 48][0]);
     about(middle, 0.5, 2e-3);
@@ -751,9 +774,35 @@ fn matte_finesse_keyframed_from_nothing_changes_nothing_where_it_is_nothing() {
         ("blur radius", &|q: &mut Qualifier| {
             q.finesse.blur_radius = rising()
         }),
+        ("morph radius", &|q: &mut Qualifier| {
+            q.finesse.morph_radius = rising()
+        }),
     ] {
         assert_eq!(key_picture(&soft(set), &pixels), plain, "{what}");
     }
+    // The blur of a key coming in alike.
+    let coming_in = |radius: Param| {
+        let mut grade = serial(vec![
+            soft(&|_| {}).nodes[0].clone(),
+            corrector("n2", |c| {
+                c.primaries.offset.b = fixed(75.0);
+                c.key.input_blur.radius = radius;
+            }),
+        ]);
+        grade.links.push(link("n1", "n2", Port::Key, 0));
+        grade.sort_links();
+        evaluate_picture(
+            &grade,
+            0.0,
+            &options(),
+            &NoLuts,
+            &|_, rgb| rgb,
+            (SIZE, SIZE),
+            &pixels,
+            1.0,
+        )
+    };
+    assert_eq!(coming_in(rising()), coming_in(fixed(0.0)));
 }
 
 #[test]

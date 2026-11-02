@@ -268,19 +268,19 @@ async fn a_window_follows_a_pan_turn_and_zoom_tracked_through_the_engine_as_one_
         window(&mut f.client, "w1").await["tracking"]["mode"],
         "frame"
     );
+    // Add Keyframe keys the tracker and the window's corners there; Delete Keyframe takes both.
+    let shape = window(&mut f.client, "w1").await["shape"].clone();
     f.edit("w1", json!({"kind":"add_key","frame":8})).await;
+    let keyed = window(&mut f.client, "w1").await;
     assert_eq!(
-        data_of(&window(&mut f.client, "w1").await)
-            .keys()
-            .keys()
-            .copied()
-            .collect::<Vec<_>>(),
+        data_of(&keyed).keys().keys().copied().collect::<Vec<_>>(),
         vec![8]
     );
+    assert_eq!(keyed["shape"]["points"][0]["x"]["keys"][0]["frame"], 8);
     f.edit("w1", json!({"kind":"delete_key","frame":8})).await;
-    assert!(data_of(&window(&mut f.client, "w1").await)
-        .keys()
-        .is_empty());
+    let unkeyed = window(&mut f.client, "w1").await;
+    assert!(data_of(&unkeyed).keys().is_empty());
+    assert_eq!(unkeyed["shape"], shape);
     // Paste: the second window moves as the first does about its own centre.
     f.edit("w2", json!({"kind":"paste","from":"w1"})).await;
     let pasted = data_of(&window(&mut f.client, "w2").await);

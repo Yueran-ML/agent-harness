@@ -323,12 +323,13 @@ describe('the Primaries palette', () => {
     expect(screen.getByRole('status').textContent).toBe('Auto Color found too little range in this frame to balance it.');
   });
 
-  it('keeps the pickers of the viewer off, and says why', () => {
+  it('keeps the pickers of the viewer off where no viewer hands them its pointer, and says how they are used', () => {
+    // The Color page gives them the viewer (color-pickers.test.tsx); the palettes alone have none.
     mount();
     for (const test of ['picker-black', 'picker-white', 'curve-picker']) {
       const button = document.querySelector<HTMLButtonElement>(`[data-test="${test}"]`)!;
       expect(button.disabled).toBe(true);
-      expect(button.title).toContain('cannot do yet');
+      expect(button.title).toContain('Click on the viewer');
     }
   });
 

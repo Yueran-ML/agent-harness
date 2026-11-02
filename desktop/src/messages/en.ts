@@ -868,7 +868,7 @@ export const en = {
             one: 'point {point}', two: 'points {first} and {second}',
             frames: '{clock} frames {from}–{to}', allFrames: 'every frame',
           },
-          osc: 'On-screen controls', none: 'Off', window: 'Power Window', image_wipe: 'Image Wipe', add: 'Add Circular Window',
+          osc: 'On-screen controls', none: 'Off', qualifier: 'Qualifier', window: 'Power Window', image_wipe: 'Image Wipe', add: 'Add Circular Window',
           list: 'Windows', editing: 'Editing', static: 'Static', key: 'Key frame', frame: 'Frame', creating: 'Creating window…',
           clock: { source: 'Source clock', clip: 'Clip clock', timeline: 'Timeline clock' },
           shapes: { circular: 'Circular', linear: 'Linear', polygon: 'Polygon', curve: 'Curve', gradient: 'Gradient' },
@@ -948,6 +948,27 @@ export const en = {
           splitModes: { current_group: 'Current Group', neighbor_clips: 'Neighbor Clips', selected_clips: 'Selected Clips', selected_stills: 'Selected Still Images' },
           showOutline: 'Show Outline', reference: 'Wipe reference clip',
         },
+        /** The Qualifier palette (Reference Manual 20, pp. 3157–3184), in DaVinci Resolve's words. */
+        qualifierPalette: {
+          modes: 'Qualifier mode', hsl: 'HSL', rgb: 'RGB', lum: 'LUM', reset: 'Reset', invert: 'Invert', selectionRange: 'Selection Range',
+          tools: { pick: 'Sample Eyedropper', subtract: 'Subtract Color Range', add: 'Add Color Range', harden: 'Subtract Softness', soften: 'Add Softness' },
+          components: { hue: 'Hue', sat: 'Sat', lum: 'Lum', red: 'Red', green: 'Green', blue: 'Blue' },
+          center: 'Center', width: 'Width', soft: 'Soft', symmetry: 'Sym', low: 'Low', high: 'High', lowSoft: 'L. Soft', highSoft: 'H. Soft',
+          finesse: {
+            title: 'Matte Finesse', pre_filter: 'Pre-Filter', clean_black: 'Clean Black', black_clip: 'Black Clip', clean_white: 'Clean White',
+            white_clip: 'White Clip', blur_radius: 'Blur Radius', in_out_ratio: 'In/Out Ratio', morph: 'Morph Operation', morph_radius: 'Morph Radius',
+            morphs: { shrink: 'Shrink', grow: 'Grow', opening: 'Opening', closing: 'Closing' },
+          },
+        },
+        /** The Key palette (Reference Manual 20, pp. 3358–3363), in DaVinci Resolve's words. */
+        keyPalette: {
+          input: 'Key Input', output: 'Key Output', qualifier: 'Qualifier', invert: 'Invert', matte: 'Matte', mask: 'Mask', gain: 'Gain', offset: 'Offset',
+          blurRadius: 'Blur Radius', blurRatio: 'Blur H/V Ratio', reset: 'Reset', mixerInput: (number: number) => `Input ${number}`,
+        },
+        /** Highlight (pp. 2986, 3170–3171), Bypass Color (p. 2987), Generate LUT (p. 3413) and Update All Thumbnails (p. 3026). */
+        highlight: { menu: 'Highlight', off: 'Off', highlight: 'Highlight', bw: 'Highlight B/W' },
+        bypass: 'Bypass Color Grades', generateLut: 'Generate LUT', lutSize: (size: number) => `Generate 3D LUT (${size} Point Cube)`,
+        updateThumbnails: 'Update All Thumbnails',
         /** The orange dot of a palette's button: the current node is adjusted there. */
         changed: 'Adjusted',
         /** The Primaries palette (Reference Manual 20, Chapter 131), in DaVinci Resolve's words. */
@@ -1725,7 +1746,12 @@ export const en = {
           graded: 'Some clips already had adjustments; these can affect the match.',
           space: 'Shot Match is designed for Rec.709 Gamma 2.4 and measures each node in the timeline working space.',
         },
-        picker: 'Sampling the viewer needs the engine to read the color at a point of the picture, which it cannot do yet.',
+        picker: 'Click on the viewer to take the color of a pixel, or drag to take the colors of a range.',
+        qualifierEmpty: 'Choose the Sample Eyedropper and click or drag on the viewer to pick the colors to key.',
+        noKeyNode: 'Choose a corrector or a Key Mixer in the node editor to adjust its key.',
+        lutGenerated: (path: string, ignored: number) => (ignored === 0 ? `The LUT was saved as ${path}.`
+          : `The LUT was saved as ${path}. ${ignored === 1 ? 'A node' : `${ignored} nodes`} with qualifiers, windows or filters ${ignored === 1 ? 'was' : 'were'} left out of it.`),
+        lutFailed: (message: string) => `The LUT could not be generated. ${message}`,
         keyed: 'This setting has keyframes: a change goes into the keyframe at the playhead or to its left.',
         scopes: {
           preparing: 'The scope is being prepared. The first time takes a while.',

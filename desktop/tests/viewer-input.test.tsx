@@ -54,6 +54,30 @@ function mount({ holdBind = false, holdPrepare = false, holdNavigation = false, 
 }
 
 describe('the sole viewer input owner', () => {
+  it('hands a picker of colour the pointer before a window, with the crosshair, and gives the window back after', async () => {
+    const h = mount(); await settle();
+    expect(h.call.mock.calls.filter(([method]) => method === 'window.bind')).toHaveLength(1);
+    const onPointer = vi.fn();
+    h.update({ picker: { cursor: 'crosshair', onPointer } }); await settle();
+    // The window lets the pointer go; the view takes it with the crosshair of the picker.
+    await h.answer('window.unbind', { binding: 10, phase: 'ended' }); await settle();
+    expect(h.call.mock.calls.filter(([method]) => method === 'view.pointer').at(-1)![1]).toEqual({ monitor: 'timeline', on: true, cursor: 'crosshair' });
+    const down = point('down', 30, { snapshot: { ...point('down').snapshot!, window: null } });
+    h.notify('view.pointer', down);
+    h.notify('view.pointer', point('move', 31, { button: null, snapshot: { ...point('down').snapshot!, window: null } }));
+    h.notify('view.pointer', point('up', 32, { snapshot: { ...point('down').snapshot!, window: null } })); await settle();
+    expect(onPointer.mock.calls.map(([event]) => event.kind)).toEqual(['down', 'move', 'up']);
+    expect(h.inputs()).toEqual([]);
+    expect(h.handlePointer).not.toHaveBeenCalled();
+    // The right button still opens the viewer's menu, and a split screen keeps the pointer for its tiles.
+    h.notify('view.pointer', point('down', 33, { button: 'right', buttons: ['right'], snapshot: null })); await settle();
+    expect(h.menu).toHaveBeenCalledTimes(1);
+    expect(onPointer).toHaveBeenCalledTimes(3);
+    // Without the picker the window is bound again.
+    h.update({ picker: null }); await settle();
+    expect(h.call.mock.calls.filter(([method]) => method === 'window.bind')).toHaveLength(2);
+  });
+
   it('ignores a fresh wheel reporting inherited middle held without querying or mutating', async () => {
     const h = mount({ holdPrepare: true }); await settle(); h.update({ tool: 'image_wipe' }); await settle();
     await h.answer('window.unbind', { binding: 10, phase: 'ended' }); await settle();

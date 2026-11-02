@@ -3,6 +3,7 @@ import type { EngineBridge } from '../../bridge';
 import { callEngine, EngineError, viewPointerOf, type ViewerTool, type WindowSelection, type WindowState, type WindowUnbound,
   type Viewport, type PreparedViewport, type ViewNavigation, type WindowDeleted, type WindowTopology } from '../engine';
 import type { Comparison } from './useComparison';
+import type { ViewerPicker } from './pickers';
 import type { WindowNotice } from './WindowPalette';
 
 interface Capture {
@@ -28,15 +29,19 @@ export type WindowInputStatus = 'idle' | 'arming' | 'armed' | 'refused';
 
 /** The Color viewer's sole native pointer subscription and ownership switch.
  * Window coordinates and hits belong to the engine; Image Wipe coordinates belong to comparison.
+ * A palette's picker of colour (`pickers.ts`), where one is in force, takes the left button before
+ * a window or a wipe line does; a split screen keeps the pointer for its tiles.
  */
 export function useViewerInput({ bridge, session, native, loaded, timeline, tool, selection, intention, creating = false, comparison, viewer,
-  onMenu, onWindowState, onDeleted, onIdleEscape }: {
+  onMenu, onWindowState, onDeleted, onIdleEscape, picker = null }: {
   bridge: Pick<EngineBridge, 'call' | 'onEvent'>; session: number; native: boolean; loaded: boolean; timeline: string | null;
   tool: ViewerTool; selection: WindowSelection | null; intention: number; creating?: boolean; comparison: Comparison;
   viewer: RefObject<HTMLElement | null>; onMenu: (point: { x: number; y: number }) => void;
   onWindowState: (state: WindowState) => void; onDeleted?: (answer: WindowDeleted) => void;
   /** Esc in the viewer with no capture; true when it was used (an unfinished Curve is left, keeping its draft). */
   onIdleEscape?: () => boolean;
+  /** The picker of colour in force, which takes the pointer while it is. */
+  picker?: ViewerPicker | null;
 }) {
   const [status, setStatus] = useState<WindowInputStatus>('idle');
   // Why the engine refused a Polygon point insertion (at down) or a middle-click deletion.
@@ -46,12 +51,14 @@ export function useViewerInput({ bridge, session, native, loaded, timeline, tool
   const [retry, setRetry] = useState(0);
   const [viewport, setViewport] = useState<Viewport>({ mode: 'fit' });
   const retiring = useRef(new Set<Capture>());
-  const windowOn = native && loaded && !comparison.splitting && tool === 'window' && selection !== null && selection.visible && selection.outline;
-  const cursor = native && loaded ? (comparison.splitting || tool === 'image_wipe' ? comparison.pointerCursor ?? 'arrow' : 'arrow') : null;
+  const picking = native && loaded && !comparison.splitting && picker !== null;
+  const windowOn = native && loaded && !comparison.splitting && !picking && tool === 'window' && selection !== null && selection.visible && selection.outline;
+  const cursor = native && loaded ? (picking ? picker.cursor
+    : comparison.splitting || tool === 'image_wipe' ? comparison.pointerCursor ?? 'arrow' : 'arrow') : null;
   // Revision, server selection, edited object and palette interaction are deliberately absent.
   const key = JSON.stringify([session, timeline, tool, windowOn ? [selection!.target, selection!.node, selection!.clip, intention] : null, cursor]);
-  const now = useRef({ key, session, timeline, selection, windowOn, creating, comparison, tool, onMenu, onWindowState, onDeleted, onIdleEscape });
-  now.current = { key, session, timeline, selection, windowOn, creating, comparison, tool, onMenu, onWindowState, onDeleted, onIdleEscape };
+  const now = useRef({ key, session, timeline, selection, windowOn, creating, comparison, tool, onMenu, onWindowState, onDeleted, onIdleEscape, picker: picking ? picker : null });
+  now.current = { key, session, timeline, selection, windowOn, creating, comparison, tool, onMenu, onWindowState, onDeleted, onIdleEscape, picker: picking ? picker : null };
   const owner = useRef<Owner | null>(null);
   const switching = useRef<Promise<void>>(Promise.resolve());
   const nativeSeen = useRef({ session, instance: -1, event: -1, buttons: 0 });
@@ -316,7 +323,8 @@ export function useViewerInput({ bridge, session, native, loaded, timeline, tool
     // drag into a Window or wipe drag when another button is pressed.
     if (pointer.kind === 'down' && pointer.button === 'left' && pointer.buttons.includes('middle')) return;
     if (of.binding === null) {
-      if (of.pointer && (now.current.comparison.splitting || now.current.tool === 'image_wipe')) now.current.comparison.handlePointer(pointer);
+      if (of.pointer && now.current.picker) now.current.picker.onPointer(pointer);
+      else if (of.pointer && (now.current.comparison.splitting || now.current.tool === 'image_wipe')) now.current.comparison.handlePointer(pointer);
       return;
     }
     if (pointer.kind === 'down') {

@@ -42,15 +42,20 @@ import { useComparison, type Comparison } from '../color/useComparison';
 import { ComparisonBar, comparisonMenuItems, splitMenu } from '../color/ComparisonBar';
 import { CoveringMenu } from '../color/CoveringMenu';
 import type { Menu } from '../color/ColorMenu';
+import { PickerContext, usePickerHub } from '../color/pickers';
+import { QualifierPalette } from '../color/Qualifier';
+import { KeyPalette } from '../color/KeyPalette';
+import { useViewerModes, type HighlightMode } from '../color/useViewerModes';
+import { useGenerateLut } from '../color/generateLut';
+import { useGradedThumbnails } from '../color/gradedThumbnails';
 import '../color/color.css';
 
 /** Narrower than this, the left and center palettes are merged into one group (Reference Manual 20, p. 2976). */
 export const MERGE_PALETTES_PX = 1280;
 
-/** A LUT that a grade of the timeline names and the engine could not read (PROTOCOL.md, "Grades in the picture"). */
-export interface MissingLut { name: string; message: string }
-/** The state of the timeline monitor with what T13a added to it, which `engine.ts` does not type yet. */
-type TimelineState = TimelineTransportState & { missing_luts?: MissingLut[] };
+export type { MissingLut } from '../engine';
+/** The state of the timeline monitor. */
+type TimelineState = TimelineTransportState;
 
 /**
  * How large the viewer is (pp. 2968–2969, 2993–2995): as laid out; Enhanced (Alt+F), over all that
@@ -101,7 +106,7 @@ export function ColorPage({
   bridge, native, session, revision, pool, media, timelines, groups = NO_GROUPS, selected, onSelect, timelineMonitor, noticeOf, onRetry, onProblem, color,
   nextId, project = '', language = 'en',
 }: {
-  bridge: Pick<EngineBridge, 'call' | 'onEvent' | 'viewRect' | 'viewShow'> & Partial<Pick<EngineBridge, 'importStills' | 'exportStills'>>;
+  bridge: Pick<EngineBridge, 'call' | 'onEvent' | 'viewRect' | 'viewShow'> & Partial<Pick<EngineBridge, 'importStills' | 'exportStills' | 'exportLut'>>;
   native: boolean;
   session: number;
   revision: number;
@@ -201,10 +206,16 @@ export function ColorPage({
   const comparisonRef = useRef<Comparison | null>(null);
   const currentId = useRef<string | null>(null);
   currentId.current = current?.clip.id ?? null;
+  // Generate LUT ▸ (p. 3413) and Update All Thumbnails (p. 3026), and the thumbnails as their clips are graded.
+  const generateLut = useGenerateLut({ bridge, language, timeline: selected, media: mediaById, current: current?.clip.id ?? null, frame,
+    words: { generateLut: labels.generateLut, sizes: labels.lutSize } });
+  const graded = useGradedThumbnails({ bridge, session, timeline: selected, groups, media: mediaById, color, native });
   const thumbnailItems = useCallback((clip: string) => [
     ...(clip === currentId.current ? [] : [{ id: 'wipe-timeline-clip', label: labels.galleryPanel.wipeTimelineClip, run: () => comparisonRef.current?.wipeTimelineClip(clip) }]),
     ...shotMatch.items(clip),
-  ], [labels, shotMatch.items]);
+    ...generateLut.items(clip),
+    ...(graded.pictures ? [{ id: 'update-thumbnails', label: labels.updateThumbnails, run: graded.updateAll }] : []),
+  ], [labels, shotMatch.items, generateLut.items, graded.pictures, graded.updateAll]);
   const grades = useColorPageGrades({
     bridge, revision, session, area, level: shownLevel, timeline: selected, clips: visibleClips, current: current?.clip ?? null, chosen: chosenClips,
     grade, nextId, thumbnailItems,
@@ -234,6 +245,10 @@ export function ColorPage({
       before: defaultNode !== null && editedNode.id === defaultNode.id ? [makeDefaultNode(defaultNode.target)] : undefined,
     }),
   [bridge, session, revision, JSON.stringify(placed), editedNode, paletteFailed, defaultNode, current?.clip.id, clockInputs, frame, timelineState?.playing, timelineMonitor.held]);
+  // The pickers of colour of the palettes on the viewer (T17, T21), and its Highlight modes and Bypass Color (T21, T13d).
+  const pickers = usePickerHub(viewerTool, setViewerTool, edited, paletteFailed);
+  const modes = useViewerModes({ bridge, session, loaded: timelineState !== null && timelineMonitor.loaded, state: timelineState,
+    grade: grades.target, node: currentNode, onFailure: paletteFailed });
   // The LUTs of nodes (T18): Apply LUT to Current Node and drags from the browser, the node menu's LUT ▸, and Reveal Selected LUT.
   const lutLibrary = useLutLibrary(bridge).library;
   const favoriteLuts = useFavoriteLuts();
@@ -324,7 +339,7 @@ export function ColorPage({
   const viewerInput = useViewerInput({ bridge, session, native, loaded: timelineState !== null && timelineMonitor.loaded,
     timeline: selected?.id ?? null, tool: viewerTool, selection: windows.selection, intention: windows.intention,
     creating: windows.pending, comparison, viewer: viewerElement, onMenu: onPointerMenu, onWindowState: windows.onState, onDeleted: windows.onDeleted,
-    onIdleEscape: windows.leaveDraft });
+    onIdleEscape: windows.leaveDraft, picker: pickers.active });
   comparisonRef.current = comparison;
   useEffect(() => { setWiped(comparison.wipedStill); }, [comparison.wipedStill]);
   // Append Node to Selected Clips (Color menu, p. 3297), from the menu of the node: the current node, after the grades of the other clips chosen.
@@ -450,16 +465,25 @@ export function ColorPage({
     </select>
     <select className="field color-osc" aria-label={labels.windowControls.osc} value={viewerTool}
       onChange={event => setViewerTool(event.target.value as ViewerTool)} data-test="viewer-osc">
-      {(['none', 'window', 'image_wipe'] as const).map(tool => <option key={tool} value={tool}>{labels.windowControls[tool]}</option>)}
+      {(['none', 'qualifier', 'window', 'image_wipe'] as const).map(tool => <option key={tool} value={tool}>{labels.windowControls[tool]}</option>)}
     </select>
-    <ViewerOptions bridge={bridge} color={keptColor({ color })} run={grades.editing.run} comparisons={comparisonMenuItems(comparison, labels.compare)} />
+    {/* Bypass Color and Fusion (p. 2987): this studio has no Fusion, so it is the one switch; Shift+D. */}
+    <button type="button" className="color-tool" aria-pressed={modes.bypass} disabled={!timelineMonitor.loaded} title={`${labels.bypass} (Shift+D)`}
+      onClick={modes.toggleBypass} data-test="bypass-color">{labels.bypass}</button>
+    <ViewerOptions bridge={bridge} color={keptColor({ color })} run={grades.editing.run} comparisons={[
+      { id: 'highlight', label: labels.highlight.menu, items: (['off', 'highlight', 'bw'] as const).map((mode: HighlightMode) => ({
+        id: `highlight-${mode}`, label: labels.highlight[mode], keys: mode === 'highlight' ? 'Shift+H' : mode === 'bw' ? 'Alt+Shift+H' : undefined,
+        checked: modes.highlight === mode, run: () => modes.setHighlight(mode),
+      })) },
+      ...comparisonMenuItems(comparison, labels.compare)]} />
     <button type="button" className="icon-btn" aria-pressed={viewerMode === 'enhanced'} aria-label={labels.enhanced}
       title={`${labels.enhanced} (Alt+F)`}
       onClick={event => setViewerMode(old => (event.altKey ? (old === 'full' ? 'normal' : 'full') : old === 'enhanced' ? 'normal' : 'enhanced'))}
       data-test="enhanced-viewer">{viewerMode === 'normal' ? <Maximize2 size={14} /> : <Minimize2 size={14} />}</button>
   </div>;
   // Where a LUT of the timeline cannot be read, the viewer says so at its lower right (p. 3413): the one by its name, more as more.
-  const missingNotice = missing.length > 0 && <p className="color-missing-luts" role="status"
+  // The engine writes the words over the picture of its view (T13d); a page without one says them beneath it.
+  const missingNotice = missing.length > 0 && !native && <p className="color-missing-luts" role="status"
     title={missing.map(each => `${each.name}: ${each.message}`).join('\n')} data-test="missing-luts">
     {missing.length === 1 ? labels.missingLut(missing[0].name) : labels.missingLuts}
   </p>;
@@ -472,9 +496,18 @@ export function ColorPage({
     }}>
     <MonitorPane controls={timelineMonitor} bridge={bridge} native={native} active hidden={nodesOpen && nodesExpanded && viewerMode === 'normal'}
       notice={noticeOf('timeline')} onRetry={onRetry} hint={words.hint.studio.timeline.empty}
-      switcher={<div className="color-viewer-heads">{viewerHead}<ComparisonBar comparison={comparison} /></div>}
-      footer={missingNotice || shotMatch.notice ? <>{missingNotice}{shotMatch.notice && <p role="status" aria-busy={shotMatch.busy}
-        className="color-missing-luts" data-test="shot-match-notice">{shotMatch.notice}</p>}</> : undefined} />
+      switcher={<div className="color-viewer-heads">{viewerHead}<ComparisonBar comparison={comparison}>
+        {/* Highlight (pp. 2986–2987, 3170): Shift+H, and Alt+Shift+H for Highlight B/W. */}
+        <button type="button" className="color-tool" aria-pressed={modes.highlight !== 'off'} title={`${labels.highlight.highlight} (Shift+H)`}
+          onClick={() => modes.setHighlight(modes.highlight === 'off' ? 'highlight' : 'off')} data-test="highlight">{labels.highlight.highlight}</button>
+        {modes.highlight !== 'off' && <button type="button" className="color-tool" aria-pressed={modes.highlight === 'bw'} title={`${labels.highlight.bw} (Alt+Shift+H)`}
+          onClick={() => modes.setHighlight(modes.highlight === 'bw' ? 'highlight' : 'bw')} data-test="highlight-bw">{labels.highlight.bw}</button>}
+      </ComparisonBar></div>}
+      footer={missingNotice || shotMatch.notice || generateLut.notice ? <>{missingNotice}{shotMatch.notice && <p role="status" aria-busy={shotMatch.busy}
+        className="color-missing-luts" data-test="shot-match-notice">{shotMatch.notice}</p>}
+        {generateLut.notice && <p role="status" className="color-missing-luts" data-test="lut-notice" onClick={generateLut.dismiss}>
+          {generateLut.notice.kind === 'done' ? said.lutGenerated(generateLut.notice.path, generateLut.notice.ignored) : said.lutFailed(generateLut.notice.message)}</p>}</>
+        : undefined} />
     {viewerMode === 'cinema' && <button type="button" className="btn color-cinema-exit" onClick={() => setViewerMode('normal')} data-test="exit-cinema">
       {labels.exitCinema}</button>}
   </section>;
@@ -517,16 +550,19 @@ export function ColorPage({
     {clipsOpen && <div className="color-thumbs-area" {...focusOf('thumbnails')} onContextMenu={grades.onThumbnailMenu}>
       <ThumbnailTimeline clips={listed} media={mediaById} rate={selected?.rate ?? { num: 25, den: 1 }} cache={thumbnails}
         current={current?.clip.id ?? null} selected={chosenClips} onPick={pick} pictures={pictures} onPicture={onPicture}
-        hint={selected === null ? noTimeline : said.noClips} reference={comparison.referenceClip} />
+        hint={selected === null ? noTimeline : said.noClips} reference={comparison.referenceClip} graded={graded.pictures} />
     </div>}
     {miniOpen && selected !== null && <div className="color-mini-area" {...focusOf('mini')}>
       <MiniTimeline timeline={selected} numbers={numbers} frame={frame ?? 0} current={current?.clip.id ?? null} skipped={skipped}
         onClip={clipPressed} onSeek={timelineMonitor.seek} onEnable={enable} onSkip={skip} />
     </div>}
     <div className="color-palettes-area" {...focusOf('palettes')}>
+      <PickerContext.Provider value={pickers.hub}>
       <Palettes merged={merged} left={left} center={center} last={last} right={right} edited={edited} scopes={scopes.docked}
         windows={edit => <WindowPalette edit={edit} controls={windows} capturing={viewerInput.capturing} busy={viewerInput.busy} status={viewerInput.status} notice={viewerInput.notice} />}
-        onLeft={(each) => { setLeft(each); setLast('left'); }} onCenter={(each) => { setCenter(each); setLast('center'); if (each === 'window') setViewerTool('window'); }} onRight={setRight} />
+        bodies={{ qualifier: edit => <QualifierPalette key={edit.interaction} edit={edit} />, key: edit => <KeyPalette key={edit.interaction} edit={edit} edited={edited} /> }}
+        onLeft={(each) => { setLeft(each); setLast('left'); }} onCenter={(each) => { setCenter(each); setLast('center'); if (each === 'window') setViewerTool('window'); if (each === 'qualifier') setViewerTool('qualifier'); }} onRight={setRight} />
+      </PickerContext.Provider>
     </div>
     {grades.menu}
     {viewerMenu && <CoveringMenu menu={viewerMenu} onClose={closeViewerMenu} />}

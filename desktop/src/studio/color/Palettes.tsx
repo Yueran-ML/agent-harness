@@ -5,6 +5,7 @@ import { callEngine } from '../engine';
 import { editingAllowed, inStudio } from '../keys';
 import { autoColor, curvesChanged, primariesChanged } from './corrector';
 import { CurvesPalette, type CurveMode } from './Curves';
+import { keyChanged } from './KeyPalette';
 import { PrimariesPalette, type PrimariesMode } from './Primaries';
 import { useNodeEdit, type EditedNode, type NodeEdit } from './useNodeEdit';
 import './palettes.css';
@@ -34,6 +35,8 @@ interface Filled {
   /** The docked video scopes (T19), shown where the Scopes panel is chosen. */
   scopes?: ReactNode;
   windows?: (edit: NodeEdit) => ReactNode;
+  /** The palettes that the page gives whole (Qualifier and Key, T21/T22). */
+  bodies?: Partial<Record<Palette, (edit: NodeEdit) => ReactNode>>;
 }
 
 /** One group of palettes: its buttons along its top, and the palette chosen beneath them. */
@@ -55,6 +58,8 @@ function PaletteGroup<T extends Palette>({ name, palettes, chosen, onChoose, sid
   const { edit } = filled;
   const body = (() => {
     if (chosen === 'window' && filled.windows !== undefined) return filled.windows(edit);
+    const given = filled.bodies?.[chosen];
+    if (given !== undefined) return given(edit);
     if (chosen === 'scopes' && filled.scopes !== undefined) return filled.scopes;
     if (chosen !== 'primaries' && chosen !== 'curves') return <p className="caption color-empty">{words.hint.studio.colorPage.palette}</p>;
     if (!edit.enabled) return <p className="caption color-empty" data-test="no-corrector">{words.hint.studio.colorPage.noCorrector}</p>;
@@ -122,7 +127,7 @@ function useAutoColor(edited: EditedNode | null, edit: NodeEdit) {
  * corrector; their buttons carry an orange dot where that node is adjusted in them. Alt+Z switches
  * the Primaries palette between its Wheels and Log modes (p. 3068), and Alt+Shift+C is Auto Color.
  */
-export function Palettes({ merged, left, center, last, right, onLeft, onCenter, onRight, edited = null, scopes, windows }: {
+export function Palettes({ merged, left, center, last, right, onLeft, onCenter, onRight, edited = null, scopes, windows, bodies }: {
   merged: boolean;
   left: LeftPalette; center: CenterPalette;
   /** Which of the two groups was chosen from last. */
@@ -134,6 +139,8 @@ export function Palettes({ merged, left, center, last, right, onLeft, onCenter, 
   /** The docked video scopes, for the Scopes panel. */
   scopes?: ReactNode;
   windows?: (edit: NodeEdit) => ReactNode;
+  /** The Qualifier and Key palettes, which the page gives. */
+  bodies?: Partial<Record<Palette, (edit: NodeEdit) => ReactNode>>;
 }) {
   const labels = useWords().label.studio.colorPage;
   const both: readonly (LeftPalette | CenterPalette)[] = [...LEFT_PALETTES, ...CENTER_PALETTES];
@@ -147,6 +154,8 @@ export function Palettes({ merged, left, center, last, right, onLeft, onCenter, 
     if (!edit.enabled) return set;
     if (primariesChanged(edit.corrector)) set.add('primaries');
     if (curvesChanged(edit.corrector)) set.add('curves');
+    if (edit.corrector.qualifier != null) set.add('qualifier');
+    if (keyChanged(edit.corrector)) set.add('key');
     return set;
   }, [edit.enabled, edit.corrector]);
 
@@ -171,7 +180,7 @@ export function Palettes({ merged, left, center, last, right, onLeft, onCenter, 
     return () => window.removeEventListener('keydown', down);
   }, []);
 
-  const filled: Filled = { edit, primaries, onPrimaries: setPrimaries, curves, onCurves: setCurves, onAuto: auto.run, status: auto.status, changed, scopes, windows };
+  const filled: Filled = { edit, primaries, onPrimaries: setPrimaries, curves, onCurves: setCurves, onAuto: auto.run, status: auto.status, changed, scopes, windows, bodies };
   return <div className="color-palettes" data-merged={merged || undefined} role="region" aria-label={labels.palettes} data-test="palettes">
     {merged
       ? <PaletteGroup name={labels.palettes} palettes={both} chosen={last === 'left' ? left : center}

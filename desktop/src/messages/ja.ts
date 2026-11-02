@@ -794,7 +794,7 @@ export const ja: Messages = {
             one: 'ポイント {point}', two: 'ポイント {first} と {second}',
             frames: '{clock} {from}–{to} フレーム', allFrames: 'すべてのフレーム',
           },
-          osc: 'オンスクリーンコントロール', none: 'オフ', window: 'ウィンドウ', image_wipe: 'イメージワイプ', add: '円形ウィンドウを追加',
+          osc: 'オンスクリーンコントロール', none: 'オフ', qualifier: 'クオリファイアー', window: 'ウィンドウ', image_wipe: 'イメージワイプ', add: '円形ウィンドウを追加',
           list: 'ウィンドウ', editing: '編集中', static: '静的', key: 'キーフレーム', frame: 'フレーム', creating: 'ウィンドウを作成中…',
           clock: { source: 'ソース時間', clip: 'クリップ時間', timeline: 'タイムライン時間' },
           shapes: { circular: '円形', linear: '線形', polygon: '多角形', curve: '曲線', gradient: 'グラデーション' },
@@ -868,6 +868,24 @@ export const ja: Messages = {
           splitModes: { current_group: '現在のグループ', neighbor_clips: '隣接クリップ', selected_clips: '選択したクリップ', selected_stills: '選択したスチル画像' },
           showOutline: 'アウトラインを表示', reference: 'ワイプのリファレンスクリップ',
         },
+        qualifierPalette: {
+          modes: 'クオリファイアーモード', hsl: 'HSL モード', rgb: 'RGB モード', lum: 'LUM モード', reset: 'リセット', invert: '反転', selectionRange: '選択範囲',
+          tools: { pick: 'サンプルスポイト', subtract: 'カラー範囲を減らす', add: 'カラー範囲を増やす', harden: 'ソフトネスを減らす', soften: 'ソフトネスを増やす' },
+          components: { hue: '色相', sat: '彩度', lum: '輝度', red: 'レッド', green: 'グリーン', blue: 'ブルー' },
+          center: 'センター', width: '幅', soft: 'ソフト', symmetry: '対称', low: 'ロー', high: 'ハイ', lowSoft: 'ローソフト', highSoft: 'ハイソフト',
+          finesse: {
+            title: 'マットフィネス', pre_filter: 'プリフィルター', clean_black: 'クリーンブラック', black_clip: 'ブラッククリップ', clean_white: 'クリーンホワイト',
+            white_clip: 'ホワイトクリップ', blur_radius: 'ブラー半径', in_out_ratio: 'イン/アウト比', morph: 'モーフ処理', morph_radius: 'モーフ半径',
+            morphs: { shrink: '縮小', grow: '拡大', opening: 'オープニング', closing: 'クロージング' },
+          },
+        },
+        keyPalette: {
+          input: 'キー入力', output: 'キー出力', qualifier: 'クオリファイアー', invert: '反転', matte: 'マット', mask: 'マスク', gain: 'ゲイン', offset: 'オフセット',
+          blurRadius: 'ブラー半径', blurRatio: 'ブラー H/V 比', reset: 'リセット', mixerInput: (number: number) => `入力 ${number}`,
+        },
+        highlight: { menu: 'ハイライト', off: 'オフ', highlight: 'ハイライト', bw: 'ハイライト（白黒）' },
+        bypass: 'カラーグレードをバイパス', generateLut: 'LUT を生成', lutSize: (size: number) => `3D LUT を生成（${size} ポイントキューブ）`,
+        updateThumbnails: 'すべてのサムネイルを更新',
         changed: '調整済み',
         primariesPalette: {
           modes: 'プライマリーモード', wheels: 'カラーホイール', bars: 'カラーバー', log: 'Log ホイール', reset: 'リセット',
@@ -1594,7 +1612,12 @@ export const ja: Messages = {
           graded: '一部のクリップには既に調整があり、マッチ結果に影響する場合があります。',
           space: 'ショットマッチは Rec.709 Gamma 2.4 向けに設計され、各ノードのタイムライン作業色空間で測定します。',
         },
-        picker: 'ビューアからサンプリングするには、画面上の一点の色をエンジンが読み取れる必要があります。今はまだできません。',
+        picker: 'ビューアをクリックすると 1 ピクセルの色を、ドラッグすると範囲の色を取ります。',
+        qualifierEmpty: 'サンプルスポイトを選び、ビューアをクリックかドラッグして、キーにする色を取ってください。',
+        noKeyNode: 'ノードエディターでコレクターかキーミキサーを選ぶと、そのキーを調整できます。',
+        lutGenerated: (path: string, ignored: number) => (ignored === 0 ? `LUT を ${path} に保存しました。`
+          : `LUT を ${path} に保存しました。クオリファイアー、ウィンドウ、フィルターのあるノード ${ignored} 個は含まれていません。`),
+        lutFailed: (message: string) => `LUT を生成できませんでした（${message}）。`,
         keyed: 'このパラメーターにはキーフレームがあります。変更は再生ヘッドの位置か、その左のキーフレームに入ります。',
         scopes: {
           preparing: 'スコープを準備しています。初回は時間がかかります。',

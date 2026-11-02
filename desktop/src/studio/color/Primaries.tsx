@@ -1,10 +1,12 @@
-import { useRef, type PointerEvent } from 'react';
+import { useContext, useRef, type PointerEvent } from 'react';
 import { Pipette, RotateCcw } from 'lucide-react';
 import { useWords } from '../../app/locale';
 import {
   BAR_FEEL, BOUNDS, SETTING_FEEL, WHEEL_FEEL, chromaOf, fit, rgbOfChroma, ringChroma, withoutColor, type Bounds,
 } from './corrector';
 import { Bar, MasterWheel, NumberControl, useDrag } from './controls';
+import { PickerContext, useArmedPicker } from './pickers';
+import { blackPointEdits, whitePointEdits } from './pickMaths';
 import type { Edits, NodeEdit } from './useNodeEdit';
 
 /**
@@ -74,18 +76,42 @@ export function indicatorOf(wheel: Pick<WheelSpec, 'bounds' | 'feel'>, values: R
 }
 
 /**
- * The head of a wheel or of a group of bars: its name, its reset button at its upper right, and at
- * the upper left of Lift and Gain the black and white point pickers (pp. 3044–3045), off until the
- * engine can sample the viewer.
+ * Pick Black Point and Pick White Point (pp. 3044–3045): pressed, the next click on the viewer
+ * takes the colour that goes into the node there and makes it black by Lift, or white by Gain, one
+ * step to undo; then the picker is let go (the interaction reference, §3.5). Escape lets it go.
  */
-function WheelHead({ title, picker, disabled, onReset }: { title: string; picker?: 'black' | 'white'; disabled: boolean; onReset: () => void }) {
+function PointPicker({ which, edit, name }: { which: 'black' | 'white'; edit: NodeEdit; name: string }) {
+  const words = useWords();
+  const hub = useContext(PickerContext);
+  const now = useRef(edit);
+  now.current = edit;
+  const picker = useArmedPicker((pointer) => {
+    const sample = hub?.sample;
+    if (!sample || pointer.x === null || pointer.y === null) return;
+    void sample(pointer.x, pointer.y).then((input) => {
+      const editing = now.current;
+      if (!input || !editing.enabled) return;
+      const of = (path: string) => Object.fromEntries((['y', 'r', 'g', 'b'] as const).map(ch => [ch, editing.value(`${path}.${ch}`)])) as Record<'y' | 'r' | 'g' | 'b', number>;
+      editing.commit(which === 'black' ? blackPointEdits(input, of('primaries.lift'))
+        : whitePointEdits(input, of('primaries.lift'), of('primaries.gamma'), of('primaries.gain')));
+    }, failure => hub?.onFailure(failure));
+  });
+  const usable = picker.available && hub?.sample != null && edit.enabled;
+  return <button type="button" className="icon-btn" disabled={!usable} aria-pressed={picker.armed} aria-label={name}
+    title={`${name}: ${words.hint.studio.colorPage.picker}`} onClick={picker.toggle} data-test={`picker-${which}`}><Pipette size={12} /></button>;
+}
+
+/**
+ * The head of a wheel or of a group of bars: its name, its reset button at its upper right, and at
+ * the upper left of Lift and Gain the black and white point pickers (pp. 3044–3045).
+ */
+function WheelHead({ title, picker, disabled, onReset, edit }: { title: string; picker?: 'black' | 'white'; disabled: boolean; onReset: () => void; edit: NodeEdit }) {
   const words = useWords();
   const labels = words.label.studio.colorPage.primariesPalette;
   const pickerName = picker === 'black' ? labels.blackPoint : picker === 'white' ? labels.whitePoint : null;
   return <div className="color-wheel-head">
-    {pickerName !== null
-      ? <button type="button" className="icon-btn" disabled aria-label={pickerName} title={`${pickerName}: ${words.hint.studio.colorPage.picker}`}
-        data-test={`picker-${picker}`}><Pipette size={12} /></button>
+    {pickerName !== null && picker
+      ? <PointPicker which={picker} edit={edit} name={pickerName} />
       : <span className="color-wheel-spacer" />}
     <span className="color-wheel-title">{title}</span>
     <button type="button" className="icon-btn" aria-label={`${labels.resetWheel}: ${title}`} title={labels.resetWheel} disabled={disabled}
@@ -181,7 +207,7 @@ function Wheel({ wheel, edit, title, picker }: { wheel: WheelSpec; edit: NodeEdi
   const masterStart = useRef<Record<Channel, number> | null>(null);
   const keyed = wheel.channels.some(ch => edit.keyed(`${wheel.path}.${ch}`));
   return <div className="color-wheel" data-wheel={wheel.name} data-changed={wheel.channels.some(ch => values[ch] !== neutral) || undefined}>
-    <WheelHead title={title} picker={picker} disabled={disabled} onReset={resetAll} />
+    <WheelHead title={title} picker={picker} disabled={disabled} onReset={resetAll} edit={edit} />
     <div ref={ring} className="color-ring" role="slider" aria-label={`${labels.balance}: ${title}`} aria-valuetext={`${x.toFixed(2)}, ${y.toFixed(2)}`}
       aria-disabled={disabled || undefined} data-test="ring"
       onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={() => drag.cancel()}
@@ -226,7 +252,7 @@ function Bars({ wheel, edit, title, picker }: { wheel: WheelSpec; edit: NodeEdit
   const master = wheel.channels.includes('y') ? values.y : withoutColor(values.r, values.g, values.b);
   const resetAll = () => { if (!disabled) edit.commit(wheel.channels.map(ch => [`${wheel.path}.${ch}`, neutral] as const)); };
   return <div className="color-bars" data-wheel={wheel.name}>
-    <WheelHead title={title} picker={picker} disabled={disabled} onReset={resetAll} />
+    <WheelHead title={title} picker={picker} disabled={disabled} onReset={resetAll} edit={edit} />
     <div className="color-bars-row">
       {wheel.channels.map(ch => <div key={edit.controlKey([`${wheel.path}.${ch}`])} className="color-bar-column">
         <Bar name={`${title} ${LETTER[ch]}`} channel={ch} value={values[ch]} neutral={neutral} low={feel.low} high={feel.high} perPx={feel.perPx} disabled={disabled}

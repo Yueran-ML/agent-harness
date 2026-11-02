@@ -745,7 +745,7 @@ export const zhCN: Messages = {
             one: '第 {point} 点', two: '第 {first} 点和第 {second} 点',
             frames: '{clock}第 {from}–{to} 帧', allFrames: '所有帧',
           },
-          osc: '屏上控制', none: '关闭', window: '窗口', image_wipe: '图像划像', add: '添加圆形窗口',
+          osc: '屏上控制', none: '关闭', qualifier: '限定器', window: '窗口', image_wipe: '图像划像', add: '添加圆形窗口',
           list: '窗口列表', editing: '正在编辑', static: '静态', key: '关键帧', frame: '帧', creating: '正在创建窗口…',
           clock: { source: '源时钟', clip: '片段时钟', timeline: '时间线时钟' },
           shapes: { circular: '圆形', linear: '线性', polygon: '多边形', curve: '曲线', gradient: '渐变' },
@@ -818,6 +818,24 @@ export const zhCN: Messages = {
           splitModes: { current_group: '当前群组', neighbor_clips: '相邻片段', selected_clips: '所选片段', selected_stills: '所选静帧图像' },
           showOutline: '显示轮廓', reference: '划像参考片段',
         },
+        qualifierPalette: {
+          modes: '限定器模式', hsl: 'HSL 模式', rgb: 'RGB 模式', lum: 'LUM 模式', reset: '复位', invert: '反转', selectionRange: '选择范围',
+          tools: { pick: '取色器', subtract: '减少颜色范围', add: '增加颜色范围', harden: '减少柔化', soften: '增加柔化' },
+          components: { hue: '色相', sat: '饱和度', lum: '亮度', red: '红', green: '绿', blue: '蓝' },
+          center: '中心', width: '宽度', soft: '柔化', symmetry: '对称', low: '低', high: '高', lowSoft: '低柔化', highSoft: '高柔化',
+          finesse: {
+            title: '遮罩优化', pre_filter: '预过滤', clean_black: '清理黑色', black_clip: '黑色裁切', clean_white: '清理白色',
+            white_clip: '白色裁切', blur_radius: '模糊半径', in_out_ratio: '内/外比例', morph: '形态操作', morph_radius: '形态半径',
+            morphs: { shrink: '收缩', grow: '扩展', opening: '开运算', closing: '闭运算' },
+          },
+        },
+        keyPalette: {
+          input: '键输入', output: '键输出', qualifier: '限定器', invert: '反转', matte: '遮罩', mask: '蒙版', gain: '增益', offset: '偏移',
+          blurRadius: '模糊半径', blurRatio: '模糊水平/垂直比', reset: '复位', mixerInput: (number: number) => `输入 ${number}`,
+        },
+        highlight: { menu: '突出显示', off: '关闭', highlight: '突出显示', bw: '突出显示（黑白）' },
+        bypass: '旁通调色', generateLut: '生成 LUT', lutSize: (size: number) => `生成 3D LUT（${size} 点立方体）`,
+        updateThumbnails: '更新所有缩略图',
         changed: '已调整',
         primariesPalette: {
           modes: '一级校色模式', wheels: '校色轮', bars: '校色条', log: 'Log 色轮', reset: '重置',
@@ -1516,7 +1534,12 @@ export const zhCN: Messages = {
           graded: '部分片段已有调色调整，这些调整可能影响匹配结果。',
           space: '镜头匹配针对 Rec.709 Gamma 2.4 设计，统计取自各节点所在的时间线工作空间。',
         },
-        picker: '在检视器上取样要等引擎能读取画面上某一点的颜色，目前还不行。',
+        picker: '在检视器上单击取一个像素的颜色，拖动取一片范围的颜色。',
+        qualifierEmpty: '选中取色器，在检视器上单击或拖动，取要限定的颜色。',
+        noKeyNode: '在节点编辑器里选中校正器节点或键混合器，才能调整它的键。',
+        lutGenerated: (path: string, ignored: number) => (ignored === 0 ? `LUT 已保存为 ${path}。`
+          : `LUT 已保存为 ${path}。其中有 ${ignored} 个带限定器、窗口或滤镜的节点没有计入。`),
+        lutFailed: (message: string) => `无法生成 LUT（${message}）。`,
         keyed: '这个参数有关键帧：改动会写进播放头处或其左侧的关键帧。',
         scopes: {
           preparing: '正在准备示波器，第一次需要一些时间。',

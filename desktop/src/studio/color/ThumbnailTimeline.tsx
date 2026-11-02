@@ -6,6 +6,7 @@ import type { Thumbnails } from '../media/Thumbnails';
 import { rateOf, timecode } from '../timecode';
 import { badgesOf, sourceFrameAt, type ColorClip } from './clips';
 import { numberText } from './graph';
+import { useGradedPicture, type GradedPictures } from './gradedThumbnails';
 
 /** What is written under each thumbnail, double-clicked to go to the next (p. 3028): the codec first, then the clip's name. */
 export type ThumbnailText = 'codec' | 'name';
@@ -21,15 +22,31 @@ function MatchedBadge({ title }: { title: string }) {
   </svg>;
 }
 
-/** The picture of a thumbnail: a frame of its media, asked for once it is in view; a title or a colour has none. */
-function Picture({ entry, media, rate, cache, offset }: { entry: ColorClip; media: Media | undefined; rate: Rate; cache: Thumbnails | null; offset: number }) {
+/**
+ * The picture of a thumbnail, asked for once it is in view: as its clip is graded where the engine
+ * draws it (`graded`, p. 3026), else a frame of its media; a title or a colour has none but that.
+ */
+function Picture({ entry, media, rate, cache, offset, graded }: {
+  entry: ColorClip; media: Media | undefined; rate: Rate; cache: Thumbnails | null; offset: number; graded?: GradedPictures | null;
+}) {
   const box = useRef<HTMLSpanElement>(null);
   const [picture, setPicture] = useState<string | null>(null);
+  const [seen, setSeen] = useState(false);
   const { clip } = entry;
   const frame = media?.facts.video ? sourceFrameAt(clip, offset, rate, media) : null;
   const mediaId = clip.source.kind === 'media' ? clip.source.media : null;
+  const gradedPicture = useGradedPicture(graded, clip, offset, seen);
   useEffect(() => {
-    if (cache === null || mediaId === null || frame === null) return undefined;
+    if (!graded || seen) return undefined;
+    const observer = typeof IntersectionObserver === 'function' ? new IntersectionObserver((shown) => {
+      if (shown.some(each => each.isIntersecting)) { setSeen(true); observer?.disconnect(); }
+    }) : null;
+    if (observer && box.current) observer.observe(box.current);
+    else setSeen(true);
+    return () => observer?.disconnect();
+  }, [graded, seen]);
+  useEffect(() => {
+    if (graded || cache === null || mediaId === null || frame === null) return undefined;
     let ended = false;
     let asked = false;
     const fetch = () => {
@@ -43,7 +60,11 @@ function Picture({ entry, media, rate, cache, offset }: { entry: ColorClip; medi
     if (observer && box.current) observer.observe(box.current);
     else fetch();
     return () => { ended = true; observer?.disconnect(); };
-  }, [cache, mediaId, frame]);
+  }, [cache, mediaId, frame, graded]);
+  if (gradedPicture) {
+    return <span ref={box} className="color-thumb-picture" title={clip.source.kind === 'media' ? media?.name : undefined} data-picture="graded">
+      <img src={gradedPicture} alt="" draggable={false} /></span>;
+  }
   if (clip.source.kind === 'color') return <span ref={box} className="color-thumb-picture" style={{ background: clip.source.color.slice(0, 7) }} />;
   if (clip.source.kind === 'title') return <span ref={box} className="color-thumb-picture" data-kind="title"><span>{clip.source.text}</span></span>;
   return <span ref={box} className="color-thumb-picture" title={picture === null ? undefined : media?.name}>
@@ -52,8 +73,10 @@ function Picture({ entry, media, rate, cache, offset }: { entry: ColorClip; medi
 }
 
 /** One clip of the thumbnail timeline, with what is written above and below it (pp. 2973–2974, 3027–3028). */
-const Thumbnail = memo(function Thumbnail({ entry, media, rate, cache, current, selected, referenced = false, text, offset, onPick, onText, onPicture }: {
+const Thumbnail = memo(function Thumbnail({ entry, media, rate, cache, current, selected, referenced = false, text, offset, onPick, onText, onPicture, graded }: {
   entry: ColorClip; media: Media | undefined; rate: Rate; cache: Thumbnails | null;
+  /** The pictures of clips as they are graded, where the engine draws them. */
+  graded?: GradedPictures | null;
   current: boolean; selected: boolean; text: ThumbnailText; offset: number;
   /** Whether a timeline wipe shows this clip: outlined in blue (p. 3261). */
   referenced?: boolean;
@@ -107,7 +130,7 @@ ${labels.compare.reference}` : name}>
         if (held?.scrubbing) { onPicture(clip.id, offsetAt(event)); setScrubbed(null); } else if (held) onPick(clip.id, event);
       }}
       onPointerCancel={() => { press.current = null; setScrubbed(null); }}>
-      <Picture entry={entry} media={media} rate={rate} cache={cache} offset={offset} />
+      <Picture entry={entry} media={media} rate={rate} cache={cache} offset={offset} graded={graded} />
       {scrubbed !== null && <span className="color-thumb-scrub" data-test="thumb-scrub">+{scrubbed}</span>}
     </div>
     <div className="color-thumb-foot">
@@ -127,7 +150,7 @@ ${labels.compare.reference}` : name}>
  * goes through its clip, and the frame where it is let go becomes its picture (a matter of the
  * view, which no undo takes back). The clip that a timeline wipe shows is outlined in blue (p. 3261).
  */
-export function ThumbnailTimeline({ clips, media, rate, cache, current, selected, onPick, pictures, onPicture, hint, reference = null }: {
+export function ThumbnailTimeline({ clips, media, rate, cache, current, selected, onPick, pictures, onPicture, hint, reference = null, graded = null }: {
   clips: readonly ColorClip[];
   media: ReadonlyMap<string, Media>;
   rate: Rate;
@@ -141,6 +164,8 @@ export function ThumbnailTimeline({ clips, media, rate, cache, current, selected
   hint: string;
   /** The clip that a timeline wipe shows now, where one does. */
   reference?: string | null;
+  /** The pictures of the clips as they are graded (p. 3026), where the engine draws them. */
+  graded?: GradedPictures | null;
 }) {
   const labels = useWords().label.studio.colorPage;
   const list = useRef<HTMLOListElement>(null);
@@ -184,6 +209,6 @@ export function ThumbnailTimeline({ clips, media, rate, cache, current, selected
     {clips.map(entry => <Thumbnail key={entry.clip.id} entry={entry} rate={rate} cache={cache}
       media={entry.clip.source.kind === 'media' ? media.get(entry.clip.source.media) : undefined}
       current={entry.clip.id === current} selected={selected.has(entry.clip.id)} referenced={entry.clip.id === reference} text={text} offset={pictures[entry.clip.id] ?? 0}
-      onPick={pick} onText={cycle} onPicture={picture} />)}
+      onPick={pick} onText={cycle} onPicture={picture} graded={graded} />)}
   </ol>;
 }

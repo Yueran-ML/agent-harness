@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { Columns2, Grid2x2 } from 'lucide-react';
 import { useWords } from '../../app/locale';
 import type { WipeStyle } from '../engine';
@@ -11,13 +12,18 @@ import type { Comparison } from './useComparison';
  * settings of the mode that is on: of a wipe its reference mode, its style and Invert Wipe; of a
  * split screen its mode.
  */
-export function ComparisonBar({ comparison }: { comparison: Comparison }) {
+export function ComparisonBar({ comparison, children }: {
+  comparison: Comparison;
+  /** The other buttons of the row (Highlight, p. 2987), after Image Wipe and Split Screen. */
+  children?: ReactNode;
+}) {
   const labels = useWords().label.studio.colorPage.compare;
   return <div className="color-viewer-modes" role="toolbar" aria-label={labels.modes} data-test="viewer-modes">
     <button type="button" className="icon-btn" aria-pressed={comparison.wiping} aria-label={labels.imageWipe} title={`${labels.imageWipe} (Ctrl+W)`}
       onClick={comparison.toggleWipe} data-test="image-wipe"><Columns2 size={14} /></button>
     <button type="button" className="icon-btn" aria-pressed={comparison.splitting} aria-label={labels.splitScreen} title={`${labels.splitScreen} (Ctrl+Alt+W)`}
       onClick={comparison.toggleSplit} data-test="split-screen"><Grid2x2 size={14} /></button>
+    {children}
     <span className="color-gap" />
     {comparison.wiping && <>
       <select className="field color-head-kind" aria-label={labels.referenceMode} value={comparison.referenceMode}

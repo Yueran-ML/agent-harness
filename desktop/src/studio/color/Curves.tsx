@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type MouseEvent, type PointerEvent } from 'react';
+import { useContext, useEffect, useRef, useState, type MouseEvent, type PointerEvent } from 'react';
 import { Link2, Pipette, RotateCcw } from 'lucide-react';
 import { useWords } from '../../app/locale';
 import type { CurvePoint } from '../engine';
@@ -7,6 +7,8 @@ import {
   type HslCurve, type Vector,
 } from './corrector';
 import { NumberControl } from './controls';
+import { PickerContext, usePalettePicker, usePickerDrags } from './pickers';
+import { customPickPoints, hslPickPoints } from './pickMaths';
 import type { Edits, NodeEdit } from './useNodeEdit';
 
 /**
@@ -212,6 +214,20 @@ export function CurvesPalette({ edit, mode, onMode }: { edit: NodeEdit; mode: Cu
   const [chosen, setChosen] = useState<number | null>(null);
   useEffect(() => { setChosen(null); }, [mode]);
   const editing: Channel = ganged ? 'y' : channel;
+  const hub = useContext(PickerContext);
+  // The colours taken on the viewer: a point on the custom curve open where the button is let go
+  // (p. 3110); three points on an HSL curve, shown as the drag goes (p. 3122).
+  const drags = usePickerDrags(disabled ? null : hub?.sample ?? null, (samples, ended) => {
+    if (mode === 'custom') {
+      if (!ended) return;
+      const added = customPickPoints(curves[editing].points, samples[samples.length - 1], editing);
+      if (added) edit.commit(customEdits(added));
+      return;
+    }
+    const next = hslPickPoints(mode, edit.base.hsl[mode], samples);
+    if (ended) edit.commit(hslEdits(mode, next)); else edit.preview(hslEdits(mode, next));
+  }, () => edit.cancel(), failure => { edit.cancel(); hub?.onFailure(failure); });
+  usePalettePicker(!disabled, drags);
 
   // Ganged, the four curves are edited as one (pp. 3115–3116): each gets the same points.
   const customEdits = (points: CurvePoint[]): Edits => (ganged ? CHANNELS : [editing]).map(ch => [`curves.${ch}.points`, { whole: points }] as const);
@@ -234,8 +250,12 @@ export function CurvesPalette({ edit, mode, onMode }: { edit: NodeEdit; mode: Cu
     else if (value === 'r' || value === 'g' || value === 'b') edit.commit([[`curves.${value}.points`, { whole: points }]]);
   };
 
+  // Sampling the viewer (pp. 3110, 3122): the picker button switches the viewer's on-screen control
+  // to Qualifier, whose Color Sample cursor then takes the colours for the curve open.
+  const picking = hub !== null && hub.tool === 'qualifier';
   const head = <div className="color-palette-head">
-    <button type="button" className="icon-btn" disabled aria-label={labels.picker} title={`${labels.picker}: ${words.hint.studio.colorPage.picker}`}
+    <button type="button" className="icon-btn" disabled={disabled || hub?.sample == null} aria-pressed={picking} aria-label={labels.picker}
+      title={`${labels.picker}: ${words.hint.studio.colorPage.picker}`} onClick={() => hub?.setTool(picking ? 'none' : 'qualifier')}
       data-test="curve-picker"><Pipette size={13} /></button>
     {mode === 'custom' && <select className="field color-curve-options" aria-label={labels.options} value="" disabled={disabled}
       onChange={(event) => { option(event.target.value); event.currentTarget.value = ''; }} data-test="curve-options">

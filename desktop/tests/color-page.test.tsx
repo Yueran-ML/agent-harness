@@ -90,7 +90,7 @@ function fakeEngine(timelines: Timeline[] = [graded()]) {
     open: vi.fn(async () => { const opened = { session: 1, project: 'F:/film/.columbina/studio', owned: true, pid: 9, revision }; listeners.forEach(listener => listener({ kind: 'opened', ...opened })); return opened; }),
     call: vi.fn(async (method: string, params?: Record<string, unknown>) => {
       if (method === 'project.get') return { ok: true, result: { project, revision, next_id: project.next_id } };
-      if (method === 'media.thumbnail') return new Promise(() => {});
+      if (method === 'media.thumbnail' || method === 'timeline.thumbnail') return new Promise(() => {});
       if (method === 'transport.state') return { ok: true, result: params?.monitor === 'timeline' ? state : { ...state, monitor: 'source', media: null } };
       if (method === 'transport.load') {
         state = { ...state, timeline: params!.timeline as string, frame: 0, shown: 0, last: 299 } as TransportState;
@@ -255,8 +255,10 @@ describe('the Color page', () => {
     expect(thumbs().filter(each => each.querySelector('[data-graded]')).map(each => each.dataset.clip)).toEqual(['c1']);
     expect(thumbs().filter(each => each.querySelector('[data-test="badge-group"]')).map(each => each.dataset.clip)).toEqual(['c2']);
     expect(thumbs().filter(each => each.querySelector('[data-test="badge-matched"]')).map(each => each.dataset.clip)).toEqual(['c1']);
-    // Each picture is the first frame of its clip, in the frames of its media.
-    expect(calls(bridge, 'media.thumbnail')).toEqual(expect.arrayContaining([{ media: 'm1', frame: 0, height: 90 }, { media: 'm2', frame: 50, height: 90 }]));
+    // Each picture is the first frame of its clip as it is graded (p. 3026), its layer drawn by the engine, a title's too.
+    expect(calls(bridge, 'timeline.thumbnail')).toEqual(expect.arrayContaining([{ timeline: 't1', clip: 'c1', frame: 0, height: 90 },
+      { timeline: 't1', clip: 'c2', frame: 100, height: 90 }, { timeline: 't1', clip: 'c4', frame: 50, height: 90 }]));
+    expect(calls(bridge, 'media.thumbnail')).toEqual([]);
   });
 
   it('outlines the clip at the playhead, and a click takes the playhead to the first frame of a clip, as the mini-timeline does', async () => {
@@ -432,17 +434,12 @@ describe('the Color page', () => {
     expect(page().dataset.viewerMode).toBe('normal');
   });
 
-  it('tells of the LUTs that the engine could not read, at the foot of the viewer', async () => {
+  it('leaves the words of the LUTs that the engine could not read to the engine, which writes them over its view (T13d)', async () => {
     const { notify } = await mount();
     expect(document.querySelector('[data-test="missing-luts"]')).toBeNull();
+    // The engine writes Missing LUT: film.cube at the lower right of the picture of its native view
+    // (p. 3413): the page, which cannot draw over it, says nothing beneath it.
     await notify({ missing_luts: [{ name: 'film.cube', message: 'there is no LUT film.cube in the folder of the project or in the library' }] });
-    const notice = document.querySelector<HTMLElement>('[data-test="missing-luts"]')!;
-    expect(notice.textContent).toBe('Missing LUT: film.cube');
-    expect(notice.title).toContain('there is no LUT film.cube');
-    expect(notice.closest('.monitor')).not.toBeNull();
-    await notify({ missing_luts: [{ name: 'a.cube', message: 'no' }, { name: 'b.cube', message: 'no' }] });
-    expect(document.querySelector('[data-test="missing-luts"]')!.textContent).toBe('Multiple LUTs missing');
-    await notify({ missing_luts: undefined });
     expect(document.querySelector('[data-test="missing-luts"]')).toBeNull();
   });
 
@@ -550,6 +547,60 @@ describe('the Color page', () => {
     await settle();
     expect([...document.querySelectorAll('.studio-pages [role="tab"]')].map(tab => tab.textContent)).toEqual(['Media', 'Cut', 'Edit']);
     expect(document.querySelector('[data-test="color-page"]')).toBeNull();
+  });
+});
+
+describe('the viewer modes, the pickers and the thumbnail menu of the Color page (T21, T13d, T10b)', () => {
+  it('turns Highlight on and off with Shift+H and Alt+Shift+H for the current node, and Bypass Color with Shift+D', async () => {
+    const { bridge, notify } = await mount();
+    const grade = { level: 'clip', timeline: 't1', clip: 'c1' };
+    key('H', { code: 'KeyH', shiftKey: true }); await settle();
+    expect(calls(bridge, 'viewer.highlight').at(-1)).toEqual({ mode: 'highlight', grade, node: 'n1' });
+    expect(screen.getByRole('button', { name: 'Highlight' }).getAttribute('aria-pressed')).toBe('true');
+    key('H', { code: 'KeyH', shiftKey: true, altKey: true }); await settle();
+    expect(calls(bridge, 'viewer.highlight').at(-1)).toEqual({ mode: 'bw', grade, node: 'n1' });
+    // Another node current: the engine is told it.
+    fireEvent.pointerDown(graph().querySelector('[data-node="n2"]')!, { button: 0 }); fireEvent.pointerUp(graph().querySelector('[data-node="n2"]')!, { button: 0 }); await settle();
+    expect(calls(bridge, 'viewer.highlight').at(-1)).toEqual({ mode: 'bw', grade, node: 'n2' });
+    key('H', { code: 'KeyH', shiftKey: true, altKey: true }); await settle();
+    expect(calls(bridge, 'viewer.highlight').at(-1)).toEqual({ mode: 'off' });
+    // Bypass Color: Shift+D, and the button; the state of the monitor tells it.
+    key('D', { code: 'KeyD', shiftKey: true }); await settle();
+    expect(calls(bridge, 'viewer.bypass')).toEqual([{ on: true }]);
+    await notify({ bypass: true }); await settle();
+    const bypass = document.querySelector<HTMLElement>('[data-test="bypass-color"]')!;
+    expect(bypass.getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(bypass); await settle();
+    expect(calls(bridge, 'viewer.bypass').at(-1)).toEqual({ on: false });
+  });
+
+  it('switches the viewer to the Qualifier control as the Qualifier palette opens (p. 2988)', async () => {
+    await mount();
+    const osc = document.querySelector<HTMLSelectElement>('[data-test="viewer-osc"]')!;
+    expect(osc.value).toBe('none');
+    fireEvent.click(screen.getByRole('tab', { name: 'Qualifier' })); await settle();
+    expect(osc.value).toBe('qualifier');
+    expect(document.querySelector('[data-test="qualifier"]')).not.toBeNull();
+    fireEvent.click(screen.getByRole('tab', { name: 'Key' })); await settle();
+    expect(document.querySelector('[data-test="key"]')).not.toBeNull();
+  });
+
+  it('generates a LUT of a clip from its thumbnail, says where it went, and updates all thumbnails', async () => {
+    const { bridge } = await mount();
+    const exportLut = vi.fn(async () => ({ ok: true as const, result: { path: 'C:/LUT/Street.cube', name: 'Street.cube', size: 33, nodes: ['pre'], ignored: [{ node: 'n9', why: 'qualifier' }] } }));
+    (bridge as unknown as Record<string, unknown>).exportLut = exportLut;
+    fireEvent.contextMenu(thumb('c2'), { clientX: 20, clientY: 20 }); await settle();
+    fireEvent.click(document.querySelector('[data-test="menu-generate-lut"]')!);
+    expect(document.querySelector('[data-test="menu-generate-lut-17"]')!.textContent).toContain('Generate 3D LUT (17 Point Cube)');
+    fireEvent.click(document.querySelector('[data-test="menu-generate-lut-33"]')!); await settle();
+    expect(exportLut).toHaveBeenCalledWith({ language: 'en', grade: { level: 'clip', timeline: 't1', clip: 'c2' }, size: 33, name: 'Street' });
+    expect(document.querySelector('[data-test="lut-notice"]')!.textContent)
+      .toBe('The LUT was saved as C:/LUT/Street.cube. A node with qualifiers, windows or filters was left out of it.');
+    const asked = calls(bridge, 'timeline.thumbnail').length;
+    fireEvent.contextMenu(thumb('c1'), { clientX: 20, clientY: 20 }); await settle();
+    fireEvent.click(document.querySelector('[data-test="menu-update-thumbnails"]')!); await settle();
+    await act(() => new Promise(done => setTimeout(done, 20)));
+    expect(calls(bridge, 'timeline.thumbnail').length).toBeGreaterThanOrEqual(asked * 2);
   });
 });
 

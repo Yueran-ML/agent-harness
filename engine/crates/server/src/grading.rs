@@ -231,6 +231,8 @@ pub struct Grading {
     viewed: Vec<Arc<Target>>,
     /// The pictures that the words of the view are written over (`crate::notice`).
     noticed: Vec<Arc<Target>>,
+    /// The plate of those words last drawn (`crate::notice::Plates`).
+    plates: crate::notice::Plates,
     /// How many grades were made ready, for the tests.
     made: u64,
 }
@@ -253,6 +255,7 @@ impl Grading {
             missing: Vec::new(),
             viewed: Vec::new(),
             noticed: Vec::new(),
+            plates: crate::notice::Plates::default(),
             made: 0,
         }
     }
@@ -605,7 +608,7 @@ impl Grading {
                 Err(_) => return Arc::clone(viewed),
             },
         };
-        match crate::notice::write(&gpu, viewed, &into, words, white) {
+        match crate::notice::write(&mut self.plates, &gpu, viewed, &into, words, white) {
             Ok(()) => into,
             Err(_) => Arc::clone(viewed),
         }

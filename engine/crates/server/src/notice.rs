@@ -80,8 +80,55 @@ pub fn plate(pixels: &[[u8; 4]], white: f32) -> Vec<u16> {
     out
 }
 
+/// A plate drawn: its width and height, and its pixels as [`plate`] gives them.
+#[derive(Debug, PartialEq)]
+pub struct Plate {
+    pub width: u32,
+    pub height: u32,
+    pub halves: Vec<u16>,
+}
+
+/// The plate last drawn, kept by the words, the size of the letters and the white it is drawn
+/// of, so that the frames of a monitor that go on missing the same LUT do not draw the letters
+/// again at each frame.
+#[derive(Debug, Default)]
+pub struct Plates {
+    kept: Option<((String, u32, u32), Arc<Plate>)>,
+    /// How many plates were drawn, for the tests.
+    made: u64,
+}
+
+impl Plates {
+    /// The plate of `words` in letters `size` pixels high, their white `white`: the one kept
+    /// where it is of these, else drawn and kept.
+    pub fn plate(&mut self, words: &str, size: f32, white: f32) -> Arc<Plate> {
+        let key = (words.to_owned(), size.to_bits(), white.to_bits());
+        if let Some((kept, plate)) = &self.kept {
+            if *kept == key {
+                return Arc::clone(plate);
+            }
+        }
+        let (width, height, pixels) = overlay::label(words, size);
+        let made = Arc::new(Plate {
+            width,
+            height,
+            halves: plate(&pixels, white),
+        });
+        self.made += 1;
+        self.kept = Some((key, Arc::clone(&made)));
+        made
+    }
+
+    /// How many plates were drawn.
+    #[must_use]
+    pub fn made(&self) -> u64 {
+        self.made
+    }
+}
+
 /// `shown` with `words` written over it at its lower right, into `into` (a target of its size,
-/// on its card): the frame copied, then the plate written.
+/// on its card): the frame copied, then the plate written, the one of `plates` where it is of
+/// these words.
 ///
 /// # Errors
 /// The words do not fit on the frame, or the targets are not of a size on the card.
@@ -90,6 +137,7 @@ pub fn plate(pixels: &[[u8; 4]], white: f32) -> Vec<u16> {
     reason = "the height of a frame, for the size of letters"
 )]
 pub fn write(
+    plates: &mut Plates,
     gpu: &Arc<Gpu>,
     shown: &Target,
     into: &Target,
@@ -98,9 +146,9 @@ pub fn write(
 ) -> Result<(), String> {
     let frame = shown.size();
     let size = (frame.1 as f32 * SIZE).max(LEAST);
-    let (width, height, pixels) = overlay::label(words, size);
-    let at = place(frame, width, height)
-        .filter(|_| width > 0 && height > 0)
+    let drawn = plates.plate(words, size, white);
+    let at = place(frame, drawn.width, drawn.height)
+        .filter(|_| drawn.width > 0 && drawn.height > 0)
         .ok_or_else(|| {
             format!(
                 "{words:?} does not fit on a frame of {}×{}",
@@ -112,8 +160,8 @@ pub fn write(
         shown,
         into,
         at,
-        (width, height),
-        &plate(&pixels, white),
+        (drawn.width, drawn.height),
+        &drawn.halves,
     )
     .map_err(|error| error.to_string())
 }
@@ -173,6 +221,36 @@ mod tests {
     }
 
     #[test]
+    fn a_plate_is_drawn_once_for_the_same_words_size_and_white() {
+        let mut plates = Plates::default();
+        let first = plates.plate("Missing LUT: day.cube", 20.0, 0.9);
+        assert!(first.width > 0 && first.height > 0);
+        assert_eq!(
+            first.halves.len(),
+            (first.width * first.height * 4) as usize
+        );
+        // Frame after frame of the same words: the plate kept.
+        for _ in 0..3 {
+            assert!(Arc::ptr_eq(
+                &plates.plate("Missing LUT: day.cube", 20.0, 0.9),
+                &first
+            ));
+        }
+        assert_eq!(plates.made(), 1);
+        // Other words, another size or another white: drawn again.
+        let other = plates.plate("Multiple LUTs missing", 20.0, 0.9);
+        assert!(!Arc::ptr_eq(&other, &first));
+        plates.plate("Multiple LUTs missing", 30.0, 0.9);
+        plates.plate("Multiple LUTs missing", 30.0, 0.58);
+        assert_eq!(plates.made(), 4);
+        assert!(Arc::ptr_eq(
+            &plates.plate("Multiple LUTs missing", 30.0, 0.58),
+            &plates.plate("Multiple LUTs missing", 30.0, 0.58)
+        ));
+        assert_eq!(plates.made(), 4);
+    }
+
+    #[test]
     fn the_words_are_written_over_a_copy_of_the_frame_at_its_lower_right() {
         let Some(gpu) = columbina_compose::gpu_for_tests() else {
             return;
@@ -195,7 +273,27 @@ mod tests {
             .render(&scene, &shown)
             .unwrap();
         let into = Target::preview(&gpu, width, height).unwrap();
-        write(&gpu, &shown, &into, "Missing LUT: day.cube", 0.9).unwrap();
+        let mut plates = Plates::default();
+        write(
+            &mut plates,
+            &gpu,
+            &shown,
+            &into,
+            "Missing LUT: day.cube",
+            0.9,
+        )
+        .unwrap();
+        // The next frame writes the same plate, not drawn again.
+        write(
+            &mut plates,
+            &gpu,
+            &shown,
+            &into,
+            "Missing LUT: day.cube",
+            0.9,
+        )
+        .unwrap();
+        assert_eq!(plates.made(), 1);
         let read = into.read_floats().unwrap();
         let at = |x: u32, y: u32| {
             let i = ((y * width + x) * 4) as usize;
@@ -218,6 +316,6 @@ mod tests {
             .any(|p| p.iter().all(|v| (v - 0.9).abs() < 1e-2)));
         assert!(corner.iter().any(|p| p.iter().all(|v| v.abs() < 1e-3)));
         // Words too long for the frame are refused, and nothing is written.
-        assert!(write(&gpu, &shown, &into, &"x".repeat(400), 0.9).is_err());
+        assert!(write(&mut plates, &gpu, &shown, &into, &"x".repeat(400), 0.9).is_err());
     }
 }

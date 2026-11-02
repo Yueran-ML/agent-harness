@@ -415,6 +415,18 @@ def test_the_tools_of_grades_cost_few_characters_on_every_request() -> None:
     assert max(sizes.values()) < 1800
 
 
+def test_preserving_nodes_is_told_to_leave_out_the_first_nodes_of_the_copied_grade() -> None:
+    # T14c v23: told only that a target keeps its first N nodes, the model took the copy's first
+    # node, ignored as Copy Grade: Preserve number of nodes ignores it (RM20, "When set to 1, the
+    # first node of the copied grade is ignored"), for a bug, undid the copy and appended instead.
+    (copy_tool,) = [
+        tool for tool in tools_of(Videos(Config(), None)) if tool.name == "video_grade_copy"
+    ]
+    told = copy_tool.schema.parameters["properties"]["preserve_nodes"]["description"]
+    assert "in place of from's first N" in told
+    assert "not copied" in told
+
+
 async def test_the_engine_matches_a_cast_shot_of_bars_to_the_same_bars(
     ctx: Context, tmp_path: Path
 ) -> None:

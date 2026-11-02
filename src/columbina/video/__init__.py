@@ -421,7 +421,10 @@ class _GradeCopy(_Graded):
         default=None,
         ge=0,
         le=10,
-        description="copy: keep the first N nodes of each target with N or more.",
+        description=(
+            "copy: a target of N or more keeps its first N nodes in place of from's first N, "
+            "which are not copied."
+        ),
     )
     keyframes: grading.KeyAlign | None = Field(
         default=None,

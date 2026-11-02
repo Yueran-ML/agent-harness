@@ -66,6 +66,7 @@ mod srt;
 mod thumbnail;
 mod stills;
 mod timer;
+mod tracking;
 mod transport;
 mod view;
 mod viewer_preview;

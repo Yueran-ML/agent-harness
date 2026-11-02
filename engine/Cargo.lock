@@ -330,6 +330,7 @@ dependencies = [
  "columbina-media",
  "columbina-model",
  "columbina-store",
+ "columbina-track",
  "columbina-view",
  "cpal",
  "interprocess",

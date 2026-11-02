@@ -253,7 +253,7 @@ impl Selection {
             .windows
             .iter()
             .filter(|w| w.enabled)
-            .filter_map(|w| shape_at(w, placement, size, at))
+            .filter_map(|w| shape_at(w, crate::tracking::placed(placement, w, at), size, at))
             .collect();
         Some(Arc::new(WindowOverlay {
             shapes,
@@ -597,7 +597,7 @@ impl RotationBasis {
         let aspect = f64::from(picture.0) / f64::from(picture.1);
         let [_, _, _, _, x, y] = window.transform.affine_at(at as f64, aspect)?;
         Some(Self {
-            placement,
+            placement: crate::tracking::placed(placement, window, at),
             centre: (x, y),
             aspect,
         })
@@ -851,6 +851,8 @@ impl Movement {
         let (placement, picture, at) = selection.placement(frame)?;
         let original = selection.corrector(&frame.project)?.windows.clone();
         let index = original.iter().position(|w| w.id == id && w.enabled)?;
+        // A tracked window is hit and dragged where its track shows it (T24).
+        let placement = crate::tracking::placed(placement, &original[index], at);
         let shape = &original[index].shape;
         let gradient = matches!(shape, WindowShape::Gradient { .. });
         let circular = matches!(shape, WindowShape::Circular { .. });
@@ -1386,7 +1388,10 @@ impl Movement {
                 field.bounds(),
             );
         }
-        Some(windows)
+        let aspect = f64::from(self.picture.0) / f64::from(self.picture.1);
+        Some(crate::tracking::frame_mode(
+            &self.base, windows, self.index, self.frame, aspect,
+        ))
     }
     pub fn op(selection: &Selection, windows: &[Window]) -> Value {
         json!({"op":"set_node","grade":selection.target,"id":selection.node,"params":{"windows":windows}})

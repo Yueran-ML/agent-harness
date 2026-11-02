@@ -22,6 +22,8 @@ columbina-lut = { path = "../lut" }
 columbina-media = { path = "../media" }
 columbina-model = { path = "../model" }
 columbina-store = { path = "../store" }
+# Window tracking (T24): the tracker run on the frames of a clip.
+columbina-track = { path = "../track" }
 columbina-view = { path = "../view" }
 cpal.workspace = true
 interprocess.workspace = true

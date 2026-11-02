@@ -997,14 +997,15 @@ describe('a node added with a window (Add Serial Node + CPW, LPW, PPW, PCW; p. 3
     // The Window palette opens up, ready for editing, with the viewer's controls on the window (pp. 3187, 3189).
     expect(centerShown()).toBe('window');
     expect(osc()).toBe('window');
-    expect(screen.getByRole('option', { name: 'w1 · Circular' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('option', { name: 'w1' }).getAttribute('aria-selected')).toBe('true');
     for (const [code, shape, label] of [['q', 'linear', 'Linear'], ['g', 'polygon', 'Polygon'], ['b', 'curve', 'Curve']] as const) {
       const after = currentNode()!;
       bridge.call.mockClear();
       letter(code, { altKey: true }); await settle();
       expect(sent(bridge)).toEqual([[{ edit: 'add_serial', grade: C1, node: after, windows: [newWindow('w1', shape)] }]]);
       expect(currentNode()).not.toBe(after);
-      expect(screen.getByRole('option', { name: `w1 · ${label}` }).getAttribute('aria-selected')).toBe('true');
+      expect(screen.getByRole('option', { name: 'w1' }).getAttribute('aria-selected')).toBe('true');
+      expect(screen.getByRole('button', { name: 'On/Off w1' }).textContent).toBe(label);
     }
     expect(calls(bridge, 'history.undo')).toEqual([]);
   });
@@ -1019,7 +1020,7 @@ describe('a node added with a window (Add Serial Node + CPW, LPW, PPW, PCW; p. 3
     expect(graph().querySelector('[data-node="n11"] [data-test="node-number"]')!.textContent).toBe('02');
     expect(centerShown()).toBe('window');
     // The Curve is an empty draft, chosen, for clicks in the viewer to draw (p. 3193).
-    expect(screen.getByRole('option', { name: 'w1 · Curve' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('option', { name: 'w1' }).getAttribute('aria-selected')).toBe('true');
   });
 
   it('are in the Add Node menu of a node with their keys, and a plain Alt+S opens no palette', async () => {

@@ -272,7 +272,7 @@ describe('Circular Window controls', () => {
     expect(calls(h.bridge, 'view.pointer')).toEqual(pointerCalls);
     await h.tell('view.pointer', nativePoint('down', 20)); await settle();
     expect(calls(h.bridge, 'window.input')[0]).toEqual({ binding: 1, kind: 'down', event: 20 });
-    expect(screen.getByRole('option', { name: 'w2 · Circular' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('option', { name: 'w2' }).getAttribute('aria-selected')).toBe('true');
     expect(document.querySelector('[data-test="window-keys"]')!.textContent).toContain('Pan: Key frame 0 · Tilt: Key frame 3');
     expect((screen.getByRole('button', { name: 'Add Circular Window' }) as HTMLButtonElement).disabled).toBe(true);
     // C2 owns its project changes; the desktop retains the binding across copies, including coalesced revisions.
@@ -284,7 +284,7 @@ describe('Circular Window controls', () => {
     expect(calls(h.bridge, 'window.bind')).toHaveLength(1);
     expect(calls(h.bridge, 'viewer.wipe')).toHaveLength(1);
     await h.tell('view.pointer', nativePoint('up', 22)); await settle();
-    fireEvent.click(screen.getByRole('option', { name: 'w1 · Circular' })); await settle();
+    fireEvent.click(screen.getByRole('option', { name: 'w1' })); await settle();
     expect(calls(h.bridge, 'window.bind')).toHaveLength(2);
   });
 
@@ -300,17 +300,17 @@ describe('Circular Window controls', () => {
       return answer;
     });
     fireEvent.click(screen.getByRole('button', { name: 'Add Circular Window' })); await settle();
-    fireEvent.click(screen.getByRole('option', { name: 'w3 · Circular' })); await settle();
+    fireEvent.click(screen.getByRole('option', { name: 'w3' })); await settle();
     expect(calls(h.bridge, 'window.bind').some((each: any) => each.selected === 'w3')).toBe(false);
     expect((screen.getByRole('button', { name: 'Add Circular Window' }) as HTMLButtonElement).disabled).toBe(true);
     const osc = screen.getByRole('combobox', { name: 'On-screen controls' });
     fireEvent.change(osc, { target: { value: 'none' } }); await settle();
     fireEvent.change(osc, { target: { value: 'window' } }); await settle();
-    fireEvent.click(screen.getByRole('option', { name: 'w3 · Circular' })); await settle();
+    fireEvent.click(screen.getByRole('option', { name: 'w3' })); await settle();
     expect(calls(h.bridge, 'window.bind').some((each: any) => each.selected === 'w3')).toBe(false);
     await act(async () => release()); await settle();
-    expect(screen.getByRole('option', { name: 'w1 · Circular' }).getAttribute('aria-selected')).toBe('true');
-    fireEvent.click(screen.getByRole('option', { name: 'w3 · Circular' })); await settle();
+    expect(screen.getByRole('option', { name: 'w1' }).getAttribute('aria-selected')).toBe('true');
+    fireEvent.click(screen.getByRole('option', { name: 'w3' })); await settle();
     expect(calls(h.bridge, 'window.bind').at(-1)).toMatchObject({ selected: 'w3', revision: 1 });
   });
 

@@ -751,7 +751,7 @@ export const zhCN: Messages = {
           },
           osc: '屏上控制', none: '关闭', qualifier: '限定器', window: '窗口', image_wipe: '图像划像', add: '添加圆形窗口',
           list: '窗口列表', editing: '正在编辑', static: '静态', key: '关键帧', frame: '帧', creating: '正在创建窗口…',
-          invert: '反转', mask: '蒙版',
+          invert: '反转', mask: '蒙版', onOff: '开/关', layerName: '图层名称',
           clock: { source: '源时钟', clip: '片段时钟', timeline: '时间线时钟' },
           shapes: { circular: '圆形', linear: '线性', polygon: '多边形', curve: '曲线', gradient: '渐变' },
           status: { arming: '正在准备窗口拖动…', armed: '正在拖动窗口 · Esc 取消' }

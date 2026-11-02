@@ -879,6 +879,8 @@ export const en = {
           list: 'Windows', editing: 'Editing', static: 'Static', key: 'Key frame', frame: 'Frame', creating: 'Creating window…',
           /** The switches of each row of the Window list (RM20 p. 3189): Mask on adds the window, off subtracts it. */
           invert: 'Invert', mask: 'Mask',
+          /** A row's shape button, which turns the window on and off, and its name field (RM20 p. 3189). */
+          onOff: 'On/Off', layerName: 'Layer Name',
           clock: { source: 'Source clock', clip: 'Clip clock', timeline: 'Timeline clock' },
           shapes: { circular: 'Circular', linear: 'Linear', polygon: 'Polygon', curve: 'Curve', gradient: 'Gradient' },
           /** While a window is dragged; nothing is said while none is. */

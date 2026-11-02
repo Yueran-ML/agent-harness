@@ -800,7 +800,7 @@ export const ja: Messages = {
           },
           osc: 'オンスクリーンコントロール', none: 'オフ', qualifier: 'クオリファイアー', window: 'ウィンドウ', image_wipe: 'イメージワイプ', add: '円形ウィンドウを追加',
           list: 'ウィンドウ', editing: '編集中', static: '静的', key: 'キーフレーム', frame: 'フレーム', creating: 'ウィンドウを作成中…',
-          invert: '反転', mask: 'マスク',
+          invert: '反転', mask: 'マスク', onOff: 'オン/オフ', layerName: 'レイヤー名',
           clock: { source: 'ソース時間', clip: 'クリップ時間', timeline: 'タイムライン時間' },
           shapes: { circular: '円形', linear: '線形', polygon: '多角形', curve: '曲線', gradient: 'グラデーション' },
           status: { arming: 'ウィンドウのドラッグを準備中…', armed: 'ウィンドウをドラッグ中 · Esc でキャンセル' }

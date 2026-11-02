@@ -186,7 +186,7 @@ describe('the Color page', () => {
     expect(calls(bridge, 'window.bind')).toEqual([{ monitor: 'timeline', revision: 1, timeline: 't1', target: { level: 'clip', timeline: 't1', clip: 'c3' },
       clip: 'c3', node: 'n10', selected: 'w1', visible: true, outline: true, tool: 'window' }]);
     expect(copy.getSnapshot().revision).toBe(1);
-    expect(screen.getByRole('option', { name: 'w1 · Circular' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('option', { name: 'w1' }).getAttribute('aria-selected')).toBe('true');
   });
 
   it('is laid out as DaVinci Resolve lays it out, the viewer playing the timeline', async () => {

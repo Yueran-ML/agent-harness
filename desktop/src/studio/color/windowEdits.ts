@@ -22,10 +22,11 @@ export type WindowField = 'transform.size' | 'transform.aspect' | 'transform.pan
 export interface EditScope { live: boolean }
 /**
  * One window's field as a control sets it, resolved by window id. A number goes where an edit at the playhead goes
- * (a value or the left key); Invert and Mask (`combine`) are switches of the whole window, never keyed (PROTOCOL.md).
+ * (a value or the left key); On/Off (`enabled`), the Layer Name (`label`), Invert and Mask (`combine`) are of the whole
+ * window, never keyed (PROTOCOL.md).
  */
-export type WindowChange = { id: string; field: WindowField; value: number } | { id: string; field: 'invert'; value: boolean }
-  | { id: string; field: 'combine'; value: PowerWindow['combine'] };
+export type WindowChange = { id: string; field: WindowField; value: number } | { id: string; field: 'enabled' | 'invert'; value: boolean }
+  | { id: string; field: 'label'; value: string } | { id: string; field: 'combine'; value: PowerWindow['combine'] };
 export interface WindowEdit { window: WindowChange; scope?: EditScope }
 
 export function windowPath(base: Corrector, edit: WindowEdit): string {
@@ -40,8 +41,9 @@ export function windowValue(base: Corrector, edit: WindowEdit, frame: number): P
   if (index < 0) return null;
   const window = windows[index];
   const change = edit.window;
-  if (change.field === 'invert') return windows.map((w, i) => i === index ? { ...w, invert: change.value } : w);
-  if (change.field === 'combine') return windows.map((w, i) => i === index ? { ...w, combine: change.value } : w);
+  if (change.field === 'enabled' || change.field === 'invert' || change.field === 'label' || change.field === 'combine') {
+    return windows.map((w, i) => i === index ? { ...w, [change.field]: change.value } : w);
+  }
   const param = withValue(getAt(window, field) as Param, frame, value as number);
   let next: PowerWindow;
   const shape = window.shape;

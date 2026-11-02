@@ -186,15 +186,20 @@ export function WindowPalette({ controls, capturing, busy, status, edit, notice 
     <button type="button" className="btn" disabled={blocked}
       onClick={() => controls.create(() => busy() || edit.pending(), 'curve')}>{words.addCurve}</button>
     <WindowPresets place={{ ...controls.presets, enabled: !blocked }} onRecalled={controls.choose} />
-    {/* Each row: the button that chooses the window, then its Invert and Mask switches (RM20 p. 3189). */}
+    {/* Each row (RM20 p. 3189): the On/Off button showing its shape, the button that chooses the window by its id, its
+      * Layer Name, then its Invert and Mask switches. */}
     <div role="listbox" aria-label={words.list} className="color-window-list">
-      {controls.windows.map(each => <div role="presentation" className="color-window-row" key={each.id}>
-        <button type="button" className="btn" role="option" aria-selected={selected?.id === each.id}
-          disabled={!supported(each) || controls.waitingFor(each.id)} onClick={() => controls.choose(each.id)}>
-          {each.label || each.id} · {words.shapes[each.shape.kind]}</button>
-        <WindowSwitches edit={edit} window={each} disabled={!controls.enabled || controls.pending || capturing || !edit.enabled
-          || controls.waitingFor(each.id)} />
-      </div>)}
+      {controls.windows.map(each => {
+        const disabled = !controls.enabled || controls.pending || capturing || !edit.enabled || controls.waitingFor(each.id);
+        return <div role="presentation" className="color-window-row" key={each.id}>
+          <WindowOnOff edit={edit} window={each} disabled={disabled} onEnabled={() => controls.choose(each.id)} />
+          <button type="button" className="btn" role="option" aria-selected={selected?.id === each.id}
+            disabled={!supported(each) || controls.waitingFor(each.id)} onClick={() => controls.choose(each.id)}>
+            {each.id}</button>
+          <WindowLayerName edit={edit} window={each} disabled={disabled} />
+          <WindowSwitches edit={edit} window={each} disabled={disabled} />
+        </div>;
+      })}
     </div>
     {selected && <div data-test="window-keys">
       <p>{words.editing}: {selected.label || selected.id}</p>
@@ -231,6 +236,45 @@ function WindowSwitches({ edit, window, disabled }: { edit: NodeEdit; window: Po
       disabled={disabled} onClick={() => edit.commit([['windows', { window: { id: window.id, field: 'combine', value: shown.combine === 'add' ? 'subtract' : 'add' } }]])}>
       {words.mask}</button>
   </>;
+}
+
+/**
+ * A row's On/Off button, which shows the window's shape (RM20 p. 3189), committed as Invert and Mask are. A window turned
+ * on is also chosen, so that its onscreen controls appear (p. 3190); one turned off keeps the selection, without them.
+ */
+function WindowOnOff({ edit, window, disabled, onEnabled }: { edit: NodeEdit; window: PowerWindow; disabled: boolean; onEnabled: () => void }) {
+  const words = useWords().label.studio.colorPage.windowControls;
+  const shown = edit.corrector.windows?.find(each => each.id === window.id) ?? window;
+  const shape = words.shapes[window.shape.kind];
+  return <button type="button" className="btn color-window-switch" aria-pressed={shown.enabled} aria-label={`${words.onOff} ${window.label || window.id}`}
+    title={`${shape} · ${words.onOff}`} disabled={disabled} onClick={() => {
+      edit.commit([['windows', { window: { id: window.id, field: 'enabled', value: !shown.enabled } }]]);
+      if (!shown.enabled) onEnabled();
+    }}>{shape}</button>;
+}
+
+/**
+ * A row's Layer Name, blank until it is given one (RM20 p. 3189): typed freely, sent trimmed when Enter is pressed or the
+ * field is left, if it changed, as one commit of the whole list like Invert and Mask; Escape puts the name back.
+ */
+function WindowLayerName({ edit, window, disabled }: { edit: NodeEdit; window: PowerWindow; disabled: boolean }) {
+  const words = useWords().label.studio.colorPage.windowControls;
+  const shown = edit.corrector.windows?.find(each => each.id === window.id) ?? window;
+  const [draft, setDraft] = useState<string | null>(null);
+  const typed = useRef<string | null>(null);
+  const write = (value: string | null) => { typed.current = value; setDraft(value); };
+  const send = () => {
+    const label = typed.current?.trim();
+    write(null);
+    if (label !== undefined && label !== shown.label) edit.commit([['windows', { window: { id: window.id, field: 'label', value: label } }]]);
+  };
+  return <input type="text" className="field color-window-name" value={draft ?? shown.label} maxLength={100} autoComplete="off" spellCheck={false}
+    aria-label={`${words.layerName} ${window.label || window.id}`} title={words.layerName} disabled={disabled}
+    onChange={event => write(event.target.value)} onBlur={send}
+    onKeyDown={event => {
+      if (event.key === 'Enter') { event.preventDefault(); send(); }
+      else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); write(null); }
+    }} />;
 }
 
 interface FieldSpec { field: WindowField; name: keyof WindowWords['fields']; neutral: number; low: number; high: number; perPx: number }

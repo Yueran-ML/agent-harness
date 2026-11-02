@@ -331,6 +331,14 @@ export interface EngineBridge {
   viewRect(rect: ViewRect, monitor: Monitor): Promise<void>;
   /** Hide the view while something of the page lies over the viewer, and show it again after. */
   viewShow(shown: boolean, monitor: Monitor): Promise<void>;
+  /**
+   * The floating window of the video scopes of the Color page (Reference Manual 20, pp. 3007–3008,
+   * 3018–3019): opened where `open`, at `bounds` where they are on a display, and told whether the
+   * timeline viewer has something loaded and the language to speak; closed otherwise. The window
+   * reaches the engine for its own scopes alone. As it is closed by itself, the page is told
+   * `scopes-window` with `open: false`.
+   */
+  scopesWindow(asked: { open: boolean; loaded?: boolean; language?: string; bounds?: { x: number; y: number; width: number; height: number } | null }): Promise<{ open: boolean }>;
   /** Close the engine of the studio. One that this application started ends. */
   close(): Promise<void>;
   /** Hear what the engine tells, and how it stands, in order. */

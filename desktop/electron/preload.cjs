@@ -135,6 +135,12 @@ contextBridge.exposeInMainWorld('columbina', {
       monitor, x: rect?.x, y: rect?.y, width: rect?.width, height: rect?.height,
     }),
     viewShow: (shown, monitor) => ipcRenderer.invoke('columbina:engine-view-show', { monitor, shown: shown === true }),
+    // The floating window of the video scopes: opened, told whether the viewer has something loaded, and closed.
+    scopesWindow: (asked) => ipcRenderer.invoke('columbina:engine-scopes-window', {
+      open: asked?.open === true, loaded: asked?.loaded === true, language: asked?.language,
+      bounds: asked?.bounds === undefined || asked.bounds === null ? undefined
+        : { x: asked.bounds.x, y: asked.bounds.y, width: asked.bounds.width, height: asked.bounds.height },
+    }),
     close: () => ipcRenderer.invoke('columbina:engine-close'),
     onEvent: (callback) => subscribe('columbina:engine-event', callback),
   },

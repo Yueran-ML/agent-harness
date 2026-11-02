@@ -4322,6 +4322,74 @@ describe('the engine of the studio', () => {
     expect(unsubscribed()).toEqual(['scope-2', 'scope-1', 'scope-3', 'scope-4']);
   });
 
+  it('opens the floating scopes in a window of their own, which reaches the engine for its own scopes alone and gets their pictures alone', async () => {
+    const shell = await shellHarness();
+    await openIn(shell);
+    const [main] = connections(shell);
+    const server = shell.engines.servers.get(main.address)!;
+    let made = 0;
+    server.answers.set('scopes.subscribe', () => ({ result: { scope_id: `scope-${++made}` } }));
+    // The page's own scope, docked.
+    await shell.invoke('engine-call', { method: 'scopes.subscribe', params: { view: 'timeline', settings: { kind: 'parade' } } });
+    const before = shell.windows.length;
+    expect(await shell.invoke('engine-scopes-window', { open: true, loaded: true, language: 'ja', bounds: { x: 10, y: 20, width: 700, height: 400 } }))
+      .toEqual({ open: true });
+    const scopes = shell.windows[before];
+    expect(shell.windows).toHaveLength(before + 1);
+    expect(scopes.options).toMatchObject({
+      parent: shell.window, x: 10, y: 20, width: 700, height: 400, minWidth: 240, minHeight: 180, show: false,
+      webPreferences: { preload: path.resolve(path.dirname(mainPath), 'scopes-preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true },
+    });
+    expect(scopes.loadFile).toHaveBeenCalledWith(path.resolve(path.dirname(mainPath), '../dist/scopes.html'));
+    expect(scopes.webContents.setWindowOpenHandler).toHaveBeenCalled();
+    // Asked again, it is told what it measures, and no other is made.
+    await shell.invoke('engine-scopes-window', { open: true, loaded: false, language: 'zh-CN' });
+    expect(shell.windows).toHaveLength(before + 1);
+    expect(shell.sent.filter(([channel]) => channel === 'columbina-scopes:context').at(-1)![1])
+      .toEqual({ session: 1, loaded: false, language: 'zh-CN', theme: 'moonveil' });
+    const as = (name: string, ...args: unknown[]) => shell.handlers.get(`columbina-scopes:${name}`)!(
+      { sender: scopes.webContents, senderFrame: scopes.webContents.mainFrame }, ...args);
+    expect(await as('context')).toEqual({ session: 1, loaded: false, language: 'zh-CN', theme: 'moonveil' });
+    // The main window, or a frame of another page, is not the window of the scopes.
+    expect(() => shell.handlers.get('columbina-scopes:context')!(shell.event)).toThrow('not the window of the scopes');
+    expect(() => shell.handlers.get('columbina-scopes:context')!({ sender: scopes.webContents, senderFrame: { url: 'file:///elsewhere/scopes.html' } }))
+      .toThrow('not the window of the scopes');
+    // Its own scopes: subscribed, set and let go; nothing else of the engine, and none of the page's.
+    expect(await as('call', { method: 'scopes.subscribe', params: { view: 'timeline', settings: { kind: 'waveform' } } }))
+      .toEqual({ ok: true, result: { scope_id: 'scope-2' } });
+    expect(main.written.at(-1)).toMatchObject({ method: 'scopes.subscribe', params: { view: 'timeline', settings: { kind: 'waveform' } } });
+    for (const method of ['transaction.apply', 'view.sample', 'project.get', 'scopes.statistics', 7]) {
+      await expect(as('call', { method, params: {} })).rejects.toThrow('may call');
+    }
+    await expect(as('call', { method: 'scopes.set', params: [1] })).rejects.toThrow('is an object');
+    expect(await as('call', { method: 'scopes.unsubscribe', params: { scope_id: 'scope-1' } })).toMatchObject({ ok: false });
+    expect(await as('call', { method: 'scopes.set', params: { scope_id: 'scope-1', settings: {} } })).toMatchObject({ ok: false });
+    // The pictures of its scope go to it alone; those of the page's to the page.
+    shell.sent.length = 0;
+    server.notify('scopes.frame', { scope_id: 'scope-2', width: 2, height: 2, picture: 'AAAA' });
+    server.notify('scopes.frame', { scope_id: 'scope-1', width: 2, height: 2, picture: 'BBBB' });
+    await settledAll();
+    expect(shell.sent.filter(([channel]) => channel === 'columbina-scopes:event').map(([, value]) => (value as any).params.scope_id)).toEqual(['scope-2']);
+    expect(told(shell).filter(event => event.method === 'scopes.frame').map(event => event.params.scope_id)).toEqual(['scope-1']);
+    // Closed by itself: its scopes let go, the page's kept, and the page told.
+    await as('close');
+    await settledAll();
+    const unsubscribed = () => main.written.filter(request => request.method === 'scopes.unsubscribe').map(request => request.params.scope_id);
+    expect(unsubscribed()).toEqual(['scope-2']);
+    expect(told(shell).filter(event => event.kind === 'scopes-window')).toEqual([{ kind: 'scopes-window', open: false, session: 1 }]);
+    // Opened again and closed by the page; and closed as the page is loaded again.
+    await shell.invoke('engine-scopes-window', { open: true, loaded: true, language: 'en', bounds: { x: 1, y: 1, width: 10, height: 10 } });
+    const again = shell.windows.at(-1);
+    expect(again.options).not.toHaveProperty('x');
+    expect(again.options).toMatchObject({ width: 640, height: 420 });
+    expect(await shell.invoke('engine-scopes-window', { open: false })).toEqual({ open: false });
+    expect(again.close).toHaveBeenCalledOnce();
+    await shell.invoke('engine-scopes-window', { open: true });
+    const third = shell.windows.at(-1);
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    expect(third.close).toHaveBeenCalledOnce();
+  });
+
   it('lets the page call the methods that it may, and no other', async () => {
     const shell = await shellHarness();
     expect(await shell.invoke('engine-call', { method: 'project.get' })).toMatchObject({ ok: false, error: { code: null } });
@@ -4339,6 +4407,8 @@ describe('the engine of the studio', () => {
       'viewer.highlight', 'viewer.bypass', 'timeline.thumbnail',
       // Window presets (T23).
       'window_presets.list', 'window_presets.save', 'window_presets.update', 'window_presets.delete', 'window_presets.apply',
+      // The LUT browser's previews and the Color Viewer LUT of the Color page (wave E).
+      'luts.preview', 'viewer.preview', 'viewer.lut',
     ];
     for (const method of allowed) {
       const params = method === 'transaction.apply' ? { ops: [{ op: 'remove_clip', timeline: 't1', id: 'c1' }] } : { frame: 3, monitor: 'source' };

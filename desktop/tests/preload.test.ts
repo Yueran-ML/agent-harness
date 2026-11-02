@@ -197,7 +197,7 @@ describe('the bridge of the main window', () => {
     const { exposed } = bridgeOf('electron/preload.cjs');
     const engine = exposed.columbina.engine as unknown as Record<string, Call>;
     expect(Object.keys(engine).sort()).toEqual(declared('src/bridge.d.ts', 'EngineBridge').sort());
-    expect(Object.keys(engine)).toHaveLength(13);
+    expect(Object.keys(engine)).toHaveLength(14);
   });
 
   it('hands the engine what a call names, and nothing else that came with it', () => {
@@ -409,7 +409,7 @@ describe('the bridge of the window of the pet', () => {
   });
 });
 
-describe('the six bridges', () => {
+describe('the seven bridges', () => {
   it('reach every call that the shell answers between them', () => {
     const main = reached('electron/preload.cjs', 'columbina');
     const key = reached('electron/key-preload.cjs', 'columbinaKey');
@@ -417,11 +417,44 @@ describe('the six bridges', () => {
     const wecom = reached('electron/wecom-preload.cjs', 'columbinaWecom');
     const qq = reached('electron/qq-preload.cjs', 'columbinaQq');
     const pet = reached('electron/pet-preload.cjs', 'columbinaPet');
-    const all = [main, key, feishu, wecom, qq, pet];
+    const scopes = reached('electron/scopes-preload.cjs', 'columbinaScopes');
+    const all = [main, key, feishu, wecom, qq, pet, scopes];
     expect(all.flatMap(bridge => bridge.asked).sort()).toEqual([...answered].sort());
     expect(all.flatMap(bridge => bridge.said)).toEqual(taken);
     // No channel is asked by two of them.
     const asked = all.flatMap(bridge => [...new Set(bridge.asked)]);
     expect(asked.filter((channel, index) => asked.indexOf(channel) !== index)).toEqual([]);
+  });
+});
+
+describe('the bridge of the window of the scopes', () => {
+  it('asks for its own scopes, what it measures and to be closed, and hears its pictures and what it measures', () => {
+    const { exposed, invoked, listening } = bridgeOf('electron/scopes-preload.cjs');
+    const scopes = exposed.columbinaScopes;
+    expect(Object.keys(scopes).sort()).toEqual(['call', 'close', 'context', 'onContext', 'onEvent']);
+    void scopes.call('scopes.subscribe', { view: 'timeline' }, { expectedSession: 3 });
+    expect(invoked.at(-1)).toEqual(['columbina-scopes:call', { method: 'scopes.subscribe', params: { view: 'timeline' } }]);
+    void scopes.context('more');
+    expect(invoked.at(-1)).toEqual(['columbina-scopes:context']);
+    void scopes.close('more');
+    expect(invoked.at(-1)).toEqual(['columbina-scopes:close']);
+    const heard: unknown[] = [];
+    const stop = scopes.onEvent((value: unknown) => heard.push(value)) as unknown as () => void;
+    scopes.onContext((value: unknown) => heard.push(value));
+    expect([...listening.keys()].sort()).toEqual(['columbina-scopes:context', 'columbina-scopes:event']);
+    for (const listener of listening.get('columbina-scopes:event')!) listener({}, { kind: 'notification' });
+    expect(heard).toEqual([{ kind: 'notification' }]);
+    stop();
+    expect(listening.get('columbina-scopes:event')!.size).toBe(0);
+  });
+
+  it('is opened by the page with what it measures, its place where the page kept one, and nothing else', () => {
+    const { exposed, invoked } = bridgeOf('electron/preload.cjs');
+    const engine = exposed.columbina.engine as unknown as Record<string, Call>;
+    void engine.scopesWindow({ open: true, loaded: true, language: 'ja', bounds: { x: 1, y: 2, width: 300, height: 200, more: 1 }, then: 'more' });
+    expect(invoked.at(-1)).toEqual(['columbina:engine-scopes-window',
+      { open: true, loaded: true, language: 'ja', bounds: { x: 1, y: 2, width: 300, height: 200 } }]);
+    void engine.scopesWindow({ open: 'yes' });
+    expect(invoked.at(-1)).toEqual(['columbina:engine-scopes-window', { open: false, loaded: false, language: undefined, bounds: undefined }]);
   });
 });

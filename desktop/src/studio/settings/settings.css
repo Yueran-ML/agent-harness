@@ -108,3 +108,12 @@
   right: var(--s3);
   bottom: 5px;
 }
+
+/* A setting kept with the project that the engine does not do yet: greyed, and said so beside it. */
+.project-not-yet {
+  color: var(--moon-3);
+}
+
+.project-check[data-not-yet] {
+  opacity: 0.75;
+}

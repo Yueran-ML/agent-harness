@@ -740,6 +740,7 @@ export const ja: Messages = {
         markIn: 'イン', markOut: 'アウト', noProxy: 'プロキシなし', selected: (count: number) => `${count} 件選択`,
         menu: 'メディアメニュー', inputColorSpace: '入力カラースペース', inputGamma: '入力ガンマ', acesInput: 'ACES 入力変換',
         projectDefault: 'プロジェクトのデフォルト', bypass: 'バイパス', dataLevels: 'データレベル', levels: { auto: '自動', video: 'ビデオ', full: 'フル' },
+        inverseDrt: 'SDR から HDR への変換に逆 DRT を使用',
       },
       open: 'スタジオ',
       close: 'スタジオを閉じる',
@@ -747,6 +748,8 @@ export const ja: Messages = {
       page: { media: 'メディア', cut: 'カット', edit: 'エディット', color: 'カラー' },
       monitor: {
         source: 'ソース', timeline: 'タイムライン', sourceTitle: 'ソースビューア', timelineTitle: 'タイムラインビューア', choose: '表示するビューア',
+        colorPending: 'カラーマネージメントを適用しています…',
+        colorFailed: (message: string) => `カラーマネージメントを適用できませんでした。ビューアには変更前の色が表示されています。${message}`,
       },
       editPage: { inspector: 'インスペクタ', newTimeline: '新規タイムライン', create: '作成', noTimeline: 'タイムラインなし' },
       settings: {
@@ -845,6 +848,8 @@ export const ja: Messages = {
           search: '検索', refresh: '更新', menu: 'LUT メニュー', apply: 'LUT を現在のノードに適用', addFavorite: 'お気に入りに追加',
           removeFavorite: 'お気に入りから削除', name: 'LUT 名', clips: 'クリップ', none: 'なし',
           broken: '読み込めません',
+          options: 'LUT ブラウザーのオプション', livePreview: 'ライブプレビュー', hoverScrub: 'ホバースクラブプレビュー',
+          scrubs: { both: 'サムネイルとビューアー', thumbnail: 'サムネイルのみ', off: 'オフ' },
         },
         viewerOptions: 'ビューアーオプション', displayHdr: '可能な場合はビューアーで HDR を表示', viewerLut: 'ビューアー LUT',
         galleryPanel: {
@@ -1514,6 +1519,7 @@ export const ja: Messages = {
         noProject: 'スタジオでプロジェクトを開くと設定を変更できます。',
         regrade: 'グレーディングを始めた後にこれを変更すると、すべてのグレードの見え方が変わります。',
         displayHdr: 'この設定はこのコンピューターに保存され、すべてのプロジェクトに適用されます。Windows のディスプレイ設定で HDR がオンのときだけ、ビューアーは HDR を表示します。',
+        notYet: 'まだ反映されません。プロジェクトには保存されますが、このバージョンでは画像を変えません。',
         hdrOff: 'ビューアーのディスプレイで Windows の HDR がオフのため、SDR で表示しています。',
         lutFolders: 'LUT は次のフォルダーをこの順に探します。',
       },

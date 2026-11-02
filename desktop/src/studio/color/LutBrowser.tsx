@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent } from 'react';
-import { Folder, Layers3, RotateCw, Search, Star, TriangleAlert } from 'lucide-react';
+import { Ellipsis, Folder, Layers3, RotateCw, Search, Star, TriangleAlert } from 'lucide-react';
 import { useWords } from '../../app/locale';
 import type { EngineBridge } from '../../bridge';
 import type { Group, LutFile, Timeline } from '../engine';
@@ -9,6 +9,9 @@ import {
   usersOf,
 } from './luts';
 import { toggleFavorite, useFavoriteLuts, useLutLibrary } from './useLuts';
+import {
+  HOVER_SCRUBS, keepLutOptions, readLutOptions, thumbnailKey, useLivePreview, useLutThumbnails, type LutBrowserOptions, type PreviewPlace,
+} from './lutPreview';
 import './luts.css';
 
 /** A LUT the engine could not read, as the timeline state tells it (PROTOCOL.md, "Grades in the picture"). */
@@ -25,15 +28,25 @@ export interface RevealedLut { name: string; asked: number }
  *
  * A LUT is dragged onto a node of the node editor to put it there; its right-click menu applies it
  * to the current node or adds it to the favorites, as the star does that shows on it under the
- * pointer; a right-click elsewhere refreshes the list from the disk. The thumbnails of Resolve show
- * each LUT on a test image or on the frame shown: the engine cannot draw a LUT on a frame by itself
- * yet, so each shows its name, and whether it is a 1D or a 3D LUT (the Type that Resolve's Column
- * view and Thumbnail Sort show, p. 3411). A LUT that the engine could not parse is shown marked,
- * with why under the pointer, and cannot be dragged or applied.
+ * pointer; a right-click elsewhere refreshes the list from the disk. Each LUT shows its thumbnail
+ * on the test image ("By default, all LUTs appear with a test thumbnail", p. 3410), drawn by the
+ * engine, and whether it is a 1D or a 3D LUT (the Type that Resolve's Column view and Thumbnail
+ * Sort show, p. 3411). The option menu (…) has Live Preview (p. 3411): over a LUT, the viewer and
+ * its thumbnail show the current clip with it on the current node; and Hover Scrub Preview (p.
+ * 3259), how they go through the clip as the pointer moves across the thumbnail. A LUT that the
+ * engine could not parse is shown marked, with why under the pointer, and cannot be dragged or
+ * applied.
  */
-export function LutBrowser({ bridge, session, canApply, onApply, missing, timeline, groups, numbers, revealed }: {
+export function LutBrowser({ bridge, session, native = false, canApply, onApply, missing, timeline, groups, numbers, revealed, place = null,
+  interpolation = 'trilinear' }: {
   bridge: Pick<EngineBridge, 'call' | 'onEvent'>;
   session: number;
+  /** Whether an engine draws: thumbnails and Live Preview are its. */
+  native?: boolean;
+  /** Where Live Preview shows a LUT: the current corrector, the current clip and the playhead; none where there is no corrector. */
+  place?: PreviewPlace | null;
+  /** How the project reads a cube between its points, which the thumbnails are drawn by. */
+  interpolation?: string;
   /** Whether there is a current node that a LUT can go on (a corrector). */
   canApply: boolean;
   /** Apply LUT to Current Node. */
@@ -58,6 +71,8 @@ export function LutBrowser({ bridge, session, canApply, onApply, missing, timeli
   const [searching, setSearching] = useState(false);
   const [menu, setMenu] = useState<Menu | null>(null);
   const list = useRef<HTMLUListElement>(null);
+  const [options, setOptions] = useState<LutBrowserOptions>(readLutOptions);
+  const choose = (change: Partial<LutBrowserOptions>) => setOptions((old) => { const next = { ...old, ...change }; keepLutOptions(next); return next; });
 
   // The folder shown: the one chosen while it is there, else the first that holds LUTs, else Favorites.
   const shownCategory = category === MISSING && missing.length > 0 ? MISSING
@@ -102,6 +117,22 @@ export function LutBrowser({ bridge, session, canApply, onApply, missing, timeli
     setMenu({ x: event.clientX, y: event.clientY, label: lutWords.menu, items: [{ id: 'lut-refresh', label: lutWords.refresh, run: refresh }] });
   };
   const closeMenu = useCallback(() => setMenu(null), []);
+  // The option menu (…): Live Preview, and Hover Scrub Preview ▸ (pp. 3259, 3411).
+  const optionMenu = (event: ReactMouseEvent<HTMLButtonElement>) => {
+    const box = event.currentTarget.getBoundingClientRect();
+    setMenu({ x: box.left, y: box.bottom, label: lutWords.options, items: [
+      { id: 'lut-live-preview', label: lutWords.livePreview, checked: options.live, run: () => choose({ live: !options.live }) },
+      { id: 'lut-hover-scrub', label: lutWords.hoverScrub, items: HOVER_SCRUBS.map(scrub => ({
+        id: `lut-scrub-${scrub}`, label: lutWords.scrubs[scrub], checked: options.scrub === scrub, run: () => choose({ scrub }),
+      })) },
+    ] });
+  };
+  const thumbnails = useLutThumbnails({ bridge, session, native, luts, interpolation });
+  const live = useLivePreview({ bridge, session, native, place, options });
+  const across = (event: ReactMouseEvent<HTMLElement>) => {
+    const box = event.currentTarget.getBoundingClientRect();
+    return box.width > 0 ? Math.min(1, Math.max(0, (event.clientX - box.left) / box.width)) : 0;
+  };
 
   const project = folders.filter(each => each.place === 'project');
   const kept = folders.filter(each => each.place === 'library');
@@ -121,6 +152,8 @@ export function LutBrowser({ bridge, session, canApply, onApply, missing, timeli
         onClick={() => { setSearching(open => !open); setQuery(''); }} data-test="lut-search-toggle"><Search size={13} /></button>
       <button type="button" className="icon-btn" aria-label={lutWords.refresh} title={lutWords.refresh} disabled={loading}
         onClick={refresh} data-test="lut-refresh"><RotateCw size={13} /></button>
+      <button type="button" className="icon-btn" aria-label={lutWords.options} title={lutWords.options} aria-haspopup="menu"
+        data-live={options.live || undefined} onClick={optionMenu} data-test="lut-options"><Ellipsis size={13} /></button>
     </header>
     {searching && <input className="field color-lut-search" type="search" aria-label={lutWords.search} placeholder={lutWords.search} autoFocus
       value={query} onChange={event => setQuery(event.target.value)}
@@ -149,12 +182,21 @@ export function LutBrowser({ bridge, session, canApply, onApply, missing, timeli
                 const liked = favorites.has(lut.name);
                 const broken = lutBroken(lut);
                 const why = lut.shadowed ? said.lutShadowed : broken ? [said.lutBroken, ...(lut.message ? [lut.message] : [])].join('\n') : null;
+                const usable = lutUsable(lut);
+                // The current clip with the LUT under the pointer, in Live Preview; else the test image.
+                const picture = live.picture?.lut === lut.name ? live.picture.url : thumbnails.get(thumbnailKey(session, interpolation, lut)) ?? null;
                 return <li key={keyOf(lut)} className="color-lut" data-key={keyOf(lut)} data-lut={lut.name} aria-selected={chosen === keyOf(lut)}
                   data-shadowed={lut.shadowed || undefined} data-broken={broken || undefined} data-kind={lutDimension(lut)}
                   title={why === null ? lut.name : `${lut.name}\n${why}`}
-                  draggable={lutUsable(lut)} onDragStart={event => drag(lut, event)} onClick={() => setChosen(keyOf(lut))}
+                  draggable={usable} onDragStart={event => drag(lut, event)} onClick={() => setChosen(keyOf(lut))}
                   onContextMenu={event => lutMenu(lut, event)} data-test="lut">
-                  <span className="color-lut-picture" aria-hidden="true">{broken ? <TriangleAlert size={22} /> : <Layers3 size={22} />}</span>
+                  <span className="color-lut-picture" aria-hidden="true" data-live={(live.on && usable) || undefined}
+                    onPointerEnter={usable && live.on ? event => live.enter(lut.name, across(event)) : undefined}
+                    onPointerMove={usable && live.on ? event => live.move(lut.name, across(event)) : undefined}
+                    onPointerLeave={live.on ? live.leave : undefined} data-test="lut-picture">
+                    {broken ? <TriangleAlert size={22} /> : picture !== null
+                      ? <img src={picture} alt="" draggable={false} data-test="lut-thumbnail" /> : <Layers3 size={22} />}
+                  </span>
                   <span className="color-lut-kind" lang="en" data-test="lut-kind">{lutDimension(lut) === '1d' ? '1D' : '3D'}</span>
                   <span className="color-lut-name">{lutTitle(lut.name)}</span>
                   {!lut.shadowed && <button type="button" className="color-lut-star" aria-pressed={liked} data-liked={liked || undefined}

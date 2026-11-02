@@ -19,6 +19,7 @@ import { ExportProgress } from './render/RenderProgress';
 import { rendersOf } from './render/renders';
 import { ProjectSettings } from './settings/ProjectSettings';
 import { viewerDisplayOf } from './viewerDisplay';
+import { hasViewerLut, useColorViewerLut } from './colorViewerLut';
 import { duration } from './timeline/geometry';
 import type { Marks } from './timeline/snap';
 import { framesOf, rateOf } from './timecode';
@@ -160,6 +161,8 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
   useEffect(() => { setChosenTimeline(null); }, [snapshot.session]);
 
   const project = snapshot.project;
+  // The Color Viewer LUT on the Color page alone (p. 672), told to each engine as the page changes where the project has one.
+  useColorViewerLut(bridge, native, snapshot.session ?? null, page === 'color', hasViewerLut(project?.color));
   const timelines = project?.timelines ?? NO_TIMELINES;
   const thisSession = asked !== null && asked.session === snapshot.session ? asked : null;
   const sourceState = snapshot.transports.source ?? thisSession?.source ?? null;

@@ -145,6 +145,7 @@ const samples: Record<string, unknown[][]> = {
   'hint.studio.inspector.longest': [[1], [24]],
   'label.studio.render.frames': [[0, 250], [36, 250]],
   'label.studio.colorPage.missingLut': [['film.cube'], ['Kodak 2383.cube'], ['胶片.cube']],
+  'label.studio.monitor.colorFailed': [['OCIO: no such space'], ['ColorSpace not found']],
   'label.studio.colorPage.keyPalette.mixerInput': [[1], [2]],
   'label.studio.colorPage.lutSize': [[17], [33], [65]],
   'hint.studio.colorPage.lutGenerated': [['C:/LUT/Day.cube', 0], ['C:/LUT/Day.cube', 1], ['D:/看片/日景.cube', 3]],

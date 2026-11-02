@@ -691,6 +691,7 @@ export const zhCN: Messages = {
         markIn: '入点', markOut: '出点', noProxy: '无 Proxy', selected: (count: number) => `已选择 ${count} 项`,
         menu: '媒体菜单', inputColorSpace: '输入色彩空间', inputGamma: '输入伽马', acesInput: 'ACES 输入转换',
         projectDefault: '项目默认', bypass: '旁通', dataLevels: '数据级别', levels: { auto: '自动', video: '视频', full: '全范围' },
+        inverseDrt: 'SDR 到 HDR 转换使用反向 DRT',
       },
       open: '工作室',
       close: '关闭工作室',
@@ -698,6 +699,8 @@ export const zhCN: Messages = {
       page: { media: '媒体', cut: '快编', edit: '剪辑', color: '调色' },
       monitor: {
         source: '源', timeline: '时间线', sourceTitle: '源检视器', timelineTitle: '时间线检视器', choose: '显示的检视器',
+        colorPending: '正在应用色彩管理…',
+        colorFailed: (message: string) => `无法应用色彩管理，检视器显示的仍是更改前的色彩。${message}`,
       },
       editPage: { inspector: '检查器', newTimeline: '新建时间线', create: '创建', noTimeline: '无时间线' },
       settings: {
@@ -794,6 +797,8 @@ export const zhCN: Messages = {
           search: '搜索', refresh: '刷新', menu: 'LUT 菜单', apply: '将 LUT 应用到当前节点', addFavorite: '添加到收藏夹',
           removeFavorite: '从收藏夹中移除', name: 'LUT 名称', clips: '片段', none: '无',
           broken: '无法读取',
+          options: 'LUT 浏览器选项', livePreview: '实时预览', hoverScrub: '悬停擦洗预览',
+          scrubs: { both: '缩略图和检视器', thumbnail: '仅缩略图', off: '关' },
         },
         viewerOptions: '检视器选项', displayHdr: '在检视器上显示 HDR（如可用）', viewerLut: '检视器 LUT',
         galleryPanel: {
@@ -1435,6 +1440,7 @@ export const zhCN: Messages = {
         noProject: '在工作室中打开项目后才能修改它的设置。',
         regrade: '开始调色后再改这一项，所有调色的效果都会变。',
         displayHdr: '这一项保存在这台电脑上，对所有项目有效。只有在 Windows 显示设置中打开 HDR，检视器才会显示 HDR。',
+        notYet: '尚未生效：随项目保存，但在这个版本中不改变画面。',
         hdrOff: 'Windows 没有为检视器所在的显示器打开 HDR，所以检视器显示 SDR。',
         lutFolders: 'LUT 按以下顺序在这些文件夹中查找。',
       },

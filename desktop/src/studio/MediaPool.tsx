@@ -7,6 +7,7 @@ import { callEngine, EngineError, keptColor, type Bin, type ColorSettings, type 
 import type { Menu } from './color/ColorMenu';
 import { CoveringMenu } from './color/CoveringMenu';
 import { MEDIA_COLOR_REASONS, mediaColorItems } from './media/colorMenu';
+import { useFavoriteLuts, useListedLuts } from './color/useLuts';
 import { Bins } from './media/Bins';
 import { Clips } from './media/Clips';
 import { Details } from './media/Details';
@@ -34,7 +35,8 @@ export const MediaPool = memo(function MediaPool({ media, bins, timelines, proxi
   const [selection, setSelection] = useState<Selection>(EMPTY_SELECTION);
   const [grid, setGrid] = useState(initialGrid);
   const [problem, setProblem] = useState<{ said: string; detail: string } | null>(null);
-  const [menu, setMenu] = useState<Menu | null>(null);
+  // The right-click menu: where, and of which media; its items are made as it is drawn, so the LUTs listed meanwhile show.
+  const [menuOf, setMenu] = useState<{ x: number; y: number; of: Media[] } | null>(null);
   const pending = useRef(false);
   const selectedBin = bins.some(each => each.id === bin) ? bin : null;
   useEffect(() => { onBin?.(selectedBin); }, [selectedBin, onBin]);
@@ -68,6 +70,9 @@ export const MediaPool = memo(function MediaPool({ media, bins, timelines, proxi
     if (moving.length === 0) return;
     void edit(moving.map(each => ({ op: 'set_media', id: each.id, bin: target })));
   };
+  // The LUTs of the source clips' 1D LUT ▸ and 3D LUT ▸ (pp. 3409–3410), listed as the menu is first opened.
+  const listedLuts = useListedLuts(bridge);
+  const favoriteLuts = useFavoriteLuts();
   // The right-click menu of media: its colour, for those chosen where it is one of them, else for it alone, which is then chosen.
   const colorMenu = (event: MouseEvent) => {
     const id = (event.target as Element).closest<HTMLElement>('[data-media]')?.dataset.media;
@@ -75,9 +80,14 @@ export const MediaPool = memo(function MediaPool({ media, bins, timelines, proxi
     event.preventDefault();
     const of = selection.ids.includes(id) ? visible.filter(each => selection.ids.includes(each.id)) : visible.filter(each => each.id === id);
     if (!selection.ids.includes(id)) setSelection({ ids: [id], focus: id, anchor: id });
-    setMenu({ x: event.clientX, y: event.clientY, label: labels.menu, items: mediaColorItems(of, keptColor({ color }), labels, ops => void edit(ops)) });
+    listedLuts.ensure();
+    setMenu({ x: event.clientX, y: event.clientY, of });
   };
   const closeMenu = useCallback(() => setMenu(null), []);
+  const menu: Menu | null = menuOf === null ? null : {
+    x: menuOf.x, y: menuOf.y, label: labels.menu, items: mediaColorItems(menuOf.of, keptColor({ color }), labels, ops => void edit(ops),
+      { library: listedLuts.library, favorites: favoriteLuts, words: words.label.studio.colorPage.lutPanel }),
+  };
   return <section className="pool" aria-label={words.label.studio.pool} data-test="pool">
     <header className="pool-head">
       <h2 className="overline">{words.label.studio.pool}</h2>

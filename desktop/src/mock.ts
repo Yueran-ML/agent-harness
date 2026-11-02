@@ -145,6 +145,8 @@ export function createMockEngine(): EngineBridge {
     async openLutFolder() { return false; },
     async viewRect() {},
     async viewShow() {},
+    // A browser has no window of the scopes: they float within the page.
+    async scopesWindow() { return { open: false }; },
     async close() {},
     onEvent(listener) {
       listeners.add(listener);

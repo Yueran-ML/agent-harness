@@ -13,8 +13,10 @@ import type { MonitorControls } from '../useMonitor';
 import type { ViewerNotice } from '../Viewer';
 import { useTimelineLoad } from './useTimelineLoad';
 import { LutBrowser, type RevealedLut } from '../color/LutBrowser';
+import type { PreviewPlace } from '../color/lutPreview';
 import { setNodeLut } from '../color/luts';
 import { useFavoriteLuts, useLutLibrary } from '../color/useLuts';
+import { mediaColorItems } from '../media/colorMenu';
 import { ViewerOptions } from '../color/ViewerOptions';
 import type { NodeLuts } from '../color/NodeEditor';
 import {
@@ -211,12 +213,28 @@ export function ColorPage({
   const generateLut = useGenerateLut({ bridge, language, timeline: selected, media: mediaById, current: current?.clip.id ?? null, frame,
     words: { generateLut: labels.generateLut, sizes: labels.lutSize } });
   const graded = useGradedThumbnails({ bridge, session, timeline: selected, groups, media: mediaById, color, native });
+  // The colour of the media of the clip (and of those chosen with it), as the media pool sets it: Input Color Space, 1D LUT ▸ and
+  // 3D LUT ▸ of the source clip, Inverse DRT for SDR to HDR Conversion (pp. 228, 233, 3409–3410).
+  const thumbLuts = useLutLibrary(bridge).library;
+  const thumbFavorites = useFavoriteLuts();
+  const mediaItems = useCallback((clip: string) => {
+    const ids = chosenClips.has(clip) ? [...chosenClips] : [clip];
+    const of = [...new Set(ids.flatMap((id) => {
+      const found = visibleClips.find(each => each.id === id);
+      return found?.source.kind === 'media' ? [found.source.media] : [];
+    }))].flatMap(id => mediaById.get(id) ?? []);
+    if (of.length === 0) return [];
+    return mediaColorItems(of, keptColor({ color }), words.label.studio.media, (ops) => {
+      void callEngine(bridge, 'transaction.apply', { ops }).catch(failed);
+    }, { library: thumbLuts, favorites: thumbFavorites, words: labels.lutPanel });
+  }, [chosenClips, visibleClips, mediaById, color, bridge, failed, thumbLuts, thumbFavorites, labels, words]);
   const thumbnailItems = useCallback((clip: string) => [
     ...(clip === currentId.current ? [] : [{ id: 'wipe-timeline-clip', label: labels.galleryPanel.wipeTimelineClip, run: () => comparisonRef.current?.wipeTimelineClip(clip) }]),
     ...shotMatch.items(clip),
     ...generateLut.items(clip),
+    ...mediaItems(clip),
     ...(graded.pictures ? [{ id: 'update-thumbnails', label: labels.updateThumbnails, run: graded.updateAll }] : []),
-  ], [labels, shotMatch.items, generateLut.items, graded.pictures, graded.updateAll]);
+  ], [labels, mediaItems, shotMatch.items, generateLut.items, graded.pictures, graded.updateAll]);
   const grades = useColorPageGrades({
     bridge, revision, session, area, level: shownLevel, timeline: selected, clips: visibleClips, current: current?.clip ?? null, chosen: chosenClips,
     grade, nextId, thumbnailItems,
@@ -259,6 +277,12 @@ export function ColorPage({
   const nodeLuts = useMemo<NodeLuts>(() => ({ session, library: lutLibrary, favorites: favoriteLuts, onReveal: revealLut }),
     [session, lutLibrary, favoriteLuts, revealLut]);
   const applyLut = (name: string) => { if (grades.target !== null) grades.editing.run(setNodeLut(grades.target, editedNode ?? undefined, name)); };
+  // Where the LUT browser's Live Preview shows a LUT (p. 3411): the current corrector, the current clip and the playhead.
+  const lutPlace = useMemo<PreviewPlace | null>(() => (grades.target === null || editedNode?.kind !== 'corrector' || selected === null
+    || current === null || frame === null ? null
+    : { grade: grades.target, node: editedNode.id, timeline: selected.id, clip: shownLevel === 'timeline' ? null : current.clip.id,
+      frame, start: current.clip.start, length: current.clip.length }),
+  [JSON.stringify(grades.target), editedNode?.id, editedNode?.kind, selected?.id, current?.clip.id, current?.clip.start, current?.clip.length, frame, shownLevel]);
 
   // The Gallery (T26) and the comparisons of the viewer (T27).
   const [wiped, setWiped] = useState<string | null>(null);
@@ -424,7 +448,7 @@ export function ColorPage({
   }, []);
 
   // The video scopes of the timeline monitor (T19): docked in the Scopes panel, or in their floating window.
-  const scopes = useColorScopes({ bridge, session, view: 'timeline', loaded: timelineState !== null && timelineMonitor.loaded, native, viewerMode });
+  const scopes = useColorScopes({ bridge, session, view: 'timeline', loaded: timelineState !== null && timelineMonitor.loaded, native, viewerMode, language });
   const realTime = useRealTime(timelineState);
   const missing = timelineState?.missing_luts ?? [];
   const currentMedia = current?.clip.source.kind === 'media' ? mediaById.get(current.clip.source.media) : undefined;
@@ -539,7 +563,7 @@ export function ColorPage({
       data-panel={side} data-test="color-side" {...focusOf('side')}>
       {side === 'pool' ? pool : side === 'luts' ? <LutBrowser bridge={bridge} session={session} onApply={applyLut}
         canApply={grades.target !== null && editedNode?.kind === 'corrector'} missing={missing} timeline={selected} groups={groups} numbers={numbers}
-        revealed={revealed} /> : gallery.panel}
+        revealed={revealed} native={native} place={lutPlace} interpolation={keptColor({ color }).lut_interpolation} /> : gallery.panel}
     </section>}
     {viewerMode === 'cinema' ? createPortal(<div className="color-cinema" data-studio-portal="">{viewer}</div>, document.body) : viewer}
     {nodesOpen && <section className="color-nodes" aria-label={labels.nodeEditor} data-test="node-editor" {...focusOf('nodes')}>

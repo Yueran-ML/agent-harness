@@ -806,6 +806,8 @@ export const en = {
         /** The right-click menu of media (Reference Manual 20, pp. 221–222, 230, 245). */
         menu: 'Media menu', inputColorSpace: 'Input Color Space', inputGamma: 'Input Gamma', acesInput: 'ACES Input Transform',
         projectDefault: 'Project Default', bypass: 'Bypass', dataLevels: 'Data Levels', levels: { auto: 'Auto', video: 'Video', full: 'Full' },
+        /** The clip's own switch of the project's inverse DRT (p. 233), in DaVinci Resolve's words. */
+        inverseDrt: 'Inverse DRT for SDR to HDR Conversion',
       },
       /** Its way in, beside the tasks, and its name. */
       open: 'Studio',
@@ -815,6 +817,9 @@ export const en = {
       /** The two viewers of the Edit page, as DaVinci Resolve names them. */
       monitor: {
         source: 'Source', timeline: 'Timeline', sourceTitle: 'Source viewer', timelineTitle: 'Timeline viewer', choose: 'Viewer shown',
+        /** While a change of the colour management is made, the colour before it still shown (`color_pending`); and where it cannot be made. */
+        colorPending: 'Applying color management…',
+        colorFailed: (message: string) => `Color management could not be applied; the viewer shows the color before the change. ${message}`,
       },
       editPage: { inspector: 'Inspector', newTimeline: 'New timeline', create: 'Create', noTimeline: 'No timeline' },
       /** The Project Settings window (Reference Manual 20, pp. 19–20, 149–156), in DaVinci Resolve's words. */
@@ -924,6 +929,9 @@ export const en = {
           search: 'Search', refresh: 'Refresh', menu: 'LUT menu', apply: 'Apply LUT to Current Node', addFavorite: 'Add to Favorites',
           removeFavorite: 'Remove from Favorites', name: 'LUT name', clips: 'Clips', none: 'None',
           broken: 'cannot be read',
+          /** The option menu of the LUT browser (pp. 3259, 3411), in DaVinci Resolve's words. */
+          options: 'LUT browser options', livePreview: 'Live Preview', hoverScrub: 'Hover Scrub Preview',
+          scrubs: { both: 'Thumbnail and Viewer', thumbnail: 'Thumbnail Only', off: 'Off' },
         },
         /** The options menu of the viewer (p. 2986) with what the plan adds to it (p. 244). */
         viewerOptions: 'Viewer options', displayHdr: 'Display HDR On Viewers If Available', viewerLut: 'Viewer LUT',
@@ -1646,6 +1654,7 @@ export const en = {
         regrade: 'Changing this after grading has begun changes how every grade looks.',
         displayHdr: 'This is kept on this computer for every project. The viewers show HDR only where HDR is on in the display settings of Windows.',
         hdrOff: 'Windows has HDR off for the display of the viewer, so it shows SDR.',
+        notYet: 'Not in effect yet: kept with the project, it does not change the picture in this version.',
         lutFolders: 'A LUT is looked for in these folders, in this order.',
       },
       loadSource: 'Double-click media in the media pool to see it here.',

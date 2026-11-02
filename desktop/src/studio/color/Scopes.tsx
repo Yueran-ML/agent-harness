@@ -6,11 +6,12 @@ import { createPortal } from 'react-dom';
 import { Ellipsis, Expand, SlidersHorizontal, X } from 'lucide-react';
 import { keyOf } from '../../app/keys';
 import { useWords } from '../../app/locale';
+import type { EngineBridge } from '../../bridge';
 import type { Monitor } from '../engine';
 import { editingAllowed, inStudio } from '../keys';
 import { ColorMenu, type Menu } from './ColorMenu';
 import {
-  engineSettings, fitted, GAMUT_NAMES, GAMUTS, LAYOUTS, loadScopes, overlayOf, pictureSize, SCOPE_KINDS, storeScopes,
+  engineSettings, fitted, GAMUT_NAMES, GAMUTS, LAYOUTS, loadScopes, overlayOf, pictureSize, SCOPE_KINDS, scopesStorageKey, storeScopes,
   type FloatRect, type Gamut, type Layout, type PaneSettings, type ReferenceLevels, type ScopeKind, type ScopeOptions, type ScopesSettings,
 } from './scopeSettings';
 import { useScope, type ScopeBridge } from './useScope';
@@ -309,18 +310,69 @@ function within(rect: FloatRect): FloatRect {
   return { width, height, x: Math.min(Math.max(0, rect.x), Math.max(0, room.width - width)), y: Math.min(Math.max(0, rect.y), Math.max(0, room.height - 32)) };
 }
 
+/** The buttons at the upper right of the floating scopes: 1, 2, 4 or 9 panes (p. 3018), the option menu (…), and Close. */
+function FloatingTools({ settings, onSettings, onClose }: {
+  settings: ScopesSettings; onSettings: (change: (old: ScopesSettings) => ScopesSettings) => void; onClose: () => void;
+}) {
+  const labels = useWords().label.studio.colorPage.scopes;
+  const { layout } = settings.floating;
+  return <>
+    <div className="scope-layouts" role="radiogroup" aria-label={labels.layout}>
+      {LAYOUTS.map(each => <button key={each} type="button" role="radio" aria-checked={each === layout} aria-label={labels.layouts[LAYOUT_NAMES[each]]}
+        title={labels.layouts[LAYOUT_NAMES[each]]} data-layout={each} data-test={`scope-layout-${each}`}
+        onClick={() => onSettings(old => ({ ...old, floating: { ...old.floating, layout: each as Layout } }))}>{each}</button>)}
+    </div>
+    <OptionsButton options={settings.options} onOptions={options => onSettings(old => ({ ...old, options }))} />
+    <button type="button" className="icon-btn" aria-label={labels.close} title={`${labels.close} (Ctrl+Shift+W)`} onClick={onClose}
+      data-test="scope-window-close"><X size={14} aria-hidden="true" /></button>
+  </>;
+}
+
+/** The panes of the floating scopes, as many as the layout shows, each with its own scope and settings. */
+function FloatingGrid({ context, active, settings, onSettings }: {
+  context: ScopesContext; active: boolean; settings: ScopesSettings; onSettings: (change: (old: ScopesSettings) => ScopesSettings) => void;
+}) {
+  const { layout, panes } = settings.floating;
+  const setPane = (at: number) => (pane: PaneSettings) => onSettings(old => ({
+    ...old, floating: { ...old.floating, panes: old.floating.panes.map((each, index) => (index === at ? pane : each)) },
+  }));
+  return <div className="scope-grid" data-layout={layout}>
+    {panes.slice(0, layout).map((pane, at) => <ScopePane key={at} index={at} context={context} active={active} pane={pane} options={settings.options}
+      onPane={setPane(at)} />)}
+  </div>;
+}
+
 /**
- * The floating window of the scopes (pp. 3007, 3018–3019): its head is dragged to move it and its
- * lower right corner to resize it; the buttons at its upper right show 1, 2, 4 or 9 panes, each
- * with its own scope and settings; the option menu (…) holds for all. It lies over the page (the
- * desktop app has one window for the studio): the engine's view of the viewer, which lies over
+ * The floating window of the scopes as a window of its own (T19), which the shell opens over the
+ * main one: the engine's view of the viewer does not cover it, and it may go to another display.
+ * Its frame is the system's, which moves and resizes it; it fills it.
+ */
+export function ScopesWindowBody({ context, active, settings, onSettings, onClose }: {
+  context: ScopesContext; active: boolean; settings: ScopesSettings; onSettings: (change: (old: ScopesSettings) => ScopesSettings) => void; onClose: () => void;
+}) {
+  const labels = useWords().label.studio.colorPage.scopes;
+  return <section className="scope-window scope-window-own" aria-label={labels.window} data-layout={settings.floating.layout} data-test="scope-window">
+    <header className="scope-window-head">
+      <strong>{labels.window}</strong>
+      <span className="scope-gap" />
+      <FloatingTools settings={settings} onSettings={onSettings} onClose={onClose} />
+    </header>
+    <FloatingGrid context={context} active={active} settings={settings} onSettings={onSettings} />
+  </section>;
+}
+
+/**
+ * The floating window of the scopes within the page (pp. 3007, 3018–3019), where the shell has no
+ * window of its own for it (a browser): its head is dragged to move it and its lower right corner
+ * to resize it; the buttons at its upper right show 1, 2, 4 or 9 panes, each with its own scope and
+ * settings; the option menu (…) holds for all. The engine's view of the viewer, which lies over
  * the page, would cover the part of it that lies over the viewer.
  */
 function FloatingScopes({ context, active, settings, onSettings, onClose }: {
   context: ScopesContext; active: boolean; settings: ScopesSettings; onSettings: (change: (old: ScopesSettings) => ScopesSettings) => void; onClose: () => void;
 }) {
   const labels = useWords().label.studio.colorPage.scopes;
-  const { layout, panes } = settings.floating;
+  const { layout } = settings.floating;
   const [rect, setRect] = useState<FloatRect>(() => within(settings.floating.rect ?? firstRect()));
   const keep = (next: FloatRect) => onSettings(old => ({ ...old, floating: { ...old.floating, rect: next } }));
   const drag = (event: ReactPointerEvent<HTMLElement>, how: 'move' | 'size') => {
@@ -344,33 +396,20 @@ function FloatingScopes({ context, active, settings, onSettings, onClose }: {
     target.addEventListener('pointerup', up);
     target.addEventListener('pointercancel', up);
   };
-  const setPane = (at: number) => (pane: PaneSettings) => onSettings(old => ({
-    ...old, floating: { ...old.floating, panes: old.floating.panes.map((each, index) => (index === at ? pane : each)) },
-  }));
   return createPortal(<section className="scope-window" role="dialog" aria-modal="false" aria-label={labels.window} data-studio-portal=""
     data-layout={layout} data-test="scope-window" style={{ left: rect.x, top: rect.y, width: rect.width, height: rect.height }}>
     <header className="scope-window-head" onPointerDown={event => drag(event, 'move')}>
       <strong>{labels.window}</strong>
       <span className="scope-gap" />
-      <div className="scope-layouts" role="radiogroup" aria-label={labels.layout}>
-        {LAYOUTS.map(each => <button key={each} type="button" role="radio" aria-checked={each === layout} aria-label={labels.layouts[LAYOUT_NAMES[each]]}
-          title={labels.layouts[LAYOUT_NAMES[each]]} data-layout={each} data-test={`scope-layout-${each}`}
-          onClick={() => onSettings(old => ({ ...old, floating: { ...old.floating, layout: each as Layout } }))}>{each}</button>)}
-      </div>
-      <OptionsButton options={settings.options} onOptions={options => onSettings(old => ({ ...old, options }))} />
-      <button type="button" className="icon-btn" aria-label={labels.close} title={`${labels.close} (Ctrl+Shift+W)`} onClick={onClose}
-        data-test="scope-window-close"><X size={14} aria-hidden="true" /></button>
+      <FloatingTools settings={settings} onSettings={onSettings} onClose={onClose} />
     </header>
-    <div className="scope-grid" data-layout={layout}>
-      {panes.slice(0, layout).map((pane, at) => <ScopePane key={at} index={at} context={context} active={active} pane={pane} options={settings.options}
-        onPane={setPane(at)} />)}
-    </div>
+    <FloatingGrid context={context} active={active} settings={settings} onSettings={onSettings} />
     <span className="scope-window-corner" aria-hidden="true" onPointerDown={event => drag(event, 'size')} data-test="scope-window-corner" />
   </section>, document.body);
 }
 
 /** Whether the page is shown: the scopes measure nothing for a window put away. */
-function usePageShown(): boolean {
+export function usePageShown(): boolean {
   const [shown, setShown] = useState(() => document.visibilityState !== 'hidden');
   useEffect(() => {
     const changed = () => setShown(document.visibilityState !== 'hidden');
@@ -388,8 +427,8 @@ function usePageShown(): boolean {
  * nothing. A scope is subscribed only while it is shown: its pane is mounted, the page is shown,
  * and the viewer does not cover it (Full page and Cinema). Their settings are kept on this desktop.
  */
-export function useColorScopes(context: ScopesContext & { viewerMode: string }): { docked: ReactNode; floating: ReactNode } {
-  const { viewerMode, ...shared } = context;
+export function useColorScopes(context: ScopesContext & { viewerMode: string; language?: string }): { docked: ReactNode; floating: ReactNode } {
+  const { viewerMode, language, ...shared } = context;
   const words = useWords();
   const labels = words.label.studio.colorPage.scopes;
   const [settings, setSettings] = useState<ScopesSettings>(loadScopes);
@@ -400,6 +439,28 @@ export function useColorScopes(context: ScopesContext & { viewerMode: string }):
     storeScopes(next);
     return next;
   }), []);
+  // The window of the scopes keeps the settings of the floating panes too: read them again as it changes them.
+  useEffect(() => {
+    const changed = (event: StorageEvent) => { if (event.key === null || event.key === scopesStorageKey) setSettings(loadScopes()); };
+    window.addEventListener('storage', changed);
+    return () => window.removeEventListener('storage', changed);
+  }, []);
+  // In the desktop app, the floating scopes are a window of their own, which the shell opens (T19).
+  const shell = useMemo(() => (shared.native ? scopesShell(shared.bridge) : null), [shared.native, shared.bridge]);
+  useEffect(() => {
+    if (!shell) return undefined;
+    // Closed by itself (its own button or keys): docked again.
+    return shared.bridge.onEvent((event) => { if (event.kind === 'scopes-window' && !event.open) setOpen(false); });
+  }, [shell, shared.bridge]);
+  useEffect(() => {
+    if (!shell || !open) return;
+    void shell({ open: true, loaded: shared.loaded, language, bounds: keptWindowBounds() }).catch(() => setOpen(false));
+  }, [shell, open, shared.loaded, shared.session, language]);
+  useEffect(() => {
+    if (!shell || !open) return undefined;
+    // Closed with the page: the scopes measure the Color page's viewer.
+    return () => { void shell({ open: false }).catch(() => {}); };
+  }, [shell, open]);
   // Ctrl+Shift+W: the floating window on and off (pp. 692, 3007–3008).
   useEffect(() => {
     const down = (event: KeyboardEvent) => {
@@ -427,8 +488,34 @@ export function useColorScopes(context: ScopesContext & { viewerMode: string }):
             data-test="scope-expand"><Expand size={13} aria-hidden="true" /></button>
         </>} />
     </div>;
-  const floating = open
+  const floating = open && !shell
     ? <FloatingScopes context={shared} active={pageShown && !covered} settings={settings} onSettings={change} onClose={() => setOpen(false)} />
     : null;
   return { docked, floating };
+}
+
+/** The shell's window of the scopes, where the bridge is the desktop app's. */
+function scopesShell(bridge: ScopeBridge): EngineBridge['scopesWindow'] | null {
+  const shell = (bridge as Partial<Pick<EngineBridge, 'scopesWindow'>>).scopesWindow;
+  return typeof shell === 'function' ? shell.bind(bridge) : null;
+}
+
+/** Where the window of the scopes was last, as its page keeps it (screen pixels), or none. */
+export const SCOPES_WINDOW_KEY = 'columbina-scopes-window';
+export function keptWindowBounds(): { x: number; y: number; width: number; height: number } | null {
+  try {
+    const kept: unknown = JSON.parse(localStorage.getItem(SCOPES_WINDOW_KEY) ?? 'null');
+    if (kept === null || typeof kept !== 'object') return null;
+    const { x, y, width, height } = kept as Record<string, unknown>;
+    return [x, y, width, height].every(Number.isInteger) ? { x: x as number, y: y as number, width: width as number, height: height as number } : null;
+  } catch {
+    return null;
+  }
+}
+export function keepWindowBounds(bounds: { x: number; y: number; width: number; height: number }): void {
+  try {
+    localStorage.setItem(SCOPES_WINDOW_KEY, JSON.stringify(bounds));
+  } catch {
+    // Without storage the window opens where the shell puts it.
+  }
 }

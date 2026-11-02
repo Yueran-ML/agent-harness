@@ -28,6 +28,12 @@ const keyUrl = pathToFileURL(keyPath).href;
 const petPath = path.resolve(__dirname, '../dist/pet.html');
 const petUrl = pathToFileURL(petPath).href;
 const petsBuiltIn = path.resolve(__dirname, '../dist/pets');
+// The page of the floating window of the video scopes of the Color page (T19): it reaches the
+// engine for its own scopes alone.
+const scopesPath = path.resolve(__dirname, '../dist/scopes.html');
+const scopesUrl = pathToFileURL(scopesPath).href;
+/** What the window of the scopes may call of the engine: its own scopes. */
+const SCOPE_WINDOW_METHODS = new Set(['scopes.subscribe', 'scopes.set', 'scopes.unsubscribe']);
 // The window of the pet while it shows, what it was told last of the task, how it keeps looking
 // at the task, and where a drag of the pet began: the pointer and the window.
 let petWindow = null;
@@ -168,6 +174,9 @@ const PAGE_METHODS = new Set([
   'viewer.highlight', 'viewer.bypass', 'timeline.thumbnail',
   // Window presets, a library of this user's apart from every project (RM20 pp. 3198–3199).
   'window_presets.list', 'window_presets.save', 'window_presets.update', 'window_presets.delete', 'window_presets.apply',
+  // The LUT browser's thumbnails and its Live Preview on the viewer, of LUTs named in the folders of
+  // LUTs alone (the engine refuses any other name), and the Color Viewer LUT on the Color page alone.
+  'luts.preview', 'viewer.preview', 'viewer.lut',
 ]);
 /** The points on an edge of the cubes that Generate LUT makes (Reference Manual 20, p. 3413). */
 const LUT_SIZES = [17, 33, 65];
@@ -235,6 +244,10 @@ const spoken = (language) => (typeof language === 'string' && Object.hasOwn(WORD
 // The window for the key while it is open, what it was opened for, whether something was
 // stored or deleted from it, and the promise that says so when it has closed.
 let keyWindow = null;
+// The floating window of the video scopes while it is open, and what the page said last of what it
+// measures: whether the timeline viewer has something loaded, and the language it speaks in.
+let scopesWindow = null;
+let scopesAsked = { loaded: false, language: 'en' };
 let keyAsked = { service: null, language: 'en' };
 let keyChanged = false;
 let keyClosed = null;
@@ -370,6 +383,12 @@ function isFolder(folder) {
 function checkSender(event) {
   if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== indexUrl) {
     throw new Error('IPC sender is not the application window.');
+  }
+}
+function checkScopesSender(event) {
+  if (!scopesWindow || event.sender !== scopesWindow.webContents || event.senderFrame !== scopesWindow.webContents.mainFrame
+    || event.senderFrame.url !== scopesUrl) {
+    throw new Error('IPC sender is not the window of the scopes.');
   }
 }
 function checkKeySender(event) {
@@ -713,6 +732,13 @@ async function openStudio(cwd) {
           stopMigration(studio);
           studio = null;
           forgetView();
+          tellScopesContext();
+        }
+        // The pictures of a scope of the window of the scopes go to it alone.
+        if (what.kind === 'notification' && what.method === 'scopes.frame' && studio?.number === number
+          && studio.windowScopes.has(what.params?.scope_id)) {
+          tellScopes('columbina-scopes:event', { ...what, session: number });
+          return;
         }
         if (what.kind === 'notification' && what.method === 'render.progress' && studio?.number === number) heardRender(studio, what.params);
         tellStudio(number, what);
@@ -731,8 +757,9 @@ async function openStudio(cwd) {
   // page may cancel those, and no other (an agent's), and have the file of one shown in its folder.
   // `migration`: the run of `video migrate` for the folder, while it runs.
   // `scopes`: the ids of the scopes that the page subscribed (see `keepScopes`).
-  studio = { number, project, session, opened, jobs: new Map(), migration: null, scopes: new Set() };
+  studio = { number, project, session, opened, jobs: new Map(), migration: null, scopes: new Set(), windowScopes: new Set() };
   tellStudio(number, { kind: 'opened', ...opened });
+  tellScopesContext();
   // A view is made anew for every engine, where the page has said where the viewer is.
   forgetView();
   for (const monitor of MONITORS) void attachView(monitor);
@@ -865,6 +892,7 @@ async function closeStudio() {
   stopMigration(open);
   studio = null;
   forgetView();
+  tellScopesContext();
   await open.session.close();
 }
 /**
@@ -877,6 +905,76 @@ async function keepScopes(open, method, params) {
   if (method === 'scopes.subscribe' && typeof result?.scope_id === 'string') open.scopes.add(result.scope_id);
   if (method === 'scopes.unsubscribe') open.scopes.delete(params?.scope_id);
   return result;
+}
+/** Tell the window of the scopes something, where it is open. */
+function tellScopes(channel, value) {
+  if (scopesWindow && !scopesWindow.isDestroyed() && !scopesWindow.webContents.isDestroyed()) scopesWindow.webContents.send(channel, value);
+}
+/** What the window of the scopes measures and speaks: the engine open, whether its viewer has something loaded, the language and theme. */
+function scopesContext() {
+  return { session: studio?.number ?? null, loaded: scopesAsked.loaded, language: scopesAsked.language, theme: preferences.theme };
+}
+function tellScopesContext() { tellScopes('columbina-scopes:context', scopesContext()); }
+/** Let go the scopes of the window of the scopes, which is closed or loaded again. */
+function dropWindowScopes() {
+  const open = studio;
+  if (!open?.session.alive || !open.windowScopes?.size) { open?.windowScopes?.clear(); return; }
+  for (const id of open.windowScopes) void open.session.call('scopes.unsubscribe', { scope_id: id }).catch(() => {});
+  open.windowScopes.clear();
+}
+/** Where the window of the scopes was last, as its page kept it: whole numbers of a size it can be, on a display that is there. */
+function scopesBounds(bounds) {
+  const whole = (value, least, most) => (Number.isInteger(value) && value >= least && value <= most ? value : null);
+  const width = whole(bounds?.width, 240, 8192);
+  const height = whole(bounds?.height, 180, 8192);
+  if (width === null || height === null) return {};
+  const x = whole(bounds?.x, -32768, 32768);
+  const y = whole(bounds?.y, -32768, 32768);
+  if (x === null || y === null) return { width, height };
+  let seen = true;
+  try {
+    const displays = screen.getAllDisplays?.() ?? [];
+    seen = displays.length === 0 || displays.some(({ workArea: area }) => x < area.x + area.width && x + width > area.x && y < area.y + area.height && y + 32 > area.y);
+  } catch { /* Where the displays cannot be read, the window goes where it was. */ }
+  return seen ? { x, y, width, height } : { width, height };
+}
+/**
+ * The floating window of the video scopes of the Color page (Reference Manual 20, pp. 3007–3008,
+ * 3018–3019: Workspace › Video Scopes, Ctrl+Shift+W): a window of its own, over the main one, which
+ * the engine's view of the viewer does not cover and which may go to another display. Its page
+ * reaches the engine for its own scopes alone; their pictures go to it alone. It is closed with the
+ * main window, and as the main page is loaded again.
+ */
+function openScopesWindow(asked) {
+  scopesAsked = { loaded: asked?.loaded === true, language: spoken(asked?.language) };
+  if (scopesWindow) { tellScopesContext(); return; }
+  const opened = new BrowserWindow({
+    parent: window, width: 640, height: 420, minWidth: 240, minHeight: 180, ...scopesBounds(asked?.bounds),
+    show: false, backgroundColor: titleBarThemes[preferences.theme].color, title: 'Columbina', icon: path.join(__dirname, 'icon.ico'),
+    webPreferences: { preload: path.join(__dirname, 'scopes-preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true },
+  });
+  scopesWindow = opened;
+  opened.setMenuBarVisibility(false);
+  closeToTheWorld(opened);
+  opened.once('ready-to-show', () => opened.show());
+  opened.webContents.on('render-process-gone', dropWindowScopes);
+  opened.webContents.on('did-start-navigation', (details, _url, inPlace, mainFrame) => {
+    const main = details?.isMainFrame ?? mainFrame;
+    const same = details?.isSameDocument ?? inPlace;
+    if (main === true && same !== true) dropWindowScopes();
+  });
+  opened.once('closed', () => {
+    if (scopesWindow !== opened) return;
+    scopesWindow = null;
+    dropWindowScopes();
+    // The page shows its scopes docked again.
+    tellStudio(studio?.number ?? null, { kind: 'scopes-window', open: false });
+  });
+  void opened.loadFile(scopesPath);
+}
+function closeScopesWindow() {
+  const opened = scopesWindow;
+  if (opened && !opened.isDestroyed()) opened.close();
 }
 /** Let go the scopes of a page that is loaded again or gone, whose pictures would go to no one. */
 function dropScopes() {
@@ -2061,6 +2159,39 @@ function installHandlers() {
     if (method === 'scopes.statistics') return answered(open.session.view(method, params));
     return answered(open.session.call(method, params));
   });
+  // The floating window of the scopes, which the page opens, tells what it measures, and closes.
+  ipcMain.handle('columbina:engine-scopes-window', (event, asked) => {
+    checkSender(event);
+    refuseStudioElsewhere();
+    if (asked?.open === true) openScopesWindow(asked); else closeScopesWindow();
+    return { open: scopesWindow !== null };
+  });
+  ipcMain.handle('columbina-scopes:context', (event) => {
+    checkScopesSender(event);
+    return scopesContext();
+  });
+  ipcMain.handle('columbina-scopes:call', async (event, asked) => {
+    checkScopesSender(event);
+    const method = asked?.method;
+    if (typeof method !== 'string' || !SCOPE_WINDOW_METHODS.has(method)) throw new Error('That is no method of the engine that the window of the scopes may call.');
+    const params = asked?.params ?? null;
+    if (params === null || typeof params !== 'object' || Array.isArray(params)) throw new Error('What a method of the engine is given is an object.');
+    const open = studio;
+    if (!open) return { ok: false, error: { code: null, message: 'No project is open in the studio.', data: null } };
+    // Its own scopes alone: another page's are not its to set or let go.
+    if (method !== 'scopes.subscribe' && !open.windowScopes.has(params.scope_id)) {
+      return { ok: false, error: { code: null, message: 'That scope is not one of this window.', data: null } };
+    }
+    return answered(open.session.call(method, params).then((result) => {
+      if (method === 'scopes.subscribe' && typeof result?.scope_id === 'string') open.windowScopes.add(result.scope_id);
+      if (method === 'scopes.unsubscribe') open.windowScopes.delete(params.scope_id);
+      return result;
+    }));
+  });
+  ipcMain.handle('columbina-scopes:close', (event) => {
+    checkScopesSender(event);
+    closeScopesWindow();
+  });
   ipcMain.handle('columbina:engine-import', async (event, asked) => {
     checkSender(event);
     refuseStudioElsewhere();
@@ -2752,12 +2883,12 @@ app.whenReady().then(() => {
   if (preferences.petOn) openPet();
   if (hidden && wanted) showWindow();
   else if (hidden) toTray();
-  window.webContents.on('render-process-gone', () => { blankView(); dropScopes(); stopSigningIn(); void enqueueService(stopService); });
+  window.webContents.on('render-process-gone', () => { blankView(); dropScopes(); closeScopesWindow(); stopSigningIn(); void enqueueService(stopService); });
   // The view of the engine is hidden while the page is loaded again, until the new page says where the viewer is.
   window.webContents.on('did-start-navigation', (details, _url, inPlace, mainFrame) => {
     const main = details?.isMainFrame ?? mainFrame;
     const same = details?.isSameDocument ?? inPlace;
-    if (main === true && same !== true) { blankView(); dropScopes(); }
+    if (main === true && same !== true) { blankView(); dropScopes(); closeScopesWindow(); }
   });
   void window.loadFile(indexPath);
   // An assistant runs again where it ran when the application was left.

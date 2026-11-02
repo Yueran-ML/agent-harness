@@ -369,6 +369,19 @@
   text-align: center;
 }
 
+/* The colour management being made, or not made: one line under the picture. */
+.monitor-colour {
+  flex: none;
+  margin: 0;
+  padding: 2px var(--s4);
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.monitor-colour[role='alert'] {
+  color: var(--bad);
+}
+
 .transport {
   flex: none;
   display: flex;

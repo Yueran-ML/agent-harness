@@ -1,0 +1,14 @@
+/* The page of the floating window of the video scopes: the window is the scopes, nothing else. */
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--ink-0);
+}
+
+.scopes-window-page {
+  position: relative;
+  height: 100%;
+}

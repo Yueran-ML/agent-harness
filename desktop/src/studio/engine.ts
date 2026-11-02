@@ -1060,7 +1060,9 @@ export type EngineEvent =
    * The pixels of the screen that the viewer covers changed (the page was zoomed): the page
    * measures the viewer again and says where it is. Told with no session where none is open.
    */
-  | { kind: 'measure'; session: number | null };
+  | { kind: 'measure'; session: number | null }
+  /** The floating window of the video scopes was closed by itself (its own button or keys): the page shows its scopes docked again. */
+  | { kind: 'scopes-window'; open: boolean; session: number | null };
 
 /** A failure as the engine gave it, or one of the shell's own (code null). */
 export interface EngineFailure {
@@ -1436,7 +1438,7 @@ export function applyOp(project: Project, op: Op): Project {
       const at = placeOf(project.media, op.id, 'media');
       const media = project.media[at];
       // A pair of LUTs is set whole, a LUT left out as none, as the engine reads it.
-      const set = op.lut ? { ...op, lut: { '1d': null, '3d': null, ...op.lut } } : op;
+      const set = op.lut ? { ...op, lut: { '1d': op.lut['1d'] ?? null, '3d': op.lut['3d'] ?? null } } : op;
       const override = patched(keptOverride(media), set, ['input', 'levels', 'lut', 'inverse_drt'], ['input']);
       return { ...project, media: replaced(project.media, at, { ...media, color_override: override }) };
     }

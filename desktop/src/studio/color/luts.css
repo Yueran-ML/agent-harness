@@ -153,15 +153,33 @@
   pointer-events: none;
 }
 
-/* Where Resolve draws the LUT on a test image or the frame shown: the engine cannot yet, so a mark of a LUT. */
+/* The LUT on the engine's test image, or on the current clip in Live Preview (pp. 3410–3411); a mark of a LUT until it is drawn. */
 .color-lut-picture {
   aspect-ratio: 16 / 9;
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow: hidden;
   border-radius: 3px;
   background: var(--ink-0);
   color: var(--moon-3);
+}
+
+.color-lut-picture img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+
+/* Live Preview is on: the pointer scrubs across the thumbnail. */
+.color-lut-picture[data-live] {
+  cursor: ew-resize;
+}
+
+/* The option menu, marked while Live Preview is on. */
+.color-luts-head [data-live] {
+  color: var(--accent);
 }
 
 .color-lut-name {

@@ -135,17 +135,23 @@ function Row({ label, htmlFor, children, test }: { label: string; htmlFor?: stri
   </div>;
 }
 
-function Check({ label, checked, onChange, test }: { label: string; checked: boolean; onChange: (on: boolean) => void; test: string }) {
-  return <label className="project-setting project-check" data-test={`setting-${test}`}>
-    <input type="checkbox" checked={checked} onChange={event => onChange(event.target.checked)} data-test={`color-${test}`} />
+function Check({ label, checked, onChange, test, notYet }: {
+  label: string; checked: boolean; onChange: (on: boolean) => void; test: string;
+  /** Said where the setting is kept but changes nothing yet: it is shown, greyed, and cannot be changed. */
+  notYet?: string;
+}) {
+  return <label className="project-setting project-check" data-test={`setting-${test}`} data-not-yet={notYet ? '' : undefined} title={notYet}>
+    <input type="checkbox" checked={checked} disabled={notYet !== undefined} onChange={event => onChange(event.target.checked)} data-test={`color-${test}`} />
     <span>{label}</span>
+    {notYet && <span className="caption project-not-yet" data-test={`not-yet-${test}`}>{notYet}</span>}
   </label>;
 }
 
-function Choice<T extends string>({ id, label, value, options, onChange, test, aria }: {
+function Choice<T extends string>({ id, label, value, options, onChange, test, aria, disabled }: {
   id: string; label?: string; value: T; options: readonly { value: T; label: string }[]; onChange: (value: T) => void; test: string; aria?: string;
+  disabled?: boolean;
 }) {
-  return <select id={id} className="field" aria-label={aria ?? label} value={value}
+  return <select id={id} className="field" aria-label={aria ?? label} value={value} disabled={disabled}
     onChange={(event) => { if (event.target.value !== value) onChange(event.target.value as T); }} data-test={`color-${test}`}>
     {options.map(each => <option key={each.value} value={each.value}>{each.label}</option>)}
   </select>;
@@ -314,11 +320,13 @@ function ColorManagement({ bridge, settings, send, hdr, setHdr, openFolder }: {
       {shown.has('inverse_drt') && <Check label={labels.inverseDrt} checked={settings.inverse_drt} onChange={on => set({ inverse_drt: on })} test="inverse_drt" />}
       {shown.has('white_point_adaptation') && <Check label={labels.whitePoint} checked={settings.white_point_adaptation}
         onChange={on => set({ white_point_adaptation: on })} test="white_point_adaptation" />}
+      {/* Kept with the project as Resolve has them, but not done by the engine yet: shown greyed, and said so (wave E). */}
       {shown.has('color_space_aware_tools') && <Check label={labels.aware} checked={settings.color_space_aware_tools}
-        onChange={on => set({ color_space_aware_tools: on })} test="color_space_aware_tools" />}
+        onChange={on => set({ color_space_aware_tools: on })} test="color_space_aware_tools" notYet={said.notYet} />}
       {shown.has('resize_in') && <Row label={labels.resizeIn} htmlFor="resize_in" test="resize_in">
         <Choice id="resize_in" label={labels.resizeIn} value={settings.resize_in} test="resize_in" onChange={value => set({ resize_in: value })}
-          options={RESIZES.map(each => ({ value: each, label: each === 'log' ? LOG : labels.resizes[each] }))} />
+          options={RESIZES.map(each => ({ value: each, label: each === 'log' ? LOG : labels.resizes[each] }))} disabled />
+        <span className="caption project-not-yet" data-test="not-yet-resize_in">{said.notYet}</span>
       </Row>}
       {shown.has('graphics_white') && <Row label={labels.graphicsWhite} htmlFor="graphics_white" test="graphics_white">
         <Nits id="graphics_white" label={labels.graphicsWhite} value={settings.graphics_white} onCommit={value => set({ graphics_white: value })} test="graphics_white" />
@@ -338,7 +346,8 @@ function ColorManagement({ bridge, settings, send, hdr, setHdr, openFolder }: {
       {shown.has('gamut_compress') && <Check label={labels.gamutCompress} checked={settings.gamut_compress} onChange={on => set({ gamut_compress: on })} test="gamut_compress" />}
       {shown.has('node_luts_in') && <Row label={labels.nodeLuts} htmlFor="node_luts_in" test="node_luts_in">
         <Choice id="node_luts_in" label={labels.nodeLuts} value={settings.node_luts_in} test="node_luts_in" onChange={value => set({ node_luts_in: value })}
-          options={(['timeline', 'ap0_linear'] as const).map(each => ({ value: each, label: NODE_LUT_NAMES[each] }))} />
+          options={(['timeline', 'ap0_linear'] as const).map(each => ({ value: each, label: NODE_LUT_NAMES[each] }))} disabled />
+        <span className="caption project-not-yet" data-test="not-yet-node_luts_in">{said.notYet}</span>
       </Row>}
       <Check label={labels.displayHdr} checked={hdr} onChange={setHdr} test="display_hdr" />
       <p className="caption project-setting-hint">{said.displayHdr}{hdr && hdrOffEverywhere(viewer.shows) ? ` ${said.hdrOff}` : ''}</p>

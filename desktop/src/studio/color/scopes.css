@@ -209,3 +209,16 @@
   cursor: nwse-resize;
   background: linear-gradient(135deg, transparent 50%, var(--line) 50%);
 }
+
+/* The floating scopes as a window of their own (T19): the system's frame moves and sizes it, so it fills its page. */
+.scope-window.scope-window-own {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.scope-window-own .scope-window-head {
+  cursor: default;
+}

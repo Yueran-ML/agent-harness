@@ -39,6 +39,11 @@ export function MonitorPane({ controls, bridge, native, active, notice, onRetry,
     <Viewer bridge={bridge} native={native} monitor={monitor} active={active && !hidden} notice={notice} onRetry={onRetry} />
     {hint && !controls.loaded && (notice === null || notice.kind === 'browser') && <p className="caption monitor-hint" data-test="load-hint">{hint}</p>}
     {footer}
+    {/* A change of the colour management is made apart from the monitor, which shows the colour before it meanwhile (PROTOCOL.md, "Grades in the picture"). */}
+    {controls.state?.monitor === 'timeline' && controls.state.color_error
+      ? <p className="caption monitor-colour" role="alert" data-test="colour-failed">{words.colorFailed(controls.state.color_error)}</p>
+      : controls.state?.monitor === 'timeline' && controls.state.color_pending
+        && <p className="caption monitor-colour" role="status" aria-busy="true" data-test="colour-pending">{words.colorPending}</p>}
     <Transport state={controls.state} rate={controls.rate} last={controls.last} frame={controls.frame} held={controls.held} onCommand={controls.run}
       onSeek={controls.seek} onDrag={controls.drag} onProxies={controls.proxies} />
   </section>;

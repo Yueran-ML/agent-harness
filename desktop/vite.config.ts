@@ -12,8 +12,9 @@ export default defineConfig({
     assetsInlineLimit: 0,
     rollupOptions: {
       // The pages: the application, the window that takes a key, the ones that take the app of
-      // Feishu, the bot of WeCom and the bot of QQ, and the window of the pet.
-      input: { index: 'index.html', key: 'key.html', feishu: 'feishu.html', wecom: 'wecom.html', qq: 'qq.html', pet: 'pet.html' },
+      // Feishu, the bot of WeCom and the bot of QQ, the window of the pet, and the floating window of
+      // the video scopes of the Color page.
+      input: { index: 'index.html', key: 'key.html', feishu: 'feishu.html', wecom: 'wecom.html', qq: 'qq.html', pet: 'pet.html', scopes: 'scopes.html' },
       output: {
         entryFileNames: 'assets/[name].js',
         chunkFileNames: 'assets/[name].js',

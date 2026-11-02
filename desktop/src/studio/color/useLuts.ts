@@ -29,9 +29,9 @@ export class LutStore {
   private asking = 0;
   private readonly listeners = new Set<() => void>();
 
-  constructor(private readonly bridge: Pick<EngineBridge, 'call' | 'onEvent'>) {
+  constructor(private readonly bridge: Pick<EngineBridge, 'call'> & Partial<Pick<EngineBridge, 'onEvent'>>) {
     // Another project (or the engine started again) has its own folder of LUTs.
-    bridge.onEvent((event) => {
+    bridge.onEvent?.((event) => {
       if (event.kind === 'opened' && this.asked) void this.load();
     });
   }
@@ -66,7 +66,7 @@ export class LutStore {
 
 const stores = new WeakMap<object, LutStore>();
 /** The LUTs of the engine that the bridge reaches. */
-export function lutStoreOf(bridge: Pick<EngineBridge, 'call' | 'onEvent'>): LutStore {
+export function lutStoreOf(bridge: Pick<EngineBridge, 'call'> & Partial<Pick<EngineBridge, 'onEvent'>>): LutStore {
   let store = stores.get(bridge);
   if (!store) { store = new LutStore(bridge); stores.set(bridge, store); }
   return store;
@@ -79,6 +79,17 @@ export function useLutLibrary(bridge: Pick<EngineBridge, 'call' | 'onEvent'>): L
   useEffect(() => { store.ensure(); }, [store]);
   const refresh = useCallback(() => { void store.load(); }, [store]);
   return { ...state, refresh };
+}
+
+/**
+ * The library of LUTs where something listed it already, without listing it: `ensure` lists it, as
+ * a menu that shows LUTs is opened (the media pool's 1D LUT ▸ and 3D LUT ▸).
+ */
+export function useListedLuts(bridge: Pick<EngineBridge, 'call'> & Partial<Pick<EngineBridge, 'onEvent'>>): { library: LutLibrary | null; ensure: () => void } {
+  const store = lutStoreOf(bridge);
+  const state = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
+  const ensure = useCallback(() => store.ensure(), [store]);
+  return { library: state.library, ensure };
 }
 
 // The favorites, in the preferences of this computer.

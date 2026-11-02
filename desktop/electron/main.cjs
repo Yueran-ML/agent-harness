@@ -248,6 +248,9 @@ let keyWindow = null;
 // measures: whether the timeline viewer has something loaded, and the language it speaks in.
 let scopesWindow = null;
 let scopesAsked = { loaded: false, language: 'en' };
+// Counted each time the window of the scopes lets its scopes go, so that a scope it asked for
+// before is let go as it is answered (see `columbina-scopes:call`).
+let windowScopesRound = 0;
 let keyAsked = { service: null, language: 'en' };
 let keyChanged = false;
 let keyClosed = null;
@@ -918,6 +921,7 @@ function scopesContext() {
 function tellScopesContext() { tellScopes('columbina-scopes:context', scopesContext()); }
 /** Let go the scopes of the window of the scopes, which is closed or loaded again. */
 function dropWindowScopes() {
+  windowScopesRound += 1;
   const open = studio;
   if (!open?.session.alive || !open.windowScopes?.size) { open?.windowScopes?.clear(); return; }
   for (const id of open.windowScopes) void open.session.call('scopes.unsubscribe', { scope_id: id }).catch(() => {});
@@ -2194,8 +2198,16 @@ function installHandlers() {
     if (method !== 'scopes.subscribe' && !open.windowScopes.has(params.scope_id)) {
       return { ok: false, error: { code: null, message: 'That scope is not one of this window.', data: null } };
     }
+    const asker = scopesWindow;
+    const round = windowScopesRound;
     return answered(open.session.call(method, params).then((result) => {
-      if (method === 'scopes.subscribe' && typeof result?.scope_id === 'string') open.windowScopes.add(result.scope_id);
+      if (method === 'scopes.subscribe' && typeof result?.scope_id === 'string') {
+        // A window that was closed or loaded again meanwhile let its scopes go: this one goes too,
+        // or its pictures would go to no one and the next window would hold it.
+        if (scopesWindow !== asker || !asker || asker.isDestroyed() || windowScopesRound !== round || studio !== open) {
+          if (open.session.alive) void open.session.call('scopes.unsubscribe', { scope_id: result.scope_id }).catch(() => {});
+        } else open.windowScopes.add(result.scope_id);
+      }
       if (method === 'scopes.unsubscribe') open.windowScopes.delete(params.scope_id);
       return result;
     }));

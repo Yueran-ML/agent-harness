@@ -4353,6 +4353,49 @@ describe('the engine of the studio', () => {
     expect(ended()).toBe(2);
   });
 
+  it('lets go a scope that the window of the scopes subscribed as it was closed or loaded again', async () => {
+    const shell = await shellHarness();
+    await openIn(shell);
+    const [main] = connections(shell);
+    const server = shell.engines.servers.get(main.address)!;
+    server.answers.set('scopes.subscribe', () => 'hold');
+    const unsubscribed = () => main.written.filter(request => request.method === 'scopes.unsubscribe').map(request => request.params.scope_id);
+    const asker = (window: any) => (name: string, ...args: unknown[]) => shell.handlers.get(`columbina-scopes:${name}`)!(
+      { sender: window.webContents, senderFrame: window.webContents.mainFrame }, ...args);
+    const subscribe = { method: 'scopes.subscribe', params: { view: 'timeline', settings: { kind: 'waveform' } } };
+    // Closed while it subscribes: the scope it gets is let go at once, and is not one of the next window.
+    await shell.invoke('engine-scopes-window', { open: true, loaded: true });
+    const first = shell.windows.at(-1);
+    const asked = asker(first)('call', subscribe);
+    await settledAll();
+    await asker(first)('close');
+    server.answerHeld('scopes.subscribe', { result: { scope_id: 'scope-1' } });
+    await asked;
+    await settledAll();
+    expect(unsubscribed()).toEqual(['scope-1']);
+    await shell.invoke('engine-scopes-window', { open: true, loaded: true });
+    const second = shell.windows.at(-1);
+    expect(await asker(second)('call', { method: 'scopes.set', params: { scope_id: 'scope-1', settings: {} } })).toMatchObject({ ok: false });
+    // Loaded again while it subscribes: the same.
+    const again = asker(second)('call', subscribe);
+    await settledAll();
+    second.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    server.answerHeld('scopes.subscribe', { result: { scope_id: 'scope-2' } });
+    await again;
+    await settledAll();
+    expect(unsubscribed()).toEqual(['scope-1', 'scope-2']);
+    // The scope of the window that is there, asked and answered, is its own.
+    const kept = asker(second)('call', subscribe);
+    await settledAll();
+    server.answerHeld('scopes.subscribe', { result: { scope_id: 'scope-3' } });
+    expect(await kept).toEqual({ ok: true, result: { scope_id: 'scope-3' } });
+    await settledAll();
+    expect(unsubscribed()).toEqual(['scope-1', 'scope-2']);
+    await asker(second)('close');
+    await settledAll();
+    expect(unsubscribed()).toEqual(['scope-1', 'scope-2', 'scope-3']);
+  });
+
   it('opens the floating scopes in a window of their own, which reaches the engine for its own scopes alone and gets their pictures alone', async () => {
     const shell = await shellHarness();
     await openIn(shell);

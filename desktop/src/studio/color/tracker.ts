@@ -27,8 +27,17 @@ export const DEFAULT_COMPONENTS: TrackComponents = { pan: true, tilt: true, zoom
 export function samples(data: TrackData | undefined, component: TrackComponent): [number, number][] {
   const curve = data?.curves[component];
   if (!curve) return [];
-  return Object.entries(curve).map(([frame, value]) => [Number(frame), value] as [number, number])
-    .filter(([frame, value]) => Number.isFinite(frame) && Number.isFinite(value)).sort((a, b) => a[0] - b[0]);
+  const out: [number, number][] = [];
+  let ordered = true;
+  for (const key in curve) {
+    const frame = Number(key);
+    const value = curve[key];
+    if (!Number.isFinite(frame) || !Number.isFinite(value)) continue;
+    if (out.length > 0 && frame < out[out.length - 1][0]) ordered = false;
+    out.push([frame, value]);
+  }
+  // Frames of 0 and more come in order already (a JSON object's keys that are indices do); only negative ones do not.
+  return ordered ? out : out.sort((a, b) => a[0] - b[0]);
 }
 
 /** Whether a window has been tracked: a curve has a sample (the badge of p. 3231). */

@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TrackerPalette } from '../src/studio/color/TrackerPalette';
-import { GRAPH_COLUMNS, graph, selected, trackedRange, trackerKey, tracked, withCrosshair, withoutCrosshair } from '../src/studio/color/tracker';
+import { GRAPH_COLUMNS, graph, samples, selected, trackedRange, trackerKey, tracked, withCrosshair, withoutCrosshair } from '../src/studio/color/tracker';
 import { fullCorrector } from '../src/studio/color/corrector';
 import type { EditedNode } from '../src/studio/color/useNodeEdit';
 import type { EngineEvent, PowerWindow, TrackData } from '../src/studio/engine';
@@ -103,6 +103,10 @@ describe('the Tracker palette\'s model (pp. 3231–3238)', () => {
     expect(Math.max(...ys)).toBeCloseTo(1, 3);
     expect(drawn.lines[0].points[0][0]).toBe(0);
     expect(drawn.lines[0].points.at(-1)![0]).toBe(199_999);
+  });
+
+  it('orders the samples of negative frames', () => {
+    expect(samples({ ...data(), curves: { pan: { 3: 0, '-2': 1, '-10': 2, 0: 4 } } }, 'pan')).toEqual([[-10, 2], [-2, 1], [0, 4], [3, 0]]);
   });
 
   it('keeps every sample of a short track', () => {

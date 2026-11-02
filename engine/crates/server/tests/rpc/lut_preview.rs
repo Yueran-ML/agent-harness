@@ -385,6 +385,71 @@ async fn a_live_preview_shows_a_lut_on_the_node_in_the_monitor_alone() {
     }
 }
 
+/// The Live Preview that the timeline monitor shows, as `client` reads it from the state.
+async fn previewed(client: &mut Client) -> Value {
+    let state = client
+        .result("transport.state", Some(json!({"monitor": "timeline"})))
+        .await;
+    state.get("preview").cloned().unwrap_or(Value::Null)
+}
+
+/// Wait until no Live Preview is on, as `client` reads the state.
+async fn ended(client: &mut Client) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while previewed(client).await != Value::Null {
+        assert!(Instant::now() < deadline, "the preview is still on");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test]
+async fn a_live_preview_ends_with_the_connection_that_turned_it_on_last() {
+    if columbina_compose::gpu_for_tests().is_none() {
+        return;
+    }
+    let dir = project_dir();
+    std::fs::create_dir(dir.path().join("looks")).unwrap();
+    std::fs::write(dir.path().join("looks").join("swap.cube"), swap()).unwrap();
+    let engine = engine(dir.path(), &["--no-proxies", "--sound", "null"]).await;
+    let mut watcher = engine.client("desktop").await;
+    let (names, grade) = orange(&mut watcher).await;
+    watcher
+        .result(
+            "transport.load",
+            Some(json!({"monitor": "timeline", "timeline": names["$timeline"]})),
+        )
+        .await;
+    let asked = json!({"grade": grade, "node": names["$node"], "lut": "looks/swap.cube"});
+
+    // Turned on by a connection that ends: it ends with it, and the monitor shows the grade.
+    let mut first = engine.client("desktop").await;
+    slow(&mut first, "viewer.preview", asked.clone()).await;
+    shows(&mut watcher, SWAPPED).await;
+    drop(first);
+    ended(&mut watcher).await;
+    shows(&mut watcher, ORANGE).await;
+
+    // Turned on by one and then by another: the first that ends leaves the other's on.
+    let mut first = engine.client("desktop").await;
+    let mut second = engine.client("desktop").await;
+    slow(&mut first, "viewer.preview", asked.clone()).await;
+    slow(&mut second, "viewer.preview", asked.clone()).await;
+    drop(first);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(previewed(&mut watcher).await, asked);
+    drop(second);
+    ended(&mut watcher).await;
+
+    // Turned off by its owner before it ends: nothing is left to end, and another's stays on.
+    let mut first = engine.client("desktop").await;
+    slow(&mut first, "viewer.preview", asked.clone()).await;
+    slow(&mut first, "viewer.preview", json!({"on": false})).await;
+    slow(&mut watcher, "viewer.preview", asked.clone()).await;
+    drop(first);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(previewed(&mut watcher).await, asked);
+}
+
 #[tokio::test]
 async fn the_luts_of_a_source_clip_are_on_its_pictures_and_the_state_says_while_colour_is_made() {
     if columbina_compose::gpu_for_tests().is_none() {

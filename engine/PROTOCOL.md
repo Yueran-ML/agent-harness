@@ -2596,7 +2596,9 @@ otherwise. A refused call changes nothing.
 library (named as `luts.list` names it) would do in place of the LUT of the node `node` of the
 grade `grade`: Live Preview of the LUT browser, which "will display how the current clip will
 appear with the LUT you select applied to the currently selected node of the current grade"
-(p. 3411). `{"on": false}` ends it. The frames are drawn from a copy of the project whose node has
+(p. 3411). `{"on": false}` ends it, and so does the end of the connection that turned it on last,
+which no client would be left to end otherwise (another connection that turned it on before, or
+one that never did, ends nothing as it ends). The frames are drawn from a copy of the project whose node has
 that LUT, as `set_node` of `{"lut"}` would make it, and nothing else: the project, its revision
 and history, and every other client are as they were, and an export, a frame drawn off screen
 (`view.sample` and `scopes.statistics` of a timeline and frame, `luts.preview`,

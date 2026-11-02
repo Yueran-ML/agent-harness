@@ -9,7 +9,8 @@
 //!   in the preview alone. The project, its history and every other client see nothing of it;
 //!   an export, a frame drawn off screen, the references of a wipe and a still grabbed are drawn
 //!   as the project is. A node that cannot take the LUT (one that is not there, not a corrector,
-//!   or locked) leaves the picture as it is, as a Highlight mode does.
+//!   or locked) leaves the picture as it is, as a Highlight mode does. It ends with the
+//!   connection that turned it on last (`Engine::leave`), which no client is left to end.
 //! - **The Color Viewer LUT where the viewer is the Color page's** (`viewer.lut`): "The Color
 //!   Viewer Lookup Table options … only affect the GUI Viewer in the Color page. They do not
 //!   affect the viewers in the Edit page" (p. 672). The engine does not know the page that its

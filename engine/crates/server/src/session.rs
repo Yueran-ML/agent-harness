@@ -125,6 +125,9 @@ pub struct Engine {
     renders: Arc<Renders>,
     /// The scopes of the monitors.
     scopes: Scopes,
+    /// The connection that turned the Live Preview on last (`viewer.preview`), held while one
+    /// is turned on or off: it is ended as that connection ends, as no client is left to end it.
+    preview_owner: Mutex<Option<u64>>,
     /// Where the LUTs that grades name are looked for, for `luts.list`.
     luts: LutPlaces,
     /// What draws frames apart from the monitors, to be measured.
@@ -366,6 +369,7 @@ impl Engine {
             analysis,
             renders,
             scopes,
+            preview_owner: Mutex::new(None),
             luts,
             probe,
             headless,
@@ -435,7 +439,22 @@ impl Engine {
         self.connections().stops.remove(&id);
         self.presence
             .send_modify(|presence| presence.connected -= 1);
+        self.end_preview_of(id).await;
         self.viewer.forget(id).await;
+    }
+
+    /// End the Live Preview that the connection `id` turned on last, as it ends.
+    async fn end_preview_of(&self, id: u64) {
+        let mut owner = self.preview_owner.lock().await;
+        if *owner != Some(id) {
+            return;
+        }
+        *owner = None;
+        let off = RawValue::from_string(r#"{"on": false}"#.to_owned()).expect("it is JSON");
+        let _ = self
+            .transport
+            .viewer_preview("viewer.preview", Some(&off))
+            .await;
     }
 
     /// Stop every connection, and take no more.
@@ -1133,7 +1152,14 @@ async fn dispatch(
         }
         "viewer.wipe" | "viewer.split" | "viewer.highlight" | "viewer.bypass"
         | "viewer.preview" | "viewer.lut" => {
-            let result = viewer(engine, method, params).await?;
+            let result = if method == "viewer.preview" {
+                let mut owner = engine.preview_owner.lock().await;
+                let result = viewer(engine, method, params).await?;
+                *owner = (!result["preview"].is_null()).then_some(connection.id);
+                result
+            } else {
+                viewer(engine, method, params).await?
+            };
             if method == "viewer.highlight" || result["mode"] == "split" {
                 engine.state.lock().await.window_end("viewer_mode");
             }

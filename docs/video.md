@@ -183,8 +183,9 @@ palette in which the current node is adjusted shows an orange dot on its button.
 corrector, 01. A group of clips has a pre-clip and a post-clip grade, and the timeline a grade
 over every clip, applied in that order; the node editor switches between Clip, Timeline, Group
 Pre-Clip and Group Post-Clip. Nodes are added about the current one with Alt+S (serial), Shift+S
-(serial before), Alt+P (parallel), Alt+L (layer) and Alt+K (append at the end); a parallel or
-layer node brings its mixer. Links are dragged from an output to an input, the picture's in
+(serial before), Alt+P (parallel), Alt+L (layer), Alt+K (append at the end) and Alt+O (an
+Outside node, which takes the current node's picture and its key inverted); a parallel or layer
+node brings its mixer. Links are dragged from an output to an input, the picture's in
 green and the key's in blue, and a loose node dropped on a link goes into it; Ctrl+drag swaps
 what two correctors do. A node is labelled, locked (Lock Node), turned off with Ctrl+D or a
 click on its number (all of them with Alt+D), extracted with E and deleted with Delete;
@@ -306,6 +307,7 @@ These are the Color page's own keys; playback, In and Out and undo are those of 
 | ↑ / ↓ | The clip before or after | 2991 |
 | Alt+S / Shift+S | Adds a serial node after or before the current one | 3318 |
 | Alt+P / Alt+L / Alt+K | Adds a parallel node, a layer node, a node at the end (Append) | 3318 |
+| Alt+O | Adds an Outside node of the current one (its key inverted) | 3318, 3341 |
 | Ctrl+D / Alt+D | Turns the nodes chosen, or all nodes, off or on | 3315 |
 | E, Delete | Extracts the node chosen; deletes the nodes chosen | 3318–3319 |
 | Shift+Home / Ctrl+Shift+Home / Ctrl+Home | Resets the current node, every node, the whole grade | 3316 |

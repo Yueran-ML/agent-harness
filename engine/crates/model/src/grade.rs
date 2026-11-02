@@ -31,6 +31,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::ops::{OpError, LARGEST};
 use crate::project::Id;
 
+pub mod blur;
+pub use blur::{Blur, BlurLinks, BlurMode};
 pub mod window;
 pub use window::{
     Window, WindowBezierPoint, WindowCombine, WindowPoint, WindowShape, WindowTransform,
@@ -704,6 +706,11 @@ pub struct Corrector {
     pub lut: Option<String>,
     /// Soft Clip (pp. 3117–3121).
     pub soft_clip: SoftClip,
+    /// The Blur palette (pp. 3454–3456; see [`Blur`]), done after Soft Clip and the shot match,
+    /// before the node's key. It is always written, and read as it is at first where it is left
+    /// out.
+    #[serde(default)]
+    pub blur: Blur,
     /// The Key palette of a corrector (pp. 3361–3362).
     pub key: KeyParams,
     /// The adjustment that Shot Match put on the node, or none (see [`ShotMatch`]). It is
@@ -1612,6 +1619,7 @@ impl Corrector {
         bounds::KEY_BLUR.check("key.input_blur.radius", &self.key.input_blur.radius)?;
         bounds::KEY_BLUR_RATIO.check("key.input_blur.ratio", &self.key.input_blur.ratio)?;
         self.shot_match.as_ref().map_or(Ok(()), ShotMatch::check)?;
+        self.blur.check()?;
         self.qualifier.as_ref().map_or(Ok(()), Qualifier::check)?;
         window::check_windows(&self.windows)
     }

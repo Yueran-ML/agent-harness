@@ -738,3 +738,35 @@ pub fn key_output(output: &KeyOutput, frame: f64) -> [f32; 4] {
         0.0,
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_filters_of_the_key_palette_and_pre_filter_are_scaled_and_shared() {
+        let mut corrector = Corrector::default();
+        corrector.key.input_blur.radius = Param::Fixed(40.0);
+        let sigma = 40.0 * KEY_BLUR_SCALE;
+        #[allow(clippy::cast_possible_truncation, reason = "small radii")]
+        let at = |share: f64| (sigma * 2.0 * share) as f32;
+        for (ratio, across, down) in [(0.5, 0.5, 0.5), (1.0, 1.0, 0.0), (0.25, 0.25, 0.75)] {
+            corrector.key.input_blur.ratio = Param::Fixed(ratio);
+            assert_eq!(
+                key_blur_filter(&corrector, 0.0),
+                Filter::Gaussian {
+                    sigma: [at(across), at(down)]
+                },
+                "{ratio}"
+            );
+        }
+        let mut qualifier = Qualifier::default();
+        qualifier.finesse.pre_filter = Param::Fixed(30.0);
+        #[allow(clippy::cast_possible_truncation, reason = "small radii")]
+        let pre = (30.0 * PRE_FILTER_SCALE) as f32;
+        assert_eq!(
+            pre_filter(&qualifier, 0.0),
+            Filter::Gaussian { sigma: [pre; 2] }
+        );
+    }
+}

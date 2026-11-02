@@ -926,6 +926,46 @@ fn soft_clip_keeps_everything_until_it_is_set() {
     );
 }
 
+#[test]
+fn soft_clip_low_or_low_soft_alone_on_every_channel_clips() {
+    let low = one(|c| {
+        let l = &mut c.soft_clip.low;
+        (l.r, l.g, l.b) = (fixed(10.0), fixed(10.0), fixed(10.0));
+    });
+    near(eval(&low, [0.05, -0.2, 0.5]), [0.1, 0.1, 0.5], 0.0);
+    let soft = one(|c| {
+        let s = &mut c.soft_clip.low_soft;
+        (s.r, s.g, s.b) = (fixed(20.0), fixed(20.0), fixed(20.0));
+    });
+    let out = eval(&soft, [-0.2; 3]);
+    assert!(
+        out[0] > -0.2 && out[0] == out[1] && out[1] == out[2],
+        "{out:?}"
+    );
+}
+
+#[test]
+fn hsl_curves_of_hue_and_luma_alone_change_the_colour() {
+    // Every curve of hue and of luma has points, and Lum vs Sat takes all the colour away.
+    let grey = one(|c| {
+        c.hsl.hue_vs_hue = vec![[0.5, 0.0]];
+        c.hsl.hue_vs_sat = vec![[0.5, 0.0]];
+        c.hsl.hue_vs_lum = vec![[0.5, 0.0]];
+        c.hsl.lum_vs_sat = vec![[0.0, -1.0], [1.0, -1.0]];
+    });
+    let red = [0.8, 0.2, 0.2];
+    near(eval(&grey, red), [luma(red); 3], 1e-6);
+}
+
+#[test]
+fn a_shot_match_of_its_gamma_or_its_offset_alone_moves_the_channels() {
+    let x = [0.25, 0.5, 0.64];
+    let gamma = one(|c| c.shot_match = Some(shot([0.5; 3], [1.0; 3], [0.0; 3], 1.0, 0.435)));
+    near(eval(&gamma, x), [0.5, 0.5_f32.sqrt(), 0.8], 1e-6);
+    let offset = one(|c| c.shot_match = Some(shot([1.0; 3], [1.0; 3], [0.1; 3], 1.0, 0.435)));
+    near(eval(&offset, x), [0.35, 0.6, 0.74], 1e-6);
+}
+
 /// A shot match of `gamma`, `gain` and `offset` on each channel, and `contrast` about `pivot`.
 fn shot(gamma: [f64; 3], gain: [f64; 3], offset: [f64; 3], contrast: f64, pivot: f64) -> ShotMatch {
     let mut m = ShotMatch::default();

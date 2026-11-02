@@ -227,6 +227,79 @@ async fn bypass_color_shows_the_picture_without_its_grades_and_says_so() {
     }
 }
 
+/// The colour of the pixel at `x`, `y` of the still `id`'s PNG of 16 bits, in the gallery of
+/// the project in `dir`.
+fn still_rgb(dir: &std::path::Path, id: &str, x: u32, y: u32) -> [f64; 3] {
+    let path = dir.join("gallery").join("stills").join(format!("{id}.png"));
+    let bytes = std::fs::read(&path).unwrap();
+    let mut reader = png::Decoder::new(Cursor::new(&bytes)).read_info().unwrap();
+    let width = reader.info().width;
+    assert_eq!(reader.info().bit_depth, png::BitDepth::Sixteen);
+    let mut data = vec![0; reader.output_buffer_size().unwrap()];
+    reader.next_frame(&mut data).unwrap();
+    let at = ((y * width + x) * 3 * 2) as usize;
+    [0, 1, 2]
+        .map(|c| f64::from(u16::from_be_bytes([data[at + c * 2], data[at + c * 2 + 1]])) / 65535.0)
+}
+
+#[tokio::test]
+async fn a_still_is_grabbed_graded_while_bypass_color_or_a_highlight_mode_shows_the_frame_otherwise(
+) {
+    if columbina_compose::gpu_for_tests().is_none() {
+        return;
+    }
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--no-proxies", "--sound", "null"]).await;
+    let mut client = engine.client("desktop").await;
+    let names = graded(&mut client).await;
+    client
+        .result(
+            "transport.load",
+            Some(json!({"monitor": "timeline", "timeline": names["$timeline"]})),
+        )
+        .await;
+    let [r, g, b] = halved();
+    let graded = [[r + 0.25, g, b], [0.25, 0.0, 0.0]];
+    shows(&mut client, graded).await;
+    let is_graded = |id: &str| {
+        let (orange, black) = (
+            still_rgb(dir.path(), id, 16, 9),
+            still_rgb(dir.path(), id, 48, 27),
+        );
+        assert!(close(orange, graded[0]), "{orange:?}");
+        assert!(close(black, graded[1]), "{black:?}");
+    };
+
+    // Bypass Color on: the still keeps the grades; the monitor goes on showing the frame
+    // without them, and says so.
+    slow(&mut client, "viewer.bypass", json!({"on": true})).await;
+    shows(&mut client, [ORANGE, [0.0; 3]]).await;
+    let still = slow(&mut client, "still.grab", json!({})).await;
+    is_graded(still["id"].as_str().unwrap());
+    shows(&mut client, [ORANGE, [0.0; 3]]).await;
+    let state = client
+        .result("transport.state", Some(json!({"monitor": "timeline"})))
+        .await;
+    assert_eq!(state["bypass"], true, "{state}");
+    slow(&mut client, "viewer.bypass", json!({"on": false})).await;
+    shows(&mut client, graded).await;
+
+    // Highlight B/W on: the still is the graded picture, not the key.
+    let grade = json!({"level": "clip", "timeline": names["$timeline"], "clip": names["$c"]});
+    slow(
+        &mut client,
+        "viewer.highlight",
+        json!({"mode": "bw", "grade": grade, "node": names["$clip_node"]}),
+    )
+    .await;
+    let still = slow(&mut client, "still.grab", json!({})).await;
+    is_graded(still["id"].as_str().unwrap());
+    let state = client
+        .result("transport.state", Some(json!({"monitor": "timeline"})))
+        .await;
+    assert_eq!(state["highlight"]["mode"], "bw", "{state}");
+}
+
 /// The pixels of a thumbnail: its width, height and R'G'B'A.
 fn pixels(thumbnail: &Value) -> (u32, u32, Vec<u8>) {
     let png = base64::engine::general_purpose::STANDARD

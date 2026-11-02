@@ -2434,8 +2434,11 @@ is chosen. It answers `{"monitor": "timeline", "mode", "grade"?, "node"?}` (the 
 the monitor draws its frame again at once where it is not playing. It is of the preview alone: an
 export, a frame drawn off screen (`view.sample` and `scopes.statistics` of a timeline and frame)
 and the references of a wipe are drawn as they are; the comparison of a wipe or a split screen,
-and the scopes, are of the frame as it is shown, highlighted. The timeline state tells the mode
-(`highlight`, see Grades in the picture). A `--headless` engine answers `-32601`.
+and the scopes, are of the frame as it is shown, highlighted. A still grabbed is of the frame as
+it is graded, not highlighted (see Grabbing). The timeline state tells the mode (`highlight`, see
+Grades in the picture). It is of the monitor, which the pages share: the desktop shows it on the
+Color page alone, and turns it off as that page is left. A `--headless` engine answers
+`-32601`.
 
 - **`highlight`**: the picture where the node's key is, and a flat grey (0.5) where it is not,
   "the selected portion of the image with the original colors, and the unselected portion of the
@@ -2473,8 +2476,10 @@ and Output LUTs and the Color Viewer LUT stay, so the picture is the media as th
 manages its colour. While it is on, a Highlight mode shows the picture as it is. It answers
 `{"monitor": "timeline", "on"}` (the setting now); the monitor draws its frame again at once
 where it is not playing, and the timeline state tells it (`bypass`, see Grades in the picture).
-It is of the preview alone, as Highlight is: an export, a frame drawn off screen and the
-references of a wipe are graded. A `--headless` engine answers `-32601`; `-32602` for params
+It is of the preview alone, as Highlight is: an export, a frame drawn off screen, the
+references of a wipe and a still grabbed (see Grabbing) are graded. It is of the monitor and is
+kept from page to page, as `DaVinci Resolve`'s is on the Cut, Edit and Color pages (pp. 550,
+672): the desktop shows it and turns it on each. A `--headless` engine answers `-32601`; `-32602` for params
 that are not the method's, with `data` `{"reason": "monitor"}` for the source monitor.
 
 **Refusals.** `-32602` for params that are not the method's, with `data` `{"reason": "range"}`
@@ -2554,7 +2559,11 @@ client shows as current), else the one on top at the playhead; its grade at `lev
 Editor's mode; `pre_clip` and `post_clip` need the clip in a group, `-32602` `{"reason":
 "ungrouped", "clip"}` otherwise). A frame of no clip is grabbed with no clip grade. It needs the
 timeline monitor: `-32601` in a headless engine; `-32004` `{"reason": "not_loaded"}` where no
-timeline is loaded, `{"reason": "draw"}` where the frame cannot be read back. `view` is
+timeline is loaded, `{"reason": "draw"}` where the frame cannot be read back. A still keeps
+"that clip's embedded grade" (p. 3256), and the manual says nothing of Bypass Color or the
+Highlight modes at a grab: where either shows the frame otherwise, the frame is drawn again
+aside, graded and not highlighted, for the still alone (no view or scope sees it), and the
+monitor goes on showing it as it did. `view` is
 `"timeline"` (`-32602` `{"reason": "view"}` otherwise). Grab All Stills, Grab Missing Stills and
 One Still Per Scene are not done. Each grab is logged as `still_grabbed` `{"width", "height",
 "format", "read_ms", "written_ms"}`: of a frame of 3840 × 2160 (66 MB of half floats), a release

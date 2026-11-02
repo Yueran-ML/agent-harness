@@ -243,6 +243,7 @@ impl Timeline {
                         compositor: None,
                         targets: Vec::new(),
                         current: None,
+                        aside: false,
                         clock: None,
                         sound: SoundSlot::new(sound),
                         mixed_from: None,
@@ -451,6 +452,9 @@ struct Worker {
     compositor: Option<Compositor>,
     targets: Vec<Arc<Target>>,
     current: Option<Arc<Target>>,
+    /// Whether the frame being drawn is drawn aside, for a still, and not shown: handed to no
+    /// view and told to no scope ([`Worker::graded_original`]).
+    aside: bool,
     clock: Option<Clock>,
     sound: SoundSlot,
     /// The sample of the timeline that the mixer that plays started at, and the timeline's
@@ -840,7 +844,7 @@ impl Worker {
             }
             Command::Original(reply) => {
                 self.finish_compiling();
-                let _ = reply.send(self.original());
+                let _ = reply.send(self.graded_original());
             }
             Command::Highlight(highlight, reply) => {
                 if self.status.highlight != highlight {
@@ -883,6 +887,28 @@ impl Worker {
             }),
             _ => Err(not_loaded()),
         }
+    }
+
+    /// The frame shown as [`Worker::original`] gives it, as it is graded: a still keeps the grade
+    /// of its clip (p. 3256), so where Bypass Color or a Highlight mode shows the frame
+    /// otherwise, it is drawn again aside with neither, for no view and no scope, and the frame
+    /// shown is drawn again as it was shown.
+    fn graded_original(&mut self) -> Result<crate::stills::Frame, Fault> {
+        if !self.status.bypass && self.status.highlight.is_none() {
+            return self.original();
+        }
+        let bypass = std::mem::take(&mut self.status.bypass);
+        let highlight = self.status.highlight.take();
+        self.aside = true;
+        let drawn = self.draw_inner(true, false);
+        self.aside = false;
+        let grabbed = drawn.and_then(|_| self.original());
+        self.status.bypass = bypass;
+        self.status.highlight = highlight;
+        if !self.status.playing {
+            let _ = self.draw(true, false);
+        }
+        grabbed
     }
 
     /// Change what the frame is compared with, and draw it again where it is not playing.
@@ -1335,13 +1361,13 @@ impl Worker {
             .filter(|highlight| {
                 !bypass
                     && highlight.show(
-                    &project,
-                    index,
-                    frame,
-                    &self.grading,
-                    &mut scene,
-                    &mut clips,
-                )
+                        &project,
+                        index,
+                        frame,
+                        &self.grading,
+                        &mut scene,
+                        &mut clips,
+                    )
             })
             .cloned();
         self.compare.prepare(&project, index, frame, &self.grading);
@@ -1459,7 +1485,10 @@ impl Worker {
             .show(&gpu, compositor, &target)
             .map_err(|error| drawing(&error))?
             .unwrap_or_else(|| Arc::clone(&target));
-        let attached = {
+        // A frame drawn aside is handed to no view.
+        let attached = if self.aside {
+            None
+        } else {
             let slot = lock(&self.view);
             slot.as_ref()
                 .map(|view| (view.instance, view.presentation()))
@@ -1507,14 +1536,16 @@ impl Worker {
         } else {
             &target
         };
-        self.scopes.shown(
-            Monitor::Timeline,
-            Shown::Target {
-                gpu,
-                target: Arc::clone(measured),
-                frame,
-            },
-        );
+        if !self.aside {
+            self.scopes.shown(
+                Monitor::Timeline,
+                Shown::Target {
+                    gpu,
+                    target: Arc::clone(measured),
+                    frame,
+                },
+            );
+        }
         self.current = Some(shown);
         Ok(snapshot)
     }
@@ -1789,6 +1820,7 @@ mod tests {
             compositor: None,
             targets: Vec::new(),
             current: None,
+            aside: false,
             clock: None,
             sound: SoundSlot::new(crate::audio::Kind::Null),
             mixed_from: None,

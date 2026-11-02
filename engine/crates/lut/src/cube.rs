@@ -877,6 +877,55 @@ mod tests {
         let long = "x".repeat(1000);
         let e = parse(&format!("LUT_1D_SIZE 2\n0 0 {long}\n")).unwrap_err();
         assert!(e.to_string().len() < 100, "{e}");
+        // The text that an error keeps is its first 40 characters and an ellipsis.
+        assert_eq!(
+            e.kind,
+            ErrorKind::BadNumber {
+                text: format!("{}…", "x".repeat(40))
+            }
+        );
+    }
+
+    #[test]
+    fn errors_count_every_value_of_a_long_line_and_lines_of_crlf_once() {
+        // A line is kept to its first five words, but its count is of all of them.
+        assert_eq!(
+            error("LUT_1D_SIZE 2\n0 0 0 0 0 0 0\n"),
+            (2, ErrorKind::RowArity { found: 7 })
+        );
+        assert_eq!(
+            error("DOMAIN_MIN 0 0 0 0 0 0\n").1,
+            ErrorKind::Arity {
+                keyword: "DOMAIN_MIN",
+                expected: 3,
+                found: 6
+            }
+        );
+        // CRLF ends a line, not two.
+        assert_eq!(
+            error("LUT_1D_SIZE 2\r\n0 0 0\r\n1 x 1\r\n"),
+            (3, ErrorKind::BadNumber { text: "x".into() })
+        );
+        // A file of one table and no rows is short of all of them.
+        assert_eq!(
+            error("LUT_3D_SIZE 2\n"),
+            (
+                1,
+                ErrorKind::TooFewRows {
+                    expected: 8,
+                    found: 0
+                }
+            )
+        );
+        assert_eq!(
+            error("# a\nLUT_1D_SIZE 4\n").1,
+            ErrorKind::TooFewRows {
+                expected: 4,
+                found: 0
+            }
+        );
+        // A comment after spaces and tabs need not be text either.
+        assert!(parse_cube(b" \t # \xff\xfe\nLUT_1D_SIZE 2\n0 0 0\n1 1 1\n").is_ok());
     }
 
     #[test]

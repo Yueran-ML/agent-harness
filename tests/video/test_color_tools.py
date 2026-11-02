@@ -463,7 +463,13 @@ async def test_the_engine_matches_a_cast_shot_of_bars_to_the_same_bars(
     assert told["media"][0]["color_override"]["levels"] == "full"
     result(await desk.call("video_undo"))
     listed = result(await desk.call("video_media_color"))["media"]
-    assert listed[0]["color_override"] == {"input": None, "levels": "auto"}
+    # The engine writes every field of it, the LUTs of the source clip and its Inverse DRT too.
+    assert listed[0]["color_override"] == {
+        "input": None,
+        "levels": "auto",
+        "lut": {"1d": None, "3d": None},
+        "inverse_drt": True,
+    }
 
     # A cast of a grade on the second clip: red up, blue down, green lifted.
     cast_settings = {

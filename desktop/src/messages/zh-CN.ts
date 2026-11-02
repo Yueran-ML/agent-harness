@@ -1555,7 +1555,7 @@ export const zhCN: Messages = {
             untrackable: '这里不能跟踪这个窗口，只能跟踪动态画面片段上的窗口。',
             frame: '播放头不在这个片段内。',
             busy: '另一个跟踪正在进行。',
-            untracked: '请先跟踪窗口，再添加关键帧。',
+            untracked: '这里只能给动态画面片段上的窗口添加关键帧。',
             nothing_to_paste: '复制的窗口没有跟踪数据。',
             stale_revision: '工程已改动，请重试。',
             other: '跟踪失败。',

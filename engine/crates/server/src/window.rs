@@ -692,6 +692,9 @@ pub struct Movement {
     pub placement: Affine,
     pub clock: &'static str,
     pub frame: i64,
+    /// The size of the frames the window's clip is tracked on, for Frame mode to key a window
+    /// never tracked (T24).
+    analysis: Option<[usize; 2]>,
 }
 impl Movement {
     pub fn selected(&self) -> &str {
@@ -1122,6 +1125,7 @@ impl Movement {
             placement,
             clock,
             frame: at,
+            analysis: crate::tracking::analysis_of(&frame.project, &selection.target),
         })
     }
     pub fn at(&self, canvas: (f64, f64)) -> Option<Vec<Window>> {
@@ -1390,7 +1394,12 @@ impl Movement {
         }
         let aspect = f64::from(self.picture.0) / f64::from(self.picture.1);
         Some(crate::tracking::frame_mode(
-            &self.base, windows, self.index, self.frame, aspect,
+            &self.base,
+            windows,
+            self.index,
+            self.frame,
+            aspect,
+            self.analysis,
         ))
     }
     pub fn op(selection: &Selection, windows: &[Window]) -> Value {

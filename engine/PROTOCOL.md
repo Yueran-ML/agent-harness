@@ -1266,10 +1266,16 @@ project's reading of the manual (pp. 3232, 3236); Resolve publishes no formula.
 **On the viewer.** The window controls (above) are drawn, hit and dragged through the same
 composition. In **Clip** mode a drag is read back through the track and changes the window's
 own Transform (its left key, as before), so the window moves the same way along its whole
-path. In **Frame** mode a change of the whole window (Pan, Tilt, Size, Aspect, Rotate) becomes
-a tracker keyframe at the playhead, the change as it is seen there, and the Transform is kept;
-a change of one point of a Polygon or Curve has no tracker keyframe to go into and changes the
-shape as in Clip mode (a project choice). The controls are affine: a Perspective 3D track is
+path. In **Frame** mode (p. 3236: "changes you make to the position or shape of a window
+create a keyframe", for rotoscoping, pp. 3250–3252) a change of the whole window (Pan, Tilt,
+Size, Aspect, Rotate) becomes a tracker keyframe at the playhead, the change as it is seen
+there, and the Transform is kept; a drag of points of a Linear, Polygon or Curve window keys the
+coordinates it changed at the playhead (a linear key at the value shown there plus the change,
+other keys kept) and sets the tracker keyframe there at its motion, so the graph's ruler shows
+it. A window never tracked is keyed too (p. 3250): its `data` is first set up on the frames a
+track of its clip would have (below), anchored at its centre at the playhead; the window of a
+grade that is not a clip's moving picture is changed as in Clip mode. Softness, and points added
+or a Curve closed, apply to the whole clip. The controls are affine: a Perspective 3D track is
 drawn by its derivative at the window's centre, exact there; the mask follows the full
 homography.
 
@@ -1290,7 +1296,8 @@ homography.
 
 The answer comes at once: `{job, first, last, frame_size, direction}`. The track then runs on a
 thread of its own: the clip's media (its proxy where usable) decoded on the processor, upright,
-scaled to at most 720 lines at its own aspect (`frame_size`), as luma at a fixed scale. A
+scaled to at most 720 lines at its own aspect (`frame_size`; pixels are square, as the engine
+shows every picture: the project keeps no pixel aspect), as luma at a fixed scale. A
 window tracked before keeps its data and the track continues it from the motion at `frame`
 (p. 3232); the frames it reaches are overwritten (p. 3231). Every 150 ms the track so far is
 written into the window by `set_node` as a change of one native gesture of the connection
@@ -1312,7 +1319,7 @@ taken off the curves (a line bridges them) and counted in `lost`.
 | `{"kind":"interpolate","from":f,"to":g,"components"?:[...]}` | the samples strictly between made the line between their values at `f` and `g` |
 | `{"kind":"reset"}` | Reset Track Data on Active Window; Frame mode's keyframes stay (p. 3238) |
 | `{"kind":"mode","mode":"clip" or "frame"}` | Clip/Frame (p. 3236) |
-| `{"kind":"add_key","frame":f}`, `{"kind":"delete_key","frame":f}` | a Frame mode keyframe at the motion there; Delete Keyframe (p. 3238); adding needs a tracked window (`reason: "untracked"`) |
+| `{"kind":"add_key","frame":f}`, `{"kind":"delete_key","frame":f}` | Add Keyframe: a Frame mode keyframe at the motion there, and a key at `f` of every coordinate of the window's points at its value there, so later changes interpolate from there (p. 3251); a window never tracked is first set up on its clip's frames, anchored at its centre at `f` (p. 3250), and one of a grade that is not a clip's moving picture is refused (`reason: "untracked"`). Delete Keyframe: the keyframe and the points' keys at `f` taken away, a coordinate left with none keeping its value there (pp. 3238, 3251) |
 | `{"kind":"crosshairs","points":[[u,v],...]}` | the point tracker's crosshairs: Add Tracker puts one at `[0.5,0.5]`, Delete Tracker takes one away (p. 3238) |
 | `{"kind":"paste","from":"w2"}` | Paste Track Data from another window of the node, as the same motion of the frame about this window's own anchor (p. 3233); `reason: "nothing_to_paste"` if it has none |
 

@@ -9,8 +9,7 @@
 //!
 //! - The frames are those of the clip's media, as the keys of its grade count them (its source
 //!   frames, T3c), decoded on the processor (its proxy where it has a usable one), turned upright,
-//!   and scaled to at most [`ANALYSIS_HEIGHT`] lines at the picture's own aspect: the frames the
-//!   window's track data is in pixels of. A track goes no further than the frames that the clip
+//!   and scaled to [`analysis_size`]: the frames the window's track data is in pixels of. A track goes no further than the frames that the clip
 //!   shows: a clip played backward is tracked forward in time on the timeline (p. 3231).
 //! - Every [`COMMIT_EVERY`] the track so far is written into the window, as the next change of
 //!   the same gesture: the viewer shows the window following and the palette its curves, and the
@@ -43,16 +42,13 @@ use columbina_track::{
     TrackError, Tracker,
 };
 
+use crate::tracking::{analysis_of, analysis_size, key_points, unkey_points, untracked};
+
 use super::{
     json, rpc, Arc, AtomicBool, Connection, Deserialize, Engine, Fault, Instant, Kind, Mutex,
     Ordering, OwnedGesture, RawValue, Reply, State, Value,
 };
 use crate::proxy;
-
-/// The most lines of the frames tracked: tracking needs the motion, not every pixel, and a
-/// frame of this size is decoded and tracked many times a second on the processor. A project
-/// choice.
-pub const ANALYSIS_HEIGHT: u32 = 720;
 
 /// How often the track so far is written into the window while it goes on.
 pub const COMMIT_EVERY: std::time::Duration = std::time::Duration::from_millis(150);
@@ -141,9 +137,10 @@ enum Edit {
     Reset,
     /// Clip or Frame (p. 3236).
     Mode { mode: Mode },
-    /// A keyframe of Frame mode at `frame`, at the motion there (p. 3252).
+    /// A keyframe of Frame mode at `frame`, at the motion and shape there (p. 3251), the window's
+    /// tracker set up on frames of its clip first where it was never tracked (p. 3250).
     AddKey { frame: i64 },
-    /// Delete Keyframe (p. 3238).
+    /// Delete Keyframe (pp. 3238, 3251): the tracker's keyframe and the points' keys at `frame`.
     DeleteKey { frame: i64 },
     /// The crosshairs of the point tracker, in normalized picture coordinates (Add Tracker
     /// puts one at the centre of the frame, Delete Tracker takes one away, p. 3238).
@@ -185,13 +182,14 @@ fn clip_of<'a>(
     Some((timeline, clip))
 }
 
-/// The windows of the node with `window`'s tracking made `change` of it, as an operation.
+/// The windows of the node with `window` made `change` of, as an operation: it is given the
+/// window, with its tracking (none made one), and the windows as they were.
 fn set_tracking(
     project: &columbina_model::Project,
     target: &Target,
     node: &str,
     window: &str,
-    change: impl FnOnce(&mut WindowTracking, &[Window]) -> Result<(), Fault>,
+    change: impl FnOnce(&mut Window, &[Window]) -> Result<(), Fault>,
 ) -> Result<Value, Fault> {
     let c = corrector(project, target, node).ok_or_else(|| refused("target", "no such node"))?;
     let mut windows = c.windows.clone();
@@ -199,10 +197,16 @@ fn set_tracking(
         .iter()
         .position(|w| w.id == window)
         .ok_or_else(|| refused("window", "no such window"))?;
-    let mut tracking = windows[index].tracking.clone().unwrap_or_default();
-    change(&mut tracking, &c.windows)?;
-    windows[index].tracking = Some(tracking);
+    windows[index]
+        .tracking
+        .get_or_insert_with(WindowTracking::default);
+    change(&mut windows[index], &c.windows)?;
     Ok(json!({"op":"set_node","grade":target,"id":node,"params":{"windows":windows}}))
+}
+
+/// The tracking of a window that [`set_tracking`] gives.
+fn tracking_of(window: &mut Window) -> &mut WindowTracking {
+    window.tracking.get_or_insert_with(WindowTracking::default)
 }
 
 /// What a track reads and where it writes, fixed when it starts.
@@ -302,15 +306,8 @@ fn plan(
         ));
     }
     // The upright analysis size, at the picture's aspect.
-    let (w0, h0) = if video.rotation % 180 != 0 {
-        (video.height, video.width)
-    } else {
-        (video.width, video.height)
-    };
-    let h = h0.clamp(1, ANALYSIS_HEIGHT);
-    let w = ((f64::from(w0) * f64::from(h) / f64::from(h0.max(1))).round() as u32).max(1);
-    let size = [w as usize, h as usize];
-    let (wf, hf) = (f64::from(w), f64::from(h));
+    let size = analysis_size(video);
+    let (wf, hf) = (size[0] as f64, size[1] as f64);
     let at = request.frame as f64;
     // Where the window is at the playhead, as it is seen: its own placement, then its track.
     let own = window
@@ -343,7 +340,8 @@ fn plan(
     let mut data = tracking.data;
     if data.frame_size != size {
         if data.is_empty() && data.keys().is_empty() {
-            data = TrackData::new([own[4] * wf - 0.5, own[5] * hf - 0.5], size);
+            data = untracked(window, request.frame, size)
+                .ok_or_else(|| untrackable("its transform collapses it"))?;
         } else {
             return Err(untrackable("it was tracked on frames of another size"));
         }
@@ -597,8 +595,8 @@ impl State {
                         &plan.target,
                         &plan.node,
                         &plan.window,
-                        |tracking, _| {
-                            tracking.data = data.clone();
+                        |window, _| {
+                            tracking_of(window).data = data.clone();
                             Ok(())
                         },
                     )?])
@@ -883,12 +881,21 @@ fn components(which: Option<&Vec<Component>>) -> Vec<Component> {
 }
 
 fn edit(project: &columbina_model::Project, request: &EditRequest) -> Result<Value, Fault> {
+    let analysis = analysis_of(project, &request.grade);
     set_tracking(
         project,
         &request.grade,
         &request.node,
         &request.window,
-        |tracking, windows| {
+        |window, windows| {
+            let shaped = window.clone();
+            if let Edit::AddKey { frame } = &request.edit {
+                key_points(window, *frame);
+            }
+            if let Edit::DeleteKey { frame } = &request.edit {
+                unkey_points(window, *frame);
+            }
+            let tracking = tracking_of(window);
             let data = &mut tracking.data;
             match &request.edit {
                 Edit::Clear {
@@ -905,10 +912,15 @@ fn edit(project: &columbina_model::Project, request: &EditRequest) -> Result<Val
                 Edit::Mode { mode } => tracking.mode = *mode,
                 Edit::AddKey { frame } => {
                     if data.frame_size.contains(&0) {
-                        return Err(refused(
-                            "untracked",
-                            "the window has no track to key: track it first",
-                        ));
+                        // Keyed without a track (p. 3250), on the frames a track would have.
+                        *data = analysis
+                            .and_then(|size| untracked(&shaped, *frame, size))
+                            .ok_or_else(|| {
+                                refused(
+                                    "untracked",
+                                    "only a window of a clip of moving pictures is keyed here",
+                                )
+                            })?;
                     }
                     let here = data.key_at(*frame);
                     data.set_key(*frame, here);
@@ -934,4 +946,86 @@ fn edit(project: &columbina_model::Project, request: &EditRequest) -> Result<Val
             Ok(())
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use columbina_model::grade::{Link, Node};
+
+    fn project(window: Window) -> columbina_model::Project {
+        let mut project = columbina_model::Project::sample();
+        let mut node = Node::corrector("n1");
+        let NodeKind::Corrector(c) = &mut node.kind else {
+            unreachable!()
+        };
+        c.windows = vec![window];
+        let grade = &mut project.timelines[0].tracks[0].clips[0].grade;
+        grade.nodes.push(node);
+        grade.links = vec![Link::rgb("source", "n1"), Link::rgb("n1", "output")];
+        project
+    }
+
+    fn clip() -> Target {
+        Target::Clip {
+            timeline: "t1".into(),
+            clip: "c1".into(),
+        }
+    }
+
+    /// The window `w1` as `edit` writes it, or why it is refused.
+    fn edited(project: &columbina_model::Project, edit: &Value) -> Result<Window, Fault> {
+        let request: EditRequest =
+            serde_json::from_value(json!({"grade":clip(),"node":"n1","window":"w1","edit":edit}))
+                .unwrap();
+        let op = super::edit(project, &request)?;
+        Ok(serde_json::from_value(op["params"]["windows"][0].clone()).unwrap())
+    }
+
+    fn reason(fault: &Fault) -> &str {
+        fault.data.as_ref().unwrap()["reason"].as_str().unwrap()
+    }
+
+    /// Add Keyframe needs no track (p. 3250): a window never tracked is set up on the frames a
+    /// track of its clip would have, anchored at its centre there, and keyed with its points;
+    /// Delete Keyframe takes the keyframe and the points' keys away again.
+    #[test]
+    fn add_keyframe_keys_a_window_never_tracked_and_delete_keyframe_unkeys_it() {
+        let mut window = Window::new("w1", WindowShape::polygon());
+        window.transform.pan = 40.0.into();
+        let mut project = project(window.clone());
+        let keyed = edited(&project, &json!({"kind":"add_key","frame":12})).unwrap();
+        let data = &keyed.tracking.as_ref().unwrap().data;
+        assert_eq!(data.frame_size, [1280, 720]);
+        assert_eq!(
+            data.anchor,
+            untracked(&window, 12, [1280, 720]).unwrap().anchor
+        );
+        assert_eq!(data.keys().keys().copied().collect::<Vec<_>>(), vec![12]);
+        let WindowShape::Polygon { points, .. } = &keyed.shape else {
+            panic!("a polygon")
+        };
+        assert!(points
+            .iter()
+            .all(|p| matches!(&p.x, Param::Keys(k) if k.len() == 1 && k[0].frame == 12)));
+        let NodeKind::Corrector(c) =
+            &mut project.timelines[0].tracks[0].clips[0].grade.nodes[0].kind
+        else {
+            unreachable!()
+        };
+        c.windows = vec![keyed];
+        let unkeyed = edited(&project, &json!({"kind":"delete_key","frame":12})).unwrap();
+        assert_eq!(unkeyed.shape, window.shape);
+        assert!(unkeyed.tracking.unwrap().data.keys().is_empty());
+        // A still has no frames to be tracked on.
+        project.media[0].facts.video.as_mut().unwrap().still = true;
+        let NodeKind::Corrector(c) =
+            &mut project.timelines[0].tracks[0].clips[0].grade.nodes[0].kind
+        else {
+            unreachable!()
+        };
+        c.windows = vec![window];
+        let fault = edited(&project, &json!({"kind":"add_key","frame":12})).unwrap_err();
+        assert_eq!(reason(&fault), "untracked");
+    }
 }

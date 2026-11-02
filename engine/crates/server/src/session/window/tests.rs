@@ -3607,3 +3607,32 @@ fn a_project_change_that_drops_the_point_selection_tells_its_owner() {
     assert_eq!(window_notifications(&mut owner), Vec::<Value>::new());
     assert_eq!(window_notifications(&mut observer), Vec::<Value>::new());
 }
+
+/// Frame mode keys a drag of a window never tracked (T24, p. 3250): its tracker is set up on
+/// the frames a track of its clip (1920x1080, so 1280x720) would have, anchored at its centre,
+/// and the move becomes the tracker's keyframe at the playhead, its Transform kept.
+#[test]
+fn frame_mode_keys_a_move_of_a_window_never_tracked() {
+    use columbina_model::grade::window::tracking::{Mode, WindowTracking};
+    let mut window = Window::new("w1", WindowShape::circular());
+    window.tracking = Some(WindowTracking {
+        mode: Mode::Frame,
+        ..WindowTracking::default()
+    });
+    let (mut state, registry, pin, frame) = control_window_fixture(window, (64, 36));
+    arm(&mut state);
+    drag(&mut state, &registry, &pin, &frame, (80, 36));
+    let changed = first_window(&state);
+    assert_eq!(changed.transform.pan, Param::Fixed(50.0));
+    let data = &changed.tracking.unwrap().data;
+    assert_eq!(data.frame_size, [1280, 720]);
+    assert_eq!(data.anchor, [639.5, 359.5]);
+    assert_eq!(data.keys().keys().copied().collect::<Vec<_>>(), vec![10]);
+    // 16 of the view's 128 pixels: an eighth of the frame, 160 of its 1280 pixels.
+    assert!(
+        (data.key_at(10).pan - 160.0).abs() < 1e-9,
+        "{:?}",
+        data.key_at(10)
+    );
+    assert!(data.key_at(10).tilt.abs() < 1e-9);
+}

@@ -1776,7 +1776,7 @@ export const en = {
             untrackable: 'This window cannot be tracked here. Only the windows of a clip of moving pictures can be.',
             frame: 'The playhead is outside the clip.',
             busy: 'Another track is going on.',
-            untracked: 'Track the window before adding a keyframe.',
+            untracked: 'Only the windows of a clip of moving pictures can be keyframed here.',
             nothing_to_paste: 'The copied window has no track data.',
             stale_revision: 'The project changed. Try again.',
             other: 'Tracking failed.',

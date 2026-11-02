@@ -45,9 +45,11 @@ export function blurUses(mode: BlurMode, setting: BlurColumn | BlurSingle): bool
 
 /**
  * How the controls answer the pointer (ours, to be set against DaVinci Resolve): the decimals the
- * pages show (0.50, 100.00), what a pixel of dragging a bar or a number adds, and what a notch of
- * the wheel over a bar of Radius adds (the only wheel of the palette, p. 3454: "use the scroll
- * wheel on your mouse while hovering over one of the bars to increase the radius").
+ * pages show (0.50, 100.00), what a pixel of dragging a bar or a number adds, what a notch of the
+ * wheel over a bar of Radius adds (the only wheel of the palette, p. 3454: "use the scroll wheel on
+ * your mouse while hovering over one of the bars to increase the radius"), and how long the wheel
+ * rests before the notches of a turn are one step to undo (well within the 10 seconds after which
+ * the engine ends a gesture that it hears nothing of, PROTOCOL.md, "Gestures").
  */
 export const BLUR_FEEL = {
   digits: 2,
@@ -55,6 +57,7 @@ export const BLUR_FEEL = {
   fieldPerPx: 0.002,
   mixPerPx: 0.25,
   wheelStep: 0.01,
+  wheelRestMs: 1000,
 } as const;
 
 /** The settings of the palette as a new node has them. */

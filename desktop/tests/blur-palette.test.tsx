@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Palettes } from '../src/studio/color/Palettes';
-import { blurChanged, blurUses, columnEdits, neutralBlur } from '../src/studio/color/blur';
+import { BLUR_FEEL, blurChanged, blurUses, columnEdits, neutralBlur } from '../src/studio/color/blur';
 import { fullCorrector, neutralCorrector } from '../src/studio/color/corrector';
 import type { EditedNode } from '../src/studio/color/useNodeEdit';
 import { mergePatch, type Corrector } from '../src/studio/engine';
@@ -165,22 +165,90 @@ describe('ganged columns', () => {
 });
 
 describe('the wheel over Radius (p. 3454)', () => {
-  it('moves Radius by 0.01 a notch, ganged, each notch a step; no other bar takes it', async () => {
+  const notch = (column: string, deltaY: number) => {
+    const event = new WheelEvent('wheel', { deltaY, cancelable: true, bubbles: true });
+    act(() => { document.querySelector(`[data-test="blur-${column}-r"]`)!.dispatchEvent(event); });
+    return event;
+  };
+  const radius = (value: number) => ({ blur: { radius: { r: value, g: value, b: value } } });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('moves Radius by 0.01 a notch, ganged; no other bar takes it', () => {
     const edit = mount();
-    const red = document.querySelector('[data-test="blur-radius-r"]')!;
-    const event = new WheelEvent('wheel', { deltaY: -100, cancelable: true, bubbles: true });
-    red.dispatchEvent(event);
-    expect(event.defaultPrevented).toBe(true);
+    expect(notch('radius', -100).defaultPrevented).toBe(true);
     expect(edit.sent()).toHaveLength(1);
-    expect(edit.sent()[0].ops[0].params).toEqual({ blur: { radius: { r: 0.51, g: 0.51, b: 0.51 } } });
-    expect(edit.sent()[0].gesture).toBeUndefined();
-    await edit.answer(11); edit.sync(11, { blur: { radius: { r: 0.51, g: 0.51, b: 0.51 } } });
-    red.dispatchEvent(new WheelEvent('wheel', { deltaY: 100, cancelable: true, bubbles: true }));
-    expect(edit.sent()[1].ops[0].params).toEqual({ blur: { radius: { r: 0.5, g: 0.5, b: 0.5 } } });
-    const ratio = new WheelEvent('wheel', { deltaY: -100, cancelable: true, bubbles: true });
-    document.querySelector('[data-test="blur-ratio-r"]')!.dispatchEvent(ratio);
-    expect(ratio.defaultPrevented).toBe(false);
+    expect(edit.sent()[0].ops[0].params).toEqual(radius(0.51));
+    expect(box('blur.radius.g').value).toBe('0.51');
+    expect(notch('ratio', -100).defaultPrevented).toBe(false);
+    expect(edit.sent()).toHaveLength(1);
+  });
+
+  it('makes the notches of a turn one gesture, one step to undo, ended once the wheel rests', async () => {
+    vi.useFakeTimers();
+    const edit = mount();
+    notch('radius', -100); notch('radius', -100); notch('radius', -100);
+    expect(edit.sent()).toHaveLength(1);
+    const id = edit.sent()[0].gesture?.id;
+    expect(id).toMatch(/^palette-/);
+    expect(edit.sent()[0].gesture?.end).toBeUndefined();
+    expect(box('blur.radius.g').value).toBe('0.53');
+    await edit.answer(11);
+    expect(edit.sent()[1]).toMatchObject({ revision: 10, gesture: { id }, ops: [{ params: radius(0.53) }] });
+    expect(edit.sent()[1].gesture?.end).toBeUndefined();
+    notch('radius', 100);
+    await edit.answer(12);
+    expect(edit.sent()[2]).toMatchObject({ gesture: { id }, ops: [{ params: radius(0.52) }] });
+    await edit.answer(13);
+    // Not yet at rest: nothing more.
+    act(() => { vi.advanceTimersByTime(BLUR_FEEL.wheelRestMs - 1); });
+    expect(edit.sent()).toHaveLength(3);
+    act(() => { vi.advanceTimersByTime(1); });
+    expect(edit.sent()[3]).toMatchObject({ gesture: { id, end: true }, ops: [{ params: radius(0.52) }] });
+    await edit.answer(14); edit.sync(14, radius(0.52));
+    // The next turn is a gesture of its own.
+    notch('radius', -100);
+    expect(edit.sent()[4]).toMatchObject({ ops: [{ params: radius(0.53) }] });
+    expect(edit.sent()[4].gesture?.id).not.toBe(id);
+  });
+
+  it('ends the turn when the pointer leaves the bar', async () => {
+    const edit = mount();
+    notch('radius', -100);
+    const id = edit.sent()[0].gesture?.id;
+    await edit.answer(11);
+    fireEvent.pointerLeave(document.querySelector('[data-test="blur-radius-r"]')!);
+    expect(edit.sent()[1]).toMatchObject({ gesture: { id, end: true }, ops: [{ params: radius(0.51) }] });
+    // Left again, nothing more.
+    fireEvent.pointerLeave(document.querySelector('[data-test="blur-radius-r"]')!);
+    await edit.answer(12);
     expect(edit.sent()).toHaveLength(2);
+  });
+
+  it('ends the turn when the bar is pressed, so that a drag after it is a step of its own', async () => {
+    vi.useFakeTimers();
+    const edit = mount();
+    notch('radius', -100);
+    const id = edit.sent()[0].gesture?.id;
+    await edit.answer(11);
+    const red = bar('radius', 'r');
+    pointer(red, 'pointerDown', 0, 100);
+    expect(edit.sent()[1]).toMatchObject({ gesture: { id, end: true }, ops: [{ params: radius(0.51) }] });
+    await edit.answer(12); edit.sync(12, radius(0.51));
+    pointer(red, 'pointerMove', 0, 80); pointer(red, 'pointerUp', 0, 80);
+    await edit.answer(13); await edit.answer(14);
+    act(() => { vi.advanceTimersByTime(2 * BLUR_FEEL.wheelRestMs); });
+    await settle();
+    const after = edit.sent().slice(2);
+    expect(after.length).toBeGreaterThan(0);
+    expect(after.every(sent => sent.gesture?.id !== id)).toBe(true);
+    expect(after.at(-1)).toMatchObject({ gesture: { end: true }, ops: [{ params: radius(0.61) }] });
+  });
+
+  it('keeps each channel within its bounds as the turn goes on', () => {
+    const edit = mount({ blur: { radius: { r: 0.99, g: 0.5, b: 0.97 } } });
+    notch('radius', -100); notch('radius', -100); notch('radius', -100);
+    expect(edit.sent()[0].ops[0].params).toEqual({ blur: { radius: { r: 1, g: 0.51, b: 0.98 } } });
+    expect(box('blur.radius.r').value).toBe('1.00');
   });
 });
 

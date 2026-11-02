@@ -19,26 +19,50 @@ import './blur.css';
  *
  * Ganged, as the columns are at first, a bar dragged moves the three by as much as it moves; ganging
  * them again does not make them alike. A notch of the wheel over a bar of Radius moves it by 0.01
- * (p. 3454); no other control of the palette takes the wheel. Each drag, wheel notch, typed number
- * or reset is one step to undo.
+ * (p. 3454); no other control of the palette takes the wheel. Each drag, turn of the wheel, typed
+ * number or reset is one step to undo: the notches of a turn are one gesture, as a drag is, which
+ * ends once the wheel has rested for `BLUR_FEEL.wheelRestMs`, or the pointer leaves or presses the
+ * bar.
  */
 const LETTER: Record<BlurChannel, string> = { r: 'R', g: 'G', b: 'B' };
 
-/** A notch of the wheel over `element`, to `onNotch` with +1 up and −1 down; it does not scroll what is under it. */
-function useWheel(onNotch: ((notch: 1 | -1) => void) | null) {
+/**
+ * A notch of the wheel over `element`, to `onNotch` with +1 up and −1 down; it does not scroll what
+ * is under it. `onRest` is told once the notches of a turn are over: the wheel has rested for
+ * `BLUR_FEEL.wheelRestMs`, the pointer has left the element or pressed it (before what the press
+ * does, so that a drag that follows is a gesture of its own), or the element is gone.
+ */
+function useWheel(onNotch: ((notch: 1 | -1) => void) | null, onRest: () => void) {
   const element = useRef<HTMLDivElement>(null);
-  const handler = useRef(onNotch);
-  handler.current = onNotch;
+  const handlers = useRef({ onNotch, onRest });
+  handlers.current = { onNotch, onRest };
   useEffect(() => {
     const at = element.current;
     if (!at) return undefined;
+    let resting: ReturnType<typeof setTimeout> | null = null;
+    const rest = () => {
+      if (resting === null) return;
+      clearTimeout(resting);
+      resting = null;
+      handlers.current.onRest();
+    };
     const wheel = (event: WheelEvent) => {
-      if (!handler.current || event.deltaY === 0) return;
+      const notch = handlers.current.onNotch;
+      if (!notch || event.deltaY === 0) return;
       event.preventDefault();
-      handler.current(event.deltaY < 0 ? 1 : -1);
+      if (resting !== null) clearTimeout(resting);
+      resting = setTimeout(rest, BLUR_FEEL.wheelRestMs);
+      notch(event.deltaY < 0 ? 1 : -1);
     };
     at.addEventListener('wheel', wheel, { passive: false });
-    return () => at.removeEventListener('wheel', wheel);
+    at.addEventListener('pointerleave', rest);
+    at.addEventListener('pointerdown', rest, true);
+    return () => {
+      at.removeEventListener('wheel', wheel);
+      at.removeEventListener('pointerleave', rest);
+      at.removeEventListener('pointerdown', rest, true);
+      rest();
+    };
   }, []);
   return element;
 }
@@ -50,8 +74,17 @@ function Channel({ edit, column, ch, disabled }: { edit: NodeEdit; column: BlurC
   const path = `blur.${column}.${ch}`;
   const paths = columnPaths(edit.corrector, column, ch);
   const edits = (value: number): Edits => columnEdits(edit.base, edit.frame, column, ch, value);
-  const wheel = useWheel(column === 'radius' && !disabled
-    ? notch => edit.commit(edits(edit.value(path) + notch * BLUR_FEEL.wheelStep)) : null);
+  // Where the turn of the wheel has taken this channel: each notch goes on from it, as a drag does.
+  const turned = useRef<number | null>(null);
+  const wheel = useWheel(column === 'radius' && !disabled ? notch => {
+    const next = columnEdits(edit.base, edit.frame, column, ch, (turned.current ?? edit.value(path)) + notch * BLUR_FEEL.wheelStep);
+    turned.current = next.find(([each]) => each === path)?.[1] ?? null;
+    edit.preview(next);
+  } : null, () => {
+    const at = turned.current;
+    turned.current = null;
+    if (at !== null) edit.commit(edits(at));
+  });
   const name = `${labels[column]} ${LETTER[ch]}`;
   return <div ref={wheel} className="color-bar-column" data-test={`blur-${column}-${ch}`}>
     <Bar name={name} channel={ch} value={edit.value(path)} neutral={bounds.neutral} low={bounds.low} high={bounds.high}

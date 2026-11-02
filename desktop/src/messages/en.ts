@@ -872,6 +872,8 @@ export const en = {
           },
           osc: 'On-screen controls', none: 'Off', qualifier: 'Qualifier', window: 'Power Window', image_wipe: 'Image Wipe', add: 'Add Circular Window',
           list: 'Windows', editing: 'Editing', static: 'Static', key: 'Key frame', frame: 'Frame', creating: 'Creating window…',
+          /** The switches of each row of the Window list (RM20 p. 3189): Mask on adds the window, off subtracts it. */
+          invert: 'Invert', mask: 'Mask',
           clock: { source: 'Source clock', clip: 'Clip clock', timeline: 'Timeline clock' },
           shapes: { circular: 'Circular', linear: 'Linear', polygon: 'Polygon', curve: 'Curve', gradient: 'Gradient' },
           /** While a window is dragged; nothing is said while none is. */

@@ -1,31 +1,23 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useWords } from '../../app/locale';
-import type { GradeNode, Param, PowerWindow, Target, ViewerTool, WindowDeleted, WindowKeys, WindowPoint, WindowPointsDeleted, WindowSelection,
+import type { GradeNode, Param, PowerWindow, Target, ViewerTool, WindowDeleted, WindowKeys, WindowPointsDeleted, WindowSelection,
   WindowState, WindowTopology } from '../engine';
 import type { Messages } from '../../messages/en';
 import { getAt, isKeyed, keyAt } from './corrector';
 import { NumberControl } from './controls';
 import type { NodeEdit } from './useNodeEdit';
-import type { EditScope, WindowField } from './windowEdits';
+import { newWindow, windowShape, type EditScope, type WindowField, type WindowKind } from './windowEdits';
 import type { GradeEditing } from './useGradeEditing';
 import type { WindowInputStatus } from './useViewerInput';
 import { WindowPresets, type PresetBridge } from './WindowPresets';
 
-export const circularWindow = (id: string): PowerWindow => ({ id, label: '', enabled: true, invert: false, combine: 'add', opacity: 100,
-  transform: { size: 50, aspect: 50, pan: 50, tilt: 50, rotate: 0 }, shape: { kind: 'circular', softness: 1 } });
+/** A new Circular window (`newWindow`), as the Add Circular Window button makes one. */
+export const circularWindow = (id: string): PowerWindow => newWindow(id);
+export { windowShape };
 
 // Every shape has on-screen controls.
 const supported = (_window: PowerWindow) => true;
 
-const rectangle = () => [[-0.25, -0.25], [0.25, -0.25], [0.25, 0.25], [-0.25, 0.25]].map(([x, y]) => ({ x, y }));
-/** A new window's shape, as the model makes it (Linear Soft 1–4 at 1; Polygon/Curve inside/outside 0).
- * A Curve starts as an empty open draft: clicks in the viewer draw it (RM20 p. 3193). */
-export function windowShape(kind: 'circular' | 'gradient' | 'linear' | 'polygon' | 'curve'): PowerWindow['shape'] {
-  if (kind === 'curve') return { kind, points: [], closed: false, inside: 0, outside: 0 };
-  if (kind === 'linear') return { kind, points: rectangle() as [WindowPoint, WindowPoint, WindowPoint, WindowPoint], softness: [1, 1, 1, 1] };
-  if (kind === 'polygon') return { kind, points: rectangle(), inside: 0, outside: 0 };
-  return { kind, softness: 1 };
-}
 /** A refused whole-animation Polygon/Curve point insertion or deletion (`deleteSelected`: a Curve's selected points), explained in the palette. */
 export interface WindowNotice { action: 'insert' | 'delete' | 'deleteSelected'; topology: WindowTopology }
 type WindowWords = Messages['label']['studio']['colorPage']['windowControls'];
@@ -113,7 +105,7 @@ export function useWindows({ bridge = null, session, revision, timeline, target,
     setChoice({ identity: now.current.identity, id: null, deselected: true }); setIntention(value => value + 1); setReported(null);
     return true;
   }, []);
-  const create = useCallback((busy: () => boolean, kind: 'circular' | 'gradient' | 'linear' | 'polygon' | 'curve' = 'circular') => {
+  const create = useCallback((busy: () => boolean, kind: WindowKind = 'circular') => {
     const at = now.current;
     if (pending.current || !at.enabled || !at.target || !at.node || busy()) return;
     let number = 1; while (at.windows.some(each => each.id === `w${number}`)) number++;
@@ -121,7 +113,7 @@ export function useWindows({ bridge = null, session, revision, timeline, target,
     pending.current = asked; redraw(value => value + 1);
     // Preserve an explicitly empty selection too; a late creation must not become the fallback row after intent changes.
     setChoice({ identity: at.identity, id: at.selected?.id ?? null });
-    at.editing.run([{ op: 'set_node', grade: at.target, id: at.node.id, params: { windows: [...at.windows, { ...circularWindow(asked.id), shape: windowShape(kind) }] } }], answer => {
+    at.editing.run([{ op: 'set_node', grade: at.target, id: at.node.id, params: { windows: [...at.windows, newWindow(asked.id, kind)] } }], answer => {
       if (pending.current !== asked) return;
       asked.revision = answer.revision; redraw(value => value + 1);
     }, () => { if (pending.current === asked) { pending.current = null; redraw(value => value + 1); } });
@@ -194,10 +186,15 @@ export function WindowPalette({ controls, capturing, busy, status, edit, notice 
     <button type="button" className="btn" disabled={blocked}
       onClick={() => controls.create(() => busy() || edit.pending(), 'curve')}>{words.addCurve}</button>
     <WindowPresets place={{ ...controls.presets, enabled: !blocked }} onRecalled={controls.choose} />
+    {/* Each row: the button that chooses the window, then its Invert and Mask switches (RM20 p. 3189). */}
     <div role="listbox" aria-label={words.list} className="color-window-list">
-      {controls.windows.map(each => <button type="button" className="btn" role="option" key={each.id} aria-selected={selected?.id === each.id}
-        disabled={!supported(each) || controls.waitingFor(each.id)} onClick={() => controls.choose(each.id)}>
-        {each.label || each.id} · {words.shapes[each.shape.kind]}</button>)}
+      {controls.windows.map(each => <div role="presentation" className="color-window-row" key={each.id}>
+        <button type="button" className="btn" role="option" aria-selected={selected?.id === each.id}
+          disabled={!supported(each) || controls.waitingFor(each.id)} onClick={() => controls.choose(each.id)}>
+          {each.label || each.id} · {words.shapes[each.shape.kind]}</button>
+        <WindowSwitches edit={edit} window={each} disabled={!controls.enabled || controls.pending || capturing || !edit.enabled
+          || controls.waitingFor(each.id)} />
+      </div>)}
     </div>
     {selected && <div data-test="window-keys">
       <p>{words.editing}: {selected.label || selected.id}</p>
@@ -214,6 +211,26 @@ export function WindowPalette({ controls, capturing, busy, status, edit, notice 
     <p role="status">{controls.pending ? words.creating : notice ? topologyText(messages, notice)
       : status === 'refused' ? messages.hint.studio.colorPage.windowControls.refused : status === 'idle' ? '' : words.status[status]}</p>
   </div>;
+}
+
+/**
+ * A row's Invert and Mask (RM20 p. 3189): Mask on (pressed, the default) adds the window to the others, off subtracts it
+ * (p. 3196, the project's reading). Each click is a plain commit of the edit queue, resolved by window id against its
+ * confirmed predecessor and sent as the whole Windows list: one undo step, shown at once. They are switches of the
+ * whole window and are never keyed (PROTOCOL.md, Power Windows), as On/Off is not.
+ */
+function WindowSwitches({ edit, window, disabled }: { edit: NodeEdit; window: PowerWindow; disabled: boolean }) {
+  const words = useWords().label.studio.colorPage.windowControls;
+  const shown = edit.corrector.windows?.find(each => each.id === window.id) ?? window;
+  const name = window.label || window.id;
+  return <>
+    <button type="button" className="btn color-window-switch" aria-pressed={shown.invert} aria-label={`${words.invert} ${name}`} title={words.invert}
+      disabled={disabled} onClick={() => edit.commit([['windows', { window: { id: window.id, field: 'invert', value: !shown.invert } }]])}>
+      {words.invert}</button>
+    <button type="button" className="btn color-window-switch" aria-pressed={shown.combine === 'add'} aria-label={`${words.mask} ${name}`} title={words.mask}
+      disabled={disabled} onClick={() => edit.commit([['windows', { window: { id: window.id, field: 'combine', value: shown.combine === 'add' ? 'subtract' : 'add' } }]])}>
+      {words.mask}</button>
+  </>;
 }
 
 interface FieldSpec { field: WindowField; name: keyof WindowWords['fields']; neutral: number; low: number; high: number; perPx: number }

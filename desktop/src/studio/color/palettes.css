@@ -435,4 +435,6 @@
 .color-window-palette { padding: 10px; overflow: auto; height: 100%; }
 .color-window-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
 .color-window-list [aria-selected="true"] { outline: 1px solid var(--accent); }
+.color-window-row { display: inline-flex; gap: 2px; align-items: center; }
+.color-window-switch[aria-pressed='true'] { color: var(--accent); background: var(--accent-soft); }
 .color-window-palette p { margin: 5px 0; }

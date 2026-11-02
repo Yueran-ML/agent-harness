@@ -190,7 +190,8 @@ pub(crate) fn pack(
             } => {
                 tail[at + 2][3] = feather(inside);
                 tail[at + 3][0] = feather(outside);
-                let scale = (matrix[0].hypot(matrix[1])).max(matrix[2].hypot(matrix[3]));
+                let scale = (matrix[0].hypot(matrix[1])).max(matrix[2].hypot(matrix[3]))
+                    * w.tracking.as_ref().map_or(1.0, |t| t.scale_at(frame));
                 edges.extend(
                     curve_segments(points, frame, scale)
                         .into_iter()
@@ -207,6 +208,12 @@ pub(crate) fn pack(
             tree(&mut edges, tail, relative);
         }
         tail[at + 3][2] = (relative + tail.len()) as f32;
+        // A tracked window (T24): the homography from the picture back to where the window is
+        // placed by hand, three rows after its tree; `.w` of the last header row addresses it.
+        if let Some(m) = w.tracking.as_ref().and_then(|t| t.picture_inverse(frame)) {
+            tail[at + 3][3] = (relative + tail.len()) as f32;
+            tail.extend(m.map(|r| [r[0] as f32, r[1] as f32, r[2] as f32, 0.0]));
+        }
     }
     [(relative + start) as f32, windows.len() as f32, 0.0, 0.0]
 }
@@ -245,16 +252,30 @@ pub(crate) fn key(params: &[[f32; 4]], block: usize, position: Position) -> f32 
         let info = params[at + 1];
         let mix = params[at + 2];
         let shape = params[at + 3];
+        // A tracked window: the picture point taken back to where the window is placed by hand;
+        // beyond the vanishing line of a perspective track none of the window is there.
+        let (uv, seen) = if shape[3] == 0.0 {
+            (position.uv, true)
+        } else {
+            let m = block + shape[3] as usize;
+            let row = |r: [f32; 4]| r[0] * position.uv[0] + r[1] * position.uv[1] + r[2];
+            let z = row(params[m + 2]);
+            if z > 0.0 {
+                ([row(params[m]) / z, row(params[m + 1]) / z], true)
+            } else {
+                (position.uv, false)
+            }
+        };
         let delta = [
-            (position.uv[0] - info[0]) * position.size[0] / position.size[1],
-            position.uv[1] - info[1],
+            (uv[0] - info[0]) * position.size[0] / position.size[1],
+            uv[1] - info[1],
         ];
         let p = [
             m[0] * delta[0] + m[1] * delta[1],
             m[2] * delta[0] + m[3] * delta[1],
         ];
         let mut raw = 0.0;
-        if info[3] != 0.0 {
+        if info[3] != 0.0 && seen {
             raw = match info[2] as u32 {
                 1 => feather(0.25 - (p[0] * p[0] + p[1] * p[1]).sqrt(), mix[3], shape[0]),
                 2 => {

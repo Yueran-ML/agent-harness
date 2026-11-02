@@ -63,6 +63,16 @@ fn frames_fit<T>(samples: &std::collections::BTreeMap<i64, T>) -> bool {
     samples.keys().all(|f| (-LARGEST..=LARGEST).contains(f))
 }
 
+/// A frame of the grade's clock as the track counts it: whole, within the model's frames.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "a finite frame, clamped within 2^53"
+)]
+fn whole(frame: f64) -> i64 {
+    frame.round().clamp(-LARGEST as f64, LARGEST as f64) as i64
+}
+
 fn motion_fits(m: &Motion) -> bool {
     Component::ALL.iter().all(|&c| m.get(c).is_finite()) && m.zoom > 0.0 && m.aspect > 0.0
 }
@@ -87,11 +97,7 @@ impl WindowTracking {
         if w == 0 || h == 0 {
             return None;
         }
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "a frame within the model's"
-        )]
-        let at = frame.round().clamp(-LARGEST as f64, LARGEST as f64) as i64;
+        let at = whole(frame);
         #[allow(clippy::cast_precision_loss, reason = "a side of a frame")]
         let (w, h) = (w as f64, h as f64);
         let s = columbina_track::Mat3([
@@ -104,6 +110,32 @@ impl WindowTracking {
         m.0.iter().flatten().all(|v| v.is_finite()).then_some(m.0)
     }
 
+    /// The inverse of [`Self::picture_matrix`], from where the window is shown back to where it
+    /// is placed by hand, signed so that its third coordinate is positive on the side of the
+    /// plane the window is on: a point of the picture where it is not positive is beyond the
+    /// vanishing line of a Perspective 3D track, and none of the window is there.
+    #[must_use]
+    pub fn picture_inverse(&self, frame: f64) -> Option<[[f64; 3]; 3]> {
+        let m = columbina_track::Mat3(self.picture_matrix(frame)?);
+        let mut inv = m.inverse()?;
+        let [w, h] = self.data.frame_size;
+        #[allow(clippy::cast_precision_loss, reason = "a side of a frame")]
+        let anchor = [
+            (self.data.anchor[0] + 0.5) / w as f64,
+            (self.data.anchor[1] + 0.5) / h as f64,
+        ];
+        let shown = m.apply(anchor);
+        let r = inv.0[2];
+        if r[0] * shown[0] + r[1] * shown[1] + r[2] < 0.0 {
+            inv = inv.scaled(-1.0);
+        }
+        inv.0
+            .iter()
+            .flatten()
+            .all(|v| v.is_finite())
+            .then_some(inv.0)
+    }
+
     /// The largest scale of the window by its track and keyframes at `frame`, at least 1: so
     /// that the Curve's tessellation keeps its error once the window is zoomed by the track.
     #[must_use]
@@ -111,11 +143,7 @@ impl WindowTracking {
         if !self.moves() || !frame.is_finite() {
             return 1.0;
         }
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "a frame within the model's"
-        )]
-        let at = frame.round().clamp(-LARGEST as f64, LARGEST as f64) as i64;
+        let at = whole(frame);
         let (t, k) = (self.data.motion_at(at), self.data.key_at(at));
         let stretch = |m: &Motion| m.zoom * m.aspect.max(1.0 / m.aspect) * (1.0 + m.shear.abs());
         let scale = stretch(&t) * stretch(&k);

@@ -310,3 +310,101 @@ fn circular_window_limits_the_grade_in_landscape_and_portrait() {
         assert_eq!(across, down, "one local unit is an input-image height");
     }
 }
+
+/// A tracked window's key is its own shape moved by the track (T24): the same as the window
+/// placed by hand where the track takes it, here a pan of a tenth of the picture's width, and
+/// a turn about the anchor that a rotated window of another aspect follows.
+#[test]
+fn a_tracked_window_keys_where_the_track_moves_it_after_its_own_transform() {
+    use columbina_model::grade::window::tracking::{Motion, TrackData, WindowTracking};
+    let (w, h) = (80, 40);
+    let mut g = grade(WindowShape::Circular {
+        softness: 0.0.into(),
+    });
+    let mut data = TrackData::new([39.5, 19.5], [w as usize, h as usize]);
+    data.set_sample(
+        0,
+        Motion {
+            pan: 8.0,
+            ..Motion::IDENTITY
+        },
+        1.0,
+    );
+    corrector(&mut g).windows[0].tracking = Some(WindowTracking {
+        data,
+        ..WindowTracking::default()
+    });
+    let mut moved = grade(WindowShape::Circular {
+        softness: 0.0.into(),
+    });
+    corrector(&mut moved).windows[0].transform.pan = 60.0.into();
+    assert_eq!(matte(&g, w, h), matte(&moved, w, h));
+
+    // A turn of a quarter about the anchor: a window drawn wide is shown tall.
+    let mut g = grade(WindowShape::linear());
+    corrector(&mut g).windows[0].transform.aspect = 80.0.into();
+    let mut data = TrackData::new([39.5, 19.5], [w as usize, h as usize]);
+    data.set_sample(
+        0,
+        Motion {
+            rotate: std::f64::consts::FRAC_PI_2,
+            ..Motion::IDENTITY
+        },
+        1.0,
+    );
+    let plain = matte(&g, w, h);
+    corrector(&mut g).windows[0].tracking = Some(WindowTracking {
+        data,
+        ..WindowTracking::default()
+    });
+    let turned = matte(&g, w, h);
+    let extent = |m: &[f32], across: bool| {
+        (0..if across { w } else { h })
+            .filter(|&i| {
+                let at = if across {
+                    (h / 2) * w + i
+                } else {
+                    i * w + w / 2
+                };
+                m[at as usize] > 0.5
+            })
+            .count()
+    };
+    assert!(extent(&plain, true) > extent(&plain, false));
+    assert!(extent(&turned, true) < extent(&turned, false));
+    assert_eq!(extent(&plain, true), extent(&turned, false));
+}
+
+/// Perspective 3D: the key of a tracked homography is the window's shape through its inverse;
+/// points behind the vanishing line take nothing.
+#[test]
+fn a_perspective_track_keys_through_the_homography() {
+    use columbina_model::grade::window::tracking::{Motion, TrackData, WindowTracking};
+    let (w, h) = (80, 40);
+    let mut g = grade(WindowShape::Gradient {
+        softness: 0.0.into(),
+    });
+    // A yaw of -0.04 a pixel puts the vanishing line 25 pixels left of the anchor.
+    let mut data = TrackData::new([39.5, 19.5], [w as usize, h as usize]);
+    data.set_sample(
+        0,
+        Motion {
+            yaw: -0.04,
+            ..Motion::IDENTITY
+        },
+        1.0,
+    );
+    corrector(&mut g).windows[0].tracking = Some(WindowTracking {
+        data,
+        ..WindowTracking::default()
+    });
+    let out = matte(&g, w, h);
+    // The homography keeps the anchor and the horizontal line through it: above it is in.
+    for x in [20, 39, 79] {
+        assert_eq!(out[(5 * w + x) as usize], 1.0, "{x}");
+        assert_eq!(out[(35 * w + x) as usize], 0.0, "{x}");
+    }
+    // Left of x = 39.5 - 25 the plane is behind the eye: nothing is keyed there at all.
+    assert_eq!(out[(5 * w) as usize], 0.0);
+    assert_eq!(out[(5 * w + 14) as usize], 0.0);
+}

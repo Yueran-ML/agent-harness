@@ -777,3 +777,70 @@ fn windows_gpu_mixed_grades_keep_pipelines_when_prior_window_tails_change() {
     );
     assert_eq!(gpu.uncaught_errors(), (0, None));
 }
+
+/// T24: a tracked window, Perspective 3D included, keys the same on the card as on the
+/// processor, with the homography in the parameters and no pipeline of its own.
+#[test]
+fn windows_gpu_tracked_windows_match_cpu_through_their_homography() {
+    use columbina_model::grade::window::tracking::{Motion, TrackData, WindowTracking};
+    let Some(gpu) = gpu_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    let (w, h) = (96, 64);
+    let (p, pixels) = float_picture(w, h, |_, _| [0.25, 0.4, 1.5]);
+    let source = Arc::new(p);
+    let mut pipelines = None;
+    for (i, shape) in shapes().into_iter().enumerate() {
+        let mut grade = window_grade(shape, false);
+        let NodeKind::Corrector(c) = &mut grade.nodes[0].kind else {
+            unreachable!()
+        };
+        let mut data = TrackData::new([40.0, 30.0], [192, 128]);
+        data.set_sample(
+            3,
+            Motion {
+                pan: -9.0,
+                tilt: 6.0,
+                zoom: 1.2,
+                rotate: 0.3,
+                aspect: 1.1,
+                shear: 0.05,
+                yaw: if i % 2 == 0 { 0.003 } else { -0.004 },
+                pitch: 0.002,
+            },
+            1.0,
+        );
+        c.windows[0].tracking = Some(WindowTracking {
+            data,
+            ..WindowTracking::default()
+        });
+        let wanted = evaluate_picture(
+            &grade,
+            3.0,
+            &GradeOptions::default(),
+            &NoLuts,
+            &|_, c| c,
+            (w, h),
+            &pixels,
+            h as f32 / 1080.0,
+        );
+        let op = stage_of(&grade, 3.0, &GradeOptions::default(), &NoLuts);
+        let scene = whole_scene(
+            w,
+            h,
+            vec![layer(
+                Source::Picture(Arc::clone(&source), 0),
+                Transform::NONE,
+                1.0,
+                op,
+            )],
+        );
+        let got = rgb_of(&gpu, &mut compositor, &scene);
+        let (error, _) = apart(&got, &wanted);
+        assert!(error < 0.0015, "shape {i}: error={error}");
+        if let Some(count) = pipelines {
+            assert_eq!(compositor.pipelines_made(), count);
+        }
+        pipelines = Some(compositor.pipelines_made());
+    }
+    assert_eq!(gpu.uncaught_errors(), (0, None));
+}

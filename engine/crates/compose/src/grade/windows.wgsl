@@ -59,10 +59,20 @@ fn window_key(block: u32, uv: vec2<f32>, size: vec2<f32>) -> f32 {
         let info = param(at+1u);
         let blend = param(at+2u);
         let shape = param(at+3u);
-        let delta = (uv-info.xy)*vec2<f32>(size.x/size.y,1.0);
+        // A tracked window (T24): back through the inverse homography addressed by shape.w.
+        var q = uv;
+        var seen = true;
+        if shape.w != 0.0 {
+            let m = block + u32(shape.w);
+            let z = dot(param(m+2u).xyz, vec3<f32>(uv, 1.0));
+            if z > 0.0 {
+                q = vec2<f32>(dot(param(m).xyz, vec3<f32>(uv, 1.0)), dot(param(m+1u).xyz, vec3<f32>(uv, 1.0)))/z;
+            } else { seen = false; }
+        }
+        let delta = (q-info.xy)*vec2<f32>(size.x/size.y,1.0);
         let p = vec2<f32>(dot(m.xy,delta),dot(m.zw,delta));
         var raw = 0.0;
-        if info.w != 0.0 {
+        if info.w != 0.0 && seen {
             if info.z == 1.0 {
                 raw = window_feather(0.25-length(p),blend.w,shape.x);
             } else if info.z == 2.0 {

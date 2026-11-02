@@ -715,6 +715,48 @@ fn the_key_coming_in_is_blurred_as_its_settings_say() {
 }
 
 #[test]
+fn matte_finesse_keyframed_from_nothing_changes_nothing_where_it_is_nothing() {
+    // A soft luma key over a ramp of values that half floats do not keep.
+    #[allow(clippy::cast_precision_loss, reason = "places of pixels")]
+    let pixels: Vec<[f32; 3]> = (0..SIZE * SIZE)
+        .map(|i| [(i % SIZE) as f32 / 97.0 + 0.0001; 3])
+        .collect();
+    let rising = || {
+        Param::Keys(vec![
+            Key {
+                frame: 0,
+                value: 0.0,
+                interp: Interp::Linear,
+            },
+            Key {
+                frame: 10,
+                value: 50.0,
+                interp: Interp::Linear,
+            },
+        ])
+    };
+    let soft = |set: &dyn Fn(&mut Qualifier)| {
+        finesse(|q| {
+            q.lum.low = fixed(30.0);
+            q.lum.low_soft = fixed(40.0);
+            set(q);
+        })
+    };
+    let plain = key_picture(&soft(&|_| {}), &pixels);
+    for (what, set) in [
+        (
+            "pre filter",
+            &(|q: &mut Qualifier| q.finesse.pre_filter = rising()) as &dyn Fn(&mut Qualifier),
+        ),
+        ("blur radius", &|q: &mut Qualifier| {
+            q.finesse.blur_radius = rising()
+        }),
+    ] {
+        assert_eq!(key_picture(&soft(set), &pixels), plain, "{what}");
+    }
+}
+
+#[test]
 fn matte_finesse_reads_a_neighbourhood_only_where_its_settings_ever_do_something() {
     let count = |grade: &Grade| {
         grade_ops(grade, 0.0, &options(), &NoLuts)[0]

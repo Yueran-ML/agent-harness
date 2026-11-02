@@ -339,6 +339,71 @@ fn saturation_and_hue_turn_and_scale_the_colour_about_its_luma() {
 }
 
 #[test]
+fn hue_turns_by_a_share_of_a_whole_turn_and_tint_by_its_stops() {
+    // Half a turn about the grey axis: each channel mirrored about the mean.
+    let turned = one(|c| c.primaries.hue = fixed(100.0));
+    near(
+        eval(&turned, [1.0, 0.0, 0.0]),
+        [-1.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0],
+        1e-6,
+    );
+    // A quarter turn the other way and back is no turn.
+    let quarter = |hue: f64| one(move |c| c.primaries.hue = fixed(hue));
+    let there = eval(&quarter(25.0), [0.9, 0.3, 0.1]);
+    near(eval(&quarter(75.0), there), [0.9, 0.3, 0.1], 1e-6);
+    // Tint moves green against red and blue by its stops, a half of them at 50.
+    let ratio = |tint: f64| {
+        let gains = layout::balance(0.0, tint, [0.2126, 0.7152, 0.0722]);
+        (gains[1] / gains[0]).log2()
+    };
+    let full = layout::TINT_STOPS[1] - layout::TINT_STOPS[0];
+    assert!((ratio(100.0) - full).abs() < 1e-12);
+    assert!((ratio(50.0) - full / 2.0).abs() < 1e-12);
+    assert!((ratio(-100.0) + full).abs() < 1e-12);
+}
+
+#[test]
+fn shadows_and_highlights_reach_a_quarter_at_black_and_white() {
+    let zones = |shadows: f64, highlights: f64| {
+        one(move |c| {
+            c.primaries.shadows = fixed(shadows);
+            c.primaries.highlights = fixed(highlights);
+        })
+    };
+    near(eval(&zones(0.0, 50.0), [1.0; 3]), [1.125; 3], 1e-6);
+    near(eval(&zones(0.0, -100.0), [1.0; 3]), [0.75; 3], 1e-6);
+    near(eval(&zones(50.0, 0.0), [0.0; 3]), [0.125; 3], 1e-6);
+}
+
+#[test]
+fn the_curves_of_a_node_after_another_are_its_own() {
+    let curved = |id: &str| {
+        corrector(id, |c| {
+            c.curves.y.points = vec![[0.0, 0.0], [0.5, 0.8], [1.0, 1.0]]
+        })
+    };
+    let alone = serial(vec![curved("b")]);
+    let after = serial(vec![
+        corrector("a", |c| c.curves.r.points = vec![[0.0, 0.1], [1.0, 1.0]]),
+        curved("b"),
+    ]);
+    let first = serial(vec![corrector("a", |c| {
+        c.curves.r.points = vec![[0.0, 0.1], [1.0, 1.0]];
+    })]);
+    for x in [[0.25; 3], [0.6, 0.4, 0.2]] {
+        near(eval(&after, x), eval(&alone, eval(&first, x)), 1e-6);
+    }
+}
+
+#[test]
+fn a_custom_curve_takes_the_slope_of_its_neighbours_at_a_point() {
+    // At (0.5, 0.8) the slope is that of the line from (0, 0) to (1, 1); at (0, 0), that of its
+    // segment.
+    let curve = one(|c| c.curves.y.points = vec![[0.0, 0.0], [0.5, 0.8], [1.0, 1.0]]);
+    near(eval(&curve, [0.25; 3]), [0.4375; 3], 1e-6);
+}
+
+#[test]
 fn lum_mix_keeps_luma_against_the_channels_and_lets_y_change_it() {
     // A channel apart, at Lum Mix 0, changes only itself.
     let red = |mix: f64| {

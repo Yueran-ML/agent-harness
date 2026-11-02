@@ -13,11 +13,14 @@ import {
 import {
   addedCorrector, addInput, addLoose, addNode, cleanupNodes, composite, COMPOSITES, connect, deleteNodes, disconnect, extractNode, insertOnLink, isLocked,
   linkIntoNewInput, morph, moveNodes, nodeKey, pasteNode, reconnect, relabel, reset, resetShotMatch, restoreOriginal, stepNode, swapNodes, toggleAll,
-  toggleLock, toggleNodes, withDefaultNode, type AddHow, type GradeChange, type NodeCommand, type Worked,
+  toggleLock, toggleNodes, withDefaultNode, type AddHow, type GradeChange, type NodeCommand, type NodeWindow, type Worked,
 } from './nodeEdits';
 import type { GradeEditing } from './useGradeEditing';
 import { carriesLut, draggedLut, LUT_MENU, lutMenuItems, setNodeLut } from './luts';
 import './nodes.css';
+
+/** The windows a serial node can be added with, and their keys (p. 3187). */
+const NODE_WINDOWS: readonly (readonly [NodeWindow, string])[] = [['circular', 'Alt+C'], ['linear', 'Alt+Q'], ['polygon', 'Alt+G'], ['curve', 'Alt+B']];
 
 /** How far the pointer goes before a press becomes a drag. */
 const DRAG_PX = 3;
@@ -221,7 +224,7 @@ const isMixerOf = (node: GradeNode | undefined, kind: LinkKind) => node !== unde
  * are chosen are the view's.
  */
 export function NodeEditor({ grade: real, defaultNode = null, level, levels, onLevel, current, onCurrent, hint, target, gradeKey, views, focused, editing, luts,
-  appendNode }: {
+  appendNode, onWindowNode }: {
   grade: Grade | null;
   /** The id of the default node 01 that a grade without nodes is shown with (`defaultNodeOf`), or null. */
   defaultNode?: string | null;
@@ -246,6 +249,11 @@ export function NodeEditor({ grade: real, defaultNode = null, level, levels, onL
    * are clips chosen to append it to, and what appends it.
    */
   appendNode?: { label: string; can: boolean; run: (node: string) => void };
+  /**
+   * A node added with a window (Alt+C, Q, G, B, p. 3187), once it is current: "the Window palette automatically opens
+   * up, ready for editing".
+   */
+  onWindowNode?: (node: string) => void;
 }) {
   const words = useWords();
   const labels = words.label.studio.colorPage;
@@ -298,22 +306,26 @@ export function NodeEditor({ grade: real, defaultNode = null, level, levels, onL
   }, [base, setZoom]);
 
   // What the handlers of keys and of the pointer read, as it is now.
-  const now = useRef({ grade, real, defaultNode, target, gradeKey, current, selected, pickedLink, focused, editing, onCurrent, zoom, menu, labelling, tool, base });
-  now.current = { grade, real, defaultNode, target, gradeKey, current, selected, pickedLink, focused, editing, onCurrent, zoom, menu, labelling, tool, base };
+  const now = useRef({ grade, real, defaultNode, target, gradeKey, current, selected, pickedLink, focused, editing, onCurrent, onWindowNode, zoom, menu, labelling, tool, base });
+  now.current = { grade, real, defaultNode, target, gradeKey, current, selected, pickedLink, focused, editing, onCurrent, onWindowNode, zoom, menu, labelling, tool, base };
 
-  /** Send a command; where it adds a corrector, that one becomes current (p. 3318). `settled` is told once it is done, refused or not sent. */
-  const run = useCallback((worked: Worked, settled?: () => void) => {
+  /**
+   * Send a command; where it adds a corrector, that one becomes current (p. 3318), and `added` is told of it.
+   * `settled` is told once it is done, refused or not sent.
+   */
+  const run = useCallback((worked: Worked, settled?: () => void, added?: (node: string) => void) => {
     const { editing: sending, gradeKey: key, onCurrent: choose } = now.current;
     sending.run(worked, (applied) => {
       settled?.();
-      const added = addedCorrector(applied.done);
-      if (added !== null && now.current.gradeKey === key) choose(added);
+      const made = addedCorrector(applied.done);
+      if (made !== null && now.current.gradeKey === key) { choose(made); added?.(made); }
     }, settled);
   }, []);
 
-  const add = useCallback((how: AddHow) => {
+  /** Add a node (p. 3318); with a window (p. 3187), the Window palette opens on it once it is current. */
+  const add = useCallback((how: AddHow, window?: NodeWindow) => {
     const { target: grade, current: node } = now.current;
-    if (grade) run(addNode(how, grade, node));
+    if (grade) run(addNode(how, grade, node, window), undefined, window ? made => now.current.onWindowNode?.(made) : undefined);
   }, [run]);
   const startLabel = useCallback((id: string) => {
     const node = now.current.grade?.nodes.find(each => each.id === id);
@@ -339,7 +351,7 @@ export function NodeEditor({ grade: real, defaultNode = null, level, levels, onL
     }
     if (!grade || !target) return false;
     switch (command.kind) {
-      case 'add': add(command.how); return true;
+      case 'add': add(command.how, command.window); return true;
       case 'extract': run(extractNode(target, state.current)); return true;
       case 'enable': run(toggleNodes(target, grade, state.selected)); return true;
       case 'enableAll': run(toggleAll(target, grade)); return true;
@@ -677,6 +689,9 @@ export function NodeEditor({ grade: real, defaultNode = null, level, levels, onL
     const items: MenuItem[] = [
       { id: 'add-node', label: menuWords.addNode, items: [
         { id: 'add-serial', label: menuWords.serial, keys: 'Alt+S', disabled: node.kind === 'key_mixer', run: () => add('serial') },
+        // Add Serial Node + CPW, LPW, PPW and PCW (Color › Nodes, p. 3187), which this page has no menu bar for.
+        ...NODE_WINDOWS.map(([window, keys]) => ({ id: `add-serial-${window}`, label: menuWords.serialWindow[window], keys,
+          disabled: node.kind === 'key_mixer', run: () => add('serial', window) })),
         { id: 'add-before', label: menuWords.before, keys: 'Shift+S', disabled: !corrector, run: () => add('before') },
         { id: 'add-parallel', label: menuWords.parallel, keys: 'Alt+P', disabled: !corrector, run: () => add('parallel') },
         { id: 'add-layer', label: menuWords.layer, keys: 'Alt+L', disabled: !corrector, run: () => add('layer') },

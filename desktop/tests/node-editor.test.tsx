@@ -22,6 +22,7 @@ import {
   reset, stepNode, swapNodes, toggleAll, toggleLock, withDefaultNode, type DefaultNode, type NodeCommand,
 } from '../src/studio/color/nodeEdits';
 import { setNodeLut } from '../src/studio/color/luts';
+import { newWindow } from '../src/studio/color/windowEdits';
 import { clip, media } from './timeline-fixture';
 import { likeABrowser } from './mounted';
 
@@ -95,6 +96,7 @@ function fakeEngine(timeline: Timeline = timelineOf()) {
       const id = `n${project.next_id}`;
       const fed = gradeAt(grade).links.filter(each => each.from === after && each.kind === 'rgb');
       const node = corrector(id);
+      if (change.windows && node.kind === 'corrector') node.params = { ...node.params, windows: change.windows as Corrector['windows'] };
       return [{ op: 'add_node', grade, node, index: gradeAt(grade).nodes.length,
         links: [link(after, id), ...fed.map(each => ({ ...each, from: id }))] }];
     }
@@ -116,9 +118,14 @@ function fakeEngine(timeline: Timeline = timelineOf()) {
       }
       if (method === 'transaction.apply') {
         if (refusal) return { ok: false, error: { code: -32001, message: 'refused', data: refusal } };
-        const done = frozen ? [] : (params!.ops as Record<string, unknown>[]).flatMap(expand);
-        for (const op of done) project = applyOp(project, op);
-        if (done.some(op => op.op === 'add_node')) project = { ...project, next_id: project.next_id + 1 };
+        // Each change is worked out on the project as the ones before it in the transaction left it, as the engine does.
+        const done: Op[] = [];
+        for (const change of frozen ? [] : params!.ops as Record<string, unknown>[]) {
+          for (const op of expand(change)) {
+            project = applyOp(project, op); done.push(op);
+            if (op.op === 'add_node') project = { ...project, next_id: project.next_id + 1 };
+          }
+        }
         revision++;
         tell('project.changed', { revision, made_by: 'desktop', by: 'desktop', next_id: project.next_id, done });
         return { ok: true, result: { done, names: {}, revision, next_id: project.next_id, clamped: [] } };
@@ -543,7 +550,8 @@ describe('the menus', () => {
     expect((within(menu).getByRole('menuitem', { name: 'Add Outside Node' }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Add Node' }));
     expect(within(screen.getByRole('menu', { name: 'Add Node' })).getAllByRole('menuitem').map(each => [each.getAttribute('aria-label'), each.getAttribute('aria-keyshortcuts')]))
-      .toEqual([['Add Serial', 'Alt+S'], ['Add Before Current', 'Shift+S'], ['Add Parallel', 'Alt+P'], ['Add Layer', 'Alt+L'], ['Add Outside Node', 'Alt+O']]);
+      .toEqual([['Add Serial', 'Alt+S'], ['Add Serial Node + CPW', 'Alt+C'], ['Add Serial Node + LPW', 'Alt+Q'], ['Add Serial Node + PPW', 'Alt+G'],
+        ['Add Serial Node + PCW', 'Alt+B'], ['Add Before Current', 'Shift+S'], ['Add Parallel', 'Alt+P'], ['Add Layer', 'Alt+L'], ['Add Outside Node', 'Alt+O']]);
     fireEvent.click(screen.getByRole('menuitem', { name: 'Add Parallel' }));
     await settle();
     open('n4'); fireEvent.click(screen.getByRole('menuitem', { name: 'Reset Shot Match' })); await settle();
@@ -932,5 +940,80 @@ describe('the default node 01 and Lock Node, as rules', () => {
     expect(pasteNode(C1, 'n1', C1, 'n5', grade)).toEqual({ refused: 'node_locked' });
     expect(reset('node', C1, grade, 'n5')).toEqual({ refused: 'node_locked' });
     expect(addLoose(C1, { x: 12.4, y: 7.6 })).toEqual([{ op: 'add_node', grade: C1, node: { id: '', kind: 'corrector', label: '', enabled: true, locked: false, pos: { x: 12, y: 8 }, params: newCorrector() } }]);
+  });
+});
+
+describe('a node added with a window (Add Serial Node + CPW, LPW, PPW, PCW; p. 3187)', () => {
+  const empty = (): Grade => ({ nodes: [], links: [link('source', 'output')] });
+  const centerShown = () => document.querySelector<HTMLElement>('[data-test="palettes-center"] [data-palette-shown]')?.dataset.paletteShown;
+  const osc = () => (document.querySelector('[data-test="viewer-osc"]') as HTMLSelectElement).value;
+
+  it('Alt+C, Alt+Q, Alt+G and Alt+B ask for a serial node with a circular, linear, polygonal or Curve window', () => {
+    const k = (code: string) => ({ key: code.slice(3).toLowerCase(), code, ctrl: false, alt: true, shift: false, meta: false, repeat: false, composing: false });
+    expect(['KeyC', 'KeyQ', 'KeyG', 'KeyB'].map(code => nodeKey(k(code)))).toEqual(['circular', 'linear', 'polygon', 'curve']
+      .map(window => ({ kind: 'add', how: 'serial', window })));
+    // By where the key lies, as Alt changes what it types on some layouts; with Shift or Ctrl they are other keys.
+    expect(nodeKey({ ...k('KeyC'), key: 'ç' })).toEqual({ kind: 'add', how: 'serial', window: 'circular' });
+    expect(nodeKey({ ...k('KeyC'), shift: true })).toBeNull();
+    expect(nodeKey({ ...k('KeyG'), ctrl: true })).toBeNull();
+    expect(addNode('serial', C1, 'n3', 'polygon')).toEqual([{ edit: 'add_serial', grade: C1, node: 'n3', windows: [newWindow('w1', 'polygon')] }]);
+    expect(addNode('serial', C1, null, 'curve')).toEqual([{ edit: 'add_serial', grade: C1, node: 'source',
+      windows: [{ id: 'w1', label: '', enabled: true, invert: false, combine: 'add', opacity: 100,
+        transform: { size: 50, aspect: 50, pan: 50, tilt: 50, rotate: 0 }, shape: { kind: 'curve', points: [], closed: false, inside: 0, outside: 0 } }] }]);
+  });
+
+  it('adds the node with its window in one transaction, makes it current and opens the Window palette on that window', async () => {
+    const { bridge } = await mount();
+    press(nodeOf('n3'));
+    expect(centerShown()).not.toBe('window');
+    bridge.call.mockClear();
+    letter('c', { altKey: true }); await settle();
+    expect(sent(bridge)).toEqual([[{ edit: 'add_serial', grade: C1, node: 'n3', windows: [newWindow('w1', 'circular')] }]]);
+    expect(currentNode()).toBe('n10');
+    // The Window palette opens up, ready for editing, with the viewer's controls on the window (pp. 3187, 3189).
+    expect(centerShown()).toBe('window');
+    expect(osc()).toBe('window');
+    expect(screen.getByRole('option', { name: 'w1 · Circular' }).getAttribute('aria-selected')).toBe('true');
+    for (const [code, shape, label] of [['q', 'linear', 'Linear'], ['g', 'polygon', 'Polygon'], ['b', 'curve', 'Curve']] as const) {
+      const after = currentNode()!;
+      bridge.call.mockClear();
+      letter(code, { altKey: true }); await settle();
+      expect(sent(bridge)).toEqual([[{ edit: 'add_serial', grade: C1, node: after, windows: [newWindow('w1', shape)] }]]);
+      expect(currentNode()).not.toBe(after);
+      expect(screen.getByRole('option', { name: `w1 · ${label}` }).getAttribute('aria-selected')).toBe('true');
+    }
+    expect(calls(bridge, 'history.undo')).toEqual([]);
+  });
+
+  it('on a grade shown with its default node 01, makes 01 first in the same transaction, so one undo takes both away', async () => {
+    const { bridge } = await mount({ timeline: timelineOf(empty()) });
+    bridge.call.mockClear();
+    letter('b', { altKey: true }); await settle();
+    expect(sent(bridge)).toEqual([[{ edit: 'add_serial', grade: C1, node: 'source' },
+      { edit: 'add_serial', grade: C1, node: 'n10', windows: [newWindow('w1', 'curve')] }]]);
+    expect(currentNode()).toBe('n11');
+    expect(graph().querySelector('[data-node="n11"] [data-test="node-number"]')!.textContent).toBe('02');
+    expect(centerShown()).toBe('window');
+    // The Curve is an empty draft, chosen, for clicks in the viewer to draw (p. 3193).
+    expect(screen.getByRole('option', { name: 'w1 · Curve' }).getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('are in the Add Node menu of a node with their keys, and a plain Alt+S opens no palette', async () => {
+    const { bridge } = await mount();
+    press(nodeOf('n3'));
+    bridge.call.mockClear();
+    letter('s', { altKey: true }); await settle();
+    expect(centerShown()).not.toBe('window');
+    fireEvent.contextMenu(nodeOf('n3'), { clientX: 200, clientY: 60 });
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Add Node' }));
+    const item = screen.getByRole('menuitem', { name: /Add Serial Node \+ LPW/ });
+    expect(item.textContent).toContain('Alt+Q');
+    for (const [name, keys] of [['CPW', 'Alt+C'], ['PPW', 'Alt+G'], ['PCW', 'Alt+B']]) {
+      expect(screen.getByRole('menuitem', { name: new RegExp(`Add Serial Node \\+ ${name}`) }).textContent).toContain(keys);
+    }
+    bridge.call.mockClear();
+    fireEvent.click(item); await settle();
+    expect(sent(bridge)).toEqual([[{ edit: 'add_serial', grade: C1, node: 'n3', windows: [newWindow('w1', 'linear')] }]]);
+    expect(centerShown()).toBe('window');
   });
 });

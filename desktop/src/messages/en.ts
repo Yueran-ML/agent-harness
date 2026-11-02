@@ -891,6 +891,8 @@ export const en = {
           nodeMenu: 'Node menu', graphMenu: 'Node graph menu', link: 'Link', thumbMenu: 'Clip menu', tools: 'Node editor tools',
           selectTool: 'Selection tool', panTool: 'Hand tool', zoom: 'Zoom', labelField: 'Node label',
           addNode: 'Add Node', serial: 'Add Serial', before: 'Add Before Current', parallel: 'Add Parallel', layer: 'Add Layer', outside: 'Add Outside Node',
+          /** A serial node with a window already turned on (RM20 p. 3187). */
+          serialWindow: { circular: 'Add Serial Node + CPW', linear: 'Add Serial Node + LPW', polygon: 'Add Serial Node + PPW', curve: 'Add Serial Node + PCW' },
           label: 'Change Label', deleteNode: 'Delete Node', reset: 'Reset Node Grade', resetShotMatch: 'Reset Shot Match', shotMatch: 'Shot Match to This Clip',
           addInput: 'Add One Input', toLayer: 'Morph Into Layer Mixer Node', toParallel: 'Morph Into Parallel Node', composite: 'Composite Mode',
           deleteLink: 'Delete Link', resetAll: 'Reset All Grades and Nodes', cleanup: 'Cleanup Node Graph',

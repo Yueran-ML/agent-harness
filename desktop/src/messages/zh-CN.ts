@@ -764,6 +764,7 @@ export const zhCN: Messages = {
           nodeMenu: '节点菜单', graphMenu: '节点图菜单', link: '连接线', thumbMenu: '片段菜单', tools: '节点编辑器工具',
           selectTool: '选择工具', panTool: '抓手工具', zoom: '缩放', labelField: '节点标签',
           addNode: '添加节点', serial: '添加串行节点', before: '在当前节点前添加', parallel: '添加并行节点', layer: '添加图层节点', outside: '添加外部节点',
+          serialWindow: { circular: '添加串行节点 + CPW', linear: '添加串行节点 + LPW', polygon: '添加串行节点 + PPW', curve: '添加串行节点 + PCW' },
           label: '更改标签', deleteNode: '删除节点', reset: '重置节点调色', resetShotMatch: '重置镜头匹配', shotMatch: '镜头匹配到此片段',
           addInput: '添加一个输入', toLayer: '转换为图层混合器节点', toParallel: '转换为并行节点', composite: '合成模式',
           deleteLink: '删除连接线', resetAll: '重置所有调色和节点', cleanup: '清理节点图',

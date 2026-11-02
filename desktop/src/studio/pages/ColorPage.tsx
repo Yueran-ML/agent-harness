@@ -225,6 +225,8 @@ export function ColorPage({
   const currentNode = shownGrade === null ? null
     : shownGrade.nodes.some(node => node.id === nodes[gradeKey]) ? nodes[gradeKey] : shownGrade.nodes[0]?.id ?? null;
   const onCurrentNode = useCallback((node: string) => setNodes(old => ({ ...old, [gradeKey]: node })), [gradeKey]);
+  // A node added with a window opens the Window palette, and with it the viewer's window controls (pp. 3187, 3189).
+  const openWindows = useCallback(() => { setCenter('window'); setLast('center'); setViewerTool('window'); }, []);
   // The node that the palettes edit: the current node, where it is, with its grade and the playhead as its keys count it (T17):
   // the frame of the clip's media whose picture is shown (T3c, `keyClockOf`).
   const clockMedia = current?.clip.source.kind === 'media' ? mediaById.get(current.clip.source.media) : undefined;
@@ -543,7 +545,7 @@ export function ColorPage({
     {nodesOpen && <section className="color-nodes" aria-label={labels.nodeEditor} data-test="node-editor" {...focusOf('nodes')}>
       <NodeEditor grade={grade} defaultNode={defaultNode?.id ?? null} level={shownLevel} levels={levels} onLevel={setLevel} current={currentNode} onCurrent={onCurrentNode}
         hint={noTimeline} target={grades.target} gradeKey={gradeKey} views={grades.views} focused={area === 'nodes'} editing={grades.editing}
-        luts={nodeLuts} appendNode={appendNode} />
+        luts={nodeLuts} appendNode={appendNode} onWindowNode={openWindows} />
       <button type="button" className="icon-btn color-expand" aria-pressed={nodesExpanded} aria-label={labels.nodeEditor} title={labels.nodeEditor}
         onClick={() => setNodesExpanded(open => !open)} data-test="expand-nodes"><Expand size={13} /></button>
     </section>}

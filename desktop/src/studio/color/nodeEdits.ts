@@ -11,14 +11,17 @@
 import type { Key } from '../../app/keys';
 import {
   emptyGrade, sortLinks, type Clip, type Composite, type Corrector, type Grade, type GradeNode, type KeyInput, type Link, type LinkKind, type NodePos, type Op,
-  type Target, type Timeline,
+  type PowerWindow, type Target, type Timeline,
 } from '../engine';
 import type { GradeLevel } from './clips';
 import { neutralCorrector } from './corrector';
+import { newWindow, type WindowKind } from './windowEdits';
 
 /** The edits of grades (PROTOCOL.md, "Grades", "Edits"): the engine works them out into operations. */
 export type GradeEdit =
-  | { edit: 'add_serial' | 'add_serial_before' | 'add_parallel' | 'add_layer' | 'extract_node' | 'reset_node'; grade: Target; node: string }
+  // `windows`: the new corrector's Power Windows, in the same operation (Add Serial Node + CPW and the others, p. 3187).
+  | { edit: 'add_serial'; grade: Target; node: string; windows?: PowerWindow[] }
+  | { edit: 'add_serial_before' | 'add_parallel' | 'add_layer' | 'extract_node' | 'reset_node'; grade: Target; node: string }
   | { edit: 'append_node'; grade: Target }
   | { edit: 'copy_grade'; from: Target; to: Target[]; preserve_nodes?: number }
   | { edit: 'append_node_graph'; from: Target; to: Target[] }
@@ -58,14 +61,19 @@ const nodeOf = (grade: Grade, id: string | null): GradeNode | undefined => (id =
 /** How a node is added (p. 3318): after the current one, before it, at the end, in parallel or as a layer with it. */
 export type AddHow = 'serial' | 'before' | 'append' | 'parallel' | 'layer';
 
+/** The shapes that a node can be added with (p. 3187): Alt+C circular, Alt+Q linear, Alt+G polygonal, Alt+B Curve; Gradient has none. */
+export type NodeWindow = Exclude<WindowKind, 'gradient'>;
+
 /**
  * Add a corrector as Alt+S, Shift+S, Alt+K, Alt+P and Alt+L do (p. 3318), about the current node.
  * A grade with no node yet takes its first after the source (Alt+S) or before the output (Shift+S);
  * a parallel or a layer node needs a current corrector (the engine refuses others as `wrong_node`).
+ * With `window`, a serial node with that window already turned on, its first, `w1` (Add Serial Node + CPW, LPW,
+ * PPW or PCW, Alt+C, Q, G or B, p. 3187): one edit, so one step to undo.
  */
-export function addNode(how: AddHow, grade: Target, current: string | null): Worked {
+export function addNode(how: AddHow, grade: Target, current: string | null, window?: NodeWindow): Worked {
   switch (how) {
-    case 'serial': return [{ edit: 'add_serial', grade, node: current ?? 'source' }];
+    case 'serial': return [{ edit: 'add_serial', grade, node: current ?? 'source', ...(window ? { windows: [newWindow('w1', window)] } : {}) }];
     case 'before': return [{ edit: 'add_serial_before', grade, node: current ?? 'output' }];
     case 'append': return [{ edit: 'append_node', grade }];
     default:
@@ -334,7 +342,7 @@ export function collapseGroups(timeline: string, clips: readonly Clip[]): Worked
 
 /** What a key asks of the node editor (the interaction reference, §2.2–2.5 and §9.4). */
 export type NodeCommand =
-  | { kind: 'add'; how: AddHow }
+  | { kind: 'add'; how: AddHow; window?: NodeWindow }
   | { kind: 'delete'; key: 'Delete' | 'Backspace' }
   | { kind: 'extract' | 'enable' | 'enableAll' | 'copy' | 'paste' | 'tool' | 'cancel' | 'original' }
   | { kind: 'reset'; how: ResetHow }
@@ -347,8 +355,9 @@ export type NodeCommand =
  * Shift+Home, Ctrl+Shift+Home and Ctrl+Home reset; Alt+Shift+O goes back to the grade as it was
  * when the clip was chosen (Original Memory, p. 3317); Alt+Shift+; and Alt+Shift+' go to the
  * previous and the next node; Ctrl+C and Ctrl+V copy and paste a node; H changes between the
- * selection tool and the hand. A letter is known by where it lies, as Alt changes what it types on
- * some layouts. Alt+O (an outside node) and the keys of nodes with windows wait for keys and windows.
+ * selection tool and the hand. Alt+C, Alt+Q, Alt+G and Alt+B add a serial node with a circular, linear,
+ * polygonal or Curve window (p. 3187). A letter is known by where it lies, as Alt changes what it types on
+ * some layouts. Alt+O (an outside node) waits for keys.
  */
 export function nodeKey(key: Key): NodeCommand | null {
   if (key.composing || key.meta) return null;
@@ -369,6 +378,10 @@ export function nodeKey(key: Key): NodeCommand | null {
   if (only(false, true, false)) {
     switch (letter) {
       case 's': return { kind: 'add', how: 'serial' };
+      case 'c': return { kind: 'add', how: 'serial', window: 'circular' };
+      case 'q': return { kind: 'add', how: 'serial', window: 'linear' };
+      case 'g': return { kind: 'add', how: 'serial', window: 'polygon' };
+      case 'b': return { kind: 'add', how: 'serial', window: 'curve' };
       case 'k': return { kind: 'add', how: 'append' };
       case 'p': return { kind: 'add', how: 'parallel' };
       case 'l': return { kind: 'add', how: 'layer' };

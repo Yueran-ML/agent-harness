@@ -814,6 +814,8 @@ export const ja: Messages = {
           selectTool: '選択ツール', panTool: '手のひらツール', zoom: 'ズーム', labelField: 'ノードラベル',
           addNode: 'ノードを追加', serial: 'シリアルノードを追加', before: '現在のノードの前に追加', parallel: 'パラレルノードを追加', layer: 'レイヤーノードを追加',
           outside: 'アウトサイドノードを追加',
+          serialWindow: { circular: 'シリアルノード + CPW を追加', linear: 'シリアルノード + LPW を追加', polygon: 'シリアルノード + PPW を追加',
+            curve: 'シリアルノード + PCW を追加' },
           label: 'ラベルを変更', deleteNode: 'ノードを削除', reset: 'ノードのグレードをリセット', resetShotMatch: 'ショットマッチをリセット', shotMatch: 'このクリップにショットマッチ',
           addInput: '入力をひとつ追加', toLayer: 'レイヤーミキサーノードに変換', toParallel: 'パラレルノードに変換', composite: 'コンポジットモード',
           deleteLink: 'リンクを削除', resetAll: 'すべてのグレードとノードをリセット', cleanup: 'ノードグラフをクリーンアップ',

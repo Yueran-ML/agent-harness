@@ -995,6 +995,11 @@ export const en = {
           picker: 'Sample in the viewer',
         },
         /** The Blur palette (Reference Manual 20, pp. 3454–3456), in DaVinci Resolve's words. */
+        /** The Window palette's option menu: its window presets (Reference Manual 20, pp. 3198–3199). */
+        windowPresets: {
+          options: 'Window options', saveNew: 'Save as New Preset', update: 'Update Preset', delete: 'Delete Preset',
+          presets: 'Presets', none: 'No presets', name: 'Preset name', ok: 'OK',
+        },
         blurPalette: {
           modes: 'Mode', blur: 'Blur', sharpen: 'Sharpen', mist: 'Mist',
           radius: 'Radius', ratio: 'H/V Ratio', scaling: 'Scaling', coring_softness: 'Coring Softness', level: 'Level', mix: 'Mix',
@@ -1759,6 +1764,13 @@ export const en = {
           : `The LUT was saved as ${path}. ${ignored === 1 ? 'A node' : `${ignored} nodes`} with qualifiers, windows or filters ${ignored === 1 ? 'was' : 'were'} left out of it.`),
         lutFailed: (message: string) => `The LUT could not be generated. ${message}`,
         keyed: 'This setting has keyframes: a change goes into the keyframe at the playhead or to its left.',
+        /** Why a window preset was not saved, recalled or deleted. */
+        windowPresets: {
+          nameTaken: 'A preset named “{name}” already exists. Choose another name.',
+          noWindows: 'This node has no window to save as a preset.',
+          missing: 'This preset is no longer in the library.',
+          library: 'The window presets could not be read or written.',
+        },
         scopes: {
           preparing: 'The scope is being prepared. The first time takes a while.',
           empty: 'There is nothing in the viewer to measure.',

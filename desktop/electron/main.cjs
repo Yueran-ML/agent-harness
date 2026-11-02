@@ -166,6 +166,8 @@ const PAGE_METHODS = new Set([
   // The Highlight modes and Bypass Color of the Color page's viewer, and its thumbnails as they are
   // graded. Generate LUT names a file, which Save As chooses (`engine-export-lut`).
   'viewer.highlight', 'viewer.bypass', 'timeline.thumbnail',
+  // Window presets, a library of this user's apart from every project (RM20 pp. 3198–3199).
+  'window_presets.list', 'window_presets.save', 'window_presets.update', 'window_presets.delete', 'window_presets.apply',
 ]);
 /** The points on an edge of the cubes that Generate LUT makes (Reference Manual 20, p. 3413). */
 const LUT_SIZES = [17, 33, 65];

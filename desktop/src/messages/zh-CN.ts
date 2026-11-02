@@ -858,6 +858,10 @@ export const zhCN: Messages = {
           vectors: { red: '红', yellow: '黄', green: '绿', cyan: '青', blue: '蓝', magenta: '品红' },
           picker: '在检视器上取样',
         },
+        windowPresets: {
+          options: '窗口选项', saveNew: '另存为新预设', update: '更新预设', delete: '删除预设',
+          presets: '预设', none: '没有预设', name: '预设名称', ok: '确定',
+        },
         blurPalette: {
           modes: '模式', blur: '模糊', sharpen: '锐化', mist: '薄雾',
           radius: '半径', ratio: '水平/垂直比率', scaling: '缩放', coring_softness: '核心柔化', level: '级别', mix: '混合',
@@ -1546,6 +1550,12 @@ export const zhCN: Messages = {
           : `LUT 已保存为 ${path}。其中有 ${ignored} 个带限定器、窗口或滤镜的节点没有计入。`),
         lutFailed: (message: string) => `无法生成 LUT（${message}）。`,
         keyed: '这个参数有关键帧：改动会写进播放头处或其左侧的关键帧。',
+        windowPresets: {
+          nameTaken: '已有名为“{name}”的预设，请换一个名称。',
+          noWindows: '这个节点没有可以存为预设的窗口。',
+          missing: '这个预设已经不在预设库里了。',
+          library: '无法读写窗口预设。',
+        },
         scopes: {
           preparing: '正在准备示波器，第一次需要一些时间。',
           empty: '检视器里没有可以测量的画面。',

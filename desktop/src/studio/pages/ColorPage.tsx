@@ -333,7 +333,7 @@ export function ColorPage({
     onGo: (clip) => { const entry = numbered.find(each => each.clip.id === clip); if (entry) { setChosen(clip); timelineMonitor.seek(entry.clip.start, false); } },
     onProblem: (failure) => { if (failure instanceof EngineError) grades.editing.setProblem(refusalText(failure, now.current.words.hint.studio)); else failed(failure); },
   });
-  const windows = useWindows({ session, revision, timeline: selected?.id ?? null, target: grades.target, clip: current?.clip.id ?? null,
+  const windows = useWindows({ bridge, session, revision, timeline: selected?.id ?? null, target: grades.target, clip: current?.clip.id ?? null,
     node: editedNode, realNode: grade?.nodes.find(each => each.id === currentNode) ?? null, editing: grades.editing, tool: viewerTool,
     complete: grade !== null && isComplete(grade),
     frame: placed?.frame ?? 0, clock: shownLevel === 'timeline' ? 'timeline' : clockMedia?.facts.video && !clockMedia.facts.video.still ? 'source' : 'clip' });

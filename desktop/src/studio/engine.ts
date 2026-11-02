@@ -702,8 +702,20 @@ export interface PageMethods {
   'viewer.highlight': ViewerHighlight;
   'viewer.bypass': { monitor: 'timeline'; on: boolean };
   'timeline.thumbnail': { width: number; height: number; png: string; frame: number };
+  // Window presets, this user's and shared by every project (PROTOCOL.md, "Window presets").
+  'window_presets.list': { presets: WindowPreset[] };
+  'window_presets.save': WindowPreset;
+  'window_presets.update': WindowPreset;
+  'window_presets.delete': { deleted: string };
+  'window_presets.apply': Applied;
 }
 export type PageMethod = keyof PageMethods;
+
+/**
+ * A window preset (RM20 pp. 3198–3199): the windows of a node as they were on the frame of the
+ * playhead, every parameter fixed, kept in this user's library apart from every project.
+ */
+export interface WindowPreset { id: string; name: string; windows: PowerWindow[] }
 
 /**
  * An album of the project's gallery, or of the PowerGrades that every project shares (p. 3266), or

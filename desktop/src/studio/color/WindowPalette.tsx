@@ -9,6 +9,7 @@ import type { NodeEdit } from './useNodeEdit';
 import type { EditScope, WindowField } from './windowEdits';
 import type { GradeEditing } from './useGradeEditing';
 import type { WindowInputStatus } from './useViewerInput';
+import { WindowPresets, type PresetBridge } from './WindowPresets';
 
 export const circularWindow = (id: string): PowerWindow => ({ id, label: '', enabled: true, invert: false, combine: 'add', opacity: 100,
   transform: { size: 50, aspect: 50, pan: 50, tilt: 50, rotate: 0 }, shape: { kind: 'circular', softness: 1 } });
@@ -45,8 +46,9 @@ export function topologyText(messages: Messages, notice: WindowNotice): string {
 
 interface Creation { identity: string; object: string; session: number; generation: number; id: string; revision: number | null }
 /** Keeps creation acknowledgment separate from the real ProjectCopy and from the user's current intent. */
-export function useWindows({ session, revision, timeline, target, clip, node, realNode, complete, editing, tool, frame, clock }: {
-  session: number; revision: number; timeline: string | null; target: Target | null; clip: string | null;
+export function useWindows({ bridge = null, session, revision, timeline, target, clip, node, realNode, complete, editing, tool, frame, clock }: {
+  /** The engine, for the window presets of the option menu; none hides them. */
+  bridge?: PresetBridge | null; session: number; revision: number; timeline: string | null; target: Target | null; clip: string | null;
   node: GradeNode | null; realNode: GradeNode | null; complete: boolean; editing: GradeEditing; tool: ViewerTool;
   frame: number; clock: WindowKeys['clock'];
 }) {
@@ -142,7 +144,9 @@ export function useWindows({ session, revision, timeline, target, clip, node, re
   };
   const keys: WindowKeys = reported?.identity === identity && reported.id === selected?.id ? reported.keys
     : { size: keyFrame('size'), aspect: keyFrame('aspect'), pan: keyFrame('pan'), tilt: keyFrame('tilt'), rotate: keyFrame('rotate'), softness: keyFrame('softness'), clock, frame };
-  return { windows, selected, selection, intention, choose, leaveDraft, create, onState, onDeleted, keys, enabled, waitingFor, pending: pending.current !== null };
+  // A preset is saved from, and recalled onto, a node of the project (not the default node shown before it is made).
+  const presets = { bridge, session, target, node: realNode && realNode.id === node?.id ? realNode.id : null, frame, revision, windows: windows.length };
+  return { windows, selected, selection, intention, choose, leaveDraft, create, onState, onDeleted, keys, enabled, waitingFor, pending: pending.current !== null, presets };
 }
 
 /** The participating fields of a captured control, or every keyed field of the selected window. */
@@ -184,6 +188,7 @@ export function WindowPalette({ controls, capturing, busy, status, edit, notice 
       onClick={() => controls.create(() => busy() || edit.pending(), 'polygon')}>{words.addPolygon}</button>
     <button type="button" className="btn" disabled={blocked}
       onClick={() => controls.create(() => busy() || edit.pending(), 'curve')}>{words.addCurve}</button>
+    <WindowPresets place={{ ...controls.presets, enabled: !blocked }} onRecalled={controls.choose} />
     <div role="listbox" aria-label={words.list} className="color-window-list">
       {controls.windows.map(each => <button type="button" className="btn" role="option" key={each.id} aria-selected={selected?.id === each.id}
         disabled={!supported(each) || controls.waitingFor(each.id)} onClick={() => controls.choose(each.id)}>

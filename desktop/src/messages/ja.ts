@@ -908,6 +908,10 @@ export const ja: Messages = {
           vectors: { red: '赤', yellow: '黄', green: '緑', cyan: 'シアン', blue: '青', magenta: 'マゼンタ' },
           picker: 'ビューアでサンプル',
         },
+        windowPresets: {
+          options: 'ウィンドウのオプション', saveNew: '新規プリセットとして保存', update: 'プリセットを更新', delete: 'プリセットを削除',
+          presets: 'プリセット', none: 'プリセットはありません', name: 'プリセット名', ok: '決定',
+        },
         blurPalette: {
           modes: 'モード', blur: 'ブラー', sharpen: 'シャープ', mist: 'ミスト',
           radius: '半径', ratio: 'H/V 比率', scaling: 'スケーリング', coring_softness: 'コアリングソフトネス', level: 'レベル', mix: 'ミックス',
@@ -1624,6 +1628,12 @@ export const ja: Messages = {
           : `LUT を ${path} に保存しました。クオリファイアー、ウィンドウ、フィルターのあるノード ${ignored} 個は含まれていません。`),
         lutFailed: (message: string) => `LUT を生成できませんでした（${message}）。`,
         keyed: 'このパラメーターにはキーフレームがあります。変更は再生ヘッドの位置か、その左のキーフレームに入ります。',
+        windowPresets: {
+          nameTaken: '「{name}」という名前のプリセットはすでにあります。別の名前を付けてください。',
+          noWindows: 'このノードには、プリセットとして保存できるウィンドウがありません。',
+          missing: 'このプリセットはライブラリにもうありません。',
+          library: 'ウィンドウプリセットを読み書きできませんでした。',
+        },
         scopes: {
           preparing: 'スコープを準備しています。初回は時間がかかります。',
           empty: 'ビューアに測定できる映像がありません。',

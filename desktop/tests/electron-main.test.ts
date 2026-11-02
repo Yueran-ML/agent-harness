@@ -4337,6 +4337,8 @@ describe('the engine of the studio', () => {
       'gallery.list', 'gallery.thumbnail', 'gallery.album.create', 'gallery.album.rename', 'gallery.album.delete', 'grade.append_node',
       // Highlight, Bypass Color and the graded thumbnails of the Color page (T21, T13d).
       'viewer.highlight', 'viewer.bypass', 'timeline.thumbnail',
+      // Window presets (T23).
+      'window_presets.list', 'window_presets.save', 'window_presets.update', 'window_presets.delete', 'window_presets.apply',
     ];
     for (const method of allowed) {
       const params = method === 'transaction.apply' ? { ops: [{ op: 'remove_clip', timeline: 't1', id: 'c1' }] } : { frame: 3, monitor: 'source' };

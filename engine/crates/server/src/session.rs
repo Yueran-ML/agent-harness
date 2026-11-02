@@ -1125,11 +1125,14 @@ async fn dispatch(
         "window.bind" | "window.input" | "window.unbind" => {
             window::call(engine, connection, kind, id, method, params).await
         }
-        "luts.list" | "grade.export_lut" => luts_call(engine, connection, id, method, params).await,
+        "luts.list" | "grade.export_lut" | "luts.preview" => {
+            luts_call(engine, connection, id, method, params).await
+        }
         _ if crate::window_presets::is_method(method) => {
             crate::window_presets::call(engine, connection, kind, id, method, params).await
         }
-        "viewer.wipe" | "viewer.split" | "viewer.highlight" | "viewer.bypass" => {
+        "viewer.wipe" | "viewer.split" | "viewer.highlight" | "viewer.bypass"
+        | "viewer.preview" | "viewer.lut" => {
             let result = viewer(engine, method, params).await?;
             if method == "viewer.highlight" || result["mode"] == "split" {
                 engine.state.lock().await.window_end("viewer_mode");
@@ -1320,6 +1323,9 @@ async fn viewer(engine: &Engine, method: &str, params: Option<&RawValue>) -> Res
     }
     if method == "viewer.bypass" {
         return engine.transport.bypass(params).await;
+    }
+    if method == "viewer.preview" || method == "viewer.lut" {
+        return engine.transport.viewer_preview(method, params).await;
     }
     crate::stills::compare(engine, &engine.transport, method, params).await
 }
@@ -1623,6 +1629,8 @@ async fn luts_call(
 ) -> Result<Reply, Reply> {
     if method == "grade.export_lut" {
         export_lut(engine, connection, id, params).await
+    } else if method == "luts.preview" {
+        luts_preview(engine, connection, id, params).await
     } else {
         luts_list(engine, connection, id, params).await
     }
@@ -1641,6 +1649,29 @@ async fn export_lut(
     let dir = PathBuf::from(&engine.project);
     let result = tokio::task::spawn_blocking(move || {
         crate::lut_export::export(&project, &dir, &places, &request)
+    })
+    .await
+    .map_err(|error| Fault::new(rpc::CANNOT_READ, error.to_string()))??;
+    Ok(match connection.queue(rpc::result_line(id, &result)) {
+        Ok(()) => Reply::Queued,
+        Err(refused) => Reply::Refused(refused),
+    })
+}
+
+/// `luts.preview`: what LUTs of the library do, on the test image or on a frame of a timeline
+/// (`crate::lut_preview`).
+async fn luts_preview(
+    engine: &Engine,
+    connection: &Connection,
+    id: &RawValue,
+    params: Option<&RawValue>,
+) -> Result<Reply, Reply> {
+    let request = crate::lut_preview::Request::read(params)?;
+    let project = engine.state.lock().await.history.project().clone();
+    let probe = Arc::clone(&engine.probe);
+    let places = engine.luts.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        crate::lut_preview::preview(&probe, &places, &project, &request)
     })
     .await
     .map_err(|error| Fault::new(rpc::CANNOT_READ, error.to_string()))??;

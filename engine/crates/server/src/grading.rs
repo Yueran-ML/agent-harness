@@ -235,6 +235,10 @@ pub struct Grading {
     plates: crate::notice::Plates,
     /// How many grades were made ready, for the tests.
     made: u64,
+    /// Why the colour management that the project asks for could not be made, while it cannot.
+    colour_error: Option<String>,
+    /// The project that a Live Preview draws (`crate::viewer_preview`).
+    previewed: crate::viewer_preview::Previewed,
 }
 
 impl Grading {
@@ -257,6 +261,8 @@ impl Grading {
             noticed: Vec::new(),
             plates: crate::notice::Plates::default(),
             made: 0,
+            colour_error: None,
+            previewed: crate::viewer_preview::Previewed::default(),
         }
     }
 
@@ -627,6 +633,7 @@ impl Grading {
                 // Back to what is in force: nothing more is wanted.
                 background.wanted = None;
             }
+            self.colour_error = None;
             return;
         }
         if let Some(background) = &mut self.background {
@@ -648,8 +655,12 @@ impl Grading {
                     &json!({"ms": since.elapsed().as_secs_f64() * 1e3, "waited": true}),
                 );
                 self.colour = Arc::new(colour);
+                self.colour_error = None;
             }
-            Err(message) => crate::log::log("colour_error", &json!({ "message": message })),
+            Err(message) => {
+                crate::log::log("colour_error", &json!({ "message": message }));
+                self.colour_error = Some(message);
+            }
         }
     }
 
@@ -670,22 +681,41 @@ impl Grading {
         match made {
             Ok(colour) => {
                 self.colour = colour;
+                self.colour_error = None;
                 true
             }
             Err(message) => {
                 crate::log::log("colour_error", &json!({ "message": message }));
                 background.failed = Some(key);
+                self.colour_error = Some(message);
                 false
             }
         }
     }
 
-    /// Whether a colour management is being made, or wanted, on a thread of its own.
-    #[cfg(test)]
+    /// Whether a colour management is being made, or wanted, on a thread of its own: the
+    /// monitor shows the colour in force meanwhile (`color_pending` of the timeline state).
     pub fn making(&self) -> bool {
         self.background
             .as_ref()
             .is_some_and(|background| background.job.is_some() || background.wanted.is_some())
+    }
+
+    /// Why the colour management that the project asks for could not be made (OCIO's message),
+    /// while it cannot: the colour in force is shown meanwhile (`color_error` of the timeline
+    /// state).
+    pub fn colour_error(&self) -> Option<&str> {
+        self.colour_error.as_deref()
+    }
+
+    /// `project` as a Live Preview shows it (`crate::viewer_preview`), made once for each project
+    /// and preview; `project` itself where there is none.
+    pub fn previewed(
+        &mut self,
+        project: &Arc<Project>,
+        preview: Option<&crate::viewer_preview::Preview>,
+    ) -> Arc<Project> {
+        self.previewed.of(project, preview)
     }
 
     /// Where another colour management is wanted and none is being made, make it on a thread of

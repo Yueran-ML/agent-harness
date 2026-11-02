@@ -460,6 +460,30 @@ impl Transport {
         timeline.bypass(asked.on).await
     }
 
+    /// `viewer.preview` (a Live Preview of a LUT on a node, p. 3411) and `viewer.lut` (the Color
+    /// Viewer LUT on the view or not, p. 672) of the timeline monitor (`crate::viewer_preview`).
+    ///
+    /// # Errors
+    /// The engine is headless, or the params are not what the method takes (`-32602`).
+    pub async fn viewer_preview(
+        &self,
+        method: &str,
+        params: Option<&RawValue>,
+    ) -> Result<Value, Fault> {
+        let Some(timeline) = &self.timeline else {
+            return Err(Fault::new(
+                rpc::METHOD_NOT_FOUND,
+                format!("there is no method {method} in a headless engine: it has no monitor"),
+            ));
+        };
+        if method == "viewer.lut" {
+            let on = crate::viewer_preview::viewer_lut(params)?;
+            return timeline.viewer_lut(on).await;
+        }
+        let preview = crate::viewer_preview::Preview::read(params)?;
+        timeline.preview(preview).await
+    }
+
     pub async fn frame_digest(&self, params: Option<&RawValue>) -> Result<Value, Fault> {
         let method = "transport.frame_digest";
         self.check(method)?;

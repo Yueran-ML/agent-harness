@@ -48,6 +48,9 @@ mod highlight;
 #[path = "rpc/color_page.rs"]
 mod color_page;
 
+#[path = "rpc/lut_preview.rs"]
+mod lut_preview;
+
 #[path = "rpc/viewport.rs"]
 mod viewport;
 

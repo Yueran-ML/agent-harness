@@ -34,6 +34,8 @@
 //! - the **Input LUT** on each picture of media after its input transform (RCM's into the
 //!   timeline, or the IDT of ACES) and before its grades, "before every other image processing
 //!   operation" of the Color page (p. 152); not on titles and colours, which are no source;
+//! - the **LUTs of a source clip** (`color_override.lut`, pp. 3409–3410), 1D first, on the
+//!   pictures of its media alone, after the Input LUT and before its grades;
 //! - the **Output LUT** on the frame after the timeline grade and the subtitles, before the
 //!   output transform (RCM's, or the ODT of ACES): "after the operations applied in the Color
 //!   page, but before" the display LUT (p. 152);
@@ -111,6 +113,10 @@ struct MediaKey {
     input: Option<MediaInput>,
     levels: Levels,
     peak: Option<u32>,
+    /// The LUTs of the source clip (pp. 3409–3410).
+    lut: LutPair,
+    /// Whether its Inverse DRT for SDR to HDR Conversion is on (p. 233).
+    inverse_drt: bool,
 }
 
 impl Key {
@@ -129,6 +135,8 @@ impl Key {
                         input: cm::media_input(&settings, media).map(|(input, _)| input),
                         levels: media.color_override.levels,
                         peak: mastered_peak(media),
+                        lut: media.color_override.lut.clone(),
+                        inverse_drt: media.color_override.inverse_drt,
                     },
                 )
             })
@@ -205,12 +213,14 @@ impl Default for Output {
     }
 }
 
-/// The colour of a media's pictures: its input transform, and the range its codes are read in
-/// where it is set by hand (Data Levels, pp. 221–222).
+/// The colour of a media's pictures: its input transform, the range its codes are read in
+/// where it is set by hand (Data Levels, pp. 221–222), and the LUTs of the source clip (pp.
+/// 3409–3410).
 #[derive(Clone, Debug, Default)]
 struct MediaColour {
     input: Vec<ColorOp>,
     range: Option<ColorRange>,
+    luts: Vec<ColorOp>,
 }
 
 /// The colour management of a project, made on one card.
@@ -227,28 +237,30 @@ pub struct Colour {
     luts: ProjectLuts,
 }
 
-/// The LUTs of the Lookup Tables of a project (pp. 151–152), each level's 1D first, on the card;
-/// and those that could not be read.
+/// The LUTs of the Lookup Tables of a project (pp. 151–152), each level's 1D first, and those of
+/// each source clip (pp. 3409–3410), by its media, on the card; and those that could not be read.
 #[derive(Default)]
 struct ProjectLuts {
     input: Vec<ColorOp>,
     output: Vec<ColorOp>,
     viewer: Vec<ColorOp>,
+    media: HashMap<String, Vec<ColorOp>>,
     missing: Vec<MissingLut>,
 }
 
 impl ProjectLuts {
-    /// The LUTs that `settings` names, read from `places` and put on `card`, read between their
-    /// points as the project says. A name that cannot be read is left out, and told.
-    fn read(card: &Arc<Gpu>, places: &LutPlaces, settings: &ColorSettings) -> Self {
+    /// The LUTs that the settings and the media of `key` name, read from `places` and put on
+    /// `card`, read between their points as the project says. A name that cannot be read is
+    /// left out, and told.
+    fn read(card: &Arc<Gpu>, places: &LutPlaces, key: &Key) -> Self {
+        let settings = &key.settings;
         let levels = [
             &settings.input_lut,
             &settings.output_lut,
             &settings.viewer_lut,
         ];
-        if levels
-            .iter()
-            .all(|pair| pair.one.is_none() && pair.three.is_none())
+        let none = |pair: &LutPair| pair.one.is_none() && pair.three.is_none();
+        if levels.iter().all(|pair| none(pair)) && key.media.values().all(|media| none(&media.lut))
         {
             return ProjectLuts::default();
         }
@@ -259,7 +271,7 @@ impl ProjectLuts {
         );
         luts.set_interpolation(interpolation(settings.lut_interpolation));
         let mut missing = BTreeMap::new();
-        let level = |pair: &LutPair| -> Vec<ColorOp> {
+        let mut level = |pair: &LutPair| -> Vec<ColorOp> {
             [&pair.one, &pair.three]
                 .into_iter()
                 .flatten()
@@ -275,11 +287,18 @@ impl ProjectLuts {
                 })
                 .collect()
         };
-        let [input, output, viewer] = levels.map(level);
+        let [input, output, viewer] = levels.map(&mut level);
+        let media = key
+            .media
+            .iter()
+            .filter(|(_, media)| !none(&media.lut))
+            .map(|(id, media)| (id.clone(), level(&media.lut)))
+            .collect();
         ProjectLuts {
             input,
             output,
             viewer,
+            media,
             missing: missing
                 .into_iter()
                 .map(|(name, message)| MissingLut { name, message })
@@ -368,7 +387,7 @@ impl Colour {
     /// A transform cannot be made (OCIO's message): a space that the catalogue names and the
     /// config lacks, which the tests hold none to be.
     pub fn make(ops: &CardOps, places: &LutPlaces, key: Key) -> Result<Colour, String> {
-        let luts = ProjectLuts::read(ops.gpu(), places, &key.settings);
+        let luts = ProjectLuts::read(ops.gpu(), places, &key);
         let mut levels: HashMap<String, MediaColour> = key
             .media
             .iter()
@@ -383,6 +402,7 @@ impl Colour {
                     MediaColour {
                         input: Vec::new(),
                         range,
+                        luts: luts.media.get(id).cloned().unwrap_or_default(),
                     },
                 )
             })
@@ -448,6 +468,10 @@ impl Colour {
                         .input
                         .ops
                         .extend(self.luts.input.iter().cloned());
+                    // The source clip's LUTs, after the project's Input LUT.
+                    if let Some(own) = own {
+                        layer.color.input.ops.extend(own.luts.iter().cloned());
+                    }
                 }
                 _ => layer.color.input.ops.clone_from(&self.graphics),
             }
@@ -488,21 +512,25 @@ impl Maker<'_> {
         let luma = luma_of(&self.config, &timeline.ocio)?;
         let rec2020 = REC2020_LUMA;
         // Each media, from its space into the timeline's.
-        let mut made: HashMap<String, Vec<ColorOp>> = HashMap::new();
+        let mut made: HashMap<(String, bool), Vec<ColorOp>> = HashMap::new();
         for (id, own) in &key.media {
             let Some(MediaInput::Space(name)) = &own.input else {
                 continue;
             };
             let space = space_of(name);
             let peak = source_peak(&space, own.peak);
+            // Mapped up only where the project's inverse DRT and the media's are both on (p. 233:
+            // "you can disable this behavior on a clip by clip basis").
+            let inverse = rcm.inverse_drt && own.inverse_drt;
             let mapped = (rcm.input_drt != ToneMapping::None)
                 .then(|| drt(rcm.input_drt, peak, map, rec2020, rcm.input_sat_rolloff))
                 .flatten()
-                .filter(|drt| peak > map || rcm.inverse_drt && !drt.is_identity());
+                .filter(|drt| peak > map || inverse && !drt.is_identity());
             let adapt = (!rcm.white_point_adaptation)
                 .then(|| unadapt(white_of(name), D65))
                 .flatten();
-            let ops = if let Some(ops) = made.get(name) {
+            let made_key = (name.clone(), inverse);
+            let ops = if let Some(ops) = made.get(&made_key) {
                 ops.clone()
             } else {
                 let mut ops = Vec::new();
@@ -514,7 +542,7 @@ impl Maker<'_> {
                     ops.extend(mapped.and_then(|drt| drt.op()));
                     Self::push(&mut ops, self.between(LINEAR, &timeline.ocio)?);
                 }
-                made.insert(name.clone(), ops.clone());
+                made.insert(made_key, ops.clone());
                 ops
             };
             media.entry(id.clone()).or_default().input = ops;
@@ -1337,6 +1365,146 @@ mod tests {
         colour.apply(&mut scene, &[] as &[Option<&str>]);
         assert_eq!(scene.output.ops.len(), 1);
         assert_eq!(scene.output.ops[0].textures[0].kind, TextureKind::D3);
+    }
+
+    /// A picture of media and one of a colour, for [`Colour::apply`].
+    fn layers(media: usize) -> Scene {
+        let picture = || columbina_compose::SceneLayer {
+            source: Source::Picture(Arc::default(), 0),
+            transform: columbina_compose::Transform::NONE,
+            opacity: 1.0,
+            color: columbina_compose::LayerColor::default(),
+        };
+        let mut layers: Vec<_> = (0..media).map(|_| picture()).collect();
+        layers.push(columbina_compose::SceneLayer {
+            source: Source::Color([1.0; 4]),
+            ..picture()
+        });
+        Scene {
+            layers,
+            ..Scene::default()
+        }
+    }
+
+    /// The sample project with a second media, `m2`, like `m1`.
+    fn two_media() -> columbina_model::Project {
+        let mut project = columbina_model::Project::sample();
+        let mut other = project.media[0].clone();
+        other.id = "m2".into();
+        project.media.push(other);
+        project
+    }
+
+    #[test]
+    fn the_luts_of_a_source_clip_come_after_the_input_lut_on_its_own_pictures_alone() {
+        let Some(gpu) = columbina_compose::gpu_for_tests() else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("half.cube"),
+            "LUT_1D_SIZE 2\n0 0 0\n0.5 0.5 0.5\n",
+        )
+        .unwrap();
+        let mut cube = String::from("LUT_3D_SIZE 2\n");
+        for _ in 0..8 {
+            cube.push_str("0.5 0.5 0.5\n");
+        }
+        std::fs::write(dir.path().join("grey.cube"), cube).unwrap();
+        let places = LutPlaces::with_library(dir.path(), vec![]);
+        let ops = CardOps::new(Arc::clone(&gpu));
+        let managed = ColorSettings {
+            science: cm::Science::YrgbManaged,
+            preset: Preset::Custom,
+            timeline: "DaVinci Wide Gamut/DaVinci Intermediate".into(),
+            ..ColorSettings::default()
+        };
+        for settings in [ColorSettings::default(), managed] {
+            let mut project = two_media();
+            project.color = settings.clone();
+            let plain = Colour::make(&ops, &places, Key::of(&project)).unwrap();
+            project.color.input_lut.three = Some("grey.cube".into());
+            project.media[0].color_override.lut = LutPair {
+                one: Some("half.cube".into()),
+                three: Some("grey.cube".into()),
+            };
+            let colour = Colour::make(&ops, &places, Key::of(&project)).unwrap();
+            assert_eq!(colour.missing(), []);
+            let (mut before, mut after) = (layers(2), layers(2));
+            let media = [Some("m1"), Some("m2"), None];
+            plain.apply(&mut before, &media);
+            colour.apply(&mut after, &media);
+            let kinds = |layer: usize| -> Vec<TextureKind> {
+                let transform = before.layers[layer].color.input.ops.len();
+                let ops = &after.layers[layer].color.input.ops;
+                assert_eq!(
+                    bodies(&ops[..transform]),
+                    bodies(&before.layers[layer].color.input.ops)
+                );
+                ops[transform..]
+                    .iter()
+                    .map(|op| op.textures[0].kind)
+                    .collect()
+            };
+            // m1: its input transform, the project's Input LUT, then its own 1D and 3D.
+            assert_eq!(
+                kinds(0),
+                [TextureKind::D3, TextureKind::D2, TextureKind::D3],
+                "{:?}",
+                settings.science
+            );
+            // m2: the Input LUT alone; the colour: nothing.
+            assert_eq!(kinds(1), [TextureKind::D3]);
+            assert_eq!(kinds(2), []);
+            // Nothing of the frame.
+            assert_eq!(bodies(&after.output.ops), bodies(&before.output.ops));
+        }
+        // One that cannot be read is left out and told.
+        let mut project = two_media();
+        project.media[1].color_override.lut.three = Some("gone.cube".into());
+        let colour = Colour::make(&ops, &places, Key::of(&project)).unwrap();
+        assert_eq!(colour.missing().len(), 1);
+        assert_eq!(colour.missing()[0].name, "gone.cube");
+        let mut scene = layers(2);
+        colour.apply(&mut scene, &[Some("m1"), Some("m2"), None]);
+        assert!(scene.layers[1].color.input.ops.is_empty());
+    }
+
+    #[test]
+    fn media_whose_inverse_drt_is_off_is_not_mapped_up_where_the_others_are() {
+        let Some(gpu) = columbina_compose::gpu_for_tests() else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let places = LutPlaces::with_library(dir.path(), vec![]);
+        let ops = CardOps::new(Arc::clone(&gpu));
+        let mut project = two_media();
+        project.color = ColorSettings {
+            science: cm::Science::YrgbManaged,
+            preset: Preset::Custom,
+            timeline: "Rec.2100 ST2084".into(),
+            working_luminance: cm::WorkingLuminance::Hdr1000,
+            input_drt: ToneMapping::Luminance,
+            inverse_drt: true,
+            ..ColorSettings::default()
+        };
+        project.media[1].color_override.inverse_drt = false;
+        let colour = Colour::make(&ops, &places, Key::of(&project)).unwrap();
+        let mut scene = layers(2);
+        colour.apply(&mut scene, &[Some("m1"), Some("m2"), None]);
+        let mapped = bodies(&scene.layers[0].color.input.ops);
+        let plain = bodies(&scene.layers[1].color.input.ops);
+        // m1, of SDR, is mapped up to the working luminance through the inverse DRT: into linear,
+        // the DRT, then into the timeline; m2 goes straight into the timeline.
+        assert_eq!(plain.len(), 1, "{plain:?}");
+        assert!(mapped.len() > plain.len(), "{mapped:?}");
+        // As the project's inverse DRT off leaves them all.
+        project.color.inverse_drt = false;
+        let off = Colour::make(&ops, &places, Key::of(&project)).unwrap();
+        let mut scene = layers(2);
+        off.apply(&mut scene, &[Some("m1"), Some("m2"), None]);
+        assert_eq!(bodies(&scene.layers[0].color.input.ops), plain);
+        assert_eq!(bodies(&scene.layers[1].color.input.ops), plain);
     }
 
     #[test]

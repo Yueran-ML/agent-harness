@@ -338,6 +338,13 @@ async fn the_viewer_lut_is_on_the_view_alone_never_in_the_frame_its_scopes_or_an
     let exported = middle(&film, 2);
     assert!(close(exported, ORANGE, 4), "{exported:?}");
 
+    // Not on the view while the viewer is not the Color page's (`viewer.lut`, p. 672), and on it
+    // again as it is.
+    slow_result(&mut client, "viewer.lut", json!({"on": false})).await;
+    until_green(ORANGE[1]).await;
+    slow_result(&mut client, "viewer.lut", json!({"on": true})).await;
+    until_green(halved_then_lifted(ORANGE)[1]).await;
+
     // Gone from the view as it is taken away.
     set(&mut client, json!({"viewer_lut": {"1d": null, "3d": null}})).await;
     until_green(ORANGE[1]).await;

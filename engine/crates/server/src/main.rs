@@ -48,6 +48,7 @@ mod grading;
 mod highlight;
 mod log;
 mod lut_export;
+mod lut_preview;
 mod luts;
 mod managed;
 mod names;
@@ -67,6 +68,7 @@ mod stills;
 mod timer;
 mod transport;
 mod view;
+mod viewer_preview;
 mod window;
 mod window_presets;
 

@@ -30,6 +30,7 @@ use crate::scopes::{Scopes, Shown};
 use crate::transport::clock::{self, Clock};
 use crate::transport::{Again, Sound, SoundSlot, Source, POOL_BYTES, SETTLE, TOLD_EVERY};
 use crate::view::{Monitor, ViewSlot};
+use crate::viewer_preview::Preview;
 use columbina_model::keyframes::KeyClock;
 
 const SEEK_WAIT: Duration = Duration::from_secs(5);
@@ -67,6 +68,21 @@ pub struct Status {
     /// Color); left out where it does not.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub bypass: bool,
+    /// The Live Preview that the monitor shows, where one is on (`viewer.preview`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview: Option<Preview>,
+    /// Whether the view shows the Color Viewer LUT (`viewer.lut`); written only where it does
+    /// not.
+    #[serde(skip_serializing_if = "crate::viewer_preview::is_on")]
+    pub viewer_lut: bool,
+    /// Whether the colour management that the project asks for is being made, the colour in
+    /// force shown meanwhile; left out where it is not.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub color_pending: bool,
+    /// Why the colour management that the project asks for could not be made, while it cannot;
+    /// left out where it was.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color_error: Option<String>,
     /// The frame of the timeline that each reference of the wipe or split screen shows for the
     /// frame shown, as it moves with the playhead (`viewer.wipe`, `viewer.split`); left out
     /// where nothing is compared.
@@ -92,6 +108,10 @@ impl Default for Status {
             missing_luts: Vec::new(),
             highlight: None,
             bypass: false,
+            preview: None,
+            viewer_lut: true,
+            color_pending: false,
+            color_error: None,
             compared: None,
         }
     }
@@ -150,6 +170,10 @@ enum Command {
     Original(oneshot::Sender<Result<crate::stills::Frame, Fault>>),
     /// The Highlight mode that is shown (`viewer.highlight`).
     Highlight(Option<Highlight>, oneshot::Sender<Value>),
+    /// The Live Preview that is shown (`viewer.preview`).
+    Preview(Option<Preview>, oneshot::Sender<Value>),
+    /// Whether the view shows the Color Viewer LUT (`viewer.lut`).
+    ViewerLut(bool, oneshot::Sender<Value>),
     /// Whether the grades are left out of the picture (`viewer.bypass`).
     Bypass(bool, oneshot::Sender<Value>),
     Stop,
@@ -395,6 +419,20 @@ impl Timeline {
     pub async fn bypass(&self, on: bool) -> Result<Value, Fault> {
         let (reply, receiver) = oneshot::channel();
         self.send(Command::Bypass(on, reply))?;
+        receiver.await.map_err(|_| stopped())
+    }
+
+    /// Show a Live Preview, or none, and give the preview shown now.
+    pub async fn preview(&self, preview: Option<Preview>) -> Result<Value, Fault> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(Command::Preview(preview, reply))?;
+        receiver.await.map_err(|_| stopped())
+    }
+
+    /// Show the Color Viewer LUT on the view, or not, and say which it does now.
+    pub async fn viewer_lut(&self, on: bool) -> Result<Value, Fault> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(Command::ViewerLut(on, reply))?;
         receiver.await.map_err(|_| stopped())
     }
 }
@@ -658,8 +696,11 @@ impl Worker {
     fn redraw(&mut self) {
         if !self.status.playing {
             let missing = self.status.missing_luts.clone();
+            let colour = (self.status.color_pending, self.status.color_error.clone());
             let _ = self.draw(true, false);
-            if self.status.missing_luts != missing {
+            if self.status.missing_luts != missing
+                || (self.status.color_pending, &self.status.color_error) != (colour.0, &colour.1)
+            {
                 self.tell(true);
             }
         }
@@ -866,6 +907,24 @@ impl Worker {
                 }
                 let _ = reply.send(json!({"monitor": "timeline", "on": self.status.bypass}));
             }
+            Command::Preview(preview, reply) => {
+                if self.status.preview != preview {
+                    self.status.preview = preview;
+                    if !self.status.playing {
+                        let _ = self.draw(true, false);
+                    }
+                    self.tell(true);
+                }
+                let _ = reply.send(Preview::written(self.status.preview.as_ref()));
+            }
+            Command::ViewerLut(on, reply) => {
+                if self.status.viewer_lut != on {
+                    self.status.viewer_lut = on;
+                    self.redraw();
+                    self.tell(true);
+                }
+                let _ = reply.send(json!({"monitor": "timeline", "on": self.status.viewer_lut}));
+            }
             Command::Act(action) => self.action(action),
             Command::Stop => unreachable!("handled by run"),
         }
@@ -894,17 +953,19 @@ impl Worker {
     /// otherwise, it is drawn again aside with neither, for no view and no scope, and the frame
     /// shown is drawn again as it was shown.
     fn graded_original(&mut self) -> Result<crate::stills::Frame, Fault> {
-        if !self.status.bypass && self.status.highlight.is_none() {
+        if !self.status.bypass && self.status.highlight.is_none() && self.status.preview.is_none() {
             return self.original();
         }
         let bypass = std::mem::take(&mut self.status.bypass);
         let highlight = self.status.highlight.take();
+        let preview = self.status.preview.take();
         self.aside = true;
         let drawn = self.draw_inner(true, false);
         self.aside = false;
         let grabbed = drawn.and_then(|_| self.original());
         self.status.bypass = bypass;
         self.status.highlight = highlight;
+        self.status.preview = preview;
         if !self.status.playing {
             let _ = self.draw(true, false);
         }
@@ -1202,6 +1263,23 @@ impl Worker {
         }
     }
 
+    /// The frame of the timeline drawn: the playhead's, or, where it is still, the frame that a
+    /// Live Preview asks for (Hover Scrub Preview, `viewer.preview`).
+    fn drawn_frame(&self) -> i64 {
+        let frame = self.status.frame.unwrap_or(0);
+        match self
+            .status
+            .preview
+            .as_ref()
+            .and_then(|preview| preview.frame)
+        {
+            Some(asked) if self.clock.is_none() => {
+                clock::clamped(asked, self.status.last.unwrap_or(0))
+            }
+            _ => frame,
+        }
+    }
+
     fn draw(&mut self, wait: bool, scrubbing: bool) -> Result<(), Fault> {
         let result = self.draw_inner(wait, scrubbing).map(|_| ());
         if let Err(error) = &result {
@@ -1225,7 +1303,7 @@ impl Worker {
         };
         let project = Arc::clone(project);
         let timeline = &project.timelines[index];
-        let frame = self.status.frame.unwrap_or(0);
+        let frame = self.drawn_frame();
         self.request(frame, scrubbing);
         let mut scene = Scene {
             width: timeline.width,
@@ -1409,13 +1487,19 @@ impl Worker {
             .graphics
             .gpu()
             .map_err(|error| drawing(&error.to_string()))?;
-        let project = Arc::clone(project);
+        let project = self
+            .grading
+            .previewed(project, self.status.preview.as_ref());
         self.grading.update(&gpu, &project, index);
         self.grading.grade(scene, clips, frame);
         self.grading
             .make_ahead(&project, index, (scene, clips, frame));
         if self.status.missing_luts != self.grading.missing() {
             self.status.missing_luts = self.grading.missing().to_vec();
+        }
+        self.status.color_pending = self.grading.making();
+        if self.status.color_error.as_deref() != self.grading.colour_error() {
+            self.status.color_error = self.grading.colour_error().map(str::to_owned);
         }
         // The scopes measure the frame as its output space has it, and the view shows HDR as
         // HDR (each frame, so that a view attached since is told too; it changes nothing where
@@ -1499,14 +1583,14 @@ impl Worker {
         };
         // Viewer LUT is composed before the final readiness is frozen. No ViewSlot is held
         // during this GPU work, and no registry guard spans any view operation.
-        let viewed = if attached.is_some() {
+        let viewed = if attached.is_some() && self.status.viewer_lut {
             Some(
                 self.grading
                     .viewed(compositor, &shown)
                     .map_err(|error| drawing(&error))?,
             )
         } else {
-            None
+            attached.as_ref().map(|_| Arc::clone(&shown))
         };
         // The words of a LUT that cannot be read, over the picture of the view alone (p. 3413).
         let viewed = match (viewed, crate::notice::words(&self.status.missing_luts)) {

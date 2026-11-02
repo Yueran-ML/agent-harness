@@ -161,6 +161,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `scopes.unsubscribe` | `{"scope_id": "scope-1"}` | `{}` |
 | `scopes.statistics` | `{"view": "timeline" \| "source", "bins"?: 256}`, or `{"timeline": "t1", "frame": n, "bins"?}`; either with `"grade": target, "node": "n1", "at"?: "input" \| "output", "clip"?: "c1"` | the figures of the frame shown, of a frame drawn off screen, or of the picture at a node (see Scopes) |
 | `luts.list` | none, or `{"folder"?: "Film"}` | `{"roots": [...], "luts": [...], "truncated": false}` (see The library of LUTs) |
+| `luts.preview` | `{"luts": ["Film/Look.cube", ...], "height"?: 72, "frame"?: {"timeline": "t1", "frame": 0, "clip"?: "c1", "grade": target, "node": "n1"}}` | `{"previews": [{"lut", "width", "height", "png": "<base64>"} \| {"lut", "error"}, ...]}` (see Previews of LUTs) |
 | `grade.export_lut` | `{"grade": target, "node"?: "n1", "size": 17 \| 33 \| 65, "path": "<name or file>.cube", "frame"?: n, "replace"?: false}` | `{"path", "name", "size", "nodes": [...], "ignored": [{"node", "why"}]}` (see Generate LUT) |
 | `viewer.wipe` | `{"on"?: true, "style"?: "horizontal", "position"?: 0.5, ..., "reference": {"kind": "still", "path": "..."}}`, or `{"on": false}` | what the timeline monitor compares with (see Comparisons in the viewer) |
 | `viewer.split` | `{"on"?: true, "items": [{"kind": "current"}, ...], "selected"?: 0, "outline"?: true}`, or `{"on": false}` | as `viewer.wipe` |
@@ -182,6 +183,8 @@ Before `hello`, every other request is refused with `-32600`.
 | `grade.append_node` | `{"from": target, "node": "n4", "to": [target, ...], "keyframes"?: "none" \| "source_timecode" \| "start_frame", "at"?: 120, "revision"?: n}` | as `transaction.apply` (Append Node to Selected Clips, see The Gallery) |
 | `viewer.highlight` | `{"mode": "off" \| "highlight" \| "bw", "grade"?: target, "node"?: "n1", "monitor"?: "timeline"}` | `{"monitor": "timeline", "mode", "grade"?, "node"?}` (see Highlight) |
 | `viewer.bypass` | `{"on": true, "monitor"?: "timeline"}` | `{"monitor": "timeline", "on"}` (see Bypass Color) |
+| `viewer.preview` | `{"grade": target, "node": "n1", "lut": "Film/Look.cube", "frame"?: n, "monitor"?: "timeline"}`, or `{"on": false}` | `{"monitor": "timeline", "preview": {...} \| null}` (see Live Preview and the Color Viewer LUT) |
+| `viewer.lut` | `{"on": true \| false, "monitor"?: "timeline"}` | `{"monitor": "timeline", "on"}` (see Live Preview and the Color Viewer LUT) |
 | `timeline.thumbnail` | `{"timeline": "t1", "frame": 0, "clip"?: "c1", "height"?: 90}` | `{"width": 160, "height": 90, "png": "<base64>", "frame"}` (see Thumbnails of the Color page) |
 | `window_presets.list` | none, or `{}` | `{"presets": [{"id": "wp1", "name": "Face", "windows": [window, ...]}, ...]}` (see Window presets) |
 | `window_presets.save` | `{"name": "Face", "grade": target, "node": "n4", "frame": 120}` | the preset `{"id", "name", "windows"}` (Save as New Preset) |
@@ -2226,6 +2229,18 @@ subtitles in. A grade that is not complete, or has no node, changes nothing.
   mode is on (`viewer.highlight`, in Comparisons in the viewer), and none while it is off.
 - **Bypass Color**: the timeline state has `bypass: true` while the monitor shows its picture
   without its grades (`viewer.bypass`, in Comparisons in the viewer), and none while it shows them.
+- **Live Preview**: the timeline state has `preview: {"grade", "node", "lut", "frame"?}` while a
+  LUT is previewed on a node (`viewer.preview`), and none while none is; `viewer_lut: false`
+  while the view leaves the Color Viewer LUT out (`viewer.lut`), and none while it shows it
+  (see Live Preview and the Color Viewer LUT).
+- **Colour being made**: the timeline state has `color_pending: true` while a change of the
+  project's colour management (its settings, or the colour of media) is being made on a thread
+  of the engine's own, the monitor showing the colour it had until then, and none once the new
+  one is shown (told at once both ways; up to a second and a half for an ODT of ACES 2.0; see
+  What colour management does to the picture). `color_error: "<OCIO's message>"` where the
+  colour management that the project asks for could not be made: the monitor goes on showing
+  the colour it had, and the change is not tried again until the project's colour changes
+  again; none where it was made.
 
 ### Generate LUT
 
@@ -2574,6 +2589,42 @@ the last), and `{"reason": "still", "path", "message"}` for a still that cannot 
 reference of the timeline needs a timeline loaded: `-32004` with `{"reason": "not_loaded"}`
 otherwise. A refused call changes nothing.
 
+### Live Preview and the Color Viewer LUT
+
+**`viewer.preview`** `{"grade": target, "node": "n1", "lut": "Film/Look.cube", "frame"?: n,
+"on"?: true, "monitor"?: "timeline"}` shows on the timeline monitor what the LUT `lut` of the
+library (named as `luts.list` names it) would do in place of the LUT of the node `node` of the
+grade `grade`: Live Preview of the LUT browser, which "will display how the current clip will
+appear with the LUT you select applied to the currently selected node of the current grade"
+(p. 3411). `{"on": false}` ends it. The frames are drawn from a copy of the project whose node has
+that LUT, as `set_node` of `{"lut"}` would make it, and nothing else: the project, its revision
+and history, and every other client are as they were, and an export, a frame drawn off screen
+(`view.sample` and `scopes.statistics` of a timeline and frame, `luts.preview`,
+`timeline.thumbnail`), the references of a wipe and a still grabbed (see Grabbing) are of the
+project as it is. What the monitor shows (the comparison of a wipe, the scopes, `view.sample`
+and `transport.frame_digest` of the monitor) is the frame as it is previewed. `frame`, where it
+is given, is the frame of the timeline shown while the monitor is still (Hover Scrub Preview,
+"the duration of the current clip in both the thumbnail and Viewer", p. 3259): `shown` of the
+state is it, the playhead (`frame`) stays where it is, and playing shows the playhead's frames.
+A node that cannot take the LUT (one that is not there, a node that is not a corrector, a locked
+node) leaves the picture as it is, the preview staying on, as a Highlight mode does. It answers
+`{"monitor": "timeline", "preview": {...} | null}`, the monitor draws its frame again at once
+where it is not playing, and the timeline state tells it (`preview`). Bypass Color, which leaves
+every grade out, leaves the previewed LUT out too. Refusals: `-32602` for params that are not
+the method's, with `data` `{"reason": "monitor"}` for the source monitor, `{"reason": "lut"}`
+for a preview on without its grade, node and LUT, and `{"reason": "name"}` for a LUT not named
+relative to the folders of LUTs; a `--headless` engine answers `-32601`.
+
+**`viewer.lut`** `{"on": true | false, "monitor"?: "timeline"}` puts the project's Color Viewer
+LUT (`viewer_lut`, What colour management does to the picture) on the view of the timeline
+monitor, or leaves it off: "The Color Viewer Lookup Table options … only affect the GUI Viewer in
+the Color page. They do not affect the viewers in the Edit page" (p. 672). The engine does not
+know which page its view is on: it shows the LUT until it is told not to, and the desktop turns
+it off on every page but the Color page and on again there. It answers `{"monitor": "timeline",
+"on"}`, the view shows the frame again at once where it is not playing, and the timeline state
+says `viewer_lut: false` while it is off. Nothing but the view ever has the Color Viewer LUT.
+Refusals as `viewer.bypass`'s.
+
 ## The Gallery
 
 Stills of the timeline monitor, with the grades that made them, kept in albums, as the Gallery
@@ -2851,6 +2902,34 @@ them:
 - At most 10000 files are listed, 100000 entries of folders looked at, and folders 16 deep; past
   that, `truncated` is `true` and what was found is given.
 
+### Previews of LUTs
+
+**`luts.preview`** draws small pictures of what LUTs do, for the thumbnails of the LUT browser
+(pp. 2970, 3410–3411). It changes neither the project nor its history; a headless engine has it
+too.
+
+- `luts`: 1 to 64 LUTs, each named as `luts.list` names it, relative to the folders of LUTs
+  (not empty, not absolute, never going up: `-32602` `{"reason": "name"}`; none or more than 64:
+  `{"reason": "luts"}`). `height`: 1 to 270 pixels (`{"reason": "height"}`), 72 where left out.
+- **On the test image** (no `frame`): "By default, all LUTs appear with a test thumbnail that
+  give a preview of that LUT's effect" (p. 3410). The test image is the engine's own, 16:9: a
+  sweep of hues across its top, full at the top and paler to its middle; a row of six patches
+  (skin, sky, foliage, shadow, highlight, a grey of 0.5); and a ramp of grey from black to white
+  along its bottom fifth, in R'G'B' read as shown. Each LUT is done to it on the processor by the
+  tables and the reading between points that grade on the card, as `lut_interpolation` says, and
+  its values clipped to 0..1 and made 8 bits.
+- **On a frame** (`frame`: `{"timeline", "frame", "clip"?, "grade", "node"}`): how the current
+  clip looks with the LUT on the node chosen (p. 3410: "a live preview of how the current clip
+  looks with that LUT"; p. 3411), as Hover Scrub Preview shows it in the thumbnail (p. 3259): the
+  frame drawn as `timeline.thumbnail` draws it (of the clip's layers alone, by its own grades,
+  where `clip` is named), from a copy of the project whose node has the LUT in place of its own.
+  A timeline, clip or frame refused as `timeline.thumbnail` refuses them; a node that cannot
+  take the LUT (`set_node` would refuse it) is `-32602` `{"reason": "node"}`.
+- It answers `{"previews": [...]}`, one for each LUT in the order asked: `{"lut", "width",
+  "height", "png"}` (an opaque PNG of 8 bits, in base64), or `{"lut", "error"}` with why for a
+  LUT that cannot be read (not there, or not parsed: the message of `luts.list`), the others
+  drawn.
+
 ## Colour management
 
 The colour management of a project is its `color` object, and the colour of media set by hand
@@ -2975,7 +3054,7 @@ are ours (marked *ours*), to be checked against Resolve.
 
 ### Media's `color_override`
 
-`{"input": null, "levels": "auto"}`:
+`{"input": null, "levels": "auto", "lut": {"1d": null, "3d": null}, "inverse_drt": true}`:
 
 - `input`: a space, `bypass` (Bypass Color Management, p. 245) or `null` (the project's default,
   the menu's Project Default). It decides the input space over the file's metadata and the
@@ -2983,14 +3062,24 @@ are ours (marked *ours*), to be checked against Resolve.
   is its maker's and cannot be set (`camera_raw`); a space set by hand; the file's metadata; the
   project's `input` (or `Rec.709 Gamma 2.4` under a preset), or `idt` in ACES.
 - `levels`: `auto`, `video`, `full` (Data Levels, pp. 221–222).
+- `lut`: the LUTs of the source clip (Applying LUTs to Source Clips, pp. 3409–3410: the 1D LUT ▸
+  and 3D LUT ▸ menus of the media pool and of the Color page's thumbnails), each named relative
+  to the folders of LUTs as the project's are (else `out_of_range`, `what: "media_lut"`), or
+  `null`. They are the media's, not a grade's (`ColorTrace` "cannot" copy them); see What colour
+  management does to the picture.
+- `inverse_drt`: Inverse DRT for SDR to HDR Conversion of the clip (p. 233): `true`, the default,
+  lets the project's `inverse_drt` map its picture up; `false` keeps it from being mapped up
+  where the project's would ("you can disable this behavior on a clip by clip basis in the Media
+  Pool clip contextual menu, or the Thumbnail Timeline contextual menu").
 - Media without a picture keeps the defaults (`no_stream`).
+- Each field is written; one left out, as by a project written before, is read as its default.
 
 ### Operations
 
 | op | fields | inverse |
 |---|---|---|
 | `set_color_settings` | `settings`: a patch of `color` | `set_color_settings` with the values as they were |
-| `set_media_color` | `id`, `input?` (a space, `bypass`, or `null`), `levels?` | `set_media_color` with the given fields as they were |
+| `set_media_color` | `id`, `input?` (a space, `bypass`, or `null`), `levels?`, `lut?` (`{"1d", "3d"}`, both, each a name or `null`), `inverse_drt?` | `set_media_color` with the given fields as they were |
 
 - `settings` is merged as `set_node` merges `params`: each object in it (a LUT pair, a rolloff)
   is put into the object of that name, and any other value takes the place of the one there,
@@ -3014,7 +3103,7 @@ The timeline monitor and an export draw a project as its `color` says
   its file says, else the project's) into the timeline space, never clipped; through the Input
   DRT where it maps (from the most of the space, 100 nits for SDR, 1000 for HLG, the mastering
   display's or 10000 for PQ, 10000 for linear light and the spaces of cameras, to the working
-  luminance; up only with `inverse_drt`); titles and colours from Rec.709 Gamma 2.4, their white
+  luminance; up only with `inverse_drt`, and the media's own `inverse_drt` on); titles and colours from Rec.709 Gamma 2.4, their white
   at `graphics_white`. Grades are done in the timeline space, whose primaries give their luma.
   Then into the output space: the Output DRT (from what the timeline holds to the most of the
   output), the reference of 203 nits, `limit_gamut` (clipped below 0 in the smaller gamut) and,
@@ -3039,6 +3128,9 @@ p. 3330:
 - the **Input LUT** on each picture of media after its input transform (RCM's into the timeline
   space, or the IDT of ACES) and before its grades, "before every other image processing
   operation" of the Color page; not on titles and colours, which are no source;
+- the **LUTs of a source clip** (`color_override.lut`, its `1d` before its `3d`) on the pictures of
+  its media alone, after the Input LUT and before their grades, in every science, read as the
+  project's are; one that cannot be read is told likewise;
 - the **Output LUT** on the frame after the timeline grade and the subtitles, before the output
   transform (RCM's, or the ODT of ACES): "after the operations applied in the Color page, but
   before" the display LUT;
@@ -3052,13 +3144,15 @@ A cube clips what is beyond its domain (0–1 where the file says none, p. 225),
 LUT is of display-referred values clips a timeline of scene-referred ones, as in Resolve. A LUT
 that cannot be read is left out of its level, and told as `missing_luts` (Grades in the
 picture); a project whose LUT could not be read makes its colour again at the next change of the
-project, so that a file put in its place is found. With none of the three named, `yrgb` is drawn
-to the bit as before.
+project, so that a file put in its place is found. With none of the three named, nor any of a
+source clip, `yrgb` is drawn to the bit as before. The view leaves the Color Viewer LUT out while
+`viewer.lut` says so (Live Preview and the Color Viewer LUT).
 
 A change of the colour management, while a timeline is loaded in the monitor, is made ready on a
 thread of the engine's own and its shaders compiled there; the monitor shows the colour it had
-until then (up to a second and a half for an ODT of ACES 2.0), and then draws again. A load, and
-an export, wait for it. The timeline monitor's view is told to show HDR (PQ or HLG, and its most
+until then (up to a second and a half for an ODT of ACES 2.0), and then draws again; the
+timeline state says `color_pending: true` meanwhile, and `color_error` where it cannot be made
+(Grades in the picture). A load, and an export, wait for it. The timeline monitor's view is told to show HDR (PQ or HLG, and its most
 nits) where the output space is of HDR; the source monitor's where the media's file says PQ or
 HLG.
 

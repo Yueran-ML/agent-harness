@@ -465,6 +465,8 @@ fn a_window_frozen_at_a_frame_keeps_its_interpolated_values_without_keys() {
     };
     let mut window = Window::new("w2", WindowShape::curve());
     window.label = "face".into();
+    // A window turned off is kept off: a preset keeps On/Off and the Layer Name (RM20 p. 3189).
+    window.enabled = false;
     window.invert = true;
     window.transform.pan = keys(20.0, 40.0);
     // Rotate overshoots its bounds after interpolation; the mask clamps it, and so does a preset.
@@ -482,6 +484,7 @@ fn a_window_frozen_at_a_frame_keeps_its_interpolated_values_without_keys() {
     assert!(!written.to_string().contains("keys"), "{written}");
     assert_eq!(written["id"], "w2");
     assert_eq!(written["label"], "face");
+    assert_eq!(written["enabled"], false);
     assert_eq!(written["invert"], true);
     assert_eq!(written["transform"]["pan"], 30.0);
     assert_eq!(written["transform"]["rotate"], 36_000.0);

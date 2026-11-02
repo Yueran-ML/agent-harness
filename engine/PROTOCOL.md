@@ -2963,7 +2963,7 @@ one change at a time of all the engines that share it; one of another format is 
 project names a preset, and no change of the library is a step of a project's history.
 
 - **`window_presets.save`** (Save as New Preset) keeps every window of the corrector `node` of
-  the grade `target` (see Grades), in the list's order, ids and labels and all, each as it is on
+  the grade `target` (see Grades), in the list's order, ids, labels, On/Off and all, each as it is on
   `frame` of the grade's keys (see Frames of keys; the playhead): every parameter interpolated
   and clamped there as the mask uses it, and no keyframes or tracking data. It goes after the
   others, with a new id `wp<n>` (never given twice). `name` is 1 to 100 characters, trimmed.

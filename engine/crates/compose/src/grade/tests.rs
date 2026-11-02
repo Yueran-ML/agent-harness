@@ -1390,6 +1390,12 @@ fn every_composite_mode_lays_each_side_of_its_branches_as_its_definition_says() 
             }
         }
     }
+    // Nothing divided by nothing is nothing.
+    let divide = layout::composite(Composite::Divide);
+    assert_eq!(
+        maths::composite(&c, divide, [0.0, 0.5, 0.0], [0.0, 0.0, 0.5]),
+        [0.0, 1.0, 0.0]
+    );
 }
 
 #[test]

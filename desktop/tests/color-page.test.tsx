@@ -13,7 +13,7 @@ import type { EngineBridge } from '../src/bridge';
 import { Studio, studioPages } from '../src/studio/Studio';
 import { MERGE_PALETTES_PX } from '../src/studio/pages/ColorPage';
 import {
-  applyOp, emptyGrade, ProjectCopy, sortLinks, type Corrector, type EngineEvent, type Grade, type GradeNode, type Link, type Media, type Op,
+  applyOp, emptyGrade, ProjectCopy, sortLinks, type Corrector, type EngineEvent, type Grade, type GradeNode, type Link, type Media, type Op, type PowerWindow,
   type Project, type Target, type Timeline, type TransportState,
 } from '../src/studio/engine';
 import { currentClip, numberedClips, shownClips, sourceFrameAt, stepClip } from '../src/studio/color/clips';
@@ -677,6 +677,39 @@ describe('the viewer modes, the pickers and the thumbnail menu of the Color page
     expect(binds()).toHaveLength(2);
     expect(binds()[1]).toEqual(bound);
     expect(screen.getByRole('tab', { name: 'Primaries' }).getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('keeps an unclosed Curve draft selected through an armed picker, whose Esc in the viewer lets the picker go before the draft', async () => {
+    const { bridge, notify } = await mount();
+    // The engine's binding numbers, so the idle Esc of the viewer has a binding to go to.
+    const answer = bridge.call.getMockImplementation()!;
+    let bindings = 0;
+    bridge.call.mockImplementation(async (method: string, params?: Record<string, unknown>) =>
+      (method === 'window.bind' ? { ok: true, result: { binding: ++bindings, sequence: 1 } } : answer(method, params)));
+    await notify({ frame: 200, shown: 200 }); await settle();
+    fireEvent.click(screen.getByRole('tab', { name: 'Window' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Curve Window' })); await settle();
+    const binds = () => calls(bridge, 'window.bind');
+    expect(binds()).toHaveLength(1);
+    const bound = binds()[0];
+    expect(bound).toMatchObject({ node: 'n10', selected: 'w1', tool: 'window' });
+    const added = (calls(bridge, 'transaction.apply')[0] as { ops: { params?: { windows?: PowerWindow[] } }[] }).ops.find(op => op.params?.windows)!.params!.windows!;
+    expect(added.map(each => each.shape)).toEqual([{ kind: 'curve', points: [], closed: false, inside: 0, outside: 0 }]);
+    const viewer = document.querySelector<HTMLElement>('[data-test="color-viewer"]')!;
+    // Pick Black Point armed: the window lets the viewer go.
+    fireEvent.click(screen.getByRole('tab', { name: 'Primaries' })); await settle();
+    fireEvent.click(document.querySelector('[data-test="picker-black"]')!); await settle();
+    expect(calls(bridge, 'window.unbind')).toHaveLength(1);
+    // Esc in the viewer lets the picker go; the draft stays selected and is bound again as it was.
+    fireEvent.keyDown(viewer, { key: 'Escape' }); await settle();
+    expect(document.querySelector('[data-test="picker-black"]')!.getAttribute('aria-pressed')).toBe('false');
+    expect(binds()).toHaveLength(2);
+    expect(binds()[1]).toEqual(bound);
+    // The next idle Esc in the viewer leaves the draft: bound again selecting none, the project untouched.
+    fireEvent.keyDown(viewer, { key: 'Escape' }); await settle();
+    expect(binds()).toHaveLength(3);
+    expect(binds()[2]).toMatchObject({ node: 'n10', selected: null, tool: 'window' });
+    expect(calls(bridge, 'transaction.apply')).toHaveLength(1);
   });
 
   it('switches the viewer to the Qualifier control as the Qualifier palette opens (p. 2988)', async () => {

@@ -575,6 +575,68 @@ describe('the viewer modes, the pickers and the thumbnail menu of the Color page
     expect(calls(bridge, 'viewer.bypass').at(-1)).toEqual({ on: false });
   });
 
+  it('shows the Highlight mode that the monitor tells, and turns it off as the page is left, the Color page alone showing a key', async () => {
+    const { bridge, notify } = await mount();
+    const grade = { level: 'clip', timeline: 't1', clip: 'c1' };
+    const highlightButton = () => screen.getByRole('button', { name: 'Highlight' });
+    // Another client turns Highlight B/W on: the page shows it, and does not tell the engine back.
+    await notify({ highlight: { mode: 'bw', grade, node: 'n1' } }); await settle();
+    expect(screen.getByRole('button', { name: 'Highlight B/W' }).getAttribute('aria-pressed')).toBe('true');
+    expect(calls(bridge, 'viewer.highlight')).toEqual([]);
+    // Off from elsewhere: the button is off.
+    await notify({ highlight: undefined }); await settle();
+    expect(highlightButton().getAttribute('aria-pressed')).toBe('false');
+    expect(document.querySelector('[data-test="highlight-bw"]')).toBeNull();
+    // On here, then the Edit page: the monitor is told to show no key.
+    key('H', { code: 'KeyH', shiftKey: true }); await settle();
+    await notify({ highlight: { mode: 'highlight', grade, node: 'n1' } }); await settle();
+    expect(highlightButton().getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(screen.getByRole('tab', { name: 'Edit' })); await settle();
+    expect(calls(bridge, 'viewer.highlight').at(-1)).toEqual({ mode: 'off' });
+    expect(calls(bridge, 'viewer.highlight')).toHaveLength(2);
+    // Shift+H on the Edit page asks nothing of the monitor.
+    key('H', { code: 'KeyH', shiftKey: true }); await settle();
+    expect(calls(bridge, 'viewer.highlight')).toHaveLength(2);
+    await notify({ highlight: undefined }); await settle();
+    // Back on the Color page, Highlight is off and nothing more is sent.
+    fireEvent.click(screen.getByRole('tab', { name: 'Color' })); await settle();
+    expect(highlightButton().getAttribute('aria-pressed')).toBe('false');
+    expect(calls(bridge, 'viewer.highlight')).toHaveLength(2);
+  });
+
+  it('turns no Highlight off as the page is left where none was on', async () => {
+    const { bridge } = await mount();
+    fireEvent.click(screen.getByRole('tab', { name: 'Edit' })); await settle();
+    expect(calls(bridge, 'viewer.highlight')).toEqual([]);
+  });
+
+  it('keeps Bypass Color across the pages, the Edit page showing it and turning it with Shift+D and its button (p. 672)', async () => {
+    const { bridge, notify } = await mount();
+    key('D', { code: 'KeyD', shiftKey: true }); await settle();
+    expect(calls(bridge, 'viewer.bypass')).toEqual([{ on: true }]);
+    await notify({ bypass: true }); await settle();
+    fireEvent.click(screen.getByRole('tab', { name: 'Edit' })); await settle();
+    // The Edit page shows the monitor's Bypass Color and does not turn it off by itself.
+    expect(calls(bridge, 'viewer.bypass')).toEqual([{ on: true }]);
+    const edit = () => document.querySelector<HTMLElement>('[data-test="edit-page"] [data-test="bypass-color"]')!;
+    expect(edit().getAttribute('aria-pressed')).toBe('true');
+    expect(edit().getAttribute('title')).toBe('Bypass Color Grades (Shift+D)');
+    key('D', { code: 'KeyD', shiftKey: true }); await settle();
+    expect(calls(bridge, 'viewer.bypass').at(-1)).toEqual({ on: false });
+    await notify({ bypass: false }); await settle();
+    expect(edit().getAttribute('aria-pressed')).toBe('false');
+    fireEvent.click(edit()); await settle();
+    expect(calls(bridge, 'viewer.bypass').at(-1)).toEqual({ on: true });
+    await notify({ bypass: true }); await settle();
+    // The Cut page shows it too (p. 550).
+    fireEvent.click(screen.getByRole('tab', { name: 'Cut' })); await settle();
+    expect(document.querySelector<HTMLElement>('[data-test="cut-page"] [data-test="bypass-color"]')!.getAttribute('aria-pressed')).toBe('true');
+    // Back on the Color page, it is on there too.
+    fireEvent.click(screen.getByRole('tab', { name: 'Color' })); await settle();
+    expect(document.querySelector<HTMLElement>('[data-test="bypass-color"]')!.getAttribute('aria-pressed')).toBe('true');
+    expect(calls(bridge, 'viewer.bypass')).toHaveLength(3);
+  });
+
   it('switches the viewer to the Qualifier control as the Qualifier palette opens (p. 2988)', async () => {
     await mount();
     const osc = document.querySelector<HTMLSelectElement>('[data-test="viewer-osc"]')!;

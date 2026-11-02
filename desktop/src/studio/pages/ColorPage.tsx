@@ -46,6 +46,7 @@ import { PickerContext, usePickerHub } from '../color/pickers';
 import { QualifierPalette } from '../color/Qualifier';
 import { KeyPalette } from '../color/KeyPalette';
 import { useViewerModes, type HighlightMode } from '../color/useViewerModes';
+import { BypassButton } from '../BypassColor';
 import { useGenerateLut } from '../color/generateLut';
 import { useGradedThumbnails } from '../color/gradedThumbnails';
 import '../color/color.css';
@@ -468,8 +469,7 @@ export function ColorPage({
       {(['none', 'qualifier', 'window', 'image_wipe'] as const).map(tool => <option key={tool} value={tool}>{labels.windowControls[tool]}</option>)}
     </select>
     {/* Bypass Color and Fusion (p. 2987): this studio has no Fusion, so it is the one switch; Shift+D. */}
-    <button type="button" className="color-tool" aria-pressed={modes.bypass} disabled={!timelineMonitor.loaded} title={`${labels.bypass} (Shift+D)`}
-      onClick={modes.toggleBypass} data-test="bypass-color">{labels.bypass}</button>
+    <BypassButton className="color-tool" bypass={modes.bypass} disabled={!timelineMonitor.loaded} label={labels.bypass} onToggle={modes.toggleBypass} />
     <ViewerOptions bridge={bridge} color={keptColor({ color })} run={grades.editing.run} comparisons={[
       { id: 'highlight', label: labels.highlight.menu, items: (['off', 'highlight', 'bw'] as const).map((mode: HighlightMode) => ({
         id: `highlight-${mode}`, label: labels.highlight[mode], keys: mode === 'highlight' ? 'Shift+H' : mode === 'bw' ? 'Alt+Shift+H' : undefined,

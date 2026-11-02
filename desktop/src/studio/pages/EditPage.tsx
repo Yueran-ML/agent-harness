@@ -6,6 +6,7 @@ import type { EngineBridge } from '../../bridge';
 import { callEngine, type Media, type Monitor, type Timeline as TimelineModel } from '../engine';
 import { editingAllowed, inStudio, useStudioKeys } from '../keys';
 import { MonitorPane } from '../MonitorPane';
+import { BypassButton, useBypassColor } from '../BypassColor';
 import { Timeline, type TimelineHandle } from '../timeline/Timeline';
 import type { MonitorControls } from '../useMonitor';
 import type { ViewerNotice } from '../Viewer';
@@ -131,6 +132,10 @@ export function EditPage({
   const sourceContext = useMemo(() => (sourceMedia === null || sourceFrame === null ? null : { media: sourceMedia, frame: sourceFrame, rate: source.rate }),
     [sourceMedia, sourceFrame, source.rate]);
   const timelineState = timelineMonitor.state?.monitor === 'timeline' && selected !== null && playing === selected.id ? timelineMonitor.state : null;
+  // Bypass Color is the timeline monitor's, kept from page to page: shown and turned here too (pp. 550, 672).
+  const bypassLoaded = timelineState !== null && timelineMonitor.loaded;
+  const bypassColor = useBypassColor({ bridge, session, loaded: bypassLoaded, state: timelineState?.monitor === 'timeline' ? timelineState : null,
+    onFailure: failure => now.current.onProblem(now.current.words.hint.studio.failed, failure) });
 
   const create = useCallback(async (made: TimelineModel): Promise<string | null> => {
     try {
@@ -152,7 +157,9 @@ export function EditPage({
   </div> : undefined;
   const pane = (controls: MonitorControls, name: string | undefined, hint: string) => <MonitorPane controls={controls} bridge={bridge} native={native}
     active notice={noticeOf(controls.monitor)} onRetry={onRetry} hidden={narrow && focus !== controls.monitor} focused={focus === controls.monitor}
-    onFocus={onFocus} name={name} hint={hint} switcher={switcher} />;
+    onFocus={onFocus} name={name} hint={hint} switcher={switcher}
+    tools={controls.monitor === 'timeline' ? <BypassButton className="monitor-bypass" bypass={bypassColor.bypass} disabled={!bypassLoaded}
+      label={labels.colorPage.bypass} onToggle={bypassColor.toggleBypass} /> : undefined} />;
 
   return <div ref={page} className="studio-body edit-page" data-narrow={narrow || undefined} data-pool={poolOpen || undefined} data-inspector={inspectorOpen || undefined}
     data-test="edit-page">

@@ -6,6 +6,7 @@ import type { EngineBridge } from '../../bridge';
 import type { Bin, Media, Monitor, Timeline as TimelineModel } from '../engine';
 import { editingAllowed, inStudio, useStudioKeys } from '../keys';
 import { MonitorPane } from '../MonitorPane';
+import { BypassButton, useBypassColor } from '../BypassColor';
 import { EditButtons } from '../cut/EditButtons';
 import { SourceTape, tapeMedia, tapeOf, tapeStep, useTapeGo } from '../cut/SourceTape';
 import { nearestCut, type EditAction } from '../timeline/editKeys';
@@ -107,6 +108,10 @@ export function CutPage({
 
   const playing = useTimelineLoad(bridge, selected, timelineMonitor, session, failed);
   const timelineState = timelineMonitor.state?.monitor === 'timeline' && selected !== null && playing === selected.id ? timelineMonitor.state : null;
+  // Bypass Color is the timeline monitor's, kept from page to page: shown and turned here too (pp. 550, 672).
+  const bypassLoaded = timelineState !== null && timelineMonitor.loaded;
+  const bypassColor = useBypassColor({ bridge, session, loaded: bypassLoaded, state: timelineState?.monitor === 'timeline' ? timelineState : null,
+    onFailure: failed });
   // The frame that the timeline monitor shows, which the edits and the indicator of Smart Insert take.
   const frame = timelineState === null ? 0 : timelineMonitor.frame ?? 0;
   const sourceState = source.state?.monitor === 'source' ? source.state : null;
@@ -159,7 +164,9 @@ export function CutPage({
   </div>;
   const pane = (controls: MonitorControls, name: string | undefined, hint: string) => <MonitorPane controls={controls} bridge={bridge} native={native}
     active notice={noticeOf(controls.monitor)} onRetry={onRetry} hidden={focus !== controls.monitor} focused={focus === controls.monitor}
-    onFocus={onFocus} name={name} hint={hint} switcher={switcher} />;
+    onFocus={onFocus} name={name} hint={hint} switcher={switcher}
+    tools={controls.monitor === 'timeline' ? <BypassButton className="monitor-bypass" bypass={bypassColor.bypass} disabled={!bypassLoaded}
+      label={words.label.studio.colorPage.bypass} onToggle={bypassColor.toggleBypass} /> : undefined} />;
   const shown = view && view.scale > 0 ? { from: Math.max(0, view.left / view.scale), to: (view.left + view.width) / view.scale } : null;
   const indicator = selected !== null ? nearestCut(selected, frame) : null;
   const common = {

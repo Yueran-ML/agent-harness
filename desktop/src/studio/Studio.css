@@ -585,6 +585,31 @@
   color: var(--moon-1);
 }
 
+/* The timeline monitor's Bypass Color, at the right of its title bar (Reference Manual 20, p. 672). */
+.monitor-tools {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 2px;
+}
+
+.monitor-tools button {
+  height: 22px;
+  padding: 0 var(--s2);
+  border-radius: var(--r1);
+  font-size: var(--text-caption);
+  color: var(--moon-2);
+  white-space: nowrap;
+}
+
+.monitor-tools button[aria-pressed='true'] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.monitor-tools button:disabled {
+  opacity: 0.5;
+}
+
 /* The monitor that the keys go to. */
 .monitor[data-focused='true'] .monitor-head {
   color: var(--accent);

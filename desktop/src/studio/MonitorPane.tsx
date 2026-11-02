@@ -12,7 +12,7 @@ import type { MonitorControls } from './useMonitor';
  * viewer does in DaVinci Resolve. Hidden, it keeps its transport and its place in the engine, and
  * its view is hidden.
  */
-export function MonitorPane({ controls, bridge, native, active, notice, onRetry, hidden = false, focused = false, onFocus, name, hint, switcher, footer }: {
+export function MonitorPane({ controls, bridge, native, active, notice, onRetry, hidden = false, focused = false, onFocus, name, hint, switcher, tools, footer }: {
   controls: MonitorControls; bridge: ViewBridge; native: boolean; active: boolean; notice: ViewerNotice | null; onRetry: () => void;
   hidden?: boolean; focused?: boolean; onFocus?: (monitor: Monitor) => void;
   /** The name of what is loaded. */
@@ -21,6 +21,8 @@ export function MonitorPane({ controls, bridge, native, active, notice, onRetry,
   hint?: string;
   /** In place of the name of the monitor: the switch between the two, where only one is shown. */
   switcher?: ReactNode;
+  /** The controls at the right of the title bar: the timeline monitor's Bypass Color on the Cut and Edit pages. */
+  tools?: ReactNode;
   /** What is said beneath the picture, above the transport: the Color page's missing LUTs. */
   footer?: ReactNode;
 }) {
@@ -32,6 +34,7 @@ export function MonitorPane({ controls, bridge, native, active, notice, onRetry,
     {(onFocus || switcher) && <header className="monitor-head">
       {switcher ?? <span className="monitor-name">{words[monitor]}</span>}
       {name && <strong className="monitor-loaded" title={name}>{name}</strong>}
+      {tools && <span className="monitor-tools">{tools}</span>}
     </header>}
     <Viewer bridge={bridge} native={native} monitor={monitor} active={active && !hidden} notice={notice} onRetry={onRetry} />
     {hint && !controls.loaded && (notice === null || notice.kind === 'browser') && <p className="caption monitor-hint" data-test="load-hint">{hint}</p>}

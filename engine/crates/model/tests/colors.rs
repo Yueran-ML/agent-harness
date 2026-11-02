@@ -426,7 +426,13 @@ fn a_source_clip_has_its_luts_and_its_inverse_drt_set_by_hand() {
         Some("Film/Look.cube")
     );
     // A name of a LUT is relative to the folders of LUTs, as the project's LUTs are.
-    for bad in ["", "../up.cube", "C:/Looks/a.cube", "/a.cube", r"\\server\a.cube"] {
+    for bad in [
+        "",
+        "../up.cube",
+        "C:/Looks/a.cube",
+        "/a.cube",
+        r"\\server\a.cube",
+    ] {
         assert_eq!(
             refused(&project, set(json!({"lut": {"1d": bad}}))),
             OpError::OutOfRange { what: "media_lut" },
@@ -438,7 +444,14 @@ fn a_source_clip_has_its_luts_and_its_inverse_drt_set_by_hand() {
     sound.id = "sound".into();
     sound.facts.video = None;
     sound.color_override = ColorOverride::default();
-    apply(&mut project, Op::AddMedia { media: sound, index: None }).unwrap();
+    apply(
+        &mut project,
+        Op::AddMedia {
+            media: sound,
+            index: None,
+        },
+    )
+    .unwrap();
     let sound = |patch: serde_json::Value| -> Op {
         let mut op = set(patch);
         if let Op::SetMediaColor { id, .. } = &mut op {

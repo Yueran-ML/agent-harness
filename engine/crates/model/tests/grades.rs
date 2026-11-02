@@ -1,8 +1,10 @@
 //! The operations and edits of grades, one by one: what each does, what it gives back, and what
 //! it refuses.
 
+use columbina_model::edit::MOST_PRESERVED_NODES;
 use columbina_model::grade::{
-    Composite, Interp, Key, Kind, Link, Node, NodeKind, Param, Port, Pos,
+    Composite, Interp, Key, KeyInput, Kind, Link, Node, NodeKind, Param, Port, Pos, LONGEST_LABEL,
+    LONGEST_PATH, MOST_INPUTS,
 };
 use columbina_model::{
     apply, apply_done, expand, Edit, EditError, Given, Grade, Group, Op, OpError, Project, Target,
@@ -2757,4 +2759,223 @@ fn add_outside_puts_a_corrector_after_the_chosen_one_on_its_picture_and_its_key_
     .unwrap();
     assert_eq!(written["edit"], "add_outside");
     assert_eq!(written["node"], "n3");
+}
+
+fn set_n3_params(params: serde_json::Value) -> Op {
+    Op::SetNode {
+        grade: c1(),
+        id: "n3".into(),
+        label: None,
+        enabled: None,
+        locked: None,
+        pos: None,
+        params: Some(params),
+    }
+}
+
+#[test]
+fn wheels_keys_curves_paths_and_labels_are_kept_within_their_bounds_to_the_ends() {
+    let mut project = serial();
+    for (params, what) in [
+        (
+            json!({"primaries": {"lift": {"r": 1.5}}}),
+            "primaries.lift.r",
+        ),
+        (
+            json!({"primaries": {"gamma": {"y": -1.5}}}),
+            "primaries.gamma.y",
+        ),
+        (
+            json!({"primaries": {"gain": {"b": 16.5}}}),
+            "primaries.gain.b",
+        ),
+        (json!({"key": {"input": {"gain": 2.5}}}), "key.input.gain"),
+        (
+            json!({"key": {"input": {"offset": -1.5}}}),
+            "key.input.offset",
+        ),
+        // Two points of a curve at one input.
+        (
+            json!({"curves": {"y": {"points": [[0, 0], [0.5, 0.2], [0.5, 0.8], [1, 1]]}}}),
+            "curves.y.points",
+        ),
+        (
+            json!({"hsl": {"sat_vs_sat": [[0.5, 0.2], [0.5, 0.8]]}}),
+            "hsl.sat_vs_sat",
+        ),
+        (json!({"lut": "a".repeat(LONGEST_PATH + 1)}), "lut"),
+    ] {
+        assert_eq!(
+            refused(&project, set_n3_params(params)),
+            OpError::OutOfRange { what },
+            "{what}"
+        );
+    }
+    // The ends are within them: an HSL curve down to -1, a path and a label of the most
+    // characters.
+    applied(
+        &mut project,
+        set_n3_params(json!({"hsl": {"hue_vs_sat": [[0.2, -1], [0.6, -0.5]]}})),
+    );
+    applied(
+        &mut project,
+        set_n3_params(json!({"lut": "a".repeat(LONGEST_PATH)})),
+    );
+    let label = |label: String| Op::SetNode {
+        grade: c1(),
+        id: "n3".into(),
+        label: Some(label),
+        enabled: None,
+        locked: None,
+        pos: None,
+        params: None,
+    };
+    applied(&mut project, label("l".repeat(LONGEST_LABEL)));
+    assert_eq!(
+        refused(&project, label("l".repeat(LONGEST_LABEL + 1))),
+        OpError::OutOfRange { what: "label" }
+    );
+}
+
+#[test]
+fn a_key_mixer_takes_a_key_into_each_of_its_inputs_from_one_to_the_most() {
+    let mut project = serial();
+    // The keys of n3 into both inputs of a key mixer, whose key goes into n4.
+    let (done, _) = applied(
+        &mut project,
+        add(
+            Node::new("", Kind::KeyMixer),
+            vec![key("n3", "", 0), key("n3", "", 1), key("", "n4", 0)],
+        ),
+    );
+    let Op::AddNode { node, .. } = done else {
+        panic!("{done:?}")
+    };
+    let mixer = node.id;
+    let g = grade(&project, &c1());
+    assert_eq!(g.node(&mixer).unwrap().kind.inputs(Port::Key), 2);
+    assert_eq!(g.node(&mixer).unwrap().kind.inputs(Port::Rgb), 0);
+    assert!(g.is_complete());
+    let error = refused(
+        &project,
+        Op::Connect {
+            grade: c1(),
+            link: key("n3", &mixer, 2),
+        },
+    );
+    assert!(
+        matches!(error, OpError::NoPort { input: Some(2), .. }),
+        "{error}"
+    );
+    let set = |inputs: Vec<serde_json::Value>| Op::SetNode {
+        grade: c1(),
+        id: mixer.clone(),
+        label: None,
+        enabled: None,
+        locked: None,
+        pos: None,
+        params: Some(json!({ "inputs": inputs })),
+    };
+    let input = serde_json::to_value(KeyInput::default()).unwrap();
+    let most = MOST_INPUTS as usize;
+    for count in [0, most + 1] {
+        assert_eq!(
+            refused(&project, set(vec![input.clone(); count])),
+            OpError::OutOfRange { what: "inputs" },
+            "{count}"
+        );
+    }
+    let mut out_of_bounds = vec![input.clone(); 2];
+    out_of_bounds[1]["gain"] = json!(2.5);
+    assert_eq!(
+        refused(&project, set(out_of_bounds)),
+        OpError::OutOfRange {
+            what: "key.input.gain"
+        }
+    );
+    applied(&mut project, set(vec![input; most]));
+    let g = grade(&project, &c1());
+    assert_eq!(g.node(&mixer).unwrap().kind.inputs(Port::Key), MOST_INPUTS);
+}
+
+#[test]
+fn a_node_added_before_one_that_is_not_there_is_refused_as_missing() {
+    let project = serial();
+    for edit in [
+        Edit::AddSerialBefore {
+            grade: c1(),
+            node: "n9".into(),
+        },
+        Edit::AddParallel {
+            grade: c1(),
+            node: "n9".into(),
+        },
+    ] {
+        assert_eq!(
+            refused_edit(&project, edit),
+            EditError::Op(OpError::Missing {
+                what: "node",
+                id: "n9".into()
+            })
+        );
+    }
+}
+
+#[test]
+fn a_grade_given_whole_keeps_as_many_first_nodes_as_the_most_that_may_be_kept() {
+    let mut project = with_c2(vec![saturated("a1", 10.0), saturated("a2", 20.0)]);
+    let c1_grade = grade(&project, &c1());
+    // c2 has fewer nodes than are kept, so it takes the copy whole.
+    edited(
+        &mut project,
+        Edit::CopyGivenGrade {
+            given: given(c1_grade.clone()),
+            to: vec![c2()],
+            preserve_nodes: MOST_PRESERVED_NODES,
+        },
+    );
+    assert_eq!(grade(&project, &c2()), c1_grade);
+    assert_eq!(
+        refused_edit(
+            &project,
+            Edit::CopyGivenGrade {
+                given: given(c1_grade),
+                to: vec![c2()],
+                preserve_nodes: MOST_PRESERVED_NODES + 1,
+            },
+        ),
+        EditError::Op(OpError::OutOfRange {
+            what: "preserve_nodes"
+        })
+    );
+}
+
+#[test]
+fn collapse_group_grades_of_a_group_of_one_grade_puts_in_that_one() {
+    for pre_only in [true, false] {
+        let (mut project, group) = grouped();
+        let empty = if pre_only {
+            Target::PostClip { group }
+        } else {
+            Target::PreClip { group }
+        };
+        applied(
+            &mut project,
+            Op::SetGrade {
+                grade: empty,
+                value: Grade::default(),
+            },
+        );
+        edited(
+            &mut project,
+            Edit::CollapseGroupGrades {
+                timeline: "t1".into(),
+                clips: vec!["c1".into()],
+            },
+        );
+        let g = grade(&project, &c1());
+        let expected = if pre_only { 3 } else { 4 };
+        assert_eq!(g.nodes.len(), expected, "pre only: {pre_only}");
+        assert!(g.is_complete());
+    }
 }

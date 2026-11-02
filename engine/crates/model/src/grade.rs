@@ -2584,6 +2584,43 @@ mod tests {
     }
 
     #[test]
+    fn a_grade_has_keys_where_a_setting_of_a_node_has_them_in_a_field_or_a_list() {
+        let mut grade = serial();
+        assert!(!grade.is_empty());
+        assert!(!grade.has_keys());
+        let keys = Param::Keys(vec![
+            key(0, 50.0, Interp::Linear),
+            key(10, 60.0, Interp::Linear),
+        ]);
+        // A window's opacity is a setting in the list of windows.
+        let NodeKind::Corrector(c) = &mut grade.nodes[1].kind else {
+            unreachable!()
+        };
+        let mut w = window::Window::new("w1", window::WindowShape::circular());
+        w.opacity = keys.clone();
+        c.windows.push(w);
+        assert!(grade.has_keys());
+        let mut grade = serial();
+        let NodeKind::Corrector(c) = &mut grade.nodes[0].kind else {
+            unreachable!()
+        };
+        c.primaries.saturation = keys;
+        assert!(grade.has_keys());
+    }
+
+    #[test]
+    fn ports_are_named_as_they_are_written() {
+        assert_eq!(Port::Rgb.name(), "rgb");
+        assert_eq!(Port::Key.name(), "key");
+        for port in [Port::Rgb, Port::Key] {
+            assert_eq!(
+                serde_json::to_value(port).unwrap(),
+                serde_json::json!(port.name())
+            );
+        }
+    }
+
+    #[test]
     fn a_grade_with_a_node_left_out_is_kept_but_does_not_colour() {
         let mut grade = serial();
         assert!(grade.is_complete());

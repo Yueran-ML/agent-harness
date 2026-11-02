@@ -2147,6 +2147,8 @@ function installHandlers() {
     const chosen = await dialog.showSaveDialog(window, {
       title: words.generateLut, defaultPath: path.join(folder, `${fileNameOf(asked?.name)}.cube`),
       filters: [{ name: words.cube, extensions: ['cube'] }],
+      // Windows and macOS ask before a file is replaced; Linux only where it is told to.
+      properties: ['showOverwriteConfirmation'],
     });
     if (chosen.canceled) return { ok: true, result: null };
     if (typeof chosen.filePath !== 'string' || !path.isAbsolute(chosen.filePath)) throw new Error('Choose a whole path in Save As.');

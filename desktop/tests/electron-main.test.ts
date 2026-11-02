@@ -4495,6 +4495,8 @@ describe('the engine of the studio', () => {
     expect(options.title).toBe('生成 LUT');
     expect(options.defaultPath).toBe(path.join(library, 'Day.cube'));
     expect(options.filters[0].extensions).toEqual(['cube']);
+    // Linux asks before a file is replaced only where it is told to (replace: true rests on it).
+    expect(options.properties).toEqual(['showOverwriteConfirmation']);
     // Nothing chosen is nothing written.
     shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: true, filePath: '' });
     const before = main.written.filter(each => each.method === 'grade.export_lut').length;

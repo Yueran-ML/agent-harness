@@ -2,6 +2,7 @@
 //! never CSS pixels. The producer chooses the active OSC and supplies no overlay for Split.
 
 use crate::ViewportMap;
+use columbina_compose::grade::curve::{self, Anchor, CurveSegment};
 use columbina_compose::wipe::Wipe;
 
 mod offset;
@@ -29,10 +30,27 @@ pub struct Shape {
     pub kind: ShapeKind,
     /// Half of the feather band in local image-height units.
     pub feather: f64,
-    /// Linear/Polygon local outline points in boundary order; empty for the other shapes.
+    /// Linear/Polygon local outline points, or Curve anchors, in boundary order; empty for the
+    /// other shapes.
     pub points: Vec<[f64; 2]>,
     /// Per outline edge `j` (point `j` to the next): the inside and outside feather extents.
+    /// A Curve has one entry, its uniform Inside/Outside Softness extents.
     pub feathers: Vec<[f64; 2]>,
+    /// A Curve's Bezier handles and whether it is closed; none for the other shapes.
+    pub curve: Option<Bezier>,
+}
+
+/// The Bezier part of a Curve shape, evaluated at the displayed frame like its anchors.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Bezier {
+    /// Per anchor, its `[in, out]` handles relative to the anchor; zero is a corner side.
+    pub handles: Vec<[[f64; 2]; 2]>,
+    /// An open Curve is an unfinished drawing: no body, no mask, and while selected every
+    /// click that hits nothing else adds a point (RM20 p. 3193).
+    pub closed: bool,
+    /// The local tolerance the mask flattens this Curve with (`curve::tolerance`): drawing is
+    /// never flattened more finely than the mask actually is.
+    pub tolerance: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,10 +59,15 @@ pub enum ShapeKind {
     Gradient,
     Linear,
     Polygon,
+    Curve,
 }
 
 /// Indices are stable local corner/axis/point/edge identifiers, also used to break
-/// equal-distance ties. `Insert(j)` is a selected Polygon's edge `j` outline, below handles.
+/// equal-distance ties. `Insert(j)` is a selected Polygon's or Curve's edge `j` outline, below
+/// handles. `HandleIn/HandleOut(i)` are a Curve anchor's Bezier handle ends; `Close` is an open
+/// Curve's first anchor once it has two (clicking it closes the shape, p. 3193); `Append` is
+/// anywhere else while an open Curve is selected. A Curve's `Softness(-1)`/`Softness(1)` are its
+/// magenta inside/outside softness handles.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Control {
     Move,
@@ -52,10 +75,14 @@ pub enum Control {
     Aspect(u8),
     Rotate,
     Softness(i8),
-    Point(u8),
+    Point(u32),
     Edge(u8),
     EdgeSoftness(u8),
-    Insert(u8),
+    Insert(u32),
+    HandleIn(u32),
+    HandleOut(u32),
+    Close,
+    Append,
 }
 
 /// Where a Linear side's softness handle sits along its side, as a share from its first point.
@@ -124,7 +151,8 @@ impl WindowOverlay {
                 self.selected.as_deref() == Some(shape.id.as_str()),
                 false,
             );
-            // Explicit handles first, then a Polygon edge insertion, then the body.
+            // Explicit handles first, then a Polygon/Curve edge insertion, then the body (with a
+            // closed Curve's margin just outside its outline).
             for edge in [false, true] {
                 let control = primitives
                     .iter()
@@ -146,10 +174,18 @@ impl WindowOverlay {
                 || primitives
                     .iter()
                     .any(|p| !p.guide && p.alpha(device, self.style.width) > 0.0)
+                || shape.grips(&primitives, device)
             {
                 return Some(Hit {
                     id: &shape.id,
                     control: Control::Move,
+                });
+            }
+            // A selected unfinished Curve takes every other click to draw (RM20 p. 3193).
+            if self.selected.as_deref() == Some(shape.id.as_str()) && shape.drafting() {
+                return Some(Hit {
+                    id: &shape.id,
+                    control: Control::Append,
                 });
             }
         }
@@ -280,13 +316,17 @@ impl Primitive {
     /// Handles compare their centres; edges compare the device distance to the segment.
     fn distance(&self, p: [f32; 2]) -> f32 {
         if self.edge {
-            let segment = self.geometry;
-            let [x, y] = [p[0] - segment.centre[0], p[1] - segment.centre[1]];
-            let [dx, dy, _, _] = segment.inverse;
-            let share = ((x * dx + y * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
-            return (x - share * dx).hypot(y - share * dy);
+            return self.along(p);
         }
         (p[0] - self.anchor[0]).hypot(p[1] - self.anchor[1])
+    }
+    /// The device distance to a segment primitive's centre line.
+    fn along(&self, p: [f32; 2]) -> f32 {
+        let segment = self.geometry;
+        let [x, y] = [p[0] - segment.centre[0], p[1] - segment.centre[1]];
+        let [dx, dy, _, _] = segment.inverse;
+        let share = ((x * dx + y * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+        (x - share * dx).hypot(y - share * dy)
     }
     pub(crate) fn alpha(&self, p: [f32; 2], width: f32) -> f32 {
         let geometry = self.geometry;
@@ -500,6 +540,9 @@ impl Shape {
         if matches!(self.kind, ShapeKind::Linear | ShapeKind::Polygon) {
             return self.path_primitives(map, style, selected, guides);
         }
+        if self.kind == ShapeKind::Curve {
+            return self.curve_primitives(map, style, selected, guides);
+        }
         if self.device(map).is_none() {
             return vec![];
         }
@@ -599,6 +642,18 @@ impl Shape {
             ShapeKind::Gradient => self
                 .device(map)
                 .is_some_and(|body| body.local(p).0[1] <= 0.0),
+            ShapeKind::Curve => {
+                let closed = self.curve.as_ref().is_some_and(|c| c.closed);
+                if !closed || !self.invertible(map) {
+                    return false;
+                }
+                let ring: Vec<_> = self
+                    .curve_segments(map)
+                    .iter()
+                    .map(|s| self.at(map, s.a))
+                    .collect();
+                offset::inside(&ring, p.map(f64::from))
+            }
             ShapeKind::Linear | ShapeKind::Polygon => {
                 let [x, y] = p.map(f64::from);
                 let device: Vec<_> = self.points.iter().map(|&q| self.at(map, q)).collect();
@@ -623,7 +678,14 @@ impl Shape {
             ShapeKind::Linear | ShapeKind::Polygon => {
                 self.points.len() >= 2 && self.invertible(map)
             }
+            // Even an empty draft is drawable: it takes clicks to draw while selected.
+            ShapeKind::Curve => self.curve.is_some() && self.invertible(map),
         }
+    }
+
+    /// An unfinished Curve, which draws on every click that hits nothing else while selected.
+    fn drafting(&self) -> bool {
+        self.kind == ShapeKind::Curve && self.curve.as_ref().is_some_and(|c| !c.closed)
     }
 
     /// A local point in f64 device pixels.
@@ -834,7 +896,10 @@ impl Shape {
     /// handles and one magenta softness handle per side; a Polygon has no softness handles.
     /// The selected window's grey guides are exactly where its mask becomes opaque inside and
     /// zero outside (`offset`), drawn only when `guides`: they are never hit.
-    #[allow(clippy::cast_possible_truncation, reason = "at most 128 points")]
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "at most 128 points; four Linear sides"
+    )]
     fn path_primitives(
         &self,
         map: ViewportMap,
@@ -852,32 +917,7 @@ impl Shape {
                 let radii: Vec<f64> = (0..n)
                     .map(|j| self.feathers.get(j).map_or(0.0, |f| f[side]))
                     .collect();
-                for piece in offset::guide(&self.points, &radii, inside) {
-                    match piece {
-                        offset::Piece::Line(a, b) => out.extend(
-                            Self::segment(
-                                map,
-                                self.at(map, a),
-                                self.at(map, b),
-                                style.unselected,
-                                None,
-                            )
-                            .map(Primitive::into_guide),
-                        ),
-                        offset::Piece::Arc {
-                            centre,
-                            radius,
-                            start,
-                            sweep,
-                        } => self.arc(
-                            map,
-                            (centre, radius),
-                            [start, start + sweep],
-                            style.unselected,
-                            &mut out,
-                        ),
-                    }
-                }
+                self.guides(map, &self.points, &radii, inside, style, &mut out);
             }
         }
         let colour = if selected {
@@ -887,7 +927,7 @@ impl Shape {
         };
         for j in 0..n {
             let insert =
-                (selected && self.kind == ShapeKind::Polygon).then_some(Control::Insert(j as u8));
+                (selected && self.kind == ShapeKind::Polygon).then_some(Control::Insert(j as u32));
             out.extend(Self::segment(
                 map,
                 self.at(map, self.points[j]),
@@ -904,7 +944,7 @@ impl Shape {
                 map,
                 self.at(map, point),
                 style.selected,
-                Control::Point(i as u8),
+                Control::Point(i as u32),
             ));
         }
         if self.kind == ShapeKind::Linear {
@@ -930,6 +970,346 @@ impl Shape {
                     Control::EdgeSoftness(j as u8),
                 ));
             }
+        }
+        out
+    }
+}
+
+impl Shape {
+    /// The exact softness guide of one side of a closed outline, as display-only primitives.
+    fn guides(
+        &self,
+        map: ViewportMap,
+        outline: &[[f64; 2]],
+        radii: &[f64],
+        inside: bool,
+        style: Style,
+        out: &mut Vec<Primitive>,
+    ) {
+        for piece in offset::guide(outline, radii, inside) {
+            match piece {
+                offset::Piece::Line(a, b) => out.extend(
+                    Self::segment(
+                        map,
+                        self.at(map, a),
+                        self.at(map, b),
+                        style.unselected,
+                        None,
+                    )
+                    .map(Primitive::into_guide),
+                ),
+                offset::Piece::Arc {
+                    centre,
+                    radius,
+                    start,
+                    sweep,
+                } => self.arc(
+                    map,
+                    (centre, radius),
+                    [start, start + sweep],
+                    style.unselected,
+                    out,
+                ),
+            }
+        }
+    }
+}
+
+/// Device pixels a drawn Curve piece may depart from its cubic, unless the mask's own
+/// tessellation is coarser there (extreme zoom), which is then drawn exactly as it masks.
+const CURVE_DISPLAY: f64 = 0.25;
+/// Cubic parameters on edge 0 of a closed Curve where its inside and outside softness handles
+/// stand, apart so that both stay grabbable at zero softness.
+const CURVE_SOFT_AT: [f64; 2] = [1.0 / 3.0, 2.0 / 3.0];
+/// Device radius of a Bezier handle end, smaller than an anchor's.
+const HANDLE_RADIUS: f32 = 3.0;
+/// Device pixels from a closed Curve's drawn outline within which a down still grips its body:
+/// RM20 p. 3194, "drag anywhere within or just outside a curve to move it". An anchor's radius
+/// plus the stroke's half-pixel fringe. A project choice; a draft has no body, so no margin.
+const CURVE_GRIP: f32 = 4.5;
+
+/// A cubic's point and derivative direction at `t` (Bernstein form).
+fn cubic_at(c: [[f64; 2]; 4], t: f64) -> ([f64; 2], [f64; 2]) {
+    let u = 1.0 - t;
+    let at = [0, 1].map(|i| {
+        u * u * u * c[0][i]
+            + 3.0 * u * u * t * c[1][i]
+            + 3.0 * u * t * t * c[2][i]
+            + t * t * t * c[3][i]
+    });
+    let along = [0, 1].map(|i| {
+        u * u * (c[1][i] - c[0][i])
+            + 2.0 * u * t * (c[2][i] - c[1][i])
+            + t * t * (c[3][i] - c[2][i])
+    });
+    (at, along)
+}
+
+impl Shape {
+    fn anchors(&self) -> Vec<Anchor> {
+        let Some(bezier) = &self.curve else {
+            return vec![];
+        };
+        self.points
+            .iter()
+            .zip(&bezier.handles)
+            .map(|(&position, &[into, out])| Anchor {
+                position,
+                into,
+                out,
+            })
+            .collect()
+    }
+
+    /// Whether a closed Curve's body grips a down just outside it: within `CURVE_GRIP` of its
+    /// drawn outline segments (`primitives` as made for a hit; handle lines are guides). Ranked
+    /// by the caller below every control and above the windows underneath.
+    fn grips(&self, primitives: &[Primitive], p: [f32; 2]) -> bool {
+        self.kind == ShapeKind::Curve
+            && self.curve.as_ref().is_some_and(|c| c.closed)
+            && primitives
+                .iter()
+                .any(|s| s.kind > 2.5 && !s.guide && s.along(p) <= CURVE_GRIP)
+    }
+
+    /// The largest local-to-device column scale.
+    fn device_scale(&self, map: ViewportMap) -> f64 {
+        let a = self.to_canvas;
+        let sx = f64::from(map.dest[2]) / f64::from(map.picture.0);
+        let sy = f64::from(map.dest[3]) / f64::from(map.picture.1);
+        (a.xx * sx)
+            .hypot(a.yx * sy)
+            .max((a.xy * sx).hypot(a.yy * sy))
+    }
+
+    /// The drawn and hit pieces of a Curve in local units: the shared mask flattening
+    /// (`curve::segments`), at a quarter device pixel but never finer than the mask's own
+    /// tolerance. An open draft has no closing edge.
+    pub(crate) fn curve_segments(&self, map: ViewportMap) -> Vec<CurveSegment> {
+        let Some(bezier) = &self.curve else {
+            return vec![];
+        };
+        let scale = self.device_scale(map);
+        let tolerance = if scale > 0.0 && scale.is_finite() {
+            (CURVE_DISPLAY / scale).max(bezier.tolerance)
+        } else {
+            bezier.tolerance
+        };
+        curve::segments(&self.anchors(), bezier.closed, tolerance)
+    }
+
+    /// The exact cubic parameter on Curve edge `edge` nearest a canvas point, from the mask's
+    /// own flattening, kept off the two anchors. None for another shape or a missing edge.
+    #[must_use]
+    pub fn curve_parameter(&self, edge: usize, canvas: [f64; 2]) -> Option<f64> {
+        let bezier = self.curve.as_ref()?;
+        let anchors = self.anchors();
+        let edges = if bezier.closed {
+            anchors.len()
+        } else {
+            anchors.len().saturating_sub(1)
+        };
+        if edge >= edges || bezier.tolerance <= 0.0 || bezier.tolerance.is_nan() {
+            return None;
+        }
+        let cubic = curve::cubic(&anchors, edge);
+        let mut pieces = vec![];
+        curve::flatten(cubic, bezier.tolerance, edge, &mut pieces);
+        let a = self.to_canvas;
+        let place = |p: [f64; 2]| {
+            [
+                a.xx * p[0] + a.xy * p[1] + a.tx,
+                a.yx * p[0] + a.yy * p[1] + a.ty,
+            ]
+        };
+        let away = |t: f64| {
+            let p = place(cubic_at(cubic, t).0);
+            (canvas[0] - p[0]).hypot(canvas[1] - p[1])
+        };
+        // The nearest flattened piece, then the nearest parameter of the cubic itself within
+        // it: a piece is straight to the tolerance, but its parameter need not be uniform.
+        let mut best: Option<(f64, [f64; 2])> = None;
+        for piece in pieces {
+            let (p, q) = (place(piece.a), place(piece.b));
+            let d = [q[0] - p[0], q[1] - p[1]];
+            let length = d[0] * d[0] + d[1] * d[1];
+            let share = if length > 0.0 {
+                (((canvas[0] - p[0]) * d[0] + (canvas[1] - p[1]) * d[1]) / length).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let distance = (canvas[0] - p[0] - share * d[0]).hypot(canvas[1] - p[1] - share * d[1]);
+            if best.is_none_or(|(nearest, _)| distance < nearest) {
+                best = Some((distance, piece.t));
+            }
+        }
+        let [low, high] = best?.1;
+        let samples = 64;
+        let step = (high - low) / f64::from(samples);
+        let mut t = (0..=samples)
+            .map(|k| low + step * f64::from(k))
+            .min_by(|x, y| away(*x).total_cmp(&away(*y)))?;
+        let (mut from, mut to) = ((t - step).max(low), (t + step).min(high));
+        for _ in 0..60 {
+            let (left, right) = (from + (to - from) / 3.0, to - (to - from) / 3.0);
+            if away(left) <= away(right) {
+                to = right;
+            } else {
+                from = left;
+            }
+        }
+        t = f64::midpoint(from, to);
+        Some(t.clamp(1e-3, 1.0 - 1e-3)).filter(|t| t.is_finite())
+    }
+
+    /// A closed Curve's magenta softness handles (RM20 p. 3193): `Softness(-1)` on its inside
+    /// guide and `Softness(1)` on its outside guide, on edge 0 at `CURVE_SOFT_AT`, each with the
+    /// local unit normal along which dragging increases that softness. The model keeps one
+    /// Inside and one Outside Softness per window, so there is one handle of each.
+    #[must_use]
+    pub fn curve_softness_handles(&self) -> Vec<(Control, [f64; 2], [f64; 2])> {
+        let Some(bezier) = self.curve.as_ref().filter(|c| c.closed) else {
+            return vec![];
+        };
+        let anchors = self.anchors();
+        if anchors.len() < 2 {
+            return vec![];
+        }
+        // The inside is the even-odd inside of the mask's flattening, read just off the edge on
+        // each side: a signed area cannot tell the lobes of a self-intersecting figure apart.
+        let tolerance = bezier.tolerance.max(1e-4);
+        let ring: Vec<[f64; 2]> = curve::segments(&anchors, true, tolerance)
+            .iter()
+            .map(|s| s.a)
+            .collect();
+        let twice_area: f64 = (0..ring.len())
+            .map(|i| {
+                let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+                a[0] * b[1] - b[0] * a[1]
+            })
+            .sum();
+        let step = 4.0 * tolerance;
+        let c = curve::cubic(&anchors, 0);
+        let [inside, outside] = self.feathers.first().copied().unwrap_or([0.0; 2]);
+        let mut out = vec![];
+        for (control, t, extent, towards) in [
+            (Control::Softness(-1), CURVE_SOFT_AT[0], inside, 1.0),
+            (Control::Softness(1), CURVE_SOFT_AT[1], outside, -1.0),
+        ] {
+            let (at, mut along) = cubic_at(c, t);
+            if along[0].hypot(along[1]) <= 1e-12 {
+                along = [c[3][0] - c[0][0], c[3][1] - c[0][1]];
+            }
+            let length = along[0].hypot(along[1]);
+            if !(length > 1e-12 && length.is_finite()) {
+                continue;
+            }
+            let left = [-along[1] / length, along[0] / length];
+            let off = |side: f64| {
+                offset::inside(
+                    &ring,
+                    [at[0] + side * step * left[0], at[1] + side * step * left[1]],
+                )
+            };
+            // Where both sides read alike (a crossing, or a sliver thinner than the step), the
+            // winding of the whole outline decides.
+            let inward = match (off(1.0), off(-1.0)) {
+                (true, false) => 1.0,
+                (false, true) => -1.0,
+                _ if twice_area < 0.0 => -1.0,
+                _ => 1.0,
+            };
+            let normal = [towards * inward * left[0], towards * inward * left[1]];
+            out.push((
+                control,
+                [at[0] + normal[0] * extent, at[1] + normal[1] * extent],
+                normal,
+            ));
+        }
+        out
+    }
+
+    /// Curve controls (RM20 pp. 3193–3194): the outline (its edges insert when selected), white
+    /// anchors, each non-zero Bezier handle as a display-only line to a smaller white end, and
+    /// on a closed Curve the exact inside/outside softness guides and their magenta handles.
+    /// Unselected, only the grey outline is drawn and hit (it moves or selects the window).
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "anchor and edge indices of one Curve fit u32"
+    )]
+    fn curve_primitives(
+        &self,
+        map: ViewportMap,
+        style: Style,
+        selected: bool,
+        guides: bool,
+    ) -> Vec<Primitive> {
+        let Some(bezier) = self.curve.as_ref().filter(|_| self.drawable(map)) else {
+            return vec![];
+        };
+        let segments = self.curve_segments(map);
+        let mut out = vec![];
+        if selected && guides && bezier.closed && self.points.len() >= 2 {
+            let ring: Vec<[f64; 2]> = segments.iter().map(|s| s.a).collect();
+            let [inside, outside] = self.feathers.first().copied().unwrap_or([0.0; 2]);
+            for (extent, side) in [(inside, true), (outside, false)] {
+                self.guides(map, &ring, &vec![extent; ring.len()], side, style, &mut out);
+            }
+        }
+        let colour = if selected {
+            style.selected
+        } else {
+            style.unselected
+        };
+        for s in &segments {
+            out.extend(Self::segment(
+                map,
+                self.at(map, s.a),
+                self.at(map, s.b),
+                colour,
+                selected.then_some(Control::Insert(s.edge as u32)),
+            ));
+        }
+        if !selected {
+            return out;
+        }
+        for (i, (&point, &[into, outward])) in self.points.iter().zip(&bezier.handles).enumerate() {
+            for (handle, control) in [
+                (into, Control::HandleIn(i as u32)),
+                (outward, Control::HandleOut(i as u32)),
+            ] {
+                if handle == [0.0, 0.0] {
+                    continue;
+                }
+                let end = [point[0] + handle[0], point[1] + handle[1]];
+                out.extend(
+                    Self::segment(map, self.at(map, point), self.at(map, end), colour, None)
+                        .map(Primitive::into_guide),
+                );
+                out.extend(
+                    Self::disk(map, self.at(map, end), style.selected, control).map(|mut p| {
+                        p.geometry.scale = HANDLE_RADIUS;
+                        p
+                    }),
+                );
+            }
+        }
+        let closes = !bezier.closed && self.points.len() >= 2;
+        for (i, &point) in self.points.iter().enumerate() {
+            let control = if closes && i == 0 {
+                Control::Close
+            } else {
+                Control::Point(i as u32)
+            };
+            out.extend(Self::disk(
+                map,
+                self.at(map, point),
+                style.selected,
+                control,
+            ));
+        }
+        for (control, at, _) in self.curve_softness_handles() {
+            out.extend(Self::disk(map, self.at(map, at), SOFT_COLOUR, control));
         }
         out
     }
@@ -973,6 +1353,7 @@ mod tests {
 
     fn circle(id: &str, tx: f64) -> Shape {
         Shape {
+            curve: None,
             id: id.into(),
             radius: 1.0,
             kind: ShapeKind::Circular,
@@ -1256,6 +1637,7 @@ mod tests {
 
     fn path(id: &str, kind: ShapeKind, points: Vec<[f64; 2]>, feather: f64) -> Shape {
         Shape {
+            curve: None,
             id: id.into(),
             radius: 0.25,
             kind,
@@ -1480,6 +1862,8 @@ mod tests {
             gradient,
             linear,
             path("p", ShapeKind::Polygon, star, 0.03),
+            bezier_shape("bez", &round(), true),
+            bezier_shape("draft", &square(), false),
         ];
         for shape in shapes {
             let mut osc = overlay(vec![shape]);
@@ -1542,6 +1926,315 @@ mod tests {
                 assert_eq!(
                     shape.hit(map, point),
                     if scale > 1.0 { Some("p") } else { None },
+                    "{scale}, {point:?}"
+                );
+            }
+        }
+    }
+
+    /// A Curve on the 120x80 test map: local (x, y) is device (60 + 80x, 40 + 80y).
+    fn bezier_shape(id: &str, anchors: &[([f64; 2], [f64; 2], [f64; 2])], closed: bool) -> Shape {
+        Shape {
+            id: id.into(),
+            radius: 0.25,
+            kind: ShapeKind::Curve,
+            feather: 0.0,
+            points: anchors.iter().map(|a| a.0).collect(),
+            feathers: vec![[0.05, 0.05]],
+            curve: Some(Bezier {
+                handles: anchors.iter().map(|a| [a.1, a.2]).collect(),
+                closed,
+                tolerance: curve::tolerance(1.0),
+            }),
+            to_canvas: Affine {
+                xx: 80.0,
+                xy: 0.0,
+                yx: 0.0,
+                yy: 80.0,
+                tx: 60.0,
+                ty: 40.0,
+            },
+        }
+    }
+    /// The test rectangle as Curve anchors; anchor 2's handles lie along its two edges, so
+    /// every edge stays straight.
+    fn square() -> Vec<([f64; 2], [f64; 2], [f64; 2])> {
+        vec![
+            ([-0.25, -0.25], [0.0; 2], [0.0; 2]),
+            ([0.25, -0.25], [0.0; 2], [0.0; 2]),
+            ([0.25, 0.25], [0.0, -0.1], [-0.1, 0.0]),
+            ([-0.25, 0.25], [0.0; 2], [0.0; 2]),
+        ]
+    }
+
+    #[test]
+    fn curve_anchors_handles_softness_and_edges_win_in_order_and_only_the_body_moves() {
+        let map = Viewport::Fit.map((120, 80), (120, 80), 0).unwrap();
+        let mut shape = overlay(vec![bezier_shape("c", &square(), true)]);
+        shape.selected = Some("c".into());
+        let hit = |shape: &WindowOverlay, point| shape.hit_control(map, point).map(|h| h.control);
+        for (point, control) in [
+            ([40.0, 20.0], Control::Point(0)),
+            ([80.0, 60.0], Control::Point(2)),
+            ([80.0, 52.0], Control::HandleIn(2)),
+            ([72.0, 60.0], Control::HandleOut(2)),
+            ([60.0, 20.5], Control::Insert(0)),
+            ([80.0, 40.0], Control::Insert(1)),
+            // Edge 0 at t = 1/3 and 2/3, four device pixels in and out (Inside/Outside .05).
+            ([50.37, 24.0], Control::Softness(-1)),
+            ([69.63, 16.0], Control::Softness(1)),
+            ([60.0, 40.0], Control::Move),
+        ] {
+            assert_eq!(hit(&shape, point), Some(control), "{point:?}");
+        }
+        assert_eq!(hit(&shape, [10.0, 10.0]), None, "outside a closed Curve");
+        // The handle lines are drawn but display only: under them is the edge.
+        assert!(shape.outline(map, [80.0, 55.0]).is_some());
+        assert_eq!(hit(&shape, [80.0, 46.0]), Some(Control::Insert(1)));
+        // Unselected: a grey outline and body that move it; no handles, no insertion.
+        shape.selected = None;
+        for point in [[40.0, 20.0], [60.0, 20.5], [60.0, 40.0]] {
+            assert_eq!(hit(&shape, point), Some(Control::Move), "{point:?}");
+        }
+        assert!(
+            shape.outline(map, [72.0, 60.0]).is_some(),
+            "the outline itself"
+        );
+        assert!(shape.outline(map, [80.0, 28.0]).is_some());
+        // No softness handle where the selected Curve had one; four pixels out is its margin.
+        assert_eq!(hit(&shape, [69.63, 16.0]), Some(Control::Move));
+        assert_eq!(hit(&shape, [69.63, 15.0]), None);
+    }
+
+    #[test]
+    fn a_closed_curve_grips_a_down_just_outside_it_below_its_controls_and_above_others() {
+        let map = Viewport::Fit.map((120, 80), (120, 80), 0).unwrap();
+        // A circle underneath spans device 40..80 x 10..70; the Curve square is 40..80 x 20..60.
+        let mut under = circle("under", 60.0);
+        under.to_canvas.yy = 30.0;
+        let mut shape = overlay(vec![under, bezier_shape("c", &square(), true)]);
+        let hit = |shape: &WindowOverlay, point: [f32; 2]| {
+            shape
+                .hit_control(map, point)
+                .map(|h| (h.id.to_owned(), h.control))
+        };
+        let on = |id: &str, control| Some((id.to_owned(), control));
+        for selected in [None, Some("c")] {
+            shape.selected = selected.map(Into::into);
+            // Within 4.5 device pixels of the outline, whether selected or not, the Curve moves.
+            for point in [[60.0, 16.0], [60.0, 15.6], [84.0, 40.0], [84.4, 40.0]] {
+                assert_eq!(
+                    hit(&shape, point),
+                    on("c", Control::Move),
+                    "{selected:?} {point:?}"
+                );
+            }
+            // Beyond it, the window underneath, or nothing.
+            assert_eq!(hit(&shape, [60.0, 15.0]), on("under", Control::Move));
+            assert_eq!(hit(&shape, [85.0, 40.0]), None);
+        }
+        // Selected, its anchors and edges still win their own pixels.
+        assert_eq!(hit(&shape, [40.0, 17.0]), on("c", Control::Point(0)));
+        assert_eq!(hit(&shape, [60.0, 20.5]), on("c", Control::Insert(0)));
+        // A draft has no body and so no margin: selected it draws, unselected the one under moves.
+        shape.shapes[1] = bezier_shape("c", &square(), false);
+        assert_eq!(hit(&shape, [60.0, 16.0]), on("c", Control::Append));
+        assert_eq!(hit(&shape, [84.0, 40.0]), on("c", Control::Append));
+        shape.selected = None;
+        assert_eq!(hit(&shape, [60.0, 16.0]), on("under", Control::Move));
+        assert_eq!(hit(&shape, [84.0, 40.0]), None);
+    }
+
+    #[test]
+    fn curve_softness_handles_take_their_side_from_the_lobe_they_stand_on() {
+        // A figure eight whose small right lobe holds edge 0; the big left lobe decides the
+        // signed area, which would put the inside handle outside the small lobe.
+        let eight = vec![
+            ([0.2, -0.1], [0.0; 2], [0.0; 2]),
+            ([0.2, 0.1], [0.0; 2], [0.0; 2]),
+            ([-0.4, -0.2], [0.0; 2], [0.0; 2]),
+            ([-0.4, 0.2], [0.0; 2], [0.0; 2]),
+        ];
+        let shape = bezier_shape("e", &eight, true);
+        let outline: Vec<[f64; 2]> = eight.iter().map(|a| a.0).collect();
+        let handles = shape.curve_softness_handles();
+        assert_eq!(handles.len(), 2);
+        for (control, at, normal) in handles {
+            let inside = control == Control::Softness(-1);
+            assert_eq!(offset::inside(&outline, at), inside, "{control:?} {at:?}");
+            // Its normal points further in for the inside handle, further out for the outside one.
+            let expected = if inside { -1.0 } else { 1.0 };
+            assert!(
+                (normal[0] - expected).abs() < 1e-12 && normal[1].abs() < 1e-12,
+                "{normal:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_selected_draft_closes_on_its_first_point_and_takes_every_other_click_to_draw() {
+        let map = Viewport::Fit.map((120, 80), (120, 80), 0).unwrap();
+        let mut shape = overlay(vec![
+            circle("other", 100.0),
+            bezier_shape("d", &square(), false),
+        ]);
+        shape.selected = Some("d".into());
+        let control = |shape: &WindowOverlay, point: [f32; 2]| {
+            shape.hit_control(map, point).map(|h| h.control)
+        };
+        assert_eq!(control(&shape, [40.0, 20.0]), Some(Control::Close));
+        assert_eq!(control(&shape, [40.0, 60.0]), Some(Control::Point(3)));
+        assert_eq!(control(&shape, [60.0, 20.5]), Some(Control::Insert(0)));
+        // No closing edge, no body, no softness: everything else draws, even over another window.
+        assert!(shape.outline(map, [40.0, 40.0]).is_none());
+        assert!(
+            shape.outline(map, [60.0, 16.0]).is_none(),
+            "no guides on a draft"
+        );
+        for point in [[40.0, 40.0], [60.0, 40.0], [10.0, 10.0], [100.0, 40.0]] {
+            assert_eq!(
+                shape.hit_control(map, point),
+                Some(Hit {
+                    id: "d",
+                    control: Control::Append
+                }),
+                "{point:?}"
+            );
+        }
+        // Unselected, a draft is a grey open outline that selects (moves) it; elsewhere nothing.
+        shape.selected = None;
+        assert_eq!(
+            shape.hit_control(map, [60.0, 20.5]),
+            Some(Hit {
+                id: "d",
+                control: Control::Move
+            })
+        );
+        assert_eq!(shape.hit_control(map, [60.0, 40.0]), None);
+        // One point: it is that point, not a close; an empty draft still draws where clicked.
+        shape.selected = Some("d".into());
+        shape.shapes[1] = bezier_shape("d", &square()[..1], false);
+        assert_eq!(control(&shape, [40.0, 20.0]), Some(Control::Point(0)));
+        shape.shapes[1] = bezier_shape("d", &[], false);
+        assert_eq!(control(&shape, [60.0, 40.0]), Some(Control::Append));
+        // Size 0 has no inverse: nothing is drawn and no point can be placed.
+        shape.shapes[1].to_canvas.xx = 0.0;
+        shape.shapes[1].to_canvas.yy = 0.0;
+        assert_eq!(control(&shape, [60.0, 40.0]), None);
+    }
+
+    /// A circle of radius .25 from four Bezier quarter arcs (kappa .5523).
+    fn round() -> Vec<([f64; 2], [f64; 2], [f64; 2])> {
+        let k = 0.25 * 0.552_284_749_8;
+        vec![
+            ([0.25, 0.0], [0.0, -k], [0.0, k]),
+            ([0.0, 0.25], [k, 0.0], [-k, 0.0]),
+            ([-0.25, 0.0], [0.0, k], [0.0, -k]),
+            ([0.0, -0.25], [-k, 0.0], [k, 0.0]),
+        ]
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn curve_outline_follows_its_cubics_and_its_guides_are_the_exact_offsets_never_hit() {
+        let map = Viewport::Scale {
+            scale: 1.25,
+            center: [0.5, 0.5],
+        }
+        .map((160, 120), (120, 80), 0)
+        .unwrap();
+        let mut shape = overlay(vec![bezier_shape("c", &round(), true)]);
+        let (sin, cos) = 0.5_f64.sin_cos();
+        // Rotated, with a different scale on each local axis.
+        shape.shapes[0].to_canvas = Affine {
+            xx: 90.0 * cos,
+            xy: -60.0 * sin,
+            yx: 90.0 * sin,
+            yy: 60.0 * cos,
+            tx: 60.0,
+            ty: 40.0,
+        };
+        shape.shapes[0].feathers = vec![[0.06, 0.1]];
+        shape.selected = Some("c".into());
+        let placed = shape.shapes[0].clone();
+        let device = |local: [f64; 2]| placed.at(map, local).map(|v| v as f32);
+        let anchors = placed.anchors();
+        for j in 0..4 {
+            for k in 1..8 {
+                let t = f64::from(k) / 8.0;
+                let (on, _) = cubic_at(curve::cubic(&anchors, j), t);
+                assert!(shape.outline(map, device(on)).is_some(), "edge {j} t {t}");
+                // The exact offsets of the curve (a circle within its .03% Bezier error).
+                let r = on[0].hypot(on[1]);
+                let radial = [on[0] / r, on[1] / r];
+                for extent in [-0.06, 0.1] {
+                    let guide = [on[0] + radial[0] * extent, on[1] + radial[1] * extent];
+                    assert!(guide_alpha(&shape, map, device(guide)) > 0.5, "{guide:?}");
+                }
+                let between = [on[0] - radial[0] * 0.03, on[1] - radial[1] * 0.03];
+                assert_eq!(guide_alpha(&shape, map, device(between)), 0.0);
+            }
+        }
+        // A guide outside the body and its grip margin hits nothing; inside, the body moves it.
+        let outer = device([-0.35 * std::f64::consts::FRAC_1_SQRT_2; 2]);
+        assert!(shape.outline(map, outer).is_some());
+        assert_eq!(shape.hit_control(map, outer), None);
+        let inner = device([-0.19 * std::f64::consts::FRAC_1_SQRT_2; 2]);
+        assert_eq!(
+            shape.hit_control(map, inner).map(|h| h.control),
+            Some(Control::Move)
+        );
+    }
+
+    #[test]
+    fn a_curve_click_names_the_exact_parameter_of_its_edge() {
+        let shape = bezier_shape("c", &round(), true);
+        let anchors = shape.anchors();
+        for (j, t) in [(0, 0.2), (1, 0.5), (3, 0.9)] {
+            let (on, _) = cubic_at(curve::cubic(&anchors, j), t);
+            let canvas = [60.0 + 80.0 * on[0], 40.0 + 80.0 * on[1]];
+            let got = shape.curve_parameter(j, canvas).unwrap();
+            assert!((got - t).abs() < 1e-3, "{j} {t} {got}");
+        }
+        // A straight edge with corner handles is not uniform in its parameter: still the
+        // parameter of the clicked spot itself.
+        let corners = bezier_shape("s", &square(), true);
+        let t = corners.curve_parameter(0, [50.0, 20.0]).unwrap();
+        let (on, _) = cubic_at(curve::cubic(&corners.anchors(), 0), t);
+        assert!((60.0 + 80.0 * on[0] - 50.0).abs() < 1e-6, "{t} {on:?}");
+        // Next to an anchor the parameter stays off it, and an open draft has no closing edge.
+        assert_eq!(shape.curve_parameter(0, [80.0, 40.0]), Some(1e-3));
+        let draft = bezier_shape("d", &round(), false);
+        assert_eq!(draft.curve_parameter(3, [60.0, 20.0]), None);
+        assert!(draft.curve_parameter(2, [40.0, 40.0]).is_some());
+    }
+
+    #[test]
+    fn curve_controls_stay_finite_and_bounded_at_legal_extreme_zooms() {
+        let mut shape = overlay(vec![bezier_shape("c", &round(), true)]);
+        shape.selected = Some("c".into());
+        for scale in [2.0_f64.powi(-126), 1e-20, 1e20, 2.0_f64.powi(112)] {
+            let map = Viewport::Scale {
+                scale,
+                center: [0.5, 0.5],
+            }
+            .map((100, 100), (120, 80), 0)
+            .unwrap();
+            let primitives = shape.primitives(&shape.shapes[0], map);
+            // Never flattened more finely than the mask itself.
+            assert!(primitives.len() < 40_000, "{scale}: {}", primitives.len());
+            for p in primitives {
+                assert!(p
+                    .geometry
+                    .inverse
+                    .iter()
+                    .chain(&p.geometry.centre)
+                    .all(|v| v.is_finite() && v.abs() < 1e6));
+            }
+            for point in [[0.5, 0.5], [50.5, 50.5], [99.5, 99.5]] {
+                assert_eq!(
+                    shape.hit(map, point),
+                    if scale > 1.0 { Some("c") } else { None },
                     "{scale}, {point:?}"
                 );
             }

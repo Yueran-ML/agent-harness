@@ -859,10 +859,10 @@ export const en = {
       colorPage: {
         viewerZoom: 'Viewer zoom', viewerFit: 'Fit', matching: 'Matching the selected clips…',
         windowControls: {
-          addGradient: 'Add Gradient Window', addLinear: 'Add Linear Window', addPolygon: 'Add Polygon Window',
+          addGradient: 'Add Gradient Window', addLinear: 'Add Linear Window', addPolygon: 'Add Polygon Window', addCurve: 'Add Curve Window',
           fields: { size: 'Size', aspect: 'Aspect', pan: 'Pan', tilt: 'Tilt', rotate: 'Rotate', opacity: 'Opacity', softness: 'Soft 1',
             soft1: 'Soft 1', soft2: 'Soft 2', soft3: 'Soft 3', soft4: 'Soft 4', inside: 'Inside Softness', outside: 'Outside Softness' },
-          point: 'Point', inserted: 'New point',
+          point: 'Point', inserted: 'New point', handleIn: 'in handle', handleOut: 'out handle',
           /** The parts of a refused point edit's explanation: the points and the key interval it names. */
           topology: {
             one: 'point {point}', two: 'points {first} and {second}',
@@ -1707,6 +1707,7 @@ export const en = {
           topology: {
             maximum: 'A polygon window holds at most {most} points, so no point was added.',
             minimum: 'A polygon window keeps at least {least} points, so the point was not deleted.',
+            minimumCurve: 'A closed curve window keeps at least {least} points, so the point was not deleted.',
             unsupported: 'This point cannot be added or deleted.',
             jump: 'No point was added: the {axis} of {points} mixes a held jump with a continuous change ({frames}), so a new point would change the shape between keyframes. Give those keyframes the same times and interpolation (for example Linear), then add the point. The animation was not changed.',
             timing: 'No point was added: the {axis} of {points} uses different easing curves ({frames}), so a new point would change the shape between keyframes. Give those fields the same easing, then add the point. The animation was not changed.',

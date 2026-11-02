@@ -2,11 +2,12 @@
 //! published Resolve algorithms. Soft 100 spans .5 local image heights (half on each
 //! side); Polygon/Curve inside and outside independently span .5 at 100.
 //!
-//! Cubics are split in f64 until their control hull lies within 1/(8*16384) image
-//! heights of the chord after the largest transform scale: <= .125 pixels at 16384
-//! high. This is the tessellation error, separate from f32 shader rounding. A threaded
-//! bounding-box tree prunes both even-odd ray tests and nearest-edge searches. Neither
-//! window count nor Curve anchor/segment count has an artificial limit.
+//! Cubics are split in f64 (`super::curve`, shared with the native controls) until their
+//! control hull lies within 1/(8*16384) image heights of the chord after the largest
+//! transform scale: <= .125 pixels at 16384 high. This is the tessellation error, separate
+//! from f32 shader rounding. A threaded bounding-box tree prunes both even-odd ray tests
+//! and nearest-edge searches. Neither window count nor Curve anchor/segment count has an
+//! artificial limit.
 
 #![allow(
     clippy::cast_possible_truncation,
@@ -22,12 +23,12 @@ use columbina_model::grade::{
     WindowShape,
 };
 
+use super::curve::{self, Anchor, CurveSegment};
 use super::maths::smoothstep;
 
 pub(crate) const LIBRARY: &str = include_str!("windows.wgsl");
 const HEADER: usize = 4;
 const TREE_NODE: usize = 3;
-const CURVE_ERROR: f64 = 1.0 / (8.0 * 16384.0);
 
 #[derive(Clone, Copy)]
 pub(crate) struct Position {
@@ -61,76 +62,24 @@ struct Edge {
     soft: f32,
 }
 
-fn distance64(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
-    let d = [b[0] - a[0], b[1] - a[1]];
-    let n = d[0] * d[0] + d[1] * d[1];
-    let t = if n == 0.0 {
-        0.0
-    } else {
-        (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / n).clamp(0.0, 1.0)
-    };
-    (p[0] - a[0] - t * d[0]).hypot(p[1] - a[1] - t * d[1])
-}
-
-/// The original edge and interval survive tessellation for a later native edge insertion.
-#[derive(Clone, Copy)]
-pub(crate) struct CurveSegment {
-    pub a: [f64; 2],
-    pub b: [f64; 2],
-    #[allow(dead_code, reason = "retained for precise native edge insertion")]
-    pub edge: usize,
-    #[allow(dead_code, reason = "retained for precise native edge insertion")]
-    pub t: [f64; 2],
-}
-
-fn flatten(cubic: [[f64; 2]; 4], tolerance: f64, edge: usize, edges: &mut Vec<CurveSegment>) {
-    let mut pending = vec![(cubic, [0.0, 1.0])];
-    while let Some((p, t)) = pending.pop() {
-        if distance64(p[1], p[0], p[3]).max(distance64(p[2], p[0], p[3])) <= tolerance {
-            edges.push(CurveSegment {
-                a: p[0],
-                b: p[3],
-                edge,
-                t,
-            });
-        } else {
-            let mid = |a: [f64; 2], b: [f64; 2]| [a[0].midpoint(b[0]), a[1].midpoint(b[1])];
-            let a = mid(p[0], p[1]);
-            let b = mid(p[1], p[2]);
-            let c = mid(p[2], p[3]);
-            let d = mid(a, b);
-            let e = mid(b, c);
-            let f = mid(d, e);
-            let tm = t[0].midpoint(t[1]);
-            pending.push(([f, e, c, p[3]], [tm, t[1]]));
-            pending.push(([p[0], a, d, f], [t[0], tm]));
-        }
-    }
-}
-
+/// A closed Curve's flattened edges at `frame`, as the mask uses them.
 pub(crate) fn curve_segments(
     points: &[WindowBezierPoint],
     frame: f64,
     scale: f64,
 ) -> Vec<CurveSegment> {
-    let mut segments = Vec::new();
     if scale <= 0.0 {
-        return segments;
+        return Vec::new();
     }
-    for (j, a) in points.iter().enumerate() {
-        let b = &points[(j + 1) % points.len()];
-        let p = point(&a.position, frame);
-        let q = point(&b.position, frame);
-        let h = point(&a.out, frame);
-        let k = point(&b.into, frame);
-        flatten(
-            [p, [p[0] + h[0], p[1] + h[1]], [q[0] + k[0], q[1] + k[1]], q],
-            CURVE_ERROR / scale,
-            j,
-            &mut segments,
-        );
-    }
-    segments
+    let anchors: Vec<Anchor> = points
+        .iter()
+        .map(|p| Anchor {
+            position: point(&p.position, frame),
+            into: point(&p.into, frame),
+            out: point(&p.out, frame),
+        })
+        .collect();
+    curve::segments(&anchors, true, curve::tolerance(scale))
 }
 
 fn tree(edges: &mut [Edge], out: &mut Vec<[f32; 4]>, relative: usize) {
@@ -380,55 +329,6 @@ pub(crate) fn key(params: &[[f32; 4]], block: usize, position: Position) -> f32 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn curve_tessellation_meets_dense_bernstein_reference_and_keeps_original_intervals() {
-        let cubics = [
-            [[-0.25, 0.0], [-0.25, -0.4], [0.25, -0.4], [0.25, 0.0]],
-            [[0.0, 0.0], [16.0, 16.0], [-16.0, 16.0], [0.0, 0.0]],
-            [[-16.0, -16.0], [0.0, 0.0], [32.0, 32.0], [16.0, 16.0]],
-        ];
-        for scale in [1.0, 40.0] {
-            for cubic in cubics {
-                let mut segments = Vec::new();
-                flatten(cubic, CURVE_ERROR / scale, 7, &mut segments);
-                let mut next = 0;
-                let mut most = 0.0_f64;
-                let mut rounded = 0.0_f64;
-                for sample in 0..=20000 {
-                    let t = f64::from(sample) / 20000.0;
-                    while next + 1 < segments.len() && segments[next].t[1] < t {
-                        next += 1;
-                    }
-                    let s = segments[next];
-                    assert_eq!(s.edge, 7);
-                    assert!(s.t[0] <= t && t <= s.t[1]);
-                    // Independent Bernstein evaluation, not the subdivision algorithm.
-                    let q = [0, 1].map(|j| {
-                        (1.0 - t).powi(3) * cubic[0][j]
-                            + 3.0 * (1.0 - t).powi(2) * t * cubic[1][j]
-                            + 3.0 * (1.0 - t) * t * t * cubic[2][j]
-                            + t.powi(3) * cubic[3][j]
-                    });
-                    most = most.max(distance64(q, s.a, s.b) * scale * 16384.0);
-                    rounded = rounded.max(
-                        distance64(
-                            q,
-                            s.a.map(|v| f64::from(v as f32)),
-                            s.b.map(|v| f64::from(v as f32)),
-                        ) * scale
-                            * 16384.0,
-                    );
-                }
-                assert!(
-                    most <= 0.125 + 1e-7,
-                    "error={most}, segments={}",
-                    segments.len()
-                );
-                eprintln!("T23 cubic scale={scale} segments={} double_error_px={most:.6} packed_error_px={rounded:.6}",segments.len());
-            }
-        }
-    }
 
     #[test]
     fn window_tree_prunes_large_outlines_and_agrees_with_an_independent_winding_reference() {

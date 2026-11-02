@@ -6,6 +6,7 @@ use columbina_view::Viewport;
 fn overlay(x: f64) -> Arc<WindowOverlay> {
     Arc::new(WindowOverlay {
         shapes: vec![Shape {
+            curve: None,
             id: "w1".into(),
             radius: 1.0,
             kind: ShapeKind::Circular,

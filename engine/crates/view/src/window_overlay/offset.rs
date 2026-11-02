@@ -78,6 +78,155 @@ pub(crate) fn inside(points: &[[f64; 2]], p: [f64; 2]) -> bool {
     inside
 }
 
+/// The outline's edges by horizontal band, so that an even-odd test reads only the edges whose
+/// y range holds its point: the same crossings as [`inside`], without visiting every edge.
+struct Bands {
+    low: f64,
+    height: f64,
+    rows: Vec<Vec<usize>>,
+}
+
+impl Bands {
+    #[allow(clippy::cast_precision_loss, reason = "a band count far below 2^52")]
+    fn new(points: &[[f64; 2]]) -> Self {
+        let n = points.len();
+        let (low, high) = points
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), p| {
+                (l.min(p[1]), h.max(p[1]))
+            });
+        let count = (n / 2).max(1);
+        let height = (high - low) / count as f64;
+        let mut bands = Self {
+            low,
+            height,
+            rows: vec![],
+        };
+        if !(height > 0.0 && height.is_finite()) {
+            bands.rows = vec![(0..n).collect()];
+            return bands;
+        }
+        bands.rows = vec![vec![]; count];
+        for j in 0..n {
+            let (a, b) = (points[j], points[(j + 1) % n]);
+            for row in bands.row(a[1].min(b[1]))..=bands.row(a[1].max(b[1])) {
+                bands.rows[row].push(j);
+            }
+        }
+        bands
+    }
+
+    /// The band of height `y`; monotonic in `y`, so an edge spanning `y` is listed in it.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to the band count, far below 2^52, before the conversion"
+    )]
+    fn row(&self, y: f64) -> usize {
+        if self.rows.len() <= 1 {
+            return 0;
+        }
+        let last = self.rows.len() - 1;
+        ((y - self.low) / self.height)
+            .floor()
+            .clamp(0.0, last as f64) as usize
+    }
+
+    fn inside(&self, points: &[[f64; 2]], p: [f64; 2]) -> bool {
+        let mut inside = false;
+        for &j in &self.rows[self.row(p[1])] {
+            let (a, b) = (points[j], points[(j + 1) % points.len()]);
+            if (a[1] > p[1]) != (b[1] > p[1])
+                && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]
+            {
+                inside = !inside;
+            }
+        }
+        inside
+    }
+}
+
+/// Boxes by grid cell, so that the boxes meeting a query box are found without visiting all.
+struct Grid {
+    low: [f64; 2],
+    cell: [f64; 2],
+    side: usize,
+    cells: Vec<Vec<usize>>,
+}
+
+impl Grid {
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a cell count far below 2^52"
+    )]
+    fn new(boxes: &[[f64; 4]]) -> Self {
+        let mut low = [f64::INFINITY; 2];
+        let mut high = [f64::NEG_INFINITY; 2];
+        for b in boxes {
+            low = [low[0].min(b[0]), low[1].min(b[1])];
+            high = [high[0].max(b[2]), high[1].max(b[3])];
+        }
+        let side = (boxes.len() as f64).sqrt().ceil().max(1.0) as usize;
+        let cell = [
+            (high[0] - low[0]) / side as f64,
+            (high[1] - low[1]) / side as f64,
+        ];
+        let mut grid = Self {
+            low,
+            cell,
+            side,
+            cells: vec![vec![]; side * side],
+        };
+        for (k, b) in boxes.iter().enumerate() {
+            let ([x0, y0], [x1, y1]) = (grid.at([b[0], b[1]]), grid.at([b[2], b[3]]));
+            for y in y0..=y1 {
+                for x in x0..=x1 {
+                    grid.cells[y * side + x].push(k);
+                }
+            }
+        }
+        grid
+    }
+
+    /// The cell of a point, clamped to the grid; monotonic in each axis. A quotient that
+    /// overflows (a tiny positive cell) is past the last cell, never back at the first; one
+    /// with no value (a point at `low` over a zero cell) is the first.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to the cell count before the conversion"
+    )]
+    fn at(&self, p: [f64; 2]) -> [usize; 2] {
+        let last = (self.side - 1) as f64;
+        [0, 1].map(|i| {
+            let s = (p[i] - self.low[i]) / self.cell[i];
+            if s.is_nan() {
+                0
+            } else {
+                s.floor().clamp(0.0, last) as usize
+            }
+        })
+    }
+
+    /// Every box sharing a cell with `b`, a superset of the boxes that meet it, each once.
+    fn near(&self, b: [f64; 4]) -> Vec<usize> {
+        let ([x0, y0], [x1, y1]) = (self.at([b[0], b[1]]), self.at([b[2], b[3]]));
+        let mut out = vec![];
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                out.extend_from_slice(&self.cells[y * self.side + x]);
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+}
+
 impl Curve {
     fn at(self, s: f64) -> [f64; 2] {
         match self {
@@ -259,19 +408,23 @@ pub(crate) fn guide(points: &[[f64; 2]], radii: &[f64], inside_side: bool) -> Ve
         .collect();
     let overlaps =
         |p: [f64; 4], q: [f64; 4]| p[0] <= q[2] && q[0] <= p[2] && p[1] <= q[3] && q[1] <= p[3];
+    // Indexes, so that a finely flattened Curve does not test every edge for every piece.
+    let grown = Grid::new(&reach.iter().map(|(_, b)| *b).collect::<Vec<_>>());
+    let bands = Bands::new(points);
     // On a curve only the edges whose grown box meets the curve's box can be nearer.
     let kept = |p: [f64; 2], near: &[usize]| {
         near.iter().all(|&k| {
             let (a, b) = edge(k);
             distance(p, a, b) >= radius(k) * (1.0 - 1e-9)
-        }) && inside(points, p) == inside_side
+        }) && bands.inside(points, p) == inside_side
     };
     let mut out = vec![];
     for ((curve, mut cuts), bounds) in curves.into_iter().zip(cuts).zip(bounds) {
-        let near: Vec<usize> = reach
-            .iter()
-            .filter(|(_, grown)| overlaps(*grown, bounds))
-            .map(|(k, _)| *k)
+        let near: Vec<usize> = grown
+            .near(bounds)
+            .into_iter()
+            .filter(|&r| overlaps(reach[r].1, bounds))
+            .map(|r| reach[r].0)
             .collect();
         let (low, high) = match curve {
             Curve::Line(..) => (0.0, 1.0),
@@ -504,5 +657,64 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn indexes_give_the_same_crossings_and_every_meeting_box() {
+        // A star with spikes and a flat run: horizontal edges, shared heights, self-crossing.
+        let mut star: Vec<[f64; 2]> = (0..40)
+            .map(|k| {
+                let a = f64::from(k) * TAU / 40.0;
+                let r = if k % 2 == 0 { 0.4 } else { 0.15 };
+                [r * a.cos(), r * a.sin()]
+            })
+            .collect();
+        star.extend([[0.5, 0.1], [-0.5, 0.1], [0.0, -0.45]]);
+        let flat = vec![[-0.3, 0.0], [0.3, 0.0], [0.3, 0.0]];
+        for points in [star, rectangle(), flat] {
+            let bands = Bands::new(&points);
+            for i in 0..=60 {
+                for j in 0..=60 {
+                    let p = [-0.6 + f64::from(i) * 0.02, -0.6 + f64::from(j) * 0.02];
+                    assert_eq!(bands.inside(&points, p), inside(&points, p), "{p:?}");
+                }
+            }
+            for v in &points {
+                assert_eq!(bands.inside(&points, *v), inside(&points, *v));
+            }
+        }
+        let boxes: Vec<[f64; 4]> = (0..50)
+            .map(|k| {
+                let x = (f64::from(k) * 0.37).sin() * 0.5;
+                let y = (f64::from(k) * 0.91).cos() * 0.5;
+                let w = 0.01 + f64::from(k % 7) * 0.03;
+                [x, y, x + w, y + w * 0.5]
+            })
+            .collect();
+        let grid = Grid::new(&boxes);
+        let meets =
+            |p: [f64; 4], q: [f64; 4]| p[0] <= q[2] && q[0] <= p[2] && p[1] <= q[3] && q[1] <= p[3];
+        for q in &boxes {
+            let near = grid.near(*q);
+            for (k, b) in boxes.iter().enumerate() {
+                if meets(*b, *q) {
+                    assert!(near.contains(&k), "{k}");
+                }
+            }
+        }
+        assert_eq!(Grid::new(&[[0.0; 4]; 3]).near([0.0; 4]), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn a_point_beyond_a_tiny_cell_is_in_the_last_cell() {
+        // Two boxes a subnormal width apart: the cell is so small that a query reaching 1.0
+        // overflows to +inf, which is past the last cell, not back at the first.
+        let tiny = 1e-320;
+        let boxes = [[0.0, 0.0, 0.0, 0.0], [tiny, tiny, tiny, tiny]];
+        let grid = Grid::new(&boxes);
+        assert_eq!(grid.at([1.0, 1.0]), [1, 1]);
+        assert_eq!(grid.at([-1.0, -1.0]), [0, 0]);
+        assert_eq!(grid.near([0.0, 0.0, 1.0, 1.0]), vec![0, 1]);
+        assert_eq!(grid.near([tiny, tiny, 1.0, 1.0]), vec![1]);
     }
 }

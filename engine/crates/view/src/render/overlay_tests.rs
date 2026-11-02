@@ -2,13 +2,14 @@ use super::tests::{draw_using, gpu, halves_using, near_mapped};
 use super::Painter;
 use crate::display::{mapping, Content, HdrTransfer, Output};
 use crate::window_overlay::render::OverlayPainter;
-use crate::window_overlay::{Affine, Shape, ShapeKind, Style, WindowOverlay};
+use crate::window_overlay::{Affine, Bezier, Shape, ShapeKind, Style, WindowOverlay};
 use crate::Viewport;
 use columbina_compose::wipe::{Style as WipeStyle, Wipe};
 
 fn overlay() -> WindowOverlay {
     WindowOverlay {
         shapes: vec![Shape {
+            curve: None,
             id: "w1".into(),
             radius: 1.0,
             kind: ShapeKind::Circular,
@@ -500,6 +501,7 @@ fn window_overlay_linear_and_polygon_controls_match_cpu_geometry_through_wipes()
         ty: 40.5,
     };
     let linear = Shape {
+        curve: None,
         id: "lin".into(),
         radius: 0.25,
         kind: ShapeKind::Linear,
@@ -509,6 +511,7 @@ fn window_overlay_linear_and_polygon_controls_match_cpu_geometry_through_wipes()
         to_canvas: rotated,
     };
     let polygon = Shape {
+        curve: None,
         id: "poly".into(),
         kind: ShapeKind::Polygon,
         // Self-intersecting on purpose: drawn and hit in the stored order.
@@ -596,6 +599,7 @@ fn window_overlay_exact_softness_guides_match_cpu_and_are_never_hit() {
     };
     // A reflex L: an inner arc and an outer mitre at its notch.
     let reflex = Shape {
+        curve: None,
         id: "l".into(),
         radius: 0.25,
         kind: ShapeKind::Polygon,
@@ -613,6 +617,7 @@ fn window_overlay_exact_softness_guides_match_cpu_and_are_never_hit() {
     };
     // Narrow, with more inside softness than it holds: only the outer guide is drawn.
     let narrow = Shape {
+        curve: None,
         id: "n".into(),
         points: vec![[-0.4, -0.05], [0.4, -0.05], [0.4, 0.05], [-0.4, 0.05]],
         feathers: vec![[0.2, 0.05]; 4],
@@ -620,6 +625,7 @@ fn window_overlay_exact_softness_guides_match_cpu_and_are_never_hit() {
         ..reflex.clone()
     };
     let linear = Shape {
+        curve: None,
         id: "q".into(),
         kind: ShapeKind::Linear,
         points: vec![[-0.2, -0.2], [0.2, -0.15], [0.2, 0.2], [-0.2, 0.2]],
@@ -669,6 +675,7 @@ fn window_overlay_128_point_selected_polygon_timing() {
         let map = Viewport::Fit.map(size, size, 0).unwrap();
         let height = f64::from(size.1);
         let shape = Shape {
+            curve: None,
             id: "p".into(),
             radius: 0.25,
             kind: ShapeKind::Polygon,
@@ -733,6 +740,188 @@ fn window_overlay_128_point_selected_polygon_timing() {
         }
         println!(
             "TIMING {}x{} primitives={primitives} (built in {built:.2} ms): encode {encode:.2} ms, gpu {:.2} ms, encode+gpu {total:.2} ms per frame",
+            size.0,
+            size.1,
+            total - encode
+        );
+    }
+}
+
+/// A Curve of `count` anchors on a circle of `radius`, with tangent handles (closed or a draft).
+fn round_curve(id: &str, count: u32, radius: f64, closed: bool, to_canvas: Affine) -> Shape {
+    let step = std::f64::consts::TAU / f64::from(count);
+    let k = radius * 4.0 / 3.0 * (step / 4.0).tan();
+    let anchors: Vec<_> = (0..count)
+        .map(|i| {
+            let (sin, cos) = (f64::from(i) * step).sin_cos();
+            (
+                [radius * cos, radius * sin],
+                [k * sin, -k * cos],
+                [-k * sin, k * cos],
+            )
+        })
+        .collect();
+    Shape {
+        id: id.into(),
+        curve: Some(Bezier {
+            handles: anchors.iter().map(|a| [a.1, a.2]).collect(),
+            closed,
+            tolerance: columbina_compose::grade::curve::tolerance(1.0),
+        }),
+        radius: 0.25,
+        kind: ShapeKind::Curve,
+        feather: 0.0,
+        points: anchors.iter().map(|a| a.0).collect(),
+        feathers: vec![[0.05, 0.03]],
+        to_canvas,
+    }
+}
+
+#[test]
+fn window_overlay_curve_controls_and_guides_match_cpu_geometry_through_wipes() {
+    let Some(gpu) = gpu() else { return };
+    let size = (120, 80);
+    let frame = source(&gpu);
+    let map = Viewport::Scale {
+        scale: 1.25,
+        center: [0.5, 0.5],
+    }
+    .map(size, size, 0)
+    .unwrap();
+    let mut painter = Painter::new(&gpu.device, &gpu.queue, wgpu::TextureFormat::Bgra8Unorm);
+    painter.use_texture(&frame).unwrap();
+    let overlay_painter = OverlayPainter::new(&gpu.device, wgpu::TextureFormat::Bgra8Unorm);
+    // Rotated with a different scale per local axis.
+    let rotated = Affine {
+        xx: 70.0,
+        xy: -25.0,
+        yx: 20.0,
+        yy: 60.0,
+        tx: 45.5,
+        ty: 40.5,
+    };
+    let closed = round_curve("closed", 5, 0.3, true, rotated);
+    let draft = round_curve(
+        "draft",
+        3,
+        0.2,
+        false,
+        Affine {
+            tx: 85.5,
+            ..rotated
+        },
+    );
+    let mut osc = overlay();
+    osc.shapes = vec![closed, draft].into();
+    for selected in ["closed", "draft"] {
+        osc.selected = Some(selected.into());
+        for style in [WipeStyle::Horizontal, WipeStyle::Mix] {
+            osc.coverage = Some(Wipe {
+                style,
+                softness: 0.25,
+                ..Wipe::default()
+            });
+            let base = draw_using(&gpu, size, |v| painter.draw_mapped(v, size, 0, Some(map)));
+            let drawn = draw_using(&gpu, size, |target| {
+                painter.draw_mapped_with(target, size, 0, Some(map), |encoder| {
+                    overlay_painter.encode(&gpu.device, encoder, target, &osc, map, Output::Sdr);
+                })
+            });
+            let (mut stroked, mut guided) = (0, 0);
+            for (i, pixel) in drawn.iter().enumerate() {
+                #[allow(clippy::cast_precision_loss)]
+                let point = [(i % 120) as f32 + 0.5, (i / 120) as f32 + 0.5];
+                let wanted = cpu_pixel(&osc, map, point, base[i].map(f32::from));
+                assert!(
+                    (0..3).all(|ch| (f32::from(pixel[ch]) - wanted[ch]).abs() < 2.1),
+                    "{selected} {style:?} {point:?} {pixel:?} {wanted:?}"
+                );
+                if osc.outline(map, point).is_some() {
+                    stroked += 1;
+                    if controls(&osc, map, point) {
+                        assert!(osc.hit(map, point).is_some(), "{point:?}");
+                    } else {
+                        guided += 1;
+                    }
+                }
+            }
+            assert!(stroked > 200, "{stroked}");
+            if selected == "closed" {
+                assert!(guided > 50, "guides drawn: {guided}");
+            }
+        }
+    }
+}
+
+/// Encode and GPU time per frame of a selected closed 128-anchor Curve with Bezier handles and
+/// softness guides, at 1080p and 4K, measured like the 128-point Polygon above.
+#[test]
+#[ignore = "GPU timing, run explicitly"]
+fn window_overlay_128_point_selected_curve_timing() {
+    let Some(gpu) = gpu() else { return };
+    let overlay_painter = OverlayPainter::new(&gpu.device, wgpu::TextureFormat::Bgra8Unorm);
+    for size in [(1920_u32, 1080_u32), (3840, 2160)] {
+        let map = Viewport::Fit.map(size, size, 0).unwrap();
+        let height = f64::from(size.1);
+        let mut shape = round_curve(
+            "c",
+            128,
+            0.4,
+            true,
+            Affine {
+                xx: height,
+                xy: 0.0,
+                yx: 0.0,
+                yy: height,
+                tx: f64::from(size.0) / 2.0,
+                ty: height / 2.0,
+            },
+        );
+        shape.feathers = vec![[0.05, 0.05]];
+        let osc = WindowOverlay {
+            shapes: vec![shape].into(),
+            selected: Some("c".into()),
+            style: Style::default(),
+            coverage: None,
+        };
+        let built = std::time::Instant::now();
+        let primitives = osc.primitives(&osc.shapes[0], map).len();
+        let built = built.elapsed().as_secs_f64() * 1000.0;
+        let target = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: size.0,
+                height: size.1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let (mut encode, mut total) = (0.0, 0.0);
+        for frame in 0..25 {
+            let start = std::time::Instant::now();
+            let mut encoder = gpu
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+            overlay_painter.encode(&gpu.device, &mut encoder, &view, &osc, map, Output::Sdr);
+            let commands = encoder.finish();
+            let spent = start.elapsed();
+            gpu.queue.submit([commands]);
+            gpu.device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .unwrap();
+            if frame >= 5 {
+                encode += spent.as_secs_f64() * 1000.0 / 20.0;
+                total += start.elapsed().as_secs_f64() * 1000.0 / 20.0;
+            }
+        }
+        println!(
+            "TIMING curve {}x{} primitives={primitives} (built in {built:.2} ms): encode {encode:.2} ms, gpu {:.2} ms, encode+gpu {total:.2} ms per frame",
             size.0,
             size.1,
             total - encode

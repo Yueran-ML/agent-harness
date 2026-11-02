@@ -737,10 +737,10 @@ export const zhCN: Messages = {
       colorPage: {
         viewerZoom: '检视器缩放', viewerFit: '适合窗口', matching: '正在匹配选中的片段…',
         windowControls: {
-          addGradient: '添加渐变窗口', addLinear: '添加线性窗口', addPolygon: '添加多边形窗口',
+          addGradient: '添加渐变窗口', addLinear: '添加线性窗口', addPolygon: '添加多边形窗口', addCurve: '添加曲线窗口',
           fields: { size: '大小', aspect: '宽高比', pan: '平移', tilt: '倾斜', rotate: '旋转', opacity: '不透明度', softness: '柔化 1',
             soft1: '柔化 1', soft2: '柔化 2', soft3: '柔化 3', soft4: '柔化 4', inside: '内部柔化', outside: '外部柔化' },
-          point: '点', inserted: '新点',
+          point: '点', inserted: '新点', handleIn: '入手柄', handleOut: '出手柄',
           topology: {
             one: '第 {point} 点', two: '第 {first} 点和第 {second} 点',
             frames: '{clock}第 {from}–{to} 帧', allFrames: '所有帧',
@@ -1498,6 +1498,7 @@ export const zhCN: Messages = {
           topology: {
             maximum: '多边形窗口最多 {most} 个点，未添加该点。',
             minimum: '多边形窗口至少保留 {least} 个点，未删除该点。',
+            minimumCurve: '闭合的曲线窗口至少保留 {least} 个点，未删除该点。',
             unsupported: '无法添加或删除这个点。',
             jump: '未添加点：{points}的 {axis} 在{frames}既有保持跳变又有连续变化，插点会改变关键帧之间的形状。请先统一这些关键帧的时刻与插值（例如线性），再添加点。原动画未更改。',
             timing: '未添加点：{points}的 {axis} 在{frames}使用不同的缓动曲线，插点会改变关键帧之间的形状。请先统一这些字段的缓动，再添加点。原动画未更改。',

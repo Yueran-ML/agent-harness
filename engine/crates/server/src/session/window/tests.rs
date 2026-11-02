@@ -1,8 +1,11 @@
 use super::*;
 use crate::presentation::{LayerSnapshot, Origin};
 use crate::session::GESTURE_IDLE;
-use columbina_model::grade::{Interp, Key, Node, NodeKind, Param, Target, Window, WindowShape};
+use columbina_model::grade::{
+    Interp, Key, Node, NodeKind, Param, Target, Window, WindowPoint, WindowShape,
+};
 use columbina_model::{History, Op};
+use columbina_view::window_overlay::Control;
 
 #[cfg(windows)]
 #[allow(
@@ -1276,7 +1279,7 @@ fn a_middle_tap_keeps_three_polygon_points_and_never_deletes_linear_corners() {
     let tap = middle_tap(&registry, &pin, &frame, (82, 54), false);
     assert_eq!(
         state.window_delete(7, 1, &tap).unwrap_err().data,
-        Some(json!({"reason":"delete","topology":{"why":"minimum","least":3}}))
+        Some(json!({"reason":"delete","topology":{"why":"minimum","least":3,"shape":"polygon"}}))
     );
     assert_eq!(state.history.revision(), 0);
     let (mut state, registry, pin, frame) =
@@ -1542,7 +1545,16 @@ fn transform_controls_use_evaluated_geometry_but_write_only_their_left_key() {
             interp: Interp::Hold,
         },
     ]);
-    let size = Movement::capture(selection, &frame, "w1", Control::Size(2), (82.0, 54.0)).unwrap();
+    let size = Movement::capture(
+        selection,
+        &frame,
+        "w1",
+        Control::Size(2),
+        (82.0, 54.0),
+        [1.0; 2],
+        Modifiers::default(),
+    )
+    .unwrap();
     let changed = size.at((91.0, 63.0)).unwrap();
     assert_eq!(size.keys(), json!({"size":0,"clock":"source","frame":10}));
     let Param::Keys(keys) = &changed[0].transform.size else {
@@ -1572,8 +1584,16 @@ fn transform_controls_use_evaluated_geometry_but_write_only_their_left_key() {
             interp: Interp::Hold,
         },
     ]);
-    let aspect =
-        Movement::capture(selection, &frame, "w1", Control::Aspect(1), (82.0, 36.0)).unwrap();
+    let aspect = Movement::capture(
+        selection,
+        &frame,
+        "w1",
+        Control::Aspect(1),
+        (82.0, 36.0),
+        [1.0; 2],
+        Modifiers::default(),
+    )
+    .unwrap();
     let changed = aspect.at((100.0, 36.0)).unwrap();
     assert_eq!(aspect.keys()["aspect"], 2);
     assert_eq!(changed[0].transform.aspect.value_at(2.0), 60.0);
@@ -1603,6 +1623,8 @@ fn transform_softness_controls_restore_zero_and_clamp_without_touching_transform
                 "w1",
                 Control::Softness(side),
                 (64.0, 36.0),
+                [1.0; 2],
+                Modifiers::default(),
             )
             .unwrap();
             let changed = movement.at((64.0, 36.0 + f64::from(side) * 18.0)).unwrap();
@@ -2435,4 +2457,502 @@ async fn a_valid_external_seek_before_the_orders_turn_cannot_be_rewound_by_late_
     );
     assert_eq!(state.lock().await.history.revision(), 0);
     transport.stop();
+}
+
+// ---- Curve drawing and single-point editing (T23 step 4, RM20 pp. 3193-3194) ----
+
+type CurveAnchor = ([f64; 2], [f64; 2], [f64; 2]);
+
+fn curve_window(anchors: &[CurveAnchor], closed: bool) -> Window {
+    Window::new(
+        "w1",
+        WindowShape::Curve {
+            points: anchors
+                .iter()
+                .map(|&(p, i, o)| columbina_model::grade::WindowBezierPoint {
+                    position: WindowPoint::new(p[0], p[1]),
+                    into: WindowPoint::new(i[0], i[1]),
+                    out: WindowPoint::new(o[0], o[1]),
+                })
+                .collect(),
+            closed,
+            inside: Param::Fixed(0.0),
+            outside: Param::Fixed(0.0),
+        },
+    )
+}
+
+/// The fixture's rectangle as Curve anchors (device 46..82 x 18..54); anchor 2 has handles
+/// along its two edges.
+fn curve_square() -> Vec<CurveAnchor> {
+    vec![
+        ([-0.25, -0.25], [0.0; 2], [0.0; 2]),
+        ([0.25, -0.25], [0.0; 2], [0.0; 2]),
+        ([0.25, 0.25], [0.0, -0.125], [-0.125, 0.0]),
+        ([-0.25, 0.25], [0.0; 2], [0.0; 2]),
+    ]
+}
+
+fn curve_points(window: &Window) -> (Vec<columbina_model::grade::WindowBezierPoint>, bool) {
+    match &window.shape {
+        WindowShape::Curve { points, closed, .. } => (points.clone(), *closed),
+        _ => panic!("not a Curve"),
+    }
+}
+
+fn fixed(param: &Param) -> f64 {
+    match param {
+        Param::Fixed(v) => *v,
+        Param::Keys(_) => panic!("keyed {param:?}"),
+    }
+}
+
+/// A down with Alt and/or the system's double click on a control of the selected `window`.
+#[allow(clippy::type_complexity, reason = "one fixture tuple")]
+fn try_curve(
+    window: Window,
+    at: (i32, i32),
+    alt: bool,
+    clicks: u8,
+) -> (
+    State,
+    Registry,
+    Arc<Pin>,
+    Arc<FrameSnapshot>,
+    Result<Value, Fault>,
+) {
+    try_curve_selecting(window, at, alt, clicks, Some("w1"))
+}
+
+/// As `try_curve`, with the binding selecting `selected` (none after Esc left a draft).
+#[allow(clippy::type_complexity, reason = "one fixture tuple")]
+fn try_curve_selecting(
+    window: Window,
+    at: (i32, i32),
+    alt: bool,
+    clicks: u8,
+    selected: Option<&str>,
+) -> (
+    State,
+    Registry,
+    Arc<Pin>,
+    Arc<FrameSnapshot>,
+    Result<Value, Fault>,
+) {
+    try_curve_shown(window, at, alt, clicks, selected, None)
+}
+
+/// As `try_curve_selecting`, optionally with the clip's picture `size` (also the canvas) shown
+/// through `map` instead of the fixture's 128x72 picture at one device pixel per canvas pixel.
+#[allow(clippy::type_complexity, reason = "one fixture tuple")]
+fn try_curve_shown(
+    window: Window,
+    at: (i32, i32),
+    alt: bool,
+    clicks: u8,
+    selected: Option<&str>,
+    shown: Option<((u32, u32), columbina_view::ViewportMap)>,
+) -> (
+    State,
+    Registry,
+    Arc<Pin>,
+    Arc<FrameSnapshot>,
+    Result<Value, Fault>,
+) {
+    let (mut state, registry, old_pin, old_frame) = fixture();
+    state.window_end("fixture");
+    let mut frame = (*old_frame).clone();
+    let mut project = (*frame.project).clone();
+    let NodeKind::Corrector(c) = &mut project.timelines[0].tracks[0].clips[0].grade.nodes[0].kind
+    else {
+        panic!()
+    };
+    c.windows[0] = window;
+    let mut pointer = old_pin.down.pointer;
+    if let Some((size, map)) = shown {
+        project.timelines[0].width = size.0;
+        project.timelines[0].height = size.1;
+        frame.canvas = size;
+        frame.layers[0].shown_size = size;
+        frame.layers[0].picture_to_canvas =
+            [f64::from(size.0), 0.0, 0.0, f64::from(size.1), 0.0, 0.0];
+        pointer.presentation.as_mut().unwrap().map = Some(map);
+    }
+    state.history = History::new(project.clone());
+    frame.project = Arc::new(project);
+    Arc::make_mut(state.window.selection.as_mut().unwrap()).selected = selected.map(Into::into);
+    frame.overlay = state
+        .window
+        .selection
+        .as_ref()
+        .unwrap()
+        .overlay(&frame, None);
+    let frame = Arc::new(frame);
+    let tag = registry
+        .register(Monitor::Timeline, 1, frame.clone())
+        .unwrap();
+    pointer.window = at;
+    pointer.alt = alt;
+    pointer.clicks = clicks;
+    pointer.presentation.as_mut().unwrap().tag = Some(tag);
+    pointer.presentation.as_mut().unwrap().serial += 1;
+    registry.observe(Monitor::Timeline, 1, pointer.presentation);
+    let event = registry.input(Monitor::Timeline, 7, 1, pointer, Some(frame.clone()));
+    let pin = registry.claim(7, event).unwrap();
+    let begun = state.window_begin(7, 1, pin.clone(), registry.clone());
+    (state, registry, pin, frame, begun)
+}
+
+fn control_of(state: &State) -> Control {
+    state.window.active.as_ref().unwrap().movement.control
+}
+
+#[test]
+fn drawing_adds_a_corner_on_a_click_and_a_bezier_point_on_a_drag_each_one_undo_step() {
+    let (mut state, registry, pin, frame, begun) =
+        try_curve(curve_window(&[], false), (40, 36), false, 1);
+    begun.unwrap();
+    assert_eq!(control_of(&state), Control::Append);
+    assert_eq!(
+        state.window.active.as_ref().unwrap().movement.keys(),
+        json!({"points":[{"point":0,"out_x":null,"out_y":null,"in_x":null,"in_y":null}],
+            "inserted":0,"clock":"source","frame":10})
+    );
+    arm_capture(&mut state);
+    // A wobble shorter than the pull threshold keeps a corner.
+    drag(&mut state, &registry, &pin, &frame, (41, 36));
+    let (points, closed) = curve_points(&first_window(&state));
+    assert!(!closed);
+    assert_eq!(points.len(), 1);
+    assert!((fixed(&points[0].position.x) - (40.5 - 64.0) / 72.0).abs() < 1e-12);
+    assert!((fixed(&points[0].position.y) - 0.5 / 72.0).abs() < 1e-12);
+    assert_eq!(points[0].out, WindowPoint::new(0.0, 0.0));
+    state.window_end("up");
+    assert_eq!(state.history.revision(), 1);
+    // A second point dragged out: the out handle follows, the in handle mirrors it.
+    let drawn = first_window(&state);
+    let (mut state, registry, pin, frame, begun) = try_curve(drawn, (88, 36), false, 1);
+    begun.unwrap();
+    arm_capture(&mut state);
+    drag(&mut state, &registry, &pin, &frame, (100, 45));
+    let (points, _) = curve_points(&first_window(&state));
+    assert_eq!(points.len(), 2);
+    assert!((fixed(&points[1].out.x) - 12.0 / 72.0).abs() < 1e-12);
+    assert!((fixed(&points[1].out.y) - 9.0 / 72.0).abs() < 1e-12);
+    assert!((fixed(&points[1].into.x) + 12.0 / 72.0).abs() < 1e-12);
+    assert!((fixed(&points[1].into.y) + 9.0 / 72.0).abs() < 1e-12);
+    state.window_end("up");
+    state.history.undo("desktop").unwrap().unwrap();
+    assert_eq!(curve_points(&first_window(&state)).0.len(), 1, "one step");
+}
+
+#[test]
+fn the_pull_threshold_is_four_device_pixels_in_a_fit_4k_view_and_at_800_percent() {
+    use columbina_view::Viewport;
+    // A 3840x2160 picture fitted to 1920x1080: half a device pixel per canvas pixel.
+    let fit = Viewport::Fit.map((1920, 1080), (3840, 2160), 0).unwrap();
+    // The fixture's 128x72 picture at 800%: eight device pixels per canvas pixel.
+    let zoomed = Viewport::Scale {
+        scale: 8.0,
+        center: [0.5, 0.5],
+    }
+    .map((128, 72), (128, 72), 0)
+    .unwrap();
+    for (size, map, at) in [
+        ((3840, 2160), fit, (900, 540)),
+        ((128, 72), zoomed, (40, 36)),
+    ] {
+        for (travel, pulled) in [(3, false), (4, true)] {
+            let (mut state, registry, pin, frame, begun) = try_curve_shown(
+                curve_window(&[], false),
+                at,
+                false,
+                1,
+                Some("w1"),
+                Some((size, map)),
+            );
+            begun.unwrap();
+            assert_eq!(control_of(&state), Control::Append);
+            arm_capture(&mut state);
+            drag(&mut state, &registry, &pin, &frame, (at.0 + travel, at.1));
+            let (points, _) = curve_points(&first_window(&state));
+            assert_eq!(points.len(), 1);
+            assert_eq!(
+                fixed(&points[0].out.x) > 0.0,
+                pulled,
+                "{travel} device px in {size:?}: {:?}",
+                points[0]
+            );
+            assert_eq!(fixed(&points[0].out.y), 0.0);
+        }
+    }
+}
+
+#[test]
+fn a_down_just_outside_a_closed_curve_moves_it_and_one_beside_a_draft_draws() {
+    // The square's top edge is device y = 18; pixel centre 64.5, 14.5 is 3.5 pixels above it.
+    for selected in [Some("w1"), None] {
+        let (mut state, registry, pin, frame, begun) = try_curve_selecting(
+            curve_window(&curve_square(), true),
+            (64, 14),
+            false,
+            1,
+            selected,
+        );
+        begun.unwrap();
+        assert_eq!(control_of(&state), Control::Move);
+        assert_eq!(
+            state.window.selection.as_ref().unwrap().selected.as_deref(),
+            Some("w1")
+        );
+        arm_capture(&mut state);
+        drag(&mut state, &registry, &pin, &frame, (70, 20));
+        let moved = first_window(&state);
+        let before = curve_window(&curve_square(), true);
+        let panned = moved.transform.pan.value_at(10.0) - before.transform.pan.value_at(10.0);
+        assert!((panned - 6.0 / 128.0 * 100.0).abs() < 1e-9, "{panned}");
+        assert_eq!(
+            curve_points(&moved).0,
+            curve_points(&before).0,
+            "the whole window moves, not a point"
+        );
+    }
+    // Two pixels further out nothing is hit; beside a selected draft the down draws.
+    let (_, _, _, _, begun) = try_curve(curve_window(&curve_square(), true), (64, 12), false, 1);
+    assert_eq!(begun.unwrap_err().data, Some(json!({"reason":"hit"})));
+    let (state, _, _, _, begun) =
+        try_curve(curve_window(&curve_square(), false), (64, 14), false, 1);
+    begun.unwrap();
+    assert_eq!(control_of(&state), Control::Append);
+}
+
+#[test]
+fn esc_during_a_drawing_drag_removes_only_that_point_and_keeps_the_draft() {
+    let (mut state, registry, pin, frame, begun) = try_curve(
+        curve_window(&curve_square()[..2], false),
+        (64, 54),
+        false,
+        1,
+    );
+    begun.unwrap();
+    let before = state.history.project().clone();
+    arm_capture(&mut state);
+    drag(&mut state, &registry, &pin, &frame, (70, 60));
+    assert_eq!(curve_points(&first_window(&state)).0.len(), 3);
+    let capture = state.window.active.take().unwrap();
+    state.window_cancel(7, capture);
+    assert_eq!(state.history.project(), &before);
+    let (points, closed) = curve_points(&first_window(&state));
+    assert_eq!((points.len(), closed), (2, false), "the draft stays");
+    assert!(!state.history.can_undo());
+}
+
+#[test]
+fn clicking_the_first_point_closes_and_dragging_it_closes_with_bezier_handles() {
+    // The first point was drawn as a Bezier point: a click still closes with a corner there.
+    let mut anchors = curve_square();
+    anchors[0].1 = [0.0, 0.1];
+    anchors[0].2 = [0.1, 0.0];
+    for dragged in [false, true] {
+        let (mut state, registry, pin, frame, begun) =
+            try_curve(curve_window(&anchors, false), (46, 18), false, 1);
+        begun.unwrap();
+        assert_eq!(control_of(&state), Control::Close);
+        arm_capture(&mut state);
+        if dragged {
+            drag(&mut state, &registry, &pin, &frame, (46, 30));
+        }
+        let (points, closed) = curve_points(&first_window(&state));
+        assert!(closed);
+        assert_eq!(points.len(), 4, "closing adds no point");
+        let out = [fixed(&points[0].out.x), fixed(&points[0].out.y)];
+        let into = [fixed(&points[0].into.x), fixed(&points[0].into.y)];
+        if dragged {
+            assert!((out[1] - 12.0 / 72.0).abs() < 1e-12 && out[0].abs() < 1e-12);
+            assert!((into[1] + 12.0 / 72.0).abs() < 1e-12);
+        } else {
+            assert_eq!((out, into), ([0.0; 2], [0.0; 2]), "a corner closing");
+        }
+        state.window_end("up");
+        state.history.undo("desktop").unwrap().unwrap();
+        assert!(!curve_points(&first_window(&state)).1, "one step");
+    }
+    // A released click before arming still closes, with its corner, as one step.
+    let (mut state, registry, pin, frame, begun) =
+        try_curve(curve_window(&anchors, false), (46, 18), false, 1);
+    begun.unwrap();
+    let mut pointer = pin.down.pointer;
+    pointer.kind = PointerKind::Up;
+    pointer.buttons = 0;
+    registry.input(Monitor::Timeline, 7, 1, pointer, Some(frame.clone()));
+    let capture = state.window.active.take().unwrap();
+    state.window_finish_unarmed(capture, "native_end");
+    let (points, closed) = curve_points(&first_window(&state));
+    assert!(closed);
+    assert_eq!(points[0].out, WindowPoint::new(0.0, 0.0));
+    assert_eq!(state.history.revision(), 1);
+}
+
+#[test]
+fn a_linked_handle_drag_turns_both_keeping_angle_and_ratio_and_alt_moves_one() {
+    // Anchor 2 (device 82, 54): in handle up 9 px, out handle left 9 px; make them unequal.
+    let mut anchors = curve_square();
+    anchors[2].2 = [-0.25, 0.0];
+    for alt in [false, true] {
+        let (mut state, registry, pin, frame, begun) =
+            try_curve(curve_window(&anchors, true), (82, 45), alt, 1);
+        begun.unwrap();
+        assert_eq!(control_of(&state), Control::HandleIn(2));
+        arm_capture(&mut state);
+        // Turn the in handle a quarter turn clockwise on screen and double it: up 9 -> right 18.
+        drag(&mut state, &registry, &pin, &frame, (100, 54));
+        let (points, _) = curve_points(&first_window(&state));
+        let into = [fixed(&points[2].into.x), fixed(&points[2].into.y)];
+        let out = [fixed(&points[2].out.x), fixed(&points[2].out.y)];
+        assert!(
+            (into[0] - 0.25).abs() < 1e-12 && into[1].abs() < 1e-12,
+            "{into:?}"
+        );
+        if alt {
+            assert_eq!(out, [-0.25, 0.0], "Alt leaves the opposite handle");
+        } else {
+            // The opposite handle turned the same quarter and doubled: left .25 -> up .5.
+            assert!(
+                out[0].abs() < 1e-12 && (out[1] + 0.5).abs() < 1e-12,
+                "{out:?}"
+            );
+        }
+        assert_eq!(points[2].position, WindowPoint::new(0.25, 0.25));
+    }
+}
+
+#[test]
+fn a_zero_opposite_handle_stays_zero_and_alt_drag_on_a_corner_pulls_handles() {
+    let mut anchors = curve_square();
+    anchors[2].1 = [0.0; 2];
+    let (mut state, registry, pin, frame, begun) =
+        try_curve(curve_window(&anchors, true), (73, 54), false, 1);
+    begun.unwrap();
+    assert_eq!(control_of(&state), Control::HandleOut(2));
+    arm_capture(&mut state);
+    drag(&mut state, &registry, &pin, &frame, (73, 63));
+    let (points, _) = curve_points(&first_window(&state));
+    assert_eq!(points[2].into, WindowPoint::new(0.0, 0.0), "a corner side");
+    // Alt on a corner anchor pulls a symmetric pair; a plain drag would move the anchor.
+    let (mut state, registry, pin, frame, begun) =
+        try_curve(curve_window(&curve_square(), true), (82, 18), true, 1);
+    begun.unwrap();
+    arm_capture(&mut state);
+    drag(&mut state, &registry, &pin, &frame, (91, 18));
+    let (points, _) = curve_points(&first_window(&state));
+    assert_eq!(points[1].position, WindowPoint::new(0.25, -0.25));
+    assert!((fixed(&points[1].out.x) - 0.125).abs() < 1e-12);
+    assert!((fixed(&points[1].into.x) + 0.125).abs() < 1e-12);
+}
+
+#[test]
+fn alt_double_click_makes_a_bezier_point_a_corner_in_one_step() {
+    let (mut state, _, _, _, begun) =
+        try_curve(curve_window(&curve_square(), true), (82, 54), true, 2);
+    begun.unwrap();
+    assert_eq!(control_of(&state), Control::Point(2));
+    arm_capture(&mut state);
+    let (points, _) = curve_points(&first_window(&state));
+    assert_eq!(points[2].into, WindowPoint::new(0.0, 0.0));
+    assert_eq!(points[2].out, WindowPoint::new(0.0, 0.0));
+    assert_eq!(points[2].position, WindowPoint::new(0.25, 0.25));
+    state.window_end("up");
+    assert_eq!(state.history.revision(), 1);
+}
+
+#[test]
+fn a_curve_edge_click_inserts_on_the_original_cubic_and_its_drag_moves_the_new_point() {
+    let (mut state, registry, pin, frame, begun) =
+        try_curve(curve_window(&curve_square(), true), (64, 18), false, 1);
+    begun.unwrap();
+    assert_eq!(control_of(&state), Control::Insert(0));
+    arm_capture(&mut state);
+    let (points, _) = curve_points(&first_window(&state));
+    assert_eq!(points.len(), 5);
+    // On the straight top edge, at the clicked x (pixel centre 64.5).
+    assert!((fixed(&points[1].position.y) + 0.25).abs() < 1e-9);
+    assert!((fixed(&points[1].position.x) - 0.5 / 72.0).abs() < 1e-6);
+    drag(&mut state, &registry, &pin, &frame, (64, 27));
+    let (points, _) = curve_points(&first_window(&state));
+    assert!((fixed(&points[1].position.y) + 0.125).abs() < 1e-9);
+    state.window_end("up");
+    state.history.undo("desktop").unwrap().unwrap();
+    assert_eq!(curve_points(&first_window(&state)).0.len(), 4);
+}
+
+#[test]
+fn curve_softness_handles_drag_inside_and_outside_softness() {
+    let mut window = curve_window(&curve_square(), true);
+    let WindowShape::Curve {
+        inside, outside, ..
+    } = &mut window.shape
+    else {
+        panic!()
+    };
+    *inside = Param::Fixed(20.0);
+    *outside = Param::Fixed(20.0);
+    // .1 image heights each: 7.2 device pixels. Edge 0 at t = 1/3 is x = 46 + 36 * .259.
+    let (mut state, registry, pin, frame, begun) = try_curve(window.clone(), (55, 25), false, 1);
+    begun.unwrap();
+    assert_eq!(control_of(&state), Control::Softness(-1));
+    arm_capture(&mut state);
+    drag(&mut state, &registry, &pin, &frame, (55, 34));
+    let WindowShape::Curve { inside, .. } = &first_window(&state).shape else {
+        panic!()
+    };
+    assert!((fixed(inside) - 45.0).abs() < 1e-9, "{inside:?}");
+    let (state, _, _, _, begun) = try_curve(window, (72, 10), false, 1);
+    begun.unwrap();
+    assert_eq!(control_of(&state), Control::Softness(1));
+}
+
+#[test]
+fn a_middle_tap_deletes_a_curve_point_but_keeps_two_closed_and_empties_a_draft() {
+    let (mut state, registry, pin, frame) =
+        control_window_fixture(curve_window(&curve_square()[..3], true), (64, 36));
+    state.window_end("fixture");
+    let tap = middle_tap(&registry, &pin, &frame, (82, 18), false);
+    assert_eq!(state.window_delete(7, 1, &tap).unwrap()["point"], 1);
+    assert_eq!(curve_points(&first_window(&state)).0.len(), 2);
+    let (mut state, registry, pin, frame) =
+        control_window_fixture(curve_window(&curve_square()[..2], true), (64, 18));
+    state.window_end("fixture");
+    let tap = middle_tap(&registry, &pin, &frame, (82, 18), false);
+    assert_eq!(
+        state.window_delete(7, 1, &tap).unwrap_err().data,
+        Some(json!({"reason":"delete","topology":{"why":"minimum","least":2,"shape":"curve"}}))
+    );
+    // A draft's first point (its Close control) is deletable.
+    let (mut state, registry, pin, frame, begun) = try_curve(
+        curve_window(&curve_square()[..2], false),
+        (64, 18),
+        false,
+        1,
+    );
+    begun.unwrap();
+    state.window_end("fixture");
+    let tap = middle_tap(&registry, &pin, &frame, (46, 18), false);
+    assert_eq!(state.window_delete(7, 1, &tap).unwrap()["point"], 0);
+    let (points, closed) = curve_points(&first_window(&state));
+    assert_eq!((points.len(), closed), (1, false));
+}
+
+#[test]
+fn an_unselected_draft_is_selected_by_its_outline_and_nothing_else_draws_while_none_is() {
+    let draft = curve_window(&curve_square()[..2], false);
+    let (state, _, _, _, begun) = try_curve_selecting(draft.clone(), (64, 18), false, 1, None);
+    begun.unwrap();
+    assert_eq!(control_of(&state), Control::Move);
+    assert_eq!(
+        state.window.selection.as_ref().unwrap().selected.as_deref(),
+        Some("w1"),
+        "selected again, so its next click draws"
+    );
+    let (_, _, _, _, begun) = try_curve_selecting(draft, (64, 50), false, 1, None);
+    assert_eq!(begun.unwrap_err().data, Some(json!({"reason":"hit"})));
 }

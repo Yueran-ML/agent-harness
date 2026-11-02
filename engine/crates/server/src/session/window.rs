@@ -5,7 +5,9 @@ use super::{
     Mutex, Ordering, OwnedGesture, RawValue, Reply, State, Transport, Value, WorkedOutError,
 };
 use crate::presentation::{FrameSnapshot, Input, Pin, Registry, Tap};
-use crate::window::{refused, topology_refused, Movement, Refusal, Selection, Tool, Update};
+use crate::window::{
+    refused, topology_refused, Modifiers, Movement, Refusal, Selection, Tool, Update,
+};
 use columbina_model::grade::WindowShape;
 use columbina_view::window_overlay::Control;
 use columbina_view::{Button, PointerKind, Presentation};
@@ -260,14 +262,26 @@ impl State {
             .ok_or_else(|| refused("hit"))?;
         let selected = hit.id.to_owned();
         let canvas = map.on_picture(down.pointer.window).0;
+        // Alt and the system's double click qualify Curve point controls (RM20 p. 3194).
+        let modifiers = Modifiers {
+            alt: down.pointer.alt,
+            double: down.pointer.clicks >= 2,
+        };
         let movement = if hit.control == Control::Move {
             Movement::new(selection, frame, &selected, canvas).ok_or_else(|| refused("target"))
         } else {
-            Movement::capture(selection, frame, &selected, hit.control, canvas).map_err(|refusal| {
-                match refusal {
-                    Refusal::Target => refused("target"),
-                    Refusal::Insert(error, clock) => topology_refused("insert", &error, clock),
-                }
+            Movement::capture(
+                selection,
+                frame,
+                &selected,
+                hit.control,
+                canvas,
+                Movement::device_per_canvas(map),
+                modifiers,
+            )
+            .map_err(|refusal| match refusal {
+                Refusal::Target => refused("target"),
+                Refusal::Insert(error, clock) => topology_refused("insert", &error, clock),
             })
         }?;
         self.window_end("new_down");
@@ -291,10 +305,11 @@ impl State {
         Ok(result)
     }
 
-    /// A Polygon edge insertion is the capture's first owned step, written once arming has
-    /// begun its gesture, so a following drag moves the new point within the same undo step.
+    /// The down's own edit (a Polygon/Curve edge insertion, a drawn Curve point, a closed draft
+    /// or a corner) is the capture's first owned step, written once arming has begun its
+    /// gesture, so a following drag continues within the same undo step.
     fn window_write_insertion(&mut self, capture: &mut Capture) -> Result<(), Fault> {
-        let Some(windows) = capture.movement.inserted().map(<[_]>::to_vec) else {
+        let Some(windows) = capture.movement.edited().map(<[_]>::to_vec) else {
             return Ok(());
         };
         let selection = self
@@ -324,16 +339,17 @@ impl State {
         })
     }
 
-    /// A click on a Polygon edge released before arming completed still inserts its point, as
-    /// one plain step against the unchanged down revision. Otherwise it ends like any click.
+    /// A click with its own edit (an edge insertion, a drawn or closing Curve point, a corner)
+    /// released before arming completed still makes it, as one plain step against the
+    /// unchanged down revision. Otherwise it ends like any click.
     fn window_finish_unarmed(&mut self, capture: Capture, reason: &str) -> Value {
-        let inserts = capture.gesture.is_none() && capture.movement.inserted().is_some();
+        let inserts = capture.gesture.is_none() && capture.movement.edited().is_some();
         if !inserts {
             return self.finish_capture(capture, reason);
         }
         let op = match (
             Self::window_released(&capture),
-            capture.movement.inserted(),
+            capture.movement.edited(),
             self.window.selection.clone(),
             capture.pin.down.frame.as_ref(),
         ) {
@@ -361,8 +377,9 @@ impl State {
         }
     }
 
-    /// Middle-click deletion of a selected Polygon point (RM20 p. 3193), from native evidence:
-    /// the middle down's own frame, overlay and map, released without moving. One plain step.
+    /// Middle-click deletion of a selected Polygon point or Curve anchor (RM20 pp. 3193-3194),
+    /// from native evidence: the middle down's own frame, overlay and map, released without
+    /// moving. One plain step. An open Curve's first anchor (its `Close` control) is deletable.
     #[allow(
         clippy::cast_precision_loss,
         reason = "native pixel coordinates are converted to the overlay's f32 device space"
@@ -409,8 +426,10 @@ impl State {
             .as_ref()
             .and_then(|o| o.hit_control(map, point))
             .ok_or_else(|| refused("hit"))?;
-        let Control::Point(index) = hit.control else {
-            return Err(refused("hit"));
+        let index = match hit.control {
+            Control::Point(index) => index as usize,
+            Control::Close => 0,
+            _ => return Err(refused("hit")),
         };
         let id = hit.id.to_owned();
         let mut windows = selection
@@ -420,12 +439,20 @@ impl State {
             .clone();
         let window = windows
             .iter_mut()
-            .find(|w| w.id == id && matches!(w.shape, WindowShape::Polygon { .. }))
+            .find(|w| {
+                w.id == id
+                    && matches!(
+                        w.shape,
+                        WindowShape::Polygon { .. } | WindowShape::Curve { .. }
+                    )
+            })
             .ok_or_else(|| refused("hit"))?;
-        window
-            .shape
-            .remove_polygon_point(usize::from(index))
-            .map_err(|error| topology_refused("delete", &error, ""))?;
+        if matches!(window.shape, WindowShape::Curve { .. }) {
+            window.shape.remove_curve_point(index)
+        } else {
+            window.shape.remove_polygon_point(index)
+        }
+        .map_err(|error| topology_refused("delete", &error, ""))?;
         let op = Movement::op(&selection, &windows);
         self.apply_worked_out_locked(
             Kind::Desktop,
@@ -975,7 +1002,7 @@ impl Task {
                     .as_ref()
                     .and_then(|d| d["reason"].as_str())
                     .unwrap_or("freeze");
-                if capture.movement.inserted().is_some() && State::window_released(&capture) {
+                if capture.movement.edited().is_some() && State::window_released(&capture) {
                     state.window_finish_unarmed(capture, reason);
                 } else {
                     state.close_capture(capture, "refused", reason);

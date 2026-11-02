@@ -650,3 +650,220 @@ async fn native_polygon_edge_click_inserts_once_and_a_middle_tap_deletes_whole_a
     assert_eq!(refused["data"]["topology"]["why"], "minimum", "{refused}");
     assert_eq!(project(&mut desktop).await, three);
 }
+
+fn curve_shape(project: &Value, binding: &Value) -> (Vec<Value>, bool) {
+    let shape = &windows(project, binding)[0]["shape"];
+    (
+        shape["points"].as_array().unwrap().clone(),
+        shape["closed"].as_bool().unwrap(),
+    )
+}
+
+/// A coordinate of a static Curve point field, e.g. `("position", "x")`.
+fn curve_value(point: &Value, field: &str, axis: &str) -> f64 {
+    point[field][axis].as_f64().unwrap()
+}
+
+/// Bind again at the current revision and wait for its first frame, as the transform tests do
+/// after a drag. Returns the new binding. The desktop's own flow, one binding for the whole
+/// drawing, is the `native_curve_clicks_draw_in_a_row_…` test below.
+async fn curve_rebind(client: &mut Client, window: isize, binding: &mut Value) -> (Value, Value) {
+    let now = project(client).await;
+    binding["revision"] = now["revision"].clone();
+    let bound = client.result("window.bind", Some(binding.clone())).await;
+    ready(client, window, &bound["binding"]).await;
+    (bound["binding"].clone(), now)
+}
+
+/// A native left down at `at`, dragged to `through` once armed, and released there. Returns the
+/// down's answer.
+async fn curve_gesture(
+    client: &mut Client,
+    window: isize,
+    binding: &Value,
+    at: (i32, i32),
+    through: Option<(i32, i32)>,
+) -> Value {
+    let down = pointer(client, window, WM_LBUTTONDOWN, at.0, at.1).await;
+    let started = client
+        .result(
+            "window.input",
+            Some(json!({"binding":binding,"kind":"down","event":down["event"]})),
+        )
+        .await;
+    let end = through.unwrap_or(at);
+    if let Some((x, y)) = through {
+        phase(client, "armed").await;
+        let moved = pointer(client, window, WM_MOUSEMOVE, x, y).await;
+        client.result("window.input",Some(json!({"binding":binding,"capture":started["capture"],"kind":"move","event":moved["event"]}))).await;
+    }
+    pointer(client, window, WM_LBUTTONUP, end.0, end.1).await;
+    let ended = client
+        .result(
+            "window.input",
+            Some(json!({"binding":binding,"capture":started["capture"],"kind":"up"})),
+        )
+        .await;
+    assert_eq!(ended["phase"], "ended", "{ended}");
+    started
+}
+
+/// A native middle tap at `at`, named for deletion.
+async fn curve_tap(client: &mut Client, window: isize, binding: &Value, at: (i32, i32)) -> Value {
+    let down = middle(client, window, WM_MBUTTONDOWN, at.0, at.1).await;
+    let up = middle(client, window, WM_MBUTTONUP, at.0, at.1).await;
+    assert_eq!(up["middle_moved"], false);
+    json!({"binding":binding,"kind":"delete","event":down["event"]})
+}
+
+#[tokio::test]
+async fn native_curve_clicks_draw_close_insert_on_the_edge_and_middle_taps_keep_two_points() {
+    let dir = project_dir();
+    let engine = engine(dir.path(), &[]).await;
+    let parent = parent::Parent::open();
+    let mut desktop = engine.client("desktop").await;
+    let mut binding = fixture(&mut desktop).await;
+    let mut all = windows(&project(&mut desktop).await, &binding);
+    all[0]["shape"] = json!({"kind":"curve","points":[],"closed":false,"inside":0,"outside":0});
+    let changed = desktop.apply(json!([{"op":"set_node","grade":binding["target"],"id":binding["node"],"params":{"windows":all}}])).await;
+    binding["revision"] = changed["revision"].clone();
+    desktop.result("view.attach",Some(json!({"monitor":"timeline","parent":parent.hwnd.to_string(),"x":0,"y":0,"width":128,"height":72}))).await;
+    desktop
+        .result(
+            "transport.load",
+            Some(json!({"monitor":"timeline","timeline":binding["timeline"]})),
+        )
+        .await;
+    let bound = desktop.result("window.bind", Some(binding.clone())).await;
+    let window = until_views(&parent, "curve view", |views| views.len() == 1).await[0].0;
+    ready(&mut desktop, window, &bound["binding"]).await;
+    // A click in the viewer draws a corner point where it lands (pixel centres, 72 px high).
+    let started = curve_gesture(&mut desktop, window, &bound["binding"], (40, 36), None).await;
+    assert_eq!(started["keys"]["inserted"], 0, "{started}");
+    let (b, drawn) = curve_rebind(&mut desktop, window, &mut binding).await;
+    let (points, closed) = curve_shape(&drawn, &binding);
+    assert_eq!((points.len(), closed), (1, false));
+    assert!((curve_value(&points[0], "position", "x") - (40.5 - 64.0) / 72.0).abs() < 1e-9);
+    assert_eq!(curve_value(&points[0], "out", "x"), 0.0);
+    // A drag pulls symmetric Bezier handles out of the new point, in the same undo step.
+    let started = curve_gesture(&mut desktop, window, &b, (88, 36), Some((100, 45))).await;
+    assert_eq!(started["keys"]["inserted"], 1);
+    let pulled = project(&mut desktop).await;
+    let (points, _) = curve_shape(&pulled, &binding);
+    assert!((curve_value(&points[1], "out", "x") - 12.0 / 72.0).abs() < 1e-9);
+    assert!((curve_value(&points[1], "in", "y") + 9.0 / 72.0).abs() < 1e-9);
+    desktop.result("history.undo", None).await;
+    assert_eq!(project(&mut desktop).await["project"], drawn["project"]);
+    desktop.result("history.redo", None).await;
+    let (b, _) = curve_rebind(&mut desktop, window, &mut binding).await;
+    curve_gesture(&mut desktop, window, &b, (64, 60), None).await;
+    // Clicking the first point closes the curve and adds no point.
+    let (b, _) = curve_rebind(&mut desktop, window, &mut binding).await;
+    let started = curve_gesture(&mut desktop, window, &b, (40, 36), None).await;
+    assert!(started["keys"].get("inserted").is_none(), "{started}");
+    let (b, closed_project) = curve_rebind(&mut desktop, window, &mut binding).await;
+    let (points, closed) = curve_shape(&closed_project, &binding);
+    assert_eq!((points.len(), closed), (3, true));
+    // A click on the straight closing edge inserts a point on it, in one step.
+    let started = curve_gesture(&mut desktop, window, &b, (52, 48), None).await;
+    assert_eq!(started["keys"]["inserted"], 3, "{started}");
+    let inserted = project(&mut desktop).await;
+    let (points, _) = curve_shape(&inserted, &binding);
+    assert_eq!(points.len(), 4);
+    assert!((curve_value(&points[3], "position", "x") - (52.5 - 64.0) / 72.0).abs() < 1e-6);
+    assert!((curve_value(&points[3], "position", "y") - (48.5 - 36.0) / 72.0).abs() < 1e-6);
+    desktop.result("history.undo", None).await;
+    let (b, restored) = curve_rebind(&mut desktop, window, &mut binding).await;
+    assert_eq!(restored["project"], closed_project["project"]);
+    // Dragging an out handle turns its linked in handle with it; Esc restores the whole list.
+    let down = pointer(&mut desktop, window, WM_LBUTTONDOWN, 100, 45).await;
+    let started = desktop
+        .result(
+            "window.input",
+            Some(json!({"binding":b,"kind":"down","event":down["event"]})),
+        )
+        .await;
+    let armed = phase(&mut desktop, "armed").await;
+    assert_eq!(armed["keys"]["points"][0]["point"], 1, "{armed}");
+    let moved = pointer(&mut desktop, window, WM_MOUSEMOVE, 100, 54).await;
+    desktop.result("window.input",Some(json!({"binding":b,"capture":started["capture"],"kind":"move","event":moved["event"]}))).await;
+    let (points, _) = curve_shape(&project(&mut desktop).await, &binding);
+    let out = [
+        curve_value(&points[1], "out", "x"),
+        curve_value(&points[1], "out", "y"),
+    ];
+    let into = [
+        curve_value(&points[1], "in", "x"),
+        curve_value(&points[1], "in", "y"),
+    ];
+    assert!((out[1] - 18.0 / 72.0).abs() < 1e-9, "{out:?}");
+    assert!((into[0] + out[0]).abs() < 1e-9 && (into[1] + out[1]).abs() < 1e-9);
+    desktop
+        .result(
+            "window.input",
+            Some(json!({"binding":b,"capture":started["capture"],"kind":"cancel"})),
+        )
+        .await;
+    // A middle tap deletes a point; a closed curve keeps two, and then nothing changes.
+    let (b, cancelled) = curve_rebind(&mut desktop, window, &mut binding).await;
+    assert_eq!(cancelled["project"], closed_project["project"]);
+    let tap = curve_tap(&mut desktop, window, &b, (64, 60)).await;
+    let deleted = desktop.result("window.input", Some(tap)).await;
+    assert_eq!(deleted["point"], 2, "{deleted}");
+    let (b, two) = curve_rebind(&mut desktop, window, &mut binding).await;
+    let (points, closed) = curve_shape(&two, &binding);
+    assert_eq!((points.len(), closed), (2, true));
+    let tap = curve_tap(&mut desktop, window, &b, (40, 36)).await;
+    let refused = desktop.error("window.input", Some(tap)).await;
+    assert_eq!(
+        refused["data"]["topology"],
+        json!({"why":"minimum","least":2,"shape":"curve"}),
+        "{refused}"
+    );
+    assert_eq!(project(&mut desktop).await, two);
+}
+
+/// As the desktop does: one binding for a whole drawing, each click sent once the previous one's
+/// revision is presented, never bound again in between, including right after a drag.
+#[tokio::test]
+async fn native_curve_clicks_draw_in_a_row_on_one_binding_waiting_only_for_each_presented_frame() {
+    let dir = project_dir();
+    let engine = engine(dir.path(), &[]).await;
+    let parent = parent::Parent::open();
+    let mut desktop = engine.client("desktop").await;
+    let mut binding = fixture(&mut desktop).await;
+    let mut all = windows(&project(&mut desktop).await, &binding);
+    all[0]["shape"] = json!({"kind":"curve","points":[],"closed":false,"inside":0,"outside":0});
+    let changed = desktop.apply(json!([{"op":"set_node","grade":binding["target"],"id":binding["node"],"params":{"windows":all}}])).await;
+    binding["revision"] = changed["revision"].clone();
+    desktop.result("view.attach",Some(json!({"monitor":"timeline","parent":parent.hwnd.to_string(),"x":0,"y":0,"width":128,"height":72}))).await;
+    desktop
+        .result(
+            "transport.load",
+            Some(json!({"monitor":"timeline","timeline":binding["timeline"]})),
+        )
+        .await;
+    let bound = desktop.result("window.bind", Some(binding.clone())).await;
+    let b = bound["binding"].clone();
+    let window = until_views(&parent, "curve row view", |views| views.len() == 1).await[0].0;
+    ready(&mut desktop, window, &b).await;
+    // A click, a drag, two more clicks, the close, then an insertion on the closing edge.
+    let steps = [
+        ((40, 36), None),
+        ((88, 36), Some((100, 45))),
+        ((64, 60), None),
+        ((40, 36), None),
+        ((52, 48), None),
+    ];
+    let inserted = [json!(0), json!(1), json!(2), Value::Null, json!(3)];
+    for (k, (at, through)) in steps.into_iter().enumerate() {
+        let started = curve_gesture(&mut desktop, window, &b, at, through).await;
+        assert_eq!(started["keys"]["inserted"], inserted[k], "{k}: {started}");
+        let now = project(&mut desktop).await;
+        shown(&mut desktop, window, &now["revision"]).await;
+    }
+    let (points, closed) = curve_shape(&project(&mut desktop).await, &binding);
+    assert_eq!((points.len(), closed), (4, true));
+    assert!((curve_value(&points[1], "out", "x") - 12.0 / 72.0).abs() < 1e-9);
+    assert!((curve_value(&points[3], "position", "x") - (52.5 - 64.0) / 72.0).abs() < 1e-6);
+}

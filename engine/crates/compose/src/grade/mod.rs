@@ -170,6 +170,7 @@
 //! Q3) will change the luma weights ([`GradeOptions::luma`]), and may move the Log wheels and
 //! Contrast into a log space of their own.
 
+pub mod curve;
 mod graph;
 pub mod layout;
 mod luts;

@@ -323,7 +323,8 @@ export function ColorPage({
     frame: placed?.frame ?? 0, clock: shownLevel === 'timeline' ? 'timeline' : clockMedia?.facts.video && !clockMedia.facts.video.still ? 'source' : 'clip' });
   const viewerInput = useViewerInput({ bridge, session, native, loaded: timelineState !== null && timelineMonitor.loaded,
     timeline: selected?.id ?? null, tool: viewerTool, selection: windows.selection, intention: windows.intention,
-    creating: windows.pending, comparison, viewer: viewerElement, onMenu: onPointerMenu, onWindowState: windows.onState, onDeleted: windows.onDeleted });
+    creating: windows.pending, comparison, viewer: viewerElement, onMenu: onPointerMenu, onWindowState: windows.onState, onDeleted: windows.onDeleted,
+    onIdleEscape: windows.leaveDraft });
   comparisonRef.current = comparison;
   useEffect(() => { setWiped(comparison.wipedStill); }, [comparison.wipedStill]);
   // Append Node to Selected Clips (Color menu, p. 3297), from the menu of the node: the current node, after the grades of the other clips chosen.

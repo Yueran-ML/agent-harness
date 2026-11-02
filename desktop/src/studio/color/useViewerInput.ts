@@ -30,11 +30,13 @@ export type WindowInputStatus = 'idle' | 'arming' | 'armed' | 'refused';
  * Window coordinates and hits belong to the engine; Image Wipe coordinates belong to comparison.
  */
 export function useViewerInput({ bridge, session, native, loaded, timeline, tool, selection, intention, creating = false, comparison, viewer,
-  onMenu, onWindowState, onDeleted }: {
+  onMenu, onWindowState, onDeleted, onIdleEscape }: {
   bridge: Pick<EngineBridge, 'call' | 'onEvent'>; session: number; native: boolean; loaded: boolean; timeline: string | null;
   tool: ViewerTool; selection: WindowSelection | null; intention: number; creating?: boolean; comparison: Comparison;
   viewer: RefObject<HTMLElement | null>; onMenu: (point: { x: number; y: number }) => void;
   onWindowState: (state: WindowState) => void; onDeleted?: (answer: WindowDeleted) => void;
+  /** Esc in the viewer with no capture; true when it was used (an unfinished Curve is left, keeping its draft). */
+  onIdleEscape?: () => boolean;
 }) {
   const [status, setStatus] = useState<WindowInputStatus>('idle');
   // Why the engine refused a Polygon point insertion (at down) or a middle-click deletion.
@@ -48,8 +50,8 @@ export function useViewerInput({ bridge, session, native, loaded, timeline, tool
   const cursor = native && loaded ? (comparison.splitting || tool === 'image_wipe' ? comparison.pointerCursor ?? 'arrow' : 'arrow') : null;
   // Revision, server selection, edited object and palette interaction are deliberately absent.
   const key = JSON.stringify([session, timeline, tool, windowOn ? [selection!.target, selection!.node, selection!.clip, intention] : null, cursor]);
-  const now = useRef({ key, session, timeline, selection, windowOn, creating, comparison, tool, onMenu, onWindowState, onDeleted });
-  now.current = { key, session, timeline, selection, windowOn, creating, comparison, tool, onMenu, onWindowState, onDeleted };
+  const now = useRef({ key, session, timeline, selection, windowOn, creating, comparison, tool, onMenu, onWindowState, onDeleted, onIdleEscape });
+  now.current = { key, session, timeline, selection, windowOn, creating, comparison, tool, onMenu, onWindowState, onDeleted, onIdleEscape };
   const owner = useRef<Owner | null>(null);
   const switching = useRef<Promise<void>>(Promise.resolve());
   const nativeSeen = useRef({ session, instance: -1, event: -1, buttons: 0 });
@@ -369,13 +371,22 @@ export function useViewerInput({ bridge, session, native, loaded, timeline, tool
   useEffect(() => {
     const escape = (event: KeyboardEvent) => {
       const of = owner.current; const capture = of?.capture;
-      if (event.key !== 'Escape' || !of || !current(of) || !capture || capture.done) return;
+      if (event.key !== 'Escape' || !of || !current(of)) return;
+      if (!capture || capture.done) {
+        // Idle: only within the viewer, and never while a closing capture is still retiring.
+        const target = event.target;
+        if (capture || retiring.current.size > 0 || of.binding === null || event.defaultPrevented
+          || !(target instanceof Node) || !viewer.current?.contains(target)) return;
+        if (now.current.onIdleEscape?.()) { event.preventDefault(); event.stopPropagation(); }
+        return;
+      }
+      // During a drag Esc only rolls back that drag (an appended point with it); the draft stays.
       event.preventDefault(); event.stopPropagation();
       capture.terminal = 'cancel'; void terminal(of, capture);
     };
     window.addEventListener('keydown', escape, true);
     return () => window.removeEventListener('keydown', escape, true);
-  }, [terminal]);
+  }, [terminal, viewer]);
   const busy = useCallback(() => owner.current?.capture != null || retiring.current.size > 0, []);
   const setZoom = useCallback((value: number | 'fit') => navigate(value === 'fit' ? { operation: 'fit' } : { operation: 'scale', scale: value }), [navigate]);
   return { status, capturing: capturing || closing, busy, viewport, setZoom, notice };

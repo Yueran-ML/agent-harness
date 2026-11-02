@@ -852,18 +852,24 @@ export type PointerCursor = 'arrow' | 'crosshair' | 'move' | 'resize_ew' | 'resi
  */
 export type ViewerTool = 'none' | 'window' | 'image_wipe';
 /** A Linear corner or Polygon point dragged by a control: the left key frame of each coordinate. */
-export interface WindowPointKeys { point: number; x?: number | null; y?: number | null }
+/** A point's left keys: its position, and for a Curve its Bezier handles (`in_*`, `out_*`). */
+export interface WindowPointKeys {
+  point: number; x?: number | null; y?: number | null;
+  in_x?: number | null; in_y?: number | null; out_x?: number | null; out_y?: number | null;
+}
 /**
  * The left keys a captured control edits (PROTOCOL.md). `edge` names the Linear side whose Soft 1–4
- * is `softness`; `inserted` is a Polygon point added by this capture, whose keys are in `points`.
+ * is `softness`; `inserted` is a Polygon or Curve point added by this capture, whose keys are in `points`;
+ * `inside`/`outside` are a Curve's softness dragged on screen.
  */
 export interface WindowKeys {
   size?: number | null; aspect?: number | null; pan?: number | null; tilt?: number | null; rotate?: number | null; softness?: number | null;
-  edge?: number; points?: WindowPointKeys[]; inserted?: number; clock: 'source' | 'clip' | 'timeline'; frame: number;
+  edge?: number; points?: WindowPointKeys[]; inserted?: number; inside?: number | null; outside?: number | null;
+  clock: 'source' | 'clip' | 'timeline'; frame: number;
 }
-/** Why a whole-animation Polygon point insertion or deletion was refused; nothing changed. */
+/** Why a whole-animation Polygon or Curve point insertion or deletion was refused; nothing changed. */
 export type WindowTopology =
-  | { why: 'maximum'; most: number } | { why: 'minimum'; least: number } | { why: 'unsupported' }
+  | { why: 'maximum'; most: number } | { why: 'minimum'; least: number; shape?: 'polygon' | 'curve' } | { why: 'unsupported' }
   | { why: 'jump' | 'timing' | 'overshoot' | 'range' | 'encoding'; axis: 'x' | 'y'; points: number[];
     frames: [number, number] | null; clock: 'source' | 'clip' | 'timeline' };
 /** The answer of `window.input` with `kind: "delete"` (a native middle-button tap). */

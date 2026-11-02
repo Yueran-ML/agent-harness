@@ -13,12 +13,14 @@ import type { WindowInputStatus } from './useViewerInput';
 export const circularWindow = (id: string): PowerWindow => ({ id, label: '', enabled: true, invert: false, combine: 'add', opacity: 100,
   transform: { size: 50, aspect: 50, pan: 50, tilt: 50, rotate: 0 }, shape: { kind: 'circular', softness: 1 } });
 
-// Curve editing is a later step; its rows stay visible but cannot be chosen yet.
-const supported = (window: PowerWindow) => window.shape.kind !== 'curve';
+// Every shape has on-screen controls; Curve multi-point selection is a later step.
+const supported = (_window: PowerWindow) => true;
 
 const rectangle = () => [[-0.25, -0.25], [0.25, -0.25], [0.25, 0.25], [-0.25, 0.25]].map(([x, y]) => ({ x, y }));
-/** A new window's shape, as the model makes it (Linear Soft 1–4 at 1; Polygon inside/outside 0). */
-export function windowShape(kind: 'circular' | 'gradient' | 'linear' | 'polygon'): PowerWindow['shape'] {
+/** A new window's shape, as the model makes it (Linear Soft 1–4 at 1; Polygon/Curve inside/outside 0).
+ * A Curve starts as an empty open draft: clicks in the viewer draw it (RM20 p. 3193). */
+export function windowShape(kind: 'circular' | 'gradient' | 'linear' | 'polygon' | 'curve'): PowerWindow['shape'] {
+  if (kind === 'curve') return { kind, points: [], closed: false, inside: 0, outside: 0 };
   if (kind === 'linear') return { kind, points: rectangle() as [WindowPoint, WindowPoint, WindowPoint, WindowPoint], softness: [1, 1, 1, 1] };
   if (kind === 'polygon') return { kind, points: rectangle(), inside: 0, outside: 0 };
   return { kind, softness: 1 };
@@ -33,7 +35,7 @@ export function topologyText(messages: Messages, notice: WindowNotice): string {
   const topology = notice.topology; const words = messages.label.studio.colorPage.windowControls;
   const part = words.topology; const text = messages.hint.studio.colorPage.windowControls.topology;
   if (topology.why === 'maximum') return fill(text.maximum, { most: topology.most });
-  if (topology.why === 'minimum') return fill(text.minimum, { least: topology.least });
+  if (topology.why === 'minimum') return fill(topology.shape === 'curve' ? text.minimumCurve : text.minimum, { least: topology.least });
   if (topology.why === 'unsupported') return text.unsupported;
   const frames = topology.frames ? fill(part.frames, { clock: words.clock[topology.clock], from: topology.frames[0], to: topology.frames[1] }) : part.allFrames;
   const [first, second] = topology.points.map(point => point + 1);
@@ -54,7 +56,8 @@ export function useWindows({ session, revision, timeline, target, clip, node, re
   const intentKey = JSON.stringify([identity, tool]);
   const intent = useRef({ key: intentKey, generation: 0 });
   if (intent.current.key !== intentKey) intent.current = { key: intentKey, generation: intent.current.generation + 1 };
-  const [choice, setChoice] = useState<{ identity: string; id: string | null } | null>(null);
+  // `deselected`: Esc left an unfinished Curve; the binding stays, selecting none, so a click picks a window again.
+  const [choice, setChoice] = useState<{ identity: string; id: string | null; deselected?: boolean } | null>(null);
   const [intention, setIntention] = useState(0);
   const [reported, setReported] = useState<{ identity: string; keys: WindowKeys; id: string } | null>(null);
   const pending = useRef<Creation | null>(null);
@@ -96,7 +99,16 @@ export function useWindows({ session, revision, timeline, target, clip, node, re
     intent.current.generation++;
     setChoice({ identity: now.current.identity, id }); setIntention(value => value + 1); setReported(null);
   }, [waitingFor]);
-  const create = useCallback((busy: () => boolean, kind: 'circular' | 'gradient' | 'linear' | 'polygon' = 'circular') => {
+  /** Idle Esc on an unfinished Curve keeps its draft and selects no window; choosing the Curve again continues it
+   * (author decision 2026-11-02). False, doing nothing, for any other selection. */
+  const leaveDraft = useCallback(() => {
+    const shape = now.current.selected?.shape;
+    if (shape?.kind !== 'curve' || shape.closed) return false;
+    intent.current.generation++;
+    setChoice({ identity: now.current.identity, id: null, deselected: true }); setIntention(value => value + 1); setReported(null);
+    return true;
+  }, []);
+  const create = useCallback((busy: () => boolean, kind: 'circular' | 'gradient' | 'linear' | 'polygon' | 'curve' = 'circular') => {
     const at = now.current;
     if (pending.current || !at.enabled || !at.target || !at.node || busy()) return;
     let number = 1; while (at.windows.some(each => each.id === `w${number}`)) number++;
@@ -117,10 +129,11 @@ export function useWindows({ session, revision, timeline, target, clip, node, re
   const onDeleted = useCallback((answer: WindowDeleted) => {
     setChoice({ identity: now.current.identity, id: answer.selected }); setReported(null);
   }, []);
+  const deselected = choice?.identity === identity && choice.deselected === true && unconfirmed === null && windows.some(each => each.enabled);
   const selection: WindowSelection | null = enabled && complete && realNode?.id === node?.id && realNode?.kind === 'corrector'
-    && selected?.enabled && realNode.params.windows?.some(each => each.id === selected.id)
+    && (deselected || (selected?.enabled && realNode.params.windows?.some(each => each.id === selected.id)))
     ? { monitor: 'timeline', revision, timeline: timeline!, target: target!, ...(clip ? { clip } : {}), node: node!.id,
-      selected: selected.id, visible: true, outline: true, tool: 'window' } : null;
+      selected: selected?.id ?? null, visible: true, outline: true, tool: 'window' } : null;
   const keyFrame = (name: 'size' | 'aspect' | 'pan' | 'tilt' | 'rotate' | 'softness') => {
     // Linear and Polygon softness are per-side or inside/outside numbers, each with its own key title.
     const param = name === 'softness' ? selected && (selected.shape.kind === 'circular' || selected.shape.kind === 'gradient') ? selected.shape.softness : undefined : selected?.transform[name];
@@ -129,7 +142,7 @@ export function useWindows({ session, revision, timeline, target, clip, node, re
   };
   const keys: WindowKeys = reported?.identity === identity && reported.id === selected?.id ? reported.keys
     : { size: keyFrame('size'), aspect: keyFrame('aspect'), pan: keyFrame('pan'), tilt: keyFrame('tilt'), rotate: keyFrame('rotate'), softness: keyFrame('softness'), clock, frame };
-  return { windows, selected, selection, intention, choose, create, onState, onDeleted, keys, enabled, waitingFor, pending: pending.current !== null };
+  return { windows, selected, selection, intention, choose, leaveDraft, create, onState, onDeleted, keys, enabled, waitingFor, pending: pending.current !== null };
 }
 
 /** The participating fields of a captured control, or every keyed field of the selected window. */
@@ -141,8 +154,13 @@ function hints(words: WindowWords, keys: WindowKeys): string[] {
     const name = keys.edge === undefined ? 'softness' : (`soft${keys.edge + 1}` as 'soft1');
     parts.push(`${words.fields[name]}: ${at(keys.softness)}`);
   }
+  for (const side of ['inside', 'outside'] as const) if (keys[side] !== undefined) parts.push(`${words.fields[side]}: ${at(keys[side])}`);
   for (const point of keys.points ?? []) {
-    parts.push(`${point.point === keys.inserted ? words.inserted : `${words.point} ${point.point + 1}`}: X ${at(point.x)} · Y ${at(point.y)}`);
+    const name = point.point === keys.inserted ? words.inserted : `${words.point} ${point.point + 1}`;
+    if ('x' in point || 'y' in point) parts.push(`${name}: X ${at(point.x)} · Y ${at(point.y)}`);
+    // A Curve point's Bezier handles, each with its own left keys.
+    if ('in_x' in point || 'in_y' in point) parts.push(`${name} ${words.handleIn}: X ${at(point.in_x)} · Y ${at(point.in_y)}`);
+    if ('out_x' in point || 'out_y' in point) parts.push(`${name} ${words.handleOut}: X ${at(point.out_x)} · Y ${at(point.out_y)}`);
   }
   return parts;
 }
@@ -164,6 +182,8 @@ export function WindowPalette({ controls, capturing, busy, status, edit, notice 
       onClick={() => controls.create(() => busy() || edit.pending(), 'linear')}>{words.addLinear}</button>
     <button type="button" className="btn" disabled={blocked}
       onClick={() => controls.create(() => busy() || edit.pending(), 'polygon')}>{words.addPolygon}</button>
+    <button type="button" className="btn" disabled={blocked}
+      onClick={() => controls.create(() => busy() || edit.pending(), 'curve')}>{words.addCurve}</button>
     <div role="listbox" aria-label={words.list} className="color-window-list">
       {controls.windows.map(each => <button type="button" className="btn" role="option" key={each.id} aria-selected={selected?.id === each.id}
         disabled={!supported(each) || controls.waitingFor(each.id)} onClick={() => controls.choose(each.id)}>
@@ -200,7 +220,7 @@ const SOFTNESS_FIELDS: Record<PowerWindow['shape']['kind'], FieldSpec[]> = {
   gradient: [soft('shape.softness', 'softness', 1)],
   linear: ([0, 1, 2, 3] as const).map(side => soft(`shape.softness.${side}`, `soft${side + 1}` as FieldSpec['name'], 1)),
   polygon: [soft('shape.inside', 'inside', 0), soft('shape.outside', 'outside', 0)],
-  curve: [],
+  curve: [soft('shape.inside', 'inside', 0), soft('shape.outside', 'outside', 0)],
 };
 
 function WindowNumber({ edit, id, field, name, neutral, low, high, perPx, disabled, clock }: {

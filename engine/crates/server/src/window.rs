@@ -1,13 +1,15 @@
 //! Immutable Window selection and evaluated geometry. This module never locks session State.
 use std::sync::Arc;
 
+use columbina_compose::grade::curve;
 use columbina_model::grade::{
     window::{bounds, topology::TopologyError, MOST_POLYGON_POINTS},
-    Bounds, Corrector, NodeKind, Param, Target, Window, WindowPoint, WindowShape,
+    Bounds, Corrector, NodeKind, Param, Target, Window, WindowBezierPoint, WindowPoint,
+    WindowShape,
 };
 use columbina_model::{Project, Timeline};
 use columbina_view::window_overlay::{
-    Affine, Control, Shape, ShapeKind, Style, WindowOverlay, AXES, CORNERS, SOFT_NORMAL,
+    Affine, Bezier, Control, Shape, ShapeKind, Style, WindowOverlay, AXES, CORNERS, SOFT_NORMAL,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -56,12 +58,14 @@ pub fn refused(reason: &str) -> Fault {
     .with_data(json!({"reason":reason}))
 }
 
-/// A refused whole-animation Polygon edit, with what the desktop needs to explain it. `points`
-/// are 0-based Polygon point indices; `frames` is the key interval in `clock` frames.
+/// A refused whole-animation Polygon/Curve edit, with what the desktop needs to explain it.
+/// `points` are 0-based point indices; `frames` is the key interval in `clock` frames.
 pub fn topology_refused(reason: &str, error: &TopologyError, clock: &str) -> Fault {
     let detail = match error {
         TopologyError::Maximum => json!({"why":"maximum","most":MOST_POLYGON_POINTS}),
-        TopologyError::Minimum => json!({"why":"minimum","least":3}),
+        TopologyError::Minimum { shape, least } => {
+            json!({"why":"minimum","least":least,"shape":shape})
+        }
         TopologyError::Unsupported => json!({"why":"unsupported"}),
         TopologyError::Shape {
             axis,
@@ -82,8 +86,15 @@ pub fn topology_refused(reason: &str, error: &TopologyError, clock: &str) -> Fau
 pub enum Refusal {
     /// The hit no longer names a supported, current control.
     Target,
-    /// A Polygon edge insertion that the model refused as a whole, with the keys' clock.
+    /// A Polygon/Curve edge insertion that the model refused as a whole, with the keys' clock.
     Insert(TopologyError, &'static str),
+}
+
+/// What the down itself held, beyond its position: Alt, and a system double click.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Modifiers {
+    pub alt: bool,
+    pub double: bool,
 }
 
 impl Selection {
@@ -212,72 +223,11 @@ impl Selection {
         }
         let (placement, size, at) = self.placement(frame)?;
         let c = self.corrector(&frame.project)?;
-        let value = |p: &Param, b: Bounds| p.value_at(at as f64).clamp(b.low, b.high);
         let shapes = c
             .windows
             .iter()
             .filter(|w| w.enabled)
-            .filter_map(|w| {
-                // Linear Soft 1–4 span soft/200 across each side; Polygon inside/outside soft/200.
-                let (kind, feather, feathers) = match &w.shape {
-                    WindowShape::Circular { softness } => (
-                        ShapeKind::Circular,
-                        value(softness, bounds::SOFTNESS) / 400.0,
-                        vec![],
-                    ),
-                    WindowShape::Gradient { softness } => (
-                        ShapeKind::Gradient,
-                        value(softness, bounds::SOFTNESS) / 400.0,
-                        vec![],
-                    ),
-                    WindowShape::Linear { softness, .. } => (
-                        ShapeKind::Linear,
-                        0.0,
-                        softness
-                            .iter()
-                            .map(|s| [value(s, bounds::SOFTNESS) / 400.0; 2])
-                            .collect(),
-                    ),
-                    WindowShape::Polygon {
-                        points,
-                        inside,
-                        outside,
-                    } => (
-                        ShapeKind::Polygon,
-                        0.0,
-                        vec![
-                            [
-                                value(inside, bounds::FEATHER) / 200.0,
-                                value(outside, bounds::FEATHER) / 200.0
-                            ];
-                            points.len()
-                        ],
-                    ),
-                    WindowShape::Curve { .. } => return None,
-                };
-                let [xx, yx, xy, yy, tx, ty] = w
-                    .transform
-                    .affine_at(at as f64, f64::from(size.0) / f64::from(size.1))?;
-                Some(Shape {
-                    id: w.id.clone(),
-                    radius: columbina_model::grade::window::DEFAULT_EXTENT,
-                    kind,
-                    feather,
-                    points: outline_at(&w.shape, at),
-                    feathers,
-                    to_canvas: compose(
-                        placement,
-                        Affine {
-                            xx,
-                            xy,
-                            yx,
-                            yy,
-                            tx,
-                            ty,
-                        },
-                    ),
-                })
-            })
+            .filter_map(|w| shape_at(w, placement, size, at))
             .collect();
         Some(Arc::new(WindowOverlay {
             shapes,
@@ -286,6 +236,122 @@ impl Selection {
             coverage,
         }))
     }
+}
+
+/// A window's controls geometry at clock frame `at`, for the overlay and for a capture: the
+/// same evaluated, clamped values the mask uses, placed on the canvas.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::too_many_lines,
+    reason = "the model evaluates keyframes as f64; one table of the five shapes"
+)]
+pub fn shape_at(w: &Window, placement: Affine, size: (u32, u32), at: i64) -> Option<Shape> {
+    let value = |p: &Param, b: Bounds| p.value_at(at as f64).clamp(b.low, b.high);
+    let point = |p: &WindowPoint| {
+        [
+            value(&p.x, bounds::COORDINATE),
+            value(&p.y, bounds::COORDINATE),
+        ]
+    };
+    let transform = w
+        .transform
+        .affine_at(at as f64, f64::from(size.0) / f64::from(size.1))?;
+    // Linear Soft 1-4 span soft/200 across each side; Polygon/Curve inside/outside soft/200.
+    let (kind, feather, feathers, bezier) = match &w.shape {
+        WindowShape::Circular { softness } => (
+            ShapeKind::Circular,
+            value(softness, bounds::SOFTNESS) / 400.0,
+            vec![],
+            None,
+        ),
+        WindowShape::Gradient { softness } => (
+            ShapeKind::Gradient,
+            value(softness, bounds::SOFTNESS) / 400.0,
+            vec![],
+            None,
+        ),
+        WindowShape::Linear { softness, .. } => (
+            ShapeKind::Linear,
+            0.0,
+            softness
+                .iter()
+                .map(|s| [value(s, bounds::SOFTNESS) / 400.0; 2])
+                .collect(),
+            None,
+        ),
+        WindowShape::Polygon {
+            points,
+            inside,
+            outside,
+        } => (
+            ShapeKind::Polygon,
+            0.0,
+            vec![
+                [
+                    value(inside, bounds::FEATHER) / 200.0,
+                    value(outside, bounds::FEATHER) / 200.0
+                ];
+                points.len()
+            ],
+            None,
+        ),
+        WindowShape::Curve {
+            points,
+            closed,
+            inside,
+            outside,
+        } => {
+            // The mask's own tessellation tolerance, from the transform at unit image aspect.
+            let unit = w.transform.affine_at(at as f64, 1.0)?;
+            let scale = unit[0].hypot(unit[1]).max(unit[2].hypot(unit[3]));
+            (
+                ShapeKind::Curve,
+                0.0,
+                vec![[
+                    value(inside, bounds::FEATHER) / 200.0,
+                    value(outside, bounds::FEATHER) / 200.0,
+                ]],
+                Some(Bezier {
+                    handles: points
+                        .iter()
+                        .map(|p| [point(&p.into), point(&p.out)])
+                        .collect(),
+                    closed: *closed,
+                    tolerance: if scale > 0.0 {
+                        curve::tolerance(scale)
+                    } else {
+                        0.0
+                    },
+                }),
+            )
+        }
+    };
+    let [xx, yx, xy, yy, tx, ty] = transform;
+    Some(Shape {
+        id: w.id.clone(),
+        radius: columbina_model::grade::window::DEFAULT_EXTENT,
+        kind,
+        feather,
+        points: match &w.shape {
+            WindowShape::Curve { points, .. } => {
+                points.iter().map(|p| point(&p.position)).collect()
+            }
+            shape => outline_at(shape, at),
+        },
+        feathers,
+        curve: bezier,
+        to_canvas: compose(
+            placement,
+            Affine {
+                xx,
+                xy,
+                yx,
+                yy,
+                tx,
+                ty,
+            },
+        ),
+    })
 }
 
 pub fn compose(a: Affine, b: Affine) -> Affine {
@@ -356,6 +422,14 @@ enum Field {
     Y(usize),
     /// Linear Soft 1–4, for side `j` from point `j` to the next.
     EdgeSoftness(usize),
+    /// A Curve anchor's incoming and outgoing Bezier handle, relative to it.
+    InX(usize),
+    InY(usize),
+    OutX(usize),
+    OutY(usize),
+    /// A Curve's Inside and Outside Softness.
+    Inside,
+    Outside,
 }
 impl Field {
     fn name(self) -> &'static str {
@@ -368,6 +442,24 @@ impl Field {
             Self::Softness | Self::EdgeSoftness(_) => "softness",
             Self::X(_) => "x",
             Self::Y(_) => "y",
+            Self::InX(_) => "in_x",
+            Self::InY(_) => "in_y",
+            Self::OutX(_) => "out_x",
+            Self::OutY(_) => "out_y",
+            Self::Inside => "inside",
+            Self::Outside => "outside",
+        }
+    }
+    /// The Curve anchor or Polygon/Linear point whose coordinates this is.
+    fn point(self) -> Option<usize> {
+        match self {
+            Self::X(i)
+            | Self::Y(i)
+            | Self::InX(i)
+            | Self::InY(i)
+            | Self::OutX(i)
+            | Self::OutY(i) => Some(i),
+            _ => None,
         }
     }
     fn bounds(self) -> Bounds {
@@ -378,7 +470,13 @@ impl Field {
             Self::Tilt => bounds::TILT,
             Self::Rotate => bounds::ROTATE,
             Self::Softness | Self::EdgeSoftness(_) => bounds::SOFTNESS,
-            Self::X(_) | Self::Y(_) => bounds::COORDINATE,
+            Self::X(_)
+            | Self::Y(_)
+            | Self::InX(_)
+            | Self::InY(_)
+            | Self::OutX(_)
+            | Self::OutY(_) => bounds::COORDINATE,
+            Self::Inside | Self::Outside => bounds::FEATHER,
         }
     }
     fn param(self, window: &mut Window) -> &mut Param {
@@ -397,6 +495,14 @@ impl Field {
             (Self::Y(i), WindowShape::Linear { points, .. }) => &mut points[i].y,
             (Self::X(i), WindowShape::Polygon { points, .. }) => &mut points[i].x,
             (Self::Y(i), WindowShape::Polygon { points, .. }) => &mut points[i].y,
+            (Self::X(i), WindowShape::Curve { points, .. }) => &mut points[i].position.x,
+            (Self::Y(i), WindowShape::Curve { points, .. }) => &mut points[i].position.y,
+            (Self::InX(i), WindowShape::Curve { points, .. }) => &mut points[i].into.x,
+            (Self::InY(i), WindowShape::Curve { points, .. }) => &mut points[i].into.y,
+            (Self::OutX(i), WindowShape::Curve { points, .. }) => &mut points[i].out.x,
+            (Self::OutY(i), WindowShape::Curve { points, .. }) => &mut points[i].out.y,
+            (Self::Inside, WindowShape::Curve { inside, .. }) => inside,
+            (Self::Outside, WindowShape::Curve { outside, .. }) => outside,
             _ => unreachable!("captured supported shape"),
         }
     }
@@ -487,20 +593,54 @@ impl RotationBasis {
     }
 }
 
+/// Device pixels (an anchor's radius) a Curve pull must travel on screen before it gives a point
+/// Bezier handles, so a click that wobbles still adds or closes with a corner (p. 3193) at any
+/// viewer zoom. A project choice.
+const PULL_THRESHOLD: f64 = 4.0;
+
+/// How a captured Curve control turns the pointer into its fields (RM20 p. 3194).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum CurveDrag {
+    /// Pull symmetric handles out of point `i`: its out handle follows the pointer and its in
+    /// handle mirrors it. Used by drawing a new point, closing on the first point, and an
+    /// Alt-drag on a corner. Nearer the down than `PULL_THRESHOLD` nothing is pulled.
+    Pull(usize),
+    /// Drag one handle of point `i` (`out` or in). Linked: the opposite handle turns and scales
+    /// with it by the same similarity, keeping their relative angle and length ratio; with Alt
+    /// it stays where it is. A zero opposite handle stays zero; a zero dragged handle at down
+    /// has no direction, so the opposite handle is kept.
+    Handle {
+        point: usize,
+        out: bool,
+        linked: bool,
+    },
+}
+
 pub struct Movement {
     /// The complete list at down, restored by Esc.
     pub original: Vec<Window>,
-    /// What every update starts from: `original`, or it with an inserted Polygon point.
+    /// What every update starts from: `original`, or it with the down's own edit (a point
+    /// inserted or drawn, a Curve closed, or a Curve point made a corner).
     base: Vec<Window>,
+    /// Whether `base` differs from `original`, written by the first armed step.
+    edited: bool,
     inserted: Option<usize>,
-    /// The captured Linear side's outward local normal at down.
+    /// The captured Linear side's outward local normal at down, or the local direction in
+    /// which a Curve softness handle increases its softness.
     normal: [f64; 2],
     index: usize,
     keys: Vec<(Field, LeftKey)>,
+    bezier: Option<CurveDrag>,
     pub control: Control,
     down: (f64, f64),
+    canvas_down: (f64, f64),
+    /// Device pixels per canvas pixel on each axis of the map shown at down (a captured drag
+    /// keeps that map), so that the pull threshold is measured on screen.
+    device: [f64; 2],
     local_down: (f64, f64),
     transform: Affine,
+    /// The shown picture size at down, for the Curve geometry of `shape_at`.
+    picture: (u32, u32),
     size: f64,
     gradient: bool,
     pub rotation: RotationBasis,
@@ -512,24 +652,26 @@ impl Movement {
     pub fn selected(&self) -> &str {
         &self.original[self.index].id
     }
-    /// The list with an inserted point, written by the first armed step, if this inserts.
-    pub fn inserted(&self) -> Option<&[Window]> {
-        self.inserted.map(|_| self.base.as_slice())
+    /// The list with the down's own edit (an inserted or drawn point, a closed Curve, a corner),
+    /// written by the first armed step, if this capture made one.
+    pub fn edited(&self) -> Option<&[Window]> {
+        self.edited.then_some(self.base.as_slice())
     }
     pub fn keys(&self) -> Value {
         let mut keys = serde_json::Map::new();
         let mut points: Vec<(usize, serde_json::Map<String, Value>)> = Vec::new();
         for (field, key) in &self.keys {
+            if let Some(i) = field.point() {
+                let at = points.iter().position(|(p, _)| *p == i).unwrap_or_else(|| {
+                    let mut entry = serde_json::Map::new();
+                    entry.insert("point".into(), json!(i));
+                    points.push((i, entry));
+                    points.len() - 1
+                });
+                points[at].1.insert(field.name().into(), json!(key.frame));
+                continue;
+            }
             match *field {
-                Field::X(i) | Field::Y(i) => {
-                    let at = points.iter().position(|(p, _)| *p == i).unwrap_or_else(|| {
-                        let mut entry = serde_json::Map::new();
-                        entry.insert("point".into(), json!(i));
-                        points.push((i, entry));
-                        points.len() - 1
-                    });
-                    points[at].1.insert(field.name().into(), json!(key.frame));
-                }
                 Field::EdgeSoftness(j) => {
                     keys.insert("softness".into(), json!(key.frame));
                     keys.insert("edge".into(), json!(j));
@@ -558,10 +700,31 @@ impl Movement {
         id: &str,
         canvas: (f64, f64),
     ) -> Option<Self> {
-        Self::capture(selection, frame, id, Control::Move, canvas).ok()
+        Self::capture(
+            selection,
+            frame,
+            id,
+            Control::Move,
+            canvas,
+            [1.0; 2],
+            Modifiers::default(),
+        )
+        .ok()
     }
-    /// Capture one control. A Polygon `Insert` also inserts its point into `base` for the whole
-    /// animation at the clicked share of the displayed edge, or refuses as a whole.
+    /// Device pixels per canvas pixel on each axis of `map`, the map a capture's down was shown
+    /// with.
+    #[must_use]
+    pub fn device_per_canvas(map: columbina_view::ViewportMap) -> [f64; 2] {
+        [
+            f64::from(map.dest[2]) / f64::from(map.picture.0),
+            f64::from(map.dest[3]) / f64::from(map.picture.1),
+        ]
+    }
+    /// Capture one control. A Polygon/Curve `Insert` also inserts its point into `base` for the
+    /// whole animation at the clicked spot of the displayed edge, or refuses as a whole. On a
+    /// Curve, `Append` draws a point, `Close` closes the draft, and an Alt double click on a
+    /// Bezier point makes it a corner, each in `base` too. `device` is
+    /// [`Movement::device_per_canvas`] of the map the down was shown with.
     ///
     /// # Errors
     ///
@@ -572,45 +735,65 @@ impl Movement {
         id: &str,
         control: Control,
         canvas: (f64, f64),
+        device: [f64; 2],
+        modifiers: Modifiers,
     ) -> Result<Self, Refusal> {
-        let mut movement =
-            Self::locate(selection, frame, id, control, canvas).ok_or(Refusal::Target)?;
+        let mut movement = Self::locate(selection, frame, id, control, canvas, modifiers)
+            .ok_or(Refusal::Target)?;
+        movement.device = device;
         if let Control::Insert(edge) = control {
-            movement.insert(usize::from(edge))?;
+            movement.insert(edge as usize, canvas)?;
         }
         Ok(movement)
     }
-    fn insert(&mut self, edge: usize) -> Result<(), Refusal> {
-        let points = outline_at(&self.original[self.index].shape, self.frame);
-        let (a, b) = (points[edge], points[(edge + 1) % points.len()]);
-        let d = [b[0] - a[0], b[1] - a[1]];
-        let q = [self.local_down.0 - a[0], self.local_down.1 - a[1]];
-        let length = d[0] * d[0] + d[1] * d[1];
-        // The clicked spot on the displayed edge; its ends are point handles.
-        let share = if length > 0.0 && length.is_finite() {
-            ((q[0] * d[0] + q[1] * d[1]) / length).clamp(1e-3, 1.0 - 1e-3)
+    fn insert(&mut self, edge: usize, canvas: (f64, f64)) -> Result<(), Refusal> {
+        let window = &self.original[self.index];
+        let inserted = if matches!(window.shape, WindowShape::Curve { .. }) {
+            // The exact cubic parameter under the click, on the displayed (down-frame) curve.
+            let shape = shape_at(window, self.placement, self.picture, self.frame)
+                .ok_or(Refusal::Target)?;
+            let t = shape
+                .curve_parameter(edge, [canvas.0, canvas.1])
+                .ok_or(Refusal::Target)?;
+            self.base[self.index].shape.insert_curve_point(edge, t)
         } else {
-            0.5
-        };
-        let inserted = self.base[self.index]
-            .shape
-            .insert_polygon_point(edge, share)
-            .map_err(|error| Refusal::Insert(error, self.clock))?;
+            let points = outline_at(&window.shape, self.frame);
+            let (a, b) = (points[edge], points[(edge + 1) % points.len()]);
+            let d = [b[0] - a[0], b[1] - a[1]];
+            let q = [self.local_down.0 - a[0], self.local_down.1 - a[1]];
+            let length = d[0] * d[0] + d[1] * d[1];
+            // The clicked spot on the displayed edge; its ends are point handles.
+            let share = if length > 0.0 && length.is_finite() {
+                ((q[0] * d[0] + q[1] * d[1]) / length).clamp(1e-3, 1.0 - 1e-3)
+            } else {
+                0.5
+            };
+            self.base[self.index]
+                .shape
+                .insert_polygon_point(edge, share)
+        }
+        .map_err(|error| Refusal::Insert(error, self.clock))?;
         self.inserted = Some(inserted);
-        self.keys = [Field::X(inserted), Field::Y(inserted)]
-            .into_iter()
-            .map(|field| {
+        self.edited = true;
+        self.capture_fields(&[Field::X(inserted), Field::Y(inserted)]);
+        Ok(())
+    }
+    /// The left keys of `fields` in `base`, which the drag then writes.
+    fn capture_fields(&mut self, fields: &[Field]) {
+        self.keys = fields
+            .iter()
+            .map(|&field| {
                 (
                     field,
                     LeftKey::of(field.param(&mut self.base[self.index]), self.frame),
                 )
             })
             .collect();
-        Ok(())
     }
     #[allow(
         clippy::cast_precision_loss,
-        reason = "the model evaluates keyframes as f64"
+        clippy::too_many_lines,
+        reason = "the model evaluates keyframes as f64; one table of controls to fields"
     )]
     fn locate(
         selection: &Selection,
@@ -618,18 +801,34 @@ impl Movement {
         id: &str,
         control: Control,
         canvas: (f64, f64),
+        modifiers: Modifiers,
     ) -> Option<Self> {
         let (placement, picture, at) = selection.placement(frame)?;
-        let mut original = selection.corrector(&frame.project)?.windows.clone();
-        let index = original.iter().position(|w| {
-            w.id == id && w.enabled && !matches!(w.shape, WindowShape::Curve { .. })
-        })?;
+        let original = selection.corrector(&frame.project)?.windows.clone();
+        let index = original.iter().position(|w| w.id == id && w.enabled)?;
         let shape = &original[index].shape;
         let gradient = matches!(shape, WindowShape::Gradient { .. });
         let circular = matches!(shape, WindowShape::Circular { .. });
         let linear = matches!(shape, WindowShape::Linear { .. });
+        let curve = match shape {
+            WindowShape::Curve { points, closed, .. } => Some((points.len(), *closed)),
+            _ => None,
+        };
         let points = outline_at(shape, at);
-        let n = points.len();
+        let n = curve.map_or(points.len(), |(count, _)| count);
+        let view = shape_at(&original[index], placement, picture, at)?;
+        // A Curve anchor's handles as displayed (E): a corner has both at zero.
+        let corner = |i: usize| {
+            view.curve
+                .as_ref()
+                .is_some_and(|c| c.handles[i] == [[0.0; 2]; 2])
+        };
+        let pull = |i: usize| vec![Field::OutX(i), Field::OutY(i), Field::InX(i), Field::InY(i)];
+        let mut base = original.clone();
+        let mut edited = false;
+        let mut inserted = None;
+        let mut bezier = None;
+        let mut normal = [0.0; 2];
         let fields: Vec<Field> = match control {
             Control::Move => vec![Field::Pan, Field::Tilt],
             Control::Size(i) if circular && i < 4 => vec![Field::Size],
@@ -638,31 +837,87 @@ impl Movement {
             Control::Softness(side) if circular && side == 1 || gradient && side.abs() == 1 => {
                 vec![Field::Softness]
             }
-            Control::Point(i) if usize::from(i) < n => {
-                vec![Field::X(usize::from(i)), Field::Y(usize::from(i))]
+            Control::Softness(side) if curve.is_some_and(|(_, closed)| closed) => {
+                normal = view
+                    .curve_softness_handles()
+                    .into_iter()
+                    .find(|(c, _, _)| *c == control)?
+                    .2;
+                vec![if side < 0 {
+                    Field::Inside
+                } else {
+                    Field::Outside
+                }]
+            }
+            // An Alt double click makes a Curve point a corner (p. 3194); a drag then moves it.
+            Control::Point(i) if curve.is_some() && modifiers.alt && modifiers.double => {
+                let i = i as usize;
+                if i >= n {
+                    return None;
+                }
+                for field in pull(i) {
+                    let key = LeftKey::of(field.param(&mut base[index]), at);
+                    key.write(field.param(&mut base[index]), -key.value, field.bounds());
+                }
+                edited = base != original;
+                vec![Field::X(i), Field::Y(i)]
+            }
+            // Alt-dragging a corner pulls out Bezier handles (p. 3194).
+            Control::Point(i)
+                if curve.is_some() && modifiers.alt && (i as usize) < n && corner(i as usize) =>
+            {
+                bezier = Some(CurveDrag::Pull(i as usize));
+                pull(i as usize)
+            }
+            Control::Point(i) if (i as usize) < n => {
+                vec![Field::X(i as usize), Field::Y(i as usize)]
+            }
+            Control::HandleIn(i) | Control::HandleOut(i) if curve.is_some() && (i as usize) < n => {
+                let (i, out) = (i as usize, matches!(control, Control::HandleOut(_)));
+                bezier = Some(CurveDrag::Handle {
+                    point: i,
+                    out,
+                    linked: !modifiers.alt,
+                });
+                // The dragged handle first, then the opposite one.
+                if out {
+                    vec![Field::OutX(i), Field::OutY(i), Field::InX(i), Field::InY(i)]
+                } else {
+                    vec![Field::InX(i), Field::InY(i), Field::OutX(i), Field::OutY(i)]
+                }
+            }
+            // Clicking an open Curve's first point closes it with a corner there; dragging on it
+            // closes it with a Bezier curve (p. 3193). Its handles' left keys go to 0 at once,
+            // and a drag past the pull threshold pulls them out again.
+            Control::Close if curve.is_some_and(|(count, closed)| !closed && count >= 2) => {
+                if let WindowShape::Curve { closed, .. } = &mut base[index].shape {
+                    *closed = true;
+                }
+                for field in pull(0) {
+                    let key = LeftKey::of(field.param(&mut base[index]), at);
+                    key.write(field.param(&mut base[index]), -key.value, field.bounds());
+                }
+                edited = true;
+                bezier = Some(CurveDrag::Pull(0));
+                pull(0)
             }
             Control::Edge(j) if linear && usize::from(j) < n => {
                 let (j, k) = (usize::from(j), (usize::from(j) + 1) % n);
                 vec![Field::X(j), Field::Y(j), Field::X(k), Field::Y(k)]
             }
             Control::EdgeSoftness(j) if linear && usize::from(j) < n => {
+                normal = outward(&points, usize::from(j));
                 vec![Field::EdgeSoftness(usize::from(j))]
             }
             Control::Insert(j)
-                if matches!(shape, WindowShape::Polygon { .. }) && usize::from(j) < n =>
+                if (j as usize) < n
+                    && (matches!(shape, WindowShape::Polygon { .. }) || curve.is_some()) =>
             {
                 vec![]
             }
+            Control::Append if curve.is_some_and(|(_, closed)| !closed) => vec![],
             _ => return None,
         };
-        let normal = match control {
-            Control::EdgeSoftness(j) => outward(&points, usize::from(j)),
-            _ => [0.0; 2],
-        };
-        let keys = fields
-            .iter()
-            .map(|&field| (field, LeftKey::of(field.param(&mut original[index]), at)))
-            .collect();
         let aspect = f64::from(picture.0) / f64::from(picture.1);
         let [xx, yx, xy, yy, tx, ty] = original[index].transform.affine_at(at as f64, aspect)?;
         let transform = Affine {
@@ -675,6 +930,36 @@ impl Movement {
         };
         let down = unplace(placement, canvas)?;
         let local_down = unplace(transform, down)?;
+        if control == Control::Append {
+            // A drawn point lies where it was clicked, static, a corner until pulled.
+            let local = [local_down.0, local_down.1];
+            let range = bounds::COORDINATE.low..=bounds::COORDINATE.high;
+            if local.iter().any(|v| !range.contains(v)) {
+                return None;
+            }
+            let WindowShape::Curve { points, .. } = &mut base[index].shape else {
+                return None;
+            };
+            points.push(WindowBezierPoint {
+                position: WindowPoint::new(local[0], local[1]),
+                into: WindowPoint::new(0.0, 0.0),
+                out: WindowPoint::new(0.0, 0.0),
+            });
+            edited = true;
+            inserted = Some(n);
+            bezier = Some(CurveDrag::Pull(n));
+        }
+        let keys_of = |base: &mut Vec<Window>, fields: &[Field]| -> Vec<(Field, LeftKey)> {
+            fields
+                .iter()
+                .map(|&field| (field, LeftKey::of(field.param(&mut base[index]), at)))
+                .collect()
+        };
+        let keys = if control == Control::Append {
+            keys_of(&mut base, &pull(n))
+        } else {
+            keys_of(&mut base, &fields)
+        };
         let size = original[index]
             .transform
             .size
@@ -698,16 +983,21 @@ impl Movement {
             }
         };
         Some(Self {
-            base: original.clone(),
+            base,
             original,
-            inserted: None,
+            edited,
+            inserted,
             normal,
             index,
             keys,
+            bezier,
             control,
             down,
+            canvas_down: canvas,
+            device: [1.0; 2],
             local_down,
             transform,
+            picture,
             size,
             gradient,
             rotation: RotationBasis {
@@ -723,13 +1013,64 @@ impl Movement {
     pub fn at(&self, canvas: (f64, f64)) -> Option<Vec<Window>> {
         self.at_rotation(canvas, None)
     }
+    /// The values a Curve drag gives its fields, as absolute targets, in `keys` order.
+    fn bezier_targets(&self, canvas: (f64, f64), delta: [f64; 2]) -> Vec<Option<f64>> {
+        let value = |k: usize| self.keys[k].1.value;
+        match self.bezier {
+            None => vec![None; self.keys.len()],
+            Some(CurveDrag::Pull(_)) => {
+                // In device pixels: the same threshold on screen at any zoom.
+                let travelled = ((canvas.0 - self.canvas_down.0) * self.device[0])
+                    .hypot((canvas.1 - self.canvas_down.1) * self.device[1]);
+                if travelled < PULL_THRESHOLD {
+                    // Not pulled yet: every field keeps its value in `base`.
+                    return (0..self.keys.len()).map(|k| Some(value(k))).collect();
+                }
+                // [out x, out y, in x, in y]
+                vec![
+                    Some(delta[0]),
+                    Some(delta[1]),
+                    Some(-delta[0]),
+                    Some(-delta[1]),
+                ]
+            }
+            Some(CurveDrag::Handle { linked, .. }) => {
+                // [dragged x, dragged y, opposite x, opposite y]
+                let old = [value(0), value(1)];
+                let new = [old[0] + delta[0], old[1] + delta[1]];
+                let other = [value(2), value(3)];
+                let length = old[0] * old[0] + old[1] * old[1];
+                let other = if linked && length > 0.0 && length.is_finite() {
+                    // other · (new / old), as complex numbers: one rotation and scale.
+                    let ratio = [
+                        (new[0] * old[0] + new[1] * old[1]) / length,
+                        (new[1] * old[0] - new[0] * old[1]) / length,
+                    ];
+                    [
+                        other[0] * ratio[0] - other[1] * ratio[1],
+                        other[0] * ratio[1] + other[1] * ratio[0],
+                    ]
+                } else {
+                    other
+                };
+                vec![Some(new[0]), Some(new[1]), Some(other[0]), Some(other[1])]
+            }
+        }
+    }
     pub fn at_rotation(&self, canvas: (f64, f64), rotation: Option<f64>) -> Option<Vec<Window>> {
         let picture = unplace(self.placement, canvas)?;
         let local = unplace(self.transform, picture)?;
         let delta = [local.0 - self.local_down.0, local.1 - self.local_down.1];
         let extent = columbina_model::grade::window::DEFAULT_EXTENT;
         let amount = match self.control {
-            Control::Move | Control::Point(_) | Control::Edge(_) | Control::Insert(_) => 0.0,
+            Control::Move
+            | Control::Point(_)
+            | Control::Edge(_)
+            | Control::Insert(_)
+            | Control::HandleIn(_)
+            | Control::HandleOut(_)
+            | Control::Close
+            | Control::Append => 0.0,
             Control::EdgeSoftness(_) => {
                 400.0 * (delta[0] * self.normal[0] + delta[1] * self.normal[1])
             }
@@ -754,6 +1095,12 @@ impl Movement {
                 sign * 50.0 * stretch.log2()
             }
             Control::Rotate => rotation?,
+            // A Curve's Inside/Outside Softness spans value/200 local units.
+            Control::Softness(_)
+                if matches!(self.keys.first(), Some((Field::Inside | Field::Outside, _))) =>
+            {
+                200.0 * (delta[0] * self.normal[0] + delta[1] * self.normal[1])
+            }
             Control::Softness(side) => {
                 400.0
                     * if self.gradient {
@@ -763,14 +1110,16 @@ impl Movement {
                     }
             }
         };
+        let targets = self.bezier_targets(canvas, delta);
         let mut windows = self.base.clone();
-        for &(field, key) in &self.keys {
-            let amount = match field {
-                Field::Pan => 100.0 * (picture.0 - self.down.0),
-                Field::Tilt => -100.0 * (picture.1 - self.down.1),
-                Field::X(_) => delta[0],
-                Field::Y(_) => delta[1],
-                _ => amount,
+        for (&(field, key), target) in self.keys.iter().zip(targets) {
+            let amount = match (target, field) {
+                (Some(target), _) => target - key.value,
+                (None, Field::Pan) => 100.0 * (picture.0 - self.down.0),
+                (None, Field::Tilt) => -100.0 * (picture.1 - self.down.1),
+                (None, Field::X(_)) => delta[0],
+                (None, Field::Y(_)) => delta[1],
+                (None, _) => amount,
             };
             key.write(
                 field.param(&mut windows[self.index]),

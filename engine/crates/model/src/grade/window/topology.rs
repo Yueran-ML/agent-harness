@@ -1,16 +1,18 @@
-//! Whole-animation Polygon topology: inserting and removing points.
+//! Whole-animation Polygon and Curve topology: inserting and removing points.
 //!
 //! The point count is the same on every frame; adding or removing a point applies to the whole
 //! animation and keeps every other point's keys. An inserted point splits its edge at one fixed
-//! share for the whole animation. Its coordinates are generated on the union of the existing key
-//! times of the two edge ends, so the shape is unchanged at every instant. Where this module
-//! cannot prove that, the insertion is refused as a whole and says why: it never bakes a static
-//! value, drops keys, approximates, or adds dense keys. These are project rules; Resolve instead
-//! makes an animated Polygon's points pop on and off at keyframes (RM20 p. 3194).
+//! share (a Polygon) or cubic parameter (a Curve, by de Casteljau) for the whole animation. Its
+//! coordinates, and a Curve's two shortened handles, are generated on the union of the existing
+//! key times of the fields they are made from, so the shape is unchanged at every instant.
+//! Where this module cannot prove that, the insertion is refused as a whole and says why: it
+//! never bakes a static value, drops keys, approximates, or adds dense keys. These are project
+//! rules; Resolve instead makes an animated Polygon's points pop on and off at keyframes
+//! (RM20 p. 3194).
 
 use serde::Serialize;
 
-use super::{bounds, WindowPoint, WindowShape, MOST_POLYGON_POINTS};
+use super::{bounds, WindowBezierPoint, WindowPoint, WindowShape, MOST_POLYGON_POINTS};
 use crate::grade::{Bounds, Interp, Key, Param};
 
 /// Floating-point slack when comparing generated values, in local image-height units.
@@ -41,19 +43,20 @@ pub struct Conflict {
     pub frames: Option<[i64; 2]>,
 }
 
-/// Why a Polygon topology edit was refused; the shape is then unchanged.
+/// Why a Polygon or Curve topology edit was refused; the shape is then unchanged.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TopologyError {
-    /// Not a Polygon, or an index out of range.
+    /// Not a Polygon/Curve, or an index or parameter out of range.
     Unsupported,
     /// A Polygon already has [`MOST_POLYGON_POINTS`] points.
     Maximum,
-    /// Removing would leave fewer than three points.
-    Minimum,
-    /// The inserted point's `axis` coordinate cannot be generated exactly.
+    /// Removing would leave fewer than `least` points: three on a Polygon, two on a closed Curve.
+    Minimum { shape: &'static str, least: usize },
+    /// The inserted point's `axis` coordinate (or a Curve handle it shortens) cannot be
+    /// generated exactly.
     Shape {
         axis: &'static str,
-        /// Polygon point indices whose coordinates cause the conflict.
+        /// Point indices whose coordinates or handles cause the conflict.
         points: Vec<usize>,
         why: Why,
         frames: Option<[i64; 2]>,
@@ -507,7 +510,116 @@ impl WindowShape {
             return Err(TopologyError::Unsupported);
         }
         if points.len() <= 3 {
-            return Err(TopologyError::Minimum);
+            return Err(TopologyError::Minimum {
+                shape: "polygon",
+                least: 3,
+            });
+        }
+        points.remove(index);
+        Ok(())
+    }
+
+    /// Split Curve edge `edge` (anchor `edge` to the next, the closing edge included only when
+    /// closed) at cubic parameter `t`, for the whole animation, by de Casteljau: the new anchor
+    /// and its handles lie on the original cubic, the two neighbours' facing handles shorten, and
+    /// every other Param is kept. An open draft splits only its drawn edges. Returns the new
+    /// anchor's index.
+    ///
+    /// # Errors
+    ///
+    /// The shape is left unchanged when any generated field cannot be represented exactly.
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "de Casteljau's parameter and the edge ends A, B in the formula's notation"
+    )]
+    pub fn insert_curve_point(&mut self, edge: usize, t: f64) -> Result<usize, TopologyError> {
+        let Self::Curve { points, closed, .. } = self else {
+            return Err(TopologyError::Unsupported);
+        };
+        let n = points.len();
+        let edges = if *closed { n } else { n.saturating_sub(1) };
+        if edge >= edges || !(t > 0.0 && t < 1.0) {
+            return Err(TopologyError::Unsupported);
+        }
+        let ends = [edge, (edge + 1) % n];
+        let (a, b) = (&points[ends[0]], &points[ends[1]]);
+        let (s, u) = (t, 1.0 - t);
+        // Each generated field as weights of [A, A.out, B.in, B] for the control points
+        // C = [A, A+A.out, B+B.in, B]: N = Σ Bernstein·C, R0/R1 the second de Casteljau level.
+        let n_at = [
+            u * u * u + 3.0 * u * u * s,
+            3.0 * u * u * s,
+            3.0 * u * s * s,
+            3.0 * u * s * s + s * s * s,
+        ];
+        let r0 = [u * u + 2.0 * u * s, 2.0 * u * s, s * s, s * s];
+        let r1 = [u * u, u * u, 2.0 * u * s, 2.0 * u * s + s * s];
+        let less = |r: [f64; 4]| std::array::from_fn::<f64, 4, _>(|i| r[i] - n_at[i]);
+        let owners = [ends[0], ends[0], ends[1], ends[1]];
+        let generate = |weights: [f64; 4], axis: &'static str| {
+            let field = |point: &'_ WindowPoint| {
+                if axis == "x" {
+                    point.x.clone()
+                } else {
+                    point.y.clone()
+                }
+            };
+            let inputs = [
+                field(&a.position),
+                field(&a.out),
+                field(&b.into),
+                field(&b.position),
+            ];
+            let terms: Vec<(f64, &Param)> = weights.iter().copied().zip(inputs.iter()).collect();
+            blend(&terms, bounds::COORDINATE).map_err(|conflict| {
+                let mut points: Vec<usize> = conflict.terms.iter().map(|&k| owners[k]).collect();
+                points.sort_unstable();
+                points.dedup();
+                TopologyError::Shape {
+                    axis,
+                    points,
+                    why: conflict.why,
+                    frames: conflict.frames,
+                }
+            })
+        };
+        let point = |weights: [f64; 4]| -> Result<WindowPoint, TopologyError> {
+            Ok(WindowPoint {
+                x: generate(weights, "x")?,
+                y: generate(weights, "y")?,
+            })
+        };
+        let inserted = WindowBezierPoint {
+            position: point(n_at)?,
+            into: point(less(r0))?,
+            out: point(less(r1))?,
+        };
+        let a_out = point([0.0, s, 0.0, 0.0])?;
+        let b_in = point([0.0, 0.0, u, 0.0])?;
+        points[ends[0]].out = a_out;
+        points[ends[1]].into = b_in;
+        points.insert(edge + 1, inserted);
+        Ok(edge + 1)
+    }
+
+    /// Remove Curve anchor `index` from the whole animation. A closed Curve keeps at least two
+    /// anchors (it is never turned back into a draft); an open draft may become empty.
+    ///
+    /// # Errors
+    ///
+    /// The shape is left unchanged when the anchor cannot be removed.
+    pub fn remove_curve_point(&mut self, index: usize) -> Result<(), TopologyError> {
+        let Self::Curve { points, closed, .. } = self else {
+            return Err(TopologyError::Unsupported);
+        };
+        if index >= points.len() {
+            return Err(TopologyError::Unsupported);
+        }
+        if *closed && points.len() <= 2 {
+            return Err(TopologyError::Minimum {
+                shape: "curve",
+                least: 2,
+            });
         }
         points.remove(index);
         Ok(())
@@ -754,6 +866,218 @@ mod tests {
         assert_eq!(full, before);
     }
 
+    fn anchor(p: [f64; 2], into: [f64; 2], out: [f64; 2]) -> WindowBezierPoint {
+        WindowBezierPoint {
+            position: WindowPoint::new(p[0], p[1]),
+            into: WindowPoint::new(into[0], into[1]),
+            out: WindowPoint::new(out[0], out[1]),
+        }
+    }
+    fn curve(points: Vec<WindowBezierPoint>, closed: bool) -> WindowShape {
+        WindowShape::Curve {
+            points,
+            closed,
+            inside: 0.0.into(),
+            outside: 0.0.into(),
+        }
+    }
+    fn at(p: &WindowPoint, frame: f64) -> [f64; 2] {
+        [p.x.value_at(frame), p.y.value_at(frame)]
+    }
+    /// The cubic of edge `j` at `frame`, as compose draws it: [A, A+out, B+in, B].
+    #[allow(clippy::many_single_char_names, reason = "control point notation")]
+    fn cubic(points: &[WindowBezierPoint], j: usize, frame: f64) -> [[f64; 2]; 4] {
+        let (a, b) = (&points[j], &points[(j + 1) % points.len()]);
+        let (p, h, k, q) = (
+            at(&a.position, frame),
+            at(&a.out, frame),
+            at(&b.into, frame),
+            at(&b.position, frame),
+        );
+        [p, [p[0] + h[0], p[1] + h[1]], [q[0] + k[0], q[1] + k[1]], q]
+    }
+    /// An independent Bernstein evaluation, not de Casteljau.
+    fn eval(c: [[f64; 2]; 4], t: f64) -> [f64; 2] {
+        let u = 1.0 - t;
+        [0, 1].map(|i| {
+            u * u * u * c[0][i]
+                + 3.0 * u * u * t * c[1][i]
+                + 3.0 * u * t * t * c[2][i]
+                + t * t * t * c[3][i]
+        })
+    }
+    /// Edge `j` split at `t` into edges `j` and `j+1` of `after` traces the same curve, and the
+    /// other fields are untouched, at every sampled frame.
+    fn assert_split(
+        before: &[WindowBezierPoint],
+        after: &[WindowBezierPoint],
+        j: usize,
+        t: f64,
+        frames: &[f64],
+    ) {
+        assert_eq!(after.len(), before.len() + 1);
+        for &frame in frames {
+            let whole = cubic(before, j, frame);
+            let (left, right) = (cubic(after, j, frame), cubic(after, j + 1, frame));
+            for k in 0..=20 {
+                let sigma = f64::from(k) / 20.0;
+                for (got, want) in [
+                    (eval(left, sigma), eval(whole, sigma * t)),
+                    (eval(right, sigma), eval(whole, t + sigma * (1.0 - t))),
+                ] {
+                    assert!(
+                        (got[0] - want[0]).abs() < 1e-9 && (got[1] - want[1]).abs() < 1e-9,
+                        "frame {frame} sigma {sigma}: {got:?} vs {want:?}"
+                    );
+                }
+            }
+        }
+        for (i, point) in after.iter().enumerate() {
+            if i == j + 1 {
+                continue;
+            }
+            let old = if i <= j { i } else { i - 1 };
+            let mut kept = before[old].clone();
+            if old == j {
+                kept.out = point.out.clone();
+            }
+            if old == (j + 1) % before.len() {
+                kept.into = point.into.clone();
+            }
+            assert_eq!(point, &kept, "point {i}");
+        }
+    }
+
+    fn lens() -> Vec<WindowBezierPoint> {
+        vec![
+            anchor([-0.25, 0.0], [0.0, 0.1], [0.0, -0.2]),
+            anchor([0.25, 0.0], [0.05, -0.15], [-0.1, 0.25]),
+            anchor([0.0, 0.3], [0.2, 0.0], [-0.2, 0.0]),
+        ]
+    }
+
+    #[test]
+    fn curve_insertion_splits_the_original_cubic_exactly_and_keeps_other_points() {
+        for (edge, t) in [(0, 0.3), (1, 0.5), (2, 0.85)] {
+            let before = lens();
+            let mut shape = curve(before.clone(), true);
+            assert_eq!(shape.insert_curve_point(edge, t), Ok(edge + 1));
+            let WindowShape::Curve { points, closed, .. } = &shape else {
+                panic!()
+            };
+            assert!(closed);
+            assert_split(&before, points, edge, t, &[0.0]);
+            assert!(shape.check().is_ok());
+        }
+        // A corner edge stays straight: the new handles lie along the chord.
+        let corner = |x: f64| anchor([x, 0.0], [0.0; 2], [0.0; 2]);
+        let mut shape = curve(vec![corner(0.0), corner(1.0)], true);
+        assert_eq!(shape.insert_curve_point(0, 0.25), Ok(1));
+        let WindowShape::Curve { points, .. } = &shape else {
+            panic!()
+        };
+        // A cubic with corner handles is not uniform in t: 3·.75·.25² + .25³.
+        assert!((at(&points[1].position, 0.0)[0] - 0.156_25).abs() < 1e-12);
+        assert_eq!(at(&points[1].into, 0.0)[1], 0.0);
+    }
+
+    #[test]
+    fn an_open_draft_splits_only_its_drawn_edges() {
+        let before = lens();
+        let mut shape = curve(before.clone(), false);
+        let unchanged = shape.clone();
+        assert_eq!(
+            shape.insert_curve_point(2, 0.5),
+            Err(TopologyError::Unsupported)
+        );
+        assert_eq!(shape, unchanged);
+        assert_eq!(shape.insert_curve_point(1, 0.4), Ok(2));
+        let WindowShape::Curve { points, closed, .. } = &shape else {
+            panic!()
+        };
+        assert!(!closed, "a draft stays a draft");
+        assert_split(&before, points, 1, 0.4, &[0.0]);
+        // A one-point draft has no edge.
+        let mut one = curve(vec![before[0].clone()], false);
+        assert_eq!(
+            one.insert_curve_point(0, 0.5),
+            Err(TopologyError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn an_animated_curve_edge_splits_on_its_key_union_and_stays_exact_between_keys() {
+        let mut before = lens();
+        let ease = |dv: f64| bez([0.3, dv], [0.4, -dv]);
+        before[0].position.x = keys(&[(0, -0.25, L), (20, -0.1, L), (40, -0.3, L)]);
+        before[0].out.y = keys(&[(0, -0.2, ease(0.1)), (30, -0.05, L)]);
+        before[1].into.x = keys(&[(0, 0.05, ease(-0.2)), (30, 0.2, L)]);
+        before[1].position.y = keys(&[(10, 0.0, L), (30, 0.1, L)]);
+        // Fields this edge does not use may hold anything: A.in and B.out.
+        before[0].into.x = keys(&[(0, 0.0, H), (5, 0.4, L), (9, 0.0, L)]);
+        before[1].out.y = keys(&[(0, 0.0, bez([0.9, 1.0], [0.05, 0.0])), (7, 0.2, L)]);
+        let mut shape = curve(before.clone(), true);
+        assert_eq!(shape.insert_curve_point(0, 0.35), Ok(1));
+        let WindowShape::Curve { points, .. } = &shape else {
+            panic!()
+        };
+        let frames: Vec<f64> = (-8..=200).map(|k| f64::from(k) * 0.25).collect();
+        assert_split(&before, points, 0, 0.35, &frames);
+        assert!(shape.check().is_ok());
+    }
+
+    #[test]
+    fn a_curve_insertion_that_cannot_keep_its_shape_names_its_anchors_and_changes_nothing() {
+        let mut before = lens();
+        before[1].position.x = keys(&[(0, 0.25, H), (10, 0.3, L)]);
+        before[0].out.x = keys(&[(0, 0.0, L), (10, 0.1, L)]);
+        let mut shape = curve(before, true);
+        let unchanged = shape.clone();
+        let error = shape.insert_curve_point(0, 0.5).unwrap_err();
+        let TopologyError::Shape {
+            axis,
+            points,
+            why,
+            frames,
+        } = error
+        else {
+            panic!("{error:?}")
+        };
+        assert_eq!(
+            (axis, points, why, frames),
+            ("x", vec![0, 1], Why::Jump, Some([0, 10]))
+        );
+        assert_eq!(shape, unchanged);
+        // Edge 2 (from anchor 2 to anchor 0) uses neither anchor 1 nor anchor 0's out handle.
+        assert_eq!(shape.insert_curve_point(2, 0.5), Ok(3));
+    }
+
+    #[test]
+    fn curve_removal_keeps_two_closed_anchors_but_lets_a_draft_empty() {
+        let before = lens();
+        let mut shape = curve(before.clone(), true);
+        shape.remove_curve_point(1).unwrap();
+        let WindowShape::Curve { points, closed, .. } = &shape else {
+            panic!()
+        };
+        assert!(closed);
+        assert_eq!(points[..], [before[0].clone(), before[2].clone()]);
+        let two = shape.clone();
+        assert_eq!(
+            shape.remove_curve_point(0),
+            Err(TopologyError::Minimum {
+                shape: "curve",
+                least: 2
+            })
+        );
+        assert_eq!(shape, two);
+        let mut draft = curve(before[..2].to_vec(), false);
+        draft.remove_curve_point(0).unwrap();
+        draft.remove_curve_point(0).unwrap();
+        assert_eq!(draft, curve(vec![], false));
+        assert_eq!(draft.remove_curve_point(0), Err(TopologyError::Unsupported));
+    }
+
     #[test]
     fn polygon_removal_keeps_three_points_and_every_other_param() {
         let mut shape = WindowShape::polygon();
@@ -769,7 +1093,13 @@ mod tests {
             [before[0].clone(), before[2].clone(), before[3].clone()]
         );
         let three = shape.clone();
-        assert_eq!(shape.remove_polygon_point(0), Err(TopologyError::Minimum));
+        assert_eq!(
+            shape.remove_polygon_point(0),
+            Err(TopologyError::Minimum {
+                shape: "polygon",
+                least: 3
+            })
+        );
         assert_eq!(shape, three);
         assert_eq!(
             WindowShape::linear().remove_polygon_point(0),

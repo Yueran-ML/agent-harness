@@ -149,7 +149,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `view.display` | `{"hdr"?: true \| false}` | `{"hdr": true, "source": {"hdr_on": true, "hdr_shown": true, "peak_nits": 400.0, "sdr_white_nits": 148.0} \| null, "timeline": ... \| null}` (see The view) |
 | `view.sample` | `{"monitor": m}` or `{"timeline": "t1", "frame": n}`, `"x": 960.5, "y": 540.5, "size"?: 1, "grade"?: target, "node"?: "n1", "clip"?: "c1"` | `{"frame", "x", "y", "size", "width", "height", "region", "rgb": [r, g, b], "node"?: {"grade", "node", "input", "output", "key"}}` (see Samples and the pointer) |
 | `view.pointer` | `{"monitor": m, "on": true \| false, "cursor"?: "arrow" \| "crosshair" \| "move" \| "resize_ew" \| "resize_ns"}` | `{"monitor", "on", "cursor"}`, then `view.pointer` notifications (see Samples and the pointer) |
-| `window.bind` | `{monitor:"timeline",revision,timeline,target,clip?,node,selected,visible,outline,tool}` | `{binding,sequence}`; existing Circular/Gradient/Linear/Polygon Window controls (see Circular and Gradient Window controls, Linear and Polygon Window controls) |
+| `window.bind` | `{monitor:"timeline",revision,timeline,target,clip?,node,selected,visible,outline,tool}` | `{binding,sequence}`; existing Window controls of every shape (see Circular and Gradient Window controls, Linear and Polygon Window controls, Curve Window controls) |
 | `window.input` | `{binding,kind:"down"\|"move"\|"up"\|"cancel"\|"delete",event?,capture?}` | Down returns `arming` immediately; `window.state` reports the asynchronous result. `delete` names a native middle-button down and answers `{binding,phase:"deleted",selected,point,revision}` |
 | `window.unbind` | `{binding}` | Ends capture and clears this connection's Window selection, or releases its still-owned retired binding's pointer |
 | `render.start` | `{"timeline":"t1", "path":"<file>", "codec":"h264", "quality":"high", "range"?:{"from":0,"to":250}, "subtitle_tracks"?:["S1"], "replace"?:false, "revision"?:n}` | `{"job": "render-1"}` (see Rendering a timeline) |
@@ -1066,11 +1066,76 @@ by its own connection and only after an unmoved release (`middle_moved` false an
 The engine hit-tests the down's own frame and overlay: only a selected Polygon's point handle
 deletes, removing that point (and its Params) from the whole animation as one plain step. A
 deletion that would leave fewer than three points is refused entirely with
-`data.reason:"delete"` and `data.topology:{why:"minimum",least:3}`; the window is not deleted.
+`data.reason:"delete"` and `data.topology:{why:"minimum",least:3,shape:"polygon"}`; the window
+is not deleted.
 A moved middle gesture is viewer pan (`data.reason:"moved"` if named), another hit is `hit`, and
 an active capture is `capture`. These handle positions, increments, the insertion rule and the
 point-count rule are project choices; Resolve instead makes an animated Polygon's points pop on
 and off at keyframes (p. 3194).
+
+### Curve Window controls
+
+The same binding, native down evidence, arming/freeze, owned gesture, left-key, Esc and undo rules
+as the other shapes apply. A new Curve is an empty open draft and shows no controls (RM20
+p. 3193); clicks in the viewer draw it.
+
+**Drawing.** The outline is the mask's own flattening of the displayed (interpolated, clamped)
+anchors and handles: each edge a cubic `[A, A+A.out, B+B.in, B]`, cut until straight to a quarter
+device pixel, never finer than the mask's own tessellation. An open draft has no closing edge
+and no body. Only the selected Curve draws white anchor handles and each non-zero Bezier handle as
+a display-only line to a smaller white end; a closed one also draws grey Inside/Outside guides
+(the exact offsets of that outline at Inside/Outside Softness/200, as Polygon; display only, never
+hit) and two magenta softness handles: the inside one on the inside guide at parameter 1/3 of
+edge 0, the outside one on the outside guide at 2/3 (each on the side the even-odd mask reads
+as inside or outside there, also on a lobe of a self-intersecting Curve). Every other window is
+a grey outline; clicking an unselected Curve's outline or closed body selects and moves it.
+
+**Hit priority** within the selected Curve: an anchor or handle end, then an edge, then the
+closed body (move), nearest device distance first. A closed Curve's body also takes a down
+within 4.5 device pixels of its drawn outline, selected or not ("drag anywhere within or just
+outside a curve to move it", p. 3194): below that Curve's own controls, above the windows
+underneath, independent of its softness guides. A draft has no body and so no such margin. While a draft is selected, a down that hits
+none of its controls (even over another window) draws: it appends a static corner point at the
+clicked spot, through the displayed transform's inverse, for the whole animation, and reports
+`"inserted":i` with the point's handle keys. A binding may select no window (`selected:null`,
+which the desktop uses when Esc leaves a draft): then a down on any window's body or a draft's
+outline selects it and moves, and any other down is `hit`.
+
+**Drafting and closing.** A drag that travels at least 4 device pixels (an anchor's radius, at
+any viewer zoom) from the down pulls symmetric Bezier handles out of the new point (out = the
+local displacement, in = its negative); a shorter wobble keeps a corner. With two or more points, the draft's first point closes it: a
+click closes it with a corner there (its handles' left keys go to 0), a drag closes it with the
+pulled symmetric handles; no point is added and `closed` becomes true. A one-point draft's first
+point is an ordinary point. The draw or close is the capture's first owned step once armed, so
+its drag belongs to the same undo step and Esc during it removes only that point or closing (the
+rest of the draft stays); a click released before arming completes still draws or closes once.
+
+**Editing** (p. 3194; open drafts too). An anchor drag writes `L + delta` to its x/y left keys
+(its relative handles go with it). A handle drag writes the dragged handle's left keys, and turns
+and scales the opposite handle by the same rotation and scale (their angle and length ratio
+stay); with Alt the opposite handle stays where it is. A zero opposite handle stays zero; a
+handle dragged from zero has no direction, so its opposite stays. Alt with a drag on a corner
+(both handles zero as displayed) pulls a symmetric pair; Alt with a system double click on an
+anchor writes its handles' left keys to 0 (a corner), then a drag moves it. Down `keys` report
+`"points":[{"point":i,"x","y"}]` for an anchor and `{"point":i,"out_x","out_y","in_x","in_y"}`
+for its handles. A softness handle writes `L + 200 * (delta . n)` to Inside or Outside Softness
+(reported as `"inside"` or `"outside"`), n the local unit normal at down pointing away from the
+outline on that handle's side, clamped to 0–100.
+
+**Insertion.** A down on a selected Curve's edge splits that cubic at the parameter of the
+nearest point of the cubic itself (clamped to .001–.999) for the whole animation, by de Casteljau:
+the new anchor and its two handles, and the two neighbours' shortened facing handles, are exact
+fixed combinations of A, A.out, B.in and B on the union of their key frames, so the curve is
+unchanged at every instant. Refusals, `"inserted"`, the first owned step and the unarmed click
+are as for Polygon (`topology.points` name anchors); a Curve has no point maximum.
+
+**Deletion.** A middle tap on a selected Curve's anchor, including an open draft's first point,
+removes it from the whole animation as one plain step. A closed Curve keeps at least two points:
+otherwise the whole delete is refused with `data.topology:{why:"minimum",least:2,shape:"curve"}`
+and the Curve stays closed; an open draft may become empty. Drawn points are static, and the pull
+threshold, the margin just outside, handle placements and the linked rotation and scale are
+project choices; Shift
+multi-point selection is not part of this protocol yet.
 
 ## The transport
 

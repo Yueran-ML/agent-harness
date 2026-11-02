@@ -229,6 +229,13 @@ one step of undo. Alt+C, Alt+Q, Alt+G and Alt+B, or *Add Serial Node + CPW*, *LP
 window, in one step of undo, and open the Window palette on it; a Curve starts empty, to be
 drawn on the viewer (p. 3187).
 
+**Tracker.** The Tracker palette makes the windows of a node follow the picture: the cloud
+tracker follows the whole of what the window covers, and the point tracker the points that are
+placed. It tracks Pan, Tilt, Zoom, Rotate and 3D, forward, backward or a frame at a time, in
+Clip or Frame mode; a track is cleared, interpolated, copied and pasted. The keys of the
+Tracker menu work whichever palette is open, for the window selected in the Window palette. The
+stabilizer comes in a later phase.
+
 **Blur.** The Blur palette has Resolve's three modes: Blur, Sharpen and Mist. Radius, H/V Ratio
 and Scaling are set for red, green and blue, ganged at first; Sharpen adds Coring Softness and
 Level, and Mist its Mix. Over Radius, a notch of the wheel changes it by 0.01. Blur works within
@@ -322,6 +329,8 @@ These are the Color page's own keys; playback, In and Out and undo are those of 
 | Alt+P / Alt+L / Alt+K | Adds a parallel node, a layer node, a node at the end (Append) | 3318 |
 | Alt+O | Adds an Outside node of the current one (its key inverted) | 3318, 3341 |
 | Alt+C / Alt+Q / Alt+G / Alt+B | Adds a serial node with a circular, linear, polygon or Curve window | 3187 |
+| Ctrl+T / Alt+T / Ctrl+Alt+T | Tracks the selected window forward or in reverse, stops tracking | 3231 |
+| Alt+→ / Alt+← | Tracks the selected window one frame forward or in reverse | 3231 |
 | Ctrl+D / Alt+D | Turns the nodes chosen, or all nodes, off or on | 3315 |
 | E, Delete | Extracts the node chosen; deletes the nodes chosen | 3318–3319 |
 | Shift+Home / Ctrl+Shift+Home / Ctrl+Home | Resets the current node, every node, the whole grade | 3316 |
@@ -419,7 +428,8 @@ grade's summary.
   from 0) whose picture is shown, so keys stay on their pictures through trims, slips and speed
   changes; for a title, a colour or a still, the clip's frame from its first; for the timeline's
   grade, the timeline's frame. The settings are those of the Primaries, Curves, Qualifier, Blur
-  and Key palettes, Soft Clip and a node's LUT; Power Windows are drawn on the Color page.
+  and Key palettes, Soft Clip and a node's LUT; Power Windows and their tracking are drawn on the
+  Color page.
 - `video_grade_node` adds a corrector as `append` (Append Node), `add_serial`,
   `add_serial_before`, `add_parallel`, `add_layer` or `add_outside` (Add Outside Node, whose key
   is the current node's inverted) add one, with its label and settings in the same step if
@@ -594,6 +604,5 @@ Keyframes and speed curves on the Edit page, the Keyframe Editor of the Color pa
 Fairlight-style mixing (pitch kept at another speed, music
 ducking), markers, Fit to Fill, Close Up, multicam and lining clips up by timecode come in later
 phases. The desktop's export writes with hardware encoders only, with ProRes as the fallback.
-Of the Color page, the tracker, the stabilizer, versions of grades, the 3D qualifier, Magic Mask,
-Color Warper, Sizing and the other Motion Effects, DCTL, Dolby Vision and HDR10+ are not in this
-version.
+Of the Color page, the stabilizer, versions of grades, the 3D qualifier, Magic Mask, Color Warper,
+Sizing and the other Motion Effects, DCTL, Dolby Vision and HDR10+ are not in this version.

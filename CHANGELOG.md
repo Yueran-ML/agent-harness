@@ -12,7 +12,7 @@ change what was there before.
   dragged between nodes, labels, Lock Node, resets and Original Memory. The palettes are
   Primaries (Color Wheels, Color Bars, Log Wheels, Auto Color and the black and white point
   pickers), Curves (custom, the six HSL curves, Soft Clip), Qualifier (HSL, RGB, LUM, Matte
-  Finesse, pickers in the viewer, Highlight), Window, Blur (Blur, Sharpen, Mist) and Key.
+  Finesse, pickers in the viewer, Highlight), Window, Tracker, Blur (Blur, Sharpen, Mist) and Key.
   Thumbnails of the clips show their grades; grades are copied, pasted and taken from the clips
   before. Every change is one step of undo, shared with the agent.
 - Power Windows: Linear, Circular, Polygon, Curve and Gradient, drawn and edited with their
@@ -20,7 +20,9 @@ change what was there before.
   several of its points are moved, scaled, rotated or deleted together. The window list inverts
   each window, and with Mask off takes it away from the others. Windows are kept as presets in a
   library that every project of the user shares. Alt+C, Alt+Q, Alt+G and Alt+B add a serial node
-  with a circular, linear, polygon or Curve window in one step of undo.
+  with a circular, linear, polygon or Curve window in one step of undo. The tracker makes windows
+  follow the picture, with a cloud of points or with points placed (Pan, Tilt, Zoom, Rotate, 3D;
+  forward, backward, a frame at a time), in Clip or Frame mode, each track one step of undo.
 - LUTs, stills and comparisons: a LUT browser with Favorites, LUTs dropped on nodes, the
   project's Input, Output and Color Viewer LUTs, and Generate LUT (17, 33 or 65 point cubes)
   from a clip's thumbnail. The browser shows each LUT on a test image, and Live Preview and
@@ -51,9 +53,11 @@ change what was there before.
   Color page: scopes and their figures, the viewer's pointer and samples, Power Window controls,
   comparisons, Highlight and Bypass Color, the Gallery, the LUT library and its previews
   (`luts.preview`, `viewer.preview`, `viewer.lut`), Generate LUT, window presets, `add_serial`
-  with windows, graded thumbnails, and `color_pending` and `color_error` in the timeline's
-  state. `engine/PROTOCOL.md` describes all of it. The engine compiles its shaders with the
-  DirectX Shader Compiler of Microsoft that comes with it, and with FXC where it cannot.
+  with windows, window tracking (`track.start`, `track.stop`, `track.edit`, with the
+  notifications `track.progress` and `track.state`), graded thumbnails, and `color_pending` and
+  `color_error` in the timeline's state. `engine/PROTOCOL.md` describes all of it. The engine
+  compiles its shaders with the DirectX Shader Compiler of Microsoft that comes with it, and
+  with FXC where it cannot.
 - The agent grades: `video_grade_info`, `video_grade_set`, `video_grade_node`,
   `video_grade_copy`, `video_grade_lut` (with Generate LUT), `video_grade_group`,
   `video_grade_scopes` (figures of a frame drawn off screen, so no desktop is needed),

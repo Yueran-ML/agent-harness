@@ -68,7 +68,8 @@ export function fakeEngine(project: Project, luts: LutLibrary = library()) {
     open: vi.fn(async () => opened()),
     call: vi.fn(async (method: string, params?: Record<string, unknown>) => {
       if (method === 'project.get') return { ok: true, result: { project, revision, next_id: project.next_id } };
-      if (method === 'media.thumbnail' || method === 'timeline.thumbnail') return new Promise(() => {});
+      if (method === 'media.thumbnail') return new Promise(() => {});
+      if (method === 'timeline.thumbnail') return { ok: true, result: { width: 160, height: 90, png: '', frame: params!.frame } };
       if (method === 'transport.state') return { ok: true, result: params?.monitor === 'timeline' ? state : { ...state, monitor: 'source', media: null } };
       if (method === 'transport.load') {
         state = { ...state, timeline: params!.timeline as string, frame: 0, shown: 0, last: 299 } as TransportState;

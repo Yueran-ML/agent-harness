@@ -14,6 +14,7 @@ import { PickerContext, SampleDrag, pickerInForce, usePickerHub, type Rgb, type 
 import { PICK, addRange, arcOf, measure, pickRange, qualifierAfter, softenRange, subtractRange } from '../src/studio/color/qualifierPick';
 import { blackPointEdits, customPickPoints, hslPickPoints, whitePointEdits } from '../src/studio/color/pickMaths';
 import { fullCorrector } from '../src/studio/color/corrector';
+import { AT_ONCE, GradedThumbnails, stampOf } from '../src/studio/color/gradedThumbnails';
 import { mergePatch, newQualifier, type Corrector, type GradeNode, type Qualifier, type Target, type ViewPointer, type ViewerTool } from '../src/studio/engine';
 import { likeABrowser } from './mounted';
 
@@ -407,3 +408,31 @@ describe('the Key palette', () => {
 function within(element: HTMLElement) {
   return { getByRole: (role: string, { name }: { name: string }) => [...element.querySelectorAll<HTMLElement>(`[role="${role}"]`)].find(each => each.textContent === name)! };
 }
+
+describe('the thumbnails as their clips are graded', () => {
+  it('asks the engine for two at a time, once each, again as what they depend on changes or all are updated', async () => {
+    const answers: ((value: unknown) => void)[] = [];
+    const call = vi.fn((_method: string, _params?: Record<string, unknown>) => new Promise<never>(done => answers.push(done as (value: unknown) => void)));
+    const cache = new GradedThumbnails({ call: call as never }, 1);
+    const pictures = ['c1', 'c2', 'c3'].map(clip => cache.picture('t1', clip, 10, 'a'));
+    await Promise.resolve();
+    expect(call.mock.calls.map(([, params]) => params!.clip)).toEqual(['c1', 'c2'].slice(0, AT_ONCE));
+    expect(cache.picture('t1', 'c1', 10, 'a')).toBe(pictures[0]);
+    answers[0]({ ok: true, result: { png: 'AAA' } });
+    expect(await pictures[0]).toBe('data:image/png;base64,AAA');
+    await Promise.resolve(); await Promise.resolve();
+    expect(call.mock.calls.map(([, params]) => params!.clip)).toEqual(['c1', 'c2', 'c3']);
+    expect(call.mock.calls[0]).toEqual(['timeline.thumbnail', { timeline: 't1', clip: 'c1', frame: 10, height: 90 }, { expectedSession: 1 }]);
+    expect(cache.picture('t1', 'c1', 10, 'b')).not.toBe(pictures[0]);
+    cache.forget();
+    expect(cache.picture('t1', 'c2', 10, 'a')).not.toBe(pictures[1]);
+  });
+
+  it('depend on the clip, its group, its media and the colour management', () => {
+    const clip = { id: 'c1', start: 0, length: 10, source: { kind: 'media', media: 'm1', in: { ticks: 0, scale: 25 } }, group: 'g1' } as never;
+    const group = { id: 'g1', name: 'Day', pre: { nodes: [], links: [] }, post: { nodes: [], links: [] } };
+    const before = stampOf(clip, [group], new Map(), undefined);
+    expect(stampOf(clip, [{ ...group, post: { nodes: [], links: [{ from: 'source', to: 'output', kind: 'rgb', input: 0 }] } }], new Map(), undefined)).not.toBe(before);
+    expect(stampOf(clip, [group], new Map(), { space: 'x' } as never)).not.toBe(before);
+  });
+});

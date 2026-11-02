@@ -90,7 +90,8 @@ function fakeEngine(timelines: Timeline[] = [graded()]) {
     open: vi.fn(async () => { const opened = { session: 1, project: 'F:/film/.columbina/studio', owned: true, pid: 9, revision }; listeners.forEach(listener => listener({ kind: 'opened', ...opened })); return opened; }),
     call: vi.fn(async (method: string, params?: Record<string, unknown>) => {
       if (method === 'project.get') return { ok: true, result: { project, revision, next_id: project.next_id } };
-      if (method === 'media.thumbnail' || method === 'timeline.thumbnail') return new Promise(() => {});
+      if (method === 'media.thumbnail') return new Promise(() => {});
+      if (method === 'timeline.thumbnail') return { ok: true, result: { width: 160, height: 90, png: '', frame: params!.frame } };
       if (method === 'transport.state') return { ok: true, result: params?.monitor === 'timeline' ? state : { ...state, monitor: 'source', media: null } };
       if (method === 'transport.load') {
         state = { ...state, timeline: params!.timeline as string, frame: 0, shown: 0, last: 299 } as TransportState;
@@ -599,7 +600,7 @@ describe('the viewer modes, the pickers and the thumbnail menu of the Color page
     const asked = calls(bridge, 'timeline.thumbnail').length;
     fireEvent.contextMenu(thumb('c1'), { clientX: 20, clientY: 20 }); await settle();
     fireEvent.click(document.querySelector('[data-test="menu-update-thumbnails"]')!); await settle();
-    await act(() => new Promise(done => setTimeout(done, 20)));
+    await act(() => new Promise(done => setTimeout(done, 350)));
     expect(calls(bridge, 'timeline.thumbnail').length).toBeGreaterThanOrEqual(asked * 2);
   });
 });

@@ -16,9 +16,16 @@ import { callEngine, type Clip, type ColorSettings, type Group, type Media, type
 export const SETTLE_MS = 300;
 /** The most pictures kept. */
 const KEPT = 256;
+/**
+ * The most pictures asked of the engine at once: it draws them one at a time, with the samples of
+ * the pickers (`view.sample` at a node), which so wait behind one or two thumbnails at most.
+ */
+export const AT_ONCE = 2;
 
 export class GradedThumbnails {
   private readonly images = new Map<string, Promise<string>>();
+  private readonly waiting: (() => void)[] = [];
+  private asking = 0;
   /** Bumped by Update All Thumbnails, so that every picture is asked again. */
   generation = 0;
   constructor(private readonly bridge: Pick<EngineBridge, 'call'>, private readonly session?: number) {}
@@ -28,13 +35,25 @@ export class GradedThumbnails {
     const key = JSON.stringify([this.generation, timeline, clip, frame, stamp]);
     const existing = this.images.get(key);
     if (existing) return existing;
-    const image = callEngine(this.bridge, 'timeline.thumbnail', { timeline, clip, frame, height: 90 },
-      this.session === undefined ? undefined : { expectedSession: this.session })
-      .then(result => `data:image/png;base64,${result.png}`);
+    const image = this.turn().then(() => callEngine(this.bridge, 'timeline.thumbnail', { timeline, clip, frame, height: 90 },
+      this.session === undefined ? undefined : { expectedSession: this.session }))
+      .then(result => `data:image/png;base64,${result.png}`)
+      .finally(() => this.done());
     this.images.set(key, image);
     void image.catch(() => { if (this.images.get(key) === image) this.images.delete(key); });
     if (this.images.size > KEPT) this.images.delete(this.images.keys().next().value!);
     return image;
+  }
+
+  /** Wait for a turn to ask the engine. */
+  private turn(): Promise<void> {
+    if (this.asking < AT_ONCE) { this.asking += 1; return Promise.resolve(); }
+    return new Promise(go => this.waiting.push(() => { this.asking += 1; go(); }));
+  }
+
+  private done(): void {
+    this.asking -= 1;
+    this.waiting.shift()?.();
   }
 
   /** Forget every picture (Update All Thumbnails). */

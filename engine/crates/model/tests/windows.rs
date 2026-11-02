@@ -444,3 +444,61 @@ fn transform_evaluates_source_frame_keys_and_clamps_bezier_overshoot() {
         [1.0, 0.5],
     );
 }
+
+/// A window preset keeps the shape and parameters at the playhead, interpolated and clamped as
+/// the mask uses them, and no keyframes (author decision 2026-11-01; RM20 p. 3199).
+#[test]
+fn a_window_frozen_at_a_frame_keeps_its_interpolated_values_without_keys() {
+    let keys = |from: f64, to: f64| {
+        Param::Keys(vec![
+            Key {
+                frame: 0,
+                value: from,
+                interp: Interp::Linear,
+            },
+            Key {
+                frame: 10,
+                value: to,
+                interp: Interp::Linear,
+            },
+        ])
+    };
+    let mut window = Window::new("w2", WindowShape::curve());
+    window.label = "face".into();
+    window.invert = true;
+    window.transform.pan = keys(20.0, 40.0);
+    // Rotate overshoots its bounds after interpolation; the mask clamps it, and so does a preset.
+    window.transform.rotate = keys(0.0, 80_000.0);
+    window.opacity = keys(100.0, 0.0);
+    window.shape = serde_json::from_value(json!({"kind":"curve","closed":true,
+        "points":[
+            {"position":{"x":{"keys":[{"frame":0,"value":0.0,"interp":"linear"},{"frame":10,"value":0.5,"interp":"linear"}]},"y":0.1},
+             "in":{"x":0.0,"y":0.0},"out":{"x":{"keys":[{"frame":0,"value":0.0,"interp":"hold"},{"frame":10,"value":1.0,"interp":"linear"}]},"y":0.0}},
+            {"position":{"x":0.2,"y":0.2},"in":{"x":0.0,"y":0.0},"out":{"x":0.0,"y":0.0}}],
+        "inside":{"keys":[{"frame":0,"value":0.0,"interp":"linear"},{"frame":10,"value":10.0,"interp":"linear"}]},"outside":3.0}))
+    .unwrap();
+    let frozen = window.frozen_at(5.0);
+    let written = serde_json::to_value(&frozen).unwrap();
+    assert!(!written.to_string().contains("keys"), "{written}");
+    assert_eq!(written["id"], "w2");
+    assert_eq!(written["label"], "face");
+    assert_eq!(written["invert"], true);
+    assert_eq!(written["transform"]["pan"], 30.0);
+    assert_eq!(written["transform"]["rotate"], 36_000.0);
+    assert_eq!(written["opacity"], 50.0);
+    assert_eq!(written["shape"]["closed"], true);
+    assert_eq!(written["shape"]["points"][0]["position"]["x"], 0.25);
+    assert_eq!(written["shape"]["points"][0]["out"]["x"], 0.0);
+    assert_eq!(written["shape"]["inside"], 5.0);
+    assert_eq!(written["shape"]["outside"], 3.0);
+    // Every shape keeps its kind and the values it has on that frame.
+    for shape in [
+        WindowShape::linear(),
+        WindowShape::circular(),
+        WindowShape::polygon(),
+        WindowShape::gradient(),
+    ] {
+        let window = Window::new("w1", shape);
+        assert_eq!(window.frozen_at(3.0), window);
+    }
+}

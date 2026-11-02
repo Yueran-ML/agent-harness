@@ -912,7 +912,7 @@ impl AppendNodeRequest {
 }
 
 /// The grade `target` names, or the refusal `missing`.
-fn grade_of<'a>(project: &'a Project, target: &Target) -> Result<&'a Grade, Fault> {
+pub(crate) fn grade_of<'a>(project: &'a Project, target: &Target) -> Result<&'a Grade, Fault> {
     let missing = |what: &str, id: &str| {
         refused(
             "missing",

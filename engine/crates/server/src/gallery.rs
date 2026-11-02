@@ -166,14 +166,7 @@ impl Places {
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
             .filter(|path| path.is_absolute());
-        let home = std::env::var_os("COLUMBINA_HOME")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
-                    .filter(|value| !value.is_empty())
-                    .map(|home| PathBuf::from(home).join(".columbina"))
-            });
+        let home = columbina_home();
         Places {
             project: Path::new(project).join("gallery"),
             power: named.or_else(|| home.map(|home| home.join("powergrades"))),
@@ -191,6 +184,19 @@ impl Places {
             }),
         }
     }
+}
+
+/// This user's folder of what every project shares (the `PowerGrades`, the window presets):
+/// `%COLUMBINA_HOME%`, else `.columbina` in the user's home folder.
+pub fn columbina_home() -> Option<PathBuf> {
+    std::env::var_os("COLUMBINA_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+                .filter(|value| !value.is_empty())
+                .map(|home| PathBuf::from(home).join(".columbina"))
+        })
 }
 
 /// An album, as `gallery.json` keeps it.

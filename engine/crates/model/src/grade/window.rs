@@ -86,6 +86,74 @@ impl Window {
         }
     }
 
+    /// This window as it is on `frame`: every parameter fixed at the value it has there,
+    /// interpolated and clamped as the mask uses it, with no keyframes. A window preset is kept
+    /// so (author decision 2026-11-01), to be animated or tracked again once it is applied.
+    #[must_use]
+    pub fn frozen_at(&self, frame: f64) -> Self {
+        let fix = |p: &Param, b: Bounds| Param::Fixed(p.value_at(frame).clamp(b.low, b.high));
+        let point = |p: &WindowPoint| WindowPoint {
+            x: fix(&p.x, bounds::COORDINATE),
+            y: fix(&p.y, bounds::COORDINATE),
+        };
+        let t = &self.transform;
+        let shape = match &self.shape {
+            WindowShape::Linear { points, softness } => WindowShape::Linear {
+                points: Box::new(std::array::from_fn(|i| point(&points[i]))),
+                softness: std::array::from_fn(|i| fix(&softness[i], bounds::SOFTNESS)),
+            },
+            WindowShape::Circular { softness } => WindowShape::Circular {
+                softness: fix(softness, bounds::SOFTNESS),
+            },
+            WindowShape::Gradient { softness } => WindowShape::Gradient {
+                softness: fix(softness, bounds::SOFTNESS),
+            },
+            WindowShape::Polygon {
+                points,
+                inside,
+                outside,
+            } => WindowShape::Polygon {
+                points: points.iter().map(point).collect(),
+                inside: fix(inside, bounds::FEATHER),
+                outside: fix(outside, bounds::FEATHER),
+            },
+            WindowShape::Curve {
+                points,
+                closed,
+                inside,
+                outside,
+            } => WindowShape::Curve {
+                points: points
+                    .iter()
+                    .map(|p| WindowBezierPoint {
+                        position: point(&p.position),
+                        into: point(&p.into),
+                        out: point(&p.out),
+                    })
+                    .collect(),
+                closed: *closed,
+                inside: fix(inside, bounds::FEATHER),
+                outside: fix(outside, bounds::FEATHER),
+            },
+        };
+        Self {
+            id: self.id.clone(),
+            label: self.label.clone(),
+            enabled: self.enabled,
+            invert: self.invert,
+            combine: self.combine,
+            transform: WindowTransform {
+                size: fix(&t.size, bounds::SIZE),
+                aspect: fix(&t.aspect, bounds::ASPECT),
+                pan: fix(&t.pan, bounds::PAN),
+                tilt: fix(&t.tilt, bounds::TILT),
+                rotate: fix(&t.rotate, bounds::ROTATE),
+            },
+            opacity: fix(&self.opacity, bounds::OPACITY),
+            shape,
+        }
+    }
+
     fn check(&self) -> Result<(), OpError> {
         if self.id.is_empty() {
             return Err(OpError::NoId);

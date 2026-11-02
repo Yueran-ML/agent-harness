@@ -68,6 +68,7 @@ mod timer;
 mod transport;
 mod view;
 mod window;
+mod window_presets;
 
 #[cfg(test)]
 #[path = "../../media/tests/support/mod.rs"]

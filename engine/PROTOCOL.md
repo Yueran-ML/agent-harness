@@ -183,6 +183,11 @@ Before `hello`, every other request is refused with `-32600`.
 | `viewer.highlight` | `{"mode": "off" \| "highlight" \| "bw", "grade"?: target, "node"?: "n1", "monitor"?: "timeline"}` | `{"monitor": "timeline", "mode", "grade"?, "node"?}` (see Highlight) |
 | `viewer.bypass` | `{"on": true, "monitor"?: "timeline"}` | `{"monitor": "timeline", "on"}` (see Bypass Color) |
 | `timeline.thumbnail` | `{"timeline": "t1", "frame": 0, "clip"?: "c1", "height"?: 90}` | `{"width": 160, "height": 90, "png": "<base64>", "frame"}` (see Thumbnails of the Color page) |
+| `window_presets.list` | none, or `{}` | `{"presets": [{"id": "wp1", "name": "Face", "windows": [window, ...]}, ...]}` (see Window presets) |
+| `window_presets.save` | `{"name": "Face", "grade": target, "node": "n4", "frame": 120}` | the preset `{"id", "name", "windows"}` (Save as New Preset) |
+| `window_presets.update` | `{"preset": "wp1", "grade": target, "node": "n4", "frame": 120}` | the preset (Update Preset) |
+| `window_presets.delete` | `{"preset": "wp1"}` | `{"deleted": "wp1"}` (Delete Preset) |
+| `window_presets.apply` | `{"preset": "wp1", "grade": target, "node": "n4", "revision"?: n}` | as `transaction.apply` (recalling a preset) |
 
 - `hello` says once per connection what the client is; a second `hello` is refused (`-32600`).
   From then on the connection is sent every notification. `protocol` other than 2 is refused
@@ -2724,6 +2729,42 @@ Security); `{"reason": "write", "path", "message"}` where an export cannot be wr
 
 Memories (Alt+1…8, p. 3271) are not kept by the engine: a client keeps which still each holds.
 
+## Window presets
+
+Window presets (RM20 pp. 3198–3199) are windows saved to be recalled on any node. As the
+PowerGrades, they are this user's and shared by every project (`%COLUMBINA_HOME%\window_presets`,
+else `%USERPROFILE%\.columbina\window_presets`, or the folder that `COLUMBINA_WINDOW_PRESETS`
+names: `presets.json` `{"format": 1, "next", "presets"}` and a lock folder `.lock`, written whole,
+one change at a time of all the engines that share it; one of another format is refused). No
+project names a preset, and no change of the library is a step of a project's history.
+
+- **`window_presets.save`** (Save as New Preset) keeps every window of the corrector `node` of
+  the grade `target` (see Grades), in the list's order, ids and labels and all, each as it is on
+  `frame` of the grade's keys (see Frames of keys; the playhead): every parameter interpolated
+  and clamped there as the mask uses it, and no keyframes or tracking data. It goes after the
+  others, with a new id `wp<n>` (never given twice). `name` is 1 to 100 characters, trimmed.
+- **`window_presets.update`** (Update Preset) puts the node's windows, kept so, in place of the
+  preset's; its id, name and place stay.
+- **`window_presets.delete`** (Delete Preset) removes it at once and for good, "no warning" and
+  no undo (p. 3199). Projects whose nodes it was recalled on keep their windows.
+- **`window_presets.apply`** (choosing a preset in the option menu) "overwrite[s] whatever other
+  windows were set up in that node" (p. 3199): it is worked out, while the project is locked,
+  into one `set_node` of the node's whole `windows`, the preset's in full, one transaction and
+  one undo step, answered as `transaction.apply`. The windows can then be animated or tracked.
+- There is no Rename Preset: the manual lists none.
+
+Every method that changes the library tells every client `window_presets.changed` `{}` before it
+answers. They all work in a headless engine.
+
+**Refusals.** `-32602` for params that are not the method's; `{"reason": "missing", "what":
+"preset", "id"}` for no such preset; `{"reason": "out_of_range", "what": "name"}`. `-32001`
+`{"reason": "name_taken", "name"}` for a name a preset has already; `{"reason": "no_windows",
+"node"}` to save a node without windows; `{"reason": "missing", "what": "timeline" | "clip" |
+"group" | "node", "id"}`; `{"reason": "wrong_node", "node"}` for a node that is not a
+corrector; and an apply refused as a transaction is (`stale_revision`, a locked node, windows of
+a hand-edited library that are not valid). `-32002` `{"reason": "window_presets", "path",
+"message"}` where the library cannot be made, read or written, or is of another format.
+
 ## The library of LUTs
 
 **`luts.list`** (no params, or `{"folder"}`) lists the folders that a corrector's `lut` is
@@ -3079,6 +3120,7 @@ real ids. For example:
 | `render.progress` | `{"job", "state": "running" \| "done" \| "failed" \| "cancelled", "frame", "frames", "fps", "path", "encoder"?, "message"?, "missing_luts"?}` (see Rendering a timeline, and Grades in the picture) |
 | `scopes.frame` | `{"scope_id": "scope-1", "view": "timeline", "frame": n, "width": w, "height": h, "rgba": "<base64>"}`: a picture of a scope, to the connection that subscribed it only (see Scopes) |
 | `gallery.changed` | `{}`: the Gallery was changed; call `gallery.list` again (see The Gallery) |
+| `window_presets.changed` | `{}`: the window presets were changed; call `window_presets.list` again (see Window presets) |
 | `view.pointer` | `{"monitor", "kind": "down" \| "move" \| "wheel" \| "up" \| "cancel", "button", "buttons", "delta", "clicks", "middle_moved", "x", "y", "inside", "window": {"x", "y"}, "shift", "ctrl", "alt"}`: what the pointer did on a view that takes it, to the connection that asked only (see Samples and the pointer) |
 | `window.state` | `{binding,capture,sequence,phase,reason,selected,event,revision,keys}`: owner-only arming, armed, refused and ended states (see Circular and Gradient Window controls) |
 | `window.unbound` | `{binding,sequence,revision,reason:"project_changed"}`: original-owner-only retirement when a project change invalidates the binding, even without capture |

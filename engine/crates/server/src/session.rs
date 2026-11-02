@@ -1126,6 +1126,9 @@ async fn dispatch(
             window::call(engine, connection, kind, id, method, params).await
         }
         "luts.list" | "grade.export_lut" => luts_call(engine, connection, id, method, params).await,
+        _ if crate::window_presets::is_method(method) => {
+            crate::window_presets::call(engine, connection, kind, id, method, params).await
+        }
         "viewer.wipe" | "viewer.split" | "viewer.highlight" | "viewer.bypass" => {
             let result = viewer(engine, method, params).await?;
             if method == "viewer.highlight" || result["mode"] == "split" {
@@ -2045,6 +2048,11 @@ pub(crate) async fn tell_everyone(engine: &Engine, method: &str, params: &serde_
     let kicked = std::mem::take(&mut state.kicked);
     drop(state);
     engine.log_kicked(kicked);
+}
+
+/// Read the project as it is now, while the state is locked.
+pub(crate) async fn read_project<T>(engine: &Engine, read: impl FnOnce(&Project) -> T) -> T {
+    read(engine.state.lock().await.history.project())
 }
 
 /// What a transaction worked out by the engine is made of: operations and edits written as the

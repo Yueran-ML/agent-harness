@@ -11,9 +11,11 @@
 //!   frames, T3c), decoded on the processor (its proxy where it has a usable one), turned upright,
 //!   and scaled to [`analysis_size`]: the frames the window's track data is in pixels of. A track goes no further than the frames that the clip
 //!   shows: a clip played backward is tracked forward in time on the timeline (p. 3231).
-//! - Every [`COMMIT_EVERY`] the track so far is written into the window, as the next change of
-//!   the same gesture: the viewer shows the window following and the palette its curves, and the
-//!   whole track is one step to undo. `track.progress` tells the frame reached.
+//! - The track so far is written into the window as the next change of the same gesture, every
+//!   [`COMMIT_EVERY`] while it is short and further apart as it grows ([`commit_interval`]), as
+//!   each write sends every client the window's whole track: the viewer shows the window
+//!   following and the palette its curves, and the whole track is one step to undo.
+//!   `track.progress` tells the frame reached.
 //! - Stop (`track.stop`, Ctrl+Alt+T) ends it between frames; what was tracked stays, as does
 //!   the part of a track that ended at a frame that could not be decoded (p. 3231 says a new
 //!   track overwrites the frames it reaches; nothing says a stopped track is taken back).
@@ -50,8 +52,27 @@ use super::{
 };
 use crate::proxy;
 
-/// How often the track so far is written into the window while it goes on.
+/// How often the track so far is written into the window while it goes on, while it is short.
 pub const COMMIT_EVERY: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// The longest time between two writes of a track, however long: the viewer still follows it.
+pub const COMMIT_MOST: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The bytes of writes a track sends each client in a second, at most, below [`COMMIT_MOST`].
+const COMMIT_BYTES_PER_SECOND: u64 = 2_000_000;
+
+/// The time from a write of a track of `bytes` (its operation as written, which every client is
+/// sent, parses and draws) that held the engine for `took` to the next: [`COMMIT_EVERY`], or
+/// longer as the track grows, so that no more than [`COMMIT_BYTES_PER_SECOND`] are sent and the
+/// writes hold the engine no more than a fifth of the time, but never more than [`COMMIT_MOST`].
+#[must_use]
+pub fn commit_interval(bytes: usize, took: std::time::Duration) -> std::time::Duration {
+    let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+    let millis = bytes.saturating_mul(1000) / COMMIT_BYTES_PER_SECOND;
+    std::time::Duration::from_millis(millis)
+        .max(took.saturating_mul(5))
+        .clamp(COMMIT_EVERY, COMMIT_MOST)
+}
 
 /// Frames decoded at once to track backward, from the earliest of them, so that a reverse track
 /// does not seek for every frame.
@@ -574,15 +595,21 @@ impl State {
         }
     }
 
-    /// Write `data` into the tracked window as the next change of the track's gesture.
+    /// Write `data` into the tracked window as the next change of the track's gesture. Gives the
+    /// revision and the size of the operation as it is sent.
     fn track_commit(
         &mut self,
         plan: &Plan,
         gesture: &mut OwnedGesture,
         data: &TrackData,
-    ) -> Result<u64, Fault> {
+    ) -> Result<(u64, usize), Fault> {
         let now = Instant::now();
-        self.gesture_last = Some(now);
+        // Only a gesture that is still the track's own is kept from going idle by its write (a
+        // frame may take long to decode); a refused write refreshes no one's.
+        self.check_owned_gesture(plan.owner, gesture)?;
+        if self.history.gesture() == Some((gesture.key.as_str(), gesture.base)) {
+            self.gesture_last = Some(now);
+        }
         let result = self
             .apply_worked_out_locked(
                 plan.kind,
@@ -608,7 +635,7 @@ impl State {
         if self.tell_at.is_some_and(|due| due <= Instant::now()) {
             self.flush();
         }
-        Ok(result.revision)
+        Ok((result.revision, result.done.get().len()))
     }
 
     /// End the track's gesture, as a drag's ends: its own if it is still current, or, where
@@ -650,6 +677,7 @@ fn run(state: &Arc<Mutex<State>>, plan: &Plan, mut gesture: OwnedGesture, stop: 
     let mut written = None::<u64>;
     let mut stopped_by: Option<String> = None;
     let mut last_commit = Instant::now();
+    let mut interval = COMMIT_EVERY;
     let mut reached = plan.track.start;
     let mut lost = 0_usize;
     let tell = |state: &mut State,
@@ -658,8 +686,8 @@ fn run(state: &Arc<Mutex<State>>, plan: &Plan, mut gesture: OwnedGesture, stop: 
                 reached: i64,
                 done: i64,
                 lost: usize|
-     -> Result<u64, Fault> {
-        let revision = state.track_commit(plan, gesture, data)?;
+     -> Result<(u64, usize), Fault> {
+        let (revision, bytes) = state.track_commit(plan, gesture, data)?;
         let timeline = plan
             .timeline
             .range(..=reached)
@@ -672,7 +700,7 @@ fn run(state: &Arc<Mutex<State>>, plan: &Plan, mut gesture: OwnedGesture, stop: 
             &json!({"job":plan.job,"frame":reached,"timeline_frame":timeline,"done":done,
                 "total":total,"lost":lost,"revision":revision}),
         );
-        Ok(revision)
+        Ok((revision, bytes))
     };
     let outcome = match frames.as_mut() {
         None => Err(TrackError::MissingFrame(plan.track.start)),
@@ -694,11 +722,12 @@ fn run(state: &Arc<Mutex<State>>, plan: &Plan, mut gesture: OwnedGesture, stop: 
                     if step.lost {
                         lost += 1;
                     }
-                    if last_commit.elapsed() < COMMIT_EVERY {
+                    if last_commit.elapsed() < interval {
                         return;
                     }
                     last_commit = Instant::now();
                     let mut locked = state.blocking_lock();
+                    let held = Instant::now();
                     let gone = !locked.peers.contains_key(&plan.owner);
                     let result = if gone {
                         Err(refused(
@@ -709,7 +738,10 @@ fn run(state: &Arc<Mutex<State>>, plan: &Plan, mut gesture: OwnedGesture, stop: 
                         tell(&mut locked, &mut gesture, now, frame, done, lost)
                     };
                     match result {
-                        Ok(revision) => written = Some(revision),
+                        Ok((revision, bytes)) => {
+                            written = Some(revision);
+                            interval = commit_interval(bytes, held.elapsed());
+                        }
                         Err(fault) => {
                             stopped_by = Some(
                                 fault
@@ -730,7 +762,7 @@ fn run(state: &Arc<Mutex<State>>, plan: &Plan, mut gesture: OwnedGesture, stop: 
     // The rest of the track, unless the project was changed under it or nothing was tracked.
     if stopped_by.is_none() && done > 0 && data != plan.data {
         match tell(&mut locked, &mut gesture, &data, reached, done, lost) {
-            Ok(revision) => written = Some(revision),
+            Ok((revision, _)) => written = Some(revision),
             Err(fault) => {
                 stopped_by = Some(
                     fault
@@ -952,6 +984,7 @@ fn edit(project: &columbina_model::Project, request: &EditRequest) -> Result<Val
 mod tests {
     use super::*;
     use columbina_model::grade::{Link, Node};
+    use columbina_model::History;
 
     fn project(window: Window) -> columbina_model::Project {
         let mut project = columbina_model::Project::sample();
@@ -1027,5 +1060,138 @@ mod tests {
         c.windows = vec![window];
         let fault = edited(&project, &json!({"kind":"add_key","frame":12})).unwrap_err();
         assert_eq!(reason(&fault), "untracked");
+    }
+
+    fn start(window: &str) -> Start {
+        serde_json::from_value(
+            json!({"grade":clip(),"node":"n1","window":window,"revision":0,
+            "frame":12,"direction":"forward"}),
+        )
+        .unwrap()
+    }
+
+    /// Track data of `frames` frames, every curve and the confidence at each.
+    #[allow(clippy::cast_precision_loss)]
+    fn long(frames: i64) -> TrackData {
+        let mut data = TrackData::new([639.5, 359.5], [1280, 720]);
+        for f in 0..frames {
+            let t = f as f64;
+            let motion = columbina_track::Motion {
+                pan: (t / 37.0).sin() * 41.3,
+                tilt: (t / 53.0).cos() * 17.9,
+                zoom: 1.0 + (t / 91.0).sin() * 0.031,
+                rotate: (t / 71.0).sin() * 0.0123,
+                ..columbina_track::Motion::IDENTITY
+            };
+            data.set_sample(f, motion, 0.97);
+        }
+        data
+    }
+
+    /// The writes of a track are as often as `COMMIT_EVERY` while its data is small, and further
+    /// apart as it grows, never more than `COMMIT_MOST` apart: what every client is sent each
+    /// time grows with the track.
+    #[test]
+    fn a_long_track_is_written_less_often() {
+        let zero = std::time::Duration::ZERO;
+        assert_eq!(commit_interval(0, zero), COMMIT_EVERY);
+        assert_eq!(commit_interval(50_000, zero), COMMIT_EVERY);
+        let bytes = |frames| {
+            serde_json::to_string(&json!({"windows":[{"tracking":{"data":long(frames)}}]}))
+                .unwrap()
+                .len()
+        };
+        let (short, long, longest) = (bytes(300), bytes(10_000), bytes(20_000));
+        assert_eq!(commit_interval(short, zero), COMMIT_EVERY);
+        let ten_thousand = commit_interval(long, zero);
+        assert!(
+            ten_thousand > COMMIT_EVERY * 5 && ten_thousand < COMMIT_MOST,
+            "{ten_thousand:?}"
+        );
+        assert_eq!(commit_interval(longest, zero), COMMIT_MOST);
+        assert_eq!(commit_interval(usize::MAX, zero), COMMIT_MOST);
+        assert!(commit_interval(long, zero) <= commit_interval(long + 1, zero));
+        // A write that held the engine long waits five times as long, within the most.
+        let took = std::time::Duration::from_millis(100);
+        assert_eq!(commit_interval(short, took), took * 5);
+        assert_eq!(commit_interval(short, COMMIT_MOST), COMMIT_MOST);
+    }
+
+    /// A write of a track that is no longer the project's (another change came first) refreshes
+    /// no gesture: the one going on stays as idle as it was.
+    #[test]
+    fn a_refused_write_of_a_track_keeps_the_idle_time_of_the_gesture_going_on() {
+        let mut state = crate::session::tests::state();
+        state.history = History::new(project(Window::new("w1", WindowShape::circular())));
+        let plan = plan(
+            state.history.project(),
+            &start("w1"),
+            7,
+            Kind::Desktop,
+            "track-1".into(),
+        )
+        .unwrap();
+        let mut gesture = state.begin_owned_gesture(7, 0).unwrap();
+        // Another connection's gesture changes the project first, and is left idle.
+        let idle = Instant::now()
+            .checked_sub(crate::session::GESTURE_IDLE / 2)
+            .unwrap();
+        let mut other = state.begin_owned_gesture(8, 0).unwrap();
+        state
+            .apply_worked_out_locked(Kind::Desktop, None, Some((8, &mut other)), idle, |_| {
+                Ok(vec![
+                    json!({"op":"set_track","timeline":"t1","id":"V1","name":"x"}),
+                ])
+            })
+            .unwrap();
+        assert_eq!(state.gesture_last, Some(idle));
+        let fault = state
+            .track_commit(&plan, &mut gesture, &long(3))
+            .unwrap_err();
+        assert_eq!(fault.data.unwrap()["reason"], "stale_revision");
+        assert_eq!(state.gesture_last, Some(idle));
+        // Its own write refreshes its own gesture.
+        let mut gesture = state
+            .begin_owned_gesture(7, state.history.revision())
+            .unwrap();
+        let (_, bytes) = state.track_commit(&plan, &mut gesture, &long(3)).unwrap();
+        assert!(bytes > 0);
+        assert!(state.gesture_last.is_some_and(|last| last > idle));
+    }
+
+    /// The cost of writing a track of 10 000 frames into its window, as a track does: the
+    /// operation's size and the time the engine is held for it (no saver and no transport here).
+    #[test]
+    #[ignore = "a measurement: cargo test --bin columbina-engine -- --ignored --nocapture write_of_a_long_track"]
+    fn the_cost_of_a_write_of_a_long_track() {
+        let mut state = crate::session::tests::state();
+        state.history = History::new(project(Window::new("w1", WindowShape::circular())));
+        let plan = plan(
+            state.history.project(),
+            &start("w1"),
+            7,
+            Kind::Desktop,
+            "track-1".into(),
+        )
+        .unwrap();
+        let mut gesture = state.begin_owned_gesture(7, 0).unwrap();
+        let data = long(10_000);
+        let serialized = std::time::Instant::now();
+        let text = serde_json::to_string(&data).unwrap();
+        let serialized = serialized.elapsed();
+        let parsed = std::time::Instant::now();
+        let _: TrackData = serde_json::from_str(&text).unwrap();
+        let parsed = parsed.elapsed();
+        let mut times = Vec::new();
+        let mut bytes = 0;
+        for _ in 0..5 {
+            let at = std::time::Instant::now();
+            bytes = state.track_commit(&plan, &mut gesture, &data).unwrap().1;
+            times.push(at.elapsed());
+        }
+        println!(
+            "10000 frames: op {bytes} bytes, interval {:?}; serialize {serialized:?}, parse              {parsed:?}; commits {times:?}",
+            commit_interval(bytes, times[times.len() - 1])
+        );
     }
 }

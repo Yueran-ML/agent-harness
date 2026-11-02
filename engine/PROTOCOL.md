@@ -1299,14 +1299,26 @@ thread of its own: the clip's media (its proxy where usable) decoded on the proc
 scaled to at most 720 lines at its own aspect (`frame_size`; pixels are square, as the engine
 shows every picture: the project keeps no pixel aspect), as luma at a fixed scale. A
 window tracked before keeps its data and the track continues it from the motion at `frame`
-(p. 3232); the frames it reaches are overwritten (p. 3231). Every 150 ms the track so far is
-written into the window by `set_node` as a change of one native gesture of the connection
-(`project.changed` to everyone, `track.progress` to it): the viewer shows the window following,
-and the whole track is **one step to undo**.
+(p. 3232); the frames it reaches are overwritten (p. 3231). The track so far is written into the
+window by `set_node` as a change of one native gesture of the connection (`project.changed` to
+everyone, `track.progress` to it): the viewer shows the window following, and the whole track is
+**one step to undo**. As each write carries the window's whole track, writes are 150 ms apart
+while it is short and further apart as it grows: at least its size in bytes over 2 MB/s, and five
+times as long as the last write held the engine, but never more than 1 s apart (a track of
+10 000 frames writes about 1.75 MB, so about every 0.88 s).
 
-`track.state` ends it: `done`; `stopped` with `reason: "stop"` (`track.stop`, Ctrl+Alt+T),
-`"stale_revision"` (the project was changed by anyone, or Undo/Redo), or `"disconnected"`;
-`failed` with `no_features`, `no_points`, `missing_frame` or `cannot_read`, and a `message`.
+`track.state` ends it: `done`; `stopped` with a `reason`; `failed` with `no_features`,
+`no_points`, `missing_frame` or `cannot_read`, and a `message`. The reasons of `stopped`:
+
+| `reason` | why |
+|---|---|
+| `stop` | `track.stop` (Ctrl+Alt+T), or the Stop button |
+| `disconnected` | the connection that started it went |
+| `stale_revision` | the project was changed by anyone (the track's next write was not on the revision it last wrote), or Undo or Redo |
+| `stale_gesture` | the track's gesture was ended or replaced while the project stayed as the track last wrote it |
+| `gesture_owner` | the gesture was not the connection's (not expected: a track writes only its own) |
+| `project_changed` | its write was refused with no reason given |
+| any other | its write was refused for that reason, as `window` when the window was deleted or `target` when its node or clip was |
 Whatever the end, what was written stays as its own undo step (an Undo during a track takes it
 away); a track that wrote nothing makes no step. Frames where the tracker lost the subject are
 taken off the curves (a line bridges them) and counted in `lost`.

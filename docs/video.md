@@ -222,9 +222,12 @@ drag around the points of a Curve chooses several, to move, scale, rotate or del
 drag on a playing timeline pauses it. Windows are saved as presets (Save as New Preset, Update
 Preset, Delete Preset) in a library that every project of the user shares; a preset recalled on
 a node replaces its windows, as Resolve's does, and is kept in the project in full. Each row of
-the window list has two switches (p. 3189): Invert turns the window inside out, and Mask, on at
-first, adds the window to the others, or takes it away from them when it is off; each click is
-one step of undo. Alt+C, Alt+Q, Alt+G and Alt+B, or *Add Serial Node + CPW*, *LPW*, *PPW* and
+the window list (p. 3189) starts with a button that shows the window's shape and turns it on or
+off (a window turned on is chosen, with its controls on the viewer), and has a Layer Name field,
+blank until you name the window, sent when you press Enter or leave it (Esc puts the name back).
+Its two switches follow: Invert turns the window inside out, and Mask, on at first, adds the
+window to the others, or takes it away from them when it is off. Each click or name is one step
+of undo. Alt+C, Alt+Q, Alt+G and Alt+B, or *Add Serial Node + CPW*, *LPW*, *PPW* and
 *PCW* in a node's Add Node menu, add a serial node with a circular, linear, polygon or Curve
 window, in one step of undo, and open the Window palette on it; a Curve starts empty, to be
 drawn on the viewer (p. 3187).

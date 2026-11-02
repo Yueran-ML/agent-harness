@@ -17,8 +17,9 @@ change what was there before.
   before. Every change is one step of undo, shared with the agent.
 - Power Windows: Linear, Circular, Polygon, Curve and Gradient, drawn and edited with their
   controls on the viewer, with zoom and pan of the viewer; a Curve is drawn point by point, and
-  several of its points are moved, scaled, rotated or deleted together. The window list inverts
-  each window, and with Mask off takes it away from the others. Windows are kept as presets in a
+  several of its points are moved, scaled, rotated or deleted together. The window list turns
+  each window on and off by its shape button, names it, inverts it, and with Mask off takes it
+  away from the others. Windows are kept as presets in a
   library that every project of the user shares. Alt+C, Alt+Q, Alt+G and Alt+B add a serial node
   with a circular, linear, polygon or Curve window in one step of undo. The tracker makes windows
   follow the picture, with a cloud of points or with points placed (Pan, Tilt, Zoom, Rotate, 3D;

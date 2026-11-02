@@ -95,6 +95,7 @@ pub struct Plate {
 pub struct Plates {
     kept: Option<((String, u32, u32), Arc<Plate>)>,
     /// How many plates were drawn, for the tests.
+    #[cfg(test)]
     made: u64,
 }
 
@@ -114,12 +115,16 @@ impl Plates {
             height,
             halves: plate(&pixels, white),
         });
-        self.made += 1;
+        #[cfg(test)]
+        {
+            self.made += 1;
+        }
         self.kept = Some((key, Arc::clone(&made)));
         made
     }
 
     /// How many plates were drawn.
+    #[cfg(test)]
     #[must_use]
     pub fn made(&self) -> u64 {
         self.made

@@ -66,7 +66,7 @@ pub use linalg::{Mat3, Point};
 pub use motion::{Component, Components, Motion};
 pub use point::{PointOptions, PointStep, PointTracker};
 pub use region::Region;
-pub use run::{run, Direction, Job, Report, Tracker};
+pub use run::{run, run_watching, Direction, Job, Report, Tracker};
 
 /// What a tracker found in a frame.
 #[derive(Clone, Copy, Debug, PartialEq)]

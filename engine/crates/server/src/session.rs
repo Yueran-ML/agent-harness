@@ -48,6 +48,7 @@ use crate::view::{Monitor, Viewer};
 
 #[cfg(test)]
 mod tests;
+mod tracker;
 mod window;
 
 /// The version of the engine that `hello` answers with.
@@ -151,6 +152,8 @@ struct Connections {
 pub struct State {
     history: History,
     window: window::WindowState,
+    /// The window track going on, if one is (T24).
+    tracks: tracker::Tracks,
     /// What saves the project after each change. It is taken when the engine ends.
     pub saver: Option<Saver>,
     /// The connections that said hello, each of which is sent every notification.
@@ -267,6 +270,7 @@ impl Engine {
         let state = Arc::new(Mutex::new(State {
             history,
             window: window::WindowState::default(),
+            tracks: tracker::Tracks::default(),
             saver: Some(saver),
             peers: HashMap::new(),
             kicked: Vec::new(),
@@ -1143,6 +1147,9 @@ async fn dispatch(
         "view.pointer" => view_pointer(engine, connection, kind, id, params).await,
         "window.bind" | "window.input" | "window.unbind" => {
             window::call(engine, connection, kind, id, method, params).await
+        }
+        "track.start" | "track.stop" | "track.edit" => {
+            tracker::call(engine, connection, kind, id, method, params).await
         }
         "luts.list" | "grade.export_lut" | "luts.preview" => {
             luts_call(engine, connection, id, method, params).await

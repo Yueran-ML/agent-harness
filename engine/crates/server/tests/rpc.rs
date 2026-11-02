@@ -68,6 +68,9 @@ mod window_presets;
 #[path = "rpc/window_nodes.rs"]
 mod window_nodes;
 
+#[path = "rpc/tracking.rs"]
+mod tracking;
+
 /// How long anything that should happen soon is waited for before the test fails.
 const WAIT: Duration = Duration::from_secs(30);
 

@@ -39,7 +39,8 @@ fn matrix_of(a: Affine) -> Mat3 {
 /// centre. `None` where the window is not tracked.
 #[allow(
     clippy::cast_precision_loss,
-    reason = "the model evaluates keyframes as f64"
+    clippy::many_single_char_names,
+    reason = "the model evaluates keyframes as f64; the letters of the formulas"
 )]
 pub fn picture_affine(window: &Window, at: i64) -> Option<Affine> {
     let m = window.tracking.as_ref()?.picture_matrix(at as f64)?;
@@ -215,8 +216,8 @@ mod tests {
     }
 
     /// Where the key puts a local point of the window at `at`: the full homography.
+    #[allow(clippy::cast_precision_loss)]
     fn shown(w: &Window, at: i64, aspect: f64, local: [f64; 2]) -> [f64; 2] {
-        #[allow(clippy::cast_precision_loss)]
         let [xx, yx, xy, yy, tx, ty] = w.transform.affine_at(at as f64, aspect).unwrap();
         let p = apply(
             Affine {

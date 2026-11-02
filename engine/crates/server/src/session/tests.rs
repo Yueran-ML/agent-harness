@@ -6,6 +6,7 @@ pub(super) fn state() -> State {
     State {
         history: History::new(Project::sample()),
         window: window::WindowState::default(),
+        tracks: super::tracker::Tracks::default(),
         saver: None,
         peers: HashMap::new(),
         kicked: vec![],

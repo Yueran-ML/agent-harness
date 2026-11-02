@@ -6,6 +6,8 @@ use columbina_model::grade::{Interp, Key, Link, Node, Param, Window, WindowShape
 use columbina_model::{apply, Op, OpError, Project, Target};
 use serde_json::{json, Value};
 
+type Spoil = fn(&mut Value);
+
 fn target() -> Target {
     Target::Timeline {
         timeline: "t1".into(),
@@ -111,7 +113,7 @@ fn tracking_that_is_not_finite_or_out_of_range_is_refused_atomically() {
         w.tracking = Some(tracked());
         serde_json::to_value(&w).unwrap()
     };
-    let cases: [(&str, fn(&mut Value)); 5] = [
+    let cases: [(&str, Spoil); 5] = [
         ("windows.tracking.curves", |w| {
             w["tracking"]["data"]["curves"]["pan"]["12"] = json!("NaN");
         }),

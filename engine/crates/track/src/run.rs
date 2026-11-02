@@ -99,6 +99,23 @@ pub fn run(
     stop: &AtomicBool,
     progress: &mut dyn FnMut(i64, &Step),
 ) -> Result<Report, TrackError> {
+    run_watching(job, data, frames, stop, &mut |frame, step, _| {
+        progress(frame, step);
+    })
+}
+
+/// As [`run`], with `progress` also shown the track data as it stands once each frame is
+/// written: so that a caller can show the window following while the track goes on.
+///
+/// # Errors
+/// As [`run`].
+pub fn run_watching(
+    job: &Job,
+    data: &mut TrackData,
+    frames: &mut dyn FnMut(i64) -> Option<Luma>,
+    stop: &AtomicBool,
+    progress: &mut dyn FnMut(i64, &Step, &TrackData),
+) -> Result<Report, TrackError> {
     if job.start < job.first || job.start > job.last {
         return Err(TrackError::OutOfRange {
             start: job.start,
@@ -148,7 +165,7 @@ fn leg(
     most: Option<usize>,
     frames: &mut dyn FnMut(i64) -> Option<Luma>,
     stop: &AtomicBool,
-    progress: &mut dyn FnMut(i64, &Step),
+    progress: &mut dyn FnMut(i64, &Step, &TrackData),
     report: &mut Report,
 ) -> Result<f64, TrackError> {
     let end = if way > 0 { job.last } else { job.first };
@@ -211,7 +228,7 @@ fn leg(
             report.lost += 1;
             data.remove_frame(frame);
         }
-        progress(frame, &found);
+        progress(frame, &found, data);
     }
     Ok(busy)
 }

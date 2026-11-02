@@ -700,6 +700,205 @@ mod tests {
     }
 
     #[test]
+    fn a_sum_within_the_slack_of_the_range_is_clamped_and_one_beyond_it_is_refused() {
+        let c = bounds::COORDINATE;
+        for (value, kept) in [
+            (c.low - TOLERANCE, c.low),
+            (c.low - TOLERANCE / 2.0, c.low),
+            (c.low, c.low),
+            (c.high, c.high),
+            (c.high + TOLERANCE / 2.0, c.high),
+            (c.high + TOLERANCE, c.high),
+        ] {
+            let fixed = Param::Fixed(value);
+            assert_eq!(
+                blend(&[(1.0, &fixed)], c),
+                Ok(Param::Fixed(kept)),
+                "{value}"
+            );
+        }
+        for value in [c.low - 1.0, c.high + 1.0] {
+            let fixed = Param::Fixed(value);
+            assert_eq!(
+                blend(&[(1.0, &fixed)], c).unwrap_err().why,
+                Why::Range,
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_range_of_a_cubic_is_that_of_its_points_however_it_bends() {
+        for y in [
+            // Two turns inside, unevenly.
+            [0.0, 3.0, -2.0, 1.0],
+            [1.0, -4.0, 5.0, 0.5],
+            [2.0, 2.5, -1.5, -0.25],
+            // One turn: the derivative is linear.
+            [15.0, 15.8, 15.8, 15.0],
+            // None: monotonic.
+            [0.0, 1.0, 2.0, 3.0],
+        ] {
+            let (low, high) = extremes(y);
+            let samples = (0..=100_000).map(|i| bernstein(y, f64::from(i) / 100_000.0));
+            let (want_low, want_high) = samples.fold((f64::INFINITY, f64::NEG_INFINITY), |a, v| {
+                (a.0.min(v), a.1.max(v))
+            });
+            assert!(
+                low <= want_low + 1e-12 && (low - want_low).abs() < 1e-6,
+                "{y:?}: low {low}, sampled {want_low}"
+            );
+            assert!(
+                high >= want_high - 1e-12 && (high - want_high).abs() < 1e-6,
+                "{y:?}: high {high}, sampled {want_high}"
+            );
+        }
+    }
+
+    #[test]
+    fn straight_beziers_of_other_timings_sum_to_a_line() {
+        assert!(straight([0.0, 0.2, 0.7, 1.0], [1.0, 1.2, 1.7, 2.0]));
+        assert!(!straight([0.0, 0.2, 0.7, 1.0], [1.0, 1.6, 1.7, 2.0]));
+        // Value handles on the line of their keys, at other times: each is a straight line.
+        let a = keys(&[(0, 1.0, bez([0.2, 0.2], [0.3, -0.3])), (10, 2.0, L)]);
+        let b = keys(&[(0, 0.5, bez([0.6, 0.6], [0.1, -0.1])), (10, 1.5, L)]);
+        let terms = [(0.5, &a), (0.5, &b)];
+        let got = blend(&terms, bounds::COORDINATE).expect("a line");
+        assert_exact(&terms, &got);
+        let Param::Keys(made) = got else {
+            panic!("{got:?}")
+        };
+        assert_eq!(made[0].interp, L);
+        // That line goes into an easing of a third.
+        let c = keys(&[(0, 0.0, bez([0.1, 0.5], [0.6, -0.5])), (10, 1.0, L)]);
+        let terms = [(0.5, &a), (0.5, &b), (1.0, &c)];
+        let got = blend(&terms, bounds::COORDINATE).expect("one easing");
+        assert_exact(&terms, &got);
+    }
+
+    #[test]
+    fn a_held_part_split_by_another_grid_stays_held() {
+        // a holds from 0 to 40; b's keys put a frame at 10, flat on both sides.
+        let a = keys(&[(0, 1.0, H), (40, 2.0, L)]);
+        let b = keys(&[(0, 0.0, H), (10, 0.0, L)]);
+        let terms = [(0.5, &a), (0.5, &b)];
+        let got = blend(&terms, bounds::COORDINATE).expect("held");
+        assert_exact(&terms, &got);
+        let Param::Keys(keys) = got else {
+            panic!("{got:?}")
+        };
+        let interps: Vec<_> = keys.iter().map(|k| (k.frame, k.interp)).collect();
+        assert_eq!(interps, [(0, H), (10, H), (40, L)]);
+    }
+
+    #[test]
+    fn jumps_that_cancel_leave_a_change_continuous() {
+        // 0.25 · (+3) and 0.75 · (-1) at frame 10 cancel; c changes all along.
+        let a = keys(&[(0, 0.0, H), (10, 3.0, L)]);
+        let b = keys(&[(0, 1.0, H), (10, 0.0, L)]);
+        let c = keys(&[(0, 0.0, L), (10, 1.0, L)]);
+        let terms = [(0.25, &a), (0.75, &b), (1.0, &c)];
+        let got = blend(&terms, bounds::COORDINATE).expect("no jump");
+        assert_exact(&terms, &got);
+    }
+
+    #[test]
+    fn a_jump_against_a_straight_bezier_names_both() {
+        let a = keys(&[(0, 0.0, H), (10, 2.0, L)]);
+        let b = keys(&[(0, 0.0, bez([0.2, 0.4], [0.3, -0.6])), (10, 2.0, L)]);
+        let error = blend(&[(0.5, &a), (0.5, &b)], bounds::COORDINATE).unwrap_err();
+        assert_eq!(
+            (error.why, error.terms, error.frames),
+            (Why::Jump, vec![0, 1], Some([0, 10]))
+        );
+    }
+
+    #[test]
+    fn easings_of_one_time_handle_alike_but_not_the_other_are_refused() {
+        let a = keys(&[(0, 0.0, bez([0.4, 1.0], [0.3, -1.0])), (30, 2.0, L)]);
+        let b = keys(&[(0, 0.0, bez([0.4, 1.0], [0.6, -1.0])), (30, 2.0, L)]);
+        let error = blend(&[(0.5, &a), (0.5, &b)], bounds::COORDINATE).unwrap_err();
+        assert_eq!((error.why, error.terms), (Why::Timing, vec![0, 1]));
+    }
+
+    #[test]
+    fn easings_of_one_timing_that_cancel_to_a_line_leave_its_value() {
+        // b is a moved 1 up: a - b is -1 throughout, eased alike.
+        let a = keys(&[(0, 0.0, bez([0.3, 0.8], [0.3, 0.8])), (10, 0.0, L)]);
+        let b = keys(&[(0, 1.0, bez([0.3, 0.8], [0.3, 0.8])), (10, 1.0, L)]);
+        let terms = [(1.0, &a), (-1.0, &b)];
+        let got = blend(&terms, bounds::COORDINATE).expect("a line");
+        assert_exact(&terms, &got);
+        assert_eq!(got.value_at(5.0), -1.0);
+        // That line goes into the one easing of another timing that is left.
+        let c = keys(&[(0, 0.0, bez([0.1, 0.5], [0.6, -0.5])), (10, 1.0, L)]);
+        let terms = [(1.0, &a), (-1.0, &b), (1.0, &c)];
+        let got = blend(&terms, bounds::COORDINATE).expect("one easing");
+        assert_exact(&terms, &got);
+    }
+
+    #[test]
+    fn a_sum_that_bulges_past_the_top_alone_is_refused() {
+        // Each term is within the range, and so are the sums at the keys; halfway is 16.1.
+        let bump = keys(&[(0, 15.0, bez([0.3, 0.8], [0.3, 0.8])), (10, 15.0, L)]);
+        let lift = keys(&[(0, 0.5, L), (10, 0.5, L)]);
+        let error = blend(&[(1.0, &bump), (1.0, &lift)], bounds::COORDINATE).unwrap_err();
+        assert_eq!((error.why, error.frames), (Why::Range, Some([0, 10])));
+    }
+
+    #[test]
+    fn a_point_is_put_only_inside_an_edge_that_there_is() {
+        let square: Vec<_> = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
+            .iter()
+            .map(|p| WindowPoint::new(p[0], p[1]))
+            .collect();
+        let mut shape = polygon(square);
+        let before = shape.clone();
+        for (edge, share) in [
+            (4, 0.5),
+            (0, 0.0),
+            (0, 1.0),
+            (0, -0.5),
+            (0, 1.5),
+            (0, f64::NAN),
+        ] {
+            assert_eq!(
+                shape.insert_polygon_point(edge, share),
+                Err(TopologyError::Unsupported),
+                "{edge} {share}"
+            );
+        }
+        assert_eq!(shape, before);
+        let mut shape = curve(lens(), true);
+        let before = shape.clone();
+        let edges = lens().len();
+        for (edge, t) in [
+            (edges, 0.5),
+            (0, 0.0),
+            (0, 1.0),
+            (0, -0.5),
+            (0, 1.5),
+            (0, f64::NAN),
+        ] {
+            assert_eq!(
+                shape.insert_curve_point(edge, t),
+                Err(TopologyError::Unsupported),
+                "{edge} {t}"
+            );
+        }
+        assert_eq!(shape, before);
+    }
+
+    #[test]
+    fn a_bezier_that_bulges_within_the_range_is_summed_exactly() {
+        // From 15 to 15, bulging to 15.6 halfway: below 16, so not an overshoot.
+        let bump = keys(&[(0, 15.0, bez([0.3, 0.8], [0.3, 0.8])), (10, 15.0, L)]);
+        let terms = [(1.0, &bump)];
+        let got = blend(&terms, bounds::COORDINATE).expect("within the range");
+        assert_exact(&terms, &got);
+    }
+
+    #[test]
     fn static_points_and_window_level_animation_split_statically() {
         let got = accepts(&Param::Fixed(-0.25), &Param::Fixed(0.25), 0.25);
         assert_eq!(got, Param::Fixed(-0.125));

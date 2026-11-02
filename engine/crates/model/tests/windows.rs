@@ -593,3 +593,18 @@ fn add_serial_with_windows_adds_the_node_with_them_in_one_undoable_operation() {
         }
     }
 }
+
+#[test]
+fn the_feathers_of_polygons_and_curves_are_kept_within_their_range() {
+    let project = project();
+    for kind in ["polygon", "curve"] {
+        for (path, invalid) in [("/shape/inside", json!(101)), ("/shape/outside", json!(-1))] {
+            let mut w = window(kind);
+            *w.pointer_mut(path).unwrap() = invalid;
+            assert!(
+                matches!(refused(&project, json!([w])), OpError::OutOfRange { .. }),
+                "{kind} {path}"
+            );
+        }
+    }
+}

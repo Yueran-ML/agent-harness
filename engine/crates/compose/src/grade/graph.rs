@@ -69,6 +69,11 @@ pub(crate) enum Reads {
     Morph2,
     /// The blur of the key coming in: that key.
     KeyBlur,
+    /// A near neighbourhood of the Blur palette (`blur.rs`), of the settings of this channel:
+    /// what the node made before its key.
+    Near(usize),
+    /// A wide neighbourhood of Mist, of the H/V Ratio of this channel: the same.
+    Wide(usize),
 }
 
 /// A neighbourhood that a step reads, numbered by its place in [`Plan::hoods`].
@@ -88,13 +93,17 @@ pub(crate) struct Hoods {
     pub morph: Option<usize>,
     pub morph2: Option<usize>,
     pub key_blur: Option<usize>,
+    /// The near and wide neighbourhoods of the Blur palette that each channel reads.
+    pub near: [Option<usize>; 3],
+    pub wide: [Option<usize>; 3],
 }
 
 /// A step of a grade.
 #[derive(Clone, Debug)]
 pub(crate) enum Step {
     /// A corrector: node `node` of the grade, its block of parameters at `block`; with a
-    /// qualifier or none, and the neighbourhoods that it reads.
+    /// qualifier or none, and the neighbourhoods that it reads; and the block of its Blur palette
+    /// where the palette changes the picture at some frame.
     Corrector {
         node: usize,
         input: From,
@@ -104,6 +113,7 @@ pub(crate) enum Step {
         qualifier: bool,
         windows: Option<u32>,
         hoods: Box<Hoods>,
+        blur: Option<u32>,
     },
     /// A node of the picture that is disabled: it gives its first input as it is.
     Pass { input: From },
@@ -275,6 +285,11 @@ impl Plan {
                         plan.fixed += 1;
                         at
                     });
+                    let blur = corrector.blur.reads_neighbourhood().then(|| {
+                        let at = plan.fixed;
+                        plan.fixed += super::blur::BLOCK;
+                        at
+                    });
                     let key = match into(&node.id, Port::Key, 0) {
                         None => None,
                         Some(link) => match from(Some(link))? {
@@ -305,7 +320,7 @@ impl Plan {
                         })
                     };
                     let [pre, clean, spread, morph, morph2] = layout::qualifier_reads(corrector);
-                    let hoods = Box::new(Hoods {
+                    let mut hoods = Box::new(Hoods {
                         detail: hood(layout::reads_detail(corrector), Reads::Detail),
                         pre: hood(pre, Reads::Pre),
                         clean: hood(clean, Reads::Clean),
@@ -316,7 +331,21 @@ impl Plan {
                             key.is_some() && layout::reads_key_blur(corrector),
                             Reads::KeyBlur,
                         ),
+                        ..Hoods::default()
                     });
+                    let (near, wide) = super::blur::groups(&corrector.blur);
+                    for (first, reads) in near {
+                        let number = hood(true, Reads::Near(first));
+                        for (channel, _) in reads.iter().enumerate().filter(|(_, r)| **r) {
+                            hoods.near[channel] = number;
+                        }
+                    }
+                    for (first, reads) in wide {
+                        let number = hood(true, Reads::Wide(first));
+                        for (channel, _) in reads.iter().enumerate().filter(|(_, r)| **r) {
+                            hoods.wide[channel] = number;
+                        }
+                    }
                     Step::Corrector {
                         node: n,
                         input: *inputs(Port::Rgb, 1)?.first()?,
@@ -326,6 +355,7 @@ impl Plan {
                         qualifier: corrector.qualifier.is_some(),
                         windows,
                         hoods,
+                        blur,
                     }
                 }
                 (NodeKind::ParallelMixer(mixer), true) => Step::Parallel {
@@ -360,6 +390,14 @@ impl Plan {
         })
     }
 
+    /// Whether a corrector of it has a Blur palette that changes the picture at some frame: then
+    /// the grade needs the library of the palette.
+    pub(crate) fn blurred(&self) -> bool {
+        self.steps
+            .iter()
+            .any(|s| matches!(s, Step::Corrector { blur: Some(_), .. }))
+    }
+
     /// The LUTs of its correctors, in the order of their textures.
     pub(crate) fn luts(&self) -> impl Iterator<Item = &LutUse> {
         self.steps.iter().filter_map(|step| match step {
@@ -384,6 +422,7 @@ impl Plan {
                     block,
                     lut,
                     windows,
+                    blur,
                     ..
                 } => {
                     let NodeKind::Corrector(corrector) = &grade.nodes[*node].kind else {
@@ -407,6 +446,11 @@ impl Plan {
                             self.fixed as usize,
                             &mut tail,
                         );
+                    }
+                    if let Some(b) = blur {
+                        let at = *b as usize;
+                        let values = super::blur::block(&corrector.blur, frame);
+                        params[at..at + values.len()].copy_from_slice(&values);
                     }
                     if let Some(lut) = lut {
                         let at = lut.params as usize;
@@ -487,6 +531,12 @@ impl Plan {
                     (Reads::Detail, _) => Filter::Gaussian { sigma: [detail; 2] },
                     (Reads::KeyBlur, _) => layout::key_blur_filter(corrector, frame),
                     (Reads::Clean, _) => layout::clean_filter(),
+                    (Reads::Near(channel), _) => {
+                        super::blur::near_filter(&corrector.blur, channel, frame)
+                    }
+                    (Reads::Wide(channel), _) => {
+                        super::blur::wide_filter(&corrector.blur, channel, frame)
+                    }
                     (Reads::Pre, Some(qualifier)) => layout::pre_filter(qualifier, frame),
                     (Reads::Spread, Some(qualifier)) => layout::spread_filter(qualifier, frame),
                     (Reads::Morph | Reads::Morph2, Some(qualifier)) => {
@@ -535,6 +585,15 @@ impl Plan {
                 o(*input)
             ),
             Reads::Pre => writeln!(code, "rgb = {};", o(*input)),
+            Reads::Near(_) | Reads::Wide(_) => {
+                let (primary, lut) = self.made_code(at);
+                writeln!(
+                    code,
+                    "{{\nlet input = {};\nvar x = {primary};\n{lut}x = grade_secondary(x, input, \
+                     $P + {block}u);\nrgb = x;\n}}",
+                    o(*input)
+                )
+            }
             Reads::KeyBlur => writeln!(
                 code,
                 "rgb = vec3<f32>(k{});",
@@ -606,6 +665,28 @@ impl Plan {
         }
     }
 
+    /// The WGSL of what corrector `s` makes of its `input` before its secondary steps: its
+    /// primary steps (with its Midtone Detail), which give `x`, and its LUT, which changes it.
+    fn made_code(&self, s: usize) -> (String, String) {
+        let Step::Corrector {
+            block, lut, hoods, ..
+        } = &self.steps[s]
+        else {
+            unreachable!("what a corrector makes");
+        };
+        let lut = lut.as_ref().map_or_else(String::new, |lut| {
+            format!(
+                "    {{\n        var rgb = x;\n        {{\n{}\n        }}\n        x = rgb;\n    }}\n",
+                rewrite(&lut.op.body, lut.params, lut.texture)
+            )
+        });
+        let primary = match hoods.detail {
+            None => format!("grade_primary(input, $P + {block}u)"),
+            Some(number) => format!("grade_primary_detailed(input, $P + {block}u, $N{number})"),
+        };
+        (primary, lut)
+    }
+
     /// The WGSL of step `s`, put at the end of `code`.
     #[allow(
         clippy::too_many_lines,
@@ -617,10 +698,10 @@ impl Plan {
                 input,
                 key,
                 block,
-                lut,
                 qualifier,
                 windows,
                 hoods,
+                blur,
                 ..
             } => {
                 let incoming = key.map(|k| {
@@ -645,18 +726,25 @@ impl Plan {
                         block + KEY_INPUT
                     ),
                 };
-                let lut = lut.as_ref().map_or_else(String::new, |lut| {
+                let (primary, lut) = self.made_code(s);
+                let blur = blur.map_or_else(String::new, |at| {
+                    let channel = |hoods: [Option<usize>; 3]| {
+                        let read = |i: usize, c: &str| {
+                            hoods[i].map_or_else(|| format!("x.{c}"), |n| format!("$N{n}.{c}"))
+                        };
+                        format!(
+                            "vec3<f32>({}, {}, {})",
+                            read(0, "x"),
+                            read(1, "y"),
+                            read(2, "z")
+                        )
+                    };
                     format!(
-                        "    {{\n        var rgb = x;\n        {{\n{}\n        }}\n        x = rgb;\n    }}\n",
-                        rewrite(&lut.op.body, lut.params, lut.texture)
+                        "    x = grade_blur(x, {}, {}, $P + {at}u);\n",
+                        channel(hoods.near),
+                        channel(hoods.wide)
                     )
                 });
-                let primary = match hoods.detail {
-                    None => format!("grade_primary(input, $P + {block}u)"),
-                    Some(number) => {
-                        format!("grade_primary_detailed(input, $P + {block}u, $N{number})")
-                    }
-                };
                 let mut qualify = String::new();
                 if *qualifier {
                     self.qualifier_code(s, None, &mut qualify);
@@ -668,7 +756,7 @@ impl Plan {
                      var x = {primary};\n\
                      {lut}    \
                      x = grade_secondary(x, input, $P + {block}u);\n\
-                     {qualify}    \
+                     {blur}{qualify}    \
                      k{s} = grade_key({key_in}, param($P + {output}u));\n    \
                      c{s} = x;\n    \
                      o{s} = select(input + (x - input) * k{s}, x, k{s} == 1.0);\n}}\n",
@@ -907,6 +995,7 @@ impl Plan {
                     qualifier,
                     windows,
                     hoods,
+                    blur,
                     ..
                 } => {
                     let input = picture(&o, *input);
@@ -915,6 +1004,22 @@ impl Plan {
                             Reads::Detail => maths::detail_source(constants, p, *block, input),
                             Reads::Pre => input,
                             Reads::KeyBlur => [k[key.expect("a key coming in")]; 3],
+                            Reads::Near(_) | Reads::Wide(_) => {
+                                let mut x = match (hoods.detail, around) {
+                                    (Some(number), Some(around)) => maths::primary_detailed(
+                                        constants,
+                                        p,
+                                        *block,
+                                        input,
+                                        around[number],
+                                    ),
+                                    _ => maths::primary(constants, p, *block, input),
+                                };
+                                if let Some(used) = used {
+                                    x = lut(&used.name, x);
+                                }
+                                maths::secondary(constants, p, *block, x, input)
+                            }
                             reads => {
                                 [Self::qualifier_key(
                                     constants,
@@ -938,6 +1043,15 @@ impl Plan {
                         x = lut(&used.name, x);
                     }
                     x = maths::secondary(constants, p, *block, x, input);
+                    if let Some(at) = blur {
+                        let read = |hoods: [Option<usize>; 3]| -> Rgb {
+                            std::array::from_fn(|i| match (hoods[i], around) {
+                                (Some(n), Some(around)) => around[n][i],
+                                _ => x[i],
+                            })
+                        };
+                        x = super::blur::apply(p, *at, x, read(hoods.near), read(hoods.wide));
+                    }
                     let incoming = key.map(|j| {
                         let blurred = match (hoods.key_blur, around) {
                             (Some(n), Some(around)) => {

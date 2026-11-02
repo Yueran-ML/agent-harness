@@ -164,12 +164,16 @@
 //!     `x`, and `S` the S-curve of step 6 with the match's own contrast and pivot, whatever
 //!     [`GradeOptions::s_curve_contrast`] says (`columbina_model::grade::ShotMatch`). A node
 //!     without one, or with one at its neutral settings, leaves it out.
+//! 14. **The Blur palette** (pp. 3454–3456): Blur, Sharpen and Mist of what the node made, before
+//!     its key, through neighbourhoods of it ([`blur`]). At rest it reads none and has no
+//!     parameters: the node is as it was, to the bit.
 //!
 //! The formulas are kept apart from the graph (the maths in `corrector.wgsl` and [`maths`],
 //! their units in [`layout`]) so that they can be replaced: colour-managed working spaces (Q2,
 //! Q3) will change the luma weights ([`GradeOptions::luma`]), and may move the Log wheels and
 //! Contrast into a log space of their own.
 
+pub mod blur;
 pub mod curve;
 mod graph;
 pub mod layout;
@@ -312,6 +316,12 @@ impl Prepared {
             if plan.spatial() {
                 ops.push(ColorOp {
                     library: windows::LIBRARY.into(),
+                    ..ColorOp::default()
+                });
+            }
+            if plan.blurred() {
+                ops.push(ColorOp {
+                    library: blur::LIBRARY.into(),
                     ..ColorOp::default()
                 });
             }

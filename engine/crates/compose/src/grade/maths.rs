@@ -30,7 +30,7 @@ const INV_SQRT3: f32 = 0.577_350_26;
 pub(crate) struct Params<'a>(pub &'a [[f32; 4]]);
 
 impl Params<'_> {
-    fn at(&self, index: u32) -> [f32; 4] {
+    pub(crate) fn at(&self, index: u32) -> [f32; 4] {
         // As the card reads a storage buffer beyond its end: something, and no fault.
         self.0.get(index as usize).copied().unwrap_or([0.0; 4])
     }

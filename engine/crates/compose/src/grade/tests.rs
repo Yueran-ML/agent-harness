@@ -2052,4 +2052,5 @@ fn textures_of_luts_used_longest_ago_go_while_they_take_more_than_the_budget() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+mod blur;
 mod keys;

@@ -139,6 +139,8 @@ function fakeEngine(timelines: Timeline[] = [graded()]) {
     }),
     /** The transport tells something of the timeline monitor. */
     notify: (fields: Record<string, unknown>) => act(() => { state = { ...state, ...fields } as TransportState; tell('transport.state', state); }),
+    /** The engine tells this connection something. */
+    tell: (method: string, params: unknown) => act(() => tell(method, params)),
     /** Another client changes the project. */
     change: (ops: Op[]) => act(() => {
       for (const op of ops) project = applyOp(project, op);
@@ -709,6 +711,93 @@ describe('the viewer modes, the pickers and the thumbnail menu of the Color page
     fireEvent.keyDown(viewer, { key: 'Escape' }); await settle();
     expect(binds()).toHaveLength(3);
     expect(binds()[2]).toMatchObject({ node: 'n10', selected: null, tool: 'window' });
+    expect(calls(bridge, 'transaction.apply')).toHaveLength(1);
+  });
+
+  it("lets an armed picker go before a Curve's selected points and the draft, the picker's unbinding having cleared the points", async () => {
+    const { bridge, notify, tell } = await mount();
+    const answer = bridge.call.getMockImplementation()!;
+    let bindings = 0;
+    let sequence = 1;
+    let downAt = 0;
+    // The engine: bindings numbered; a Shift band from down to up selects anchors 0 and 1; Esc clears them.
+    let captures = 0;
+    const anchor = (x: number) => ({ position: { x, y: 0 }, in: { x: 0, y: 0 }, out: { x: 0, y: 0 } });
+    const preset = { id: 'wp1', name: 'Face', windows: [{ id: 'w1', label: '', enabled: true, invert: false, combine: 'add', opacity: 100,
+      transform: { size: 50, aspect: 50, pan: 50, tilt: 50, rotate: 0 }, shape: { kind: 'curve', points: [anchor(-0.1), anchor(0.1)], closed: false, inside: 0, outside: 0 } }] };
+    const state = (params: Record<string, unknown>, phase: string, points: number[]) => ({ binding: params.binding,
+      capture: phase === 'arming' ? ++captures : captures, sequence: ++sequence, phase,
+      reason: null, selected: 'w1', event: downAt = (params.event as number | undefined) ?? downAt, revision: 1, keys: { clock: 'source', frame: 200 }, selected_points: points });
+    bridge.call.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'window.bind') return { ok: true, result: { binding: ++bindings, sequence: ++sequence } };
+      if (method === 'window.input' && params!.kind === 'down') return { ok: true, result: state(params!, 'arming', []) };
+      if (method === 'window.input' && params!.kind === 'up') return { ok: true, result: state(params!, 'ended', [0, 1]) };
+      if (method === 'window.input' && params!.kind === 'clear_points') return { ok: true, result: { binding: params!.binding, phase: 'cleared', cleared: 2 } };
+      // A window preset of one unclosed Curve w1 of two anchors, which the engine recalls as one set_node of the node's windows.
+      if (method === 'window_presets.list') return { ok: true, result: { presets: [preset] } };
+      if (method === 'window_presets.apply') {
+        return answer('transaction.apply', { ops: [{ op: 'set_node', grade: params!.grade, id: params!.node, params: { windows: preset.windows } }] });
+      }
+      return answer(method, params);
+    });
+    await notify({ frame: 200, shown: 200 }); await settle();
+    fireEvent.click(screen.getByRole('tab', { name: 'Window' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Curve Window' })); await settle();
+    const binds = () => calls(bridge, 'window.bind');
+    const inputs = (kind: string) => calls(bridge, 'window.input').filter(each => (each as { kind: string }).kind === kind);
+    const bound = binds()[0] as { timeline: string; target: unknown };
+    const viewer = document.querySelector<HTMLElement>('[data-test="color-viewer"]')!;
+    let event = 100;
+    const band = async () => {
+      for (const kind of ['down', 'up'] as const) {
+        await tell('view.pointer', { monitor: 'timeline', instance: 1, event: ++event, kind, button: 'left', buttons: kind === 'up' ? [] : ['left'],
+          presentation: { serial: 1, tag: 1, map: { surface: [256, 144], picture: [128, 72], dest: [0, 0, 256, 144] } },
+          snapshot: { revision: 1, timeline: bound.timeline, frame: 200, canvas: [128, 72], ready: true, editable: true, comparison: 'off',
+            window: { binding: bindings, selected: 'w1' } },
+          x: 10, y: 20, inside: true, window: { x: 10, y: 20 }, shift: true, ctrl: false, alt: false });
+        await settle();
+      }
+    };
+    const shownPoints = () => document.querySelector('[data-test="window-points"]');
+    await band();
+    expect(shownPoints()?.textContent).toContain('Selected points: 2');
+    // Without a picker, the first Esc deselects the points and keeps the draft selected.
+    fireEvent.keyDown(viewer, { key: 'Escape' }); await settle();
+    expect(inputs('clear_points')).toHaveLength(1);
+    expect(shownPoints()).toBeNull();
+    expect(binds()).toHaveLength(1);
+    await band();
+    expect(shownPoints()).not.toBeNull();
+    // Recalling a preset replaces the node's windows and selects its first window, bound anew: no point stays selected.
+    fireEvent.click(screen.getByRole('button', { name: 'Window options' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Face' })); await settle();
+    expect(calls(bridge, 'window_presets.apply')).toEqual([{ preset: 'wp1', grade: binds()[0].target, node: 'n10', revision: 1 }]);
+    expect(binds()).toHaveLength(2);
+    expect(binds()[1]).toMatchObject({ node: 'n10', selected: 'w1', revision: 2 });
+    expect(shownPoints()).toBeNull();
+    await band();
+    expect(shownPoints()).not.toBeNull();
+    // Pick Black Point armed: the window lets the viewer go, which ends the engine's point selection with its binding.
+    fireEvent.click(screen.getByRole('tab', { name: 'Primaries' })); await settle();
+    const unbound = calls(bridge, 'window.unbind').length;
+    fireEvent.click(document.querySelector('[data-test="picker-black"]')!); await settle();
+    expect(calls(bridge, 'window.unbind')).toHaveLength(unbound + 1);
+    // Backspace while the picker is armed deletes no point.
+    fireEvent.keyDown(viewer, { key: 'Backspace' }); await settle();
+    expect(inputs('delete_points')).toHaveLength(0);
+    // Esc lets the picker go; the draft is bound again as it was, with no point selected (nothing to clear).
+    fireEvent.keyDown(viewer, { key: 'Escape' }); await settle();
+    expect(document.querySelector('[data-test="picker-black"]')!.getAttribute('aria-pressed')).toBe('false');
+    expect(binds()).toHaveLength(3);
+    expect(binds()[2]).toEqual(binds()[1]);
+    fireEvent.click(screen.getByRole('tab', { name: 'Window' })); await settle();
+    expect(shownPoints()).toBeNull();
+    // So the next Esc leaves the draft: bound again selecting none, with no clear_points and the project untouched.
+    fireEvent.keyDown(viewer, { key: 'Escape' }); await settle();
+    expect(inputs('clear_points')).toHaveLength(1);
+    expect(binds()).toHaveLength(4);
+    expect(binds()[3]).toMatchObject({ selected: null, tool: 'window' });
+    expect(inputs('delete_points')).toHaveLength(0);
     expect(calls(bridge, 'transaction.apply')).toHaveLength(1);
   });
 

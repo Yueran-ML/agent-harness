@@ -81,7 +81,7 @@ function Column({ edit, column, mode }: { edit: NodeEdit; column: BlurColumn; mo
         disabled={disabled} onClick={reset} data-test={`blur-reset-${column}`}><RotateCcw size={11} /></button>
     </div>
     <div className="color-bars-row">
-      {BLUR_CHANNELS.map(ch => <Channel key={edit.controlKey(columnPaths(edit.corrector, column, ch))} edit={edit} column={column} ch={ch} disabled={disabled} />)}
+      {BLUR_CHANNELS.map(ch => <Channel key={`${ch}:${edit.controlKey(columnPaths(edit.corrector, column, ch))}`} edit={edit} column={column} ch={ch} disabled={disabled} />)}
     </div>
   </div>;
 }

@@ -8,11 +8,19 @@ import type { EditedNode } from '../src/studio/color/useNodeEdit';
 import { mergePatch, type Corrector } from '../src/studio/engine';
 import { likeABrowser } from './mounted';
 
+// React tells of children with the same key on the console; a palette that renders such fails.
+let errors: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   likeABrowser(); vi.stubGlobal('PointerEvent', MouseEvent);
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 1; });
+  errors = vi.spyOn(console, 'error');
 });
-afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => {
+  cleanup();
+  const keys = errors.mock.calls.map(call => call.map(String).join(' ')).filter(said => /same key|unique "key"/.test(said));
+  vi.restoreAllMocks(); vi.unstubAllGlobals();
+  expect(keys).toEqual([]);
+});
 const settle = () => act(async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); });
 const pointer = (element: Element, kind: 'pointerDown' | 'pointerMove' | 'pointerUp', x = 0, y = 0) => fireEvent[kind](element, { pointerId: 1, button: 0, clientX: x, clientY: y });
 const bar = (column: string, ch: string) => document.querySelector<HTMLElement>(`[data-test="blur-${column}-${ch}"] [role="slider"]`)!;

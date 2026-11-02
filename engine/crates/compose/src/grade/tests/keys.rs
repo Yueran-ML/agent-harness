@@ -327,6 +327,107 @@ fn the_key_of_a_qualifier_goes_through_clip_invert_and_the_key_palette() {
 }
 
 #[test]
+fn a_channel_of_rgb_alone_keys_its_range() {
+    for channel in 0..3 {
+        let alone = qualifier(|q| {
+            q.mode = QualifierMode::Rgb;
+            for (i, range) in [&mut q.red, &mut q.green, &mut q.blue]
+                .into_iter()
+                .enumerate()
+            {
+                range.low = fixed(50.0);
+                range.on = i == channel;
+            }
+        });
+        let mut high = [0.1; 3];
+        high[channel] = 0.8;
+        let mut low = [0.9; 3];
+        low[channel] = 0.2;
+        assert_eq!(key_at(&alone, high), 1.0, "{channel}");
+        assert_eq!(key_at(&alone, low), 0.0, "{channel}");
+    }
+}
+
+#[test]
+fn black_clip_or_white_clip_alone_stretches_the_key_and_both_at_one_level_cut_it() {
+    // An RGB key of red, rising from 0 at red 0 to 1 at 0.5: 0.5 at red 0.25.
+    let red = |set: &dyn Fn(&mut Qualifier)| {
+        qualifier(|q| {
+            q.mode = QualifierMode::Rgb;
+            q.red.low = fixed(50.0);
+            q.red.low_soft = fixed(50.0);
+            q.green.on = false;
+            q.blue.on = false;
+            set(q);
+        })
+    };
+    let at_red = |q: &Qualifier, r: f32| key_at(q, [r, 0.0, 0.0]);
+    assert_eq!(at_red(&red(&|_| {}), 0.25), 0.5);
+    let black = red(&|q| q.finesse.black_clip = fixed(40.0));
+    about(at_red(&black, 0.25), (0.5 - 0.4) / 0.6, 1e-6);
+    let white = red(&|q| q.finesse.white_clip = fixed(60.0));
+    about(at_red(&white, 0.25), 0.5 / 0.6, 1e-6);
+    let cut = red(&|q| {
+        q.finesse.black_clip = fixed(50.0);
+        q.finesse.white_clip = fixed(50.0);
+    });
+    assert_eq!(at_red(&cut, 0.25), 0.0, "at the level: none");
+    assert_eq!(at_red(&cut, 0.375), 1.0);
+    assert_eq!(at_red(&cut, 0.125), 0.0);
+}
+
+#[test]
+fn the_key_of_matte_finesse_alone_is_that_of_a_node_that_also_changes_the_colour() {
+    let pixels = picture(|x, y| x < 48 && (x, y) != (20, 20));
+    for set in [
+        (|q: &mut Qualifier| q.finesse.pre_filter = fixed(40.0)) as fn(&mut Qualifier),
+        |q| q.finesse.clean_white = fixed(40.0),
+        |q| q.finesse.blur_radius = fixed(30.0),
+        |q| q.finesse.morph_radius = fixed(3.0),
+    ] {
+        let mut q = Qualifier::default();
+        q.mode = QualifierMode::Lum;
+        q.lum.low = fixed(50.0);
+        set(&mut q);
+        let bare = serial(vec![corrector("n1", |c| c.qualifier = Some(q.clone()))]);
+        let changing = serial(vec![keyed("n1", q.clone())]);
+        assert_eq!(key_picture(&bare, &pixels), key_picture(&changing, &pixels));
+    }
+    // The blur of a key coming in, alike.
+    let coming_in = |offset: f64| {
+        let mut grade = serial(vec![
+            corrector("n1", |c| {
+                c.qualifier = Some(qualifier(|q| {
+                    q.mode = QualifierMode::Lum;
+                    q.lum.low = fixed(50.0);
+                }));
+            }),
+            corrector("n2", |c| {
+                c.primaries.offset.b = fixed(offset);
+                c.key.input_blur.radius = fixed(30.0);
+            }),
+        ]);
+        grade.links.push(link("n1", "n2", Port::Key, 0));
+        grade.sort_links();
+        evaluate_picture_showing(
+            &grade,
+            0.0,
+            &options(),
+            &NoLuts,
+            &|_, rgb| rgb,
+            (SIZE, SIZE),
+            &pixels,
+            1.0,
+            Some(&Look {
+                node: "n2".into(),
+                show: Show::Matte,
+            }),
+        )
+    };
+    assert_eq!(coming_in(25.0), coming_in(75.0));
+}
+
+#[test]
 fn keyframes_of_a_qualifier_are_taken_at_the_frame() {
     let grade = serial(vec![keyed(
         "n1",
@@ -588,6 +689,11 @@ fn blur_radius_softens_the_edge_and_in_out_ratio_moves_it_in_or_out() {
     );
     about(at(&inside, 48, 40), 0.0, 1e-3);
     assert!(at(&inside, 44, 40) < at(&blurred, 44, 40));
+    // Far from the edge, both are whole and none.
+    for keyed in [&out, &inside] {
+        about(at(keyed, 20, 40), 1.0, 1e-3);
+        about(at(keyed, 80, 40), 0.0, 1e-3);
+    }
 }
 
 #[test]

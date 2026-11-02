@@ -434,6 +434,18 @@ fn a_quarter_turn_of_hue_turns_about_the_grey_axis() {
 }
 
 #[test]
+fn hue_vs_hue_turns_by_its_value_as_a_share_of_half_a_turn() {
+    // 0.5 everywhere: a quarter turn, as Hue does at 75.
+    let curve = one(|c| c.hsl.hue_vs_hue = vec![[0.0, 0.5]]);
+    let hue = one(|c| c.primaries.hue = fixed(75.0));
+    near(
+        eval(&curve, [1.0, 0.0, 0.0]),
+        eval(&hue, [1.0, 0.0, 0.0]),
+        1e-6,
+    );
+}
+
+#[test]
 fn the_s_curve_of_contrast_bends_each_side_of_its_pivot_its_own_way() {
     assert!((maths::s_contrast(0.2, 2.0, 0.5) - 0.08).abs() < 1e-6);
     assert!((maths::s_contrast(0.8, 2.0, 0.5) - 0.92).abs() < 1e-6);
@@ -1269,6 +1281,28 @@ fn composite_modes_lay_the_front_over_the_back() {
 // ---------------------------------------------------------------------------------------------
 // Graphs
 // ---------------------------------------------------------------------------------------------
+
+#[test]
+fn luminosity_keeps_the_colour_of_the_back_and_clips_it_into_range_about_its_luma() {
+    let c = constants();
+    // Within range: the back moved to the luma of the front.
+    let back = [0.5, 0.3, 0.2];
+    let lifted = maths::composite(&c, 18, back, [0.4; 3]);
+    let by = 0.4 - luma(back);
+    near(lifted, back.map(|v| v + by), 1e-6);
+    // Red to the luma of white goes past 1 and is brought back to white; to that of black,
+    // below 0, and to black.
+    near(
+        maths::composite(&c, 18, [1.0, 0.0, 0.0], [1.0; 3]),
+        [1.0; 3],
+        1e-6,
+    );
+    near(
+        maths::composite(&c, 18, [1.0, 0.0, 0.0], [0.0; 3]),
+        [0.0; 3],
+        1e-6,
+    );
+}
 
 fn gain_node(id: &str, gain: [f64; 3]) -> Node {
     corrector(id, |c| {

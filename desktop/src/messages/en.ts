@@ -1019,6 +1019,18 @@ export const en = {
           radius: 'Radius', ratio: 'H/V Ratio', scaling: 'Scaling', coring_softness: 'Coring Softness', level: 'Level', mix: 'Mix',
           gang: 'Gang the red, green and blue sliders', reset: 'Reset', resetColumn: 'Reset',
         },
+        /** The Tracker palette in Window mode (Reference Manual 20, pp. 3234–3238), in DaVinci Resolve's words. */
+        trackerPalette: {
+          transforms: 'Transforms to track', analyze: 'Analyze',
+          trackOneReverse: 'Track One Frame Reverse', trackReverse: 'Track Reverse', stop: 'Stop Tracking', trackForward: 'Track Forward',
+          trackForwardBack: 'Track Forward and Back', trackOneForward: 'Track One Frame Forward',
+          pan: 'Pan', tilt: 'Tilt', zoom: 'Zoom', rotate: 'Rotate', perspective: 'Perspective 3D',
+          mode: 'Clip or Frame', clip: 'Clip', frame: 'Frame', graph: 'Tracker graph', scale: 'Graph height',
+          tracker: 'Tracker type', cloud: 'Cloud Tracker', point: 'Point Tracker',
+          addTracker: 'Add Tracker', deleteTracker: 'Delete Tracker', crosshair: (number: number) => `Tracker ${number}`, x: 'X %', y: 'Y %',
+          options: 'Options', reset: 'Reset Track Data on Active Window', clearSelected: 'Clear Selected Track Data',
+          addKey: 'Add Keyframe', deleteKey: 'Delete Keyframe', copy: 'Copy Track Data', paste: 'Paste Track Data',
+        },
         /** The video scopes (Reference Manual 20, pp. 3007–3022), in DaVinci Resolve's words. */
         scopes: {
           kinds: { waveform: 'Waveform', parade: 'Parade', vectorscope: 'Vectorscope', histogram: 'Histogram', chromaticity: 'CIE Chromaticity' },
@@ -1748,6 +1760,28 @@ export const en = {
         palette: 'The controls of this palette come in a later version.',
         noCorrector: 'Choose a corrector node in the node editor to adjust it.',
         autoFlat: 'Auto Color found too little range in this frame to balance it.',
+        /** The Tracker palette (pp. 3229–3238). */
+        tracker: {
+          noWindow: 'Select a window in the Window palette to track it.',
+          tracking: (frame: number, done: number, total: number) => `Tracking frame ${frame} (${done} of ${total}).`,
+          done: (frames: number) => `Tracked ${frames} frames.`,
+          stopped: 'Tracking stopped. The frames already tracked are kept.',
+          changed: 'Tracking stopped because the project changed.',
+          copied: 'Track data copied. Select another window of this node and paste it.',
+          failed: {
+            no_features: 'Nothing inside the window can be tracked. Place it over a feature with detail.',
+            no_points: 'Add a tracker first.',
+            missing_frame: 'A frame could not be read. The frames already tracked are kept.',
+            cannot_read: 'The media of this clip could not be read.',
+            untrackable: 'This window cannot be tracked here. Only the windows of a clip of moving pictures can be.',
+            frame: 'The playhead is outside the clip.',
+            busy: 'Another track is going on.',
+            untracked: 'Track the window before adding a keyframe.',
+            nothing_to_paste: 'The copied window has no track data.',
+            stale_revision: 'The project changed. Try again.',
+            other: 'Tracking failed.',
+          },
+        },
         windowControls: {
           refused: 'Window controls are unavailable for this frame. Select the window again to retry.',
           /** What a Curve's selected points take (RM20 p. 3195). */

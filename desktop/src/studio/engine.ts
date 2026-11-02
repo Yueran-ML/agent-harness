@@ -333,6 +333,37 @@ export type WindowShape =
 export interface PowerWindow {
   id: string; label: string; enabled: boolean; invert: boolean; combine: 'add' | 'subtract';
   transform: WindowTransform; opacity: Param; shape: WindowShape;
+  /** T24: its tracking, apart from its own transform; left out when there is none. */
+  tracking?: WindowTracking;
+}
+/** One of the eight curves of the tracker graph (PROTOCOL.md, "Window tracking"). */
+export type TrackComponent = 'pan' | 'tilt' | 'zoom' | 'rotate' | 'aspect' | 'shear' | 'yaw' | 'pitch';
+export type TrackMotion = Record<TrackComponent, number>;
+/** The five boxes of the Tracker palette (p. 3235). */
+export interface TrackComponents { pan: boolean; tilt: boolean; zoom: boolean; rotate: boolean; perspective: boolean }
+/** Frames are the grade's clock, written as JSON keys. */
+export interface TrackData {
+  anchor: [number, number]; frame_size: [number, number]; components: TrackComponents;
+  curves: Partial<Record<TrackComponent, Record<string, number>>>;
+  confidence: Record<string, number>;
+  points: Record<string, [number, number]>[];
+  keys: Record<string, TrackMotion>;
+}
+export interface WindowTracking { mode?: 'clip' | 'frame'; crosshairs?: [number, number][]; data: TrackData }
+export type TrackDirection = 'forward' | 'reverse' | 'forward_and_back' | 'one_forward' | 'one_reverse';
+export type TrackEdit =
+  | { kind: 'clear' | 'interpolate'; from: number; to: number; components?: TrackComponent[] }
+  | { kind: 'reset' } | { kind: 'mode'; mode: 'clip' | 'frame' }
+  | { kind: 'add_key' | 'delete_key'; frame: number }
+  | { kind: 'crosshairs'; points: [number, number][] }
+  | { kind: 'paste'; from: string };
+export interface TrackStarted { job: string; first: number; last: number; frame_size: [number, number]; direction: TrackDirection }
+/** `track.progress`, to the connection that started the track. */
+export interface TrackProgress { job: string; frame: number; timeline_frame: number | null; done: number; total: number; lost: number; revision: number }
+/** `track.state`: how a track ended. */
+export interface TrackEnded {
+  job: string; phase: 'done' | 'stopped' | 'failed'; reason: string | null; frames: number; lost: number; frame: number;
+  revision: number; tracked: [number, number] | null; message?: string;
 }
 export interface Corrector {
   primaries: Primaries; log: LogWheels; curves: Curves; hsl: HslCurves; lut: string | null; soft_clip: SoftClip;
@@ -697,6 +728,9 @@ export interface PageMethods {
   'window.bind': { binding: number; sequence: number };
   'window.input': WindowState;
   'window.unbind': { binding: number; phase: 'ended' };
+  'track.start': TrackStarted;
+  'track.stop': Record<string, never>;
+  'track.edit': { revision: number };
   // The Gallery and the comparisons of the viewer (PROTOCOL.md, "The Gallery", "Comparisons in the viewer").
   'viewer.wipe': Compared;
   'viewer.split': Compared;

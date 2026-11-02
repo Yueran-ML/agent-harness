@@ -47,6 +47,7 @@ import type { Menu } from '../color/ColorMenu';
 import { PickerContext, usePickerHub } from '../color/pickers';
 import { QualifierPalette } from '../color/Qualifier';
 import { KeyPalette } from '../color/KeyPalette';
+import { TrackerPalette } from '../color/TrackerPalette';
 import { useViewerModes, type HighlightMode } from '../color/useViewerModes';
 import { BypassButton } from '../BypassColor';
 import { useGenerateLut } from '../color/generateLut';
@@ -586,8 +587,9 @@ export function ColorPage({
       <PickerContext.Provider value={pickers.hub}>
       <Palettes merged={merged} left={left} center={center} last={last} right={right} edited={edited} scopes={scopes.docked}
         windows={edit => <WindowPalette edit={edit} controls={windows} capturing={viewerInput.capturing} busy={viewerInput.busy} status={viewerInput.status} notice={viewerInput.notice} points={viewerInput.points} />}
-        bodies={{ qualifier: edit => <QualifierPalette key={edit.interaction} edit={edit} />, key: edit => <KeyPalette key={edit.interaction} edit={edit} edited={edited} /> }}
-        onLeft={(each) => { setLeft(each); setLast('left'); }} onCenter={(each) => { setCenter(each); setLast('center'); if (each === 'window') setViewerTool('window'); if (each === 'qualifier') setViewerTool('qualifier'); }} onRight={setRight} />
+        bodies={{ qualifier: edit => <QualifierPalette key={edit.interaction} edit={edit} />, key: edit => <KeyPalette key={edit.interaction} edit={edit} edited={edited} />,
+          tracker: () => <TrackerPalette edited={edited} bridge={bridge} window={windows.selected?.id ?? null} onSeek={frame => timelineMonitor.seek(frame, false)} /> }}
+        onLeft={(each) => { setLeft(each); setLast('left'); }} onCenter={(each) => { setCenter(each); setLast('center'); if (each === 'window' || each === 'tracker') setViewerTool('window'); if (each === 'qualifier') setViewerTool('qualifier'); }} onRight={setRight} />
       </PickerContext.Provider>
     </div>
     {grades.menu}

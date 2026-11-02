@@ -1,0 +1,100 @@
+/*
+ * The Tracker palette of the Color page in Window mode (Reference Manual 20, pp. 3234–3238): the
+ * boxes of the transforms, the analyze buttons and Clip/Frame along the top, the tracker graph
+ * with its height slider, and the tracker type, crosshairs and Options beneath.
+ */
+.tracker-palette {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  padding: var(--s1) var(--s2);
+  min-width: 0;
+}
+
+.tracker-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+
+.tracker-boxes,
+.tracker-analyze,
+.tracker-mode,
+.tracker-points {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.tracker-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: var(--fs-small, 12px);
+}
+
+.tracker-mode button[aria-pressed='true'],
+.tracker-crosshair button[aria-pressed='true'] {
+  background: var(--accent-soft, rgba(255, 255, 255, 0.12));
+}
+
+.tracker-graph-row {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  min-width: 0;
+}
+
+.tracker-graph {
+  flex: 1;
+  min-width: 0;
+  height: 120px;
+  background: var(--surface-sunken, rgba(0, 0, 0, 0.25));
+  border-radius: 4px;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.tracker-axis {
+  stroke: currentColor;
+  opacity: 0.2;
+}
+
+.tracker-playhead {
+  stroke: #e05040;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.tracker-key {
+  fill: #e0c050;
+}
+
+.tracker-selection {
+  fill: rgba(255, 255, 255, 0.08);
+  stroke: rgba(255, 255, 255, 0.6);
+  stroke-dasharray: 3 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.tracker-scale {
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 16px;
+}
+
+.tracker-crosshair {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.tracker-crosshair input[type='number'] {
+  width: 5em;
+}
+
+.tracker-status {
+  margin: 0;
+}

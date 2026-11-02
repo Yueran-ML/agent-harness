@@ -153,6 +153,9 @@ const samples: Record<string, unknown[][]> = {
   'hint.studio.migration.done': [[['film'], 1], [['film', 'trip', 'talk'], 3], [['旅行', '会议'], 2], [['film', 'trip', 'talk'], 12]],
   'hint.studio.migration.failed': [[1], [3]],
   'hint.studio.colorPage.shotMatch.done': [[1], [3]],
+  'label.studio.colorPage.trackerPalette.crosshair': [[1], [12]],
+  'hint.studio.colorPage.tracker.tracking': [[20, 9, 88], [0, 1, 1]],
+  'hint.studio.colorPage.tracker.done': [[1], [240]],
 };
 
 type Said = { path: string; text: string };

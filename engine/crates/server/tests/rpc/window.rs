@@ -867,3 +867,202 @@ async fn native_curve_clicks_draw_in_a_row_on_one_binding_waiting_only_for_each_
     assert!((curve_value(&points[1], "out", "x") - 12.0 / 72.0).abs() < 1e-9);
     assert!((curve_value(&points[3], "position", "x") - (52.5 - 64.0) / 72.0).abs() < 1e-6);
 }
+
+/// A native left message with the given `MK_*` key bits (Shift is 4) in its WPARAM.
+#[allow(
+    unsafe_code,
+    reason = "synthetic messages to a test-owned child window"
+)]
+async fn keyed(
+    client: &mut Client,
+    window: isize,
+    message: u32,
+    (x, y): (i32, i32),
+    keys: usize,
+) -> Value {
+    client.take_notifications();
+    unsafe {
+        PostMessageW(
+            Some(HWND(window as *mut _)),
+            message,
+            WPARAM(keys),
+            LPARAM(((x & 0xffff) | ((y & 0xffff) << 16)) as isize),
+        )
+    }
+    .unwrap();
+    loop {
+        let event = client.message().await;
+        if event["method"] == "view.pointer" {
+            return event["params"].clone();
+        }
+    }
+}
+
+/// A native drag from `at` to `to` with `keys` held (`MK_LBUTTON` is 1, `MK_SHIFT` 4), once armed;
+/// returns the down's answer and the up's.
+async fn keyed_gesture(
+    client: &mut Client,
+    window: isize,
+    binding: &Value,
+    at: (i32, i32),
+    to: (i32, i32),
+    keys: usize,
+) -> (Value, Value) {
+    let down = keyed(client, window, WM_LBUTTONDOWN, at, keys).await;
+    let started = client
+        .result(
+            "window.input",
+            Some(json!({"binding":binding,"kind":"down","event":down["event"]})),
+        )
+        .await;
+    phase(client, "armed").await;
+    let moved = keyed(client, window, WM_MOUSEMOVE, to, keys).await;
+    client.result("window.input",Some(json!({"binding":binding,"capture":started["capture"],"kind":"move","event":moved["event"]}))).await;
+    keyed(client, window, WM_LBUTTONUP, to, keys & !1).await;
+    let ended = client
+        .result(
+            "window.input",
+            Some(json!({"binding":binding,"capture":started["capture"],"kind":"up"})),
+        )
+        .await;
+    assert_eq!(ended["phase"], "ended", "{ended}");
+    (started, ended)
+}
+
+/// Wait until the presented frame is at `revision` and shows `points` selected.
+async fn selection_shown(client: &mut Client, window: isize, revision: &Value, points: &Value) {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let p = pointer(client, window, WM_MOUSEMOVE, 64, 36).await;
+        if p["snapshot"]["revision"] == *revision
+            && p["snapshot"]["ready"] == true
+            && p["snapshot"]["window"]["points"] == *points
+        {
+            return;
+        }
+        assert!(Instant::now() < deadline, "selection not presented: {p}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// As the desktop does, on one binding: a Shift-drag selects two anchors, the box moves them,
+/// a corner rotation is cancelled, Backspace deletes them, and below two anchors the whole
+/// delete is refused (RM20 p. 3195). Each action waits only for its frame to be presented.
+#[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one binding through a whole selection, its box drags and its deletions"
+)]
+async fn native_shift_band_selects_curve_points_the_box_moves_them_and_backspace_deletes_them() {
+    let dir = project_dir();
+    let engine = engine(dir.path(), &[]).await;
+    let parent = parent::Parent::open();
+    let mut desktop = engine.client("desktop").await;
+    let mut binding = fixture(&mut desktop).await;
+    let mut all = windows(&project(&mut desktop).await, &binding);
+    let corner =
+        |x: f64, y: f64| json!({"position":{"x":x,"y":y},"in":{"x":0,"y":0},"out":{"x":0,"y":0}});
+    all[0]["shape"] = json!({"kind":"curve","closed":true,"inside":0,"outside":0,"points":[
+        corner(-0.25,-0.25),corner(0.25,-0.25),corner(0.25,0.25),corner(-0.25,0.25)]});
+    let changed = desktop.apply(json!([{"op":"set_node","grade":binding["target"],"id":binding["node"],"params":{"windows":all}}])).await;
+    binding["revision"] = changed["revision"].clone();
+    desktop.result("view.attach",Some(json!({"monitor":"timeline","parent":parent.hwnd.to_string(),"x":0,"y":0,"width":128,"height":72}))).await;
+    desktop
+        .result(
+            "transport.load",
+            Some(json!({"monitor":"timeline","timeline":binding["timeline"]})),
+        )
+        .await;
+    let bound = desktop.result("window.bind", Some(binding.clone())).await;
+    let b = bound["binding"].clone();
+    let window = until_views(&parent, "multi view", |views| views.len() == 1).await[0].0;
+    ready(&mut desktop, window, &b).await;
+    let square = project(&mut desktop).await;
+    // Shift-drag a band about the top anchors (device 46, 18 and 82, 18): pure selection.
+    let (_, ended) = keyed_gesture(&mut desktop, window, &b, (40, 10), (88, 24), 5).await;
+    assert_eq!(ended["selected_points"], json!([0, 1]), "{ended}");
+    assert_eq!(project(&mut desktop).await["revision"], square["revision"]);
+    selection_shown(&mut desktop, window, &square["revision"], &json!([0, 1])).await;
+    // Inside the box moves both, as one undo step; the selection stays.
+    let (started, ended) = keyed_gesture(&mut desktop, window, &b, (64, 18), (64, 27), 1).await;
+    assert_eq!(started["keys"]["points"][1]["point"], 1, "{started}");
+    assert_eq!(ended["selected_points"], json!([0, 1]));
+    let moved = project(&mut desktop).await;
+    let (points, _) = curve_shape(&moved, &binding);
+    assert!((curve_value(&points[0], "position", "y") + 0.125).abs() < 1e-9);
+    assert!((curve_value(&points[1], "position", "y") + 0.125).abs() < 1e-9);
+    assert!((curve_value(&points[2], "position", "y") - 0.25).abs() < 1e-9);
+    // The box is now 38..90 x 19..35: just beside its top right corner rotates them; Esc puts
+    // the whole list back without a step.
+    selection_shown(&mut desktop, window, &moved["revision"], &json!([0, 1])).await;
+    let down = pointer(&mut desktop, window, WM_LBUTTONDOWN, 96, 13).await;
+    let started = desktop
+        .result(
+            "window.input",
+            Some(json!({"binding":b,"kind":"down","event":down["event"]})),
+        )
+        .await;
+    phase(&mut desktop, "armed").await;
+    let turned = pointer(&mut desktop, window, WM_MOUSEMOVE, 70, 60).await;
+    desktop.result("window.input",Some(json!({"binding":b,"capture":started["capture"],"kind":"move","event":turned["event"]}))).await;
+    let rotated = project(&mut desktop).await;
+    assert_ne!(rotated["project"], moved["project"]);
+    desktop
+        .result(
+            "window.input",
+            Some(json!({"binding":b,"capture":started["capture"],"kind":"cancel"})),
+        )
+        .await;
+    assert_eq!(project(&mut desktop).await["project"], moved["project"]);
+    // Backspace deletes the selected anchors from the whole animation, in one step.
+    let now = project(&mut desktop).await;
+    selection_shown(&mut desktop, window, &now["revision"], &json!([0, 1])).await;
+    let deleted = desktop
+        .result(
+            "window.input",
+            Some(json!({"binding":b,"kind":"delete_points"})),
+        )
+        .await;
+    assert_eq!(
+        (deleted["phase"].clone(), deleted["points"].clone()),
+        (json!("deleted"), json!([0, 1])),
+        "{deleted}"
+    );
+    let two = project(&mut desktop).await;
+    let (points, closed) = curve_shape(&two, &binding);
+    assert_eq!((points.len(), closed), (2, true));
+    let refused = desktop
+        .error(
+            "window.input",
+            Some(json!({"binding":b,"kind":"delete_points"})),
+        )
+        .await;
+    assert_eq!(refused["data"]["reason"], "points", "{refused}");
+    desktop.result("history.undo", None).await;
+    let back = project(&mut desktop).await;
+    assert_eq!(back["project"], moved["project"]);
+    // All four selected: deleting would leave none, so nothing is deleted; Esc deselects.
+    selection_shown(&mut desktop, window, &back["revision"], &json!([])).await;
+    let (_, ended) = keyed_gesture(&mut desktop, window, &b, (40, 12), (88, 60), 5).await;
+    assert_eq!(ended["selected_points"], json!([0, 1, 2, 3]), "{ended}");
+    let refused = desktop
+        .error(
+            "window.input",
+            Some(json!({"binding":b,"kind":"delete_points"})),
+        )
+        .await;
+    assert_eq!(
+        refused["data"]["topology"],
+        json!({"why":"minimum","least":2,"shape":"curve"}),
+        "{refused}"
+    );
+    assert_eq!(project(&mut desktop).await, back);
+    let cleared = desktop
+        .result(
+            "window.input",
+            Some(json!({"binding":b,"kind":"clear_points"})),
+        )
+        .await;
+    assert_eq!(cleared["cleared"], 4, "{cleared}");
+    selection_shown(&mut desktop, window, &back["revision"], &json!([])).await;
+}

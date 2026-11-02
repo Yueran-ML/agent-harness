@@ -559,7 +559,7 @@ export function ColorPage({
     <div className="color-palettes-area" {...focusOf('palettes')}>
       <PickerContext.Provider value={pickers.hub}>
       <Palettes merged={merged} left={left} center={center} last={last} right={right} edited={edited} scopes={scopes.docked}
-        windows={edit => <WindowPalette edit={edit} controls={windows} capturing={viewerInput.capturing} busy={viewerInput.busy} status={viewerInput.status} notice={viewerInput.notice} />}
+        windows={edit => <WindowPalette edit={edit} controls={windows} capturing={viewerInput.capturing} busy={viewerInput.busy} status={viewerInput.status} notice={viewerInput.notice} points={viewerInput.points} />}
         bodies={{ qualifier: edit => <QualifierPalette key={edit.interaction} edit={edit} />, key: edit => <KeyPalette key={edit.interaction} edit={edit} edited={edited} /> }}
         onLeft={(each) => { setLeft(each); setLast('left'); }} onCenter={(each) => { setCenter(each); setLast('center'); if (each === 'window') setViewerTool('window'); if (each === 'qualifier') setViewerTool('qualifier'); }} onRight={setRight} />
       </PickerContext.Provider>

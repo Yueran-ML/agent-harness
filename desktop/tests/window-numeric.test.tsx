@@ -158,7 +158,7 @@ it.each(['selection', 'key'] as const)('real numeric down cannot revive after a 
 it('reports only the native captured control fields and their own left keys', () => {
   const h = mountPalette();
   act(() => h.controls().onState({ binding: 1, capture: 1, sequence: 2, phase: 'armed', reason: null, selected: 'w1', event: 2, revision: 10,
-    keys: { size: 0, clock: 'source', frame: 5 } }));
+    keys: { size: 0, clock: 'source', frame: 5 }, selected_points: [] }));
   const hints = document.querySelector('[data-test="window-keys"]')!;
   expect(hints.textContent).toContain('Size:');
   expect(hints.textContent).toContain('0');

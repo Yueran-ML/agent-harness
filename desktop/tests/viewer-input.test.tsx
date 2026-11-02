@@ -8,7 +8,7 @@ import { settle } from './colorEngine';
 
 afterEach(cleanup);
 const state = (extra: Partial<WindowState> = {}): WindowState => ({ binding: 10, capture: 1, sequence: 12, phase: 'arming', reason: null,
-  selected: 'w1', event: 20, revision: 1, keys: { pan: 0, tilt: 3, clock: 'source', frame: 10 }, ...extra });
+  selected: 'w1', event: 20, revision: 1, keys: { pan: 0, tilt: 3, clock: 'source', frame: 10 }, selected_points: [], ...extra });
 const point = (kind: ViewPointer['kind'], event = 20, extra: Partial<ViewPointer> = {}): ViewPointer => ({ monitor: 'timeline', instance: 1, event,
   presentation: { serial: 1, tag: 1, map: { surface: [256, 144], picture: [128, 72], dest: [0, 0, 256, 144] } }, snapshot: { revision: 1, timeline: 't1', frame: 10, canvas: [1920, 1080], ready: true,
     editable: true, comparison: 'wipe', window: { binding: 10, selected: 'w1' } },

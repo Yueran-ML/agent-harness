@@ -741,6 +741,7 @@ export const zhCN: Messages = {
           fields: { size: '大小', aspect: '宽高比', pan: '平移', tilt: '倾斜', rotate: '旋转', opacity: '不透明度', softness: '柔化 1',
             soft1: '柔化 1', soft2: '柔化 2', soft3: '柔化 3', soft4: '柔化 4', inside: '内部柔化', outside: '外部柔化' },
           point: '点', inserted: '新点', handleIn: '入手柄', handleOut: '出手柄',
+          selectedPoints: '已选中的点：{count}',
           topology: {
             one: '第 {point} 点', two: '第 {first} 点和第 {second} 点',
             frames: '{clock}第 {from}–{to} 帧', allFrames: '所有帧',
@@ -1522,10 +1523,12 @@ export const zhCN: Messages = {
         autoFlat: '这一帧的明暗范围太窄，自动调色无从平衡。',
         windowControls: {
           refused: '当前帧无法使用窗口控制。请重新选择窗口后重试。',
+          selectedPoints: '在框内拖动可移动这些点，拖动角可等比缩放，拖动边可拉伸，在角外侧附近拖动可旋转。按 Backspace 删除，按 Esc 取消选择。',
           topology: {
             maximum: '多边形窗口最多 {most} 个点，未添加该点。',
             minimum: '多边形窗口至少保留 {least} 个点，未删除该点。',
             minimumCurve: '闭合的曲线窗口至少保留 {least} 个点，未删除该点。',
+            minimumCurvePoints: '闭合的曲线窗口至少保留 {least} 个点，未删除选中的点。',
             unsupported: '无法添加或删除这个点。',
             jump: '未添加点：{points}的 {axis} 在{frames}既有保持跳变又有连续变化，插点会改变关键帧之间的形状。请先统一这些关键帧的时刻与插值（例如线性），再添加点。原动画未更改。',
             timing: '未添加点：{points}的 {axis} 在{frames}使用不同的缓动曲线，插点会改变关键帧之间的形状。请先统一这些字段的缓动，再添加点。原动画未更改。',

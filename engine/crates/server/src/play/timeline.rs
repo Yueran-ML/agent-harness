@@ -1779,6 +1779,8 @@ mod tests {
             outline: true,
             tool: crate::window::Tool::Window,
             binding: 9,
+            chosen: None,
+            band: None,
         });
         worker.apply(Command::Window(crate::window::Update {
             sequence: 9,

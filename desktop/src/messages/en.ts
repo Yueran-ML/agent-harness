@@ -863,6 +863,8 @@ export const en = {
           fields: { size: 'Size', aspect: 'Aspect', pan: 'Pan', tilt: 'Tilt', rotate: 'Rotate', opacity: 'Opacity', softness: 'Soft 1',
             soft1: 'Soft 1', soft2: 'Soft 2', soft3: 'Soft 3', soft4: 'Soft 4', inside: 'Inside Softness', outside: 'Outside Softness' },
           point: 'Point', inserted: 'New point', handleIn: 'in handle', handleOut: 'out handle',
+          /** A Curve's Shift-selected points (RM20 p. 3195). */
+          selectedPoints: 'Selected points: {count}',
           /** The parts of a refused point edit's explanation: the points and the key interval it names. */
           topology: {
             one: 'point {point}', two: 'points {first} and {second}',
@@ -1735,11 +1737,14 @@ export const en = {
         autoFlat: 'Auto Color found too little range in this frame to balance it.',
         windowControls: {
           refused: 'Window controls are unavailable for this frame. Select the window again to retry.',
+          /** What a Curve's selected points take (RM20 p. 3195). */
+          selectedPoints: 'Drag inside the box to move them, a corner to scale them, a side to stretch them, or just beside a corner to rotate them. Backspace deletes them; Esc deselects them.',
           /** Why a Polygon point was not added or deleted; nothing was changed. */
           topology: {
             maximum: 'A polygon window holds at most {most} points, so no point was added.',
             minimum: 'A polygon window keeps at least {least} points, so the point was not deleted.',
             minimumCurve: 'A closed curve window keeps at least {least} points, so the point was not deleted.',
+            minimumCurvePoints: 'A closed curve window keeps at least {least} points, so the selected points were not deleted.',
             unsupported: 'This point cannot be added or deleted.',
             jump: 'No point was added: the {axis} of {points} mixes a held jump with a continuous change ({frames}), so a new point would change the shape between keyframes. Give those keyframes the same times and interpolation (for example Linear), then add the point. The animation was not changed.',
             timing: 'No point was added: the {axis} of {points} uses different easing curves ({frames}), so a new point would change the shape between keyframes. Give those fields the same easing, then add the point. The animation was not changed.',

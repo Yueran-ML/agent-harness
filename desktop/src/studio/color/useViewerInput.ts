@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import type { EngineBridge } from '../../bridge';
 import { callEngine, EngineError, viewPointerOf, type ViewerTool, type WindowSelection, type WindowState, type WindowUnbound,
-  type Viewport, type PreparedViewport, type ViewNavigation, type WindowDeleted, type WindowTopology } from '../engine';
+  type Viewport, type PreparedViewport, type ViewNavigation, type WindowDeleted, type WindowTopology,
+  type WindowPointsCleared, type WindowPointsDeleted, type WindowPointsDropped } from '../engine';
 import type { Comparison } from './useComparison';
 import type { ViewerPicker } from './pickers';
 import type { WindowNotice } from './WindowPalette';
@@ -15,6 +16,8 @@ interface Owner {
   capture: Capture | null; retired: boolean; pointer: boolean; bridge: Pick<EngineBridge, 'call'>;
   bindingPending: boolean; earlyRetirements: Map<number, WindowUnbound>; retryAt: number | null; retryScheduled: boolean;
   navigation: Promise<void>; navigationRevision: number; leftHeld: boolean; inheritedButtons: number; pan: Pan | null;
+  /** How many Curve anchors the engine last said are selected (RM20 p. 3195). */
+  points: number;
 }
 type Point = { x: number; y: number };
 /** `deletes` is the native middle down event of an unmoved tap that may delete a Polygon point. */
@@ -37,7 +40,7 @@ export function useViewerInput({ bridge, session, native, loaded, timeline, tool
   bridge: Pick<EngineBridge, 'call' | 'onEvent'>; session: number; native: boolean; loaded: boolean; timeline: string | null;
   tool: ViewerTool; selection: WindowSelection | null; intention: number; creating?: boolean; comparison: Comparison;
   viewer: RefObject<HTMLElement | null>; onMenu: (point: { x: number; y: number }) => void;
-  onWindowState: (state: WindowState) => void; onDeleted?: (answer: WindowDeleted) => void;
+  onWindowState: (state: WindowState) => void; onDeleted?: (answer: WindowDeleted | WindowPointsDeleted) => void;
   /** Esc in the viewer with no capture; true when it was used (an unfinished Curve is left, keeping its draft). */
   onIdleEscape?: () => boolean;
   /** The picker of colour in force, which takes the pointer while it is. */
@@ -46,6 +49,8 @@ export function useViewerInput({ bridge, session, native, loaded, timeline, tool
   const [status, setStatus] = useState<WindowInputStatus>('idle');
   // Why the engine refused a Polygon point insertion (at down) or a middle-click deletion.
   const [notice, setNotice] = useState<WindowNotice | null>(null);
+  // The selected Curve's selected anchors, as the engine last said (window.state and point replies).
+  const [points, setPoints] = useState(0);
   const [capturing, setCapturing] = useState(false);
   const [closing, setClosing] = useState(false);
   const [retry, setRetry] = useState(0);
@@ -78,6 +83,7 @@ export function useViewerInput({ bridge, session, native, loaded, timeline, tool
     of.retryAt = notice.revision;
     // The server has ended any capture before retiring the binding, including a down whose reply is still pending.
     if (of.capture) { of.capture.done = true; of.capture = null; }
+    of.points = 0; setPoints(0);
     setCapturing(false); setStatus('refused');
     recover(of);
   }, [recover]);
@@ -87,6 +93,7 @@ export function useViewerInput({ bridge, session, native, loaded, timeline, tool
       || answer.capture <= of.lastCapture || (capture.id !== null && answer.capture !== capture.id) || answer.event < capture.event) return;
     capture.id = answer.capture;
     of.sequence = answer.sequence;
+    of.points = answer.selected_points.length; setPoints(of.points);
     now.current.onWindowState(answer);
     if (answer.phase === 'ended' || answer.phase === 'refused') {
       capture.done = true; of.lastCapture = answer.capture; of.capture = null;
@@ -183,6 +190,8 @@ export function useViewerInput({ bridge, session, native, loaded, timeline, tool
     if (!current(of) || of.binding === null || of.retryAt !== null || of.capture) return;
     callEngine(of.bridge, 'window.input', { binding: of.binding, kind: 'delete', event }, { expectedSession: of.session }).then(answer => {
       if (!current(of)) return;
+      // Deleting an anchor changes the Curve's anchor count, which ends its point selection.
+      of.points = 0; setPoints(0);
       setNotice(null); now.current.onDeleted?.(answer as unknown as WindowDeleted);
     }).catch(failure => {
       const topology = failure instanceof EngineError ? (failure.data as { topology?: WindowTopology } | null)?.topology : undefined;
@@ -190,13 +199,35 @@ export function useViewerInput({ bridge, session, native, loaded, timeline, tool
     });
   }, []);
 
+  /** Esc on a Curve's point selection deselects those points; if the engine had none left, Esc leaves a draft as usual. */
+  const clearPoints = useCallback((of: Owner) => {
+    callEngine(of.bridge, 'window.input', { binding: of.binding, kind: 'clear_points' }, { expectedSession: of.session }).then(answer => {
+      if (!current(of)) return;
+      of.points = 0; setPoints(0);
+      if ((answer as unknown as WindowPointsCleared).cleared === 0) now.current.onIdleEscape?.();
+    }).catch(() => {});
+  }, []);
+  /** Backspace deletes a Curve's selected points, all or none; a refusal is explained like a middle-click deletion. */
+  const deletePoints = useCallback((of: Owner) => {
+    callEngine(of.bridge, 'window.input', { binding: of.binding, kind: 'delete_points' }, { expectedSession: of.session }).then(answer => {
+      if (!current(of)) return;
+      of.points = 0; setPoints(0); setNotice(null);
+      now.current.onDeleted?.(answer as unknown as WindowPointsDeleted);
+    }).catch(failure => {
+      if (!current(of)) return;
+      const data = failure instanceof EngineError ? failure.data as { reason?: string; topology?: WindowTopology } | null : null;
+      if (data?.topology) setNotice({ action: 'deleteSelected', topology: data.topology });
+      else if (data?.reason === 'points') { of.points = 0; setPoints(0); }
+    });
+  }, []);
+
   useEffect(() => {
     const of: Owner = { key, session, bridge, binding: null, sequence: -1, lastCapture: -1, capture: null, retired: false, pointer: false,
       bindingPending: false, earlyRetirements: new Map(), retryAt: null, retryScheduled: false,
       navigation: Promise.resolve(), navigationRevision: 0, leftHeld: (nativeSeen.current.buttons & 1) !== 0,
-      inheritedButtons: nativeSeen.current.buttons, pan: null };
+      inheritedButtons: nativeSeen.current.buttons, pan: null, points: 0 };
     owner.current = of;
-    setStatus('idle'); setCapturing(false); setNotice(null); comparison.resetPointer();
+    setStatus('idle'); setCapturing(false); setNotice(null); setPoints(0); comparison.resetPointer();
     // Cleanup and activation share this queue. A late bind is unbound before its successor takes the pointer.
     switching.current = switching.current.then(async () => {
       if (!current(of)) return;
@@ -266,6 +297,14 @@ export function useViewerInput({ bridge, session, native, loaded, timeline, tool
     }
     if (event.kind === 'notification' && event.method === 'window.state') {
       if (of.capture) accept(of, of.capture, event.params as WindowState);
+      return;
+    }
+    if (event.kind === 'notification' && event.method === 'window.points') {
+      // A project change (undo, redo, another client's edit) dropped the selected Curve points.
+      const notice = event.params as WindowPointsDropped;
+      if (of.retryAt === null && notice.binding === of.binding && notice.sequence > of.sequence) {
+        of.sequence = notice.sequence; of.points = notice.selected_points.length; setPoints(of.points);
+      }
       return;
     }
     const pointer = viewPointerOf(event);
@@ -385,6 +424,8 @@ export function useViewerInput({ bridge, session, native, loaded, timeline, tool
         const target = event.target;
         if (capture || retiring.current.size > 0 || of.binding === null || event.defaultPrevented
           || !(target instanceof Node) || !viewer.current?.contains(target)) return;
+        // Selected Curve points are deselected first (RM20 p. 3195); only then does Esc leave a draft.
+        if (of.points > 0) { event.preventDefault(); event.stopPropagation(); clearPoints(of); return; }
         if (now.current.onIdleEscape?.()) { event.preventDefault(); event.stopPropagation(); }
         return;
       }
@@ -394,8 +435,22 @@ export function useViewerInput({ bridge, session, native, loaded, timeline, tool
     };
     window.addEventListener('keydown', escape, true);
     return () => window.removeEventListener('keydown', escape, true);
-  }, [terminal, viewer]);
+  }, [terminal, viewer, clearPoints]);
+
+  useEffect(() => {
+    // Backspace (the manual's Delete key) deletes a Curve's selected points, idle and within the viewer only.
+    const backspace = (event: KeyboardEvent) => {
+      const of = owner.current; const target = event.target;
+      if (event.key !== 'Backspace' || event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || !of || !current(of)
+        || of.binding === null || of.points === 0 || of.capture || retiring.current.size > 0
+        || !(target instanceof Element) || !viewer.current?.contains(target) || target.closest('input,textarea,select,[contenteditable="true"]')) return;
+      event.preventDefault();
+      deletePoints(of);
+    };
+    window.addEventListener('keydown', backspace);
+    return () => window.removeEventListener('keydown', backspace);
+  }, [viewer, deletePoints]);
   const busy = useCallback(() => owner.current?.capture != null || retiring.current.size > 0, []);
   const setZoom = useCallback((value: number | 'fit') => navigate(value === 'fit' ? { operation: 'fit' } : { operation: 'scale', scale: value }), [navigate]);
-  return { status, capturing: capturing || closing, busy, viewport, setZoom, notice };
+  return { status, capturing: capturing || closing, busy, viewport, setZoom, notice, points };
 }

@@ -624,6 +624,37 @@ impl WindowShape {
         points.remove(index);
         Ok(())
     }
+
+    /// Remove several Curve anchors at once (a multi-point selection's Backspace, RM20
+    /// p. 3195), from the whole animation: each anchor's Params go with it, every other Param is
+    /// kept. A repeated index counts once.
+    ///
+    /// # Errors
+    ///
+    /// Nothing is removed when the list is empty or names a missing anchor
+    /// ([`TopologyError::Unsupported`]), or when a closed Curve would keep fewer than two
+    /// ([`TopologyError::Minimum`]); an open draft may become empty.
+    pub fn remove_curve_points(&mut self, indices: &[usize]) -> Result<(), TopologyError> {
+        let Self::Curve { points, closed, .. } = self else {
+            return Err(TopologyError::Unsupported);
+        };
+        let mut gone = indices.to_vec();
+        gone.sort_unstable();
+        gone.dedup();
+        if gone.is_empty() || gone.last().is_some_and(|&i| i >= points.len()) {
+            return Err(TopologyError::Unsupported);
+        }
+        if *closed && points.len() - gone.len() < 2 {
+            return Err(TopologyError::Minimum {
+                shape: "curve",
+                least: 2,
+            });
+        }
+        for &i in gone.iter().rev() {
+            points.remove(i);
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1076,6 +1107,66 @@ mod tests {
         draft.remove_curve_point(0).unwrap();
         assert_eq!(draft, curve(vec![], false));
         assert_eq!(draft.remove_curve_point(0), Err(TopologyError::Unsupported));
+    }
+
+    #[test]
+    fn removing_selected_curve_points_is_all_or_nothing_for_the_whole_animation() {
+        // Four anchors, the third animated: removal takes its every key with it.
+        let mut before = lens();
+        before.push(anchor([-0.1, -0.3], [0.0; 2], [0.0; 2]));
+        before[2].position.x = keys(&[(0, 0.0, L), (10, 0.2, L)]);
+        let mut shape = curve(before.clone(), true);
+        shape.remove_curve_points(&[2, 0]).unwrap();
+        let WindowShape::Curve { points, closed, .. } = &shape else {
+            panic!()
+        };
+        assert!(closed);
+        assert_eq!(points[..], [before[1].clone(), before[3].clone()]);
+        // A closed Curve keeps two: removing either of the two left refuses, nothing changes.
+        let two = shape.clone();
+        assert_eq!(
+            shape.remove_curve_points(&[1]),
+            Err(TopologyError::Minimum {
+                shape: "curve",
+                least: 2
+            })
+        );
+        assert_eq!(shape, two);
+        let mut whole = curve(before.clone(), true);
+        assert_eq!(
+            whole.remove_curve_points(&[0, 1, 2]),
+            Err(TopologyError::Minimum {
+                shape: "curve",
+                least: 2
+            })
+        );
+        assert_eq!(whole, curve(before.clone(), true));
+        // A missing index or none refuses as a whole too; a repeated one counts once; a draft
+        // may become empty.
+        assert_eq!(
+            whole.remove_curve_points(&[1, 4]),
+            Err(TopologyError::Unsupported)
+        );
+        assert_eq!(
+            whole.remove_curve_points(&[]),
+            Err(TopologyError::Unsupported)
+        );
+        assert_eq!(whole, curve(before.clone(), true));
+        whole.remove_curve_points(&[1, 1]).unwrap();
+        assert_eq!(
+            whole,
+            curve(
+                vec![before[0].clone(), before[2].clone(), before[3].clone()],
+                true
+            )
+        );
+        let mut draft = curve(before[..3].to_vec(), false);
+        draft.remove_curve_points(&[0, 1, 2]).unwrap();
+        assert_eq!(draft, curve(vec![], false));
+        assert_eq!(
+            WindowShape::polygon().remove_curve_points(&[0]),
+            Err(TopologyError::Unsupported)
+        );
     }
 
     #[test]

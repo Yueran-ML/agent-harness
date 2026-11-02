@@ -26,6 +26,8 @@ fn overlay(x: f64) -> Arc<WindowOverlay> {
         selected: Some("w1".into()),
         style: Style::default(),
         coverage: None,
+        points: vec![],
+        band: None,
     })
 }
 

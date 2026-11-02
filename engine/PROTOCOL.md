@@ -150,7 +150,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `view.sample` | `{"monitor": m}` or `{"timeline": "t1", "frame": n}`, `"x": 960.5, "y": 540.5, "size"?: 1, "grade"?: target, "node"?: "n1", "clip"?: "c1"` | `{"frame", "x", "y", "size", "width", "height", "region", "rgb": [r, g, b], "node"?: {"grade", "node", "input", "output", "key"}}` (see Samples and the pointer) |
 | `view.pointer` | `{"monitor": m, "on": true \| false, "cursor"?: "arrow" \| "crosshair" \| "move" \| "resize_ew" \| "resize_ns"}` | `{"monitor", "on", "cursor"}`, then `view.pointer` notifications (see Samples and the pointer) |
 | `window.bind` | `{monitor:"timeline",revision,timeline,target,clip?,node,selected,visible,outline,tool}` | `{binding,sequence}`; existing Window controls of every shape (see Circular and Gradient Window controls, Linear and Polygon Window controls, Curve Window controls) |
-| `window.input` | `{binding,kind:"down"\|"move"\|"up"\|"cancel"\|"delete",event?,capture?}` | Down returns `arming` immediately; `window.state` reports the asynchronous result. `delete` names a native middle-button down and answers `{binding,phase:"deleted",selected,point,revision}` |
+| `window.input` | `{binding,kind:"down"\|"move"\|"up"\|"cancel"\|"delete"\|"clear_points"\|"delete_points",event?,capture?}` | Down returns `arming` immediately; `window.state` reports the asynchronous result. `delete` names a native middle-button down and answers `{binding,phase:"deleted",selected,point,revision}`; `clear_points` and `delete_points` (Esc and Backspace on a Curve's point selection) answer `{binding,phase:"cleared",cleared}` and `{binding,phase:"deleted",selected,points,revision}` (see Curve Window controls) |
 | `window.unbind` | `{binding}` | Ends capture and clears this connection's Window selection, or releases its still-owned retired binding's pointer |
 | `render.start` | `{"timeline":"t1", "path":"<file>", "codec":"h264", "quality":"high", "range"?:{"from":0,"to":250}, "subtitle_tracks"?:["S1"], "replace"?:false, "revision"?:n}` | `{"job": "render-1"}` (see Rendering a timeline) |
 | `render.cancel` | `{"job": "render-1"}` | `{}` |
@@ -908,7 +908,9 @@ is a grey outline without feather lines or handles, whose outline and body still
 Unsupported/disabled shapes have no invented handles. Split Screen suppresses the overlay.
 An incompatible target, node, current clip, retained layer, revision, source provenance or
 Highlight also suppresses it for that frame. The same immutable overlay is retained by the
-frame snapshot and submitted native texture. `snapshot.window` is null or `{binding,selected}`.
+frame snapshot and submitted native texture. `snapshot.window` is null or
+`{binding,selected,points}`, `points` the selected Curve anchors that frame shows (see Curve
+Window controls).
 
 Each `view.pointer` also carries an increasing native `event` sequence. On a native left down,
 the engine retains that event's connection, instance, successful presentation and exact frame
@@ -939,8 +941,11 @@ transport command turn, so a late freeze cannot rewind a newer seek.
 ```json
 {"binding":2,"capture":1,"sequence":5,"phase":"armed","reason":null,
  "selected":"w2","event":41,"revision":12,
- "keys":{"pan":0,"tilt":3,"clock":"source","frame":10}}
+ "keys":{"pan":0,"tilt":3,"clock":"source","frame":10},"selected_points":[]}
 ```
+
+`selected_points` are the selected window's selected Curve anchors as that state is sent (empty
+for any other shape; see Curve Window controls).
 
 `selected` is the window actually hit, including when it differs from the originally selected
 row. Accept that server selection in the list **without sending another bind**. Keep the same
@@ -1165,8 +1170,42 @@ removes it from the whole animation as one plain step. A closed Curve keeps at l
 otherwise the whole delete is refused with `data.topology:{why:"minimum",least:2,shape:"curve"}`
 and the Curve stays closed; an open draft may become empty. Drawn points are static, and the pull
 threshold, the margin just outside, handle placements and the linked rotation and scale are
-project choices; Shift
-multi-point selection is not part of this protocol yet.
+project choices.
+
+**Multi-point selection** (p. 3195; closed Curves and drafts, not Polygons). A down with Shift
+held while a Curve is the selected window, anywhere on the picture, is a band: it hits no
+control (`keys` has only `clock`/`frame`), draws a display-only white rectangle from the down to
+the pointer while armed, and on release selects the anchors it encloses as that frame displayed
+them, each counting within its 4 device pixel radius (so a Shift click on one anchor selects
+it). The band replaces the selection; one enclosing none clears it; Esc during it keeps the
+previous selection. Selection is not part of the project or its history and is never sent by a
+client; the selected anchors are drawn amber. With two or more selected, a display-only white
+box stands 8 device pixels off their bounding box (axis-aligned on screen) with blue corner and
+side handles. **Hit priority** with that box: its handles (nearest first), then anywhere inside
+it (`BoxMove`, over the Curve's own anchors, handles and edges), then a down outside it within
+14 device pixels of a corner (rotation), then the Curve's own controls as above; a middle tap
+looks through the box to the anchor under it. Dragging inside moves the selected anchors
+(`L + delta` to their x/y left keys, handles kept); a corner scales them uniformly and a side
+stretches them along its axis so that the handle follows the pointer (along the corner's down
+offset from the box centre, or along the side's axis: in device pixels, the box's 8 pixels off
+the anchors do not scale, and a down offset reaching less than one pixel past them counts as
+one); the rotation turns them by the angle the pointer turns about the centre; all about the box
+centre in canvas pixels (factors never below 0). Each map is applied in full to the displayed anchors and by its
+linear part to their relative handles, writing each field's `L + delta`, clamped; `keys` reports
+every participating anchor (`x`/`y`, and `in_*`/`out_*` for a transform). It is one owned
+gesture: one undo step, Esc restores the whole list. A down whose frame does not show the
+current point selection is refused `selection`. The selection lasts through its own drags and
+undo/redo while that Curve keeps its anchor count; a changed count, another selected window, a
+new bind, or any other down clears it. When a project change (an undo or redo, or another
+client's edit) clears it, the binding owner is sent **`window.points`**
+`{binding,sequence,revision,selected_points:[]}` (the sequence shared with `window.state`), so a
+count kept from `window.state` follows. `window.input` `{binding,kind:"clear_points"}` (Esc)
+clears it and answers `cleared`, the number it held (0 if none, for the desktop then to leave a
+draft). `{binding,kind:"delete_points"}` (Backspace) removes the selected anchors from the whole
+animation as one plain step, all or none: a closed Curve keeps at least two, otherwise
+`data.topology:{why:"minimum",least:2,shape:"curve"}` and the selection stays; none selected is
+`{reason:"points"}`; during a capture `{reason:"capture"}`. Box padding, the rotation reach, the
+centre pivot and the anchor radius of a band are project choices.
 
 ## The transport
 
@@ -3122,8 +3161,9 @@ real ids. For example:
 | `gallery.changed` | `{}`: the Gallery was changed; call `gallery.list` again (see The Gallery) |
 | `window_presets.changed` | `{}`: the window presets were changed; call `window_presets.list` again (see Window presets) |
 | `view.pointer` | `{"monitor", "kind": "down" \| "move" \| "wheel" \| "up" \| "cancel", "button", "buttons", "delta", "clicks", "middle_moved", "x", "y", "inside", "window": {"x", "y"}, "shift", "ctrl", "alt"}`: what the pointer did on a view that takes it, to the connection that asked only (see Samples and the pointer) |
-| `window.state` | `{binding,capture,sequence,phase,reason,selected,event,revision,keys}`: owner-only arming, armed, refused and ended states (see Circular and Gradient Window controls) |
+| `window.state` | `{binding,capture,sequence,phase,reason,selected,event,revision,keys,selected_points}`: owner-only arming, armed, refused and ended states (see Circular and Gradient Window controls) |
 | `window.unbound` | `{binding,sequence,revision,reason:"project_changed"}`: original-owner-only retirement when a project change invalidates the binding, even without capture |
+| `window.points` | `{binding,sequence,revision,selected_points:[]}`: owner-only, when a project change drops the selected Curve's point selection (see Curve Window controls) |
 
 - `by` is the kind of the client that asked (for an undo or a redo, the one that asked for
   that); `made_by` is the kind of the client that made the transaction (for an undo or a redo,

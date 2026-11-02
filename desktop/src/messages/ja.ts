@@ -790,6 +790,7 @@ export const ja: Messages = {
           fields: { size: 'サイズ', aspect: 'アスペクト', pan: 'パン', tilt: 'ティルト', rotate: '回転', opacity: '不透明度', softness: 'ソフト 1',
             soft1: 'ソフト 1', soft2: 'ソフト 2', soft3: 'ソフト 3', soft4: 'ソフト 4', inside: '内側ソフト', outside: '外側ソフト' },
           point: 'ポイント', inserted: '新しいポイント', handleIn: 'イン側ハンドル', handleOut: 'アウト側ハンドル',
+          selectedPoints: '選択中のポイント：{count}',
           topology: {
             one: 'ポイント {point}', two: 'ポイント {first} と {second}',
             frames: '{clock} {from}–{to} フレーム', allFrames: 'すべてのフレーム',
@@ -1600,10 +1601,12 @@ export const ja: Messages = {
         autoFlat: 'このフレームは明暗の幅が狭すぎるため、オートカラーで調整できません。',
         windowControls: {
           refused: 'このフレームでは操作できません。ウィンドウを選び直してください。',
+          selectedPoints: 'ボックス内をドラッグすると移動、角をドラッグすると拡大縮小、辺をドラッグすると伸縮、角のすぐ外側をドラッグすると回転します。Backspace キーで削除し、Esc キーで選択を解除します。',
           topology: {
             maximum: '多角形ウィンドウのポイントは最大 {most} 個のため、追加しませんでした。',
             minimum: '多角形ウィンドウには {least} 個以上のポイントが必要なため、削除しませんでした。',
             minimumCurve: '閉じた曲線ウィンドウには {least} 個以上のポイントが必要なため、削除しませんでした。',
+            minimumCurvePoints: '閉じた曲線ウィンドウには {least} 個以上のポイントが必要なため、選択したポイントを削除しませんでした。',
             unsupported: 'このポイントは追加・削除できません。',
             jump: 'ポイントを追加しませんでした：{points} の {axis} で、ホールドによる値の切り替わりと連続的な変化が重なっています（{frames}）。追加するとキーフレーム間の形が変わります。それらのキーフレームの時刻と補間（たとえばリニア）をそろえてから追加してください。アニメーションは変更していません。',
             timing: 'ポイントを追加しませんでした：{points} の {axis} が異なるイージングカーブを使っています（{frames}）。追加するとキーフレーム間の形が変わります。それらのイージングをそろえてから追加してください。アニメーションは変更していません。',

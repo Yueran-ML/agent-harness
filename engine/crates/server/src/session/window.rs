@@ -6,10 +6,10 @@ use super::{
 };
 use crate::presentation::{FrameSnapshot, Input, Pin, Registry, Tap};
 use crate::window::{
-    refused, topology_refused, Modifiers, Movement, Refusal, Selection, Tool, Update,
+    refused, topology_refused, Chosen, Modifiers, Movement, Refusal, Selection, Tool, Update,
 };
 use columbina_model::grade::WindowShape;
-use columbina_view::window_overlay::Control;
+use columbina_view::window_overlay::{Control, ShapeKind};
 use columbina_view::{Button, PointerKind, Presentation};
 #[cfg(test)]
 mod tests;
@@ -101,9 +101,14 @@ impl State {
 
     fn window_note(&mut self, capture: &Capture, phase: &str, reason: Option<&str>) -> Value {
         self.window.sequence += 1;
+        let points = self
+            .window
+            .selection
+            .as_ref()
+            .map_or_else(Vec::new, |s| s.points().to_vec());
         let value = json!({"binding":capture.binding,"capture":capture.id,"sequence":self.window.sequence,
             "phase":phase,"reason":reason,"event":capture.last_event,"revision":self.history.revision(),"selected":capture.movement.selected(),
-            "keys":capture.movement.keys()});
+            "keys":capture.movement.keys(),"selected_points":points});
         self.window_tell(capture.owner, "window.state", &value);
         value
     }
@@ -136,7 +141,10 @@ impl State {
         self.close_capture(capture, "ended", reason)
     }
 
-    fn close_capture(&mut self, capture: Capture, phase: &str, reason: &str) -> Value {
+    fn close_capture(&mut self, mut capture: Capture, phase: &str, reason: &str) -> Value {
+        if capture.movement.bands() {
+            self.window_band_end(&mut capture, phase == "ended" && reason == "up");
+        }
         let result = self.window_note(&capture, phase, Some(reason));
         self.window.ended = Some((capture.owner, result.clone()));
         capture.registry.release(&capture.pin);
@@ -148,6 +156,47 @@ impl State {
             }
         }
         result
+    }
+
+    /// A Shift-drag ends: its band goes and, released (not cancelled or ended otherwise), it
+    /// selects the anchors it encloses where the native input last reached, replacing the
+    /// selection; a band enclosing none clears it. Pure selection: no history.
+    fn window_band_end(&mut self, capture: &mut Capture, select: bool) {
+        let map = capture.pin.down.pointer.presentation.and_then(|p| p.map);
+        if let Some(map) = map {
+            // Native input not yet consumed (before arming, or the up itself).
+            if let Some(last) = capture
+                .registry
+                .events(&capture.pin)
+                .iter()
+                .rev()
+                .find(|e| {
+                    e.instance == capture.pin.down.instance
+                        && e.pointer.presentation.and_then(|p| p.map) == Some(map)
+                })
+            {
+                capture
+                    .movement
+                    .extend_band(map.on_picture(last.pointer.window).0);
+            }
+        }
+        let points = select.then(|| capture.movement.band_points());
+        let (window, count) = (
+            capture.movement.selected().to_owned(),
+            capture.movement.anchors(),
+        );
+        if let Some(selection) = self.window.selection.as_mut() {
+            let selection = Arc::make_mut(selection);
+            selection.band = None;
+            if let Some(points) = points {
+                selection.chosen = (!points.is_empty()).then_some(Chosen {
+                    window,
+                    count,
+                    points,
+                });
+            }
+        }
+        self.window_update();
     }
 
     /// Esc: an owned gesture that wrote puts back the Windows captured at down (before any
@@ -187,6 +236,7 @@ impl State {
     pub(super) fn window_project_changed(&mut self) {
         self.window_end("project_changed");
         let mut retired = None;
+        let mut dropped = None;
         if let Some(selection) = &mut self.window.selection {
             let selection = Arc::make_mut(selection);
             selection.revision = self.history.revision();
@@ -197,8 +247,36 @@ impl State {
                 retired = self.window.owner.map(|owner| (owner, selection.binding));
                 self.window.selection = None;
                 self.window.owner = None;
+            } else {
+                // Anchor indices stay meaningful only while that Curve keeps its anchor count.
+                let project = self.history.project();
+                let kept = selection.chosen.as_ref().is_some_and(|chosen| {
+                    selection.selected.as_ref() == Some(&chosen.window)
+                        && selection
+                            .corrector(project)
+                            .and_then(|c| c.windows.iter().find(|w| w.id == chosen.window))
+                            .is_some_and(|w| {
+                                matches!(&w.shape, WindowShape::Curve { points, .. }
+                                    if points.len() == chosen.count)
+                            })
+                });
+                if !kept && selection.chosen.take().is_some() {
+                    dropped = self.window.owner.map(|owner| (owner, selection.binding));
+                }
             }
             self.window_update();
+        }
+        // The owner counts the selected points from its notes: say they are gone.
+        if let Some((owner, binding)) = dropped {
+            self.window.sequence += 1;
+            self.window_tell(
+                owner,
+                "window.points",
+                &json!({
+                    "binding": binding, "sequence": self.window.sequence,
+                    "revision": self.history.revision(), "selected_points": [],
+                }),
+            );
         }
         if let Some((owner, binding)) = retired {
             self.window.sequence += 1;
@@ -239,11 +317,10 @@ impl State {
         {
             return Err(refused("down"));
         }
-        if frame
-            .selection
-            .as_ref()
-            .is_none_or(|s| s.binding != binding || s.revision != selection.revision)
-        {
+        // The displayed frame must also show the current point selection (its box decides hits).
+        if frame.selection.as_ref().is_none_or(|s| {
+            s.binding != binding || s.revision != selection.revision || s.chosen != selection.chosen
+        }) {
             return Err(refused("selection"));
         }
         let map = shown.map.ok_or_else(|| refused("map"))?;
@@ -255,26 +332,27 @@ impl State {
             down.pointer.window.0 as f32 + 0.5,
             down.pointer.window.1 as f32 + 0.5,
         ];
-        let hit = frame
-            .overlay
-            .as_ref()
-            .and_then(|o| o.hit_control(map, point))
-            .ok_or_else(|| refused("hit"))?;
-        let selected = hit.id.to_owned();
+        let (selected, control) = Self::window_hit(
+            selection,
+            frame.overlay.as_deref(),
+            map,
+            point,
+            down.pointer.shift,
+        )?;
         let canvas = map.on_picture(down.pointer.window).0;
         // Alt and the system's double click qualify Curve point controls (RM20 p. 3194).
         let modifiers = Modifiers {
             alt: down.pointer.alt,
             double: down.pointer.clicks >= 2,
         };
-        let movement = if hit.control == Control::Move {
+        let movement = if control == Control::Move {
             Movement::new(selection, frame, &selected, canvas).ok_or_else(|| refused("target"))
         } else {
             Movement::capture(
                 selection,
                 frame,
                 &selected,
-                hit.control,
+                control,
                 canvas,
                 Movement::device_per_canvas(map),
                 modifiers,
@@ -285,8 +363,20 @@ impl State {
             })
         }?;
         self.window_end("new_down");
-        Arc::make_mut(self.window.selection.as_mut().expect("validated selection")).selected =
-            Some(selected);
+        let current = Arc::make_mut(self.window.selection.as_mut().expect("validated selection"));
+        // Only the box and a new band keep the point selection; any other down clears it.
+        if !matches!(
+            control,
+            Control::Band
+                | Control::BoxMove
+                | Control::BoxCorner(_)
+                | Control::BoxEdge(_)
+                | Control::BoxRotate(_)
+        ) || current.selected.as_ref() != Some(&selected)
+        {
+            current.chosen = None;
+        }
+        current.selected = Some(selected);
         self.window_update();
         self.window.next_capture += 1;
         let capture = Capture {
@@ -303,6 +393,33 @@ impl State {
         let result = self.window_note(&capture, "arming", None);
         self.window.active = Some(capture);
         Ok(result)
+    }
+
+    /// What a down hits: a Shift down while a Curve is the selected window drags a band selecting
+    /// its anchors (RM20 p. 3195), on the current-A picture only like any other down; otherwise
+    /// the overlay's hit, the selection box first.
+    fn window_hit(
+        selection: &Selection,
+        overlay: Option<&columbina_view::window_overlay::WindowOverlay>,
+        map: columbina_view::ViewportMap,
+        point: [f32; 2],
+        shift: bool,
+    ) -> Result<(String, Control), Fault> {
+        let overlay = overlay.ok_or_else(|| refused("hit"))?;
+        if let Some(id) = selection.selected.as_ref().filter(|id| {
+            shift
+                && overlay.takes(map, point)
+                && overlay
+                    .shapes
+                    .iter()
+                    .any(|s| &s.id == *id && s.kind == ShapeKind::Curve)
+        }) {
+            return Ok((id.clone(), Control::Band));
+        }
+        overlay
+            .hit_control(map, point)
+            .map(|hit| (hit.id.to_owned(), hit.control))
+            .ok_or_else(|| refused("hit"))
     }
 
     /// The down's own edit (a Polygon/Curve edge insertion, a drawn Curve point, a closed draft
@@ -424,7 +541,7 @@ impl State {
         let hit = frame
             .overlay
             .as_ref()
-            .and_then(|o| o.hit_control(map, point))
+            .and_then(|o| o.hit_point(map, point))
             .ok_or_else(|| refused("hit"))?;
         let index = match hit.control {
             Control::Point(index) => index as usize,
@@ -470,6 +587,70 @@ impl State {
         }
         Ok(
             json!({"binding":binding,"phase":"deleted","selected":id,"point":index,
+            "revision":self.history.revision()}),
+        )
+    }
+
+    /// Backspace and Esc on a Curve's point selection (RM20 p. 3195). Both act on the binding's
+    /// current selection, not on pointer evidence. `delete` removes the selected anchors from the
+    /// whole animation as one plain step, all or none (a closed Curve keeps two); otherwise the
+    /// point selection is cleared, which is not a history step.
+    fn window_points(&mut self, owner: u64, binding: u64, delete: bool) -> Result<Value, Fault> {
+        let selection = self
+            .window
+            .selection
+            .clone()
+            .filter(|s| s.binding == binding && self.window.owner == Some(owner))
+            .ok_or_else(|| refused("binding"))?;
+        selection.validate(self.history.project(), self.history.revision())?;
+        if self.window.active.is_some() {
+            return Err(refused("capture"));
+        }
+        let points = selection.points().to_vec();
+        if !delete {
+            if let Some(current) = self.window.selection.as_mut() {
+                Arc::make_mut(current).chosen = None;
+            }
+            if !points.is_empty() {
+                self.window_update();
+            }
+            return Ok(json!({"binding":binding,"phase":"cleared","cleared":points.len()}));
+        }
+        let id = selection
+            .selected
+            .clone()
+            .filter(|_| !points.is_empty())
+            .ok_or_else(|| refused("points"))?;
+        let mut windows = selection
+            .corrector(self.history.project())
+            .ok_or_else(|| refused("target"))?
+            .windows
+            .clone();
+        let indices: Vec<usize> = points.iter().map(|&i| i as usize).collect();
+        windows
+            .iter_mut()
+            .find(|w| w.id == id)
+            .ok_or_else(|| refused("points"))?
+            .shape
+            .remove_curve_points(&indices)
+            .map_err(|error| topology_refused("delete", &error, ""))?;
+        let op = Movement::op(&selection, &windows);
+        self.apply_worked_out_locked(
+            Kind::Desktop,
+            Some(selection.revision),
+            None,
+            Instant::now(),
+            |_| Ok(vec![op]),
+        )
+        .map_err(|error| match error {
+            WorkedOutError::Input(f) | WorkedOutError::Apply(f) => f,
+        })?;
+        if let Some(current) = self.window.selection.as_mut() {
+            Arc::make_mut(current).chosen = None;
+            self.window_update();
+        }
+        Ok(
+            json!({"binding":binding,"phase":"deleted","selected":id,"points":points,
             "revision":self.history.revision()}),
         )
     }
@@ -542,6 +723,16 @@ impl State {
                 .is_none_or(|shown| !self.window_current(capture, shown))
         {
             return Err(refused("presentation"));
+        }
+        if capture.movement.bands() {
+            capture
+                .movement
+                .extend_band(original.on_picture(input.pointer.window).0);
+            if let Some(selection) = self.window.selection.as_mut() {
+                Arc::make_mut(selection).band = Some(capture.movement.band_rect());
+            }
+            self.window_update();
+            return Ok(());
         }
         let selection = self
             .window
@@ -681,6 +872,12 @@ enum InputKind {
     Up,
     Cancel,
     Delete,
+    /// Esc on a Curve's point selection: clear it.
+    #[serde(rename = "clear_points")]
+    ClearPoints,
+    /// Backspace on a Curve's point selection: delete those anchors.
+    #[serde(rename = "delete_points")]
+    DeletePoints,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -821,7 +1018,14 @@ pub(super) async fn call(
         "window.input" => {
             let asked: InputRequest =
                 rpc::params(method, "{binding,kind,event?,capture?}", params)?;
-            if asked.kind == InputKind::Delete {
+            if matches!(asked.kind, InputKind::ClearPoints | InputKind::DeletePoints) {
+                let mut state = engine.state.lock().await;
+                state.window_points(
+                    connection.id,
+                    asked.binding,
+                    asked.kind == InputKind::DeletePoints,
+                )?
+            } else if asked.kind == InputKind::Delete {
                 let tap = engine
                     .viewer
                     .frames
@@ -1004,6 +1208,9 @@ impl Task {
                     .unwrap_or("freeze");
                 if capture.movement.edited().is_some() && State::window_released(&capture) {
                     state.window_finish_unarmed(capture, reason);
+                } else if capture.movement.bands() && State::window_released(&capture) {
+                    // A released Shift-drag selects even before arming completed.
+                    state.finish_capture(capture, "up");
                 } else {
                     state.close_capture(capture, "refused", reason);
                 }

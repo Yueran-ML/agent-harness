@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useWords } from '../../app/locale';
-import type { GradeNode, Param, PowerWindow, Target, ViewerTool, WindowDeleted, WindowKeys, WindowPoint, WindowSelection, WindowState,
-  WindowTopology } from '../engine';
+import type { GradeNode, Param, PowerWindow, Target, ViewerTool, WindowDeleted, WindowKeys, WindowPoint, WindowPointsDeleted, WindowSelection,
+  WindowState, WindowTopology } from '../engine';
 import type { Messages } from '../../messages/en';
 import { getAt, isKeyed, keyAt } from './corrector';
 import { NumberControl } from './controls';
@@ -14,7 +14,7 @@ import { WindowPresets, type PresetBridge } from './WindowPresets';
 export const circularWindow = (id: string): PowerWindow => ({ id, label: '', enabled: true, invert: false, combine: 'add', opacity: 100,
   transform: { size: 50, aspect: 50, pan: 50, tilt: 50, rotate: 0 }, shape: { kind: 'circular', softness: 1 } });
 
-// Every shape has on-screen controls; Curve multi-point selection is a later step.
+// Every shape has on-screen controls.
 const supported = (_window: PowerWindow) => true;
 
 const rectangle = () => [[-0.25, -0.25], [0.25, -0.25], [0.25, 0.25], [-0.25, 0.25]].map(([x, y]) => ({ x, y }));
@@ -26,8 +26,8 @@ export function windowShape(kind: 'circular' | 'gradient' | 'linear' | 'polygon'
   if (kind === 'polygon') return { kind, points: rectangle(), inside: 0, outside: 0 };
   return { kind, softness: 1 };
 }
-/** A refused whole-animation Polygon point insertion or deletion, explained in the palette. */
-export interface WindowNotice { action: 'insert' | 'delete'; topology: WindowTopology }
+/** A refused whole-animation Polygon/Curve point insertion or deletion (`deleteSelected`: a Curve's selected points), explained in the palette. */
+export interface WindowNotice { action: 'insert' | 'delete' | 'deleteSelected'; topology: WindowTopology }
 type WindowWords = Messages['label']['studio']['colorPage']['windowControls'];
 const fill = (template: string, values: Record<string, string | number>) => template.replace(/\{(\w+)\}/g, (all, name: string) => String(values[name] ?? all));
 /** Points are 1-based for people; the engine reports 0-based indices and the actual key interval.
@@ -36,7 +36,10 @@ export function topologyText(messages: Messages, notice: WindowNotice): string {
   const topology = notice.topology; const words = messages.label.studio.colorPage.windowControls;
   const part = words.topology; const text = messages.hint.studio.colorPage.windowControls.topology;
   if (topology.why === 'maximum') return fill(text.maximum, { most: topology.most });
-  if (topology.why === 'minimum') return fill(topology.shape === 'curve' ? text.minimumCurve : text.minimum, { least: topology.least });
+  if (topology.why === 'minimum') {
+    const curve = notice.action === 'deleteSelected' ? text.minimumCurvePoints : text.minimumCurve;
+    return fill(topology.shape === 'curve' ? curve : text.minimum, { least: topology.least });
+  }
   if (topology.why === 'unsupported') return text.unsupported;
   const frames = topology.frames ? fill(part.frames, { clock: words.clock[topology.clock], from: topology.frames[0], to: topology.frames[1] }) : part.allFrames;
   const [first, second] = topology.points.map(point => point + 1);
@@ -127,8 +130,8 @@ export function useWindows({ bridge = null, session, revision, timeline, target,
     setChoice({ identity: now.current.identity, id: state.selected });
     setReported(state.phase === 'arming' || state.phase === 'armed' ? { identity: now.current.identity, keys: state.keys, id: state.selected } : null);
   }, []);
-  /** A middle-click deletion selects the window whose point it removed, like a native down. */
-  const onDeleted = useCallback((answer: WindowDeleted) => {
+  /** A middle-click or Backspace deletion selects the window whose points it removed, like a native down. */
+  const onDeleted = useCallback((answer: WindowDeleted | WindowPointsDeleted) => {
     setChoice({ identity: now.current.identity, id: answer.selected }); setReported(null);
   }, []);
   const deselected = choice?.identity === identity && choice.deselected === true && unconfirmed === null && windows.some(each => each.enabled);
@@ -169,9 +172,11 @@ function hints(words: WindowWords, keys: WindowKeys): string[] {
   return parts;
 }
 
-export function WindowPalette({ controls, capturing, busy, status, edit, notice = null }: {
+export function WindowPalette({ controls, capturing, busy, status, edit, notice = null, points = 0 }: {
   edit: NodeEdit; controls: ReturnType<typeof useWindows>; capturing: boolean; busy: () => boolean; status: WindowInputStatus;
   notice?: WindowNotice | null;
+  /** How many of the selected Curve's points are Shift-selected in the viewer (RM20 p. 3195). */
+  points?: number;
 }) {
   const messages = useWords(); const words = messages.label.studio.colorPage.windowControls;
   const { selected, keys } = controls;
@@ -198,6 +203,8 @@ export function WindowPalette({ controls, capturing, busy, status, edit, notice 
       <p>{words.editing}: {selected.label || selected.id}</p>
       <p>{hints(words, keys).join(' · ')}</p>
       <p>{words.clock[keys.clock]} · {words.frame} {keys.frame}</p>
+      {points > 0 && selected.shape.kind === 'curve' && <p data-test="window-points">
+        {fill(words.selectedPoints, { count: points })} · {messages.hint.studio.colorPage.windowControls.selectedPoints}</p>}
     </div>}
     {selected && <div className="color-settings" data-test="window-numbers">
       {fields.map(({ field, name, neutral, low, high, perPx }) => <WindowNumber key={`${selected.id}:${field}`} edit={edit} id={selected.id} field={field}

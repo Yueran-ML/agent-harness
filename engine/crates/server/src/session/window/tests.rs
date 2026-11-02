@@ -760,6 +760,8 @@ fn fixture() -> (State, Registry, Arc<Pin>, Arc<FrameSnapshot>) {
         outline: true,
         tool: Tool::Window,
         binding: 1,
+        chosen: None,
+        band: None,
     });
     let mut frame = FrameSnapshot {
         revision: 0,
@@ -2955,4 +2957,653 @@ fn an_unselected_draft_is_selected_by_its_outline_and_nothing_else_draws_while_n
     );
     let (_, _, _, _, begun) = try_curve_selecting(draft, (64, 50), false, 1, None);
     assert_eq!(begun.unwrap_err().data, Some(json!({"reason":"hit"})));
+}
+
+// ---- Curve multi-point selection (T23 step 5, RM20 p. 3195) ----
+
+/// A down at `at` (Shift held or not) on the selected Curve `window` whose anchors `chosen` are
+/// already selected; the down's frame shows that selection.
+#[allow(clippy::type_complexity, reason = "one fixture tuple")]
+fn try_chosen(
+    window: Window,
+    at: (i32, i32),
+    shift: bool,
+    chosen: &[u32],
+) -> (
+    State,
+    Registry,
+    Arc<Pin>,
+    Arc<FrameSnapshot>,
+    Result<Value, Fault>,
+) {
+    try_chosen_wiped(window, at, shift, chosen, None, None)
+}
+
+/// As `try_chosen`, the frame compared through `wipe`, and shown through `map` instead of one
+/// device pixel per canvas pixel.
+#[allow(clippy::type_complexity, reason = "one fixture tuple")]
+fn try_chosen_wiped(
+    window: Window,
+    at: (i32, i32),
+    shift: bool,
+    chosen: &[u32],
+    wipe: Option<columbina_compose::wipe::Wipe>,
+    map: Option<columbina_view::ViewportMap>,
+) -> (
+    State,
+    Registry,
+    Arc<Pin>,
+    Arc<FrameSnapshot>,
+    Result<Value, Fault>,
+) {
+    let (mut state, registry, old_pin, old_frame) = fixture();
+    state.window_end("fixture");
+    let mut frame = (*old_frame).clone();
+    let mut project = (*frame.project).clone();
+    let NodeKind::Corrector(c) = &mut project.timelines[0].tracks[0].clips[0].grade.nodes[0].kind
+    else {
+        panic!()
+    };
+    let count = match &window.shape {
+        WindowShape::Curve { points, .. } => points.len(),
+        _ => 0,
+    };
+    c.windows[0] = window;
+    state.history = History::new(project.clone());
+    frame.project = Arc::new(project);
+    {
+        let selection = Arc::make_mut(state.window.selection.as_mut().unwrap());
+        selection.selected = Some("w1".into());
+        selection.chosen = (!chosen.is_empty()).then(|| Chosen {
+            window: "w1".into(),
+            count,
+            points: chosen.to_vec(),
+        });
+    }
+    let selection = state.window.selection.clone().unwrap();
+    frame.overlay = selection.overlay(&frame, wipe);
+    frame.selection = Some(selection);
+    let frame = Arc::new(frame);
+    let tag = registry
+        .register(Monitor::Timeline, 1, frame.clone())
+        .unwrap();
+    let mut pointer = old_pin.down.pointer;
+    if map.is_some() {
+        pointer.presentation.as_mut().unwrap().map = map;
+    }
+    pointer.window = at;
+    pointer.shift = shift;
+    pointer.presentation.as_mut().unwrap().tag = Some(tag);
+    pointer.presentation.as_mut().unwrap().serial += 1;
+    registry.observe(Monitor::Timeline, 1, pointer.presentation);
+    let event = registry.input(Monitor::Timeline, 7, 1, pointer, Some(frame.clone()));
+    let pin = registry.claim(7, event).unwrap();
+    let begun = state.window_begin(7, 1, pin.clone(), registry.clone());
+    (state, registry, pin, frame, begun)
+}
+
+/// The native left up at `to`, consumed as the task consumes it.
+fn release(
+    state: &mut State,
+    registry: &Registry,
+    pin: &Arc<Pin>,
+    frame: &Arc<FrameSnapshot>,
+    to: (i32, i32),
+) {
+    let mut pointer = pin.down.pointer;
+    pointer.kind = PointerKind::Up;
+    pointer.buttons = 0;
+    pointer.window = to;
+    registry.input(Monitor::Timeline, 7, 1, pointer, Some(frame.clone()));
+    let id = state.window.active.as_ref().unwrap().id;
+    state.window_events(
+        id,
+        registry.events(pin),
+        registry.current(Monitor::Timeline, 1),
+    );
+}
+
+fn chosen_points(state: &State) -> Vec<u32> {
+    state.window.selection.as_ref().unwrap().points().to_vec()
+}
+
+/// The fixture square (device 46..82 x 18..54); anchor 1 also has handles, and its x is keyed
+/// 0.2 at frame 0 to 0.3 at frame 20 (shown .25 at the fixture's frame 10).
+fn chosen_square() -> Window {
+    let mut anchors = curve_square();
+    anchors[1].2 = [0.1, 0.05];
+    anchors[1].1 = [-0.05, 0.0];
+    let mut window = curve_window(&anchors, true);
+    let WindowShape::Curve { points, .. } = &mut window.shape else {
+        panic!()
+    };
+    points[1].position.x = Param::Keys(vec![
+        Key {
+            frame: 0,
+            value: 0.2,
+            interp: Interp::Linear,
+        },
+        Key {
+            frame: 20,
+            value: 0.3,
+            interp: Interp::Linear,
+        },
+    ]);
+    window
+}
+
+fn left_key(param: &Param) -> f64 {
+    match param {
+        Param::Fixed(v) => *v,
+        Param::Keys(keys) => keys[0].value,
+    }
+}
+
+#[test]
+fn a_shift_drag_selects_the_anchors_its_band_encloses_without_history() {
+    // A Shift down anywhere while the Curve is selected is a band, even on its edge.
+    let (state, _, _, _, begun) = try_chosen(chosen_square(), (64, 18), true, &[]);
+    begun.unwrap();
+    assert_eq!(control_of(&state), Control::Band);
+    let (mut state, registry, pin, frame, begun) = try_chosen(chosen_square(), (40, 10), true, &[]);
+    begun.unwrap();
+    arm_capture(&mut state);
+    drag(&mut state, &registry, &pin, &frame, (88, 24));
+    // While it is dragged the band is shown, from the down to the pointer, in canvas pixels.
+    assert_eq!(
+        state.window.selection.as_ref().unwrap().band,
+        Some([40.5, 10.5, 88.5, 24.5])
+    );
+    assert_eq!(
+        chosen_points(&state),
+        Vec::<u32>::new(),
+        "selected only on release"
+    );
+    release(&mut state, &registry, &pin, &frame, (88, 24));
+    assert!(state.window.active.is_none());
+    assert_eq!(chosen_points(&state), [0, 1]);
+    assert_eq!(state.window.selection.as_ref().unwrap().band, None);
+    assert_eq!(state.history.revision(), 0, "pure selection");
+    assert!(!state.history.can_undo());
+    // Esc during a band keeps the previous selection.
+    let (mut state, registry, pin, frame, begun) =
+        try_chosen(chosen_square(), (88, 60), true, &[0, 1]);
+    begun.unwrap();
+    arm_capture(&mut state);
+    drag(&mut state, &registry, &pin, &frame, (40, 40));
+    let capture = state.window.active.take().unwrap();
+    state.window_cancel(7, capture);
+    assert_eq!(chosen_points(&state), [0, 1]);
+    assert_eq!(state.window.selection.as_ref().unwrap().band, None);
+    // Released, a band upwards and leftwards replaces the selection.
+    let (mut state, registry, pin, frame, begun) =
+        try_chosen(chosen_square(), (88, 60), true, &[0, 1]);
+    begun.unwrap();
+    arm_capture(&mut state);
+    release(&mut state, &registry, &pin, &frame, (40, 40));
+    assert_eq!(chosen_points(&state), [2, 3]);
+    // A Shift click released before arming selects the anchor under it (its radius counts).
+    let (mut state, registry, pin, frame, begun) =
+        try_chosen(chosen_square(), (48, 56), true, &[0, 1]);
+    begun.unwrap();
+    let mut pointer = pin.down.pointer;
+    pointer.kind = PointerKind::Up;
+    pointer.buttons = 0;
+    registry.input(Monitor::Timeline, 7, 1, pointer, Some(frame.clone()));
+    let capture = state.window.active.take().unwrap();
+    state.window_finish_unarmed(capture, "up");
+    assert_eq!(chosen_points(&state), [3]);
+    // A band enclosing no anchor clears the selection.
+    let (mut state, registry, pin, frame, begun) =
+        try_chosen(chosen_square(), (60, 30), true, &[0, 1]);
+    begun.unwrap();
+    arm_capture(&mut state);
+    release(&mut state, &registry, &pin, &frame, (70, 40));
+    assert_eq!(chosen_points(&state), Vec::<u32>::new());
+    assert!(state.window.selection.as_ref().unwrap().chosen.is_none());
+    // Not on a pure reference part of a wipe, where no down is taken.
+    let wipe = columbina_compose::wipe::Wipe {
+        position: 0.5,
+        ..Default::default()
+    };
+    let (_, _, _, _, begun) =
+        try_chosen_wiped(chosen_square(), (110, 36), true, &[0, 1], Some(wipe), None);
+    assert_eq!(begun.unwrap_err().data, Some(json!({"reason":"hit"})));
+    let (state, _, _, _, begun) =
+        try_chosen_wiped(chosen_square(), (20, 36), true, &[0, 1], Some(wipe), None);
+    begun.unwrap();
+    assert_eq!(control_of(&state), Control::Band);
+}
+
+#[test]
+fn a_shift_click_takes_an_anchor_within_four_device_pixels_at_any_zoom() {
+    use columbina_view::Viewport;
+    // 800% about anchor 2 (canvas 82, 54): eight device pixels per canvas pixel.
+    let map = Viewport::Scale {
+        scale: 8.0,
+        center: [82.0 / 128.0, 54.0 / 72.0],
+    }
+    .map((128, 72), (128, 72), 0)
+    .unwrap();
+    let anchor = map.to_device((82.0, 54.0));
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "device pixels near the surface"
+    )]
+    let pixel = |dx: f64| ((anchor.0 + dx).floor() as i32, anchor.1.floor() as i32);
+    for (dx, taken) in [(3.0, true), (5.0, false)] {
+        let (mut state, registry, pin, frame, begun) =
+            try_chosen_wiped(chosen_square(), pixel(dx), true, &[], None, Some(map));
+        begun.unwrap();
+        arm_capture(&mut state);
+        release(&mut state, &registry, &pin, &frame, pixel(dx));
+        assert_eq!(
+            chosen_points(&state),
+            if taken { vec![2] } else { vec![] },
+            "{dx} device px"
+        );
+    }
+}
+
+#[test]
+fn the_box_moves_scales_stretches_and_rotates_the_selected_anchors_from_their_left_keys() {
+    // Anchors 0 and 1 (canvas 46, 18 and 82, 18): the box centre is canvas (64, 18).
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-9;
+    // Inside the box (on edge 0, which it covers) moves them; anchor 1's x writes its left key.
+    let (mut state, registry, pin, frame, begun) =
+        try_chosen(chosen_square(), (64, 18), false, &[0, 1]);
+    begun.unwrap();
+    assert_eq!(control_of(&state), Control::BoxMove);
+    arm_capture(&mut state);
+    drag(&mut state, &registry, &pin, &frame, (64, 27));
+    let (points, _) = curve_points(&first_window(&state));
+    assert!(near(fixed(&points[0].position.y), -0.125));
+    assert!(near(fixed(&points[1].position.y), -0.125));
+    assert!(near(left_key(&points[1].position.x), 0.2), "x unchanged");
+    assert_eq!(
+        points[1].out,
+        WindowPoint::new(0.1, 0.05),
+        "handles go with it"
+    );
+    assert_eq!(points[2], curve_points(&chosen_square()).0[2]);
+    state.window_end("up");
+    state.history.undo("desktop").unwrap().unwrap();
+    assert_eq!(first_window(&state), chosen_square(), "one step");
+    // A corner scales them uniformly about the centre; handles by the same factor.
+    let (mut state, registry, pin, frame, begun) =
+        try_chosen(chosen_square(), (89, 25), false, &[0, 1]);
+    begun.unwrap();
+    assert_eq!(control_of(&state), Control::BoxCorner(2));
+    arm_capture(&mut state);
+    drag(&mut state, &registry, &pin, &frame, (114, 33));
+    // The handle follows the pointer along its down offset `u` from the centre: of that offset,
+    // the box's 8 px off its corner (`inset` along `u`) does not scale.
+    let (u, v) = ((25.5_f64, 7.5_f64), (50.5, 15.5));
+    let from = u.0.hypot(u.1);
+    let inset = 8.0 * (u.0 + u.1) / from;
+    let k = 1.0 + ((v.0 * u.0 + v.1 * u.1) / from - from) / (from - inset);
+    let (points, _) = curve_points(&first_window(&state));
+    assert!(near(fixed(&points[0].position.x), -0.25 * k));
+    assert!(near(fixed(&points[0].position.y), -0.25));
+    // Anchor 1 was shown at .25 but its left key is .2: the key moves by the same amount.
+    assert!(near(
+        left_key(&points[1].position.x),
+        0.2 + 0.25 * (k - 1.0)
+    ));
+    assert!(near(fixed(&points[1].out.x), 0.1 * k) && near(fixed(&points[1].out.y), 0.05 * k));
+    assert!(near(fixed(&points[1].into.x), -0.05 * k));
+    assert_eq!(points[3], curve_points(&chosen_square()).0[3], "unselected");
+    // A side stretches them along its axis only.
+    let (mut state, registry, pin, frame, begun) =
+        try_chosen(chosen_square(), (89, 17), false, &[0, 1]);
+    begun.unwrap();
+    assert_eq!(control_of(&state), Control::BoxEdge(1));
+    arm_capture(&mut state);
+    drag(&mut state, &registry, &pin, &frame, (102, 30));
+    let k = (38.5 - 8.0) / (25.5 - 8.0);
+    let (points, _) = curve_points(&first_window(&state));
+    assert!(near(fixed(&points[0].position.x), -0.25 * k));
+    assert!(near(fixed(&points[0].position.y), -0.25));
+    assert!(near(fixed(&points[1].out.x), 0.1 * k) && near(fixed(&points[1].out.y), 0.05));
+    // Just beside a corner rotates them about the centre: a quarter turn, clockwise on screen.
+    let (mut state, registry, pin, frame, begun) =
+        try_chosen(chosen_square(), (96, 4), false, &[0, 1]);
+    begun.unwrap();
+    assert_eq!(control_of(&state), Control::BoxRotate(1));
+    arm_capture(&mut state);
+    drag(&mut state, &registry, &pin, &frame, (77, 50));
+    let (points, _) = curve_points(&first_window(&state));
+    assert!(near(fixed(&points[0].position.x), 0.0));
+    assert!(near(fixed(&points[0].position.y), -0.5));
+    assert!(near(left_key(&points[1].position.x), 0.2 - 0.25));
+    assert!(near(fixed(&points[1].position.y), 0.0));
+    assert!(near(fixed(&points[1].out.x), -0.05) && near(fixed(&points[1].out.y), 0.1));
+    // Esc puts the whole list back, with no step; the point selection stays.
+    let capture = state.window.active.take().unwrap();
+    state.window_cancel(7, capture);
+    assert_eq!(first_window(&state), chosen_square());
+    assert!(!state.history.can_undo());
+    assert_eq!(chosen_points(&state), [0, 1]);
+}
+
+#[test]
+fn backspace_deletes_the_selected_anchors_in_one_step_and_esc_only_deselects_them() {
+    let (mut state, _, _, _, begun) = try_chosen(chosen_square(), (64, 18), false, &[0, 1]);
+    begun.unwrap();
+    // Not during a capture.
+    assert_eq!(
+        state.window_points(7, 1, true).unwrap_err().data,
+        Some(json!({"reason":"capture"}))
+    );
+    state.window_end("up");
+    // Leaving two of four, both removed from the whole animation, as one step.
+    let answer = state.window_points(7, 1, true).unwrap();
+    assert_eq!(
+        (
+            answer["phase"].clone(),
+            answer["points"].clone(),
+            answer["selected"].clone()
+        ),
+        (json!("deleted"), json!([0, 1]), json!("w1"))
+    );
+    let (points, closed) = curve_points(&first_window(&state));
+    assert_eq!(points[..], curve_points(&chosen_square()).0[2..]);
+    assert!(closed);
+    assert_eq!(chosen_points(&state), Vec::<u32>::new());
+    assert_eq!(state.history.revision(), 1);
+    state.history.undo("desktop").unwrap().unwrap();
+    assert_eq!(first_window(&state), chosen_square());
+    // Leaving one of a closed Curve refuses the whole delete and keeps the selection.
+    let (mut state, _, _, _, begun) = try_chosen(chosen_square(), (64, 18), false, &[0, 1, 2]);
+    begun.unwrap();
+    state.window_end("up");
+    let before = state.history.project().clone();
+    assert_eq!(
+        state.window_points(7, 1, true).unwrap_err().data,
+        Some(json!({"reason":"delete","topology":{"why":"minimum","least":2,"shape":"curve"}}))
+    );
+    assert_eq!(state.history.project(), &before);
+    assert_eq!(chosen_points(&state), [0, 1, 2]);
+    // Esc clears the point selection (no step); with none it says so and Backspace is refused.
+    let answer = state.window_points(7, 1, false).unwrap();
+    assert_eq!(answer["cleared"], 3);
+    assert_eq!(chosen_points(&state), Vec::<u32>::new());
+    assert_eq!(state.window_points(7, 1, false).unwrap()["cleared"], 0);
+    assert_eq!(
+        state.window_points(7, 1, true).unwrap_err().data,
+        Some(json!({"reason":"points"}))
+    );
+    assert_eq!(state.history.project(), &before);
+    assert!(!state.history.can_undo());
+    // Another connection's binding cannot.
+    assert_eq!(
+        state.window_points(8, 1, false).unwrap_err().data,
+        Some(json!({"reason":"binding"}))
+    );
+}
+
+#[test]
+fn a_point_selection_outlives_its_drags_and_undo_but_not_another_down_or_anchor_count() {
+    let (mut state, registry, pin, frame, begun) =
+        try_chosen(chosen_square(), (64, 18), false, &[0, 1]);
+    begun.unwrap();
+    arm_capture(&mut state);
+    drag(&mut state, &registry, &pin, &frame, (64, 27));
+    state.window_end("up");
+    assert_eq!(chosen_points(&state), [0, 1], "its own drag keeps it");
+    state.history.undo("desktop").unwrap().unwrap();
+    state.window_project_changed();
+    assert_eq!(chosen_points(&state), [0, 1], "same anchor count");
+    // A middle tap looks through the box to the anchor under it; the changed anchor count
+    // clears the selection.
+    let (mut state, registry, pin, frame, begun) =
+        try_chosen(chosen_square(), (64, 18), false, &[0, 1]);
+    begun.unwrap();
+    state.window_end("up");
+    let tap = middle_tap(&registry, &pin, &frame, (64, 18), false);
+    assert_eq!(
+        state.window_delete(7, 1, &tap).unwrap_err().data,
+        Some(json!({"reason":"hit"})),
+        "an edge under the box is not an anchor"
+    );
+    let tap = middle_tap(&registry, &pin, &frame, (46, 18), false);
+    assert_eq!(state.window_delete(7, 1, &tap).unwrap()["point"], 0);
+    assert_eq!(chosen_points(&state), Vec::<u32>::new());
+    // A plain down outside the box, here on an unselected anchor, clears it and moves that one.
+    let (state, _, _, _, begun) = try_chosen(chosen_square(), (82, 54), false, &[0, 1]);
+    begun.unwrap();
+    assert_eq!(control_of(&state), Control::Point(2));
+    assert_eq!(chosen_points(&state), Vec::<u32>::new());
+    // A down whose frame shows a different point selection is stale evidence.
+    let (mut state, registry, pin, frame, begun) =
+        try_chosen(chosen_square(), (64, 18), false, &[0, 1]);
+    begun.unwrap();
+    state.window_end("up");
+    Arc::make_mut(state.window.selection.as_mut().unwrap()).chosen = None;
+    let event = registry.input(Monitor::Timeline, 7, 1, pin.down.pointer, Some(frame));
+    let old_down = registry.claim(7, event).unwrap();
+    assert_eq!(
+        state
+            .window_begin(7, 1, old_down, registry.clone())
+            .unwrap_err()
+            .data,
+        Some(json!({"reason":"selection"}))
+    );
+}
+
+/// The canvas positions of `window`'s fixed anchors through the down frame's map of `w1` (box
+/// drags change no transform, so that map still places them).
+fn shown_anchors(frame: &FrameSnapshot, window: &Window) -> Vec<[f64; 2]> {
+    let overlay = frame.overlay.as_ref().unwrap();
+    let a = overlay
+        .shapes
+        .iter()
+        .find(|s| s.id == "w1")
+        .unwrap()
+        .to_canvas;
+    curve_points(window)
+        .0
+        .iter()
+        .map(|p| {
+            let (x, y) = (fixed(&p.position.x), fixed(&p.position.y));
+            [a.xx * x + a.xy * y + a.tx, a.yx * x + a.yy * y + a.ty]
+        })
+        .collect()
+}
+
+/// The canvas box `[x0, y0, x1, y1]` of anchors 0 and 1.
+fn first_two_bounds(anchors: &[[f64; 2]]) -> [f64; 4] {
+    let (p, q) = (anchors[0], anchors[1]);
+    [
+        p[0].min(q[0]),
+        p[1].min(q[1]),
+        p[0].max(q[0]),
+        p[1].max(q[1]),
+    ]
+}
+
+/// The native pixel holding a canvas point (one device pixel per canvas pixel).
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "device pixels near the surface"
+)]
+fn pixel(p: [f64; 2]) -> (i32, i32) {
+    (p[0].floor() as i32, p[1].floor() as i32)
+}
+
+/// The fixture square as a Curve widened (Aspect 70) and turned 30 degrees: its local units are
+/// neither square nor upright on the canvas.
+fn turned_square() -> Window {
+    let mut window = curve_window(&curve_square(), true);
+    window.transform.aspect = Param::Fixed(70.0);
+    window.transform.rotate = Param::Fixed(30.0);
+    window
+}
+
+/// The turned square's anchors 0 and 1 on the canvas, their box and its centre.
+fn turned_pair() -> (Vec<[f64; 2]>, [f64; 4], [f64; 2]) {
+    let (_, _, _, frame, _) = try_chosen(turned_square(), (0, 0), false, &[0, 1]);
+    let before = shown_anchors(&frame, &turned_square());
+    let b = first_two_bounds(&before);
+    (before, b, [b[0].midpoint(b[2]), b[1].midpoint(b[3])])
+}
+
+#[test]
+fn box_rotation_is_rigid_on_screen_on_a_widened_turned_curve() {
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-9;
+    let pad = columbina_view::window_overlay::BOX_PAD;
+    // Just beside the box's corner 2 (right, bottom), outside it: a rotation about the centre.
+    let (before, b, c) = turned_pair();
+    let at = pixel([b[2] + pad + 6.0, b[3] + pad + 6.0]);
+    let (mut state, registry, pin, frame, begun) = try_chosen(turned_square(), at, false, &[0, 1]);
+    begun.unwrap();
+    assert_eq!(control_of(&state), Control::BoxRotate(2));
+    arm_capture(&mut state);
+    let to = (70, 68);
+    drag(&mut state, &registry, &pin, &frame, to);
+    let after = shown_anchors(&frame, &first_window(&state));
+    let u = (f64::from(at.0) + 0.5 - c[0], f64::from(at.1) + 0.5 - c[1]);
+    let v = (f64::from(to.0) + 0.5 - c[0], f64::from(to.1) + 0.5 - c[1]);
+    let turn = v.1.atan2(v.0) - u.1.atan2(u.0);
+    let span = |p: &[[f64; 2]]| (p[1][0] - p[0][0], p[1][1] - p[0][1]);
+    let (was, now) = (span(&before), span(&after));
+    // Rigid on screen: the anchors keep their canvas distance and their distance from the
+    // centre, and the line between them turns by the pointer's angle.
+    assert!(
+        near(was.0.hypot(was.1), now.0.hypot(now.1)),
+        "{was:?} {now:?}"
+    );
+    for k in 0..2 {
+        assert!(near(
+            (before[k][0] - c[0]).hypot(before[k][1] - c[1]),
+            (after[k][0] - c[0]).hypot(after[k][1] - c[1])
+        ));
+    }
+    let off = (now.1.atan2(now.0) - was.1.atan2(was.0) - turn).rem_euclid(std::f64::consts::TAU);
+    assert!(near(off, 0.0) || near(off, std::f64::consts::TAU), "{off}");
+    assert_eq!(after[2..], before[2..], "unselected");
+}
+
+#[test]
+fn a_box_side_stretches_one_canvas_axis_on_a_widened_turned_curve() {
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-9;
+    let pad = columbina_view::window_overlay::BOX_PAD;
+    // The right side stretches them along the canvas x axis only, by one factor.
+    let (before, b, c) = turned_pair();
+    let at = pixel([b[2] + pad, c[1]]);
+    let (mut state, registry, pin, frame, begun) = try_chosen(turned_square(), at, false, &[0, 1]);
+    begun.unwrap();
+    assert_eq!(control_of(&state), Control::BoxEdge(1));
+    arm_capture(&mut state);
+    drag(&mut state, &registry, &pin, &frame, (at.0 + 12, at.1 + 5));
+    let after = shown_anchors(&frame, &first_window(&state));
+    let k = (after[0][0] - c[0]) / (before[0][0] - c[0]);
+    assert!(k > 1.0, "{k}");
+    for i in 0..2 {
+        assert!(near(after[i][1], before[i][1]), "canvas y kept: {after:?}");
+        assert!(near(after[i][0] - c[0], k * (before[i][0] - c[0])));
+    }
+}
+
+/// Anchors 0 and 1 three device pixels apart on each axis (canvas 62.5, 16.5 and 65.5, 19.5;
+/// centre 64, 18), 2 and 3 as the fixture square's.
+fn close_pair() -> Window {
+    let local = |x: f64, y: f64| [(x - 64.0) / 72.0, (y - 36.0) / 72.0];
+    curve_window(
+        &[
+            (local(62.5, 16.5), [0.0; 2], [0.0; 2]),
+            (local(65.5, 19.5), [0.0; 2], [0.0; 2]),
+            (local(82.0, 54.0), [0.0; 2], [0.0; 2]),
+            (local(46.0, 54.0), [0.0; 2], [0.0; 2]),
+        ],
+        true,
+    )
+}
+
+#[test]
+fn a_box_handle_stays_under_the_pointer_however_close_the_selected_anchors() {
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-9;
+    let pad = columbina_view::window_overlay::BOX_PAD;
+    // The right side's handle is at canvas (64 + 1.5 + 8, 18): native pixel (73, 17) holds it.
+    let (mut state, registry, pin, frame, begun) =
+        try_chosen(close_pair(), (73, 17), false, &[0, 1]);
+    begun.unwrap();
+    assert_eq!(control_of(&state), Control::BoxEdge(1));
+    arm_capture(&mut state);
+    drag(&mut state, &registry, &pin, &frame, (93, 17));
+    let b = first_two_bounds(&shown_anchors(&frame, &first_window(&state)));
+    assert!(
+        near(b[2] + pad, 93.5),
+        "side at {} for the pointer at 93.5",
+        b[2] + pad
+    );
+    assert!(near(b[1], 16.5) && near(b[3], 19.5), "y kept");
+    // The corner 2 handle, at canvas (73.5, 27.5), dragged three times as far from the centre.
+    let (mut state, registry, pin, frame, begun) =
+        try_chosen(close_pair(), (73, 27), false, &[0, 1]);
+    begun.unwrap();
+    assert_eq!(control_of(&state), Control::BoxCorner(2));
+    arm_capture(&mut state);
+    drag(&mut state, &registry, &pin, &frame, (92, 46));
+    let b = first_two_bounds(&shown_anchors(&frame, &first_window(&state)));
+    assert!(
+        near(b[2] + pad, 92.5) && near(b[3] + pad, 46.5),
+        "corner at {:?} for the pointer at (92.5, 46.5)",
+        (b[2] + pad, b[3] + pad)
+    );
+}
+
+#[test]
+fn a_project_change_that_drops_the_point_selection_tells_its_owner() {
+    let (mut state, _, _, _, begun) = try_chosen(chosen_square(), (64, 18), false, &[0, 1]);
+    begun.unwrap();
+    state.window_end("up");
+    let binding = state.window.selection.as_ref().unwrap().binding;
+    let (mut owner, _) = binding_peer(&mut state, 7);
+    let (mut observer, _) = binding_peer(&mut state, 8);
+    // A change keeping the Curve's anchor count keeps the selection and says nothing.
+    state
+        .apply_worked_out_locked(Kind::Agent, None, None, Instant::now(), |_| {
+            Ok(vec![
+                json!({"op":"set_track","timeline":"t1","id":"V1","name":"still valid"}),
+            ])
+        })
+        .unwrap();
+    assert_eq!(chosen_points(&state), [0, 1]);
+    assert_eq!(window_notifications(&mut owner), Vec::<Value>::new());
+    // One changing it (another client's edit here; an undo or redo alike) drops the selection
+    // and tells its owner, so that the desktop's count follows.
+    let selection = state.window.selection.clone().unwrap();
+    let mut windows = selection
+        .corrector(state.history.project())
+        .unwrap()
+        .windows
+        .clone();
+    let WindowShape::Curve { points, .. } = &mut windows[0].shape else {
+        panic!()
+    };
+    points.pop();
+    let op = Movement::op(&selection, &windows);
+    state
+        .apply_worked_out_locked(Kind::Agent, None, None, Instant::now(), |_| Ok(vec![op]))
+        .unwrap();
+    assert_eq!(chosen_points(&state), Vec::<u32>::new());
+    let notes = window_notifications(&mut owner);
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert_eq!(notes[0]["method"], "window.points");
+    assert_eq!(
+        notes[0]["params"],
+        json!({"binding":binding,"sequence":state.window.sequence,
+            "revision":state.history.revision(),"selected_points":[]})
+    );
+    // With none selected, later changes say nothing; nobody else is told.
+    state
+        .apply_worked_out_locked(Kind::Agent, None, None, Instant::now(), |_| {
+            Ok(vec![
+                json!({"op":"set_track","timeline":"t1","id":"V1","name":"again"}),
+            ])
+        })
+        .unwrap();
+    assert_eq!(window_notifications(&mut owner), Vec::<Value>::new());
+    assert_eq!(window_notifications(&mut observer), Vec::<Value>::new());
 }

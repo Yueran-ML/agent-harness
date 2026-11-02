@@ -73,7 +73,7 @@ impl FrameSnapshot {
             "ready": self.ready,
             "editable": self.editable(),
             "comparison": self.comparison["mode"],
-            "window": self.selection.as_ref().zip(self.overlay.as_ref()).map(|(s,_)| json!({"binding":s.binding,"selected":s.selected})),
+            "window": self.selection.as_ref().zip(self.overlay.as_ref()).map(|(s,_)| json!({"binding":s.binding,"selected":s.selected,"points":s.points()})),
         })
     }
 }

@@ -9,7 +9,8 @@ use columbina_model::grade::{
 };
 use columbina_model::{Project, Timeline};
 use columbina_view::window_overlay::{
-    Affine, Bezier, Control, Shape, ShapeKind, Style, WindowOverlay, AXES, CORNERS, SOFT_NORMAL,
+    Affine, Bezier, Control, Shape, ShapeKind, Style, WindowOverlay, AXES, BOX_PAD, CORNERS,
+    SOFT_NORMAL,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -33,6 +34,22 @@ pub struct Selection {
     pub tool: Tool,
     #[serde(skip)]
     pub binding: u64,
+    /// The selected Curve's selected anchors (RM20 p. 3195). Pure selection: neither part of the
+    /// project nor of its history, and never sent by a client.
+    #[serde(skip)]
+    pub chosen: Option<Chosen>,
+    /// A Shift-drag's band `[x0, y0, x1, y1]` in canvas pixels while it selects.
+    #[serde(skip)]
+    pub band: Option<[f64; 4]>,
+}
+
+/// Anchors selected on one Curve, kept while that Curve keeps `count` anchors.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Chosen {
+    pub window: String,
+    pub count: usize,
+    /// Ascending anchor indices, at least one.
+    pub points: Vec<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -98,6 +115,15 @@ pub struct Modifiers {
 }
 
 impl Selection {
+    /// The selected anchors of the selected window, if it has any.
+    #[must_use]
+    pub fn points(&self) -> &[u32] {
+        self.chosen
+            .as_ref()
+            .filter(|c| self.selected.as_ref() == Some(&c.window))
+            .map_or(&[], |c| c.points.as_slice())
+    }
+
     pub fn timeline<'a>(&self, project: &'a Project) -> Option<&'a Timeline> {
         project.timelines.iter().find(|t| t.id == self.timeline)
     }
@@ -234,6 +260,8 @@ impl Selection {
             selected: self.selected.clone(),
             style: Style::default(),
             coverage,
+            points: self.points().to_vec(),
+            band: self.band,
         }))
     }
 }
@@ -616,6 +644,18 @@ enum CurveDrag {
     },
 }
 
+/// Device pixels about a band within which an anchor's centre counts as enclosed (an anchor's
+/// radius), so that a Shift click on one anchor selects it. A project choice.
+const BAND_REACH: f64 = 4.0;
+
+/// A drag of the box about two or more selected Curve anchors (RM20 p. 3195), from what was
+/// displayed at down: the box centre in canvas pixels, about which it scales, stretches and
+/// rotates, and per selected anchor its index, local position and `[in, out]` handles.
+struct Multi {
+    centre: (f64, f64),
+    anchors: Vec<(usize, [f64; 2], [[f64; 2]; 2])>,
+}
+
 pub struct Movement {
     /// The complete list at down, restored by Esc.
     pub original: Vec<Window>,
@@ -631,6 +671,11 @@ pub struct Movement {
     index: usize,
     keys: Vec<(Field, LeftKey)>,
     bezier: Option<CurveDrag>,
+    multi: Option<Multi>,
+    /// A Shift-drag's band: every anchor's canvas position as displayed at down.
+    band: Option<Vec<(u32, (f64, f64))>>,
+    /// Where a band reaches, in canvas pixels: the last position it was given.
+    band_to: (f64, f64),
     pub control: Control,
     down: (f64, f64),
     canvas_down: (f64, f64),
@@ -828,6 +873,8 @@ impl Movement {
         let mut edited = false;
         let mut inserted = None;
         let mut bezier = None;
+        let mut multi = None;
+        let mut band = None;
         let mut normal = [0.0; 2];
         let fields: Vec<Field> = match control {
             Control::Move => vec![Field::Pan, Field::Tilt],
@@ -916,6 +963,68 @@ impl Movement {
                 vec![]
             }
             Control::Append if curve.is_some_and(|(_, closed)| !closed) => vec![],
+            // A Shift-drag selects the anchors its band encloses; it writes nothing.
+            Control::Band if curve.is_some() => {
+                let a = view.to_canvas;
+                band = Some(
+                    view.points
+                        .iter()
+                        .zip(0..)
+                        .map(|(p, i)| {
+                            (
+                                i,
+                                (
+                                    a.xx * p[0] + a.xy * p[1] + a.tx,
+                                    a.yx * p[0] + a.yy * p[1] + a.ty,
+                                ),
+                            )
+                        })
+                        .collect(),
+                );
+                vec![]
+            }
+            // The box about the selected anchors: moving writes their positions; scaling,
+            // stretching and rotating also turn their handles by the linear part.
+            Control::BoxMove
+            | Control::BoxCorner(_)
+            | Control::BoxEdge(_)
+            | Control::BoxRotate(_)
+                if curve.is_some() && selection.selected.as_deref() == Some(id) =>
+            {
+                let chosen: Vec<u32> = selection
+                    .points()
+                    .iter()
+                    .copied()
+                    .filter(|&i| (i as usize) < n)
+                    .collect();
+                let bounds = view.anchor_bounds(&chosen).filter(|_| chosen.len() >= 2)?;
+                let handles = &view.curve.as_ref()?.handles;
+                multi = Some(Multi {
+                    centre: (bounds[0].midpoint(bounds[2]), bounds[1].midpoint(bounds[3])),
+                    anchors: chosen
+                        .iter()
+                        .map(|&i| (i as usize, view.points[i as usize], handles[i as usize]))
+                        .collect(),
+                });
+                chosen
+                    .iter()
+                    .flat_map(|&i| {
+                        let i = i as usize;
+                        if control == Control::BoxMove {
+                            vec![Field::X(i), Field::Y(i)]
+                        } else {
+                            vec![
+                                Field::X(i),
+                                Field::Y(i),
+                                Field::InX(i),
+                                Field::InY(i),
+                                Field::OutX(i),
+                                Field::OutY(i),
+                            ]
+                        }
+                    })
+                    .collect()
+            }
             _ => return None,
         };
         let aspect = f64::from(picture.0) / f64::from(picture.1);
@@ -991,6 +1100,9 @@ impl Movement {
             index,
             keys,
             bezier,
+            multi,
+            band,
+            band_to: canvas,
             control,
             down,
             canvas_down: canvas,
@@ -1057,6 +1169,141 @@ impl Movement {
             }
         }
     }
+    /// How a box corner, side or rotation drag changes each captured field, in `keys` order: the
+    /// canvas map about the box centre, conjugated to local units, applied in full to the
+    /// displayed anchors and by its linear part to their relative handles.
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "the canvas map and the vectors from the centre in plane notation"
+    )]
+    fn multi_deltas(&self, canvas: (f64, f64)) -> Option<Vec<f64>> {
+        let multi = self.multi.as_ref()?;
+        let c = multi.centre;
+        let u = (self.canvas_down.0 - c.0, self.canvas_down.1 - c.1);
+        let v = (canvas.0 - c.0, canvas.1 - c.1);
+        // In device pixels, where the box stands `BOX_PAD` off the anchors: that part of the
+        // down offset does not scale, so the handle stays under the pointer. A down offset
+        // reaching less than one device pixel past the pad scales as if it reached one.
+        let (ud, vd) = (
+            (u.0 * self.device[0], u.1 * self.device[1]),
+            (v.0 * self.device[0], v.1 * self.device[1]),
+        );
+        let share =
+            |from: f64, to: f64, inset: f64| (1.0 + (to - from) / (from - inset).max(1.0)).max(0.0);
+        // [a, b, c, d]: x' = a x + b y, y' = c x + d y about the centre, in canvas pixels.
+        let a = match self.control {
+            // Uniform: the pointer's progress along its down offset.
+            Control::BoxCorner(corner) => {
+                let from = ud.0.hypot(ud.1);
+                let k = if from > 1e-9 {
+                    let sign = CORNERS[usize::from(corner) % 4];
+                    share(
+                        from,
+                        (vd.0 * ud.0 + vd.1 * ud.1) / from,
+                        BOX_PAD * (sign[0] * ud.0 + sign[1] * ud.1) / from,
+                    )
+                } else {
+                    1.0
+                };
+                [k, 0.0, 0.0, k]
+            }
+            Control::BoxEdge(side) => {
+                let axis = AXES[usize::from(side) % 4];
+                let k = share(
+                    ud.0 * axis[0] + ud.1 * axis[1],
+                    vd.0 * axis[0] + vd.1 * axis[1],
+                    BOX_PAD,
+                );
+                if side < 2 {
+                    [k, 0.0, 0.0, 1.0]
+                } else {
+                    [1.0, 0.0, 0.0, k]
+                }
+            }
+            Control::BoxRotate(_) => {
+                let turn = if u.0.hypot(u.1) > 1e-9 && v.0.hypot(v.1) > 1e-9 {
+                    v.1.atan2(v.0) - u.1.atan2(u.0)
+                } else {
+                    0.0
+                };
+                let (sin, cos) = turn.sin_cos();
+                [cos, -sin, sin, cos]
+            }
+            _ => return None,
+        };
+        let place = compose(self.placement, self.transform);
+        let linear = Affine {
+            tx: 0.0,
+            ty: 0.0,
+            ..place
+        };
+        let map = |p: (f64, f64)| (a[0] * p.0 + a[1] * p.1, a[2] * p.0 + a[3] * p.1);
+        let mut out = Vec::with_capacity(self.keys.len());
+        for &(_, p, handles) in &multi.anchors {
+            let at = (
+                place.xx * p[0] + place.xy * p[1] + place.tx,
+                place.yx * p[0] + place.yy * p[1] + place.ty,
+            );
+            let moved = map((at.0 - c.0, at.1 - c.1));
+            let q = unplace(place, (c.0 + moved.0, c.1 + moved.1))?;
+            out.extend([q.0 - p[0], q.1 - p[1]]);
+            for h in handles {
+                let vector = (
+                    linear.xx * h[0] + linear.xy * h[1],
+                    linear.yx * h[0] + linear.yy * h[1],
+                );
+                let turned = unplace(linear, map(vector))?;
+                out.extend([turned.0 - h[0], turned.1 - h[1]]);
+            }
+        }
+        Some(out)
+    }
+
+    /// Whether this capture is a Shift-drag selecting anchors.
+    #[must_use]
+    pub fn bands(&self) -> bool {
+        self.band.is_some()
+    }
+
+    /// Extend the band to a canvas position.
+    pub fn extend_band(&mut self, canvas: (f64, f64)) {
+        self.band_to = canvas;
+    }
+
+    /// The band from the down to where it was last extended, `[x0, y0, x1, y1]` in canvas
+    /// pixels.
+    #[must_use]
+    pub fn band_rect(&self) -> [f64; 4] {
+        let (a, b) = (self.canvas_down, self.band_to);
+        [a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1)]
+    }
+
+    /// The anchors the band encloses, within an anchor's radius on screen, ascending.
+    #[must_use]
+    pub fn band_points(&self) -> Vec<u32> {
+        let r = self.band_rect();
+        let grow = [BAND_REACH / self.device[0], BAND_REACH / self.device[1]];
+        self.band.as_ref().map_or_else(Vec::new, |anchors| {
+            anchors
+                .iter()
+                .filter(|(_, q)| {
+                    (r[0] - grow[0]..=r[2] + grow[0]).contains(&q.0)
+                        && (r[1] - grow[1]..=r[3] + grow[1]).contains(&q.1)
+                })
+                .map(|&(i, _)| i)
+                .collect()
+        })
+    }
+
+    /// The selected Curve's anchor count at down.
+    #[must_use]
+    pub fn anchors(&self) -> usize {
+        match &self.original[self.index].shape {
+            WindowShape::Curve { points, .. } => points.len(),
+            _ => 0,
+        }
+    }
+
     pub fn at_rotation(&self, canvas: (f64, f64), rotation: Option<f64>) -> Option<Vec<Window>> {
         let picture = unplace(self.placement, canvas)?;
         let local = unplace(self.transform, picture)?;
@@ -1070,7 +1317,12 @@ impl Movement {
             | Control::HandleIn(_)
             | Control::HandleOut(_)
             | Control::Close
-            | Control::Append => 0.0,
+            | Control::Append
+            | Control::Band
+            | Control::BoxMove
+            | Control::BoxCorner(_)
+            | Control::BoxEdge(_)
+            | Control::BoxRotate(_) => 0.0,
             Control::EdgeSoftness(_) => {
                 400.0 * (delta[0] * self.normal[0] + delta[1] * self.normal[1])
             }
@@ -1111,10 +1363,17 @@ impl Movement {
             }
         };
         let targets = self.bezier_targets(canvas, delta);
+        let deltas = match self.control {
+            Control::BoxCorner(_) | Control::BoxEdge(_) | Control::BoxRotate(_) => {
+                Some(self.multi_deltas(canvas)?)
+            }
+            _ => None,
+        };
         let mut windows = self.base.clone();
-        for (&(field, key), target) in self.keys.iter().zip(targets) {
+        for (k, (&(field, key), target)) in self.keys.iter().zip(targets).enumerate() {
             let amount = match (target, field) {
                 (Some(target), _) => target - key.value,
+                _ if deltas.is_some() => deltas.as_ref().map_or(0.0, |d| d[k]),
                 (None, Field::Pan) => 100.0 * (picture.0 - self.down.0),
                 (None, Field::Tilt) => -100.0 * (picture.1 - self.down.1),
                 (None, Field::X(_)) => delta[0],

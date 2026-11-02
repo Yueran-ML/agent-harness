@@ -912,8 +912,16 @@ export interface WindowDeleted { binding: number; phase: 'deleted'; selected: st
 export interface WindowState {
   binding: number; capture: number; sequence: number; phase: 'arming' | 'armed' | 'refused' | 'ended';
   reason: string | null; selected: string; event: number; revision: number; keys: WindowKeys;
+  /** The selected Curve's Shift-selected anchors (0-based) as this state is sent; empty for other shapes. */
+  selected_points: number[];
 }
+/** The answer of `window.input` with `kind: "delete_points"` (Backspace on a Curve's selected points). */
+export interface WindowPointsDeleted { binding: number; phase: 'deleted'; selected: string; points: number[]; revision: number }
+/** The answer of `window.input` with `kind: "clear_points"` (Esc): how many points it deselected. */
+export interface WindowPointsCleared { binding: number; phase: 'cleared'; cleared: number }
 export interface WindowUnbound { binding: number; sequence: number; revision: number; reason: 'project_changed' }
+/** `window.points`: a project change (undo, redo, another client's edit) dropped the selected Curve's point selection. */
+export interface WindowPointsDropped { binding: number; sequence: number; revision: number; selected_points: [] }
 export interface WindowSelection {
   monitor: 'timeline'; revision: number; timeline: string; target: Target; clip?: string;
   node: string; selected: string | null; visible: boolean; outline: boolean; tool: ViewerTool;

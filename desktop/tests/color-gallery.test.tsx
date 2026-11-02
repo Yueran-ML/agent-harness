@@ -172,7 +172,7 @@ async function mountGallery(project: Project = projectWith(), { albums = startin
       case 'window.bind': return ok({ binding: ++binding, sequence: ++sequence });
       case 'window.unbind': return ok({ binding: params!.binding, phase: 'ended' });
       case 'window.input': return ok({ binding: params!.binding, capture: 1, sequence: ++sequence, phase: params!.kind === 'up' || params!.kind === 'cancel' ? 'ended' : 'arming',
-        reason: null, selected: 'w2', event: params!.event ?? 20, revision: 0, keys: { pan: 0, tilt: 3, clock: 'source', frame: 10 } });
+        reason: null, selected: 'w2', event: params!.event ?? 20, revision: 0, keys: { pan: 0, tilt: 3, clock: 'source', frame: 10 }, selected_points: [] });
       case 'view.pointer': return ok({ monitor: 'timeline', on: params!.on, cursor: params!.cursor ?? null });
       case 'view.viewport': {
         if (params!.operation === 'zoom') viewport = { mode: 'scale', scale: 1.027, center: { x: 0.4, y: 0.6 } };

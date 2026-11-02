@@ -29,6 +29,8 @@ fn overlay() -> WindowOverlay {
         selected: Some("w1".into()),
         style: Style::default(),
         coverage: None,
+        points: vec![],
+        band: None,
     }
 }
 
@@ -701,6 +703,8 @@ fn window_overlay_128_point_selected_polygon_timing() {
             selected: Some("p".into()),
             style: Style::default(),
             coverage: None,
+            points: vec![],
+            band: None,
         };
         let built = std::time::Instant::now();
         let primitives = osc.primitives(&osc.shapes[0], map).len();
@@ -853,6 +857,83 @@ fn window_overlay_curve_controls_and_guides_match_cpu_geometry_through_wipes() {
     }
 }
 
+#[test]
+fn window_overlay_selected_points_box_and_band_match_cpu_and_only_box_handles_hit() {
+    let Some(gpu) = gpu() else { return };
+    let size = (120, 80);
+    let frame = source(&gpu);
+    let map = Viewport::Fit.map(size, size, 0).unwrap();
+    let mut painter = Painter::new(&gpu.device, &gpu.queue, wgpu::TextureFormat::Bgra8Unorm);
+    painter.use_texture(&frame).unwrap();
+    let overlay_painter = OverlayPainter::new(&gpu.device, wgpu::TextureFormat::Bgra8Unorm);
+    let mut osc = overlay();
+    // Five anchors on a circle of radius .3 about device (60.5, 40.5), 80 device px per unit.
+    osc.shapes = vec![round_curve(
+        "c",
+        5,
+        0.3,
+        true,
+        Affine {
+            xx: 80.0,
+            xy: 0.0,
+            yx: 0.0,
+            yy: 80.0,
+            tx: 60.5,
+            ty: 40.5,
+        },
+    )]
+    .into();
+    osc.selected = Some("c".into());
+    osc.points = vec![0, 1];
+    osc.band = Some([5.0, 5.0, 30.0, 20.0]);
+    let base = draw_using(&gpu, size, |v| painter.draw_mapped(v, size, 0, Some(map)));
+    let drawn = draw_using(&gpu, size, |target| {
+        painter.draw_mapped_with(target, size, 0, Some(map), |encoder| {
+            overlay_painter.encode(&gpu.device, encoder, target, &osc, map, Output::Sdr);
+        })
+    });
+    let at = |x: usize, y: usize| drawn[y * 120 + x];
+    let near =
+        |pixel: [u8; 3], want: [u8; 3]| pixel.iter().zip(want).all(|(&c, w)| c.abs_diff(w) <= 1);
+    // Anchor 0 (device 84.5, 40.5) is amber; anchor 2 is white; a box corner handle is blue.
+    assert!(near(at(84, 40), [255, 179, 26]), "{:?}", at(84, 40));
+    let (sin, cos) = (std::f64::consts::TAU * 2.0 / 5.0).sin_cos();
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let two = ((60.5 + 24.0 * cos) as usize, (40.5 + 24.0 * sin) as usize);
+    assert!(
+        near(at(two.0, two.1), [255, 255, 255]),
+        "{:?}",
+        at(two.0, two.1)
+    );
+    // Anchors 0 and 1 span device x 67.9..84.5, y 40.5..63.3: the box corner 0 is 8 px off.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let corner = (
+        (60.5 + 24.0 * (std::f64::consts::TAU / 5.0).cos() - 8.0) as usize,
+        32,
+    );
+    assert!(
+        near(at(corner.0, corner.1), [38, 115, 255]),
+        "{:?}",
+        at(corner.0, corner.1)
+    );
+    let mut banded = 0;
+    for (i, pixel) in drawn.iter().enumerate() {
+        #[allow(clippy::cast_precision_loss)]
+        let point = [(i % 120) as f32 + 0.5, (i / 120) as f32 + 0.5];
+        let wanted = cpu_pixel(&osc, map, point, base[i].map(f32::from));
+        assert!(
+            (0..3).all(|ch| (f32::from(pixel[ch]) - wanted[ch]).abs() < 2.1),
+            "{point:?} {pixel:?} {wanted:?}"
+        );
+        // The band is display only (the Curve and its margin start right of x = 32).
+        if point[0] < 31.0 && osc.outline(map, point).is_some() {
+            banded += 1;
+            assert_eq!(osc.hit(map, point), None, "{point:?}");
+        }
+    }
+    assert!(banded > 60, "{banded}");
+}
+
 /// Encode and GPU time per frame of a selected closed 128-anchor Curve with Bezier handles and
 /// softness guides, at 1080p and 4K, measured like the 128-point Polygon above.
 #[test]
@@ -883,6 +964,8 @@ fn window_overlay_128_point_selected_curve_timing() {
             selected: Some("c".into()),
             style: Style::default(),
             coverage: None,
+            points: vec![],
+            band: None,
         };
         let built = std::time::Instant::now();
         let primitives = osc.primitives(&osc.shapes[0], map).len();

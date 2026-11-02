@@ -83,6 +83,17 @@ pub enum Control {
     HandleOut(u32),
     Close,
     Append,
+    /// A Shift down on the selected Curve: a band that selects the anchors it encloses (RM20
+    /// p. 3195). The server chooses it from the down's Shift; no primitive hits it.
+    Band,
+    /// Within the box about two or more selected Curve anchors: moves them.
+    BoxMove,
+    /// A selection box corner (`CORNERS` order): scales the selected anchors uniformly.
+    BoxCorner(u8),
+    /// A selection box side handle (`AXES` order): stretches them along that axis.
+    BoxEdge(u8),
+    /// Just beside a selection box corner, outside the box: rotates them.
+    BoxRotate(u8),
 }
 
 /// Where a Linear side's softness handle sits along its side, as a share from its first point.
@@ -125,6 +136,11 @@ pub struct WindowOverlay {
     pub selected: Option<String>,
     pub style: Style,
     pub coverage: Option<Wipe>,
+    /// The selected Curve's selected anchors (RM20 p. 3195), drawn highlighted; two or more
+    /// also get a box whose handles move, scale, stretch and rotate them.
+    pub points: Vec<u32>,
+    /// A Shift-drag's band `[x0, y0, x1, y1]` in canvas pixels, drawn while it selects.
+    pub band: Option<[f64; 4]>,
 }
 
 impl WindowOverlay {
@@ -137,12 +153,38 @@ impl WindowOverlay {
 
     #[must_use]
     pub fn hit_control(&self, map: ViewportMap, device: [f32; 2]) -> Option<Hit<'_>> {
+        self.hit_with(map, device, true)
+    }
+
+    /// Whether a down at this device pixel centre is on the current-A picture this overlay
+    /// takes downs on (no pure reference sample), whatever it hits there: where a Shift band
+    /// may start.
+    #[must_use]
+    pub fn takes(&self, map: ViewportMap, device: [f32; 2]) -> bool {
+        self.visible(map, device)
+    }
+
+    /// As [`WindowOverlay::hit_control`] without the selection box, which a middle-click
+    /// deletion looks through to the anchor under it.
+    #[must_use]
+    pub fn hit_point(&self, map: ViewportMap, device: [f32; 2]) -> Option<Hit<'_>> {
+        self.hit_with(map, device, false)
+    }
+
+    fn hit_with(&self, map: ViewportMap, device: [f32; 2], boxed: bool) -> Option<Hit<'_>> {
         if !self.visible(map, device) {
             return None;
         }
         for shape in self.ordered().rev() {
             if !shape.drawable(map) {
                 continue;
+            }
+            // The box about selected anchors ranks above all of the selected Curve's controls.
+            if let Some(control) = boxed.then(|| self.box_hit(shape, map, device)).flatten() {
+                return Some(Hit {
+                    id: &shape.id,
+                    control,
+                });
             }
             // Softness guides are display only: they are not even made for a hit.
             let primitives = shape.layers(
@@ -209,11 +251,12 @@ impl WindowOverlay {
     /// Only the selected window carries controls; the others are a grey outline whose body
     /// and stroke still select or move them, as before any window had controls.
     pub(crate) fn primitives(&self, shape: &Shape, map: ViewportMap) -> Vec<Primitive> {
-        shape.primitives(
-            map,
-            self.style,
-            self.selected.as_deref() == Some(shape.id.as_str()),
-        )
+        let selected = self.selected.as_deref() == Some(shape.id.as_str());
+        let mut out = shape.primitives(map, self.style, selected);
+        if selected {
+            self.selection_primitives(shape, map, &mut out);
+        }
+        out
     }
 
     pub(crate) fn ordered(&self) -> impl DoubleEndedIterator<Item = &Shape> {
@@ -1315,6 +1358,190 @@ impl Shape {
     }
 }
 
+/// Device pixels the box about selected Curve anchors stands off them, so that its handles stay
+/// apart from the anchors at its extremes. A project choice.
+pub const BOX_PAD: f64 = 8.0;
+/// Device pixels from a selection box corner within which a down outside the box rotates the
+/// selected anchors (RM20 p. 3195: "move the pointer to one of the corners until the rotate cursor
+/// appears"). A project choice.
+const BOX_ROTATE: f64 = 14.0;
+/// Selected anchors are amber; the selection box's handles are blue like the transform handles.
+const CHOSEN_COLOUR: [f32; 3] = [1.0, 0.7, 0.1];
+const BOX_COLOUR: [f32; 3] = [0.15, 0.45, 1.0];
+
+/// A canvas point in f64 device pixels.
+fn canvas_device(map: ViewportMap, p: [f64; 2]) -> [f64; 2] {
+    [
+        f64::from(map.dest[0]) + p[0] * f64::from(map.dest[2]) / f64::from(map.picture.0),
+        f64::from(map.dest[1]) + p[1] * f64::from(map.dest[3]) / f64::from(map.picture.1),
+    ]
+}
+
+impl Shape {
+    /// The canvas box `[x0, y0, x1, y1]` of a Curve's anchors `points` as displayed (missing
+    /// ones skipped); none without any. Its centre is where a selection scales and rotates.
+    #[must_use]
+    pub fn anchor_bounds(&self, points: &[u32]) -> Option<[f64; 4]> {
+        if self.kind != ShapeKind::Curve {
+            return None;
+        }
+        let a = self.to_canvas;
+        let mut bounds: Option<[f64; 4]> = None;
+        for &i in points {
+            let Some(&p) = self.points.get(i as usize) else {
+                continue;
+            };
+            let q = [
+                a.xx * p[0] + a.xy * p[1] + a.tx,
+                a.yx * p[0] + a.yy * p[1] + a.ty,
+            ];
+            bounds = Some(bounds.map_or([q[0], q[1], q[0], q[1]], |b| {
+                [
+                    b[0].min(q[0]),
+                    b[1].min(q[1]),
+                    b[2].max(q[0]),
+                    b[3].max(q[1]),
+                ]
+            }));
+        }
+        bounds.filter(|b| b.iter().all(|v| v.is_finite()))
+    }
+}
+
+impl WindowOverlay {
+    /// The selected anchors of `shape` that exist, when it is the selected Curve.
+    fn chosen(&self, shape: &Shape) -> Vec<u32> {
+        if self.selected.as_deref() != Some(shape.id.as_str()) || shape.kind != ShapeKind::Curve {
+            return vec![];
+        }
+        self.points
+            .iter()
+            .copied()
+            .filter(|&i| (i as usize) < shape.points.len())
+            .collect()
+    }
+
+    /// The device box `BOX_PAD` about two or more selected anchors.
+    fn selection_box(&self, shape: &Shape, map: ViewportMap) -> Option<[f64; 4]> {
+        let chosen = self.chosen(shape);
+        if chosen.len() < 2 {
+            return None;
+        }
+        let b = shape.anchor_bounds(&chosen)?;
+        let (low, high) = (
+            canvas_device(map, [b[0], b[1]]),
+            canvas_device(map, [b[2], b[3]]),
+        );
+        let d = [
+            low[0] - BOX_PAD,
+            low[1] - BOX_PAD,
+            high[0] + BOX_PAD,
+            high[1] + BOX_PAD,
+        ];
+        d.iter().all(|v| v.is_finite()).then_some(d)
+    }
+
+    /// The box's corner `k` and the middle of its side `k`, in device pixels.
+    fn box_points(b: [f64; 4]) -> ([[f64; 2]; 4], [[f64; 2]; 4]) {
+        let centre = [b[0].midpoint(b[2]), b[1].midpoint(b[3])];
+        let half = [(b[2] - b[0]) / 2.0, (b[3] - b[1]) / 2.0];
+        let at = |d: [f64; 2]| [centre[0] + d[0] * half[0], centre[1] + d[1] * half[1]];
+        (CORNERS.map(at), AXES.map(at))
+    }
+
+    /// The selection box's blue corner and side handles.
+    #[allow(clippy::cast_possible_truncation, reason = "four corners and sides")]
+    fn box_handles(&self, shape: &Shape, map: ViewportMap) -> Vec<Primitive> {
+        let Some(b) = self.selection_box(shape, map) else {
+            return vec![];
+        };
+        let (corners, sides) = Self::box_points(b);
+        let mut out = vec![];
+        for (k, &corner) in corners.iter().enumerate() {
+            out.extend(Shape::disk(
+                map,
+                corner,
+                BOX_COLOUR,
+                Control::BoxCorner(k as u8),
+            ));
+        }
+        for (k, &side) in sides.iter().enumerate() {
+            out.extend(Shape::disk(
+                map,
+                side,
+                BOX_COLOUR,
+                Control::BoxEdge(k as u8),
+            ));
+        }
+        out
+    }
+
+    /// The selected Curve's box hit: a handle (nearest first), then anywhere within the box
+    /// moves the selection, then just beside a corner outside it rotates the selection.
+    #[allow(clippy::cast_possible_truncation, reason = "four corners")]
+    fn box_hit(&self, shape: &Shape, map: ViewportMap, p: [f32; 2]) -> Option<Control> {
+        let b = self.selection_box(shape, map)?;
+        let handle = self
+            .box_handles(shape, map)
+            .into_iter()
+            .filter(|h| h.alpha(p, self.style.width) > 0.0)
+            .min_by(|a, b| a.distance(p).total_cmp(&b.distance(p)))
+            .and_then(|h| h.control);
+        if handle.is_some() {
+            return handle;
+        }
+        let [x, y] = p.map(f64::from);
+        if (b[0]..=b[2]).contains(&x) && (b[1]..=b[3]).contains(&y) {
+            return Some(Control::BoxMove);
+        }
+        Self::box_points(b)
+            .0
+            .iter()
+            .enumerate()
+            .map(|(k, c)| (k, (x - c[0]).hypot(y - c[1])))
+            .filter(|(_, d)| *d <= BOX_ROTATE)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(k, _)| Control::BoxRotate(k as u8))
+    }
+
+    /// The selected Curve's selected anchors in amber, the box about them (display-only lines
+    /// and its handles) and a Shift-drag's band (display only).
+    fn selection_primitives(&self, shape: &Shape, map: ViewportMap, out: &mut Vec<Primitive>) {
+        let chosen = self.chosen(shape);
+        for p in out.iter_mut() {
+            let anchor = match p.control {
+                Some(Control::Point(i)) => Some(i),
+                Some(Control::Close) => Some(0),
+                _ => None,
+            };
+            if anchor.is_some_and(|i| chosen.contains(&i)) {
+                p.colour = CHOSEN_COLOUR;
+            }
+        }
+        let style = self.style;
+        let rectangle = |b: [f64; 4], out: &mut Vec<Primitive>| {
+            let c = [[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]];
+            for k in 0..4 {
+                out.extend(
+                    Shape::segment(map, c[k], c[(k + 1) % 4], style.selected, None)
+                        .map(Primitive::into_guide),
+                );
+            }
+        };
+        if let Some(b) = self.selection_box(shape, map) {
+            rectangle(b, out);
+            out.extend(self.box_handles(shape, map));
+        }
+        if let Some(band) = self.band {
+            let (low, high) = (
+                canvas_device(map, [band[0], band[1]]),
+                canvas_device(map, [band[2], band[3]]),
+            );
+            rectangle([low[0], low[1], high[0], high[1]], out);
+        }
+    }
+}
+
 impl DeviceCircle {
     fn local(self, p: [f32; 2]) -> ([f32; 2], f32) {
         let [x, y] = [p[0] - self.centre[0], p[1] - self.centre[1]];
@@ -1376,6 +1603,8 @@ mod tests {
             selected: None,
             style: Style::default(),
             coverage: None,
+            points: vec![],
+            band: None,
         }
     }
 
@@ -2043,6 +2272,97 @@ mod tests {
         shape.selected = None;
         assert_eq!(hit(&shape, [60.0, 16.0]), on("under", Control::Move));
         assert_eq!(hit(&shape, [84.0, 40.0]), None);
+    }
+
+    #[test]
+    fn selected_anchors_get_a_box_whose_handles_and_inside_rank_above_the_curve() {
+        let map = Viewport::Fit.map((120, 80), (120, 80), 0).unwrap();
+        let mut shape = overlay(vec![bezier_shape("c", &square(), true)]);
+        shape.selected = Some("c".into());
+        // Anchors 0 and 1 (device 40, 20 and 80, 20): the box is 32..88 x 12..28.
+        shape.points = vec![0, 1];
+        let hit = |shape: &WindowOverlay, point| shape.hit_control(map, point).map(|h| h.control);
+        for (point, control) in [
+            ([32.0, 12.0], Control::BoxCorner(0)),
+            ([88.0, 28.0], Control::BoxCorner(2)),
+            ([32.0, 20.0], Control::BoxEdge(0)),
+            ([60.0, 12.0], Control::BoxEdge(2)),
+            ([60.0, 28.0], Control::BoxEdge(3)),
+            // A selected anchor, the edge between them and the space between: all move them.
+            ([40.0, 20.0], Control::BoxMove),
+            ([60.0, 20.5], Control::BoxMove),
+            ([70.0, 25.0], Control::BoxMove),
+            // Beside a corner, outside the box, within 14 device pixels: rotation.
+            ([26.0, 6.0], Control::BoxRotate(0)),
+            ([94.0, 34.0], Control::BoxRotate(2)),
+            ([88.0, 2.0], Control::BoxRotate(1)),
+            // Outside the box the Curve's own controls are as before.
+            ([80.0, 60.0], Control::Point(2)),
+            ([80.0, 40.0], Control::Insert(1)),
+            ([60.0, 45.0], Control::Move),
+        ] {
+            assert_eq!(hit(&shape, point), Some(control), "{point:?}");
+        }
+        assert_eq!(hit(&shape, [10.0, 10.0]), None, "beyond the rotation reach");
+        // A middle-click deletion looks through the box to the anchor.
+        assert_eq!(
+            shape.hit_point(map, [40.0, 20.0]).map(|h| h.control),
+            Some(Control::Point(0))
+        );
+        // Drawn: the selected anchors amber, the others white, the box lines display only.
+        let colour = |shape: &WindowOverlay, control| {
+            shape
+                .primitives(&shape.shapes[0], map)
+                .iter()
+                .find(|p| p.control == Some(control))
+                .map(|p| p.colour)
+        };
+        assert_eq!(colour(&shape, Control::Point(0)), Some(CHOSEN_COLOUR));
+        assert_eq!(colour(&shape, Control::Point(2)), Some([1.0; 3]));
+        assert_eq!(colour(&shape, Control::BoxCorner(3)), Some(BOX_COLOUR));
+        assert!(
+            shape.outline(map, [50.0, 12.0]).is_some(),
+            "the box's top line"
+        );
+        assert!(shape
+            .primitives(&shape.shapes[0], map)
+            .iter()
+            .filter(|p| p.guide && p.control.is_none())
+            .any(|p| p.alpha([50.0, 12.0], 2.0) > 0.0));
+        // One selected anchor is highlighted but has no box: it is an ordinary point.
+        shape.points = vec![3];
+        assert_eq!(hit(&shape, [40.0, 60.0]), Some(Control::Point(3)));
+        assert_eq!(hit(&shape, [26.0, 6.0]), None);
+        assert_eq!(colour(&shape, Control::Point(3)), Some(CHOSEN_COLOUR));
+        // Another window selected: no box, no highlight on this Curve.
+        shape.points = vec![0, 1];
+        shape.selected = Some("other".into());
+        assert_eq!(hit(&shape, [60.0, 20.5]), Some(Control::Move));
+        assert_eq!(colour(&shape, Control::BoxCorner(0)), None);
+    }
+
+    #[test]
+    fn a_selecting_band_is_drawn_on_the_selected_curve_but_never_hit() {
+        let map = Viewport::Fit.map((120, 80), (120, 80), 0).unwrap();
+        let mut shape = overlay(vec![bezier_shape("c", &square(), false)]);
+        shape.selected = Some("c".into());
+        shape.band = Some([90.0, 70.0, 100.0, 50.0]);
+        assert!(
+            shape.outline(map, [100.0, 60.0]).is_some(),
+            "its right side"
+        );
+        assert!(shape.outline(map, [95.0, 50.0]).is_some(), "its top side");
+        assert!(shape.outline(map, [95.0, 60.0]).is_none(), "its inside");
+        // A draft takes the click there to draw; the band itself is never a control.
+        assert_eq!(
+            shape.hit_control(map, [100.0, 60.0]).map(|h| h.control),
+            Some(Control::Append)
+        );
+        shape.selected = None;
+        assert!(
+            shape.outline(map, [100.0, 60.0]).is_none(),
+            "only with a selection"
+        );
     }
 
     #[test]

@@ -82,16 +82,16 @@ it('edits Polygon inside and outside softness numerically, with no Soft 1–4', 
 it('names captured points, an inserted point and a Linear side in the key hints', () => {
   const h = mountPalette([linear]);
   act(() => h.controls().onState({ binding: 1, capture: 1, sequence: 2, phase: 'armed', reason: null, selected: 'w1', event: 2, revision: 10,
-    keys: { points: [{ point: 0, x: 4, y: null }, { point: 1, x: null, y: null }], clock: 'source', frame: 5 } }));
+    keys: { points: [{ point: 0, x: 4, y: null }, { point: 1, x: null, y: null }], clock: 'source', frame: 5 }, selected_points: [] }));
   const hints = () => document.querySelector('[data-test="window-keys"]')!.textContent!;
   expect(hints()).toContain('Point 1: X Key frame 4 · Y Static');
   expect(hints()).toContain('Point 2: X Static · Y Static');
   expect(hints()).not.toContain('Soft');
   act(() => h.controls().onState({ binding: 1, capture: 2, sequence: 3, phase: 'armed', reason: null, selected: 'w1', event: 3, revision: 10,
-    keys: { softness: 7, edge: 2, clock: 'source', frame: 5 } }));
+    keys: { softness: 7, edge: 2, clock: 'source', frame: 5 }, selected_points: [] }));
   expect(hints()).toContain('Soft 3: Key frame 7');
   act(() => h.controls().onState({ binding: 1, capture: 3, sequence: 4, phase: 'armed', reason: null, selected: 'w1', event: 4, revision: 10,
-    keys: { points: [{ point: 3, x: null, y: 2 }], inserted: 3, clock: 'source', frame: 5 } }));
+    keys: { points: [{ point: 3, x: null, y: 2 }], inserted: 3, clock: 'source', frame: 5 }, selected_points: [] }));
   expect(hints()).toContain('New point: X Static · Y Key frame 2');
 });
 

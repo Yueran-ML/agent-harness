@@ -177,7 +177,7 @@ describe('Window creation and selection intent', () => {
     h.copy([other, circle, circularWindow('w4')]);
     const before = h.hook.result.current.intention;
     act(() => h.hook.result.current.onState({ binding: 1, capture: 1, sequence: 2, phase: 'armed', reason: null, selected: 'w4', event: 2,
-      revision: 11, keys: { pan: 0, tilt: 5, clock: 'source', frame: 8 } }));
+      revision: 11, keys: { pan: 0, tilt: 5, clock: 'source', frame: 8 }, selected_points: [] }));
     expect(h.hook.result.current.selected?.id).toBe('w4'); expect(h.hook.result.current.intention).toBe(before);
     expect(h.hook.result.current.keys).toEqual({ pan: 0, tilt: 5, clock: 'source', frame: 8 });
     act(() => h.hook.result.current.choose('w2')); expect(h.hook.result.current.intention).toBe(before + 1);

@@ -55,7 +55,7 @@ it('leaves an open Curve with Esc keeping its draft and binding, and picks it ag
   expect(hook.result.current.intention).toBe(before + 1);
   expect(hook.result.current.windows).toEqual([draft, polygon]);
   act(() => hook.result.current.onState({ binding: 1, capture: 1, sequence: 2, phase: 'armed', reason: null, selected: 'w1', event: 2, revision: 10,
-    keys: { pan: null, tilt: null, clock: 'source', frame: 8 } }));
+    keys: { pan: null, tilt: null, clock: 'source', frame: 8 }, selected_points: [] }));
   expect(hook.result.current.selection?.selected).toBe('w1');
   // Nothing to leave: no window selected now, a closed Curve, or another shape.
   act(() => { left = hook.result.current.leaveDraft(); });
@@ -114,15 +114,15 @@ it('names a Curve point, its in and out handles and its inside or outside softne
   const h = mountPalette([closed]);
   const hints = () => document.querySelector('[data-test="window-keys"]')!.textContent!;
   act(() => h.controls().onState({ binding: 1, capture: 1, sequence: 2, phase: 'armed', reason: null, selected: 'w2', event: 2, revision: 10,
-    keys: { points: [{ point: 1, out_x: 4, out_y: null, in_x: null, in_y: 6 }], clock: 'source', frame: 5 } }));
+    keys: { points: [{ point: 1, out_x: 4, out_y: null, in_x: null, in_y: 6 }], clock: 'source', frame: 5 }, selected_points: [] }));
   expect(hints()).toContain('Point 2 out handle: X Key frame 4 · Y Static');
   expect(hints()).toContain('Point 2 in handle: X Static · Y Key frame 6');
   expect(hints()).not.toContain('Point 2: X');
   act(() => h.controls().onState({ binding: 1, capture: 2, sequence: 3, phase: 'armed', reason: null, selected: 'w2', event: 3, revision: 10,
-    keys: { points: [{ point: 3, out_x: null, out_y: null, in_x: null, in_y: null }], inserted: 3, clock: 'source', frame: 5 } }));
+    keys: { points: [{ point: 3, out_x: null, out_y: null, in_x: null, in_y: null }], inserted: 3, clock: 'source', frame: 5 }, selected_points: [] }));
   expect(hints()).toContain('New point out handle: X Static · Y Static');
   act(() => h.controls().onState({ binding: 1, capture: 3, sequence: 4, phase: 'armed', reason: null, selected: 'w2', event: 4, revision: 10,
-    keys: { outside: 2, clock: 'source', frame: 5 } }));
+    keys: { outside: 2, clock: 'source', frame: 5 }, selected_points: [] }));
   expect(hints()).toContain('Outside Softness: Key frame 2');
 });
 
@@ -143,7 +143,7 @@ it('names the Curve words in each language', () => {
 });
 
 const state = (extra: Partial<WindowState> = {}): WindowState => ({ binding: 10, capture: 1, sequence: 12, phase: 'arming', reason: null,
-  selected: 'w1', event: 20, revision: 1, keys: { points: [{ point: 2, out_x: null, out_y: null, in_x: null, in_y: null }], inserted: 2, clock: 'source', frame: 10 }, ...extra });
+  selected: 'w1', event: 20, revision: 1, keys: { points: [{ point: 2, out_x: null, out_y: null, in_x: null, in_y: null }], inserted: 2, clock: 'source', frame: 10 }, selected_points: [], ...extra });
 const point = (kind: ViewPointer['kind'], event: number): ViewPointer => ({ monitor: 'timeline', instance: 1, event,
   presentation: { serial: 1, tag: 1, map: { surface: [256, 144], picture: [128, 72], dest: [0, 0, 256, 144] } }, snapshot: { revision: 1, timeline: 't1', frame: 10, canvas: [128, 72], ready: true,
     editable: true, comparison: 'off', window: { binding: 10, selected: 'w1' } },

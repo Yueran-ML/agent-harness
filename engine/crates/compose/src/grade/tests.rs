@@ -525,6 +525,36 @@ fn lowered_midtone_detail_softens_faint_detail_away_from_middle_grey_too() {
 }
 
 #[test]
+fn color_boost_moves_a_colour_from_its_luma_by_what_it_lacks_of_saturation() {
+    // Saturation 1/3: the colour moves from its luma by 2/3 more of the way.
+    let boost = one(|c| c.primaries.color_boost = fixed(100.0));
+    let x = [0.6, 0.5, 0.4];
+    let y = luma(x);
+    near(eval(&boost, x), x.map(|v| v + (v - y) * 2.0 / 3.0), 1e-6);
+}
+
+#[test]
+fn the_lift_of_a_node_after_another_is_its_own() {
+    let lifted = |id: &str| corrector(id, |c| c.primaries.lift.r = fixed(0.5));
+    let after = serial(vec![gain_node("a", [1.0, 1.0, 2.0]), lifted("b")]);
+    let first = serial(vec![gain_node("a", [1.0, 1.0, 2.0])]);
+    let then = serial(vec![lifted("b")]);
+    let x = [0.2, 0.3, 0.25];
+    near(eval(&after, x), eval(&then, eval(&first, x)), 1e-6);
+}
+
+#[test]
+fn soft_clip_high_bends_above_its_knee_towards_high() {
+    // High at 100 and High Soft 40: a knee at 0.8, and 1 made 0.8 + 0.2 (1 - 1/e).
+    let soft = one(|c| {
+        let s = &mut c.soft_clip.high_soft;
+        (s.r, s.g, s.b) = (fixed(40.0), fixed(40.0), fixed(40.0));
+    });
+    let want = 0.8 + 0.2 * (1.0 - (-1.0_f32).exp());
+    near(eval(&soft, [1.0; 3]), [want; 3], 1e-6);
+}
+
+#[test]
 fn lum_mix_keeps_luma_against_the_channels_and_lets_y_change_it() {
     // A channel apart, at Lum Mix 0, changes only itself.
     let red = |mix: f64| {

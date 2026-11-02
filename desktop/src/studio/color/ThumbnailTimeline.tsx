@@ -24,7 +24,8 @@ function MatchedBadge({ title }: { title: string }) {
 
 /**
  * The picture of a thumbnail, asked for once it is in view: as its clip is graded where the engine
- * draws it (`graded`, p. 3026), else a frame of its media; a title or a colour has none but that.
+ * draws it (`graded`, p. 3026), else (or where the engine drew none) a frame of its media; a title
+ * or a colour has none but that.
  */
 function Picture({ entry, media, rate, cache, offset, graded }: {
   entry: ColorClip; media: Media | undefined; rate: Rate; cache: Thumbnails | null; offset: number; graded?: GradedPictures | null;
@@ -35,7 +36,9 @@ function Picture({ entry, media, rate, cache, offset, graded }: {
   const { clip } = entry;
   const frame = media?.facts.video ? sourceFrameAt(clip, offset, rate, media) : null;
   const mediaId = clip.source.kind === 'media' ? clip.source.media : null;
-  const gradedPicture = useGradedPicture(graded, clip, offset, seen);
+  const { picture: gradedPicture, failed } = useGradedPicture(graded, clip, offset, seen);
+  // The media's own frame where the engine does not draw the clip graded.
+  const ungraded = !graded || failed;
   useEffect(() => {
     if (!graded || seen) return undefined;
     const observer = typeof IntersectionObserver === 'function' ? new IntersectionObserver((shown) => {
@@ -46,7 +49,7 @@ function Picture({ entry, media, rate, cache, offset, graded }: {
     return () => observer?.disconnect();
   }, [graded, seen]);
   useEffect(() => {
-    if (graded || cache === null || mediaId === null || frame === null) return undefined;
+    if (!ungraded || cache === null || mediaId === null || frame === null) return undefined;
     let ended = false;
     let asked = false;
     const fetch = () => {
@@ -60,7 +63,7 @@ function Picture({ entry, media, rate, cache, offset, graded }: {
     if (observer && box.current) observer.observe(box.current);
     else fetch();
     return () => { ended = true; observer?.disconnect(); };
-  }, [cache, mediaId, frame, graded]);
+  }, [cache, mediaId, frame, ungraded]);
   if (gradedPicture) {
     return <span ref={box} className="color-thumb-picture" title={clip.source.kind === 'media' ? media?.name : undefined} data-picture="graded">
       <img src={gradedPicture} alt="" draggable={false} /></span>;

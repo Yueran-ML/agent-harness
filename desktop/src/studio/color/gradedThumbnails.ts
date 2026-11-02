@@ -104,10 +104,13 @@ export function useGradedThumbnails({ bridge, session, timeline, groups, media, 
 
 /**
  * The picture of a thumbnail as it is graded, asked once it is seen and again when what it depends
- * on has settled: the picture before is kept meanwhile.
+ * on has settled: the picture before is kept meanwhile. `failed` where the engine drew none (a
+ * clip it cannot draw, or a fault), until a picture comes: the thumbnail then shows what it shows
+ * without the engine, a frame of the media or a title's words.
  */
-export function useGradedPicture(pictures: GradedPictures | null | undefined, clip: Clip, offset: number, seen: boolean): string | null {
+export function useGradedPicture(pictures: GradedPictures | null | undefined, clip: Clip, offset: number, seen: boolean): { picture: string | null; failed: boolean } {
   const [picture, setPicture] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
   const stamp = pictures ? pictures.stamp(clip) : '';
   const now = useRef({ pictures, clip, offset });
   now.current = { pictures, clip, offset };
@@ -116,10 +119,14 @@ export function useGradedPicture(pictures: GradedPictures | null | undefined, cl
     let ended = false;
     const timer = setTimeout(() => {
       const asked = now.current.pictures?.picture(now.current.clip, now.current.offset);
-      void asked?.then(image => { if (!ended) setPicture(image); }, () => {});
+      if (asked === null || asked === undefined) { setPicture(null); setFailed(true); return; }
+      void asked.then(
+        (image) => { if (!ended) { setPicture(image); setFailed(false); } },
+        () => { if (!ended) { setPicture(null); setFailed(true); } },
+      );
     }, picture === null ? 0 : SETTLE_MS);
     return () => { ended = true; clearTimeout(timer); };
     // The picture before is kept while the next is asked (`picture` is read, not followed).
   }, [pictures, stamp, offset, seen]);
-  return pictures ? picture : null;
+  return pictures ? { picture, failed } : { picture: null, failed: false };
 }

@@ -743,13 +743,53 @@ pub(crate) fn scene(
     frame: i64,
     sources: &Sources,
 ) -> Result<(Scene, Vec<String>), String> {
+    scene_of(
+        project,
+        timeline,
+        resolve::video_at(timeline, project, frame),
+        sources,
+    )
+}
+
+/// The layers of clip `clip` at `frame` of a timeline of `project`, as its track shows them
+/// were the track on: for a thumbnail of the clip (`timeline.thumbnail`), which shows it on a
+/// track that is off too, and has nothing of the other tracks read. None where the clip is not
+/// a clip of picture, is off, or is not seen at the frame.
+pub(crate) fn clip_layers(
+    project: &Project,
+    timeline: &columbina_model::Timeline,
+    clip: &str,
+    frame: i64,
+) -> Vec<resolve::Layer> {
+    let Some(track) = timeline.tracks.iter().find(|track| {
+        track.kind == TrackKind::Video && track.clips.iter().any(|each| each.id == clip)
+    }) else {
+        return Vec::new();
+    };
+    let mut on = std::borrow::Cow::Borrowed(track);
+    if !track.enabled {
+        on.to_mut().enabled = true;
+    }
+    let mut layers = resolve::video_of_track_at(timeline, project, &on, frame);
+    layers.retain(|layer| layer.clip == clip);
+    layers
+}
+
+/// The scene of `layers` of a timeline, not yet graded, and the clip of each, as [`scene`]
+/// makes it; each picture is read only here.
+pub(crate) fn scene_of(
+    project: &Project,
+    timeline: &columbina_model::Timeline,
+    layers: Vec<resolve::Layer>,
+    sources: &Sources,
+) -> Result<(Scene, Vec<String>), String> {
     let mut scene = Scene {
         width: timeline.width,
         height: timeline.height,
         ..Scene::default()
     };
     let mut clips = Vec::new();
-    for layer in resolve::video_at(timeline, project, frame) {
+    for layer in layers {
         clips.push(layer.clip.clone());
         let (source, color) = match layer.content {
             resolve::Content::Color { rgba } => (Source::color(rgba), LayerColor::default()),
@@ -812,6 +852,36 @@ pub(crate) fn picture_layer(picture: Arc<NativePicture>, rotation: i16) -> Scene
 mod tests {
     use super::*;
     use crate::test_media::{self, Sample};
+
+    #[test]
+    fn a_clip_alone_is_its_own_layers_on_a_track_that_is_off_too_and_no_other() {
+        let mut project = Project::sample();
+        let timeline = &mut project.timelines[0];
+        // A second track of picture over the first, its clip seen at the same frames.
+        let mut over = timeline.tracks[0].clone();
+        over.id = "V2".into();
+        over.clips[0].id = "c9".into();
+        timeline.tracks.insert(1, over);
+        let timeline = project.timelines[0].clone();
+        let ids = |layers: Vec<resolve::Layer>| -> Vec<String> {
+            layers.into_iter().map(|layer| layer.clip).collect()
+        };
+        assert_eq!(ids(clip_layers(&project, &timeline, "c1", 5)), ["c1"]);
+        assert_eq!(ids(clip_layers(&project, &timeline, "c9", 5)), ["c9"]);
+        // V1 off: the whole frame leaves c1 out, its thumbnail does not.
+        project.timelines[0].tracks[0].enabled = false;
+        let timeline = project.timelines[0].clone();
+        assert_eq!(ids(resolve::video_at(&timeline, &project, 5)), ["c9"]);
+        assert_eq!(ids(clip_layers(&project, &timeline, "c1", 5)), ["c1"]);
+        // Not seen at the frame, not a clip of picture, or not there: nothing.
+        assert!(clip_layers(&project, &timeline, "c1", 100).is_empty());
+        assert!(clip_layers(&project, &timeline, "c2", 5).is_empty());
+        assert!(clip_layers(&project, &timeline, "c404", 5).is_empty());
+        // A clip that is off is not seen.
+        project.timelines[0].tracks[0].clips[0].enabled = false;
+        let timeline = project.timelines[0].clone();
+        assert!(clip_layers(&project, &timeline, "c1", 5).is_empty());
+    }
 
     pub(super) fn worker(dir: &Path) -> Worker {
         let mut project = Project::sample();

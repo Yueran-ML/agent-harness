@@ -262,6 +262,26 @@ describe('the Color page', () => {
     expect(calls(bridge, 'media.thumbnail')).toEqual([]);
   });
 
+  it('shows a frame of the media, or what a title or colour shows, where the engine draws no graded picture of a clip', async () => {
+    const engine = fakeEngine();
+    const real = engine.bridge.call.getMockImplementation()!;
+    engine.bridge.call.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'timeline.thumbnail' && (params?.clip === 'c3' || params?.clip === 'c4')) {
+        return { ok: false, error: { code: -32602, message: `clip ${params.clip} is not seen`, data: { reason: 'clip' } } };
+      }
+      if (method === 'media.thumbnail') return { ok: true, result: { width: 160, height: 90, png: 'MEDIA', frame: params!.frame } };
+      return real(method, params);
+    });
+    render(<Studio cwd="F:/film" engine={{ ...engine, native: true }} language="en" onClose={() => {}} />);
+    await settle(); fireEvent.click(screen.getByRole('tab', { name: 'Color' })); await settle(); await settle();
+    // c3 falls back to its media's frame; the title c4 to its words; c1 is graded.
+    expect(calls(engine.bridge, 'media.thumbnail')).toEqual([{ media: 'm1', frame: 0, height: 90 }]);
+    expect(thumb('c3').querySelector('img')!.getAttribute('src')).toBe('data:image/png;base64,MEDIA');
+    expect(thumb('c3').querySelector('[data-picture="graded"]')).toBeNull();
+    expect(thumb('c4').querySelector('[data-kind="title"]')!.textContent).toBe('Hello');
+    expect(thumb('c1').querySelector('[data-picture="graded"]')).not.toBeNull();
+  });
+
   it('outlines the clip at the playhead, and a click takes the playhead to the first frame of a clip, as the mini-timeline does', async () => {
     const { bridge, notify } = await mount();
     expect(currentThumb()).toBe('c1');

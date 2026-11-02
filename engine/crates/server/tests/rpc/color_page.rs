@@ -312,6 +312,45 @@ async fn a_thumbnail_is_of_the_frame_as_it_is_graded_or_of_a_clip_by_its_own_gra
             rgb_at(&seen, x, y)
         );
     }
+    // A clip on a track that is off still has its thumbnail, as it is graded; the whole frame
+    // no longer shows it.
+    client
+        .apply(
+            json!([{"op": "set_track", "timeline": names["$timeline"], "id": names["$v"],
+            "enabled": false}]),
+        )
+        .await;
+    let off = slow(
+        &mut client,
+        "timeline.thumbnail",
+        json!({"timeline": names["$timeline"], "frame": 3, "clip": names["$c"], "height": 9}),
+    )
+    .await;
+    let seen = pixels(&off);
+    assert_eq!((seen.0, seen.1), (16, 9));
+    assert!(
+        close(rgb_at(&seen, 8, 4), [r, g, b]),
+        "{:?}",
+        rgb_at(&seen, 8, 4)
+    );
+    let whole = slow(
+        &mut client,
+        "timeline.thumbnail",
+        json!({"timeline": names["$timeline"], "frame": 3, "height": 18}),
+    )
+    .await;
+    assert!(
+        close(rgb_at(&pixels(&whole), 8, 4), [0.25, 0.0, 0.0]),
+        "{:?}",
+        rgb_at(&pixels(&whole), 8, 4)
+    );
+    client
+        .apply(
+            json!([{"op": "set_track", "timeline": names["$timeline"], "id": names["$v"],
+            "enabled": true}]),
+        )
+        .await;
+
     // No higher than the timeline.
     let tall = slow(
         &mut client,

@@ -377,8 +377,9 @@ media as its file has it. It answers `{"width", "height", "png": "<base64>", "fr
   and made `height` high by the mean of the pixels; its values, the output signal, kept to 0..1.
 - With **`clip`**, the layer of that clip alone, fitted to the frame and opaque, by its own
   grades (its group's pre-clip grade, its own, its group's post-clip grade) and not the
-  timeline's: the clip's picture as it is graded, whatever its place on the canvas. Without it,
-  the whole frame as an export draws it.
+  timeline's: the clip's picture as it is graded, whatever its place on the canvas, and on a
+  track that is off too (the thumbnail timeline shows every clip); only that clip's picture is
+  read. A clip that is itself off is not seen. Without it, the whole frame as an export draws it.
 - It changes nothing and works in a headless engine. `-32602` for params that are not the
   method's, with `data` `{"reason": "timeline"}` for a timeline that is not there, `{"reason":
   "clip"}` for a clip that is not seen at the frame, and `{"reason": "height"}` for a height out

@@ -208,7 +208,8 @@ impl Probe {
     /// most (as high as the timeline at most), for a thumbnail: as an export draws it; or, with
     /// `clip`, that clip's layer alone, fitted to the frame and opaque, graded by its own grades
     /// (its group's and its own) and not the timeline's, through the output transform, "the
-    /// media as it's currently graded" (p. 3026). This blocks, as [`Probe::draw`] does.
+    /// media as it's currently graded" (p. 3026), on a track that is off too, and nothing of the
+    /// other tracks read. This blocks, as [`Probe::draw`] does.
     ///
     /// # Errors
     /// The timeline is not there, or the clip is not seen at the frame (`-32602`), or the card
@@ -240,21 +241,26 @@ impl Probe {
         let project = Arc::new(project.clone());
         self.with_drawing(|gpu, drawn| {
             let timeline = &project.timelines[index];
-            let (mut scene, mut clips) =
-                crate::render::scene(&project, timeline, frame, &drawn.sources)
+            // A clip alone: its own layers, read by themselves, on a track that is off too.
+            let layers = match clip {
+                Some(clip) => {
+                    let layers = crate::render::clip_layers(&project, timeline, clip, frame);
+                    if layers.is_empty() {
+                        return Err(missing(
+                            "clip",
+                            format!("clip {clip} is not seen at frame {frame} of the timeline"),
+                        ));
+                    }
+                    layers
+                }
+                None => resolve::video_at(timeline, &project, frame),
+            };
+            let (mut scene, clips) =
+                crate::render::scene_of(&project, timeline, layers, &drawn.sources)
                     .map_err(|message| drawing(&message))?;
             drawn.grading.update(gpu, &project, index);
             drawn.grading.grade(&mut scene, &clips, frame);
-            if let Some(clip) = clip {
-                let mut kept = clips.iter().map(|each| each == clip);
-                scene.layers.retain(|_| kept.next().unwrap_or(false));
-                clips.retain(|each| each == clip);
-                if scene.layers.is_empty() {
-                    return Err(missing(
-                        "clip",
-                        format!("clip {clip} is not seen at frame {frame} of the timeline"),
-                    ));
-                }
+            if clip.is_some() {
                 for layer in &mut scene.layers {
                     layer.transform = columbina_compose::Transform::NONE;
                     layer.opacity = 1.0;

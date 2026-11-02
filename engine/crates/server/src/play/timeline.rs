@@ -1432,6 +1432,10 @@ impl Worker {
     }
 
     /// Compose `scene`, the frame `frame`, hand it to the view, and tell the scopes.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the frame composed, compared, made ready for the view and told, in order"
+    )]
     fn present(
         &mut self,
         scene: &Scene,

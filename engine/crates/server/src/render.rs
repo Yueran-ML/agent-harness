@@ -874,13 +874,25 @@ mod tests {
         assert_eq!(ids(resolve::video_at(&timeline, &project, 5)), ["c9"]);
         assert_eq!(ids(clip_layers(&project, &timeline, "c1", 5)), ["c1"]);
         // Not seen at the frame, not a clip of picture, or not there: nothing.
-        assert!(clip_layers(&project, &timeline, "c1", 100).is_empty());
-        assert!(clip_layers(&project, &timeline, "c2", 5).is_empty());
-        assert!(clip_layers(&project, &timeline, "c404", 5).is_empty());
+        assert_eq!(
+            ids(clip_layers(&project, &timeline, "c1", 100)),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            ids(clip_layers(&project, &timeline, "c2", 5)),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            ids(clip_layers(&project, &timeline, "c404", 5)),
+            Vec::<String>::new()
+        );
         // A clip that is off is not seen.
         project.timelines[0].tracks[0].clips[0].enabled = false;
         let timeline = project.timelines[0].clone();
-        assert!(clip_layers(&project, &timeline, "c1", 5).is_empty());
+        assert_eq!(
+            ids(clip_layers(&project, &timeline, "c1", 5)),
+            Vec::<String>::new()
+        );
     }
 
     pub(super) fn worker(dir: &Path) -> Worker {

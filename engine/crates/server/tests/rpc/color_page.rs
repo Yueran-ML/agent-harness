@@ -323,6 +323,10 @@ fn close(seen: [f64; 3], wanted: [f64; 3]) -> bool {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "a thumbnail whole, of a clip, of a clip on a track that is off, and refused"
+)]
 async fn a_thumbnail_is_of_the_frame_as_it_is_graded_or_of_a_clip_by_its_own_grades() {
     if columbina_compose::gpu_for_tests().is_none() {
         return;

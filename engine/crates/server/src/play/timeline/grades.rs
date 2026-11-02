@@ -41,6 +41,7 @@ fn monitor(dir: &Path) -> Worker {
         compositor: None,
         targets: Vec::new(),
         current: None,
+        aside: false,
         clock: None,
         sound: SoundSlot::new(crate::audio::Kind::Null),
         mixed_from: None,

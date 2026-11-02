@@ -408,3 +408,29 @@ fn a_perspective_track_keys_through_the_homography() {
     assert_eq!(out[(5 * w) as usize], 0.0);
     assert_eq!(out[(5 * w + 14) as usize], 0.0);
 }
+
+#[test]
+fn an_open_curve_of_any_number_of_anchors_is_a_draft_that_keys_nothing() {
+    let anchor = |x: f64, y: f64| WindowBezierPoint {
+        position: WindowPoint::new(x, y),
+        into: WindowPoint::new(0.0, 0.0),
+        out: WindowPoint::new(0.0, 0.0),
+    };
+    let points = vec![anchor(-0.2, -0.2), anchor(0.2, -0.2), anchor(0.0, 0.2)];
+    let mut g = grade(WindowShape::Curve {
+        points: points.clone(),
+        closed: false,
+        inside: 0.0.into(),
+        outside: 0.0.into(),
+    });
+    corrector(&mut g).windows[0].invert = true;
+    // Ignored, even inverted: the whole picture keyed, as without a window.
+    assert!(matte(&g, 80, 40).iter().all(|v| *v == 1.0));
+    // Closed, it keys outside the triangle where inverted.
+    if let WindowShape::Curve { closed, .. } = &mut corrector(&mut g).windows[0].shape {
+        *closed = true;
+    }
+    let closed = matte(&g, 80, 40);
+    assert_eq!(closed[20 * 80 + 40], 0.0);
+    assert_eq!(closed[2 * 80 + 2], 1.0);
+}

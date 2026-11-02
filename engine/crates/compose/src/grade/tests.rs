@@ -1390,6 +1390,13 @@ fn every_composite_mode_lays_each_side_of_its_branches_as_its_definition_says() 
             }
         }
     }
+    // Darker and Lighter Color take the whole colour of the darker or lighter, either side.
+    let (dark, light) = ([0.1, 0.2, 0.9], [0.8, 0.7, 0.1]);
+    for (b, f) in [(dark, light), (light, dark)] {
+        let darker = maths::composite(&c, layout::composite(Composite::DarkerColor), b, f);
+        let lighter = maths::composite(&c, layout::composite(Composite::LighterColor), b, f);
+        assert_eq!((darker, lighter), (dark, light));
+    }
     // Nothing divided by nothing is nothing.
     let divide = layout::composite(Composite::Divide);
     assert_eq!(

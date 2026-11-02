@@ -156,6 +156,16 @@ pub struct MissingLut {
     pub message: String,
 }
 
+/// `scene` without its grades, as Bypass Color shows it (`viewer.bypass`; p. 2987): each layer's
+/// grades and the timeline's left out, the input and output transforms of colour management
+/// and the project's LUTs kept.
+pub fn bypass(scene: &mut columbina_compose::Scene) {
+    for layer in &mut scene.layers {
+        layer.color.grade = Stage::default();
+    }
+    scene.grade = Stage::default();
+}
+
 /// Which of the grades of a clip's layer: its group's pre-clip grade, its own, or its group's
 /// post-clip grade.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -219,6 +229,8 @@ pub struct Grading {
     missing: Vec<MissingLut>,
     /// The pictures that the Color Viewer LUT is done into for the view.
     viewed: Vec<Arc<Target>>,
+    /// The pictures that the words of the view are written over (`crate::notice`).
+    noticed: Vec<Arc<Target>>,
     /// How many grades were made ready, for the tests.
     made: u64,
 }
@@ -240,6 +252,7 @@ impl Grading {
             timeline: None,
             missing: Vec::new(),
             viewed: Vec::new(),
+            noticed: Vec::new(),
             made: 0,
         }
     }
@@ -564,6 +577,38 @@ impl Grading {
             .apply(&stage, shown, &into)
             .map_err(|error| error.to_string())?;
         Ok(if done { into } else { Arc::clone(shown) })
+    }
+
+    /// `viewed`, a frame that the view is handed, with `words` written over it at its lower right
+    /// (`crate::notice`), in a picture of its own; `viewed` itself where they cannot be written.
+    pub fn noticed(&mut self, viewed: &Arc<Target>, words: &str, white: f32) -> Arc<Target> {
+        let gpu = Arc::clone(viewed.gpu());
+        let size = viewed.size();
+        self.noticed
+            .retain(|target| target.size() == size && Arc::ptr_eq(target.gpu(), &gpu));
+        // One that the view no longer holds.
+        let free = self
+            .noticed
+            .iter()
+            .find(|target| {
+                Arc::strong_count(target) == 1 && Arc::strong_count(target.texture()) == 1
+            })
+            .cloned();
+        let into = match free {
+            Some(free) => free,
+            None => match Target::preview(&gpu, size.0, size.1) {
+                Ok(made) => {
+                    let made = Arc::new(made);
+                    self.noticed.push(Arc::clone(&made));
+                    made
+                }
+                Err(_) => return Arc::clone(viewed),
+            },
+        };
+        match crate::notice::write(&gpu, viewed, &into, words, white) {
+            Ok(()) => into,
+            Err(_) => Arc::clone(viewed),
+        }
     }
 
     /// The colour management of `project`: made here for an export, for the first project of a

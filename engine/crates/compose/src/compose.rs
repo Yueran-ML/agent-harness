@@ -255,7 +255,7 @@ fn check_size(gpu: &Gpu, width: u32, height: u32) -> Result<(), ComposeError> {
 
 impl Target {
     /// A target for a preview: a texture of `width` × `height`, of half floats
-    /// ([`WORKING_FORMAT`]), that can be drawn from and copied.
+    /// ([`WORKING_FORMAT`]), that can be drawn from, copied, and copied or written into.
     ///
     /// # Errors
     /// The size is none, or more than the card takes.
@@ -624,7 +624,8 @@ fn canvas(
         format,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT
             | wgpu::TextureUsages::TEXTURE_BINDING
-            | wgpu::TextureUsages::COPY_SRC,
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     })
 }

@@ -426,6 +426,40 @@ impl Transport {
         timeline.highlight(highlight).await
     }
 
+    /// `viewer.bypass`: show the timeline monitor's picture without its grades (Bypass Color,
+    /// p. 2987; Shift-D, pp. 504, 550), or with them.
+    ///
+    /// # Errors
+    /// The engine is headless, or the params are not what the method takes (`-32602`; of the
+    /// source monitor, `reason: monitor`).
+    pub async fn bypass(&self, params: Option<&RawValue>) -> Result<Value, Fault> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Asked {
+            on: bool,
+            #[serde(default)]
+            monitor: Option<Monitor>,
+        }
+        let Some(timeline) = &self.timeline else {
+            return Err(Fault::new(
+                rpc::METHOD_NOT_FOUND,
+                "there is no method viewer.bypass in a headless engine: it has no monitor",
+            ));
+        };
+        let asked: Asked = rpc::params(
+            "viewer.bypass",
+            r#"{"on": true, "monitor"?: "timeline"}"#,
+            params,
+        )?;
+        if asked.monitor == Some(Monitor::Source) {
+            return Err(Fault::params(
+                "the source monitor shows no grade: Bypass Color is of the timeline monitor",
+            )
+            .with_data(serde_json::json!({ "reason": "monitor" })));
+        }
+        timeline.bypass(asked.on).await
+    }
+
     pub async fn frame_digest(&self, params: Option<&RawValue>) -> Result<Value, Fault> {
         let method = "transport.frame_digest";
         self.check(method)?;

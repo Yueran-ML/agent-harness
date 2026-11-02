@@ -45,6 +45,9 @@ mod project_luts;
 #[path = "rpc/highlight.rs"]
 mod highlight;
 
+#[path = "rpc/color_page.rs"]
+mod color_page;
+
 #[path = "rpc/viewport.rs"]
 mod viewport;
 

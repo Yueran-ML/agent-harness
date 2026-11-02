@@ -1120,12 +1120,13 @@ async fn dispatch(
             scopes_call(engine, connection, id, method, params).await
         }
         "view.sample" => view_sample(engine, connection, id, params).await,
+        "timeline.thumbnail" => timeline_thumbnail(engine, connection, id, params).await,
         "view.pointer" => view_pointer(engine, connection, kind, id, params).await,
         "window.bind" | "window.input" | "window.unbind" => {
             window::call(engine, connection, kind, id, method, params).await
         }
         "luts.list" | "grade.export_lut" => luts_call(engine, connection, id, method, params).await,
-        "viewer.wipe" | "viewer.split" | "viewer.highlight" => {
+        "viewer.wipe" | "viewer.split" | "viewer.highlight" | "viewer.bypass" => {
             let result = viewer(engine, method, params).await?;
             if method == "viewer.highlight" || result["mode"] == "split" {
                 engine.state.lock().await.window_end("viewer_mode");
@@ -1307,11 +1308,15 @@ fn bins() -> u32 {
     256
 }
 
-/// `viewer.wipe` and `viewer.split` (what the timeline monitor compares with), and
-/// `viewer.highlight` (what it shows of the key of a node).
+/// `viewer.wipe` and `viewer.split` (what the timeline monitor compares with),
+/// `viewer.highlight` (what it shows of the key of a node), and `viewer.bypass` (its picture
+/// without its grades).
 async fn viewer(engine: &Engine, method: &str, params: Option<&RawValue>) -> Result<Value, Fault> {
     if method == "viewer.highlight" {
         return engine.transport.highlight(params).await;
+    }
+    if method == "viewer.bypass" {
+        return engine.transport.bypass(params).await;
     }
     crate::stills::compare(engine, &engine.transport, method, params).await
 }
@@ -1475,6 +1480,28 @@ async fn statistics_apart(
     })
     .await
     .map_err(|error| probe::drawing(&error.to_string()))??;
+    Ok(match connection.queue(rpc::result_line(id, &result)) {
+        Ok(()) => Reply::Queued,
+        Err(refused) => Reply::Refused(refused),
+    })
+}
+
+/// `timeline.thumbnail`: a small picture of a frame of a timeline as it is graded, drawn off
+/// screen (`crate::thumbnail`).
+async fn timeline_thumbnail(
+    engine: &Engine,
+    connection: &Connection,
+    id: &RawValue,
+    params: Option<&RawValue>,
+) -> Result<Reply, Reply> {
+    let request = crate::thumbnail::Request::read(params)?;
+    let project = engine.state.lock().await.history.project().clone();
+    let probe = Arc::clone(&engine.probe);
+    let result = tokio::task::spawn_blocking(move || {
+        crate::thumbnail::thumbnail(&probe, &project, &request)
+    })
+    .await
+    .map_err(|error| Fault::new(rpc::CANNOT_READ, error.to_string()))??;
     Ok(match connection.queue(rpc::result_line(id, &result)) {
         Ok(()) => Reply::Queued,
         Err(refused) => Reply::Refused(refused),

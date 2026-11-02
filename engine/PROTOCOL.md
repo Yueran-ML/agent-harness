@@ -181,6 +181,8 @@ Before `hello`, every other request is refused with `-32600`.
 | `gallery.album.delete` | `{"album": "a2"}` | `{"deleted": [still ids]}` |
 | `grade.append_node` | `{"from": target, "node": "n4", "to": [target, ...], "keyframes"?: "none" \| "source_timecode" \| "start_frame", "at"?: 120, "revision"?: n}` | as `transaction.apply` (Append Node to Selected Clips, see The Gallery) |
 | `viewer.highlight` | `{"mode": "off" \| "highlight" \| "bw", "grade"?: target, "node"?: "n1", "monitor"?: "timeline"}` | `{"monitor": "timeline", "mode", "grade"?, "node"?}` (see Highlight) |
+| `viewer.bypass` | `{"on": true, "monitor"?: "timeline"}` | `{"monitor": "timeline", "on"}` (see Bypass Color) |
+| `timeline.thumbnail` | `{"timeline": "t1", "frame": 0, "clip"?: "c1", "height"?: 90}` | `{"width": 160, "height": 90, "png": "<base64>", "frame"}` (see Thumbnails of the Color page) |
 
 - `hello` says once per connection what the client is; a second `hello` is refused (`-32600`).
   From then on the connection is sent every notification. `protocol` other than 2 is refused
@@ -358,6 +360,29 @@ cannot be opened or decoded is `-32002`, with `path`, `reason` and `message` as 
   must fit the 16 MiB protocol line limit, leaving 1024 bytes for JSON; an oversized waveform
   or PNG returns `-32002`, reason `too_large`. Waveform size is checked before allocation;
   PNG size is checked before base64 response encoding.
+
+### Thumbnails of the Color page
+
+**`timeline.thumbnail`** `{"timeline": "t1", "frame": 0, "clip"?: "c1", "height"?: 90}` gives a
+small picture of a frame of a timeline as it is graded: the thumbnails of the Color page "always
+show the media as it's currently graded" (p. 3026), where `media.thumbnail` gives a frame of
+media as its file has it. It answers `{"width", "height", "png": "<base64>", "frame"}`, as
+`media.thumbnail` does: an upright PNG of R'G'B'A of 8 bits, opaque, `height` pixels high (1 to
+270, 90 where left out; no higher than the timeline), as wide as the timeline's aspect makes it.
+
+- The frame is drawn off screen as `view.sample` and `scopes.statistics` of a timeline and frame
+  draw theirs (its pictures from the original media, through their input transforms, graded,
+  and through the output transform; no subtitles), at twice the height asked for (or the
+  timeline's height, where that is less, its grades' neighbourhoods and titles scaled with it),
+  and made `height` high by the mean of the pixels; its values, the output signal, kept to 0..1.
+- With **`clip`**, the layer of that clip alone, fitted to the frame and opaque, by its own
+  grades (its group's pre-clip grade, its own, its group's post-clip grade) and not the
+  timeline's: the clip's picture as it is graded, whatever its place on the canvas. Without it,
+  the whole frame as an export draws it.
+- It changes nothing and works in a headless engine. `-32602` for params that are not the
+  method's, with `data` `{"reason": "timeline"}` for a timeline that is not there, `{"reason":
+  "clip"}` for a clip that is not seen at the frame, and `{"reason": "height"}` for a height out
+  of its range; `-32004` with `{"reason": "draw"}` where the card could not draw it.
 
 ## Proxies
 
@@ -2105,9 +2130,19 @@ subtitles in. A grade that is not complete, or has no node, changes nothing.
   and Color Viewer LUTs (What colour management does to the picture), in the **timeline state**
   (left out where there is none, so a state without it has none missing; told again as soon as
   a change of the project's colour, made on a thread of its own, finds or loses one) and in each
-  `render.progress` of an export of that timeline (left out likewise).
+  `render.progress` of an export of that timeline (left out likewise). The view of the timeline
+  monitor also shows it, as "an overlay at the bottom right of the screen indicating the name of
+  the LUT if a single LUT is missing, or an indicator that multiple LUTs are missing": the
+  engine writes `Missing LUT: <name>` or `Multiple LUTs missing` (DaVinci's words, in English)
+  into the picture that it hands the view, after the Color Viewer LUT, white letters outlined in
+  black on a black plate, 2.8% of the frame high, 2.5% of its height from its lower right corner
+  (a white of 0.9 in SDR; of PQ 0.58 and of HLG 0.75, about 203 nits); the page cannot draw over
+  the native view. The scopes, `view.sample`, a still grabbed and an export see the picture
+  without it. Words that do not fit on the frame are not written.
 - **Highlight**: the timeline state has `highlight: {"mode", "grade", "node"}` while a Highlight
   mode is on (`viewer.highlight`, in Comparisons in the viewer), and none while it is off.
+- **Bypass Color**: the timeline state has `bypass: true` while the monitor shows its picture
+  without its grades (`viewer.bypass`, in Comparisons in the viewer), and none while it shows them.
 
 ### Generate LUT
 
@@ -2424,6 +2459,22 @@ and the scopes, are of the frame as it is shown, highlighted. The timeline state
 - **Refusals**: `-32602` for params that are not the method's, with `data` `{"reason":
   "monitor"}` for the source monitor (it shows no grade) and `{"reason": "node"}` for a mode on
   without both `grade` and `node`.
+
+### Bypass Color
+
+**`viewer.bypass`** `{"on": true | false, "monitor"?: "timeline"}` shows the timeline monitor's
+picture without its grades, or with them again: Bypass Color of the viewer's title bar (Bypass
+Color and Fusion, p. 2987; View › Bypass Color and Fusion; Shift-D on the Cut and Edit pages, pp.
+504, 550, which the desktop takes on the Color page too; this engine has no Fusion). Every
+grade is left out (each clip's, its group's pre-clip and post-clip grades, Shot Match with them,
+and the timeline's); the input and output transforms of colour management, the project's Input
+and Output LUTs and the Color Viewer LUT stay, so the picture is the media as the project
+manages its colour. While it is on, a Highlight mode shows the picture as it is. It answers
+`{"monitor": "timeline", "on"}` (the setting now); the monitor draws its frame again at once
+where it is not playing, and the timeline state tells it (`bypass`, see Grades in the picture).
+It is of the preview alone, as Highlight is: an export, a frame drawn off screen and the
+references of a wipe are graded. A `--headless` engine answers `-32601`; `-32602` for params
+that are not the method's, with `data` `{"reason": "monitor"}` for the source monitor.
 
 **Refusals.** `-32602` for params that are not the method's, with `data` `{"reason": "range"}`
 for a value out of its range (or no items, more than 16, or `selected` not one of them),

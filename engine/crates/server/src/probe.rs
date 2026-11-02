@@ -204,6 +204,74 @@ impl Probe {
         })
     }
 
+    /// Draw frame `frame` of the timeline `timeline` of `project` small, `height` pixels high at
+    /// most (as high as the timeline at most), for a thumbnail: as an export draws it; or, with
+    /// `clip`, that clip's layer alone, fitted to the frame and opaque, graded by its own grades
+    /// (its group's and its own) and not the timeline's, through the output transform, "the
+    /// media as it's currently graded" (p. 3026). This blocks, as [`Probe::draw`] does.
+    ///
+    /// # Errors
+    /// The timeline is not there, or the clip is not seen at the frame (`-32602`), or the card
+    /// could not draw it (`-32004`, `draw`).
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "a size of pixels"
+    )]
+    pub fn draw_small(
+        &self,
+        project: &Project,
+        timeline: &str,
+        frame: i64,
+        clip: Option<&str>,
+        height: u32,
+    ) -> Result<Drawn, Fault> {
+        let index = project
+            .timelines
+            .iter()
+            .position(|found| found.id == timeline)
+            .ok_or_else(|| {
+                missing(
+                    "timeline",
+                    format!("there is no timeline {timeline} in the project"),
+                )
+            })?;
+        let project = Arc::new(project.clone());
+        self.with_drawing(|gpu, drawn| {
+            let timeline = &project.timelines[index];
+            let (mut scene, mut clips) =
+                crate::render::scene(&project, timeline, frame, &drawn.sources)
+                    .map_err(|message| drawing(&message))?;
+            drawn.grading.update(gpu, &project, index);
+            drawn.grading.grade(&mut scene, &clips, frame);
+            if let Some(clip) = clip {
+                let mut kept = clips.iter().map(|each| each == clip);
+                scene.layers.retain(|_| kept.next().unwrap_or(false));
+                clips.retain(|each| each == clip);
+                if scene.layers.is_empty() {
+                    return Err(missing(
+                        "clip",
+                        format!("clip {clip} is not seen at frame {frame} of the timeline"),
+                    ));
+                }
+                for layer in &mut scene.layers {
+                    layer.transform = columbina_compose::Transform::NONE;
+                    layer.opacity = 1.0;
+                }
+                scene.grade = columbina_compose::Stage::default();
+            }
+            // Small: the grades' neighbourhoods and the titles scale with the frame.
+            let high = height.clamp(1, scene.height.max(1));
+            let wide = ((f64::from(scene.width) * f64::from(high) / f64::from(scene.height.max(1)))
+                .round() as u32)
+                .max(1);
+            scene.units = high as f32 / scene.height.max(1) as f32;
+            (scene.width, scene.height) = (wide, high);
+            Ok((scene, drawn.grading.output().signal))
+        })
+    }
+
     /// Draw the scene that `make` makes with what draws frames on the card, made where it is not
     /// there or is of another card.
     fn with_drawing(

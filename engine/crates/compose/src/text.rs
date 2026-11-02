@@ -397,6 +397,27 @@ pub(crate) fn draw(laid: &mut Laid, window: [u32; 4]) -> Raster {
     }
 }
 
+/// A line of text drawn whole, as subtitles are drawn (white, a black outline about the letters),
+/// of letters `size` pixels high: its width and height, and its pixels, R'G'B'A premultiplied,
+/// row after row. For what the engine writes over the picture of a view, as the name of a LUT
+/// that cannot be read (Reference Manual 20, p. 3413); at most [`MOST_PIXELS`], or nothing.
+#[must_use]
+pub(crate) fn label(text: &str, size: f32) -> (u32, u32, Vec<[u8; 4]>) {
+    let mut laid = lay_out(&Spec::subtitles(&[text.to_owned()], size));
+    let (width, height) = laid.full();
+    if width == 0 || height == 0 || u64::from(width) * u64::from(height) > MOST_PIXELS {
+        return (0, 0, Vec::new());
+    }
+    let raster = draw(&mut laid, [0, 0, width, height]);
+    let (columns, row) = (raster.width as usize, raster.row as usize);
+    let mut pixels = Vec::with_capacity(columns * raster.height as usize);
+    for y in 0..raster.height as usize {
+        let at = raster.start + y * row;
+        pixels.extend_from_slice(&raster.pixels[at..at + columns]);
+    }
+    (raster.width, raster.height, pixels)
+}
+
 /// How far the outline of letters that cover `cover` reaches: the most of what they cover within
 /// `radius` pixels across and down of each pixel (a square), in two passes, each in time linear
 /// in the pixels whatever the radius, and each over rows, as they lie in memory.
@@ -512,6 +533,20 @@ fn most_within_rows(plane: &[u8], columns: usize, rows: usize, radius: usize) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_label_is_a_line_of_white_letters_outlined_in_black() {
+        let (width, height, pixels) = label("Missing LUT: look.cube", 24.0);
+        assert_eq!(pixels.len(), width as usize * height as usize);
+        assert!(width > height * 4, "{width} × {height}");
+        // White letters, black outlines about them, and clear about those.
+        assert!(pixels.contains(&[255, 255, 255, 255]));
+        assert!(pixels.iter().any(|p| p[3] == 255 && p[0] == 0));
+        assert_eq!(pixels[0], [0, 0, 0, 0]);
+        // Premultiplied.
+        assert!(pixels.iter().all(|p| p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3]));
+        assert_eq!(label("", 24.0).2.len(), label("", 24.0).0 as usize * label("", 24.0).1 as usize);
+    }
 
     #[test]
     fn an_outline_reaches_a_square_about_each_letter() {

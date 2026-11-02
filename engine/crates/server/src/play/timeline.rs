@@ -39,6 +39,10 @@ const SEEK_WAIT: Duration = Duration::from_secs(5);
 const COMPILED_POLL: Duration = Duration::from_millis(10);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the state of the monitor as the protocol writes it, a field each"
+)]
 pub struct Status {
     pub monitor: Monitor,
     pub timeline: Option<String>,
@@ -59,6 +63,10 @@ pub struct Status {
     /// The Highlight mode that the monitor shows, where one is on (`viewer.highlight`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub highlight: Option<Highlight>,
+    /// Whether the monitor shows the picture without its grades (`viewer.bypass`, Bypass
+    /// Color); left out where it does not.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub bypass: bool,
     /// The frame of the timeline that each reference of the wipe or split screen shows for the
     /// frame shown, as it moves with the playhead (`viewer.wipe`, `viewer.split`); left out
     /// where nothing is compared.
@@ -83,6 +91,7 @@ impl Default for Status {
             proxies: true,
             missing_luts: Vec::new(),
             highlight: None,
+            bypass: false,
             compared: None,
         }
     }
@@ -141,6 +150,8 @@ enum Command {
     Original(oneshot::Sender<Result<crate::stills::Frame, Fault>>),
     /// The Highlight mode that is shown (`viewer.highlight`).
     Highlight(Option<Highlight>, oneshot::Sender<Value>),
+    /// Whether the grades are left out of the picture (`viewer.bypass`).
+    Bypass(bool, oneshot::Sender<Value>),
     Stop,
 }
 
@@ -376,6 +387,13 @@ impl Timeline {
     pub async fn highlight(&self, highlight: Option<Highlight>) -> Result<Value, Fault> {
         let (reply, receiver) = oneshot::channel();
         self.send(Command::Highlight(highlight, reply))?;
+        receiver.await.map_err(|_| stopped())
+    }
+
+    /// Show the picture without its grades, or with them, and say which it shows now.
+    pub async fn bypass(&self, on: bool) -> Result<Value, Fault> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(Command::Bypass(on, reply))?;
         receiver.await.map_err(|_| stopped())
     }
 }
@@ -833,6 +851,16 @@ impl Worker {
                     self.tell(true);
                 }
                 let _ = reply.send(Highlight::written(self.status.highlight.as_ref()));
+            }
+            Command::Bypass(on, reply) => {
+                if self.status.bypass != on {
+                    self.status.bypass = on;
+                    if !self.status.playing {
+                        let _ = self.draw(true, false);
+                    }
+                    self.tell(true);
+                }
+                let _ = reply.send(json!({"monitor": "timeline", "on": self.status.bypass}));
             }
             Command::Act(action) => self.action(action),
             Command::Stop => unreachable!("handled by run"),
@@ -1294,12 +1322,19 @@ impl Worker {
         // picture of every clip ever visited. At a late cut, that track's old picture stays.
         self.previous = previous;
         self.grade(&mut scene, &clips, frame)?;
+        // Bypass Color: the picture without its grades, its colour management kept; nothing of
+        // a key to highlight.
+        let bypass = self.status.bypass;
+        if bypass {
+            crate::grading::bypass(&mut scene);
+        }
         let highlight = self
             .status
             .highlight
             .as_ref()
             .filter(|highlight| {
-                highlight.show(
+                !bypass
+                    && highlight.show(
                     &project,
                     index,
                     frame,
@@ -1439,6 +1474,15 @@ impl Worker {
             )
         } else {
             None
+        };
+        // The words of a LUT that cannot be read, over the picture of the view alone (p. 3413).
+        let viewed = match (viewed, crate::notice::words(&self.status.missing_luts)) {
+            (Some(viewed), Some(words)) => Some(self.grading.noticed(
+                &viewed,
+                &words,
+                crate::notice::white(self.output.as_ref()),
+            )),
+            (viewed, _) => viewed,
         };
         let snapshot = snapshot.map(|mut snapshot| {
             snapshot.ready =

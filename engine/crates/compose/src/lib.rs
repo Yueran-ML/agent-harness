@@ -28,6 +28,7 @@ mod gpu;
 pub mod grade;
 pub mod neighbourhood;
 pub mod ocio;
+pub mod overlay;
 mod pipelines;
 pub mod sample;
 pub mod scopes;

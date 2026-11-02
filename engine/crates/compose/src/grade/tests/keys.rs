@@ -707,6 +707,8 @@ fn the_key_coming_in_is_blurred_as_its_settings_say() {
     let soft = key(&grade(30.0, 0.5));
     let middle = f32::midpoint(soft[40 * 96 + 47][0], soft[40 * 96 + 48][0]);
     about(middle, 0.5, 2e-3);
+    // Blurred, the edge is a slope: neither side of it is full or none.
+    assert!(soft[40 * 96 + 47][0] < 0.9 && soft[40 * 96 + 48][0] > 0.1);
     // All of the blur down: the edge, which goes down, stays sharp.
     let down = key(&grade(30.0, 0.0));
     assert!(down[40 * 96 + 47][0] > 0.99 && down[40 * 96 + 48][0] < 0.01);
@@ -914,6 +916,38 @@ fn highlight_shows_the_picture_where_the_key_is_and_grey_where_it_is_not() {
     assert_eq!(solo, eval(&first, light));
     // And its key, white throughout.
     assert_eq!(show("n2", Show::Matte, [0.05; 3]), [1.0; 3]);
+}
+
+#[test]
+fn highlight_of_a_node_whose_key_comes_in_shows_grey_where_that_key_is_not() {
+    let mut grade = serial(vec![
+        corrector("n1", |c| {
+            c.qualifier = Some(qualifier(|q| {
+                q.mode = QualifierMode::Lum;
+                q.lum.low = fixed(50.0);
+            }));
+        }),
+        corrector("n2", |c| c.primaries.offset.b = fixed(75.0)),
+    ]);
+    grade.links.push(link("n1", "n2", Port::Key, 0));
+    grade.sort_links();
+    let show = |rgb: [f32; 3]| {
+        evaluate_showing(
+            &grade,
+            0.0,
+            &options(),
+            &NoLuts,
+            &|_, rgb| rgb,
+            rgb,
+            &Look {
+                node: "n2".into(),
+                show: Show::Highlight,
+            },
+        )
+    };
+    // n2 has no qualifier, but a key of its own coming in.
+    assert_eq!(show([0.05; 3]), [0.5; 3]);
+    assert_eq!(show([0.8; 3]), eval(&grade, [0.8; 3]));
 }
 
 #[test]

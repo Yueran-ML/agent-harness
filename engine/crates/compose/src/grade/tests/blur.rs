@@ -617,3 +617,29 @@ fn the_detail_is_none_within_three_steps_of_half_floats() {
     assert_eq!(blur::detail(1e6, 1e6), 0.0);
     assert_eq!(blur::detail(0.0, 0.0), 0.0);
 }
+
+#[test]
+fn a_palette_blurs_what_midtone_detail_of_its_node_made() {
+    // Midtone Detail and a blur in one node, and the same in two nodes one after the other.
+    let detail = |c: &mut columbina_model::grade::Corrector| {
+        c.primaries.midtone_detail = fixed(80.0);
+    };
+    let both = one(|c| {
+        detail(c);
+        c.blur.mode = BlurMode::Blur;
+        radius(0.7)(&mut c.blur);
+    });
+    let apart = serial(vec![
+        corrector("n1", detail),
+        corrector("n2", |c| {
+            c.blur.mode = BlurMode::Blur;
+            radius(0.7)(&mut c.blur);
+        }),
+    ]);
+    let pixels = cross();
+    let one_node = picture_of(&both, 0.0, (81, 41), &pixels);
+    let two_nodes = picture_of(&apart, 0.0, (81, 41), &pixels);
+    for (a, b) in one_node.iter().zip(&two_nodes) {
+        near(*a, *b, 1e-6);
+    }
+}

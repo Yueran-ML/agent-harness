@@ -165,6 +165,30 @@ mod tests {
     }
 
     #[test]
+    fn the_handles_of_an_edge_are_offsets_from_its_anchors() {
+        let anchors = [
+            Anchor {
+                position: [1.0, 2.0],
+                into: [-0.5, -0.25],
+                out: [0.5, 0.25],
+            },
+            Anchor {
+                position: [3.0, -1.0],
+                into: [-0.75, 0.5],
+                out: [0.25, 0.125],
+            },
+        ];
+        assert_eq!(
+            cubic(&anchors, 0),
+            [[1.0, 2.0], [1.5, 2.25], [2.25, -0.5], [3.0, -1.0]]
+        );
+        assert_eq!(
+            cubic(&anchors, 1),
+            [[3.0, -1.0], [3.25, -0.875], [0.5, 1.75], [1.0, 2.0]]
+        );
+    }
+
+    #[test]
     fn an_open_path_has_no_closing_edge_and_a_closed_one_wraps() {
         let anchor = |x: f64, y: f64| Anchor {
             position: [x, y],

@@ -1169,6 +1169,69 @@ fn a_disabled_node_passes_its_input() {
 }
 
 #[test]
+fn a_parallel_mixer_of_three_means_all_three() {
+    let grade = mixed(
+        vec![
+            gain_node("a", [2.0, 1.0, 1.0]),
+            gain_node("b", [1.0, 1.0, 0.5]),
+            gain_node("c", [1.0, 0.25, 1.0]),
+        ],
+        NodeKind::ParallelMixer(ParallelMixer { inputs: 3 }),
+    );
+    near(
+        eval(&grade, [0.4; 3]),
+        [0.4 + 0.4 / 3.0, 0.3, 0.4 - 0.2 / 3.0],
+        1e-6,
+    );
+}
+
+/// LUTs of a parameter each and no texture: on the processor, each is what `lut` makes of it.
+struct ParamLuts;
+
+impl Luts for ParamLuts {
+    fn lut(&self, name: &str) -> Option<ColorOp> {
+        name.ends_with(".cube").then(|| ColorOp {
+            body: "rgb = rgb * param($P).x;".into(),
+            params: vec![[if name == "a.cube" { 2.0 } else { 3.0 }, 0.0, 0.0, 0.0]],
+            ..ColorOp::default()
+        })
+    }
+}
+
+#[test]
+fn the_parameters_of_the_luts_of_a_grade_each_have_their_own_place() {
+    let node = |id: &str, lut: &str| {
+        corrector(id, |c| {
+            c.lut = Some(lut.into());
+            c.primaries.saturation = fixed(60.0);
+        })
+    };
+    let grade = serial(vec![node("a", "a.cube"), node("b", "b.cube")]);
+    let half = |_: &str, x: [f32; 3]| x.map(|v| v * 0.5);
+    let x = [0.2, 0.4, 0.6];
+    let none = serial(vec![
+        corrector("a", |c| c.primaries.saturation = fixed(60.0)),
+        corrector("b", |c| c.primaries.saturation = fixed(60.0)),
+    ]);
+    let made = evaluate_with(&grade, 0.0, &options(), &ParamLuts, &half, x);
+    let without = evaluate(&none, 0.0, &options(), x);
+    // Saturation is linear: the two halvings come out as a quarter.
+    near(made, without.map(|v| v * 0.25), 1e-6);
+    let ops = grade_ops(&grade, 0.0, &options(), &ParamLuts);
+    let params = &ops.last().unwrap().params;
+    let at = |value: f32| {
+        params
+            .iter()
+            .position(|p| p[0] == value && p[1..] == [0.0; 3])
+    };
+    let (a, b) = (at(2.0).unwrap(), at(3.0).unwrap());
+    assert_ne!(a, b);
+    let body = &ops.last().unwrap().body;
+    assert!(body.contains(&format!("($P + {a}u)")), "{body}");
+    assert!(body.contains(&format!("($P + {b}u)")), "{body}");
+}
+
+#[test]
 fn a_node_that_names_a_lut_that_there_is_not_has_none() {
     let mut node = gain_node("a", [2.0, 2.0, 2.0]);
     let NodeKind::Corrector(c) = &mut node.kind else {

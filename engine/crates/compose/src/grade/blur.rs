@@ -372,6 +372,7 @@ mod tests {
         }
         assert_eq!(core(0.05, 0.1, 0.0), 0.0);
         assert_eq!(core(0.15, 0.1, 0.0), 1.0);
+        assert_eq!(core(0.1, 0.1, 0.0), 1.0, "from the Level on");
         // The softness is a band below the Level, from L − C up to L.
         assert_eq!(core(0.0, 0.1, 0.05), 0.0);
         assert_eq!(core(0.05, 0.1, 0.05), 0.0);

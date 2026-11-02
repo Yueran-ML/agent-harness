@@ -637,6 +637,28 @@ describe('the viewer modes, the pickers and the thumbnail menu of the Color page
     expect(calls(bridge, 'viewer.bypass')).toHaveLength(3);
   });
 
+  it('gives a bound window the viewer back, with the same selection, as an armed picker is let go', async () => {
+    const { bridge, notify } = await mount();
+    await notify({ frame: 200, shown: 200 }); await settle();
+    fireEvent.click(screen.getByRole('tab', { name: 'Window' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Circular Window' })); await settle();
+    const binds = () => calls(bridge, 'window.bind');
+    expect(binds()).toHaveLength(1);
+    const bound = binds()[0];
+    expect(bound).toMatchObject({ node: 'n10', selected: 'w1', tool: 'window' });
+    // Pick Black Point armed: the picker takes the viewer and the window lets it go.
+    fireEvent.click(screen.getByRole('tab', { name: 'Primaries' })); await settle();
+    fireEvent.click(document.querySelector('[data-test="picker-black"]')!); await settle();
+    expect(calls(bridge, 'window.unbind')).toHaveLength(1);
+    expect(binds()).toHaveLength(1);
+    // Let go: the window is bound again, its selection as it was.
+    key('Escape'); await settle();
+    expect(document.querySelector('[data-test="picker-black"]')!.getAttribute('aria-pressed')).toBe('false');
+    expect(binds()).toHaveLength(2);
+    expect(binds()[1]).toEqual(bound);
+    expect(screen.getByRole('tab', { name: 'Primaries' }).getAttribute('aria-selected')).toBe('true');
+  });
+
   it('switches the viewer to the Qualifier control as the Qualifier palette opens (p. 2988)', async () => {
     await mount();
     const osc = document.querySelector<HTMLSelectElement>('[data-test="viewer-osc"]')!;

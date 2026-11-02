@@ -503,6 +503,28 @@ fn a_window_frozen_at_a_frame_keeps_its_interpolated_values_without_keys() {
     }
 }
 
+/// A window preset never keeps the window's tracking (T24): its track is of the frames of one
+/// clip, and the preset is recalled on any node of any project, to be tracked there again.
+#[test]
+fn a_window_frozen_at_a_frame_keeps_no_tracking() {
+    use columbina_model::grade::window::tracking::{Mode, Motion, TrackData, WindowTracking};
+    let mut data = TrackData::new([639.5, 359.5], [1280, 720]);
+    data.set_sample(4, Motion::IDENTITY, 1.0);
+    data.set_key(4, Motion::IDENTITY);
+    let mut window = Window::new("w1", WindowShape::polygon());
+    window.tracking = Some(WindowTracking {
+        mode: Mode::Frame,
+        crosshairs: vec![[0.5, 0.5]],
+        data,
+    });
+    let frozen = window.frozen_at(4.0);
+    assert_eq!(frozen.tracking, None);
+    let written = serde_json::to_value(&frozen).unwrap();
+    assert!(written.get("tracking").is_none(), "{written}");
+    window.tracking = None;
+    assert_eq!(frozen, window.frozen_at(4.0));
+}
+
 /// Add Serial Node + CPW, LPW, PPW and PCW (Option-C, -Q, -G and -B; p. 3187): `add_serial`
 /// with `windows` adds the corrector with those windows, as one operation that one undo takes
 /// back, and checks them as `set_node` does, refusing the whole edit for one that is invalid.

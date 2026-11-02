@@ -96,8 +96,9 @@ impl Window {
     }
 
     /// This window as it is on `frame`: every parameter fixed at the value it has there,
-    /// interpolated and clamped as the mask uses it, with no keyframes. A window preset is kept
-    /// so (author decision 2026-11-01), to be animated or tracked again once it is applied.
+    /// interpolated and clamped as the mask uses it, with no keyframes and no tracking (T24). A
+    /// window preset is kept so (author decision 2026-11-01), to be animated or tracked again
+    /// once it is applied.
     #[must_use]
     pub fn frozen_at(&self, frame: f64) -> Self {
         let fix = |p: &Param, b: Bounds| Param::Fixed(p.value_at(frame).clamp(b.low, b.high));
@@ -160,6 +161,7 @@ impl Window {
             },
             opacity: fix(&self.opacity, bounds::OPACITY),
             shape,
+            tracking: None,
         }
     }
 

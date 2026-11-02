@@ -369,7 +369,8 @@ fn visit_edit<E>(
 ) -> Result<(), E> {
     let timeline = match edit {
         // The edits of grades name grades and nodes, and no timeline of their own.
-        Edit::AddSerial { grade, node }
+        // The windows of `add_serial` have ids of their own node, not of the project.
+        Edit::AddSerial { grade, node, .. }
         | Edit::AddSerialBefore { grade, node }
         | Edit::AddParallel { grade, node }
         | Edit::AddLayer { grade, node }

@@ -2124,7 +2124,7 @@ operations above when applied, as the other edits are.
 
 | edit | fields | behavior |
 |---|---|---|
-| `add_serial` | `grade`, `node` (a node with an RGB output, or `source`) | Add a corrector after it, taking what its RGB output fed (Add Serial, Option-S, p. 3318). |
+| `add_serial` | `grade`, `node` (a node with an RGB output, or `source`), `windows?` (`[window, ...]`, default none) | Add a corrector after it, taking what its RGB output fed (Add Serial, Option-S, p. 3318). With `windows`, the corrector has those Power Windows (see Power Windows) from the start, checked as `set_node` checks `params.windows`, in the one `add_node` that adds it: Add Serial Node + CPW, LPW, PPW and PCW (Option-C, -Q, -G and -B, p. 3187) are one edit and one step to undo. An invalid window refuses the edit as `set_node` would. |
 | `add_serial_before` | `grade`, `node` (a corrector, or `output`) | Add a corrector before it, taking what came into it (Add Before Current, Shift-S). |
 | `append_node` | `grade` | `add_serial_before` the output (Append Node, Option-K): the first node of an ungraded clip. |
 | `add_parallel` | `grade`, `node` (a corrector) | Add a corrector taking what the node takes; if the node's picture goes only into a parallel mixer, the mixer gets one more input for it, else a new parallel mixer takes the node at input 0, the new corrector at input 1, and the node's place (Option-P, pp. 3334–3335). |

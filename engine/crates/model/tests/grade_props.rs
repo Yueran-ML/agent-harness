@@ -183,7 +183,11 @@ fn edit_of(project: &Project, n: [usize; 5]) -> Edit {
         }
     };
     match n[0] % 13 {
-        0 => Edit::AddSerial { grade, node },
+        0 => Edit::AddSerial {
+            grade,
+            node,
+            windows: vec![],
+        },
         12 => Edit::AddOutside { grade, node },
         1 => Edit::AddSerialBefore { grade, node },
         2 => Edit::AppendNode { grade },

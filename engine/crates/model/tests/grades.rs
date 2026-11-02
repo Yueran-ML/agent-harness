@@ -1015,6 +1015,7 @@ fn add_serial_puts_a_node_after_the_one_chosen_and_numbers_it_last() {
         Edit::AddSerial {
             grade: c1(),
             node: "n3".into(),
+            windows: vec![],
         },
     );
     assert_eq!(done.len(), 1);
@@ -1034,6 +1035,7 @@ fn add_serial_puts_a_node_after_the_one_chosen_and_numbers_it_last() {
         Edit::AddSerial {
             grade: c1(),
             node: "source".into(),
+            windows: vec![],
         },
     );
     let g = grade(&project, &c1());
@@ -1086,6 +1088,7 @@ fn add_serial_before_and_append_node_put_a_node_before_the_one_chosen_and_the_ou
         Edit::AddSerial {
             grade: c1(),
             node: "output".into(),
+            windows: vec![],
         },
     );
     assert!(
@@ -1366,7 +1369,8 @@ fn an_edit_of_grades_is_written_as_the_protocol_names_it() {
             grade: Target::Timeline {
                 timeline: "t1".into()
             },
-            node: "source".into()
+            node: "source".into(),
+            windows: vec![],
         }
     );
 }
@@ -2140,6 +2144,7 @@ fn the_edits_that_set_a_locked_node_are_refused_and_the_others_are_not() {
         Edit::AddSerial {
             grade: c1(),
             node: "n3".into(),
+            windows: vec![],
         },
     );
     // It is taken out of its tree, and away, with its lock and its place.

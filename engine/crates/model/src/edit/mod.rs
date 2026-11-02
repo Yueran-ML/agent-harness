@@ -48,7 +48,7 @@ mod work;
 
 use serde::{Deserialize, Serialize, Serializer};
 
-use crate::grade::Target;
+use crate::grade::{Target, Window};
 use crate::keyframes::Align;
 use crate::ops::{apply_done, Op, OpError};
 use crate::project::{Alignment, Id, Project, Rgba, TitleStyle, TrackKind, TransitionKind};
@@ -501,12 +501,17 @@ pub enum Edit {
         track: Id,
     },
     /// Add a corrector after a node of a grade, or after its source: it takes what the node
-    /// gave its picture to (Add Serial, Option-S; Reference Manual 20, p. 3318).
+    /// gave its picture to (Add Serial, Option-S; Reference Manual 20, p. 3318). With
+    /// `windows`, the corrector has those Power Windows from the start, in the one operation
+    /// that adds it (Add Serial Node + CPW, LPW, PPW or PCW, Option-C, -Q, -G or -B; p. 3187).
     AddSerial {
         /// The grade.
         grade: Target,
         /// The node, or `source`.
         node: Id,
+        /// The windows of the new corrector, checked as `set_node` checks a node's windows.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        windows: Vec<Window>,
     },
     /// Add a corrector before a corrector of a grade, or before its output: it takes what came
     /// into the node (Add Before Current, Shift-S).
@@ -920,9 +925,11 @@ pub fn expand(project: &mut Project, edit: Edit) -> Result<Expansion, EditError>
 #[allow(clippy::too_many_lines, reason = "an arm for each edit")]
 pub(crate) fn run(project: &mut Project, edit: Edit) -> Result<Expansion, EditError> {
     let edit = match edit {
-        Edit::AddSerial { grade, node } => {
-            return grade::add(project, &grade, &node, grade::Beside::After)
-        }
+        Edit::AddSerial {
+            grade,
+            node,
+            windows,
+        } => return grade::add(project, &grade, &node, grade::Beside::After(windows)),
         Edit::AddSerialBefore { grade, node } => {
             return grade::add(project, &grade, &node, grade::Beside::Before)
         }

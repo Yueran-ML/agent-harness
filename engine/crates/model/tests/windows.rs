@@ -502,3 +502,69 @@ fn a_window_frozen_at_a_frame_keeps_its_interpolated_values_without_keys() {
         assert_eq!(window.frozen_at(3.0), window);
     }
 }
+
+/// Add Serial Node + CPW, LPW, PPW and PCW (Option-C, -Q, -G and -B; p. 3187): `add_serial`
+/// with `windows` adds the corrector with those windows, as one operation that one undo takes
+/// back, and checks them as `set_node` does, refusing the whole edit for one that is invalid.
+#[test]
+fn add_serial_with_windows_adds_the_node_with_them_in_one_undoable_operation() {
+    let mut project = project();
+    let before = project.clone();
+    let edit: Edit = serde_json::from_value(json!({
+        "edit": "add_serial", "grade": {"level": "timeline", "timeline": "t1"}, "node": "n3",
+        "windows": [window("circular")],
+    }))
+    .unwrap();
+    let expansion = expand(&mut project, edit.clone()).unwrap();
+    assert_eq!(expansion.done.len(), 1, "{:?}", expansion.done);
+    let nodes = &project.timelines[0].grade.nodes;
+    assert_eq!(nodes.len(), 2);
+    assert_eq!(
+        nodes[1].kind.params()["windows"],
+        json!([window("circular")])
+    );
+    // The new node goes after n3, as a plain Add Serial puts it.
+    let grade = &project.timelines[0].grade;
+    assert!(grade.links.contains(&Link::rgb("n3", nodes[1].id.clone())));
+    for op in expansion.inverse.iter().rev() {
+        apply(&mut project, op.clone()).unwrap();
+    }
+    project.next_id = before.next_id;
+    assert_eq!(project, before);
+    // Written back as it was read; a plain Add Serial writes no `windows`.
+    assert_eq!(
+        serde_json::to_value(&edit).unwrap()["windows"],
+        json!([window("circular")])
+    );
+    let plain = Edit::AddSerial {
+        grade: target(),
+        node: "n3".into(),
+        windows: vec![],
+    };
+    assert!(serde_json::to_value(&plain)
+        .unwrap()
+        .get("windows")
+        .is_none());
+    // A window refused as `set_node` refuses it refuses the edit, and nothing is added.
+    let mut wrong = window("linear");
+    wrong["opacity"] = json!(101);
+    let edit: Edit = serde_json::from_value(json!({
+        "edit": "add_serial", "grade": {"level": "timeline", "timeline": "t1"}, "node": "n3",
+        "windows": [wrong],
+    }))
+    .unwrap();
+    let mut copy = before.clone();
+    assert!(expand(&mut copy, edit).is_err());
+    assert_eq!(copy, before);
+    for windows in [json!([window("curve"), window("curve")]), json!({})] {
+        let read = serde_json::from_value::<Edit>(json!({
+            "edit": "add_serial", "grade": {"level": "timeline", "timeline": "t1"},
+            "node": "n3", "windows": windows,
+        }));
+        if let Ok(edit) = read {
+            let mut copy = before.clone();
+            assert!(expand(&mut copy, edit).is_err(), "{windows}");
+            assert_eq!(copy, before);
+        }
+    }
+}

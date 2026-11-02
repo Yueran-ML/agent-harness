@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::{EditError, Expansion, MOST_PRESERVED_NODES};
 use crate::grade::{
-    at_path, patch_at, Grade, Kind, Link, Node, NodeKind, Port, Pos, Target, FIRST_COLUMN,
+    at_path, patch_at, Grade, Kind, Link, Node, NodeKind, Port, Pos, Target, Window, FIRST_COLUMN,
     FURTHEST_POS, NODE_STEP, OUTPUT, SOURCE,
 };
 use crate::keyframes::{aligned, Align, KeyBase};
@@ -43,10 +43,9 @@ impl Steps {
 }
 
 /// Where a node is to be added, beside the node that is chosen.
-#[derive(Clone, Copy)]
 pub(super) enum Beside {
-    /// After it (Add Serial, Option-S).
-    After,
+    /// After it (Add Serial, Option-S), with these windows (Option-C, -Q, -G, -B; p. 3187).
+    After(Vec<Window>),
     /// Before it (Add Before Current, Shift-S).
     Before,
     /// Beside it, into a parallel mixer (Add Parallel, Option-P).
@@ -64,9 +63,9 @@ pub(super) fn add(
 ) -> Result<Expansion, EditError> {
     let mut steps = Steps::default();
     let g = grade_at(project, grade)?.clone();
-    let corrector = Node::corrector("");
+    let mut corrector = Node::corrector("");
     match beside {
-        Beside::After => {
+        Beside::After(windows) => {
             if !g.has_output(node, Port::Rgb).ok_or_else(|| missing(node))? {
                 return Err(wrong(&g, node).into());
             }
@@ -75,6 +74,9 @@ pub(super) fn add(
                 from: String::new(),
                 ..out.clone()
             }));
+            if let NodeKind::Corrector(params) = &mut corrector.kind {
+                params.windows = windows;
+            }
             steps.apply(project, add_node(grade, corrector, links))?;
         }
         Beside::Before => {

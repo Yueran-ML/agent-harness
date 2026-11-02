@@ -100,6 +100,18 @@ function fakeEngine(timeline: Timeline = timelineOf()) {
       return [{ op: 'add_node', grade, node, index: gradeAt(grade).nodes.length,
         links: [link(after, id), ...fed.map(each => ({ ...each, from: id }))] }];
     }
+    if (change.edit === 'add_outside') {
+      // A corrector after the node, on its picture and its key, with its key input inverted (p. 3341).
+      const grade = change.grade as Target;
+      const after = change.node as string;
+      const id = `n${project.next_id}`;
+      const fed = gradeAt(grade).links.filter(each => each.from === after && each.kind === 'rgb');
+      const plain = corrector(id);
+      const params = plain.params as Extract<GradeNode, { kind: 'corrector' }>['params'];
+      const node = { ...plain, params: { ...params, key: { ...params.key, input: { ...params.key.input, invert: true } } } } as GradeNode;
+      return [{ op: 'add_node', grade, node, index: gradeAt(grade).nodes.length,
+        links: [link(after, id), link(after, id, 0, 'key'), ...fed.map(each => ({ ...each, from: id }))] }];
+    }
     return [];
   };
   const bridge = {
@@ -188,6 +200,8 @@ describe('the keys of the node editor', () => {
     letter('k', { altKey: true }); await settle();
     letter('p', { altKey: true }); await settle();
     letter('l', { altKey: true }); await settle();
+    // Alt+O, an Outside node of the current one (pp. 3318, 3341).
+    letter('o', { altKey: true }); await settle();
     expect(sent(bridge)).toEqual([
       [{ edit: 'add_serial', grade: C1, node: 'n3' }],
       // Alt+S made n10 after n3, and it is current now.
@@ -195,8 +209,10 @@ describe('the keys of the node editor', () => {
       [{ edit: 'append_node', grade: C1 }],
       [{ edit: 'add_parallel', grade: C1, node: 'n10' }],
       [{ edit: 'add_layer', grade: C1, node: 'n10' }],
+      [{ edit: 'add_outside', grade: C1, node: 'n10' }],
     ]);
-    expect(currentNode()).toBe('n10');
+    // The Outside node, made after n10, is current now, as each node added is.
+    expect(currentNode()).toBe('n11');
     expect(graph().querySelector('[data-node="n10"] [data-test="node-number"]')!.textContent).toBe('06');
   });
 
@@ -546,18 +562,23 @@ describe('the menus', () => {
       ['Append Node to Selected Clips', null],
     ]);
     expect((within(menu).getByRole('menuitem', { name: 'Append Node to Selected Clips' }) as HTMLButtonElement).disabled).toBe(true);
-    // An outside node waits for the keys of the Qualifier and Key palettes.
-    expect((within(menu).getByRole('menuitem', { name: 'Add Outside Node' }) as HTMLButtonElement).disabled).toBe(true);
+    // Add Outside Node, of a corrector (p. 3341: "Right-click a node choose Add Outside Node").
+    expect((within(menu).getByRole('menuitem', { name: 'Add Outside Node' }) as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Add Node' }));
     expect(within(screen.getByRole('menu', { name: 'Add Node' })).getAllByRole('menuitem').map(each => [each.getAttribute('aria-label'), each.getAttribute('aria-keyshortcuts')]))
       .toEqual([['Add Serial', 'Alt+S'], ['Add Serial Node + CPW', 'Alt+C'], ['Add Serial Node + LPW', 'Alt+Q'], ['Add Serial Node + PPW', 'Alt+G'],
         ['Add Serial Node + PCW', 'Alt+B'], ['Add Before Current', 'Shift+S'], ['Add Parallel', 'Alt+P'], ['Add Layer', 'Alt+L'], ['Add Outside Node', 'Alt+O']]);
     fireEvent.click(screen.getByRole('menuitem', { name: 'Add Parallel' }));
     await settle();
+    open('n4'); fireEvent.click(screen.getByRole('menuitem', { name: 'Add Outside Node' })); await settle();
+    open('n4'); fireEvent.click(screen.getByRole('menuitem', { name: 'Add Node' }));
+    fireEvent.click(within(screen.getByRole('menu', { name: 'Add Node' })).getByRole('menuitem', { name: 'Add Outside Node' })); await settle();
     open('n4'); fireEvent.click(screen.getByRole('menuitem', { name: 'Reset Shot Match' })); await settle();
     open('n4'); fireEvent.click(screen.getByRole('menuitem', { name: 'Delete Node' })); await settle();
     expect(sent(bridge)).toEqual([
       [{ edit: 'add_parallel', grade: C1, node: 'n4' }],
+      [{ edit: 'add_outside', grade: C1, node: 'n4' }],
+      [{ edit: 'add_outside', grade: C1, node: 'n4' }],
       [{ op: 'set_node', grade: C1, id: 'n4', params: { shot_match: null } }],
       [{ op: 'remove_node', grade: C1, id: 'n4' }],
     ]);
@@ -710,7 +731,8 @@ describe('the rules of the node editor', () => {
       [k('k', { alt: true, code: 'KeyK' }), { kind: 'add', how: 'append' }],
       [k('p', { alt: true, code: 'KeyP' }), { kind: 'add', how: 'parallel' }],
       [k('l', { alt: true, code: 'KeyL' }), { kind: 'add', how: 'layer' }],
-      [k('o', { alt: true, code: 'KeyO' }), null],
+      [k('o', { alt: true, code: 'KeyO' }), { kind: 'add', how: 'outside' }],
+      [k('ø', { alt: true, code: 'KeyO' }), { kind: 'add', how: 'outside' }],
       [k('e', { code: 'KeyE' }), { kind: 'extract' }],
       [k('d', { ctrl: true, code: 'KeyD' }), { kind: 'enable' }],
       [k('d', { alt: true, code: 'KeyD' }), { kind: 'enableAll' }],
@@ -740,6 +762,8 @@ describe('the rules of the node editor', () => {
     expect(addNode('serial', C1, null)).toEqual([{ edit: 'add_serial', grade: C1, node: 'source' }]);
     expect(addNode('before', C1, null)).toEqual([{ edit: 'add_serial_before', grade: C1, node: 'output' }]);
     expect(addNode('parallel', C1, null)).toEqual({ refused: 'wrong_node' });
+    expect(addNode('outside', C1, null)).toEqual({ refused: 'wrong_node' });
+    expect(addNode('outside', C1, 'n4')).toEqual([{ edit: 'add_outside', grade: C1, node: 'n4' }]);
     expect(deleteNodes(C1, grade, ['zz'])).toBeNull();
     expect(toggleAll(C1, { ...grade, nodes: grade.nodes.map(node => ({ ...node, enabled: false })) }))
       .toEqual(grade.nodes.map(node => ({ op: 'set_node', grade: C1, id: node.id, enabled: true })));

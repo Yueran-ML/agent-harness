@@ -695,10 +695,10 @@ export function NodeEditor({ grade: real, defaultNode = null, level, levels, onL
         { id: 'add-before', label: menuWords.before, keys: 'Shift+S', disabled: !corrector, run: () => add('before') },
         { id: 'add-parallel', label: menuWords.parallel, keys: 'Alt+P', disabled: !corrector, run: () => add('parallel') },
         { id: 'add-layer', label: menuWords.layer, keys: 'Alt+L', disabled: !corrector, run: () => add('layer') },
-        // An outside node takes the key of the node before it, which waits for the keys of T21 and T22.
-        { id: 'add-outside', label: menuWords.outside, keys: 'Alt+O', disabled: true },
+        // An Outside node of a corrector, which takes its picture and its key (pp. 3318, 3341).
+        { id: 'add-outside', label: menuWords.outside, keys: 'Alt+O', disabled: !corrector, run: () => add('outside') },
       ] },
-      { id: 'outside', label: menuWords.outside, keys: 'Alt+O', disabled: true },
+      { id: 'outside', label: menuWords.outside, keys: 'Alt+O', disabled: !corrector, run: () => add('outside') },
       { id: 'label', label: menuWords.label, run: () => startLabel(node.id) },
       { id: 'delete', label: menuWords.deleteNode, keys: 'Delete', run: () => run(deleteNodes(target, grade, [node.id])) },
       { id: 'reset', label: menuWords.reset, keys: 'Shift+Home', run: () => run(reset('node', target, grade, node.id)) },

@@ -21,7 +21,7 @@ import { newWindow, type WindowKind } from './windowEdits';
 export type GradeEdit =
   // `windows`: the new corrector's Power Windows, in the same operation (Add Serial Node + CPW and the others, p. 3187).
   | { edit: 'add_serial'; grade: Target; node: string; windows?: PowerWindow[] }
-  | { edit: 'add_serial_before' | 'add_parallel' | 'add_layer' | 'extract_node' | 'reset_node'; grade: Target; node: string }
+  | { edit: 'add_serial_before' | 'add_parallel' | 'add_layer' | 'add_outside' | 'extract_node' | 'reset_node'; grade: Target; node: string }
   | { edit: 'append_node'; grade: Target }
   | { edit: 'copy_grade'; from: Target; to: Target[]; preserve_nodes?: number }
   | { edit: 'append_node_graph'; from: Target; to: Target[] }
@@ -58,16 +58,23 @@ const newKeyInput = (): KeyInput => ({ invert: false, matte: false, gain: 1, off
 
 const nodeOf = (grade: Grade, id: string | null): GradeNode | undefined => (id === null ? undefined : grade.nodes.find(node => node.id === id));
 
-/** How a node is added (p. 3318): after the current one, before it, at the end, in parallel or as a layer with it. */
-export type AddHow = 'serial' | 'before' | 'append' | 'parallel' | 'layer';
+/**
+ * How a node is added (p. 3318): after the current one, before it, at the end, in parallel or as a
+ * layer with it, or as its Outside node.
+ */
+export type AddHow = 'serial' | 'before' | 'append' | 'parallel' | 'layer' | 'outside';
+
+const ADD_EDITS = { parallel: 'add_parallel', layer: 'add_layer', outside: 'add_outside' } as const;
 
 /** The shapes that a node can be added with (p. 3187): Alt+C circular, Alt+Q linear, Alt+G polygonal, Alt+B Curve; Gradient has none. */
 export type NodeWindow = Exclude<WindowKind, 'gradient'>;
 
 /**
- * Add a corrector as Alt+S, Shift+S, Alt+K, Alt+P and Alt+L do (p. 3318), about the current node.
- * A grade with no node yet takes its first after the source (Alt+S) or before the output (Shift+S);
- * a parallel or a layer node needs a current corrector (the engine refuses others as `wrong_node`).
+ * Add a corrector as Alt+S, Shift+S, Alt+K, Alt+P, Alt+L and Alt+O do (p. 3318), about the current
+ * node. A grade with no node yet takes its first after the source (Alt+S) or before the output
+ * (Shift+S); a parallel, a layer or an Outside node needs a current corrector (the engine refuses
+ * others as `wrong_node`). An Outside node (pp. 3341–3342) is a corrector after the node, on its
+ * picture and its key, with Key Input Invert on, which the engine makes as one `add_node`.
  * With `window`, a serial node with that window already turned on, its first, `w1` (Add Serial Node + CPW, LPW,
  * PPW or PCW, Alt+C, Q, G or B, p. 3187): one edit, so one step to undo.
  */
@@ -78,7 +85,7 @@ export function addNode(how: AddHow, grade: Target, current: string | null, wind
     case 'append': return [{ edit: 'append_node', grade }];
     default:
       if (current === null) return { refused: 'wrong_node' };
-      return [{ edit: how === 'parallel' ? 'add_parallel' : 'add_layer', grade, node: current }];
+      return [{ edit: ADD_EDITS[how], grade, node: current }];
   }
 }
 
@@ -350,14 +357,14 @@ export type NodeCommand =
 
 /**
  * The keys of the node editor, as DaVinci Resolve has them on Windows (pp. 3314–3319): Alt+S,
- * Shift+S, Alt+K, Alt+P and Alt+L add a node; Delete deletes the nodes chosen (Backspace only a
+ * Shift+S, Alt+K, Alt+P, Alt+L and Alt+O add a node; Delete deletes the nodes chosen (Backspace only a
  * link chosen); E extracts; Ctrl+D enables or disables the nodes chosen and Alt+D all of them;
  * Shift+Home, Ctrl+Shift+Home and Ctrl+Home reset; Alt+Shift+O goes back to the grade as it was
  * when the clip was chosen (Original Memory, p. 3317); Alt+Shift+; and Alt+Shift+' go to the
  * previous and the next node; Ctrl+C and Ctrl+V copy and paste a node; H changes between the
  * selection tool and the hand. Alt+C, Alt+Q, Alt+G and Alt+B add a serial node with a circular, linear,
  * polygonal or Curve window (p. 3187). A letter is known by where it lies, as Alt changes what it types on
- * some layouts. Alt+O (an outside node) waits for keys.
+ * some layouts.
  */
 export function nodeKey(key: Key): NodeCommand | null {
   if (key.composing || key.meta) return null;
@@ -385,6 +392,7 @@ export function nodeKey(key: Key): NodeCommand | null {
       case 'k': return { kind: 'add', how: 'append' };
       case 'p': return { kind: 'add', how: 'parallel' };
       case 'l': return { kind: 'add', how: 'layer' };
+      case 'o': return { kind: 'add', how: 'outside' };
       case 'd': return { kind: 'enableAll' };
       default: return null;
     }

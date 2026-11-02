@@ -404,6 +404,127 @@ fn a_custom_curve_takes_the_slope_of_its_neighbours_at_a_point() {
 }
 
 #[test]
+fn hues_go_round_from_red_through_green_and_blue() {
+    for (rgb, h) in [
+        ([1.0, 0.0, 0.0], 0.0),
+        ([1.0, 1.0, 0.0], 1.0 / 6.0),
+        ([0.5, 1.0, 0.0], 0.25),
+        ([0.0, 1.0, 0.0], 1.0 / 3.0),
+        ([0.0, 1.0, 1.0], 0.5),
+        ([0.0, 0.0, 1.0], 2.0 / 3.0),
+        ([1.0, 0.0, 1.0], 5.0 / 6.0),
+        ([0.4, 0.4, 0.4], 0.0),
+    ] {
+        let got = maths::hue(rgb);
+        assert!((got - h).abs() < 1e-6, "{rgb:?}: {got}");
+    }
+}
+
+#[test]
+fn a_quarter_turn_of_hue_turns_about_the_grey_axis() {
+    // cos 90° less 1 is -1 and sin 90° is 1: the mean, and the cross of the axis and the colour.
+    let turned = one(|c| c.primaries.hue = fixed(75.0));
+    let third = 1.0 / 3.0;
+    let across = 1.0 / 3.0_f32.sqrt();
+    near(
+        eval(&turned, [1.0, 0.0, 0.0]),
+        [third, third + across, third - across],
+        1e-6,
+    );
+}
+
+#[test]
+fn the_s_curve_of_contrast_bends_each_side_of_its_pivot_its_own_way() {
+    assert!((maths::s_contrast(0.2, 2.0, 0.5) - 0.08).abs() < 1e-6);
+    assert!((maths::s_contrast(0.8, 2.0, 0.5) - 0.92).abs() < 1e-6);
+}
+
+#[test]
+fn a_curve_goes_on_along_its_slope_below_its_first_point_or_flat_where_it_is_held() {
+    // A custom curve from (0.2, 0.3) to (1, 1): below 0.2 along its slope of 0.875.
+    let custom = one(|c| c.curves.y.points = vec![[0.2, 0.3], [1.0, 1.0]]);
+    near(eval(&custom, [0.1; 3]), [0.2125; 3], 1e-6);
+    // Lum vs Sat held at its first point below it: all the colour taken away under 0.3.
+    let held = one(|c| c.hsl.lum_vs_sat = vec![[0.3, -1.0], [0.8, 0.0]]);
+    let dark = [0.2, 0.1, 0.05];
+    near(eval(&held, dark), [luma(dark); 3], 1e-6);
+}
+
+#[test]
+fn unganged_curves_at_lum_mix_100_keep_the_luma_of_their_channels_mixed() {
+    // The red curve on grey: red changes as the curve says, and green and blue do not, as the
+    // luma of what the channel curves make is that of the curve on all three, weighed.
+    let red = one(|c| {
+        c.curves.ganged = false;
+        c.curves.r.points = vec![[0.0, 0.0], [0.5, 0.7], [1.0, 1.0]];
+    });
+    near(eval(&red, [0.5; 3]), [0.7, 0.5, 0.5], 1e-6);
+}
+
+#[test]
+fn the_log_wheels_meet_half_way_at_their_ranges() {
+    // Each wheel of 0.4 moves red by 0.1 where its zone is whole.
+    let wheel = |set: fn(&mut Corrector)| one(move |c| set(c));
+    let shadow = wheel(|c| c.log.shadow.r = fixed(0.4));
+    let midtone = wheel(|c| c.log.midtone.r = fixed(0.4));
+    let highlight = wheel(|c| c.log.highlight.r = fixed(0.4));
+    let moved = |grade: &Grade, y: f32| eval(grade, [y; 3])[0] - y;
+    let (low, high) = (0.333, 0.55);
+    for (grade, y, by) in [
+        (&shadow, low, 0.05),
+        (&shadow, low - 0.05, 0.1),
+        (&shadow, low + 0.05, 0.0),
+        (&midtone, low, 0.05),
+        (&midtone, high, 0.05),
+        (&midtone, 0.44, 0.1),
+        (&highlight, high, 0.05),
+        (&highlight, high + 0.05, 0.1),
+        (&highlight, high - 0.05, 0.0),
+    ] {
+        assert!(
+            (moved(grade, y) - by).abs() < 1e-5,
+            "{y}: {}",
+            moved(grade, y)
+        );
+    }
+}
+
+#[test]
+fn lowered_midtone_detail_softens_faint_detail_away_from_middle_grey_too() {
+    // Faint stripes two pixels wide of 0.29 and 0.31.
+    let pixels: Vec<[f32; 3]> = (0..120_u32)
+        .flat_map(|_| {
+            (0..160_u32).map(|x| {
+                if (x / 2) % 2 == 1 {
+                    [0.31; 3]
+                } else {
+                    [0.29; 3]
+                }
+            })
+        })
+        .collect();
+    let out = evaluate_picture(
+        &detailed(-100.0),
+        0.0,
+        &options(),
+        &NoLuts,
+        &|_, rgb| rgb,
+        (160, 120),
+        &pixels,
+        1.0,
+    );
+    let (mut least, mut most) = (f32::MAX, f32::MIN);
+    for y in 40..80 {
+        for x in 40..120 {
+            let v = luma(out[y * 160 + x]);
+            least = least.min(v);
+            most = most.max(v);
+        }
+    }
+    assert!(most - least < 0.01, "{least} {most}");
+}
+
+#[test]
 fn lum_mix_keeps_luma_against_the_channels_and_lets_y_change_it() {
     // A channel apart, at Lum Mix 0, changes only itself.
     let red = |mix: f64| {

@@ -401,6 +401,17 @@ mod tests {
         };
         assert_eq!(sharpened(0.41), 0.5, "a detail of 0.09 is kept out");
         assert!(sharpened(0.38) > 0.6, "a detail of 0.12 is sharpened");
+        // Level 1 and Coring Softness 0.25: from 0.15 to 0.2, half of it sharpened half way.
+        palette.level = Param::Fixed(1.0);
+        palette.coring_softness = Param::Fixed(0.25);
+        let block = super::block(&palette, 0.0);
+        let at = |near: f32| {
+            let x = [0.5, 0.0, 0.0];
+            apply(Params(&block), 0, x, [near, 0.0, 0.0], x)[0]
+        };
+        let (half, whole) = (at(0.5 - 0.175), at(0.5 - 0.25));
+        let added = |out: f32, near: f32| (out - 0.5) / detail(0.5, near);
+        assert!((added(half, 0.325) / added(whole, 0.25) - 0.5).abs() < 0.05);
     }
 
     #[test]

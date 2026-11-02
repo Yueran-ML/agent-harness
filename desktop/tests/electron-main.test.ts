@@ -4335,6 +4335,8 @@ describe('the engine of the studio', () => {
       // The Gallery and the comparisons of the viewer (T26, T27).
       'viewer.wipe', 'viewer.split', 'still.grab', 'still.get', 'still.apply', 'still.label', 'still.delete', 'still.move',
       'gallery.list', 'gallery.thumbnail', 'gallery.album.create', 'gallery.album.rename', 'gallery.album.delete', 'grade.append_node',
+      // Highlight, Bypass Color and the graded thumbnails of the Color page (T21, T13d).
+      'viewer.highlight', 'viewer.bypass', 'timeline.thumbnail',
     ];
     for (const method of allowed) {
       const params = method === 'transaction.apply' ? { ops: [{ op: 'remove_clip', timeline: 't1', id: 'c1' }] } : { frame: 3, monitor: 'source' };
@@ -4342,7 +4344,7 @@ describe('the engine of the studio', () => {
       expect((method === 'scopes.statistics' ? view : main).written.at(-1)).toMatchObject({ method, params });
     }
     const sent = main.written.length + view.written.length;
-    for (const method of ['render.start', 'view.attach', 'view.detach', 'media.import', 'still.import', 'still.export', 'hello', 'project.changed', 'transport', '', 7, undefined, 'constructor']) {
+    for (const method of ['render.start', 'view.attach', 'view.detach', 'media.import', 'still.import', 'still.export', 'grade.export_lut', 'hello', 'project.changed', 'transport', '', 7, undefined, 'constructor']) {
       await expect(shell.invoke('engine-call', { method, params: {} })).rejects.toThrow('no method of the engine');
     }
     for (const params of [[1], 'ops', 3]) {
@@ -4468,6 +4470,43 @@ describe('the engine of the studio', () => {
     for (const stills of [undefined, [], [''], [3], 's1']) {
       await expect(shell.invoke('engine-still-export', { stills })).rejects.toThrow('Name the stills to export by their ids.');
     }
+  });
+
+  it('generates a LUT of the grade the page names where Save As says, opening in the library of LUTs', async () => {
+    const shell = await shellHarness();
+    expect(await shell.invoke('engine-export-lut', { language: 'en', grade: { level: 'clip', timeline: 't1', clip: 'c1' }, size: 33 })).toMatchObject({ ok: false });
+    expect(shell.dialog.showSaveDialog).not.toHaveBeenCalled();
+    await openIn(shell);
+    const [main] = connections(shell);
+    const server = shell.engines.servers.get(main.address)!;
+    const library = path.resolve('/home/.columbina/luts');
+    server.answers.set('luts.list', () => ({ result: { roots: [{ place: 'project', path: path.resolve('/film/.columbina/studio'), exists: true },
+      { place: 'library', path: library, exists: true }], luts: [], truncated: false } }));
+    server.answers.set('grade.export_lut', params => ({ result: { path: params.path, name: 'Day.cube', size: params.size, nodes: ['n1'], ignored: [] } }));
+    const chosen = path.resolve('/home/.columbina/luts/Day.cube');
+    shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: chosen });
+    // Whatever path the page names is no part of it; Save As asked before a file is replaced.
+    expect(await shell.invoke('engine-export-lut', { language: 'zh-CN', grade: { level: 'clip', timeline: 't1', clip: 'c1' }, size: 33, node: 'n2',
+      frame: 12, name: 'Day', path: 'C:/secret.cube', replace: false })).toMatchObject({ ok: true, result: { path: chosen } });
+    expect(main.written.at(-1)).toMatchObject({ method: 'grade.export_lut', params: {
+      grade: { level: 'clip', timeline: 't1', clip: 'c1' }, size: 33, path: chosen, replace: true, node: 'n2', frame: 12 } });
+    const [over, options] = shell.dialog.showSaveDialog.mock.calls.at(-1)!;
+    expect(over).toBe(shell.window);
+    expect(options.title).toBe('生成 LUT');
+    expect(options.defaultPath).toBe(path.join(library, 'Day.cube'));
+    expect(options.filters[0].extensions).toEqual(['cube']);
+    // Nothing chosen is nothing written.
+    shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: true, filePath: '' });
+    const before = main.written.filter(each => each.method === 'grade.export_lut').length;
+    expect(await shell.invoke('engine-export-lut', { language: 'en', grade: { level: 'timeline', timeline: 't1' }, size: 65 })).toEqual({ ok: true, result: null });
+    expect(main.written.filter(each => each.method === 'grade.export_lut')).toHaveLength(before);
+    // A grade named by what is not its target, a size of no cube, a node or a frame that is not one.
+    for (const asked of [
+      { grade: 't1', size: 33 }, { grade: { level: 'clip', path: 'C:/x' }, size: 33 }, { grade: { timeline: 't1' }, size: 33 },
+    ]) await expect(shell.invoke('engine-export-lut', asked)).rejects.toThrow('Name the grade');
+    await expect(shell.invoke('engine-export-lut', { grade: { level: 'timeline', timeline: 't1' }, size: 32 })).rejects.toThrow('17, 33 or 65');
+    await expect(shell.invoke('engine-export-lut', { grade: { level: 'timeline', timeline: 't1' }, size: 17, node: 3 })).rejects.toThrow('Name a node');
+    await expect(shell.invoke('engine-export-lut', { grade: { level: 'timeline', timeline: 't1' }, size: 17, frame: 1.5 })).rejects.toThrow('whole number');
   });
 
   it('lets a transaction of the page name no file: no media that it adds, and no proxy that it sets', async () => {
@@ -4936,7 +4975,7 @@ describe('the engine of the studio', () => {
 
   it('answers only its own window', async () => {
     const shell = await shellHarness();
-    for (const name of ['engine-open', 'engine-call', 'engine-import', 'engine-still-import', 'engine-still-export', 'engine-render', 'engine-reveal', 'engine-open-lut-folder', 'engine-view-rect', 'engine-view-show', 'engine-close']) {
+    for (const name of ['engine-open', 'engine-call', 'engine-import', 'engine-still-import', 'engine-still-export', 'engine-export-lut', 'engine-render', 'engine-reveal', 'engine-open-lut-folder', 'engine-view-rect', 'engine-view-show', 'engine-close']) {
       await expect(Promise.resolve().then(() => shell.handlers.get(`columbina:${name}`)!(shell.unrelated, { cwd: path.resolve('/film') })))
         .rejects.toThrow('IPC sender');
     }

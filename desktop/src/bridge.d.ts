@@ -1,5 +1,5 @@
 import type {
-  EngineAnswer, EngineEvent, EngineOpened, Imported, Monitor, PageMethod, RenderOptions, RenderStarted, StillsExported, StillsImported, ViewRect,
+  EngineAnswer, EngineEvent, EngineOpened, Imported, LutExported, Monitor, PageMethod, RenderOptions, RenderStarted, StillsExported, StillsImported, ViewRect,
 } from './studio/engine';
 
 export interface ColumbinaBridge {
@@ -305,6 +305,12 @@ export interface EngineBridge {
    * there already are not replaced. The result is null where nothing was chosen.
    */
   exportStills(asked: { language: string; stills: string[] }): Promise<EngineAnswer<StillsExported | null>>;
+  /**
+   * Generate LUT (Reference Manual 20, p. 3413): let the user choose a file in Save As, `name`
+   * suggested, and bake the grade named (or its node) into a cube of `size` points there
+   * (`grade.export_lut`). The result is null where nothing was chosen.
+   */
+  exportLut(asked: { language: string; grade: Record<string, string>; size: 17 | 33 | 65; node?: string; frame?: number; name?: string }): Promise<EngineAnswer<LutExported | null>>;
   /** Choose an export destination in Save As and start rendering. Existing outputs are not replaced. */
   render(options: RenderOptions): Promise<EngineAnswer<RenderStarted>>;
   /**

@@ -197,7 +197,7 @@ describe('the bridge of the main window', () => {
     const { exposed } = bridgeOf('electron/preload.cjs');
     const engine = exposed.columbina.engine as unknown as Record<string, Call>;
     expect(Object.keys(engine).sort()).toEqual(declared('src/bridge.d.ts', 'EngineBridge').sort());
-    expect(Object.keys(engine)).toHaveLength(12);
+    expect(Object.keys(engine)).toHaveLength(13);
   });
 
   it('hands the engine what a call names, and nothing else that came with it', () => {
@@ -222,6 +222,9 @@ describe('the bridge of the main window', () => {
     expect(handed('importStills', { language: 'en' })).toEqual(['columbina:engine-still-import', { language: 'en' }]);
     expect(handed('exportStills', { language: 'ja', stills: ['s1', 'ps2'], dir: 'C:/elsewhere' }, more))
       .toEqual(['columbina:engine-still-export', { language: 'ja', stills: ['s1', 'ps2'] }]);
+    // Generate LUT: the grade, the size, the node and the frame, and the name Save As suggests; no path.
+    expect(handed('exportLut', { language: 'zh-CN', grade: { level: 'clip', timeline: 't1', clip: 'c2' }, size: 33, name: 'Day', path: 'C:/secret.cube' }, more))
+      .toEqual(['columbina:engine-export-lut', { language: 'zh-CN', grade: { level: 'clip', timeline: 't1', clip: 'c2' }, size: 33, node: undefined, frame: undefined, name: 'Day' }]);
     expect(handed('viewRect', { x: 1, y: 2, width: 3, height: 4, ...more }, 'timeline'))
       .toEqual(['columbina:engine-view-rect', { monitor: 'timeline', x: 1, y: 2, width: 3, height: 4 }]);
     // Shown only where the page says so in so many words.

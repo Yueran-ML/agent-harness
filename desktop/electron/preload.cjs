@@ -118,6 +118,10 @@ contextBridge.exposeInMainWorld('columbina', {
     exportStills: (asked) => ipcRenderer.invoke('columbina:engine-still-export', {
       language: asked?.language, stills: Array.isArray(asked?.stills) ? [...asked.stills] : asked?.stills,
     }),
+    // Generate LUT: the grade and the size the page names, the file chosen in Save As.
+    exportLut: (asked) => ipcRenderer.invoke('columbina:engine-export-lut', {
+      language: asked?.language, grade: asked?.grade, size: asked?.size, node: asked?.node, frame: asked?.frame, name: asked?.name,
+    }),
     render: (options) => ipcRenderer.invoke('columbina:engine-render', {
       timeline: options?.timeline, codec: options?.codec, quality: options?.quality,
       subtitle_tracks: Array.isArray(options?.subtitle_tracks) ? [...options.subtitle_tracks] : options?.subtitle_tracks,

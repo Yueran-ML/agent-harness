@@ -500,10 +500,16 @@ export interface TimelineTransportState extends TransportBase {
   late: number;
   /** The Highlight mode shown (`viewer.highlight`), while one is on. */
   highlight?: { mode: 'highlight' | 'bw'; grade: Target; node: string };
+  /** The LUTs that the grades of the timeline name and that cannot be read; left out where there are none (PROTOCOL.md, "Grades in the picture"). */
+  missing_luts?: MissingLut[];
+  /** Whether the picture is shown without its grades (`viewer.bypass`, Bypass Color), while it is. */
+  bypass?: boolean;
   /** The frame of the timeline that each reference of the wipe or split screen shows for the frame shown, in their order; while one is on. */
   compared?: (number | null)[];
 }
 export type TransportState = SourceTransportState | TimelineTransportState;
+/** A LUT that a grade of the timeline names and the engine could not read (PROTOCOL.md, "Grades in the picture"). */
+export interface MissingLut { name: string; message: string }
 
 /** A folder that a corrector's `lut` is looked for in, in the order of `luts.list` (PROTOCOL.md, "The library of LUTs"). */
 export interface LutRoot { place: 'project' | 'library'; path: string; exists: boolean }
@@ -681,6 +687,8 @@ export interface PageMethods {
   'gallery.album.delete': { deleted: string[] };
   'grade.append_node': Applied;
   'viewer.highlight': ViewerHighlight;
+  'viewer.bypass': { monitor: 'timeline'; on: boolean };
+  'timeline.thumbnail': { width: number; height: number; png: string; frame: number };
 }
 export type PageMethod = keyof PageMethods;
 
@@ -738,6 +746,8 @@ export interface GalleryAlbum { id: string; name: string; kind: AlbumKind; still
 export interface StillsImported { added: Still[] }
 /** What `still.export` answers: the files written for each still. The shell asks for the place in Save As. */
 export interface StillsExported { written: { image: string; json: string }[] }
+/** What `grade.export_lut` answers (Generate LUT): where the cube is, its name in the library where it lies there, and the nodes baked and left out. */
+export interface LutExported { path: string; name: string | null; size: number; nodes: string[]; ignored: { node: string; why: string }[] }
 
 /** The styles of a wipe that the engine draws (p. 3000); Alpha is not done. */
 export type WipeStyle = 'horizontal' | 'vertical' | 'diagonal' | 'mix' | 'difference' | 'box' | 'venetian_blind' | 'checkerboard';
@@ -850,7 +860,7 @@ export type PointerCursor = 'arrow' | 'crosshair' | 'move' | 'resize_ew' | 'resi
  * shown (of the timeline, for the timeline monitor), null where none is drawn; a drag that goes
  * beyond the picture goes on, `inside` false.
  */
-export type ViewerTool = 'none' | 'window' | 'image_wipe';
+export type ViewerTool = 'none' | 'qualifier' | 'window' | 'image_wipe';
 /** A Linear corner or Polygon point dragged by a control: the left key frame of each coordinate. */
 /** A point's left keys: its position, and for a Curve its Bezier handles (`in_*`, `out_*`). */
 export interface WindowPointKeys {

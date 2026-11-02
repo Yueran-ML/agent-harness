@@ -128,15 +128,15 @@ const WORDS = {
   en: { chooseFolder: 'Choose a project folder', chooseFiles: 'Choose files to attach', open: 'Open Columbina', quit: 'Quit Columbina', hidePet: 'Hide the pet',
     petWaiting: (tool) => (tool ? `Waiting for your yes to ${tool}.` : 'Waiting for your yes.'), petDone: 'Done.', petFailed: 'Something went wrong.',
     chooseExport: 'Export timeline', chooseMedia: 'Choose media to import', media: 'Video, audio and pictures', allFiles: 'All files',
-    importStills: 'Import Stills', exportStills: 'Export Stills', stills: 'Still images' },
+    importStills: 'Import Stills', exportStills: 'Export Stills', stills: 'Still images', generateLut: 'Generate LUT', cube: 'Cube LUT' },
   ja: { chooseFolder: 'プロジェクトフォルダーを選択', chooseFiles: '添付するファイルを選択', open: 'Columbina を開く', quit: 'Columbina を終了', hidePet: 'ペットをしまう',
     petWaiting: (tool) => (tool ? `${tool} の承認を待っています。` : '承認を待っています。'), petDone: '終わりました。', petFailed: 'うまくいきませんでした。',
     chooseExport: 'タイムラインを書き出す', chooseMedia: '読み込むメディアを選択', media: '動画・音声・画像', allFiles: 'すべてのファイル',
-    importStills: 'スチルを読み込む', exportStills: 'スチルを書き出す', stills: '静止画' },
+    importStills: 'スチルを読み込む', exportStills: 'スチルを書き出す', stills: '静止画', generateLut: 'LUT を生成', cube: 'Cube LUT' },
   'zh-CN': { chooseFolder: '选择项目文件夹', chooseFiles: '选择要附上的文件', open: '打开 Columbina', quit: '退出 Columbina', hidePet: '收起桌宠',
     petWaiting: (tool) => (tool ? `等你点头：${tool}。` : '等你点头。'), petDone: '做完了。', petFailed: '遇到点难题。',
     chooseExport: '导出时间线', chooseMedia: '选择要导入的媒体', media: '视频、音频和图片', allFiles: '所有文件',
-    importStills: '导入静帧', exportStills: '导出静帧', stills: '静帧图像' },
+    importStills: '导入静帧', exportStills: '导出静帧', stills: '静帧图像', generateLut: '生成 LUT', cube: 'Cube LUT' },
 };
 /**
  * The methods of the engine that the page may call. The view is attached and detached by the
@@ -163,7 +163,12 @@ const PAGE_METHODS = new Set([
   // from files chosen in the dialog and exported where Save As says (`engine-still-import`, `-export`).
   'viewer.wipe', 'viewer.split', 'still.grab', 'still.get', 'still.apply', 'still.label', 'still.delete', 'still.move',
   'gallery.list', 'gallery.thumbnail', 'gallery.album.create', 'gallery.album.rename', 'gallery.album.delete', 'grade.append_node',
+  // The Highlight modes and Bypass Color of the Color page's viewer, and its thumbnails as they are
+  // graded. Generate LUT names a file, which Save As chooses (`engine-export-lut`).
+  'viewer.highlight', 'viewer.bypass', 'timeline.thumbnail',
 ]);
+/** The points on an edge of the cubes that Generate LUT makes (Reference Manual 20, p. 3413). */
+const LUT_SIZES = [17, 33, 65];
 /** The endings of the pictures that the engine makes stills of (PNG, TIFF, OpenEXR; not JPEG, which is Y'CbCr). */
 const STILL_ENDINGS = ['png', 'tif', 'tiff', 'exr'];
 /** The endings of the files that the engine reads as media, offered first in the dialog. */
@@ -2112,6 +2117,45 @@ function installHandlers() {
     if (studio !== open) return { ok: false, error: { code: null, message: 'The project of the studio was closed meanwhile.', data: null } };
     const prefix = path.basename(chosen.filePath, path.extname(chosen.filePath));
     return answered(open.session.call('still.export', { stills: [...stills], dir: path.dirname(chosen.filePath), ...(prefix ? { prefix } : {}) }));
+  });
+  ipcMain.handle('columbina:engine-export-lut', async (event, asked) => {
+    checkSender(event);
+    refuseStudioElsewhere();
+    const open = studio;
+    if (!open) return { ok: false, error: { code: null, message: 'No project is open in the studio.', data: null } };
+    // Generate LUT (Reference Manual 20, p. 3413): a grade the page names by its target, baked
+    // into a cube of 17, 33 or 65 points, written where Save As says and nowhere else.
+    const grade = asked?.grade;
+    const keys = ['level', 'timeline', 'clip', 'group'];
+    if (typeof grade !== 'object' || grade === null || Array.isArray(grade) || typeof grade.level !== 'string'
+      || !Object.entries(grade).every(([key, value]) => keys.includes(key) && typeof value === 'string' && value)) {
+      throw new Error('Name the grade by its level and where it is.');
+    }
+    if (!LUT_SIZES.includes(asked?.size)) throw new Error('A cube is of 17, 33 or 65 points.');
+    const node = asked?.node;
+    if (node !== undefined && (typeof node !== 'string' || !node)) throw new Error('Name a node by its id.');
+    const frame = asked?.frame;
+    if (frame !== undefined && !Number.isSafeInteger(frame)) throw new Error('A frame is a whole number.');
+    const words = WORDS[spoken(asked?.language)];
+    // Save As opens in the library of LUTs, as DaVinci Resolve's opens in its LUT folder, so that
+    // the cube saved there is listed and can be put on a node (p. 3413); else in the project's folder.
+    const listed = await answered(open.session.call('luts.list', null));
+    const roots = listed.ok && Array.isArray(listed.result?.roots) ? listed.result.roots : [];
+    const library = roots.find(each => each?.place === 'library' && each.exists === true && typeof each.path === 'string' && path.isAbsolute(each.path));
+    const folder = library ? library.path : path.resolve(open.project, ...STUDIO_FOLDER.map(() => '..'));
+    if (studio !== open) return { ok: false, error: { code: null, message: 'The project of the studio was closed meanwhile.', data: null } };
+    const chosen = await dialog.showSaveDialog(window, {
+      title: words.generateLut, defaultPath: path.join(folder, `${fileNameOf(asked?.name)}.cube`),
+      filters: [{ name: words.cube, extensions: ['cube'] }],
+    });
+    if (chosen.canceled) return { ok: true, result: null };
+    if (typeof chosen.filePath !== 'string' || !path.isAbsolute(chosen.filePath)) throw new Error('Choose a whole path in Save As.');
+    if (studio !== open) return { ok: false, error: { code: null, message: 'The project of the studio was closed meanwhile.', data: null } };
+    // Save As asked before a file there is replaced; the engine replaces only a file.
+    return answered(open.session.call('grade.export_lut', {
+      grade: { ...grade }, size: asked.size, path: chosen.filePath, replace: true,
+      ...(node === undefined ? {} : { node }), ...(frame === undefined ? {} : { frame }),
+    }));
   });
   ipcMain.handle('columbina:engine-render', async (event, asked) => {
     checkSender(event);

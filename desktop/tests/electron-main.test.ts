@@ -4506,6 +4506,8 @@ describe('the engine of the studio', () => {
       'window_presets.list', 'window_presets.save', 'window_presets.update', 'window_presets.delete', 'window_presets.apply',
       // The LUT browser's previews and the Color Viewer LUT of the Color page (wave E).
       'luts.preview', 'viewer.preview', 'viewer.lut',
+      // The Tracker palette and the keys of the Color › Tracker menu (T24).
+      'track.start', 'track.stop', 'track.edit',
     ];
     for (const method of allowed) {
       const params = method === 'transaction.apply' ? { ops: [{ op: 'remove_clip', timeline: 't1', id: 'c1' }] } : { frame: 3, monitor: 'source' };

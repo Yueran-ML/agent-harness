@@ -177,6 +177,9 @@ const PAGE_METHODS = new Set([
   // The LUT browser's thumbnails and its Live Preview on the viewer, of LUTs named in the folders of
   // LUTs alone (the engine refuses any other name), and the Color Viewer LUT on the Color page alone.
   'luts.preview', 'viewer.preview', 'viewer.lut',
+  // Window tracking (RM20 pp. 3231–3238): a track of the selected window, its stop, and the edits
+  // of its track data, which name the window by its grade, node and id alone.
+  'track.start', 'track.stop', 'track.edit',
 ]);
 /** The points on an edge of the cubes that Generate LUT makes (Reference Manual 20, p. 3413). */
 const LUT_SIZES = [17, 33, 65];

@@ -994,6 +994,13 @@ export const en = {
           vectors: { red: 'Red', yellow: 'Yellow', green: 'Green', cyan: 'Cyan', blue: 'Blue', magenta: 'Magenta' },
           picker: 'Sample in the viewer',
         },
+        /** The Blur palette (Reference Manual 20, pp. 3454–3456), in DaVinci Resolve's words. */
+        blurPalette: {
+          modes: 'Mode', blur: 'Blur', sharpen: 'Sharpen', mist: 'Mist',
+          radius: 'Radius', ratio: 'H/V Ratio', scaling: 'Scaling', coring_softness: 'Coring Softness', level: 'Level', mix: 'Mix',
+          gang: 'Gang the red, green and blue sliders', reset: 'Reset', resetColumn: 'Reset',
+          channels: { r: 'Red', g: 'Green', b: 'Blue' },
+        },
         /** The video scopes (Reference Manual 20, pp. 3007–3022), in DaVinci Resolve's words. */
         scopes: {
           kinds: { waveform: 'Waveform', parade: 'Parade', vectorscope: 'Vectorscope', histogram: 'Histogram', chromaticity: 'CIE Chromaticity' },

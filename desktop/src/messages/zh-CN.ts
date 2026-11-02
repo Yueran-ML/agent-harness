@@ -858,6 +858,12 @@ export const zhCN: Messages = {
           vectors: { red: '红', yellow: '黄', green: '绿', cyan: '青', blue: '蓝', magenta: '品红' },
           picker: '在检视器上取样',
         },
+        blurPalette: {
+          modes: '模式', blur: '模糊', sharpen: '锐化', mist: '薄雾',
+          radius: '半径', ratio: '水平/垂直比率', scaling: '缩放', coring_softness: '核心柔化', level: '级别', mix: '混合',
+          gang: '联动红、绿、蓝滑块', reset: '重置', resetColumn: '重置',
+          channels: { r: '红', g: '绿', b: '蓝' },
+        },
         scopes: {
           kinds: { waveform: '波形图', parade: '分量图', vectorscope: '矢量图', histogram: '直方图', chromaticity: 'CIE 色度图' },
           scope: '示波器', controls: '示波器设置', menu: '示波器选项', expand: '在浮动窗口中打开', close: '关闭',

@@ -1,0 +1,41 @@
+/*
+ * The Blur palette of the Color page (Reference Manual 20, pp. 3454–3456): three columns of
+ * ganged bars, Radius, H/V Ratio and Scaling, and the settings beneath them. The bars and the
+ * numbers are those of the Bars mode of the Primaries palette (palettes.css).
+ */
+.color-blur {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.color-blur-columns {
+  display: flex;
+  justify-content: space-around;
+  gap: var(--s2);
+  padding: var(--s1) var(--s2);
+  flex-wrap: wrap;
+}
+
+.color-blur-column {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+}
+
+/* What the tab does not use is grey (pp. 3454–3456). */
+.color-blur-column[data-unused] {
+  opacity: 0.45;
+}
+
+.color-blur-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.color-blur-singles {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}

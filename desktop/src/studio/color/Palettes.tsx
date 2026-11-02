@@ -4,6 +4,8 @@ import { useWords } from '../../app/locale';
 import { callEngine } from '../engine';
 import { editingAllowed, inStudio } from '../keys';
 import { autoColor, curvesChanged, primariesChanged } from './corrector';
+import { blurChanged } from './blur';
+import { BlurPalette } from './BlurPalette';
 import { CurvesPalette, type CurveMode } from './Curves';
 import { keyChanged } from './KeyPalette';
 import { PrimariesPalette, type PrimariesMode } from './Primaries';
@@ -61,6 +63,8 @@ function PaletteGroup<T extends Palette>({ name, palettes, chosen, onChoose, sid
     const given = filled.bodies?.[chosen];
     if (given !== undefined) return given(edit);
     if (chosen === 'scopes' && filled.scopes !== undefined) return filled.scopes;
+    if (chosen === 'blur') return edit.enabled ? <BlurPalette key={edit.interaction} edit={edit} />
+      : <p className="caption color-empty" data-test="no-corrector">{words.hint.studio.colorPage.noCorrector}</p>;
     if (chosen !== 'primaries' && chosen !== 'curves') return <p className="caption color-empty">{words.hint.studio.colorPage.palette}</p>;
     if (!edit.enabled) return <p className="caption color-empty" data-test="no-corrector">{words.hint.studio.colorPage.noCorrector}</p>;
     return chosen === 'primaries'
@@ -156,6 +160,7 @@ export function Palettes({ merged, left, center, last, right, onLeft, onCenter, 
     if (curvesChanged(edit.corrector)) set.add('curves');
     if (edit.corrector.qualifier != null) set.add('qualifier');
     if (keyChanged(edit.corrector)) set.add('key');
+    if (blurChanged(edit.corrector)) set.add('blur');
     return set;
   }, [edit.enabled, edit.corrector]);
 

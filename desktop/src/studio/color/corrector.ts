@@ -66,6 +66,10 @@ export function neutralCorrector(): Corrector {
     qualifier: null,
     windows: [],
     shot_match: null,
+    blur: {
+      mode: 'blur', radius: { r: 0.5, g: 0.5, b: 0.5 }, ratio: { r: 0.5, g: 0.5, b: 0.5 }, scaling: { r: 0.25, g: 0.25, b: 0.25 },
+      coring_softness: 0, level: 0, mix: 100, linked: { radius: true, ratio: true, scaling: true },
+    },
   };
 }
 

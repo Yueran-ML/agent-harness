@@ -270,6 +270,17 @@ export interface KeyOutput { invert: boolean; gain: Param; offset: Param }
 export interface ShotMatch { gamma: Rgb; gain: Rgb; offset: Rgb; contrast: Param; pivot: Param }
 /** The blur of the key coming into a corrector (Key palette, p. 3362): radius 0…2000 (0), ratio 0…1 (0.5). */
 export interface KeyBlur { radius: Param; ratio: Param }
+/** The tab of the Blur palette (pp. 3454–3456). */
+export type BlurMode = 'blur' | 'sharpen' | 'mist';
+/**
+ * The Blur palette of a corrector (pp. 3454–3456): one set of settings that its tabs show. Radius,
+ * H/V Ratio (`ratio`) and Scaling are R, G and B (0.5, 0.5, 0.25 at first, 0…1), ganged by `linked`;
+ * Coring Softness and Level 0…1 (0), Mix 0…100 (100). See PROTOCOL.md, "Grades".
+ */
+export interface BlurSettings {
+  mode: BlurMode; radius: Rgb; ratio: Rgb; scaling: Rgb; coring_softness: Param; level: Param; mix: Param;
+  linked: { radius: boolean; ratio: boolean; scaling: boolean };
+}
 /**
  * The Key palette of a corrector (pp. 3361–3362). `qualifier` (the Qualifier controls: invert, Matte
  * mode, gain, offset; at first `false`, `true`, 1, 0) and `input_blur` are always written by the
@@ -325,6 +336,8 @@ export interface Corrector {
   key: CorrectorKey;
   /** The engine always writes it; `null` for none. */
   shot_match: ShotMatch | null;
+  /** The engine always writes it; older files leave it out, which is the palette as at first. */
+  blur?: BlurSettings;
   /** The engine always writes it; `null` for none, as a node is until a colour is picked. */
   qualifier?: Qualifier | null;
   /** The engine writes the whole list; omitted by older files, which have no windows. */

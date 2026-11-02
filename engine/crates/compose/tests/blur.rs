@@ -341,9 +341,30 @@ fn blurred_grades() -> Vec<(&'static str, Grade)> {
         c.qualifier = Some(q);
         c.key.output.gain = fixed(0.8);
     })]);
+    // A blur, and a sharpening of what it made: the second neighbourhood filters the first.
+    let two = serial(vec![
+        corrector("n1", |c| radius(&mut c.blur, 0.7)),
+        corrector("n2", |c| {
+            c.blur.mode = BlurMode::Sharpen;
+            radius(&mut c.blur, 0.2);
+            c.primaries.gain.g = fixed(1.1);
+        }),
+    ]);
+    // A blur, and downstream a node whose Midtone Detail reads the pixels about what it made.
+    let detailed = serial(vec![
+        corrector("n1", |c| {
+            c.blur.mode = BlurMode::Mist;
+            radius(&mut c.blur, 0.8);
+            c.blur.mix = fixed(70.0);
+        }),
+        corrector("n2", |c| c.primaries.contrast = fixed(1.1)),
+        corrector("n3", |c| c.primaries.midtone_detail = fixed(60.0)),
+    ]);
     vec![
         ("blur", blur),
         ("sharpen", sharpen),
+        ("two in series", two),
+        ("then midtone detail", detailed),
         ("mist", mist),
         ("each channel", channels),
         ("in a parallel", branch),

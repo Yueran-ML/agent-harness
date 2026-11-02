@@ -1169,6 +1169,20 @@ fn a_disabled_node_passes_its_input() {
 }
 
 #[test]
+fn a_node_that_names_a_lut_that_there_is_not_has_none() {
+    let mut node = gain_node("a", [2.0, 2.0, 2.0]);
+    let NodeKind::Corrector(c) = &mut node.kind else {
+        unreachable!()
+    };
+    c.lut = Some("missing.cube".into());
+    let grade = serial(vec![node]);
+    let invert = |_: &str, x: [f32; 3]| x.map(|v| 1.0 - v);
+    let x = [0.2, 0.3, 0.4];
+    let made = evaluate_with(&grade, 0.0, &options(), &NoLuts, &invert, x);
+    near(made, [0.4, 0.6, 0.8], 1e-6);
+}
+
+#[test]
 fn a_grade_that_is_not_complete_changes_nothing() {
     let mut grade = serial(vec![gain_node("a", [2.0, 2.0, 2.0])]);
     // A node left over, not linked to the output.

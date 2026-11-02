@@ -385,6 +385,43 @@ mod tests {
     }
 
     #[test]
+    fn a_level_of_one_omits_detail_up_to_the_reach_of_coring() {
+        let mut palette = Blur {
+            mode: BlurMode::Sharpen,
+            ..Blur::default()
+        };
+        palette.radius.r = Param::Fixed(0.0);
+        // Level 0.5 omits detail below 0.1.
+        palette.level = Param::Fixed(0.5);
+        let block = block(&palette, 0.0);
+        let sharpened = |near: f32| {
+            let x = [0.5, 0.0, 0.0];
+            apply(Params(&block), 0, x, [near, 0.0, 0.0], x)[0]
+        };
+        assert_eq!(sharpened(0.41), 0.5, "a detail of 0.09 is kept out");
+        assert!(sharpened(0.38) > 0.6, "a detail of 0.12 is sharpened");
+    }
+
+    #[test]
+    fn mix_superimposes_nothing_but_in_the_mist_mode() {
+        for mode in [BlurMode::Blur, BlurMode::Sharpen] {
+            let mut palette = Blur {
+                mode,
+                ..Blur::default()
+            };
+            palette.mix = Param::Fixed(50.0);
+            assert_eq!(block(&palette, 0.0)[2][3], 0.0, "{mode:?}");
+        }
+        let mut palette = Blur {
+            mode: BlurMode::Mist,
+            ..Blur::default()
+        };
+        assert_eq!(block(&palette, 0.0)[2][3], 0.0, "a Mix of 100");
+        palette.mix = Param::Fixed(50.0);
+        assert_eq!(block(&palette, 0.0)[2][3], 1.0);
+    }
+
+    #[test]
     fn coring_softness_alone_turns_no_coring_on() {
         let mut palette = Blur {
             mode: BlurMode::Sharpen,

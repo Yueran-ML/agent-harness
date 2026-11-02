@@ -475,6 +475,43 @@ mod tests {
     }
 
     #[test]
+    fn a_pass_alone_is_the_weighed_mean_of_its_row() {
+        // A box of radius 1 across: each pixel the mean of three, the edges held.
+        let row = picture(5, 1, |x, _| x as f32 / 4.0);
+        let across = run(
+            &Pass {
+                across: true,
+                gaussian: false,
+                reach: 1.0,
+                taps: 1.0,
+                source: (5, 1),
+                target: (5, 1),
+            },
+            &row,
+        );
+        let red: Vec<f32> = (0..5).map(|x| across.at(x, 0)[0]).collect();
+        let want = [1.0 / 12.0, 0.25, 0.5, 0.75, 11.0 / 12.0].map(half);
+        for (got, want) in red.iter().zip(want) {
+            assert!((got - want).abs() < 1e-3, "{red:?}");
+        }
+    }
+
+    #[test]
+    fn a_texture_is_read_unpremultiplied_and_held_at_its_edges() {
+        let mut image = picture(4, 2, |x, _| x as f32 / 4.0);
+        for pixel in &mut image.pixels {
+            // Half seen: premultiplied by 0.5.
+            *pixel = [pixel[0] * 0.5, pixel[1] * 0.5, pixel[2] * 0.5, 0.5];
+        }
+        let at = [(2.0 + 0.5) / 4.0, 0.25];
+        let [r, g, b] = colour_at(&image, at);
+        assert!((r - 0.5).abs() < 1e-3 && (g - 0.25).abs() < 1e-3 && (b - 0.5).abs() < 1e-3);
+        // Beyond the right and bottom edges, the texels at them.
+        assert_eq!(sample(&image, [1.25, 1.5]), image.at(3, 1));
+        assert_eq!(sample(&image, [-0.5, -0.5]), image.at(0, 0));
+    }
+
+    #[test]
     fn units_are_pixels_of_the_picture_to_a_pixel_of_a_timeline_1080_high() {
         // A picture of 4K fitted into a canvas of 1080: 2.
         assert_eq!(units(2160.0, 1080.0, 1080.0), 2.0);

@@ -4,6 +4,8 @@
 //   - resources/engine holds exactly the engine, the libraries of FFmpeg, its ffmpeg, Microsoft's DXC
 //     (dxcompiler.dll and dxil.dll of one version, 1.8.2502 or later, unless the package was made with
 //     COLUMBINA_DXC=none, which is then set here too) and the notices;
+//   - the notices hold the license files of FFmpeg, of the DXC, of OpenColorIO and the libraries linked
+//     with it, and of each crate, which THIRD_PARTY_ENGINE.md lists;
 //   - the engine needs no C runtime beside it (it is linked with it statically);
 //   - each library says that it is of the LGPL, and that ffmpeg starts and is an LGPL build;
 //   - a headless engine starts with the libraries beside it, says that it will compile its shaders
@@ -26,6 +28,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { cleanEnvironment, DXC_FILES, dxcIn, lgplConfiguration, libraryLicense, runtimeImports } from '../electron/engine-bundle.mjs';
+import { OCIO_PARTS, OCIO_VERSION } from './engine-notices.mjs';
 
 if (process.platform !== 'win32') {
   console.log('Packages bring an engine only on Windows, for now: there is nothing to try here.');
@@ -57,8 +60,17 @@ if (dxc?.why) fail(`its DXC will not do: ${dxc.why}`);
 if (dxc && !(await readFile(path.join(folder, 'THIRD_PARTY_ENGINE.md'), 'utf8')).includes(`are of version ${dxc.version}`)) {
   fail('THIRD_PARTY_ENGINE.md does not give the terms and the version of the DXC beside the engine');
 }
+// OpenColorIO, linked into the engine: the license files of it and of each library linked with it.
+for (const part of OCIO_PARTS) {
+  for (const file of part.files) {
+    if (!existsSync(path.join(folder, 'licenses', part.name, file))) fail(`it has no licenses/${part.name}/${file}, of the ${part.name} linked into the engine`);
+  }
+}
+const told = await readFile(path.join(folder, 'THIRD_PARTY_ENGINE.md'), 'utf8');
+if (!told.includes(`linked statically with OpenColorIO ${OCIO_VERSION}`)) fail(`THIRD_PARTY_ENGINE.md does not list OpenColorIO ${OCIO_VERSION} and the libraries linked with it`);
+// The crates, as many rows of the list of crates as folders of their licenses.
 const crates = await readdir(path.join(folder, 'licenses', 'crates'));
-const listed = (await readFile(path.join(folder, 'THIRD_PARTY_ENGINE.md'), 'utf8')).match(/^\| \S+ \| \d\S* \|/gm) ?? [];
+const listed = told.slice(told.indexOf('## Rust crates in the engine')).match(/^\| \S+ \| \d\S* \|/gm) ?? [];
 if (crates.length === 0 || listed.length !== crates.length) fail(`THIRD_PARTY_ENGINE.md lists ${listed.length} crates, and licenses/crates holds ${crates.length}`);
 
 const runtime = runtimeImports(engine);

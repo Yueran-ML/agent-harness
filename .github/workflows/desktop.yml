@@ -35,6 +35,10 @@ jobs:
       run:
         shell: bash
         working-directory: desktop
+    env:
+      # The OpenColorIO that the engine links statically, as engine/crates/ocio/ci/build-ocio.ps1 and
+      # the notices of the package (desktop/scripts/engine-notices.mjs) know it.
+      OCIO_VERSION: "2.6.0"
     steps:
       - uses: actions/checkout@v7
 
@@ -98,8 +102,42 @@ jobs:
         with:
           workspaces: engine -> target
 
-      # columbina-server does not link columbina-ocio yet, so no OpenColorIO is built here. Once it
-      # does, it needs OCIO_DIR as the engine of CI does: take the steps of OpenColorIO of ci.yml.
+      # OpenColorIO, which the engine links statically from OCIO_DIR, as the engine of CI has it
+      # (ci.yml): built by engine/crates/ocio/ci/build-ocio.ps1 and kept in the cache. OCIO_DIR also
+      # names it to the packaging, which checks that it is of the version of the notices.
+      - name: OpenColorIO, its key in the cache
+        if: runner.os == 'Windows'
+        id: ocio
+        shell: pwsh
+        env:
+          RECIPE: ${{ hashFiles('engine/crates/ocio/ci/build-ocio.ps1', 'engine/crates/ocio/cmake/*.cmake') }}
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $msvc = (Get-Content "$vs\VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt").Trim()
+          Add-Content $env:GITHUB_OUTPUT "key=ocio-$env:OCIO_VERSION-$env:ImageOS-msvc$msvc-$env:RECIPE"
+          Add-Content $env:GITHUB_ENV "OCIO_DIR=$env:RUNNER_TEMP\ocio-$env:OCIO_VERSION"
+
+      - name: OpenColorIO from the cache
+        if: runner.os == 'Windows'
+        id: ocio-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.OCIO_DIR }}
+          key: ${{ steps.ocio.outputs.key }}
+
+      - name: OpenColorIO, built when the cache has none
+        if: runner.os == 'Windows' && steps.ocio-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        working-directory: engine
+        run: ./crates/ocio/ci/build-ocio.ps1 -Version $env:OCIO_VERSION -Prefix $env:OCIO_DIR -WorkDir "$env:RUNNER_TEMP\ocio-build" -Jobs $env:NUMBER_OF_PROCESSORS
+
+      - name: OpenColorIO into the cache
+        if: runner.os == 'Windows' && steps.ocio-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.OCIO_DIR }}
+          key: ${{ steps.ocio.outputs.key }}
+
       - name: Build the engine
         if: runner.os == 'Windows'
         working-directory: engine
@@ -107,7 +145,8 @@ jobs:
 
       # The page, the Python with Columbina built from this commit, the icon of the system, the
       # application around them, and a zip of it. On Windows also the engine, the libraries of
-      # FFmpeg and its ffmpeg (checked to be of the LGPL), Microsoft's DXC, and their notices, in
+      # FFmpeg and its ffmpeg (checked to be of the LGPL), Microsoft's DXC, and their notices, with
+      # those of the OpenColorIO of OCIO_DIR linked into the engine (checked to be of their version), in
       # resources/engine: the engine of engine/target/release, the FFmpeg of FFMPEG_DIR, and
       # dxcompiler.dll and dxil.dll of the Windows SDK of the image (Redist/D3D/x64, which the
       # Windows 11 SDK 10.0.26100 of Visual Studio 2022 puts there), of 1.8.2502 or later, the

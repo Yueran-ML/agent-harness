@@ -14,7 +14,13 @@
 // choice of licenses, with the files of the one it is used under). electron/package.mjs
 // runs the same through rustCrates() and writeCrateNotices(). cargo is taken from CARGO, else PATH;
 // it runs in the engine's folder, so that its rust-toolchain.toml holds.
+//
+// The notices of OpenColorIO, which the engine links statically with the C++ libraries that it is
+// built with, are OCIO_PARTS below and the license files of licenses/ocio/: electron/package.mjs
+// checks with locateOcio() that the OpenColorIO of OCIO_DIR is of their version, and writes them with
+// writeOcioNotices(). tests/engine-ocio-notices.test.ts holds them to engine/crates/ocio/build.rs.
 import { spawnSync } from 'node:child_process';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { copyFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -39,6 +45,106 @@ const OVERRIDES = new Map([
   }],
   ['self_cell', { only: ['LICENSE-APACHE'], under: 'Apache-2.0' }],
 ]);
+
+/**
+ * OpenColorIO, which the crate columbina-ocio links statically into the engine, and the libraries
+ * linked with it: those of engine/crates/ocio/build.rs (`library` is its name there, `prefixes` the
+ * beginnings of the names of its files there). They are built by engine/crates/ocio/ci/build-ocio.ps1
+ * from the release of OpenColorIO, whose CMake fetches the others at the versions that it
+ * recommends (share/cmake/modules/FindExtPackages.cmake, OCIO_INSTALL_EXT_PACKAGES=ALL), at the tags
+ * and commits below. Their license files, in licenses/ocio/<name>/, are copied unchanged from the
+ * sources of that build, besides two notices taken from the head of a source file that is compiled
+ * in (FileFormatCDL.cpp of OpenColorIO, the dragonbox of yaml-cpp), with a line saying where from.
+ * A new version of OpenColorIO is a new list: its FindExtPackages.cmake, and the license files of each.
+ */
+export const OCIO_VERSION = '2.6.0';
+export const OCIO_LICENSES = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'licenses', 'ocio');
+export const OCIO_PARTS = [
+  {
+    name: 'OpenColorIO', library: 'OpenColorIO', prefixes: ['OpenColorIO'], version: OCIO_VERSION, license: 'BSD-3-Clause',
+    source: 'https://github.com/AcademySoftwareFoundation/OpenColorIO, tag v2.6.0',
+    files: ['LICENSE', 'THIRD-PARTY.md', 'FileFormatCDL-NOTICE.txt'],
+  },
+  {
+    name: 'yaml-cpp', library: 'yaml-cpp', prefixes: ['yaml-cpp'], version: '0.9.0', license: 'MIT',
+    source: 'https://github.com/jbeder/yaml-cpp, tag yaml-cpp-0.9.0 (56e3bb550c91fd7005566f19c079cb7a503223cf)',
+    files: ['LICENSE', 'dragonbox-NOTICE.txt'],
+  },
+  {
+    name: 'expat', library: 'expat', prefixes: ['libexpatMT', 'libexpat', 'expat'], version: '2.8.4', license: 'MIT',
+    source: 'https://github.com/libexpat/libexpat, tag R_2_8_4 (12cf0b1f25f026a022fe728ad8f7e3d017285b80)',
+    files: ['COPYING'],
+  },
+  {
+    name: 'Imath', library: 'Imath', prefixes: ['Imath'], version: '3.2.3', license: 'BSD-3-Clause',
+    source: 'https://github.com/AcademySoftwareFoundation/Imath, tag v3.2.3 (5f27ba266d3ea1565e912570c30b5eafc89959f1)',
+    files: ['LICENSE.md'],
+  },
+  {
+    name: 'pystring', library: 'pystring', prefixes: ['pystring'], version: '1.1.4', license: 'BSD-3-Clause',
+    source: 'https://github.com/imageworks/pystring, tag v1.1.4 (7d16bc814ccb4cad03c300dcb77440034caa84f7)',
+    files: ['LICENSE'],
+  },
+  {
+    name: 'minizip-ng', library: 'minizip-ng', prefixes: ['minizip-ng', 'minizip'], version: '4.2.2', license: 'Zlib',
+    source: 'https://github.com/zlib-ng/minizip-ng, tag 4.2.2 (7b2387161c542fa9f427352dcdef76097d0d692b)',
+    files: ['LICENSE'],
+  },
+  {
+    name: 'zlib', library: 'zlib', prefixes: ['zs', 'zlibstatic', 'zlib', 'z'], version: '1.3.2', license: 'Zlib',
+    source: 'https://github.com/madler/zlib, tag v1.3.2 (da607da739fa6047df13e66a2af6b8bec7c2a498)',
+    files: ['LICENSE'],
+  },
+];
+
+/**
+ * The OpenColorIO that the engine is linked with: the folder named by --ocio= or OCIO_DIR (as the
+ * engine was built), of the version that the notices are of, with a static library of each part.
+ * Answers { folder, version }, or ends the packaging, saying why.
+ */
+export function locateOcio({ args = process.argv.slice(2), env = process.env } = {}) {
+  const given = args.find((one) => one.startsWith('--ocio='))?.slice('--ocio='.length) ?? (env.OCIO_DIR || undefined);
+  if (!given) {
+    throw new Error(`There is no OpenColorIO named, whose notices go with the engine: name the folder that the engine was built with (its OCIO_DIR) by OCIO_DIR or --ocio=. It is made by engine/crates/ocio/ci/build-ocio.ps1, OpenColorIO ${OCIO_VERSION}.`);
+  }
+  const folder = path.resolve(given);
+  const versionFile = path.join(folder, 'lib', 'cmake', 'OpenColorIO', 'OpenColorIOConfigVersion.cmake');
+  if (!existsSync(versionFile)) throw new Error(`${folder} has no lib/cmake/OpenColorIO/OpenColorIOConfigVersion.cmake: it is to be the install of OpenColorIO that the engine was built with (OCIO_DIR).`);
+  const version = /set\(PACKAGE_VERSION "([^"]+)"\)/.exec(readFileSync(versionFile, 'utf8'))?.[1];
+  if (version !== OCIO_VERSION) {
+    throw new Error(`The OpenColorIO of ${folder} is ${version ?? 'of no version that it says'}, and the notices of the engine are of OpenColorIO ${OCIO_VERSION} and the libraries that it is built with (OCIO_PARTS of scripts/engine-notices.mjs).`);
+  }
+  const files = readdirSync(path.join(folder, 'lib'));
+  for (const part of OCIO_PARTS) {
+    const found = files.some((file) => {
+      const stem = /\.lib$/i.test(file) ? file.slice(0, -4) : /^lib.*\.a$/.test(file) ? file.slice(3, -2) : null;
+      return stem !== null && part.prefixes.some((prefix) => stem.startsWith(prefix) && /^($|[-_.])/.test(stem.slice(prefix.length)));
+    });
+    if (!found) throw new Error(`${path.join(folder, 'lib')} has no static library of ${part.name}, which the engine is linked with and whose notices go with it.`);
+  }
+  return { folder, version };
+}
+
+/** Copy the license files of OpenColorIO and its libraries into <out>/licenses/<name>/, and answer the Markdown that lists them. */
+export async function writeOcioNotices({ out, from = OCIO_LICENSES }) {
+  const rows = [];
+  for (const part of OCIO_PARTS) {
+    const folder = path.join(out, 'licenses', part.name);
+    await rm(folder, { recursive: true, force: true });
+    await mkdir(folder, { recursive: true });
+    for (const file of part.files) await copyFile(path.join(from, part.name, file), path.join(folder, file));
+    rows.push(`| ${part.name} | ${part.version} | ${part.license} | ${part.source} | ${part.files.map((file) => `\`licenses/${part.name}/${file}\``).join(', ')} |`);
+  }
+  return [
+    `The engine is linked statically with OpenColorIO ${OCIO_VERSION} and with the libraries that it is built with,`,
+    'each at the version of its source below. Their license files are copied unchanged into `licenses/<name>/`.',
+    '',
+    '| Library | Version | License | Source | License files |',
+    '| --- | --- | --- | --- | --- |',
+    ...rows,
+    '',
+  ].join('\n');
+}
 
 /** The target of a package made on this system. */
 export function hostTarget(platform = process.platform, arch = process.arch) {

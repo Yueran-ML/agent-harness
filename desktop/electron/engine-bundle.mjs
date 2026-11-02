@@ -8,6 +8,8 @@
 //                                                 LICENSE.txt, as BtbN's), by default FFMPEG_DIR
 //   --dxc=<dir>           COLUMBINA_DXC           a folder with dxcompiler.dll and dxil.dll, by default
 //                                                 Redist\D3D\x64 of the Windows SDK; `none` for none
+//   --ocio=<dir>          OCIO_DIR                the OpenColorIO that the engine is built with (its
+//                                                 OCIO_DIR), checked to be of the version of its notices
 // What is missing ends the packaging, saying what.
 //
 // DXC. Microsoft's DirectX Shader Compiler, dxcompiler.dll and dxil.dll of 1.8.2502 or later, goes
@@ -44,7 +46,7 @@ import { spawnSync } from 'node:child_process';
 import { copyFile, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { hostTarget, rustCrates, writeCrateNotices } from '../scripts/engine-notices.mjs';
+import { hostTarget, locateOcio, rustCrates, writeCrateNotices, writeOcioNotices } from '../scripts/engine-notices.mjs';
 
 /** The files of the engine's folder on each system, as far as they are known. */
 export const LAYOUT = {
@@ -367,7 +369,9 @@ export function locateEngine({ desktop, args = process.argv.slice(2), platform =
   }
   // Microsoft's compiler of shaders, beside it.
   const dxc = locateDxc({ args });
-  return { platform, layout, repository, engine, ffmpegBin, ffmpeg, ffmpegLicense, dxc };
+  // The OpenColorIO linked into it, of the version that its notices are of.
+  const ocio = locateOcio({ args });
+  return { platform, layout, repository, engine, ffmpegBin, ffmpeg, ffmpegLicense, dxc, ocio };
 }
 
 /** What the notices say of the DXC brought, or of none. */
@@ -427,6 +431,7 @@ export async function bundleEngine({ resources, desktop, located }) {
     await copyFile(path.join(desktop, 'licenses', 'DirectXShaderCompiler-THIRD-PARTY-NOTICES.txt'), path.join(licenses, 'DirectXShaderCompiler', 'THIRD-PARTY-NOTICES.txt'));
     dxcTerms = `${(await withoutComments('THIRD_PARTY_DXC.md')).trimEnd()}\n`;
   }
+  const ocioList = await writeOcioNotices({ out: folder });
   const crates = await rustCrates({ engine: path.join(repository, 'engine'), target: hostTarget(platform) });
   const crateList = await writeCrateNotices({ crates, out: folder });
   // What is written for those who keep the repository (in <!-- -->) is not shipped.
@@ -435,6 +440,8 @@ export async function bundleEngine({ resources, desktop, located }) {
     notice.trimEnd(), '',
     ffmpegNotice(versionLine, options),
     ...(dxcTerms ? [dxcTerms, dxcNotice(dxc)] : []),
+    '## OpenColorIO and the libraries linked with it', '',
+    ocioList,
     '## The files of this folder', '',
     ...files.map(([name]) => `- \`${name}\``).sort(),
     '', `They load besides, from Windows itself: ${[...ofWindows].sort().join(', ')}.`, '',
@@ -443,6 +450,6 @@ export async function bundleEngine({ resources, desktop, located }) {
   ].join('\n'));
 
   const size = (await Promise.all(files.map(([name]) => stat(path.join(folder, name))))).reduce((sum, one) => sum + one.size, 0);
-  console.log(`The engine is in ${folder}: ${files.map(([name]) => name).sort().join(', ')} (${Math.round(size / 1024 / 1024)} MB), and the notices of FFmpeg and of ${crates.length} crates.`);
-  return { folder, files: files.map(([name]) => name).sort(), libraries: [...brought.keys()].sort(), ofWindows: [...ofWindows].sort(), versionLine, crates: crates.length, dxc: dxc.skipped ? null : dxc.version };
+  console.log(`The engine is in ${folder}: ${files.map(([name]) => name).sort().join(', ')} (${Math.round(size / 1024 / 1024)} MB), and the notices of FFmpeg, of OpenColorIO ${located.ocio.version} and of ${crates.length} crates.`);
+  return { folder, files: files.map(([name]) => name).sort(), libraries: [...brought.keys()].sort(), ofWindows: [...ofWindows].sort(), versionLine, crates: crates.length, dxc: dxc.skipped ? null : dxc.version, ocio: located.ocio.version };
 }

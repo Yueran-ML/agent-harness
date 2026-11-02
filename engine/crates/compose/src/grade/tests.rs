@@ -1283,6 +1283,116 @@ fn composite_modes_lay_the_front_over_the_back() {
 // ---------------------------------------------------------------------------------------------
 
 #[test]
+fn every_composite_mode_lays_each_side_of_its_branches_as_its_definition_says() {
+    // The separable modes of the compositing of W3C and Photoshop, and the modes of colour with
+    // their clip into range about luma, at three pairs that go through each branch.
+    let c = constants();
+    let pairs = [
+        ([0.6, 0.3, 0.2], [0.2, 0.5, 0.9]),
+        ([0.1, 0.8, 0.0], [0.7, 0.3, 1.0]),
+        ([1.0, 0.5, 0.4], [0.0, 0.8, 0.6]),
+    ];
+    let third = 1.0 / 3.0;
+    let table: [(Composite, [[f32; 3]; 3]); 14] = [
+        (
+            Composite::ColorBurn,
+            [[0.0, 0.0, 1.0 / 9.0], [0.0, third, 0.0], [1.0, 0.375, 0.0]],
+        ),
+        (
+            Composite::ColorDodge,
+            [[0.75, 0.6, 1.0], [third, 1.0, 0.0], [1.0, 1.0, 1.0]],
+        ),
+        (
+            Composite::Softlight,
+            [
+                [0.456, 0.3, 0.3984],
+                [0.1784, 0.736, 0.0],
+                [1.0, 0.624_264_1, 0.446_491_1],
+            ],
+        ),
+        (
+            Composite::VividLight,
+            [
+                [0.0, 0.3, 1.0],
+                [1.0 / 6.0, 2.0 / 3.0, 0.0],
+                [1.0, 1.0, 0.5],
+            ],
+        ),
+        (
+            Composite::PinLight,
+            [[0.4, 0.3, 0.8], [0.4, 0.6, 1.0], [0.0, 0.6, 0.4]],
+        ),
+        (
+            Composite::Divide,
+            [
+                [3.0, 0.6, 2.0 / 9.0],
+                [1.0 / 7.0, 8.0 / 3.0, 0.0],
+                [1.0, 0.625, 2.0 / 3.0],
+            ],
+        ),
+        (
+            Composite::Exclusion,
+            [[0.56, 0.5, 0.74], [0.66, 0.62, 1.0], [1.0, 0.5, 0.52]],
+        ),
+        (
+            Composite::LinearLight,
+            [[0.0, 0.3, 1.0], [0.5, 0.4, 1.0], [0.0, 1.1, 0.6]],
+        ),
+        (
+            Composite::LinearDodge,
+            [[0.8, 0.8, 1.1], [0.8, 1.1, 1.0], [1.0, 1.3, 1.0]],
+        ),
+        (
+            Composite::Overlay,
+            [[0.36, 0.3, 0.36], [0.14, 0.72, 0.0], [1.0, 0.8, 0.48]],
+        ),
+        (
+            Composite::Hue,
+            [
+                [0.205_074_3, 0.376_502_9, 0.605_074_3],
+                [0.783_895, 0.495_754_9, 1.0],
+                [0.137_47, 0.737_47, 0.587_47],
+            ],
+        ),
+        (
+            Composite::Saturation,
+            [
+                [0.782_58, 0.257_58, 0.082_58],
+                [0.161_677_5, 0.774_177_5, 0.074_177_5],
+                [1.0, 0.5, 0.4],
+            ],
+        ),
+        (
+            Composite::Color,
+            [
+                [0.091_46, 0.391_46, 0.791_46],
+                [0.783_895, 0.495_754_9, 1.0],
+                [0.0, 0.778_683_3, 0.584_012_5],
+            ],
+        ),
+        (
+            Composite::Luminosity,
+            [
+                [0.708_54, 0.408_54, 0.308_54],
+                [0.073_401_6, 0.587_213_1, 0.0],
+                [1.0, 0.520_453, 0.424_543_5],
+            ],
+        ),
+    ];
+    for (mode, wanted) in table {
+        for ((b, f), want) in pairs.iter().zip(wanted) {
+            let got = maths::composite(&c, layout::composite(mode), *b, *f);
+            for i in 0..3 {
+                assert!(
+                    (got[i] - want[i]).abs() < 2e-6,
+                    "{mode:?} of {f:?} over {b:?}: {got:?}, not {want:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn luminosity_keeps_the_colour_of_the_back_and_clips_it_into_range_about_its_luma() {
     let c = constants();
     // Within range: the back moved to the luma of the front.

@@ -12,6 +12,9 @@ use super::{check_label, Bounds, Param};
 use crate::{Id, OpError};
 
 pub mod topology;
+pub mod tracking;
+
+pub use tracking::WindowTracking;
 
 /// The Polygon limit documented on p. 3194; it is not a limit on Curve windows.
 pub const MOST_POLYGON_POINTS: usize = 128;
@@ -68,6 +71,10 @@ pub struct Window {
     pub opacity: Param,
     /// The shape and its editable geometry, including an unfinished Curve draft.
     pub shape: WindowShape,
+    /// Its tracking (T24), apart from this manual shape and its keys; left out when there is
+    /// none. A window preset never stores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracking: Option<WindowTracking>,
 }
 
 impl Window {
@@ -83,6 +90,7 @@ impl Window {
             transform: WindowTransform::default(),
             opacity: bounds::OPACITY.param(),
             shape,
+            tracking: None,
         }
     }
 
@@ -166,6 +174,9 @@ impl Window {
         check_label(&self.label)?;
         self.transform.check()?;
         bounds::OPACITY.check("windows.opacity", &self.opacity)?;
+        if let Some(tracking) = &self.tracking {
+            tracking.check()?;
+        }
         self.shape.check()
     }
 }

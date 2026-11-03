@@ -353,15 +353,21 @@ cannot be opened or decoded is `-32002`, with `path`, `reason` and `message` as 
   is omitted; for audio-only media it is the audio stream start. A source without audio is
   `-32002`, reason `no_audio`. Audio is always read from the original, not the picture proxy.
 - **Streams of sound.** Without `stream` the waveform is of the media's sound: its best stream
-  of sound, as libav ranks them, in the channels that `facts.audio` counts. `stream` asks for
-  another stream of a file that holds several (a camera that writes one stream for each
-  microphone), by its index among all the streams of the file, as `ffprobe` numbers them: its
-  channels are given as the stream has them, in the order of its own layout, none mixed into
-  another, as a clip's channel configuration picks them (RM20 pp. 3833-3835). Its time zero is
-  that of the media's sound (the first video frame, or the start of the best stream of sound).
-  An index that is not a stream of sound the engine can decode is `-32602`, `data:
-  {"reason":"stream", "stream":n}`; where the file cannot be opened the waveform of a stream
-  is still given from its cache, as any waveform is.
+  of sound, as libav ranks them, in the channels that `facts.audio` counts, laid out by
+  swresample in the default layout of libav for that many channels. That is the stream's own
+  order where its layout is that default (mono, stereo, 5.1), but not where it is another:
+  3.0 (L R C) is mixed into 2.1 (L R LFE), its C into the left and right. A waveform of each
+  channel as it is (for the lanes of a track, or to pick a channel) passes `stream`. `stream`
+  asks for a stream of the file by its index among all the streams of the file, as `ffprobe`
+  numbers them (the sound of a file with a picture is usually stream 1): its channels are given
+  as the stream has them, in the order of the layout that the stream says it has, none mixed
+  into another, as a clip's channel configuration picks them (RM20 pp. 3833-3835). Its time
+  zero is that of the media's sound (the first video frame, or the start of the best stream of
+  sound), so a stream that starts later is silent until it starts. An index that is not a
+  stream of sound the engine can decode is `-32602`, `data: {"reason":"stream", "stream":n}`.
+  The cache of a stream's waveform is read first, by the channels that its header says, without
+  opening the file; a file that cannot be opened and has no cache is answered as for the sound
+  of the media: pending, then the notification, then the error.
 - **Background work.** An uncached waveform returns `{"pending":true}` and runs on a separate
   single-worker queue, leaving the thumbnail queue available. Repeated requests for the same
   pending source share the job. Completion sends `media.waveform` with `{"media":"m1"}` (and

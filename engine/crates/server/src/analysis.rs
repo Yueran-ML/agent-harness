@@ -83,7 +83,9 @@ pub struct WaveJob {
     media: Media,
     stream: Option<usize>,
     key: String,
-    spec: WaveSpec,
+    /// The size of the waveform; none for a stream whose file could not be opened, which the
+    /// job opens again, to make its waveform or to say why it cannot.
+    spec: Option<WaveSpec>,
 }
 
 impl Analysis {
@@ -157,9 +159,28 @@ impl Analysis {
                 Some(stream) => format!("{}-s{stream}.bin", stem(&media)),
             };
             let cache = cache_path(&shared.project, "waveforms", &key);
-            let spec = WaveSpec::new(&media, stream, cache.as_deref())?;
-            if let Some(wave) = cache.and_then(|path| cached_wave(&path, &spec)) {
-                return Ok((wave.value(), None));
+            let audio =
+                media.facts.audio.as_ref().ok_or_else(|| {
+                    cannot_read(&media.path, "no_audio", "the media has no sound")
+                })?;
+            let spec = match stream {
+                None => Some(WaveSpec::new(&media, audio.channels)?),
+                Some(stream) => {
+                    // The cache first, by the channels that its header says, so that the file
+                    // is not opened for a waveform made before (nor needed: it may be offline).
+                    if let Some(wave) = cache.as_deref().and_then(|path| {
+                        let spec = WaveSpec::new(&media, cached_channels(path)?).ok()?;
+                        cached_wave(path, &spec)
+                    }) {
+                        return Ok((wave.value(), None));
+                    }
+                    stream_spec(&media, stream)?
+                }
+            };
+            if let (None, Some(spec), Some(path)) = (stream, &spec, &cache) {
+                if let Some(wave) = cached_wave(path, spec) {
+                    return Ok((wave.value(), None));
+                }
             }
             let mut jobs = shared
                 .jobs
@@ -194,7 +215,12 @@ impl WaveJob {
             };
             let _ = tokio::task::spawn_blocking(move || {
                 let _permit = permit;
-                let result = make_wave(&self.media, self.stream, &self.spec, &self.shared.stopped);
+                let result = make_wave(
+                    &self.media,
+                    self.stream,
+                    self.spec.as_ref(),
+                    &self.shared.stopped,
+                );
                 let saved = result.as_ref().is_ok_and(|wave| {
                     cache_path(&self.shared.project, "waveforms", &self.key).is_some_and(|path| {
                         let mut bytes = Vec::with_capacity(WAVE_MAGIC.len() + 2 + wave.peaks.len());
@@ -388,33 +414,28 @@ struct WaveSpec {
     bytes: usize,
 }
 
+/// The size of the waveform of stream `stream` of the media, from the channels that its file
+/// says the stream has. A stream that the file does not have as sound is refused; where the file
+/// cannot be opened, none, so that the job says why, as it does for the sound of the media.
+fn stream_spec(media: &Media, stream: usize) -> Result<Option<WaveSpec>, Fault> {
+    let Ok(sounds) = columbina_media::sounds(Path::new(&media.path)) else {
+        return Ok(None);
+    };
+    let channels = sounds
+        .streams
+        .iter()
+        .find(|found| found.index == stream)
+        .map(|found| found.channels)
+        .ok_or_else(|| {
+            Fault::params(format!("the media has no stream of sound {stream}"))
+                .with_data(json!({"reason":"stream", "stream":stream}))
+        })?;
+    WaveSpec::new(media, channels).map(Some)
+}
+
 impl WaveSpec {
-    /// The waveform of the sound of the media, or of one of its streams of sound. The channels
-    /// of a stream are read from its file; from the cache `cache` of its waveform, where the
-    /// file cannot be opened, so that a waveform made before is given while it is offline.
-    fn new(media: &Media, stream: Option<usize>, cache: Option<&Path>) -> Result<Self, Fault> {
-        let audio = media
-            .facts
-            .audio
-            .as_ref()
-            .ok_or_else(|| cannot_read(&media.path, "no_audio", "the media has no sound"))?;
-        let channels = match stream {
-            None => audio.channels,
-            Some(stream) => match columbina_media::sounds(Path::new(&media.path)) {
-                Ok(sounds) => sounds
-                    .streams
-                    .iter()
-                    .find(|found| found.index == stream)
-                    .map(|found| found.channels)
-                    .ok_or_else(|| {
-                        Fault::params(format!("the media has no stream of sound {stream}"))
-                            .with_data(json!({"reason":"stream", "stream":stream}))
-                    })?,
-                Err(error) => cache
-                    .and_then(cached_channels)
-                    .ok_or_else(|| cannot_read(&media.path, error.reason(), &error.to_string()))?,
-            },
-        };
+    /// The waveform of `channels` channels of the sound of the media, as long as the media.
+    fn new(media: &Media, channels: u16) -> Result<Self, Fault> {
         let duration = media.facts.duration;
         let bins = ceil(
             i128::from(duration.ticks) * i128::from(RATE),
@@ -439,15 +460,35 @@ impl WaveSpec {
 fn make_wave(
     media: &Media,
     stream: Option<usize>,
-    spec: &WaveSpec,
+    spec: Option<&WaveSpec>,
     stopped: &AtomicBool,
 ) -> Result<Wave, Fault> {
-    let read = || -> Result<Wave, MediaError> {
-        let path = Path::new(&media.path);
-        let mut decoder = match stream {
-            None => AudioDecoder::open(path, None)?,
-            Some(stream) => AudioDecoder::open_unmixed(path, stream, None)?,
-        };
+    let path = Path::new(&media.path);
+    let cannot = |error: MediaError| cannot_read(&media.path, error.reason(), &error.to_string());
+    let decoder = match stream {
+        None => AudioDecoder::open(path, None),
+        Some(stream) => AudioDecoder::open_unmixed(path, stream, None),
+    };
+    let decoder = match decoder {
+        Ok(decoder) => decoder,
+        // Opened now, the file has no such stream of sound.
+        Err(MediaError::NoStreams) if stream.is_some() => {
+            return Err(cannot_read(
+                &media.path,
+                "no_audio",
+                "the media has no such stream of sound",
+            ))
+        }
+        Err(error) => return Err(cannot(error)),
+    };
+    let made;
+    let spec = if let Some(spec) = spec {
+        spec
+    } else {
+        made = WaveSpec::new(media, decoder.format().channels)?;
+        &made
+    };
+    let read = |mut decoder: AudioDecoder| -> Result<Wave, MediaError> {
         let format = decoder.format();
         if format.channels != spec.channels {
             return Err(MediaError::Unsupported(
@@ -493,7 +534,7 @@ fn make_wave(
             peaks: peaks.finish(),
         })
     };
-    read().map_err(|error| cannot_read(&media.path, error.reason(), &error.to_string()))
+    read(decoder).map_err(cannot)
 }
 
 /// Reduce every native sample, without downsampling away narrow peaks. Missing samples are

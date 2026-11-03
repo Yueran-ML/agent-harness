@@ -1951,6 +1951,123 @@ async fn analysis_waveform_of_each_stream_of_sound_has_its_channels_and_its_own_
     assert_eq!(stream_waveform(&mut client, "m1", 1).await, waves[1]);
 }
 
+/// The peaks of a waveform, decoded: for each bin, the least and the most of each channel.
+fn peaks_of(result: &Value) -> Vec<i8> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD
+        .decode(result["peaks"].as_str().unwrap())
+        .unwrap()
+        .into_iter()
+        .map(u8::cast_signed)
+        .collect()
+}
+
+/// A media of the tests imported into a new engine, copied into its project first.
+async fn imported(sample: support::Sample) -> Option<(tempfile::TempDir, Engine, Client)> {
+    let made = support::media(sample)?;
+    let dir = project_dir();
+    let extension = made.path.extension().unwrap().to_str().unwrap().to_owned();
+    let source = dir.path().join(format!("source.{extension}"));
+    std::fs::copy(&made.path, &source).unwrap();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut client = engine.client("agent").await;
+    client
+        .result("media.import", Some(json!({"paths":[source]})))
+        .await;
+    Some((dir, engine, client))
+}
+
+#[tokio::test]
+async fn analysis_waveform_of_a_stream_lays_its_channels_out_as_the_stream_does() {
+    let Some((_dir, _engine, mut client)) = imported(support::Sample::ThreeZero).await else {
+        return;
+    };
+    // 3.0: L, R and C at amplitude 0.25 each; C is the third channel of the stream.
+    let own = stream_waveform(&mut client, "m1", 0).await;
+    assert_eq!(own["channels"], 3);
+    let peaks = peaks_of(&own);
+    let most = |peaks: &[i8], channel: usize| {
+        peaks
+            .as_chunks::<6>()
+            .0
+            .iter()
+            .map(|bin| bin[channel * 2 + 1])
+            .max()
+            .unwrap()
+    };
+    for channel in 0..3 {
+        assert_eq!(most(&peaks, channel), 32, "channel {channel}");
+    }
+    // Without a stream, swresample lays the channels out as 2.1, the default of three: C is
+    // mixed into the left and right, and the third channel is of the low frequencies, silent.
+    let mixed = waveform(&mut client, "m1").await;
+    assert_eq!(mixed["channels"], 3);
+    assert_ne!(mixed, own);
+    assert_eq!(most(&peaks_of(&mixed), 2), 0);
+}
+
+#[tokio::test]
+async fn analysis_waveform_of_a_stream_is_named_by_its_index_among_all_the_streams() {
+    let Some((_dir, _engine, mut client)) = imported(support::Sample::Fhd).await else {
+        return;
+    };
+    // The picture is stream 0, the sound stream 1.
+    let sound = stream_waveform(&mut client, "m1", 1).await;
+    assert_eq!(sound, waveform(&mut client, "m1").await);
+    let error = client
+        .error("media.waveform", Some(json!({"media":"m1", "stream":0})))
+        .await;
+    assert_eq!(error["code"], -32602);
+    assert_eq!(error["data"], json!({"reason":"stream", "stream":0}));
+}
+
+#[tokio::test]
+async fn analysis_waveform_of_a_stream_that_starts_later_is_silent_until_it_starts() {
+    let Some((_dir, _engine, mut client)) = imported(support::Sample::LateStream).await else {
+        return;
+    };
+    // The sound of the media starts at 0 with stream 0; stream 1 half a second later.
+    let late = stream_waveform(&mut client, "m1", 1).await;
+    let peaks = peaks_of(&late);
+    assert_eq!(peaks.len(), 200 * 2);
+    let bins = peaks.as_chunks::<2>().0;
+    assert!(
+        bins[..50].iter().all(|bin| *bin == [0, 0]),
+        "{:?}",
+        &bins[..52]
+    );
+    assert!(
+        bins[51..].iter().all(|bin| bin[1] >= 60),
+        "{:?}",
+        &bins[48..56]
+    );
+}
+
+#[tokio::test]
+async fn analysis_waveform_of_a_stream_of_a_file_offline_is_pending_and_then_fails() {
+    let Some((dir, _engine, mut client)) = imported(support::Sample::TwoMonoStreams).await else {
+        return;
+    };
+    let source = dir.path().join("source.mov");
+    std::fs::rename(&source, source.with_extension("offline")).unwrap();
+    // As the sound of the media does: pending, told, and the error at the next query.
+    let params = json!({"media":"m1", "stream":1});
+    assert_eq!(
+        client.result("media.waveform", Some(params.clone())).await,
+        json!({"pending":true})
+    );
+    let ready = |note: &Value| note["method"] == "media.waveform" && note["params"] == params;
+    if !client.take_notifications().iter().any(ready) {
+        while !ready(&client.message().await) {}
+    }
+    let failed = client.error("media.waveform", Some(params.clone())).await;
+    assert_eq!(failed["code"], -32002);
+    assert_eq!(failed["data"]["reason"], "not_found");
+    // Restored, it is made.
+    std::fs::rename(source.with_extension("offline"), &source).unwrap();
+    assert_eq!(stream_waveform(&mut client, "m1", 1).await["channels"], 1);
+}
+
 #[tokio::test]
 async fn analysis_waveform_is_100_peaks_per_second_per_channel_and_cached() {
     use base64::Engine as _;

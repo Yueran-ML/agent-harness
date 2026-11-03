@@ -140,7 +140,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `media.inspect` | `{"paths": ["<file>", ...]}` | `{"media": [media, ...]}` (empty ids; no project change) |
 | `media.make_proxy` | `{"media": "m1"}` | `{}` (see Proxies) |
 | `media.thumbnail` | `{"media": "m1", "frame": 50, "height": 90}` (`frame` optional) | `{"width": 160, "height": 90, "png": "<base64>"}` |
-| `media.waveform` | `{"media": "m1"}` | `{"rate": 100, "channels": 2, "peaks": "<base64>"}`, or `{"pending": true}` |
+| `media.waveform` | `{"media": "m1", "stream"?: 1}` | `{"rate": 100, "channels": 2, "peaks": "<base64>"}`, or `{"pending": true}` |
 | `view.attach` | `{"monitor":"source" \| "timeline", "parent": "<handle>", "x": x, "y": y, "width": w, "height": h}` | `{"adapter": "<name>", "backend": "Dx12", "compiler": "dxc" \| "fxc" \| "auto" \| null}` |
 | `view.place` | `{"monitor":"source" \| "timeline", "x": x, "y": y, "width": w, "height": h}` | `{}` |
 | `view.viewport` | `{"monitor": m}` to query; `{"monitor": m, "mode": "fit"}` or `{"monitor": m, "mode": "scale", "scale": 1.0, "center": {"x": 0.5, "y": 0.5}}` to set | The requested setting: `{"monitor", "mode"}` or `{"monitor", "mode", "scale", "center"}` |
@@ -352,16 +352,27 @@ cannot be opened or decoded is `-32002`, with `path`, `reason` and `message` as 
   Missing sound is zero. For video media time zero is the first video frame, so audio pre-roll
   is omitted; for audio-only media it is the audio stream start. A source without audio is
   `-32002`, reason `no_audio`. Audio is always read from the original, not the picture proxy.
+- **Streams of sound.** Without `stream` the waveform is of the media's sound: its best stream
+  of sound, as libav ranks them, in the channels that `facts.audio` counts. `stream` asks for
+  another stream of a file that holds several (a camera that writes one stream for each
+  microphone), by its index among all the streams of the file, as `ffprobe` numbers them: its
+  channels are given as the stream has them, in the order of its own layout, none mixed into
+  another, as a clip's channel configuration picks them (RM20 pp. 3833-3835). Its time zero is
+  that of the media's sound (the first video frame, or the start of the best stream of sound).
+  An index that is not a stream of sound the engine can decode is `-32602`, `data:
+  {"reason":"stream", "stream":n}`; where the file cannot be opened the waveform of a stream
+  is still given from its cache, as any waveform is.
 - **Background work.** An uncached waveform returns `{"pending":true}` and runs on a separate
   single-worker queue, leaving the thumbnail queue available. Repeated requests for the same
-  pending source share the job. Completion sends `media.waveform` with `{"media":"m1"}` to
-  all clients that said hello, provided the same source is still in the project. Query again
+  pending source share the job. Completion sends `media.waveform` with `{"media":"m1"}` (and
+  the `stream` asked for, if one was) to all clients that said hello, provided the same source is still in the project. Query again
   after this notification to receive the data or a decode error; the notification does not
   assert success. An error is consumed by the next query, and a further query can retry (for
   example after an offline file is restored). Shutdown cancels queued jobs and stops decoding
   at the next audio block.
 - **Caches.** PNG files live in `cache/thumbs/<media>-<digest12>-<frame>-<height>.png`;
-  waveforms in `cache/waveforms/<media>-<digest12>.bin`. The digest is the existing imported
+  waveforms in `cache/waveforms/<media>-<digest12>.bin`, and that of a stream in
+  `<media>-<digest12>-s<stream>.bin`. The digest is the existing imported
   identity, not a newly computed hash. Punctuation in media ids is percent-encoded in filenames.
   Files are replaced atomically. Malformed caches are rebuilt; a cache that cannot be written
   does not prevent a computed answer. Valid caches can be read while the source is offline,
@@ -3383,7 +3394,7 @@ real ids. For example:
 | `transport.state` | the state of the transport (see The transport) |
 | `engine.yielding` | `{"to": "desktop"}`: the engine is about to end, to yield the project to the desktop's engine (see `engine.yield`) |
 | `media.proxy` | `{"media": "m1", "state": "queued" \| "running" \| "done" \| "failed", "progress": 0.5, "message"?: "..."}` (see Proxies) |
-| `media.waveform` | `{"media": "m1"}` (background analysis finished; query again for data or error) |
+| `media.waveform` | `{"media": "m1"}`, or `{"media": "m1", "stream": 1}` for the waveform of a stream (background analysis finished; query again for data or error) |
 | `render.progress` | `{"job", "state": "running" \| "done" \| "failed" \| "cancelled", "frame", "frames", "fps", "path", "encoder"?, "message"?, "missing_luts"?}` (see Rendering a timeline, and Grades in the picture) |
 | `scopes.frame` | `{"scope_id": "scope-1", "view": "timeline", "frame": n, "width": w, "height": h, "rgba": "<base64>"}`: a picture of a scope, to the connection that subscribed it only (see Scopes) |
 | `gallery.changed` | `{}`: the Gallery was changed; call `gallery.list` again (see The Gallery) |
@@ -3455,7 +3466,7 @@ commits to it; and any client may send transactions. So:
 | `-32700` | the line is not JSON (id `null`) | |
 | `-32600` | not a request object, `jsonrpc` is not `"2.0"`, no `method`, a bad `id` (answered with id `null`), a request before `hello`, a second `hello`, a `hello` of another protocol, a line over 16 MiB, `view.*` or `engine.yield` from a client that is not the desktop | `{"reason": "protocol", "supported": [2]}` for a `hello` of another protocol |
 | `-32601` | no such method; `view.*` (but `view.sample` of a frame drawn off screen), `transport.*` and `scopes.*` (but `scopes.statistics` of a frame drawn off screen) in a `--headless` engine; `media.make_proxy` in an engine that makes no proxies; `engine.yield` in an engine that is not headless | |
-| `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name`; a speed of `transport.play` out of −8…8 or 0; `transport.load` of media or a timeline not in the project; `timeline.duration` of a timeline not there; `media.import` or `media.inspect` with no paths or a relative path; `media.thumbnail`, `media.waveform` or `media.make_proxy` of media not there; `media.thumbnail` of a frame outside the media, a height outside 1…270 or a width over 16384; a bad parent or rectangle of `view.*`; `render.start` with a bad path, codec, quality, timeline, range (an empty timeline has none, so it cannot be exported) or `subtitle_tracks`, and `render.cancel` of a job that is not there; `scopes.*` with bad settings, a scope that is not the connection's, too many scopes or bins out of range; `luts.list` with a `folder` outside the roots; `grade.export_lut` of a size, path, grade or node that it does not take; `transaction.apply` with a `gesture` id that is empty or longer than 64 characters; `view.sample` off the frame or of an even size, and `view.sample` or `scopes.statistics` naming a node that cannot be drawn | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above; `{"reason": "speed"}`; `{"index": i, "path": "...", "reason": "relative"}`; `{"reason": "parent"}` or `{"reason": "rect"}` (`view.*`); `{"reason": "missing", "media": "..."}` or `{"reason": "missing", "timeline": "..."}` (`render.start` too); `{"reason": "out_of_range", "frame": n}`; `{"reason": "subtitle_track", "track": "..."}` for a `subtitle_tracks` entry that is not a subtitle track of the timeline, or is named twice; `{"reason": "settings" \| "missing" \| "too_many" \| "bins", ...}` (`scopes.*`, see Scopes); `{"reason": "outside_roots", "folder": "..."}` (`luts.list`); `{"reason": "size" \| "path" \| "missing" \| "not_a_corrector" \| "cannot_bake", ...}` (`grade.export_lut`, see Generate LUT); `{"reason": "gesture"}`; `{"reason": "outside" \| "size" \| "monitor" \| "node" \| "grade" \| "timeline" \| "clip"}` (see Samples and the pointer) |
+| `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name`; a speed of `transport.play` out of −8…8 or 0; `transport.load` of media or a timeline not in the project; `timeline.duration` of a timeline not there; `media.import` or `media.inspect` with no paths or a relative path; `media.thumbnail`, `media.waveform` or `media.make_proxy` of media not there; `media.waveform` of a `stream` that is not a stream of sound of the media; `media.thumbnail` of a frame outside the media, a height outside 1…270 or a width over 16384; a bad parent or rectangle of `view.*`; `render.start` with a bad path, codec, quality, timeline, range (an empty timeline has none, so it cannot be exported) or `subtitle_tracks`, and `render.cancel` of a job that is not there; `scopes.*` with bad settings, a scope that is not the connection's, too many scopes or bins out of range; `luts.list` with a `folder` outside the roots; `grade.export_lut` of a size, path, grade or node that it does not take; `transaction.apply` with a `gesture` id that is empty or longer than 64 characters; `view.sample` off the frame or of an even size, and `view.sample` or `scopes.statistics` naming a node that cannot be drawn | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above; `{"reason": "speed"}`; `{"index": i, "path": "...", "reason": "relative"}`; `{"reason": "parent"}` or `{"reason": "rect"}` (`view.*`); `{"reason": "missing", "media": "..."}` or `{"reason": "missing", "timeline": "..."}` (`render.start` too); `{"reason": "stream", "stream": n}` (`media.waveform`); `{"reason": "out_of_range", "frame": n}`; `{"reason": "subtitle_track", "track": "..."}` for a `subtitle_tracks` entry that is not a subtitle track of the timeline, or is named twice; `{"reason": "settings" \| "missing" \| "too_many" \| "bins", ...}` (`scopes.*`, see Scopes); `{"reason": "outside_roots", "folder": "..."}` (`luts.list`); `{"reason": "size" \| "path" \| "missing" \| "not_a_corrector" \| "cannot_bake", ...}` (`grade.export_lut`, see Generate LUT); `{"reason": "gesture"}`; `{"reason": "outside" \| "size" \| "monitor" \| "node" \| "grade" \| "timeline" \| "clip"}` (see Samples and the pointer) |
 | `-32001` | a transaction, undo or redo was refused; the project is exactly as it was; or `render.start` was refused before anything was written or taken away (with `{"reason":"stopping"}` while the engine is stopping; with no `data` when the export could not be started) | the refusal, below |
 | `-32002` | `media.import` or `media.inspect`: a file cannot be read; nothing was added. `transport.load`, `media.thumbnail`, `media.waveform`: the file of the media cannot be opened or decoded. The analysis of the engine stopped (no `data`) | `{"path": "<as sent>", "reason": "...", "message": "..."}`, below |
 | `-32003` | `view.*`: the view cannot be made, there is none, or its window is gone | `{"reason": "..."}`, see The view |

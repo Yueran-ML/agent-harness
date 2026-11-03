@@ -1873,6 +1873,84 @@ async fn waveform(client: &mut Client, media: &str) -> Value {
     }
 }
 
+/// The waveform of a stream of sound of a media, once it is made.
+async fn stream_waveform(client: &mut Client, media: &str, stream: usize) -> Value {
+    let params = json!({"media":media, "stream":stream});
+    let result = client.result("media.waveform", Some(params.clone())).await;
+    if result["pending"] == true {
+        let ready = |note: &Value| note["method"] == "media.waveform" && note["params"] == params;
+        if !client.take_notifications().iter().any(ready) {
+            loop {
+                if ready(&client.message().await) {
+                    break;
+                }
+            }
+        }
+        client.result("media.waveform", Some(params)).await
+    } else {
+        result
+    }
+}
+
+#[tokio::test]
+async fn analysis_waveform_of_each_stream_of_sound_has_its_channels_and_its_own_cache() {
+    use base64::Engine as _;
+    let Some(made) = support::media(support::Sample::TwoMonoStreams) else {
+        return;
+    };
+    let dir = project_dir();
+    let source = dir.path().join("source.mov");
+    std::fs::copy(made.path, &source).unwrap();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut client = engine.client("agent").await;
+    client
+        .result("media.import", Some(json!({"paths":[source]})))
+        .await;
+    let peaks = |result: &Value| {
+        base64::engine::general_purpose::STANDARD
+            .decode(result["peaks"].as_str().unwrap())
+            .unwrap()
+    };
+    // Stream 0 at amplitude 0.25, stream 1 at 0.5: 127 × each, rounded.
+    let mut waves = Vec::new();
+    for (stream, most) in [(0, 32), (1, 64)] {
+        let result = stream_waveform(&mut client, "m1", stream).await;
+        assert_eq!(result["rate"], 100);
+        assert_eq!(result["channels"], 1, "stream {stream}");
+        let peaks = peaks(&result);
+        assert_eq!(peaks.len(), 200 * 2);
+        let pairs = peaks.as_chunks::<2>().0;
+        assert_eq!(
+            pairs.iter().map(|pair| pair[1].cast_signed()).max(),
+            Some(most)
+        );
+        assert_eq!(
+            pairs.iter().map(|pair| pair[0].cast_signed()).min(),
+            Some(-most)
+        );
+        waves.push(result);
+    }
+    // The sound of the media is its best stream, the first, in a cache of its own.
+    assert_eq!(waveform(&mut client, "m1").await, waves[0]);
+    assert_eq!(stream_waveform(&mut client, "m1", 1).await, waves[1]);
+    let mut caches: Vec<String> = std::fs::read_dir(dir.path().join("cache/waveforms"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    caches.sort();
+    assert_eq!(caches.len(), 3, "{caches:?}");
+    assert!(caches[0].ends_with("-s0.bin") && caches[1].ends_with("-s1.bin"));
+    // No third stream.
+    let error = client
+        .error("media.waveform", Some(json!({"media":"m1", "stream":2})))
+        .await;
+    assert_eq!(error["code"], -32602);
+    assert_eq!(error["data"], json!({"reason":"stream", "stream":2}));
+    // Offline, the waveform made of a stream is still given from its cache.
+    std::fs::rename(&source, source.with_extension("offline")).unwrap();
+    assert_eq!(stream_waveform(&mut client, "m1", 1).await, waves[1]);
+}
+
 #[tokio::test]
 async fn analysis_waveform_is_100_peaks_per_second_per_channel_and_cached() {
     use base64::Engine as _;

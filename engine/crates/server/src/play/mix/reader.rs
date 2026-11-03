@@ -451,7 +451,7 @@ mod tests {
         let mut reader = Reader::new(&media, 48000, &crossed).unwrap();
         assert_eq!(reader.channels(), 2);
         let (left, right) = (second(&mut reader, 0), second(&mut reader, 1));
-        assert!((amplitude(&left, 880.0) - 0.25).abs() < 1e-3);
+        assert!((amplitude(&left, 880.0) - 0.5).abs() < 1e-3);
         assert!(amplitude(&left, 440.0) < 1e-5);
         assert!((amplitude(&right, 440.0) - 0.25).abs() < 1e-3);
         assert!(amplitude(&right, 880.0) < 1e-5);

@@ -154,8 +154,8 @@ pub enum Sample {
     /// 0.25.
     ThreeZero,
     /// Sound only: `QuickTime` of two streams of PCM of 16 bits in mono at 48 kHz, 2 s each, as a
-    /// camera with two microphones writes one stream for each: stream 0 a sine of 440 Hz, stream
-    /// 1 of 880 Hz, at amplitude 0.25.
+    /// camera with two microphones writes one stream for each: stream 0 a sine of 440 Hz at
+    /// amplitude 0.25, stream 1 of 880 Hz at amplitude 0.5.
     TwoMonoStreams,
     /// Sound only: WAV, 16 bits in stereo at 48 kHz, 2 s: the left a sine of 440 Hz, the right
     /// of 880 Hz, at amplitude 0.25.
@@ -838,7 +838,7 @@ fn recipes(sample: Sample, encoders: &str) -> Vec<Recipe> {
                 "-f",
                 "lavfi",
                 "-i",
-                "aevalsrc=exprs=0.25*sin(2*PI*880*t):s=48000:d=2",
+                "aevalsrc=exprs=0.5*sin(2*PI*880*t):s=48000:d=2",
                 "-map",
                 "0:a",
                 "-map",

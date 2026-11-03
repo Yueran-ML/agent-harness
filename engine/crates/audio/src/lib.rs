@@ -1,0 +1,46 @@
+//! The graph of the sound of a timeline (plan of phase 3, Fairlight): clips, track strips, buses
+//! and outputs, processed in blocks on the processor, the same code for playback, export and
+//! analysis.
+//!
+//! This first part (T4a) is what every node and the graph stand on:
+//!
+//! - [`node`]: the interface of a node ([`Node`]), what it is told of a block ([`Block`]: where
+//!   it starts on the timeline, the sidechain, the automation), and the planar buffers between
+//!   nodes ([`Planar`]).
+//! - [`rt`]: what the threads of the sound share without locks (rings, a seqlock) and the 10 ms
+//!   ramp of a parameter ([`rt::Smoothed`]).
+//! - [`fft`]: the transform of Fourier of real signals, planned before the sound runs.
+//! - [`constants`]: the numbers that the manual does not give, in one place.
+//! - `testing` (feature `testing`): the check that the output of a node does not depend on its
+//!   blocks, the allocator that counts what the thread of the mix takes, test nodes, signals.
+//!
+//! # The rules of the thread of the mix
+//!
+//! The thread of the mix and the callback of the card do not lock, allocate or free memory, do
+//! I/O, log, or wait for another thread (convention 3 of the plan). Everything they use is taken
+//! when the graph is built ([`Node::prepare`]).
+
+pub mod constants;
+pub mod fft;
+pub mod node;
+pub mod rt;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
+pub use node::{Automated, Automation, Block, Node, ParamId, Planar, Spec, Unsupported};
+
+/// The gain of `db` decibels; silence at or below [`constants::SILENCE_DB`].
+#[must_use]
+pub fn db_to_gain(db: f32) -> f32 {
+    if db <= constants::SILENCE_DB {
+        0.0
+    } else {
+        10.0_f32.powf(db / 20.0)
+    }
+}
+
+/// The decibels of `gain`; −∞ for silence.
+#[must_use]
+pub fn gain_to_db(gain: f32) -> f32 {
+    20.0 * gain.abs().log10()
+}

@@ -7,7 +7,7 @@
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use columbina_media::{AudioDecoder, AudioFormat, MediaError, Samples};
+use columbina_media::{AudioDecoder, AudioFormat, AudioStreams, MediaError, Samples};
 use columbina_model::Media;
 
 /// How the channels of a clip are made from its media: the `channels` of a clip of the model.
@@ -71,119 +71,130 @@ impl Lane {
     }
 }
 
-/// A stream of the media, decoded into a window of its own.
-struct Stream {
-    /// Its index in the file; none for the best stream of sound, mixed by swresample.
-    index: Option<usize>,
-    channels: usize,
-    decoder: AudioDecoder,
+/// Where the samples come from: the best stream of sound, mixed by swresample (auto), or the
+/// streams that a mapping picks from, each unmixed, from one reading of the file.
+enum Source {
+    Mixed(AudioDecoder),
+    Streams(AudioStreams),
+}
+
+impl Source {
+    fn open(path: &Path, rate: u32, layout: &Layout) -> Result<Self, MediaError> {
+        Ok(match layout {
+            Layout::Auto(channels) => Self::Mixed(AudioDecoder::open(
+                path,
+                Some(AudioFormat {
+                    rate,
+                    channels: *channels,
+                }),
+            )?),
+            Layout::Mapped(lanes) => {
+                let indices: Vec<usize> = lanes
+                    .iter()
+                    .flat_map(|lane| lane.sources.iter().map(|pick| pick.stream))
+                    .collect();
+                Self::Streams(AudioStreams::open_unmixed(path, &indices, Some(rate))?)
+            }
+        })
+    }
+
+    /// How many streams it reads.
+    fn len(&self) -> usize {
+        match self {
+            Self::Mixed(_) => 1,
+            Self::Streams(streams) => streams.len(),
+        }
+    }
+
+    /// The channels of the stream at `place`.
+    fn channels(&self, place: usize) -> usize {
+        usize::from(match self {
+            Self::Mixed(decoder) => decoder.format().channels,
+            Self::Streams(streams) => streams.format(place).channels,
+        })
+    }
+
+    fn seek(&mut self, sample: i64) -> Result<(), MediaError> {
+        match self {
+            Self::Mixed(decoder) => decoder.seek(sample),
+            Self::Streams(streams) => streams.seek(sample),
+        }
+    }
+
+    fn next(&mut self, place: usize) -> Result<Option<Samples>, MediaError> {
+        match self {
+            Self::Mixed(decoder) => decoder.next(),
+            Self::Streams(streams) => streams.next(place),
+        }
+    }
+}
+
+/// Where the decoding of a stream is: the run it gave last, which may reach past the window.
+#[derive(Default)]
+struct Lag {
     pending: Option<Samples>,
     ended: bool,
 }
 
-impl Stream {
-    /// Open stream `index` of the file unmixed at `rate`, or the best stream in `format`. None
-    /// where the file has no such stream of sound: what is picked of it is silent.
-    fn open(
-        path: &Path,
-        index: Option<usize>,
-        format: AudioFormat,
-    ) -> Result<Option<Self>, MediaError> {
-        let opened = match index {
-            None => AudioDecoder::open(path, Some(format)),
-            Some(index) => AudioDecoder::open_unmixed(path, index, Some(format.rate)),
-        };
-        let decoder = match opened {
-            Ok(decoder) => decoder,
-            Err(MediaError::NoStreams) if index.is_some() => return Ok(None),
-            Err(error) => return Err(error),
-        };
-        Ok(Some(Self {
-            index,
-            channels: usize::from(decoder.format().channels),
-            decoder,
-            pending: None,
-            ended: false,
-        }))
-    }
-
-    /// Open it again, at the sample clock it starts with.
-    fn reopen(&mut self, path: &Path, rate: u32) -> Result<(), MediaError> {
-        let format = AudioFormat {
-            rate,
-            channels: u16::try_from(self.channels).unwrap_or(u16::MAX),
-        };
-        self.decoder = match self.index {
-            None => AudioDecoder::open(path, Some(format))?,
-            Some(index) => AudioDecoder::open_unmixed(path, index, Some(rate))?,
-        };
-        self.pending = None;
-        self.ended = false;
-        Ok(())
-    }
-
-    fn seek(&mut self, sample: i64) -> Result<(), MediaError> {
-        self.decoder.seek(sample)?;
-        self.pending = None;
-        self.ended = false;
-        Ok(())
-    }
-
-    /// Decode the samples from `from` to `to` (of the media, from its origin `origin`) into
-    /// `output`, interleaved, which starts at `start`.
-    fn fill(
-        &mut self,
-        origin: i64,
-        start: i64,
-        from: i64,
-        to: i64,
-        output: &mut [f32],
-    ) -> Result<(), String> {
-        let channels = self.channels;
-        while !self.ended {
-            if self.pending.is_none() {
-                self.pending = self.decoder.next().map_err(|error| error.to_string())?;
-                if self.pending.is_none() {
-                    self.ended = true;
-                    break;
-                }
-            }
-            let samples = self.pending.as_ref().expect("read above");
-            let begins = samples
-                .start
-                .checked_sub(origin)
-                .ok_or("decoded audio is outside sample time")?;
-            let length = samples.data.len() / channels;
-            let end = begins.saturating_add(i64::try_from(length).expect("bounded decoder packet"));
-            let left = from.max(begins);
-            let right = to.min(end);
-            if left < right {
-                let source = usize::try_from(left - begins).expect("inside packet") * channels;
-                let target = usize::try_from(left - start).expect("inside window") * channels;
-                let count = usize::try_from(right - left).expect("positive overlap") * channels;
-                output[target..target + count]
-                    .copy_from_slice(&samples.data[source..source + count]);
-            }
-            if end >= to {
+/// Decode the samples of the stream at `place` from `from` to `to` (of the media, from its
+/// origin `origin`) into `output`, interleaved, which starts at `start`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the window and where it is filled"
+)]
+fn fill_stream(
+    source: &mut Source,
+    place: usize,
+    lag: &mut Lag,
+    origin: i64,
+    start: i64,
+    (from, to): (i64, i64),
+    output: &mut [f32],
+) -> Result<(), String> {
+    let channels = source.channels(place);
+    while !lag.ended {
+        if lag.pending.is_none() {
+            lag.pending = source.next(place).map_err(|error| error.to_string())?;
+            if lag.pending.is_none() {
+                lag.ended = true;
                 break;
             }
-            self.pending = None;
         }
-        Ok(())
+        let samples = lag.pending.as_ref().expect("read above");
+        let begins = samples
+            .start
+            .checked_sub(origin)
+            .ok_or("decoded audio is outside sample time")?;
+        let length = samples.data.len() / channels;
+        let end = begins.saturating_add(i64::try_from(length).expect("bounded decoder packet"));
+        let left = from.max(begins);
+        let right = to.min(end);
+        if left < right {
+            let source = usize::try_from(left - begins).expect("inside packet") * channels;
+            let target = usize::try_from(left - start).expect("inside window") * channels;
+            let count = usize::try_from(right - left).expect("positive overlap") * channels;
+            output[target..target + count].copy_from_slice(&samples.data[source..source + count]);
+        }
+        if end >= to {
+            break;
+        }
+        lag.pending = None;
     }
+    Ok(())
 }
 
 pub(crate) struct Reader {
     path: PathBuf,
     rate: u32,
+    layout: Layout,
     /// How many channels it gives.
     channels: usize,
-    /// The lanes of a mapping; none where the one stream's channels are given as they are.
-    lanes: Option<Vec<Lane>>,
-    /// The streams that are read, in the order of their indices.
-    streams: Vec<Stream>,
-    /// For each pick of each lane, where it is read: the place of its stream in `streams`, and
-    /// the channel in that stream; none where the media lacks it, which is then silent.
+    source: Source,
+    /// Where the decoding of each stream of `source` is.
+    lags: Vec<Lag>,
+    /// For each pick of each lane of a mapping, where it is read: the place of its stream in
+    /// `source`, and the channel in that stream; none where the media lacks it, which is then
+    /// silent.
     picks: Vec<Vec<Option<(usize, usize)>>>,
     origin: i64,
     length: i64,
@@ -197,57 +208,35 @@ impl Reader {
     pub(crate) fn new(media: &Media, rate: u32, layout: &Layout) -> Result<Self, String> {
         let path = Path::new(&media.path);
         let cannot = |error: MediaError| error.to_string();
-        let (channels, lanes, streams, picks) = match layout {
-            Layout::Auto(channels) => {
-                let format = AudioFormat {
-                    rate,
-                    channels: *channels,
-                };
-                let stream = Stream::open(path, None, format)
-                    .map_err(cannot)?
-                    .expect("the best stream is opened or fails");
-                (usize::from(*channels), None, vec![stream], Vec::new())
-            }
-            Layout::Mapped(lanes) => {
-                let mut indices: Vec<usize> = lanes
-                    .iter()
-                    .flat_map(|lane| lane.sources.iter().map(|pick| pick.stream))
-                    .collect();
-                indices.sort_unstable();
-                indices.dedup();
-                let mut streams = Vec::new();
-                for index in indices {
-                    let format = AudioFormat { rate, channels: 1 };
-                    if let Some(stream) = Stream::open(path, Some(index), format).map_err(cannot)? {
-                        streams.push(stream);
-                    }
-                }
-                let picks = lanes
-                    .iter()
-                    .map(|lane| {
-                        lane.sources
-                            .iter()
-                            .map(|pick| {
-                                let place = streams
-                                    .iter()
-                                    .position(|stream| stream.index == Some(pick.stream))?;
-                                let channel = usize::from(pick.channel);
-                                (channel < streams[place].channels).then_some((place, channel))
-                            })
-                            .collect()
-                    })
-                    .collect();
-                (lanes.len(), Some(lanes.clone()), streams, picks)
-            }
+        let source = Source::open(path, rate, layout).map_err(cannot)?;
+        let channels = match layout {
+            Layout::Auto(channels) => usize::from(*channels),
+            Layout::Mapped(lanes) => lanes.len(),
+        };
+        let picks = match (layout, &source) {
+            (Layout::Mapped(lanes), Source::Streams(streams)) => lanes
+                .iter()
+                .map(|lane| {
+                    lane.sources
+                        .iter()
+                        .map(|pick| {
+                            let place = streams.place(pick.stream)?;
+                            let channel = usize::from(pick.channel);
+                            (channel < usize::from(streams.format(place).channels))
+                                .then_some((place, channel))
+                        })
+                        .collect()
+                })
+                .collect(),
+            _ => Vec::new(),
         };
         let origin = if media.facts.video.is_some() {
             columbina_media::video_start(path).map_err(cannot)?
-        } else if let Some(Stream { index: None, .. }) = streams.first() {
-            streams[0].decoder.start()
-        } else if streams.is_empty() {
-            columbina_model::Time { ticks: 0, scale: 1 }
         } else {
-            columbina_media::sound_start(path).map_err(cannot)?
+            match &source {
+                Source::Mixed(decoder) => decoder.start(),
+                Source::Streams(streams) => streams.start(),
+            }
         };
         let sample = |ticks, scale| {
             i64::try_from(i128::from(ticks) * i128::from(rate) / i128::from(scale))
@@ -256,9 +245,10 @@ impl Reader {
         Ok(Self {
             path: path.to_owned(),
             rate,
+            layout: layout.clone(),
             channels,
-            lanes,
-            streams,
+            lags: (0..source.len()).map(|_| Lag::default()).collect(),
+            source,
             picks,
             origin: sample(origin.ticks, origin.scale)?,
             length: sample(media.facts.duration.ticks, media.facts.duration.scale)?,
@@ -307,18 +297,17 @@ impl Reader {
                 if start == 0 && !self.pcm.is_empty() {
                     // Rewinding to the picture origin must retain the original continuous
                     // sample positions too (Matroska PCM packet timestamps can be rounded).
-                    for stream in &mut self.streams {
-                        stream
-                            .reopen(&self.path, self.rate)
-                            .map_err(|error| error.to_string())?;
-                    }
+                    self.source = Source::open(&self.path, self.rate, &self.layout)
+                        .map_err(|error| error.to_string())?;
+                    self.lags.iter_mut().for_each(|lag| *lag = Lag::default());
                 } else if start != 0 {
                     let absolute = start
                         .checked_add(self.origin)
                         .ok_or("audio seek is outside sample time")?;
-                    for stream in &mut self.streams {
-                        stream.seek(absolute).map_err(|error| error.to_string())?;
-                    }
+                    self.source
+                        .seek(absolute)
+                        .map_err(|error| error.to_string())?;
+                    self.lags.iter_mut().for_each(|lag| *lag = Lag::default());
                 }
                 start
             };
@@ -335,17 +324,34 @@ impl Reader {
     }
 
     /// Fill the window `output`, which starts at `start`, from `from` to `to`: the one stream
-    /// as it is, or each stream into a window of its own, from which the lanes are made.
+    /// as it is, or each stream into a window of its own, side by side, from which the lanes
+    /// are made.
     fn fill(&mut self, start: i64, from: i64, to: i64, output: &mut [f32]) -> Result<(), String> {
         let origin = self.origin;
-        let Some(lanes) = &self.lanes else {
-            return self.streams[0].fill(origin, start, from, to, output);
+        let Layout::Mapped(lanes) = &self.layout else {
+            return fill_stream(
+                &mut self.source,
+                0,
+                &mut self.lags[0],
+                origin,
+                start,
+                (from, to),
+                output,
+            );
         };
         let frames = usize::try_from(to - from).expect("an ordered window");
-        let mut windows = Vec::with_capacity(self.streams.len());
-        for stream in &mut self.streams {
-            let mut window = vec![0.0; frames * stream.channels];
-            stream.fill(origin, from, from, to, &mut window)?;
+        let mut windows = Vec::with_capacity(self.lags.len());
+        for (place, lag) in self.lags.iter_mut().enumerate() {
+            let mut window = vec![0.0; frames * self.source.channels(place)];
+            fill_stream(
+                &mut self.source,
+                place,
+                lag,
+                origin,
+                from,
+                (from, to),
+                &mut window,
+            )?;
             windows.push(window);
         }
         let offset = usize::try_from(from - start).expect("inside window");
@@ -358,7 +364,7 @@ impl Reader {
             for frame in 0..frames {
                 let mut sum = 0.0;
                 for &(place, channel) in picks.iter().flatten() {
-                    sum += windows[place][frame * self.streams[place].channels + channel];
+                    sum += windows[place][frame * self.source.channels(place) + channel];
                 }
                 output[(offset + frame) * self.channels + lane] = sum * gain;
             }
@@ -609,5 +615,45 @@ mod tests {
         let tail = reader.read(95_000..97_000).unwrap();
         assert_eq!(tail[..2000], expected[190_000..]);
         assert!(tail[2000..].iter().all(|&sample| sample == 0.0));
+    }
+
+    #[test]
+    fn a_channel_picked_is_the_channel_of_the_stream_in_its_own_layout() {
+        let Some(media) = of(Sample::ThreeZero) else {
+            return;
+        };
+        // The third channel of 3.0 is its C, which swresample would lay on the left and right of
+        // 2.1, the default of three channels.
+        let centre = Layout::Mapped(vec![Lane::of(pick(0, 2), true, false, 0.0)]);
+        let wave = second(&mut Reader::new(&media, 48000, &centre).unwrap(), 0);
+        assert!((amplitude(&wave, 300.0) - 0.25).abs() < 1e-3);
+        for other in [440.0, 660.0] {
+            assert!(amplitude(&wave, other) < 1e-5, "{other} Hz");
+        }
+    }
+
+    #[test]
+    fn a_stream_that_starts_later_is_heard_from_where_it_starts() {
+        let Some(media) = of(Sample::LateStream) else {
+            return;
+        };
+        let late = Layout::Mapped(vec![
+            Lane::of(pick(0, 0), true, false, 0.0),
+            Lane::of(pick(1, 0), true, false, 0.0),
+        ]);
+        let mut reader = Reader::new(&media, 48000, &late).unwrap();
+        for from in [0, 30000, 0] {
+            let pcm = reader.read(from..from + 48000).unwrap();
+            let right: Vec<f32> = pcm.iter().skip(1).step_by(2).copied().collect();
+            let starts = usize::try_from(24000 - from).unwrap_or(0).min(48000);
+            assert!(
+                right[..starts].iter().all(|&sample| sample == 0.0),
+                "{from}"
+            );
+            assert!(
+                (amplitude(&right[starts..], 880.0) - 0.5).abs() < 2e-3,
+                "{from}"
+            );
+        }
     }
 }

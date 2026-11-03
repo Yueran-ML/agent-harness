@@ -89,7 +89,7 @@ mod native;
 mod probe;
 mod timing;
 
-pub use audio::{sound_start, AudioDecoder, AudioFormat, Samples};
+pub use audio::{sound_start, AudioDecoder, AudioFormat, AudioStreams, Samples};
 pub use color::{levels, YuvMatrix};
 pub use columbina_model::{
     input_space, AudioFacts, Basis, ColorFacts, ColorRange, Facts, Gamma, Gamut, Identity,

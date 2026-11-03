@@ -162,6 +162,10 @@ pub enum Sample {
     LeftRight,
     /// Sound only: WAV, 16 bits in mono at 48 kHz, 2 s: a sine of 440 Hz at amplitude 0.25.
     Mono,
+    /// Sound only: `QuickTime` of two streams of PCM of 16 bits in mono at 48 kHz: stream 0 a sine
+    /// of 440 Hz at amplitude 0.25 for 2 s from 0, stream 1 a sine of 880 Hz at amplitude 0.5
+    /// for 1.5 s from 0.5 s, as a microphone that started late.
+    LateStream,
 }
 
 /// The codes of R', G' and B' of [`Sample::RampPng`] (and [`Sample::RampTiff`]) at `(x, y)`.
@@ -265,7 +269,8 @@ impl Sample {
             | Sample::ThreeZero
             | Sample::TwoMonoStreams
             | Sample::LeftRight
-            | Sample::Mono => None,
+            | Sample::Mono
+            | Sample::LateStream => None,
         }
     }
 
@@ -337,6 +342,7 @@ impl Sample {
             Sample::TwoMonoStreams => "v1-two-mono-streams.mov",
             Sample::LeftRight => "v1-left-440-right-880.wav",
             Sample::Mono => "v1-mono-440.wav",
+            Sample::LateStream => "v1-stream-from-0.5s.mov",
         }
     }
 }
@@ -828,6 +834,28 @@ fn recipes(sample: Sample, encoders: &str) -> Vec<Recipe> {
         ),
         Sample::LeftRight => pcm("0.25*sin(2*PI*440*t)|0.25*sin(2*PI*880*t)", "stereo"),
         Sample::Mono => pcm("0.25*sin(2*PI*440*t)", "mono"),
+        Sample::LateStream => vec![Recipe {
+            encoder: "pcm_s16le".into(),
+            steps: vec![strings(&[
+                "-f",
+                "lavfi",
+                "-i",
+                "aevalsrc=exprs=0.25*sin(2*PI*440*t):s=48000:d=2",
+                "-itsoffset",
+                "0.5",
+                "-f",
+                "lavfi",
+                "-i",
+                "aevalsrc=exprs=0.5*sin(2*PI*880*t):s=48000:d=1.5",
+                "-map",
+                "0:a",
+                "-map",
+                "1:a",
+                "-c:a",
+                "pcm_s16le",
+                "{out}",
+            ])],
+        }],
         Sample::TwoMonoStreams => vec![Recipe {
             encoder: "pcm_s16le".into(),
             steps: vec![strings(&[

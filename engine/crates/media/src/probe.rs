@@ -100,7 +100,7 @@ pub struct Sounds {
 /// blocks, and reads only the head of the file.
 ///
 /// # Errors
-/// The file cannot be opened (as [`probe`]), or a stream of sound has no rate or no channels.
+/// The file cannot be opened (as [`probe`]).
 pub fn sounds(path: &Path) -> Result<Sounds, MediaError> {
     let input = open(path)?;
     let mut streams = Vec::new();
@@ -108,7 +108,11 @@ pub fn sounds(path: &Path) -> Result<Sounds, MediaError> {
         if decodable_sound(&input, found.index()).is_none() {
             continue;
         }
-        let facts = sound(&found)?;
+        // A stream that says no rate or no channels is passed over, as one that cannot be
+        // decoded is: the others are listed still.
+        let Ok(facts) = sound(&found) else {
+            continue;
+        };
         streams.push(SoundStream {
             index: found.index(),
             channels: facts.channels,

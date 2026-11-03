@@ -465,13 +465,18 @@ pub(crate) fn seek_to_byte(
 
 /// Have the demuxer drop the packets of every stream but `keep`, unread where it can.
 pub(crate) fn discard_others(input: &mut ff::format::context::Input, keep: usize) {
+    discard_all_but(input, &[keep]);
+}
+
+/// Have the demuxer drop the packets of every stream but those of `keep`, unread where it can.
+pub(crate) fn discard_all_but(input: &mut ff::format::context::Input, keep: &[usize]) {
     let count = input.nb_streams() as usize;
     // SAFETY: the context is open, and `streams` has `nb_streams` of them; `discard` may be
     // set between reads.
     unsafe {
         let context = input.as_mut_ptr();
         for index in 0..count {
-            if index != keep {
+            if !keep.contains(&index) {
                 let stream = *(*context).streams.add(index);
                 (*stream).discard = AVDiscard::AVDISCARD_ALL;
             }
@@ -521,24 +526,96 @@ pub(crate) fn parameters(stream: &ff::format::stream::Stream) -> Parameters {
 /// shows it (`mono`, `stereo`, `5.1`, `5.1(side)`); none where the stream says only how many
 /// channels it has, as Matroska does of PCM.
 pub(crate) fn sound_layout(stream: &ff::format::stream::Stream) -> Option<String> {
-    // SAFETY: the stream is of an open context, and has parameters, whose layout libav made;
-    // av_channel_layout_describe writes at most the size of the buffer, ending it with a NUL.
+    // SAFETY: the stream is of an open context, and has parameters, whose layout libav made.
+    unsafe { described(&raw const (*(*stream.as_ptr()).codecpar).ch_layout, 128) }
+}
+
+/// The name of a layout, as [`sound_layout`] gives it, written first into `room` bytes, and
+/// again into as many as it needs where they are too few.
+///
+/// # Safety
+/// `layout` is a layout that libav made.
+unsafe fn described(layout: *const AVChannelLayout, room: usize) -> Option<String> {
+    // SAFETY: as the caller says; av_channel_layout_describe writes at most the size of the
+    // buffer, ending it with a NUL, and says how many bytes the whole name takes.
     unsafe {
-        let layout = &raw const (*(*stream.as_ptr()).codecpar).ch_layout;
         if (*layout).nb_channels <= 0
             || (*layout).order == AVChannelOrder::AV_CHANNEL_ORDER_UNSPEC
             || av_channel_layout_check(layout) == 0
         {
             return None;
         }
-        let mut text = [0 as std::ffi::c_char; 128];
-        if av_channel_layout_describe(layout, text.as_mut_ptr(), text.len()) < 0 {
-            return None;
+        let mut room = room.max(1);
+        for _ in 0..2 {
+            let mut text = vec![0 as std::ffi::c_char; room];
+            let needed = usize::try_from(av_channel_layout_describe(
+                layout,
+                text.as_mut_ptr(),
+                text.len(),
+            ))
+            .ok()?;
+            if needed < room {
+                return CStr::from_ptr(text.as_ptr())
+                    .to_str()
+                    .ok()
+                    .map(str::to_owned);
+            }
+            room = needed + 1;
         }
-        CStr::from_ptr(text.as_ptr())
-            .to_str()
-            .ok()
-            .map(str::to_owned)
+        None
+    }
+}
+
+/// The layout of the channels of sound that are given: the default layout of a number of
+/// channels, or the layout of a stream, which converted sound is laid out in.
+pub(crate) struct ChannelLayout(AVChannelLayout);
+
+// SAFETY: the layout is used by one thread at a time, which `&mut` sees to; it holds nothing
+// of the thread that made it.
+unsafe impl Send for ChannelLayout {}
+
+impl Drop for ChannelLayout {
+    fn drop(&mut self) {
+        // SAFETY: the layout was made by av_channel_layout_default or av_channel_layout_copy,
+        // and is let go only here.
+        unsafe { av_channel_layout_uninit(&raw mut self.0) }
+    }
+}
+
+impl ChannelLayout {
+    /// The default layout of `channels` channels (stereo for 2, 5.1 for 6).
+    pub(crate) fn default(channels: u16) -> Self {
+        // SAFETY: a layout that is zeroed is an empty one, which av_channel_layout_default
+        // writes over.
+        unsafe {
+            let mut layout: AVChannelLayout = std::mem::zeroed();
+            av_channel_layout_default(&raw mut layout, c_int::from(channels));
+            Self(layout)
+        }
+    }
+
+    /// The layout of a stream, as its parameters say; the default layout of as many channels
+    /// where they say only how many there are.
+    pub(crate) fn of_stream(stream: &ff::format::stream::Stream) -> Result<Self, String> {
+        // SAFETY: the stream is of an open context, and has parameters, whose layout libav
+        // made.
+        unsafe {
+            Ok(Self(copied(
+                &raw const (*(*stream.as_ptr()).codecpar).ch_layout,
+            )?))
+        }
+    }
+
+    /// How many channels it lays out.
+    pub(crate) fn channels(&self) -> u16 {
+        u16::try_from(self.0.nb_channels).unwrap_or(0)
+    }
+
+    /// Its name, as [`sound_layout`] gives it, written first into `room` bytes.
+    #[cfg(test)]
+    fn name(&self, room: usize) -> Option<String> {
+        // SAFETY: the layout was made by libav.
+        unsafe { described(&raw const self.0, room) }
     }
 }
 
@@ -935,9 +1012,9 @@ impl Scaler {
 unsafe impl Send for Scaler {}
 
 /// A converter of sound, of swresample: from the format, rate and channels of the frames of a
-/// decoder to 32-bit floats at another rate, interleaved, in the default layout of another
-/// number of channels (stereo for 2), mixing the channels down or up as swresample does; or,
-/// unmixed, in the layout of the frames, each channel as it is.
+/// decoder to 32-bit floats at another rate, interleaved, in another layout (the default
+/// layout of a number of channels, stereo for 2, or the layout of the stream), mixing the
+/// channels down or up as swresample does where the layouts differ.
 pub(crate) struct Resampler {
     context: *mut SwrContext,
     /// What it takes: the format of a sample, the rate, and the layout of the channels.
@@ -968,10 +1045,19 @@ impl Drop for Resampler {
 /// # Safety
 /// `frame` is a frame of sound of libav.
 unsafe fn layout_of(frame: *const ff::ffi::AVFrame) -> Result<AVChannelLayout, String> {
+    // SAFETY: as the caller says.
+    unsafe { copied(&raw const (*frame).ch_layout) }
+}
+
+/// A copy of a layout, or the default layout of as many channels where it says only how many
+/// there are, or is not valid.
+///
+/// # Safety
+/// `given` is a layout that libav made.
+unsafe fn copied(given: *const AVChannelLayout) -> Result<AVChannelLayout, String> {
     // SAFETY: as the caller says; a layout that is zeroed is an empty one, which
     // av_channel_layout_copy and av_channel_layout_default write over.
     unsafe {
-        let given = &raw const (*frame).ch_layout;
         let mut layout: AVChannelLayout = std::mem::zeroed();
         let count = (*given).nb_channels;
         if count <= 0 {
@@ -989,14 +1075,13 @@ unsafe fn layout_of(frame: *const ff::ffi::AVFrame) -> Result<AVChannelLayout, S
 }
 
 impl Resampler {
-    /// A converter of frames of the format, rate and layout of `frame` to `rate` and
-    /// `channels`, in the default layout of that many; or, where no `channels` are given, in
-    /// the layout of `frame` (its channels in its order, none mixed into another), converting
-    /// only the format and the rate.
+    /// A converter of frames of the format, rate and layout of `frame` to `rate`, laid out
+    /// as `out`: where `out` is the layout of `frame`, each channel is given as it is, and only
+    /// the format and the rate are converted.
     pub fn new(
         frame: &ff::frame::Audio,
         rate: u32,
-        channels: Option<u16>,
+        out: &ChannelLayout,
     ) -> Result<Resampler, String> {
         let format = frame.format();
         if matches!(format, ff::format::Sample::None) {
@@ -1013,23 +1098,11 @@ impl Resampler {
                 return Err("its sound has no rate".to_owned());
             }
             let mut layout = layout_of(raw)?;
-            let mut out_layout: AVChannelLayout = std::mem::zeroed();
-            let copied = match channels {
-                Some(channels) => {
-                    av_channel_layout_default(&raw mut out_layout, c_int::from(channels));
-                    0
-                }
-                None => av_channel_layout_copy(&raw mut out_layout, &raw const layout),
-            };
-            if copied < 0 {
-                av_channel_layout_uninit(&raw mut layout);
-                return Err("the layout of its channels cannot be copied".to_owned());
-            }
-            let channels = usize::try_from(out_layout.nb_channels).unwrap_or(0);
+            let channels = usize::from(out.channels());
             let mut context = std::ptr::null_mut();
             let code = swr_alloc_set_opts2(
                 &raw mut context,
-                &raw const out_layout,
+                &raw const out.0,
                 AVSampleFormat::AV_SAMPLE_FMT_FLT,
                 out_rate,
                 &raw const layout,
@@ -1038,7 +1111,6 @@ impl Resampler {
                 0,
                 std::ptr::null_mut(),
             );
-            av_channel_layout_uninit(&raw mut out_layout);
             let code = if code < 0 { code } else { swr_init(context) };
             if code < 0 {
                 swr_free(&raw mut context);
@@ -1368,4 +1440,33 @@ pub(crate) fn scale_from(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_name_of_a_layout_is_written_whole_into_as_many_bytes_as_it_takes() {
+        assert_eq!(ChannelLayout::default(6).name(128).as_deref(), Some("5.1"));
+        // Too few bytes at first: written again into as many as it takes.
+        assert_eq!(ChannelLayout::default(6).name(2).as_deref(), Some("5.1"));
+        // 24 channels that no layout of libav is named by: a name of 96 bytes.
+        let names =
+            "FL+FR+FC+LFE+BL+BR+FLC+FRC+BC+SL+SR+TC+TFL+TFC+TFR+TBL+TBC+TBR+DL+DR+WL+WR+SDL+SDR";
+        let text = CString::new(names).unwrap();
+        // SAFETY: a layout that is zeroed is an empty one, which libav writes over.
+        let layout = unsafe {
+            let mut layout: AVChannelLayout = std::mem::zeroed();
+            assert_eq!(
+                ff::ffi::av_channel_layout_from_string(&raw mut layout, text.as_ptr()),
+                0
+            );
+            ChannelLayout(layout)
+        };
+        assert_eq!(layout.channels(), 24);
+        let whole = format!("24 channels ({names})");
+        assert_eq!(layout.name(128).as_deref(), Some(whole.as_str()));
+        assert_eq!(layout.name(16).as_deref(), Some(whole.as_str()));
+    }
 }

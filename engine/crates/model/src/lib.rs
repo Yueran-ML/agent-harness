@@ -12,6 +12,8 @@ pub mod keyframes;
 pub mod ops;
 pub mod project;
 pub mod resolve;
+#[cfg(any(test, feature = "sample"))]
+pub mod samples;
 pub mod span;
 pub mod time;
 pub mod upgrade;

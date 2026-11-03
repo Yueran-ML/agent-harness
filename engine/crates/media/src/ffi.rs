@@ -8,18 +8,18 @@ use std::ffi::{c_int, c_void, CStr, CString};
 use ff::ffi::{
     av_buffer_create, av_buffer_ref, av_buffer_unref, av_channel_layout_check,
     av_channel_layout_compare, av_channel_layout_copy, av_channel_layout_default,
-    av_channel_layout_uninit, av_frame_alloc, av_frame_free, av_frame_make_writable, av_frame_ref,
-    av_frame_unref, av_hwdevice_ctx_create, av_hwdevice_find_type_by_name,
-    av_hwframe_transfer_data, av_pix_fmt_desc_get, av_read_image_line2, av_seek_frame, av_strerror,
-    avcodec_default_get_format, avcodec_get_hw_config, avformat_index_get_entries_count,
-    avformat_index_get_entry, avformat_index_get_entry_from_timestamp, swr_alloc_set_opts2,
-    swr_convert, swr_free, swr_get_out_samples, swr_init, sws_scale, AVBufferRef, AVChannelLayout,
-    AVChannelOrder, AVCodecContext, AVColorRange, AVDiscard, AVHWDeviceType, AVHWFramesContext,
-    AVPixelFormat, AVSampleFormat, SwrContext, AVINDEX_DISCARD_FRAME, AVSEEK_FLAG_BACKWARD,
-    AVSEEK_FLAG_BYTE, AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX, AV_PIX_FMT_FLAG_ALPHA,
-    AV_PIX_FMT_FLAG_BAYER, AV_PIX_FMT_FLAG_BE, AV_PIX_FMT_FLAG_FLOAT, AV_PIX_FMT_FLAG_HWACCEL,
-    AV_PIX_FMT_FLAG_PAL, AV_PIX_FMT_FLAG_PLANAR, AV_PIX_FMT_FLAG_RGB, FF_THREAD_FRAME,
-    FF_THREAD_SLICE,
+    av_channel_layout_describe, av_channel_layout_uninit, av_frame_alloc, av_frame_free,
+    av_frame_make_writable, av_frame_ref, av_frame_unref, av_hwdevice_ctx_create,
+    av_hwdevice_find_type_by_name, av_hwframe_transfer_data, av_pix_fmt_desc_get,
+    av_read_image_line2, av_seek_frame, av_strerror, avcodec_default_get_format,
+    avcodec_get_hw_config, avformat_index_get_entries_count, avformat_index_get_entry,
+    avformat_index_get_entry_from_timestamp, swr_alloc_set_opts2, swr_convert, swr_free,
+    swr_get_out_samples, swr_init, sws_scale, AVBufferRef, AVChannelLayout, AVChannelOrder,
+    AVCodecContext, AVColorRange, AVDiscard, AVHWDeviceType, AVHWFramesContext, AVPixelFormat,
+    AVSampleFormat, SwrContext, AVINDEX_DISCARD_FRAME, AVSEEK_FLAG_BACKWARD, AVSEEK_FLAG_BYTE,
+    AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX, AV_PIX_FMT_FLAG_ALPHA, AV_PIX_FMT_FLAG_BAYER,
+    AV_PIX_FMT_FLAG_BE, AV_PIX_FMT_FLAG_FLOAT, AV_PIX_FMT_FLAG_HWACCEL, AV_PIX_FMT_FLAG_PAL,
+    AV_PIX_FMT_FLAG_PLANAR, AV_PIX_FMT_FLAG_RGB, FF_THREAD_FRAME, FF_THREAD_SLICE,
 };
 use ffmpeg_next as ff;
 
@@ -517,6 +517,31 @@ pub(crate) fn parameters(stream: &ff::format::stream::Stream) -> Parameters {
     }
 }
 
+/// The name that libav gives the layout of the channels of a stream of sound, as `ffprobe`
+/// shows it (`mono`, `stereo`, `5.1`, `5.1(side)`); none where the stream says only how many
+/// channels it has, as Matroska does of PCM.
+pub(crate) fn sound_layout(stream: &ff::format::stream::Stream) -> Option<String> {
+    // SAFETY: the stream is of an open context, and has parameters, whose layout libav made;
+    // av_channel_layout_describe writes at most the size of the buffer, ending it with a NUL.
+    unsafe {
+        let layout = &raw const (*(*stream.as_ptr()).codecpar).ch_layout;
+        if (*layout).nb_channels <= 0
+            || (*layout).order == AVChannelOrder::AV_CHANNEL_ORDER_UNSPEC
+            || av_channel_layout_check(layout) == 0
+        {
+            return None;
+        }
+        let mut text = [0 as std::ffi::c_char; 128];
+        if av_channel_layout_describe(layout, text.as_mut_ptr(), text.len()) < 0 {
+            return None;
+        }
+        CStr::from_ptr(text.as_ptr())
+            .to_str()
+            .ok()
+            .map(str::to_owned)
+    }
+}
+
 /// The numbers that a stream or a frame gives for its colours, as libav numbers them: the colour
 /// primaries, the transfer, the matrix (`AVColorSpace`), the range and where chroma lies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -911,7 +936,8 @@ unsafe impl Send for Scaler {}
 
 /// A converter of sound, of swresample: from the format, rate and channels of the frames of a
 /// decoder to 32-bit floats at another rate, interleaved, in the default layout of another
-/// number of channels (stereo for 2), mixing the channels down or up as swresample does.
+/// number of channels (stereo for 2), mixing the channels down or up as swresample does; or,
+/// unmixed, in the layout of the frames, each channel as it is.
 pub(crate) struct Resampler {
     context: *mut SwrContext,
     /// What it takes: the format of a sample, the rate, and the layout of the channels.
@@ -964,8 +990,14 @@ unsafe fn layout_of(frame: *const ff::ffi::AVFrame) -> Result<AVChannelLayout, S
 
 impl Resampler {
     /// A converter of frames of the format, rate and layout of `frame` to `rate` and
-    /// `channels`.
-    pub fn new(frame: &ff::frame::Audio, rate: u32, channels: u16) -> Result<Resampler, String> {
+    /// `channels`, in the default layout of that many; or, where no `channels` are given, in
+    /// the layout of `frame` (its channels in its order, none mixed into another), converting
+    /// only the format and the rate.
+    pub fn new(
+        frame: &ff::frame::Audio,
+        rate: u32,
+        channels: Option<u16>,
+    ) -> Result<Resampler, String> {
         let format = frame.format();
         if matches!(format, ff::format::Sample::None) {
             return Err("its sound has no format of samples".to_owned());
@@ -982,7 +1014,18 @@ impl Resampler {
             }
             let mut layout = layout_of(raw)?;
             let mut out_layout: AVChannelLayout = std::mem::zeroed();
-            av_channel_layout_default(&raw mut out_layout, c_int::from(channels));
+            let copied = match channels {
+                Some(channels) => {
+                    av_channel_layout_default(&raw mut out_layout, c_int::from(channels));
+                    0
+                }
+                None => av_channel_layout_copy(&raw mut out_layout, &raw const layout),
+            };
+            if copied < 0 {
+                av_channel_layout_uninit(&raw mut layout);
+                return Err("the layout of its channels cannot be copied".to_owned());
+            }
+            let channels = usize::try_from(out_layout.nb_channels).unwrap_or(0);
             let mut context = std::ptr::null_mut();
             let code = swr_alloc_set_opts2(
                 &raw mut context,
@@ -1010,7 +1053,7 @@ impl Resampler {
                 format,
                 rate: in_rate,
                 layout,
-                channels: usize::from(channels),
+                channels,
             })
         }
     }

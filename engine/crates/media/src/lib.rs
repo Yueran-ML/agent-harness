@@ -89,7 +89,7 @@ mod native;
 mod probe;
 mod timing;
 
-pub use audio::{AudioDecoder, AudioFormat, Samples};
+pub use audio::{sound_start, AudioDecoder, AudioFormat, Samples};
 pub use color::{levels, YuvMatrix};
 pub use columbina_model::{
     input_space, AudioFacts, Basis, ColorFacts, ColorRange, Facts, Gamma, Gamut, Identity,
@@ -105,7 +105,9 @@ pub use encode::{
 pub use error::MediaError;
 pub use identity::identity;
 pub use native::{Alpha, NativePicture, PictureFormat};
-pub use probe::{frame_count, frame_numbers, gop, probe, Gop, DEMUXERS};
+pub use probe::{
+    frame_count, frame_numbers, gop, probe, sounds, Gop, SoundStream, Sounds, DEMUXERS,
+};
 
 /// Make libav ready to be used, once: its log is turned off.
 fn init() {

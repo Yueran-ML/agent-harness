@@ -146,6 +146,22 @@ pub enum Sample {
     /// `testsrc2`, said by MXF (not by its stream, which has no word of it) to be BT.2020 and
     /// HLG (9-18-9) of limited range.
     Mxf,
+    /// Sound only: WAV, 16 bits in 5.1 (L R C LFE Ls Rs) at 48 kHz, 2 s; channel `k` (from 0) a
+    /// sine of `100·(k + 1)` Hz at -20 dBFS (amplitude 0.1).
+    SixSines,
+    /// Sound only: WAV, 16 bits in 3.0 (L R C), whose three channels are not the default layout
+    /// of three (2.1, L R LFE), at 48 kHz, 2 s: sines of 440, 660 and 300 Hz at amplitude
+    /// 0.25.
+    ThreeZero,
+    /// Sound only: `QuickTime` of two streams of PCM of 16 bits in mono at 48 kHz, 2 s each, as a
+    /// camera with two microphones writes one stream for each: stream 0 a sine of 440 Hz, stream
+    /// 1 of 880 Hz, at amplitude 0.25.
+    TwoMonoStreams,
+    /// Sound only: WAV, 16 bits in stereo at 48 kHz, 2 s: the left a sine of 440 Hz, the right
+    /// of 880 Hz, at amplitude 0.25.
+    LeftRight,
+    /// Sound only: WAV, 16 bits in mono at 48 kHz, 2 s: a sine of 440 Hz at amplitude 0.25.
+    Mono,
 }
 
 /// The codes of R', G' and B' of [`Sample::RampPng`] (and [`Sample::RampTiff`]) at `(x, y)`.
@@ -240,7 +256,16 @@ impl Sample {
             | Sample::AlphaExr
             | Sample::Sited420(_)
             | Sample::Sited422(_) => Some(1),
-            Sample::Wav | Sample::Evc | Sample::Noise | Sample::EditList | Sample::Clicks => None,
+            Sample::Wav
+            | Sample::Evc
+            | Sample::Noise
+            | Sample::EditList
+            | Sample::Clicks
+            | Sample::SixSines
+            | Sample::ThreeZero
+            | Sample::TwoMonoStreams
+            | Sample::LeftRight
+            | Sample::Mono => None,
         }
     }
 
@@ -307,6 +332,11 @@ impl Sample {
                 _ => panic!("no siting {location} of 4:2:2 here"),
             },
             Sample::Mxf => "v1-dnxhr-hqx-hlg.mxf",
+            Sample::SixSines => "v1-six-sines-5.1.wav",
+            Sample::ThreeZero => "v1-sines-3.0.wav",
+            Sample::TwoMonoStreams => "v1-two-mono-streams.mov",
+            Sample::LeftRight => "v1-left-440-right-880.wav",
+            Sample::Mono => "v1-mono-440.wav",
         }
     }
 }
@@ -482,6 +512,23 @@ fn numbered(
          geq=lum='{base}+{step}*mod(floor(N/pow(16,floor(X/64))),16)':cb={middle}:cr={middle}[digits];\
          [bg][digits]overlay=0:0:format={overlay}{then}[v]"
     )
+}
+
+/// A WAV of PCM of 16 bits at 48 kHz, 2 s, of a channel for each of the expressions of
+/// `aevalsrc` (split by `|`), laid out as `layout` names it.
+fn pcm(expressions: &str, layout: &str) -> Vec<Recipe> {
+    vec![Recipe {
+        encoder: "pcm_s16le".into(),
+        steps: vec![strings(&[
+            "-f",
+            "lavfi",
+            "-i",
+            &format!("aevalsrc=exprs='{expressions}':s=48000:d=2:channel_layout={layout}"),
+            "-c:a",
+            "pcm_s16le",
+            "{out}",
+        ])],
+    }]
 }
 
 fn strings(args: &[&str]) -> Vec<String> {
@@ -765,6 +812,37 @@ fn recipes(sample: Sample, encoders: &str) -> Vec<Recipe> {
                 "sine=frequency=440:sample_rate=48000:duration=2",
                 "-ac",
                 "2",
+                "-c:a",
+                "pcm_s16le",
+                "{out}",
+            ])],
+        }],
+        Sample::SixSines => pcm(
+            "0.1*sin(2*PI*100*t)|0.1*sin(2*PI*200*t)|0.1*sin(2*PI*300*t)|\
+             0.1*sin(2*PI*400*t)|0.1*sin(2*PI*500*t)|0.1*sin(2*PI*600*t)",
+            "5.1",
+        ),
+        Sample::ThreeZero => pcm(
+            "0.25*sin(2*PI*440*t)|0.25*sin(2*PI*660*t)|0.25*sin(2*PI*300*t)",
+            "3.0",
+        ),
+        Sample::LeftRight => pcm("0.25*sin(2*PI*440*t)|0.25*sin(2*PI*880*t)", "stereo"),
+        Sample::Mono => pcm("0.25*sin(2*PI*440*t)", "mono"),
+        Sample::TwoMonoStreams => vec![Recipe {
+            encoder: "pcm_s16le".into(),
+            steps: vec![strings(&[
+                "-f",
+                "lavfi",
+                "-i",
+                "aevalsrc=exprs=0.25*sin(2*PI*440*t):s=48000:d=2",
+                "-f",
+                "lavfi",
+                "-i",
+                "aevalsrc=exprs=0.25*sin(2*PI*880*t):s=48000:d=2",
+                "-map",
+                "0:a",
+                "-map",
+                "1:a",
                 "-c:a",
                 "pcm_s16le",
                 "{out}",

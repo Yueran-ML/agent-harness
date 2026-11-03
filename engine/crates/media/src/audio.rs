@@ -4,7 +4,6 @@
 use std::path::Path;
 
 use ff::format::context::Input;
-use ff::media::Type;
 use ffmpeg_next as ff;
 
 use crate::ffi::{self, Resampler};
@@ -58,14 +57,37 @@ impl Samples {
     }
 }
 
+/// The time that the sound of a file starts at: that of the best stream of sound, which
+/// [`AudioDecoder::open`] opens, as [`AudioDecoder::start`] gives it, without opening its
+/// decoder. The sound of the other streams of the file is placed by it, as the sound of a file
+/// with a picture is placed by [`crate::video_start`].
+///
+/// # Errors
+/// The file cannot be opened (as [`crate::probe`]), or it has no sound that this build of libav
+/// can decode ([`MediaError::NoStreams`]).
+pub fn sound_start(path: &Path) -> Result<columbina_model::Time, MediaError> {
+    let input = probe::open(path)?;
+    let stream = probe::sound_stream(&input).ok_or(MediaError::NoStreams)?;
+    let found = input.stream(stream).ok_or(MediaError::NoStreams)?;
+    let (num, den) = probe::base(&found)?;
+    let first_tick = Some(found.start_time())
+        .filter(|&start| start != ff::ffi::AV_NOPTS_VALUE)
+        .unwrap_or(0);
+    Ok(columbina_model::Time {
+        ticks: first_tick.saturating_mul(num),
+        scale: u32::try_from(den).unwrap_or(u32::MAX),
+    })
+}
+
 /// The decoder of the sound of a file.
 ///
-/// It gives the samples of the best stream of sound in the file, as libav ranks them, one run
-/// after another, with no gap and no overlap between them: where the timestamps of the file
-/// leave a gap, it is filled with silence, and where they overlap, the samples that would come
-/// again are dropped. A sample is numbered by its time in the file's timestamps, from time 0 of
-/// the file (the time that the streams of a file share, not the start of this stream), at the
-/// rate it is given at: the sample at `t` seconds is `round(t × rate)`. So the sound of a
+/// It gives the samples of a stream of sound in the file, the best as libav ranks them or one
+/// chosen by its index ([`AudioDecoder::open_stream`]), one run after another, with no gap and
+/// no overlap between them: where the timestamps of the file leave a gap, it is filled with
+/// silence, and where they overlap, the samples that would come again are dropped. A sample is
+/// numbered by its time in the file's timestamps, from time 0 of the file (the time that the
+/// streams of a file share, not the start of this stream), at the rate it is given at: the
+/// sample at `t` seconds is `round(t × rate)`. So the sound of a
 /// picture's frame `n` is at `(start + n / rate_of_frames) × rate`, where `start` is
 /// [`crate::VideoDecoder::start`].
 ///
@@ -86,6 +108,8 @@ pub struct AudioDecoder {
     preroll: i64,
     source: AudioFormat,
     format: AudioFormat,
+    /// Whether the channels are given as the stream has them, none mixed into another.
+    unmixed: bool,
     /// The converter of the frames that come, made for the first of them, and again for one of
     /// another format.
     resampler: Option<Resampler>,
@@ -102,19 +126,65 @@ pub struct AudioDecoder {
 
 impl AudioDecoder {
     /// Open the sound of a file, to be given in `format`, or as the stream has it (its rate and
-    /// its channels) if none is given.
+    /// its channels) if none is given: the best stream of sound that this build of libav can
+    /// decode, as libav ranks them.
     ///
     /// # Errors
     /// The file cannot be opened (as [`crate::probe`]), it has no sound that this build of
     /// libav can decode ([`MediaError::NoStreams`]), or its decoder cannot be opened.
     pub fn open(path: &Path, format: Option<AudioFormat>) -> Result<Self, MediaError> {
-        let mut input = probe::open(path)?;
-        let stream = input
-            .streams()
-            .best(Type::Audio)
-            .filter(|stream| ff::decoder::find(stream.parameters().id()).is_some())
-            .map(|stream| stream.index())
-            .ok_or(MediaError::NoStreams)?;
+        let input = probe::open(path)?;
+        let stream = probe::sound_stream(&input).ok_or(MediaError::NoStreams)?;
+        Self::opened(input, stream, format, false)
+    }
+
+    /// Open a stream of sound of a file, by its index among all the streams of the file (as
+    /// libav and the `ffmpeg` of the command line number them, and [`crate::sounds`] lists
+    /// them), to be given as [`AudioDecoder::open`] gives the best one.
+    ///
+    /// # Errors
+    /// As [`AudioDecoder::open`]; [`MediaError::NoStreams`] where the file has no such stream,
+    /// or it is not sound that this build of libav can decode.
+    pub fn open_stream(
+        path: &Path,
+        stream: usize,
+        format: Option<AudioFormat>,
+    ) -> Result<Self, MediaError> {
+        let input = probe::open(path)?;
+        let stream = probe::decodable_sound(&input, stream).ok_or(MediaError::NoStreams)?;
+        Self::opened(input, stream, format, false)
+    }
+
+    /// Open a stream of sound of a file, by its index (as [`AudioDecoder::open_stream`]), to be
+    /// given with its own channels, in its own order, none mixed into another: only the format
+    /// of its samples is converted, and their rate to `rate` if one is given. A stream whose
+    /// channels are not laid out as libav lays out as many by default (3.0, L R C, where the
+    /// default of three is 2.1, L R LFE; or a layout of its own) is given as it is, where
+    /// [`AudioDecoder::open`] mixes it into the default layout of as many channels. Should the
+    /// layout change within the stream, frames of another number of channels are mixed into
+    /// as many as the stream starts with.
+    ///
+    /// # Errors
+    /// As [`AudioDecoder::open_stream`].
+    pub fn open_unmixed(path: &Path, stream: usize, rate: Option<u32>) -> Result<Self, MediaError> {
+        let input = probe::open(path)?;
+        let stream = probe::decodable_sound(&input, stream).ok_or(MediaError::NoStreams)?;
+        Self::opened(
+            input,
+            stream,
+            rate.map(|rate| AudioFormat { rate, channels: 0 }),
+            true,
+        )
+    }
+
+    /// The decoder of stream `stream` of `input`, a stream of sound that can be decoded, giving
+    /// `format`; unmixed, the channels of `format` are those of the stream.
+    fn opened(
+        mut input: Input,
+        stream: usize,
+        format: Option<AudioFormat>,
+        unmixed: bool,
+    ) -> Result<Self, MediaError> {
         let (base, first_tick, preroll, decoder, source) = {
             let found = input.stream(stream).ok_or(MediaError::NoStreams)?;
             let base = probe::base(&found)?;
@@ -146,7 +216,10 @@ impl AudioDecoder {
             (base, first_tick, preroll, decoder, source)
         };
         ffi::discard_others(&mut input, stream);
-        let format = format.unwrap_or(source);
+        let mut format = format.unwrap_or(source);
+        if unmixed {
+            format.channels = source.channels;
+        }
         if format.rate == 0 || format.channels == 0 {
             return Err(MediaError::Unsupported(
                 "sound is given at a rate and with channels above 0".into(),
@@ -166,6 +239,7 @@ impl AudioDecoder {
             preroll,
             source,
             format,
+            unmixed,
             resampler: None,
             next: None,
             sought: None,
@@ -327,8 +401,12 @@ impl AudioDecoder {
                 .is_some_and(|resampler| resampler.takes(frame))
             {
                 // What the old one holds back is let go: the format changed mid-stream.
+                // Unmixed, the channels of the frame are given as they are, while there are as
+                // many as the stream started with.
+                let channels = (!self.unmixed || frame.channels() != self.format.channels)
+                    .then_some(self.format.channels);
                 self.resampler = Some(
-                    Resampler::new(frame, self.format.rate, self.format.channels)
+                    Resampler::new(frame, self.format.rate, channels)
                         .map_err(MediaError::Decode)?,
                 );
             }

@@ -2,7 +2,8 @@
 //! `testing`): every node of T7–T13 is put through them.
 //!
 //! - [`chunk_invariance`]: the output of a node is the same, to the bit, for the signal processed
-//!   whole and cut into blocks of 1 to `max_block` samples at random; and after a reset.
+//!   whole and cut into blocks of fixed sizes, of random sizes (uniform and log-uniform) and of
+//!   none; the parameters set never change its latency; and a reset makes it as new.
 //! - [`assert_latency`], [`measured_latency`]: the delay that a node reports is the delay of its
 //!   output.
 //! - [`assert_settle`]: after its reported settling time, a node started in the middle sounds as
@@ -24,7 +25,7 @@ use std::cell::Cell;
 
 use crate::constants::{SETTLE_FLOOR_DBFS, SMOOTHING};
 use crate::node::{Automated, Automation, Block, Node, ParamId, Planar, Spec, Unsupported};
-use crate::rt::{Domain, Smoothed};
+use crate::rt::{flush, Domain, Smoothed};
 
 // --- The allocator that counts ---------------------------------------------------------------
 
@@ -130,17 +131,51 @@ pub fn realtime<R>(section: impl FnOnce() -> R) -> (R, Allocations) {
 // --- What the real-time code must not say ----------------------------------------------------
 
 /// The words that the code of the threads of the sound (`src/rt/`, `src/graph/process*.rs`) must
-/// not hold: locks, allocations, text, logs (convention 3).
-pub const RT_FORBIDDEN: [&str; 10] = [
-    "Mutex", "RwLock", "Condvar", "Vec::new", "vec!", "Box::new", "String", "format!", "println!",
+/// not hold: locks, waits, allocations, text, logs (convention 3).
+pub const RT_FORBIDDEN: [&str; 22] = [
+    "Mutex",
+    "RwLock",
+    "Condvar",
+    ".lock()",
+    "sleep",
+    "Vec::new",
+    "Vec::with_capacity",
+    "vec!",
+    "to_vec(",
+    "collect(",
+    "Box::new",
+    "Box::from",
+    "Arc::new",
+    "String",
+    "to_string",
+    "to_owned",
+    "format!",
+    "println!",
+    "eprintln!",
+    "dbg!",
+    "json!",
     "log(",
 ];
 
-/// Each line of `source` (from 1) holding a word of [`RT_FORBIDDEN`], with the word.
+/// The tag of a line that holds a forbidden word on purpose, with its reason after it: code that
+/// runs when things are made, off the thread of the mix.
+pub const RT_OK: &str = "// rt-ok:";
+
+/// Each line of `source` (from 1) holding a word of [`RT_FORBIDDEN`], with the word. Lines of
+/// comments are not read; a line tagged with [`RT_OK`] and a reason is let through.
 #[must_use]
 pub fn rt_violations(source: &str) -> Vec<(usize, &'static str)> {
     let mut found = Vec::new();
     for (index, line) in source.lines().enumerate() {
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        let tagged = line
+            .find(RT_OK)
+            .is_some_and(|at| !line[at + RT_OK.len()..].trim().is_empty());
+        if tagged {
+            continue;
+        }
         for word in RT_FORBIDDEN {
             if line.contains(word) {
                 found.push((index + 1, word));
@@ -181,6 +216,24 @@ impl Rng {
         assert!(low <= high, "an empty range");
         let span = (high - low) as u64 + 1;
         low + (self.next_u64() % span) as usize
+    }
+
+    /// A number from 0 to below 1.
+    #[allow(clippy::cast_precision_loss, reason = "53 bits of the 64")]
+    pub fn unit(&mut self) -> f64 {
+        (self.next_u64() >> 11) as f64 / (1_u64 << 53) as f64
+    }
+
+    /// A count from 1 to `high`, its logarithm uniform: as many small counts as large.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "a count of a test"
+    )]
+    pub fn log_range(&mut self, high: usize) -> usize {
+        let high = high.max(1);
+        ((high as f64).powf(self.unit()) as usize).clamp(1, high)
     }
 
     /// A sample from −1 to 1.
@@ -231,12 +284,12 @@ pub struct Change {
     pub value: f32,
 }
 
-/// What a node is given through a run: the input, the sidechain and the automation, a channel
-/// or a lane each, all of one length, and the parameters set along the way.
+/// What a node is given through a run of `frames` samples: the input, the sidechain and the
+/// automation, a channel or a lane each, all that long, and the parameters set along the way.
 #[derive(Clone, Debug, Default)]
 pub struct Run {
-    /// The sample of the timeline at which the run starts.
-    pub start: i64,
+    /// The samples of the run.
+    pub frames: usize,
     /// The channels in.
     pub input: Vec<Vec<f32>>,
     /// The channels of the sidechain.
@@ -248,30 +301,44 @@ pub struct Run {
 }
 
 impl Run {
-    /// A run of `input`, from the start of the timeline.
+    /// A run of `input`, as long as its channels; at least one channel.
     #[must_use]
     pub fn new(input: Vec<Vec<f32>>) -> Self {
+        let frames = input.first().map(Vec::len).expect("a channel of input");
+        assert!(
+            input.iter().all(|channel| channel.len() == frames),
+            "channels of different lengths"
+        );
         Run {
+            frames,
             input,
             ..Run::default()
         }
     }
 
-    /// The same, from the sample `start` of the timeline.
+    /// A run of `frames` samples with no input: for a node that makes sound of its own.
     #[must_use]
-    pub fn starting_at(self, start: i64) -> Self {
-        Run { start, ..self }
+    pub fn silent(frames: usize) -> Self {
+        Run {
+            frames,
+            ..Run::default()
+        }
     }
 
-    /// The same, with a sidechain.
+    /// The same, with a sidechain as long as the run.
     #[must_use]
     pub fn with_sidechain(self, sidechain: Vec<Vec<f32>>) -> Self {
+        assert!(
+            sidechain.iter().all(|channel| channel.len() == self.frames),
+            "a sidechain of another length"
+        );
         Run { sidechain, ..self }
     }
 
-    /// The same, with `param` automated by `values`.
+    /// The same, with `param` automated by `values`, as long as the run.
     #[must_use]
     pub fn with_automation(mut self, param: ParamId, values: Vec<f32>) -> Self {
+        assert_eq!(values.len(), self.frames, "a lane of another length");
         self.automation.push((param, values));
         self
     }
@@ -284,14 +351,13 @@ impl Run {
         self
     }
 
-    /// The samples of the run.
+    /// The same, setting no parameter.
     #[must_use]
-    pub fn frames(&self) -> usize {
-        self.input
-            .first()
-            .or(self.sidechain.first())
-            .or(self.automation.first().map(|(_, values)| values))
-            .map_or(0, Vec::len)
+    pub fn without_changes(&self) -> Run {
+        Run {
+            changes: Vec::new(),
+            ..self.clone()
+        }
     }
 
     /// The run from its sample `offset` on: the changes before it are made at its start.
@@ -304,7 +370,7 @@ impl Run {
                 .collect()
         };
         Run {
-            start: self.start + i64::try_from(offset).expect("a run of a test"),
+            frames: self.frames - offset,
             input: cut(&self.input),
             sidechain: cut(&self.sidechain),
             automation: self
@@ -324,38 +390,47 @@ impl Run {
     }
 }
 
-/// The output of `node`, prepared for `spec`, through `run`, in blocks whose lengths `cut` gives
-/// for the samples left (and at most `spec.max_block`, and cut again where a parameter is set).
-/// Allocates: not for a section counted by [`realtime`].
+/// The output of `node`, prepared for `spec` (new, or just reset), through `run`, in blocks whose
+/// lengths `cut` gives for the samples left: at most `spec.max_block`, cut again where a parameter
+/// is set, and a length of 0 processes a block of nothing. Checks that setting a parameter does not
+/// change the latency. Allocates: not for a section counted by [`realtime`].
 pub fn render<N: Node + ?Sized>(
     node: &mut N,
     spec: &Spec,
     run: &Run,
     mut cut: impl FnMut(usize) -> usize,
 ) -> Vec<Vec<f32>> {
-    assert_eq!(run.input.len(), spec.inputs, "the channels of the input");
+    assert_eq!(run.input.len(), spec.inputs(), "the channels of the input");
     assert_eq!(
         run.sidechain.len(),
         spec.sidechain,
         "the channels of the sidechain"
     );
-    let frames = run.frames();
-    let mut input = Planar::new(spec.inputs, spec.max_block);
+    let frames = run.frames;
+    let latency = node.latency();
+    let mut input = Planar::new(spec.inputs(), spec.max_block);
     let mut sidechain = Planar::new(spec.sidechain, spec.max_block);
-    let mut output = Planar::new(spec.outputs, spec.max_block);
-    let mut rendered = vec![Vec::with_capacity(frames); spec.outputs];
+    let mut output = Planar::new(spec.outputs(), spec.max_block);
+    let mut rendered = vec![Vec::with_capacity(frames); spec.outputs()];
     let mut at = 0;
     let mut change = 0;
     while at < frames {
         while let Some(next) = run.changes.get(change).filter(|next| next.at <= at) {
             node.set(next.param, next.value);
+            assert_eq!(
+                node.latency(),
+                latency,
+                "setting {:?} to {} changed the latency",
+                next.param,
+                next.value
+            );
             change += 1;
         }
         let until = run
             .changes
             .get(change)
             .map_or(frames, |next| next.at.min(frames));
-        let size = cut(frames - at).clamp(1, spec.max_block).min(until - at);
+        let size = cut(frames - at).min(spec.max_block).min(until - at);
         for (channel, signal) in run.input.iter().enumerate() {
             input.channel_mut(channel)[..size].copy_from_slice(&signal[at..at + size]);
         }
@@ -370,7 +445,7 @@ pub fn render<N: Node + ?Sized>(
                 values: &values[at..at + size],
             })
             .collect();
-        let start = run.start + i64::try_from(at).expect("a run of a test");
+        let start = u64::try_from(at).expect("a run of a test");
         let block = Block::new(start, spec.rate, size).with_automation(Automation::new(&lanes));
         sidechain.read(size, |sidechain| {
             input.read(size, |input| {
@@ -405,37 +480,85 @@ fn assert_same_bits(a: &[Vec<f32>], b: &[Vec<f32>], what: &str) {
     }
 }
 
+/// The fixed lengths of blocks tried: the smallest, the hops of the transforms and the periods
+/// of the cards around them, and the largest.
+#[must_use]
+pub fn fixed_blocks(max_block: usize) -> Vec<usize> {
+    let mut sizes = vec![1, 2, 3, max_block.saturating_sub(1), max_block];
+    for hop in [64, 128, 256, 441, 480, 512, 1_024, 2_048] {
+        sizes.extend([hop - 1, hop, hop + 1]);
+    }
+    sizes.retain(|&size| (1..=max_block).contains(&size));
+    sizes.sort_unstable();
+    sizes.dedup();
+    sizes
+}
+
+/// A length of a block drawn from `rng`: uniform from 1 to `max_block`, log-uniform, small, or
+/// now and then 0 (a block of nothing).
+fn drawn_block(rng: &mut Rng, max_block: usize) -> usize {
+    match rng.next_u64() % 8 {
+        0 => 0,
+        1..=3 => rng.range(1, max_block),
+        4..=6 => rng.log_range(max_block),
+        _ => rng.range(1, max_block.min(4)),
+    }
+}
+
 /// Checks that the output of the nodes that `factory` makes does not depend on how the sound is
-/// cut into blocks: `run` processed whole, in one block, gives the same bits as `run` processed in
-/// blocks of 1 to `spec.max_block` samples drawn from each of `seeds`; and the same node, reset,
-/// processing `run` again in other blocks, gives the same bits as a node that processed `run` whole
-/// twice with a reset between. When `run` sets no parameter, a reset node is a new one, and that
-/// is the output processed whole again. The output processed whole.
+/// cut into blocks, and that a reset makes a node as new:
+///
+/// - `run` processed whole, in one block, gives the same bits as `run` processed in blocks of each
+///   of the fixed lengths ([`fixed_blocks`]: 1, 2, 3, the common hops and periods ± 1, and
+///   `spec.max_block` and one less), and in blocks drawn from each of `seeds` (uniform,
+///   log-uniform, small, and blocks of nothing between);
+/// - the node of each seed, reset, processing `run` again in other blocks, gives the same bits as
+///   a node that processed `run` whole twice with a reset between (the parameters are kept
+///   through a reset);
+/// - a node that processed `run` without its changes, reset, processes it again as a new node:
+///   the reset leaves nothing of the sound behind.
+///
+/// Setting a parameter must not change the latency ([`render`]). The output processed whole.
 pub fn chunk_invariance<N: Node>(
     mut factory: impl FnMut() -> N,
     spec: &Spec,
     run: &Run,
     seeds: &[u64],
 ) -> Vec<Vec<f32>> {
-    let whole_spec = spec.with_max_block(run.frames().max(1));
+    assert!(run.frames > 0, "a run of no samples checks nothing");
+    let whole_spec = spec.with_max_block(run.frames);
     let mut node = factory();
     node.prepare(&whole_spec).expect("the node takes the spec");
     let whole = render(&mut node, &whole_spec, run, |left| left);
-    // A reset keeps the parameters set and ends their ramps: after one, the parameters are those
-    // of the end of the run.
     node.reset();
     let whole_again = render(&mut node, &whole_spec, run, |left| left);
-    if run.changes.is_empty() {
-        assert_same_bits(&whole, &whole_again, "after a reset, whole");
+
+    let quiet = run.without_changes();
+    let mut node = factory();
+    node.prepare(&whole_spec).expect("the node takes the spec");
+    let quiet_whole = render(&mut node, &whole_spec, &quiet, |left| left);
+    node.reset();
+    let quiet_again = render(&mut node, &whole_spec, &quiet, |left| left);
+    assert_same_bits(&quiet_whole, &quiet_again, "after a reset, as new");
+
+    for size in fixed_blocks(spec.max_block) {
+        let mut node = factory();
+        node.prepare(spec).expect("the node takes the spec");
+        let blocks = render(&mut node, spec, run, |_| size);
+        assert_same_bits(&whole, &blocks, &format!("in blocks of {size}"));
     }
     for &seed in seeds {
         let mut rng = Rng::new(seed);
         let mut node = factory();
         node.prepare(spec).expect("the node takes the spec");
-        let blocks = render(&mut node, spec, run, |_| rng.range(1, spec.max_block));
+        let blocks = render(&mut node, spec, run, |_| {
+            drawn_block(&mut rng, spec.max_block)
+        });
         assert_same_bits(&whole, &blocks, &format!("in blocks from seed {seed}"));
         node.reset();
-        let again = render(&mut node, spec, run, |_| rng.range(1, spec.max_block));
+        let again = render(&mut node, spec, run, |_| {
+            drawn_block(&mut rng, spec.max_block)
+        });
         let what = format!("after a reset, in blocks from seed {seed}");
         assert_same_bits(&whole_again, &again, &what);
     }
@@ -466,8 +589,13 @@ pub fn measured_latency(input: &[f32], output: &[f32], max_lag: usize) -> usize 
 
 /// Checks that the delay a node reports is the delay of its output: fed noise at −12 dBFS on
 /// each channel, each output channel is behind the input channel of its number (the last, for
-/// outputs beyond the inputs) by [`Node::latency`]. The delay.
+/// outputs beyond the inputs) by [`Node::latency`]. The delay. For a node with an input: one
+/// that makes its own sound is measured some other way.
 pub fn assert_latency<N: Node>(mut factory: impl FnMut() -> N, spec: &Spec) -> usize {
+    assert!(
+        spec.inputs() > 0,
+        "the latency of a node with no input is not measured against its input"
+    );
     let mut node = factory();
     node.prepare(spec).expect("the node takes the spec");
     let latency = node.latency() as usize;
@@ -478,10 +606,10 @@ pub fn assert_latency<N: Node>(mut factory: impl FnMut() -> N, spec: &Spec) -> u
             .map(|c| noise(seed + c as u64, 0.25, frames))
             .collect()
     };
-    let run = Run::new(channels(spec.inputs, 1)).with_sidechain(channels(spec.sidechain, 101));
+    let run = Run::new(channels(spec.inputs(), 1)).with_sidechain(channels(spec.sidechain, 101));
     let output = render(&mut node, spec, &run, |left| left);
     for (channel, out) in output.iter().enumerate() {
-        let input = &run.input[channel.min(spec.inputs - 1)];
+        let input = &run.input[channel.min(spec.inputs() - 1)];
         let measured = measured_latency(input, out, max_lag);
         assert_eq!(
             measured, latency,
@@ -500,6 +628,11 @@ pub fn assert_settle<N: Node>(
     run: &Run,
     from: usize,
 ) -> f32 {
+    assert!(
+        from < run.frames,
+        "a start at {from} of a run of {}",
+        run.frames
+    );
     let mut early = factory();
     early.prepare(spec).expect("the node takes the spec");
     let whole = render(&mut early, spec, run, |left| left);
@@ -566,10 +699,10 @@ impl Delay {
 
 impl Node for Delay {
     fn prepare(&mut self, spec: &Spec) -> Result<(), Unsupported> {
-        if spec.inputs != spec.outputs {
+        if spec.layout != spec.output {
             return Err(Unsupported::from(spec));
         }
-        self.lines = vec![vec![0.0; self.samples]; spec.inputs];
+        self.lines = vec![vec![0.0; self.samples]; spec.inputs()];
         self.at = 0;
         Ok(())
     }
@@ -600,8 +733,9 @@ impl Node for Delay {
 }
 
 /// A node with every kind of state a node of the graph has: a gain smoothed over 10 ms and open
-/// to automation ([`Reference::GAIN`]), a one-pole low-pass, kept in `f64`, and a delay. For the
-/// tests of the graph, and the measure of the checks here.
+/// to automation ([`Reference::GAIN`]), a one-pole low-pass, kept in `f64` and flushed to 0 below
+/// 1e-30, and a delay. For the tests of the graph, and the measure of the checks here. Its gain
+/// is kept through a reset and through `prepare` again, as every parameter is.
 #[derive(Clone, Debug)]
 pub struct Reference {
     gain: Smoothed,
@@ -637,7 +771,7 @@ impl Node for Reference {
         self.delay.prepare(spec)?;
         self.gain.prepare(spec.rate);
         self.ramp = self.gain.ramp_len();
-        self.state = vec![0.0; spec.inputs];
+        self.state = vec![0.0; spec.inputs()];
         self.gains = vec![0.0; spec.max_block];
         Ok(())
     }
@@ -651,7 +785,7 @@ impl Node for Reference {
         }
         for ((output, input), state) in output.iter_mut().zip(input).zip(&mut self.state) {
             for ((out, x), g) in output.iter_mut().zip(*input).zip(gains.iter()) {
-                *state = self.pole * *state + (1.0 - self.pole) * f64::from(x * g);
+                *state = flush(self.pole * *state + (1.0 - self.pole) * f64::from(x * g));
                 *out = *state as f32;
             }
         }

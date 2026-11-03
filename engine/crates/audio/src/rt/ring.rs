@@ -4,18 +4,33 @@
 //! messages of a fixed size (a parameter changed, a new graph, an old graph sent back to be
 //! dropped).
 //!
-//! The capacity is rounded up to a power of two.
+//! A ring of samples carries whole frames of interleaved sound: each frame is a sample of every
+//! channel, and every count of it (pushed, popped, dropped, free, held) is in frames, so that a
+//! frame is never cut in two. Capacities are rounded up to a power of two (in frames).
 
 use rtrb::{Consumer, Producer, RingBuffer};
 
-/// A ring of `capacity` samples (rounded up to a power of two): the end that writes and the end
-/// that reads. Made off the thread of the mix: it takes its memory here.
+/// A ring of `frames` frames of `channels` interleaved samples (the frames rounded up to a
+/// power of two): the end that writes and the end that reads. Made off the thread of the mix:
+/// it takes its memory here.
+///
+/// # Panics
+///
+/// When `channels` is 0.
 #[must_use]
-pub fn samples(capacity: usize) -> (SampleProducer, SampleConsumer) {
-    let (producer, consumer) = RingBuffer::new(capacity.max(1).next_power_of_two());
+pub fn samples(frames: usize, channels: usize) -> (SampleProducer, SampleConsumer) {
+    assert!(channels > 0, "a ring of no channels");
+    let frames = frames.max(1).next_power_of_two();
+    let (producer, consumer) = RingBuffer::new(frames * channels);
     (
-        SampleProducer { ring: producer },
-        SampleConsumer { ring: consumer },
+        SampleProducer {
+            ring: producer,
+            channels,
+        },
+        SampleConsumer {
+            ring: consumer,
+            channels,
+        },
     )
 }
 
@@ -33,25 +48,36 @@ pub fn messages<T: Send>(capacity: usize) -> (MessageProducer<T>, MessageConsume
 #[derive(Debug)]
 pub struct SampleProducer {
     ring: Producer<f32>,
+    channels: usize,
 }
 
 impl SampleProducer {
-    /// Writes as many of `samples` as there is room for, from the first; the count written.
+    /// Writes as many whole frames of `samples` (interleaved) as there is room for, from the
+    /// first; the frames written. Samples after the last whole frame are not written.
     pub fn push(&mut self, samples: &[f32]) -> usize {
-        let (written, _) = self.ring.push_partial_slice(samples);
-        written.len()
+        let frames = samples.len().min(self.ring.slots()) / self.channels;
+        let (written, _) = self
+            .ring
+            .push_partial_slice(&samples[..frames * self.channels]);
+        written.len() / self.channels
     }
 
-    /// The room for samples now (more may come free at any time).
+    /// The room for frames now (more may come free at any time).
     #[must_use]
     pub fn free(&self) -> usize {
-        self.ring.slots()
+        self.ring.slots() / self.channels
     }
 
-    /// The samples the ring holds when full.
+    /// The frames the ring holds when full.
     #[must_use]
     pub fn capacity(&self) -> usize {
-        self.ring.buffer().capacity()
+        self.ring.buffer().capacity() / self.channels
+    }
+
+    /// The channels of a frame.
+    #[must_use]
+    pub fn channels(&self) -> usize {
+        self.channels
     }
 
     /// The end that reads is gone.
@@ -65,38 +91,48 @@ impl SampleProducer {
 #[derive(Debug)]
 pub struct SampleConsumer {
     ring: Consumer<f32>,
+    channels: usize,
 }
 
 impl SampleConsumer {
-    /// Reads as many samples as there are into the start of `out`, up to its length; the count
-    /// read.
+    /// Reads as many whole frames as there are into the start of `out`, as many as fit in it;
+    /// the frames read.
     pub fn pop(&mut self, out: &mut [f32]) -> usize {
-        let (read, _) = self.ring.pop_partial_slice(out);
-        read.len()
+        let frames = out.len().min(self.ring.slots()) / self.channels;
+        let (read, _) = self
+            .ring
+            .pop_partial_slice(&mut out[..frames * self.channels]);
+        read.len() / self.channels
     }
 
-    /// Drops up to `count` samples unread; the count dropped.
-    pub fn discard(&mut self, count: usize) -> usize {
-        let count = count.min(self.ring.slots());
-        match self.ring.read_chunk(count) {
+    /// Drops up to `frames` frames unread; the frames dropped.
+    pub fn discard(&mut self, frames: usize) -> usize {
+        let frames = frames.min(self.ring.slots() / self.channels);
+        match self.ring.read_chunk(frames * self.channels) {
             Ok(chunk) => {
                 chunk.commit_all();
-                count
+                frames
             }
             Err(_) => 0,
         }
     }
 
-    /// The samples there are to read now (more may come at any time).
+    /// The frames there are to read now (more may come at any time).
     #[must_use]
     pub fn available(&self) -> usize {
-        self.ring.slots()
+        self.ring.slots() / self.channels
     }
 
-    /// The samples the ring holds when full.
+    /// The frames the ring holds when full.
     #[must_use]
     pub fn capacity(&self) -> usize {
-        self.ring.buffer().capacity()
+        self.ring.buffer().capacity() / self.channels
+    }
+
+    /// The channels of a frame.
+    #[must_use]
+    pub fn channels(&self) -> usize {
+        self.channels
     }
 
     /// The end that writes is gone.

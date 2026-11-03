@@ -13,7 +13,9 @@ use crate::constants::{samples, SMOOTHING};
 pub enum Domain {
     /// Straight in the value: a gain, a mix, a pan.
     Linear,
-    /// Straight in the logarithm of the value: a frequency, a time. The values must be above 0.
+    /// Straight in the logarithm of the value: a frequency, a time. A value of 0 or below is
+    /// taken as the smallest positive normal `f32` (a value below 0 is a mistake, caught in debug
+    /// builds), so that the ramp is never of an infinity and never gives NaN.
     Log,
 }
 
@@ -37,6 +39,7 @@ impl Smoothed {
     /// A parameter at `value`, not ramping. It changes at once until it is prepared.
     #[must_use]
     pub fn new(value: f32, domain: Domain) -> Self {
+        let value = guard(domain, value);
         let at = into(domain, value);
         Smoothed {
             domain,
@@ -63,6 +66,7 @@ impl Smoothed {
     /// Ramps from the value now to `target`, reached at the 10 ms-th sample given from now. The
     /// same target again changes nothing.
     pub fn set(&mut self, target: f32) {
+        let target = guard(self.domain, target);
         if target.to_bits() == self.target.to_bits() {
             return;
         }
@@ -74,6 +78,7 @@ impl Smoothed {
 
     /// Goes to `value` at once.
     pub fn jump(&mut self, value: f32) {
+        let value = guard(self.domain, value);
         self.target = value;
         self.to = into(self.domain, value);
         self.finish();
@@ -131,6 +136,21 @@ impl Smoothed {
             self.from + (self.to - self.from) * f64::from(self.step) / f64::from(self.len)
         } else {
             self.to
+        }
+    }
+}
+
+/// `value`, or in the logarithmic domain at least the smallest positive normal.
+fn guard(domain: Domain, value: f32) -> f32 {
+    match domain {
+        Domain::Linear => value,
+        Domain::Log => {
+            debug_assert!(value >= 0.0, "a value of {value} in the logarithmic domain");
+            if value >= f32::MIN_POSITIVE {
+                value
+            } else {
+                f32::MIN_POSITIVE
+            }
         }
     }
 }

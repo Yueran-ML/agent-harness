@@ -27,7 +27,9 @@ pub mod rt;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
-pub use node::{Automated, Automation, Block, Node, ParamId, Planar, Spec, Unsupported};
+pub use node::{
+    Automated, Automation, Block, Layout, Node, ParamId, Planar, Role, Spec, Unsupported,
+};
 
 /// The gain of `db` decibels; silence at or below [`constants::SILENCE_DB`].
 #[must_use]

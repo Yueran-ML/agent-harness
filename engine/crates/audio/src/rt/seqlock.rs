@@ -156,11 +156,12 @@ struct Shared {
 pub fn seqlock<T: Words>(initial: T) -> (SeqWriter<T>, SeqReader<T>) {
     let words: Box<[AtomicU32]> = (0..T::WORDS)
         .map(|index| AtomicU32::new(initial.word(index)))
-        .collect();
-    let shared = Arc::new(Shared {
+        .collect(); // rt-ok: the seqlock is made off the thread of the mix
+    let shared = Shared {
         sequence: AtomicUsize::new(0),
         words,
-    });
+    };
+    let shared = Arc::new(shared); // rt-ok: the seqlock is made off the thread of the mix
     (
         SeqWriter {
             shared: Arc::clone(&shared),

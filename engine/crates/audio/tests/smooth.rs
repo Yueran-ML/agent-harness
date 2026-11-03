@@ -68,6 +68,27 @@ fn a_reset_ends_the_ramp_at_its_target() {
 }
 
 #[test]
+fn a_frequency_ramped_to_zero_and_back_never_gives_nan() {
+    let mut frequency = Smoothed::new(1_000.0, Domain::Log);
+    frequency.prepare(48_000);
+    frequency.set(0.0);
+    assert_eq!(frequency.target(), f32::MIN_POSITIVE);
+    let down: Vec<f32> = (0..300).map(|_| frequency.next_value()).collect();
+    frequency.set(500.0);
+    let up: Vec<f32> = (0..600).map(|_| frequency.next_value()).collect();
+    for value in down.iter().chain(&up) {
+        assert!(value.is_finite() && *value > 0.0, "{value}");
+    }
+    assert_eq!(up[599], 500.0);
+    let mut from_zero = Smoothed::new(0.0, Domain::Log);
+    from_zero.prepare(48_000);
+    from_zero.set(500.0);
+    assert!((0..480).all(|_| from_zero.next_value().is_finite()));
+    from_zero.jump(0.0);
+    assert_eq!(from_zero.next_value(), f32::MIN_POSITIVE);
+}
+
+#[test]
 fn before_it_is_prepared_a_change_takes_at_once() {
     let mut gain = Smoothed::new(0.0, Domain::Linear);
     gain.set(1.0);

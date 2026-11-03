@@ -268,3 +268,74 @@ pub const AUTOMATION_MIN_SPACING: f64 = 0.001;
 
 /// Where a range of a lane raised or lowered puts its inner points, inside its ends (C-A6).
 pub const AUTOMATION_BOUNDARY_RAMP: f64 = 0.010;
+
+// --- The curves of fades and crossfades (convention 11) --------------------------------------
+
+/// The level of one side of a crossfade (p. 3831; `fade_in_level_db` and `fade_out_level_db`
+/// of a transition, T1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CrossfadeLevel {
+    /// −3 dB: g(t) = t^1.5, 3.01 dB under linear half way (C-C2; chosen over the plan's
+    /// 1 − cos(πt/2), which is 4.64 dB under, by the review of T4a).
+    Minus3,
+    /// 0 dB: g(t) = t, linear; the default of a new crossfade (Q11).
+    Zero,
+    /// +3 dB: g(t) = sin(πt/2), equal power, 3.01 dB over linear half way; the crossfades of
+    /// projects of schema 3, to the bit as phase 2 made them (`model/src/resolve.rs`).
+    Plus3,
+}
+
+impl CrossfadeLevel {
+    /// The level of `db`: −3, 0 or 3.
+    #[must_use]
+    pub fn from_db(db: i32) -> Option<Self> {
+        match db {
+            -3 => Some(CrossfadeLevel::Minus3),
+            0 => Some(CrossfadeLevel::Zero),
+            3 => Some(CrossfadeLevel::Plus3),
+            _ => None,
+        }
+    }
+}
+
+/// The gain of one side of a crossfade of `level`, `t` of the way through it (0 to 1, clamped):
+/// g(t) for the side that comes in, g(1 − t) for the side that goes (`falling`). The equal-power
+/// side that goes is cos(πt/2), which is g(1 − t) and is what phase 2 computes, to the bit.
+#[must_use]
+pub fn crossfade_gain(level: CrossfadeLevel, t: f64, falling: bool) -> f64 {
+    use std::f64::consts::FRAC_PI_2;
+    let t = t.clamp(0.0, 1.0);
+    match (level, falling) {
+        (CrossfadeLevel::Zero, false) => t,
+        (CrossfadeLevel::Zero, true) => 1.0 - t,
+        (CrossfadeLevel::Plus3, false) => (t * FRAC_PI_2).sin(),
+        (CrossfadeLevel::Plus3, true) => (t * FRAC_PI_2).cos(),
+        (CrossfadeLevel::Minus3, false) => t.powf(1.5),
+        (CrossfadeLevel::Minus3, true) => (1.0 - t).powf(1.5),
+    }
+}
+
+/// The gain of a clip's fade, `t` of the way through it (0 to 1, clamped): g(t) for a fade in,
+/// g(1 − t) for a fade out (`falling`). `curve` from −1 to 1 bends it: 0 is linear, +1 is
+/// sin(πt/2), −1 is 1 − cos(πt/2), and between them the curve is the linear one mixed with the
+/// one at the end by |`curve`|. `skew` from −1 to 1 moves its middle in time: t' = t^(2^(−skew))
+/// (the plan's table; dragging the handle up and down and sideways, pp. 972–973).
+#[must_use]
+pub fn fade_gain(curve: f64, skew: f64, t: f64, falling: bool) -> f64 {
+    use std::f64::consts::FRAC_PI_2;
+    let t = t.clamp(0.0, 1.0);
+    let t = if falling { 1.0 - t } else { t };
+    let curve = curve.clamp(-1.0, 1.0);
+    let skew = skew.clamp(-1.0, 1.0);
+    let t = if skew == 0.0 {
+        t
+    } else {
+        t.powf((-skew).exp2())
+    };
+    let end = if curve >= 0.0 {
+        (t * FRAC_PI_2).sin()
+    } else {
+        1.0 - (t * FRAC_PI_2).cos()
+    };
+    t + curve.abs() * (end - t)
+}

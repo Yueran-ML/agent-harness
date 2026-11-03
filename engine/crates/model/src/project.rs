@@ -17,10 +17,23 @@
 //! Blur palette of a corrector (`blur`, see [`crate::grade::blur`]). A project written before
 //! them is read with the values that leave it as it was: not managed, no media set, and no
 //! blur.
+//!
+//! Schema 4 added the sound of the Fairlight page (see [`crate::audio`]): on a clip, keyframes of
+//! its gain and pan, fades of any length and curve, an equalizer, effects, a pitch and a map of
+//! its channels; on a track of sound, a format, a mute and a solo, a strip and lanes of
+//! automation; on a timeline, buses, VCAs, groups of tracks and the settings of its sound; on a
+//! transition, the levels of a crossfade; and in the facts of media, its streams of sound. They
+//! are always written, and may each be left out where a project is read, as its default. A
+//! project of schema 3 is read into schema 4 so that it sounds as it did (see
+//! [`crate::upgrade`]).
 
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::audio::{
+    self, AudioFade, AudioParam, Bus, ChannelMap, ChannelOrder, ClipPitch, CrossfadeLevel,
+    Equalizer, Insert, Lanes, Strip, TimelineAudio, TrackAudio, TrackFormat, TrackGroup, Vca,
+};
 use crate::color::ColorFacts;
 use crate::color_management::{ColorOverride, ColorSettings};
 use crate::grade::{Grade, Group};
@@ -28,7 +41,7 @@ use crate::ops::Invalid;
 use crate::time::{Rate, Speed, Time};
 
 /// The schema of a project that this engine reads and writes.
-pub const SCHEMA: u32 = 3;
+pub const SCHEMA: u32 = 4;
 
 /// What a thing of a project is known by. It never changes.
 ///
@@ -246,7 +259,8 @@ pub struct VideoFacts {
     pub color: Option<ColorFacts>,
 }
 
-/// The sound of a file.
+/// The sound of a file: that of the stream of sound that libav ranks best, and the streams of
+/// sound that it has.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AudioFacts {
@@ -256,6 +270,28 @@ pub struct AudioFacts {
     pub channels: u16,
     /// The name of its codec.
     pub codec: String,
+    /// The name of the layout of its channels, as libav names it (`stereo`, `5.1(side)`), if
+    /// one was read. None where it was not, as in a project whose media was probed before
+    /// schema 4: left out of the JSON, and read so where it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<String>,
+    /// Each stream of sound of the file, in the order of the file, if they were read. None where
+    /// they were not, as for `layout`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub streams: Option<Vec<AudioStream>>,
+}
+
+/// A stream of sound of a file.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AudioStream {
+    /// Its number among all the streams of the file, as libav numbers them.
+    pub index: u32,
+    /// How many channels it has.
+    pub channels: u16,
+    /// The name of the layout of its channels, if it has one.
+    #[serde(default)]
+    pub layout: Option<String>,
 }
 
 /// A timeline: tracks of clips and subtitles, laid on frames of one rate, and the picture and
@@ -281,6 +317,19 @@ pub struct Timeline {
     /// where a timeline is read.
     #[serde(default)]
     pub grade: Grade,
+    /// Its buses (see [`crate::audio::routing`]). It may be left out where a timeline is read, as
+    /// the one bus of a new timeline, `B1`.
+    #[serde(default = "audio::first_buses")]
+    pub buses: Vec<Bus>,
+    /// Its VCAs. It may be left out, as none.
+    #[serde(default)]
+    pub vcas: Vec<Vca>,
+    /// Its groups of tracks of sound. It may be left out, as none.
+    #[serde(default)]
+    pub track_groups: Vec<TrackGroup>,
+    /// The settings of its sound. It may be left out, as those of a new timeline.
+    #[serde(default)]
+    pub audio: TimelineAudio,
 }
 
 /// What a track holds: picture, sound or subtitles.
@@ -299,9 +348,12 @@ pub enum TrackKind {
 ///
 /// A track of picture or of sound holds clips and the transitions between them, and is written
 /// with `clips` and `transitions`; a track of subtitles holds subtitles in a language, and is
-/// written with `language` and `cues`. A track is written with the fields of its kind only, and
-/// one that is read with the fields of another kind is refused. The fields of the other kinds
-/// are empty here.
+/// written with `language` and `cues`. A track of sound is written with what it has of sound too
+/// (see [`TrackAudio`]): `format`, `channels`, `order`, `mute`, `solo`, `solo_safe`, `adc`,
+/// `automation_arm`, `strip` and `lanes`, each of which may be left out where it is read (the
+/// `channels` of an adaptive track excepted). A track is written with the fields of its kind
+/// only, and one that is read with the fields of another kind is refused. The fields of the other
+/// kinds are empty here, and `audio` is the default.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(try_from = "RawTrack")]
 pub struct Track {
@@ -325,6 +377,8 @@ pub struct Track {
     pub language: String,
     /// Its subtitles, in the order of their start.
     pub cues: Vec<Cue>,
+    /// What it has of sound, if it is a track of sound.
+    pub audio: TrackAudio,
 }
 
 /// A track as it is written, before the fields of its kind are looked at.
@@ -340,6 +394,16 @@ struct RawTrack {
     transitions: Option<Vec<Transition>>,
     language: Option<String>,
     cues: Option<Vec<Cue>>,
+    format: Option<TrackFormat>,
+    channels: Option<u8>,
+    order: Option<ChannelOrder>,
+    mute: Option<bool>,
+    solo: Option<bool>,
+    solo_safe: Option<bool>,
+    adc: Option<bool>,
+    automation_arm: Option<bool>,
+    strip: Option<Strip>,
+    lanes: Option<Lanes>,
 }
 
 impl TryFrom<RawTrack> for Track {
@@ -367,6 +431,40 @@ impl TryFrom<RawTrack> for Track {
                 return Err(format!("missing field `{field}` of a {name} track"));
             }
         }
+        let sound = [
+            ("format", raw.format.is_some()),
+            ("channels", raw.channels.is_some()),
+            ("order", raw.order.is_some()),
+            ("mute", raw.mute.is_some()),
+            ("solo", raw.solo.is_some()),
+            ("solo_safe", raw.solo_safe.is_some()),
+            ("adc", raw.adc.is_some()),
+            ("automation_arm", raw.automation_arm.is_some()),
+            ("strip", raw.strip.is_some()),
+            ("lanes", raw.lanes.is_some()),
+        ];
+        if kind != TrackKind::Audio {
+            if let Some((field, _)) = sound.iter().find(|(_, there)| *there) {
+                return Err(format!("a {name} track has no `{field}`"));
+            }
+        }
+        let made = TrackAudio::default();
+        let format = raw.format.unwrap_or(made.format);
+        let Some(channels) = raw.channels.or(format.channels()) else {
+            return Err("missing field `channels` of an adaptive track".into());
+        };
+        let audio = TrackAudio {
+            format,
+            channels,
+            order: raw.order.unwrap_or(made.order),
+            mute: raw.mute.unwrap_or(made.mute),
+            solo: raw.solo.unwrap_or(made.solo),
+            solo_safe: raw.solo_safe.unwrap_or(made.solo_safe),
+            adc: raw.adc.unwrap_or(made.adc),
+            automation_arm: raw.automation_arm.unwrap_or(made.automation_arm),
+            strip: raw.strip.unwrap_or(made.strip),
+            lanes: raw.lanes.unwrap_or(made.lanes),
+        };
         Ok(Self {
             id: raw.id,
             kind,
@@ -377,13 +475,14 @@ impl TryFrom<RawTrack> for Track {
             transitions: raw.transitions.unwrap_or_default(),
             language: raw.language.unwrap_or_default(),
             cues: raw.cues.unwrap_or_default(),
+            audio,
         })
     }
 }
 
 impl Serialize for Track {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut track = serializer.serialize_struct("Track", 7)?;
+        let mut track = serializer.serialize_struct("Track", 17)?;
         track.serialize_field("id", &self.id)?;
         track.serialize_field("kind", &self.kind)?;
         track.serialize_field("name", &self.name)?;
@@ -396,6 +495,19 @@ impl Serialize for Track {
             track.serialize_field("clips", &self.clips)?;
             track.serialize_field("transitions", &self.transitions)?;
         }
+        if self.kind == TrackKind::Audio {
+            let audio = &self.audio;
+            track.serialize_field("format", &audio.format)?;
+            track.serialize_field("channels", &audio.channels)?;
+            track.serialize_field("order", &audio.order)?;
+            track.serialize_field("mute", &audio.mute)?;
+            track.serialize_field("solo", &audio.solo)?;
+            track.serialize_field("solo_safe", &audio.solo_safe)?;
+            track.serialize_field("adc", &audio.adc)?;
+            track.serialize_field("automation_arm", &audio.automation_arm)?;
+            track.serialize_field("strip", &audio.strip)?;
+            track.serialize_field("lanes", &audio.lanes)?;
+        }
         track.end()
     }
 }
@@ -405,8 +517,8 @@ impl Serialize for Track {
 ///
 /// The source is media, from a place in it, or a title or a colour that the engine makes, which
 /// go on tracks of picture only. A clip of media shows its frames at its speed, forward or
-/// backward (see [`crate::span`]). Its transform is used on a track of picture, and its gain and
-/// pan on a track of sound; they are kept on the other kind too, as they were set.
+/// backward (see [`crate::span`]). Its transform is used on a track of picture, and its settings
+/// of sound on a track of sound; they are kept on the other kind too, as they were set.
 ///
 /// The ticks that its frames last are counted rounded down, so its last frame may end less than
 /// one tick past the end of its source; whoever reads the source for it stops at the end.
@@ -433,14 +545,44 @@ pub struct Clip {
     pub link: Option<Id>,
     /// Where its picture is put on the picture of the timeline.
     pub transform: Transform,
-    /// How much louder its sound is played, in decibels: from -96 to 24.
-    pub gain_db: f64,
-    /// Where its sound is put between the left and the right: from -1, left, to 1, right.
-    pub pan: f64,
-    /// How many frames its picture fades in over, or its sound rises over, from its start.
+    /// How much louder its sound is played, in decibels: from -96 to 24. One number, or keyframes
+    /// at times of its source (see [`AudioParam`]).
+    pub gain_db: AudioParam,
+    /// Where its sound is put between the left and the right: from -1, left, to 1, right. One
+    /// number, or keyframes.
+    pub pan: AudioParam,
+    /// How many frames its picture fades in over, and its sound where `audio_fade_in` is none,
+    /// from its start.
     pub fade_in: i64,
-    /// How many frames its picture fades out over, or its sound falls over, to its end.
+    /// How many frames its picture fades out over, and its sound where `audio_fade_out` is none,
+    /// to its end.
     pub fade_out: i64,
+    /// How its sound fades in, if not over `fade_in` frames on a straight line. It may be left
+    /// out, as none.
+    #[serde(default)]
+    pub audio_fade_in: Option<AudioFade>,
+    /// How its sound fades out, if not over `fade_out` frames on a straight line. It may be left
+    /// out, as none.
+    #[serde(default)]
+    pub audio_fade_out: Option<AudioFade>,
+    /// Its equalizer, of 4 bands (p. 3827). It may be left out, as that of a new clip: off.
+    #[serde(default = "Equalizer::clip")]
+    pub eq: Equalizer,
+    /// Its effects, in order (p. 986). It may be left out, as none.
+    #[serde(default)]
+    pub effects: Vec<Insert>,
+    /// Whether a change of its speed keeps the pitch of its sound (p. 3827). It may be left out,
+    /// as not: its pitch goes with its speed, as it did before schema 4.
+    #[serde(default)]
+    pub pitch_correction: bool,
+    /// How far its pitch is moved, apart from its speed (p. 3826). It may be left out, as not.
+    #[serde(default)]
+    pub pitch: ClipPitch,
+    /// What each channel of its track plays (pp. 3833–3836), as many as its track has; or none,
+    /// for the channels of its media mixed to those of its track as libav mixes them. It may be
+    /// left out, as none.
+    #[serde(default)]
+    pub channels: Option<Vec<ChannelMap>>,
     /// Its grade, which colours its picture before it is put on the tracks below it. It is kept
     /// on a clip of sound too, as it was set. It may be left out where a clip is read.
     #[serde(default)]
@@ -587,6 +729,13 @@ pub struct Transition {
     pub length: i64,
     /// Where it lies about the cut.
     pub align: Alignment,
+    /// How the clip that starts at the cut rises, on a crossfade (p. 3831). It may be left out,
+    /// as 0 dB, a straight line.
+    #[serde(default)]
+    pub fade_in_level_db: CrossfadeLevel,
+    /// How the clip that ends at the cut falls, on a crossfade. It may be left out, as 0 dB.
+    #[serde(default)]
+    pub fade_out_level_db: CrossfadeLevel,
 }
 
 impl Transition {
@@ -616,8 +765,8 @@ pub enum TransitionKind {
     DipBlack,
     /// The picture fades to white and up from it. On tracks of picture.
     DipWhite,
-    /// The sounds are mixed at equal power, the one falling as the other rises. On tracks of
-    /// sound.
+    /// The sounds are mixed, the one falling as the other rises, at the levels of the transition.
+    /// On tracks of sound.
     Crossfade,
 }
 
@@ -699,7 +848,8 @@ impl Project {
     }
 
     /// Read a project of this schema, as [`Project::from_value`] does, or one of an earlier
-    /// schema, as [`crate::upgrade::from_schema_1`] and [`crate::upgrade::from_schema_2`] do.
+    /// schema, as [`crate::upgrade::from_schema_1`], [`crate::upgrade::from_schema_2`] and
+    /// [`crate::upgrade::from_schema_3`] do.
     /// Gives back the schema that it was upgraded from, if it was.
     ///
     /// # Errors
@@ -711,6 +861,7 @@ impl Project {
         match schema_of(&value)? {
             1 => Ok((crate::upgrade::from_schema_1(value)?, Some(1))),
             2 => Ok((crate::upgrade::from_schema_2(value)?, Some(2))),
+            3 => Ok((crate::upgrade::from_schema_3(value)?, Some(3))),
             _ => Ok((Self::from_value(value)?, None)),
         }
     }
@@ -745,6 +896,10 @@ impl Timeline {
             sample_rate: 48000,
             tracks: vec![],
             grade: Grade::default(),
+            buses: audio::first_buses(),
+            vcas: vec![],
+            track_groups: vec![],
+            audio: TimelineAudio::default(),
         }
     }
 }
@@ -765,6 +920,7 @@ impl Track {
             transitions: vec![],
             language: String::new(),
             cues: vec![],
+            audio: TrackAudio::default(),
         }
     }
 
@@ -792,10 +948,17 @@ impl Clip {
             reverse: false,
             link: None,
             transform: Transform::NONE,
-            gain_db: 0.0,
-            pan: 0.0,
+            gain_db: AudioParam::Fixed(0.0),
+            pan: AudioParam::Fixed(0.0),
             fade_in: 0,
             fade_out: 0,
+            audio_fade_in: None,
+            audio_fade_out: None,
+            eq: Equalizer::clip(),
+            effects: vec![],
+            pitch_correction: false,
+            pitch: ClipPitch::default(),
+            channels: None,
             grade: Grade::default(),
             group: None,
         }
@@ -906,6 +1069,8 @@ impl Project {
                         rate: 48000,
                         channels: 2,
                         codec: "aac".into(),
+                        layout: None,
+                        streams: None,
                     }),
                 },
                 proxy: None,
@@ -950,7 +1115,7 @@ mod tests {
             })
         };
         let expected = serde_json::json!({
-            "schema": 3,
+            "schema": 4,
             "next_id": 3,
             "bins": [],
             "media": [{
@@ -1013,6 +1178,14 @@ mod tests {
             "groups": [],
             "color": serde_json::to_value(ColorSettings::default()).unwrap(),
         });
+        let mut expected = expected;
+        let timeline = &mut expected["timelines"][0];
+        crate::audio::written::with(timeline, crate::audio::written::timeline());
+        crate::audio::written::with(&mut timeline["tracks"][1], crate::audio::written::track());
+        for track in [0, 1] {
+            let clip = &mut timeline["tracks"][track]["clips"][0];
+            crate::audio::written::with(clip, crate::audio::written::clip());
+        }
         assert_eq!(written, expected);
     }
 
@@ -1061,9 +1234,9 @@ mod tests {
 
         // One of another schema.
         let mut value = serde_json::to_value(Project::sample()).unwrap();
-        value["schema"] = 4.into();
+        value["schema"] = 5.into();
         let error = serde_json::from_value::<Project>(value).unwrap_err();
-        assert!(error.to_string().contains("schema 4"), "{error}");
+        assert!(error.to_string().contains("schema 5"), "{error}");
 
         // One that validate puts right.
         let mut value = serde_json::to_value(Project::sample()).unwrap();

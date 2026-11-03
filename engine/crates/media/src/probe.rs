@@ -474,6 +474,9 @@ fn sound(stream: &Stream) -> Result<AudioFacts, MediaError> {
         rate,
         channels,
         codec: stream.parameters().id().name().to_owned(),
+        // Read from every stream of sound once T3's `sounds` is merged beside this.
+        layout: None,
+        streams: None,
     })
 }
 

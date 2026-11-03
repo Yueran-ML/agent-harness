@@ -1964,7 +1964,7 @@ mod tests {
         assert_eq!(worker.generation, read_ahead);
         // What is heard only keeps the pictures that were read.
         let mut louder = other.clone();
-        louder.timelines[0].tracks[1].clips[0].gain_db = -3.0;
+        louder.timelines[0].tracks[1].clips[0].gain_db = (-3.0).into();
         assert!(worker.replace(0, Arc::new(louder.clone())));
         assert_eq!(worker.generation, read_ahead);
         // A proxy of the media under the picture changes what is read.
@@ -1997,7 +1997,7 @@ mod tests {
             "sound is never read from a proxy"
         );
         let mut louder = before.clone();
-        louder.timelines[0].tracks[1].clips[0].gain_db = -3.0;
+        louder.timelines[0].tracks[1].clips[0].gain_db = (-3.0).into();
         assert!(!check(&louder, 0));
         let mut faded = before.clone();
         faded.timelines[0].tracks[1].clips[0].fade_in = 10;
@@ -2010,7 +2010,7 @@ mod tests {
         (later.id, later.start) = ("c9".into(), 40);
         sound.push(later);
         let mut quieter = earlier.clone();
-        quieter.timelines[0].tracks[1].clips[0].gain_db = -6.0;
+        quieter.timelines[0].tracks[1].clips[0].gain_db = (-6.0).into();
         let check_from = |from: i64| {
             same_sound(
                 &earlier,

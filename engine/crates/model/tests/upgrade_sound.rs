@@ -68,12 +68,13 @@ fn sound_of(project: &Project) -> u64 {
 }
 
 fn written() -> String {
-    (0..PROJECTS)
-        .map(|seed| {
-            let (project, _) = Project::from_value_upgrading(schema3_project(seed)).unwrap();
-            format!("{seed} {:016x}\n", sound_of(&project))
-        })
-        .collect()
+    use std::fmt::Write;
+    let mut text = String::new();
+    for seed in 0..PROJECTS {
+        let (project, _) = Project::from_value_upgrading(schema3_project(seed)).unwrap();
+        writeln!(text, "{seed} {:016x}", sound_of(&project)).unwrap();
+    }
+    text
 }
 
 #[test]

@@ -4,6 +4,7 @@ use std::collections::HashSet;
 
 use super::work::{fit_fades, most, Work};
 use super::{Created, CueItem, Edge, EditError};
+use crate::audio::CrossfadeLevel;
 use crate::ops::{Op, OpError};
 use crate::project::{Alignment, Clip, Cue, Id, Track, TrackKind, Transition, TransitionKind};
 use crate::span::{frames_for_span, source_span};
@@ -45,6 +46,8 @@ pub(super) fn check_fits(
             right: String::new(),
             length,
             align,
+            fade_in_level_db: CrossfadeLevel::default(),
+            fade_out_level_db: CrossfadeLevel::default(),
         }
         .handles()
     };
@@ -137,6 +140,8 @@ pub(super) fn add_transition(
             right: right.into(),
             length,
             align,
+            fade_in_level_db: CrossfadeLevel::default(),
+            fade_out_level_db: CrossfadeLevel::default(),
         },
     })?;
     if let Op::AddTransition { transition, .. } = done {

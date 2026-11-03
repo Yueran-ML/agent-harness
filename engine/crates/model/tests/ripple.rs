@@ -26,6 +26,8 @@ fn sequence(count: i64) -> Project {
                 kind: TransitionKind::Dissolve,
                 length: 10,
                 align: Alignment::Center,
+                fade_in_level_db: columbina_model::CrossfadeLevel::Zero,
+                fade_out_level_db: columbina_model::CrossfadeLevel::Zero,
             });
         }
     }

@@ -150,7 +150,7 @@ impl Store {
     /// [`Project::from_value_upgrading`], which checks it; a file that is not a project that this engine
     /// can open is refused, and left as it is.
     ///
-    /// A project of an earlier schema, 1 or 2, is read into the schema of this engine (see
+    /// A project of an earlier schema, 1, 2 or 3, is read into the schema of this engine (see
     /// `columbina_model::upgrade`), and is written in it when it is first saved. Before that,
     /// the first time that it is opened, its file is copied as it is to
     /// `project.schema<N>.json`, where `N` is its schema, written whole or not at all, so that

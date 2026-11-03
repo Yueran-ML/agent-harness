@@ -114,6 +114,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize, Serializer};
 
+use crate::audio::{self, AudioParam};
 use crate::color_management::{Levels, LutPair};
 use crate::grade::{
     Grade, Group, Link, Node, Port, Pos, Target, LONGEST_LABEL, LONGEST_PATH, MOST_INPUTS,
@@ -332,12 +333,12 @@ pub enum Op {
         /// Its transform, whole.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         transform: Option<Transform>,
-        /// Its gain.
+        /// Its gain: one number, or keyframes.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        gain_db: Option<f64>,
-        /// Its pan.
+        gain_db: Option<AudioParam>,
+        /// Its pan: one number, or keyframes.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        pan: Option<f64>,
+        pan: Option<AudioParam>,
         /// The frames that it fades in over.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fade_in: Option<i64>,
@@ -755,7 +756,14 @@ pub enum OpError {
     /// hexadecimal digits), `by` (a shift by 0), `clips` or `cues` (a shift of none); and of
     /// colour management, `custom_luminance`, `graphics_white`, `input_sat_rolloff`,
     /// `output_sat_rolloff`, `limit_gamut`, `input_lut`, `output_lut` or `viewer_lut`; and of
-    /// the colour of media, `media_lut`.
+    /// the colour of media, `media_lut`. Of sound (schema 4): of a clip, `gain_db` and `pan`
+    /// (also of their keys), `fade`, `eq`, `pitch`, `channels` (a channel of its media that it
+    /// has not, or a level out of -96 to 24) and `sidechain` (an effect of a clip has none); of a
+    /// strip, `trim_db`, `track_fx` (of a bus), `fader_db`, `pan`, `send`, `outputs` (two to one
+    /// bus), `eq`, `dynamics`, `ducker`, the kind of an effect (`gain`, `limiter`,
+    /// `soft_clipper`, `stereo_width`, `de_esser`, `de_hummer`, `noise_reduction`, `pitch`) and
+    /// `lane`; of a timeline, `buses`, `vcas` (too many), `audio` (its settings of sound),
+    /// `label` (the name of a bus); and of a group of tracks, `members` and `linked` (one twice).
     #[error("{}", range_message(.what))]
     OutOfRange {
         /// The setting.
@@ -969,6 +977,68 @@ pub enum OpError {
         /// The media.
         media: Id,
     },
+    /// The sound of a timeline would go round in a loop through a track or a bus: by outputs,
+    /// sends, sidechains or duckers.
+    #[error("the sound would go round in a loop through {id}")]
+    BusCycle {
+        /// A track or a bus on the loop.
+        id: Id,
+    },
+    /// A path of buses, each feeding the next, would be more than 6 buses long (p. 3721).
+    #[error("bus {id} would be more than 6 buses deep")]
+    BusDepth {
+        /// The bus at the end of the path.
+        id: Id,
+    },
+    /// A strip would have more than 6 inserts (p. 3855).
+    #[error("a strip has at most 6 inserts")]
+    TooManyInserts,
+    /// A strip would send to more than 10 buses (p. 3721).
+    #[error("a strip has at most 10 sends")]
+    TooManySends,
+    /// A strip would output to more than 10 buses (p. 3721).
+    #[error("a strip has at most 10 outputs")]
+    TooManyOutputs,
+    /// The channels of a track of sound do not fit its format (an adaptive track has from 1 to
+    /// 24), or those that a clip on it names are not as many as it has.
+    #[error("the channels of track {track}, or of a clip on it, do not fit its format")]
+    ChannelCount {
+        /// The track.
+        track: Id,
+    },
+    /// A bus that is named is not there.
+    #[error("there is no bus {id}")]
+    UnknownBus {
+        /// Its id.
+        id: Id,
+    },
+    /// A VCA that is named is not there.
+    #[error("there is no VCA {id}")]
+    UnknownVca {
+        /// Its id.
+        id: Id,
+    },
+    /// A group of tracks that is named is not there.
+    #[error("there is no group of tracks {id}")]
+    UnknownGroup {
+        /// Its id.
+        id: Id,
+    },
+    /// The order of a strip is not its inserts, Dynamics and equalizer each once (p. 3859).
+    #[error("the order of a strip is not fx, dynamics and eq, each once")]
+    Order,
+    /// The VCAs of a timeline would be members of each other in a loop.
+    #[error("the VCAs would be members of each other in a loop through {id}")]
+    VcaCycle {
+        /// A VCA on the loop.
+        id: Id,
+    },
+    /// A chain of VCAs, each a member of the next, would be more than 6 long.
+    #[error("VCA {id} would be more than 6 VCAs deep")]
+    VcaDepth {
+        /// The VCA at the end of the chain.
+        id: Id,
+    },
 }
 
 /// Why a project that is read is not one that the operations can work on: the thing of it that
@@ -977,7 +1047,7 @@ pub enum OpError {
 #[error("{} {}", thing_of(.what, .id), .error)]
 pub struct Invalid {
     /// The kind of the thing: `project`, `bin`, `media`, `timeline`, `track`, `clip`,
-    /// `transition`, `cue` or `group`.
+    /// `transition`, `cue`, `group`, `bus`, `vca` or `track_group`.
     pub what: &'static str,
     /// Its id, which is empty for the project.
     pub id: Id,
@@ -1144,6 +1214,34 @@ enum Fields {
     },
     CameraRaw {
         media: Id,
+    },
+    BusCycle {
+        id: Id,
+    },
+    BusDepth {
+        id: Id,
+    },
+    TooManyInserts,
+    TooManySends,
+    TooManyOutputs,
+    ChannelCount {
+        track: Id,
+    },
+    UnknownBus {
+        id: Id,
+    },
+    UnknownVca {
+        id: Id,
+    },
+    UnknownGroup {
+        id: Id,
+    },
+    Order,
+    VcaCycle {
+        id: Id,
+    },
+    VcaDepth {
+        id: Id,
     },
 }
 
@@ -1694,6 +1792,7 @@ fn add_timeline(
     name(&mut counter, &mut claims, &[], &mut timeline.tracks)?;
     check_tracks(project, timeline.rate, &mut timeline.tracks)?;
     one_shown(&timeline.tracks).map_err(|(_, error)| error)?;
+    routed(&timeline, |_| {})?;
     let id = timeline.id.clone();
     project.timelines.insert(at, timeline);
     project.next_id = counter.next;
@@ -1731,6 +1830,9 @@ fn add_track(
             });
         }
     }
+    routed(timeline, |tracks| {
+        tracks.insert(at, routing_of_track(&track));
+    })?;
     let id = track.id.clone();
     project.timelines[t].tracks.insert(at, track);
     project.next_id = counter.next;
@@ -1742,12 +1844,16 @@ fn add_track(
 
 fn remove_track(project: &mut Project, timeline_id: &str, id: &str) -> Result<Op, OpError> {
     let t = timeline_at(project, timeline_id)?;
-    let tracks = &mut project.timelines[t].tracks;
-    let at = tracks
+    let at = project.timelines[t]
+        .tracks
         .iter()
         .position(|r| r.id == id)
         .ok_or_else(|| missing("track", id))?;
-    let track = tracks.remove(at);
+    // A track that a group, a sidechain or a ducker names stays until they no longer do.
+    routed(&project.timelines[t], |tracks| {
+        tracks.remove(at);
+    })?;
+    let track = project.timelines[t].tracks.remove(at);
     Ok(Op::AddTrack {
         timeline: timeline_id.into(),
         track,
@@ -1778,6 +1884,7 @@ fn insert_clip(
     clip.grade.sort_links();
     grade::check_ids(&counter, &clip.grade)?;
     check_clip(project, timeline.rate, track.kind, &clip)?;
+    audio::check_channels(track, &clip)?;
     check_room(&track.clips, &clip)?;
     let id = clip.id.clone();
     put(&mut project.timelines[t].tracks[r].clips, clip);
@@ -1826,6 +1933,7 @@ fn move_clip(
         ..old.clone()
     };
     check_clip(project, timeline.rate, kind, &moved)?;
+    audio::check_channels(&timeline.tracks[to], &moved)?;
     check_room(&timeline.tracks[to].clips, &moved)?;
     let inverse = Op::MoveClip {
         timeline: timeline_id.into(),
@@ -2095,8 +2203,8 @@ struct ClipSettings {
     reverse: Option<bool>,
     link: Option<Option<Id>>,
     transform: Option<Transform>,
-    gain_db: Option<f64>,
-    pan: Option<f64>,
+    gain_db: Option<AudioParam>,
+    pan: Option<AudioParam>,
     fade_in: Option<i64>,
     fade_out: Option<i64>,
     source: Option<Source>,
@@ -2118,8 +2226,8 @@ fn set_clip(
     swap(&mut new.speed, set.speed);
     swap(&mut new.reverse, set.reverse);
     swap(&mut new.transform, set.transform);
-    swap(&mut new.gain_db, set.gain_db);
-    swap(&mut new.pan, set.pan);
+    swap(&mut new.gain_db, set.gain_db.clone());
+    swap(&mut new.pan, set.pan.clone());
     swap(&mut new.fade_in, set.fade_in);
     swap(&mut new.fade_out, set.fade_out);
     if let Some(source) = &set.source {
@@ -2152,8 +2260,8 @@ fn set_clip(
         reverse: set.reverse.map(|_| old.reverse),
         link: set.link.map(|_| old.link.clone()),
         transform: set.transform.map(|_| old.transform),
-        gain_db: set.gain_db.map(|_| old.gain_db),
-        pan: set.pan.map(|_| old.pan),
+        gain_db: set.gain_db.map(|_| old.gain_db.clone()),
+        pan: set.pan.map(|_| old.pan.clone()),
         fade_in: set.fade_in.map(|_| old.fade_in),
         fade_out: set.fade_out.map(|_| old.fade_out),
         source: set.source.map(|_| old.source.clone()),
@@ -2784,6 +2892,7 @@ fn check_track(project: &Project, rate: Rate, track: &Track) -> Result<(), OpErr
     for clip in &track.clips {
         check_clip(project, rate, kind, clip)?;
     }
+    audio::check_track(track)?;
     if let Some(pair) = track.clips.windows(2).find(|p| overlap(&p[0], &p[1])) {
         return Err(OpError::Overlap {
             with: pair[0].id.clone(),
@@ -2853,6 +2962,7 @@ fn check_clip(project: &Project, rate: Rate, kind: TrackKind, clip: &Clip) -> Re
         });
     }
     check_settings_of(clip)?;
+    audio::check_clip(clip, rate)?;
     match (&clip.source, media) {
         (Source::Media { .. }, Some(media)) => {
             if let Err(why) = in_source(media, rate, clip, 0, 0) {
@@ -2924,10 +3034,10 @@ fn check_settings_of(clip: &Clip) -> Result<(), OpError> {
     if !(finite && t.scale > 0.0 && t.scale <= 16.0 && (0.0..=1.0).contains(&t.opacity)) {
         return Err(range("transform"));
     }
-    if !(-96.0..=24.0).contains(&clip.gain_db) {
+    if !clip.gain_db.is_valid(|v| (-96.0..=24.0).contains(&v)) {
         return Err(range("gain_db"));
     }
-    if !(-1.0..=1.0).contains(&clip.pan) {
+    if !clip.pan.is_valid(|v| (-1.0..=1.0).contains(&v)) {
         return Err(range("pan"));
     }
     let fades = i128::from(clip.fade_in) + i128::from(clip.fade_out);
@@ -3024,10 +3134,11 @@ fn check_transitions(project: &Project, rate: Rate, track: &Track) -> Result<(),
             clip: clip.id.clone(),
             edge,
         };
-        if left.fade_out != 0 {
+        let sounds = |fade: &Option<audio::AudioFade>| fade.is_some_and(|f| f.length.ticks != 0);
+        if left.fade_out != 0 || sounds(&left.audio_fade_out) {
             return Err(fades(left, "out"));
         }
-        if right.fade_in != 0 {
+        if right.fade_in != 0 || sounds(&right.audio_fade_in) {
             return Err(fades(right, "in"));
         }
         let (after_left, before_right) = transition.handles();
@@ -3536,9 +3647,57 @@ impl Project {
             }
             one_shown(&timeline.tracks)
                 .map_err(|(track, error)| wrong("track", &track.id)(error))?;
+            audio::check_timeline(timeline).map_err(|(what, id, error)| Invalid {
+                what,
+                id,
+                error,
+            })?;
         }
         Ok(())
     }
+}
+
+/// A copy of a timeline with what its sound is routed by, and none of its clips, transitions,
+/// subtitles or grade: what [`audio::check_timeline`] looks at, cheap to make.
+fn routing_of(timeline: &Timeline) -> Timeline {
+    let tracks = timeline.tracks.iter().map(routing_of_track).collect();
+    Timeline {
+        id: timeline.id.clone(),
+        name: String::new(),
+        rate: timeline.rate,
+        width: timeline.width,
+        height: timeline.height,
+        sample_rate: timeline.sample_rate,
+        tracks,
+        grade: Grade::default(),
+        buses: timeline.buses.clone(),
+        vcas: timeline.vcas.clone(),
+        track_groups: timeline.track_groups.clone(),
+        audio: timeline.audio.clone(),
+    }
+}
+
+/// A copy of a track with what its sound is routed by, and nothing on it.
+fn routing_of_track(track: &Track) -> Track {
+    Track {
+        id: track.id.clone(),
+        kind: track.kind,
+        name: String::new(),
+        enabled: track.enabled,
+        locked: track.locked,
+        clips: vec![],
+        transitions: vec![],
+        language: String::new(),
+        cues: vec![],
+        audio: track.audio.clone(),
+    }
+}
+
+/// Check the routing of the sound of a timeline as it would be with its tracks changed so.
+fn routed(timeline: &Timeline, change: impl FnOnce(&mut Vec<Track>)) -> Result<(), OpError> {
+    let mut routing = routing_of(timeline);
+    change(&mut routing.tracks);
+    audio::check_timeline(&routing).map_err(|(_, _, error)| error)
 }
 
 /// Check that a thing of a project that is read has an id, and one that no thing among `ids`
@@ -4706,6 +4865,13 @@ mod tests {
             },
             "index": 1,
         });
+        let mut expected = expected;
+        let written = crate::audio::written::with;
+        written(&mut expected["timeline"], crate::audio::written::timeline());
+        written(
+            &mut expected["timeline"]["tracks"][0]["clips"][0],
+            crate::audio::written::clip(),
+        );
         assert_eq!(value, expected);
     }
 
@@ -5238,6 +5404,8 @@ mod tests {
             right: right.into(),
             length,
             align,
+            fade_in_level_db: crate::audio::CrossfadeLevel::Zero,
+            fade_out_level_db: crate::audio::CrossfadeLevel::Zero,
         }
     }
 
@@ -5387,10 +5555,16 @@ mod tests {
                 &|c: &mut Clip| c.transform.rotation = f64::INFINITY,
                 "transform",
             ),
-            (&|c: &mut Clip| c.gain_db = -97.0, "gain_db"),
-            (&|c: &mut Clip| c.gain_db = 24.5, "gain_db"),
-            (&|c: &mut Clip| c.pan = 1.5, "pan"),
-            (&|c: &mut Clip| c.pan = f64::NAN, "pan"),
+            (
+                &|c: &mut Clip| c.gain_db = AudioParam::Fixed(-97.0),
+                "gain_db",
+            ),
+            (
+                &|c: &mut Clip| c.gain_db = AudioParam::Fixed(24.5),
+                "gain_db",
+            ),
+            (&|c: &mut Clip| c.pan = AudioParam::Fixed(1.5), "pan"),
+            (&|c: &mut Clip| c.pan = AudioParam::Fixed(f64::NAN), "pan"),
             (&|c: &mut Clip| (c.fade_in, c.fade_out) = (6, 5), "fade"),
             (&|c: &mut Clip| c.fade_in = -1, "fade"),
         ];
@@ -5409,8 +5583,8 @@ mod tests {
                     opacity: 0.0,
                 };
             },
-            &|c: &mut Clip| (c.gain_db, c.pan) = (-96.0, -1.0),
-            &|c: &mut Clip| (c.gain_db, c.pan) = (24.0, 1.0),
+            &|c: &mut Clip| (c.gain_db, c.pan) = ((-96.0).into(), (-1.0).into()),
+            &|c: &mut Clip| (c.gain_db, c.pan) = (24.0.into(), 1.0.into()),
             &|c: &mut Clip| (c.fade_in, c.fade_out) = (5, 5),
         ];
         for change in fine {
@@ -6085,8 +6259,8 @@ mod tests {
                     rotation: 90.0,
                     opacity: 0.5,
                 });
-                *gain_db = Some(-6.0);
-                *pan = Some(0.5);
+                *gain_db = Some((-6.0).into());
+                *pan = Some(0.5.into());
                 (*fade_in, *fade_out) = (Some(10), Some(20));
             }
         });
@@ -6095,8 +6269,13 @@ mod tests {
         assert!(!clip.enabled && clip.reverse);
         assert_eq!(clip.speed, Speed { num: 5, den: 2 });
         assert_eq!(
-            (clip.gain_db, clip.pan, clip.fade_in, clip.fade_out),
-            (-6.0, 0.5, 10, 20)
+            (
+                clip.gain_db.clone(),
+                clip.pan.clone(),
+                clip.fade_in,
+                clip.fade_out
+            ),
+            ((-6.0).into(), 0.5.into(), 10, 20)
         );
 
         let speed = |num, den| {
@@ -6875,7 +7054,7 @@ mod tests {
                     "op": "add_transition", "timeline": "t1", "track": "V1",
                     "transition": {
                         "id": "", "kind": "dissolve", "left": "c1", "right": "c3",
-                        "length": 10, "align": "center",
+                        "length": 10, "align": "center", "fade_in_level_db": 0, "fade_out_level_db": 0,
                     },
                 }),
             ),

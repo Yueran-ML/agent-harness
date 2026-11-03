@@ -66,6 +66,8 @@ fn media() -> Vec<Media> {
                 rate: 48000,
                 channels: 2,
                 codec: "aac".into(),
+                layout: None,
+                streams: None,
             }),
         },
         proxy: None,
@@ -299,6 +301,8 @@ pub fn project_of(recipe: &Recipe) -> Project {
             right,
             length,
             align: [Alignment::Center, Alignment::Start, Alignment::End][usize::from(align)],
+            fade_in_level_db: columbina_model::CrossfadeLevel::Zero,
+            fade_out_level_db: columbina_model::CrossfadeLevel::Zero,
         };
         // A fade at the cut is taken off first, as an editor would.
         for (id, edge) in [(&transition.left, 1), (&transition.right, 0)] {

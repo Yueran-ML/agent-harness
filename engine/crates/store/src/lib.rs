@@ -8,6 +8,7 @@
 //!   project.json      the project
 //!   project.schema1.json  the project as it was, where it was of schema 1 when first opened
 //!   project.schema2.json  the project as it was, where it was of schema 2 when first opened
+//!   project.schema3.json  the project as it was, where it was of schema 3 when first opened
 //!   engine.lock       the engine that has it open: {"pid", "address", "started"}
 //!   cache/            what the engine has found out about the media, kept to be used again
 //!     engine.guard    the file whose lock of the system is the lock of the project

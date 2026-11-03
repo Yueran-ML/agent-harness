@@ -44,7 +44,11 @@ impl Numbers {
     }
 
     /// A number from `low` to `high`, on a grid of 1/64, so that it is written and read exactly.
-    #[allow(clippy::cast_precision_loss, reason = "small whole numbers")]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        reason = "small whole numbers"
+    )]
     fn fraction(&mut self, low: f64, high: f64) -> f64 {
         let steps = ((high - low) * 64.0) as i64;
         low + self.within(0, steps) as f64 / 64.0
@@ -146,7 +150,8 @@ fn audio_track(numbers: &mut Numbers, next: &mut u64, number: i64) -> Value {
     for _ in 0..numbers.within(1, 4) {
         let media = MEDIA[usize::try_from(numbers.within(0, 3)).expect("a place")].0;
         let clip = clip_of(numbers, next, media, start);
-        start = clip["start"].as_i64().expect("a start") + clip["length"].as_i64().expect("a length");
+        start =
+            clip["start"].as_i64().expect("a start") + clip["length"].as_i64().expect("a length");
         clips.push(clip);
         if numbers.chance(40) {
             start += numbers.within(1, 20);

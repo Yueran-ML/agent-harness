@@ -56,6 +56,75 @@ fn set_clip(id: &str) -> Op {
     }
 }
 
+/// `set_clip` of c2 to a gain that rises from -12 dB to 0 dB, easing in, over a second of m1.
+fn keyed_gain() -> Op {
+    use columbina_model::{AudioKey, AudioParam, KeyInterp};
+    let mut op = set_clip("c2");
+    if let Op::SetClip { gain_db, .. } = &mut op {
+        *gain_db = Some(AudioParam::Keys(vec![
+            AudioKey {
+                at: at(1),
+                value: -12.0,
+                interp: KeyInterp::Linear,
+            },
+            AudioKey {
+                at: at(2),
+                value: 0.0,
+                interp: KeyInterp::EaseIn,
+            },
+        ]));
+    }
+    op
+}
+
+/// `add_track` of a 5.1 track of sound, muted and solo-safe, whose strip is at -6 dB with a Gain
+/// in an insert and a Ducker that A1 drives, with a clip of m1 whose channels are named.
+fn sound_track() -> Op {
+    use columbina_model::audio::fx::{Ducker, GainFx};
+    use columbina_model::{
+        ChannelMap, ChannelSource, ChannelSources, Effect, Insert, SourceRef, TrackFormat,
+    };
+    let mut clip = Clip::of_media("", "m1", at(1), 0, 30);
+    clip.channels = Some(
+        (0..6)
+            .map(|channel| ChannelMap {
+                // L and R from stream 1, C their mean, and the rest silent.
+                source: ChannelSources(match channel {
+                    0 | 1 => vec![ChannelSource { stream: 1, channel }],
+                    2 => (0..2)
+                        .map(|channel| ChannelSource { stream: 1, channel })
+                        .collect(),
+                    _ => vec![],
+                }),
+                enabled: true,
+                mute: false,
+                level_db: 0.0,
+            })
+            .collect(),
+    );
+    let mut track = Track::new("", TrackKind::Audio).with_clips(vec![clip]);
+    track.audio.format = TrackFormat::FiveOne;
+    track.audio.channels = 6;
+    track.audio.mute = true;
+    track.audio.solo_safe = true;
+    track.audio.strip.fader_db = -6.0;
+    track.audio.strip.inserts = vec![Insert {
+        on: true,
+        effect: Effect::Gain(GainFx { gain_db: 3.0 }),
+    }];
+    track.audio.strip.track_fx = Some(Ducker {
+        on: true,
+        sources: vec![SourceRef::Track("A1".into())],
+        amount_db: 12.0,
+        ..Ducker::default()
+    });
+    Op::AddTrack {
+        timeline: "t1".into(),
+        track,
+        index: None,
+    }
+}
+
 /// The project that the examples start from: the sample, with a track of subtitles S1 holding
 /// q3, bin b4, c5 on V1 right after c1 with dissolve x6 between them, c1 and c2 linked in g7, and
 /// a title c8 on V2.
@@ -106,6 +175,8 @@ fn base() -> Project {
                 right: "c5".into(),
                 length: 10,
                 align: Alignment::Center,
+                fade_in_level_db: columbina_model::CrossfadeLevel::Zero,
+                fade_out_level_db: columbina_model::CrossfadeLevel::Zero,
             },
         },
         link_c1,
@@ -162,8 +233,8 @@ fn examples() -> Vec<(&'static str, Vec<Op>, Op)> {
             rotation: 90.0,
             opacity: 0.5,
         });
-        *gain_db = Some(-6.0);
-        *pan = Some(-0.5);
+        *gain_db = Some((-6.0).into());
+        *pan = Some((-0.5).into());
         (*fade_in, *fade_out) = (Some(10), Some(5));
     }
     let mut unlinked = set_clip("c1");
@@ -403,6 +474,12 @@ fn examples() -> Vec<(&'static str, Vec<Op>, Op)> {
         ("set_clip out of its group", vec![], unlinked),
         ("set_clip in a new group", vec![], new_group),
         ("set_clip of a title", vec![], retitled),
+        ("set_clip of a gain of keyframes", vec![], keyed_gain()),
+        (
+            "add_track of sound, 5.1, muted, with a strip",
+            vec![],
+            sound_track(),
+        ),
         ("add_bin", vec![], add_bin(Some("b4"))),
         (
             "remove_bin",
@@ -540,6 +617,8 @@ fn examples() -> Vec<(&'static str, Vec<Op>, Op)> {
                     right: "c9".into(),
                     length: 8,
                     align: Alignment::End,
+                    fade_in_level_db: columbina_model::CrossfadeLevel::Zero,
+                    fade_out_level_db: columbina_model::CrossfadeLevel::Zero,
                 },
             },
         ),

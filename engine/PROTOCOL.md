@@ -602,8 +602,11 @@ are at most +10; −100 or below is −∞.
   out), `order` (`smpte|film`, of 5.1), `mute`, `solo`, `solo_safe`, `adc` (true),
   `automation_arm`, `strip` (out to `B1` at unity) and `lanes`. A track of picture or subtitles
   has none of them (refused if given). `enabled: false` is Disable Track (not read, not heard);
-  `mute` is the header's button (p. 3885): not heard nor rendered. While any track of sound is
-  soloed, those neither soloed nor solo-safe are not heard nor rendered.
+  `mute` is the header's button (p. 3885): not heard nor rendered. A track is heard (and
+  rendered) where it is on and not muted, its sound reaches a main output through outputs and
+  sends that are on and buses that are not muted, and, while any track that is on or any bus is
+  soloed, it is soloed, solo-safe or feeds a soloed bus. A track that is off solos nothing. The
+  sound that drives a sidechain or a Ducker is taken before the mute and the fader of its track.
 - **Strip** (of a track or a bus): `{trim_db (−20…20), invert, track_fx (null or a Ducker; a bus
   has none), order (a permutation of "fx", "dynamics", "eq"; that order), inserts (≤ 6),
   inserts_on (Effects In, true), dynamics, eq (6 bands), fader_db, pan, sends (≤ 10), outputs
@@ -623,8 +626,8 @@ are at most +10; −100 or below is −∞.
   range is `out_of_range` naming what it is of.
 - **Timeline.** Beside `grade`: `buses` (`[{id: "B1", name: "Bus 1", color, format: "stereo",
   strip, lanes}]`), `vcas`, `track_groups` and `audio`. A bus is `{id, name, color, format
-  (mono|stereo|3.0|4.0|5.0|5.1|7.0|7.1), strip, lanes}`; its strip's outputs are the buses it
-  feeds, and a bus that none feeds into another is a main output. A VCA is `{id, name, fader_db,
+  (mono|stereo|3.0|4.0|5.0|5.1|7.0|7.1), strip, mute, solo, solo_safe, lanes}`; its strip's outputs
+  are the buses it feeds, and a bus that outputs to none is a main output. A VCA is `{id, name, fader_db,
   mute, solo, vcas, lanes}` (members name it in their strip's `vcas`; a VCA may be a member of
   another). A track group is `{id, name, color, members (tracks of sound), linked
   (editing|fader|solo|mute|sends|panning|automation; all), active (true)}`. `audio` is

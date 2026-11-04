@@ -15,7 +15,6 @@ use proptest::prelude::*;
 pub mod colors;
 pub mod grades;
 
-/// The rates of the timelines that are added.
 /// The levels of a side of a crossfade.
 const LEVELS: [columbina_model::CrossfadeLevel; 3] = [
     columbina_model::CrossfadeLevel::Minus3,
@@ -23,6 +22,7 @@ const LEVELS: [columbina_model::CrossfadeLevel; 3] = [
     columbina_model::CrossfadeLevel::Plus3,
 ];
 
+/// The rates of the timelines that are added.
 const RATES: [Rate; 3] = [
     Rate { num: 25, den: 1 },
     Rate {

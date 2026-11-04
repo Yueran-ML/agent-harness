@@ -424,29 +424,89 @@ impl AudioPiece {
     }
 }
 
-/// Whether a track of sound is heard: it is on, not muted, and soloed or solo-safe where any
-/// track of sound of its timeline is soloed (p. 3885).
+/// The buses that a strip's sound reaches, through outputs and sends that are on and buses that
+/// are not muted, and whether one of them is a main output (a bus that outputs to none) and one
+/// is soloed.
+fn reaches(t: &Timeline, strip: &crate::audio::Strip) -> (bool, bool) {
+    let feeds = |strip: &crate::audio::Strip| -> Vec<String> {
+        strip
+            .outputs
+            .iter()
+            .filter(|o| o.on)
+            .map(|o| o.bus.clone())
+            .chain(strip.sends.iter().filter(|s| s.on).map(|s| s.bus.clone()))
+            .collect()
+    };
+    let (mut main, mut soloed) = (false, false);
+    let mut seen = std::collections::HashSet::new();
+    let mut next = feeds(strip);
+    while let Some(id) = next.pop() {
+        let Some(bus) = t.buses.iter().find(|b| b.id == id) else {
+            continue;
+        };
+        if bus.mute || !seen.insert(id) {
+            continue;
+        }
+        soloed |= bus.solo;
+        main |= bus.strip.outputs.is_empty();
+        next.extend(feeds(&bus.strip));
+    }
+    (main, soloed)
+}
+
+/// Whether a track of sound is heard at a main output (p. 3885): it is on and not muted; its
+/// sound reaches a main output through outputs and sends that are on and buses that are not
+/// muted; and while any track that is on, or any bus, is soloed, it is soloed, solo-safe, or
+/// feeds a soloed bus. A track that is off is not soloed, whatever it says.
+///
+/// This decides which tracks the mixer of the transport plays. What each path of buses does to
+/// the sound (levels, a muted bus on one of two paths, a solo-safe bus of returns) is the graph's
+/// (T4b).
 #[must_use]
 pub fn heard(t: &Timeline, track: &Track) -> bool {
-    let soloed = t
+    if track.kind != TrackKind::Audio || !track.enabled || track.audio.mute {
+        return false;
+    }
+    let soloing = t
         .tracks
         .iter()
-        .any(|r| r.kind == TrackKind::Audio && r.audio.solo);
-    track.kind == TrackKind::Audio
-        && track.enabled
-        && !track.audio.mute
-        && (!soloed || track.audio.solo || track.audio.solo_safe)
+        .any(|r| r.kind == TrackKind::Audio && r.enabled && r.audio.solo)
+        || t.buses.iter().any(|b| b.solo);
+    let (main, feeds_soloed) = reaches(t, &track.audio.strip);
+    main && (!soloing || track.audio.solo || track.audio.solo_safe || feeds_soloed)
 }
 
 /// What is heard from sample `from` of a timeline of `project` to the sample before `to`, at its
-/// rate of sound: a piece of each clip that sounds then, track by track in their order and on a
-/// track in the order of their start. On a track the pieces follow one another, and overlap only
-/// at a crossfade.
+/// rate of sound: a piece of each clip that sounds then, of the tracks that are [`heard`], track
+/// by track in their order and on a track in the order of their start. On a track the pieces
+/// follow one another, and overlap only at a crossfade.
 #[must_use]
 pub fn audio_between(t: &Timeline, project: &Project, from: i64, to: i64) -> Vec<AudioPiece> {
+    pieces_between(t, project, from, to, |track| heard(t, track))
+}
+
+/// What every track of sound that is on gives from sample `from` to the sample before `to`,
+/// muted, soloed away or routed nowhere as it may be: the sound that drives a sidechain or a
+/// Ducker, taken before the fader and the mute of its track (C-D5). As [`audio_between`], with no
+/// track left out but those that are off.
+#[must_use]
+pub fn sources_between(t: &Timeline, project: &Project, from: i64, to: i64) -> Vec<AudioPiece> {
+    pieces_between(t, project, from, to, |track| {
+        track.kind == TrackKind::Audio && track.enabled
+    })
+}
+
+/// The pieces of sound of the tracks that `taken` takes.
+fn pieces_between(
+    t: &Timeline,
+    project: &Project,
+    from: i64,
+    to: i64,
+    taken: impl Fn(&Track) -> bool,
+) -> Vec<AudioPiece> {
     let mut pieces = vec![];
     for track in &t.tracks {
-        if !heard(t, track) {
+        if !taken(track) {
             continue;
         }
         for clip in track.clips.iter().filter(|c| c.enabled) {

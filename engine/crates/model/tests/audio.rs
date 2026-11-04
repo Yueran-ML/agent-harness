@@ -372,6 +372,68 @@ fn a_fade_of_sound_lasts_its_time_along_its_curve() {
 }
 
 #[test]
+fn a_track_is_heard_through_buses_that_are_not_muted_and_as_buses_are_soloed() {
+    // A1 outputs to B2, which outputs to B1, the main output; A2 straight to B1.
+    let mut project = Project::sample();
+    let t = &mut project.timelines[0];
+    let mut b2 = bus(2);
+    b2.strip.outputs = vec![output("B1")];
+    t.buses.push(b2);
+    t.tracks[1].audio.strip.outputs = vec![output("B2")];
+    let mut a2 = Track::new("A2", TrackKind::Audio);
+    a2.clips = vec![columbina_model::Clip::of_media(
+        "c9",
+        "m1",
+        Time {
+            ticks: 0,
+            scale: 15360,
+        },
+        0,
+        100,
+    )];
+    t.tracks.push(a2);
+    project.validate().unwrap();
+    let heard = |project: &Project| -> Vec<String> {
+        audio_between(&project.timelines[0], project, 0, 1000)
+            .into_iter()
+            .map(|piece| piece.track)
+            .collect()
+    };
+    assert_eq!(heard(&project), ["A1", "A2"]);
+    // B2 muted: A1 is not heard, but still drives a sidechain.
+    project.timelines[0].buses[1].mute = true;
+    assert_eq!(heard(&project), ["A2"]);
+    let sources: Vec<String> =
+        columbina_model::resolve::sources_between(&project.timelines[0], &project, 0, 1000)
+            .into_iter()
+            .map(|piece| piece.track)
+            .collect();
+    assert_eq!(sources, ["A1", "A2"]);
+    project.timelines[0].buses[1].mute = false;
+    // B2 soloed: what feeds it is heard, and A2 is not, unless it is solo-safe.
+    project.timelines[0].buses[1].solo = true;
+    assert_eq!(heard(&project), ["A1"]);
+    project.timelines[0].tracks[2].audio.solo_safe = true;
+    assert_eq!(heard(&project), ["A1", "A2"]);
+    project.timelines[0].buses[1].solo = false;
+    // A track that is off does not solo: the others are heard.
+    let a2 = &mut project.timelines[0].tracks[2];
+    (a2.enabled, a2.audio.solo, a2.audio.solo_safe) = (false, true, false);
+    assert_eq!(heard(&project), ["A1"]);
+    // A track that outputs to no bus reaches no main output.
+    project.timelines[0].tracks[2].enabled = true;
+    project.timelines[0].tracks[2].audio.solo = false;
+    project.timelines[0].tracks[2].audio.strip.outputs = vec![];
+    assert_eq!(heard(&project), ["A1"]);
+    // A bus is written with its mute and solo, which may be left out.
+    let written = serde_json::to_value(&project.timelines[0].buses[1]).unwrap();
+    assert_eq!(
+        (&written["mute"], &written["solo"], &written["solo_safe"]),
+        (&json!(false), &json!(false), &json!(false))
+    );
+}
+
+#[test]
 fn a_track_of_sound_is_muted_and_soloed_by_set_track_and_taken_back() {
     let mut project = Project::sample();
     let set = |id: &str, mute, solo, solo_safe| Op::SetTrack {

@@ -254,7 +254,7 @@ export interface LanePoint { at: Time; value: number }
 export interface Lane { points: LanePoint[]; kind?: 'continuous' | 'switch' }
 /** Lanes of automation by the path of their setting (`fader`, `pan.x`, ...). */
 export type Lanes = Record<string, Lane>;
-export interface Bus { id: string; name: string; color: string; format: BusFormat; strip?: Strip; lanes?: Lanes }
+export interface Bus { id: string; name: string; color: string; format: BusFormat; strip?: Strip; mute?: boolean; solo?: boolean; solo_safe?: boolean; lanes?: Lanes }
 export interface Vca { id: string; name: string; fader_db?: number; mute?: boolean; solo?: boolean; vcas?: string[]; lanes?: Lanes }
 export type GroupControl = 'editing' | 'fader' | 'solo' | 'mute' | 'sends' | 'panning' | 'automation';
 export interface TrackGroup { id: string; name: string; color?: string; members: string[]; linked?: GroupControl[]; active?: boolean }

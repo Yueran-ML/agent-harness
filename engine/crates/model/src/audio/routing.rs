@@ -130,6 +130,16 @@ pub struct Bus {
     /// unity that outputs to no bus.
     #[serde(default)]
     pub strip: Strip,
+    /// Whether it is muted (p. 3885): what goes through it is not heard nor rendered.
+    #[serde(default)]
+    pub mute: bool,
+    /// Whether it is soloed: while any track or bus is, only what feeds a soloed bus, a soloed
+    /// track, and what is solo-safe is heard.
+    #[serde(default)]
+    pub solo: bool,
+    /// Whether it is heard while others are soloed (Solo Safe), as a bus of returns is.
+    #[serde(default)]
+    pub solo_safe: bool,
     /// The automation of its settings. It may be left out, as none.
     #[serde(default)]
     pub lanes: Lanes,
@@ -148,6 +158,9 @@ impl Bus {
             color: Rgba([0x5a, 0xa0, 0xe0, 0xff]),
             format: BusFormat::Stereo,
             strip: Strip::default(),
+            mute: false,
+            solo: false,
+            solo_safe: false,
             lanes: Lanes::new(),
         }
     }

@@ -900,3 +900,41 @@ fn the_ids_of_the_engine_skip_none_and_a_bus_vca_or_group_given_one_keeps_it() {
         json!("TG4")
     );
 }
+
+#[test]
+fn a_strip_sends_to_a_bus_once_and_a_bus_made_by_the_engine_takes_no_id_of_a_track() {
+    let mut project = project();
+    applied(
+        &mut project,
+        op(
+            json!({"op": "add_bus", "timeline": "t1", "bus": {"id": "", "name": "Verb", "color": "#ffffffff", "format": "stereo"}}),
+        ),
+    );
+    assert_eq!(
+        refused(
+            &mut project,
+            op(
+                json!({"op": "set_track_audio", "timeline": "t1", "track": "A1",
+                "patch": {"strip": {"sends": [{"bus": "B2"}, {"bus": "B2", "pre": true}]}}})
+            )
+        ),
+        json!({"reason": "out_of_range", "what": "sends"})
+    );
+    applied(
+        &mut project,
+        op(
+            json!({"op": "add_track", "timeline": "t1", "track": {"id": "B3", "kind": "audio",
+            "name": "B3", "enabled": true, "locked": false, "clips": [], "transitions": []}}),
+        ),
+    );
+    let (done, _) = applied(
+        &mut project,
+        op(
+            json!({"op": "add_bus", "timeline": "t1", "bus": {"id": "", "name": "Next", "color": "#ffffffff", "format": "stereo"}}),
+        ),
+    );
+    assert_eq!(
+        serde_json::to_value(&done).unwrap()["bus"]["id"],
+        json!("B4")
+    );
+}

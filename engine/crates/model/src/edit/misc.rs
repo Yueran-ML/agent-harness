@@ -104,12 +104,14 @@ pub(super) fn check_fits(
 
 /// The cuts of the clips of sound that are linked to `left` and `right`, where two of them meet
 /// on a track of sound that is not locked and has no transition at their cut: the track and the
-/// two clips of each.
-fn linked_cuts(work: &Work, left: &Clip, right: &Clip) -> Vec<(Id, Id, Id)> {
+/// two clips of each; and whether a cut was passed over because a clip fades there, as a
+/// transition does not go where a fade is (`fade_at_transition`).
+fn linked_cuts(work: &Work, left: &Clip, right: &Clip) -> (Vec<(Id, Id, Id)>, bool) {
     let (Some(l), Some(r)) = (&left.link, &right.link) else {
-        return vec![];
+        return (vec![], false);
     };
     let mut cuts = vec![];
+    let mut faded = false;
     for track in &work.timeline().tracks {
         if track.kind != TrackKind::Audio || track.locked {
             continue;
@@ -126,12 +128,20 @@ fn linked_cuts(work: &Work, left: &Clip, right: &Clip) -> Vec<(Id, Id, Id)> {
                 .transitions
                 .iter()
                 .any(|x| x.left == a.id || x.right == b.id);
-            if !taken {
+            let sounds =
+                |fade: &Option<crate::audio::AudioFade>| fade.is_some_and(|f| f.length.ticks != 0);
+            let fading = a.fade_out != 0
+                || sounds(&a.audio_fade_out)
+                || b.fade_in != 0
+                || sounds(&b.audio_fade_in);
+            if fading && !taken {
+                faded = true;
+            } else if !taken {
                 cuts.push((track.id.clone(), a.id.clone(), b.id.clone()));
             }
         }
     }
-    cuts
+    (cuts, faded)
 }
 
 /// Add a crossfade of `length` and `align` at the cut of `left` and `right` on track `track`, or
@@ -210,11 +220,12 @@ pub(super) fn add_transition(
     });
     // A transition of picture brings crossfades at the cuts of the sound linked to its clips,
     // where they meet as the picture does (p. 973).
-    let cuts = if linked && track.kind == TrackKind::Video {
+    let (cuts, faded) = if linked && track.kind == TrackKind::Video {
         linked_cuts(work, l, r)
     } else {
-        vec![]
+        (vec![], false)
     };
+
     let track = track.id.clone();
     let timeline = work.timeline_id();
     let done = work.op(Op::AddTransition {
@@ -233,6 +244,9 @@ pub(super) fn add_transition(
     })?;
     if let Op::AddTransition { transition, .. } = done {
         work.created(Created::Transition(transition.id));
+    }
+    if faded {
+        work.clamp();
     }
     for cut in cuts {
         add_crossfade(work, cut, length, align)?;
@@ -262,9 +276,8 @@ pub(super) fn remove_transition(work: &mut Work, id: &str) -> Result<(), EditErr
 pub(super) fn set_transition(
     work: &mut Work,
     id: &str,
-    kind: Option<TransitionKind>,
-    length: Option<i64>,
-    align: Option<Alignment>,
+    (kind, length, align): (Option<TransitionKind>, Option<i64>, Option<Alignment>),
+    (fade_in_level_db, fade_out_level_db): (Option<CrossfadeLevel>, Option<CrossfadeLevel>),
 ) -> Result<(), EditError> {
     let (track, x) = transition(work, id)?;
     let track = work.open(&track.id)?;
@@ -291,8 +304,8 @@ pub(super) fn set_transition(
         kind,
         length,
         align,
-        fade_in_level_db: None,
-        fade_out_level_db: None,
+        fade_in_level_db,
+        fade_out_level_db,
     })?;
     Ok(())
 }
@@ -617,6 +630,25 @@ pub(super) fn add_track(
 pub(super) fn remove_track(work: &mut Work, track: &str) -> Result<(), EditError> {
     let track = work.open(track)?.clone();
     let timeline = work.timeline_id();
+    // It leaves the groups of tracks that it is in, as DaVinci takes a deleted track out of
+    // them; a sidechain or a Ducker that it drives still stands in the way.
+    let groups: Vec<(Id, Vec<Id>)> = work
+        .timeline()
+        .track_groups
+        .iter()
+        .filter(|g| g.members.contains(&track.id))
+        .map(|g| {
+            let members = g.members.iter().filter(|m| **m != track.id).cloned();
+            (g.id.clone(), members.collect())
+        })
+        .collect();
+    for (id, members) in groups {
+        work.op(Op::SetTrackGroup {
+            timeline: timeline.clone(),
+            id,
+            patch: serde_json::json!({ "members": members }),
+        })?;
+    }
     // The clips go one by one, each with the transitions at it.
     for c in &track.clips {
         work.remove(&c.id)?;
@@ -740,6 +772,8 @@ mod tests {
             kind: Some(TransitionKind::DipBlack),
             length: Some(length),
             align: None,
+            fade_in_level_db: None,
+            fade_out_level_db: None,
         };
         edit(&mut project, set(20));
         assert_eq!(
@@ -1192,6 +1226,8 @@ mod tests {
                 kind: None,
                 length: Some(4),
                 align: None,
+                fade_in_level_db: None,
+                fade_out_level_db: None,
             },
         );
         assert_eq!(
@@ -1355,6 +1391,8 @@ mod tests {
             kind: None,
             length: Some(length),
             align: None,
+            fade_in_level_db: None,
+            fade_out_level_db: None,
         };
         edit(&mut project.clone(), set(1));
         for length in [0, -1] {

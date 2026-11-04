@@ -230,7 +230,9 @@ pub(super) fn add_bus(
     let timeline = &project.timelines[t];
     let at = place(index, timeline.buses.len())?;
     if bus.id.is_empty() {
-        bus.id = next_of("B", timeline.buses.iter().map(|b| &b.id))?;
+        // Past the ids of the buses, and of tracks that are named so.
+        let ids = timeline.buses.iter().map(|b| &b.id);
+        bus.id = next_of("B", ids.chain(timeline.tracks.iter().map(|r| &r.id)))?;
     }
     audio::name_inserts(&mut bus.strip);
     checked(timeline, |t| t.buses.insert(at, bus.clone()))?;

@@ -418,6 +418,12 @@ pub enum Edit {
         /// Where it lies about the cut.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         align: Option<Alignment>,
+        /// How the clip that starts at the cut rises across a crossfade: -3, 0 or 3 (p. 3831).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fade_in_level_db: Option<crate::audio::CrossfadeLevel>,
+        /// How the clip that ends at the cut falls across a crossfade.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fade_out_level_db: Option<crate::audio::CrossfadeLevel>,
     },
     /// Play a clip at another speed, showing the same stretch of its source: so it lasts more or
     /// fewer frames. With `ripple`, what is after it moves with its end.
@@ -755,16 +761,26 @@ pub enum Edit {
         /// What is put back.
         items: Vec<Attribute>,
     },
-    /// Fade a clip in to the playhead, or out from it (p. 3812).
+    /// Fade clips in to the playhead, or out from it (p. 3812), in one step.
     FadeToPlayhead {
         /// The timeline.
         timeline: Id,
-        /// The clip.
-        clip: Id,
+        /// The clips.
+        clips: Vec<Id>,
         /// Which end fades.
         side: Edge,
         /// The frame of the playhead.
         at: i64,
+    },
+    /// Set a bus by a patch, as the operation `set_bus` does; while the solo of the timeline is
+    /// exclusive (p. 3885), a bus that is soloed takes the solo off every track, other bus and VCA.
+    SetBus {
+        /// The timeline.
+        timeline: Id,
+        /// The bus.
+        id: Id,
+        /// The settings that change.
+        patch: serde_json::Value,
     },
     /// Copy the inserts of one chain onto others, in place of theirs (pp. 3855–3860).
     CopyEffects {
@@ -1263,8 +1279,15 @@ pub(crate) fn run(project: &mut Project, edit: Edit) -> Result<Expansion, EditEr
             kind,
             length,
             align,
+            fade_in_level_db,
+            fade_out_level_db,
             ..
-        } => misc::set_transition(&mut work, &id, kind, length, align),
+        } => misc::set_transition(
+            &mut work,
+            &id,
+            (kind, length, align),
+            (fade_in_level_db, fade_out_level_db),
+        ),
         Edit::SetSpeed {
             clip,
             speed,
@@ -1332,9 +1355,10 @@ pub(crate) fn run(project: &mut Project, edit: Edit) -> Result<Expansion, EditEr
         Edit::RemoveAttributes { clips, items, .. } => {
             audio::remove_attributes(&mut work, &clips, &items)
         }
-        Edit::FadeToPlayhead { clip, side, at, .. } => {
-            audio::fade_to_playhead(&mut work, &clip, side, at)
-        }
+        Edit::FadeToPlayhead {
+            clips, side, at, ..
+        } => audio::fade_to_playhead(&mut work, &clips, side, at),
+        Edit::SetBus { id, patch, .. } => audio::set_bus(&mut work, &id, &patch),
         Edit::CopyEffects { from, to, .. } => audio::copy_effects(&mut work, &from, &to),
         _ => unreachable!("the edits of grades are worked out above"),
     }?;
@@ -1380,6 +1404,7 @@ pub fn timeline_of(edit: &Edit) -> Option<&Id> {
         | Edit::PasteAttributes { timeline, .. }
         | Edit::RemoveAttributes { timeline, .. }
         | Edit::FadeToPlayhead { timeline, .. }
+        | Edit::SetBus { timeline, .. }
         | Edit::CopyEffects { timeline, .. } => timeline,
         Edit::AddSerial { .. }
         | Edit::AddSerialBefore { .. }

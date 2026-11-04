@@ -486,7 +486,7 @@ fn a_clip_fades_to_the_playhead_over_time_for_sound_and_frames_for_picture() {
     let mut project = project();
     edit(
         &mut project,
-        json!({"edit": "fade_to_playhead", "timeline": "t1", "clip": "s5", "side": "in", "at": 25}),
+        json!({"edit": "fade_to_playhead", "timeline": "t1", "clips": ["s5"], "side": "in", "at": 25}),
     );
     let fade = clip(&project, "s5").audio_fade_in.unwrap();
     assert_eq!(
@@ -498,25 +498,25 @@ fn a_clip_fades_to_the_playhead_over_time_for_sound_and_frames_for_picture() {
     );
     edit(
         &mut project,
-        json!({"edit": "fade_to_playhead", "timeline": "t1", "clip": "c1", "side": "out", "at": 40}),
+        json!({"edit": "fade_to_playhead", "timeline": "t1", "clips": ["c1"], "side": "out", "at": 40}),
     );
     assert_eq!(clip(&project, "c1").fade_out, 10);
     assert_eq!(
         refused(
             &mut project,
-            json!({"edit": "fade_to_playhead", "timeline": "t1", "clip": "s5", "side": "out", "at": 100})
+            json!({"edit": "fade_to_playhead", "timeline": "t1", "clips": ["s5"], "side": "out", "at": 100})
         ),
         json!({"reason": "nothing_at", "track": "A2", "frame": 100})
     );
     // A fade out of 70 frames, and then one in of 99 frames is longer than the clip with it.
     edit(
         &mut project,
-        json!({"edit": "fade_to_playhead", "timeline": "t1", "clip": "s5", "side": "out", "at": 30}),
+        json!({"edit": "fade_to_playhead", "timeline": "t1", "clips": ["s5"], "side": "out", "at": 30}),
     );
     assert_eq!(
         refused(
             &mut project,
-            json!({"edit": "fade_to_playhead", "timeline": "t1", "clip": "s5", "side": "in", "at": 99})
+            json!({"edit": "fade_to_playhead", "timeline": "t1", "clips": ["s5"], "side": "in", "at": 99})
         ),
         json!({"reason": "out_of_range", "what": "fade"})
     );
@@ -554,7 +554,8 @@ fn effects_are_copied_from_one_chain_onto_others_in_place_of_theirs() {
     let a1 = &track(&project, "A1").audio.strip.inserts;
     assert_eq!(&track(&project, "A2").audio.strip.inserts, a1);
     assert_eq!(&project.timelines[0].buses[0].strip.inserts, a1);
-    assert_eq!(&clip(&project, "s5").effects, a1);
+    let effects = |list: &[Insert]| list.iter().map(|i| i.effect.clone()).collect::<Vec<_>>();
+    assert_eq!(effects(&clip(&project, "s5").effects), effects(a1));
 }
 
 #[test]
@@ -593,4 +594,274 @@ fn a_transition_of_picture_brings_a_crossfade_at_the_cut_of_its_linked_sound() {
             "length": 10, "linked": true}),
     );
     assert_eq!(done.len(), 1);
+}
+
+// The review of T2.
+
+#[test]
+fn a_linked_crossfade_is_left_out_where_a_clip_of_sound_fades_at_the_cut() {
+    let mut project = project();
+    // c2 fades out at its cut with c5.
+    op(
+        &mut project,
+        json!({"op": "set_clip", "timeline": "t1", "id": "c2",
+            "audio_fade_out": {"length": {"ticks": 1, "scale": 5}}}),
+    );
+    let expansion = columbina_model::expand(
+        &mut project,
+        serde_json::from_value(json!({"edit": "add_transition", "timeline": "t1",
+            "left": "c1", "right": "c3", "length": 10, "linked": true}))
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(expansion.done.len(), 1, "the picture alone");
+    assert!(expansion.clamped);
+    assert_eq!(track(&project, "V1").transitions.len(), 1);
+    assert_eq!(track(&project, "A1").transitions.len(), 0);
+}
+
+#[test]
+fn a_fader_brought_up_from_minus_infinity_moves_the_group_from_minus_100() {
+    let mut project = grouped(json!(["fader"]), true);
+    op(
+        &mut project,
+        json!({"op": "set_track_audio", "timeline": "t1", "track": "A1", "patch": {"strip": {"fader_db": -120}}}),
+    );
+    op(
+        &mut project,
+        json!({"op": "set_track_audio", "timeline": "t1", "track": "A2", "patch": {"strip": {"fader_db": -20}}}),
+    );
+    edit(
+        &mut project,
+        json!({"edit": "set_track_audio", "timeline": "t1", "track": "A1", "patch": {"strip": {"fader_db": -90}}}),
+    );
+    // -100 to -90 is 10 dB: A2 goes from -20 to -10, not to +10.
+    assert_eq!(fader(&project, "A2"), -10.0);
+}
+
+#[test]
+fn an_exclusive_solo_of_a_track_or_a_bus_takes_the_solo_off_vcas_too() {
+    let mut project = project();
+    for one in [
+        json!({"op": "set_timeline_audio", "timeline": "t1", "patch": {"exclusive_solo": true}}),
+        json!({"op": "add_vca", "timeline": "t1", "vca": {"id": "", "name": "All", "solo": true}}),
+        json!({"op": "add_bus", "timeline": "t1", "bus": {"id": "", "name": "Verb", "color": "#ffffffff", "format": "stereo"}}),
+    ] {
+        op(&mut project, one);
+    }
+    edit(
+        &mut project,
+        json!({"edit": "set_track_audio", "timeline": "t1", "track": "A1", "patch": {"solo": true}}),
+    );
+    assert!(!project.timelines[0].vcas[0].solo);
+    // A bus soloed by the edit of a bus takes the solo off A1 and the others.
+    op(
+        &mut project,
+        json!({"op": "set_vca", "timeline": "t1", "id": "VCA1", "patch": {"solo": true}}),
+    );
+    edit(
+        &mut project,
+        json!({"edit": "set_bus", "timeline": "t1", "id": "B2", "patch": {"solo": true}}),
+    );
+    assert!(project.timelines[0].buses[1].solo);
+    assert!(!track(&project, "A1").audio.solo);
+    assert!(!project.timelines[0].vcas[0].solo);
+}
+
+#[test]
+fn copied_effects_are_new_inserts_with_the_next_ids_of_their_strip() {
+    let mut project = project();
+    for id in ["fx3", "fx5"] {
+        op(
+            &mut project,
+            json!({"op": "add_insert", "timeline": "t1", "of": {"track": "A1"},
+                "insert": {"id": id, "effect": {"kind": "gain"}}}),
+        );
+    }
+    edit(
+        &mut project,
+        json!({"edit": "copy_effects", "timeline": "t1", "from": {"track": "A1"},
+            "to": [{"track": "A2"}, {"clip": "s5"}]}),
+    );
+    let ids = |list: &[Insert]| list.iter().map(|i| i.id.clone()).collect::<Vec<_>>();
+    assert_eq!(
+        ids(&track(&project, "A2").audio.strip.inserts),
+        ["fx1", "fx2"]
+    );
+    assert_eq!(ids(&clip(&project, "s5").effects), ["", ""]);
+}
+
+#[test]
+fn a_range_keeps_the_ease_of_the_segment_that_it_splits_and_of_a_key_that_it_replaces() {
+    let mut project = project();
+    for (at, interp) in [(0, "ease_out"), (4, "ease_in")] {
+        edit(
+            &mut project,
+            json!({"edit": "clip_gain_keys", "timeline": "t1", "clip": "s5", "action": "add",
+                "at": time(at, 1), "value": -10, "interp": interp}),
+        );
+    }
+    // A key at 1 s, which the inner key of the range takes the place of.
+    edit(
+        &mut project,
+        json!({"edit": "clip_gain_keys", "timeline": "t1", "clip": "s5", "action": "add",
+            "at": time(48000, 48000), "value": -10, "interp": "ease_out"}),
+    );
+    edit(
+        &mut project,
+        json!({"edit": "clip_gain_range", "timeline": "t1", "clip": "s5",
+            "from": time(1, 1), "to": time(2, 1), "delta_db": -6}),
+    );
+    let AudioParam::Keys(keys) = &clip(&project, "s5").gain_db else {
+        panic!()
+    };
+    let interp_at = |ticks: i64| {
+        keys.iter()
+            .find(|k| {
+                k.at == Time {
+                    ticks,
+                    scale: 48000,
+                }
+            })
+            .unwrap()
+            .interp
+    };
+    // The segment from 1 s to 4 s was linear out of 1 s: the outer key before 1 s is linear.
+    assert_eq!(interp_at(47999), KeyInterp::Linear);
+    assert_eq!(interp_at(48000), KeyInterp::EaseOut, "kept");
+    assert_eq!(interp_at(95999), KeyInterp::Linear);
+    // The segment from 1 s to 4 s eased out of 1 s: the outer key at 2 s carries that ease.
+    assert_eq!(interp_at(96000), KeyInterp::EaseOut);
+}
+
+#[test]
+fn the_volume_pasted_onto_a_clip_that_plays_backward_is_heard_where_it_was() {
+    let mut project = project();
+    edit(
+        &mut project,
+        json!({"edit": "clip_gain_keys", "timeline": "t1", "clip": "c2", "action": "add",
+            "at": time(1, 1), "value": -9, "interp": "ease_in"}),
+    );
+    op(
+        &mut project,
+        json!({"op": "set_clip", "timeline": "t1", "id": "s5", "reverse": true}),
+    );
+    edit(
+        &mut project,
+        json!({"edit": "paste_attributes", "timeline": "t1", "from": "c2", "to": ["s5"], "items": ["volume"]}),
+    );
+    // c2 is 1 s into its media from its start at 0 s; s5 plays 4 s of m1 backward from 4 s.
+    let AudioParam::Keys(keys) = &clip(&project, "s5").gain_db else {
+        panic!()
+    };
+    assert_eq!(
+        (keys[0].at, keys[0].interp),
+        (Time { ticks: 3, scale: 1 }, KeyInterp::EaseOut)
+    );
+}
+
+#[test]
+fn edits_of_the_sound_of_a_clip_refuse_a_clip_of_picture_and_keys_outside_its_media() {
+    let mut project = project();
+    let video = json!({"reason": "wrong_track", "what": "sound", "kind": "video"});
+    for (one, error) in [
+        (
+            json!({"edit": "clip_gain_keys", "timeline": "t1", "clip": "c1", "action": "add", "at": time(1, 1)}),
+            video.clone(),
+        ),
+        (
+            json!({"edit": "clip_gain_range", "timeline": "t1", "clip": "c1", "from": time(1, 1), "to": time(2, 1), "delta_db": 1}),
+            video.clone(),
+        ),
+        (
+            json!({"edit": "remove_attributes", "timeline": "t1", "clips": ["c1"], "items": ["volume"]}),
+            video.clone(),
+        ),
+        (
+            json!({"edit": "paste_attributes", "timeline": "t1", "from": "c2", "to": ["c1"], "items": ["volume"]}),
+            video,
+        ),
+        // s5 plays 0 s to 4 s of m1.
+        (
+            json!({"edit": "clip_gain_keys", "timeline": "t1", "clip": "s5", "action": "add", "at": time(9, 1)}),
+            json!({"reason": "out_of_range", "what": "at"}),
+        ),
+        (
+            json!({"edit": "clip_gain_range", "timeline": "t1", "clip": "s5", "from": time(3, 1), "to": time(5, 1), "delta_db": 1}),
+            json!({"reason": "out_of_range", "what": "to"}),
+        ),
+    ] {
+        assert_eq!(refused(&mut project, one), error);
+    }
+}
+
+#[test]
+fn several_clips_fade_to_the_playhead_in_one_edit() {
+    let mut project = project();
+    let done = edit(
+        &mut project,
+        json!({"edit": "fade_to_playhead", "timeline": "t1", "clips": ["s5", "c1", "s5"], "side": "in", "at": 20}),
+    );
+    assert_eq!(done.len(), 2);
+    assert_eq!(clip(&project, "c1").fade_in, 20);
+    assert!(clip(&project, "s5").audio_fade_in.is_some());
+}
+
+#[test]
+fn a_track_that_is_taken_away_leaves_its_groups_in_the_same_step() {
+    let mut project = grouped(json!(["fader"]), true);
+    let mut history = History::new(project.clone());
+    history
+        .change(
+            vec![Change::Edit(
+                serde_json::from_value(
+                    json!({"edit": "remove_track", "timeline": "t1", "track": "A2"}),
+                )
+                .unwrap(),
+            )],
+            "desktop",
+            |change, _| change,
+        )
+        .unwrap();
+    assert_eq!(
+        history.project().timelines[0].track_groups[0].members,
+        ["A1"]
+    );
+    history.undo("desktop").unwrap().unwrap();
+    assert_eq!(history.project().timelines[0], project.timelines[0]);
+    // A Ducker that A2 drives still stands in the way.
+    op(
+        &mut project,
+        json!({"op": "set_track_audio", "timeline": "t1", "track": "A1",
+            "patch": {"strip": {"track_fx": {"sources": [{"track": "A2"}]}}}}),
+    );
+    assert_eq!(
+        refused(
+            &mut project,
+            json!({"edit": "remove_track", "timeline": "t1", "track": "A2"})
+        ),
+        json!({"reason": "in_use", "what": "track", "id": "A2", "by": "A1"})
+    );
+}
+
+#[test]
+fn the_edit_of_a_transition_sets_the_levels_of_a_crossfade() {
+    let mut project = project();
+    edit(
+        &mut project,
+        json!({"edit": "add_transition", "timeline": "t1", "left": "c2", "right": "c5", "length": 10}),
+    );
+    let id = track(&project, "A1").transitions[0].id.clone();
+    edit(
+        &mut project,
+        json!({"edit": "set_transition", "timeline": "t1", "id": id, "fade_in_level_db": 3, "fade_out_level_db": -3}),
+    );
+    let x = &track(&project, "A1").transitions[0];
+    assert_eq!(
+        (x.fade_in_level_db, x.fade_out_level_db),
+        (
+            columbina_model::CrossfadeLevel::Plus3,
+            columbina_model::CrossfadeLevel::Minus3
+        )
+    );
 }

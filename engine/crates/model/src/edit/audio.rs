@@ -10,7 +10,9 @@ use serde_json::{json, Map, Value};
 use super::work::{missing, Work};
 use super::{Attribute, Edge, EditError, KeyAction, Keyed};
 use crate::audio::param::{earlier, seconds};
-use crate::audio::{AudioFade, AudioKey, AudioParam, Equalizer, GroupControl, Pan, SILENT_DB};
+use crate::audio::{
+    AudioFade, AudioKey, AudioParam, Equalizer, GroupControl, KeyInterp, Pan, SILENT_DB,
+};
 use crate::ops::{inserts_of, InsertsOf, Op, OpError};
 use crate::project::{Clip, Id, Timeline, Track, TrackKind};
 use crate::time::Time;
@@ -52,6 +54,50 @@ fn open_clip(work: &Work, id: &str) -> Result<(Id, Clip), EditError> {
     let (track, clip) = work.owned(id)?;
     work.open(&track)?;
     Ok((track, clip))
+}
+
+/// A clip of sound that an edit of its sound changes, on a track that is not locked: one on a
+/// track of picture is refused as `wrong_track` (`what: "sound"`).
+fn sound_clip(work: &Work, id: &str) -> Result<(Id, Clip), EditError> {
+    let (track, clip) = open_clip(work, id)?;
+    let kind = work.track(&track)?.kind;
+    if kind == TrackKind::Audio {
+        Ok((track, clip))
+    } else {
+        Err(EditError::Op(OpError::WrongTrack {
+            what: "sound",
+            kind,
+        }))
+    }
+}
+
+/// The stretch of its media that a clip plays, from where it begins in it to where it ends there,
+/// in the scale of its media: from its first frame's place to its last's, whichever way it plays.
+fn source_range(clip: &Clip, rate: crate::time::Rate) -> (Time, Time) {
+    let start = origin(clip);
+    let span = crate::span::source_span(clip, rate, start.scale);
+    (
+        start,
+        Time {
+            ticks: start.ticks.saturating_add(span),
+            scale: start.scale,
+        },
+    )
+}
+
+/// Refuse a time of a key that is outside the media that a clip plays, as `out_of_range` (`what`).
+fn within_source(
+    clip: &Clip,
+    rate: crate::time::Rate,
+    at: Time,
+    what: &'static str,
+) -> Result<(), EditError> {
+    let (first, last) = source_range(clip, rate);
+    if earlier(at, first) || earlier(last, at) {
+        Err(range(what))
+    } else {
+        Ok(())
+    }
 }
 
 // Tracks of sound, and the groups that link them.
@@ -115,6 +161,12 @@ fn moved_level(level: f64, delta: f64, top: f64) -> f64 {
     (level + delta).clamp(SILENT_DB, top)
 }
 
+/// How far a level moved from `before` to `after`, in decibels, a level at -∞ (-100 or below)
+/// counted as -100: so a fader brought up from -120 dB to -6 dB moved by 94 dB.
+fn level_change(before: f64, after: f64) -> f64 {
+    after.max(SILENT_DB) - before.max(SILENT_DB)
+}
+
 /// A setting of a pan moved as another moved from `before` to `after`, within `lo` and `hi`.
 fn moved_by(value: f64, before: f64, after: f64, lo: f64, hi: f64) -> f64 {
     (value + (after - before)).clamp(lo, hi)
@@ -140,7 +192,7 @@ fn moved_pan(pan: &Pan, before: &Pan, after: &Pan) -> Pan {
             0.0,
             100.0,
         ),
-        lfe_db: moved_level(pan.lfe_db, after.lfe_db - before.lfe_db, 10.0),
+        lfe_db: moved_level(pan.lfe_db, level_change(before.lfe_db, after.lfe_db), 10.0),
         lfe_on: if before.lfe_on == after.lfe_on {
             pan.lfe_on
         } else {
@@ -163,7 +215,11 @@ fn follow(member: &Track, before: &Track, after: &Track, linked: &HashSet<GroupC
     let mut patch = Map::new();
     let mut strip = Map::new();
     if linked.contains(&GroupControl::Fader) {
-        let fader = moved_level(m.strip.fader_db, a.strip.fader_db - b.strip.fader_db, 10.0);
+        let fader = moved_level(
+            m.strip.fader_db,
+            level_change(b.strip.fader_db, a.strip.fader_db),
+            10.0,
+        );
         if fader.to_bits() != m.strip.fader_db.to_bits() {
             strip.insert("fader_db".into(), fader.into());
         }
@@ -184,7 +240,11 @@ fn follow(member: &Track, before: &Track, after: &Track, linked: &HashSet<GroupC
                 let was = b.strip.sends.iter().find(|s| s.bus == send.bus);
                 let now = a.strip.sends.iter().find(|s| s.bus == send.bus);
                 if let (Some(was), Some(now)) = (was, now) {
-                    send.level_db = moved_level(send.level_db, now.level_db - was.level_db, 10.0);
+                    send.level_db = moved_level(
+                        send.level_db,
+                        level_change(was.level_db, now.level_db),
+                        10.0,
+                    );
                     if was.on != now.on {
                         send.on = now.on;
                     }
@@ -256,36 +316,92 @@ pub(super) fn set_track_audio(
             }
         }
     }
-    if work.timeline().audio.exclusive_solo && after.audio.solo && !before.audio.solo {
-        let others: Vec<Id> = work
-            .timeline()
-            .tracks
-            .iter()
-            .filter(|r| r.kind == TrackKind::Audio && r.audio.solo && !r.locked)
-            .filter(|r| !soloed.contains(&r.id))
-            .map(|r| r.id.clone())
-            .collect();
-        for id in others {
-            work.op(Op::SetTrackAudio {
-                timeline: timeline.clone(),
-                track: id,
-                patch: json!({ "solo": false }),
-            })?;
-        }
-        let buses: Vec<Id> = work
-            .timeline()
-            .buses
-            .iter()
-            .filter(|b| b.solo)
-            .map(|b| b.id.clone())
-            .collect();
-        for id in buses {
-            work.op(Op::SetBus {
-                timeline: timeline.clone(),
-                id,
-                patch: json!({ "solo": false }),
-            })?;
-        }
+    if after.audio.solo && !before.audio.solo {
+        exclusive_solo(work, &soloed, None)?;
+    }
+    Ok(())
+}
+
+/// While the solo of the timeline is exclusive (p. 3885), take the solo off every track that is
+/// not locked but those of `tracks`, every bus but `bus`, and every VCA, once one is soloed. The
+/// Solo Safe of a track stays: it is not a solo.
+fn exclusive_solo(
+    work: &mut Work,
+    tracks: &HashSet<Id>,
+    bus: Option<&str>,
+) -> Result<(), EditError> {
+    if !work.timeline().audio.exclusive_solo {
+        return Ok(());
+    }
+    let timeline = work.timeline_id();
+    let t = work.timeline();
+    let others: Vec<Id> = t
+        .tracks
+        .iter()
+        .filter(|r| r.kind == TrackKind::Audio && r.audio.solo && !r.locked)
+        .filter(|r| !tracks.contains(&r.id))
+        .map(|r| r.id.clone())
+        .collect();
+    let buses: Vec<Id> = t
+        .buses
+        .iter()
+        .filter(|b| b.solo && Some(b.id.as_str()) != bus)
+        .map(|b| b.id.clone())
+        .collect();
+    let vcas: Vec<Id> = t
+        .vcas
+        .iter()
+        .filter(|v| v.solo)
+        .map(|v| v.id.clone())
+        .collect();
+    let off = json!({ "solo": false });
+    for id in others {
+        work.op(Op::SetTrackAudio {
+            timeline: timeline.clone(),
+            track: id,
+            patch: off.clone(),
+        })?;
+    }
+    for id in buses {
+        work.op(Op::SetBus {
+            timeline: timeline.clone(),
+            id,
+            patch: off.clone(),
+        })?;
+    }
+    for id in vcas {
+        work.op(Op::SetVca {
+            timeline: timeline.clone(),
+            id,
+            patch: off.clone(),
+        })?;
+    }
+    Ok(())
+}
+
+/// Set a bus by a patch, as the operation `set_bus` does; and while the solo of the timeline is
+/// exclusive, a bus that is soloed takes the solo off every track, other bus and VCA, as a track
+/// does.
+pub(super) fn set_bus(work: &mut Work, id: &str, patch: &Value) -> Result<(), EditError> {
+    let was = work
+        .timeline()
+        .buses
+        .iter()
+        .find(|b| b.id == id)
+        .is_some_and(|b| b.solo);
+    work.op(Op::SetBus {
+        timeline: work.timeline_id(),
+        id: id.into(),
+        patch: patch.clone(),
+    })?;
+    let now = work
+        .timeline()
+        .buses
+        .iter()
+        .find(|b| b.id == id)
+        .is_some_and(|b| b.solo);
+    if now && !was {
+        exclusive_solo(work, &HashSet::new(), Some(id))?;
     }
     Ok(())
 }
@@ -339,12 +455,22 @@ pub(super) fn clip_gain_keys(
     at: Time,
     to: Option<Time>,
     value: Option<f64>,
-    interp: Option<crate::audio::KeyInterp>,
+    interp: Option<KeyInterp>,
 ) -> Result<(), EditError> {
     if at.scale == 0 || to.is_some_and(|to| to.scale == 0) {
         return Err(range("at"));
     }
-    let (_, c) = open_clip(work, clip)?;
+    let (_, c) = sound_clip(work, clip)?;
+    let rate = work.rate();
+    match action {
+        KeyAction::Add => within_source(&c, rate, at, "at")?,
+        KeyAction::Move => {
+            if let Some(to) = to {
+                within_source(&c, rate, to, "to")?;
+            }
+        }
+        KeyAction::Remove | KeyAction::SetInterp => {}
+    }
     let old = param_of(&c, param);
     let mut keys = match old {
         AudioParam::Fixed(_) => vec![],
@@ -438,7 +564,9 @@ pub(super) fn clip_gain_range(
     if from.scale == 0 || to.scale == 0 {
         return Err(range("at"));
     }
-    let (_, c) = open_clip(work, clip)?;
+    let (_, c) = sound_clip(work, clip)?;
+    within_source(&c, work.rate(), from, "from")?;
+    within_source(&c, work.rate(), to, "to")?;
     let rate = work.timeline().sample_rate;
     let (a, b) = (sample_of(from, rate), sample_of(to, rate));
     if a >= b || delta_db == 0.0 {
@@ -456,20 +584,46 @@ pub(super) fn clip_gain_range(
         clamped |= was;
         db
     };
-    let at = |time: Time, value: f64| AudioKey {
+    let existing: &[AudioKey] = match old {
+        AudioParam::Keys(keys) => keys,
+        AudioParam::Fixed(_) => &[],
+    };
+    // A key that is replaced keeps its interpolation; an outer key that splits a segment takes
+    // the ease that the segment has at its side: the ease into the key after `outer_a`, and the
+    // ease out of the key before `outer_b`. Inner keys are linear.
+    let interp_of = |time: Time, outer: Option<bool>| {
+        if let Some(key) = existing.iter().find(|k| same(k.at, time)) {
+            return key.interp;
+        }
+        match outer {
+            Some(true) => existing
+                .iter()
+                .find(|k| earlier(time, k.at))
+                .filter(|k| k.interp == KeyInterp::EaseIn)
+                .map_or(KeyInterp::Linear, |k| k.interp),
+            Some(false) => existing
+                .iter()
+                .rev()
+                .find(|k| earlier(k.at, time))
+                .filter(|k| k.interp == KeyInterp::EaseOut)
+                .map_or(KeyInterp::Linear, |k| k.interp),
+            None => KeyInterp::Linear,
+        }
+    };
+    let at = |time: Time, value: f64, outer: Option<bool>| AudioKey {
         at: time,
         value,
-        interp: crate::audio::KeyInterp::Linear,
+        interp: interp_of(time, outer),
     };
     let mut keys = vec![
-        at(outer_a, old.value_at(seconds(outer_a))),
-        at(inner_a, moved(old.value_at(seconds(inner_a)))),
-        at(outer_b, old.value_at(seconds(outer_b))),
+        at(outer_a, old.value_at(seconds(outer_a)), Some(true)),
+        at(inner_a, moved(old.value_at(seconds(inner_a))), None),
+        at(outer_b, old.value_at(seconds(outer_b)), Some(false)),
     ];
     if inner_b != inner_a {
-        keys.push(at(inner_b, moved(old.value_at(seconds(inner_b)))));
+        keys.push(at(inner_b, moved(old.value_at(seconds(inner_b))), None));
     }
-    if let AudioParam::Keys(existing) = old {
+    {
         for key in existing {
             let outside = earlier(key.at, outer_a) || earlier(outer_b, key.at);
             let inside = earlier(inner_a, key.at) && earlier(key.at, inner_b);
@@ -596,19 +750,62 @@ fn origin(clip: &Clip) -> Time {
     clip.source_in().unwrap_or(Time { ticks: 0, scale: 1 })
 }
 
-/// The volume of `from` for clip `to`: its keys at the same places from where each clip begins
-/// in its media.
-fn volume_for(from: &Clip, to: &Clip) -> Result<AudioParam, EditError> {
-    let (a, b) = (origin(from), origin(to));
+/// `a` + `b` - `at`, exactly, as [`shifted`] gives `at` - `a` + `b`.
+fn mirrored(at: Time, a: Time, b: Time) -> Option<Time> {
+    let zero = Time { ticks: 0, scale: 1 };
+    let sum = shifted(a, zero, b)?;
+    let negated = Time {
+        ticks: at.ticks.checked_neg()?,
+        scale: at.scale,
+    };
+    shifted(negated, zero, sum)
+}
+
+/// The place in its media that a clip plays at its start on the timeline: where it begins in it,
+/// or, for one that plays backward, where it ends there.
+fn timeline_origin(clip: &Clip, rate: crate::time::Rate) -> Time {
+    let (first, last) = source_range(clip, rate);
+    if clip.reverse {
+        last
+    } else {
+        first
+    }
+}
+
+/// The volume of `from` for clip `to`: each key as far from where `to` starts on the timeline,
+/// in its media, as it is from where `from` starts, whichever way each plays; so the envelope is
+/// heard at the same places of each clip.
+fn volume_for(from: &Clip, to: &Clip, rate: crate::time::Rate) -> Result<AudioParam, EditError> {
+    let (a, b) = (timeline_origin(from, rate), timeline_origin(to, rate));
+    let mirror = from.reverse != to.reverse;
     match &from.gain_db {
-        AudioParam::Keys(keys) if !same(a, b) => keys
-            .iter()
-            .map(|k| {
-                let at = shifted(k.at, a, b).ok_or(OpError::TooLarge { what: "at" })?;
-                Ok(AudioKey { at, ..k.clone() })
-            })
-            .collect::<Result<_, EditError>>()
-            .map(AudioParam::Keys),
+        AudioParam::Keys(keys) if mirror || !same(a, b) => {
+            let mut moved = keys
+                .iter()
+                .map(|k| {
+                    let at = if mirror {
+                        mirrored(k.at, a, b)
+                    } else {
+                        shifted(k.at, a, b)
+                    };
+                    let at = at.ok_or(OpError::TooLarge { what: "at" })?;
+                    Ok(AudioKey { at, ..k.clone() })
+                })
+                .collect::<Result<Vec<_>, EditError>>()?;
+            if mirror {
+                // The other way round, the keys are in the other order, and an ease into a key
+                // is an ease out of it.
+                moved.reverse();
+                for key in &mut moved {
+                    key.interp = match key.interp {
+                        KeyInterp::EaseIn => KeyInterp::EaseOut,
+                        KeyInterp::EaseOut => KeyInterp::EaseIn,
+                        KeyInterp::Linear => KeyInterp::Linear,
+                    };
+                }
+            }
+            Ok(AudioParam::Keys(moved))
+        }
         gain => Ok(gain.clone()),
     }
 }
@@ -633,10 +830,18 @@ pub(super) fn paste_attributes(
     if to.is_empty() {
         return Err(range("clips"));
     }
-    let (_, source) = work.owned(from)?;
+    let (track, source) = work.owned(from)?;
+    let kind = work.track(&track)?.kind;
+    if kind != TrackKind::Audio {
+        return Err(EditError::Op(OpError::WrongTrack {
+            what: "sound",
+            kind,
+        }));
+    }
+    let rate = work.rate();
     let items: BTreeSet<Attribute> = items.iter().copied().collect();
     for id in once(to) {
-        let (_, clip) = open_clip(work, &id)?;
+        let (_, clip) = sound_clip(work, &id)?;
         let mut op = set_clip(work.timeline_id(), &id);
         if let Op::SetClip {
             gain_db,
@@ -646,7 +851,7 @@ pub(super) fn paste_attributes(
         } = &mut op
         {
             if items.contains(&Attribute::Volume) {
-                *gain_db = Some(volume_for(&source, &clip)?);
+                *gain_db = Some(volume_for(&source, &clip, rate)?);
             }
             if items.contains(&Attribute::Plugins) {
                 *effects = Some(source.effects.clone());
@@ -676,7 +881,7 @@ pub(super) fn remove_attributes(
     }
     let items: BTreeSet<Attribute> = items.iter().copied().collect();
     for id in once(clips) {
-        let (_, clip) = open_clip(work, &id)?;
+        let (_, clip) = sound_clip(work, &id)?;
         let mut op = set_clip(work.timeline_id(), &id);
         let mut any = false;
         if let Op::SetClip {
@@ -708,16 +913,27 @@ pub(super) fn remove_attributes(
     Ok(())
 }
 
-/// Fade a clip in from its start to the playhead, or out from the playhead to its end (Fade In
-/// to Playhead, Fade Out to Playhead, p. 3812): over frames of a clip of picture, and over that
-/// time of a clip of sound, keeping the curve of the fade that it has. The playhead, frame `at`,
-/// is after the first frame of the clip and before its end.
+/// Fade clips in from their start to the playhead, or out from the playhead to their end (Fade In
+/// to Playhead, Fade Out to Playhead, p. 3812), in one step: over frames of a clip of picture,
+/// and over that time of a clip of sound, keeping the curve of the fade that it has. The
+/// playhead, frame `at`, is after the first frame of each clip and before its end; a fade that
+/// would meet the other fade of its clip is refused (`out_of_range`, `fade`).
 pub(super) fn fade_to_playhead(
     work: &mut Work,
-    clip: &str,
+    clips: &[Id],
     side: Edge,
     at: i64,
 ) -> Result<(), EditError> {
+    if clips.is_empty() {
+        return Err(range("clips"));
+    }
+    for clip in once(clips) {
+        fade_one_to_playhead(work, &clip, side, at)?;
+    }
+    Ok(())
+}
+
+fn fade_one_to_playhead(work: &mut Work, clip: &str, side: Edge, at: i64) -> Result<(), EditError> {
     let (track, c) = open_clip(work, clip)?;
     if at <= c.start || at >= c.end() {
         return Err(EditError::NothingAt {
@@ -772,7 +988,8 @@ pub(super) fn fade_to_playhead(
 
 /// Copy the inserts of one chain onto others, in place of all that each has (pp. 3855–3860): a
 /// strip of a track of sound or a bus, or the effects of a clip. Only the inserts are copied, not
-/// Dynamics nor the equalizer. A chain that is the one copied is passed over.
+/// Dynamics nor the equalizer, each as a new insert, which a strip gives the next ids of its own.
+/// A chain that is the one copied is passed over.
 pub(super) fn copy_effects(
     work: &mut Work,
     from: &InsertsOf,
@@ -782,7 +999,14 @@ pub(super) fn copy_effects(
         return Err(range("to"));
     }
     let timeline = work.timeline_id();
-    let inserts = inserts_of(work.project(), &timeline, from)?.to_vec();
+    // A copy is a new insert: a strip gives it the next id of its own.
+    let inserts: Vec<_> = inserts_of(work.project(), &timeline, from)?
+        .iter()
+        .map(|insert| crate::audio::Insert {
+            id: String::new(),
+            ..insert.clone()
+        })
+        .collect();
     let mut seen = HashSet::new();
     for target in to {
         if target == from || !seen.insert(target.clone()) {

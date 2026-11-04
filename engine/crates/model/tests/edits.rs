@@ -678,9 +678,20 @@ fn the_random_edits_of_sound_are_applied_as_well_as_refused() {
     let mut runner = proptest::test_runner::TestRunner::deterministic();
     let mut applied = [0usize; 8];
     let mut followed = 0;
+    let mut crossfaded = 0;
     for _ in 0..300 {
         let recipe = recipe().new_tree(&mut runner).unwrap().current();
         let mut project = project_of(&recipe);
+        // A transition of picture, linked, at a cut of picture whose sound meets too.
+        let pairs = linked_cuts_of(&project);
+        if let Some((left, right)) = pairs.first() {
+            let edit: Edit = serde_json::from_value(serde_json::json!({"edit": "add_transition",
+                "timeline": "t1", "left": left, "right": right, "length": 2, "linked": true}))
+            .unwrap();
+            if let Ok(expansion) = expand(&mut project, edit) {
+                crossfaded += usize::from(expansion.done.len() > 1);
+            }
+        }
         for kind in 28..36 {
             let making = making_of(Just(kind))
                 .new_tree(&mut runner)
@@ -695,4 +706,34 @@ fn the_random_edits_of_sound_are_applied_as_well_as_refused() {
     }
     assert!(applied.iter().all(|&n| n >= 20), "{applied:?}");
     assert!(followed >= 10, "{followed} followed by a group");
+    assert!(
+        crossfaded >= 1,
+        "no transition of picture brought a crossfade"
+    );
+}
+
+/// The cuts of picture of t1 whose two clips are linked to clips of sound that meet too.
+fn linked_cuts_of(project: &Project) -> Vec<(String, String)> {
+    let tracks = &project.timelines[0].tracks;
+    let sound: Vec<&Clip> = tracks
+        .iter()
+        .filter(|r| r.kind == TrackKind::Audio)
+        .flat_map(|r| &r.clips)
+        .collect();
+    let meets = |l: &Clip, r: &Clip| {
+        sound.iter().any(|a| {
+            a.link == l.link
+                && sound
+                    .iter()
+                    .any(|b| b.link == r.link && b.start == a.end() && b.start > a.start)
+        })
+    };
+    tracks
+        .iter()
+        .filter(|r| r.kind == TrackKind::Video)
+        .flat_map(|r| r.clips.windows(2))
+        .filter(|p| p[0].end() == p[1].start && p[0].link.is_some() && p[1].link.is_some())
+        .filter(|p| meets(&p[0], &p[1]))
+        .map(|p| (p[0].id.clone(), p[1].id.clone()))
+        .collect()
 }

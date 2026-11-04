@@ -54,6 +54,7 @@ pub(super) fn check(edit: &Edit) -> Result<(), OpError> {
             within("to", i128::from(to.ticks))
         }
         Edit::SetTrackAudio { .. }
+        | Edit::SetBus { .. }
         | Edit::NudgeClipGain { .. }
         | Edit::PasteAttributes { .. }
         | Edit::RemoveAttributes { .. }

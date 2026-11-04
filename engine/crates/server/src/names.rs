@@ -24,7 +24,9 @@ use columbina_model::{
     Change, Edit, Expansion, Grade, Id, InsertsOf, Link, Material, Op, OpError, Source, Target,
     Track, TrackKind,
 };
+use columbina_model::{Effect, Insert, SourceRef, Strip};
 use serde::{Deserialize, Deserializer};
+use serde_json::Value;
 
 /// One wire change, with optional bindings for the outputs of a creating edit.
 #[derive(Debug)]
@@ -454,6 +456,7 @@ fn visit_edit<E>(
         | Edit::PasteAttributes { timeline, .. }
         | Edit::RemoveAttributes { timeline, .. }
         | Edit::FadeToPlayhead { timeline, .. }
+        | Edit::SetBus { timeline, .. }
         | Edit::CopyEffects { timeline, .. } => timeline,
     };
     let of = timeline.clone();
@@ -514,7 +517,8 @@ fn visit_edit<E>(
         | Edit::RippleDelete { clips, .. }
         | Edit::InsertMove { clips, .. }
         | Edit::NudgeClipGain { clips, .. }
-        | Edit::RemoveAttributes { clips, .. } => {
+        | Edit::RemoveAttributes { clips, .. }
+        | Edit::FadeToPlayhead { clips, .. } => {
             for id in clips {
                 f(id, Role::Names)?;
             }
@@ -537,15 +541,17 @@ fn visit_edit<E>(
         Edit::CloseGap { track, .. }
         | Edit::AddCue { track, .. }
         | Edit::CuesFrom { track, .. }
-        | Edit::RemoveTrack { track, .. }
-        | Edit::SetTrackAudio { track, .. } => f(track, Role::NamesTrack(of))?,
+        | Edit::RemoveTrack { track, .. } => f(track, Role::NamesTrack(of))?,
+        Edit::SetTrackAudio { track, patch, .. } => {
+            f(track, Role::NamesTrack(of.clone()))?;
+            visit_sources(patch, &of, f)?;
+        }
         Edit::Trim { clip, .. }
         | Edit::Slip { clip, .. }
         | Edit::Slide { clip, .. }
         | Edit::SetSpeed { clip, .. }
         | Edit::ClipGainKeys { clip, .. }
-        | Edit::ClipGainRange { clip, .. }
-        | Edit::FadeToPlayhead { clip, .. } => f(clip, Role::Names)?,
+        | Edit::ClipGainRange { clip, .. } => f(clip, Role::Names)?,
         Edit::Roll { left, right, .. } | Edit::AddTransition { left, right, .. } => {
             f(left, Role::Names)?;
             f(right, Role::Names)?;
@@ -555,6 +561,7 @@ fn visit_edit<E>(
         | Edit::SetCue { id, .. }
         | Edit::RemoveCue { id, .. } => f(id, Role::Names)?,
         Edit::AddTrack { .. } => {}
+        Edit::SetBus { patch, .. } => visit_sources(patch, &of, f)?,
         Edit::PasteAttributes { from, to, .. } => {
             f(from, Role::Names)?;
             for id in to {
@@ -584,6 +591,73 @@ fn visit_inserts_of<E>(
         InsertsOf::Clip(id) => f(id, Role::Names),
         InsertsOf::Bus(_) => Ok(()),
     }
+}
+
+/// Call `f` on the tracks of timeline `of` that a patch of sound names as the sources of a
+/// sidechain or a Ducker: each object of it, at any depth, that is `{"track": id}`, as a source
+/// is written.
+fn visit_sources<E>(
+    patch: &mut Value,
+    of: &Id,
+    f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>,
+) -> Result<(), E> {
+    match patch {
+        Value::Object(object) => {
+            if object.len() == 1 {
+                if let Some(Value::String(id)) = object.get_mut("track") {
+                    return f(id, Role::NamesTrack(of.clone()));
+                }
+            }
+            for value in object.values_mut() {
+                visit_sources(value, of, f)?;
+            }
+            Ok(())
+        }
+        Value::Array(values) => {
+            for value in values {
+                visit_sources(value, of, f)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Call `f` on the track that drives the sidechain of an insert, if a track does.
+fn visit_insert<E>(
+    insert: &mut Insert,
+    of: &Id,
+    f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>,
+) -> Result<(), E> {
+    match &mut insert.effect {
+        Effect::Limiter(limiter) => match &mut limiter.sidechain.source {
+            Some(SourceRef::Track(id)) => f(id, Role::NamesTrack(of.clone())),
+            _ => Ok(()),
+        },
+        _ => Ok(()),
+    }
+}
+
+/// Call `f` on the tracks that drive the sidechains and the Ducker of a strip.
+fn visit_strip<E>(
+    strip: &mut Strip,
+    of: &Id,
+    f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>,
+) -> Result<(), E> {
+    let sources = strip
+        .track_fx
+        .iter_mut()
+        .flat_map(|ducker| ducker.sources.iter_mut())
+        .chain(strip.dynamics.compressor.sidechain.source.iter_mut());
+    for source in sources {
+        if let SourceRef::Track(id) = source {
+            f(id, Role::NamesTrack(of.clone()))?;
+        }
+    }
+    for insert in &mut strip.inserts {
+        visit_insert(insert, of, f)?;
+    }
+    Ok(())
 }
 
 /// Call `f` on the ids of the timeline, the clip or the group that a grade is of.
@@ -948,13 +1022,29 @@ fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> 
             }
         }
         // The buses, VCAs and groups of tracks of a timeline are named by their own ids, not by
-        // names of a transaction; the tracks that a group has are.
+        // names of a transaction; the tracks that a group has, and that drive a sidechain or a
+        // Ducker, are.
         Op::SetTrackAudio {
-            timeline, track, ..
+            timeline,
+            track,
+            patch,
         } => {
             let of = timeline.clone();
             f(timeline, Role::Names)?;
-            f(track, Role::NamesTrack(of))
+            f(track, Role::NamesTrack(of.clone()))?;
+            visit_sources(patch, &of, f)
+        }
+        Op::SetBus {
+            timeline, patch, ..
+        } => {
+            let of = timeline.clone();
+            f(timeline, Role::Names)?;
+            visit_sources(patch, &of, f)
+        }
+        Op::AddBus { timeline, bus, .. } => {
+            let of = timeline.clone();
+            f(timeline, Role::Names)?;
+            visit_strip(&mut bus.strip, &of, f)
         }
         Op::AddTrackGroup {
             timeline, group, ..
@@ -966,18 +1056,43 @@ fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> 
             }
             Ok(())
         }
-        Op::AddBus { timeline, .. }
-        | Op::RemoveBus { timeline, .. }
-        | Op::SetBus { timeline, .. }
+        Op::SetTrackGroup {
+            timeline, patch, ..
+        } => {
+            let of = timeline.clone();
+            f(timeline, Role::Names)?;
+            let members = patch.get_mut("members").and_then(Value::as_array_mut);
+            for member in members.into_iter().flatten() {
+                if let Value::String(id) = member {
+                    f(id, Role::NamesTrack(of.clone()))?;
+                }
+            }
+            Ok(())
+        }
+        Op::RemoveBus { timeline, .. }
         | Op::AddVca { timeline, .. }
         | Op::RemoveVca { timeline, .. }
         | Op::SetVca { timeline, .. }
         | Op::RemoveTrackGroup { timeline, .. }
-        | Op::SetTrackGroup { timeline, .. }
         | Op::SetTimelineAudio { timeline, .. } => f(timeline, Role::Names),
-        Op::AddInsert { timeline, of, .. }
-        | Op::SetInsert { timeline, of, .. }
-        | Op::MoveInsert { timeline, of, .. } => {
+        Op::AddInsert {
+            timeline,
+            of,
+            insert,
+            ..
+        }
+        | Op::SetInsert {
+            timeline,
+            of,
+            insert: Some(insert),
+            ..
+        } => {
+            let at = timeline.clone();
+            f(timeline, Role::Names)?;
+            visit_inserts_of(of, &at, f)?;
+            visit_insert(insert, &at, f)
+        }
+        Op::SetInsert { timeline, of, .. } | Op::MoveInsert { timeline, of, .. } => {
             let at = timeline.clone();
             f(timeline, Role::Names)?;
             visit_inserts_of(of, &at, f)
@@ -1028,6 +1143,47 @@ mod tests {
             .applied;
         let ids = names.finish();
         Ok((applied.done, ids))
+    }
+
+    #[test]
+    fn a_track_named_in_a_transaction_drives_a_ducker_and_joins_a_group_by_its_name() {
+        let mut history = History::new(Project::sample());
+        let track = json!({"id": "$voice", "kind": "audio", "name": "", "enabled": true,
+            "locked": false, "transitions": [], "clips": []});
+        let transaction = ops(json!([
+            {"op": "add_track", "timeline": "t1", "track": track},
+            {"op": "set_track_audio", "timeline": "t1", "track": "A1",
+                "patch": {"strip": {"track_fx": {"sources": [{"track": "$voice"}]},
+                    "dynamics": {"compressor": {"sidechain": {"source": {"track": "$voice"}}}}}}},
+            {"op": "add_bus", "timeline": "t1", "bus": {"id": "", "name": "Music",
+                "color": "#ffffffff", "format": "stereo", "strip": {"outputs": [{"bus": "B1"}],
+                "inserts": [{"effect": {"kind": "limiter", "sidechain": {"source": {"track": "$voice"}}}}]}}},
+            {"op": "add_track_group", "timeline": "t1",
+                "group": {"id": "", "name": "Talk", "members": ["$voice"]}},
+            {"op": "set_track_group", "timeline": "t1", "id": "TG1",
+                "patch": {"members": ["A1", "$voice"]}},
+        ]));
+        let (_, ids) = apply(&mut history, transaction).unwrap();
+        let voice = ids["$voice"].clone();
+        assert_eq!(voice, "A2");
+        let timeline = &history.project().timelines[0];
+        let a1 = &timeline.tracks[1].audio.strip;
+        assert_eq!(
+            a1.track_fx.as_ref().unwrap().sources,
+            [SourceRef::Track(voice.clone())]
+        );
+        assert_eq!(
+            a1.dynamics.compressor.sidechain.source,
+            Some(SourceRef::Track(voice.clone()))
+        );
+        let Effect::Limiter(limiter) = &timeline.buses[1].strip.inserts[0].effect else {
+            panic!()
+        };
+        assert_eq!(
+            limiter.sidechain.source,
+            Some(SourceRef::Track(voice.clone()))
+        );
+        assert_eq!(timeline.track_groups[0].members, ["A1".to_string(), voice]);
     }
 
     #[test]

@@ -268,6 +268,12 @@ impl Strip {
             }
             send.pan.check()?;
         }
+        let mut sent: Vec<&Id> = self.sends.iter().map(|s| &s.bus).collect();
+        sent.sort();
+        sent.dedup();
+        if sent.len() != self.sends.len() {
+            return Err(out("sends"));
+        }
         if self.outputs.len() > routing::MOST_OUTPUTS {
             return Err(OpError::TooManyOutputs);
         }

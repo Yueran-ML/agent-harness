@@ -71,7 +71,19 @@ fn track_patch(n: usize, m: usize, buses: &[String], vcas: &[String], tracks: &[
         6 => json!({"strip": {"outputs": [{"bus": pick(buses, m, "B99")}]}}),
         7 => json!({"strip": {"sends": [{"bus": pick(buses, m, "B99"), "level_db": -12}]}}),
         8 => json!({"strip": {"vcas": [pick(vcas, m, "VCA99")]}}),
-        9 => json!({"strip": {"track_fx": {"sources": [{"track": pick(tracks, m, "A99")}]}}}),
+        9 => {
+            // A Ducker or the sidechain of the compressor, driven by a track or a bus.
+            let source = if m.is_multiple_of(2) {
+                json!({"track": pick(tracks, m, "A99")})
+            } else {
+                json!({"bus": pick(buses, m, "B99")})
+            };
+            if m % 3 == 1 {
+                json!({"strip": {"dynamics": {"compressor": {"sidechain": {"on": true, "source": source}}}}})
+            } else {
+                json!({"strip": {"track_fx": {"sources": [source]}}})
+            }
+        }
         10 => json!({"strip": {"inserts": [insert(m), insert(m / 7)]}}),
         11 => json!({"strip": {"order": ([["eq", "fx", "dynamics"], ["fx", "fx", "eq"]][m % 2])}}),
         _ => [json!(1), json!({"lanes": {}}), json!({"strip": {"x": 1}})][m % 3].clone(),

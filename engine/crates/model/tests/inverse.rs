@@ -4,7 +4,7 @@
 
 mod common;
 
-use columbina_model::{apply, apply_done};
+use columbina_model::{apply, apply_done, Project};
 use common::{check, messy, op_of, spec, tidy};
 use proptest::prelude::*;
 
@@ -67,9 +67,27 @@ fn the_random_operations_on_sound_are_applied_as_well_as_refused() {
             .as_str()
             .unwrap()
             .to_owned();
-        match apply(&mut project, op) {
-            Ok(_) => *applied.entry(name).or_default() += 1,
-            Err(_) => refused += 1,
+        let before = project.clone();
+        if let Ok((done, inverse)) = apply_done(&mut project, op.clone()) {
+            *applied.entry(name).or_default() += 1;
+            // Taken back, and done again by the inverse of the inverse, which is `done`.
+            let after = project.clone();
+            let mut undone = after.clone();
+            let again = apply(&mut undone, inverse).unwrap();
+            assert_eq!(
+                undone,
+                Project {
+                    next_id: after.next_id,
+                    ..before
+                },
+                "{op:?}"
+            );
+            assert_eq!(again, done, "{op:?}");
+            apply(&mut undone, done).unwrap();
+            assert_eq!(undone, after, "{op:?}");
+        } else {
+            assert_eq!(project, before);
+            refused += 1;
         }
         check(&project);
     }

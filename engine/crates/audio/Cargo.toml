@@ -1,0 +1,27 @@
+[package]
+name = "columbina-audio"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# The module `testing`: the check that a node's output does not depend on how the sound is cut
+# into blocks, the allocator that counts, the test nodes and the signals, for the tests of this
+# crate and of the crates that use it.
+testing = []
+
+[dependencies]
+# The transforms of Fourier of real signals (src/fft.rs), and the complex numbers of their spectra.
+realfft.workspace = true
+rustfft.workspace = true
+# The ring between one thread that writes and one that reads (src/rt/ring.rs).
+rtrb.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# The crate itself with its module `testing`, for the tests in tests/.
+columbina-audio = { path = ".", features = ["testing"] }
+proptest.workspace = true

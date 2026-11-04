@@ -1,4 +1,4 @@
-//! Sample-accurate timeline mixing. Media readers supply stereo PCM at the timeline rate;
+//! Sample-accurate timeline mixing. Media readers supply PCM at the timeline rate, in stereo;
 //! the pure mixer maps clip time, resamples speed, applies gain/pan and sums before limiting.
 
 mod reader;
@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use columbina_media::AudioFormat;
 use columbina_model::{resolve, Clip, Media, Project, Timeline};
-use reader::Reader;
+use reader::{Layout, Reader};
 
 type Stereo = [f32; 2];
 
@@ -39,13 +39,17 @@ impl Mixer {
             |clip, media, range| {
                 active.insert(clip.id.clone());
                 if !self.readers.contains_key(&clip.id) {
-                    self.readers
-                        .insert(clip.id.clone(), Reader::new(media, timeline.sample_rate)?);
+                    self.readers.insert(
+                        clip.id.clone(),
+                        Reader::new(media, timeline.sample_rate, &Layout::Auto(2))?,
+                    );
                 }
-                self.readers
+                let pcm = self
+                    .readers
                     .get_mut(&clip.id)
                     .expect("opened above")
-                    .read(range)
+                    .read(range)?;
+                Ok(pcm.as_chunks::<2>().0.to_vec())
             },
         );
         self.readers.retain(|clip, _| active.contains(clip));

@@ -66,6 +66,89 @@ pub fn probe(path: &Path) -> Result<Facts, MediaError> {
     })
 }
 
+/// A stream of sound of a file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SoundStream {
+    /// Its index among all the streams of the file, as libav and the `ffmpeg` of the command
+    /// line number them, which [`crate::AudioDecoder::open_stream`] takes.
+    pub index: usize,
+    /// How many channels it has.
+    pub channels: u16,
+    /// The name that libav gives the layout of its channels (`mono`, `stereo`, `2.1`, `5.1`,
+    /// `5.1(side)`), whose order [`crate::AudioDecoder::open_unmixed`] gives them in; none
+    /// where the file says only how many channels there are (then they are in the default
+    /// order of libav for as many).
+    pub layout: Option<String>,
+    /// Its samples a second.
+    pub rate: u32,
+    /// The name of its codec, as ffprobe names it.
+    pub codec: String,
+}
+
+/// The streams of sound of a file that this build of libav can decode.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Sounds {
+    /// The index of the best of them, as libav ranks them: the sound of [`probe`] and of
+    /// [`crate::AudioDecoder::open`]. None where there are none.
+    pub best: Option<usize>,
+    /// Every one of them, in the order of their indices.
+    pub streams: Vec<SoundStream>,
+}
+
+/// The streams of sound of a file, each with its channels and their layout, for a file whose
+/// several streams of sound each hold a microphone of its own, as cameras write them. This
+/// blocks, and reads only the head of the file.
+///
+/// # Errors
+/// The file cannot be opened (as [`probe`]).
+pub fn sounds(path: &Path) -> Result<Sounds, MediaError> {
+    let input = open(path)?;
+    let mut streams = Vec::new();
+    for found in input.streams() {
+        if decodable_sound(&input, found.index()).is_none() {
+            continue;
+        }
+        // A stream that says no rate or no channels is passed over, as one that cannot be
+        // decoded is: the others are listed still.
+        let Ok(facts) = sound(&found) else {
+            continue;
+        };
+        streams.push(SoundStream {
+            index: found.index(),
+            channels: facts.channels,
+            layout: ffi::sound_layout(&found),
+            rate: facts.rate,
+            codec: facts.codec,
+        });
+    }
+    Ok(Sounds {
+        best: sound_stream(&input),
+        streams,
+    })
+}
+
+/// The index of the sound of a file: the best stream of sound that this build of libav can
+/// decode, as libav ranks them.
+pub(crate) fn sound_stream(input: &Input) -> Option<usize> {
+    input
+        .streams()
+        .best(Type::Audio)
+        .filter(|stream| ff::decoder::find(stream.parameters().id()).is_some())
+        .map(|stream| stream.index())
+}
+
+/// `index`, if it is the index of a stream of sound of a file that this build of libav can
+/// decode.
+pub(crate) fn decodable_sound(input: &Input, index: usize) -> Option<usize> {
+    input
+        .stream(index)
+        .filter(|stream| {
+            stream.parameters().medium() == Type::Audio
+                && ff::decoder::find(stream.parameters().id()).is_some()
+        })
+        .map(|stream| stream.index())
+}
+
 /// How the frames of a picture are coded, as its first packets show: whether each is a key frame,
 /// and whether frames are reordered (B-frames).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

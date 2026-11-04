@@ -38,7 +38,14 @@ pub struct ThumbnailRequest {
 #[serde(deny_unknown_fields)]
 pub struct WaveformRequest {
     pub media: String,
+    /// A stream of sound of the media, by its index among all the streams of the file, its
+    /// channels as the stream has them; none for the sound of the media, its best stream.
+    #[serde(default)]
+    pub stream: Option<usize>,
 }
+
+/// Told that the waveform of a media, or of one of its streams of sound, is done.
+pub type Notify = Box<dyn Fn(&Media, Option<usize>) + Send + Sync>;
 
 pub struct Analysis(Arc<Shared>);
 
@@ -48,7 +55,7 @@ struct Shared {
     wave_slots: Arc<Semaphore>,
     stopped: AtomicBool,
     jobs: Mutex<Jobs>,
-    notify: Box<dyn Fn(&Media) + Send + Sync>,
+    notify: Notify,
 }
 
 #[derive(Default)]
@@ -74,12 +81,15 @@ impl Wave {
 pub struct WaveJob {
     shared: Arc<Shared>,
     media: Media,
+    stream: Option<usize>,
     key: String,
-    spec: WaveSpec,
+    /// The size of the waveform; none for a stream whose file could not be opened, which the
+    /// job opens again, to make its waveform or to say why it cannot.
+    spec: Option<WaveSpec>,
 }
 
 impl Analysis {
-    pub fn new(project: &Path, notify: Box<dyn Fn(&Media) + Send + Sync>) -> Self {
+    pub fn new(project: &Path, notify: Notify) -> Self {
         Self(Arc::new(Shared {
             project: project.to_owned(),
             thumb_slots: Arc::new(Semaphore::new(2)),
@@ -137,15 +147,40 @@ impl Analysis {
         .map_err(worker_error)?
     }
 
-    pub async fn waveform(&self, media: Media) -> Result<(Value, Option<WaveJob>), Fault> {
+    pub async fn waveform(
+        &self,
+        media: Media,
+        stream: Option<usize>,
+    ) -> Result<(Value, Option<WaveJob>), Fault> {
         let shared = Arc::clone(&self.0);
         tokio::task::spawn_blocking(move || {
-            let spec = WaveSpec::new(&media)?;
-            let key = format!("{}.bin", stem(&media));
-            if let Some(wave) = cache_path(&shared.project, "waveforms", &key)
-                .and_then(|path| cached_wave(&path, &spec))
-            {
-                return Ok((wave.value(), None));
+            let key = match stream {
+                None => format!("{}.bin", stem(&media)),
+                Some(stream) => format!("{}-s{stream}.bin", stem(&media)),
+            };
+            let cache = cache_path(&shared.project, "waveforms", &key);
+            let audio =
+                media.facts.audio.as_ref().ok_or_else(|| {
+                    cannot_read(&media.path, "no_audio", "the media has no sound")
+                })?;
+            let spec = match stream {
+                None => Some(WaveSpec::new(&media, audio.channels)?),
+                Some(stream) => {
+                    // The cache first, by the channels that its header says, so that the file
+                    // is not opened for a waveform made before (nor needed: it may be offline).
+                    if let Some(wave) = cache.as_deref().and_then(|path| {
+                        let spec = WaveSpec::new(&media, cached_channels(path)?).ok()?;
+                        cached_wave(path, &spec)
+                    }) {
+                        return Ok((wave.value(), None));
+                    }
+                    stream_spec(&media, stream)?
+                }
+            };
+            if let (None, Some(spec), Some(path)) = (stream, &spec, &cache) {
+                if let Some(wave) = cached_wave(path, spec) {
+                    return Ok((wave.value(), None));
+                }
             }
             let mut jobs = shared
                 .jobs
@@ -161,6 +196,7 @@ impl Analysis {
             let job = fresh.then(|| WaveJob {
                 shared,
                 media,
+                stream,
                 key,
                 spec,
             });
@@ -179,7 +215,12 @@ impl WaveJob {
             };
             let _ = tokio::task::spawn_blocking(move || {
                 let _permit = permit;
-                let result = make_wave(&self.media, &self.spec, &self.shared.stopped);
+                let result = make_wave(
+                    &self.media,
+                    self.stream,
+                    self.spec.as_ref(),
+                    &self.shared.stopped,
+                );
                 let saved = result.as_ref().is_ok_and(|wave| {
                     cache_path(&self.shared.project, "waveforms", &self.key).is_some_and(|path| {
                         let mut bytes = Vec::with_capacity(WAVE_MAGIC.len() + 2 + wave.peaks.len());
@@ -203,7 +244,7 @@ impl WaveJob {
                 }
                 drop(jobs);
                 if !self.shared.stopped.load(Ordering::Acquire) {
-                    (self.shared.notify)(&self.media);
+                    (self.shared.notify)(&self.media, self.stream);
                 }
             })
             .await;
@@ -373,19 +414,34 @@ struct WaveSpec {
     bytes: usize,
 }
 
+/// The size of the waveform of stream `stream` of the media, from the channels that its file
+/// says the stream has. A stream that the file does not have as sound is refused; where the file
+/// cannot be opened, none, so that the job says why, as it does for the sound of the media.
+fn stream_spec(media: &Media, stream: usize) -> Result<Option<WaveSpec>, Fault> {
+    let Ok(sounds) = columbina_media::sounds(Path::new(&media.path)) else {
+        return Ok(None);
+    };
+    let channels = sounds
+        .streams
+        .iter()
+        .find(|found| found.index == stream)
+        .map(|found| found.channels)
+        .ok_or_else(|| {
+            Fault::params(format!("the media has no stream of sound {stream}"))
+                .with_data(json!({"reason":"stream", "stream":stream}))
+        })?;
+    WaveSpec::new(media, channels).map(Some)
+}
+
 impl WaveSpec {
-    fn new(media: &Media) -> Result<Self, Fault> {
-        let audio = media
-            .facts
-            .audio
-            .as_ref()
-            .ok_or_else(|| cannot_read(&media.path, "no_audio", "the media has no sound"))?;
+    /// The waveform of `channels` channels of the sound of the media, as long as the media.
+    fn new(media: &Media, channels: u16) -> Result<Self, Fault> {
         let duration = media.facts.duration;
         let bins = ceil(
             i128::from(duration.ticks) * i128::from(RATE),
             i128::from(duration.scale),
         );
-        let bytes = bins * i128::from(audio.channels) * 2;
+        let bytes = bins * i128::from(channels) * 2;
         if !(0..=MAX_PEAK_BYTES as i128).contains(&bytes) {
             return Err(cannot_read(
                 &media.path,
@@ -394,25 +450,56 @@ impl WaveSpec {
             ));
         }
         Ok(Self {
-            channels: audio.channels,
+            channels,
             duration,
             bytes: usize::try_from(bytes).expect("waveform size checked above"),
         })
     }
 }
 
-fn make_wave(media: &Media, spec: &WaveSpec, stopped: &AtomicBool) -> Result<Wave, Fault> {
-    let read = || -> Result<Wave, MediaError> {
-        let path = Path::new(&media.path);
-        let mut decoder = AudioDecoder::open(path, None)?;
+fn make_wave(
+    media: &Media,
+    stream: Option<usize>,
+    spec: Option<&WaveSpec>,
+    stopped: &AtomicBool,
+) -> Result<Wave, Fault> {
+    let path = Path::new(&media.path);
+    let cannot = |error: MediaError| cannot_read(&media.path, error.reason(), &error.to_string());
+    let decoder = match stream {
+        None => AudioDecoder::open(path, None),
+        Some(stream) => AudioDecoder::open_unmixed(path, stream, None),
+    };
+    let decoder = match decoder {
+        Ok(decoder) => decoder,
+        // Opened now, the file has no such stream of sound.
+        Err(MediaError::NoStreams) if stream.is_some() => {
+            return Err(cannot_read(
+                &media.path,
+                "no_audio",
+                "the media has no such stream of sound",
+            ))
+        }
+        Err(error) => return Err(cannot(error)),
+    };
+    let made;
+    let spec = if let Some(spec) = spec {
+        spec
+    } else {
+        made = WaveSpec::new(media, decoder.format().channels)?;
+        &made
+    };
+    let read = |mut decoder: AudioDecoder| -> Result<Wave, MediaError> {
         let format = decoder.format();
         if format.channels != spec.channels {
             return Err(MediaError::Unsupported(
                 "the number of audio channels changed since import".to_owned(),
             ));
         }
+        // Every stream of sound is placed by the start of the best one, as its clips are.
         let origin = if media.facts.video.is_some() {
             columbina_media::video_start(path)?
+        } else if stream.is_some() {
+            columbina_media::sound_start(path)?
         } else {
             decoder.start()
         };
@@ -447,7 +534,7 @@ fn make_wave(media: &Media, spec: &WaveSpec, stopped: &AtomicBool) -> Result<Wav
             peaks: peaks.finish(),
         })
     };
-    read().map_err(|error| cannot_read(&media.path, error.reason(), &error.to_string()))
+    read(decoder).map_err(cannot)
 }
 
 /// Reduce every native sample, without downsampling away narrow peaks. Missing samples are
@@ -536,6 +623,19 @@ impl Peaks {
         }
         self.values.into_iter().map(i8::cast_unsigned).collect()
     }
+}
+
+/// The channels of a waveform in a cache, from its header.
+fn cached_channels(path: &Path) -> Option<u16> {
+    let header = WAVE_MAGIC.len() + 2;
+    let mut bytes = vec![0; header];
+    std::fs::File::open(path)
+        .ok()?
+        .read_exact(&mut bytes)
+        .ok()?;
+    bytes
+        .starts_with(WAVE_MAGIC)
+        .then(|| u16::from_le_bytes([bytes[header - 2], bytes[header - 1]]))
 }
 
 fn cached_wave(path: &Path, spec: &WaveSpec) -> Option<Wave> {

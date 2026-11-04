@@ -288,7 +288,9 @@ impl Engine {
             Path::new(&project),
             Box::new({
                 let state = Arc::clone(&state);
-                move |media: &Media| tell_waveform(&state, media, limits)
+                move |media: &Media, stream: Option<usize>| {
+                    tell_waveform(&state, media, stream, limits);
+                }
             }),
         );
         let notify = {
@@ -528,7 +530,7 @@ fn tell_proxy(state: &Mutex<State>, note: &Note, limits: Limits) {
 
 /// Analysis finishes on a blocking worker. A source removed or replaced meanwhile is not
 /// announced as ready for a different media snapshot.
-fn tell_waveform(state: &Mutex<State>, media: &Media, limits: Limits) {
+fn tell_waveform(state: &Mutex<State>, media: &Media, stream: Option<usize>, limits: Limits) {
     let mut state = state.blocking_lock();
     if !state
         .history
@@ -539,10 +541,11 @@ fn tell_waveform(state: &Mutex<State>, media: &Media, limits: Limits) {
     {
         return;
     }
-    state.broadcast(&rpc::notification_line(
-        "media.waveform",
-        &json!({"media":media.id}),
-    ));
+    let params = match stream {
+        None => json!({"media":media.id}),
+        Some(stream) => json!({"media":media.id, "stream":stream}),
+    };
+    state.broadcast(&rpc::notification_line("media.waveform", &params));
     let kicked = std::mem::take(&mut state.kicked);
     drop(state);
     for (id, kind) in kicked {
@@ -1739,13 +1742,13 @@ async fn media_analysis(
     method: &str,
     params: Option<&RawValue>,
 ) -> Result<Reply, Reply> {
-    let (media_id, thumbnail) = if method == "media.thumbnail" {
+    let (media_id, thumbnail, stream) = if method == "media.thumbnail" {
         let request: ThumbnailRequest =
             rpc::params(method, r#"{"media":"m1","height":90}"#, params)?;
-        (request.media.clone(), Some(request))
+        (request.media.clone(), Some(request), None)
     } else {
         let request: WaveformRequest = rpc::params(method, r#"{"media":"m1"}"#, params)?;
-        (request.media, None)
+        (request.media, None, request.stream)
     };
     let media = {
         let state = engine.state.lock().await;
@@ -1763,7 +1766,7 @@ async fn media_analysis(
     };
     let (result, job) = match thumbnail {
         Some(request) => (engine.analysis.thumbnail(media, request).await?, None),
-        None => engine.analysis.waveform(media).await?,
+        None => engine.analysis.waveform(media, stream).await?,
     };
     let reply = match connection.queue(rpc::result_line(id, &result)) {
         Ok(()) => Reply::Queued,

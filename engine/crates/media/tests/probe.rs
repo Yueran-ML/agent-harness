@@ -436,3 +436,56 @@ fn the_frames_of_mp4_are_counted_from_its_index_and_a_dropped_frame_leaves_a_num
         assert_eq!(columbina_media::frame_count(&made.path).unwrap(), Some(100));
     }
 }
+
+#[test]
+fn every_stream_of_sound_is_listed_with_its_channels_and_layout() {
+    use columbina_media::{sounds, SoundStream};
+    let stream = |index, channels, layout: Option<&str>, codec: &str| SoundStream {
+        index,
+        channels,
+        layout: layout.map(str::to_owned),
+        rate: 48000,
+        codec: codec.to_owned(),
+    };
+    // Two streams of mono, as a camera with two microphones writes them; this `QuickTime` does not
+    // say the layout of its PCM.
+    if let Some(made) = media(Sample::TwoMonoStreams) {
+        let found = sounds(&made.path).unwrap();
+        assert_eq!(found.best, Some(0));
+        assert_eq!(
+            found.streams,
+            [
+                stream(0, 1, None, "pcm_s16le"),
+                stream(1, 1, None, "pcm_s16le")
+            ]
+        );
+    }
+    if let Some(made) = media(Sample::SixSines) {
+        let found = sounds(&made.path).unwrap();
+        assert_eq!(found.best, Some(0));
+        assert_eq!(found.streams, [stream(0, 6, Some("5.1"), "pcm_s16le")]);
+    }
+    if let Some(made) = media(Sample::ThreeZero) {
+        let found = sounds(&made.path).unwrap();
+        assert_eq!(found.streams, [stream(0, 3, Some("3.0"), "pcm_s16le")]);
+    }
+    // A WAV of one channel does not say which it is.
+    if let Some(made) = media(Sample::Mono) {
+        let found = sounds(&made.path).unwrap();
+        assert_eq!(found.streams, [stream(0, 1, None, "pcm_s16le")]);
+    }
+    // The sound of a picture is numbered among all the streams of the file.
+    if let Some(made) = media(Sample::Fhd) {
+        let found = sounds(&made.path).unwrap();
+        assert_eq!(found.best, Some(1));
+        assert_eq!(found.streams, [stream(1, 2, Some("stereo"), "aac")]);
+        let facts = probe(&made.path).unwrap().audio.unwrap();
+        assert_eq!(facts.channels, found.streams[0].channels);
+        assert_eq!(facts.codec, found.streams[0].codec);
+    }
+    if let Some(made) = media(Sample::Uhd) {
+        let found = sounds(&made.path).unwrap();
+        assert_eq!(found.best, None);
+        assert_eq!(found.streams, Vec::<SoundStream>::new());
+    }
+}

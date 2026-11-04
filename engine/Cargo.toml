@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/model", "crates/store", "crates/server", "crates/media", "crates/view", "crates/compose", "crates/lut", "crates/ocio", "crates/track"]
+members = ["crates/model", "crates/store", "crates/server", "crates/media", "crates/view", "crates/compose", "crates/lut", "crates/ocio", "crates/track", "crates/audio"]
 
 [workspace.package]
 edition = "2021"
@@ -23,6 +23,11 @@ sha2 = "0.10"
 ffmpeg-next = { version = "8.1", default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
 # The sound of the transport (crates/server): WASAPI on Windows, Core Audio on macOS, ALSA on Linux.
 cpal = "=0.18.2"
+# The graph of the sound (crates/audio): the transforms of Fourier, planned before the sound runs,
+# and the ring between one thread that writes and one that reads, neither waiting on the other.
+rustfft = "=6.4.1"
+realfft = "=3.5.1"
+rtrb = "=0.4.1"
 # Text laid out and drawn into pixels (crates/compose), with the fonts of the system.
 cosmic-text = "=0.19.0"
 # The picture, put together and drawn on the graphics card (crates/compose, crates/view): Direct3D 12

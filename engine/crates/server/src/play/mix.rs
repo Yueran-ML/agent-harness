@@ -41,7 +41,11 @@ impl Mixer {
                 if !self.readers.contains_key(&clip.id) {
                     self.readers.insert(
                         clip.id.clone(),
-                        Reader::new(media, timeline.sample_rate, &Layout::Auto(2))?,
+                        Reader::new(
+                            media,
+                            timeline.sample_rate,
+                            &Layout::of_clip(clip, 2).stereo(),
+                        )?,
                     );
                 }
                 let pcm = self

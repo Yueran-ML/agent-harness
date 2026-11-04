@@ -8,7 +8,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use columbina_media::{AudioDecoder, AudioFormat, AudioStreams, MediaError, Samples};
-use columbina_model::Media;
+use columbina_model::{ChannelSource, Clip, Media};
 
 /// How the channels of a clip are made from its media: the `channels` of a clip of the model.
 #[derive(Clone, Debug, PartialEq)]
@@ -18,11 +18,40 @@ pub(crate) enum Layout {
     /// project made before them is: its sound is what it was).
     Auto(u16),
     /// A channel for each lane, in the order of the channels of the track.
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "the graph (T4b) maps the clip's channels")
-    )]
     Mapped(Vec<Lane>),
+}
+
+impl Layout {
+    /// The layout of a clip of the model on a track of `channels` channels: auto where its
+    /// `channels` are `null`, and otherwise a lane for each channel that it names, the mean of
+    /// the channels of the media that its `source` picks (none: silence).
+    pub(crate) fn of_clip(clip: &Clip, channels: u16) -> Self {
+        match &clip.channels {
+            None => Self::Auto(channels),
+            Some(maps) => Self::Mapped(
+                maps.iter()
+                    .map(|map| {
+                        let sources = map.source.0.iter().copied().map(Pick::of).collect();
+                        Lane::mean(sources, map.enabled, map.mute, map.level_db)
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    /// The layout as the stereo mixer of the transport takes it, until the graph (T4b) takes
+    /// any: auto in two channels, and a mapping of its first two lanes as left and right, or of
+    /// its one lane on both.
+    pub(crate) fn stereo(self) -> Self {
+        match self {
+            Self::Auto(_) => Self::Auto(2),
+            Self::Mapped(lanes) => {
+                let left = lanes.first().cloned();
+                let right = lanes.get(1).cloned().or_else(|| left.clone());
+                Self::Mapped(left.into_iter().chain(right).collect())
+            }
+        }
+    }
 }
 
 /// A channel of the media: the index of its stream among all the streams of the file (as
@@ -32,6 +61,27 @@ pub(crate) enum Layout {
 pub(crate) struct Pick {
     pub stream: usize,
     pub channel: u16,
+}
+
+impl Pick {
+    /// A pick of no channel of any file: silence, as one of a stream or a channel that the
+    /// media has not is.
+    const NOWHERE: Pick = Pick {
+        stream: usize::MAX,
+        channel: 0,
+    };
+
+    /// The pick of a channel that a clip of the model names. A channel past what a stream can
+    /// have (65535) is of none, and so is silence: it is never cut down to another.
+    fn of(source: ChannelSource) -> Self {
+        match (
+            usize::try_from(source.stream),
+            u16::try_from(source.channel),
+        ) {
+            (Ok(stream), Ok(channel)) if stream != usize::MAX => Pick { stream, channel },
+            _ => Self::NOWHERE,
+        }
+    }
 }
 
 /// A channel that a clip gives: the mean of the channels of the media picked for it (one, or
@@ -46,14 +96,11 @@ pub(crate) struct Lane {
 /// At or below this a level is silence, as a fader's is.
 const SILENT_DB: f64 = -100.0;
 
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "the graph (T4b) maps the clip's channels")
-)]
 impl Lane {
     /// A channel as a clip of the model has it (RM20 pp. 3834-3836): its source, whether it is
     /// enabled (a channel that is not is taken out of the clip) and muted (kept in the clip,
     /// but silent), and its level in dB, at or below -100 dB silence.
+    #[cfg(test)]
     pub(crate) fn of(source: Option<Pick>, enabled: bool, mute: bool, level_db: f64) -> Self {
         Self::mean(source.into_iter().collect(), enabled, mute, level_db)
     }
@@ -655,5 +702,96 @@ mod tests {
                 "{from}"
             );
         }
+    }
+
+    /// A clip of the sample whose channels are mapped so.
+    fn mapped(maps: Option<Vec<columbina_model::ChannelMap>>) -> Clip {
+        let mut clip = Project::sample().timelines[0].tracks[1].clips[0].clone();
+        clip.channels = maps;
+        clip
+    }
+
+    fn channel(picks: &[(u32, u32)]) -> columbina_model::ChannelMap {
+        columbina_model::ChannelMap {
+            source: columbina_model::ChannelSources(
+                picks
+                    .iter()
+                    .map(|&(stream, channel)| ChannelSource { stream, channel })
+                    .collect(),
+            ),
+            enabled: true,
+            mute: false,
+            level_db: 0.0,
+        }
+    }
+
+    #[test]
+    fn the_channels_of_a_clip_of_the_model_are_laid_out_as_it_names_them() {
+        // None: auto, in the channels of the track, as every clip before schema 4 was.
+        assert_eq!(Layout::of_clip(&mapped(None), 2), Layout::Auto(2));
+        assert_eq!(Layout::of_clip(&mapped(None), 6).stereo(), Layout::Auto(2));
+        // One pick, a mean of two, none, and a channel past 65535, which is of none.
+        let clip = mapped(Some(vec![
+            channel(&[(1, 0)]),
+            channel(&[(0, 0), (0, 1)]),
+            channel(&[]),
+            channel(&[(0, 65_536)]),
+        ]));
+        let Layout::Mapped(lanes) = Layout::of_clip(&clip, 4) else {
+            panic!("mapped")
+        };
+        let at = |stream, channel| Pick { stream, channel };
+        let picks: Vec<Vec<Pick>> = lanes.iter().map(|lane| lane.sources.clone()).collect();
+        assert_eq!(
+            picks,
+            [
+                vec![at(1, 0)],
+                vec![at(0, 0), at(0, 1)],
+                vec![],
+                vec![Pick::NOWHERE]
+            ]
+        );
+        assert!(lanes
+            .iter()
+            .all(|lane| (lane.gain - 1.0).abs() < f32::EPSILON));
+        // The stereo mixer takes the first two lanes, or the one lane on both sides.
+        let Layout::Mapped(two) = Layout::of_clip(&clip, 4).stereo() else {
+            panic!("mapped")
+        };
+        assert_eq!(two, lanes[..2]);
+        let one = mapped(Some(vec![channel(&[(0, 1)])]));
+        let Layout::Mapped(both) = Layout::of_clip(&one, 1).stereo() else {
+            panic!("mapped")
+        };
+        assert_eq!(both.len(), 2);
+        assert_eq!(both[0], both[1]);
+    }
+
+    #[test]
+    fn a_clip_of_no_mapping_reads_as_auto_did_and_one_that_maps_reads_its_channels() {
+        let Some(media) = of(Sample::LeftRight) else {
+            return;
+        };
+        let read = |layout: &Layout| {
+            Reader::new(&media, 48000, layout)
+                .unwrap()
+                .read(0..48000)
+                .unwrap()
+        };
+        let auto = read(&Layout::Auto(2));
+        let model = read(&Layout::of_clip(&mapped(None), 2).stereo());
+        assert_eq!(auto.len(), model.len());
+        assert!(auto
+            .iter()
+            .zip(&model)
+            .all(|(a, b)| a.to_bits() == b.to_bits()));
+        // The left on both sides; and a channel of 65536, cut down to none, is silence.
+        let left = read(&Layout::of_clip(&mapped(Some(vec![channel(&[(0, 0)])])), 1).stereo());
+        let (l, r): (Vec<f32>, Vec<f32>) = left.chunks(2).map(|pair| (pair[0], pair[1])).unzip();
+        assert!((amplitude(&l, 440.0) - 0.25).abs() < 1e-3 && amplitude(&l, 880.0) < 1e-5);
+        assert_eq!(l, r);
+        let far = mapped(Some(vec![channel(&[(0, 65_536)])]));
+        let far = read(&Layout::of_clip(&far, 1).stereo());
+        assert!(far.iter().all(|&sample| sample == 0.0));
     }
 }

@@ -1821,9 +1821,18 @@ fn same_sound(
     }
     let end = resolve::samples_at(resolve::duration(now), now.rate, now.sample_rate);
     let pieces = resolve::audio_between(now, after, from, end);
+    let channels = |timeline: &columbina_model::Timeline, clip: &str| {
+        timeline
+            .tracks
+            .iter()
+            .flat_map(|track| &track.clips)
+            .find(|each| each.id == clip)
+            .map(|each| each.channels.clone())
+    };
     pieces == resolve::audio_between(was, before, from, end)
         && pieces.iter().all(|piece| {
             media_of(before, &piece.media).map(heard) == media_of(after, &piece.media).map(heard)
+                && channels(was, &piece.clip) == channels(now, &piece.clip)
         })
 }
 
@@ -2002,6 +2011,18 @@ mod tests {
         let mut faded = before.clone();
         faded.timelines[0].tracks[1].clips[0].fade_in = 10;
         assert!(!check(&faded, 0));
+        // Its channels mapped otherwise, the clip is read otherwise.
+        let mut mapped = before.clone();
+        mapped.timelines[0].tracks[1].clips[0].channels = Some(vec![
+            columbina_model::ChannelMap {
+                source: columbina_model::ChannelSources(vec![]),
+                enabled: true,
+                mute: false,
+                level_db: 0.0,
+            };
+            2
+        ]);
+        assert!(!check(&mapped, 0));
         // What was heard before the playhead does not matter: a clip of sound that has ended.
         let mut earlier = before.clone();
         let sound = &mut earlier.timelines[0].tracks[1].clips;

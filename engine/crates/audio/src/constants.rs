@@ -179,6 +179,28 @@ pub const DIM_DB: f32 = -20.0;
 /// constant of a one-pole smoother, 1 − 1/e (plan T8).
 pub const DYNAMICS_TIME_CONSTANT_FRACTION: f64 = 1.0 - 1.0 / std::f64::consts::E;
 
+/// The level, in dBFS, that Dynamics hears in silence: the floor of its detector (T8).
+pub const DYNAMICS_LEVEL_FLOOR_DB: f64 = -200.0;
+
+/// The loudest level, in dBFS, that Dynamics hears: an infinite sample is heard as this (T8).
+pub const DYNAMICS_LEVEL_CEILING_DB: f64 = 200.0;
+
+/// The samples of a bin of the Hold of Dynamics: the window of a hold of H samples is H + 1 to
+/// H + 32 samples long, kept as the peaks of its bins (T8). 32 rather than 64, for half the
+/// spread of the length of the window (0.67 ms at 48 kHz) at 48 kB a window for 4 s.
+pub const DYNAMICS_HOLD_BIN: u32 = 32;
+
+/// How fast the peak that a module of Dynamics hears when it is turned on falls, in dB a second:
+/// it bridges the dips of a wave (4 dB in the 10 ms of half a wave of 50 Hz) and forgets the
+/// 400 dB between the floor and the ceiling in a second (T8).
+pub const DYNAMICS_WAKE_FALL_DB_PER_SECOND: f64 = 400.0;
+
+/// How many of its time constants (attack plus release, and its hold) a module of Dynamics
+/// takes to settle (`Node::settle`, T8): a difference of the gain of 200 dB, at an output up to
+/// +12 dBFS, comes under −90 dBFS in ln(200 / 6.9e-5) ≈ 15 time constants, and 3 more cover the
+/// two stages of its detector (the hold of the peak, then the attack).
+pub const DYNAMICS_SETTLE_TIME_CONSTANTS: f64 = 18.0;
+
 /// The zones of the frequency of the bands 2 to 5 of the track EQ, in Hz: L, ML, MH, H (plan; the
 /// reference's C-E3 has wider ones).
 pub const EQ_ZONES: [(f32, f32); 4] = [

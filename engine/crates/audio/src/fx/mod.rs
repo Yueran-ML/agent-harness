@@ -5,6 +5,7 @@ pub mod biquad;
 pub mod common;
 pub mod deesser;
 pub mod dehummer;
+pub mod dynamics;
 pub mod eq;
 pub mod gain;
 pub mod limiter;

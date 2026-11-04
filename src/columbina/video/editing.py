@@ -134,6 +134,8 @@ _TIMELINE_OPERATIONS = frozenset(
         "set_track_audio", "add_bus", "remove_bus", "set_bus", "add_vca", "remove_vca",
         "set_vca", "add_track_group", "remove_track_group", "set_track_group", "add_insert",
         "set_insert", "move_insert", "set_timeline_audio",
+        # The operations of automation (T14).
+        "set_lane", "splice_lane",
     }
 )  # fmt: skip
 """The basic operations whose ``timeline`` the tool's fills where it is left out."""

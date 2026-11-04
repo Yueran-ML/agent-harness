@@ -1056,7 +1056,8 @@ route to it in the same batch, as buses have no $names), add_vca/set_vca/remove_
 add_track_group/set_track_group/remove_track_group (group {id:"",name,members,linked});
 set_bus/set_vca/set_track_group/set_timeline_audio take a patch; add_insert
 {of:{track|bus|clip:id},insert:{effect:{kind:"gain",gain_db:-3}},index?}, set_insert
-{of,slot,insert|null}, move_insert {of,from,to}. Clip sound: set_clip
+{of,slot,insert|null}, move_insert {of,from,to} (prefer the edits set_insert/move_insert of the
+same fields, plus to_of to move to another chain: they also drop the insert's lanes). Clip sound: set_clip
 eq/effects/pitch/pitch_correction/channels; set_transition fade_in_level_db/fade_out_level_db
 -3|0|3 on crossfades. Edits: clip_gain_keys
 {clip,action:add|remove|move|set_interp,at:{ticks,scale} of the clip's media,value?,to?,interp?};
@@ -1065,6 +1066,21 @@ clip_gain_range {clip,from,to,delta_db}; nudge_clip_gain {clips,delta_db}; paste
 {clips,side:"in"|"out",at}; copy_effects {from,to:[...]}; set_bus edit {id,patch} (an exclusive
 solo clears other solos); add_transition with linked:true also crossfades the linked audio
 (do not add that crossfade yourself then).
+Automation lanes (Fairlight, times of the timeline {ticks,scale}, e.g. scale 48000): a lane is
+of={track|bus|vca:id} plus path, the strip field it drives: fader_db, mute (0/1), pan.x,
+trim_db, eq.<band 0-5>.gain_db, dynamics.compressor.threshold_db, send.<bus>.level_db,
+output.<bus>.on, insert.<fx id>.<setting>; a VCA has fader_db and mute. Straight lines between
+points, held before the first and after the last; a lane overrides the static setting. Edits:
+lane_points {of,path,action:"add",points:[{at,value?}]} (no value keeps the curve there; makes
+the lane), {action:"remove",at:[times]}, {action:"move",at:[times],by?,delta?}; lane_range
+{of,path,from,to,action:"delete"|"paste"|"shift_value"|"thin",points?(times from "from"),delta?}
+keeps the values outside the range; lane_draw {of,path,from,to,points} replaces a range with
+thinned points; clear_lanes {of,paths?,then:"keep"|"reset"|"hold",at?}. Ops set_lane
+{of,path,lane:{points:[{at,value}],kind:"continuous"|"switch"}|null} and splice_lane exist too.
+Values must be in the setting's range; a fade of the fader over 2 s:
+{edit:"lane_draw",timeline:"t1",of:{track:"A1"},path:"fader_db",from:{ticks:96000,scale:48000},
+to:{ticks:192000,scale:48000},points:[{at:{ticks:96000,scale:48000},value:0},
+{at:{ticks:192000,scale:48000},value:-100}]}.
 To create a timeline, use {op:"add_timeline",timeline:{id:"$film",name:"Cut",
 rate:{num:25,den:1},width:1920,height:1080,sample_rate:48000,tracks:[]}}, followed in the same
 batch by {edit:"add_track",timeline:"$film",kind:"video"} and an audio track as needed.

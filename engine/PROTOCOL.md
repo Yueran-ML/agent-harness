@@ -653,8 +653,15 @@ are at most +10; −100 or below is −∞.
   (`dynamics.compressor.threshold_db`, `dynamics.compressor.sidechain.on`, `dynamics.makeup_db`),
   `track_fx.<…>` of a track with a Ducker (`track_fx.amount_db`), `send.<bus id>.<level_db|on|pre|pan.x|…>`,
   `output.<bus id>.on`, and `insert.<insert id>.<on|setting>` (`insert.fx1.ceiling_db`). A VCA has
-  `fader_db` and `mute`. A lane of a setting that the strip has not, or of another kind, is
-  refused as `out_of_range: lane`.
+  `fader_db` and `mute`. The Lookahead of a Ducker (`track_fx.lookahead_ms`) has no lane: it is
+  the latency of the graph, not a setting that moves. A lane keeps to the range of its setting:
+  each of its values is one that the setting may be set to while the rest of the strip is as it
+  is (a fader at most +10 dB, a pan −1…1, a frequency within its band), and a switch is 0 or 1. A
+  lane of a setting that the strip has not, of another kind, or out of that range is refused as
+  `out_of_range: lane`. The engine reads a lane at each sample of the timeline exactly as written
+  here: the times are compared in ticks, a point whose time falls between two samples acts from
+  the first sample at or after it, and the share of the way between two points is worked in
+  doubles (T14).
 - **Transition.** Added `fade_in_level_db` and `fade_out_level_db`, each −3, 0 or 3 (0): how the
   clip that starts at the cut rises and the one that ends there falls on a crossfade: 0 dB `t`,
   +3 dB `sin(πt/2)`, −3 dB `t^1.5`; the falling side is the rising curve reversed.
@@ -1791,6 +1798,8 @@ its inverse:
 | `set_insert` | `timeline`, `of`, `slot`, `insert` (an insert, or `null`, which must be written, to take the one at `slot` away) |
 | `move_insert` | `timeline`, `of`, `from`, `to` |
 | `set_timeline_audio` | `timeline`, `patch` |
+| `set_lane` | `timeline`, `of`, `path`, `lane` (a lane, or `null`, which must be written, to take it away) |
+| `splice_lane` | `timeline`, `of`, `path`, `at`, `remove`, `points` |
 
 **Patches.** `set_track_audio`, `set_bus`, `set_vca`, `set_track_group` and
 `set_timeline_audio` set their thing by a patch, as `set_color_settings` does: each object in it
@@ -1844,9 +1853,24 @@ away from the one and adds it to the other with an empty id. A `slot`, `from` or
 a place of the chain is `out_of_list`; a strip of more than 6 inserts is `too_many_inserts`; an
 effect of a clip with a sidechain on is `out_of_range` (`sidechain`); an insert taken away or
 replaced while a lane names its id leaves the lane naming what is not there, refused as
-`out_of_range` (`lane`), so the lane is taken away first.
+`out_of_range` (`lane`), so the lane is taken away first: the edits `set_insert`,
+`move_insert` and `copy_effects` (below) do that in the same transaction.
 
 A strip sends to a bus at most once: two sends to one bus are `out_of_range` (`sends`).
+
+**Lanes** (`crates/model/src/ops/automation.rs`). `of` names what a lane is of: `{"track": id}`
+(a track of sound), `{"bus": id}` or `{"vca": id}`; `path` names its setting (see Lane above).
+`set_lane` puts `lane` in place of the lane of `path`, or adds it where there is none, or with
+`lane: null` takes it away; its inverse puts back what was there (`null` where nothing was).
+`splice_lane` puts `points` in place of the `remove` points of the lane from its point `at` (from
+0) on, as JavaScript's `splice` does; its inverse is the `splice_lane` that puts back the points it
+took away in place of those it put, so a change to a few points of a long lane is a short step of
+undo. A lane must keep at least one point (`set_lane` with `null` takes one away), and what either
+makes is checked as a lane that is read is (`out_of_range: lane`). A lane that is not there is
+`missing` (`what: "lane"`, `id` its path) for `splice_lane` and for `set_lane` with `null`; an `at`
+and `remove` that reach past the points is `out_of_list` (`at` their sum); a track that is not of
+sound is `wrong_track` (`what: "lanes"`); a bus or VCA that is not there `unknown_bus`,
+`unknown_vca`. A track may be named by a name of a transaction (`{"track": "$a"}`).
 
 **Clips and crossfades.** `set_clip` also sets `eq` (whole, 4 bands), `effects` (whole),
 `pitch_correction`, `pitch` and `channels` (`null` for the media's channels mixed as libav mixes
@@ -1950,7 +1974,13 @@ fades are not silently substituted. All changes are still one reversible transac
 | `remove_attributes` | `clips`, `items` | Put them back as a new clip has them: 0 dB with no keys, no effects, the equalizer off (p. 3804). |
 | `fade_to_playhead` | `clips`, `side: in\|out`, `at` | Fade each clip in from its start to frame `at`, or out from it to its end (p. 3812), in one transaction. |
 | `set_bus` | `id`, `patch` | As the operation; a bus soloed while the solo is exclusive takes the solo off the others (below). |
-| `copy_effects` | `from`, `to: [chains]` | Put the inserts of one chain (`{"track"}`, `{"bus"}` or `{"clip"}`, as `of` of the operations) in place of all those of others (pp. 3855–3860): only the inserts, not Dynamics nor the equalizer. |
+| `copy_effects` | `from`, `to: [chains]` | Put the inserts of one chain (`{"track"}`, `{"bus"}` or `{"clip"}`, as `of` of the operations) in place of all those of others (pp. 3855–3860): only the inserts, not Dynamics nor the equalizer. The lanes of the inserts of a strip that they replace are taken away first. |
+| `set_insert` | `of`, `slot`, `insert` (an insert or `null`, which must be written) | As the operation, with the lanes of the insert that goes (`insert.<id>.…`) taken away first; an insert of a strip put in place of another is given a new id, one above every id of the strip and the one it replaces. |
+| `move_insert` | `of`, `from`, `to`, `to_of?` | Within `of` (or `to_of` equal to it), as the operation: the insert keeps its id and its lanes. To another chain `to_of`: its lanes taken away, the insert taken from `of` and added to `to_of` at `to` with an empty id, so it is a new insert there. |
+| `lane_points` | `of`, `path`, `action: add\|remove\|move`, `points?`, `at?`, `by?`, `delta?` | Points of a lane (pp. 3898–3900, 3911): add `points` (`[{at, value?}]`), take away or move the points at the times `at`. |
+| `lane_range` | `of`, `path`, `from`, `to`, `action: delete\|cut\|paste\|shift_value\|thin`, `points?`, `delta?`, `tolerance?` | A range of a lane (pp. 3898–3899): taken away, pasted over, raised or lowered, or thinned. |
+| `lane_draw` | `of`, `path`, `from`, `to`, `points`, `tolerance?` | The Pencil (pp. 3900, 3911): the points drawn, thinned, in place of the range. |
+| `clear_lanes` | `of`, `paths?`, `then?: keep\|reset\|hold`, `at?` | Clear Track Automation (p. 3912): the lanes of `paths`, or all, taken away. |
 
 `add_transition` takes `linked?` (false where it is left out): a transition of picture with
 `linked: true` brings, in the same transaction, a crossfade of the same length and alignment at
@@ -2026,6 +2056,60 @@ transition is is `fade_at_transition`. `copy_effects` with an empty `to` is `out
 is passed over; the copies are new inserts, which a strip gives the next ids of its own (so a
 lane of the target's old inserts names an insert that is not there, and is refused as
 `out_of_range`, `lane`, until it is taken away).
+
+**Automation (T14, Ch. 178).** The edits of lanes name a lane by `of` and `path`, as the
+operations do, and work in times of the timeline (`{ticks, scale}`), each put on the nearest tick
+of the lane's scale (that of its points; the timeline's sample rate for a lane that is not there
+yet); a time that falls outside 0…2^53−1 ticks there is `out_of_range` (`at`, `from`, `to`,
+`points`, `by`). A lane of a track that is locked is `locked`; a path of no setting (or of
+`track_fx.lookahead_ms`, a `listen`, a kind) is `out_of_range` (`lane`). Each is one transaction:
+a lane made is one `set_lane`, one taken away one `set_lane` of `null`, and any other change one
+`splice_lane` of the points from the first that changes to the last. A value of a switch is on
+(1) at 0.5 and above and off (0) below; a value of a number past the range of its setting is kept
+at the end of the range, and the edit is `clamped`.
+- `lane_points` `add` puts each of `points` at its time, after any there already, or, where one
+  is there, sets the value of the last one there; a point given no `value` takes the value that
+  the lane has at its time, so nothing is heard to change (p. 3898). Where the lane is not there,
+  it is made, of the kind of its setting, from the value its setting has. `remove` takes away
+  every point at each time of `at`; the last taken away takes the lane away, and the setting is
+  heard again as it is set. `move` moves every point at the times of `at` by `by` in time (back
+  where its ticks are below 0) and by `delta` in value: each run of points moved stays between the
+  points beside it and within the timeline, as far as it can (`clamped` where it stops). A time of
+  `at` with no point is `missing` (`what: "point"`, `id` the time as `ticks/scale`); a lane that is
+  not there is `missing` (`what: "lane"`); `move` with no change is `empty_range`; `points` or `at`
+  empty is `out_of_range` (`points`, `at`).
+- `lane_range` works on the range from `from` to `to` (`from` before `to`, else `empty_range`).
+  The value before `from` and the value from `to` on stay as they were (pp. 3898–3899): the points
+  from `from` to `to` (both in) are put in place of by a point at `from` of the value that the lane
+  came to it with, what the action makes, and a point at `to` of the value that was there. `delete`
+  and `cut` (the same; a client keeps what it cut) leave a straight line between those two. `paste`
+  puts `points` (times from `from`, in order, none past `to`; `out_of_range: points` otherwise) in
+  between. `shift_value` moves the values of the range by `delta` (0 is `empty_range`): at each end
+  a point of the value that was there and, 10 ms within (half the range where it is shorter than
+  20 ms), one of the value moved, so it ramps in and out (C-A6); the points between the two within
+  move by `delta`, and those within 10 ms of an end go. A switch jumps instead, at `from` and at
+  `to`. `thin` keeps of the points from `from` to `to` those that Douglas–Peucker keeps within
+  `tolerance` (see `lane_draw`). `delete`, `cut` and `thin` of a lane that is not there are
+  `missing`; `paste` and `shift_value` make it, from the value of its setting.
+- `lane_draw` puts `points` (times from `from` to `to`, in order; `out_of_range: points`
+  otherwise), thinned, in place of the range from `from` to `to`, as `lane_range` `paste` does.
+  Thinning (C-A4) keeps the first and the last point and both points of a jump (two at one time),
+  and between them, by Douglas–Peucker, each point without which the lane would go further than
+  `tolerance` from a point drawn, in value at its time: 0.1 dB for a level in decibels (a path
+  ending in `_db`), 0.01 for a pan (`pan.x`, `pan.y`, and those of a send), and 0.1 % of the range
+  of any other setting, where `tolerance` is left out; of a switch, the points where its value
+  changes. A negative or not finite `tolerance` is `out_of_range` (`tolerance`).
+- `clear_lanes` takes away the lanes of `paths` (each must be there, else `missing`; an empty
+  list is `out_of_range: paths`), or every lane of `of` where it is left out, as one step of undo
+  (Clear Track Automation, p. 3912). `then` says what each setting is left at: `keep` (where it is
+  left out) as it is set; `reset` as a new strip has it (an insert as a new effect of its kind, a
+  send as a new send to its bus; a VCA at 0 dB and not muted); `hold` at the value of its lane at
+  `at` (required: `out_of_range: at`). The settings are set by one `set_track_audio`, `set_bus`
+  or `set_vca` of what changes, after the lanes are gone.
+- The edits `set_track_audio` and `set_bus` take away, first, the lanes that their patch would
+  leave naming a setting that is no longer there or is of another kind: of a send, an output or
+  an insert that a patch of `sends`, `outputs`, `inserts` or `track_fx` takes away, or of a
+  Ducker gone. A lane left out of its range by a patch is still refused.
 
 ## Grades
 
@@ -3847,6 +3931,12 @@ the expanded operation list. Refusal emits no `project.changed` and adds no hist
 | `vca_depth` | `id` | a chain of VCAs would be more than 6 long |
 | `unknown_group` | `id` | an operation names a group of tracks that is not there |
 | `audio_settings` | `why` | a patch of sound (`set_track_audio`, `set_bus`, `set_vca`, `set_track_group`, `set_timeline_audio`) is not an object, names a field that is not known or may not be set so (`id`, `lanes`), or holds a value of the wrong kind; `why` is the reason |
+
+Of automation (T14): `missing` with `what: "lane"` (`id` its path) or `what: "point"` (`id`
+`ticks/scale`); `out_of_range` with `what` `lane` (a lane of no setting, of another kind, of no
+point, out of the range of its setting, or a switch that is neither 0 nor 1), `points`, `at`,
+`from`, `to`, `by`, `value`, `delta`, `tolerance` or `paths` (see Automation, above);
+`wrong_track` with `what: "lanes"`; `empty_range` of a range or a move of nothing.
 
 A track that a group, a sidechain or a ducker names is refused as `missing` (`what: "track"`)
 where it is not there; `remove_track` of it while it is named is refused as `in_use`. `out_of_range` also

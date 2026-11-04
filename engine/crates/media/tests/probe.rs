@@ -489,3 +489,36 @@ fn every_stream_of_sound_is_listed_with_its_channels_and_layout() {
         assert_eq!(found.streams, Vec::<SoundStream>::new());
     }
 }
+
+#[test]
+fn the_facts_of_sound_name_its_layout_and_list_every_stream_of_sound() {
+    use columbina_model::AudioStream;
+    let stream = |index, channels, layout: Option<&str>| AudioStream {
+        index,
+        channels,
+        layout: layout.map(str::to_owned),
+    };
+    if let Some(made) = media(Sample::TwoMonoStreams) {
+        let facts = probe(&made.path).unwrap().audio.unwrap();
+        assert_eq!(facts.layout, None);
+        assert_eq!(
+            facts.streams,
+            Some(vec![stream(0, 1, None), stream(1, 1, None)])
+        );
+    }
+    if let Some(made) = media(Sample::SixSines) {
+        let facts = probe(&made.path).unwrap().audio.unwrap();
+        assert_eq!(facts.layout.as_deref(), Some("5.1"));
+        assert_eq!(facts.streams, Some(vec![stream(0, 6, Some("5.1"))]));
+    }
+    // The sound of a picture is numbered among all the streams of the file.
+    if let Some(made) = media(Sample::Fhd) {
+        let facts = probe(&made.path).unwrap().audio.unwrap();
+        assert_eq!(facts.layout.as_deref(), Some("stereo"));
+        assert_eq!(facts.streams, Some(vec![stream(1, 2, Some("stereo"))]));
+    }
+    // A file of no sound has no facts of sound at all.
+    if let Some(made) = media(Sample::Uhd) {
+        assert_eq!(probe(&made.path).unwrap().audio, None);
+    }
+}

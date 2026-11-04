@@ -345,3 +345,45 @@ pub fn fade_gain(curve: f64, skew: f64, t: f64, falling: bool) -> f64 {
     };
     t + curve.abs() * (end - t)
 }
+
+// --- Effects of T10: Gain, Limiter, Soft Clipper, Stereo Width, De-Esser, De-Hummer -----------
+
+/// The time constants of a follower or a release after which two effects that heard the same
+/// sound from different states sound the same (a difference of gain of 1 brought under −90 dBFS
+/// on a sound of up to +30 dBFS: e^(−14) · 31.6 < 3.16e-5): the settling of the Limiter's release
+/// and of the De-Esser's followers (T10).
+pub const FX_SETTLE_TIME_CONSTANTS: f64 = 14.0;
+
+/// The β of the Kaiser window of the interpolator of the Limiter's true peaks (4 points a
+/// sample, 12 taps a phase): within 0.01 dB below 0.3 of the rate (T10; the reference's C-X5).
+pub const LIMITER_KAISER_BETA: f64 = 6.0;
+
+/// The delays of the all-passes of Stereo Width's Diffusion, in seconds (C-X11: "a short
+/// decorrelating all-pass on S"): four, of lengths with no common divisor at 48 kHz.
+pub const WIDTH_DIFFUSION_DELAYS: [f64; 4] = [0.001_7, 0.003_1, 0.004_3, 0.005_9];
+
+/// The feedback of each all-pass of Diffusion.
+pub const WIDTH_DIFFUSION_FEEDBACK: f64 = 0.5;
+
+/// The frequency above which Sparkle widens the side, in Hz (C-X11).
+pub const WIDTH_SPARKLE_HZ: f32 = 5_000.0;
+
+/// What Sparkle at 100 % adds of the high side to the side: as much again, +6 dB.
+pub const WIDTH_SPARKLE_GAIN: f64 = 1.0;
+
+/// The most that De-Esser's Amount takes from the band, in dB (C-X7).
+pub const DEESSER_MAX_REDUCTION_DB: f32 = 20.0;
+
+/// How far under the whole sound the band of De-Esser may be before it acts, in dB: the band
+/// within this of the whole is sibilance (T10; the manual has no threshold).
+pub const DEESSER_RELATIVE_THRESHOLD_DB: f32 = -12.0;
+
+/// The level of De-Esser's band under which it does nothing, in dBFS; all of its reduction from
+/// 10 dB above (T10).
+pub const DEESSER_FLOOR_DBFS: f32 = -70.0;
+
+/// The widths of De-Esser's Narrow and Wide bands, in octaves (C-X7).
+pub const DEESSER_BANDWIDTHS: [f64; 2] = [1.0 / 3.0, 1.0];
+
+/// The deepest cut of De-Hummer's notches at Amount 100, in dB (C-X8).
+pub const DEHUMMER_MAX_DEPTH_DB: f32 = 40.0;

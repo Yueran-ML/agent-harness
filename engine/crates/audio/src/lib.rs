@@ -12,6 +12,9 @@
 //! - [`fft`]: the transform of Fourier of real signals, planned before the sound runs.
 //! - [`constants`]: the numbers that the manual does not give, in one place.
 //! - [`fx`]: the nodes of the effects (the EQ, T7; Dynamics, T8).
+//! - [`meter`], [`loudness`], [`standards`], [`analysis`]: the level meters, the loudness of
+//!   BS.1770, the table of the loudness standards, and the analysis of a whole sound with the
+//!   gains of Normalize Audio Levels and Level Matcher (T9).
 //! - `testing` (feature `testing`): the check that the output of a node does not depend on its
 //!   blocks, the allocator that counts what the thread of the mix takes, test nodes, signals.
 //!
@@ -21,11 +24,15 @@
 //! I/O, log, or wait for another thread (convention 3 of the plan). Everything they use is taken
 //! when the graph is built ([`Node::prepare`]).
 
+pub mod analysis;
 pub mod constants;
 pub mod fft;
 pub mod fx;
+pub mod loudness;
+pub mod meter;
 pub mod node;
 pub mod rt;
+pub mod standards;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 

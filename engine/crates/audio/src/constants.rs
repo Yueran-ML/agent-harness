@@ -113,22 +113,51 @@ pub const STRETCH_RESET_CROSSFADE: f64 = 0.010;
 /// The sound of each move of the playhead while scrubbing (C-U7).
 pub const SCRUB_GRAIN: f64 = 0.060;
 
-// --- Meters and loudness ---------------------------------------------------------------------
+// --- Meters and loudness (T9) ----------------------------------------------------------------
+//
+// IEC 60268-10 and -18 are not open; their numbers here are those that every secondary source
+// gives (the reference's C-L2, checked 2026-11-04: Wikipedia, "Peak programme meter", and the
+// preview of IEC TR 60268-18 ed. 1.0, whose clauses 2.2 and 2.3 are its "delay time" and "return
+// time"). The loudness is ITU-R BS.1770-4/-5 and EBU Tech 3341/3342 V4 (2023), both open.
 
-/// The integration of the PPM, IEC 60268-18 (plan).
+/// The cell of the levels and of the loudness: the sound that the thread of the mix sums into
+/// one record before it publishes it, and the step of every ballistic and of the momentary and
+/// short-term windows (we decide: 10 ms, so that the files of Tech 3341's cases 10 and 13, whose
+/// silences are multiples of 20 ms and 150 ms, read their maximum to the cell).
+pub const METER_CELL: f64 = 0.010;
+
+/// The cells of the levels that a tap keeps in its seqlock: a reader that reads at
+/// [`METER_RATE_HZ`] may be late by this many, 160 ms, without losing a peak (we decide).
+pub const LEVEL_CELLS_KEPT: usize = 16;
+
+/// The cells of the loudness that its tap keeps in its seqlock: 320 ms of lateness (we decide).
+pub const LOUDNESS_CELLS_KEPT: usize = 32;
+
+/// The integration of the PPM, IEC 60268-18 "less than 5 ms" (plan; C-L1): the IEC meter here
+/// reads the peak of the samples, rising at once, so that a burst of 5 ms reads its level.
 pub const PPM_INTEGRATION: f64 = 0.005;
 
 /// The fall of the PPM: this many dB ...
 pub const PPM_FALL_DB: f32 = 20.0;
 
-/// ... in this many seconds (plan; C-L2).
+/// ... in this many seconds: IEC 60268-10 type I and IEC 60268-18, 1.7 ± 0.3 s (plan; C-L2,
+/// checked).
 pub const PPM_FALL_TIME: f64 = 1.7;
 
-/// The rise and the fall of the VU (plan).
+/// The time in which the VU comes to 99 % of a step, and falls back as fast: IEC 60268-17 (plan;
+/// C-L3). The VU here is two equal one-pole stages, critically damped, on the RMS of each cell,
+/// so that it does not overshoot (the standard's 1–1.5 % of overshoot is left out; we decide).
 pub const VU_TIME: f64 = 0.300;
 
-/// The fall of the peak segment of the Digital VU, per 20 dB (C-L2).
+/// The time constant of each of the two stages of the VU: a step comes to 99 % in [`VU_TIME`]
+/// when 1 − (1 + t/τ)·e^(−t/τ) = 0.99, t/τ = 6.638.
+pub const VU_STAGE: f64 = VU_TIME / 6.638_352;
+
+/// The fall of the peak segment of the Digital VU, per 20 dB (C-L2: the manual has "far faster").
 pub const DIGITAL_VU_PEAK_FALL_TIME: f64 = 0.5;
+
+/// The fall of a Custom meter, in seconds for 20 dB: its least, its most (C-L2; we decide) ...
+pub const CUSTOM_DECAY_RANGE: (f64, f64) = (0.1, 5.0);
 
 /// How long a peak is held: Medium, the default (plan; C-L4) ...
 pub const PEAK_HOLD: f64 = 2.0;
@@ -145,19 +174,31 @@ pub const RMS_WINDOW: f64 = 0.300;
 /// How often the meters are read and sent (C-L5).
 pub const METER_RATE_HZ: u32 = 30;
 
+/// The bottom of a meter's scale, in dB (p. 3688; C-L7).
+pub const METER_FLOOR_DB: f32 = -60.0;
+
+/// The level of an IEC 60268-18 scale at its middle: −60 to −20 dB take its lower half, −20 to 0
+/// its upper half (C-L7; we decide).
+pub const METER_IEC_MIDDLE_DB: f32 = -20.0;
+
 /// The oversampling of the true peak (plan T9; C-L1): 8, not the 4 of BS.1770's annex 2, whose
 /// short filter reads content near the Nyquist frequency several dB low (the review of T10;
 /// `fx::true_peak`).
 pub const TRUE_PEAK_OVERSAMPLING: usize = 8;
 
-/// The window of Momentary loudness, and how often it is given (BS.1770; p. 3985).
+/// The window of Momentary loudness (BS.1770; Tech 3341; p. 3985).
 pub const LOUDNESS_MOMENTARY: f64 = 0.400;
 
-/// How often Momentary loudness is given (p. 3985; C-R1).
+/// How often Momentary loudness is shown (p. 3985; C-R1); it is worked out at every cell.
 pub const LOUDNESS_MOMENTARY_STEP: f64 = 0.100;
 
 /// The window of Short Term loudness: the manual has 30 s and 3 s, EBU has 3 s (C-R2).
 pub const LOUDNESS_SHORT_TERM: f64 = 3.0;
+
+/// The step between two blocks of the gating of the integrated loudness, 400 ms blocks
+/// overlapping by 75 % (BS.1770-2 and later, annex 1), and between two short-term values of the
+/// loudness range (Tech 3342 V3 and later: "a minimum block overlap of 2.9 s", at least 10 Hz).
+pub const LOUDNESS_BLOCK_STEP: f64 = 0.100;
 
 /// The absolute gate of integrated loudness and of the loudness range, in LUFS (BS.1770; C-R5).
 pub const LOUDNESS_ABSOLUTE_GATE: f32 = -70.0;
@@ -171,6 +212,36 @@ pub const LOUDNESS_RANGE_GATE: f32 = -20.0;
 /// The low and the high percentile of the short-term loudness that make the loudness range
 /// (Tech 3342; C-R5).
 pub const LOUDNESS_RANGE_PERCENTILES: (f32, f32) = (0.10, 0.95);
+
+/// The width of a bin of the histograms of the gated loudness and of the loudness range, in LU:
+/// the meter on the thread of the mix keeps no list that grows (we decide; ffmpeg's `ebur128`
+/// keeps bins of 0.01 LU too).
+pub const LOUDNESS_BIN: f64 = 0.01;
+
+/// The loudest block that the histograms tell apart, in LUFS; a louder one is counted in the top
+/// bin, its energy kept (we decide).
+pub const LOUDNESS_CEILING: f64 = 30.0;
+
+/// The weight of the power of a channel of surround (Ls, Rs, and the side surrounds of 7.1, at
+/// 60° to 120° from the front): +1.5 dB (BS.1770-4/-5, table 4). The others weigh 1, the LFE 0.
+pub const LOUDNESS_SURROUND_WEIGHT: f64 = 1.41;
+
+/// The tolerance on either side of the target, in LU, of a standard that gives none, for the
+/// colours of the integrated loudness (blue under, yellow within, red over; p. 3984; we decide).
+pub const LOUDNESS_DEFAULT_TOLERANCE: f32 = 1.0;
+
+/// Target Loudness Level of the project settings: its default, least and most, in LUFS (p. 3888,
+/// p. 162; C-R4: the range is ours).
+pub const TARGET_LOUDNESS: (f32, f32, f32) = (-23.0, -36.0, -10.0);
+
+/// Normalize Audio Levels (p. 3840–3841): the default Reference Level of the peak modes, in dBFS,
+/// and the range of the peak modes and of the loudness modes (C-C5: the mode Sample Peak Program
+/// is the default by a secondary source; −9 dBFS and the ranges are not confirmed by any source
+/// found, 2026-11-04; we decide).
+pub const NORMALIZE_PEAK_DEFAULT: f32 = -9.0;
+
+/// See [`NORMALIZE_PEAK_DEFAULT`]: the least and the most Reference Level, dBFS or LUFS.
+pub const NORMALIZE_RANGE: (f32, f32) = (-60.0, 0.0);
 
 /// The cut of the monitor by DIM, in dB (C-M1).
 pub const DIM_DB: f32 = -20.0;

@@ -176,3 +176,59 @@ pub fn realtime_work<N: Node>(
     });
     counted
 }
+
+/// The frequency of the strongest component of `signal` at 48 kHz: the peak of the spectrum of
+/// its first 65536 samples (Hann window, zero-padded where shorter), placed between the bins by
+/// the parabola through the logarithms of the three around it.
+pub fn peak_frequency(signal: &[f32]) -> f64 {
+    const SIZE: usize = 1 << 16;
+    let mut fft = columbina_audio::fft::RealFft::new(SIZE);
+    let mut windowed = fft.signal();
+    let length = signal.len().min(SIZE);
+    for (n, (out, x)) in windowed.iter_mut().zip(signal).enumerate() {
+        let hann = 0.5 - 0.5 * (TAU * n as f64 / length as f64).cos();
+        *out = (f64::from(*x) * hann) as f32;
+    }
+    let mut spectrum = fft.spectrum();
+    fft.forward(&mut windowed, &mut spectrum);
+    let magnitude = |k: usize| f64::from(spectrum[k].norm()).max(1e-30).ln();
+    let k = (1..spectrum.len() - 1)
+        .max_by(|&a, &b| magnitude(a).total_cmp(&magnitude(b)))
+        .unwrap();
+    let (a, b, c) = (magnitude(k - 1), magnitude(k), magnitude(k + 1));
+    let offset = 0.5 * (a - c) / (a - 2.0 * b + c);
+    (k as f64 + offset) * f64::from(RATE) / SIZE as f64
+}
+
+/// The cents from `reference` to `measured`.
+pub fn cents(measured: f64, reference: f64) -> f64 {
+    1200.0 * (measured / reference).log2()
+}
+
+/// The level of a steady tone in `signal` (the root mean square over windows of 1 ms) over the
+/// crossfade around the sample `point` where a stretch starts again, against the lowest and the
+/// highest level over the half second before it (the stretch's own ripple): the lowest there
+/// over that lowest and the highest over that highest, checked never to be above 1.2 (the
+/// crossfade never raises the sound). Two segments out of phase there make a dip, which is
+/// returned for the test to bound or tell. `what` says which.
+pub fn level_across(signal: &[f32], point: usize, what: &str) -> (f32, f32) {
+    let window = RATE as usize / 1_000;
+    let level = |at: usize| {
+        (signal[at..at + window].iter().map(|s| s * s).sum::<f32>() / window as f32).sqrt()
+    };
+    let steady: Vec<f32> = (point - RATE as usize / 2..point - RATE as usize / 20)
+        .step_by(window)
+        .map(level)
+        .collect();
+    let (low, high) = steady.iter().fold((f32::MAX, 0.0_f32), |(low, high), &l| {
+        (low.min(l), high.max(l))
+    });
+    let (mut least, mut most) = (f32::MAX, 0.0_f32);
+    for at in (point - 2 * window * 10..point + 2 * window * 10).step_by(window / 4) {
+        let l = level(at);
+        least = least.min(l / low);
+        most = most.max(l / high);
+    }
+    assert!(most <= 1.2, "{what}: raised to {most} of the steady level");
+    (least, most)
+}

@@ -281,6 +281,7 @@ version = "0.1.0"
 dependencies = [
  "columbina-audio",
  "columbina-model",
+ "columbina-stretch",
  "ebur128",
  "nnnoiseless",
  "proptest",
@@ -391,6 +392,15 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "columbina-stretch"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "columbina-stretch",
  "thiserror 2.0.21",
 ]
 

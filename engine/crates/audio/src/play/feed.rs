@@ -83,6 +83,9 @@ pub struct RingFeed {
     per: usize,
     /// Whether each clip reads its media backwards.
     backward: Box<[bool]>,
+    /// How far behind where it reads each clip may read again: a piece is let go of only that far
+    /// behind (a stretch, T13, reads the sound before a stretcher's start after what comes later).
+    keep: Box<[i64]>,
     reading: Arc<Reading>,
     counters: Arc<Counters>,
 }
@@ -102,6 +105,7 @@ impl RingFeed {
         let places = backward.len() * per;
         let mut held = Vec::with_capacity(places); // rt-ok: made off the thread of the mix
         held.resize_with(places, || None);
+        let keep = vec![0; backward.len()].into_boxed_slice(); // rt-ok: made off the thread of the mix
         RingFeed {
             incoming,
             back,
@@ -109,9 +113,20 @@ impl RingFeed {
             held: held.into_boxed_slice(),
             per,
             backward,
+            keep,
             reading,
             counters,
         }
+    }
+
+    /// The same, each clip keeping the pieces up to `keep` samples behind where it reads (its
+    /// [`crate::graph::Reach::radius`]), where it may read again.
+    #[must_use]
+    pub fn with_keep(mut self, keep: Box<[i64]>) -> Self {
+        if keep.len() == self.backward.len() {
+            self.keep = keep;
+        }
+        self
     }
 
     /// Says where the graph reads next, for the reader ahead.
@@ -167,6 +182,7 @@ impl ClipFeed for RingFeed {
             out.fill(0.0);
         }
         let backward = self.backward.get(clip).copied().unwrap_or(false);
+        let keep = self.keep.get(clip).copied().unwrap_or(0);
         let mut covered = 0_u64;
         for place in clip * self.per..(clip + 1) * self.per {
             let behind = self
@@ -175,9 +191,9 @@ impl ClipFeed for RingFeed {
                 .and_then(Option::as_ref)
                 .is_some_and(|chunk| {
                     if backward {
-                        chunk.first() >= range.end
+                        chunk.first() >= range.end.saturating_add(keep)
                     } else {
-                        chunk.end() <= range.start
+                        chunk.end() <= range.start.saturating_sub(keep)
                     }
                 });
             if behind {

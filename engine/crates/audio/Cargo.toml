@@ -11,7 +11,9 @@ workspace = true
 # The module `testing`: the check that a node's output does not depend on how the sound is cut
 # into blocks, the allocator that counts, the test nodes and the signals, for the tests of this
 # crate and of the crates that use it.
-testing = []
+# The allocations of the C++ of the stretch are counted too (`columbina-stretch`'s
+# `count-allocations`).
+testing = ["columbina-stretch/count-allocations"]
 
 [dependencies]
 # The project that the graph is built from (src/graph/build.rs), and its resolved clips.
@@ -27,6 +29,9 @@ serde_json.workspace = true
 thiserror.workspace = true
 # RNNoise, the voice mode of Noise Reduction (src/fx/rnnoise.rs).
 nnnoiseless.workspace = true
+# Signalsmith Stretch: the change of speed that keeps the pitch, and Pitch (src/fx/stretch.rs,
+# src/fx/pitch.rs, src/graph/clip.rs).
+columbina-stretch = { path = "../stretch" }
 
 [target.'cfg(windows)'.dependencies]
 # The thread of the mix asks the system for the priority of audio (MMCSS "Pro Audio", or a time

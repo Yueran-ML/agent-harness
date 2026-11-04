@@ -119,6 +119,17 @@ fn patched<T: Serialize + DeserializeOwned>(
     Ok((after, changed(&before, patch)))
 }
 
+/// Refuse a strip changed from `before` to `after` where a lane of `lanes` names an insert that
+/// is in both with an effect of another kind: the new effect would take the lane of the old one
+/// for its own (`out_of_range`, `lane`; T14's review). The edits take such lanes away first.
+fn kept_lanes(before: &Strip, after: &Strip, lanes: &audio::Lanes) -> Result<(), OpError> {
+    if audio::automation::lanes_of_changed_inserts(before, after, lanes).is_empty() {
+        Ok(())
+    } else {
+        Err(OpError::OutOfRange { what: "lane" })
+    }
+}
+
 /// Check the routing of a timeline, and the settings of its buses, VCAs and sound, as they would
 /// be once `change` is made to them.
 fn checked(timeline: &Timeline, change: impl FnOnce(&mut Timeline)) -> Result<(), OpError> {
@@ -209,7 +220,9 @@ pub(super) fn set_track_audio(
     let (settings, inverse) = patched(&TrackSound::of(&timeline.tracks[r].audio), &patch, &[])?;
     let mut track = timeline.tracks[r].clone();
     settings.put(&mut track.audio);
-    audio::name_inserts(&mut track.audio.strip);
+    let before = &timeline.tracks[r].audio.strip;
+    audio::name_inserts_after(&mut track.audio.strip, &before.inserts);
+    kept_lanes(before, &track.audio.strip, &track.audio.lanes)?;
     audio::check_track(&track)?;
     routed(timeline, |tracks| tracks[r] = routing_of_track(&track))?;
     project.timelines[t].tracks[r] = track;
@@ -235,6 +248,7 @@ pub(super) fn add_bus(
         bus.id = next_of("B", ids.chain(timeline.tracks.iter().map(|r| &r.id)))?;
     }
     audio::name_inserts(&mut bus.strip);
+    audio::automation::fill_scales(&mut bus.lanes);
     checked(timeline, |t| t.buses.insert(at, bus.clone()))?;
     let id = bus.id.clone();
     project.timelines[t].buses.insert(at, bus);
@@ -312,7 +326,9 @@ pub(super) fn set_bus(
     let timeline = &project.timelines[t];
     let b = bus_at(timeline, id)?;
     let (mut bus, inverse) = patched(&timeline.buses[b], patch, &["id", "lanes"])?;
-    audio::name_inserts(&mut bus.strip);
+    let before = &timeline.buses[b].strip;
+    audio::name_inserts_after(&mut bus.strip, &before.inserts);
+    kept_lanes(before, &bus.strip, &bus.lanes)?;
     checked(timeline, |t| t.buses[b] = bus.clone())?;
     project.timelines[t].buses[b] = bus;
     Ok(Op::SetBus {
@@ -334,6 +350,7 @@ pub(super) fn add_vca(
     if vca.id.is_empty() {
         vca.id = next_of("VCA", timeline.vcas.iter().map(|v| &v.id))?;
     }
+    audio::automation::fill_scales(&mut vca.lanes);
     checked(timeline, |t| t.vcas.insert(at, vca.clone()))?;
     let id = vca.id.clone();
     project.timelines[t].vcas.insert(at, vca);
@@ -481,7 +498,9 @@ fn with_inserts<R>(
             let r = sound_track_at(timeline, id)?;
             let mut track = timeline.tracks[r].clone();
             let given = change(&mut track.audio.strip.inserts)?;
-            audio::name_inserts(&mut track.audio.strip);
+            let before = &timeline.tracks[r].audio.strip;
+            audio::name_inserts_after(&mut track.audio.strip, &before.inserts);
+            kept_lanes(before, &track.audio.strip, &track.audio.lanes)?;
             audio::check_track(&track)?;
             routed(timeline, |tracks| tracks[r] = routing_of_track(&track))?;
             project.timelines[t].tracks[r] = track;
@@ -491,7 +510,9 @@ fn with_inserts<R>(
             let b = bus_at(timeline, id)?;
             let mut bus = timeline.buses[b].clone();
             let given = change(&mut bus.strip.inserts)?;
-            audio::name_inserts(&mut bus.strip);
+            let before = &timeline.buses[b].strip;
+            audio::name_inserts_after(&mut bus.strip, &before.inserts);
+            kept_lanes(before, &bus.strip, &bus.lanes)?;
             checked(timeline, |t| t.buses[b] = bus.clone())?;
             project.timelines[t].buses[b] = bus;
             Ok(given)

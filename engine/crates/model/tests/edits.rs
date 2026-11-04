@@ -676,7 +676,7 @@ fn the_random_timelines_have_fades_of_sound_and_channels_named() {
 fn the_random_edits_of_sound_are_applied_as_well_as_refused() {
     use proptest::strategy::{Strategy, ValueTree};
     let mut runner = proptest::test_runner::TestRunner::deterministic();
-    let mut applied = [0usize; 8];
+    let mut applied = [0usize; 14];
     let mut followed = 0;
     let mut crossfaded = 0;
     for _ in 0..300 {
@@ -692,7 +692,7 @@ fn the_random_edits_of_sound_are_applied_as_well_as_refused() {
                 crossfaded += usize::from(expansion.done.len() > 1);
             }
         }
-        for kind in 28..36 {
+        for kind in 28..42 {
             let making = making_of(Just(kind))
                 .new_tree(&mut runner)
                 .unwrap()

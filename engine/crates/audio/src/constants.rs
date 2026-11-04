@@ -117,8 +117,19 @@ pub const PREROLL_MAX: f64 = 10.0;
 /// (plan T13).
 pub const STRETCH_RESET_INTERVAL: f64 = 4.0;
 
-/// The crossfade on either side of a point where the stretch starts again (plan T13).
+/// The crossfade at a point where the stretch starts again (plan T13): 10 ms in all, half before
+/// the point and half after, equal power (`sin` in, `cos` out). We decide: the plan says only
+/// "10 ms on either side".
 pub const STRETCH_RESET_CROSSFADE: f64 = 0.010;
+
+/// The fastest speed whose Pitch Correction is done: above it the pitch goes with the speed, as
+/// without (we decide; the stretcher's input per chunk grows with the speed, and the resampler
+/// keeps its stopband up to 32).
+pub const STRETCH_FASTEST: f64 = 32.0;
+
+/// The speeds outside which Pitch Correction is told to sound worse (p. 1073 says only "large
+/// changes"; the reference's C-C8): the hint beside its checkbox (T19).
+pub const STRETCH_CLEAN_SPEEDS: (f64, f64) = (0.5, 2.0);
 
 /// The sound of each move of the playhead while scrubbing (C-U7).
 pub const SCRUB_GRAIN: f64 = 0.060;
@@ -629,3 +640,10 @@ pub const RNNOISE_LONGEST_PERIOD: u64 = 640;
 
 /// The lowest and the highest rate that the voice mode takes (we decide).
 pub const RNNOISE_RATES: (u32, u32) = (8_000, 384_000);
+
+/// The constants of the drawing, thinning and moving of lanes of automation (C-A4: how far a
+/// thinned lane may go from what was drawn; C-A6: the ramp at each end of a range raised or
+/// lowered), kept with the edits of lanes in the model, which work them out.
+pub use columbina_model::audio::automation::{
+    LANE_RAMP_PER_SECOND, LANE_THIN_LEVEL_DB, LANE_THIN_PAN_SHARE, LANE_THIN_SHARE,
+};

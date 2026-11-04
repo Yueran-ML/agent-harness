@@ -66,6 +66,160 @@ fn a_sample_between_samples_is_a_windowed_sinc_of_those_about_it() {
     assert_eq!(got, [pcm[0][77], pcm[1][77]]);
 }
 
+// The cursor of a lane (T14).
+
+mod cursor {
+    use std::time::Instant;
+
+    use columbina_model::{Lane, LaneKind, LanePoint, LaneScale, Time};
+    use proptest::prelude::*;
+
+    use super::super::automation::Cursor;
+
+    fn lane_of(points: &[(i64, f64)], scale: u32, switch: bool) -> Lane {
+        Lane {
+            points: points
+                .iter()
+                .map(|&(ticks, value)| LanePoint {
+                    at: Time { ticks, scale },
+                    value,
+                })
+                .collect(),
+            kind: if switch {
+                LaneKind::Switch
+            } else {
+                LaneKind::Continuous
+            },
+            scale: None,
+        }
+    }
+
+    #[allow(clippy::cast_possible_truncation, reason = "as the strip reads it")]
+    fn expected(lane: &Lane, n: i64, rate: u32) -> f32 {
+        lane.value_at(Time {
+            ticks: n,
+            scale: rate,
+        }) as f32
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(1024))]
+
+        /// Block after block, from wherever a run starts, the cursor gives what `value_at` gives
+        /// at each sample, to the bit: of lanes of any scale (their points among the samples
+        /// read, of a scale of 7 and of 1000 too), with points at one time, of switches, and of
+        /// frequencies on a scale of logarithms, read at any rate, before their first point and
+        /// after their last.
+        #[test]
+        fn a_cursor_reads_a_lane_as_value_at_does_at_every_sample(
+            mut points in prop::collection::vec((-1000i64..400_000, 0.0f64..1.0), 1..14),
+            jump in any::<bool>(),
+            shape in 0usize..3,
+            scale in prop::sample::select(vec![1000u32, 44_100, 48_000, 96_000, 15_360, 7]),
+            rate in prop::sample::select(vec![44_100u32, 48_000, 96_000]),
+            runs in prop::collection::vec((-50_000i64..420_000, prop::collection::vec(1usize..3000, 1..6)), 1..4),
+        ) {
+            // The points at the samples drawn, as ticks of their scale, so that they fall among
+            // the samples that are read whatever the scale.
+            points.retain(|p| p.0 >= 0);
+            prop_assume!(!points.is_empty());
+            let ticks = |sample: i64| sample * i64::from(scale) / i64::from(rate);
+            let mut points: Vec<(i64, f64)> = points
+                .iter()
+                .map(|&(sample, share)| {
+                    let value = match shape {
+                        // Of a frequency, from 20 Hz to 20 kHz.
+                        2 => 20.0 * 1000f64.powf(share),
+                        _ => -100.0 + 110.0 * share,
+                    };
+                    (ticks(sample), value)
+                })
+                .collect();
+            points.sort_by_key(|p| p.0);
+            if jump && points.len() > 2 {
+                points[2].0 = points[1].0;
+            }
+            let mut lane = lane_of(&points, scale, shape == 1);
+            if shape == 2 {
+                lane.scale = Some(LaneScale::Log);
+            }
+            let mut cursor = Cursor::default();
+            let mut out = [0f32; 3000];
+            for (start, blocks) in &runs {
+                let mut at = *start;
+                for &frames in blocks {
+                    cursor.fill(&lane, at, rate, &mut out[..frames]);
+                    for (k, got) in out[..frames].iter().enumerate() {
+                        let n = at + i64::try_from(k).unwrap();
+                        let want = expected(&lane, n, rate);
+                        prop_assert_eq!(got.to_bits(), want.to_bits(), "sample {}", n);
+                    }
+                    at += i64::try_from(frames).unwrap();
+                }
+            }
+        }
+    }
+
+    /// Points a whole lane apart from a run of samples, and the times of points far out, read in
+    /// 128 bits.
+    #[test]
+    fn a_cursor_reads_points_far_out_on_the_timeline() {
+        // 2^53 - 1 ticks of 4e9 a second, 25 days on: past what 64 bits count of ticks times
+        // the rate.
+        let far = (1i64 << 53) - 1;
+        let lane = lane_of(&[(0, -10.0), (far, 0.0)], 4_000_000_000, false);
+        let end = far / 4_000_000_000 * 48_000;
+        let mut cursor = Cursor::default();
+        let mut out = [0f32; 64];
+        for start in [0, 1 << 30, end - 32, end + 1000] {
+            cursor.fill(&lane, start, 48_000, &mut out);
+            for (k, got) in out.iter().enumerate() {
+                let n = start + i64::try_from(k).unwrap();
+                assert_eq!(got.to_bits(), expected(&lane, n, 48_000).to_bits(), "{n}");
+            }
+        }
+    }
+
+    /// What a lane costs at each sample, read by `value_at` (T4b) and by the cursor (T14): a
+    /// lane of 200 points over 10 s, read for 60 s in blocks of 480. Run with
+    /// `cargo test --release -p columbina-audio --lib cost_of_a_lane -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "a measurement, not a check"]
+    #[allow(clippy::cast_precision_loss, reason = "a measurement")]
+    fn cost_of_a_lane_per_sample() {
+        let points: Vec<(i64, f64)> = (0..200)
+            .map(|k| (k * 2400, if k % 2 == 0 { -20.0 } else { 0.0 }))
+            .collect();
+        for switch in [false, true] {
+            let lane = lane_of(&points, 48_000, switch);
+            let samples = 48_000 * 60;
+            let mut out = [0f32; 480];
+            let mut sum = 0.0f64;
+            let begun = Instant::now();
+            for block in 0..samples / 480 {
+                let start = i64::from(block) * 480;
+                for (n, value) in (start..).zip(out.iter_mut()) {
+                    *value = expected(&lane, n, 48_000);
+                }
+                sum += f64::from(out[17]);
+            }
+            let old = begun.elapsed().as_nanos() as f64 / f64::from(samples);
+            let mut cursor = Cursor::default();
+            let begun = Instant::now();
+            for block in 0..samples / 480 {
+                cursor.fill(&lane, i64::from(block) * 480, 48_000, &mut out);
+                sum += f64::from(out[17]);
+            }
+            let new = begun.elapsed().as_nanos() as f64 / f64::from(samples);
+            println!(
+                "{}: value_at {old:.2} ns a sample, the cursor {new:.2} ns ({:.1} times as fast) [{sum}]",
+                if switch { "switch" } else { "continuous" },
+                old / new
+            );
+        }
+    }
+}
+
 #[test]
 fn the_channels_of_sources_of_different_formats_go_by_their_roles() {
     use super::build::routes;
@@ -95,4 +249,98 @@ fn the_channels_of_sources_of_different_formats_go_by_their_roles() {
     // An Adaptive track's channels by their numbers, round the channels of the other.
     assert_eq!(routes(Adaptive(3), Stereo), [(0, 0), (1, 1), (2, 0)]);
     assert_eq!(routes(Stereo, Adaptive(3)), [(0, 0), (1, 1)]);
+}
+
+/// A stretched clip (T13) reads its media only within its reach of where its mapping is, from
+/// where it starts warming: what a reader ahead of the graph is told to have (T5). A run started
+/// in the middle does the work of bringing its stretchers there in `Graph::start`, so that the
+/// blocks after read only near where they play.
+#[test]
+fn a_stretched_clip_reads_within_its_reach_once_its_run_has_started() {
+    use std::cell::RefCell;
+    use std::ops::Range;
+    use std::rc::Rc;
+
+    use columbina_model::{ClipPitch, Project, Speed, Time, TrackKind};
+
+    use super::{Graph, Options, Purpose};
+    use crate::feed::FeedError;
+
+    // Both ways in: a run that starts, and a graph swapped in with a short preroll (T5).
+    for (within, (speed, reverse, corrected, pitch, at)) in
+        [false, true].into_iter().flat_map(|within| {
+            [
+                ((4, 5), false, true, 0, 6 * 48_000),
+                ((3, 2), true, true, 2, 3 * 48_000 + 17),
+                ((1, 1), false, false, 5, 5 * 48_000 + 999),
+                ((7, 3), false, true, 0, 1),
+            ]
+            .map(|case| (within, case))
+        })
+    {
+        let mut project = Project::sample();
+        project.timelines[0]
+            .tracks
+            .retain(|track| track.kind == TrackKind::Audio);
+        project.media[0].facts.duration = Time {
+            ticks: 60 * 15_360,
+            scale: 15_360,
+        };
+        let clip = &mut project.timelines[0].tracks[0].clips[0];
+        clip.length = 250;
+        clip.speed = Speed {
+            num: speed.0,
+            den: speed.1,
+        };
+        clip.reverse = reverse;
+        clip.pitch_correction = corrected;
+        clip.pitch = ClipPitch {
+            semitones: pitch,
+            cents: 0.0,
+        };
+        let mut graph = Graph::build(&project, 0, Options::new(480, Purpose::Export)).unwrap();
+        let reads: Rc<RefCell<Vec<Range<i64>>>> = Rc::default();
+        let seen = Rc::clone(&reads);
+        let mut feed = move |_: usize, range: Range<i64>, out: &mut [&mut [f32]]| {
+            for (channel, out) in out.iter_mut().enumerate() {
+                for (n, sample) in out.iter_mut().enumerate() {
+                    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+                    let x = (range.start + i64::try_from(n).unwrap()) as f64;
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+                    let value = (0.5 * (x * 0.05 + channel as f64).sin()) as f32;
+                    *sample = value;
+                }
+            }
+            seen.borrow_mut().push(range);
+            Ok::<(), FeedError>(())
+        };
+        if within {
+            graph.start_within(at, 480, &mut feed).unwrap();
+        } else {
+            graph.start(at, &mut feed).unwrap();
+        }
+        reads.borrow_mut().clear();
+        let chain = &graph.clips[0];
+        assert!(chain.stretch.is_some(), "{speed:?}");
+        let (reach, busy_from, to) = (chain.reads_within(), chain.busy_from(), chain.to);
+        let mapping = chain.mapping;
+        let mut block = at;
+        while block < to {
+            graph.process(&mut feed, 480).unwrap();
+            let end = block + 480;
+            let (a, b) = (mapping.at(block).0, mapping.at(end - 1).0);
+            let (low, high) = (a.min(b) - reach, a.max(b) + reach + 1);
+            for range in reads.borrow_mut().drain(..) {
+                assert!(
+                    end > busy_from,
+                    "{speed:?}: a read before it warms, at {block}"
+                );
+                assert!(
+                    range.start >= low && range.end <= high,
+                    "{speed:?} backward {reverse}: {range:?} read in the block at {block}, not within {low}..{high}"
+                );
+            }
+            block = end;
+        }
+    }
 }

@@ -289,11 +289,14 @@ pub(super) fn set_track_audio(
 ) -> Result<(), EditError> {
     let before = work.open(track)?.clone();
     let timeline = work.timeline_id();
-    work.op(Op::SetTrackAudio {
-        timeline: timeline.clone(),
-        track: track.into(),
-        patch: patch.clone(),
-    })?;
+    super::automation::strip_op(
+        work,
+        Op::SetTrackAudio {
+            timeline: timeline.clone(),
+            track: track.into(),
+            patch: patch.clone(),
+        },
+    )?;
     let after = work.track(track)?.clone();
     let mut soloed: HashSet<Id> = HashSet::from([track.to_string()]);
     if follow_groups {
@@ -308,11 +311,14 @@ pub(super) fn set_track_audio(
                 soloed.insert(id.clone());
             }
             if patch.as_object().is_some_and(|p| !p.is_empty()) {
-                work.op(Op::SetTrackAudio {
-                    timeline: timeline.clone(),
-                    track: id,
-                    patch,
-                })?;
+                super::automation::strip_op(
+                    work,
+                    Op::SetTrackAudio {
+                        timeline: timeline.clone(),
+                        track: id,
+                        patch,
+                    },
+                )?;
             }
         }
     }
@@ -389,11 +395,14 @@ pub(super) fn set_bus(work: &mut Work, id: &str, patch: &Value) -> Result<(), Ed
         .iter()
         .find(|b| b.id == id)
         .is_some_and(|b| b.solo);
-    work.op(Op::SetBus {
-        timeline: work.timeline_id(),
-        id: id.into(),
-        patch: patch.clone(),
-    })?;
+    super::automation::strip_op(
+        work,
+        Op::SetBus {
+            timeline: work.timeline_id(),
+            id: id.into(),
+            patch: patch.clone(),
+        },
+    )?;
     let now = work
         .timeline()
         .buses
@@ -1012,6 +1021,14 @@ pub(super) fn copy_effects(
         if target == from || !seen.insert(target.clone()) {
             continue;
         }
+        // The copies are new inserts, which may be given the ids of those that they replace:
+        // no lane of those is left to be taken for theirs.
+        if !matches!(target, InsertsOf::Clip(_)) {
+            if let InsertsOf::Track(id) = target {
+                work.open(id)?;
+            }
+            super::automation::take_all_insert_lanes_away(work, target)?;
+        }
         let op = match target {
             InsertsOf::Track(id) => {
                 work.open(id)?;
@@ -1035,7 +1052,7 @@ pub(super) fn copy_effects(
                 op
             }
         };
-        work.op(op)?;
+        super::automation::strip_op(work, op)?;
     }
     Ok(())
 }

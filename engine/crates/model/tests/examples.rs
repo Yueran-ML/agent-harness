@@ -898,10 +898,51 @@ fn sound_examples() -> Vec<(&'static str, Vec<Op>, Op)> {
         ),
         (
             "set_timeline_audio",
-            vec![b2],
+            vec![b2.clone()],
             written_op(json!({"op": "set_timeline_audio", "timeline": "t1",
                 "patch": {"monitor": "B2", "exclusive_solo": true,
                     "loudness": {"standard": "youtube", "target": -14}}})),
+        ),
+        (
+            "set_lane of a fader",
+            vec![],
+            written_op(
+                json!({"op": "set_lane", "timeline": "t1", "of": {"track": "A1"},
+                "path": "fader_db", "lane": {"points": [
+                    {"at": {"ticks": 0, "scale": 48000}, "value": -10},
+                    {"at": {"ticks": 48000, "scale": 48000}, "value": 0}]}}),
+            ),
+        ),
+        (
+            "set_lane of null, of the mute of a bus",
+            vec![
+                b2,
+                written_op(
+                    json!({"op": "set_lane", "timeline": "t1", "of": {"bus": "B2"},
+                    "path": "mute", "lane": {"points": [
+                        {"at": {"ticks": 24000, "scale": 48000}, "value": 1}], "kind": "switch"}}),
+                ),
+            ],
+            written_op(
+                json!({"op": "set_lane", "timeline": "t1", "of": {"bus": "B2"},
+                "path": "mute", "lane": null}),
+            ),
+        ),
+        (
+            "splice_lane",
+            vec![written_op(
+                json!({"op": "set_lane", "timeline": "t1", "of": {"track": "A1"},
+                "path": "pan.x", "lane": {"points": [
+                    {"at": {"ticks": 0, "scale": 48000}, "value": -1},
+                    {"at": {"ticks": 4800, "scale": 48000}, "value": 0},
+                    {"at": {"ticks": 9600, "scale": 48000}, "value": 1}]}}),
+            )],
+            written_op(
+                json!({"op": "splice_lane", "timeline": "t1", "of": {"track": "A1"},
+                "path": "pan.x", "at": 1, "remove": 1, "points": [
+                    {"at": {"ticks": 2400, "scale": 48000}, "value": 0.5},
+                    {"at": {"ticks": 7200, "scale": 48000}, "value": -0.5}]}),
+            ),
         ),
     ]
 }
@@ -1433,6 +1474,8 @@ fn the_examples_of_the_operations_are_as_the_engine_applies_them() {
         "set_insert",
         "move_insert",
         "set_timeline_audio",
+        "set_lane",
+        "splice_lane",
     ] {
         assert!(names.iter().any(|name| name == op), "no example of {op}");
     }

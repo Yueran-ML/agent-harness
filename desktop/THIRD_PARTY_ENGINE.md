@@ -74,6 +74,22 @@ None of them is a file of its own in this folder.
 - **Source.** https://github.com/AcademySoftwareFoundation/OpenColorIO, and the repository of each
   library at the tag listed below.
 
+## Signalsmith Stretch
+
+The engine changes the speed of sound without changing its pitch, and moves its pitch, with
+Signalsmith Stretch (https://github.com/Signalsmith-Audio/signalsmith-stretch), copyright (c) 2022
+Geraint Luff / Signalsmith Audio Ltd., which uses Signalsmith Linear
+(https://github.com/Signalsmith-Audio/linear), copyright (c) 2025 Signalsmith Audio, for its
+transforms. Both are libraries of C++ headers, compiled into `columbina-engine.exe` from their
+sources. Neither is a file of its own in this folder.
+
+- **Which version.** The headers are kept in Columbina's repository
+  (`engine/crates/stretch/vendor/`), copied unchanged from the releases listed below under
+  *Libraries compiled into the engine from their sources*.
+- **License.** Both are under the MIT license, whose texts are
+  `licenses/signalsmith-stretch/LICENSE.txt` and `licenses/signalsmith-linear/LICENSE.txt`. They
+  come with no warranty.
+
 ## Rust crates
 
 The engine is compiled from crates of crates.io. Most of them are under the MIT license or the

@@ -46,7 +46,7 @@ import { spawnSync } from 'node:child_process';
 import { copyFile, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { hostTarget, locateOcio, rustCrates, writeCrateNotices, writeOcioNotices } from '../scripts/engine-notices.mjs';
+import { hostTarget, locateOcio, rustCrates, writeCrateNotices, writeOcioNotices, writeVendoredNotices } from '../scripts/engine-notices.mjs';
 
 /** The files of the engine's folder on each system, as far as they are known. */
 export const LAYOUT = {
@@ -432,6 +432,7 @@ export async function bundleEngine({ resources, desktop, located }) {
     dxcTerms = `${(await withoutComments('THIRD_PARTY_DXC.md')).trimEnd()}\n`;
   }
   const ocioList = await writeOcioNotices({ out: folder });
+  const vendoredList = await writeVendoredNotices({ out: folder });
   const crates = await rustCrates({ engine: path.join(repository, 'engine'), target: hostTarget(platform) });
   const crateList = await writeCrateNotices({ crates, out: folder });
   // What is written for those who keep the repository (in <!-- -->) is not shipped.
@@ -442,6 +443,8 @@ export async function bundleEngine({ resources, desktop, located }) {
     ...(dxcTerms ? [dxcTerms, dxcNotice(dxc)] : []),
     '## OpenColorIO and the libraries linked with it', '',
     ocioList,
+    '## Libraries compiled into the engine from their sources', '',
+    vendoredList,
     '## The files of this folder', '',
     ...files.map(([name]) => `- \`${name}\``).sort(),
     '', `They load besides, from Windows itself: ${[...ofWindows].sort().join(', ')}.`, '',

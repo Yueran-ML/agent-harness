@@ -393,6 +393,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "columbina-stretch"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "columbina-stretch",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "columbina-track"
 version = "0.1.0"
 dependencies = [

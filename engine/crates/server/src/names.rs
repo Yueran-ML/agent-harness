@@ -21,8 +21,8 @@ use std::fmt;
 use columbina_model::edit::Created;
 use columbina_model::history::ChangeMapper;
 use columbina_model::{
-    Change, Edit, Expansion, Grade, Id, InsertsOf, Link, Material, Op, OpError, Source, Target,
-    Track, TrackKind,
+    Change, Edit, Expansion, Grade, Id, InsertsOf, LanesOf, Link, Material, Op, OpError, Source,
+    Target, Track, TrackKind,
 };
 use columbina_model::{Effect, Insert, SourceRef, Strip};
 use serde::{Deserialize, Deserializer};
@@ -457,7 +457,13 @@ fn visit_edit<E>(
         | Edit::RemoveAttributes { timeline, .. }
         | Edit::FadeToPlayhead { timeline, .. }
         | Edit::SetBus { timeline, .. }
-        | Edit::CopyEffects { timeline, .. } => timeline,
+        | Edit::CopyEffects { timeline, .. }
+        | Edit::SetInsert { timeline, .. }
+        | Edit::MoveInsert { timeline, .. }
+        | Edit::LanePoints { timeline, .. }
+        | Edit::LaneRange { timeline, .. }
+        | Edit::LaneDraw { timeline, .. }
+        | Edit::ClearLanes { timeline, .. } => timeline,
     };
     let of = timeline.clone();
     f(timeline, Role::Names)?;
@@ -574,6 +580,26 @@ fn visit_edit<E>(
                 visit_inserts_of(chain, &of, f)?;
             }
         }
+        Edit::SetInsert {
+            of: chain, insert, ..
+        } => {
+            visit_inserts_of(chain, &of, f)?;
+            if let Some(insert) = insert {
+                visit_insert(insert, &of, f)?;
+            }
+        }
+        Edit::MoveInsert {
+            of: chain, to_of, ..
+        } => {
+            visit_inserts_of(chain, &of, f)?;
+            if let Some(chain) = to_of {
+                visit_inserts_of(chain, &of, f)?;
+            }
+        }
+        Edit::LanePoints { of: owner, .. }
+        | Edit::LaneRange { of: owner, .. }
+        | Edit::LaneDraw { of: owner, .. }
+        | Edit::ClearLanes { of: owner, .. } => visit_lanes_of(owner, &of, f)?,
         _ => unreachable!("the edits of grades are visited above"),
     }
     Ok(())
@@ -590,6 +616,19 @@ fn visit_inserts_of<E>(
         InsertsOf::Track(id) => f(id, Role::NamesTrack(of.clone())),
         InsertsOf::Clip(id) => f(id, Role::Names),
         InsertsOf::Bus(_) => Ok(()),
+    }
+}
+
+/// Call `f` on the id of the track of sound whose lanes are named, of timeline `of`; a bus and
+/// a VCA have no name of a transaction.
+fn visit_lanes_of<E>(
+    owner: &mut LanesOf,
+    of: &Id,
+    f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>,
+) -> Result<(), E> {
+    match owner {
+        LanesOf::Track(id) => f(id, Role::NamesTrack(of.clone())),
+        LanesOf::Bus(_) | LanesOf::Vca(_) => Ok(()),
     }
 }
 
@@ -1096,6 +1135,11 @@ fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> 
             let at = timeline.clone();
             f(timeline, Role::Names)?;
             visit_inserts_of(of, &at, f)
+        }
+        Op::SetLane { timeline, of, .. } | Op::SpliceLane { timeline, of, .. } => {
+            let at = timeline.clone();
+            f(timeline, Role::Names)?;
+            visit_lanes_of(of, &at, f)
         }
     }
 }

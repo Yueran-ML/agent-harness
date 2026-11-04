@@ -611,12 +611,26 @@ fn lanes_are_of_the_settings_of_their_strip_by_their_paths_and_kinds() {
         "insert.fx1.on",
         "insert.fx3.sidechain.on",
     ];
+    // Each lane at the value that its setting has (T14 holds a lane to the range of its
+    // setting: a frequency of 0 Hz is refused), or 0 where there is no setting.
     let fits = |path: &str, kind| {
+        use columbina_model::audio::automation::{fixed_value, view, Owner};
         let mut project = project.clone();
+        let audio = &project.timelines[0].tracks[1].audio;
+        let set = fixed_value(
+            &view(Owner::Strip {
+                strip: &audio.strip,
+                mute: audio.mute,
+                bus: false,
+            }),
+            path,
+        );
+        let mut lane = lane(kind);
+        lane.points[0].value = set.unwrap_or(0.0);
         project.timelines[0].tracks[1]
             .audio
             .lanes
-            .insert(path.into(), lane(kind));
+            .insert(path.into(), lane);
         project.validate().is_ok()
     };
     for path in continuous {

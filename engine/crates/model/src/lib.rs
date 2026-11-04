@@ -39,7 +39,7 @@ pub use grade::{
     Qualifier, QualifierMode, ShotMatch, Target,
 };
 pub use history::{Applied, Changed, History, Step, TransactionError, HISTORY_MOST};
-pub use ops::{apply, apply_done, InsertsOf, Invalid, Op, OpError, LARGEST};
+pub use ops::{apply, apply_done, InsertsOf, Invalid, LanesOf, Op, OpError, LARGEST};
 pub use project::{
     Alignment, AudioFacts, AudioStream, Bin, Clip, Cue, Facts, Id, Identity, Media, Project, Proxy,
     ReadError, Rgba, Source, TextAlign, Timeline, TitleStyle, Track, TrackKind, Transform,

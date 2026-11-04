@@ -129,10 +129,13 @@ use crate::project::{
 use crate::span;
 use crate::time::{Rate, Speed, Time};
 
+mod automation;
 mod color;
 mod grade;
 mod sound;
 
+pub(crate) use automation::owner_of;
+pub use automation::LanesOf;
 pub(crate) use grade::{grade_at, group_of_clip, keeps_node_id, reserve_node_ids};
 pub(crate) use sound::inserts_of;
 pub use sound::InsertsOf;
@@ -807,6 +810,36 @@ pub enum Op {
         timeline: Id,
         /// The settings that change.
         patch: serde_json::Value,
+    },
+    /// Put a lane of automation in place of the one of the setting at `path` of a track of
+    /// sound, a bus or a VCA, or add it where there is none, or take it away (`null`). Its inverse
+    /// puts back the lane that was there, or takes it away.
+    SetLane {
+        /// The timeline.
+        timeline: Id,
+        /// The track of sound, bus or VCA.
+        of: LanesOf,
+        /// The path of the setting (see [`crate::audio::automation`]).
+        path: String,
+        /// The lane, or `null`, which must be written, to take it away.
+        #[serde(deserialize_with = "nullable_required")]
+        lane: Option<crate::audio::Lane>,
+    },
+    /// Put `points` in place of the `remove` points of a lane from its point `at` on. Its
+    /// inverse puts back the points that it took away, in place of those that it put.
+    SpliceLane {
+        /// The timeline.
+        timeline: Id,
+        /// The track of sound, bus or VCA.
+        of: LanesOf,
+        /// The path of the setting of the lane.
+        path: String,
+        /// The place of the first point that is put in place of, from 0.
+        at: usize,
+        /// How many points are taken away.
+        remove: usize,
+        /// The points that are put there.
+        points: Vec<crate::audio::LanePoint>,
     },
 }
 
@@ -1867,6 +1900,20 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
         Op::SetTimelineAudio { timeline, patch } => {
             sound::set_timeline_audio(project, &timeline, &patch)
         }
+        Op::SetLane {
+            timeline,
+            of,
+            path,
+            lane,
+        } => automation::set_lane(project, &timeline, of, path, lane),
+        Op::SpliceLane {
+            timeline,
+            of,
+            path,
+            at,
+            remove,
+            points,
+        } => automation::splice_lane(project, &timeline, of, path, (at, remove), points),
     }
 }
 

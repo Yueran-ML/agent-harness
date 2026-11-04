@@ -22,6 +22,7 @@
 //! A fader, a send, a VCA and a boom are written in decibels, at most +10; -100 or below is -∞
 //! (see [`gain_of_db`]).
 
+pub mod automation;
 pub mod fx;
 pub mod param;
 pub mod routing;
@@ -911,7 +912,7 @@ pub fn first_buses() -> Vec<Bus> {
 /// (`insert.fx1.on`, `insert.fx1.ceiling_db`); and `mute`, which a track and a bus have beside
 /// it. A number is a setting that changes smoothly, and a lane of it is continuous; a switch is
 /// a lane of a setting that is on or off. What is neither (a kind, a mode, a source) has none.
-fn automatable(strip: &Strip) -> serde_json::Value {
+pub fn automatable(strip: &Strip) -> serde_json::Value {
     let mut view = serde_json::to_value(strip).unwrap_or_default();
     let Some(object) = view.as_object_mut() else {
         return serde_json::Value::Null;
@@ -957,6 +958,11 @@ fn automatable(strip: &Strip) -> serde_json::Value {
     // Listening (to a sidechain, to what a De-Esser or a Noise Reduction takes away) is only
     // heard while one listens, and is never written: it has no lane.
     unlisten(&mut view);
+    // The lookahead of a Ducker is how far its sound is delayed, which is a structure of the
+    // graph (its latency), not a setting that moves: it has no lane.
+    if let Some(serde_json::Value::Object(ducker)) = view.get_mut("track_fx") {
+        ducker.remove("lookahead_ms");
+    }
     view
 }
 
@@ -965,43 +971,6 @@ fn unlisten(view: &mut serde_json::Value) {
     if let serde_json::Value::Object(object) = view {
         object.remove("listen");
         object.values_mut().for_each(unlisten);
-    }
-}
-
-/// The kind of a lane of the setting at `path` of `view` (see [`automatable`]), or none where
-/// there is no such setting. A key that holds a `.` (a bus or an insert named so) is found as a
-/// whole.
-fn lane_kind(view: &serde_json::Value, path: &str) -> Option<LaneKind> {
-    match view {
-        serde_json::Value::Number(_) if path.is_empty() => Some(LaneKind::Continuous),
-        serde_json::Value::Bool(_) if path.is_empty() => Some(LaneKind::Switch),
-        serde_json::Value::Object(object) if !path.is_empty() => {
-            object.iter().find_map(|(key, inner)| {
-                if path == key {
-                    lane_kind(inner, "")
-                } else {
-                    lane_kind(inner, path.strip_prefix(key.as_str())?.strip_prefix('.')?)
-                }
-            })
-        }
-        _ => None,
-    }
-}
-
-/// Check the lanes of automation of a strip, or of a VCA where `strip` is none: each of a
-/// setting that it has, of the kind of that setting, with points (see [`Lane::is_valid`]).
-fn lanes_valid(lanes: &Lanes, strip: Option<&Strip>) -> Result<(), OpError> {
-    let view = match strip {
-        Some(strip) => automatable(strip),
-        None => serde_json::json!({ "fader_db": 0.0, "mute": false }),
-    };
-    if lanes
-        .iter()
-        .all(|(path, lane)| lane.is_valid() && lane_kind(&view, path) == Some(lane.kind))
-    {
-        Ok(())
-    } else {
-        Err(out("lane"))
     }
 }
 
@@ -1059,7 +1028,14 @@ pub fn check_track(track: &Track) -> Result<(), OpError> {
         check_channels(track, clip)?;
     }
     audio.strip.check(false)?;
-    lanes_valid(&audio.lanes, Some(&audio.strip))
+    automation::check_lanes(
+        &audio.lanes,
+        automation::Owner::Strip {
+            strip: &audio.strip,
+            mute: audio.mute,
+            bus: false,
+        },
+    )
 }
 
 /// Check that a clip on a track of sound plays as many channels as the track has, where it
@@ -1165,7 +1141,12 @@ pub fn check_timeline(timeline: &Timeline) -> Result<(), routing::Wrong> {
             return Err(wrong(out("label")));
         }
         bus.strip.check(true).map_err(wrong)?;
-        lanes_valid(&bus.lanes, Some(&bus.strip)).map_err(wrong)?;
+        let owner = automation::Owner::Strip {
+            strip: &bus.strip,
+            mute: bus.mute,
+            bus: true,
+        };
+        automation::check_lanes(&bus.lanes, owner).map_err(wrong)?;
     }
     for group in &timeline.track_groups {
         if group.name.chars().count() > crate::grade::LONGEST_LABEL {
@@ -1180,7 +1161,7 @@ pub fn check_timeline(timeline: &Timeline) -> Result<(), routing::Wrong> {
         if !level(vca.fader_db) {
             return Err(wrong(out("fader_db")));
         }
-        lanes_valid(&vca.lanes, None).map_err(wrong)?;
+        automation::check_lanes(&vca.lanes, automation::Owner::Vca(vca)).map_err(wrong)?;
     }
     let settings = &timeline.audio;
     let range = settings.record.active_range.is_none_or(|r| {

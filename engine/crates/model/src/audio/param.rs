@@ -212,6 +212,47 @@ pub enum LaneKind {
     Switch,
 }
 
+/// On what a lane of automation goes in a straight line between two points: its values as they
+/// are, or their logarithms (C-A7, the decision of T14's review: a frequency or a Q, which their
+/// controls show on a scale of logarithms, so that 100 Hz to 10 kHz passes 1 kHz half way). A
+/// level in decibels and a pan are straight in their own units.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LaneScale {
+    /// Straight in the values.
+    #[default]
+    Linear,
+    /// Straight in their logarithms: the value at a share `s` of the way from `a` to `b` is
+    /// `exp(ln a + (ln b − ln a)·s)`. Every value of such a lane is above 0.
+    Log,
+}
+
+impl LaneScale {
+    /// The scale of a lane of the setting at `path`: [`LaneScale::Log`] of a frequency (a path
+    /// whose last part is `freq` or ends in `frequency_hz`) or of a Q (`q`), else linear.
+    #[must_use]
+    pub fn of_path(path: &str) -> Self {
+        let last = path.rsplit('.').next().unwrap_or(path);
+        if last == "freq" || last == "q" || last.ends_with("frequency_hz") {
+            Self::Log
+        } else {
+            Self::Linear
+        }
+    }
+
+    /// The value at `share` of the way from `from` to `to`, as [`Lane::value_at`] works it out.
+    #[must_use]
+    pub fn between(self, from: f64, to: f64, share: f64) -> f64 {
+        match self {
+            Self::Linear => from + (to - from) * share,
+            Self::Log => {
+                let (low, high) = (from.ln(), to.ln());
+                (low + (high - low) * share).exp()
+            }
+        }
+    }
+}
+
 /// A point of a lane of automation: a value at a time of the timeline.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -239,6 +280,10 @@ pub struct Lane {
     /// What it is of. It may be left out, as continuous.
     #[serde(default)]
     pub kind: LaneKind,
+    /// On what it goes straight between two points: set by the path of its setting
+    /// ([`LaneScale::of_path`]) where it is made or read without one, and written as it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<LaneScale>,
 }
 
 impl Lane {
@@ -268,7 +313,9 @@ impl Lane {
                 let share = ((now - place(from.at)) as f64
                     / (place(to.at) - place(from.at)) as f64)
                     .clamp(0.0, 1.0);
-                from.value + (to.value - from.value) * share
+                self.scale
+                    .unwrap_or_default()
+                    .between(from.value, to.value, share)
             }
         }
     }
@@ -409,6 +456,7 @@ mod tests {
         let mut lane = Lane {
             points: vec![point(0, -10.0), point(1000, 0.0), point(1000, -20.0)],
             kind: LaneKind::Continuous,
+            scale: None,
         };
         assert!(lane.is_valid());
         // Read at times of other scales, in ticks.
@@ -439,5 +487,36 @@ mod tests {
         assert!(!lane.is_valid());
         lane.points = vec![];
         assert!(!lane.is_valid());
+    }
+
+    #[test]
+    fn a_lane_of_a_frequency_goes_straight_in_its_logarithm() {
+        let at = |ticks| Time {
+            ticks,
+            scale: 48000,
+        };
+        let lane = Lane {
+            points: vec![
+                LanePoint {
+                    at: at(0),
+                    value: 100.0,
+                },
+                LanePoint {
+                    at: at(48000),
+                    value: 10_000.0,
+                },
+            ],
+            kind: LaneKind::Continuous,
+            scale: Some(LaneScale::of_path("eq.2.freq")),
+        };
+        assert!((lane.value_at(at(24000)) - 1000.0).abs() < 1e-9);
+        assert!((lane.value_at(at(12000)) - 10f64.powf(2.5)).abs() < 1e-9);
+        assert_eq!(LaneScale::of_path("eq.2.q"), LaneScale::Log);
+        assert_eq!(
+            LaneScale::of_path("insert.fx1.frequency_hz"),
+            LaneScale::Log
+        );
+        assert_eq!(LaneScale::of_path("eq.2.gain_db"), LaneScale::Linear);
+        assert_eq!(LaneScale::of_path("pan.x"), LaneScale::Linear);
     }
 }

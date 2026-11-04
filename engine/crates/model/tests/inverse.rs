@@ -91,7 +91,7 @@ fn the_random_operations_on_sound_are_applied_as_well_as_refused() {
         }
         check(&project);
     }
-    assert_eq!(applied.len(), 15, "{applied:?}");
+    assert_eq!(applied.len(), 17, "{applied:?}");
     assert!(applied.values().all(|&n| n >= 5), "{applied:?}");
     assert!(refused >= 400, "{refused} refused");
 }

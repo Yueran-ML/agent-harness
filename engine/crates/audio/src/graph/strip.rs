@@ -10,13 +10,14 @@
 //! What is set once is a parameter ramped over 10 ms ([`Smoothed`], C-T1); where a lane of
 //! automation is, its value takes the place of the parameter, sample by sample (T14).
 
-use columbina_model::{Lane, Time};
+use columbina_model::Lane;
 
 use crate::constants::MAX_CHANNELS;
 use crate::db_to_gain;
 use crate::node::{Automated, Automation, Block, Layout, Node, ParamId, Planar};
 use crate::rt::Smoothed;
 
+use super::automation::Cursor;
 use super::pdc::DelayLine;
 use super::route::{panned, Matrix, PanAt};
 use super::taps::Tap;
@@ -26,11 +27,30 @@ pub(crate) const MAX_NODE_LANES: usize = 64;
 
 /// A lane of automation of a strip, read `delay` samples behind the input of the graph: the
 /// latency of the graph before the point where it acts, so that it acts on the sound of the
-/// time it is at.
+/// time it is at. It is read by its cursor; and it names what it is of, `owner` and `path` (the
+/// lane of a VCA read at the fader of each of its members, the one of a pan read after each
+/// output's delay, are each a lane of their own here, of the same owner and path), so that a lane
+/// of the model may be put in place of it while the graph plays (T5, T14's review).
 #[derive(Debug)]
 pub(crate) struct LaneOf {
     pub(crate) lane: Lane,
     pub(crate) delay: i64,
+    pub(crate) cursor: Cursor,
+    pub(crate) owner: super::Owner,
+    pub(crate) path: Box<str>,
+}
+
+impl LaneOf {
+    /// A lane of `owner` at `path`, read `delay` samples behind, its cursor not yet placed.
+    pub(crate) fn new(lane: &Lane, delay: i64, owner: &super::Owner, path: &str) -> Self {
+        Self {
+            lane: lane.clone(),
+            delay,
+            cursor: Cursor::default(),
+            owner: owner.clone(),
+            path: path.into(),
+        }
+    }
 }
 
 /// A node of a strip: its Ducker, an insert, its Dynamics or its equalizer.
@@ -212,14 +232,10 @@ impl Strip {
             self.work.channel_mut(channel)[..frames]
                 .copy_from_slice(&input.channel(channel)[..frames]);
         }
-        let scale = rate;
-        for (index, lane) in self.lanes.iter().enumerate() {
+        for (index, lane) in self.lanes.iter_mut().enumerate() {
             let values = &mut self.values[index * self.max_block..][..frames];
-            for (ticks, value) in (start - lane.delay..).zip(values) {
-                #[allow(clippy::cast_possible_truncation, reason = "a value of a parameter")]
-                let at = lane.lane.value_at(Time { ticks, scale }) as f32;
-                *value = at;
-            }
+            lane.cursor
+                .fill(&lane.lane, start - lane.delay, rate, values);
         }
     }
 
@@ -528,6 +544,9 @@ impl Strip {
             edge.matrix = panned(edge.from, edge.to, &edge.pan.last);
             edge.delay.reset();
             edge.stale = 0;
+        }
+        for lane in &mut self.lanes {
+            lane.cursor.reset();
         }
         self.pre_tap.reset();
         self.post_tap.reset();

@@ -336,6 +336,7 @@ fn lane(points: &[(i64, f64)]) -> Lane {
             })
             .collect(),
         kind: LaneKind::Continuous,
+        scale: None,
     }
 }
 

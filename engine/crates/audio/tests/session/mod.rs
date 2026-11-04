@@ -347,6 +347,7 @@ pub fn largest_step(signal: &[f32]) -> f32 {
 /// by two, equalizers, sends before and after the fader to a bus of 5.1, a VCA, lanes of the
 /// fader, the pan, a threshold and an amount, a crossfade, clips at speeds, mono, stereo, 5.1
 /// and Adaptive tracks.
+#[allow(clippy::too_many_lines, reason = "a step for each kind of strip")]
 pub fn sixteen_tracks() -> columbina_model::Project {
     use columbina_model::audio::{BusFormat, TrackFormat};
     use columbina_model::{
@@ -388,6 +389,7 @@ pub fn sixteen_tracks() -> columbina_model::Project {
             })
             .collect(),
         kind: LaneKind::Continuous,
+        scale: None,
     };
     timeline.tracks = (0..16)
         .map(|n| {

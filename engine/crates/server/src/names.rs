@@ -21,8 +21,8 @@ use std::fmt;
 use columbina_model::edit::Created;
 use columbina_model::history::ChangeMapper;
 use columbina_model::{
-    Change, Edit, Expansion, Grade, Id, InsertsOf, Link, Material, Op, OpError, Source, Target,
-    Track, TrackKind,
+    Change, Edit, Expansion, Grade, Id, InsertsOf, LanesOf, Link, Material, Op, OpError, Source,
+    Target, Track, TrackKind,
 };
 use columbina_model::{Effect, Insert, SourceRef, Strip};
 use serde::{Deserialize, Deserializer};
@@ -457,7 +457,13 @@ fn visit_edit<E>(
         | Edit::RemoveAttributes { timeline, .. }
         | Edit::FadeToPlayhead { timeline, .. }
         | Edit::SetBus { timeline, .. }
-        | Edit::CopyEffects { timeline, .. } => timeline,
+        | Edit::CopyEffects { timeline, .. }
+        | Edit::SetInsert { timeline, .. }
+        | Edit::MoveInsert { timeline, .. }
+        | Edit::LanePoints { timeline, .. }
+        | Edit::LaneRange { timeline, .. }
+        | Edit::LaneDraw { timeline, .. }
+        | Edit::ClearLanes { timeline, .. } => timeline,
     };
     let of = timeline.clone();
     f(timeline, Role::Names)?;
@@ -574,6 +580,26 @@ fn visit_edit<E>(
                 visit_inserts_of(chain, &of, f)?;
             }
         }
+        Edit::SetInsert {
+            of: chain, insert, ..
+        } => {
+            visit_inserts_of(chain, &of, f)?;
+            if let Some(insert) = insert {
+                visit_insert(insert, &of, f)?;
+            }
+        }
+        Edit::MoveInsert {
+            of: chain, to_of, ..
+        } => {
+            visit_inserts_of(chain, &of, f)?;
+            if let Some(chain) = to_of {
+                visit_inserts_of(chain, &of, f)?;
+            }
+        }
+        Edit::LanePoints { of: owner, .. }
+        | Edit::LaneRange { of: owner, .. }
+        | Edit::LaneDraw { of: owner, .. }
+        | Edit::ClearLanes { of: owner, .. } => visit_lanes_of(owner, &of, f)?,
         _ => unreachable!("the edits of grades are visited above"),
     }
     Ok(())
@@ -590,6 +616,19 @@ fn visit_inserts_of<E>(
         InsertsOf::Track(id) => f(id, Role::NamesTrack(of.clone())),
         InsertsOf::Clip(id) => f(id, Role::Names),
         InsertsOf::Bus(_) => Ok(()),
+    }
+}
+
+/// Call `f` on the id of the track of sound whose lanes are named, of timeline `of`; a bus and
+/// a VCA have no name of a transaction.
+fn visit_lanes_of<E>(
+    owner: &mut LanesOf,
+    of: &Id,
+    f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>,
+) -> Result<(), E> {
+    match owner {
+        LanesOf::Track(id) => f(id, Role::NamesTrack(of.clone())),
+        LanesOf::Bus(_) | LanesOf::Vca(_) => Ok(()),
     }
 }
 
@@ -1097,6 +1136,11 @@ fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> 
             f(timeline, Role::Names)?;
             visit_inserts_of(of, &at, f)
         }
+        Op::SetLane { timeline, of, .. } | Op::SpliceLane { timeline, of, .. } => {
+            let at = timeline.clone();
+            f(timeline, Role::Names)?;
+            visit_lanes_of(of, &at, f)
+        }
     }
 }
 
@@ -1184,6 +1228,28 @@ mod tests {
             Some(SourceRef::Track(voice.clone()))
         );
         assert_eq!(timeline.track_groups[0].members, ["A1".to_string(), voice]);
+    }
+
+    #[test]
+    fn a_track_named_in_a_transaction_is_given_lanes_by_its_name() {
+        let mut history = History::new(Project::sample());
+        let track = json!({"id": "$voice", "kind": "audio", "name": "", "enabled": true,
+            "locked": false, "transitions": [], "clips": []});
+        let point = |ticks: i64, value: f64| json!({"at": {"ticks": ticks, "scale": 48000}, "value": value});
+        let transaction = ops(json!([
+            {"op": "add_track", "timeline": "t1", "track": track},
+            {"op": "set_lane", "timeline": "t1", "of": {"track": "$voice"}, "path": "fader_db",
+                "lane": {"points": [point(0, -10.0)]}},
+            {"op": "splice_lane", "timeline": "t1", "of": {"track": "$voice"}, "path": "fader_db",
+                "at": 1, "remove": 0, "points": [point(48000, 0.0)]},
+            {"edit": "lane_points", "timeline": "t1", "of": {"track": "$voice"}, "path": "mute",
+                "action": "add", "points": [{"at": {"ticks": 0, "scale": 48000}, "value": 1}]},
+        ]));
+        let (_, ids) = apply(&mut history, transaction).unwrap();
+        let voice = &history.project().timelines[0].tracks[2];
+        assert_eq!(voice.id, ids["$voice"]);
+        assert_eq!(voice.audio.lanes["fader_db"].points.len(), 2);
+        assert_eq!(voice.audio.lanes["mute"].points[0].value, 1.0);
     }
 
     #[test]

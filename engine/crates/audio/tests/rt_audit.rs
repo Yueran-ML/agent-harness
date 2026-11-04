@@ -75,6 +75,7 @@ fn the_code_of_the_threads_of_the_sound_does_not_lock_allocate_or_log() {
         "route.rs",
         "pdc.rs",
         "taps.rs",
+        "automation.rs",
         "common.rs",
         "gain.rs",
         "limiter.rs",

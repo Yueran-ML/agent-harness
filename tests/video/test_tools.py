@@ -952,3 +952,9 @@ async def test_an_operation_of_sound_is_given_the_timeline_of_the_tool(
     (track,) = fake.project["timelines"][0]["tracks"]
     assert track["strip"] == {"fader_db": -6}
     assert track["mute"] is True
+    # So is an operation of automation (T14).
+    lane = {"points": [{"at": {"ticks": 0, "scale": 48000}, "value": -10.0}]}
+    set_lane = {"op": "set_lane", "of": {"track": "A1"}, "path": "fader_db", "lane": lane}
+    result(await desk.call("video_edit", edits=[set_lane]))
+    (track,) = fake.project["timelines"][0]["tracks"]
+    assert track["lanes"] == {"fader_db": lane}

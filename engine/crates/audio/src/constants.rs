@@ -627,3 +627,10 @@ pub const RNNOISE_LONGEST_PERIOD: u64 = 640;
 
 /// The lowest and the highest rate that the voice mode takes (we decide).
 pub const RNNOISE_RATES: (u32, u32) = (8_000, 384_000);
+
+/// The constants of the drawing, thinning and moving of lanes of automation (C-A4: how far a
+/// thinned lane may go from what was drawn; C-A6: the ramp at each end of a range raised or
+/// lowered), kept with the edits of lanes in the model, which work them out.
+pub use columbina_model::audio::automation::{
+    LANE_RAMP_PER_SECOND, LANE_THIN_LEVEL_DB, LANE_THIN_PAN_SHARE, LANE_THIN_SHARE,
+};

@@ -59,6 +59,12 @@ pub(super) fn check(edit: &Edit) -> Result<(), OpError> {
         | Edit::PasteAttributes { .. }
         | Edit::RemoveAttributes { .. }
         | Edit::CopyEffects { .. }
+        | Edit::SetInsert { .. }
+        | Edit::MoveInsert { .. }
+        | Edit::LanePoints { .. }
+        | Edit::LaneRange { .. }
+        | Edit::LaneDraw { .. }
+        | Edit::ClearLanes { .. }
         | Edit::Lift { .. }
         | Edit::RippleDelete { .. }
         | Edit::RemoveTransition { .. }

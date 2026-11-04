@@ -1636,9 +1636,13 @@ async fn files_are_taken_in_as_media_in_one_transaction() {
     assert_eq!(facts["video"]["width"], 1920);
     assert_eq!(facts["video"]["codec"], "h264");
     assert_eq!(facts["video"]["rate"], json!({ "num": 25, "den": 1 }));
+    // With the layout of its channels and every stream of sound, numbered among all streams.
     assert_eq!(
         facts["audio"],
-        json!({ "rate": 48000, "channels": 2, "codec": "aac" })
+        json!({
+            "rate": 48000, "channels": 2, "codec": "aac", "layout": "stereo",
+            "streams": [{ "index": 1, "channels": 2, "layout": "stereo" }],
+        })
     );
     let duration = &facts["duration"];
     assert_eq!(

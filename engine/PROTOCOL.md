@@ -612,7 +612,7 @@ are at most +10; −100 or below is −∞.
   has none), order (a permutation of "fx", "dynamics", "eq"; that order), inserts (≤ 6),
   inserts_on (Effects In, true), dynamics, eq (6 bands), fader_db, pan, sends (≤ 10), outputs
   (≤ 10, each bus once), vcas}`. `pan` is `{on, x, y (−1…1), rotate (±180), spread (1…99, 99),
-  divergence (0…100), lfe_db, lfe_on, lfe_pre}`. A send is `{bus, on (true), pre (false: after
+  divergence (0…100), lfe_db (−∞, −100), lfe_on, lfe_pre}`. A send is `{bus, on (true), pre (false: after
   the fader), level_db (0), pan}`; an output `{bus, on}`.
 - **Effects.** An insert is `{id, on (true), effect}`; `id` (`fx1`, `fx2`, …) is unique in its strip
   and stays with it as it moves, and an insert of a strip added without one is given the next; `effect` is `{kind, ...settings}` of `gain`,
@@ -3664,7 +3664,6 @@ the expanded operation list. Refusal emits no `project.changed` and adds no hist
 | `channel_count` | `track` | a track's `channels` do not fit its format (an adaptive one has 1–24), or a clip on it names another number of channels |
 | `unknown_bus` | `id` | an output, a send, a sidechain, a ducker or the monitor names a bus that is not there |
 | `unknown_vca` | `id` | a strip or a VCA names a VCA that is not there |
-| `unknown_group` | `id` | a group of tracks that is named is not there |
 | `order` | | a strip's `order` is not `fx`, `dynamics` and `eq` each once |
 | `vca_cycle` | `id` | VCAs would be members of each other in a loop |
 | `vca_depth` | `id` | a chain of VCAs would be more than 6 long |
@@ -3672,10 +3671,14 @@ the expanded operation list. Refusal emits no `project.changed` and adds no hist
 A track that a group, a sidechain or a ducker names is refused as `missing` (`what: "track"`)
 where it is not there; `remove_track` of it while it is named is refused as `in_use`. `out_of_range` also
 names (schema 4): of a clip `gain_db`, `pan` (also their keys), `fade`, `eq`, `pitch`,
-`channels`, `sidechain`; of a strip `trim_db`, `track_fx` (on a bus), `fader_db`, `pan`, `send`,
-`outputs` (two to one bus), `eq`, `dynamics`, `ducker`, the kind of an effect, `lane`; of a
-timeline `buses`, `vcas` (more than 64), `audio` (its settings), `label` (a bus name over the
-longest label); of a group `members`, `linked` (one twice). A project read with one of these is
+`channels` (a level above 24; a stream or channel that the media has not is silence, never
+refused), `sidechain`; of a transition `level` (a level other than 0 dB on one that is not a
+crossfade); of a strip `trim_db`, `track_fx` (on a bus), `fader_db`, `pan`, `send`, `outputs`
+(two to one bus), `inserts` (two of one id), `vcas` (one twice, or one and a VCA that it is a
+member of), `eq`, `dynamics`, `ducker`, the kind of an effect, `lane`; of a VCA `vcas` (as of a
+strip); of a timeline `buses`, `vcas` (more than 64), `audio` (its settings), `label` (a bus name
+over the longest label); of a group `members`, `linked` (one twice). A bus named as a track of
+its timeline is refused as `taken` (`what: "track"`). A project read with one of these is
 refused with `what` of `bus`, `vca` or `track_group` where the thing at fault is one.
 
 ## Rendering a timeline

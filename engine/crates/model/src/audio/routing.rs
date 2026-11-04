@@ -363,6 +363,18 @@ pub fn check_routing(timeline: &Timeline) -> Result<(), Wrong> {
         .filter(|r| r.kind == TrackKind::Audio)
         .map(|r| r.id.as_str())
         .collect();
+    // A bus is not named as a track is, so that what a source names is one or the other.
+    if let Some(bus) = timeline
+        .buses
+        .iter()
+        .find(|b| timeline.tracks.iter().any(|r| r.id == b.id))
+    {
+        let taken = OpError::Taken {
+            what: "track",
+            id: bus.id.clone(),
+        };
+        return Err(("bus", bus.id.clone(), taken));
+    }
     let strips = timeline
         .tracks
         .iter()
@@ -427,6 +439,9 @@ pub fn check_routing(timeline: &Timeline) -> Result<(), Wrong> {
             if !vcas.contains(vca.as_str()) {
                 return Err(wrong(OpError::UnknownVca { id: vca.clone() }));
             }
+        }
+        if twice(&strip.vcas) {
+            return Err(wrong(OpError::OutOfRange { what: "vcas" }));
         }
     }
     if let Some(node) = in_a_loop(&feeds) {
@@ -496,6 +511,7 @@ pub fn check_routing(timeline: &Timeline) -> Result<(), Wrong> {
             ));
         }
     }
+    check_vca_lists(timeline)?;
     for group in &timeline.track_groups {
         let wrong = |error| ("track_group", group.id.clone(), error);
         let mut seen = HashSet::new();
@@ -520,6 +536,57 @@ pub fn check_routing(timeline: &Timeline) -> Result<(), Wrong> {
             return Err(whole(OpError::UnknownBus {
                 id: monitor.clone(),
             }));
+        }
+    }
+    Ok(())
+}
+
+/// Whether a list names a thing twice.
+fn twice(list: &[Id]) -> bool {
+    (1..list.len()).any(|at| list[..at].contains(&list[at]))
+}
+
+/// Check the lists of VCAs of a timeline whose VCAs are members of each other in no loop: no
+/// VCA names one twice, and no strip or VCA names both a VCA and one that it is a member of,
+/// whose fader it would add twice.
+fn check_vca_lists(timeline: &Timeline) -> Result<(), Wrong> {
+    // The VCAs that each is a member of, at any depth.
+    let above = |vca: &str| {
+        let mut found = HashSet::new();
+        let mut next = vec![vca.to_owned()];
+        while let Some(id) = next.pop() {
+            for of in timeline
+                .vcas
+                .iter()
+                .filter(|v| v.id == id)
+                .flat_map(|v| &v.vcas)
+            {
+                if found.insert(of.clone()) {
+                    next.push(of.clone());
+                }
+            }
+        }
+        found
+    };
+    let doubled = |list: &[Id]| {
+        list.iter()
+            .any(|vca| above(vca).iter().any(|of| list.contains(of)))
+    };
+    let range = OpError::OutOfRange { what: "vcas" };
+    for vca in &timeline.vcas {
+        if twice(&vca.vcas) || doubled(&vca.vcas) {
+            return Err(("vca", vca.id.clone(), range.clone()));
+        }
+    }
+    let strips = timeline
+        .tracks
+        .iter()
+        .filter(|r| r.kind == TrackKind::Audio)
+        .map(|r| ("track", &r.id, &r.audio.strip))
+        .chain(timeline.buses.iter().map(|b| ("bus", &b.id, &b.strip)));
+    for (what, id, strip) in strips {
+        if doubled(&strip.vcas) {
+            return Err((what, id.clone(), range.clone()));
         }
     }
     Ok(())

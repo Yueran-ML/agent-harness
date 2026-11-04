@@ -726,7 +726,13 @@ mod tests {
         }
     }
 
+    /// A transition of 10 frames about its cut: a crossfade at +3 dB, as before schema 4.
     fn transition(id: &str, kind: TransitionKind, left: &str, right: &str) -> Transition {
+        let level = if kind == TransitionKind::Crossfade {
+            CrossfadeLevel::Plus3
+        } else {
+            CrossfadeLevel::Zero
+        };
         Transition {
             id: id.into(),
             kind,
@@ -734,8 +740,8 @@ mod tests {
             right: right.into(),
             length: 10,
             align: Alignment::Center,
-            fade_in_level_db: CrossfadeLevel::Plus3,
-            fade_out_level_db: CrossfadeLevel::Plus3,
+            fade_in_level_db: level,
+            fade_out_level_db: level,
         }
     }
 

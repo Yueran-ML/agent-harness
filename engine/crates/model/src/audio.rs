@@ -83,7 +83,7 @@ pub struct Pan {
     pub spread: f64,
     /// How much spills to the speakers beside, in percent, from 0 to 100.
     pub divergence: f64,
-    /// How much goes to the LFE (Boom), in decibels, at most 10.
+    /// How much goes to the LFE (Boom), in decibels, at most 10: -∞ (-100) for a new pan (C-F11).
     pub lfe_db: f64,
     /// Whether the Boom is on.
     pub lfe_on: bool,
@@ -100,7 +100,7 @@ impl Default for Pan {
             rotate: 0.0,
             spread: 99.0,
             divergence: 0.0,
-            lfe_db: 0.0,
+            lfe_db: SILENT_DB,
             lfe_on: false,
             lfe_pre: false,
         }

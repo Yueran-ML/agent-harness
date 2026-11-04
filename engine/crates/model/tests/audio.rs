@@ -645,6 +645,79 @@ fn lanes_are_of_the_settings_of_their_strip_by_their_paths_and_kinds() {
 }
 
 #[test]
+fn vcas_named_twice_or_with_their_masters_a_bus_named_as_a_track_and_levels_of_a_dissolve_are_refused(
+) {
+    let vca = |id: &str, of: &[&str]| Vca {
+        id: id.into(),
+        name: id.into(),
+        fader_db: 0.0,
+        mute: false,
+        solo: false,
+        vcas: of.iter().map(|&v| v.into()).collect(),
+        lanes: columbina_model::Lanes::default(),
+    };
+    let with = |vcas: Vec<Vca>, strip: &'static [&'static str]| {
+        move |value: &mut serde_json::Value| {
+            value["timelines"][0]["vcas"] = serde_json::to_value(&vcas).unwrap();
+            value["timelines"][0]["tracks"][1]["strip"]["vcas"] = json!(strip);
+        }
+    };
+    let range = OpError::OutOfRange { what: "vcas" };
+    // VCA2 is a member of VCA1: a strip of both would add VCA1 twice.
+    let nested = || vec![vca("VCA1", &[]), vca("VCA2", &["VCA1"])];
+    let mut value = serde_json::to_value(Project::sample()).unwrap();
+    with(nested(), &["VCA2"])(&mut value);
+    Project::from_value(value).unwrap();
+    assert_eq!(refused(with(nested(), &["VCA2", "VCA1"])), range);
+    assert_eq!(refused(with(nested(), &["VCA1", "VCA1"])), range);
+    let twice = vec![vca("VCA1", &[]), vca("VCA2", &["VCA1", "VCA1"])];
+    assert_eq!(refused(with(twice, &[])), range);
+    let deep = vec![
+        vca("VCA1", &[]),
+        vca("VCA2", &["VCA1"]),
+        vca("VCA3", &["VCA2", "VCA1"]),
+    ];
+    assert_eq!(refused(with(deep, &[])), range);
+    // A bus named as a track.
+    let error = refused(|value| {
+        let mut a1 = bus(1);
+        a1.id = "A1".into();
+        value["timelines"][0]["buses"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::to_value(a1).unwrap());
+    });
+    assert_eq!(
+        error,
+        OpError::Taken {
+            what: "track",
+            id: "A1".into()
+        }
+    );
+    // A dissolve has no levels of a crossfade.
+    let error = refused(|value| {
+        let first = value["timelines"][0]["tracks"][0]["clips"][0].clone();
+        value["timelines"][0]["tracks"][0]["clips"]
+            .as_array_mut()
+            .unwrap()
+            .push(first);
+        let clips = &mut value["timelines"][0]["tracks"][0]["clips"];
+        clips[0]["length"] = 50.into();
+        clips[1]["id"] = "c9".into();
+        clips[1]["start"] = 50.into();
+        clips[1]["length"] = 50.into();
+        clips[1]["source"]["in"]["ticks"] = (2 * 15360).into();
+        value["timelines"][0]["tracks"][0]["transitions"] = json!([{
+            "id": "x9", "kind": "dissolve", "left": "c1", "right": "c9", "length": 10,
+            "align": "center", "fade_in_level_db": 3, "fade_out_level_db": 0,
+        }]);
+    });
+    assert_eq!(error, OpError::OutOfRange { what: "level" });
+    // A new pan sends nothing to the LFE.
+    assert_eq!(columbina_model::Pan::default().lfe_db, -100.0);
+}
+
+#[test]
 fn times_of_sound_further_than_2_to_the_53_ticks_are_refused_and_never_overflow() {
     let far = Time {
         ticks: 1 << 53,

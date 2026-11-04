@@ -784,10 +784,12 @@ pub enum OpError {
     /// colour management, `custom_luminance`, `graphics_white`, `input_sat_rolloff`,
     /// `output_sat_rolloff`, `limit_gamut`, `input_lut`, `output_lut` or `viewer_lut`; and of
     /// the colour of media, `media_lut`. Of sound (schema 4): of a clip, `gain_db` and `pan`
-    /// (also of their keys), `fade`, `eq`, `pitch`, `channels` (a channel of its media that it
-    /// has not, or a level out of -96 to 24) and `sidechain` (an effect of a clip has none); of a
-    /// strip, `trim_db`, `track_fx` (of a bus), `fader_db`, `pan`, `send`, `outputs` (two to one
-    /// bus), `eq`, `dynamics`, `ducker`, the kind of an effect (`gain`, `limiter`,
+    /// (also of their keys), `fade`, `eq`, `pitch`, `channels` (a level above 24; a channel that its
+    /// media has not plays silence, and is not refused) and `sidechain` (an effect of a clip has
+    /// none); of a transition, `level` (a level of a crossfade other than 0 dB on one that is
+    /// not a crossfade); of a strip, `trim_db`, `track_fx` (of a bus), `fader_db`, `pan`, `send`,
+    /// `outputs` (two to one bus), `inserts` (two of one id), `vcas` (one twice, or one and a VCA
+    /// that it is a member of), `eq`, `dynamics`, `ducker`, the kind of an effect (`gain`, `limiter`,
     /// `soft_clipper`, `stereo_width`, `de_esser`, `de_hummer`, `noise_reduction`, `pitch`) and
     /// `lane`; of a timeline, `buses`, `vcas` (too many), `audio` (its settings of sound),
     /// `label` (the name of a bus); and of a group of tracks, `members` and `linked` (one twice).
@@ -1045,7 +1047,8 @@ pub enum OpError {
         /// Its id.
         id: Id,
     },
-    /// A group of tracks that is named is not there.
+    /// A group of tracks that is named is not there. No change of schema 4 names one by its id;
+    /// the operations on groups of tracks do.
     #[error("there is no group of tracks {id}")]
     UnknownGroup {
         /// Its id.
@@ -3203,6 +3206,12 @@ fn check_transitions(project: &Project, rate: Rate, track: &Track) -> Result<(),
                 what: kind_name(transition.kind),
                 kind: track.kind,
             });
+        }
+        let level = audio::CrossfadeLevel::Zero;
+        if transition.kind != TransitionKind::Crossfade
+            && (transition.fade_in_level_db, transition.fade_out_level_db) != (level, level)
+        {
+            return Err(range("level"));
         }
         let find = |id: &str| clips.get(id).copied().ok_or_else(|| missing("clip", id));
         let (left, right) = (find(&transition.left)?, find(&transition.right)?);

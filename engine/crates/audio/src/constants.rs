@@ -367,3 +367,74 @@ pub fn fade_gain(curve: f64, skew: f64, t: f64, falling: bool) -> f64 {
     };
     t + curve.abs() * (end - t)
 }
+
+// --- Noise Reduction (T12) -------------------------------------------------------------------
+
+/// The most that the spectral gate of Noise Reduction lowers a bin, in dB: the floor of its gain,
+/// which leaves a little of the noise under the voice instead of the "musical" tones of bins let
+/// through alone (C-X4 has no depth; we decide).
+pub const DENOISE_FLOOR_DB: f32 = -30.0;
+
+/// The power of a bin of Noise Reduction below which it is heard as this: so that the profiles
+/// in their logarithms stay finite after silence, and climb back from silence in a bounded time
+/// (about −149 dBFS of white noise in a bin of the 2048-point transform; we decide).
+pub const DENOISE_POWER_FLOOR: f32 = 1e-12;
+
+/// The power of a bin above which it is heard as this (we decide).
+pub const DENOISE_POWER_CEILING: f32 = 1e12;
+
+/// The largest size of a sample that Noise Reduction analyses: a larger one is analysed as this
+/// (the dry sound is let through as it is), so that the power of a bin stays finite (we decide).
+pub const DENOISE_INPUT_LIMIT: f32 = 1e4;
+
+/// The time constant of the gains of Noise Reduction over time with Time Smoothing on, in
+/// seconds (p. 3970 gives no number; we decide).
+pub const DENOISE_TIME_SMOOTHING: f64 = 0.020;
+
+/// The bins on each side over which Frequency Smoothing at 100 % averages the power that Noise
+/// Reduction weighs (p. 3970 gives no number; we decide: ±188 Hz at 48 kHz).
+pub const DENOISE_FREQUENCY_SMOOTHING_BINS: usize = 8;
+
+/// The factor by which Sensitivity at 0 % and at 100 % overestimates the noise (C-X4).
+pub const DENOISE_SENSITIVITY_FACTOR: (f32, f32) = (1.0, 4.0);
+
+/// The time constants of its profiles after which Noise Reduction counts itself settled:
+/// ⌈ln(55 / 3.2e-5)⌉ = 15, the logarithm of a power spanning 1e-12 to 1e12 (55) brought below
+/// −90 dBFS (we decide).
+pub const DENOISE_SETTLE_TIME_CONSTANTS: f64 = 15.0;
+
+/// The rate at which `RNNoise` works (plan T12).
+pub const RNNOISE_RATE: u32 = 48_000;
+
+/// The delay of `RNNoise` itself, at 48 kHz: its window of two frames puts out the frame before
+/// the one it takes (measured; the plan's "the first frame is thrown away").
+pub const RNNOISE_DELAY: usize = 480;
+
+/// The scale of the samples that `RNNoise` takes: the range of an i16 (plan T12).
+pub const RNNOISE_SCALE: f32 = 32_768.0;
+
+/// The settling of the voice mode of Noise Reduction, in seconds: its network forgets slowly.
+/// Measured on a voice over noise from five starts: within −60 dBFS of an earlier start after
+/// 10 s (the pre-roll), mostly within −90 dBFS after 20 to 35 s, a difference of −94 dBFS as late
+/// as 70 s, and below −130 dBFS after 80 s (we decide on 60).
+pub const RNNOISE_SETTLE: f64 = 60.0;
+
+/// The fresh states of `RNNoise` that the voice mode keeps for each channel, to be as new after
+/// a reset without taking memory on the thread of the mix (we decide).
+pub const RNNOISE_SPARE_STATES: usize = 4;
+
+/// The zero crossings on each side of the windowed sinc by which the voice mode takes another
+/// rate to 48 kHz and back (as the mixer of phase 2, `server/src/play/mix.rs`).
+pub const RNNOISE_RESAMPLE_ZEROS: f64 = 16.0;
+
+/// The band that the resampling of the voice mode keeps, as a part of the lower Nyquist
+/// frequency (we decide).
+pub const RNNOISE_RESAMPLE_BAND: f64 = 0.95;
+
+/// The longest period, in samples of 48 kHz, of the grid on which another rate meets 48 kHz,
+/// 48000 / gcd(rate, 48000), that the voice mode takes: 640 takes every rate of 8 kHz and of the
+/// families of 44.1 and 48 kHz from 11.025 kHz up (we decide).
+pub const RNNOISE_LONGEST_PERIOD: u64 = 640;
+
+/// The lowest and the highest rate that the voice mode takes (we decide).
+pub const RNNOISE_RATES: (u32, u32) = (8_000, 384_000);

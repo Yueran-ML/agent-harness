@@ -2,5 +2,7 @@
 //! thread of the mix here keeps convention 3 (`tests/rt_audit.rs` reads these files too).
 
 pub mod biquad;
+pub mod denoise;
 pub mod dynamics;
 pub mod eq;
+pub mod rnnoise;

@@ -13,7 +13,7 @@ use columbina_model::{
     Strip as StripModel, Timeline, TrackKind,
 };
 
-use crate::constants::MAX_CHANNELS;
+use crate::constants::{MAX_CHANNELS, SILENCE_DB};
 use crate::db_to_gain;
 use crate::feed::ClipSource;
 use crate::fx::ducker::{self, Ducker, Param as DuckerParam};
@@ -22,12 +22,17 @@ use crate::fx::eq::{self, Eq, Field, Kind, Variant, Zone};
 use crate::node::{Layout, Node, ParamId, Planar, Role, Spec};
 use crate::rt::{seqlock, Domain, SeqReader, Smoothed};
 
-use super::clip::{cutoff, radius, ClipChain, ClipPan, ClipScratch, Mapping, Window};
+use super::clip::{
+    cutoff, radius, ClipChain, ClipLevel, ClipPan, ClipScratch, Mapping, Reach, Window,
+};
 use super::pdc::{DelayLine, Delayer};
 use super::route::{balance, panned, PanAt};
 use super::strip::{Edge, Key, LaneOf, Pan, Stage, Strip, VcaState, VcaTerm};
 use super::taps::Tap;
-use super::{Control, Graph, Meter, Options, Out, OutputInfo, Owner, Purpose, StripParam, Target};
+use super::{
+    ClipId, ClipParam, Control, Graph, Meter, Options, Out, OutputInfo, Owner, Purpose, StripParam,
+    Target,
+};
 
 /// What a maker is told of an insert besides its effect.
 #[derive(Clone, Copy, Debug)]
@@ -198,6 +203,99 @@ pub(crate) struct Meta {
     pub(crate) edges: Vec<(Id, bool)>,
     pub(crate) stages: Vec<StageKind>,
     pub(crate) inserts: Vec<Id>,
+}
+
+/// What the clips of graph `id` are found by.
+fn clip_ids_of(sources: &[ClipSource], chains: &[ClipChain]) -> Vec<ClipId> {
+    sources
+        .iter()
+        .zip(chains)
+        .map(|(source, chain)| {
+            (
+                source.track.clone(),
+                source.clip.clone(),
+                chain.level.gain_db.is_some(),
+                chain.level.fixed_pan,
+            )
+        })
+        .collect()
+}
+
+/// The control of `owner` at `path` among the strips, VCAs and clips of graph `id`: of a clip,
+/// `clip.<id>.gain_db` and `clip.<id>.pan` of its track, where they are fixed.
+fn find_control(
+    (id, owners, metas, vca_ids, clip_ids): (u64, &[Owner], &[Meta], &[Id], &[ClipId]),
+    owner: &Owner,
+    path: &str,
+) -> Option<Control> {
+    if let (Owner::Track(track), Some(rest)) = (owner, path.strip_prefix("clip.")) {
+        return clip_ids
+            .iter()
+            .enumerate()
+            .find_map(|(at, (of, clip, fixed_gain, fixed_pan))| {
+                let field = rest.strip_prefix(clip.as_str())?.strip_prefix('.')?;
+                if of != track {
+                    return None;
+                }
+                match field {
+                    "gain_db" if *fixed_gain => {
+                        Some(Control(id, Target::Clip(at, ClipParam::Gain)))
+                    }
+                    "pan" if *fixed_pan => Some(Control(id, Target::Clip(at, ClipParam::Pan))),
+                    _ => None,
+                }
+            });
+    }
+    if let Owner::Vca(vca) = owner {
+        let vca = vca_ids.iter().position(|v| v == vca)?;
+        return match path {
+            "fader_db" => Some(Control(id, Target::VcaFader(vca))),
+            "mute" => Some(Control(id, Target::VcaMute(vca))),
+            _ => None,
+        };
+    }
+    let strip = owners.iter().position(|o| o == owner)?;
+    let param = if path == "solo" {
+        StripParam::Audible
+    } else {
+        param_of(&metas[strip], path)?
+    };
+    Some(Control(id, Target::Strip(strip, param)))
+}
+
+/// The controls of a graph, found off the thread that runs it ([`Graph::controls`]): the same
+/// as [`Graph::control`] gives.
+#[derive(Clone, Debug)]
+pub struct Controls {
+    id: u64,
+    owners: Vec<Owner>,
+    metas: Vec<Meta>,
+    vca_ids: Vec<Id>,
+    clip_ids: Vec<ClipId>,
+}
+
+impl Controls {
+    /// As [`Graph::control`].
+    #[must_use]
+    pub fn control(&self, owner: &Owner, path: &str) -> Option<Control> {
+        find_control(
+            (
+                self.id,
+                &self.owners,
+                &self.metas,
+                &self.vca_ids,
+                &self.clip_ids,
+            ),
+            owner,
+            path,
+        )
+    }
+
+    /// The tracks and buses of the graph, in its order of strips.
+    #[must_use]
+    pub fn owners(&self) -> &[Owner] {
+        &self.owners
+    }
 }
 
 /// The setting of a strip at `path`, the path of a lane (T1: `model/src/audio.rs`,
@@ -624,6 +722,104 @@ fn reach(edges: &[Vec<usize>], from: &[usize]) -> Vec<bool> {
     reached
 }
 
+/// Which strips are heard by the solos (p. 3885; the interaction reference §3.6): all of them
+/// while nothing is soloed; otherwise what is soloed or solo-safe, the buses it feeds, and what
+/// feeds a soloed bus. `feeds` are the buses each strip outputs and sends to, `tracks` the
+/// strips of tracks before those of buses.
+fn heard_by_solos(
+    feeds: &[Vec<usize>],
+    soloed: &[bool],
+    safe: &[bool],
+    tracks: usize,
+) -> Vec<bool> {
+    let count = feeds.len();
+    if !soloed.iter().any(|&s| s) {
+        return vec![true; count];
+    }
+    let kept: Vec<usize> = (0..count).filter(|&at| soloed[at] || safe[at]).collect();
+    let down = reach(feeds, &kept);
+    let mut back = vec![Vec::new(); count];
+    for (from, to) in feeds.iter().enumerate() {
+        for &to in to {
+            back[to].push(from);
+        }
+    }
+    let soloed_buses: Vec<usize> = (tracks..count).filter(|&at| soloed[at]).collect();
+    let up = reach(&back, &soloed_buses);
+    (0..count).map(|at| down[at] || up[at]).collect()
+}
+
+/// Whether each track of sound that is on and each bus of `timeline` is heard by the solos of
+/// the timeline: what the control `solo` of each is set to ([`Graph::control`]; T5 works it out
+/// when a solo changes as the sound plays, as the graph did when it was built).
+#[must_use]
+pub fn audible(timeline: &Timeline) -> Vec<(Owner, bool)> {
+    let tracks: Vec<&columbina_model::Track> = timeline
+        .tracks
+        .iter()
+        .filter(|r| r.kind == TrackKind::Audio && r.enabled)
+        .collect();
+    let bus_at: HashMap<&str, usize> = timeline
+        .buses
+        .iter()
+        .enumerate()
+        .map(|(at, bus)| (bus.id.as_str(), tracks.len() + at))
+        .collect();
+    let vca_at: HashMap<&str, usize> = timeline
+        .vcas
+        .iter()
+        .enumerate()
+        .map(|(at, vca)| (vca.id.as_str(), at))
+        .collect();
+    let strips: Vec<(Owner, &StripModel, bool, bool)> = tracks
+        .iter()
+        .map(|track| {
+            (
+                Owner::Track(track.id.clone()),
+                &track.audio.strip,
+                track.audio.solo,
+                track.audio.solo_safe,
+            )
+        })
+        .chain(timeline.buses.iter().map(|bus| {
+            (
+                Owner::Bus(bus.id.clone()),
+                &bus.strip,
+                bus.solo,
+                bus.solo_safe,
+            )
+        }))
+        .collect();
+    let feeds: Vec<Vec<usize>> = strips
+        .iter()
+        .map(|(_, strip, _, _)| {
+            strip
+                .outputs
+                .iter()
+                .map(|output| &output.bus)
+                .chain(strip.sends.iter().map(|send| &send.bus))
+                .filter_map(|bus| bus_at.get(bus.as_str()).copied())
+                .collect()
+        })
+        .collect();
+    let soloed: Vec<bool> = strips
+        .iter()
+        .map(|(_, strip, solo, _)| {
+            *solo
+                || chain(timeline, &strip.vcas, &vca_at)
+                    .iter()
+                    .any(|&v| timeline.vcas[v].solo)
+        })
+        .collect();
+    let safe: Vec<bool> = strips.iter().map(|(_, _, _, safe)| *safe).collect();
+    let heard = heard_by_solos(&feeds, &soloed, &safe, tracks.len());
+    strips
+        .into_iter()
+        .zip(heard)
+        .map(|((owner, _, _, _), heard)| (owner, heard))
+        .collect()
+}
+
 impl Graph {
     /// The graph of timeline `timeline` of `project`, as `options` say.
     ///
@@ -821,23 +1017,8 @@ impl Graph {
             .zip(&members)
             .map(|(source, members)| source.solo || members.iter().any(|&v| t.vcas[v].solo))
             .collect();
-        let audible: Vec<bool> = if soloed.iter().any(|&s| s) {
-            let kept: Vec<usize> = (0..count)
-                .filter(|&at| soloed[at] || sources[at].solo_safe)
-                .collect();
-            let down = reach(&feeds, &kept);
-            let mut back = vec![Vec::new(); count];
-            for (from, to) in feeds.iter().enumerate() {
-                for &to in to {
-                    back[to].push(from);
-                }
-            }
-            let soloed_buses: Vec<usize> = (tracks..count).filter(|&at| soloed[at]).collect();
-            let up = reach(&back, &soloed_buses);
-            (0..count).map(|at| down[at] || up[at]).collect()
-        } else {
-            vec![true; count]
-        };
+        let safe: Vec<bool> = sources.iter().map(|source| source.solo_safe).collect();
+        let audible = heard_by_solos(&feeds, &soloed, &safe, tracks);
 
         // The nodes of each strip: its Ducker, then the rest in its Order.
         let listen = options.purpose == Purpose::Preview;
@@ -1139,6 +1320,18 @@ impl Graph {
                     && clip.channels.is_some(),
                 eq,
                 processed: 0,
+                level: ClipLevel::new(
+                    match &clip.gain_db {
+                        #[allow(clippy::cast_possible_truncation, reason = "a gain in decibels")]
+                        AudioParam::Fixed(db) if *db > f64::from(SILENCE_DB) => Some(*db as f32),
+                        _ => None,
+                    },
+                    match pan {
+                        ClipPan::Fixed(sides) => Some(sides),
+                        _ => None,
+                    },
+                    rate,
+                ),
                 piece,
             });
         }
@@ -1364,6 +1557,7 @@ impl Graph {
             })
             .collect();
         let monitor = monitor_strip.and_then(|strip| outs.iter().position(|&at| at == strip));
+        let clip_ids = clip_ids_of(&clip_sources, &chains);
         let mut graph = Graph {
             id: GRAPHS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             rate,
@@ -1405,6 +1599,7 @@ impl Graph {
                 .collect(),
             edge: Planar::new(MAX_CHANNELS, max_block),
             vca_ids: t.vcas.iter().map(|vca| vca.id.clone()).collect(),
+            clip_ids,
             vcas: t
                 .vcas
                 .iter()
@@ -1448,21 +1643,37 @@ impl Graph {
 
     #[must_use]
     pub fn control(&self, owner: &Owner, path: &str) -> Option<Control> {
-        if let Owner::Vca(id) = owner {
-            let vca = self.vca_ids.iter().position(|v| v == id)?;
-            return match path {
-                "fader_db" => Some(Control(self.id, Target::VcaFader(vca))),
-                "mute" => Some(Control(self.id, Target::VcaMute(vca))),
-                _ => None,
-            };
+        find_control(
+            (
+                self.id,
+                &self.owners,
+                &self.metas,
+                &self.vca_ids,
+                &self.clip_ids,
+            ),
+            owner,
+            path,
+        )
+    }
+
+    /// What finds its controls ([`Graph::control`]) where the graph is not at hand: on the
+    /// thread that changes the project while the graph plays on the thread of the mix (T5).
+    #[must_use]
+    pub fn controls(&self) -> Controls {
+        Controls {
+            id: self.id,
+            owners: self.owners.clone(),
+            metas: self.metas.clone(),
+            vca_ids: self.vca_ids.clone(),
+            clip_ids: self.clip_ids.clone(),
         }
-        let strip = self.owners.iter().position(|o| o == owner)?;
-        let param = if path == "solo" {
-            StripParam::Audible
-        } else {
-            param_of(&self.metas[strip], path)?
-        };
-        Some(Control(self.id, Target::Strip(strip, param)))
+    }
+
+    /// Where each of its clips reads its media, in the order of [`Graph::clips`]: for the
+    /// threads that read the clips ahead of the graph (T5).
+    #[must_use]
+    pub fn reaches(&self) -> Vec<Reach> {
+        self.clips.iter().map(ClipChain::reach).collect()
     }
 
     /// Its outputs: the main outputs, then the bus that is monitored if it is not one.

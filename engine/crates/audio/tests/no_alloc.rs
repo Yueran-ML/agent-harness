@@ -7,6 +7,8 @@ use columbina_audio::rt::{messages, samples, seqlock, Domain, Smoothed};
 use columbina_audio::testing::{noise, realtime, CountingAllocator, Delay, Reference};
 use columbina_audio::{Automated, Automation, Block, Layout, Node, ParamId, Planar, Spec};
 
+mod session;
+
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
@@ -109,121 +111,11 @@ fn ten_seconds_of_the_work_of_the_thread_of_the_mix_take_no_memory() {
     assert!(counted.none(), "{counted:?}");
 }
 
-/// A project of 16 tracks of every kind of strip: Dynamics keyed by another track, Duckers keyed
-/// by two, equalizers, sends before and after the fader to a bus of 5.1, a VCA, lanes of the
-/// fader, the pan, a threshold and an amount, a crossfade, clips at speeds, mono, stereo, 5.1
-/// and Adaptive tracks.
-#[allow(clippy::too_many_lines, reason = "a step for each kind of strip")]
-fn sixteen_tracks() -> columbina_model::Project {
-    use columbina_model::audio::{BusFormat, TrackFormat};
-    use columbina_model::{
-        Bus, Lane, LaneKind, LanePoint, Output, Send, SourceRef, Speed, Time, TrackKind, Vca,
-    };
-    let mut project = columbina_model::Project::sample();
-    let timeline = &mut project.timelines[0];
-    timeline
-        .tracks
-        .retain(|track| track.kind == TrackKind::Audio);
-    let first = timeline.tracks[0].clone();
-    let mut b2 = Bus::first();
-    b2.id = "B2".into();
-    b2.format = BusFormat::FiveOne;
-    b2.strip.outputs = vec![Output {
-        bus: "B1".into(),
-        on: true,
-    }];
-    b2.strip.eq.on = true;
-    timeline.buses.push(b2);
-    timeline.vcas.push(Vca {
-        id: "VCA1".into(),
-        name: "VCA 1".into(),
-        fader_db: -3.0,
-        mute: false,
-        solo: false,
-        vcas: vec![],
-        lanes: columbina_model::Lanes::new(),
-    });
-    let lane = |points: &[(i64, f64)]| Lane {
-        points: points
-            .iter()
-            .map(|&(ticks, value)| LanePoint {
-                at: Time {
-                    ticks,
-                    scale: 48000,
-                },
-                value,
-            })
-            .collect(),
-        kind: LaneKind::Continuous,
-        scale: None,
-    };
-    timeline.tracks = (0..16)
-        .map(|n| {
-            let mut track = first.clone();
-            track.id = format!("A{n}");
-            track.clips[0].id = format!("c{n}");
-            track.clips[0].speed = [Speed { num: 1, den: 1 }, Speed { num: 3, den: 2 }][n % 2];
-            let audio = &mut track.audio;
-            (audio.format, audio.channels) = match n % 4 {
-                0 => (TrackFormat::Mono, 1),
-                1 => (TrackFormat::Stereo, 2),
-                2 => (TrackFormat::FiveOne, 6),
-                _ => (TrackFormat::Adaptive, 3),
-            };
-            audio.strip.eq.on = true;
-            audio.strip.dynamics.on = n % 3 == 0;
-            audio.strip.dynamics.compressor.on = true;
-            if n > 0 && n % 3 == 0 {
-                audio.strip.dynamics.compressor.sidechain.on = true;
-                audio.strip.dynamics.compressor.sidechain.source =
-                    Some(SourceRef::Track(format!("A{}", n - 1)));
-            }
-            audio.strip.sends.push(Send {
-                bus: "B2".into(),
-                on: true,
-                pre: n % 2 == 0,
-                level_db: -6.0,
-                pan: columbina_model::Pan {
-                    y: -0.5,
-                    ..columbina_model::Pan::default()
-                },
-            });
-            audio.strip.vcas = vec!["VCA1".into()];
-            // Every fourth track ducked by the two before it (T11), its amount on a lane.
-            if n >= 2 && n % 4 == 3 {
-                audio.strip.track_fx = Some(columbina_model::audio::fx::Ducker {
-                    on: true,
-                    sources: vec![
-                        SourceRef::Track(format!("A{}", n - 1)),
-                        SourceRef::Track(format!("A{}", n - 2)),
-                    ],
-                    ..Default::default()
-                });
-                audio.lanes.insert(
-                    "track_fx.amount_db".into(),
-                    lane(&[(0, 3.0), (96_000, 20.0)]),
-                );
-            }
-            audio
-                .lanes
-                .insert("fader_db".into(), lane(&[(0, -20.0), (96_000, 0.0)]));
-            audio
-                .lanes
-                .insert("pan.x".into(), lane(&[(0, -1.0), (96_000, 1.0)]));
-            audio
-                .lanes
-                .insert("eq.2.gain_db".into(), lane(&[(0, -6.0), (96_000, 6.0)]));
-            track
-        })
-        .collect();
-    project
-}
-
 #[test]
 fn the_graph_of_a_timeline_plays_ten_seconds_with_no_memory() {
     use columbina_audio::feed::FeedError;
     use columbina_audio::graph::{Graph, Options, Owner, Purpose};
-    let project = sixteen_tracks();
+    let project = session::sixteen_tracks();
     let mut graph = Graph::build(&project, 0, Options::new(512, Purpose::Preview)).unwrap();
     let fader = graph
         .control(&Owner::Track("A5".into()), "fader_db")
@@ -277,4 +169,85 @@ fn the_graph_of_a_timeline_plays_ten_seconds_with_no_memory() {
     });
     assert!(counted.none(), "{counted:?}");
     assert!(heard);
+}
+
+#[test]
+fn ten_seconds_of_a_session_of_sixteen_tracks_take_no_memory_on_the_threads_of_the_sound() {
+    use columbina_audio::graph::Owner;
+    use session::{Sim, Tone};
+    let project = session::sixteen_tracks();
+    // Another graph to swap in: an equalizer of A3 off, which takes its node out.
+    let mut other = project.clone();
+    other.timelines[0].tracks[3].audio.strip.eq.on = false;
+    let tone = Tone {
+        hz: 440.0,
+        amplitude: 0.3,
+    };
+    let mut sim = Sim::of(&project, 4800, tone);
+    let (a5, a3, a7, vca) = (
+        Owner::Track("A5".into()),
+        Owner::Track("A3".into()),
+        Owner::Track("A7".into()),
+        Owner::Vca("VCA1".into()),
+    );
+    let mut counted = Vec::new();
+    for tick in 0..1000 {
+        // Off the threads of the sound: reading ahead, and the graphs and the session to come
+        // made.
+        sim.pump();
+        if tick == 400 {
+            sim.swap(&other, 4800);
+        }
+        let prepared = (tick == 600).then(|| sim.prepare(&project, 96_000));
+        // Two graphs sent while another waits (the second takes the place of the first after
+        // it), and one too late.
+        let swaps = (tick == 700).then(|| {
+            let mixed = sim.counters.mixed();
+            [
+                (sim.run_of(&other, mixed + 9_600), mixed + 9_600),
+                (sim.run_of(&project, mixed + 12_000), mixed + 12_000),
+                (sim.run_of(&project, mixed + 12_100), mixed + 12_100),
+                (sim.run_of(&other, mixed - 480), mixed - 480),
+            ]
+        });
+        // On them: the changes of the settings sent, a new session as a seek starts one, the
+        // graphs sent, the mix topped up, the device's run.
+        let ((), count) = realtime(|| {
+            if let Some(prepared) = prepared {
+                sim.send(prepared);
+            }
+            if let Some(swaps) = swaps {
+                for (run, at) in swaps {
+                    sim.send_swap(run, at);
+                }
+            }
+            if tick % 2 == 0 {
+                #[allow(clippy::cast_precision_loss, reason = "a test value")]
+                let value = -((tick % 20) as f32);
+                sim.set(&a5, "fader_db", value);
+                sim.set(&a3, "dynamics.compressor.threshold_db", value);
+                sim.set(&vca, "fader_db", value / 2.0);
+                sim.set(&a7, "track_fx.hold_ms", -value * 10.0);
+            }
+            sim.device_run();
+        });
+        counted.push(count);
+    }
+    let all = counted
+        .iter()
+        .fold((0, 0), |(a, f), c| (a + c.allocations, f + c.frees));
+    assert_eq!(
+        all,
+        (0, 0),
+        "allocations and frees on the threads of the sound"
+    );
+    // The swap at 4 s, and after the seek two of the four sent: the first, and the third, which
+    // took the place of the second behind it; the last came too late.
+    assert_eq!(sim.counters.swaps(), 3);
+    assert_eq!(sim.counters.late(), 1);
+    sim.pump();
+    assert_eq!(sim.late, 1);
+    assert_eq!(sim.counters.underruns(), 0);
+    assert_eq!(sim.control.shared.short(), 0);
+    assert!(sim.played.iter().any(|&sample| sample != 0.0));
 }

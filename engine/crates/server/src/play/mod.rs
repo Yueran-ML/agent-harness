@@ -2,6 +2,7 @@
 
 mod ahead;
 pub(crate) mod mix;
+mod sound;
 pub(crate) mod sources;
 mod timeline;
 
@@ -196,9 +197,19 @@ impl Transport {
         repair: transport::Again,
         scopes: &Scopes,
     ) -> Self {
+        // A capture is of the timeline monitor's sound (T5, for T6): the source monitor plays
+        // on an output of no device that writes nothing, so that it never makes the file anew.
+        let source_setup = transport::Setup {
+            sound: match &setup.sound {
+                crate::audio::Kind::Capture(_) => crate::audio::Kind::Null,
+                other => other.clone(),
+            },
+            ..setup.clone()
+        };
+        let test_hooks = setup.test_hooks;
         let source = transport::Transport::new(
             headless,
-            setup,
+            source_setup,
             viewer.slot(Monitor::Source),
             {
                 let notify = Arc::clone(&notify);
@@ -224,7 +235,7 @@ impl Transport {
             timeline,
             graphics,
             orders: Arc::default(),
-            test_hooks: setup.test_hooks,
+            test_hooks,
         }
     }
 

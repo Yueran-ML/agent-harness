@@ -667,19 +667,29 @@ async fn timeline_sound_plays_on_through_changes_that_it_does_not_hear() {
         "the sound started again: {before} then {after}"
     );
     assert_eq!(digest["pixels"][0], json!([0, 255, 0, 255]), "{digest}");
-    // A change of what is heard starts the mix again at the playhead.
+    // A change of what is heard does not start the sound again either (T5): a clip's gain is a
+    // setting of the mix as it plays, and a fade another mix swapped in; the sound and the
+    // picture keep together.
     client
         .apply(
             json!([{"op":"set_clip","timeline":names["$timeline"],"id":sound,
             "gain_db":-6.0}]),
         )
         .await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    client
+        .apply(
+            json!([{"op":"set_clip","timeline":names["$timeline"],"id":sound,
+            "fade_out":10}]),
+        )
+        .await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
     let (again, digest) = heard(&mut client).await;
     assert!(
-        again < after,
-        "the sound did not start again: {after} then {again}"
+        again > after,
+        "the sound started again: {after} then {again}"
     );
+    assert_eq!(digest["audio_swaps"], 1, "{digest}");
+    assert_eq!(digest["audio_short_runs"], 0, "{digest}");
     assert!(
         digest["audio_sample"]
             .as_i64()
@@ -688,6 +698,182 @@ async fn timeline_sound_plays_on_through_changes_that_it_does_not_hear() {
             <= 1920,
         "{digest}"
     );
+}
+
+/// The frames of a capture (`--sound capture=<path>`): left and right, interleaved.
+fn captured(path: &std::path::Path) -> Vec<f32> {
+    std::fs::read(path)
+        .unwrap()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|word| f32::from_le_bytes(*word))
+        .collect()
+}
+
+/// A timeline of a track of sound of two clips of the 4 s of media `m1` one after the other, and
+/// a red picture as long, loaded; its names.
+async fn eight_seconds_of_sound(client: &mut Client) -> Value {
+    let got = project(client).await;
+    let mut color = clip("$color", "unused", 0, 200);
+    color["source"] = json!({"kind":"color","color":"#ff0000ff"});
+    let names = add_timeline(client, vec![color], vec![]).await;
+    let scale = got["project"]["media"][0]["facts"]["duration"]["scale"].clone();
+    let mut first = clip("$first", "m1", 0, 100);
+    first["source"]["in"]["scale"] = scale.clone();
+    let mut second = clip("$second", "m1", 100, 100);
+    second["source"]["in"]["scale"] = scale;
+    let added = client
+        .apply(
+            json!([{"op":"add_track","timeline":names["$timeline"],"track":{
+        "id":"$audio","kind":"audio","name":"Dialogue","enabled":true,"locked":false,
+        "clips":[first, second],"transitions":[]},"index":null}]),
+        )
+        .await["names"]
+        .clone();
+    let mut names = names;
+    for name in ["$audio", "$first", "$second"] {
+        names[name] = added[name].clone();
+    }
+    load(client, &names).await;
+    names
+}
+
+#[tokio::test]
+#[allow(clippy::cast_precision_loss, reason = "milliseconds of a test")]
+async fn timeline_sound_muted_while_it_plays_is_silent_within_60_ms() {
+    if columbina_compose::gpu_for_tests().is_none() {
+        return;
+    }
+    let dir = project_dir();
+    let capture = dir.path().join("heard.f32");
+    let sound = format!("capture={}", capture.display());
+    let Some((engine, mut client)) = transport_engine_with(
+        dir.path(),
+        &[support::Sample::Fhd],
+        &["--sound", &sound, "--test-hooks"],
+    )
+    .await
+    else {
+        return;
+    };
+    let names = eight_seconds_of_sound(&mut client).await;
+    action(&mut client, "transport.play", json!({"speed":1})).await;
+    client
+        .until_state("timeline audio started", |s| {
+            s["monitor"] == "timeline" && s["sound"] == "on"
+        })
+        .await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let asked = std::time::Instant::now();
+    let digest = action(&mut client, "transport.frame_digest", json!({})).await;
+    let heard = digest["audio_samples"].as_i64().unwrap();
+    let applied = std::time::Instant::now();
+    client
+        .apply(
+            json!([{"op":"set_track","timeline":names["$timeline"],"id":names["$audio"],
+            "mute":true}]),
+        )
+        .await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let digest = action(&mut client, "transport.frame_digest", json!({})).await;
+    assert_eq!(digest["audio_swaps"], 0, "a mute is a setting: {digest}");
+    assert_eq!(digest["audio_short_runs"], 0, "{digest}");
+    assert_eq!(digest["audio_underruns"], 0, "{digest}");
+    action(&mut client, "transport.pause", json!({})).await;
+    drop(client);
+    drop(engine);
+    let left: Vec<f32> = captured(&capture).into_iter().step_by(2).collect();
+    // What was given to the device when the change was sent: what was heard by the digest, the
+    // 20 ms that the device is heard after, and the time from the digest to the change.
+    let between = applied.duration_since(asked).as_secs_f64();
+    #[allow(clippy::cast_possible_truncation)]
+    let sent = usize::try_from(heard + 960 + (between * 48_000.0) as i64).unwrap();
+    let loud = left[sent - 4800..sent]
+        .iter()
+        .fold(0.0_f32, |most, x| most.max(x.abs()));
+    assert!(loud > 0.05, "{loud}");
+    let silent = (sent..left.len() - 480)
+        .find(|&n| left[n..n + 480].iter().all(|x| x.abs() < 1e-3))
+        .unwrap();
+    let after = (silent - sent) as f64 / 48.0;
+    println!("muted while it plays: below -60 dBFS {after:.1} ms after the change was sent");
+    assert!(after <= 60.0, "{after} ms");
+}
+
+#[tokio::test]
+#[allow(clippy::cast_precision_loss, reason = "levels of a test")]
+async fn timeline_sound_plays_through_two_hundred_changes_without_a_click() {
+    if columbina_compose::gpu_for_tests().is_none() {
+        return;
+    }
+    let dir = project_dir();
+    let capture = dir.path().join("heard.f32");
+    let sound = format!("capture={}", capture.display());
+    let Some((engine, mut client)) = transport_engine_with(
+        dir.path(),
+        &[support::Sample::Fhd],
+        &["--sound", &sound, "--test-hooks"],
+    )
+    .await
+    else {
+        return;
+    };
+    let names = eight_seconds_of_sound(&mut client).await;
+    action(&mut client, "transport.play", json!({"speed":1})).await;
+    client
+        .until_state("timeline audio started", |s| {
+            s["monitor"] == "timeline" && s["sound"] == "on"
+        })
+        .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let first = action(&mut client, "transport.frame_digest", json!({})).await;
+    let before = first["audio_samples"].as_i64().unwrap();
+    // Every 20 ms, the gain or the pan of a clip (a setting, as its volume line or pan is
+    // dragged) or its fade out (another mix swapped in).
+    let mut next = std::time::Instant::now();
+    for change in 0..200 {
+        let op = match change % 4 {
+            0 => json!({"op":"set_clip","timeline":names["$timeline"],"id":names["$first"],
+                "gain_db":-3.0 + f64::from(change % 7) * 0.25}),
+            1 => json!({"op":"set_clip","timeline":names["$timeline"],"id":names["$second"],
+                "pan": f64::from(change % 5) * 0.05}),
+            2 => json!({"op":"set_clip","timeline":names["$timeline"],"id":names["$first"],
+                "fade_out": change % 3}),
+            _ => json!({"op":"set_clip","timeline":names["$timeline"],"id":names["$second"],
+                "gain_db":-1.5}),
+        };
+        client.apply(json!([op])).await;
+        next += Duration::from_millis(20);
+        tokio::time::sleep_until(next.into()).await;
+    }
+    let digest = action(&mut client, "transport.frame_digest", json!({})).await;
+    let after = digest["audio_samples"].as_i64().unwrap();
+    assert!(
+        after > before + 48_000 * 3,
+        "the sound started again: {digest}"
+    );
+    assert_eq!(digest["audio_short_runs"], 0, "{digest}");
+    assert_eq!(digest["audio_underruns"], 0, "{digest}");
+    assert!(digest["audio_swaps"].as_u64().unwrap() > 0, "{digest}");
+    action(&mut client, "transport.pause", json!({})).await;
+    drop(client);
+    drop(engine);
+    let left: Vec<f32> = captured(&capture).into_iter().step_by(2).collect();
+    let step = |from: usize, to: usize| {
+        left[from..to]
+            .windows(2)
+            .map(|pair| (pair[1] - pair[0]).abs())
+            .fold(0.0_f32, f32::max)
+    };
+    // The tone of 440 Hz as it plays before the changes, and through them, but where the second
+    // clip starts the media again (at 4 s), which is a step of the tone itself.
+    let start = usize::try_from(before).unwrap();
+    let end = usize::try_from(after).unwrap().min(left.len());
+    let normal = step(4800, start);
+    let changed = step(start, 192_000 - 480).max(step(192_000 + 480, end));
+    println!("the largest step: {changed} through the changes, {normal} before");
+    assert!(changed <= normal * 1.1, "{changed} > {normal} · 1.1");
 }
 
 #[tokio::test]
@@ -868,4 +1054,58 @@ async fn the_source_and_timeline_monitors_show_a_picture_alike() {
     ] {
         both_monitors_show(sample).await;
     }
+}
+
+#[tokio::test]
+#[ignore = "plays on the real output device of the machine (muted): run with --ignored"]
+async fn timeline_sound_plays_on_the_output_device_through_a_change() {
+    if columbina_compose::gpu_for_tests().is_none() {
+        return;
+    }
+    let dir = project_dir();
+    let Some((engine, mut client)) = transport_engine_with(
+        dir.path(),
+        &[support::Sample::Fhd],
+        &["--mute", "--test-hooks"],
+    )
+    .await
+    else {
+        return;
+    };
+    let names = eight_seconds_of_sound(&mut client).await;
+    action(&mut client, "transport.play", json!({"speed":1})).await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let state = action(&mut client, "transport.state", json!({})).await;
+    if state["sound"] != "on" {
+        eprintln!("no sound: there is no device to play it on ({state})");
+        return;
+    }
+    // The device may take a while to let its first sound be heard (opening it, waking it).
+    let started = std::time::Instant::now();
+    let mut before = action(&mut client, "transport.frame_digest", json!({})).await;
+    while before["audio_samples"].as_i64().is_none() {
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "no sound heard: {before}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        before = action(&mut client, "transport.frame_digest", json!({})).await;
+    }
+    client
+        .apply(
+            json!([{"op":"set_track","timeline":names["$timeline"],"id":names["$audio"],
+            "mute":true}]),
+        )
+        .await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    let after = action(&mut client, "transport.frame_digest", json!({})).await;
+    eprintln!("on the device: {before} then {after}");
+    assert!(
+        after["audio_samples"].as_i64().unwrap() > before["audio_samples"].as_i64().unwrap(),
+        "the sound started again or stopped"
+    );
+    assert_eq!(after["audio_short_runs"], 0, "{after}");
+    assert_eq!(after["audio_underruns"], 0, "{after}");
+    action(&mut client, "transport.pause", json!({})).await;
+    eprintln!("{}", engine.stderr());
 }

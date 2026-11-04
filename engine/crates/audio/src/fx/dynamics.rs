@@ -23,10 +23,12 @@
 //!
 //! Each module follows its gain in the direction that the module acts in, its *attack*: down for
 //! the Compressor and the Limiter (more reduction), up for the Expander/Gate (it opens). Its Hold
-//! is a window: the static gain `t` is that of the loudest level of the last `H + 1` samples
-//! (the static curves rise with the level, so that this is the largest gain of the window, turned
-//! so that the attack is up), a function of those samples alone, so that it keeps no phase of
-//! its own. The detector keeps a held gain `h` and its output `y`:
+//! is a window: the static gain `t` is that of the loudest level of the last `H + 1` to
+//! `H + 32` samples (the static curves rise with the level, so that this is the largest gain of
+//! the window, turned so that the attack is up), kept as the peaks of bins of 32 samples
+//! ([`DYNAMICS_HOLD_BIN`]). It is a function of those samples and of where the bins fall in the
+//! node's own count, not of a timer: a late start differs only where an event (a gate shutting)
+//! falls in a bin elsewhere. The detector keeps a held gain `h` and its output `y`:
 //!
 //! ```text
 //! h = t                     if t ≥ h      (a new peak, or one held in the window)
@@ -40,7 +42,8 @@
 //! the release counted after the hold. The peak is held through the dips of a wave, so that a
 //! steady tone is made steady with little ripple. For the Expander/Gate, Hold keeps the gate
 //! open after the sound falls below the threshold (the reference's reading of p. 3863, §16
-//! item 6). The windows take their memory in `prepare`, for the longest hold (4 s).
+//! item 6). The windows take their memory in `prepare`, for the longest hold (4 s): 48 kB
+//! each at 48 kHz.
 //!
 //! # Changes while the sound plays
 //!
@@ -70,8 +73,8 @@
 //! block whose sidechain is missing (or shorter than the spec's) is heard as one with none.
 
 use crate::constants::{
-    samples, DYNAMICS_LEVEL_CEILING_DB, DYNAMICS_LEVEL_FLOOR_DB, DYNAMICS_SETTLE_TIME_CONSTANTS,
-    DYNAMICS_WAKE_FALL_DB_PER_SECOND, MAX_CHANNELS, SMOOTHING,
+    samples, DYNAMICS_HOLD_BIN, DYNAMICS_LEVEL_CEILING_DB, DYNAMICS_LEVEL_FLOOR_DB,
+    DYNAMICS_SETTLE_TIME_CONSTANTS, DYNAMICS_WAKE_FALL_DB_PER_SECOND, MAX_CHANNELS, SMOOTHING,
 };
 use crate::node::{Block, Layout, Node, ParamId, Spec, Unsupported};
 use crate::rt::{flush, seqlock, Domain, SeqReader, SeqWriter, Smoothed, Words};
@@ -712,22 +715,29 @@ impl Coefficient {
     }
 }
 
-/// The loudest of the levels of the last `hold + 1` samples, this one with them: the Hold of a
-/// module, a function of those samples alone, whatever came before them (a monotonic deque,
-/// each sample pushed and popped once). Its memory is taken in `prepare` for the longest hold.
+/// The loudest level of a window of the last `hold + 1` to `hold + bin` samples, this one with
+/// them: the Hold of a module. The samples are kept as the peaks of bins of
+/// [`DYNAMICS_HOLD_BIN`]: the bin under way, and as many whole bins before it as make the window
+/// at least `hold + 1` samples long, their peaks in a monotonic deque (each bin pushed and popped
+/// once). A hold of 0 is this sample alone. Its memory, taken in `prepare` for the longest hold,
+/// is a bin's 8 bytes: 6000 bins, 48 kB, for 4 s at 48 kHz.
 #[derive(Clone, Debug, Default)]
 struct Window {
-    /// A ring of (the sample, its level), the levels falling from the front.
-    entries: Vec<(u32, f32)>,
+    /// A ring of (the bin, its peak), the peaks falling from the front.
+    bins: Vec<(u32, f32)>,
     head: usize,
     len: usize,
+    /// The bin under way, its peak and its samples so far.
     now: u32,
+    peak: f64,
+    filled: u32,
 }
 
 impl Window {
     /// Room for a hold of `hold` samples.
     fn prepare(&mut self, hold: usize) {
-        self.entries = vec![(0, 0.0); hold + 1]; // rt-ok: taken in prepare
+        let bins = hold.div_ceil(DYNAMICS_HOLD_BIN as usize) + 2;
+        self.bins = vec![(0, 0.0); bins]; // rt-ok: taken in prepare
         self.clear();
     }
 
@@ -736,37 +746,56 @@ impl Window {
         self.head = 0;
         self.len = 0;
         self.now = 0;
+        self.peak = f64::NEG_INFINITY;
+        self.filled = 0;
     }
 
-    /// The loudest of `level` and the levels of the `hold` samples before it.
+    /// The loudest of `level` and the levels before it in a window of `hold + 1` to
+    /// `hold + bin` samples.
     #[allow(
         clippy::cast_possible_truncation,
         reason = "levels in dB, to a millionth"
     )]
     fn push(&mut self, level: f64, hold: u32) -> f64 {
-        let capacity = self.entries.len();
+        let capacity = self.bins.len();
         if capacity == 0 {
             return level;
         }
-        let hold = hold.min(u32::try_from(capacity - 1).unwrap_or(u32::MAX));
-        while self.len > 0 && self.now.wrapping_sub(self.entries[self.head].0) > hold {
+        self.peak = self.peak.max(level);
+        self.filled += 1;
+        // The whole bins that make the window at least hold + 1 samples, as far as there is room.
+        let room = u32::try_from(capacity - 2).unwrap_or(u32::MAX);
+        let whole = (hold + 1)
+            .saturating_sub(self.filled)
+            .div_ceil(DYNAMICS_HOLD_BIN)
+            .min(room);
+        while self.len > 0 && self.now.wrapping_sub(self.bins[self.head].0) > whole {
             self.head = (self.head + 1) % capacity;
             self.len -= 1;
         }
-        let stored = level as f32;
-        while self.len > 0 && self.entries[(self.head + self.len - 1) % capacity].1 <= stored {
-            self.len -= 1;
-        }
-        self.entries[(self.head + self.len) % capacity] = (self.now, stored);
-        self.len += 1;
-        let (at, loudest) = self.entries[self.head];
-        let current = at == self.now;
-        self.now = self.now.wrapping_add(1);
-        if current {
+        let loudest = if hold == 0 {
             level
+        } else if self.len > 0 {
+            self.peak.max(f64::from(self.bins[self.head].1))
         } else {
-            f64::from(loudest)
+            self.peak
+        };
+        if self.filled == DYNAMICS_HOLD_BIN {
+            let stored = self.peak as f32;
+            while self.len > 0 && self.bins[(self.head + self.len - 1) % capacity].1 <= stored {
+                self.len -= 1;
+            }
+            if self.len == capacity {
+                self.head = (self.head + 1) % capacity;
+                self.len -= 1;
+            }
+            self.bins[(self.head + self.len) % capacity] = (self.now, stored);
+            self.len += 1;
+            self.now = self.now.wrapping_add(1);
+            self.peak = f64::NEG_INFINITY;
+            self.filled = 0;
         }
+        loudest
     }
 }
 
@@ -977,9 +1006,9 @@ impl Dynamics {
 
     /// The settling ([`Node::settle`]) of Dynamics set as `settings`, at `rate`: the ramp of
     /// 10 ms and, when Dynamics and a module are on, the second in which what a woken module
-    /// hears is forgotten, and for each module on its hold and 18 of its time constants (attack
-    /// plus release, [`DYNAMICS_SETTLE_TIME_CONSTANTS`]), the modules one after the other, as
-    /// each hears the gain of those before it.
+    /// hears is forgotten, and for each module on its hold, a bin of it ([`DYNAMICS_HOLD_BIN`])
+    /// and 18 of its time constants (attack plus release, [`DYNAMICS_SETTLE_TIME_CONSTANTS`]),
+    /// the modules one after the other, as each hears the gain of those before it.
     ///
     /// [`Node::settle`] gives it for the parameters as they are set (the longer of a time and
     /// the time it ramps to). Lanes of automation are not set: the graph (T4b) asks for the
@@ -1003,6 +1032,7 @@ impl Dynamics {
                 (DYNAMICS_SETTLE_TIME_CONSTANTS * f64::from(attack + release) + f64::from(hold))
                     * rate
                     / 1000.0
+                    + f64::from(DYNAMICS_HOLD_BIN)
             } else {
                 0.0
             }

@@ -11,7 +11,7 @@
     reason = "the numbers of tests"
 )]
 
-use columbina_audio::constants::DYNAMICS_TIME_CONSTANT_FRACTION;
+use columbina_audio::constants::{DYNAMICS_HOLD_BIN, DYNAMICS_TIME_CONSTANT_FRACTION};
 use columbina_audio::fx::dynamics::{
     compressor_gain_db, curve, expander_gain_db, gate_gain_db, limiter_gain_db, mixed_gain_db,
     Dynamics, Param, Settings, PARAMS,
@@ -278,7 +278,17 @@ fn the_compressor_attacks_holds_and_releases_in_the_times_set() {
     for (n, g) in gains[down..down + ms(50.0)].iter().enumerate() {
         assert!((g - held).abs() < 1e-4, "moved in the hold at {n}: {g}");
     }
-    let release = time_to_63(&gains, down + ms(50.0), held, 0.0);
+    // The hold is kept in bins: the release starts from H to H + one bin after the drop.
+    let bin = DYNAMICS_HOLD_BIN as usize;
+    let starts = gains[down..]
+        .iter()
+        .position(|g| (g - held).abs() >= 1e-4)
+        .unwrap();
+    assert!(
+        (ms(50.0)..=ms(50.0) + bin).contains(&starts),
+        "the release starts {starts} after the drop"
+    );
+    let release = time_to_63(&gains, down + starts, held, 0.0);
     assert!(
         release.abs_diff(ms(200.0)) <= ms(200.0) / 20,
         "release {release}"
@@ -311,6 +321,7 @@ fn the_gate_opens_in_its_attack_stays_open_in_its_hold_and_shuts_in_its_release(
     for (n, g) in gains[down..down + ms(100.0)].iter().enumerate() {
         assert!(g.abs() < 1e-4, "shut in the hold at {n}: {g}");
     }
+    // The hold is kept in bins (up to one bin longer): within the ±5 % of the release below.
     let release = time_to_63(&gains, down + ms(100.0), 0.0, -30.0);
     assert!(
         release.abs_diff(ms(300.0)) <= ms(300.0) / 20,
@@ -1190,4 +1201,29 @@ fn the_ball_starts_silent_and_shows_the_sidechain_listened_to() {
     let seen = ball.read();
     assert!((seen.input_db - -20.0).abs() < 1e-3, "{seen:?}");
     assert!((seen.output_db - -6.0).abs() < 1e-3, "{seen:?}");
+}
+
+/// The hold kept in bins of [`DYNAMICS_HOLD_BIN`] is a window of H + 1 to H + 32 samples whose
+/// far edge is on a bin of the node's own count of samples: a node started at a sample that is
+/// not a multiple of 32 after another sees the far edge elsewhere. Where a gate shuts on a tone
+/// falling through its threshold, the two shut up to 31 samples apart, and differ by up to
+/// −52 dBFS after the reported settling (the compressor's case, a steady slope, stays below
+/// −134 dBFS). Kept to show the cost of the bins; see the progress notes of T8.
+#[test]
+#[ignore = "the bins of the hold have a phase: a gate shutting differs by up to -52 dBFS"]
+fn a_gate_shutting_in_its_hold_settles_whatever_the_phase_of_the_bins() {
+    let spec = Spec::new(RATE, 512, Layout::Mono);
+    let run = Run::new(vec![decaying(4.0, ms(8000.0))]);
+    let gate = on(|s| {
+        s.expander.on = true;
+        s.expander.gate = true;
+        s.expander.threshold_db = -20.0;
+        s.expander.range_db = 40.0;
+        s.expander.attack_ms = 1.0;
+        s.expander.hold_ms = 200.0;
+        s.expander.release_ms = 50.0;
+    });
+    for from in [ms(1000.0) + 7, ms(1000.0) + 16] {
+        assert_settle(|| Dynamics::new(&gate), &spec, &run, from);
+    }
 }

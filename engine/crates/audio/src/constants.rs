@@ -185,6 +185,11 @@ pub const DYNAMICS_LEVEL_FLOOR_DB: f64 = -200.0;
 /// The loudest level, in dBFS, that Dynamics hears: an infinite sample is heard as this (T8).
 pub const DYNAMICS_LEVEL_CEILING_DB: f64 = 200.0;
 
+/// The samples of a bin of the Hold of Dynamics: the window of a hold of H samples is H + 1 to
+/// H + 32 samples long, kept as the peaks of its bins (T8). 32 rather than 64, for half the
+/// spread of the length of the window (0.67 ms at 48 kHz) at 48 kB a window for 4 s.
+pub const DYNAMICS_HOLD_BIN: u32 = 32;
+
 /// How fast the peak that a module of Dynamics hears when it is turned on falls, in dB a second:
 /// it bridges the dips of a wave (4 dB in the 10 ms of half a wave of 50 Hz) and forgets the
 /// 400 dB between the floor and the ceiling in a second (T8).

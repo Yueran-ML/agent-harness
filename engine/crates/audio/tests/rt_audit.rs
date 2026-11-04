@@ -68,6 +68,7 @@ fn the_code_of_the_threads_of_the_sound_does_not_lock_allocate_or_log() {
         "width.rs",
         "deesser.rs",
         "dehummer.rs",
+        "ducker.rs",
         "true_peak.rs",
         "denoise.rs",
         "rnnoise.rs",

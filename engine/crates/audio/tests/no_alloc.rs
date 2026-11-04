@@ -109,9 +109,10 @@ fn ten_seconds_of_the_work_of_the_thread_of_the_mix_take_no_memory() {
     assert!(counted.none(), "{counted:?}");
 }
 
-/// A project of 16 tracks of every kind of strip: Dynamics keyed by another track, equalizers,
-/// sends before and after the fader to a bus of 5.1, a VCA, lanes of the fader, the pan and a
-/// threshold, a crossfade, clips at speeds, mono, stereo, 5.1 and Adaptive tracks.
+/// A project of 16 tracks of every kind of strip: Dynamics keyed by another track, Duckers keyed
+/// by two, equalizers, sends before and after the fader to a bus of 5.1, a VCA, lanes of the
+/// fader, the pan, a threshold and an amount, a crossfade, clips at speeds, mono, stereo, 5.1
+/// and Adaptive tracks.
 fn sixteen_tracks() -> columbina_model::Project {
     use columbina_model::audio::{BusFormat, TrackFormat};
     use columbina_model::{
@@ -186,6 +187,21 @@ fn sixteen_tracks() -> columbina_model::Project {
                 },
             });
             audio.strip.vcas = vec!["VCA1".into()];
+            // Every fourth track ducked by the two before it (T11), its amount on a lane.
+            if n >= 2 && n % 4 == 3 {
+                audio.strip.track_fx = Some(columbina_model::audio::fx::Ducker {
+                    on: true,
+                    sources: vec![
+                        SourceRef::Track(format!("A{}", n - 1)),
+                        SourceRef::Track(format!("A{}", n - 2)),
+                    ],
+                    ..Default::default()
+                });
+                audio.lanes.insert(
+                    "track_fx.amount_db".into(),
+                    lane(&[(0, 3.0), (96_000, 20.0)]),
+                );
+            }
             audio
                 .lanes
                 .insert("fader_db".into(), lane(&[(0, -20.0), (96_000, 0.0)]));
@@ -220,6 +236,9 @@ fn the_graph_of_a_timeline_plays_ten_seconds_with_no_memory() {
         .control(&Owner::Vca("VCA1".into()), "fader_db")
         .unwrap();
     let pan = graph.control(&Owner::Track("A2".into()), "pan.x").unwrap();
+    let duck = graph
+        .control(&Owner::Track("A7".into()), "track_fx.hold_ms")
+        .unwrap();
     let mut feed = |_: usize, range: std::ops::Range<i64>, out: &mut [&mut [f32]]| {
         for out in out.iter_mut() {
             for (n, sample) in out.iter_mut().enumerate() {
@@ -247,6 +266,7 @@ fn the_graph_of_a_timeline_plays_ten_seconds_with_no_memory() {
                 graph.set(threshold, value);
                 graph.set(vca, value / 2.0);
                 graph.set(pan, value / 20.0);
+                graph.set(duck, -value * 10.0);
             }
             graph.process(&mut feed, 480).unwrap();
             graph.write_device(monitor, 480, &mut device);

@@ -197,3 +197,34 @@ mod cursor {
         }
     }
 }
+
+#[test]
+fn the_channels_of_sources_of_different_formats_go_by_their_roles() {
+    use super::build::routes;
+    use crate::Layout::{Adaptive, Lcrs, Mono, Stereo, Surround51, Surround71};
+    // Mono into stereo: both sides; into 5.1: the centre (the LFE is no channel of a sidechain:
+    // L R C Ls Rs are 0 to 4).
+    assert_eq!(routes(Mono, Stereo), [(0, 0), (0, 1)]);
+    assert_eq!(routes(Mono, Surround51), [(0, 2)]);
+    // Stereo into stereo, one to one; into mono, both to it.
+    assert_eq!(routes(Stereo, Stereo), [(0, 0), (1, 1)]);
+    assert_eq!(routes(Stereo, Mono), [(0, 0), (1, 0)]);
+    // 5.1 into stereo: the centre to both sides, the surrounds to their sides.
+    assert_eq!(
+        routes(Surround51, Stereo),
+        [(0, 0), (1, 1), (2, 0), (2, 1), (3, 0), (4, 1)]
+    );
+    // 7.1 into 5.1: the rears to the surrounds of their sides.
+    assert_eq!(
+        routes(Surround71, Surround51),
+        [(0, 0), (1, 1), (2, 2), (3, 3), (4, 4), (5, 3), (6, 4)]
+    );
+    // The surround of LCRS into 5.1: both surrounds.
+    assert_eq!(
+        routes(Lcrs, Surround51),
+        [(0, 0), (1, 1), (2, 2), (3, 3), (3, 4)]
+    );
+    // An Adaptive track's channels by their numbers, round the channels of the other.
+    assert_eq!(routes(Adaptive(3), Stereo), [(0, 0), (1, 1), (2, 0)]);
+    assert_eq!(routes(Stereo, Adaptive(3)), [(0, 0), (1, 1)]);
+}

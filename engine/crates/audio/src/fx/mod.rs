@@ -6,6 +6,7 @@ pub mod common;
 pub mod deesser;
 pub mod dehummer;
 pub mod denoise;
+pub mod ducker;
 pub mod dynamics;
 pub mod eq;
 pub mod gain;

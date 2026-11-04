@@ -253,7 +253,7 @@ export interface Strip {
 }
 export interface LanePoint { at: Time; value: number }
 export interface Lane { points: LanePoint[]; kind?: 'continuous' | 'switch' }
-/** Lanes of automation by the path of their setting (`fader`, `pan.x`, ...). */
+/** Lanes of automation by the path of their setting (`fader_db`, `pan.x`, `send.B2.level_db`, `insert.fx1.gain_db`, ...). */
 export type Lanes = Record<string, Lane>;
 export interface Bus { id: string; name: string; color: string; format: BusFormat; strip?: Strip; mute?: boolean; solo?: boolean; solo_safe?: boolean; lanes?: Lanes }
 export interface Vca { id: string; name: string; fader_db?: number; mute?: boolean; solo?: boolean; vcas?: string[]; lanes?: Lanes }
@@ -261,6 +261,8 @@ export type GroupControl = 'editing' | 'fader' | 'solo' | 'mute' | 'sends' | 'pa
 export interface TrackGroup { id: string; name: string; color?: string; members: string[]; linked?: GroupControl[]; active?: boolean }
 /** The chain of inserts that an operation on inserts works on: the strip of a track of sound or a bus, or the effects of a clip. */
 export type InsertsOf = { track: string } | { bus: string } | { clip: string };
+/** What the lanes of an operation on automation belong to: a track of sound, a bus or a VCA. */
+export type LanesOf = { track: string } | { bus: string } | { vca: string };
 export type LoudnessStandard =
   | 'bs1770_1' | 'bs1770_4' | 'atsc_a85' | 'ebu_r128' | 'op_59' | 'tr_b32' | 'agcom_219' | 'netflix' | 'youtube'
   | 'disney_2_0' | 'disney_5_1' | 'apple_podcasts' | 'spotify' | 'aes_streaming' | 'web_video';
@@ -670,7 +672,11 @@ export type Op =
   /** `insert: null` takes the one at `slot` away. */
   | { op: 'set_insert'; timeline: string; of: InsertsOf; slot: number; insert: Insert | null }
   | { op: 'move_insert'; timeline: string; of: InsertsOf; from: number; to: number }
-  | { op: 'set_timeline_audio'; timeline: string; patch: Record<string, unknown> };
+  | { op: 'set_timeline_audio'; timeline: string; patch: Record<string, unknown> }
+  /** `lane: null` takes the lane of `path` away. */
+  | { op: 'set_lane'; timeline: string; of: LanesOf; path: string; lane: Lane | null }
+  /** `points` in place of the `remove` points of the lane from its point `at` on, as `Array.prototype.splice`. */
+  | { op: 'splice_lane'; timeline: string; of: LanesOf; path: string; at: number; remove: number; points: LanePoint[] };
 
 /** Who asked for a change, or made the step that it takes back or does again. */
 export type ClientKind = 'desktop' | 'agent' | 'cli' | 'engine';
@@ -1525,6 +1531,24 @@ function patchedIn<T extends { id: string }>(list: readonly T[], id: string, wha
   return replaced(list, at, mergePatch(list[at], patch) as T);
 }
 
+/** Change the lanes of `of` of a timeline: a track of sound's, a bus's or a VCA's. */
+function inLanes(timeline: Timeline, of: LanesOf, change: (lanes: Lanes) => Lanes): Timeline {
+  if ('track' in of) {
+    return inTrack(timeline, placeOf(timeline.tracks, of.track, 'track'), track => {
+      if (track.kind !== 'audio') throw new CopyMismatch(`track ${track.id} holds no sound`);
+      return { ...track, lanes: change(track.lanes ?? {}) };
+    });
+  }
+  if ('bus' in of) {
+    const buses = timeline.buses ?? [];
+    const at = placeOf(buses, of.bus, 'bus');
+    return { ...timeline, buses: replaced(buses, at, { ...buses[at], lanes: change(buses[at].lanes ?? {}) }) };
+  }
+  const vcas = timeline.vcas ?? [];
+  const at = placeOf(vcas, of.vca, 'VCA');
+  return { ...timeline, vcas: replaced(vcas, at, { ...vcas[at], lanes: change(vcas[at].lanes ?? {}) }) };
+}
+
 /** Change the chain of inserts `of` of a timeline: a strip's inserts, or a clip's effects. */
 function inInserts(timeline: Timeline, of: InsertsOf, change: (inserts: Insert[]) => Insert[]): Timeline {
   const stripOf = <T extends { strip?: Strip }>(owner: T, what: string): T => {
@@ -1694,6 +1718,21 @@ export function applyOp(project: Project, op: Op): Project {
       if (timeline.audio === undefined) throw new CopyMismatch(`timeline ${timeline.id} has no settings of sound in the copy`);
       return { ...timeline, audio: mergePatch(timeline.audio, op.patch) as TimelineAudio };
     });
+    case 'set_lane': return inTimeline(project, op.timeline, timeline => inLanes(timeline, op.of, lanes => {
+      if (op.lane !== null) return { ...lanes, [op.path]: op.lane };
+      if (!(op.path in lanes)) throw new CopyMismatch(`there is no lane ${op.path} in the copy`);
+      const { [op.path]: _gone, ...rest } = lanes;
+      return rest;
+    }));
+    case 'splice_lane': return inTimeline(project, op.timeline, timeline => inLanes(timeline, op.of, lanes => {
+      const lane = lanes[op.path];
+      if (lane === undefined) throw new CopyMismatch(`there is no lane ${op.path} in the copy`);
+      if (!Number.isInteger(op.at) || !Number.isInteger(op.remove) || op.at < 0 || op.remove < 0 || op.at + op.remove > lane.points.length) {
+        throw new CopyMismatch(`there are no points ${op.at}–${op.at + op.remove} of lane ${op.path} in the copy`);
+      }
+      const points = [...lane.points.slice(0, op.at), ...op.points, ...lane.points.slice(op.at + op.remove)];
+      return { ...lanes, [op.path]: { ...lane, points } };
+    }));
     default: throw new CopyMismatch(`the operation ${(op as { op: unknown }).op} is not known to the copy`);
   }
 }

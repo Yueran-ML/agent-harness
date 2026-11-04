@@ -1,4 +1,4 @@
-import type { Alignment, CrossfadeLevel, Cue, InsertsOf, KeyInterp, Op, Speed, Time, TitleStyle, TrackKind, TransitionKind } from '../engine';
+import type { Alignment, CrossfadeLevel, Cue, Insert, InsertsOf, KeyInterp, LanePoint, LanesOf, Op, Speed, Time, TitleStyle, TrackKind, TransitionKind } from '../engine';
 
 /** Input commands, not project operations: the engine expands them into the accepted `done` list. */
 export type Material =
@@ -47,6 +47,17 @@ export type Edit = { timeline: string } & (
   /** As `set_bus`; a bus soloed while the solo is exclusive takes the solo off the others. */
   | { edit: 'set_bus'; id: string; patch: Record<string, unknown> }
   | { edit: 'copy_effects'; from: InsertsOf; to: InsertsOf[] }
+  // The edits of automation (PROTOCOL.md, "Automation (T14, Ch. 178)"). Times are of the timeline.
+  /** As the operation; the lanes of the insert that goes are taken away, and one put in its place is new. */
+  | { edit: 'set_insert'; of: InsertsOf; slot: number; insert: Insert | null }
+  /** Within `of` as the operation; to `to_of`, a new insert there, its lanes left behind and taken away. */
+  | { edit: 'move_insert'; of: InsertsOf; from: number; to: number; to_of?: InsertsOf }
+  | { edit: 'lane_points'; of: LanesOf; path: string; action: 'add' | 'remove' | 'move'; points?: { at: Time; value?: number }[]; at?: Time[]; by?: Time; delta?: number }
+  | { edit: 'lane_range'; of: LanesOf; path: string; from: Time; to: Time; action: 'delete' | 'cut' | 'paste' | 'shift_value' | 'thin'; points?: LanePoint[]; delta?: number; tolerance?: number }
+  /** The Pencil: the points drawn, from `from` to `to` in order, thinned by the engine. */
+  | { edit: 'lane_draw'; of: LanesOf; path: string; from: Time; to: Time; points: LanePoint[]; tolerance?: number }
+  /** Clear Track Automation: `then` keep (where left out), reset, or hold the value at `at`. */
+  | { edit: 'clear_lanes'; of: LanesOf; paths?: string[]; then?: 'keep' | 'reset' | 'hold'; at?: Time }
 );
 /** An attribute of a clip that Paste/Remove Attributes takes (p. 3842). */
 export type ClipAttribute = 'volume' | 'plugins' | 'equalizer';

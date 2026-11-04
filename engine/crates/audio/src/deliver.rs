@@ -271,6 +271,7 @@ impl Rerate {
         let held = i64::try_from(self.kept.first().map_or(0, Vec::len)).unwrap_or(i64::MAX);
         let mut made = 0;
         let mut frame = vec![0.0_f32; self.kept.len()];
+        let window: Vec<&[f32]> = self.kept.iter().map(Vec::as_slice).collect();
         while made < most {
             let (sample, remainder) = self.position(self.given);
             let lowest = if self.reach == 0 {
@@ -282,7 +283,6 @@ impl Rerate {
                 break;
             }
             let index = usize::try_from(sample - self.base).unwrap_or(0);
-            let window: Vec<&[f32]> = self.kept.iter().map(Vec::as_slice).collect();
             resampled(
                 &window,
                 index,

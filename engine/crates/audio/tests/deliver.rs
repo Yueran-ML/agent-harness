@@ -656,8 +656,19 @@ fn optimize_limits_where_the_gain_takes_the_true_peak_over_gives_the_loudness_ba
 // --- Normalized for real, beside ffmpeg --------------------------------------------------------
 
 /// The ffmpeg of the tests: `FFMPEG`, else the LGPL build of the toolchain (convention 5), else
-/// the one on the path; `None` when none runs.
+/// the one on the path; `None` when none runs, which fails the test where
+/// `COLUMBINA_REQUIRE_FFMPEG` is `1` (the gate) instead of letting it pass unmeasured.
 fn ffmpeg_program() -> Option<String> {
+    let found = any_ffmpeg();
+    assert!(
+        found.is_some() || std::env::var("COLUMBINA_REQUIRE_FFMPEG").as_deref() != Ok("1"),
+        "COLUMBINA_REQUIRE_FFMPEG=1 and no ffmpeg runs"
+    );
+    found
+}
+
+/// [`ffmpeg_program`], without the requirement.
+fn any_ffmpeg() -> Option<String> {
     let lgpl = r"F:\agent harness\_review\toolchain\ffmpeg-lgpl-8.1\bin\ffmpeg.exe";
     let program = std::env::var("FFMPEG").unwrap_or_else(|_| {
         if std::path::Path::new(lgpl).exists() {

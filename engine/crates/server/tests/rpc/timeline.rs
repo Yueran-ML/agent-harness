@@ -667,12 +667,19 @@ async fn timeline_sound_plays_on_through_changes_that_it_does_not_hear() {
         "the sound started again: {before} then {after}"
     );
     assert_eq!(digest["pixels"][0], json!([0, 255, 0, 255]), "{digest}");
-    // A change of what is heard does not start the sound again either (T5): another mix is
-    // swapped in as it plays, and the sound and the picture keep together.
+    // A change of what is heard does not start the sound again either (T5): a clip's gain is a
+    // setting of the mix as it plays, and a fade another mix swapped in; the sound and the
+    // picture keep together.
     client
         .apply(
             json!([{"op":"set_clip","timeline":names["$timeline"],"id":sound,
             "gain_db":-6.0}]),
+        )
+        .await;
+    client
+        .apply(
+            json!([{"op":"set_clip","timeline":names["$timeline"],"id":sound,
+            "fade_out":10}]),
         )
         .await;
     tokio::time::sleep(Duration::from_millis(400)).await;
@@ -822,18 +829,19 @@ async fn timeline_sound_plays_through_two_hundred_changes_without_a_click() {
     tokio::time::sleep(Duration::from_millis(500)).await;
     let first = action(&mut client, "transport.frame_digest", json!({})).await;
     let before = first["audio_samples"].as_i64().unwrap();
-    // Every 20 ms, the gain of a clip or the mute of the track: a mix swapped in, or a setting.
+    // Every 20 ms, the gain or the pan of a clip (a setting, as its volume line or pan is
+    // dragged) or its fade out (another mix swapped in).
     let mut next = std::time::Instant::now();
     for change in 0..200 {
         let op = match change % 4 {
             0 => json!({"op":"set_clip","timeline":names["$timeline"],"id":names["$first"],
-                "gain_db":-3.0}),
+                "gain_db":-3.0 + f64::from(change % 7) * 0.25}),
             1 => json!({"op":"set_clip","timeline":names["$timeline"],"id":names["$second"],
-                "gain_db":-1.0}),
+                "pan": f64::from(change % 5) * 0.05}),
             2 => json!({"op":"set_clip","timeline":names["$timeline"],"id":names["$first"],
-                "gain_db":-1.5}),
+                "fade_out": change % 3}),
             _ => json!({"op":"set_clip","timeline":names["$timeline"],"id":names["$second"],
-                "gain_db":-2.5}),
+                "gain_db":-1.5}),
         };
         client.apply(json!([op])).await;
         next += Duration::from_millis(20);
@@ -1072,7 +1080,17 @@ async fn timeline_sound_plays_on_the_output_device_through_a_change() {
         eprintln!("no sound: there is no device to play it on ({state})");
         return;
     }
-    let before = action(&mut client, "transport.frame_digest", json!({})).await;
+    // The device may take a while to let its first sound be heard (opening it, waking it).
+    let started = std::time::Instant::now();
+    let mut before = action(&mut client, "transport.frame_digest", json!({})).await;
+    while before["audio_samples"].as_i64().is_none() {
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "no sound heard: {before}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        before = action(&mut client, "transport.frame_digest", json!({})).await;
+    }
     client
         .apply(
             json!([{"op":"set_track","timeline":names["$timeline"],"id":names["$audio"],

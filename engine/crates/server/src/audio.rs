@@ -43,7 +43,9 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use columbina_audio::play::device::{self, Feeding, Mark, Order, Player};
-use columbina_audio::rt::{samples as ring, SampleConsumer, SampleProducer};
+use columbina_audio::rt::{
+    messages, samples as ring, MessageConsumer, SampleConsumer, SampleProducer,
+};
 use columbina_media::{AudioDecoder, AudioFormat};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, OutputCallbackInfo, SampleFormat, SizedSample, StreamConfig};
@@ -385,7 +387,14 @@ impl Output {
         let (capture, producer) = match kind {
             Kind::Capture(path) => {
                 let (producer, consumer) = ring(CAPTURE_FRAMES, usize::from(format.channels));
-                (Some(Capture::start(path, consumer)?), Some(producer))
+                let (sessions, starts) = messages(256);
+                (
+                    Some(Capture::start(path, consumer, starts)?),
+                    Some(device::Capture {
+                        ring: producer,
+                        sessions,
+                    }),
+                )
             }
             _ => (None, None),
         };
@@ -624,6 +633,12 @@ impl Output {
         })
     }
 
+    /// The frames of sound that a capture could not take (its ring was full), so far: its files
+    /// lack them.
+    pub fn capture_dropped(&self) -> u64 {
+        self.control.shared.dropped()
+    }
+
     /// How many runs of the sound started last had less sound than the device asked for: the
     /// feeder or the mix fell behind, and the device played silence.
     pub fn short_runs(&self) -> u64 {
@@ -748,23 +763,54 @@ fn fake(
     }
 }
 
+/// The file of session `session` (from 1) of a capture at `path`: `path` itself, then
+/// `path.2`, `path.3`, ...
+pub fn capture_file(path: &Path, session: u64) -> PathBuf {
+    if session <= 1 {
+        path.to_owned()
+    } else {
+        let mut name = path.as_os_str().to_owned();
+        name.push(format!(".{session}"));
+        PathBuf::from(name)
+    }
+}
+
 impl Capture {
-    /// Writes what `ring` gets into a new file at `path` on a thread of its own, until it is
-    /// told to quit and the ring is empty.
-    fn start(path: &Path, mut ring: SampleConsumer) -> Result<Capture, String> {
-        let file = std::fs::File::create(path)
-            .map_err(|error| format!("the capture {} cannot be made: {error}", path.display()))?;
+    /// Writes what `ring` gets into new files at `path` on a thread of its own, a file for each
+    /// session ([`capture_file`]; `starts` says the frame at which each session after the first
+    /// starts), until it is told to quit and the ring is empty.
+    fn start(
+        path: &Path,
+        mut ring: SampleConsumer,
+        mut starts: MessageConsumer<u64>,
+    ) -> Result<Capture, String> {
+        let create = |session: u64| {
+            let path = capture_file(path, session);
+            std::fs::File::create(&path)
+                .map(std::io::BufWriter::new)
+                .map_err(|error| format!("the capture {} cannot be made: {error}", path.display()))
+        };
+        let file = create(1)?;
+        let path = path.to_owned();
         let quit = Arc::new(AtomicBool::new(false));
         let thread = std::thread::Builder::new()
             .name("columbina-sound-capture".into())
             .spawn({
                 let quit = Arc::clone(&quit);
                 move || {
-                    let mut file = std::io::BufWriter::new(file);
-                    let mut samples = vec![0.0_f32; 4096 * ring.channels()];
+                    let channels = ring.channels();
+                    let mut file = file;
+                    let mut session = 1;
+                    let mut written = 0_u64;
+                    let mut pending = std::collections::VecDeque::new();
+                    let mut samples = vec![0.0_f32; 4096 * channels];
                     let mut bytes = Vec::with_capacity(samples.len() * 4);
                     loop {
                         let frames = ring.pop(&mut samples);
+                        // The starts of sessions of the frames popped have come before them.
+                        while let Some(start) = starts.pop() {
+                            pending.push_back(start);
+                        }
                         if frames == 0 {
                             let _ = file.flush();
                             if quit.load(Ordering::Acquire) {
@@ -773,13 +819,34 @@ impl Capture {
                             std::thread::sleep(Duration::from_millis(5));
                             continue;
                         }
-                        bytes.clear();
-                        for sample in &samples[..frames * ring.channels()] {
-                            bytes.extend_from_slice(&sample.to_le_bytes());
+                        let mut done = 0;
+                        while done < frames {
+                            let at = written + done as u64;
+                            if pending.front().is_some_and(|&start| start <= at) {
+                                pending.pop_front();
+                                session += 1;
+                                let _ = file.flush();
+                                match std::fs::File::create(capture_file(&path, session)) {
+                                    Ok(next) => file = std::io::BufWriter::new(next),
+                                    Err(_) => return,
+                                }
+                                continue;
+                            }
+                            let until = pending.front().map_or(frames, |&start| {
+                                usize::try_from(start - written)
+                                    .unwrap_or(frames)
+                                    .min(frames)
+                            });
+                            bytes.clear();
+                            for sample in &samples[done * channels..until * channels] {
+                                bytes.extend_from_slice(&sample.to_le_bytes());
+                            }
+                            if file.write_all(&bytes).is_err() {
+                                return;
+                            }
+                            done = until;
                         }
-                        if file.write_all(&bytes).is_err() {
-                            return;
-                        }
+                        written += frames as u64;
                     }
                 }
             })
@@ -988,33 +1055,47 @@ mod tests {
     }
 
     #[test]
-    fn a_capture_writes_every_frame_of_sound_it_plays_into_its_file() {
+    fn a_capture_writes_every_frame_of_sound_it_plays_into_a_file_of_its_session() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("heard.f32");
         let mut output = Output::open(&Kind::Capture(path.clone())).unwrap();
-        let mut ring = output.begin().unwrap();
-        let frames: Vec<f32> = (0..9600)
-            .flat_map(|n| {
-                #[allow(clippy::cast_precision_loss, reason = "a test signal")]
-                let value = n as f32 / 9600.0;
-                [value, -value]
-            })
-            .collect();
-        assert_eq!(ring.push(&frames), 9600);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while output.played(Instant::now()).unwrap_or(0) < 9600 && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        let frames = |count: usize, scale: f32| -> Vec<f32> {
+            (0..count)
+                .flat_map(|n| {
+                    #[allow(clippy::cast_precision_loss, reason = "a test signal")]
+                    let value = n as f32 / 9600.0 * scale;
+                    [value, -value]
+                })
+                .collect()
+        };
+        let play = |output: &mut Output, frames: &[f32]| {
+            let mut ring = output.begin().unwrap();
+            assert_eq!(ring.push(frames), frames.len() / 2);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let wanted = i64::try_from(frames.len() / 2).unwrap();
+            while output.played(Instant::now()).unwrap_or(0) < wanted && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        let (first, second) = (frames(9600, 1.0), frames(4800, 0.5));
+        play(&mut output, &first);
+        // A session started anew (a seek): its frames go into a file of its own.
+        play(&mut output, &second);
+        assert_eq!(output.capture_dropped(), 0);
         drop(output);
-        let bytes = std::fs::read(&path).unwrap();
-        let written: Vec<f32> = bytes
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|word| f32::from_le_bytes(*word))
-            .collect();
+        let read = |session: u64| -> Vec<f32> {
+            std::fs::read(capture_file(&path, session))
+                .unwrap()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|word| f32::from_le_bytes(*word))
+                .collect()
+        };
         // Only what was counted as played, in order: the silence after the end of the ring is
         // not sound.
-        assert_eq!(written, frames);
+        assert_eq!(read(1), first);
+        assert_eq!(read(2), second);
+        assert_eq!(capture_file(&path, 2), dir.path().join("heard.f32.2"));
     }
 }

@@ -45,6 +45,8 @@ fn monitor(dir: &Path) -> Worker {
         clock: None,
         sound: SoundSlot::new(crate::audio::Kind::Null),
         playback: super::super::sound::Playback::new(),
+        joining: None,
+        sound_late: false,
         mixed_from: None,
         heard: Cell::new(0),
         fine: None,

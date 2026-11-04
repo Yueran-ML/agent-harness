@@ -30,8 +30,8 @@ pub(crate) struct Feed {
     project: Arc<Project>,
     timeline: usize,
     sources: Vec<ClipSource>,
-    /// The reader of each clip, and the read that last used it.
-    readers: BTreeMap<usize, (Reader, u64)>,
+    /// The reader of each clip, the read that last used it, and what it reads.
+    readers: BTreeMap<usize, (Reader, u64, ReaderKey)>,
     /// The clips read in the block under way.
     read: BTreeSet<usize>,
     /// What went wrong first, since it was last taken.
@@ -43,6 +43,45 @@ pub(crate) struct Feed {
     lenient: bool,
     /// The reads so far.
     reads: u64,
+    /// Where readers let go of are kept for other feeds, and taken from.
+    pool: Option<Arc<Readers>>,
+}
+
+/// What a reader reads: the media (its id and its file), at the rate of the timeline, in the
+/// layout of a clip.
+type ReaderKey = (String, String, u32, Layout);
+
+/// The most readers kept for other feeds.
+const KEPT_READERS: usize = 48;
+
+/// Readers let go of by a feed, kept for the next feeds of graphs of the same timeline (T5's
+/// review: a graph swapped in as the sound plays opens no decoder that one before it had open; a
+/// reader moved elsewhere seeks, one that reads on from where it was does not).
+#[derive(Default)]
+pub(crate) struct Readers {
+    kept: std::sync::Mutex<Vec<(ReaderKey, Reader)>>,
+}
+
+impl Readers {
+    fn take(&self, key: &ReaderKey) -> Option<Reader> {
+        let mut kept = self
+            .kept
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let at = kept.iter().rposition(|(of, _)| of == key)?;
+        Some(kept.remove(at).1)
+    }
+
+    fn keep(&self, key: ReaderKey, reader: Reader) {
+        let mut kept = self
+            .kept
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if kept.len() >= KEPT_READERS {
+            kept.remove(0);
+        }
+        kept.push((key, reader));
+    }
 }
 
 /// The readers a lenient feed keeps at the most of clips that it has not read lately.
@@ -70,7 +109,15 @@ impl Feed {
             silenced: BTreeSet::new(),
             lenient,
             reads: 0,
+            pool: None,
         }
+    }
+
+    /// The same, taking its readers from `pool` where it can, and keeping them there when it
+    /// lets them go.
+    pub(crate) fn pooled(mut self, pool: &Arc<Readers>) -> Self {
+        self.pool = Some(Arc::clone(pool));
+        self
     }
 
     fn fill(
@@ -97,15 +144,22 @@ impl Feed {
                 .ok_or("the resolved audio media is missing")?;
             let channels =
                 u16::try_from(source.channels).map_err(|_| "too many channels of sound")?;
-            let reader = Reader::new(
-                media,
+            let layout = Layout::of_clip(model, channels);
+            let key = (
+                media.id.clone(),
+                media.path.clone(),
                 timeline.sample_rate,
-                &Layout::of_clip(model, channels),
-            )?;
-            self.readers.insert(clip, (reader, self.reads));
+                layout.clone(),
+            );
+            let kept = self.pool.as_ref().and_then(|pool| pool.take(&key));
+            let reader = match kept {
+                Some(reader) => reader,
+                None => Reader::new(media, timeline.sample_rate, &layout)?,
+            };
+            self.readers.insert(clip, (reader, self.reads, key));
         }
         let reads = self.reads;
-        let (reader, used) = self.readers.get_mut(&clip).expect("opened above");
+        let (reader, used, _) = self.readers.get_mut(&clip).expect("opened above");
         *used = reads;
         let frames = usize::try_from(range.end - range.start).map_err(|_| "a backward read")?;
         let pcm = reader.read(range)?;
@@ -125,8 +179,32 @@ impl Feed {
     fn prune(&mut self) {
         if self.lenient && self.readers.len() > IDLE_READERS {
             let reads = self.reads;
-            self.readers
-                .retain(|_, (_, used)| reads.saturating_sub(*used) < IDLE_READS);
+            let idle: Vec<usize> = self
+                .readers
+                .iter()
+                .filter(|(_, (_, used, _))| reads.saturating_sub(*used) >= IDLE_READS)
+                .map(|(clip, _)| *clip)
+                .collect();
+            for clip in idle {
+                if let Some((reader, _, key)) = self.readers.remove(&clip) {
+                    self.give_up(key, reader);
+                }
+            }
+        }
+    }
+
+    /// Lets `reader` go: into the pool, if there is one.
+    fn give_up(&self, key: ReaderKey, reader: Reader) {
+        if let Some(pool) = &self.pool {
+            pool.keep(key, reader);
+        }
+    }
+}
+
+impl Drop for Feed {
+    fn drop(&mut self) {
+        for (_, (reader, _, key)) in std::mem::take(&mut self.readers) {
+            self.give_up(key, reader);
         }
     }
 }

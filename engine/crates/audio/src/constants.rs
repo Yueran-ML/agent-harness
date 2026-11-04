@@ -258,6 +258,19 @@ pub const NORMALIZE_RANGE: (f32, f32) = (-60.0, 0.0);
 /// (`gain_db` of the model, −96 to +24; C-F13).
 pub const CLIP_VOLUME_RANGE: (f64, f64) = (-96.0, 24.0);
 
+/// Audio Normalization of an export (p. 4055; plan T6): how far from the target, in LU, the
+/// loudness after the limiter of Optimize may be before the gain is raised again, once (the
+/// plan's 0.1 LU).
+pub const NORMALIZE_LOUDNESS_TOLERANCE: f64 = 0.1;
+
+/// Audio Normalization: how many times Optimize lowers the ceiling of its limiter by what the
+/// true peak measured after it still goes over (T10's review: twice).
+pub const NORMALIZE_CEILING_LOWERINGS: u32 = 2;
+
+/// Audio Normalization: the release of the limiter of Optimize, in ms: the Limiter's own
+/// default (p. 3965; the manual does not say what Optimize limits with; we decide).
+pub const EXPORT_LIMITER_RELEASE_MS: f32 = 100.0;
+
 /// The cut of the monitor by DIM, in dB (C-M1).
 pub const DIM_DB: f32 = -20.0;
 

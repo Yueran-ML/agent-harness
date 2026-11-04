@@ -21,6 +21,9 @@ mod timeline;
 #[path = "rpc/render.rs"]
 mod render;
 
+#[path = "rpc/null.rs"]
+mod null;
+
 #[path = "rpc/grades.rs"]
 mod grades;
 

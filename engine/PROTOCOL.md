@@ -163,7 +163,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `track.start` | `{grade,node,window,revision,frame,direction,tracker?,components?}` | `{job,first,last,frame_size,direction}` at once, then `track.progress` and `track.state` (see Window tracking) |
 | `track.stop` | `{job}` | `{}`; the track ends between frames, keeping what it tracked |
 | `track.edit` | `{grade,node,window,revision?,edit:{kind,...}}` | `{revision}`; one step to undo (see Window tracking) |
-| `render.start` | `{"timeline":"t1", "path":"<file>", "codec":"h264", "quality":"high", "range"?:{"from":0,"to":250}, "subtitle_tracks"?:["S1"], "replace"?:false, "revision"?:n}` | `{"job": "render-1"}` (see Rendering a timeline) |
+| `render.start` | `{"timeline":"t1", "path":"<file>", "codec":"h264", "quality":"high", "range"?:{"from":0,"to":250}, "subtitle_tracks"?:["S1"], "replace"?:false, "revision"?:n, "audio"?:{"bus"?, "rate"?, "codec"?, "bitrate"?, "normalize"?}}`, or with `"video":null` and no `codec` or `quality` for the sound alone | `{"job": "render-1"}` (see Rendering a timeline, and The sound of an export) |
 | `render.cancel` | `{"job": "render-1"}` | `{}` |
 | `transport.frame_digest` | `{"monitor": m}` | test hook only, with `--test-hooks` (see The transport); `-32601` otherwise |
 | `transport.*` | see The transport | |
@@ -3807,7 +3807,7 @@ real ids. For example:
 | `engine.yielding` | `{"to": "desktop"}`: the engine is about to end, to yield the project to the desktop's engine (see `engine.yield`) |
 | `media.proxy` | `{"media": "m1", "state": "queued" \| "running" \| "done" \| "failed", "progress": 0.5, "message"?: "..."}` (see Proxies) |
 | `media.waveform` | `{"media": "m1"}`, or `{"media": "m1", "stream": 1}` for the waveform of a stream (background analysis finished; query again for data or error) |
-| `render.progress` | `{"job", "state": "running" \| "done" \| "failed" \| "cancelled", "frame", "frames", "fps", "path", "encoder"?, "message"?, "missing_luts"?}` (see Rendering a timeline, and Grades in the picture) |
+| `render.progress` | `{"job", "state": "running" \| "done" \| "failed" \| "cancelled", "frame", "frames", "fps", "path", "encoder"?, "message"?, "missing_luts"?, "measuring"?, "normalization"?}` (see Rendering a timeline, Grades in the picture, and The sound of an export) |
 | `scopes.frame` | `{"scope_id": "scope-1", "view": "timeline", "frame": n, "width": w, "height": h, "rgba": "<base64>"}`: a picture of a scope, to the connection that subscribed it only (see Scopes) |
 | `gallery.changed` | `{}`: the Gallery was changed; call `gallery.list` again (see The Gallery) |
 | `window_presets.changed` | `{}`: the window presets were changed; call `window_presets.list` again (see Window presets) |
@@ -3878,7 +3878,7 @@ commits to it; and any client may send transactions. So:
 | `-32700` | the line is not JSON (id `null`) | |
 | `-32600` | not a request object, `jsonrpc` is not `"2.0"`, no `method`, a bad `id` (answered with id `null`), a request before `hello`, a second `hello`, a `hello` of another protocol, a line over 16 MiB, `view.*` or `engine.yield` from a client that is not the desktop | `{"reason": "protocol", "supported": [2]}` for a `hello` of another protocol |
 | `-32601` | no such method; `view.*` (but `view.sample` of a frame drawn off screen), `transport.*` and `scopes.*` (but `scopes.statistics` of a frame drawn off screen) in a `--headless` engine; `media.make_proxy` in an engine that makes no proxies; `engine.yield` in an engine that is not headless | |
-| `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name`; a speed of `transport.play` out of −8…8 or 0; `transport.load` of media or a timeline not in the project; `timeline.duration` of a timeline not there; `media.import` or `media.inspect` with no paths or a relative path; `media.thumbnail`, `media.waveform` or `media.make_proxy` of media not there; `media.waveform` of a `stream` that is not a stream of sound of the media; `media.thumbnail` of a frame outside the media, a height outside 1…270 or a width over 16384; a bad parent or rectangle of `view.*`; `render.start` with a bad path, codec, quality, timeline, range (an empty timeline has none, so it cannot be exported) or `subtitle_tracks`, and `render.cancel` of a job that is not there; `scopes.*` with bad settings, a scope that is not the connection's, too many scopes or bins out of range; `luts.list` with a `folder` outside the roots; `grade.export_lut` of a size, path, grade or node that it does not take; `transaction.apply` with a `gesture` id that is empty or longer than 64 characters; `view.sample` off the frame or of an even size, and `view.sample` or `scopes.statistics` naming a node that cannot be drawn | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above; `{"reason": "speed"}`; `{"index": i, "path": "...", "reason": "relative"}`; `{"reason": "parent"}` or `{"reason": "rect"}` (`view.*`); `{"reason": "missing", "media": "..."}` or `{"reason": "missing", "timeline": "..."}` (`render.start` too); `{"reason": "stream", "stream": n}` (`media.waveform`); `{"reason": "out_of_range", "frame": n}`; `{"reason": "subtitle_track", "track": "..."}` for a `subtitle_tracks` entry that is not a subtitle track of the timeline, or is named twice; `{"reason": "settings" \| "missing" \| "too_many" \| "bins", ...}` (`scopes.*`, see Scopes); `{"reason": "outside_roots", "folder": "..."}` (`luts.list`); `{"reason": "size" \| "path" \| "missing" \| "not_a_corrector" \| "cannot_bake", ...}` (`grade.export_lut`, see Generate LUT); `{"reason": "gesture"}`; `{"reason": "outside" \| "size" \| "monitor" \| "node" \| "grade" \| "timeline" \| "clip"}` (see Samples and the pointer) |
+| `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name`; a speed of `transport.play` out of −8…8 or 0; `transport.load` of media or a timeline not in the project; `timeline.duration` of a timeline not there; `media.import` or `media.inspect` with no paths or a relative path; `media.thumbnail`, `media.waveform` or `media.make_proxy` of media not there; `media.waveform` of a `stream` that is not a stream of sound of the media; `media.thumbnail` of a frame outside the media, a height outside 1…270 or a width over 16384; a bad parent or rectangle of `view.*`; `render.start` with a bad path, codec, quality, timeline, range (an empty timeline has none, so it cannot be exported), `subtitle_tracks` or `audio` (see The sound of an export), and `render.cancel` of a job that is not there; `scopes.*` with bad settings, a scope that is not the connection's, too many scopes or bins out of range; `luts.list` with a `folder` outside the roots; `grade.export_lut` of a size, path, grade or node that it does not take; `transaction.apply` with a `gesture` id that is empty or longer than 64 characters; `view.sample` off the frame or of an even size, and `view.sample` or `scopes.statistics` naming a node that cannot be drawn | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above; `{"reason": "speed"}`; `{"index": i, "path": "...", "reason": "relative"}`; `{"reason": "parent"}` or `{"reason": "rect"}` (`view.*`); `{"reason": "missing", "media": "..."}` or `{"reason": "missing", "timeline": "..."}` (`render.start` too); `{"reason": "stream", "stream": n}` (`media.waveform`); `{"reason": "out_of_range", "frame": n}`; `{"reason": "subtitle_track", "track": "..."}` for a `subtitle_tracks` entry that is not a subtitle track of the timeline, or is named twice; `{"reason": "bus" \| "rate" \| "audio_codec" \| "bitrate" \| "standard" \| "target", ...}` (the `audio` of `render.start`); `{"reason": "settings" \| "missing" \| "too_many" \| "bins", ...}` (`scopes.*`, see Scopes); `{"reason": "outside_roots", "folder": "..."}` (`luts.list`); `{"reason": "size" \| "path" \| "missing" \| "not_a_corrector" \| "cannot_bake", ...}` (`grade.export_lut`, see Generate LUT); `{"reason": "gesture"}`; `{"reason": "outside" \| "size" \| "monitor" \| "node" \| "grade" \| "timeline" \| "clip"}` (see Samples and the pointer) |
 | `-32001` | a transaction, undo or redo was refused; the project is exactly as it was; or `render.start` was refused before anything was written or taken away (with `{"reason":"stopping"}` while the engine is stopping; with no `data` when the export could not be started) | the refusal, below |
 | `-32002` | `media.import` or `media.inspect`: a file cannot be read; nothing was added. `transport.load`, `media.thumbnail`, `media.waveform`: the file of the media cannot be opened or decoded. The analysis of the engine stopped (no `data`) | `{"path": "<as sent>", "reason": "...", "message": "..."}`, below |
 | `-32003` | `view.*`: the view cannot be made, there is none, or its window is gone | `{"reason": "..."}`, see The view |
@@ -4056,7 +4056,8 @@ again. `path` reports the actual destination.
 The project revision and undo history are not changed by an export.
 
 The export uses a snapshot taken at start, independent original-media decoders, the same
-scene compositor as preview, and the same stereo timeline mixer. It never uses proxies.
+scene compositor as preview, and the same graph of the sound (see The sound of an export). It
+never uses proxies.
 Edits, undo, or deletion of that timeline after start do not change the export. Titles are
 composited into the picture. Subtitle tracks are **not burned into the picture**.
 The GPU is shared with preview: a waiting preview composition takes the next turn; export
@@ -4066,8 +4067,10 @@ again and goes on: no frame was written for it yet, so the file is whole; the fi
 says the device was made again. If none can be made, or it is lost three times on one frame,
 the export fails, saying so. An encoder that fails after it opened (a frame, the sound or
 finishing the file) fails the export with a message naming the encoder and the frame; the
-ProRes fallback is only ever taken when no encoder opens, never in the middle of a file. Audio is AAC, 192 kb/s, 48 kHz stereo; a timeline with no enabled
-clip on an enabled audio track gives a file with no sound. H.264 uses 8-bit picture; HEVC uses
+ProRes fallback is only ever taken when no encoder opens, never in the middle of a file. The
+sound is AAC at 192 kb/s by default, at the rate of the timeline, in the channels of the bus
+monitored (see The sound of an export); a film of a timeline with no enabled clip on an enabled
+audio track has no sound. H.264 uses 8-bit picture; HEVC uses
 10 bits when the project contains media of more than 8 bits or its output is of HDR; ProRes always
 10 bits. The picture is tagged with the colours of the project's output space (Colour management,
 What colour management does to the picture). If no hardware
@@ -4091,6 +4094,83 @@ with no `>` after it (`<3`, `a<b`) is written as it is. `{\…}` override codes 
 are, so `{\an8}` places a line at the top as players expect.
 Tracks not listed are omitted, shown or not; a listed track with no cue in the range produces
 an empty SRT.
+
+### The sound of an export
+
+Plan T6 of phase 3. The export runs the same graph of the sound as playback (the timeline's
+tracks, buses, VCAs, effects and lanes), built for export from the snapshot: a Listen of a
+sidechain is never exported, every clip is read by a reader that waits for it (a clip that is
+heard and cannot be read fails the export), and the graph starts at the first sample of the
+range with the preroll that playback from the same sample has (the graph's settling, at most
+10 s). So the sound exported from a sample is, to the bit, the sound that playback from that
+sample gives the device (the null test: a playback captured with `--sound capture=<path>` less an
+export as `pcm_f32le` is nothing but zeros), where:
+
+- the file is at the rate of the device (another rate is made by another filter);
+- the bus is stereo, or is compared as the device hears it (another format is folded into two
+  sides by the device);
+- no sample goes beyond ±1, or the file is of floats (the device's copy, and AAC and PCM of 24
+  bits, are clipped);
+- the playback started where it was asked: a playback whose graph is not built and prerolled
+  within 2 s goes on by the clock of the system and starts its sound again half a second ahead of
+  the picture (see The transport), at a sample of its own and not at the requested frame. The
+  session that a playback starts as the device is first made ready starts where the clock is by
+  then, a sample or so after the frame; the digest's `audio_sample` less `audio_samples` is where
+  each session started.
+
+An export of a range and one of the whole timeline come within −90 dBFS of each other after the
+preroll where the graph settles within 10 s.
+
+`audio` is optional, every field of it too; unknown fields are refused:
+
+- `bus`: the bus rendered, a main output (a bus that outputs to no bus) or the bus monitored; by
+  default the bus monitored, else the first main output. The file has the channels of its format
+  (mono, stereo, 3.0, 4.0, 5.0, 5.1, 7.0, 7.1), laid on the speakers of the file in the order of
+  libav's channels: 5.0 and 5.1 with the surrounds at the back (5.1 is `FL FR FC LFE BL BR`, as
+  WAV and AAC have it), 7.0 and 7.1 with the surrounds at the sides and the rears at the back
+  (`FL FR FC LFE BL BR SL SR`), the S of 4.0 at the back centre.
+- `rate`: samples a second of the file, 7350 to 192000; by default the timeline's
+  (`sample_rate`). Another rate is made by the windowed sinc that makes the device's rate. AAC
+  takes only the rates of the table of MPEG-4 audio: 7350, 8000, 11025, 12000, 16000, 22050,
+  24000, 32000, 44100, 48000, 64000, 88200 and 96000.
+- `codec`: `aac` (in `.mp4`, `.mov`, `.m4a`), `pcm_s24le` or `pcm_f32le` (in `.mov`, `.wav`); by
+  default `pcm_s24le` in `.wav` and `aac` else. AAC and PCM of 24 bits are clipped to −1…1, the
+  one place where the sound of an export is clipped; PCM of floats is written as the graph gives
+  it, over 1 too.
+- `bitrate`: of AAC only, 128000, 192000 (the default), 256000 or 320000.
+- `normalize`: Audio Normalization of the Deliver page (p. 4055), of this export only, never of
+  the project: `{"standard", "target"?, "mode": "normalize" | "optimize"}`. `standard` is an id
+  of the table of loudness standards (`ebu-r128`, `spotify`, `apple-podcasts`, …); `target`, in
+  LUFS from −60 to 0, is the standard's target by default (the timeline's Target Loudness for a
+  standard without one). The bus is measured first over the whole range (BS.1770, its true peak
+  by 8 times oversampling), then: `normalize` adds the gain that brings it to whichever of the
+  target and the standard's highest true peak it meets first; `optimize` adds the gain that brings
+  it to the target and, where its true peak would go over the highest, a limiter of true peaks
+  after it (the Limiter effect, its ceiling at the highest true peak, release 100 ms), and
+  measures again: the loudness that the limiter took is given back once where it is more than
+  0.1 LU, and the ceiling is lowered by what the true peak still goes over, twice at the most.
+
+Without `audio`, a film of a timeline that has no clip of sound that is on has no sound and
+needs no bus. Audio Normalization asked for of a film without sound is not done, and `message`
+says so.
+
+While Audio Normalization measures, before the first frame is written, `render.progress` carries
+`measuring`: `{"pass", "passes", "frame", "frames"}` (pass `pass` of at most `passes`, `frame` of
+`frames` samples of it measured); each pass is told as it starts. `fps` counts from the end of
+the measuring.
+
+With `"video": null` the sound is exported alone, without `codec` or `quality`, into a `.wav` or
+an `.m4a`; the range is still in frames of the timeline, and the progress counts them. A bus,
+rate, codec, rate of bits, standard or target that cannot be is refused with `-32602` and
+`{"reason": "bus" | "rate" | "audio_codec" | "bitrate" | "standard" | "target"}` (`bus`,
+`rate`, `bitrate` or `standard` beside it) before anything is written.
+
+`render.progress` carries, once Audio Normalization has measured, `normalization`:
+`{"standard", "mode", "target", "true_peak_max", "gain_db", "ceiling_db" | null,
+"before": {"integrated", "true_peak"}, "after": {"integrated", "true_peak"}, "met"}`
+(LUFS and dBTP; `after` measured again where a limiter was put in, else `before` raised by the
+gain; `null` for silence). Where it could not meet the standard (`met` false: a sound of no
+loudness, left as it is, or one that came as near as it could), `message` says so too.
 
 `render.cancel {job}` answers `{}` and requests cancellation; wait for the terminal progress
 notification before assuming its files have been cleaned up. An unknown job is `-32602`.

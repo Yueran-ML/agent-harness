@@ -822,11 +822,19 @@ export interface Imported {
   next_id: number;
 }
 
+/** The codec of the picture of an export. */
+export type RenderCodec = 'h264' | 'hevc' | 'prores';
+/** The quality of the picture of an export. */
+export type RenderQuality = 'high' | 'medium' | 'small';
+
 /** Export options from the page. Only the native Save As dialog supplies the output path. */
 export interface RenderOptions {
   timeline: string;
-  codec: 'h264' | 'hevc' | 'prores';
-  quality: 'high' | 'medium' | 'small';
+  /** The picture's codec and quality: both for a film, neither for the sound alone. */
+  codec?: RenderCodec;
+  quality?: RenderQuality;
+  /** `null`: the sound alone, into a `.wav` or an `.m4a`, without `codec` or `quality`. */
+  video?: null;
   range?: { from: number; to: number };
   /**
    * The subtitle tracks of the timeline whose SRT is saved beside the film, shown or hidden, as the
@@ -836,6 +844,35 @@ export interface RenderOptions {
   language?: string;
   /** The name of the timeline, which Save As suggests to name the file after. */
   name?: string;
+  /** The sound of the export (phase 3, T6): its bus, rate, codec and Audio Normalization. */
+  audio?: RenderAudio;
+}
+
+/** The `audio` of `render.start` (PROTOCOL.md, The sound of an export). */
+export interface RenderAudio {
+  /** A main output or the bus monitored; the bus monitored where left out. */
+  bus?: string;
+  /** Samples a second of the file; the timeline's where left out. */
+  rate?: number;
+  /** `pcm_s24le` in `.wav`, `aac` else, where left out. */
+  codec?: 'aac' | 'pcm_s24le' | 'pcm_f32le';
+  /** Bits a second of AAC. */
+  bitrate?: 128000 | 192000 | 256000 | 320000;
+  /** Audio Normalization of this export to a standard of loudness (Deliver, p. 4055). */
+  normalize?: { standard: string; target?: number; mode: 'normalize' | 'optimize' };
+}
+
+/** What Audio Normalization of an export did, as `render.progress` tells it. */
+export interface RenderNormalization {
+  standard: string;
+  mode: 'normalize' | 'optimize';
+  target: number;
+  true_peak_max: number | null;
+  gain_db: number;
+  ceiling_db: number | null;
+  before: { integrated: number | null; true_peak: number | null };
+  after: { integrated: number | null; true_peak: number | null };
+  met: boolean;
 }
 export type RenderStarted = { job: string } | { cancelled: true };
 
@@ -853,6 +890,8 @@ export interface RenderProgress {
   encoder?: string;
   /** Why it failed, that it fell back to ProRes, or that the graphics device was made again. */
   message?: string;
+  /** What Audio Normalization did, once it has measured. */
+  normalization?: RenderNormalization;
 }
 
 /**

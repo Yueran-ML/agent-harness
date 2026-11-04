@@ -8,13 +8,14 @@
 //! What is set once is a parameter ramped over 10 ms ([`Smoothed`], C-T1); where a lane of
 //! automation is, its value takes the place of the parameter, sample by sample (T14).
 
-use columbina_model::{Lane, Time};
+use columbina_model::Lane;
 
 use crate::constants::MAX_CHANNELS;
 use crate::db_to_gain;
 use crate::node::{Automated, Automation, Block, Layout, Node, ParamId, Planar};
 use crate::rt::Smoothed;
 
+use super::automation::Cursor;
 use super::pdc::DelayLine;
 use super::route::{panned, Matrix, PanAt};
 use super::taps::Tap;
@@ -167,6 +168,8 @@ pub(crate) struct Strip {
     pub(crate) vcas: Vec<VcaTerm>,
     pub(crate) edges: Vec<Edge>,
     pub(crate) lanes: Vec<LaneOf>,
+    /// Where each lane is read up to, one for each of `lanes` (T14).
+    pub(crate) cursors: Vec<Cursor>,
     /// The values of the lanes through the block, a lane after another, each `max_block` long.
     pub(crate) values: Box<[f32]>,
     pub(crate) max_block: usize,
@@ -205,14 +208,9 @@ impl Strip {
             self.work.channel_mut(channel)[..frames]
                 .copy_from_slice(&input.channel(channel)[..frames]);
         }
-        let scale = rate;
-        for (index, lane) in self.lanes.iter().enumerate() {
+        for (index, (lane, cursor)) in self.lanes.iter().zip(&mut self.cursors).enumerate() {
             let values = &mut self.values[index * self.max_block..][..frames];
-            for (ticks, value) in (start - lane.delay..).zip(values) {
-                #[allow(clippy::cast_possible_truncation, reason = "a value of a parameter")]
-                let at = lane.lane.value_at(Time { ticks, scale }) as f32;
-                *value = at;
-            }
+            cursor.fill(&lane.lane, start - lane.delay, rate, values);
         }
     }
 

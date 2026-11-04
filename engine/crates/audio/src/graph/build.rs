@@ -19,6 +19,7 @@ use crate::fx::eq::{self, Eq, Field, Kind, Variant, Zone};
 use crate::node::{Layout, Node, ParamId, Planar, Role, Spec};
 use crate::rt::{seqlock, Domain, Smoothed};
 
+use super::automation::Cursor;
 use super::clip::{cutoff, radius, ClipChain, ClipPan, ClipScratch, Mapping, Window};
 use super::pdc::{DelayLine, Delayer};
 use super::route::{balance, panned, PanAt};
@@ -1070,6 +1071,7 @@ impl Graph {
                     .collect(),
                 edges,
                 lanes: Vec::new(),
+                cursors: Vec::new(),
                 values: Box::new([]),
                 max_block,
                 heard: vec![0.0; max_block].into_boxed_slice(),
@@ -1156,6 +1158,7 @@ impl Graph {
                 }
             }
             strip.values = vec![0.0; strip.lanes.len() * max_block].into_boxed_slice();
+            strip.cursors = vec![Cursor::default(); strip.lanes.len()];
             strips.push(strip);
         }
 

@@ -33,6 +33,7 @@
 //! (convention 3; `tests/no_alloc.rs`, `tests/rt_audit.rs`, which reads every file here but
 //! `build.rs`). Everything is taken when the graph is built.
 
+mod automation;
 mod build;
 mod build_fx;
 mod clip;

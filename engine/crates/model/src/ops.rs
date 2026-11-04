@@ -1833,6 +1833,9 @@ fn add_timeline(
         timeline.id = counter.make('t', held)?;
     }
     name(&mut counter, &mut claims, &[], &mut timeline.tracks)?;
+    for bus in &mut timeline.buses {
+        audio::name_inserts(&mut bus.strip);
+    }
     for track in &mut timeline.tracks {
         audio::place_outputs(&timeline.buses, track);
     }
@@ -3623,6 +3626,9 @@ impl Project {
     /// tracks may have been put in order by then, and nothing else is changed.
     pub fn validate(&mut self) -> Result<(), Invalid> {
         for timeline in &mut self.timelines {
+            for bus in &mut timeline.buses {
+                audio::name_inserts(&mut bus.strip);
+            }
             for track in &mut timeline.tracks {
                 audio::place_outputs(&timeline.buses, track);
                 order(track);

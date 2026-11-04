@@ -827,6 +827,12 @@ impl Effect {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Insert {
+    /// What it is known by among the inserts of its strip (`fx1`, `fx2`, ...), which stays as
+    /// it moves from one insert to another, so that the lanes of its settings stay with it
+    /// (`insert.fx1.ceiling_db`). Where it is left out or empty, the engine gives an insert of a
+    /// strip the next `fx<n>` of the strip; one on a clip may have none.
+    #[serde(default)]
+    pub id: Id,
     /// Whether it is on. It may be left out, as on.
     #[serde(default = "yes")]
     pub on: bool,

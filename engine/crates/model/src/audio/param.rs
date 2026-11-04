@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::ops::LARGEST;
 use crate::time::Time;
 
 /// How the value of an [`AudioParam`] comes into a key and leaves it, as the right-click menu of
@@ -174,9 +175,12 @@ impl AudioParam {
             Self::Fixed(value) => value.is_finite() && check(*value),
             Self::Keys(keys) => {
                 !keys.is_empty()
-                    && keys
-                        .iter()
-                        .all(|k| k.value.is_finite() && check(k.value) && k.at.scale > 0)
+                    && keys.iter().all(|k| {
+                        k.value.is_finite()
+                            && check(k.value)
+                            && k.at.scale > 0
+                            && k.at.ticks.unsigned_abs() <= LARGEST.unsigned_abs()
+                    })
                     && keys.windows(2).all(|pair| earlier(pair[0].at, pair[1].at))
             }
         }
@@ -195,11 +199,6 @@ impl AudioParam {
 /// Whether time `a` is before time `b`, each of a scale above 0, counted exactly.
 pub(crate) fn earlier(a: Time, b: Time) -> bool {
     i128::from(a.ticks) * i128::from(b.scale) < i128::from(b.ticks) * i128::from(a.scale)
-}
-
-/// Whether time `a` is no later than time `b`, each of a scale above 0, counted exactly.
-fn no_later(a: Time, b: Time) -> bool {
-    !earlier(b, a)
 }
 
 /// What a lane of automation is of: a setting that changes smoothly, or one that is on or off.
@@ -243,48 +242,59 @@ pub struct Lane {
 }
 
 impl Lane {
-    /// The value at `at` seconds of its timeline.
+    /// The value at time `at` of its timeline, worked out in ticks, exactly but for the share
+    /// of the way between two points.
     #[must_use]
-    pub fn value_at(&self, at: f64) -> f64 {
+    pub fn value_at(&self, at: Time) -> f64 {
         let (Some(first), Some(last)) = (self.points.first(), self.points.last()) else {
             return 0.0;
         };
-        if at < seconds(first.at) {
+        // `at` as a count of ticks of the scale of the lane, times the scale of `at`.
+        let scale = i128::from(first.at.scale);
+        let place = |time: Time| i128::from(time.ticks) * i128::from(at.scale);
+        let now = i128::from(at.ticks) * scale;
+        if now < place(first.at) {
             return first.value;
         }
-        if at >= seconds(last.at) {
+        if now >= place(last.at) {
             return last.value;
         }
-        let i = self.points.partition_point(|p| seconds(p.at) <= at) - 1;
+        let i = self.points.partition_point(|p| place(p.at) <= now) - 1;
         let (from, to) = (&self.points[i], &self.points[i + 1]);
         match self.kind {
             LaneKind::Switch => from.value,
             LaneKind::Continuous => {
-                let (t0, t1) = (seconds(from.at), seconds(to.at));
-                let share = ((at - t0) / (t1 - t0)).clamp(0.0, 1.0);
+                #[allow(clippy::cast_precision_loss, reason = "a share of the way")]
+                let share = ((now - place(from.at)) as f64
+                    / (place(to.at) - place(from.at)) as f64)
+                    .clamp(0.0, 1.0);
                 from.value + (to.value - from.value) * share
             }
         }
     }
 
-    /// Whether it has points, of finite values at times of a scale above 0, from no earlier
-    /// than the start of the timeline, in order.
+    /// Whether it has points, of finite values at times all of one scale above 0, from no
+    /// earlier than the start of the timeline and no further than 2^53 - 1 ticks, in order.
     #[must_use]
     pub fn is_valid(&self) -> bool {
-        !self.points.is_empty()
-            && self
-                .points
-                .iter()
-                .all(|p| p.value.is_finite() && p.at.scale > 0 && p.at.ticks >= 0)
-            && self
-                .points
-                .windows(2)
-                .all(|pair| no_later(pair[0].at, pair[1].at))
+        let Some(first) = self.points.first() else {
+            return false;
+        };
+        self.points.iter().all(|p| {
+            p.value.is_finite()
+                && p.at.scale > 0
+                && p.at.scale == first.at.scale
+                && (0..=LARGEST).contains(&p.at.ticks)
+        }) && self
+            .points
+            .windows(2)
+            .all(|pair| pair[0].at.ticks <= pair[1].at.ticks)
     }
 }
 
 /// The lanes of automation of a track, a bus or a VCA, by the path of the setting that each is
-/// of (`fader`, `pan.x`, `send.0.level` and so on), in the order of their paths.
+/// of (see PROTOCOL: `fader_db`, `pan.x`, `send.B3.level_db`, `insert.fx1.on` and so on), in
+/// the order of their paths.
 pub type Lanes = BTreeMap<String, Lane>;
 
 #[cfg(test)]
@@ -401,15 +411,31 @@ mod tests {
             kind: LaneKind::Continuous,
         };
         assert!(lane.is_valid());
-        assert!((lane.value_at(0.25) - -7.5).abs() < 1e-12);
-        assert_eq!(lane.value_at(-1.0), -10.0);
-        assert!(lane.value_at(0.999_999).abs() < 1e-4);
-        assert_eq!(lane.value_at(1.0), -20.0);
+        // Read at times of other scales, in ticks.
+        let at = |ticks, scale| Time { ticks, scale };
+        assert!((lane.value_at(at(1, 4)) - -7.5).abs() < 1e-12);
+        assert_eq!(lane.value_at(at(-1, 1)), -10.0);
+        assert!(lane.value_at(at(47_999, 48000)).abs() < 1e-3);
+        assert_eq!(lane.value_at(at(44100, 44100)), -20.0);
         lane.kind = LaneKind::Switch;
         lane.points = vec![point(0, 0.0), point(1000, 1.0)];
-        assert_eq!(lane.value_at(0.999), 0.0);
-        assert_eq!(lane.value_at(1.0), 1.0);
+        assert_eq!(lane.value_at(at(999, 1000)), 0.0);
+        assert_eq!(lane.value_at(at(1, 1)), 1.0);
         lane.points = vec![point(1000, 1.0), point(0, 0.0)];
+        assert!(!lane.is_valid());
+        // Points of two scales, or past 2^53 - 1 ticks, are not.
+        lane.points = vec![
+            point(0, 0.0),
+            LanePoint {
+                at: at(1, 1),
+                value: 1.0,
+            },
+        ];
+        assert!(!lane.is_valid());
+        lane.points = vec![LanePoint {
+            at: at(1 << 53, 48000),
+            value: 1.0,
+        }];
         assert!(!lane.is_valid());
         lane.points = vec![];
         assert!(!lane.is_valid());

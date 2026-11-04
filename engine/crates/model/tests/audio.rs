@@ -172,6 +172,7 @@ fn routing_and_strips_that_cannot_be_played_are_refused_with_their_reasons() {
         let mut strip = Strip::to_first_bus();
         strip.inserts = vec![
             Insert {
+                id: String::new(),
                 on: true,
                 effect: Effect::Gain(GainFx { gain_db: 0.0 }),
             };
@@ -530,6 +531,117 @@ fn a_track_added_without_a_strip_goes_to_bus_1_if_there_is_one_and_else_to_none(
         .remove("strip");
     let read = Project::from_value(value).unwrap();
     assert_eq!(outputs(&read), ["B1"]);
+}
+
+#[test]
+#[allow(clippy::too_many_lines, reason = "a path of each kind of setting")]
+fn lanes_are_of_the_settings_of_their_strip_by_their_paths_and_kinds() {
+    use columbina_model::{Lane, LaneKind, LanePoint};
+    let lane = |kind| Lane {
+        points: vec![LanePoint {
+            at: Time {
+                ticks: 0,
+                scale: 48000,
+            },
+            value: 0.0,
+        }],
+        kind,
+    };
+    let mut project = Project::sample();
+    let t = &mut project.timelines[0];
+    t.buses.push(bus(3));
+    let strip = &mut t.tracks[1].audio.strip;
+    strip.sends = vec![Send {
+        bus: "B3".into(),
+        on: true,
+        pre: false,
+        level_db: 0.0,
+        pan: columbina_model::Pan::default(),
+    }];
+    strip.inserts = vec![
+        Insert {
+            id: String::new(),
+            on: true,
+            effect: Effect::Gain(GainFx { gain_db: 0.0 }),
+        };
+        2
+    ];
+    project.validate().unwrap();
+    // The inserts are given ids, which their lanes name.
+    let ids: Vec<&str> = project.timelines[0].tracks[1]
+        .audio
+        .strip
+        .inserts
+        .iter()
+        .map(|i| i.id.as_str())
+        .collect();
+    assert_eq!(ids, ["fx1", "fx2"]);
+    let continuous = [
+        "fader_db",
+        "trim_db",
+        "pan.x",
+        "eq.gain_db",
+        "eq.2.gain_db",
+        "eq.0.freq",
+        "dynamics.compressor.threshold_db",
+        "dynamics.makeup_db",
+        "send.B3.level_db",
+        "send.B3.pan.x",
+        "insert.fx2.gain_db",
+    ];
+    let switches = [
+        "mute",
+        "inserts_on",
+        "eq.on",
+        "eq.5.on",
+        "dynamics.compressor.on",
+        "send.B3.on",
+        "output.B1.on",
+        "insert.fx1.on",
+    ];
+    let fits = |path: &str, kind| {
+        let mut project = project.clone();
+        project.timelines[0].tracks[1]
+            .audio
+            .lanes
+            .insert(path.into(), lane(kind));
+        project.validate().is_ok()
+    };
+    for path in continuous {
+        assert!(fits(path, LaneKind::Continuous), "{path}");
+        assert!(!fits(path, LaneKind::Switch), "{path} is not a switch");
+    }
+    for path in switches {
+        assert!(fits(path, LaneKind::Switch), "{path}");
+    }
+    for path in [
+        "fader",
+        "send.B2.level_db",
+        "insert.fx3.on",
+        "eq.6.gain_db",
+        "dynamics.expander.mode",
+        "eq.2.kind",
+        "track_fx.amount_db",
+        "",
+    ] {
+        assert!(!fits(path, LaneKind::Continuous), "{path} is of nothing");
+    }
+    // A VCA has its fader and its mute.
+    let mut vca = project.clone();
+    vca.timelines[0].vcas = vec![columbina_model::Vca {
+        id: "VCA1".into(),
+        name: "Music".into(),
+        fader_db: 0.0,
+        mute: false,
+        solo: false,
+        vcas: vec![],
+        lanes: [("fader_db".to_owned(), lane(LaneKind::Continuous))].into(),
+    }];
+    vca.validate().unwrap();
+    vca.timelines[0].vcas[0]
+        .lanes
+        .insert("pan.x".into(), lane(LaneKind::Continuous));
+    assert!(vca.validate().is_err());
 }
 
 #[test]

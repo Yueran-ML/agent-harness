@@ -248,6 +248,11 @@ impl Strip {
         for insert in &self.inserts {
             insert.effect.check()?;
         }
+        let mut ids: Vec<&Id> = self.inserts.iter().map(|i| &i.id).collect();
+        ids.sort();
+        if ids.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(out("inserts"));
+        }
         self.dynamics.check()?;
         self.eq.check(true)?;
         if !level(self.fader_db) {
@@ -892,10 +897,90 @@ pub fn first_buses() -> Vec<Bus> {
     vec![Bus::first()]
 }
 
-fn lanes_valid(lanes: &Lanes) -> Result<(), OpError> {
+/// The settings of a strip that lanes of automation may be of, as an object whose paths are
+/// the paths of the lanes: those of its fields (`fader_db`, `trim_db`, `inserts_on`, `pan.x`,
+/// `eq.on`, `eq.gain_db`, `dynamics.compressor.threshold_db`, `track_fx.amount_db`), its bands of
+/// equalizer by their place from 0 (`eq.2.gain_db`), its sends and outputs by their bus
+/// (`send.B3.level_db`, `send.B3.pan.x`, `output.B2.on`), and its inserts by their id
+/// (`insert.fx1.on`, `insert.fx1.ceiling_db`); and `mute`, which a track and a bus have beside
+/// it. A number is a setting that changes smoothly, and a lane of it is continuous; a switch is
+/// a lane of a setting that is on or off. What is neither (a kind, a mode, a source) has none.
+fn automatable(strip: &Strip) -> serde_json::Value {
+    let mut view = serde_json::to_value(strip).unwrap_or_default();
+    let Some(object) = view.as_object_mut() else {
+        return serde_json::Value::Null;
+    };
+    for name in ["order", "vcas", "sends", "outputs", "inserts"] {
+        object.remove(name);
+    }
+    if let Some(serde_json::Value::Object(eq)) = object.get_mut("eq") {
+        if let Some(serde_json::Value::Array(bands)) = eq.remove("bands") {
+            for (at, band) in bands.into_iter().enumerate() {
+                eq.insert(at.to_string(), band);
+            }
+        }
+    }
+    let keyed = |pairs: Vec<(String, serde_json::Value)>| {
+        serde_json::Value::Object(pairs.into_iter().collect())
+    };
+    let send = strip
+        .sends
+        .iter()
+        .map(|s| (s.bus.clone(), serde_json::to_value(s).unwrap_or_default()))
+        .collect();
+    let output = strip
+        .outputs
+        .iter()
+        .map(|o| (o.bus.clone(), serde_json::json!({ "on": o.on })))
+        .collect();
+    let insert = strip
+        .inserts
+        .iter()
+        .map(|i| {
+            let mut effect = serde_json::to_value(&i.effect).unwrap_or_default();
+            if let Some(effect) = effect.as_object_mut() {
+                effect.insert("on".into(), i.on.into());
+            }
+            (i.id.clone(), effect)
+        })
+        .collect();
+    object.insert("send".into(), keyed(send));
+    object.insert("output".into(), keyed(output));
+    object.insert("insert".into(), keyed(insert));
+    object.insert("mute".into(), false.into());
+    view
+}
+
+/// The kind of a lane of the setting at `path` of `view` (see [`automatable`]), or none where
+/// there is no such setting. A key that holds a `.` (a bus or an insert named so) is found as a
+/// whole.
+fn lane_kind(view: &serde_json::Value, path: &str) -> Option<LaneKind> {
+    match view {
+        serde_json::Value::Number(_) if path.is_empty() => Some(LaneKind::Continuous),
+        serde_json::Value::Bool(_) if path.is_empty() => Some(LaneKind::Switch),
+        serde_json::Value::Object(object) if !path.is_empty() => {
+            object.iter().find_map(|(key, inner)| {
+                if path == key {
+                    lane_kind(inner, "")
+                } else {
+                    lane_kind(inner, path.strip_prefix(key.as_str())?.strip_prefix('.')?)
+                }
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Check the lanes of automation of a strip, or of a VCA where `strip` is none: each of a
+/// setting that it has, of the kind of that setting, with points (see [`Lane::is_valid`]).
+fn lanes_valid(lanes: &Lanes, strip: Option<&Strip>) -> Result<(), OpError> {
+    let view = match strip {
+        Some(strip) => automatable(strip),
+        None => serde_json::json!({ "fader_db": 0.0, "mute": false }),
+    };
     if lanes
         .iter()
-        .all(|(path, lane)| !path.is_empty() && lane.is_valid())
+        .all(|(path, lane)| lane.is_valid() && lane_kind(&view, path) == Some(lane.kind))
     {
         Ok(())
     } else {
@@ -903,13 +988,28 @@ fn lanes_valid(lanes: &Lanes) -> Result<(), OpError> {
     }
 }
 
+/// Give each insert of a strip that has no id the next `fx<n>` of the strip.
+pub fn name_inserts(strip: &mut Strip) {
+    let mut highest = strip
+        .inserts
+        .iter()
+        .filter_map(|insert| insert.id.strip_prefix("fx")?.parse::<u64>().ok())
+        .max()
+        .unwrap_or(0);
+    for insert in strip.inserts.iter_mut().filter(|i| i.id.is_empty()) {
+        highest += 1;
+        insert.id = format!("fx{highest}");
+    }
+}
+
 /// Put the output of a track that names no bus, as one added without a strip does
 /// ([`Strip::to_first_bus_if_any`]), to the first bus of its timeline, `B1`, where `buses` has it,
-/// and take it away where it has not.
+/// and take it away where it has not; and name its inserts that have no id ([`name_inserts`]).
 pub fn place_outputs(buses: &[Bus], track: &mut Track) {
     if track.kind != crate::project::TrackKind::Audio {
         return;
     }
+    name_inserts(&mut track.audio.strip);
     let outputs = &mut track.audio.strip.outputs;
     let named = outputs.iter().any(|o| o.bus == FIRST_BUS);
     if !named && buses.iter().any(|b| b.id == FIRST_BUS) {
@@ -942,7 +1042,7 @@ pub fn check_track(track: &Track) -> Result<(), OpError> {
         check_channels(track, clip)?;
     }
     audio.strip.check(false)?;
-    lanes_valid(&audio.lanes)
+    lanes_valid(&audio.lanes, Some(&audio.strip))
 }
 
 /// Check that a clip on a track of sound plays as many channels as the track has, where it
@@ -1040,14 +1140,14 @@ pub fn check_timeline(timeline: &Timeline) -> Result<(), routing::Wrong> {
             return Err(wrong(out("label")));
         }
         bus.strip.check(true).map_err(wrong)?;
-        lanes_valid(&bus.lanes).map_err(wrong)?;
+        lanes_valid(&bus.lanes, Some(&bus.strip)).map_err(wrong)?;
     }
     for vca in &timeline.vcas {
         let wrong = |error| ("vca", vca.id.clone(), error);
         if !level(vca.fader_db) {
             return Err(wrong(out("fader_db")));
         }
-        lanes_valid(&vca.lanes).map_err(wrong)?;
+        lanes_valid(&vca.lanes, None).map_err(wrong)?;
     }
     let settings = &timeline.audio;
     let range = settings.record.active_range.is_none_or(|r| {
@@ -1208,6 +1308,7 @@ mod tests {
         let mut seven = Strip::default();
         seven.inserts = vec![
             Insert {
+                id: String::new(),
                 on: true,
                 effect: Effect::Gain(fx::GainFx { gain_db: 0.0 }),
             };

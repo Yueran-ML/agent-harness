@@ -614,7 +614,8 @@ are at most +10; −100 or below is −∞.
   (≤ 10, each bus once), vcas}`. `pan` is `{on, x, y (−1…1), rotate (±180), spread (1…99, 99),
   divergence (0…100), lfe_db, lfe_on, lfe_pre}`. A send is `{bus, on (true), pre (false: after
   the fader), level_db (0), pan}`; an output `{bus, on}`.
-- **Effects.** An insert is `{on (true), effect}`; `effect` is `{kind, ...settings}` of `gain`,
+- **Effects.** An insert is `{id, on (true), effect}`; `id` (`fx1`, `fx2`, …) is unique in its strip
+  and stays with it as it moves, and an insert of a strip added without one is given the next; `effect` is `{kind, ...settings}` of `gain`,
   `limiter` (with `sidechain`), `soft_clipper`, `stereo_width`, `de_esser`, `de_hummer`,
   `noise_reduction` (with a learned `profile` or `null`) or `pitch`. A Ducker is `{on, sources:
   [{"track": id} | {"bus": id}], amount_db (2.7), lookahead_ms (15), rise_ms (10), hold_ms (150),
@@ -638,9 +639,19 @@ are at most +10; −100 or below is −∞.
   categories, preview, active_range}}`. At most 64 buses and 64 VCAs; no path of buses longer
   than 6, nor chain of VCAs; no loop through outputs, sends, sidechains and duckers.
 - **Lane** (automation of a track, bus or VCA, by the path of its setting): `{points: [{at:
-  {ticks, scale}, value}], kind: continuous|switch}`, points in time order (two may share a
-  time: the later holds from it), times of the timeline; straight lines between points, a switch
-  holds; before the first and after the last, their values.
+  {ticks, scale}, value}], kind: continuous|switch}`, points in time order, all of one scale and
+  within 0…2^53−1 ticks (two may share a time: the later holds from it), times of the timeline;
+  straight lines between points (worked out in ticks), a switch holds; before the first and
+  after the last, their values. The path of a lane is the path of the field of the strip that it
+  automates, and its kind is that of the field: a number is continuous, a boolean a switch, and
+  any other field has no lane. Paths: `fader_db`, `trim_db`, `mute`, `invert`, `inserts_on`,
+  `pan.<x|y|rotate|spread|divergence|lfe_db|on|lfe_on|lfe_pre>`, `eq.on`, `eq.gain_db`,
+  `eq.<band from 0>.<on|freq|gain_db|q>`, `dynamics.<…>` as Dynamics is written
+  (`dynamics.compressor.threshold_db`, `dynamics.compressor.sidechain.on`, `dynamics.makeup_db`),
+  `track_fx.<…>` of a track with a Ducker (`track_fx.amount_db`), `send.<bus id>.<level_db|on|pre|pan.x|…>`,
+  `output.<bus id>.on`, and `insert.<insert id>.<on|setting>` (`insert.fx1.ceiling_db`). A VCA has
+  `fader_db` and `mute`. A lane of a setting that the strip has not, or of another kind, is
+  refused as `out_of_range: lane`.
 - **Transition.** Added `fade_in_level_db` and `fade_out_level_db`, each −3, 0 or 3 (0): how the
   clip that starts at the cut rises and the one that ends there falls on a crossfade: 0 dB `t`,
   +3 dB `sin(πt/2)`, −3 dB `t^1.5`; the falling side is the rising curve reversed.

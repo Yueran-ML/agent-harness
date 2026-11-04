@@ -240,7 +240,8 @@ export type Effect =
   | { kind: 'de_hummer'; frequency_hz: number; amount: number; slope: number; listen: boolean }
   | { kind: 'noise_reduction'; mode: 'auto_speech' | 'manual' | 'voice'; threshold_db: number; attack_ms: number; sensitivity: number; ratio: number; frequency_smoothing: number; time_smoothing: boolean; dry_wet: number; level_db: number; listen: boolean; profile: number[] | null }
   | { kind: 'pitch'; semitones: number; cents: number; dry_wet: number };
-export interface Insert { on: boolean; effect: Effect }
+/** An effect in an insert or on a clip; `id` (fx1, ...) names it among the inserts of its strip, for its lanes. */
+export interface Insert { id?: string; on: boolean; effect: Effect }
 export interface Pan { on: boolean; x: number; y: number; rotate: number; spread: number; divergence: number; lfe_db: number; lfe_on: boolean; lfe_pre: boolean }
 export interface Send { bus: string; on: boolean; pre: boolean; level_db: number; pan: Pan }
 export interface Output { bus: string; on: boolean }

@@ -111,6 +111,7 @@ fn sound_track() -> Op {
     track.audio.solo_safe = true;
     track.audio.strip.fader_db = -6.0;
     track.audio.strip.inserts = vec![Insert {
+        id: String::new(),
         on: true,
         effect: Effect::Gain(GainFx { gain_db: 3.0 }),
     }];

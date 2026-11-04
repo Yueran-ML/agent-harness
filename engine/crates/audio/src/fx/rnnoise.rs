@@ -27,19 +27,28 @@
 //! # The thread of the mix
 //!
 //! `nnnoiseless` plans its transforms on first use on each thread and keeps them there (in the
-//! crate `easyfft`): the first frame on a thread takes memory, none after. [`Node::prepare`]
-//! does it for its own thread; the thread of the mix must call [`warm_thread`] once before it
-//! runs (T5). The state of `RNNoise` has no reset of its own and is rebuilt only by allocating:
-//! the node keeps [`RNNOISE_SPARE_STATES`] fresh states for each channel, taken in `prepare`,
-//! and a reset swaps a used state for a fresh one. When they are spent (more resets than that
-//! without a `prepare`), a reset keeps the used state, which the settling of the node forgets.
+//! crate `easyfft`, leaking one plan for each thread): the first frame on a thread takes memory,
+//! none after. The thread of the mix, which lives as long as the playback, calls [`warm_thread`]
+//! once before it runs (T5); `prepare` does not, so that the threads that build graphs do not
+//! each keep a plan.
+//!
+//! # Fresh states
+//!
+//! The state of `RNNoise` has no reset of its own, and copying a fresh state into a used one
+//! allocates (`clone_from` takes 9 allocations, measured): so the node keeps
+//! [`RNNOISE_SPARE_STATES`] fresh states for each channel, taken in `prepare`, and swaps a used
+//! state for a fresh one on a reset and after [`RNNOISE_FORGET`] of digital silence (every
+//! sample of 100 frames in a row below −140 dBFS). `RNNoise` keeps its state through silence, so
+//! that without the latter the state after a gap would be that of the clip before it, and a
+//! playback started inside the gap would not hear what an export hears. When the spares are
+//! spent (more resets and gaps than that without a `prepare`), the used state is kept.
 
 use nnnoiseless::DenoiseState;
 
 use crate::constants::{
-    samples, DENOISE_INPUT_LIMIT, RNNOISE_DELAY, RNNOISE_FRAME, RNNOISE_LONGEST_PERIOD,
-    RNNOISE_RATE, RNNOISE_RATES, RNNOISE_RESAMPLE_BAND, RNNOISE_RESAMPLE_ZEROS, RNNOISE_SCALE,
-    RNNOISE_SETTLE, RNNOISE_SPARE_STATES, SMOOTHING,
+    samples, DENOISE_INPUT_LIMIT, RNNOISE_DELAY, RNNOISE_FORGET, RNNOISE_FRAME,
+    RNNOISE_LONGEST_PERIOD, RNNOISE_RATE, RNNOISE_RATES, RNNOISE_RESAMPLE_BAND,
+    RNNOISE_RESAMPLE_ZEROS, RNNOISE_SCALE, RNNOISE_SETTLE, RNNOISE_SPARE_STATES, SMOOTHING,
 };
 use crate::fx::denoise::{Mixer, Param, Settings};
 use crate::node::{Block, Layout, Node, ParamId, Planar, Spec, Unsupported};
@@ -291,6 +300,8 @@ struct Channel {
     state: Box<DenoiseState<'static>>,
     /// The state has taken a frame since it was fresh.
     used: bool,
+    /// The frames of digital silence in a row.
+    quiet: u32,
     /// The frame coming in, scaled.
     frame: [f32; RNNOISE_FRAME],
     /// The frame going out: the output of the last frame taken.
@@ -303,14 +314,50 @@ struct Channel {
     dry: History,
 }
 
+/// The fresh states of `RNNoise`, and the used ones taken out of the channels, kept to be freed
+/// off the thread of the mix (on the next `prepare`, or when the node is dropped).
+struct Pool {
+    spares: Vec<Box<DenoiseState<'static>>>,
+    spent: Vec<Box<DenoiseState<'static>>>,
+}
+
+impl Pool {
+    /// A fresh state for `channel`, if one is left; the used one is kept in `spent`.
+    fn refresh(&mut self, channel: &mut Channel) {
+        if !channel.used {
+            return;
+        }
+        if let Some(fresh) = self.spares.pop() {
+            let used = std::mem::replace(&mut channel.state, fresh);
+            // Within its capacity: as many can be spent as were spare.
+            debug_assert!(self.spent.len() < self.spent.capacity());
+            self.spent.push(used);
+            channel.used = false;
+        }
+    }
+}
+
+/// A sample of a frame below this, in the scale of `RNNoise` (−140 dBFS), is digital silence.
+const SILENT: f32 = 1e-7 * RNNOISE_SCALE;
+
 impl Channel {
     /// One sample at 48 kHz, at the place `n` of the grid: the voice of 960 samples before.
-    fn step(&mut self, n: u64, sample: f32) -> f32 {
+    /// After [`RNNOISE_FORGET`] of frames of digital silence in a row (`forget` frames) the
+    /// channel takes a fresh state from `pool`.
+    fn step(&mut self, n: u64, sample: f32, forget: u32, pool: &mut Pool) -> f32 {
         #[allow(clippy::cast_possible_truncation, reason = "a place in a frame")]
         let at = (n % RNNOISE_FRAME as u64) as usize;
         let out = self.out[at];
         self.frame[at] = sample.clamp(-DENOISE_INPUT_LIMIT, DENOISE_INPUT_LIMIT) * RNNOISE_SCALE;
         if at == RNNOISE_FRAME - 1 {
+            if self.frame.iter().all(|x| x.abs() < SILENT) {
+                self.quiet = self.quiet.saturating_add(1);
+                if self.quiet == forget {
+                    pool.refresh(self);
+                }
+            } else {
+                self.quiet = 0;
+            }
             self.state.process_frame(&mut self.out, &self.frame);
             self.used = true;
         }
@@ -335,10 +382,9 @@ pub struct Voice {
     latency: u64,
     conversion: Option<Conversion>,
     channels: Vec<Channel>,
-    /// Fresh states, and the used ones swapped out of the channels (kept to be freed off the
-    /// thread of the mix, on the next `prepare` or drop).
-    spares: Vec<Box<DenoiseState<'static>>>,
-    spent: Vec<Box<DenoiseState<'static>>>,
+    pool: Pool,
+    /// The frames of [`RNNOISE_FORGET`].
+    forget: u32,
     count: u64,
     origin: u64,
     dry: Planar,
@@ -352,7 +398,7 @@ impl std::fmt::Debug for Voice {
             .field("rate", &self.rate)
             .field("latency", &self.latency)
             .field("channels", &self.channels.len())
-            .field("spares", &self.spares.len())
+            .field("spares", &self.pool.spares.len())
             .finish_non_exhaustive()
     }
 }
@@ -369,8 +415,11 @@ impl Voice {
             latency: 0,
             conversion: None,
             channels: Vec::new(), // rt-ok: empty, before the graph is built
-            spares: Vec::new(),   // rt-ok: empty, before the graph is built
-            spent: Vec::new(),    // rt-ok: empty, before the graph is built
+            pool: Pool {
+                spares: Vec::new(), // rt-ok: empty, before the graph is built
+                spent: Vec::new(),  // rt-ok: empty, before the graph is built
+            },
+            forget: 0,
             count: 0,
             origin: 0,
             dry: Planar::new(0, 0),
@@ -396,7 +445,7 @@ impl Voice {
     /// The fresh states left for resets.
     #[must_use]
     pub fn spares(&self) -> usize {
-        self.spares.len()
+        self.pool.spares.len()
     }
 
     /// The parameters as set (their targets).
@@ -434,6 +483,7 @@ impl Node for Voice {
             .map(|_| Channel {
                 state: DenoiseState::new(),
                 used: false,
+                quiet: 0,
                 frame: [0.0; RNNOISE_FRAME],
                 out: [0.0; RNNOISE_FRAME],
                 input: History::new(input),
@@ -441,13 +491,22 @@ impl Node for Voice {
                 dry: History::new(dry),
             })
             .collect(); // rt-ok: when the graph is built
-        self.spares = (0..channels * RNNOISE_SPARE_STATES)
+        let spares: Vec<_> = (0..channels * RNNOISE_SPARE_STATES)
             .map(|_| DenoiseState::new())
             .collect(); // rt-ok: when the graph is built
-        self.spent = Vec::with_capacity(self.spares.len()); // rt-ok: when the graph is built
+        let spent = Vec::with_capacity(spares.len()); // rt-ok: when the graph is built
+        self.pool = Pool { spares, spent };
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            clippy::cast_precision_loss,
+            reason = "a hundred frames"
+        )]
+        let forget =
+            (RNNOISE_FORGET * f64::from(RNNOISE_RATE) / RNNOISE_FRAME as f64).ceil() as u32;
+        self.forget = forget;
         self.dry = Planar::new(channels, spec.max_block);
         self.mixer.prepare(spec.rate);
-        warm_thread();
         self.reset();
         Ok(())
     }
@@ -460,6 +519,8 @@ impl Node for Voice {
         let Voice {
             conversion,
             channels,
+            pool,
+            forget,
             count,
             origin,
             latency,
@@ -479,12 +540,12 @@ impl Node for Voice {
                     let back = at as i64 - *latency as i64;
                     dry[c][i] = channel.dry.get(back);
                     output[c][i] = match conversion {
-                        None => channel.step(at, sample),
+                        None => channel.step(at, sample, *forget, pool),
                         Some(conversion) => {
                             channel.input.put(at, sample);
                             for n in conversion.up.outputs_at(at) {
                                 let x = conversion.up.output(n, &channel.input);
-                                let y = channel.step(n, x);
+                                let y = channel.step(n, x, *forget, pool);
                                 channel.voice.put(n, y);
                             }
                             conversion.down.output(at, &channel.voice)
@@ -511,15 +572,8 @@ impl Node for Voice {
     fn reset(&mut self) {
         for channel in &mut self.channels {
             channel.clear();
-            if channel.used {
-                if let Some(fresh) = self.spares.pop() {
-                    let used = std::mem::replace(&mut channel.state, fresh);
-                    // Within its capacity: as many can be spent as were spare.
-                    debug_assert!(self.spent.len() < self.spent.capacity());
-                    self.spent.push(used);
-                    channel.used = false;
-                }
-            }
+            channel.quiet = 0;
+            self.pool.refresh(channel);
         }
         self.count = 0;
         self.mixer.finish();

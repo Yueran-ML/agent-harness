@@ -368,6 +368,8 @@ fn bad_input_and_bad_lanes_do_not_stick() {
 
 #[test]
 fn it_takes_no_memory_on_the_thread_of_the_mix() {
+    // As the thread of the mix does before it runs (prepare does not).
+    warm_thread();
     for rate in [48_000_u32, 44_100] {
         let spec = Spec::new(rate, 480, Layout::Stereo);
         let mut node = Voice::new(&voiced());
@@ -530,5 +532,45 @@ fn aligned_off_the_start_its_output_does_not_depend_on_the_blocks() {
             &busy_run(44_100, 30_000, 2),
             &[7],
         );
+    }
+}
+
+/// `RNNoise` keeps its state through digital silence; after a second of it the voice takes a
+/// fresh state, so that an export from the start and a playback started inside a long gap give
+/// the same bits from the second clip on (a gap of 80 s, longer than the settling).
+#[test]
+fn after_a_second_of_silence_a_start_inside_the_gap_hears_what_an_export_hears() {
+    warm_thread();
+    let rate = 48_000_usize;
+    let clip = |seed: u64| sum(&voice(48_000, 0.1, 3 * rate), &white(seed, 0.01, 3 * rate));
+    let mut input = clip(291);
+    input.extend(std::iter::repeat_n(0.0, 80 * rate));
+    let second = input.len();
+    input.extend(clip(292));
+    let spec = Spec::new(48_000, input.len(), Layout::Mono);
+    let mut early = Voice::new(&voiced());
+    early.prepare(&spec).unwrap();
+    let whole = render(&mut early, &spec, &Run::new(vec![input.clone()]), |left| {
+        left
+    })
+    .remove(0);
+    for from in [40 * rate + 77, second - rate / 3] {
+        let mut late = Voice::new(&voiced());
+        late.prepare(&spec).unwrap();
+        late.align(from as u64);
+        let tail = render(
+            &mut late,
+            &spec,
+            &Run::new(vec![input[from..].to_vec()]),
+            |left| left,
+        )
+        .remove(0);
+        for t in second..input.len() {
+            assert_eq!(
+                whole[t].to_bits(),
+                tail[t - from].to_bits(),
+                "from {from}, at {t}"
+            );
+        }
     }
 }

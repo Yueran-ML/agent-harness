@@ -4,7 +4,9 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use columbina_model::audio::fx::{Dynamics as DynamicsModel, EqKind, EqRange, GateMode};
+use columbina_model::audio::fx::{
+    Ducker as DuckerModel, Dynamics as DynamicsModel, EqKind, EqRange, GateMode,
+};
 use columbina_model::audio::{BusFormat, ChannelOrder, Pan as PanModel, TrackFormat};
 use columbina_model::{
     resolve, AudioParam, Effect, Equalizer, Id, Lane, Lanes, Project, SourceRef, Stage as Order,
@@ -14,10 +16,11 @@ use columbina_model::{
 use crate::constants::MAX_CHANNELS;
 use crate::db_to_gain;
 use crate::feed::ClipSource;
+use crate::fx::ducker::{self, Ducker, Param as DuckerParam};
 use crate::fx::dynamics::{self, Dynamics, Param as DynamicsParam};
 use crate::fx::eq::{self, Eq, Field, Kind, Variant, Zone};
 use crate::node::{Layout, Node, ParamId, Planar, Role, Spec};
-use crate::rt::{seqlock, Domain, Smoothed};
+use crate::rt::{seqlock, Domain, SeqReader, Smoothed};
 
 use super::clip::{cutoff, radius, ClipChain, ClipPan, ClipScratch, Mapping, Window};
 use super::pdc::{DelayLine, Delayer};
@@ -90,8 +93,8 @@ pub enum BuildError {
 static GRAPHS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Where a sidechain from `source`, of `layout`, comes from: its channels but the LFE (T8's
-/// review).
-fn key_of(source: usize, layout: Layout) -> Key {
+/// review), delayed by `side` samples.
+fn key_of(source: usize, layout: Layout, side: u32) -> Key {
     let mut channels = [0; MAX_CHANNELS];
     let mut count = 0;
     for (channel, role) in layout.roles().iter().enumerate() {
@@ -104,19 +107,22 @@ fn key_of(source: usize, layout: Layout) -> Key {
         source,
         channels,
         count,
+        side: delay_line(count, usize::try_from(side).unwrap_or(0)),
     }
 }
 
-/// A node of a strip, `offset` samples behind the input of the graph, with its sidechain `key`
-/// delayed by `side` samples.
-fn stage(node: Box<dyn Node>, key: Option<Key>, side: u32, max_block: usize, offset: u32) -> Stage {
-    let count = key.map_or(0, |key| key.count);
+/// A node of a strip, `offset` samples behind the input of the graph, with the sidechains `keys`
+/// summed into its own.
+fn stage(node: Box<dyn Node>, keys: Vec<Key>, max_block: usize, offset: u32) -> Stage {
+    let count = keys.iter().map(|key| key.count).max().unwrap_or(0);
+    let frames = |used: bool| if used && count > 0 { max_block } else { 0 };
+    let summed = keys.len() > 1;
     Stage {
         node,
         lanes: Box::new([]),
-        key,
-        keyed: Planar::new(count, if count > 0 { max_block } else { 0 }),
-        side: delay_line(count, usize::try_from(side).unwrap_or(0)),
+        keyed: Planar::new(count, frames(true)),
+        summed: Planar::new(if summed { count } else { 0 }, frames(summed)),
+        keys: keys.into_boxed_slice(),
         offset: i64::from(offset),
         processed: 0,
     }
@@ -131,13 +137,14 @@ fn delay_line(channels: usize, length: usize) -> DelayLine {
     }
 }
 
-/// A node of a strip before the latencies are known: the node, what it is, and the strip that
+/// A node of a strip before the latencies are known: the node, what it is, and the strips that
 /// its sidechain comes from.
-type Unplaced = (Box<dyn Node>, StageKind, Option<usize>);
+type Unplaced = (Box<dyn Node>, StageKind, Vec<usize>);
 
 /// What a node of a strip is, to find the parameters that lanes and controls set.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum StageKind {
+    Ducker,
     Dynamics,
     Eq,
     Insert(usize, fn(&str) -> Option<ParamId>),
@@ -170,6 +177,13 @@ pub(crate) fn param_of(meta: &Meta, path: &str) -> Option<StripParam> {
         return simple;
     }
     let stage = |wanted: fn(&StageKind) -> bool| meta.stages.iter().position(wanted);
+    if let Some(rest) = path.strip_prefix("track_fx.") {
+        let stage = stage(|kind| matches!(kind, StageKind::Ducker))?;
+        let param = DuckerParam::ALL
+            .iter()
+            .find(|param| param.path() == rest && param.is_automatable())?;
+        return Some(StripParam::Node(stage, param.id()));
+    }
     if let Some(rest) = path.strip_prefix("dynamics.") {
         let stage = stage(|kind| matches!(kind, StageKind::Dynamics))?;
         let param = DynamicsParam::ALL
@@ -360,6 +374,35 @@ pub(crate) fn dynamics_settings(model: &DynamicsModel, listen: bool) -> dynamics
 }
 
 /// The values that a lane takes.
+/// The settings of the Ducker of the model.
+pub(crate) fn ducker_settings(model: &DuckerModel) -> ducker::Settings {
+    ducker::Settings {
+        on: model.on,
+        amount_db: single(model.amount_db),
+        lookahead_ms: single(model.lookahead_ms),
+        rise_ms: single(model.rise_ms),
+        hold_ms: single(model.hold_ms),
+        recovery_ms: single(model.recovery_ms),
+    }
+}
+
+/// `settings` with the longest rise, hold and recovery that its lanes (`track_fx.…`) take: those
+/// that settle the slowest (T8's review).
+fn slowest_ducker(mut settings: ducker::Settings, lanes: &Lanes) -> ducker::Settings {
+    for (path, value) in [
+        ("track_fx.rise_ms", &mut settings.rise_ms),
+        ("track_fx.hold_ms", &mut settings.hold_ms),
+        ("track_fx.recovery_ms", &mut settings.recovery_ms),
+    ] {
+        if let Some(lane) = lanes.get(path) {
+            for point in points(lane) {
+                *value = value.max(single(point));
+            }
+        }
+    }
+    settings
+}
+
 fn points(lane: &Lane) -> impl Iterator<Item = f64> + '_ {
     lane.points.iter().map(|point| point.value)
 }
@@ -611,10 +654,30 @@ impl Graph {
             let layout = sources[source].layout;
             layout.channels() - usize::from(layout.lfe().is_some())
         };
+        // The Ducker of a track (T11): built where it is on, or its lane turns it on, and some
+        // of its sources are in the graph; the strips of its sources, each once.
+        let duckers: Vec<Option<(&DuckerModel, Vec<usize>)>> = sources
+            .iter()
+            .enumerate()
+            .map(|(at, source)| {
+                let model = source.strip.track_fx.as_ref().filter(|_| at < tracks)?;
+                if !ever_on(model.on, source.lanes, "track_fx.on") {
+                    return None;
+                }
+                let mut keyed: Vec<usize> = Vec::new();
+                for strip in model.sources.iter().filter_map(strip_of) {
+                    if !keyed.contains(&strip) {
+                        keyed.push(strip);
+                    }
+                }
+                (!keyed.is_empty()).then_some((model, keyed))
+            })
+            .collect();
         let keys: Vec<Vec<usize>> = sources
             .iter()
             .zip(&built_dynamics)
-            .map(|(source, &built)| {
+            .zip(&duckers)
+            .map(|((source, &built), ducker)| {
                 let dynamics = if built {
                     source.strip.dynamics.compressor.sidechain.source.as_ref()
                 } else {
@@ -625,11 +688,13 @@ impl Graph {
                     .inserts
                     .iter()
                     .filter_map(|insert| insert.effect.sidechain()?.source.as_ref());
-                dynamics
+                let mut keys: Vec<usize> = dynamics
                     .into_iter()
                     .chain(inserts)
                     .filter_map(strip_of)
-                    .collect()
+                    .collect();
+                keys.extend(ducker.iter().flat_map(|(_, keyed)| keyed));
+                keys
             })
             .collect();
 
@@ -690,15 +755,27 @@ impl Graph {
             vec![true; count]
         };
 
-        // The nodes of each strip, in its Order.
+        // The nodes of each strip: its Ducker, then the rest in its Order.
         let listen = options.purpose == Purpose::Preview;
         let mut stages: Vec<Vec<Unplaced>> = Vec::with_capacity(count);
         let mut settles: Vec<u64> = vec![0; count];
+        let mut ducker_meters: Vec<(usize, SeqReader<ducker::Meter>)> = Vec::new();
         for (at, source) in sources.iter().enumerate() {
             let layout = source.layout;
             let spec = Spec::new(rate, max_block, layout);
-            let mut list = Vec::new();
+            let mut list: Vec<Unplaced> = Vec::new();
             let meta = &mut metas[at];
+            if let Some((model, keyed)) = &duckers[at] {
+                let settings = ducker_settings(model);
+                let mut node = Ducker::new(&settings);
+                let channels = keyed.iter().map(|&s| side_channels(s)).max().unwrap_or(0);
+                if node.prepare(&spec.with_sidechain(channels)).is_ok() {
+                    let slowest = slowest_ducker(settings, source.lanes);
+                    settles[at] += u64::from(ducker::settle_for(&slowest, rate));
+                    ducker_meters.push((at, node.meter()));
+                    list.push((Box::new(node), StageKind::Ducker, keyed.clone()));
+                }
+            }
             for stage in &source.strip.order {
                 match stage {
                     Order::Fx => {
@@ -739,12 +816,12 @@ impl Graph {
                                 meta.inserts.push(insert.id.clone());
                                 settles[at] += u64::from(made.settle);
                                 let kind = StageKind::Insert(meta.inserts.len() - 1, made.param);
-                                list.push((node, kind, key));
+                                list.push((node, kind, key.into_iter().collect()));
                             } else {
                                 let length = usize::try_from(node.latency()).unwrap_or(0);
                                 let mut bypass = Delayer::new(length);
                                 if bypass.prepare(&spec).is_ok() {
-                                    list.push((Box::new(bypass), StageKind::Bypass, None));
+                                    list.push((Box::new(bypass), StageKind::Bypass, Vec::new()));
                                 }
                             }
                         }
@@ -766,6 +843,7 @@ impl Graph {
                         }
                         let slowest = slowest_dynamics(settings, source.lanes);
                         settles[at] += u64::from(Dynamics::settle_for(&slowest, rate));
+                        let key = key.into_iter().collect();
                         list.push((Box::new(node) as Box<dyn Node>, StageKind::Dynamics, key));
                     }
                     Order::Eq if ever_on(source.strip.eq.on, source.lanes, "eq.on") => {
@@ -776,7 +854,7 @@ impl Graph {
                         }
                         let slowest = slowest_eq(settings, source.lanes);
                         settles[at] += u64::from(eq::settle_for(&slowest, rate));
-                        list.push((Box::new(node) as Box<dyn Node>, StageKind::Eq, None));
+                        list.push((Box::new(node) as Box<dyn Node>, StageKind::Eq, Vec::new()));
                     }
                     Order::Dynamics | Order::Eq => {}
                 }
@@ -786,8 +864,8 @@ impl Graph {
 
         // The latencies, strip by strip in their order: at the input of a bus the longest of what
         // feeds it, the tracks whose ADC is off aside; through a strip its nodes'; a node with a
-        // sidechain has its sidechain delayed to the sound it acts on, or, where the sidechain is
-        // the later, the strip delayed before the node to the sidechain (T4b's review, P3-6).
+        // sidechain has each of its sources delayed to the sound it acts on, or, where a source is
+        // the later, the strip delayed before the node to the latest (T4b's review, P3-6).
         let mut feeders: Vec<Vec<usize>> = vec![Vec::new(); count];
         for (from, to) in feeds.iter().enumerate() {
             for &to in to {
@@ -808,23 +886,27 @@ impl Graph {
             let spec = Spec::new(rate, max_block, sources[at].layout);
             let mut offset = arrival[at];
             let mut kinds = Vec::new();
-            for (node, kind, key) in lists[at].take().unwrap_or_default() {
-                let mut side = 0;
-                if let Some(source) = key {
-                    let from = arrival[source] + latencies[source];
-                    if from > offset {
-                        let mut align = Delayer::new(usize::try_from(from - offset).unwrap_or(0));
+            for (node, kind, keyed) in lists[at].take().unwrap_or_default() {
+                let from = |source: usize| arrival[source] + latencies[source];
+                if let Some(latest) = keyed.iter().map(|&source| from(source)).max() {
+                    if latest > offset {
+                        let mut align = Delayer::new(usize::try_from(latest - offset).unwrap_or(0));
                         if align.prepare(&spec).is_ok() {
-                            built[at].push(stage(Box::new(align), None, 0, max_block, offset));
+                            built[at].push(stage(Box::new(align), Vec::new(), max_block, offset));
                             kinds.push(StageKind::Bypass);
-                            offset = from;
+                            offset = latest;
                         }
                     }
-                    side = offset.saturating_sub(from);
                 }
                 let latency = node.latency();
-                let key = key.map(|source| key_of(source, sources[source].layout));
-                built[at].push(stage(node, key, side, max_block, offset));
+                let keys = keyed
+                    .iter()
+                    .map(|&source| {
+                        let side = offset.saturating_sub(from(source));
+                        key_of(source, sources[source].layout, side)
+                    })
+                    .collect();
+                built[at].push(stage(node, keys, max_block, offset));
                 kinds.push(kind);
                 offset += latency;
             }
@@ -1214,6 +1296,10 @@ impl Graph {
                 })
                 .collect(),
             keys: keyed_sources,
+            duckers: ducker_meters
+                .into_iter()
+                .map(|(at, meter)| (sources[at].owner.clone(), meter))
+                .collect(),
             edge: Planar::new(MAX_CHANNELS, max_block),
             vca_ids: t.vcas.iter().map(|vca| vca.id.clone()).collect(),
             vcas: t

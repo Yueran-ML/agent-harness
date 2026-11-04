@@ -1825,7 +1825,8 @@ fn same_sound(
         return false;
     }
     let end = resolve::samples_at(resolve::duration(now), now.rate, now.sample_rate);
-    let pieces = resolve::audio_between(now, after, from, end);
+    // Every track that is on: a muted one is not heard, but it may drive a sidechain.
+    let pieces = resolve::sources_between(now, after, from, end);
     let channels = |timeline: &columbina_model::Timeline, clip: &str| {
         timeline
             .tracks
@@ -1834,7 +1835,7 @@ fn same_sound(
             .find(|each| each.id == clip)
             .map(|each| each.channels.clone())
     };
-    pieces == resolve::audio_between(was, before, from, end)
+    pieces == resolve::sources_between(was, before, from, end)
         && pieces.iter().all(|piece| {
             media_of(before, &piece.media).map(heard) == media_of(after, &piece.media).map(heard)
                 && channels(was, &piece.clip) == channels(now, &piece.clip)
@@ -1842,8 +1843,8 @@ fn same_sound(
 }
 
 /// Whether the graph of the sound (T4b) mixes the clips of `was` as those of `now`: the same
-/// tracks of sound with the same strips, formats, mutes, solos and lanes, the same buses and VCAs,
-/// and the same bus monitored. Until T5 sends such changes into the graph as it plays, a change of
+/// tracks of sound with the same strips, formats, mutes, solos and lanes, the same equalizers,
+/// effects and pitch of their clips, the same buses and VCAs, and the same bus monitored. Until T5 sends such changes into the graph as it plays, a change of
 /// them starts the sound again.
 fn same_mixing(was: &columbina_model::Timeline, now: &columbina_model::Timeline) -> bool {
     fn mixing(
@@ -1855,7 +1856,35 @@ fn same_mixing(was: &columbina_model::Timeline, now: &columbina_model::Timeline)
             .filter(|track| track.kind == TrackKind::Audio)
             .map(|track| (track.id.as_str(), track.enabled, &track.audio))
     }
+    /// What the chain of each clip of sound does besides its gain, pan and fades.
+    fn chains(
+        timeline: &columbina_model::Timeline,
+    ) -> impl Iterator<
+        Item = (
+            &str,
+            &columbina_model::Equalizer,
+            &[columbina_model::Insert],
+            bool,
+            &columbina_model::ClipPitch,
+        ),
+    > {
+        timeline
+            .tracks
+            .iter()
+            .filter(|track| track.kind == TrackKind::Audio)
+            .flat_map(|track| &track.clips)
+            .map(|clip| {
+                (
+                    clip.id.as_str(),
+                    &clip.eq,
+                    clip.effects.as_slice(),
+                    clip.pitch_correction,
+                    &clip.pitch,
+                )
+            })
+    }
     mixing(was).eq(mixing(now))
+        && chains(was).eq(chains(now))
         && was.buses == now.buses
         && was.vcas == now.vcas
         && was.audio.monitor == now.audio.monitor
@@ -2011,6 +2040,58 @@ mod tests {
     }
 
     #[test]
+    fn sound_starts_again_for_a_change_of_how_it_is_mixed() {
+        let before = Project::sample();
+        let check = |after: &Project, from: i64| {
+            same_sound(
+                &before,
+                &before.timelines[0],
+                after,
+                &after.timelines[0],
+                from,
+            )
+        };
+        // The graph (T4b) mixes by the strips, the buses and the VCAs: a fader moved, a bus
+        // added or the monitor changed is heard, until T5 hears them without starting again.
+        let mut moved = before.clone();
+        moved.timelines[0].tracks[1].audio.strip.fader_db = -6.0;
+        assert!(!check(&moved, 0));
+        let mut bus = before.clone();
+        bus.timelines[0].buses[0].strip.fader_db = -6.0;
+        assert!(!check(&bus, 0));
+        let mut monitor = before.clone();
+        monitor.timelines[0].audio.monitor = None;
+        assert!(!check(&monitor, 0));
+        // The equalizer and the effects of a clip are heard too.
+        let mut equalized = before.clone();
+        equalized.timelines[0].tracks[1].clips[0].eq.on = true;
+        assert!(!check(&equalized, 0));
+        let mut affected = before.clone();
+        affected.timelines[0].tracks[1].clips[0]
+            .effects
+            .push(columbina_model::Insert {
+                id: String::new(),
+                on: true,
+                effect: columbina_model::Effect::Gain(columbina_model::audio::fx::GainFx {
+                    gain_db: 3.0,
+                }),
+            });
+        assert!(!check(&affected, 0));
+        // A muted track is not heard, but it may drive a sidechain: its clips count.
+        let mut muted = before.clone();
+        muted.timelines[0].tracks[1].audio.mute = true;
+        let mut quieter_muted = muted.clone();
+        quieter_muted.timelines[0].tracks[1].clips[0].gain_db = (-6.0).into();
+        assert!(!same_sound(
+            &muted,
+            &muted.timelines[0],
+            &quieter_muted,
+            &quieter_muted.timelines[0],
+            0,
+        ));
+    }
+
+    #[test]
     fn sound_plays_on_through_a_change_that_it_does_not_hear() {
         let before = Project::sample();
         let check = |after: &Project, from: i64| {
@@ -2048,17 +2129,6 @@ mod tests {
             2
         ]);
         assert!(!check(&mapped, 0));
-        // The graph (T4b) mixes by the strips, the buses and the VCAs: a fader moved, a bus
-        // added or the monitor changed is heard, until T5 hears them without starting again.
-        let mut moved = before.clone();
-        moved.timelines[0].tracks[1].audio.strip.fader_db = -6.0;
-        assert!(!check(&moved, 0));
-        let mut bus = before.clone();
-        bus.timelines[0].buses[0].strip.fader_db = -6.0;
-        assert!(!check(&bus, 0));
-        let mut monitor = before.clone();
-        monitor.timelines[0].audio.monitor = None;
-        assert!(!check(&monitor, 0));
         // What was heard before the playhead does not matter: a clip of sound that has ended.
         let mut earlier = before.clone();
         let sound = &mut earlier.timelines[0].tracks[1].clips;

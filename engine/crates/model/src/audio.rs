@@ -268,6 +268,12 @@ impl Strip {
             }
             send.pan.check()?;
         }
+        let mut sent: Vec<&Id> = self.sends.iter().map(|s| &s.bus).collect();
+        sent.sort();
+        sent.dedup();
+        if sent.len() != self.sends.len() {
+            return Err(out("sends"));
+        }
         if self.outputs.len() > routing::MOST_OUTPUTS {
             return Err(OpError::TooManyOutputs);
         }
@@ -1161,8 +1167,16 @@ pub fn check_timeline(timeline: &Timeline) -> Result<(), routing::Wrong> {
         bus.strip.check(true).map_err(wrong)?;
         lanes_valid(&bus.lanes, Some(&bus.strip)).map_err(wrong)?;
     }
+    for group in &timeline.track_groups {
+        if group.name.chars().count() > crate::grade::LONGEST_LABEL {
+            return Err(("track_group", group.id.clone(), out("label")));
+        }
+    }
     for vca in &timeline.vcas {
         let wrong = |error| ("vca", vca.id.clone(), error);
+        if vca.name.chars().count() > crate::grade::LONGEST_LABEL {
+            return Err(wrong(out("label")));
+        }
         if !level(vca.fader_db) {
             return Err(wrong(out("fader_db")));
         }

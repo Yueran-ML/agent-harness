@@ -35,6 +35,10 @@ pub enum Kind {
     Choice,
     /// A switch of the monitor (Listen): on at 0.5 and above, never automated.
     Monitor,
+    /// A number fixed when the node is made, because it moves the latency (the Ducker's
+    /// Lookahead): never automated, and not changed by `Node::set`. A change of it is a change of
+    /// the graph, which is built again.
+    Fixed,
 }
 
 /// A parameter of an effect: where it is in the model, what it is, its range and its default.
@@ -97,10 +101,22 @@ impl ParamInfo {
         }
     }
 
-    /// A lane of automation may drive it: all but a switch of the monitor and a choice.
+    /// A number fixed when the node is made, from `low` to `high`, `default` for a new effect.
+    #[must_use]
+    pub const fn fixed(path: &'static str, low: f32, high: f32, default: f32) -> Self {
+        ParamInfo {
+            path,
+            kind: Kind::Fixed,
+            range: (low, high),
+            default,
+        }
+    }
+
+    /// A lane of automation may drive it: all but a switch of the monitor, a choice and a
+    /// number fixed when the node is made.
     #[must_use]
     pub const fn is_automatable(&self) -> bool {
-        !matches!(self.kind, Kind::Monitor | Kind::Choice)
+        !matches!(self.kind, Kind::Monitor | Kind::Choice | Kind::Fixed)
     }
 
     /// It is on or off.
@@ -118,7 +134,7 @@ impl ParamInfo {
             return None;
         }
         Some(match self.kind {
-            Kind::Number => value.clamp(self.range.0, self.range.1),
+            Kind::Number | Kind::Fixed => value.clamp(self.range.0, self.range.1),
             Kind::Switch | Kind::Monitor => {
                 if value >= 0.5 {
                     1.0

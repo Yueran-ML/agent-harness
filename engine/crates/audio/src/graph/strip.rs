@@ -3,7 +3,9 @@
 //! (the nodes) → the point before the fader → the mute and the solo → the fader, with its VCAs →
 //! the point after the fader → its outputs and sends, each at its level and on its pan, delayed to
 //! line up with the other paths into its bus. A send before the fader is taken after the mute
-//! (C-B4).
+//! (C-B4). The Ducker of a track, its Track FX, is the first of its nodes, after Trim and
+//! polarity (pp. 3855, 3937; T11). The manual has Trim after the Track FX (p. 3857); both are
+//! gains, so the order changes nothing but rounding, and Trim keeps its lanes at the input.
 //!
 //! What is set once is a parameter ramped over 10 ms ([`Smoothed`], C-T1); where a lane of
 //! automation is, its value takes the place of the parameter, sample by sample (T14).
@@ -31,29 +33,34 @@ pub(crate) struct LaneOf {
     pub(crate) delay: i64,
 }
 
-/// A node of a strip: an insert, its Dynamics or its equalizer.
+/// A node of a strip: its Ducker, an insert, its Dynamics or its equalizer.
 pub(crate) struct Stage {
     pub(crate) node: Box<dyn Node>,
     /// Its parameters that lanes set, and the lanes.
     pub(crate) lanes: Box<[(ParamId, usize)]>,
-    /// Where its sidechain comes from, if it has one; the sidechain of the block; and the
-    /// delay that lines the sidechain up with the sound it acts on (T4b's review, P3-6).
-    pub(crate) key: Option<Key>,
+    /// Where its sidechain comes from: none, one strip (a Compressor's, a Limiter's), or the
+    /// strips whose sum keys a Ducker (T11); each lined up with the sound it acts on by a delay
+    /// of its own (T4b's review, P3-6).
+    pub(crate) keys: Box<[Key]>,
+    /// The sidechain of the block, and room to sum a second source and after into it.
     pub(crate) keyed: Planar,
-    pub(crate) side: DelayLine,
+    pub(crate) summed: Planar,
     /// The latency of the graph before it: its sample 0 is that of the timeline this far back.
     pub(crate) offset: i64,
     /// The samples it has processed since it was reset ([`Block::start`]).
     pub(crate) processed: u64,
 }
 
-/// Where the sidechain of a strip comes from: the sound before the fader of another strip, its
-/// channels but the LFE (T8's review).
-#[derive(Clone, Copy, Debug)]
+/// Where a sidechain comes from: the sound before the fader of another strip, its channels but
+/// the LFE (T8's review), the delay that lines it up with the sound it acts on, and where each of
+/// its channels is added into the sidechain when it is not the first (`build::routes`).
+#[derive(Debug)]
 pub(crate) struct Key {
     pub(crate) source: usize,
     pub(crate) channels: [usize; MAX_CHANNELS],
     pub(crate) count: usize,
+    pub(crate) routes: Box<[(usize, usize)]>,
+    pub(crate) side: DelayLine,
 }
 
 /// A VCA that a strip is a member of, with the lanes of its fader and mute as the strip reads
@@ -288,13 +295,34 @@ impl Strip {
             ..
         } = self;
         for stage in stages.iter_mut() {
-            if let Some(key) = &stage.key {
+            // The sidechain: the first source (of the most channels) as it is, then each other
+            // added to it by the roles of its channels.
+            let Stage {
+                keys,
+                keyed,
+                summed,
+                ..
+            } = stage;
+            for (index, key) in keys.iter_mut().enumerate() {
                 let source = &pres[key.source];
-                for (into, &from) in key.channels[..key.count].iter().enumerate() {
-                    stage.keyed.channel_mut(into)[..frames]
+                let into = if index == 0 {
+                    &mut *keyed
+                } else {
+                    &mut *summed
+                };
+                for (channel, &from) in key.channels[..key.count].iter().enumerate() {
+                    into.channel_mut(channel)[..frames]
                         .copy_from_slice(&source.channel(from)[..frames]);
                 }
-                stage.side.process(&mut stage.keyed, key.count, frames);
+                key.side.process(into, key.count, frames);
+                if index > 0 {
+                    for &(from, to) in &key.routes {
+                        let (from, into) = (summed.channel(from), keyed.channel_mut(to));
+                        for (into, from) in into[..frames].iter_mut().zip(&from[..frames]) {
+                            *into += from;
+                        }
+                    }
+                }
             }
             let mut list = [Automated {
                 param: ParamId(0),
@@ -309,15 +337,14 @@ impl Strip {
                 count += 1;
             }
             let mut side: [&[f32]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
-            let sides = match &stage.key {
-                Some(key) => {
-                    for (side, channel) in side.iter_mut().zip(0..key.count) {
-                        *side = &stage.keyed.channel(channel)[..frames];
-                    }
-                    key.count
-                }
-                None => 0,
+            let sides = if stage.keys.is_empty() {
+                0
+            } else {
+                stage.keyed.channels()
             };
+            for (side, channel) in side.iter_mut().zip(0..sides) {
+                *side = &stage.keyed.channel(channel)[..frames];
+            }
             let block = Block {
                 start: stage.processed,
                 rate,
@@ -476,7 +503,9 @@ impl Strip {
             smoothed.finish();
         }
         for stage in &mut self.stages {
-            stage.side.reset();
+            for key in &mut stage.keys {
+                key.side.reset();
+            }
             stage.node.reset();
             stage.processed = 0;
             // The grid of a node is that of the timeline: two's complement keeps the remainder

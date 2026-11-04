@@ -7,10 +7,11 @@
 //! 1. The chain of each clip: its sound read through a [`crate::feed::ClipFeed`], at its speed
 //!    and direction, in the channels of its track, through its equalizer, by its gain
 //!    (keyframes, fades, crossfades) and pan (`clip.rs`).
-//! 2. The strip of each track: the sum of its clips → Trim and polarity → the inserts, Dynamics
-//!    and equalizer in their Order → the point before the fader → mute and solo → the fader with
-//!    its VCAs → the point after the fader → its outputs and sends, each panned into the format of
-//!    its bus (`strip.rs`, `route.rs`).
+//! 2. The strip of each track: the sum of its clips → Trim and polarity → its Ducker (T11), keyed
+//!    by the sum of its sources before their faders → the inserts, Dynamics and equalizer in their
+//!    Order → the point before the fader → mute and solo → the fader with its VCAs → the point
+//!    after the fader → its outputs and sends, each panned into the format of its bus
+//!    (`strip.rs`, `route.rs`).
 //! 3. The strip of each bus, the same, fed by the tracks and buses that output and send to it.
 //! 4. The outputs: a bus that outputs to no bus is a main output; each main output, and the bus
 //!    that is monitored, can be read after each block ([`Graph::output`]). Nothing is clipped in
@@ -217,6 +218,8 @@ pub struct Graph {
     pres: Vec<Planar>,
     /// Whether each strip is the source of a sidechain.
     keys: Vec<bool>,
+    /// The meters of the window of each Ducker, by its track.
+    duckers: Vec<(Owner, SeqReader<crate::fx::ducker::Meter>)>,
     edge: Planar,
     vca_ids: Vec<Id>,
     /// What the settings of each strip are found by.
@@ -331,5 +334,15 @@ impl Graph {
     #[must_use]
     pub fn at(&self) -> i64 {
         self.position - i64::from(self.latency)
+    }
+
+    /// What the window of the Ducker of track `owner` reads (T11: the track as it comes in, its
+    /// sources, the reduction), if it has a Ducker in the graph.
+    #[must_use]
+    pub fn ducker(&self, owner: &Owner) -> Option<SeqReader<crate::fx::ducker::Meter>> {
+        self.duckers
+            .iter()
+            .find(|(of, _)| of == owner)
+            .map(|(_, meter)| meter.clone())
     }
 }

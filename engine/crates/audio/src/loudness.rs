@@ -29,8 +29,11 @@
 //!   the blocks above −70 LUFS, then those above their power mean less 10 LU, power-averaged.
 //!   BS.1770-1 had no gate: [`Reading::integrated_ungated`].
 //! - Loudness Range: the short-term loudness every 100 ms once 3 s have been heard; those above
-//!   −70 LUFS, then those above their power mean less 20 LU; the 95th percentile less the 10th
-//!   (the index of the percentile p of n sorted values round((n − 1)·p), as Tech 3342's code).
+//!   −70 LUFS, then those above their power mean less 20 LU; the 95th percentile less the 10th,
+//!   by the nearest rank: the least value with at least p·n values at or under it, as ffmpeg's
+//!   `ebur128` takes it (convention 5). Tech 3342's code and libebur128 take the value at
+//!   round((n − 1)·p) instead; the two differ by a value, which tells only over a short sound
+//!   (10 s at −60 then −75: 3.8 LU against 3.5).
 //! - The histograms have bins of 0.01 LU ([`LOUDNESS_BIN`]) that keep the count and the sum of
 //!   the energy of their blocks: the means are exact, and a gate is placed to the bin.
 
@@ -150,7 +153,10 @@ struct KState([f64; 6]);
 
 impl KState {
     #[inline]
-    #[allow(clippy::many_single_char_names, reason = "the names of a difference equation")]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "the names of a difference equation"
+    )]
     fn push(&mut self, filter: &KFilter, x: f64) -> f64 {
         let [x1, x2, s1, s2, k1, k2] = self.0;
         let (b, a) = filter.shelf;
@@ -482,7 +488,7 @@ impl Histogram {
     }
 
     /// The loudness at percentile `p` (0 to 1) of the blocks that pass the gate `relative`: the
-    /// mean of the bin of the block at round((n − 1)·p) in order.
+    /// mean of the bin of the block at the nearest rank ⌈n·p⌉ in order (see the module).
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
@@ -495,7 +501,7 @@ impl Histogram {
         if count == 0 {
             return None;
         }
-        let index = ((count - 1) as f64 * f64::from(p)).round() as u64;
+        let index = ((count as f64 * f64::from(p)).ceil() as u64).max(1) - 1;
         let mut seen = 0;
         for bin in first..self.counts.len() {
             seen += self.counts[bin];

@@ -333,6 +333,51 @@ fn tech_3341_case_4_the_absolute_gate_leaves_the_silence_out() {
 }
 
 #[test]
+fn the_absolute_gate_leaves_out_what_is_under_minus_70() {
+    // 10 s at −60 and 60 s at −75: gated by −70 alone, −60.0; without it the −75 blocks would
+    // pass the relative gate (−67.7 − 10) and pull it down to about −67.7.
+    let channels = stereo(&tone(1_000.0, &[(10.0, Some(-60.0)), (60.0, Some(-75.0))]));
+    let reading = ours(Layout::Stereo, &channels, false);
+    assert_near("I", reading.integrated.unwrap(), -60.0, 0.1);
+    // The fall from −60 is in the low tail of the range: the 10th percentile by the nearest rank,
+    // as ffmpeg reads it (3.8 LU; round((n − 1)·p) would give 3.5).
+    assert_near("LRA", reading.range.unwrap(), 3.8, 0.1);
+    beside_ffmpeg("gate", &channels, &reading, false);
+}
+
+#[test]
+fn the_windows_are_the_means_of_their_cells() {
+    // Cells of energy 1, 2, 3, …: each window is the exact mean of its last cells.
+    let mut loudness = Loudness::new();
+    for n in 1..=500 {
+        loudness.push(Cell {
+            energy: f64::from(n),
+            true_peak: 0.0,
+            sample_peak: 0.0,
+        });
+    }
+    let reading = loudness.reading();
+    let mean = |from: u32, to: u32| f64::from(from + to) / 2.0;
+    assert_eq!(reading.momentary, lufs(mean(461, 500)));
+    assert_eq!(reading.short_term, lufs(mean(201, 500)));
+    assert_eq!(reading.momentary_max, reading.momentary);
+    assert_eq!(reading.mean, Some(lufs(mean(1, 500))));
+    // Blocks of 40 cells every 10, from the 40th: their power mean, ungated.
+    let blocks: Vec<f64> = (4..=50).map(|k| mean(10 * k - 39, 10 * k)).collect();
+    let ungated = blocks.iter().sum::<f64>() / blocks.len() as f64;
+    assert!((reading.integrated_ungated.unwrap() - lufs(ungated)).abs() < 1e-12);
+    // Before a window fills, the silence before the start counts.
+    let mut early = Loudness::new();
+    early.push(Cell {
+        energy: 40.0,
+        true_peak: 0.0,
+        sample_peak: 0.0,
+    });
+    assert_eq!(early.reading().momentary, lufs(1.0));
+    assert_eq!(early.reading().integrated, None);
+}
+
+#[test]
 fn tech_3341_case_5_reads_minus_23() {
     let channels = stereo(&tone(
         1_000.0,

@@ -238,7 +238,7 @@ export type Effect =
   | { kind: 'stereo_width'; width: number; diffusion: number; sparkle: number }
   | { kind: 'de_esser'; frequency_hz: number; range: 'narrow' | 'wide' | 'all_high'; amount: number; reaction: 'slow' | 'medium' | 'fast'; listen: boolean }
   | { kind: 'de_hummer'; frequency_hz: number; amount: number; slope: number; listen: boolean }
-  | { kind: 'noise_reduction'; mode: 'auto_speech' | 'manual' | 'voice'; threshold_db: number; attack_ms: number; sensitivity: number; ratio: number; frequency_smoothing: number; time_smoothing: boolean; dry_wet: number; level_db: number; listen: boolean; profile: number[] | null }
+  | { kind: 'noise_reduction'; mode: 'auto_speech' | 'manual' | 'voice'; threshold_db: number; attack_ms: number; sensitivity: number; ratio: number; frequency_smoothing: number; time_smoothing: boolean; dry_wet: number; level_db: number; listen: boolean; profile: number[] | null; band?: 'full' | 'rumble' | 'hiss' | 'rumble_and_hiss' }
   | { kind: 'pitch'; semitones: number; cents: number; dry_wet: number };
 /** An effect in an insert or on a clip; `id` (fx1, ...) names it among the inserts of its strip, for its lanes. */
 export interface Insert { id?: string; on: boolean; effect: Effect }

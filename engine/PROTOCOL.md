@@ -617,7 +617,9 @@ are at most +10; −100 or below is −∞.
 - **Effects.** An insert is `{id, on (true), effect}`; `id` (`fx1`, `fx2`, …) is unique in its strip
   and stays with it as it moves, and an insert of a strip added without one is given the next; `effect` is `{kind, ...settings}` of `gain`,
   `limiter` (with `sidechain`), `soft_clipper`, `stereo_width`, `de_esser`, `de_hummer`,
-  `noise_reduction` (with a learned `profile` or `null`) or `pitch`. A Ducker is `{on, sources:
+  `noise_reduction` (with a learned `profile` or `null`, and the `band` that it works on:
+  `full` (default), `rumble` (below 250 Hz), `hiss` (above 4 kHz) or `rumble_and_hiss`, as its
+  presets set it; it has no lane) or `pitch`. A Ducker is `{on, sources:
   [{"track": id} | {"bus": id}], amount_db (2.7), lookahead_ms (15), rise_ms (10), hold_ms (150),
   recovery_ms (750)}`. Dynamics is `{on, expander: {on, mode: expander|gate, ...}, compressor:
   {on, ..., sidechain: {on, listen, source}}, limiter: {on, ...}, makeup_db}`. An equalizer is

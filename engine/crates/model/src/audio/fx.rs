@@ -500,6 +500,22 @@ pub enum Reaction {
     Fast,
 }
 
+/// The frequencies that a Noise Reduction works on (C-X4): all, or those that its presets
+/// De-Rumble, De-Hiss and De-Rumble and Hiss set.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoiseBand {
+    /// Every frequency.
+    #[default]
+    Full,
+    /// Below 250 Hz (De-Rumble).
+    Rumble,
+    /// Above 4 kHz (De-Hiss).
+    Hiss,
+    /// Both (De-Rumble and Hiss).
+    RumbleAndHiss,
+}
+
 /// What a Noise Reduction takes the noise from (p. 3970; the modes are the studio's).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -676,6 +692,9 @@ pub struct NoiseReductionFx {
     /// The spectrum of the noise that it learned, as the power of each bin (`Manual`), or none:
     /// at most [`LONGEST_PROFILE`] finite numbers of no less than 0.
     pub profile: Option<Vec<f64>>,
+    /// The frequencies that it works on: all, or those of the presets De-Rumble (below 250 Hz)
+    /// and De-Hiss (above 4 kHz), as the presets set them (C-X4). Not automated.
+    pub band: NoiseBand,
 }
 
 impl Default for NoiseReductionFx {
@@ -692,6 +711,7 @@ impl Default for NoiseReductionFx {
             level_db: 0.0,
             listen: false,
             profile: None,
+            band: NoiseBand::Full,
         }
     }
 }
@@ -919,6 +939,30 @@ mod tests {
             assert_eq!(written["kind"], effect.name());
             assert_eq!(serde_json::from_value::<Effect>(written).unwrap(), effect);
         }
+    }
+
+    #[test]
+    fn a_noise_reduction_works_on_all_frequencies_or_the_band_of_a_preset() {
+        let read = |band: serde_json::Value| {
+            serde_json::from_value::<Effect>(
+                serde_json::json!({ "kind": "noise_reduction", "band": band }),
+            )
+        };
+        let Ok(Effect::NoiseReduction(fx)) = read(serde_json::json!("rumble_and_hiss")) else {
+            panic!("a band")
+        };
+        assert_eq!(fx.band, NoiseBand::RumbleAndHiss);
+        let Ok(Effect::NoiseReduction(left_out)) =
+            serde_json::from_value::<Effect>(serde_json::json!({ "kind": "noise_reduction" }))
+        else {
+            panic!("a noise reduction")
+        };
+        assert_eq!(left_out.band, NoiseBand::Full);
+        assert_eq!(
+            serde_json::to_value(Effect::NoiseReduction(fx)).unwrap()["band"],
+            "rumble_and_hiss"
+        );
+        assert!(read(serde_json::json!("treble")).is_err());
     }
 
     #[test]

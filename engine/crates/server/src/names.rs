@@ -512,7 +512,9 @@ fn visit_edit<E>(
         }
         Edit::Lift { clips, .. }
         | Edit::RippleDelete { clips, .. }
-        | Edit::InsertMove { clips, .. } => {
+        | Edit::InsertMove { clips, .. }
+        | Edit::NudgeClipGain { clips, .. }
+        | Edit::RemoveAttributes { clips, .. } => {
             for id in clips {
                 f(id, Role::Names)?;
             }
@@ -535,11 +537,15 @@ fn visit_edit<E>(
         Edit::CloseGap { track, .. }
         | Edit::AddCue { track, .. }
         | Edit::CuesFrom { track, .. }
-        | Edit::RemoveTrack { track, .. } => f(track, Role::NamesTrack(of))?,
+        | Edit::RemoveTrack { track, .. }
+        | Edit::SetTrackAudio { track, .. } => f(track, Role::NamesTrack(of))?,
         Edit::Trim { clip, .. }
         | Edit::Slip { clip, .. }
         | Edit::Slide { clip, .. }
-        | Edit::SetSpeed { clip, .. } => f(clip, Role::Names)?,
+        | Edit::SetSpeed { clip, .. }
+        | Edit::ClipGainKeys { clip, .. }
+        | Edit::ClipGainRange { clip, .. }
+        | Edit::FadeToPlayhead { clip, .. } => f(clip, Role::Names)?,
         Edit::Roll { left, right, .. } | Edit::AddTransition { left, right, .. } => {
             f(left, Role::Names)?;
             f(right, Role::Names)?;
@@ -549,15 +555,6 @@ fn visit_edit<E>(
         | Edit::SetCue { id, .. }
         | Edit::RemoveCue { id, .. } => f(id, Role::Names)?,
         Edit::AddTrack { .. } => {}
-        Edit::SetTrackAudio { track, .. } => f(track, Role::NamesTrack(of))?,
-        Edit::ClipGainKeys { clip, .. }
-        | Edit::ClipGainRange { clip, .. }
-        | Edit::FadeToPlayhead { clip, .. } => f(clip, Role::Names)?,
-        Edit::NudgeClipGain { clips, .. } | Edit::RemoveAttributes { clips, .. } => {
-            for id in clips {
-                f(id, Role::Names)?;
-            }
-        }
         Edit::PasteAttributes { from, to, .. } => {
             f(from, Role::Names)?;
             for id in to {

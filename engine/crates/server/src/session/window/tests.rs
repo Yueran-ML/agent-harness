@@ -1934,6 +1934,9 @@ fn unrecorded_external_revision_flushes_only_the_captures_old_key() {
                 enabled: None,
                 locked: None,
                 language: None,
+                mute: None,
+                solo: None,
+                solo_safe: None,
             }],
             "engine",
         )

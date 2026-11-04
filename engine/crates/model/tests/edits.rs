@@ -652,3 +652,22 @@ proptest! {
         })?;
     }
 }
+
+#[test]
+fn the_random_timelines_have_fades_of_sound_and_channels_named() {
+    use proptest::strategy::{Strategy, ValueTree};
+    let mut runner = proptest::test_runner::TestRunner::deterministic();
+    let (mut faded, mut mapped) = (0, 0);
+    for _ in 0..200 {
+        let recipe = recipe().new_tree(&mut runner).unwrap().current();
+        let project = project_of(&recipe);
+        for clip in clips_of(&project) {
+            faded += usize::from(clip.audio_fade_in.is_some() || clip.audio_fade_out.is_some());
+            mapped += usize::from(clip.channels.is_some());
+        }
+    }
+    assert!(
+        faded >= 20 && mapped >= 20,
+        "{faded} faded, {mapped} mapped"
+    );
+}

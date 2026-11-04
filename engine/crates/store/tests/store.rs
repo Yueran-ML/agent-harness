@@ -170,10 +170,10 @@ fn a_file_that_is_not_text_is_refused_and_left_as_it_was() {
 #[test]
 fn a_project_of_another_schema_is_refused_and_left_as_it_was() {
     let mut value = serde_json::to_value(Project::sample()).unwrap();
-    value["schema"] = 4.into();
+    value["schema"] = 5.into();
     let error = refused(
         &serde_json::to_vec_pretty(&value).unwrap(),
-        "the project is of schema 4",
+        "the project is of schema 5",
     );
     assert!(matches!(error, StoreError::NotAProject { .. }), "{error}");
 }
@@ -292,6 +292,38 @@ fn a_project_of_schema_2_is_upgraded_and_its_file_is_kept_once_beside_it() {
         .to_string_lossy()
         .starts_with("project.schema2-"));
     assert_eq!(fs::read_to_string(beside).unwrap(), other);
+}
+
+/// A project as the engine of the Color page wrote it, of schema 3.
+const SCHEMA_3: &str = include_str!("../../model/tests/data/schema3.json");
+
+#[test]
+fn a_project_of_schema_3_is_upgraded_and_its_file_is_kept_once_beside_it() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join(PROJECT_FILE), SCHEMA_3).unwrap();
+
+    let (store, project) = Store::open(dir.path()).unwrap();
+
+    assert_eq!(project.schema, columbina_model::SCHEMA);
+    assert_eq!(
+        project.timelines[0].buses,
+        columbina_model::audio::first_buses()
+    );
+    let kept = dir.path().join(old_schema_file(3));
+    assert_eq!(kept.file_name().unwrap(), "project.schema3.json");
+    assert_eq!(fs::read_to_string(&kept).unwrap(), SCHEMA_3);
+    // The file of the project is written in schema 4 only when it is saved.
+    assert_eq!(
+        fs::read_to_string(dir.path().join(PROJECT_FILE)).unwrap(),
+        SCHEMA_3
+    );
+    store.save(&project).unwrap();
+    assert_eq!(
+        fs::read_to_string(dir.path().join(PROJECT_FILE)).unwrap(),
+        pretty(&project)
+    );
+    let (_, again) = Store::open(dir.path()).unwrap();
+    assert_eq!(again, project);
 }
 
 #[test]

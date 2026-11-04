@@ -74,6 +74,20 @@ describe('the timeline display', () => {
     expect(onSeek).toHaveBeenCalledTimes(3);
     expect(ruler.getAttribute('aria-valuenow')).toBe('120');
   });
+  it('unmutes a muted track of sound, and turns on one that is off, from its speaker', async () => {
+    const t = timeline();
+    t.tracks.push({ id: 'a1', name: 'Music', kind: 'audio', enabled: true, locked: false, clips: [], transitions: [], mute: true });
+    t.tracks.push({ id: 'a2', name: 'Voice', kind: 'audio', enabled: false, locked: false, clips: [], transitions: [] });
+    const { call } = mount(t);
+    const music = screen.getByRole('button', { name: 'Unmute: Music' });
+    expect(music.getAttribute('aria-pressed')).toBe('false');
+    fireEvent.click(music);
+    await settle();
+    expect(call).toHaveBeenLastCalledWith('transaction.apply', { revision: 0, ops: [{ op: 'set_track', timeline: 't1', id: 'a1', mute: false }] });
+    fireEvent.click(screen.getByRole('button', { name: 'Unmute: Voice' }));
+    await settle();
+    expect(call).toHaveBeenLastCalledWith('transaction.apply', { revision: 0, ops: [{ op: 'set_track', timeline: 't1', id: 'a2', mute: false, enabled: true }] });
+  });
   it('locks, mutes and renames through engine transactions; track height is only view state', async () => {
     const t = timeline();
     t.tracks.push({ id: 'a1', name: 'Dialogue', kind: 'audio', enabled: true, locked: false, clips: [], transitions: [] });
@@ -83,7 +97,8 @@ describe('the timeline display', () => {
     expect(call).toHaveBeenLastCalledWith('transaction.apply', { revision: 0, ops: [{ op: 'set_track', timeline: 't1', id: 'v1', locked: true }] });
     fireEvent.click(screen.getByRole('button', { name: 'Mute: Dialogue' }));
     await settle();
-    expect(call).toHaveBeenLastCalledWith('transaction.apply', { revision: 0, ops: [{ op: 'set_track', timeline: 't1', id: 'a1', enabled: false }] });
+    // The speaker of a track of sound is its mute (schema 4), not Disable Track.
+    expect(call).toHaveBeenLastCalledWith('transaction.apply', { revision: 0, ops: [{ op: 'set_track', timeline: 't1', id: 'a1', mute: true }] });
     fireEvent.doubleClick(screen.getByText('V1'));
     const name = screen.getByRole('textbox', { name: 'Name' });
     fireEvent.change(name, { target: { value: 'Wide shot' } });

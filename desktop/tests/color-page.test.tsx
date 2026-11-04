@@ -81,7 +81,7 @@ const groupGrade = (id: string): Grade => ({ nodes: [corrector(id, { label: id }
 
 /** An engine that keeps a project and the timeline monitor, and tells what changed as the real one does. */
 function fakeEngine(timelines: Timeline[] = [graded()]) {
-  let project: Project = { schema: 3, next_id: 10, bins: [], media: [m1, m2], timelines, groups: [{ id: 'g1', name: 'Day', pre: groupGrade('pre'), post: groupGrade('post') }] };
+  let project: Project = { schema: 4, next_id: 10, bins: [], media: [m1, m2], timelines, groups: [{ id: 'g1', name: 'Day', pre: groupGrade('pre'), post: groupGrade('post') }] };
   let revision = 0;
   const listeners = new Set<(event: EngineEvent) => void>();
   const tell = (method: string, params: unknown) => listeners.forEach(listener => listener({ kind: 'notification', session: 1, method, params }));

@@ -21,18 +21,23 @@
 //!
 //! # Sound
 //!
-//! Each clip of a track of sound that is on, if it is on, sounds from the sample that its first
-//! frame starts at to the one that the frame after its last starts at, each rounded down; and
-//! further at a crossfade, as far as the transition goes on beyond it. It is given as a piece:
-//! where in its media it is read from, at what speed and which way (see [`span::source_sample`]),
-//! and its gain over the samples of the piece. The gain is that of the clip times its fades,
-//! which rise from nothing at its first sample and fall to nothing at the end of its last frame,
-//! times the crossfades at its ends, which mix the two clips at equal power: the left clip by the
-//! cosine and the right by the sine of how far through the crossfade a sample is, a quarter turn
-//! at the end. The gain is given as straight lines between points, eight to a crossfade.
+//! Each clip of a track of sound that is heard, if it is on, sounds from the sample that its
+//! first frame starts at to the one that the frame after its last starts at, each rounded down;
+//! and further at a crossfade, as far as the transition goes on beyond it. A track is heard if it
+//! is on, is not muted, and is soloed or solo-safe while any track of sound of its timeline is
+//! soloed (p. 3885). It is given as a piece: where in its media it is read from, at what speed
+//! and which way (see [`span::source_sample`]), its pan, and its gain over the samples of the
+//! piece. The gain is that of the clip, at the time of its source that the sample is read from
+//! where it has keyframes, times its fades, which rise from nothing at its first sample and fall
+//! to nothing at the end of its last frame along their curves ([`crate::audio::AudioFade`]), times
+//! the crossfades at its ends, which mix the two clips at their levels: at +3 dB, the left clip
+//! by the cosine and the right by the sine of how far through the crossfade a sample is, a
+//! quarter turn at the end (see [`CrossfadeLevel`]). The gain is drawn as straight lines between
+//! points, eight to a crossfade.
+//!
+//! The strips, buses and automation of the timeline are not here: they are the mixer's.
 
-use std::f64::consts::FRAC_PI_2;
-
+use crate::audio::{gain_of_db, AudioFade, AudioParam, CrossfadeLevel};
 use crate::project::{
     Clip, Cue, Id, Project, Rgba, Source, Timeline, TitleStyle, Track, TrackKind, Transform,
     Transition, TransitionKind,
@@ -241,16 +246,95 @@ fn lies_over(transition: &Transition, cut: i64) -> (i64, i64) {
 pub struct Envelope {
     /// Points for drawing the envelope; use [`Self::at`] for sample-accurate gain.
     pub points: Vec<(i64, f32)>,
-    loudness: f64,
+    loudness: Loudness,
     curves: Vec<GainCurve>,
+}
+
+/// The gain of a clip, apart from its fades: one factor, or keyframes of decibels read at the
+/// time of its source.
+#[derive(Clone, Debug, PartialEq)]
+enum Loudness {
+    Fixed(f64),
+    Keys(SourceClock, AudioParam),
+}
+
+/// How the time of the source of a clip is found from a sample of its timeline: as
+/// [`span::source_sample`] finds the sample of its media, in seconds.
+#[derive(Clone, Debug, PartialEq)]
+struct SourceClock {
+    /// The sample of the timeline that its first frame starts at.
+    first: i64,
+    /// The sample of the timeline that the frame after its last starts at.
+    end: i64,
+    reverse: bool,
+    /// Where it begins in its media, in seconds.
+    begins: f64,
+    /// The seconds of its media that a sample of the timeline lasts.
+    per_sample: f64,
+}
+
+impl SourceClock {
+    fn of(clip: &Clip, rate: Rate, sample_rate: u32) -> Self {
+        let samples = |frame: i64| samples_at(frame, rate, sample_rate);
+        let begins = clip.source_in().map_or(0.0, crate::audio::param::seconds);
+        Self {
+            first: samples(clip.start),
+            end: samples(clip.end()),
+            reverse: clip.reverse,
+            begins,
+            per_sample: f64::from(clip.speed.num)
+                / f64::from(clip.speed.den)
+                / f64::from(sample_rate),
+        }
+    }
+
+    /// The time of the source, in seconds, that sample `sample` of the timeline is read from.
+    #[allow(clippy::cast_precision_loss, reason = "a time to read keys at")]
+    fn seconds(&self, sample: i64) -> f64 {
+        let mut d = apart(sample, self.first);
+        if self.reverse {
+            d = apart(self.end, self.first) - 1 - d;
+        }
+        self.begins + d as f64 * self.per_sample
+    }
+
+    /// The sample of the timeline that reads time `seconds` of the source, rounded down.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        reason = "a place to draw a key at"
+    )]
+    fn sample(&self, seconds: f64) -> i64 {
+        let d = ((seconds - self.begins) / self.per_sample).floor() as i64;
+        if self.reverse {
+            self.end.saturating_sub(1).saturating_sub(d)
+        } else {
+            self.first.saturating_add(d)
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 struct GainCurve {
     from: i64,
     to: i64,
-    falling: bool,
-    equal_power: bool,
+    shape: Shape,
+}
+
+/// The shape of a fade or of a side of a crossfade.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Shape {
+    /// A fade, rising or falling along a curve of a skew.
+    Fade {
+        falling: bool,
+        curve: f64,
+        skew: f64,
+    },
+    /// A side of a crossfade, rising or falling at a level.
+    Crossfade {
+        falling: bool,
+        level: CrossfadeLevel,
+    },
 }
 
 impl Envelope {
@@ -264,18 +348,35 @@ impl Envelope {
     }
 
     fn value(&self, sample: i64) -> f32 {
-        let mut gain = self.loudness;
+        let mut gain = match &self.loudness {
+            Loudness::Fixed(gain) => *gain,
+            Loudness::Keys(clock, keys) => gain_of_db(keys.value_at(clock.seconds(sample))),
+        };
         for curve in &self.curves {
             let along = ratio(
                 apart(sample, curve.from),
                 apart(curve.to, curve.from).max(1),
             )
             .clamp(0.0, 1.0);
-            gain *= match (curve.equal_power, curve.falling) {
-                (true, true) => (along * FRAC_PI_2).cos(),
-                (true, false) => (along * FRAC_PI_2).sin(),
-                (false, true) => 1.0 - along,
-                (false, false) => along,
+            gain *= match curve.shape {
+                Shape::Crossfade {
+                    falling: true,
+                    level,
+                } => level.fall(along),
+                Shape::Crossfade {
+                    falling: false,
+                    level,
+                } => level.rise(along),
+                Shape::Fade {
+                    falling: true,
+                    curve,
+                    skew,
+                } => crate::audio::fade_curve(1.0 - along, curve, skew),
+                Shape::Fade {
+                    falling: false,
+                    curve,
+                    skew,
+                } => crate::audio::fade_curve(along, curve, skew),
             };
         }
         single(gain.max(0.0))
@@ -302,21 +403,110 @@ pub struct AudioPiece {
     pub speed: (u32, u32),
     /// Whether it plays backward.
     pub reverse: bool,
-    /// Where its sound is put between the left, -1, and the right, 1.
+    /// Where its sound is put between the left, -1, and the right, 1, at sample `from`; where
+    /// its pan has keyframes, [`AudioPiece::pan_at`] gives it at each sample.
     pub pan: f32,
     /// Its gain, as a factor of the loudness of the media.
     pub gain: Envelope,
+    /// Its pan where it has keyframes.
+    pans: Option<(SourceClock, AudioParam)>,
+}
+
+impl AudioPiece {
+    /// Where its sound is put between the left, -1, and the right, 1, at a sample of the
+    /// timeline.
+    #[must_use]
+    pub fn pan_at(&self, sample: i64) -> f32 {
+        match &self.pans {
+            Some((clock, keys)) => single(keys.value_at(clock.seconds(sample))),
+            None => self.pan,
+        }
+    }
+}
+
+/// The buses that a strip's sound reaches, through outputs and sends that are on and buses that
+/// are not muted, and whether one of them is a main output (a bus that outputs to none) and one
+/// is soloed.
+fn reaches(t: &Timeline, strip: &crate::audio::Strip) -> (bool, bool) {
+    let feeds = |strip: &crate::audio::Strip| -> Vec<String> {
+        strip
+            .outputs
+            .iter()
+            .filter(|o| o.on)
+            .map(|o| o.bus.clone())
+            .chain(strip.sends.iter().filter(|s| s.on).map(|s| s.bus.clone()))
+            .collect()
+    };
+    let (mut main, mut soloed) = (false, false);
+    let mut seen = std::collections::HashSet::new();
+    let mut next = feeds(strip);
+    while let Some(id) = next.pop() {
+        let Some(bus) = t.buses.iter().find(|b| b.id == id) else {
+            continue;
+        };
+        if bus.mute || !seen.insert(id) {
+            continue;
+        }
+        soloed |= bus.solo;
+        main |= bus.strip.outputs.is_empty();
+        next.extend(feeds(&bus.strip));
+    }
+    (main, soloed)
+}
+
+/// Whether a track of sound is heard at a main output (p. 3885): it is on and not muted; its
+/// sound reaches a main output through outputs and sends that are on and buses that are not
+/// muted; and while any track that is on, or any bus, is soloed, it is soloed, solo-safe, or
+/// feeds a soloed bus. A track that is off is not soloed, whatever it says.
+///
+/// This decides which tracks the mixer of the transport plays. What each path of buses does to
+/// the sound (levels, a muted bus on one of two paths, a solo-safe bus of returns) is the graph's
+/// (T4b).
+#[must_use]
+pub fn heard(t: &Timeline, track: &Track) -> bool {
+    if track.kind != TrackKind::Audio || !track.enabled || track.audio.mute {
+        return false;
+    }
+    let soloing = t
+        .tracks
+        .iter()
+        .any(|r| r.kind == TrackKind::Audio && r.enabled && r.audio.solo)
+        || t.buses.iter().any(|b| b.solo);
+    let (main, feeds_soloed) = reaches(t, &track.audio.strip);
+    main && (!soloing || track.audio.solo || track.audio.solo_safe || feeds_soloed)
 }
 
 /// What is heard from sample `from` of a timeline of `project` to the sample before `to`, at its
-/// rate of sound: a piece of each clip that sounds then, track by track in their order and on a
-/// track in the order of their start. On a track the pieces follow one another, and overlap only
-/// at a crossfade.
+/// rate of sound: a piece of each clip that sounds then, of the tracks that are [`heard`], track
+/// by track in their order and on a track in the order of their start. On a track the pieces
+/// follow one another, and overlap only at a crossfade.
 #[must_use]
 pub fn audio_between(t: &Timeline, project: &Project, from: i64, to: i64) -> Vec<AudioPiece> {
+    pieces_between(t, project, from, to, |track| heard(t, track))
+}
+
+/// What every track of sound that is on gives from sample `from` to the sample before `to`,
+/// muted, soloed away or routed nowhere as it may be: the sound that drives a sidechain or a
+/// Ducker, taken before the fader and the mute of its track (C-D5). As [`audio_between`], with no
+/// track left out but those that are off.
+#[must_use]
+pub fn sources_between(t: &Timeline, project: &Project, from: i64, to: i64) -> Vec<AudioPiece> {
+    pieces_between(t, project, from, to, |track| {
+        track.kind == TrackKind::Audio && track.enabled
+    })
+}
+
+/// The pieces of sound of the tracks that `taken` takes.
+fn pieces_between(
+    t: &Timeline,
+    project: &Project,
+    from: i64,
+    to: i64,
+    taken: impl Fn(&Track) -> bool,
+) -> Vec<AudioPiece> {
     let mut pieces = vec![];
     for track in &t.tracks {
-        if track.kind != TrackKind::Audio || !track.enabled {
+        if !taken(track) {
             continue;
         }
         for clip in track.clips.iter().filter(|c| c.enabled) {
@@ -338,6 +528,17 @@ pub fn audio_between(t: &Timeline, project: &Project, from: i64, to: i64) -> Vec
             if start >= end {
                 continue;
             }
+            let pans = match &clip.pan {
+                AudioParam::Fixed(_) => None,
+                keys @ AudioParam::Keys(_) => {
+                    Some((SourceClock::of(clip, t.rate, t.sample_rate), keys.clone()))
+                }
+            };
+            let pan = match (&clip.pan, &pans) {
+                (AudioParam::Fixed(pan), _) => single(*pan),
+                (_, Some((clock, keys))) => single(keys.value_at(clock.seconds(start))),
+                (_, None) => 0.0,
+            };
             pieces.push(AudioPiece {
                 clip: clip.id.clone(),
                 track: track.id.clone(),
@@ -347,8 +548,9 @@ pub fn audio_between(t: &Timeline, project: &Project, from: i64, to: i64) -> Vec
                 source_start: span::source_sample(clip, t.rate, start, t.sample_rate, sound.rate),
                 speed: (clip.speed.num, clip.speed.den),
                 reverse: clip.reverse,
-                pan: single(clip.pan),
+                pan,
                 gain: envelope(t, track, clip, start, end),
+                pans,
             });
         }
     }
@@ -383,49 +585,88 @@ pub fn samples_at(frame: i64, rate: Rate, sample_rate: u32) -> i64 {
 /// The gain of a clip from sample `from` of its timeline to `to`.
 fn envelope(t: &Timeline, track: &Track, clip: &Clip, from: i64, to: i64) -> Envelope {
     let samples = |frame: i64| samples_at(frame, t.rate, t.sample_rate);
-    let loudness = 10f64.powf(clip.gain_db / 20.0);
+    let loudness = match &clip.gain_db {
+        AudioParam::Fixed(gain_db) => Loudness::Fixed(10f64.powf(gain_db / 20.0)),
+        keys @ AudioParam::Keys(_) => {
+            Loudness::Keys(SourceClock::of(clip, t.rate, t.sample_rate), keys.clone())
+        }
+    };
     let (first, end) = (samples(clip.start), samples(clip.end()));
-    let risen = samples(clip.start.saturating_add(clip.fade_in));
-    let falling = samples(clip.end().saturating_sub(clip.fade_out));
-    // The crossfades at its ends: the samples that each lies over, and whether the clip is the
-    // left one, which falls, or the right one, which rises.
-    let crossfades: Vec<(i64, i64, bool)> = track
+    // The samples of the timeline that a fade of sound lasts.
+    let lasts = |fade: &AudioFade| {
+        let whole = i128::from(fade.length.ticks) * i128::from(t.sample_rate);
+        i64::try_from(whole.div_euclid(i128::from(fade.length.scale.max(1)))).unwrap_or(i64::MAX)
+    };
+    let (risen, has_rise) = match &clip.audio_fade_in {
+        None => (
+            samples(clip.start.saturating_add(clip.fade_in)),
+            clip.fade_in > 0,
+        ),
+        Some(fade) => (first.saturating_add(lasts(fade)), fade.length.ticks > 0),
+    };
+    let (falling, has_fall) = match &clip.audio_fade_out {
+        None => (
+            samples(clip.end().saturating_sub(clip.fade_out)),
+            clip.fade_out > 0,
+        ),
+        Some(fade) => (end.saturating_sub(lasts(fade)), fade.length.ticks > 0),
+    };
+    let shape_of = |fade: &Option<AudioFade>, falling| {
+        let (curve, skew) = fade.map_or((0.0, 0.0), |f| (f.curve, f.skew));
+        Shape::Fade {
+            falling,
+            curve,
+            skew,
+        }
+    };
+    // The crossfades at its ends: the samples that each lies over, whether the clip is the left
+    // one, which falls, or the right one, which rises, and the level of its side.
+    let crossfades: Vec<(i64, i64, bool, CrossfadeLevel)> = track
         .transitions
         .iter()
         .filter(|x| x.left == clip.id || x.right == clip.id)
         .filter_map(|x| {
             let (_, right) = clips_of(track, x)?;
             let (start, end) = lies_over(x, right.start);
-            Some((samples(start), samples(end), x.left == clip.id))
+            let falling = x.left == clip.id;
+            let level = if falling {
+                x.fade_out_level_db
+            } else {
+                x.fade_in_level_db
+            };
+            Some((samples(start), samples(end), falling, level))
         })
         .collect();
     let mut curves: Vec<_> = crossfades
         .iter()
-        .map(|&(from, to, falling)| GainCurve {
+        .map(|&(from, to, falling, level)| GainCurve {
             from,
             to,
-            falling,
-            equal_power: true,
+            shape: Shape::Crossfade { falling, level },
         })
         .collect();
-    if clip.fade_in > 0 {
+    if has_rise {
         curves.push(GainCurve {
             from: first,
             to: risen,
-            falling: false,
-            equal_power: false,
+            shape: shape_of(&clip.audio_fade_in, false),
         });
     }
-    if clip.fade_out > 0 {
+    if has_fall {
         curves.push(GainCurve {
             from: falling,
             to: end,
-            falling: true,
-            equal_power: false,
+            shape: shape_of(&clip.audio_fade_out, true),
         });
     }
     let mut at = vec![from, to, first, risen, falling, end];
-    for &(start, end, _) in &crossfades {
+    if let Loudness::Keys(clock, AudioParam::Keys(keys)) = &loudness {
+        at.extend(
+            keys.iter()
+                .map(|key| clock.sample(crate::audio::param::seconds(key.at))),
+        );
+    }
+    for &(start, end, _, _) in &crossfades {
         at.extend((0..=8).map(|eighth| {
             let along = i128::from(start) + apart(end, start) * eighth / 8;
             // Between start and end, so an i64 holds it.
@@ -485,7 +726,13 @@ mod tests {
         }
     }
 
+    /// A transition of 10 frames about its cut: a crossfade at +3 dB, as before schema 4.
     fn transition(id: &str, kind: TransitionKind, left: &str, right: &str) -> Transition {
+        let level = if kind == TransitionKind::Crossfade {
+            CrossfadeLevel::Plus3
+        } else {
+            CrossfadeLevel::Zero
+        };
         Transition {
             id: id.into(),
             kind,
@@ -493,6 +740,8 @@ mod tests {
             right: right.into(),
             length: 10,
             align: Alignment::Center,
+            fade_in_level_db: level,
+            fade_out_level_db: level,
         }
     }
 
@@ -521,7 +770,7 @@ mod tests {
         )]);
         v2.enabled = false;
         let mut c6 = Clip::of_media("c6", "m1", at(0), 0, 50);
-        c6.gain_db = -6.0;
+        c6.gain_db = (-6.0).into();
         c6.fade_in = 10;
         let mut a1 = Track::new("A1", TrackKind::Audio)
             .with_clips(vec![c6, Clip::of_media("c7", "m1", at(30720), 50, 50)]);

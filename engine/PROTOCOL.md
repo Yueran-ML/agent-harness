@@ -509,13 +509,14 @@ rest of the project is read as it is. So is a proxy whose `path` is not absolute
 away before the project is checked, so the project is read without it and the engine starts.
 (Such a proxy in an operation, `set_proxy` or `add_media`, is still refused as `not_absolute`.)
 
-### Schema 3
+### Schema 4
 
-The top level is `{schema: 3, next_id, bins: [...], media: [...], timelines: [...], groups: [...], color: {...}}`.
+The top level is `{schema: 4, next_id, bins: [...], media: [...], timelines: [...], groups: [...], color: {...}}`.
 Schema 3 differs from schema 2 by the grades (see Grades below) and by colour management: the
-project's `color` and each media item's `color_override` (see Colour management below). A schema 1 or schema 2
-project is upgraded on open; its original bytes are kept once in `project.schema1.json` or
-`project.schema2.json`.
+project's `color` and each media item's `color_override` (see Colour management below). Schema 4
+adds the sound of the Fairlight page (see Sound below). A schema 1, 2 or 3 project is upgraded
+on open, a schema at a time (1→2→3→4); its original bytes are kept once in
+`project.schema1.json`, `project.schema2.json` or `project.schema3.json`.
 Unknown fields are refused. `project.get` and `project.changed` are the source of truth for
 clients; a client must not write `project.json` itself.
 
@@ -566,6 +567,106 @@ clients; a client must not write `project.json` itself.
 Integers written into the project and edit frame/tick inputs stay within ±(2^53−1), so clients
 using JavaScript preserve them exactly. See `crates/model/src/project.rs` for the complete
 serialized types and `crates/model/src/ops.rs` for validation.
+
+### Sound (schema 4)
+
+What schema 4 adds (`crates/model/src/audio.rs`, `audio/fx.rs`, `audio/routing.rs`,
+`audio/param.rs`). The engine always writes every field; each may be left out where a project or
+an operation is read, and is read as its default (a new timeline's, as DaVinci Resolve makes it;
+Reference Manual 20 pages in brackets). Levels in decibels of a fader, a send, a VCA and a boom
+are at most +10; −100 or below is −∞.
+
+- **Clip.** `gain_db` (−96…24) and `pan` (−1…1) are each a number, as before, or
+  `{"keys": [{"at": {ticks, scale}, "value", "interp": "linear"|"ease_in"|"ease_out"}, ...]}`:
+  at least one key, in strictly increasing time; `at` is a time of the clip's media from its
+  start (it stays on its sound when the clip is trimmed or moved); before the first key the value
+  is the first's, after the last the last's. A key that eases in is reached, and one that eases
+  out left, with a slope of 0 (cubic Hermite); otherwise straight lines (p. 3838). Added:
+  `audio_fade_in`, `audio_fade_out` (`null`, or `{length: {ticks, scale}, curve, skew}`; `null`
+  is a straight fade over `fade_in`/`fade_out` frames; `curve`, `skew` ∈ [−1, 1]: rise
+  `g(t') = (1−|c|)·t' + |c|·e(t')`, `t' = t^(2^−skew)`, `e = sin(πt'/2)` for c > 0 and
+  `1 − cos(πt'/2)` for c < 0; a fade out is `g(1−t)`; the two together no longer than the clip),
+  `eq` (4 bands, see below; off), `effects` (inserts, see below; an effect of a clip has no
+  sidechain), `pitch_correction` (false), `pitch` (`{semitones: −12…12 whole, cents: −100…100}`)
+  and `channels`: `null` (the media's channels mixed to the track's as libav mixes them) or one
+  `{source, enabled, mute, level_db}` per channel of its track (p. 3833); `source` is `null`
+  (silence), `{stream, channel}` (a stream as libav/ffprobe number all streams of the file, and a
+  channel of it in its own order) or a list of them, whose mean is played (a stereo pair made
+  mono is `0.5·(L+R)`); a stream or channel that the media has not plays silence; `level_db` is at
+  most 24. A blade leaves no fade of sound at its cut (the first half has no `audio_fade_out`, the
+  second no `audio_fade_in`); a blade or a trim shortens a fade of sound that the clip no longer
+  holds, the one at the edge that moves first, exactly where a scale of 32 bits holds the new
+  length and otherwise rounded down in its own scale.
+- **Track of sound.** Beside `clips` and `transitions`: `format` (`mono|stereo|5.1|adaptive`,
+  stereo), `channels` (as many as the format has; 1–24 for `adaptive`, which may not leave it
+  out), `order` (`smpte|film`, of 5.1), `mute`, `solo`, `solo_safe`, `adc` (true),
+  `automation_arm`, `strip` (where it is left out, at unity, out to `B1` where the timeline has it,
+  and to none where it has not) and `lanes`. A track of picture or subtitles
+  has none of them (refused if given). `enabled: false` is Disable Track (not read, not heard);
+  `mute` is the header's button (p. 3885): not heard nor rendered. A track is heard (and
+  rendered) where it is on and not muted, its sound reaches a main output through outputs and
+  sends that are on and buses that are not muted, and, while any track that is on or any bus is
+  soloed, it is soloed, solo-safe or feeds a soloed bus. A track that is off solos nothing. The
+  sound that drives a sidechain or a Ducker is taken before the mute and the fader of its track.
+- **Strip** (of a track or a bus): `{trim_db (−20…20), invert, track_fx (null or a Ducker; a bus
+  has none), order (a permutation of "fx", "dynamics", "eq"; that order), inserts (≤ 6),
+  inserts_on (Effects In, true), dynamics, eq (6 bands), fader_db, pan, sends (≤ 10), outputs
+  (≤ 10, each bus once), vcas}`. `pan` is `{on, x, y (−1…1), rotate (±180), spread (1…99, 99),
+  divergence (0…100), lfe_db (−∞, −100), lfe_on, lfe_pre}`. A send is `{bus, on (true), pre (false: after
+  the fader), level_db (0), pan}`; an output `{bus, on}`.
+- **Effects.** An insert is `{id, on (true), effect}`; `id` (`fx1`, `fx2`, …) is unique in its strip
+  and stays with it as it moves, and an insert of a strip added without one is given the next; `effect` is `{kind, ...settings}` of `gain`,
+  `limiter` (with `sidechain`), `soft_clipper`, `stereo_width`, `de_esser`, `de_hummer`,
+  `noise_reduction` (with a learned `profile` or `null`, and the `band` that it works on:
+  `full` (default), `rumble` (below 250 Hz), `hiss` (above 4 kHz) or `rumble_and_hiss`, as its
+  presets set it; it has no lane) or `pitch`. A Ducker is `{on, sources:
+  [{"track": id} | {"bus": id}], amount_db (2.7), lookahead_ms (15), rise_ms (10), hold_ms (150),
+  recovery_ms (750)}`. Dynamics is `{on, expander: {on, mode: expander|gate, ...}, compressor:
+  {on, ..., sidechain: {on, listen, source}}, limiter: {on, ...}, makeup_db}`. An equalizer is
+  `{on, bands: [{on, kind, freq, gain_db, q, slope, range}], gain_db}`; kinds
+  `low_shelf|bell|high_shelf|high_pass|low_pass|notch`, ranges of the middle bands of a strip
+  `low (20–200 Hz)|medium_low (100 Hz–1 kHz)|medium_high (500 Hz–5 kHz)|high (2–20 kHz)`. The
+  defaults and ranges of every setting are in `crates/model/src/audio/fx.rs`; a setting out of its
+  range is `out_of_range` naming what it is of.
+- **Timeline.** Beside `grade`: `buses` (`[{id: "B1", name: "Bus 1", color, format: "stereo",
+  strip, lanes}]`), `vcas`, `track_groups` and `audio`. A bus is `{id, name, color, format
+  (mono|stereo|3.0|4.0|5.0|5.1|7.0|7.1), strip, mute, solo, solo_safe, lanes}`; its strip's outputs
+  are the buses it feeds, and a bus that outputs to none is a main output. A VCA is `{id, name, fader_db,
+  mute, solo, vcas, lanes}` (members name it in their strip's `vcas`; a VCA may be a member of
+  another). A track group is `{id, name, color, members (tracks of sound), linked
+  (editing|fader|solo|mute|sends|panning|automation; all), active (true)}`. `audio` is
+  `{monitor ("B1"), meter (ppm|vu|custom), custom_meter, prefader_metering (false), loudness:
+  {standard (ebu_r128), target (−23, −36…−10), scale (ebu9), relative (true), lock_to_transport
+  (true)}, exclusive_solo (false), follows_edit (true), record: {mode, touch, on_stop,
+  categories, preview, active_range}}`. At most 64 buses and 64 VCAs; no path of buses longer
+  than 6, nor chain of VCAs; no loop through outputs, sends, sidechains and duckers.
+- **Lane** (automation of a track, bus or VCA, by the path of its setting): `{points: [{at:
+  {ticks, scale}, value}], kind: continuous|switch}`, points in time order, all of one scale and
+  within 0…2^53−1 ticks (two may share a time: the later holds from it), times of the timeline;
+  straight lines between points (worked out in ticks), a switch holds; before the first and
+  after the last, their values. The path of a lane is the path of the field of the strip that it
+  automates, and its kind is that of the field: a number is continuous, a boolean a switch, and
+  any other field has no lane, nor has any `listen` (of a sidechain, a De-Esser, a De-Hummer or a
+  Noise Reduction), which is only heard while one listens. Paths: `fader_db`, `trim_db`, `mute`, `invert`, `inserts_on`,
+  `pan.<x|y|rotate|spread|divergence|lfe_db|on|lfe_on|lfe_pre>`, `eq.on`, `eq.gain_db`,
+  `eq.<band from 0>.<on|freq|gain_db|q>`, `dynamics.<…>` as Dynamics is written
+  (`dynamics.compressor.threshold_db`, `dynamics.compressor.sidechain.on`, `dynamics.makeup_db`),
+  `track_fx.<…>` of a track with a Ducker (`track_fx.amount_db`), `send.<bus id>.<level_db|on|pre|pan.x|…>`,
+  `output.<bus id>.on`, and `insert.<insert id>.<on|setting>` (`insert.fx1.ceiling_db`). A VCA has
+  `fader_db` and `mute`. A lane of a setting that the strip has not, or of another kind, is
+  refused as `out_of_range: lane`.
+- **Transition.** Added `fade_in_level_db` and `fade_out_level_db`, each −3, 0 or 3 (0): how the
+  clip that starts at the cut rises and the one that ends there falls on a crossfade: 0 dB `t`,
+  +3 dB `sin(πt/2)`, −3 dB `t^1.5`; the falling side is the rising curve reversed.
+- **Media.** `facts.audio` may have `layout` (libav's name of its layout) and `streams: [{index,
+  channels, layout}]`; both are left out where they were not read.
+
+A schema 3 project is upgraded so that it sounds exactly as it did: each timeline gets bus `B1`,
+monitored, which every track of sound outputs to at unity through a strip that changes nothing;
+every track of sound is stereo with its clips' channels mixed as before; every crossfade gets
++3 dB on both sides (equal power, as before; a new one is 0 dB); an audio track that was
+`enabled: false` becomes `enabled: true, mute: true`. A schema 3 project that has any field of
+schema 4 is refused.
 
 ## The view
 
@@ -1610,8 +1711,8 @@ An operation is an object that names itself in `op` (unknown fields are refused,
 | `shift_cues` | `timeline`, `track`, `cues: [id, ...]`, `by` |
 | `set_proxy` | `media`, `proxy` (a proxy, or `null` or left out to take it away; its inverse sets the one before). A proxy must be a file of the engine's own (see Security), else it is refused as `not_a_proxy_path`; so must one on media that `add_media` adds |
 | `set_timeline` | `id`, `name?`, `rate?`, `width?`, `height?`, `sample_rate?` |
-| `set_track` | `timeline`, `id`, `name?`, `enabled?`, `locked?`, `language?` |
-| `set_clip` | `timeline`, `id`, `enabled?`, `speed?`, `reverse?`, `link?`, `transform?`, `gain_db?`, `pan?`, `fade_in?`, `fade_out?`, `source?` |
+| `set_track` | `timeline`, `id`, `name?`, `enabled?`, `locked?`, `language?`, `mute?`, `solo?`, `solo_safe?` (of a track of sound only; on another `wrong_track` with `what` of the setting) |
+| `set_clip` | `timeline`, `id`, `enabled?`, `speed?`, `reverse?`, `link?`, `transform?`, `gain_db?`, `pan?`, `fade_in?`, `fade_out?`, `audio_fade_in?`, `audio_fade_out?` (an `AudioFade` or `null` for a straight fade over the frames), `source?` |
 | `add_bin` | `bin`, `index?` |
 | `remove_bin` | `id` |
 | `set_bin` | `id`, `name?`, `parent?` |
@@ -3511,7 +3612,7 @@ refused only through a bug of the engine. The refusals that are not of a transac
 | `scale` | `scale`, `media_scale` | a time of scale 0, or not of the scale of its media |
 | `overlap` | `with` | the clip covers frames that clip `with` covers |
 | `out_of_timeline` | `start` | the clip starts before frame 0 |
-| `in_use` | `id`, `by` | media still used by clip `by` |
+| `in_use` | `what`, `id`, `by` | media (`what: "media"`) still used by clip `by`, or a track of sound (`what: "track"`) that group of tracks, track or bus `by` names (as a member, or as the source of a sidechain or a Ducker) |
 | `too_large` | `what` | an integer further than 2^53 − 1 from 0 |
 | `zero_rate` | | a rate with a 0 in it |
 | `negative_duration` | `ticks` | media lasting less than no time |
@@ -3553,6 +3654,35 @@ refused only through a bug of the engine. The refusals that are not of a transac
 
 As with basic operations, edit refusal indexes refer to the original mixed `ops` array, not
 the expanded operation list. Refusal emits no `project.changed` and adds no history step.
+
+### Refusals of sound (schema 4)
+
+| reason | fields | meaning |
+|---|---|---|
+| `bus_cycle` | `id` | the sound would go round in a loop through track or bus `id`, by outputs, sends, sidechains or duckers |
+| `bus_depth` | `id` | a path of buses, each feeding the next, would be more than 6 buses long, ending at bus `id` |
+| `too_many_inserts` | | a strip with more than 6 inserts |
+| `too_many_sends` | | a strip with more than 10 sends |
+| `too_many_outputs` | | a strip with more than 10 outputs |
+| `channel_count` | `track` | a track's `channels` do not fit its format (an adaptive one has 1–24), or a clip on it names another number of channels |
+| `unknown_bus` | `id` | an output, a send, a sidechain, a ducker or the monitor names a bus that is not there |
+| `unknown_vca` | `id` | a strip or a VCA names a VCA that is not there |
+| `order` | | a strip's `order` is not `fx`, `dynamics` and `eq` each once |
+| `vca_cycle` | `id` | VCAs would be members of each other in a loop |
+| `vca_depth` | `id` | a chain of VCAs would be more than 6 long |
+
+A track that a group, a sidechain or a ducker names is refused as `missing` (`what: "track"`)
+where it is not there; `remove_track` of it while it is named is refused as `in_use`. `out_of_range` also
+names (schema 4): of a clip `gain_db`, `pan` (also their keys), `fade`, `eq`, `pitch`,
+`channels` (a level above 24; a stream or channel that the media has not is silence, never
+refused), `sidechain`; of a transition `level` (a level other than 0 dB on one that is not a
+crossfade); of a strip `trim_db`, `track_fx` (on a bus), `fader_db`, `pan`, `send`, `outputs`
+(two to one bus), `inserts` (two of one id), `vcas` (one twice, or one and a VCA that it is a
+member of), `eq`, `dynamics`, `ducker`, the kind of an effect, `lane`; of a VCA `vcas` (as of a
+strip); of a timeline `buses`, `vcas` (more than 64), `audio` (its settings), `label` (a bus name
+over the longest label); of a group `members`, `linked` (one twice). A bus named as a track of
+its timeline is refused as `taken` (`what: "track"`). A project read with one of these is
+refused with `what` of `bus`, `vca` or `track_group` where the thing at fault is one.
 
 ## Rendering a timeline
 

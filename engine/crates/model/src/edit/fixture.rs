@@ -54,6 +54,8 @@ fn media(id: &str, frames: i64, video: bool) -> Media {
                 rate: 48000,
                 channels: 2,
                 codec: "aac".into(),
+                layout: None,
+                streams: None,
             }),
         },
         proxy: None,
@@ -132,6 +134,8 @@ pub fn transition(track: &str, left: &str, right: &str, length: i64, align: Alig
             right: right.into(),
             length,
             align,
+            fade_in_level_db: crate::audio::CrossfadeLevel::Zero,
+            fade_out_level_db: crate::audio::CrossfadeLevel::Zero,
         },
     }
 }
@@ -145,6 +149,9 @@ pub fn lock(track: &str) -> Op {
         enabled: None,
         locked: Some(true),
         language: None,
+        mute: None,
+        solo: None,
+        solo_safe: None,
     }
 }
 

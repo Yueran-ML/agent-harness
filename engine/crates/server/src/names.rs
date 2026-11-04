@@ -1374,7 +1374,7 @@ mod tests {
                 assert_eq!(clip.length, 5, "{edit}");
                 assert_eq!(clip.link.as_ref(), Some(&names["$g"]), "{edit}");
                 if kind == TrackKind::Audio {
-                    assert_eq!(clip.gain_db, -6.0);
+                    assert_eq!(clip.gain_db, (-6.0).into());
                 }
             }
         }

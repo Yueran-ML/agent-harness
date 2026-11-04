@@ -335,7 +335,8 @@ fn no_latency_and_a_late_start_settles_as_reported() {
         settle_for(&Settings::default(), RATE)
     );
     let settle = settle_for(&Settings::default(), RATE) as usize;
-    let frames = settle + 60_000;
+    // Long enough that the later start still has a whole settling and more to compare.
+    let frames = 2 * settle + 60_000;
     let input = hum(50.0)
         .into_iter()
         .cycle()

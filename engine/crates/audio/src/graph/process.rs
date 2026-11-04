@@ -83,6 +83,13 @@ impl Graph {
         self.reset(begin);
         let mut left = u64::from(self.preroll()) + u64::from(self.latency);
         let mut result = Ok(());
+        // The stretched clips under way at `begin` brought there now, not on the thread of the mix.
+        for (index, clip) in self.clips.iter_mut().enumerate() {
+            let primed = clip.prime(index, feed, begin, &mut self.scratch);
+            if let (Err(error), Ok(())) = (primed, &result) {
+                result = Err(error);
+            }
+        }
         while left > 0 {
             let frames = usize::try_from(left)
                 .unwrap_or(usize::MAX)
@@ -109,6 +116,7 @@ impl Graph {
                 eq.align(begin.cast_unsigned());
             }
         }
+        self.scratch.reset();
         for vca in &mut self.vcas {
             vca.fader.finish();
             vca.mute.finish();

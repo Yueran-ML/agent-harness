@@ -13,16 +13,20 @@ use columbina_model::{
     Strip as StripModel, Timeline, TrackKind,
 };
 
-use crate::constants::MAX_CHANNELS;
+use crate::constants::{samples, MAX_CHANNELS, STRETCH_FASTEST, STRETCH_RESET_CROSSFADE};
 use crate::db_to_gain;
 use crate::feed::ClipSource;
 use crate::fx::ducker::{self, Ducker, Param as DuckerParam};
 use crate::fx::dynamics::{self, Dynamics, Param as DynamicsParam};
 use crate::fx::eq::{self, Eq, Field, Kind, Variant, Zone};
+use crate::fx::pitch;
+use crate::fx::stretch::{Grid, Plan, Stretcher, CHUNK};
 use crate::node::{Layout, Node, ParamId, Planar, Role, Spec};
 use crate::rt::{seqlock, Domain, SeqReader, Smoothed};
 
-use super::clip::{cutoff, radius, ClipChain, ClipPan, ClipScratch, Mapping, Window};
+use super::clip::{
+    cutoff, radius, ClipChain, ClipPan, ClipScratch, Mapping, Pool, StretchMode, Stretched, Window,
+};
 use super::pdc::{DelayLine, Delayer};
 use super::route::{balance, panned, PanAt};
 use super::strip::{Edge, Key, LaneOf, Pan, Stage, Strip, VcaState, VcaTerm};
@@ -1022,6 +1026,7 @@ impl Graph {
         let mut clip_sources: Vec<ClipSource> = Vec::new();
         let mut unplayable: Vec<Id> = Vec::new();
         let mut window = 0usize;
+        let mut stretching = Stretching::default();
         for piece in resolve::sources_between(t, project, i64::MIN, i64::MAX) {
             let Some(&strip) = track_at.get(piece.track.as_str()) else {
                 continue;
@@ -1072,6 +1077,12 @@ impl Graph {
             } else {
                 None
             };
+            let stretch = stretching.of(clip, &piece, &mapping, (rate, channels), reach);
+            if let Some(stretch) = &stretch {
+                if stretch.mode == StretchMode::Source {
+                    window = window.max(stretching.seek_length());
+                }
+            }
             clip_sources.push(ClipSource {
                 clip: clip.id.clone(),
                 track: track.id.clone(),
@@ -1094,6 +1105,7 @@ impl Graph {
                 eq,
                 processed: 0,
                 piece,
+                stretch,
             });
         }
         let mut clips_of = vec![0..0; count];
@@ -1335,6 +1347,7 @@ impl Graph {
                 },
                 before: Planar::new(MAX_CHANNELS, max_block),
                 after: Planar::new(MAX_CHANNELS, max_block),
+                pools: stretching.pools(rate, max_block),
             },
             inputs: sources
                 .iter()
@@ -1430,6 +1443,168 @@ impl Graph {
                 pre: strip.pre_tap.reader.clone(),
                 post: strip.post_tap.reader.clone(),
             })
+            .collect()
+    }
+}
+
+/// The stretches of the clips of a graph as they are made (T13): the library's configuration at
+/// the rate of the timeline, asked once, and for each count of channels the spans over which
+/// clips hold a stretcher and the most input that one is fed by a chunk.
+#[derive(Default)]
+struct Stretching {
+    config: Option<columbina_stretch::Config>,
+    pools: Vec<PoolOf>,
+}
+
+/// What a pool of stretchers is made for: its channels, the spans of the timeline over which its
+/// clips hold a stretcher, and the most input a chunk is fed.
+struct PoolOf {
+    channels: usize,
+    spans: Vec<(i64, i64)>,
+    most: usize,
+}
+
+impl Stretching {
+    /// The samples of a seek of the library (0 before any clip is stretched).
+    fn seek_length(&self) -> usize {
+        self.config.map_or(0, |config| config.seek_length)
+    }
+
+    /// The stretch of `clip`, which sounds as `piece` with `mapping` on a track of `channels` at
+    /// `rate`, its filter reaching `radius`: Pitch Correction where its speed is not 1 (and at
+    /// most [`STRETCH_FASTEST`]), else its pitch moved alone where it is moved, else none, as
+    /// before (p. 3827, p. 3826).
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        reason = "a speed, and samples within the timeline"
+    )]
+    fn of(
+        &mut self,
+        clip: &columbina_model::Clip,
+        piece: &resolve::AudioPiece,
+        mapping: &Mapping,
+        (rate, channels): (u32, usize),
+        radius: i64,
+    ) -> Option<Stretched> {
+        let (num, den) = piece.speed;
+        let speed = f64::from(num) / f64::from(den.max(1));
+        let corrected = clip.pitch_correction && num != den && speed <= STRETCH_FASTEST;
+        let moved = clip.pitch.semitones != 0 || clip.pitch.cents != 0.0;
+        let mode = if corrected {
+            StretchMode::Source
+        } else if moved {
+            StretchMode::Resampled
+        } else {
+            return None;
+        };
+        let config = if let Some(config) = self.config {
+            config
+        } else {
+            let config = columbina_stretch::Config::of(rate).ok()?;
+            self.config = Some(config);
+            config
+        };
+        let (lin, lout, seek) = (
+            config.input_latency as i64,
+            config.output_latency as i64,
+            config.seek_length as i64,
+        );
+        let warm = Stretcher::warm_of(&config);
+        let fade = samples(STRETCH_RESET_CROSSFADE, rate) as i64;
+        let grid = Grid::clip(piece.from, mapping.speed(), rate, fade, warm);
+        let busy_from = piece.from - warm;
+        let chunk = CHUNK as i64;
+        let reach = (speed * (warm + chunk + lout + lin + seek) as f64).ceil() as i64
+            + lin
+            + seek
+            + radius
+            + 2;
+        let max_input = match mode {
+            StretchMode::Source => CHUNK * speed.ceil() as usize + 2,
+            StretchMode::Resampled => CHUNK,
+        };
+        let pool = if let Some(at) = self.pools.iter().position(|p| p.channels == channels) {
+            at
+        } else {
+            self.pools.push(PoolOf {
+                channels,
+                spans: Vec::new(),
+                most: 0,
+            });
+            self.pools.len() - 1
+        };
+        let of = &mut self.pools[pool];
+        of.spans.push((busy_from, piece.to));
+        of.most = of.most.max(max_input);
+        Some(Stretched {
+            mode,
+            plan: Plan {
+                grid,
+                segments: (0, grid.segment(piece.to - 1)),
+                floor: i64::MIN,
+                rate: match mode {
+                    StretchMode::Source => speed,
+                    StretchMode::Resampled => 1.0,
+                },
+            },
+            transpose: pitch::factor(clip.pitch.semitones as f32, clip.pitch.cents as f32),
+            latencies: (lin, lout),
+            busy_from,
+            reach,
+            pool,
+            held: None,
+        })
+    }
+
+    /// The pools: for each count of channels, as many stretchers as the most of its clips that
+    /// hold one at once, a block either side of each span (a clip takes its stretcher in the block
+    /// where it starts warming, and gives it back in the block where it ends). A pool whose
+    /// stretchers cannot be made has none, and its clips are silent.
+    fn pools(&self, rate: u32, max_block: usize) -> Vec<Pool> {
+        let block = i64::try_from(max_block).unwrap_or(i64::MAX);
+        self.pools
+            .iter()
+            .map(
+                |PoolOf {
+                     channels,
+                     spans,
+                     most,
+                 }| {
+                    let mut events: Vec<(i64, i32)> = spans
+                        .iter()
+                        .flat_map(|&(from, to)| {
+                            [
+                                (from.saturating_sub(block), 1),
+                                (to.saturating_add(block), -1),
+                            ]
+                        })
+                        .collect();
+                    events.sort_unstable();
+                    let (mut now, mut size) = (0i32, 0i32);
+                    for (_, change) in events {
+                        now += change;
+                        size = size.max(now);
+                    }
+                    let size = usize::try_from(size).unwrap_or(0);
+                    let stretchers: Vec<Stretcher> = (0..size)
+                        .map_while(|_| Stretcher::new(*channels, rate, *most).ok())
+                        .collect();
+                    let stretchers = if stretchers.len() == size {
+                        stretchers
+                    } else {
+                        Vec::new()
+                    };
+                    let mut pool = Pool {
+                        free: Vec::with_capacity(stretchers.len()),
+                        stretchers,
+                    };
+                    pool.reset();
+                    pool
+                },
+            )
             .collect()
     }
 }

@@ -71,6 +71,8 @@ fn the_code_of_the_threads_of_the_sound_does_not_lock_allocate_or_log() {
         "true_peak.rs",
         "denoise.rs",
         "rnnoise.rs",
+        "pitch.rs",
+        "stretch.rs",
     ] {
         assert!(
             names.iter().any(|name| name == expected),

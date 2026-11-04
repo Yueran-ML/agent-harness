@@ -96,3 +96,87 @@ fn the_channels_of_sources_of_different_formats_go_by_their_roles() {
     assert_eq!(routes(Adaptive(3), Stereo), [(0, 0), (1, 1), (2, 0)]);
     assert_eq!(routes(Stereo, Adaptive(3)), [(0, 0), (1, 1)]);
 }
+
+/// A stretched clip (T13) reads its media only within its reach of where its mapping is, from
+/// where it starts warming: what a reader ahead of the graph is told to have (T5). A run started
+/// in the middle does the work of bringing its stretchers there in `Graph::start`, so that the
+/// blocks after read only near where they play.
+#[test]
+fn a_stretched_clip_reads_within_its_reach_once_its_run_has_started() {
+    use std::cell::RefCell;
+    use std::ops::Range;
+    use std::rc::Rc;
+
+    use columbina_model::{ClipPitch, Project, Speed, Time, TrackKind};
+
+    use super::{Graph, Options, Purpose};
+    use crate::feed::FeedError;
+
+    for (speed, reverse, corrected, pitch, at) in [
+        ((4, 5), false, true, 0, 6 * 48_000),
+        ((3, 2), true, true, 2, 3 * 48_000 + 17),
+        ((1, 1), false, false, 5, 5 * 48_000 + 999),
+        ((7, 3), false, true, 0, 1),
+    ] {
+        let mut project = Project::sample();
+        project.timelines[0]
+            .tracks
+            .retain(|track| track.kind == TrackKind::Audio);
+        project.media[0].facts.duration = Time {
+            ticks: 60 * 15_360,
+            scale: 15_360,
+        };
+        let clip = &mut project.timelines[0].tracks[0].clips[0];
+        clip.length = 250;
+        clip.speed = Speed {
+            num: speed.0,
+            den: speed.1,
+        };
+        clip.reverse = reverse;
+        clip.pitch_correction = corrected;
+        clip.pitch = ClipPitch {
+            semitones: pitch,
+            cents: 0.0,
+        };
+        let mut graph = Graph::build(&project, 0, Options::new(480, Purpose::Export)).unwrap();
+        let reads: Rc<RefCell<Vec<Range<i64>>>> = Rc::default();
+        let seen = Rc::clone(&reads);
+        let mut feed = move |_: usize, range: Range<i64>, out: &mut [&mut [f32]]| {
+            for (channel, out) in out.iter_mut().enumerate() {
+                for (n, sample) in out.iter_mut().enumerate() {
+                    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+                    let x = (range.start + i64::try_from(n).unwrap()) as f64;
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+                    let value = (0.5 * (x * 0.05 + channel as f64).sin()) as f32;
+                    *sample = value;
+                }
+            }
+            seen.borrow_mut().push(range);
+            Ok::<(), FeedError>(())
+        };
+        graph.start(at, &mut feed).unwrap();
+        reads.borrow_mut().clear();
+        let chain = &graph.clips[0];
+        assert!(chain.stretch.is_some(), "{speed:?}");
+        let (reach, busy_from, to) = (chain.reads_within(), chain.busy_from(), chain.to);
+        let mapping = chain.mapping;
+        let mut block = at;
+        while block < to {
+            graph.process(&mut feed, 480).unwrap();
+            let end = block + 480;
+            let (a, b) = (mapping.at(block).0, mapping.at(end - 1).0);
+            let (low, high) = (a.min(b) - reach, a.max(b) + reach + 1);
+            for range in reads.borrow_mut().drain(..) {
+                assert!(
+                    end > busy_from,
+                    "{speed:?}: a read before it warms, at {block}"
+                );
+                assert!(
+                    range.start >= low && range.end <= high,
+                    "{speed:?} backward {reverse}: {range:?} read in the block at {block}, not within {low}..{high}"
+                );
+            }
+            block = end;
+        }
+    }
+}

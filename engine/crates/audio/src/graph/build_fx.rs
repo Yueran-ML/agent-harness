@@ -1,12 +1,12 @@
-//! The nodes of the effects of inserts (T10, T12), made from the model's effects when the graph is
-//! built: each effect's settings read from the model's, the switch of its insert given to it, its
-//! lanes found by the paths of its parameters (`Param::path`), and its settling worked out for the
-//! slowest values that its lanes take (T4b's review, P3-11). Pitch (T13) has no node yet.
+//! The nodes of the effects of inserts (T10, T12, T13), made from the model's effects when the
+//! graph is built: each effect's settings read from the model's, the switch of its insert given to
+//! it, its lanes found by the paths of its parameters (`Param::path`), and its settling worked out
+//! for the slowest values that its lanes take (T4b's review, P3-11).
 
 use columbina_model::audio::fx::{EssRange, NoiseBand, NoiseMode, Reaction};
 use columbina_model::{Effect, Lane};
 
-use crate::fx::{deesser, dehummer, denoise, gain, limiter, soft_clip, width};
+use crate::fx::{deesser, dehummer, denoise, gain, limiter, pitch, soft_clip, width};
 use crate::node::{Node, ParamId};
 
 use super::build::{Context, Made};
@@ -52,8 +52,7 @@ fn made(node: Box<dyn Node>, param: fn(&str) -> Option<ParamId>, settle: u32) ->
     }
 }
 
-/// The node of `effect`, an insert's, as `context` says; none for an effect with no node yet
-/// (Pitch, T13), which passes its sound as it is.
+/// The node of `effect`, an insert's, as `context` says.
 #[must_use]
 #[allow(clippy::too_many_lines, reason = "one effect after another")]
 pub fn node_of(effect: &Effect, context: &Context) -> Option<Made> {
@@ -248,6 +247,24 @@ pub fn node_of(effect: &Effect, context: &Context) -> Option<Made> {
                 settle(&slow),
             )
         }
-        Effect::Pitch(_) => return None,
+        Effect::Pitch(fx) => {
+            #[allow(clippy::cast_precision_loss, reason = "whole semitones from -12 to 12")]
+            let settings = pitch::Settings {
+                on,
+                semitones: fx.semitones as f32,
+                cents: single(fx.cents),
+                dry_wet: single(fx.dry_wet),
+            };
+            made(
+                Box::new(pitch::Pitch::new(&settings)),
+                |path| {
+                    pitch::Param::ALL
+                        .iter()
+                        .find(|p| p.path() == path && p.is_automatable())
+                        .map(|p| p.id())
+                },
+                pitch::settle_for(&settings, rate),
+            )
+        }
     })
 }

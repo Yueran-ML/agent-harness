@@ -641,27 +641,39 @@ are at most +10; −100 or below is −∞.
   categories, preview, active_range}}`. At most 64 buses and 64 VCAs; no path of buses longer
   than 6, nor chain of VCAs; no loop through outputs, sends, sidechains and duckers.
 - **Lane** (automation of a track, bus or VCA, by the path of its setting): `{points: [{at:
-  {ticks, scale}, value}], kind: continuous|switch}`, points in time order, all of one scale and
-  within 0…2^53−1 ticks (two may share a time: the later holds from it), times of the timeline;
-  straight lines between points (worked out in ticks), a switch holds; before the first and
-  after the last, their values. The path of a lane is the path of the field of the strip that it
-  automates, and its kind is that of the field: a number is continuous, a boolean a switch, and
-  any other field has no lane, nor has any `listen` (of a sidechain, a De-Esser, a De-Hummer or a
-  Noise Reduction), which is only heard while one listens. Paths: `fader_db`, `trim_db`, `mute`, `invert`, `inserts_on`,
-  `pan.<x|y|rotate|spread|divergence|lfe_db|on|lfe_on|lfe_pre>`, `eq.on`, `eq.gain_db`,
-  `eq.<band from 0>.<on|freq|gain_db|q>`, `dynamics.<…>` as Dynamics is written
+  {ticks, scale}, value}], kind: continuous|switch, scale: linear|log}`, points in time order,
+  all of one scale and within 0…2^53−1 ticks (two may share a time: the later holds from it),
+  times of the timeline; straight lines between points (worked out in ticks), a switch holds;
+  before the first and after the last, their values. `scale` is what a continuous lane goes
+  straight on (the decision of T14's review, C-A7): `log` for a frequency (a path whose last part
+  is `freq` or ends in `frequency_hz`) and a Q (`q`), where the value at a share `s` of the way
+  from `a` to `b` is `exp(ln a + (ln b − ln a)·s)` (100 Hz to 10 kHz passes 1 kHz half way), and
+  `linear` for everything else (decibels are straight in decibels, a pan in its units). It is set
+  by the path: a lane read or set without it is given the one of its path, the engine always
+  writes it, and one given another is refused. The path of a lane is the path of the field of the
+  strip that it automates, and its kind is that of the field: a number is continuous, a boolean a
+  switch. Paths: `fader_db`, `trim_db`, `mute`, `invert`, `pan.<x|y|divergence>`, `eq.on`,
+  `eq.gain_db`, `eq.<band from 0>.<on|freq|gain_db|q>`, `dynamics.<…>` as Dynamics is written
   (`dynamics.compressor.threshold_db`, `dynamics.compressor.sidechain.on`, `dynamics.makeup_db`),
-  `track_fx.<…>` of a track with a Ducker (`track_fx.amount_db`), `send.<bus id>.<level_db|on|pre|pan.x|…>`,
-  `output.<bus id>.on`, and `insert.<insert id>.<on|setting>` (`insert.fx1.ceiling_db`). A VCA has
-  `fader_db` and `mute`. The Lookahead of a Ducker (`track_fx.lookahead_ms`) has no lane: it is
-  the latency of the graph, not a setting that moves. A lane keeps to the range of its setting:
-  each of its values is one that the setting may be set to while the rest of the strip is as it
-  is (a fader at most +10 dB, a pan −1…1, a frequency within its band), and a switch is 0 or 1. A
-  lane of a setting that the strip has not, of another kind, or out of that range is refused as
-  `out_of_range: lane`. The engine reads a lane at each sample of the timeline exactly as written
-  here: the times are compared in ticks, a point whose time falls between two samples acts from
-  the first sample at or after it, and the share of the way between two points is worked in
-  doubles (T14).
+  `track_fx.<…>` of a track with a Ducker (`track_fx.amount_db`, `track_fx.on`),
+  `send.<bus id>.<level_db|on|pan.x|pan.y>`, `output.<bus id>.on`, and
+  `insert.<insert id>.<on|setting>` (`insert.fx1.ceiling_db`). A VCA has `fader_db` and `mute`.
+  No other field has a lane: a kind, a mode, a source or any `listen` (only heard while one
+  listens) is refused as `out_of_range: lane`; a whole number (`eq.<band>.slope`, the
+  `semitones` of a Pitch) as `out_of_range: lane_integer`; and what the graph does not move as a
+  lane would, as `out_of_range: lane_not_wired`: Effects In (`inserts_on`), the pan's `on`,
+  `rotate`, `spread`, `lfe_db`, `lfe_on` and `lfe_pre`, a send's `pre` and the rest of its pan, the
+  Lookahead of a Ducker (`track_fx.lookahead_ms`, the latency of the graph), and every setting of a
+  Pitch, which has no node yet. With Effects In off, a lane of the switch of an insert
+  (`insert.<id>.on`) turns no insert on. A lane keeps to the range of its setting: each of its
+  values is one that the setting may be set to while the rest of the strip is as it is (a fader at
+  most +10 dB, a pan −1…1, a frequency within its band, above 0 on a scale of logarithms), and a
+  switch is 0 or 1; a lane of a setting that the strip has not, of another kind or scale, or out
+  of that range is refused as `out_of_range: lane`. A project read with such a lane is refused
+  (none was written before these checks). The engine reads a lane at each sample of the timeline
+  exactly as written here: the times are compared in ticks, a point whose time falls between two
+  samples acts from the first sample at or after it, and the share of the way between two points
+  is worked in doubles (T14).
 - **Transition.** Added `fade_in_level_db` and `fade_out_level_db`, each −3, 0 or 3 (0): how the
   clip that starts at the cut rises and the one that ends there falls on a crossfade: 0 dB `t`,
   +3 dB `sin(πt/2)`, −3 dB `t^1.5`; the falling side is the rising curve reversed.
@@ -1842,7 +1854,10 @@ tracks stay. A bus, VCA or group that is not there is `unknown_bus`, `unknown_vc
 **Inserts.** `of` names a chain of inserts: `{"track": id}` (the strip of a track of sound),
 `{"bus": id}` (the strip of a bus) or `{"clip": id}` (the effects of a clip, in order). `add_insert`
 puts one at `index` (at the end where it is left out), and an insert of a strip with an empty id is
-given the next `fx<n>` of its strip; one of a clip keeps the id it is given, which may be none.
+given the next `fx<n>` of its strip, above every id that the strip had before the operation, so
+that an insert given no id is always new and never takes the id, and so the lanes, of one that it
+replaces (the same for the inserts of a patch of `set_track_audio` or `set_bus`); one of a clip
+keeps the id it is given, which may be none.
 `set_insert` puts one in place of the one at `slot`, or with `insert: null` takes that one away,
 those after it moving up; its inverse puts back what was replaced, or adds back what was taken
 away (`add_insert` at `slot`). `move_insert` moves the one at `from` to `to`, those between moving
@@ -1853,8 +1868,9 @@ away from the one and adds it to the other with an empty id. A `slot`, `from` or
 a place of the chain is `out_of_list`; a strip of more than 6 inserts is `too_many_inserts`; an
 effect of a clip with a sidechain on is `out_of_range` (`sidechain`); an insert taken away or
 replaced while a lane names its id leaves the lane naming what is not there, refused as
-`out_of_range` (`lane`), so the lane is taken away first: the edits `set_insert`,
-`move_insert` and `copy_effects` (below) do that in the same transaction.
+`out_of_range` (`lane`), and so is an insert that keeps its id with an effect of another kind
+while a lane names it; so the lane is taken away first: the edits `set_insert`, `move_insert`,
+`copy_effects`, `set_track_audio` and `set_bus` (below) do that in the same transaction.
 
 A strip sends to a bus at most once: two sends to one bus are `out_of_range` (`sends`).
 
@@ -2061,10 +2077,12 @@ lane of the target's old inserts names an insert that is not there, and is refus
 operations do, and work in times of the timeline (`{ticks, scale}`), each put on the nearest tick
 of the lane's scale (that of its points; the timeline's sample rate for a lane that is not there
 yet); a time that falls outside 0…2^53−1 ticks there is `out_of_range` (`at`, `from`, `to`,
-`points`, `by`). A lane of a track that is locked is `locked`; a path of no setting (or of
-`track_fx.lookahead_ms`, a `listen`, a kind) is `out_of_range` (`lane`). Each is one transaction:
-a lane made is one `set_lane`, one taken away one `set_lane` of `null`, and any other change one
-`splice_lane` of the points from the first that changes to the last. A value of a switch is on
+`points`, `by`). A lane of a track that is locked is `locked`; a path of no lane is refused as the
+operations refuse it (`lane`, `lane_integer`, `lane_not_wired`). Each is one transaction: a lane
+made is one `set_lane`, one taken away one `set_lane` of `null`, and any other change one
+`splice_lane` of the points from the first that changes to the last; an edit that would change
+nothing (a point added where one of that value is, a lane already as thin as asked) is
+`empty_range`. A value of a switch is on
 (1) at 0.5 and above and off (0) below; a value of a number past the range of its setting is kept
 at the end of the range, and the edit is `clamped`.
 - `lane_points` `add` puts each of `points` at its time, after any there already, or, where one
@@ -2095,10 +2113,13 @@ at the end of the range, and the edit is `clamped`.
   otherwise), thinned, in place of the range from `from` to `to`, as `lane_range` `paste` does.
   Thinning (C-A4) keeps the first and the last point and both points of a jump (two at one time),
   and between them, by Douglas–Peucker, each point without which the lane would go further than
-  `tolerance` from a point drawn, in value at its time: 0.1 dB for a level in decibels (a path
-  ending in `_db`), 0.01 for a pan (`pan.x`, `pan.y`, and those of a send), and 0.1 % of the range
-  of any other setting, where `tolerance` is left out; of a switch, the points where its value
-  changes. A negative or not finite `tolerance` is `out_of_range` (`tolerance`).
+  `tolerance` from a point drawn, in value at its time as its scale measures it (in logarithms
+  on a scale of logarithms): where `tolerance` is left out, 0.1 dB for a fader or the level of a
+  send, 0.5 % of the range of a pan (`pan.*`, and the pan of a send: 0.01 of `x`), and 0.1 % of
+  the range of any other setting as its control shows it (of the logarithms of its ends for a
+  frequency or a Q); of a switch, the points where its value changes. The constants are
+  `LANE_THIN_*` and `LANE_RAMP_PER_SECOND` of `crates/model/src/audio/automation.rs`. A negative
+  or not finite `tolerance` is `out_of_range` (`tolerance`).
 - `clear_lanes` takes away the lanes of `paths` (each must be there, else `missing`; an empty
   list is `out_of_range: paths`), or every lane of `of` where it is left out, as one step of undo
   (Clear Track Automation, p. 3912). `then` says what each setting is left at: `keep` (where it is
@@ -2108,8 +2129,9 @@ at the end of the range, and the edit is `clamped`.
   or `set_vca` of what changes, after the lanes are gone.
 - The edits `set_track_audio` and `set_bus` take away, first, the lanes that their patch would
   leave naming a setting that is no longer there or is of another kind: of a send, an output or
-  an insert that a patch of `sends`, `outputs`, `inserts` or `track_fx` takes away, or of a
-  Ducker gone. A lane left out of its range by a patch is still refused.
+  an insert that a patch of `sends`, `outputs`, `inserts` or `track_fx` takes away, of a Ducker
+  gone, or of an insert that keeps its id with an effect of another kind. A lane left out of its
+  range by a patch is still refused.
 
 ## Grades
 
@@ -3933,8 +3955,10 @@ the expanded operation list. Refusal emits no `project.changed` and adds no hist
 | `audio_settings` | `why` | a patch of sound (`set_track_audio`, `set_bus`, `set_vca`, `set_track_group`, `set_timeline_audio`) is not an object, names a field that is not known or may not be set so (`id`, `lanes`), or holds a value of the wrong kind; `why` is the reason |
 
 Of automation (T14): `missing` with `what: "lane"` (`id` its path) or `what: "point"` (`id`
-`ticks/scale`); `out_of_range` with `what` `lane` (a lane of no setting, of another kind, of no
-point, out of the range of its setting, or a switch that is neither 0 nor 1), `points`, `at`,
+`ticks/scale`); `out_of_range` with `what` `lane` (a lane of no setting, of another kind or scale,
+of no point, out of the range of its setting, or a switch that is neither 0 nor 1; an insert that
+keeps its id with an effect of another kind while a lane names it), `lane_integer` (of a whole
+number), `lane_not_wired` (of a setting that the graph does not move as a lane would), `points`, `at`,
 `from`, `to`, `by`, `value`, `delta`, `tolerance` or `paths` (see Automation, above);
 `wrong_track` with `what: "lanes"`; `empty_range` of a range or a move of nothing.
 

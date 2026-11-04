@@ -1077,10 +1077,11 @@ the lane), {action:"remove",at:[times]}, {action:"move",at:[times],by?,delta?}; 
 keeps the values outside the range; lane_draw {of,path,from,to,points} replaces a range with
 thinned points; clear_lanes {of,paths?,then:"keep"|"reset"|"hold",at?}. Ops set_lane
 {of,path,lane:{points:[{at,value}],kind:"continuous"|"switch"}|null} and splice_lane exist too.
-Values must be in the setting's range; a fade of the fader over 2 s:
-{edit:"lane_draw",timeline:"t1",of:{track:"A1"},path:"fader_db",from:{ticks:96000,scale:48000},
-to:{ticks:192000,scale:48000},points:[{at:{ticks:96000,scale:48000},value:0},
-{at:{ticks:192000,scale:48000},value:-100}]}.
+Values must be in the setting's range. lane_draw and lane_range paste keep the old values
+outside the range: after "to" the lane returns to what it was there. To fade out and stay
+silent, add points instead: a fade of the fader from 0 dB at 2 s to -inf at 4 s, held after:
+{edit:"lane_points",timeline:"t1",of:{track:"A1"},path:"fader_db",action:"add",
+points:[{at:{ticks:96000,scale:48000},value:0},{at:{ticks:192000,scale:48000},value:-100}]}.
 To create a timeline, use {op:"add_timeline",timeline:{id:"$film",name:"Cut",
 rate:{num:25,den:1},width:1920,height:1080,sample_rate:48000,tracks:[]}}, followed in the same
 batch by {edit:"add_track",timeline:"$film",kind:"video"} and an audio track as needed.

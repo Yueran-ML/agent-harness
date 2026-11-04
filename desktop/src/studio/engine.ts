@@ -252,7 +252,8 @@ export interface Strip {
   dynamics: Dynamics; eq: Equalizer; fader_db: number; pan: Pan; sends: Send[]; outputs: Output[]; vcas: string[];
 }
 export interface LanePoint { at: Time; value: number }
-export interface Lane { points: LanePoint[]; kind?: 'continuous' | 'switch' }
+/** `scale`: what the lane goes straight on between points, set by the engine from its path (log for a frequency or a Q). */
+export interface Lane { points: LanePoint[]; kind?: 'continuous' | 'switch'; scale?: 'linear' | 'log' }
 /** Lanes of automation by the path of their setting (`fader_db`, `pan.x`, `send.B2.level_db`, `insert.fx1.gain_db`, ...). */
 export type Lanes = Record<string, Lane>;
 export interface Bus { id: string; name: string; color: string; format: BusFormat; strip?: Strip; mute?: boolean; solo?: boolean; solo_safe?: boolean; lanes?: Lanes }

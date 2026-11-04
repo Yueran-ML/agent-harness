@@ -1,0 +1,1188 @@
+//! Building the graph from a snapshot of the project (plan T4b), off the thread of the mix: here
+//! every buffer, node and table is made, and the latencies, the order and the settling are worked
+//! out. Nothing here runs while the sound plays.
+
+use std::collections::{BTreeSet, HashMap};
+
+use columbina_model::audio::fx::{Dynamics as DynamicsModel, EqKind, EqRange, GateMode};
+use columbina_model::audio::{BusFormat, ChannelOrder, Pan as PanModel, TrackFormat};
+use columbina_model::{
+    resolve, AudioParam, Effect, Equalizer, Id, Lane, Lanes, Project, SourceRef, Stage as Order,
+    Strip as StripModel, Timeline, TrackKind,
+};
+
+use crate::constants::MAX_CHANNELS;
+use crate::db_to_gain;
+use crate::feed::ClipSource;
+use crate::fx::dynamics::{self, Dynamics, Param as DynamicsParam};
+use crate::fx::eq::{self, Eq, Field, Kind, Variant, Zone};
+use crate::node::{Block, Layout, Node, ParamId, Planar, Role, Spec, Unsupported};
+use crate::rt::{seqlock, Domain, Smoothed};
+
+use super::clip::{cutoff, radius, ClipChain, ClipPan, ClipScratch, Mapping, Window};
+use super::pdc::DelayLine;
+use super::route::{balance, panned, PanAt};
+use super::strip::{Edge, Key, LaneOf, Pan, Stage, Strip, VcaState, VcaTerm};
+use super::taps::Tap;
+use super::{Control, Graph, Meter, Options, Out, OutputInfo, Owner, Purpose, StripParam, Target};
+
+/// An effect made into a node: the node, and the parameter of each path of its settings (the
+/// path after `insert.<id>.` of a lane, such as `ceiling_db`).
+pub struct Made {
+    /// The node.
+    pub node: Box<dyn Node>,
+    /// The parameter of a path of its settings, if a lane may set it.
+    pub param: fn(&str) -> Option<ParamId>,
+}
+
+impl std::fmt::Debug for Made {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Made").finish_non_exhaustive()
+    }
+}
+
+/// What makes the node of an effect of an insert, or none where there is no node for it yet.
+pub type Maker = fn(&Effect) -> Option<Made>;
+
+/// The node of an effect of an insert: none yet. The effects of T10–T13 add theirs here; an
+/// insert with no node passes its sound as it is.
+#[must_use]
+pub fn node_of(effect: &Effect) -> Option<Made> {
+    let _ = effect;
+    None
+}
+
+/// Why a graph could not be built.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum BuildError {
+    /// The project has no such timeline.
+    #[error("the project has no timeline {0}")]
+    Timeline(usize),
+    /// The timeline has no rate of sound, or a block of no samples was asked for.
+    #[error("a graph of {rate} samples a second and blocks of {max_block}")]
+    Size {
+        /// The rate of the timeline.
+        rate: u32,
+        /// The block asked for.
+        max_block: usize,
+    },
+    /// The sound goes round in a loop through this strip (the model refuses it).
+    #[error("the sound goes round in a loop through {0}")]
+    Loop(Id),
+    /// A clip reads samples of its media beyond what a sample count holds.
+    #[error("clip {0} reads outside the samples of its media")]
+    Outside(Id),
+}
+
+/// A node of no sound of its own that delays by the latency of the insert it stands for: a
+/// bypassed insert, which "still delays its sound as it does when it is on" (the model's
+/// `Insert`).
+struct Bypass {
+    line: DelayLine,
+}
+
+impl Node for Bypass {
+    fn prepare(&mut self, spec: &Spec) -> Result<(), Unsupported> {
+        if spec.layout != spec.output {
+            return Err(Unsupported::from(spec));
+        }
+        self.line = delay_line(spec.inputs(), self.line.length());
+        Ok(())
+    }
+
+    fn process(&mut self, ctx: &Block, input: &[&[f32]], output: &mut [&mut [f32]]) {
+        for (output, input) in output.iter_mut().zip(input) {
+            output.copy_from_slice(input);
+        }
+        let length = self.line.length;
+        if length == 0 {
+            return;
+        }
+        for (output, line) in output
+            .iter_mut()
+            .zip(self.line.lines.chunks_exact_mut(length))
+        {
+            let mut at = self.line.at;
+            for sample in output.iter_mut() {
+                std::mem::swap(sample, &mut line[at]);
+                at = (at + 1) % length;
+            }
+        }
+        self.line.at = (self.line.at + ctx.frames) % length;
+    }
+
+    fn latency(&self) -> u32 {
+        u32::try_from(self.line.length()).unwrap_or(u32::MAX)
+    }
+
+    fn settle(&self) -> u32 {
+        0
+    }
+
+    fn reset(&mut self) {
+        self.line.reset();
+    }
+
+    fn set(&mut self, _: ParamId, _: f32) {}
+}
+
+/// A line that delays `channels` by `length` samples.
+fn delay_line(channels: usize, length: usize) -> DelayLine {
+    DelayLine {
+        lines: vec![0.0; channels * length].into_boxed_slice(),
+        length,
+        at: 0,
+    }
+}
+
+/// What a node of a strip is, to find the parameters that lanes and controls set.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum StageKind {
+    Dynamics,
+    Eq,
+    Insert(usize, fn(&str) -> Option<ParamId>),
+    Bypass,
+}
+
+/// What a strip has that its settings are found by: its outputs and sends (the bus, and whether
+/// it is a send), and its nodes (with the ids of its inserts).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Meta {
+    pub(crate) edges: Vec<(Id, bool)>,
+    pub(crate) stages: Vec<StageKind>,
+    pub(crate) inserts: Vec<Id>,
+}
+
+/// The setting of a strip at `path`, the path of a lane (T1: `model/src/audio.rs`,
+/// `automatable`), if the graph has it.
+pub(crate) fn param_of(meta: &Meta, path: &str) -> Option<StripParam> {
+    let simple = match path {
+        "trim_db" => Some(StripParam::Trim),
+        "invert" => Some(StripParam::Invert),
+        "fader_db" => Some(StripParam::Fader),
+        "mute" => Some(StripParam::Mute),
+        "pan.x" => Some(StripParam::PanX),
+        "pan.y" => Some(StripParam::PanY),
+        "pan.divergence" => Some(StripParam::PanDivergence),
+        _ => None,
+    };
+    if simple.is_some() {
+        return simple;
+    }
+    let stage = |wanted: fn(&StageKind) -> bool| meta.stages.iter().position(wanted);
+    if let Some(rest) = path.strip_prefix("dynamics.") {
+        let stage = stage(|kind| matches!(kind, StageKind::Dynamics))?;
+        let param = DynamicsParam::ALL
+            .iter()
+            .find(|param| param.path() == rest && param.is_automatable())?;
+        return Some(StripParam::Node(stage, param.id()));
+    }
+    if let Some(rest) = path.strip_prefix("eq.") {
+        let stage = stage(|kind| matches!(kind, StageKind::Eq))?;
+        let param = match rest {
+            "on" => eq::ON,
+            "gain_db" => eq::GAIN,
+            _ => {
+                let (band, field) = rest.split_once('.')?;
+                let band: usize = band.parse().ok()?;
+                let field = match field {
+                    "on" => Field::On,
+                    "freq" => Field::Freq,
+                    "gain_db" => Field::Gain,
+                    "q" => Field::Q,
+                    _ => return None,
+                };
+                if band >= Variant::Strip.bands() {
+                    return None;
+                }
+                eq::param(band, field)
+            }
+        };
+        return Some(StripParam::Node(stage, param));
+    }
+    for (prefix, send) in [("send.", true), ("output.", false)] {
+        if let Some(rest) = path.strip_prefix(prefix) {
+            for (edge, (bus, is_send)) in meta.edges.iter().enumerate() {
+                if *is_send != send {
+                    continue;
+                }
+                let Some(field) = rest
+                    .strip_prefix(bus.as_str())
+                    .and_then(|r| r.strip_prefix('.'))
+                else {
+                    continue;
+                };
+                return match (field, send) {
+                    ("on", _) => Some(StripParam::On(edge)),
+                    ("level_db", true) => Some(StripParam::Level(edge)),
+                    ("pan.x", true) => Some(StripParam::EdgePanX(edge)),
+                    ("pan.y", true) => Some(StripParam::EdgePanY(edge)),
+                    _ => None,
+                };
+            }
+            return None;
+        }
+    }
+    if let Some(rest) = path.strip_prefix("insert.") {
+        for (at, kind) in meta.stages.iter().enumerate() {
+            if let StageKind::Insert(insert, param) = kind {
+                let id = &meta.inserts[*insert];
+                if let Some(field) = rest
+                    .strip_prefix(id.as_str())
+                    .and_then(|r| r.strip_prefix('.'))
+                {
+                    return Some(StripParam::Node(at, param(field)?));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The layout of a track of `format` and `channels`.
+fn track_layout(format: TrackFormat, channels: u8) -> Layout {
+    match format {
+        TrackFormat::Mono => Layout::Mono,
+        TrackFormat::Stereo => Layout::Stereo,
+        TrackFormat::FiveOne => Layout::Surround51,
+        TrackFormat::Adaptive => Layout::discrete(usize::from(channels)),
+    }
+}
+
+/// The layout of a bus of `format`.
+fn bus_layout(format: BusFormat) -> Layout {
+    match format {
+        BusFormat::Mono => Layout::Mono,
+        BusFormat::Stereo => Layout::Stereo,
+        BusFormat::Lcr => Layout::Lcr,
+        BusFormat::Lcrs => Layout::Lcrs,
+        BusFormat::Five => Layout::Surround50,
+        BusFormat::FiveOne => Layout::Surround51,
+        BusFormat::Seven => Layout::Surround70,
+        BusFormat::SevenOne => Layout::Surround71,
+    }
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the settings of a node are f32"
+)]
+fn single(value: f64) -> f32 {
+    value as f32
+}
+
+/// The settings of an equalizer of the model as the node of `variant` takes them.
+pub(crate) fn eq_settings(model: &Equalizer, variant: Variant) -> eq::Settings {
+    let mut settings = eq::Settings::of(variant);
+    settings.on = model.on;
+    settings.gain_db = single(model.gain_db);
+    for (band, model) in settings
+        .bands
+        .iter_mut()
+        .zip(&model.bands)
+        .take(variant.bands())
+    {
+        *band = eq::Band {
+            on: model.on,
+            kind: match model.kind {
+                EqKind::LowShelf => Kind::LowShelf,
+                EqKind::Bell => Kind::Bell,
+                EqKind::HighShelf => Kind::HighShelf,
+                EqKind::HighPass => Kind::HighPass,
+                EqKind::LowPass => Kind::LowPass,
+                EqKind::Notch => Kind::Notch,
+            },
+            freq: single(model.freq),
+            gain_db: single(model.gain_db),
+            q: single(model.q),
+            slope: model.slope,
+            zone: model.range.map(|range| match range {
+                EqRange::Low => Zone::Low,
+                EqRange::MediumLow => Zone::MediumLow,
+                EqRange::MediumHigh => Zone::MediumHigh,
+                EqRange::High => Zone::High,
+            }),
+        };
+    }
+    settings.sanitized()
+}
+
+/// The settings of Dynamics of the model as the node takes them; Listen only where `listen`.
+pub(crate) fn dynamics_settings(model: &DynamicsModel, listen: bool) -> dynamics::Settings {
+    let (e, c, l) = (&model.expander, &model.compressor, &model.limiter);
+    dynamics::Settings {
+        on: model.on,
+        expander: dynamics::ExpanderSettings {
+            on: e.on,
+            gate: e.mode == GateMode::Gate,
+            threshold_db: single(e.threshold_db),
+            range_db: single(e.range_db),
+            ratio: single(e.ratio),
+            attack_ms: single(e.attack_ms),
+            hold_ms: single(e.hold_ms),
+            release_ms: single(e.release_ms),
+        },
+        compressor: dynamics::CompressorSettings {
+            on: c.on,
+            threshold_db: single(c.threshold_db),
+            ratio: single(c.ratio),
+            knee_db: single(c.knee_db),
+            mix: single(c.mix),
+            attack_ms: single(c.attack_ms),
+            hold_ms: single(c.hold_ms),
+            release_ms: single(c.release_ms),
+            sidechain: c.sidechain.on,
+            listen: listen && c.sidechain.listen,
+        },
+        limiter: dynamics::LimiterSettings {
+            on: l.on,
+            threshold_db: single(l.threshold_db),
+            attack_ms: single(l.attack_ms),
+            hold_ms: single(l.hold_ms),
+            release_ms: single(l.release_ms),
+        },
+        makeup_db: single(model.makeup_db),
+    }
+}
+
+/// The values that a lane takes.
+fn points(lane: &Lane) -> impl Iterator<Item = f64> + '_ {
+    lane.points.iter().map(|point| point.value)
+}
+
+/// Whether the switch of `path` is on, as set or anywhere its lane goes.
+fn ever_on(on: bool, lanes: &Lanes, path: &str) -> bool {
+    on || lanes
+        .get(path)
+        .is_some_and(|lane| points(lane).any(|value| value >= 0.5))
+}
+
+/// The slowest settings of Dynamics that `settings` and its lanes take: every switch on that is
+/// on anywhere, every time at its longest (T8: `settle_for`).
+fn slowest_dynamics(mut settings: dynamics::Settings, lanes: &Lanes) -> dynamics::Settings {
+    for param in DynamicsParam::ALL {
+        let Some(lane) = lanes.get(&format!("dynamics.{}", param.path())) else {
+            continue;
+        };
+        let path = param.path();
+        let slowest = path.ends_with("_ms") || param.is_switch();
+        if slowest {
+            let most = points(lane).fold(f64::from(settings.value(param)), f64::max);
+            settings.set(param, single(most));
+        }
+    }
+    settings
+}
+
+/// The slowest settings of an equalizer that `settings` and its lanes take: of each band the
+/// lowest frequency, the highest Q and the largest gain in size (T7: `settle_for`).
+fn slowest_eq(mut settings: eq::Settings, lanes: &Lanes) -> eq::Settings {
+    for (index, band) in settings.bands.iter_mut().enumerate() {
+        let lane = |field: &str| lanes.get(&format!("eq.{index}.{field}"));
+        if let Some(lane) = lane("freq") {
+            band.freq = points(lane).map(single).fold(band.freq, f32::min);
+        }
+        if let Some(lane) = lane("q") {
+            band.q = points(lane).map(single).fold(band.q, f32::max);
+        }
+        if let Some(lane) = lane("gain_db") {
+            band.gain_db =
+                points(lane)
+                    .map(single)
+                    .fold(band.gain_db, |a, b| if b.abs() > a.abs() { b } else { a });
+        }
+    }
+    settings
+}
+
+/// A parameter at `value`, ramped over 10 ms at `rate`.
+fn smoothed(value: f32, rate: u32) -> Smoothed {
+    let mut smoothed = Smoothed::new(value, Domain::Linear);
+    smoothed.prepare(rate);
+    smoothed
+}
+
+fn switch(on: bool) -> f32 {
+    if on {
+        1.0
+    } else {
+        0.0
+    }
+}
+
+/// A pan of the model as the graph reads it.
+fn pan_at(pan: &PanModel) -> PanAt {
+    PanAt {
+        on: pan.on,
+        x: single(pan.x),
+        y: single(pan.y),
+        divergence: single(pan.divergence / 100.0),
+        boom: if pan.lfe_on {
+            db_to_gain(single(pan.lfe_db))
+        } else {
+            0.0
+        },
+    }
+}
+
+/// A point where the level is taken.
+fn tap() -> Tap {
+    let (writer, reader) = seqlock((0, [0.0; MAX_CHANNELS], [0.0; MAX_CHANNELS]));
+    Tap {
+        writer,
+        reader,
+        frames: 0,
+    }
+}
+
+/// A strip of the model, and what it is in the timeline.
+#[allow(clippy::struct_excessive_bools, reason = "the buttons of a strip")]
+struct Source<'a> {
+    owner: Owner,
+    strip: &'a StripModel,
+    lanes: &'a Lanes,
+    layout: Layout,
+    mute: bool,
+    solo: bool,
+    solo_safe: bool,
+    /// A track whose ADC is off.
+    uncompensated: bool,
+}
+
+/// The VCAs that `vcas` name, and those that they are members of, each once, by their places.
+fn chain(timeline: &Timeline, vcas: &[Id], places: &HashMap<&str, usize>) -> Vec<usize> {
+    let mut found = Vec::new();
+    let mut next: Vec<&Id> = vcas.iter().collect();
+    while let Some(id) = next.pop() {
+        let Some(&at) = places.get(id.as_str()) else {
+            continue;
+        };
+        if found.contains(&at) {
+            continue;
+        }
+        found.push(at);
+        next.extend(timeline.vcas[at].vcas.iter());
+    }
+    found.sort_unstable();
+    found
+}
+
+/// Every strip that `from` reaches along `edges`, `from` and all.
+fn reach(edges: &[Vec<usize>], from: &[usize]) -> Vec<bool> {
+    let mut reached = vec![false; edges.len()];
+    let mut next = from.to_vec();
+    while let Some(at) = next.pop() {
+        if reached[at] {
+            continue;
+        }
+        reached[at] = true;
+        next.extend(&edges[at]);
+    }
+    reached
+}
+
+impl Graph {
+    /// The graph of timeline `timeline` of `project`, as `options` say.
+    ///
+    /// # Errors
+    ///
+    /// There is no such timeline; it has no rate of sound or the block is empty; its routing
+    /// loops (which the model refuses); or a clip reads beyond the samples a count holds.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the graph is built in one pass, step by step"
+    )]
+    pub fn build(
+        project: &Project,
+        timeline: usize,
+        options: Options,
+    ) -> Result<Graph, BuildError> {
+        let t = project
+            .timelines
+            .get(timeline)
+            .ok_or(BuildError::Timeline(timeline))?;
+        let (rate, max_block) = (t.sample_rate, options.max_block);
+        if rate == 0 || max_block == 0 {
+            return Err(BuildError::Size { rate, max_block });
+        }
+        // The strips: the tracks of sound that are on, in their order, then the buses.
+        let mut sources: Vec<Source> = Vec::new();
+        for track in t
+            .tracks
+            .iter()
+            .filter(|r| r.kind == TrackKind::Audio && r.enabled)
+        {
+            let audio = &track.audio;
+            sources.push(Source {
+                owner: Owner::Track(track.id.clone()),
+                strip: &audio.strip,
+                lanes: &audio.lanes,
+                layout: track_layout(audio.format, audio.channels),
+                mute: audio.mute,
+                solo: audio.solo,
+                solo_safe: audio.solo_safe,
+                uncompensated: !audio.adc,
+            });
+        }
+        let tracks = sources.len();
+        for bus in &t.buses {
+            sources.push(Source {
+                owner: Owner::Bus(bus.id.clone()),
+                strip: &bus.strip,
+                lanes: &bus.lanes,
+                layout: bus_layout(bus.format),
+                mute: bus.mute,
+                solo: bus.solo,
+                solo_safe: bus.solo_safe,
+                uncompensated: false,
+            });
+        }
+        let count = sources.len();
+        let track_at: HashMap<&str, usize> = t
+            .tracks
+            .iter()
+            .filter(|r| r.kind == TrackKind::Audio && r.enabled)
+            .enumerate()
+            .map(|(at, track)| (track.id.as_str(), at))
+            .collect();
+        let bus_at: HashMap<&str, usize> = t
+            .buses
+            .iter()
+            .enumerate()
+            .map(|(at, bus)| (bus.id.as_str(), tracks + at))
+            .collect();
+        let vca_at: HashMap<&str, usize> = t
+            .vcas
+            .iter()
+            .enumerate()
+            .map(|(at, vca)| (vca.id.as_str(), at))
+            .collect();
+        let members: Vec<Vec<usize>> = sources
+            .iter()
+            .map(|source| chain(t, &source.strip.vcas, &vca_at))
+            .collect();
+
+        // The connections: outputs, then sends, to buses that there are.
+        let mut metas: Vec<Meta> = vec![Meta::default(); count];
+        let mut feeds: Vec<Vec<usize>> = vec![Vec::new(); count];
+        let mut connections: Vec<Vec<(usize, bool, Option<&columbina_model::Send>)>> =
+            vec![Vec::new(); count];
+        for (at, source) in sources.iter().enumerate() {
+            for output in &source.strip.outputs {
+                if let Some(&dest) = bus_at.get(output.bus.as_str()) {
+                    connections[at].push((dest, false, None));
+                    metas[at].edges.push((output.bus.clone(), false));
+                    feeds[at].push(dest);
+                }
+            }
+            for send in &source.strip.sends {
+                if let Some(&dest) = bus_at.get(send.bus.as_str()) {
+                    connections[at].push((dest, true, Some(send)));
+                    metas[at].edges.push((send.bus.clone(), true));
+                    feeds[at].push(dest);
+                }
+            }
+        }
+        // Sidechains: the source of the Compressor of Dynamics that is built.
+        let built_dynamics: Vec<bool> = sources
+            .iter()
+            .map(|s| ever_on(s.strip.dynamics.on, s.lanes, "dynamics.on"))
+            .collect();
+        let keys: Vec<Option<usize>> = sources
+            .iter()
+            .zip(&built_dynamics)
+            .map(|(source, &built)| {
+                if !built {
+                    return None;
+                }
+                match &source.strip.dynamics.compressor.sidechain.source {
+                    Some(SourceRef::Track(id)) => track_at.get(id.as_str()).copied(),
+                    Some(SourceRef::Bus(id)) => bus_at.get(id.as_str()).copied(),
+                    None => None,
+                }
+            })
+            .collect();
+
+        // The order: Kahn's, the lowest place first, so that tracks keep their order.
+        let mut before: Vec<Vec<usize>> = feeds.clone();
+        for (at, key) in keys.iter().enumerate() {
+            if let Some(source) = key {
+                before[*source].push(at);
+            }
+        }
+        let mut waiting = vec![0usize; count];
+        for next in &before {
+            for &to in next {
+                waiting[to] += 1;
+            }
+        }
+        let mut ready: BTreeSet<usize> = (0..count).filter(|&at| waiting[at] == 0).collect();
+        let mut order = Vec::with_capacity(count);
+        while let Some(at) = ready.pop_first() {
+            order.push(at);
+            for &to in &before[at] {
+                waiting[to] -= 1;
+                if waiting[to] == 0 {
+                    ready.insert(to);
+                }
+            }
+        }
+        if order.len() != count {
+            let stuck = (0..count).find(|&at| waiting[at] > 0).unwrap_or(0);
+            let id = match &sources[stuck].owner {
+                Owner::Track(id) | Owner::Bus(id) | Owner::Vca(id) => id.clone(),
+            };
+            return Err(BuildError::Loop(id));
+        }
+
+        // Solo (p. 3885; the interaction reference §3.6): while anything is soloed, what is
+        // heard is what is soloed or solo-safe, the buses it feeds, and what feeds a soloed bus.
+        let soloed: Vec<bool> = sources
+            .iter()
+            .zip(&members)
+            .map(|(source, members)| source.solo || members.iter().any(|&v| t.vcas[v].solo))
+            .collect();
+        let audible: Vec<bool> = if soloed.iter().any(|&s| s) {
+            let kept: Vec<usize> = (0..count)
+                .filter(|&at| soloed[at] || sources[at].solo_safe)
+                .collect();
+            let down = reach(&feeds, &kept);
+            let mut back = vec![Vec::new(); count];
+            for (from, to) in feeds.iter().enumerate() {
+                for &to in to {
+                    back[to].push(from);
+                }
+            }
+            let soloed_buses: Vec<usize> = (tracks..count).filter(|&at| soloed[at]).collect();
+            let up = reach(&back, &soloed_buses);
+            (0..count).map(|at| down[at] || up[at]).collect()
+        } else {
+            vec![true; count]
+        };
+
+        // The nodes of each strip, in its Order.
+        let listen = options.purpose == Purpose::Preview;
+        let mut stages: Vec<Vec<Stage>> = Vec::with_capacity(count);
+        let mut settles: Vec<u64> = vec![0; count];
+        for (at, source) in sources.iter().enumerate() {
+            let layout = source.layout;
+            let spec = Spec::new(rate, max_block, layout);
+            let mut list = Vec::new();
+            let meta = &mut metas[at];
+            for stage in &source.strip.order {
+                match stage {
+                    Order::Fx => {
+                        for insert in &source.strip.inserts {
+                            let Some(made) = (options.maker)(&insert.effect) else {
+                                continue;
+                            };
+                            let mut node = made.node;
+                            if node.prepare(&spec).is_err() {
+                                continue;
+                            }
+                            let on = insert.on && source.strip.inserts_on;
+                            let (node, kind): (Box<dyn Node>, StageKind) = if on {
+                                meta.inserts.push(insert.id.clone());
+                                (node, StageKind::Insert(meta.inserts.len() - 1, made.param))
+                            } else {
+                                let length = usize::try_from(node.latency()).unwrap_or(0);
+                                let mut bypass = Bypass {
+                                    line: delay_line(0, length),
+                                };
+                                if bypass.prepare(&spec).is_err() {
+                                    continue;
+                                }
+                                (Box::new(bypass), StageKind::Bypass)
+                            };
+                            settles[at] += u64::from(node.settle());
+                            list.push((node, kind, false));
+                        }
+                    }
+                    Order::Dynamics if built_dynamics[at] => {
+                        let settings = dynamics_settings(&source.strip.dynamics, listen);
+                        let mut node = Dynamics::new(&settings);
+                        let key = keys[at].map(|source| {
+                            sources[source].layout.channels()
+                                - usize::from(sources[source].layout.lfe().is_some())
+                        });
+                        let spec = spec.with_sidechain(key.unwrap_or(0));
+                        if node.prepare(&spec).is_err() {
+                            continue;
+                        }
+                        let slowest = slowest_dynamics(settings, source.lanes);
+                        settles[at] += u64::from(Dynamics::settle_for(&slowest, rate));
+                        list.push((
+                            Box::new(node) as Box<dyn Node>,
+                            StageKind::Dynamics,
+                            key.is_some(),
+                        ));
+                    }
+                    Order::Eq if ever_on(source.strip.eq.on, source.lanes, "eq.on") => {
+                        let settings = eq_settings(&source.strip.eq, Variant::Strip);
+                        let mut node = Eq::new(&settings);
+                        if node.prepare(&spec).is_err() {
+                            continue;
+                        }
+                        let slowest = slowest_eq(settings, source.lanes);
+                        settles[at] += u64::from(eq::settle_for(&slowest, rate));
+                        list.push((Box::new(node) as Box<dyn Node>, StageKind::Eq, false));
+                    }
+                    Order::Dynamics | Order::Eq => {}
+                }
+            }
+            meta.stages = list.iter().map(|(_, kind, _)| *kind).collect();
+            stages.push(
+                list.into_iter()
+                    .map(|(node, _, keyed)| Stage {
+                        node,
+                        lanes: Box::new([]),
+                        keyed,
+                        offset: 0,
+                        processed: 0,
+                    })
+                    .collect(),
+            );
+        }
+
+        // The latencies: of each strip its nodes'; at the input of a bus the longest of what
+        // feeds it, the tracks whose ADC is off aside; and what each connection is delayed by.
+        let latencies: Vec<u32> = stages
+            .iter()
+            .map(|list| list.iter().map(|stage| stage.node.latency()).sum())
+            .collect();
+        let mut arrival = vec![0u32; count];
+        let mut feeders: Vec<Vec<usize>> = vec![Vec::new(); count];
+        for (from, to) in feeds.iter().enumerate() {
+            for &to in to {
+                feeders[to].push(from);
+            }
+        }
+        for &at in &order {
+            arrival[at] = feeders[at]
+                .iter()
+                .filter(|&&from| !sources[from].uncompensated)
+                .map(|&from| arrival[from] + latencies[from])
+                .max()
+                .unwrap_or(0);
+        }
+        let out = |at: usize| arrival[at] + latencies[at];
+        let mains: Vec<usize> = (tracks..count)
+            .filter(|&at| sources[at].strip.outputs.is_empty())
+            .collect();
+        let monitor_strip = t
+            .audio
+            .monitor
+            .as_deref()
+            .and_then(|id| bus_at.get(id).copied());
+        let mut outs: Vec<usize> = mains.clone();
+        if let Some(monitor) = monitor_strip {
+            if !outs.contains(&monitor) {
+                outs.push(monitor);
+            }
+        }
+        let latency = outs.iter().map(|&at| out(at)).max().unwrap_or(0);
+
+        // The settling: of each path, its nodes' summed; the clips' equalizers start the paths
+        // of their tracks.
+        let mut settle_in = vec![0u64; count];
+
+        // The clips.
+        let mut chains: Vec<ClipChain> = Vec::new();
+        let mut clip_sources: Vec<ClipSource> = Vec::new();
+        let mut window = 0usize;
+        for piece in resolve::sources_between(t, project, i64::MIN, i64::MAX) {
+            let Some(&strip) = track_at.get(piece.track.as_str()) else {
+                continue;
+            };
+            let Some(track) = t.tracks.iter().find(|r| r.id == piece.track) else {
+                continue;
+            };
+            let Some(clip) = track.clips.iter().find(|c| c.id == piece.clip) else {
+                continue;
+            };
+            let mapping =
+                Mapping::new(clip, t).ok_or_else(|| BuildError::Outside(clip.id.clone()))?;
+            let cut = cutoff(piece.speed);
+            let reach = radius(cut);
+            let fits = |sample: i64| {
+                mapping.checked_at(sample).is_some_and(|(at, _)| {
+                    at.checked_sub(reach).is_some() && at.checked_add(reach + 1).is_some()
+                })
+            };
+            if !fits(piece.from) || !fits(piece.to - 1) {
+                return Err(BuildError::Outside(clip.id.clone()));
+            }
+            let layout = sources[strip].layout;
+            let channels = layout.channels();
+            let speed = (i128::from(piece.speed.0), i128::from(piece.speed.1));
+            let span = (i128::try_from(max_block).unwrap_or(i128::MAX) * speed.0 + speed.1 - 1)
+                / speed.1
+                + 2 * i128::from(reach)
+                + 2;
+            window = window.max(usize::try_from(span).unwrap_or(usize::MAX));
+            let pan = match (&clip.pan, layout) {
+                (AudioParam::Fixed(_), Layout::Stereo) => ClipPan::Fixed(balance(piece.pan)),
+                (AudioParam::Keys(_), Layout::Stereo) => ClipPan::Keyed,
+                _ => ClipPan::None,
+            };
+            let eq = if clip.eq.on {
+                let settings = eq_settings(&clip.eq, Variant::Clip);
+                let mut node = Eq::new(&settings);
+                node.prepare(&Spec::new(rate, max_block, layout))
+                    .ok()
+                    .map(|()| {
+                        settle_in[strip] =
+                            settle_in[strip].max(u64::from(eq::settle_for(&settings, rate)));
+                        node
+                    })
+            } else {
+                None
+            };
+            clip_sources.push(ClipSource {
+                clip: clip.id.clone(),
+                track: track.id.clone(),
+                media: piece.media.clone(),
+                channels,
+            });
+            chains.push(ClipChain {
+                strip,
+                from: piece.from,
+                to: piece.to,
+                mapping,
+                cutoff: cut,
+                radius: reach,
+                pan,
+                channels,
+                film: track.audio.format == TrackFormat::FiveOne
+                    && track.audio.order == ChannelOrder::Film
+                    && clip.channels.is_some(),
+                eq,
+                processed: 0,
+                piece,
+            });
+        }
+        let mut clips_of = vec![0..0; count];
+        let mut start = 0;
+        for (strip, range) in clips_of.iter_mut().enumerate() {
+            let end = start
+                + chains[start..]
+                    .iter()
+                    .take_while(|c| c.strip == strip)
+                    .count();
+            *range = start..end;
+            start = end;
+        }
+
+        let mut settle_out = vec![0u64; count];
+        for &at in &order {
+            let mut from = settle_in[at];
+            for &feeder in &feeders[at] {
+                from = from.max(settle_out[feeder]);
+            }
+            if let Some(source) = keys[at] {
+                from = from.max(settle_out[source]);
+            }
+            settle_out[at] = from.saturating_add(settles[at]);
+        }
+        let settle = outs
+            .iter()
+            .map(|&at| settle_out[at])
+            .max()
+            .unwrap_or(0)
+            .min(u64::from(u32::MAX));
+
+        // The strips themselves, their lanes found and their buffers taken.
+        let mut strips = Vec::with_capacity(count);
+        let mut lists = stages.into_iter();
+        for (at, source) in sources.iter().enumerate() {
+            let meta = &metas[at];
+            let layout = source.layout;
+            let channels = layout.channels();
+            let model = source.strip;
+            let mut list = lists.next().unwrap_or_default();
+            let mut offset = i64::from(arrival[at]);
+            for stage in &mut list {
+                stage.offset = offset;
+                offset += i64::from(stage.node.latency());
+            }
+            let after = i64::from(out(at));
+            let strip_pan = pan_at(&model.pan);
+            let mut edges = Vec::new();
+            for &(dest, send, model_send) in &connections[at] {
+                let delay = if source.uncompensated {
+                    0
+                } else {
+                    arrival[dest].saturating_sub(out(at))
+                };
+                let pan = model_send.map_or(strip_pan, |send| pan_at(&send.pan));
+                let to = sources[dest].layout;
+                let (level, on, pre) = if let Some(send) = model_send {
+                    (db_to_gain(single(send.level_db)), send.on, send.pre)
+                } else {
+                    let bus = &metas[at].edges[edges.len()].0;
+                    let on = model.outputs.iter().any(|o| &o.bus == bus && o.on);
+                    (1.0, on, false)
+                };
+                edges.push(Edge {
+                    dest,
+                    send,
+                    pre,
+                    level: smoothed(level, rate),
+                    level_lane: None,
+                    on: smoothed(switch(on), rate),
+                    on_lane: None,
+                    pan: Pan {
+                        base: pan,
+                        x: smoothed(pan.x, rate),
+                        y: smoothed(pan.y, rate),
+                        divergence: smoothed(pan.divergence, rate),
+                        lanes: [None; 3],
+                    },
+                    from: layout,
+                    to,
+                    matrix: panned(layout, to, &pan),
+                    delay: delay_line(channels, usize::try_from(delay).unwrap_or(0)),
+                });
+            }
+            let mut strip = Strip {
+                layout,
+                trim: smoothed(db_to_gain(single(model.trim_db)), rate),
+                trim_lane: None,
+                sign: smoothed(if model.invert { -1.0 } else { 1.0 }, rate),
+                sign_lane: None,
+                stages: list,
+                key: keys[at].map(|source| {
+                    let roles = sources[source].layout.roles();
+                    let mut channels = [0; MAX_CHANNELS];
+                    let mut count = 0;
+                    for (channel, role) in roles.iter().enumerate() {
+                        if *role != Role::Lfe {
+                            channels[count] = channel;
+                            count += 1;
+                        }
+                    }
+                    Key {
+                        source,
+                        channels,
+                        count,
+                    }
+                }),
+                keyed: match keys[at] {
+                    Some(source) => Planar::new(sources[source].layout.channels(), max_block),
+                    None => Planar::new(0, 0),
+                },
+                fader: smoothed(db_to_gain(single(model.fader_db)), rate),
+                fader_lane: None,
+                mute: smoothed(switch(!source.mute), rate),
+                mute_lane: None,
+                audible: smoothed(switch(audible[at]), rate),
+                vcas: members[at]
+                    .iter()
+                    .map(|&vca| VcaTerm {
+                        vca,
+                        fader: None,
+                        mute: None,
+                    })
+                    .collect(),
+                edges,
+                lanes: Vec::new(),
+                values: Box::new([]),
+                max_block,
+                heard: vec![0.0; max_block].into_boxed_slice(),
+                gains: vec![0.0; max_block].into_boxed_slice(),
+                levels: vec![0.0; max_block].into_boxed_slice(),
+                work: Planar::new(channels, max_block),
+                spare: Planar::new(channels, max_block),
+                post: Planar::new(channels, max_block),
+                pre_tap: tap(),
+                post_tap: tap(),
+            };
+            // The lanes of the strip.
+            let mut node_lanes: Vec<Vec<(ParamId, usize)>> = vec![Vec::new(); strip.stages.len()];
+            for (path, lane) in source.lanes {
+                let Some(param) = param_of(meta, path) else {
+                    continue;
+                };
+                let delay = match param {
+                    StripParam::Trim | StripParam::Invert => i64::from(arrival[at]),
+                    StripParam::Node(stage, _) => strip.stages[stage].offset,
+                    _ => after,
+                };
+                let index = strip.lanes.len();
+                strip.lanes.push(LaneOf {
+                    lane: lane.clone(),
+                    delay,
+                });
+                match param {
+                    StripParam::Trim => strip.trim_lane = Some(index),
+                    StripParam::Invert => strip.sign_lane = Some(index),
+                    StripParam::Fader => strip.fader_lane = Some(index),
+                    StripParam::Mute => strip.mute_lane = Some(index),
+                    StripParam::Audible => {}
+                    StripParam::PanX | StripParam::PanY | StripParam::PanDivergence => {
+                        let which = match param {
+                            StripParam::PanX => 0,
+                            StripParam::PanY => 1,
+                            _ => 2,
+                        };
+                        for edge in strip.edges.iter_mut().filter(|edge| !edge.send) {
+                            edge.pan.lanes[which] = Some(index);
+                        }
+                    }
+                    StripParam::Level(edge) => strip.edges[edge].level_lane = Some(index),
+                    StripParam::On(edge) => strip.edges[edge].on_lane = Some(index),
+                    StripParam::EdgePanX(edge) => strip.edges[edge].pan.lanes[0] = Some(index),
+                    StripParam::EdgePanY(edge) => strip.edges[edge].pan.lanes[1] = Some(index),
+                    StripParam::Node(stage, param) => node_lanes[stage].push((param, index)),
+                }
+            }
+            for (stage, lanes) in strip.stages.iter_mut().zip(node_lanes) {
+                stage.lanes = lanes.into_boxed_slice();
+            }
+            // The lanes of its VCAs, read at its fader.
+            for term in &mut strip.vcas {
+                let vca = &t.vcas[term.vca];
+                for (path, slot) in [("fader_db", &mut term.fader), ("mute", &mut term.mute)] {
+                    if let Some(lane) = vca.lanes.get(path) {
+                        *slot = Some(strip.lanes.len());
+                        strip.lanes.push(LaneOf {
+                            lane: lane.clone(),
+                            delay: after,
+                        });
+                    }
+                }
+            }
+            strip.values = vec![0.0; strip.lanes.len() * max_block].into_boxed_slice();
+            strips.push(strip);
+        }
+
+        let mut keyed_sources = vec![false; count];
+        for source in keys.iter().flatten() {
+            keyed_sources[*source] = true;
+        }
+        let outputs: Vec<Out> = outs
+            .iter()
+            .map(|&at| Out {
+                strip: at,
+                bus: match &sources[at].owner {
+                    Owner::Track(id) | Owner::Bus(id) | Owner::Vca(id) => id.clone(),
+                },
+                main: mains.contains(&at),
+                buffer: Planar::new(sources[at].layout.channels(), max_block),
+                delay: delay_line(
+                    sources[at].layout.channels(),
+                    usize::try_from(latency - out(at)).unwrap_or(0),
+                ),
+            })
+            .collect();
+        let monitor = monitor_strip.and_then(|strip| outs.iter().position(|&at| at == strip));
+        let mut graph = Graph {
+            rate,
+            max_block,
+            purpose: options.purpose,
+            owners: sources.iter().map(|source| source.owner.clone()).collect(),
+            order,
+            clips_of,
+            clips: chains,
+            sources: clip_sources,
+            scratch: ClipScratch {
+                window: Window {
+                    data: vec![0.0; MAX_CHANNELS * window].into_boxed_slice(),
+                    capacity: window,
+                },
+                before: Planar::new(MAX_CHANNELS, max_block),
+                after: Planar::new(MAX_CHANNELS, max_block),
+            },
+            inputs: sources
+                .iter()
+                .map(|source| Planar::new(source.layout.channels(), max_block))
+                .collect(),
+            pres: sources
+                .iter()
+                .zip(&keyed_sources)
+                .map(|(source, &keyed)| {
+                    if keyed {
+                        Planar::new(source.layout.channels(), max_block)
+                    } else {
+                        Planar::new(0, 0)
+                    }
+                })
+                .collect(),
+            keys: keyed_sources,
+            edge: Planar::new(MAX_CHANNELS, max_block),
+            vca_ids: t.vcas.iter().map(|vca| vca.id.clone()).collect(),
+            vcas: t
+                .vcas
+                .iter()
+                .map(|vca| VcaState {
+                    fader: smoothed(db_to_gain(single(vca.fader_db)), rate),
+                    mute: smoothed(switch(!vca.mute), rate),
+                    gain: vec![0.0; max_block].into_boxed_slice(),
+                    heard: vec![0.0; max_block].into_boxed_slice(),
+                })
+                .collect(),
+            metas,
+            strips,
+            outputs,
+            monitor,
+            latency,
+            settle: u32::try_from(settle).unwrap_or(u32::MAX),
+            position: 0,
+            frames: 0,
+        };
+        graph.reset(0);
+        Ok(graph)
+    }
+
+    /// The setting of `owner` at `path`, the path of a lane of it (`fader_db`, `pan.x`,
+    /// `send.B2.level_db`, `dynamics.compressor.threshold_db`, `eq.2.gain_db`, ...; a VCA's
+    /// `fader_db` and `mute`), if the graph has it; and `solo`, whether a track or a bus is heard
+    /// while others are soloed (1) or silenced (0), which [`Graph::set`] takes as the outcome of
+    /// the solos, not as a solo button.
+    #[must_use]
+    pub fn control(&self, owner: &Owner, path: &str) -> Option<Control> {
+        if let Owner::Vca(id) = owner {
+            let vca = self.vca_ids.iter().position(|v| v == id)?;
+            return match path {
+                "fader_db" => Some(Control(Target::VcaFader(vca))),
+                "mute" => Some(Control(Target::VcaMute(vca))),
+                _ => None,
+            };
+        }
+        let strip = self.owners.iter().position(|o| o == owner)?;
+        let param = if path == "solo" {
+            StripParam::Audible
+        } else {
+            param_of(&self.metas[strip], path)?
+        };
+        Some(Control(Target::Strip(strip, param)))
+    }
+
+    /// Its outputs: the main outputs, then the bus that is monitored if it is not one.
+    #[must_use]
+    pub fn outputs(&self) -> Vec<OutputInfo> {
+        self.outputs
+            .iter()
+            .map(|out| OutputInfo {
+                bus: out.bus.clone(),
+                layout: self.strips[out.strip].layout,
+                main: out.main,
+            })
+            .collect()
+    }
+
+    /// The levels of each track and bus.
+    #[must_use]
+    pub fn meters(&self) -> Vec<Meter> {
+        self.owners
+            .iter()
+            .zip(&self.strips)
+            .map(|(owner, strip)| Meter {
+                owner: owner.clone(),
+                channels: strip.channels(),
+                pre: strip.pre_tap.reader.clone(),
+                post: strip.post_tap.reader.clone(),
+            })
+            .collect()
+    }
+}

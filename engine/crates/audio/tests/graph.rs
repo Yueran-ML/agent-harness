@@ -835,6 +835,7 @@ fn lane(kind: LaneKind, points: &[(f64, f64)]) -> Lane {
             })
             .collect(),
         kind,
+        scale: None,
     }
 }
 

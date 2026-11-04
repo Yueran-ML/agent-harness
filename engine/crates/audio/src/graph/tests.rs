@@ -71,7 +71,7 @@ fn a_sample_between_samples_is_a_windowed_sinc_of_those_about_it() {
 mod cursor {
     use std::time::Instant;
 
-    use columbina_model::{Lane, LaneKind, LanePoint, Time};
+    use columbina_model::{Lane, LaneKind, LanePoint, LaneScale, Time};
     use proptest::prelude::*;
 
     use super::super::automation::Cursor;
@@ -90,6 +90,7 @@ mod cursor {
             } else {
                 LaneKind::Continuous
             },
+            scale: None,
         }
     }
 
@@ -105,22 +106,43 @@ mod cursor {
         #![proptest_config(ProptestConfig::with_cases(1024))]
 
         /// Block after block, from wherever a run starts, the cursor gives what `value_at` gives
-        /// at each sample, to the bit: of lanes of any scale, with points at one time, read at
-        /// any rate, before their first point and after their last.
+        /// at each sample, to the bit: of lanes of any scale (their points among the samples
+        /// read, of a scale of 7 and of 1000 too), with points at one time, of switches, and of
+        /// frequencies on a scale of logarithms, read at any rate, before their first point and
+        /// after their last.
         #[test]
         fn a_cursor_reads_a_lane_as_value_at_does_at_every_sample(
-            mut points in prop::collection::vec((0i64..400_000, -100.0f64..10.0), 1..14),
+            mut points in prop::collection::vec((-1000i64..400_000, 0.0f64..1.0), 1..14),
             jump in any::<bool>(),
-            switch in any::<bool>(),
+            shape in 0usize..3,
             scale in prop::sample::select(vec![1000u32, 44_100, 48_000, 96_000, 15_360, 7]),
             rate in prop::sample::select(vec![44_100u32, 48_000, 96_000]),
-            runs in prop::collection::vec((-50_000i64..500_000, prop::collection::vec(1usize..3000, 1..6)), 1..4),
+            runs in prop::collection::vec((-50_000i64..420_000, prop::collection::vec(1usize..3000, 1..6)), 1..4),
         ) {
+            // The points at the samples drawn, as ticks of their scale, so that they fall among
+            // the samples that are read whatever the scale.
+            points.retain(|p| p.0 >= 0);
+            prop_assume!(!points.is_empty());
+            let ticks = |sample: i64| sample * i64::from(scale) / i64::from(rate);
+            let mut points: Vec<(i64, f64)> = points
+                .iter()
+                .map(|&(sample, share)| {
+                    let value = match shape {
+                        // Of a frequency, from 20 Hz to 20 kHz.
+                        2 => 20.0 * 1000f64.powf(share),
+                        _ => -100.0 + 110.0 * share,
+                    };
+                    (ticks(sample), value)
+                })
+                .collect();
             points.sort_by_key(|p| p.0);
             if jump && points.len() > 2 {
                 points[2].0 = points[1].0;
             }
-            let lane = lane_of(&points, scale, switch);
+            let mut lane = lane_of(&points, scale, shape == 1);
+            if shape == 2 {
+                lane.scale = Some(LaneScale::Log);
+            }
             let mut cursor = Cursor::default();
             let mut out = [0f32; 3000];
             for (start, blocks) in &runs {

@@ -48,7 +48,7 @@ mod tests;
 
 use columbina_model::Id;
 
-pub use build::{node_of, BuildError, Context, Made, Maker};
+pub use build::{lanes_need_a_new_graph, node_of, BuildError, Context, Made, Maker};
 pub use clip::{radius, resampled};
 pub use taps::Level;
 

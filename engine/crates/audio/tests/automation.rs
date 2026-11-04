@@ -84,6 +84,7 @@ fn lane(kind: LaneKind, scale: u32, points: &[(i64, f64)]) -> Lane {
             })
             .collect(),
         kind,
+        scale: None,
     }
 }
 
@@ -323,4 +324,218 @@ fn the_output_with_lanes_depends_neither_on_its_blocks_nor_on_where_a_run_starts
             assert_eq!(same(&whole[skip..], part), None, "from {start}");
         }
     }
+}
+
+// The review of T14.
+
+/// A1 and A2 with every effect between them, Dynamics, an equalizer, a Ducker, sends and
+/// outputs; B2 with an insert; both buses with Dynamics and an equalizer; and a VCA.
+fn everything() -> Project {
+    use columbina_model::audio::fx::{
+        DeEsserFx, DeHummerFx, LimiterFx, NoiseReductionFx, PitchFx, SoftClipperFx, StereoWidthFx,
+    };
+    let mut project = routed();
+    let timeline = &mut project.timelines[0];
+    let mut a2 = timeline.tracks[0].clone();
+    a2.id = "A2".into();
+    a2.clips[0].id = "c9".into();
+    timeline.tracks.push(a2);
+    let insert = |id: &str, effect| Insert {
+        id: id.into(),
+        on: true,
+        effect,
+    };
+    let send = |bus: &str| Send {
+        bus: bus.into(),
+        on: true,
+        pre: false,
+        level_db: -6.0,
+        pan: columbina_model::Pan::default(),
+    };
+    for (r, effects) in [
+        (
+            0,
+            vec![
+                Effect::Gain(GainFx { gain_db: 0.0 }),
+                Effect::Limiter(LimiterFx::default()),
+                Effect::SoftClipper(SoftClipperFx::default()),
+                Effect::StereoWidth(StereoWidthFx::default()),
+                Effect::DeEsser(DeEsserFx::default()),
+                Effect::DeHummer(DeHummerFx::default()),
+            ],
+        ),
+        (
+            1,
+            vec![
+                Effect::NoiseReduction(NoiseReductionFx::default()),
+                Effect::Pitch(PitchFx::default()),
+            ],
+        ),
+    ] {
+        let strip = &mut timeline.tracks[r].audio.strip;
+        strip.inserts = effects
+            .into_iter()
+            .enumerate()
+            .map(|(k, effect)| insert(&format!("fx{}", k + 1), effect))
+            .collect();
+        strip.dynamics.on = true;
+        strip.eq.on = true;
+        strip.sends = vec![send("B2")];
+    }
+    timeline.tracks[0].audio.strip.track_fx = Some(columbina_model::audio::fx::Ducker {
+        on: true,
+        sources: vec![columbina_model::SourceRef::Track("A2".into())],
+        ..columbina_model::audio::fx::Ducker::default()
+    });
+    timeline.buses[1].strip.inserts = vec![insert("fx1", Effect::Gain(GainFx { gain_db: 0.0 }))];
+    // Dynamics and an equalizer are built where they are on (or a lane turns them on).
+    for bus in &mut timeline.buses {
+        bus.strip.dynamics.on = true;
+        bus.strip.eq.on = true;
+    }
+    project.validate().unwrap();
+    project
+}
+
+#[test]
+fn every_setting_that_a_lane_may_be_of_is_one_that_the_graph_moves() {
+    use columbina_audio::graph::Owner;
+    use columbina_model::audio::automation::{no_lane, paths, Owner as ModelOwner};
+    let project = everything();
+    let graph = built(&project);
+    let timeline = &project.timelines[0];
+    let mut strips: Vec<(Owner, ModelOwner)> = Vec::new();
+    for track in &timeline.tracks {
+        let audio = &track.audio;
+        let owner = ModelOwner::Strip {
+            strip: &audio.strip,
+            mute: audio.mute,
+            bus: false,
+        };
+        strips.push((Owner::Track(track.id.clone()), owner));
+    }
+    for bus in &timeline.buses {
+        let owner = ModelOwner::Strip {
+            strip: &bus.strip,
+            mute: bus.mute,
+            bus: true,
+        };
+        strips.push((Owner::Bus(bus.id.clone()), owner));
+    }
+    strips.push((
+        Owner::Vca("VCA1".into()),
+        ModelOwner::Vca(&timeline.vcas[0]),
+    ));
+    let mut checked = 0;
+    let mut missing = Vec::new();
+    for (owner, model) in &strips {
+        for path in paths(*model) {
+            if graph.control(owner, &path).is_none() {
+                missing.push(format!("{owner:?} {path}"));
+            }
+            checked += 1;
+        }
+    }
+    assert_eq!(
+        missing,
+        Vec::<String>::new(),
+        "lanes of settings that the graph does not move"
+    );
+    assert!(checked > 150, "{checked}");
+    // What the graph does not move as a lane would has no lane, and is refused as such.
+    let (_, a1) = &strips[0];
+    let (_, a2) = &strips[1];
+    for (owner, path, why) in [
+        (a1, "inserts_on", "lane_not_wired"),
+        (a1, "pan.on", "lane_not_wired"),
+        (a1, "pan.lfe_db", "lane_not_wired"),
+        (a1, "pan.lfe_on", "lane_not_wired"),
+        (a1, "pan.lfe_pre", "lane_not_wired"),
+        (a1, "pan.rotate", "lane_not_wired"),
+        (a1, "pan.spread", "lane_not_wired"),
+        (a1, "send.B2.pre", "lane_not_wired"),
+        (a1, "send.B2.pan.divergence", "lane_not_wired"),
+        (a1, "send.B2.pan.on", "lane_not_wired"),
+        (a1, "track_fx.lookahead_ms", "lane_not_wired"),
+        (a2, "insert.fx2.cents", "lane_not_wired"),
+        (a2, "insert.fx2.dry_wet", "lane_not_wired"),
+        (a2, "insert.fx2.on", "lane_not_wired"),
+        (a2, "insert.fx2.semitones", "lane_integer"),
+        (a1, "eq.1.slope", "lane_integer"),
+    ] {
+        assert_eq!(no_lane(*owner, path), why, "{path}");
+        assert!(
+            !paths(*owner).iter().any(|p| p == path),
+            "{path} has a lane"
+        );
+    }
+}
+
+#[test]
+fn with_effects_in_off_the_lane_of_the_switch_of_an_insert_turns_none_on() {
+    // A Gain of -20 dB, switched off, whose lane switches it on: with Effects In on, it is heard
+    // at -20 dB; with Effects In off, not at all.
+    let mut project = routed();
+    let audio = &mut project.timelines[0].tracks[0].audio;
+    audio.strip.inserts[0].on = false;
+    audio.strip.inserts[0].effect = Effect::Gain(GainFx { gain_db: -20.0 });
+    audio.lanes.insert(
+        "insert.fx1.on".into(),
+        lane(LaneKind::Switch, 48_000, &[(0, 1.0)]),
+    );
+    let on = heard(&project, 2000, 0.5)[1000];
+    assert!((f64::from(on) - 0.5 * gain_of(-20.0)).abs() < 1e-6, "{on}");
+    project.timelines[0].tracks[0].audio.strip.inserts_on = false;
+    let off = heard(&project, 2000, 0.5)[1000];
+    assert!((f64::from(off) - 0.5).abs() < 1e-6, "{off}");
+}
+
+#[test]
+fn a_lane_names_what_it_is_of_and_says_whether_a_new_graph_is_needed_for_another() {
+    use columbina_audio::graph::{lanes_need_a_new_graph, Owner};
+    let mut project = routed();
+    let timeline = &mut project.timelines[0];
+    // A second output, so that the pan is read after each output's delay.
+    timeline.tracks[0].audio.strip.outputs.push(Output {
+        bus: "B2".into(),
+        on: true,
+    });
+    let flat = |value| lane(LaneKind::Continuous, 48_000, &[(0, value)]);
+    let audio = &mut timeline.tracks[0].audio;
+    audio.lanes.insert("pan.x".into(), flat(0.5));
+    audio.lanes.insert("fader_db".into(), flat(-6.0));
+    timeline.vcas[0].lanes.insert("fader_db".into(), flat(-3.0));
+    let graph = built(&project);
+    let a1 = Owner::Track("A1".into());
+    assert_eq!(graph.reads_of_lane(&a1, "fader_db"), 1);
+    assert_eq!(graph.reads_of_lane(&a1, "pan.x"), 2);
+    assert_eq!(
+        graph.reads_of_lane(&Owner::Vca("VCA1".into()), "fader_db"),
+        1
+    );
+    assert_eq!(graph.reads_of_lane(&a1, "mute"), 0);
+    // The fader's lane may be put in place of another as it plays; a lane of a node's settings,
+    // or one added, needs a new graph.
+    let audio = &project.timelines[0].tracks[0].audio;
+    let before = audio.lanes.clone();
+    let mut after = before.clone();
+    after.insert("fader_db".into(), flat(-12.0));
+    assert!(!lanes_need_a_new_graph(
+        &audio.strip,
+        &before,
+        &after,
+        48_000
+    ));
+    after.insert("insert.fx1.gain_db".into(), flat(3.0));
+    assert!(lanes_need_a_new_graph(
+        &audio.strip,
+        &before,
+        &after,
+        48_000
+    ));
+    let mut eq = before.clone();
+    eq.insert("eq.on".into(), lane(LaneKind::Switch, 48_000, &[(0, 0.0)]));
+    let mut eq_on = eq.clone();
+    eq_on.insert("eq.on".into(), lane(LaneKind::Switch, 48_000, &[(0, 1.0)]));
+    assert!(lanes_need_a_new_graph(&audio.strip, &eq, &eq_on, 48_000));
 }

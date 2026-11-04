@@ -8,7 +8,7 @@
 //! that starts elsewhere (a start, a seek) finds it again by halving. Nothing here allocates,
 //! locks or waits.
 
-use columbina_model::{Lane, LaneKind};
+use columbina_model::{Lane, LaneKind, LaneScale};
 
 /// Where a cursor is in its lane: `upper` is the first point whose time is after the sample
 /// `next`, which the next block is expected to start at.
@@ -16,6 +16,14 @@ use columbina_model::{Lane, LaneKind};
 pub(crate) struct Cursor {
     next: i64,
     upper: usize,
+}
+
+impl Cursor {
+    /// Forget where it is: the next block finds its place in its lane again, as after a start or
+    /// a seek. For a lane put in place of another while the graph plays (T5).
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
 }
 
 impl Default for Cursor {
@@ -81,7 +89,23 @@ impl Cursor {
                     LaneKind::Continuous => {
                         let base = place(from.at.ticks, rate);
                         let span = (place(to.at.ticks, rate) - base) as f64;
-                        let rise = to.value - from.value;
+                        // As `LaneScale::between` works it out: straight in the values, or in
+                        // their logarithms.
+                        let log = lane.scale == Some(LaneScale::Log);
+                        let (low, rise) = if log {
+                            let low = from.value.ln();
+                            (low, to.value.ln() - low)
+                        } else {
+                            (from.value, to.value - from.value)
+                        };
+                        let curve = |share: f64| {
+                            let value = low + rise * share;
+                            if log {
+                                value.exp()
+                            } else {
+                                value
+                            }
+                        };
                         let offset = now - base;
                         let step = i64::try_from(scale).unwrap_or(i64::MAX);
                         // Counted in 64 bits where the whole run fits, as it nearly always does;
@@ -91,14 +115,14 @@ impl Cursor {
                         {
                             for value in into.iter_mut() {
                                 let share = (offset as f64 / span).clamp(0.0, 1.0);
-                                *value = (from.value + rise * share) as f32;
+                                *value = curve(share) as f32;
                                 offset += step;
                             }
                         } else {
                             let mut offset = offset;
                             for value in into.iter_mut() {
                                 let share = (offset as f64 / span).clamp(0.0, 1.0);
-                                *value = (from.value + rise * share) as f32;
+                                *value = curve(share) as f32;
                                 offset += scale;
                             }
                         }

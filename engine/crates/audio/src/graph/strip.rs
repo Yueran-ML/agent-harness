@@ -27,11 +27,30 @@ pub(crate) const MAX_NODE_LANES: usize = 64;
 
 /// A lane of automation of a strip, read `delay` samples behind the input of the graph: the
 /// latency of the graph before the point where it acts, so that it acts on the sound of the
-/// time it is at.
+/// time it is at. It is read by its cursor; and it names what it is of, `owner` and `path` (the
+/// lane of a VCA read at the fader of each of its members, the one of a pan read after each
+/// output's delay, are each a lane of their own here, of the same owner and path), so that a lane
+/// of the model may be put in place of it while the graph plays (T5, T14's review).
 #[derive(Debug)]
 pub(crate) struct LaneOf {
     pub(crate) lane: Lane,
     pub(crate) delay: i64,
+    pub(crate) cursor: Cursor,
+    pub(crate) owner: super::Owner,
+    pub(crate) path: Box<str>,
+}
+
+impl LaneOf {
+    /// A lane of `owner` at `path`, read `delay` samples behind, its cursor not yet placed.
+    pub(crate) fn new(lane: &Lane, delay: i64, owner: &super::Owner, path: &str) -> Self {
+        Self {
+            lane: lane.clone(),
+            delay,
+            cursor: Cursor::default(),
+            owner: owner.clone(),
+            path: path.into(),
+        }
+    }
 }
 
 /// A node of a strip: its Ducker, an insert, its Dynamics or its equalizer.
@@ -175,8 +194,6 @@ pub(crate) struct Strip {
     pub(crate) vcas: Vec<VcaTerm>,
     pub(crate) edges: Vec<Edge>,
     pub(crate) lanes: Vec<LaneOf>,
-    /// Where each lane is read up to, one for each of `lanes` (T14).
-    pub(crate) cursors: Vec<Cursor>,
     /// The values of the lanes through the block, a lane after another, each `max_block` long.
     pub(crate) values: Box<[f32]>,
     pub(crate) max_block: usize,
@@ -215,9 +232,10 @@ impl Strip {
             self.work.channel_mut(channel)[..frames]
                 .copy_from_slice(&input.channel(channel)[..frames]);
         }
-        for (index, (lane, cursor)) in self.lanes.iter().zip(&mut self.cursors).enumerate() {
+        for (index, lane) in self.lanes.iter_mut().enumerate() {
             let values = &mut self.values[index * self.max_block..][..frames];
-            cursor.fill(&lane.lane, start - lane.delay, rate, values);
+            lane.cursor
+                .fill(&lane.lane, start - lane.delay, rate, values);
         }
     }
 
@@ -526,6 +544,9 @@ impl Strip {
             edge.matrix = panned(edge.from, edge.to, &edge.pan.last);
             edge.delay.reset();
             edge.stale = 0;
+        }
+        for lane in &mut self.lanes {
+            lane.cursor.reset();
         }
         self.pre_tap.reset();
         self.post_tap.reset();

@@ -274,6 +274,7 @@ name = "columbina-audio"
 version = "0.1.0"
 dependencies = [
  "columbina-audio",
+ "columbina-model",
  "nnnoiseless",
  "proptest",
  "realfft",
@@ -350,6 +351,7 @@ name = "columbina-server"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "columbina-audio",
  "columbina-compose",
  "columbina-lut",
  "columbina-media",

@@ -14,6 +14,8 @@ workspace = true
 testing = []
 
 [dependencies]
+# The project that the graph is built from (src/graph/build.rs), and its resolved clips.
+columbina-model = { path = "../model" }
 # The transforms of Fourier of real signals (src/fft.rs), and the complex numbers of their spectra.
 realfft.workspace = true
 rustfft.workspace = true
@@ -26,4 +28,6 @@ nnnoiseless.workspace = true
 [dev-dependencies]
 # The crate itself with its module `testing`, for the tests in tests/.
 columbina-audio = { path = ".", features = ["testing"] }
+# The random projects of schema 3 (`samples::schema3_project`) and `Project::sample`.
+columbina-model = { path = "../model", features = ["sample"] }
 proptest.workspace = true

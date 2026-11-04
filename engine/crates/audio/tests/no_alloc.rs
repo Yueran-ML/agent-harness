@@ -108,3 +108,151 @@ fn ten_seconds_of_the_work_of_the_thread_of_the_mix_take_no_memory() {
     });
     assert!(counted.none(), "{counted:?}");
 }
+
+/// A project of 16 tracks of every kind of strip: Dynamics keyed by another track, equalizers,
+/// sends before and after the fader to a bus of 5.1, a VCA, lanes of the fader, the pan and a
+/// threshold, a crossfade, clips at speeds, mono, stereo, 5.1 and Adaptive tracks.
+fn sixteen_tracks() -> columbina_model::Project {
+    use columbina_model::audio::{BusFormat, TrackFormat};
+    use columbina_model::{
+        Bus, Lane, LaneKind, LanePoint, Output, Send, SourceRef, Speed, Time, TrackKind, Vca,
+    };
+    let mut project = columbina_model::Project::sample();
+    let timeline = &mut project.timelines[0];
+    timeline
+        .tracks
+        .retain(|track| track.kind == TrackKind::Audio);
+    let first = timeline.tracks[0].clone();
+    let mut b2 = Bus::first();
+    b2.id = "B2".into();
+    b2.format = BusFormat::FiveOne;
+    b2.strip.outputs = vec![Output {
+        bus: "B1".into(),
+        on: true,
+    }];
+    b2.strip.eq.on = true;
+    timeline.buses.push(b2);
+    timeline.vcas.push(Vca {
+        id: "VCA1".into(),
+        name: "VCA 1".into(),
+        fader_db: -3.0,
+        mute: false,
+        solo: false,
+        vcas: vec![],
+        lanes: columbina_model::Lanes::new(),
+    });
+    let lane = |points: &[(i64, f64)]| Lane {
+        points: points
+            .iter()
+            .map(|&(ticks, value)| LanePoint {
+                at: Time {
+                    ticks,
+                    scale: 48000,
+                },
+                value,
+            })
+            .collect(),
+        kind: LaneKind::Continuous,
+    };
+    timeline.tracks = (0..16)
+        .map(|n| {
+            let mut track = first.clone();
+            track.id = format!("A{n}");
+            track.clips[0].id = format!("c{n}");
+            track.clips[0].speed = [Speed { num: 1, den: 1 }, Speed { num: 3, den: 2 }][n % 2];
+            let audio = &mut track.audio;
+            (audio.format, audio.channels) = match n % 4 {
+                0 => (TrackFormat::Mono, 1),
+                1 => (TrackFormat::Stereo, 2),
+                2 => (TrackFormat::FiveOne, 6),
+                _ => (TrackFormat::Adaptive, 3),
+            };
+            audio.strip.eq.on = true;
+            audio.strip.dynamics.on = n % 3 == 0;
+            audio.strip.dynamics.compressor.on = true;
+            if n > 0 && n % 3 == 0 {
+                audio.strip.dynamics.compressor.sidechain.on = true;
+                audio.strip.dynamics.compressor.sidechain.source =
+                    Some(SourceRef::Track(format!("A{}", n - 1)));
+            }
+            audio.strip.sends.push(Send {
+                bus: "B2".into(),
+                on: true,
+                pre: n % 2 == 0,
+                level_db: -6.0,
+                pan: columbina_model::Pan {
+                    y: -0.5,
+                    ..columbina_model::Pan::default()
+                },
+            });
+            audio.strip.vcas = vec!["VCA1".into()];
+            audio
+                .lanes
+                .insert("fader_db".into(), lane(&[(0, -20.0), (96_000, 0.0)]));
+            audio
+                .lanes
+                .insert("pan.x".into(), lane(&[(0, -1.0), (96_000, 1.0)]));
+            audio
+                .lanes
+                .insert("eq.2.gain_db".into(), lane(&[(0, -6.0), (96_000, 6.0)]));
+            track
+        })
+        .collect();
+    project
+}
+
+#[test]
+fn the_graph_of_a_timeline_plays_ten_seconds_with_no_memory() {
+    use columbina_audio::feed::FeedError;
+    use columbina_audio::graph::{Graph, Options, Owner, Purpose};
+    let project = sixteen_tracks();
+    let mut graph = Graph::build(&project, 0, Options::new(512, Purpose::Preview)).unwrap();
+    let fader = graph
+        .control(&Owner::Track("A5".into()), "fader_db")
+        .unwrap();
+    let threshold = graph
+        .control(
+            &Owner::Track("A3".into()),
+            "dynamics.compressor.threshold_db",
+        )
+        .unwrap();
+    let vca = graph
+        .control(&Owner::Vca("VCA1".into()), "fader_db")
+        .unwrap();
+    let pan = graph.control(&Owner::Track("A2".into()), "pan.x").unwrap();
+    let mut feed = |_: usize, range: std::ops::Range<i64>, out: &mut [&mut [f32]]| {
+        for out in out.iter_mut() {
+            for (n, sample) in out.iter_mut().enumerate() {
+                #[allow(
+                    clippy::cast_precision_loss,
+                    clippy::cast_possible_wrap,
+                    reason = "a test signal"
+                )]
+                let value = ((range.start + n as i64) % 101) as f32 / 101.0 - 0.5;
+                *sample = value;
+            }
+        }
+        Ok::<(), FeedError>(())
+    };
+    let monitor = graph.monitor().unwrap();
+    let mut device = vec![0.0_f32; 512 * 2];
+    let mut heard = false;
+    let ((), counted) = realtime(|| {
+        graph.start(4800, &mut feed).unwrap();
+        for block in 0..1000 {
+            if block % 7 == 0 {
+                #[allow(clippy::cast_precision_loss, reason = "a test value")]
+                let value = -((block % 20) as f32);
+                graph.set(fader, value);
+                graph.set(threshold, value);
+                graph.set(vca, value / 2.0);
+                graph.set(pan, value / 20.0);
+            }
+            graph.process(&mut feed, 480).unwrap();
+            graph.write_device(monitor, 480, &mut device);
+            heard |= device.iter().any(|&sample| sample != 0.0);
+        }
+    });
+    assert!(counted.none(), "{counted:?}");
+    assert!(heard);
+}

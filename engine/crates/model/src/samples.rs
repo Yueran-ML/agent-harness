@@ -111,19 +111,19 @@ fn attempt(numbers: &mut Numbers) -> Value {
             })
         })
         .collect();
-    let rate = *numbers.pick(&[(25, 1), (24000, 1001), (30, 1), (50, 1)]);
+    let rate: (i64, i64) = *numbers.pick(&[(25, 1), (24000, 1001), (30, 1), (50, 1)]);
     let sample_rate = *numbers.pick(&[48000, 44100, 96000]);
     let mut tracks = vec![];
     let mut next = 1;
     if numbers.chance(50) {
-        let clip = clip_of(numbers, &mut next, "m1", 0);
+        let clip = clip_of(numbers, &mut next, "m1", 0, rate);
         tracks.push(json!({
             "id": "V1", "kind": "video", "name": "V1", "enabled": true, "locked": false,
             "clips": [clip], "transitions": [],
         }));
     }
     for track in 1..=numbers.within(1, 3) {
-        tracks.push(audio_track(numbers, &mut next, track));
+        tracks.push(audio_track(numbers, &mut next, track, rate));
     }
     json!({
         "schema": 3,
@@ -144,12 +144,12 @@ fn attempt(numbers: &mut Numbers) -> Value {
 
 /// A track of sound `A<number>`, on 3 times in 4, with clips one after another and crossfades
 /// at some of the cuts where they meet.
-fn audio_track(numbers: &mut Numbers, next: &mut u64, number: i64) -> Value {
+fn audio_track(numbers: &mut Numbers, next: &mut u64, number: i64, rate: (i64, i64)) -> Value {
     let mut clips: Vec<Value> = vec![];
     let mut start = numbers.within(0, 30);
     for _ in 0..numbers.within(1, 4) {
         let media = MEDIA[usize::try_from(numbers.within(0, 3)).expect("a place")].0;
-        let clip = clip_of(numbers, next, media, start);
+        let clip = clip_of(numbers, next, media, start, rate);
         start =
             clip["start"].as_i64().expect("a start") + clip["length"].as_i64().expect("a length");
         clips.push(clip);
@@ -171,7 +171,8 @@ fn audio_track(numbers: &mut Numbers, next: &mut u64, number: i64) -> Value {
             .as_i64()
             .expect("a length")
             .min(clips[at]["length"].as_i64().expect("a length"));
-        let length = numbers.within(1, (shortest / 2).max(1));
+        // Up to the whole of the shorter clip, which the handles of its media may or may not allow.
+        let length = numbers.within(1, shortest);
         let align = *numbers.pick(&["center", "start", "end"]);
         clips[at - 1]["fade_out"] = 0.into();
         clips[at]["fade_in"] = 0.into();
@@ -191,16 +192,29 @@ fn audio_track(numbers: &mut Numbers, next: &mut u64, number: i64) -> Value {
     })
 }
 
-/// A clip of `media` at `start`, from a place well inside it.
-fn clip_of(numbers: &mut Numbers, next: &mut u64, media: &str, start: i64) -> Value {
+/// A clip of `media` at `start`, on a timeline of `rate` frames a second: from a place well
+/// inside it, or now and then from its very start or to its very end.
+fn clip_of(
+    numbers: &mut Numbers,
+    next: &mut u64,
+    media: &str,
+    start: i64,
+    rate: (i64, i64),
+) -> Value {
     let &(_, _, _, scale, _) = MEDIA
         .iter()
         .find(|m| m.0 == media)
         .expect("one of the media");
     let scale = i64::from(scale);
-    let source_in = numbers.within(60 * scale, 120 * scale);
     let length = numbers.within(4, 80);
-    let speed = *numbers.pick(&[(1, 1), (1, 1), (1, 2), (3, 2), (2, 1), (4, 5)]);
+    let speed: (i64, i64) = *numbers.pick(&[(1, 1), (1, 1), (1, 2), (3, 2), (2, 1), (4, 5)]);
+    // The ticks that the clip shows, rounded down, as the model counts them.
+    let span = length * speed.0 * rate.1 * scale / (speed.1 * rate.0);
+    let source_in = match numbers.within(0, 19) {
+        0..=2 => 0,
+        3..=5 => MEDIA_SECONDS * scale - span,
+        _ => numbers.within(60 * scale, 120 * scale),
+    };
     let gain_db = if numbers.chance(30) {
         0.0
     } else {
@@ -212,15 +226,25 @@ fn clip_of(numbers: &mut Numbers, next: &mut u64, media: &str, start: i64) -> Va
         3 => 1.0,
         _ => numbers.fraction(-1.0, 1.0),
     };
-    let fade_in = if numbers.chance(40) {
-        numbers.within(1, length / 3 + 1)
-    } else {
-        0
-    };
-    let fade_out = if numbers.chance(40) {
-        numbers.within(0, (length - fade_in) / 2)
-    } else {
-        0
+    let (fade_in, fade_out) = match numbers.within(0, 9) {
+        // Fades that meet, as long together as the clip.
+        0 | 1 => {
+            let fade_in = numbers.within(1, length - 1);
+            (fade_in, length - fade_in)
+        }
+        _ => {
+            let fade_in = if numbers.chance(40) {
+                numbers.within(1, length / 3 + 1)
+            } else {
+                0
+            };
+            let fade_out = if numbers.chance(40) {
+                numbers.within(0, (length - fade_in) / 2)
+            } else {
+                0
+            };
+            (fade_in, fade_out)
+        }
     };
     json!({
         "id": format!("c{}", made(next)),
@@ -237,6 +261,61 @@ fn clip_of(numbers: &mut Numbers, next: &mut u64, media: &str, start: i64) -> Va
         "fade_in": fade_in,
         "fade_out": fade_out,
     })
+}
+
+/// The project of schema 3 of `seed` as the engine of the Edit page would have written it, of
+/// schema 2: the same but for its schema, since it has nothing that schema 3 added.
+#[must_use]
+pub fn schema2_project(seed: u64) -> Value {
+    let mut project = schema3_project(seed);
+    project["schema"] = 2.into();
+    project
+}
+
+/// The project of schema 3 of `seed` as the first engine would have written it, of schema 1:
+/// its media, and its timelines with their tracks and the places of their clips, each played
+/// as it is, at 48000 samples a second, with no transition. It may not be valid (two clips that
+/// read past the end of their media at another speed): [`Project::from_value_upgrading`] says.
+#[must_use]
+pub fn schema1_project(seed: u64) -> Value {
+    let project = schema3_project(seed);
+    let media: Vec<Value> = project["media"]
+        .as_array()
+        .expect("media")
+        .iter()
+        .map(|m| {
+            json!({ "id": m["id"], "path": m["path"], "identity": m["identity"], "facts": m["facts"] })
+        })
+        .collect();
+    let timelines: Vec<Value> = project["timelines"]
+        .as_array()
+        .expect("timelines")
+        .iter()
+        .map(|t| {
+            let tracks: Vec<Value> = t["tracks"]
+                .as_array()
+                .expect("tracks")
+                .iter()
+                .map(|r| {
+                    let clips: Vec<Value> = r["clips"]
+                        .as_array()
+                        .expect("clips")
+                        .iter()
+                        .map(|c| {
+                            json!({
+                                "id": c["id"], "media": c["source"]["media"],
+                                "source_in": c["source"]["in"],
+                                "start": c["start"], "length": c["length"],
+                            })
+                        })
+                        .collect();
+                    json!({ "id": r["id"], "kind": r["kind"], "clips": clips })
+                })
+                .collect();
+            json!({ "id": t["id"], "name": t["name"], "rate": t["rate"], "tracks": tracks })
+        })
+        .collect();
+    json!({ "schema": 1, "next_id": project["next_id"], "media": media, "timelines": timelines })
 }
 
 /// The number of the next id, below the project's `next_id` of 1000.

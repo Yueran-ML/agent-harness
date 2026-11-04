@@ -282,6 +282,9 @@ fn examples() -> Vec<(&'static str, Vec<Op>, Op)> {
         enabled: Some(enabled),
         locked: None,
         language: None,
+        mute: None,
+        solo: None,
+        solo_safe: None,
     };
     let add_bin = |parent: Option<&str>| Op::AddBin {
         bin: Bin {
@@ -465,6 +468,9 @@ fn examples() -> Vec<(&'static str, Vec<Op>, Op)> {
                 enabled: Some(false),
                 locked: Some(true),
                 language: Some("zh-Hans".into()),
+                mute: None,
+                solo: None,
+                solo_safe: None,
             },
         ),
         (

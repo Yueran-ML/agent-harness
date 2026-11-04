@@ -406,6 +406,10 @@ fn set_track_of(project: &Project, spec: &Spec, timeline_id: String) -> Op {
         locked: bit(spec, 3).then(|| bit(spec, 4)),
         // Only a track of subtitles has a language, and only one that is a tag.
         language: bit(spec, 5).then(|| ["zh", "en-GB", "", "english"][spec.c % 4].into()),
+        // Only a track of sound is muted and soloed.
+        mute: bit(spec, 6).then(|| bit(spec, 7)),
+        solo: bit(spec, 8).then(|| bit(spec, 9)),
+        solo_safe: bit(spec, 10).then(|| bit(spec, 2)),
     }
 }
 

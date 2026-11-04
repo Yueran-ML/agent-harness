@@ -619,7 +619,7 @@ export type Op =
   | ({ op: 'set_timeline'; id: string } & Settings<Timeline, 'name' | 'rate' | 'width' | 'height' | 'sample_rate'>)
   | { op: 'add_track'; timeline: string; track: Track; index?: number | null }
   | { op: 'remove_track'; timeline: string; id: string }
-  | ({ op: 'set_track'; timeline: string; id: string; language?: string | null } & Settings<Track, 'name' | 'enabled' | 'locked'>)
+  | ({ op: 'set_track'; timeline: string; id: string; language?: string | null; mute?: boolean | null; solo?: boolean | null; solo_safe?: boolean | null } & Settings<Track, 'name' | 'enabled' | 'locked'>)
   | { op: 'insert_clip'; timeline: string; track: string; clip: Clip }
   | { op: 'remove_clip'; timeline: string; id: string }
   | { op: 'move_clip'; timeline: string; id: string; track: string; start: number }
@@ -1535,7 +1535,7 @@ export function applyOp(project: Project, op: Op): Project {
     case 'set_timeline': return inTimeline(project, op.id, timeline => patched(timeline, op, ['name', 'rate', 'width', 'height', 'sample_rate']));
     case 'add_track': return inTimeline(project, op.timeline, timeline => ({ ...timeline, tracks: inserted(timeline.tracks, keptTrack(op.track), op.index) }));
     case 'remove_track': return inTimeline(project, op.timeline, timeline => ({ ...timeline, tracks: without(timeline.tracks, placeOf(timeline.tracks, op.id, 'track')) }));
-    case 'set_track': return inTimeline(project, op.timeline, timeline => inTrack(timeline, placeOf(timeline.tracks, op.id, 'track'), track => patched(track, op, ['name', 'enabled', 'locked', ...(track.kind === 'subtitle' ? ['language'] : [])])));
+    case 'set_track': return inTimeline(project, op.timeline, timeline => inTrack(timeline, placeOf(timeline.tracks, op.id, 'track'), track => patched(track, op, ['name', 'enabled', 'locked', ...(track.kind === 'subtitle' ? ['language'] : []), ...(track.kind === 'audio' ? ['mute', 'solo', 'solo_safe'] : [])])));
     case 'insert_clip': return inTimeline(project, op.timeline, timeline => inClips(timeline, placeOf(timeline.tracks, op.track, 'track'), clips => put(clips, keptClip(op.clip))));
     case 'remove_clip': return inTimeline(project, op.timeline, timeline => {
       const [track, at] = clipAt(timeline, op.id);

@@ -1150,6 +1150,9 @@ mod tests {
                 enabled: Some(false),
                 locked: None,
                 language: None,
+                mute: None,
+                solo: None,
+                solo_safe: None,
             }],
         );
         let subtitles = Edit::AddTrack {

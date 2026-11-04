@@ -373,6 +373,9 @@ pub fn project_of(recipe: &Recipe) -> Project {
                 enabled: None,
                 locked: Some(true),
                 language: None,
+                mute: None,
+                solo: None,
+                solo_safe: None,
             };
             apply(&mut project, op).unwrap();
         }

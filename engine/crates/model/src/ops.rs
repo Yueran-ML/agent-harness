@@ -306,6 +306,15 @@ pub enum Op {
         /// The language of its subtitles.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         language: Option<String>,
+        /// Whether a track of sound is muted (p. 3885).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mute: Option<bool>,
+        /// Whether a track of sound is soloed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        solo: Option<bool>,
+        /// Whether a track of sound is heard while others are soloed (Solo Safe).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        solo_safe: Option<bool>,
     },
     /// Set the settings of a clip that are given.
     SetClip {
@@ -1435,6 +1444,9 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
             enabled,
             locked,
             language,
+            mute,
+            solo,
+            solo_safe,
         } => set_track(
             project,
             &timeline,
@@ -1444,6 +1456,9 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
                 enabled,
                 locked,
                 language,
+                mute,
+                solo,
+                solo_safe,
             },
         ),
         Op::SetClip {
@@ -2180,6 +2195,9 @@ struct TrackSettings {
     enabled: Option<bool>,
     locked: Option<bool>,
     language: Option<String>,
+    mute: Option<bool>,
+    solo: Option<bool>,
+    solo_safe: Option<bool>,
 }
 
 fn set_track(
@@ -2193,6 +2211,19 @@ fn set_track(
     let track = &project.timelines[t].tracks[r];
     if let Some(language) = &set.language {
         check_language(track.kind, language)?;
+    }
+    // Only a track of sound is muted and soloed.
+    for (what, given) in [
+        ("mute", set.mute),
+        ("solo", set.solo),
+        ("solo_safe", set.solo_safe),
+    ] {
+        if given.is_some() && track.kind != TrackKind::Audio {
+            return Err(OpError::WrongTrack {
+                what,
+                kind: track.kind,
+            });
+        }
     }
     if set.enabled == Some(true) && track.kind == TrackKind::Subtitle {
         if let Some(shown) = shown_subtitles(&project.timelines[t].tracks).find(|s| s.id != id) {
@@ -2208,12 +2239,18 @@ fn set_track(
         enabled: set.enabled.map(|_| track.enabled),
         locked: set.locked.map(|_| track.locked),
         language: set.language.as_ref().map(|_| track.language.clone()),
+        mute: set.mute.map(|_| track.audio.mute),
+        solo: set.solo.map(|_| track.audio.solo),
+        solo_safe: set.solo_safe.map(|_| track.audio.solo_safe),
     };
     let track = &mut project.timelines[t].tracks[r];
     swap(&mut track.name, set.name);
     swap(&mut track.enabled, set.enabled);
     swap(&mut track.locked, set.locked);
     swap(&mut track.language, set.language);
+    swap(&mut track.audio.mute, set.mute);
+    swap(&mut track.audio.solo, set.solo);
+    swap(&mut track.audio.solo_safe, set.solo_safe);
     Ok(inverse)
 }
 
@@ -6240,6 +6277,9 @@ mod tests {
             enabled: Some(false),
             locked,
             language: language.map(Into::into),
+            mute: None,
+            solo: None,
+            solo_safe: None,
         };
         let done = round_trip(
             &Project::sample(),
@@ -6930,6 +6970,9 @@ mod tests {
             enabled: Some(enabled),
             locked: None,
             language: None,
+            mute: None,
+            solo: None,
+            solo_safe: None,
         };
         assert_eq!(refused_in(project.clone(), enable("S2", true)), s1_shown);
         assert_eq!(
@@ -7028,6 +7071,9 @@ mod tests {
                     enabled: None,
                     locked: Some(true),
                     language: None,
+                    mute: None,
+                    solo: None,
+                    solo_safe: None,
                 },
                 serde_json::json!({ "op": "set_track", "timeline": "t1", "id": "V1", "locked": true }),
             ),

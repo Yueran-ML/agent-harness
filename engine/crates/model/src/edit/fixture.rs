@@ -149,6 +149,9 @@ pub fn lock(track: &str) -> Op {
         enabled: None,
         locked: Some(true),
         language: None,
+        mute: None,
+        solo: None,
+        solo_safe: None,
     }
 }
 

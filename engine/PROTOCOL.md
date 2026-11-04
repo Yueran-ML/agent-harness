@@ -1693,7 +1693,7 @@ An operation is an object that names itself in `op` (unknown fields are refused,
 | `shift_cues` | `timeline`, `track`, `cues: [id, ...]`, `by` |
 | `set_proxy` | `media`, `proxy` (a proxy, or `null` or left out to take it away; its inverse sets the one before). A proxy must be a file of the engine's own (see Security), else it is refused as `not_a_proxy_path`; so must one on media that `add_media` adds |
 | `set_timeline` | `id`, `name?`, `rate?`, `width?`, `height?`, `sample_rate?` |
-| `set_track` | `timeline`, `id`, `name?`, `enabled?`, `locked?`, `language?` |
+| `set_track` | `timeline`, `id`, `name?`, `enabled?`, `locked?`, `language?`, `mute?`, `solo?`, `solo_safe?` (of a track of sound only; on another `wrong_track` with `what` of the setting) |
 | `set_clip` | `timeline`, `id`, `enabled?`, `speed?`, `reverse?`, `link?`, `transform?`, `gain_db?`, `pan?`, `fade_in?`, `fade_out?`, `audio_fade_in?`, `audio_fade_out?` (an `AudioFade` or `null` for a straight fade over the frames), `source?` |
 | `add_bin` | `bin`, `index?` |
 | `remove_bin` | `id` |

@@ -371,6 +371,46 @@ fn a_fade_of_sound_lasts_its_time_along_its_curve() {
     assert_eq!(error.error, OpError::OutOfRange { what: "fade" });
 }
 
+#[test]
+fn a_track_of_sound_is_muted_and_soloed_by_set_track_and_taken_back() {
+    let mut project = Project::sample();
+    let set = |id: &str, mute, solo, solo_safe| Op::SetTrack {
+        timeline: "t1".into(),
+        id: id.into(),
+        name: None,
+        enabled: None,
+        locked: None,
+        language: None,
+        mute,
+        solo,
+        solo_safe,
+    };
+    // The track of a project of schema 3 that was off is muted; it is heard again unmuted.
+    project.timelines[0].tracks[1].audio.mute = true;
+    let before = project.clone();
+    assert_eq!(heard_at(&project, 1000), None);
+    let inverse = apply(&mut project, set("A1", Some(false), Some(true), None)).unwrap();
+    assert_eq!(heard_at(&project, 1000), Some(1.0));
+    assert!(project.timelines[0].tracks[1].audio.solo);
+    assert_eq!(inverse, set("A1", Some(true), Some(false), None));
+    apply(&mut project, inverse).unwrap();
+    assert_eq!(project, before);
+    let written = serde_json::to_value(set("A1", Some(true), None, Some(true))).unwrap();
+    assert_eq!(
+        written,
+        json!({ "op": "set_track", "timeline": "t1", "id": "A1", "mute": true, "solo_safe": true })
+    );
+    // A track of picture has no mute.
+    let error = apply(&mut project, set("V1", Some(true), None, None)).unwrap_err();
+    assert_eq!(
+        error,
+        OpError::WrongTrack {
+            what: "mute",
+            kind: TrackKind::Video
+        }
+    );
+}
+
 /// A fade of sound of half a second.
 fn half_second() -> AudioFade {
     AudioFade {

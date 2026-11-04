@@ -144,7 +144,10 @@ fn a_lane_is_set_replaced_and_taken_away_and_each_is_taken_back() {
     let set: Op =
         serde_json::from_value(set_lane(json!({"track": "A1"}), "fader_db", fader)).unwrap();
     let (done, inverse) = apply_done(&mut project, set.clone()).unwrap();
-    assert_eq!(done, set);
+    // As it was done, it has the scale of its path (linear for a fader).
+    let mut given = serde_json::to_value(&set).unwrap();
+    given["lane"]["scale"] = json!("linear");
+    assert_eq!(serde_json::to_value(&done).unwrap(), given);
     assert_eq!(
         serde_json::to_value(&inverse).unwrap(),
         set_lane(json!({"track": "A1"}), "fader_db", Value::Null)
@@ -1004,12 +1007,12 @@ fn effects_copied_onto_a_strip_take_the_lanes_of_its_inserts_away() {
         json!({"op": "add_insert", "timeline": "t1", "of": {"bus": "B2"},
             "insert": {"effect": {"kind": "soft_clipper"}}}),
     );
-    // The copy is given fx1, the id of the Gain that it replaces: its lane does not stay.
+    // The copy is a new insert, fx3, above the ids of those that it replaces: no lane stays.
     edit(
         &mut project,
         json!({"edit": "copy_effects", "timeline": "t1", "from": {"bus": "B2"}, "to": [{"track": "A1"}]}),
     );
-    assert_eq!(ids(&project), ["fx1"]);
+    assert_eq!(ids(&project), ["fx3"]);
     assert_eq!(paths(&project), Vec::<String>::new());
 }
 
@@ -1047,13 +1050,13 @@ fn a_send_taken_away_by_an_edit_takes_its_lanes_with_it() {
 // What an edit of a range leaves outside it.
 
 mod outside {
-    use super::{edit, lane_of, project, set_lane};
-    use columbina_model::{Project, Time};
+    use super::{lane_of, project, set_lane};
+    use columbina_model::{Edit, Project, Time};
     use proptest::prelude::*;
     use serde_json::{json, Value};
 
-    fn value_at(project: &Project, ticks: i64) -> f64 {
-        lane_of(project, "A1", "fader_db").unwrap().value_at(Time {
+    fn value_at(project: &Project, path: &str, ticks: i64) -> f64 {
+        lane_of(project, "A1", path).unwrap().value_at(Time {
             ticks,
             scale: 48000,
         })
@@ -1062,49 +1065,72 @@ mod outside {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(512))]
 
-        /// Taken away, pasted over, raised or drawn, a range of a lane leaves the lane before it
-        /// and from its end on as it was (pp. 3898–3899), to the rounding of a line cut in two.
+        /// Taken away, pasted over, raised, drawn or thinned, a range of a lane leaves the lane
+        /// before it and from its end on as it was (pp. 3898–3899), to the rounding of a line cut
+        /// in two: of a fader or a mute, of points of a scale of their own (the range is put on
+        /// the nearest ticks of it).
         #[test]
         fn an_edit_of_a_range_leaves_the_lane_outside_it_as_it_was(
             mut points in prop::collection::vec((0i64..20_000, -60.0f64..10.0), 1..12),
             jumps in any::<bool>(),
+            switch in any::<bool>(),
+            scale in prop::sample::select(vec![48_000i64, 44_100, 1000, 7]),
             (from, length) in (0i64..22_000, 1i64..8_000),
-            action in 0usize..4,
+            action in 0usize..5,
             delta in -30.0f64..30.0,
         ) {
+            let path = if switch { "mute" } else { "fader_db" };
+            // The points at ticks of their scale, near the samples drawn.
+            let mut points: Vec<(i64, f64)> = points
+                .drain(..)
+                .map(|(t, v)| (t * scale / 48_000, if switch { f64::from(u8::from(v > -25.0)) } else { v }))
+                .collect();
             points.sort_by_key(|p| p.0);
             if jumps && points.len() > 2 {
                 points[2].0 = points[1].0;
             }
             let lane: Vec<Value> = points
                 .iter()
-                .map(|&(t, v)| json!({"at": {"ticks": t, "scale": 48000}, "value": v}))
+                .map(|&(t, v)| json!({"at": {"ticks": t, "scale": scale}, "value": v}))
                 .collect();
+            let kind = if switch { "switch" } else { "continuous" };
             let mut project = project();
-            super::op(&mut project, set_lane(json!({"track": "A1"}), "fader_db",
-                json!({"points": lane, "kind": "continuous"})));
+            super::op(&mut project, set_lane(json!({"track": "A1"}), path,
+                json!({"points": lane, "kind": kind})));
             let before = project.clone();
             let to = from + length;
             let time = |t: i64| json!({"ticks": t, "scale": 48000});
             let change = match action {
                 0 => json!({"edit": "lane_range", "action": "delete"}),
                 1 => json!({"edit": "lane_range", "action": "paste",
-                    "points": [{"at": time(0), "value": -3.0}, {"at": time(length / 2), "value": -9.0}]}),
+                    "points": [{"at": time(0), "value": 0.0}, {"at": time(length / 2), "value": 1.0}]}),
                 2 => json!({"edit": "lane_range", "action": "shift_value", "delta": delta}),
+                3 => json!({"edit": "lane_range", "action": "thin", "tolerance": 3.0}),
                 _ => json!({"edit": "lane_draw",
-                    "points": [{"at": time(from), "value": -20.0}, {"at": time(to), "value": 5.0}]}),
+                    "points": [{"at": time(from), "value": 0.0}, {"at": time(to), "value": 1.0}]}),
             };
             let mut change = change;
             for (key, value) in [("timeline", json!("t1")), ("of", json!({"track": "A1"})),
-                ("path", json!("fader_db")), ("from", time(from)), ("to", time(to))] {
+                ("path", json!(path)), ("from", time(from)), ("to", time(to))] {
                 change[key] = value;
             }
-            edit(&mut project, change);
+            let change: Edit = serde_json::from_value(change).unwrap();
+            if columbina_model::expand(&mut project, change).is_err() {
+                // Nothing to change (a range of no tick of a coarse scale, or a lane as thin as
+                // it was): nothing changed.
+                prop_assert_eq!(&project, &before);
+                return Ok(());
+            }
+            // The range as ticks of the scale of the lane, on the nearest.
+            let tick = |t: i64| (2 * t * scale + 48_000) / 96_000;
+            let (low, high) = (tick(from), tick(to));
             for t in (0..30_000).step_by(37).chain([from - 1, to, to + 1]) {
-                if t >= from && t < to {
+                // Within the range where the sample is in it as the lane counts.
+                let place = i128::from(t) * i128::from(scale);
+                if place >= i128::from(low) * 48_000 && place < i128::from(high) * 48_000 {
                     continue;
                 }
-                let (old, new) = (value_at(&before, t), value_at(&project, t));
+                let (old, new) = (value_at(&before, path, t), value_at(&project, path, t));
                 prop_assert!((old - new).abs() <= 1e-9 * (1.0 + old.abs()), "{t}: {old} {new}");
             }
         }
@@ -1144,7 +1170,7 @@ fn the_lookahead_of_a_ducker_has_no_lane_and_its_other_settings_have() {
                 lane(&[(0, 15.0)], "continuous")
             ),
         ),
-        json!({"reason": "out_of_range", "what": "lane"})
+        json!({"reason": "out_of_range", "what": "lane_not_wired"})
     );
     assert_eq!(
         refused(
@@ -1155,14 +1181,14 @@ fn the_lookahead_of_a_ducker_has_no_lane_and_its_other_settings_have() {
                 json!({"points": [{"at": ms(0)}]})
             ),
         ),
-        json!({"reason": "out_of_range", "what": "lane"})
+        json!({"reason": "out_of_range", "what": "lane_not_wired"})
     );
 }
 
 #[test]
 fn effects_copied_of_the_kind_of_those_they_replace_still_take_their_lanes_away() {
-    // The copy of B2's Gain is given fx1 on A1, the id of the Gain whose lane names
-    // `insert.fx1.gain_db`: that lane is of the old insert, and goes.
+    // The copy of B2's Gain on A1, a Gain where a Gain had a lane: that lane is of the old
+    // insert, and goes.
     let mut project = with_insert_lanes();
     op(
         &mut project,
@@ -1173,6 +1199,235 @@ fn effects_copied_of_the_kind_of_those_they_replace_still_take_their_lanes_away(
         &mut project,
         json!({"edit": "copy_effects", "timeline": "t1", "from": {"bus": "B2"}, "to": [{"track": "A1"}]}),
     );
-    assert_eq!(ids(&project), ["fx1"]);
+    assert_eq!(ids(&project), ["fx3"]);
     assert_eq!(paths(&project), Vec::<String>::new());
+}
+
+/// What a drawing of 1000 points costs, as the edit works it out. Run with
+/// `cargo test --release -p columbina-model --test automation cost_of_a_drawing -- --ignored --nocapture`.
+#[test]
+#[ignore = "a measurement, not a check"]
+fn cost_of_a_drawing_of_1000_points() {
+    let mut project = project();
+    let drawn: Vec<Value> = (0..1000)
+        .map(|k| {
+            let wave = f64::from(i32::try_from(k % 40).unwrap()) * 0.5 - 10.0;
+            json!({"at": ms(k), "value": wave})
+        })
+        .collect();
+    let draw = json!({"edit": "lane_draw", "timeline": "t1", "of": {"track": "A1"},
+        "path": "insert.fx1.gain_db", "from": ms(0), "to": ms(999), "points": drawn});
+    let edit: Edit = serde_json::from_value(draw).unwrap();
+    let begun = std::time::Instant::now();
+    for _ in 0..10 {
+        let mut copy = project.clone();
+        columbina_model::expand(&mut copy, edit.clone()).unwrap();
+    }
+    println!(
+        "a drawing of 1000 points: {:.2} ms",
+        begun.elapsed().as_secs_f64() * 100.0
+    );
+    columbina_model::expand(&mut project, edit).unwrap();
+}
+
+// The review of T14.
+
+/// A1 with two Gains, fx1 and fx2, and a lane of the second's gain at +6 dB.
+fn two_gains_with_a_lane() -> Project {
+    let mut project = Project::sample();
+    for db in [-3, -6] {
+        op(
+            &mut project,
+            json!({"op": "add_insert", "timeline": "t1", "of": {"track": "A1"},
+                "insert": {"effect": {"kind": "gain", "gain_db": db}}}),
+        );
+    }
+    op(
+        &mut project,
+        set_lane(
+            json!({"track": "A1"}),
+            "insert.fx2.gain_db",
+            lane(&[(0, 6.0)], "continuous"),
+        ),
+    );
+    project
+}
+
+#[test]
+fn inserts_given_no_id_are_new_and_never_take_the_lanes_of_those_they_replace() {
+    // The whole chain put in place of by a patch of two Gains of no id: they are fx3 and fx4, and
+    // the lane of the old fx2 is refused by the operation, and taken away by the edit.
+    let gains = json!([{"effect": {"kind": "gain", "gain_db": 0}},
+        {"effect": {"kind": "gain", "gain_db": -20}}]);
+    let patch = json!({"strip": {"inserts": gains}});
+    let mut project = two_gains_with_a_lane();
+    assert_eq!(
+        refused_op(
+            &mut project,
+            json!({"op": "set_track_audio", "timeline": "t1", "track": "A1", "patch": patch}),
+        ),
+        json!({"reason": "out_of_range", "what": "lane"})
+    );
+    edit(
+        &mut project,
+        json!({"edit": "set_track_audio", "timeline": "t1", "track": "A1", "patch": patch}),
+    );
+    assert_eq!(ids(&project), ["fx3", "fx4"]);
+    assert_eq!(paths(&project), Vec::<String>::new());
+    // The second put in place of by the operation, with a Gain of no id: it is fx3, and the lane
+    // of fx2 names nothing, so the operation is refused; the edit takes the lane away.
+    let mut project = two_gains_with_a_lane();
+    let put = json!({"timeline": "t1", "of": {"track": "A1"}, "slot": 1,
+        "insert": {"effect": {"kind": "gain", "gain_db": -20}}});
+    let mut set = put.clone();
+    set["op"] = json!("set_insert");
+    assert_eq!(
+        refused_op(&mut project, set),
+        json!({"reason": "out_of_range", "what": "lane"})
+    );
+    let mut set = put;
+    set["edit"] = json!("set_insert");
+    edit(&mut project, set);
+    assert_eq!(ids(&project), ["fx1", "fx3"]);
+    assert_eq!(paths(&project), Vec::<String>::new());
+}
+
+#[test]
+fn an_insert_that_keeps_its_id_with_another_effect_leaves_no_lane_to_it() {
+    // A patch that names fx2 again, now a Limiter, which has no gain_db; and again, now a Soft
+    // Clipper whose lane of `on` would carry over: the operation refuses both, the edit takes
+    // the lanes away.
+    let mut project = two_gains_with_a_lane();
+    op(
+        &mut project,
+        set_lane(
+            json!({"track": "A1"}),
+            "insert.fx2.on",
+            lane(&[(0, 0.0)], "switch"),
+        ),
+    );
+    let patch = json!({"strip": {"inserts": [
+        {"id": "fx1", "effect": {"kind": "gain", "gain_db": -3}},
+        {"id": "fx2", "effect": {"kind": "soft_clipper"}}]}});
+    assert_eq!(
+        refused_op(
+            &mut project,
+            json!({"op": "set_track_audio", "timeline": "t1", "track": "A1", "patch": patch}),
+        ),
+        json!({"reason": "out_of_range", "what": "lane"})
+    );
+    edit(
+        &mut project,
+        json!({"edit": "set_track_audio", "timeline": "t1", "track": "A1", "patch": patch}),
+    );
+    assert_eq!(ids(&project), ["fx1", "fx2"]);
+    assert_eq!(paths(&project), Vec::<String>::new());
+    // Only a lane of `on`, which a Soft Clipper has too: the operation still refuses it.
+    let mut project = two_gains_with_a_lane();
+    op(
+        &mut project,
+        set_lane(json!({"track": "A1"}), "insert.fx2.gain_db", Value::Null),
+    );
+    op(
+        &mut project,
+        set_lane(
+            json!({"track": "A1"}),
+            "insert.fx2.on",
+            lane(&[(0, 0.0)], "switch"),
+        ),
+    );
+    assert_eq!(
+        refused_op(
+            &mut project,
+            json!({"op": "set_track_audio", "timeline": "t1", "track": "A1", "patch": patch}),
+        ),
+        json!({"reason": "out_of_range", "what": "lane"})
+    );
+}
+
+#[test]
+fn an_edit_that_changes_nothing_is_an_empty_range() {
+    let mut project = project();
+    op(
+        &mut project,
+        set_lane(
+            json!({"track": "A1"}),
+            "fader_db",
+            lane(&[(0, -6.0), (1000, 0.0)], "continuous"),
+        ),
+    );
+    assert_eq!(
+        refused(
+            &mut project,
+            points_edit(
+                "fader_db",
+                "add",
+                json!({"points": [{"at": ms(1000), "value": 0.0}]})
+            ),
+        ),
+        json!({"reason": "empty_range"})
+    );
+    assert_eq!(
+        refused(
+            &mut project,
+            range_edit("fader_db", "thin", 0, 1000, json!({}))
+        ),
+        json!({"reason": "empty_range"})
+    );
+}
+
+#[test]
+fn a_lane_of_a_frequency_is_made_on_a_scale_of_logarithms_and_goes_through_1_khz_half_way() {
+    let mut project = project();
+    let band = json!({"strip": {"eq": {"on": true}}});
+    op(
+        &mut project,
+        json!({"op": "set_track_audio", "timeline": "t1", "track": "A1", "patch": band}),
+    );
+    let points = json!([{"at": ms(0), "value": 100.0}, {"at": ms(1000), "value": 10_000.0}]);
+    edit(
+        &mut project,
+        json!({"edit": "lane_draw", "timeline": "t1", "of": {"track": "A1"}, "path": "eq.0.freq",
+            "from": ms(0), "to": ms(1000), "points": points}),
+    );
+    let made = lane_of(&project, "A1", "eq.0.freq").unwrap();
+    assert_eq!(made.scale, Some(columbina_model::LaneScale::Log));
+    assert!((value(&project, "A1", "eq.0.freq", 500.0) - 1000.0).abs() < 1e-6);
+    // A lane given with another scale than that of its path is refused.
+    let mut wrong = lane(&[(0, 100.0)], "continuous");
+    wrong["scale"] = json!("linear");
+    assert_eq!(
+        refused_op(
+            &mut project,
+            set_lane(json!({"track": "A1"}), "eq.1.freq", wrong)
+        ),
+        json!({"reason": "out_of_range", "what": "lane"})
+    );
+    // Whole numbers have no lane, and say so.
+    assert_eq!(
+        refused_op(
+            &mut project,
+            set_lane(
+                json!({"track": "A1"}),
+                "eq.0.slope",
+                lane(&[(0, 12.0)], "continuous")
+            )
+        ),
+        json!({"reason": "out_of_range", "what": "lane_integer"})
+    );
+}
+
+#[test]
+fn the_fade_that_the_agent_is_shown_fades_out_and_stays_silent() {
+    // `video_edit`'s example: points added at 0 dB (2 s) and -inf (4 s) of a fader with no lane.
+    let mut project = project();
+    edit(
+        &mut project,
+        json!({"edit": "lane_points", "timeline": "t1", "of": {"track": "A1"}, "path": "fader_db",
+            "action": "add", "points": [{"at": {"ticks": 96000, "scale": 48000}, "value": 0},
+            {"at": {"ticks": 192_000, "scale": 48000}, "value": -100}]}),
+    );
+    assert_eq!(value(&project, "A1", "fader_db", 1000.0), 0.0);
+    assert!(near(value(&project, "A1", "fader_db", 3000.0), -50.0));
+    assert_eq!(value(&project, "A1", "fader_db", 5000.0), -100.0);
 }

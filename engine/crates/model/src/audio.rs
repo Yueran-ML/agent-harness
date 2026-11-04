@@ -30,7 +30,7 @@ pub mod routing;
 use serde::{Deserialize, Serialize};
 
 pub use fx::{Effect, Equalizer, Insert, SourceRef};
-pub use param::{AudioKey, AudioParam, KeyInterp, Lane, LaneKind, LanePoint, Lanes};
+pub use param::{AudioKey, AudioParam, KeyInterp, Lane, LaneKind, LanePoint, LaneScale, Lanes};
 pub use routing::{Bus, BusFormat, GroupControl, Output, Send, TrackGroup, Vca, FIRST_BUS};
 
 use crate::ops::OpError;
@@ -905,15 +905,27 @@ pub fn first_buses() -> Vec<Bus> {
 }
 
 /// The settings of a strip that lanes of automation may be of, as an object whose paths are
-/// the paths of the lanes: those of its fields (`fader_db`, `trim_db`, `inserts_on`, `pan.x`,
+/// the paths of the lanes: those of its fields (`fader_db`, `trim_db`, `pan.x`,
 /// `eq.on`, `eq.gain_db`, `dynamics.compressor.threshold_db`, `track_fx.amount_db`), its bands of
 /// equalizer by their place from 0 (`eq.2.gain_db`), its sends and outputs by their bus
 /// (`send.B3.level_db`, `send.B3.pan.x`, `output.B2.on`), and its inserts by their id
 /// (`insert.fx1.on`, `insert.fx1.ceiling_db`); and `mute`, which a track and a bus have beside
 /// it. A number is a setting that changes smoothly, and a lane of it is continuous; a switch is
-/// a lane of a setting that is on or off. What is neither (a kind, a mode, a source) has none.
+/// a lane of a setting that is on or off. What is neither (a kind, a mode, a source) has none,
+/// nor has a whole number (`eq.<band>.slope`, the semitones of a Pitch), nor what the graph does
+/// not move as a lane would (see [`automation::drop_unwired`]: Effects In, the pan's switch,
+/// Boom, rotation and spread, whether a send is before the fader, the Lookahead of a Ducker, a
+/// Pitch).
 #[must_use]
 pub fn automatable(strip: &Strip) -> serde_json::Value {
+    let mut view = settings_of_strip(strip);
+    automation::drop_unwired(&mut view);
+    view
+}
+
+/// The settings of a strip laid out as [`automatable`] lays them out, but with those that no lane
+/// is of yet: what a path names, to say why a lane of it is refused.
+pub(crate) fn settings_of_strip(strip: &Strip) -> serde_json::Value {
     let mut view = serde_json::to_value(strip).unwrap_or_default();
     let Some(object) = view.as_object_mut() else {
         return serde_json::Value::Null;
@@ -959,11 +971,6 @@ pub fn automatable(strip: &Strip) -> serde_json::Value {
     // Listening (to a sidechain, to what a De-Esser or a Noise Reduction takes away) is only
     // heard while one listens, and is never written: it has no lane.
     unlisten(&mut view);
-    // The lookahead of a Ducker is how far its sound is delayed, which is a structure of the
-    // graph (its latency), not a setting that moves: it has no lane.
-    if let Some(serde_json::Value::Object(ducker)) = view.get_mut("track_fx") {
-        ducker.remove("lookahead_ms");
-    }
     view
 }
 
@@ -977,9 +984,17 @@ fn unlisten(view: &mut serde_json::Value) {
 
 /// Give each insert of a strip that has no id the next `fx<n>` of the strip.
 pub fn name_inserts(strip: &mut Strip) {
+    name_inserts_after(strip, &[]);
+}
+
+/// Give each insert of a strip that has no id the next `fx<n>` above every id of the strip and of
+/// `before`, the inserts that it had before it was changed: so an insert given no id is always a
+/// new one, and never takes the id, and so the lanes, of one that it replaces (T14's review).
+pub fn name_inserts_after(strip: &mut Strip, before: &[Insert]) {
     let mut highest = strip
         .inserts
         .iter()
+        .chain(before)
         .filter_map(|insert| insert.id.strip_prefix("fx")?.parse::<u64>().ok())
         .max()
         .unwrap_or(0);
@@ -997,6 +1012,7 @@ pub fn place_outputs(buses: &[Bus], track: &mut Track) {
         return;
     }
     name_inserts(&mut track.audio.strip);
+    automation::fill_scales(&mut track.audio.lanes);
     let outputs = &mut track.audio.strip.outputs;
     let named = outputs.iter().any(|o| o.bus == FIRST_BUS);
     if !named && buses.iter().any(|b| b.id == FIRST_BUS) {

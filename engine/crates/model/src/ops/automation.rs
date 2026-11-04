@@ -6,8 +6,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::{timeline_at, track_at, Op, OpError};
-use crate::audio::automation::{check_lanes, Owner};
-use crate::audio::{Lane, LanePoint, Lanes};
+use crate::audio::automation::{check_lane, view, Owner};
+use crate::audio::{Lane, LanePoint, LaneScale, Lanes};
 use crate::project::{Id, Project, Timeline, TrackKind};
 
 /// What the lanes of an operation belong to: a track of sound, a bus or a VCA. It is written
@@ -90,11 +90,12 @@ fn lanes_mut<'t>(timeline: &'t mut Timeline, of: &LanesOf) -> &'t mut Lanes {
     }
 }
 
-/// Change the lanes of `of` by `change`, check them, and keep them.
-fn with_lanes<R>(
+/// Change the lane of `path` of `of` by `change`, check it (the others are as they were), and
+/// keep it.
+fn with_lane<R>(
     project: &mut Project,
     timeline_id: &str,
-    of: &LanesOf,
+    (of, path): (&LanesOf, &str),
     change: impl FnOnce(&mut Lanes) -> Result<R, OpError>,
 ) -> Result<R, OpError> {
     let t = timeline_at(project, timeline_id)?;
@@ -102,7 +103,9 @@ fn with_lanes<R>(
     let (owner, lanes) = owner_of(timeline, of)?;
     let mut lanes = lanes.clone();
     let given = change(&mut lanes)?;
-    check_lanes(&lanes, owner)?;
+    if let Some(lane) = lanes.get(path) {
+        check_lane(path, lane, owner, &view(owner))?;
+    }
     *lanes_mut(&mut project.timelines[t], of) = lanes;
     Ok(given)
 }
@@ -121,8 +124,12 @@ pub(super) fn set_lane(
     path: String,
     lane: Option<Lane>,
 ) -> Result<Op, OpError> {
-    let old = with_lanes(project, timeline, &of, |lanes| match lane {
-        Some(lane) => Ok(lanes.insert(path.clone(), lane)),
+    let old = with_lane(project, timeline, (&of, &path), |lanes| match lane {
+        Some(mut lane) => {
+            // Made without a scale, it goes on that of its path.
+            lane.scale.get_or_insert(LaneScale::of_path(&path));
+            Ok(lanes.insert(path.clone(), lane))
+        }
         None => lanes
             .remove(&path)
             .map(Some)
@@ -136,6 +143,30 @@ pub(super) fn set_lane(
     })
 }
 
+/// [`Op::SetLane`] as it was done: with the lane as it is in the project now, its scale given.
+///
+/// # Panics
+/// If what was set is not in the project, which would be a bug.
+pub(super) fn done(project: &Project, op: Op) -> Op {
+    let Op::SetLane {
+        timeline,
+        of,
+        path,
+        lane: Some(_),
+    } = op
+    else {
+        return op;
+    };
+    let t = &project.timelines[timeline_at(project, &timeline).expect("the lane was set")];
+    let (_, lanes) = owner_of(t, &of).expect("the lane was set");
+    Op::SetLane {
+        lane: lanes.get(&path).cloned(),
+        timeline,
+        of,
+        path,
+    }
+}
+
 pub(super) fn splice_lane(
     project: &mut Project,
     timeline: &str,
@@ -145,7 +176,7 @@ pub(super) fn splice_lane(
     points: Vec<LanePoint>,
 ) -> Result<Op, OpError> {
     let put = points.len();
-    let removed = with_lanes(project, timeline, &of, |lanes| {
+    let removed = with_lane(project, timeline, (&of, &path), |lanes| {
         let lane = lanes.get_mut(&path).ok_or_else(|| missing_lane(&path))?;
         let len = lane.points.len();
         let end = at.checked_add(remove).filter(|&end| end <= len);

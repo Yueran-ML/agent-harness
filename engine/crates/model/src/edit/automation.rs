@@ -16,10 +16,11 @@ use serde_json::{Map, Value};
 use super::work::{missing, Work};
 use super::EditError;
 use crate::audio::automation::{
-    defaults_like, fits, fixed_value, kept_within, kind_of, point, replaced, shifted, switched,
-    thinned, ticks_in, tolerance_of, value_at, view, with_value, Owner, Set,
+    defaults_like, fits, fixed_value, kind_of, lanes_of_changed_inserts, no_lane, point, range_of,
+    replaced, shifted, switched, thinned, ticks_in, tolerance_of, value_at, view, with_value,
+    Owner, Set, Shape, LANE_RAMP_PER_SECOND,
 };
-use crate::audio::{Insert, Lane, LaneKind, LanePoint, Lanes};
+use crate::audio::{Insert, Lane, LaneKind, LanePoint, LaneScale, Lanes};
 use crate::ops::{inserts_of, owner_of, InsertsOf, LanesOf, Op, OpError, LARGEST};
 use crate::project::{Id, Project};
 use crate::time::Time;
@@ -78,10 +79,6 @@ pub struct NewPoint {
     pub value: Option<f64>,
 }
 
-/// How long a range that is raised or lowered ramps in and out at its ends (C-A6), as a part of
-/// a second: 10 ms.
-const RAMP_PER_SECOND: u32 = 100;
-
 fn range(what: &'static str) -> EditError {
     EditError::Op(OpError::OutOfRange { what })
 }
@@ -90,17 +87,19 @@ fn point_name(at: Time) -> String {
     format!("{}/{}", at.ticks, at.scale)
 }
 
-/// A lane as an edit changes it: of what and of which setting, its kind, the scale of its
+/// A lane as an edit changes it: of what and of which setting, its shape, the scale of its
 /// points (that of the lane, or the sample rate of the timeline for one that is not there yet),
-/// the value of its setting as it is set, and its points.
+/// the value of its setting as it is set, and its points; and the range of its setting, found
+/// once, where it is needed.
 struct Target {
     of: LanesOf,
     path: String,
-    kind: LaneKind,
+    shape: Shape,
     scale: u32,
     fixed: f64,
     points: Vec<LanePoint>,
     exists: bool,
+    range: Cell<Option<(f64, f64)>>,
 }
 
 /// The owner of the lanes of `of` in the project of `work`, which an edit may change: a track
@@ -115,8 +114,9 @@ fn open_owner<'w>(work: &'w Work, of: &LanesOf) -> Result<(Owner<'w>, &'w Lanes)
 fn target(work: &Work, of: &LanesOf, path: &str) -> Result<Target, EditError> {
     let (owner, lanes) = open_owner(work, of)?;
     let view = view(owner);
-    let kind = kind_of(&view, path).ok_or_else(|| range("lane"))?;
-    let fixed = fixed_value(&view, path).ok_or_else(|| range("lane"))?;
+    let refused = || range(no_lane(owner, path));
+    let kind = kind_of(&view, path).ok_or_else(refused)?;
+    let fixed = fixed_value(&view, path).ok_or_else(refused)?;
     let (scale, points, exists) = match lanes.get(path) {
         Some(lane) => (lane.points[0].at.scale, lane.points.clone(), true),
         None => (work.timeline().sample_rate, vec![], false),
@@ -124,11 +124,15 @@ fn target(work: &Work, of: &LanesOf, path: &str) -> Result<Target, EditError> {
     Ok(Target {
         of: of.clone(),
         path: path.into(),
-        kind,
+        shape: Shape {
+            kind,
+            scale: LaneScale::of_path(path),
+        },
         scale,
         fixed,
         points,
         exists,
+        range: Cell::new(None),
     })
 }
 
@@ -138,17 +142,29 @@ impl Target {
         ticks_in(at, self.scale).ok_or_else(|| range(what))
     }
 
+    /// The least and the greatest value of its setting, found the first time that it is asked
+    /// for and kept for the rest of the edit.
+    fn range(&self, work: &Work) -> (f64, f64) {
+        if let Some(range) = self.range.get() {
+            return range;
+        }
+        let range = owner_of(work.timeline(), &self.of)
+            .map_or((-f64::MAX, f64::MAX), |(owner, _)| {
+                range_of(owner, &self.path, self.fixed)
+            });
+        self.range.set(Some(range));
+        range
+    }
+
     /// `value` as the setting takes it: a switch on or off, or a number kept within its range,
     /// saying in `moved` that it was kept.
     fn kept(&self, work: &Work, value: f64, moved: &Cell<bool>) -> f64 {
-        match self.kind {
+        match self.shape.kind {
             LaneKind::Switch => switched(value),
             LaneKind::Continuous => {
-                let Ok((owner, _)) = owner_of(work.timeline(), &self.of) else {
-                    return value;
-                };
-                let (kept, was) = kept_within(owner, &self.path, value, self.fixed);
-                if was {
+                let (least, most) = self.range(work);
+                let kept = value.clamp(least, most);
+                if kept.to_bits() != value.to_bits() {
                     moved.set(true);
                 }
                 kept
@@ -158,19 +174,26 @@ impl Target {
 }
 
 /// Put `points` in place of the lane of a target: the lane added where it was not, taken away
-/// where nothing is left of it, and otherwise one `splice_lane` of the points that change.
+/// where nothing is left of it, and otherwise one `splice_lane` of the points that change. An
+/// edit that changes nothing is `empty_range`.
 fn commit(work: &mut Work, target: Target, points: Vec<LanePoint>) -> Result<(), EditError> {
     let timeline = work.timeline_id();
-    let Target { of, path, kind, .. } = target;
+    let Target {
+        of, path, shape, ..
+    } = target;
     if !target.exists {
         if points.is_empty() {
-            return Ok(());
+            return Err(EditError::EmptyRange);
         }
         work.op(Op::SetLane {
             timeline,
             of,
             path,
-            lane: Some(Lane { points, kind }),
+            lane: Some(Lane {
+                points,
+                kind: shape.kind,
+                scale: Some(shape.scale),
+            }),
         })?;
         return Ok(());
     }
@@ -192,7 +215,7 @@ fn commit(work: &mut Work, target: Target, points: Vec<LanePoint>) -> Result<(),
         .take_while(|&i| same(&old[old.len() - 1 - i], &points[points.len() - 1 - i]))
         .count();
     if head == old.len() && head == points.len() {
-        return Ok(());
+        return Err(EditError::EmptyRange);
     }
     work.op(Op::SpliceLane {
         timeline,
@@ -232,7 +255,7 @@ pub(super) fn lane_points(
             let mut points = target.points.clone();
             for p in new {
                 let ticks = target.ticks(p.at, "at")?;
-                let here = value_at(&points, target.kind, target.fixed, ticks);
+                let here = value_at(&points, target.shape, target.fixed, ticks);
                 let value = match p.value {
                     Some(value) if value.is_finite() => target.kept(work, value, &moved),
                     Some(_) => return Err(range("value")),
@@ -374,10 +397,10 @@ pub(super) fn lane_range(
         return Err(missing("lane", path));
     }
     let moved = Cell::new(false);
-    let (kind, fixed, scale) = (target.kind, target.fixed, target.scale);
+    let (shape, fixed, scale) = (target.shape, target.fixed, target.scale);
     let points = match action {
         RangeAction::Delete | RangeAction::Cut => {
-            replaced(&target.points, kind, fixed, scale, (from, to), &[])
+            replaced(&target.points, shape, fixed, scale, (from, to), &[])
         }
         RangeAction::Paste => {
             let pasted = pasted.ok_or_else(|| range("points"))?;
@@ -392,7 +415,7 @@ pub(super) fn lane_range(
                 }
                 new.push(point(at, scale, target.kept(work, p.value, &moved)));
             }
-            replaced(&target.points, kind, fixed, scale, (from, to), &new)
+            replaced(&target.points, shape, fixed, scale, (from, to), &new)
         }
         RangeAction::ShiftValue => {
             let delta = delta.unwrap_or(0.0);
@@ -402,14 +425,14 @@ pub(super) fn lane_range(
             if delta == 0.0 {
                 return Err(EditError::EmptyRange);
             }
-            let ramp = match kind {
+            let ramp = match shape.kind {
                 LaneKind::Switch => 0,
-                LaneKind::Continuous => i64::from(scale / RAMP_PER_SECOND),
+                LaneKind::Continuous => i64::from(scale / LANE_RAMP_PER_SECOND),
             };
             let change = |value: f64| target.kept(work, value + delta, &moved);
             shifted(
                 &target.points,
-                kind,
+                shape,
                 fixed,
                 scale,
                 (from, to),
@@ -426,7 +449,7 @@ pub(super) fn lane_range(
             let first = target.points.partition_point(|p| p.at.ticks < from);
             let end = target.points.partition_point(|p| p.at.ticks <= to);
             let mut points = target.points[..first].to_vec();
-            points.extend(thinned(&target.points[first..end], kind, tolerance));
+            points.extend(thinned(&target.points[first..end], shape, tolerance));
             points.extend_from_slice(&target.points[end..]);
             points
         }
@@ -437,20 +460,10 @@ pub(super) fn lane_range(
     commit(work, target, points)
 }
 
-/// How far a lane of a target may go from what was drawn, where nothing is given (C-A4).
+/// How far a lane of a target may go from what was drawn, where nothing is given (C-A4), of the
+/// range of its setting as the edit has found it.
 fn tolerance_for(work: &Work, target: &Target) -> f64 {
-    let Ok((owner, _)) = owner_of(work.timeline(), &target.of) else {
-        return 0.0;
-    };
-    let path = &target.path;
-    let range = if path.ends_with("_db") || path.contains("pan.") {
-        (0.0, 0.0)
-    } else {
-        let low = kept_within(owner, path, -f64::MAX, target.fixed).0;
-        let high = kept_within(owner, path, f64::MAX, target.fixed).0;
-        (low, high)
-    };
-    tolerance_of(path, range)
+    tolerance_of(&target.path, target.range(work))
 }
 
 /// Draw the lane of the setting at `path` of `of` from `from` to `to` with the Pencil (pp. 3900,
@@ -492,9 +505,9 @@ pub(super) fn lane_draw(
         Some(_) => return Err(range("tolerance")),
         None => tolerance_for(work, &target),
     };
-    let new = thinned(&new, target.kind, tolerance);
-    let (kind, fixed, scale) = (target.kind, target.fixed, target.scale);
-    let points = replaced(&target.points, kind, fixed, scale, (from, to), &new);
+    let new = thinned(&new, target.shape, tolerance);
+    let (shape, fixed, scale) = (target.shape, target.fixed, target.scale);
+    let points = replaced(&target.points, shape, fixed, scale, (from, to), &new);
     if moved.get() {
         work.clamp();
     }
@@ -741,22 +754,27 @@ fn without_lanes(work: &Work, of: &LanesOf) -> Project {
 
 /// Apply an operation that sets the strip of a track or a bus (`set_track_audio`, `set_bus`),
 /// first taking away the lanes that it would leave naming a setting that is not there, or one of
-/// another kind: of a send, an output or an insert that it takes away, or of a Ducker gone.
+/// another kind: of a send, an output or an insert that it takes away, of a Ducker gone, or of an
+/// insert whose id stays with an effect of another kind.
 pub(super) fn strip_op(work: &mut Work, op: Op) -> Result<Op, EditError> {
     let of = match &op {
         Op::SetTrackAudio { track, .. } => LanesOf::Track(track.clone()),
         Op::SetBus { id, .. } => LanesOf::Bus(id.clone()),
         _ => return work.op(op),
     };
-    let has_lanes = owner_of(work.timeline(), &of).is_ok_and(|(_, lanes)| !lanes.is_empty());
-    if has_lanes && structural(&op) {
+    let lanes = owner_of(work.timeline(), &of).map(|(owner, lanes)| (owner, lanes.clone()));
+    if let (Ok((Owner::Strip { strip, .. }, lanes)), true) = (lanes, structural(&op)) {
+        let before = strip.clone();
         let mut trial = without_lanes(work, &of);
-        if crate::ops::apply(&mut trial, op.clone()).is_ok() {
+        if !lanes.is_empty() && crate::ops::apply(&mut trial, op.clone()).is_ok() {
             let timeline = trial.timelines.iter().find(|t| t.id == work.timeline_id());
-            if let Some(Ok((owner, _))) = timeline.map(|t| owner_of(t, &of)) {
-                let after = view(owner);
+            if let Some(Ok((owner @ Owner::Strip { strip: after, .. }, _))) =
+                timeline.map(|t| owner_of(t, &of))
+            {
+                let changed = lanes_of_changed_inserts(&before, after, &lanes);
+                let view = view(owner);
                 take_lanes_away(work, &of, |path, lane| {
-                    kind_of(&after, path) != Some(lane.kind)
+                    kind_of(&view, path) != Some(lane.kind) || changed.iter().any(|p| p == path)
                 })?;
             }
         }

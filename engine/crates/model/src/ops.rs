@@ -1563,6 +1563,13 @@ fn range_message(what: &str) -> String {
         "input_sat_rolloff" | "output_sat_rolloff" => "the saturation rolloff does not start              below its limit, each a number of nits from 1 to 10000"
             .into(),
         "limit_gamut" => "the output gamut cannot be limited to camera native".into(),
+        "lane" => "the lane is not of a setting that a lane may be of, of its kind and scale,                    with points within the range of the setting"
+            .into(),
+        "lane_integer" => "the setting is a whole number, which has no lane".into(),
+        "lane_not_wired" => {
+            "the setting is not one that the mix moves as a lane would (Effects In, the pan's              switch, Boom, rotation or spread, a send's place before the fader, the Lookahead              of a Ducker, or a Pitch), so it has no lane"
+                .into()
+        }
         "media_lut" => format!(
             "a LUT of the source clip is not a name relative to the folders of LUTs: empty, \
              longer than {LONGEST_PATH} characters, absolute, going up, or holding a NUL or a \
@@ -1970,6 +1977,8 @@ pub fn apply_done(project: &mut Project, op: Op) -> Result<(Op, Op), OpError> {
             | Op::SetTimelineAudio { .. }
             | Op::SetInsert { .. }),
         ) => sound::done(project, op, &inverse),
+        // A lane is given back with the scale that it was given.
+        Some(op @ Op::SetLane { .. }) => automation::done(project, op),
         // A group that the engine made is named as it was made.
         Some(Op::SetClip {
             timeline,
@@ -2175,6 +2184,10 @@ fn add_timeline(
     name(&mut counter, &mut claims, &[], &mut timeline.tracks)?;
     for bus in &mut timeline.buses {
         audio::name_inserts(&mut bus.strip);
+        audio::automation::fill_scales(&mut bus.lanes);
+    }
+    for vca in &mut timeline.vcas {
+        audio::automation::fill_scales(&mut vca.lanes);
     }
     for track in &mut timeline.tracks {
         audio::place_outputs(&timeline.buses, track);
@@ -4002,6 +4015,10 @@ impl Project {
         for timeline in &mut self.timelines {
             for bus in &mut timeline.buses {
                 audio::name_inserts(&mut bus.strip);
+                audio::automation::fill_scales(&mut bus.lanes);
+            }
+            for vca in &mut timeline.vcas {
+                audio::automation::fill_scales(&mut vca.lanes);
             }
             for track in &mut timeline.tracks {
                 audio::place_outputs(&timeline.buses, track);

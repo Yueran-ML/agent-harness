@@ -546,6 +546,7 @@ fn lanes_are_of_the_settings_of_their_strip_by_their_paths_and_kinds() {
             value: 0.0,
         }],
         kind,
+        scale: None,
     };
     let mut project = Project::sample();
     let t = &mut project.timelines[0];
@@ -602,7 +603,6 @@ fn lanes_are_of_the_settings_of_their_strip_by_their_paths_and_kinds() {
     ];
     let switches = [
         "mute",
-        "inserts_on",
         "eq.on",
         "eq.5.on",
         "dynamics.compressor.on",
@@ -654,6 +654,11 @@ fn lanes_are_of_the_settings_of_their_strip_by_their_paths_and_kinds() {
         "eq.2.kind",
         "track_fx.amount_db",
         "",
+        // What the graph does not move as a lane would, and a whole number (T14's review).
+        "inserts_on",
+        "pan.spread",
+        "send.B3.pre",
+        "eq.1.slope",
     ] {
         assert!(!fits(path, LaneKind::Continuous), "{path} is of nothing");
         assert!(!fits(path, LaneKind::Switch), "{path} is of nothing");

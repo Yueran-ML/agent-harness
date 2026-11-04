@@ -112,12 +112,18 @@ fn a_stretched_clip_reads_within_its_reach_once_its_run_has_started() {
     use super::{Graph, Options, Purpose};
     use crate::feed::FeedError;
 
-    for (speed, reverse, corrected, pitch, at) in [
-        ((4, 5), false, true, 0, 6 * 48_000),
-        ((3, 2), true, true, 2, 3 * 48_000 + 17),
-        ((1, 1), false, false, 5, 5 * 48_000 + 999),
-        ((7, 3), false, true, 0, 1),
-    ] {
+    // Both ways in: a run that starts, and a graph swapped in with a short preroll (T5).
+    for (within, (speed, reverse, corrected, pitch, at)) in
+        [false, true].into_iter().flat_map(|within| {
+            [
+                ((4, 5), false, true, 0, 6 * 48_000),
+                ((3, 2), true, true, 2, 3 * 48_000 + 17),
+                ((1, 1), false, false, 5, 5 * 48_000 + 999),
+                ((7, 3), false, true, 0, 1),
+            ]
+            .map(|case| (within, case))
+        })
+    {
         let mut project = Project::sample();
         project.timelines[0]
             .tracks
@@ -154,7 +160,11 @@ fn a_stretched_clip_reads_within_its_reach_once_its_run_has_started() {
             seen.borrow_mut().push(range);
             Ok::<(), FeedError>(())
         };
-        graph.start(at, &mut feed).unwrap();
+        if within {
+            graph.start_within(at, 480, &mut feed).unwrap();
+        } else {
+            graph.start(at, &mut feed).unwrap();
+        }
         reads.borrow_mut().clear();
         let chain = &graph.clips[0];
         assert!(chain.stretch.is_some(), "{speed:?}");

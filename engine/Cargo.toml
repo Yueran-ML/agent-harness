@@ -28,6 +28,9 @@ cpal = "=0.18.2"
 rustfft = "=6.4.1"
 realfft = "=3.5.1"
 rtrb = "=0.4.1"
+# The voice mode of Noise Reduction (crates/audio, T12): RNNoise, the network of Valin, in Rust,
+# with nothing of its tools for the command line.
+nnnoiseless = { version = "=0.5.2", default-features = false }
 # Text laid out and drawn into pixels (crates/compose), with the fonts of the system.
 cosmic-text = "=0.19.0"
 # The picture, put together and drawn on the graphics card (crates/compose, crates/view): Direct3D 12

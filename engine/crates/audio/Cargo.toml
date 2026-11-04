@@ -20,6 +20,8 @@ rustfft.workspace = true
 # The ring between one thread that writes and one that reads (src/rt/ring.rs).
 rtrb.workspace = true
 thiserror.workspace = true
+# RNNoise, the voice mode of Noise Reduction (src/fx/rnnoise.rs).
+nnnoiseless.workspace = true
 
 [dev-dependencies]
 # The crate itself with its module `testing`, for the tests in tests/.

@@ -191,7 +191,7 @@ impl Limits {
 /// How the transport is made, beside the engine: what plays its sound, and, for the tests, a
 /// frame from which on the first frame on the card that the converter is given fails to be
 /// copied (`--fail-card-at`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Setup {
     pub sound: audio::Kind,
     pub fail_card_at: Option<i64>,
@@ -1121,7 +1121,7 @@ impl SoundSlot {
         if again {
             // The old one is closed before another is opened.
             self.output = None;
-            let output = Output::open(self.kind);
+            let output = Output::open(&self.kind);
             match &output {
                 Ok(output) => log(
                     "sound_ready",

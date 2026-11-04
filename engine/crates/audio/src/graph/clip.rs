@@ -24,6 +24,7 @@ use crate::fx::common::finite;
 use crate::fx::eq::Eq;
 use crate::fx::stretch::{Input, Plan, Stretcher, Transpose};
 use crate::node::{Block, Node, Planar};
+use crate::rt::{Domain, Smoothed};
 
 use super::route::balance;
 
@@ -307,7 +308,6 @@ pub(crate) struct Stretched {
     pub(crate) busy_from: i64,
     /// How far from the sample of the source that a sample of the timeline maps to its stretch
     /// reads, either way, while it plays on: what a reader ahead must have (T5).
-    #[allow(dead_code, reason = "read by `ClipChain::reads_within`, for T5")]
     pub(crate) reach: i64,
     /// Its pool, by its place in [`ClipScratch::pools`].
     pub(crate) pool: usize,
@@ -480,6 +480,97 @@ fn keep(result: &mut Result<(), FeedError>, next: Result<(), FeedError>) {
     }
 }
 
+/// Where a clip of a graph reads its media ([`crate::graph::Graph::reaches`]): the samples of the
+/// timeline it sounds on, and the samples of its media (at the rate of the timeline, as
+/// [`ClipFeed::read`] counts them) that any of them reads, the filter's reach and all. The
+/// threads that read clips ahead of the graph (T5) read what it will ask for.
+#[derive(Clone, Copy, Debug)]
+pub struct Reach {
+    from: i64,
+    to: i64,
+    mapping: Mapping,
+    radius: i64,
+}
+
+impl Reach {
+    /// The samples of the timeline that the clip sounds on.
+    #[must_use]
+    pub fn span(&self) -> Range<i64> {
+        self.from..self.to
+    }
+
+    /// The samples of the media that the samples `timeline` of the timeline read, where the
+    /// clip sounds on any of them.
+    #[must_use]
+    pub fn source(&self, timeline: Range<i64>) -> Option<Range<i64>> {
+        let (from, to) = (self.from.max(timeline.start), self.to.min(timeline.end));
+        if from >= to {
+            return None;
+        }
+        let (first, _) = self.mapping.at(from);
+        let (last, _) = self.mapping.at(to - 1);
+        Some(first.min(last) - self.radius..first.max(last) + self.radius + 1)
+    }
+
+    /// How far either way from the sample of the media that a sample of the timeline maps to
+    /// it reads: the filter's reach, or a stretch's (T13), which also reads what it read before
+    /// again (the sound before a stretcher's start).
+    #[must_use]
+    pub fn radius(&self) -> i64 {
+        self.radius
+    }
+
+    /// Whether it reads its media backwards (a clip played in reverse).
+    #[must_use]
+    pub fn backward(&self) -> bool {
+        self.mapping.step < 0
+    }
+
+    /// The samples of its media that a sample of the timeline moves on by: its speed.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss, reason = "a speed")]
+    pub fn speed(&self) -> f64 {
+        self.mapping.step.unsigned_abs() as f64 / self.mapping.denominator as f64
+    }
+}
+
+/// The fixed gain and pan of a clip, changed as it plays (T5's review: a clip's volume line or
+/// pan dragged is a setting, not another graph): a multiplier of its gain from what it was built
+/// with, and the two gains of its balance, each ramped over 10 ms. Until either is set, the
+/// clip sounds as it was built, to the bit.
+#[derive(Debug)]
+pub(crate) struct ClipLevel {
+    /// The fixed gain it was built with, in decibels; none for keyframes.
+    pub(crate) gain_db: Option<f32>,
+    pub(crate) scale: Smoothed,
+    pub(crate) scaled: bool,
+    /// Whether its pan is fixed (on a stereo track).
+    pub(crate) fixed_pan: bool,
+    pub(crate) sides: [Smoothed; 2],
+    pub(crate) panned: bool,
+}
+
+impl ClipLevel {
+    /// The level of a clip of a fixed gain `gain_db` (or none) and pan `pan` (or none), at
+    /// `rate`. Made off the thread of the mix.
+    pub(crate) fn new(gain_db: Option<f32>, pan: Option<[f32; 2]>, rate: u32) -> Self {
+        let smoothed = |value: f32| {
+            let mut smoothed = Smoothed::new(value, Domain::Linear);
+            smoothed.prepare(rate);
+            smoothed
+        };
+        let sides = pan.unwrap_or([1.0, 1.0]);
+        ClipLevel {
+            gain_db,
+            scale: smoothed(1.0),
+            scaled: false,
+            fixed_pan: pan.is_some(),
+            sides: [smoothed(sides[0]), smoothed(sides[1])],
+            panned: false,
+        }
+    }
+}
+
 /// A clip in the graph.
 pub(crate) struct ClipChain {
     /// The strip of its track.
@@ -501,6 +592,8 @@ pub(crate) struct ClipChain {
     pub(crate) eq: Option<Eq>,
     /// The samples that its equalizer has processed since it was reset.
     pub(crate) processed: u64,
+    /// Its fixed gain and pan, as they are set while it plays.
+    pub(crate) level: ClipLevel,
     /// Its stretch, where its speed keeps its pitch or its pitch is moved (T13).
     pub(crate) stretch: Option<Stretched>,
 }
@@ -516,10 +609,6 @@ impl ClipChain {
     /// the chain reads: the filter's reach, or its stretch's (T13), which a reader ahead of the
     /// graph must cover (T5's `Reach`). A stretched clip also reads before it sounds, from
     /// [`ClipChain::busy_from`].
-    #[allow(
-        dead_code,
-        reason = "for the reader ahead of the graph (T5's `Graph::reaches`), merged after"
-    )]
     pub(crate) fn reads_within(&self) -> i64 {
         self.stretch
             .as_ref()
@@ -532,6 +621,17 @@ impl ClipChain {
         self.stretch
             .as_ref()
             .map_or(self.from, |stretch| stretch.busy_from.min(self.from))
+    }
+
+    /// Where it reads its media, for the readers ahead of the graph (T5): from where it is busy,
+    /// as far either way as it reads.
+    pub(crate) fn reach(&self) -> Reach {
+        Reach {
+            from: self.busy_from(),
+            to: self.to,
+            mapping: self.mapping,
+            radius: self.reads_within(),
+        }
     }
 
     /// Adds what the clip sounds on the `frames` samples of the timeline from `start` to `into`
@@ -605,8 +705,11 @@ impl ClipChain {
 
     /// Adds `values`, the sound of the clip at `sample` of the timeline, by its gain and pan,
     /// to sample `at` of `into`: `value · gain · pan`, as the mixer of phase 2 did.
-    fn add(&self, sample: i64, values: &[f32], into: &mut Planar, at: usize) {
-        let gain = self.piece.gain.at(sample);
+    fn add(&mut self, sample: i64, values: &[f32], into: &mut Planar, at: usize) {
+        let mut gain = self.piece.gain.at(sample);
+        if self.level.scaled {
+            gain *= self.level.scale.next_value();
+        }
         let pan = match self.pan {
             ClipPan::None => {
                 for (channel, value) in values.iter().enumerate() {
@@ -614,6 +717,10 @@ impl ClipChain {
                 }
                 return;
             }
+            ClipPan::Fixed(_) if self.level.panned => [
+                self.level.sides[0].next_value(),
+                self.level.sides[1].next_value(),
+            ],
             ClipPan::Fixed(pan) => pan,
             ClipPan::Keyed => balance(self.piece.pan_at(sample)),
         };

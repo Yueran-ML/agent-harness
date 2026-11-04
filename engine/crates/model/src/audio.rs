@@ -911,7 +911,10 @@ pub fn first_buses() -> Vec<Bus> {
 /// (`insert.fx1.on`, `insert.fx1.ceiling_db`); and `mute`, which a track and a bus have beside
 /// it. A number is a setting that changes smoothly, and a lane of it is continuous; a switch is
 /// a lane of a setting that is on or off. What is neither (a kind, a mode, a source) has none.
-fn automatable(strip: &Strip) -> serde_json::Value {
+/// The engine reads it too, to tell a change of the settings that the graph of the sound takes
+/// as it plays from one that needs another graph (T5).
+#[must_use]
+pub fn automatable(strip: &Strip) -> serde_json::Value {
     let mut view = serde_json::to_value(strip).unwrap_or_default();
     let Some(object) = view.as_object_mut() else {
         return serde_json::Value::Null;

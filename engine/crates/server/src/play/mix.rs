@@ -9,8 +9,9 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use columbina_audio::feed::{ClipFeed, ClipSource, FeedError};
-use columbina_audio::graph::{self, route, Graph, Options, Purpose};
+use columbina_audio::graph::{route, Graph, Options, Purpose};
 use columbina_audio::node::Layout as Channels;
+use columbina_audio::stream::Resampler;
 use columbina_media::AudioFormat;
 use columbina_model::{resolve, Project};
 use serde_json::json;
@@ -23,27 +24,109 @@ type Stereo = [f32; 2];
 /// The most samples that the graph of a mixer processes at once.
 const MAX_BLOCK: usize = 4096;
 
-/// The readers of the clips of a graph, opened as the graph first asks for each.
-struct Feed {
+/// The readers of the clips of a graph, opened as the graph first asks for each: the feed of a
+/// mixer, and the reading ahead and the starting of a graph that plays (`sound.rs`).
+pub(crate) struct Feed {
     project: Arc<Project>,
     timeline: usize,
     sources: Vec<ClipSource>,
-    readers: BTreeMap<usize, Reader>,
+    /// The reader of each clip, the read that last used it, and what it reads.
+    readers: BTreeMap<usize, (Reader, u64, ReaderKey)>,
     /// The clips read in the block under way.
     read: BTreeSet<usize>,
     /// What went wrong first, since it was last taken.
     error: Option<String>,
-    /// The clips that the mix does not need and could not be read, told of once each.
+    /// The clips that could not be read and are silent, told of once each.
     silenced: BTreeSet<usize>,
+    /// Whether a clip that is heard and cannot be read is silent too, told of once, as one that
+    /// is not heard is (playback, where the mix goes on), rather than an error (an export).
+    lenient: bool,
+    /// The reads so far.
+    reads: u64,
+    /// Where readers let go of are kept for other feeds, and taken from.
+    pool: Option<Arc<Readers>>,
 }
 
+/// What a reader reads: the media (its id and its file), at the rate of the timeline, in the
+/// layout of a clip.
+type ReaderKey = (String, String, u32, Layout);
+
+/// The most readers kept for other feeds.
+const KEPT_READERS: usize = 48;
+
+/// Readers let go of by a feed, kept for the next feeds of graphs of the same timeline (T5's
+/// review: a graph swapped in as the sound plays opens no decoder that one before it had open; a
+/// reader moved elsewhere seeks, one that reads on from where it was does not).
+#[derive(Default)]
+pub(crate) struct Readers {
+    kept: std::sync::Mutex<Vec<(ReaderKey, Reader)>>,
+}
+
+impl Readers {
+    fn take(&self, key: &ReaderKey) -> Option<Reader> {
+        let mut kept = self
+            .kept
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let at = kept.iter().rposition(|(of, _)| of == key)?;
+        Some(kept.remove(at).1)
+    }
+
+    fn keep(&self, key: ReaderKey, reader: Reader) {
+        let mut kept = self
+            .kept
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if kept.len() >= KEPT_READERS {
+            kept.remove(0);
+        }
+        kept.push((key, reader));
+    }
+}
+
+/// The readers a lenient feed keeps at the most of clips that it has not read lately.
+const IDLE_READERS: usize = 8;
+
+/// How many reads ago a reader was last used for it to be idle.
+const IDLE_READS: u64 = 256;
+
 impl Feed {
+    /// The feed of the clips `sources` of timeline `timeline` of `project`; `lenient` as
+    /// [`Feed::lenient`] says.
+    pub(crate) fn new(
+        project: Arc<Project>,
+        timeline: usize,
+        sources: &[ClipSource],
+        lenient: bool,
+    ) -> Self {
+        Feed {
+            project,
+            timeline,
+            sources: sources.to_vec(),
+            readers: BTreeMap::new(),
+            read: BTreeSet::new(),
+            error: None,
+            silenced: BTreeSet::new(),
+            lenient,
+            reads: 0,
+            pool: None,
+        }
+    }
+
+    /// The same, taking its readers from `pool` where it can, and keeping them there when it
+    /// lets them go.
+    pub(crate) fn pooled(mut self, pool: &Arc<Readers>) -> Self {
+        self.pool = Some(Arc::clone(pool));
+        self
+    }
+
     fn fill(
         &mut self,
         clip: usize,
         range: Range<i64>,
         out: &mut [&mut [f32]],
     ) -> Result<(), String> {
+        self.reads += 1;
         if !self.readers.contains_key(&clip) {
             let source = &self.sources[clip];
             let timeline = &self.project.timelines[self.timeline];
@@ -61,14 +144,23 @@ impl Feed {
                 .ok_or("the resolved audio media is missing")?;
             let channels =
                 u16::try_from(source.channels).map_err(|_| "too many channels of sound")?;
-            let reader = Reader::new(
-                media,
+            let layout = Layout::of_clip(model, channels);
+            let key = (
+                media.id.clone(),
+                media.path.clone(),
                 timeline.sample_rate,
-                &Layout::of_clip(model, channels),
-            )?;
-            self.readers.insert(clip, reader);
+                layout.clone(),
+            );
+            let kept = self.pool.as_ref().and_then(|pool| pool.take(&key));
+            let reader = match kept {
+                Some(reader) => reader,
+                None => Reader::new(media, timeline.sample_rate, &layout)?,
+            };
+            self.readers.insert(clip, (reader, self.reads, key));
         }
-        let reader = self.readers.get_mut(&clip).expect("opened above");
+        let reads = self.reads;
+        let (reader, used, _) = self.readers.get_mut(&clip).expect("opened above");
+        *used = reads;
         let frames = usize::try_from(range.end - range.start).map_err(|_| "a backward read")?;
         let pcm = reader.read(range)?;
         let channels = out.len();
@@ -82,6 +174,39 @@ impl Feed {
         }
         Ok(())
     }
+
+    /// Let the readers go that a lenient feed has not used lately, where it has many.
+    fn prune(&mut self) {
+        if self.lenient && self.readers.len() > IDLE_READERS {
+            let reads = self.reads;
+            let idle: Vec<usize> = self
+                .readers
+                .iter()
+                .filter(|(_, (_, used, _))| reads.saturating_sub(*used) >= IDLE_READS)
+                .map(|(clip, _)| *clip)
+                .collect();
+            for clip in idle {
+                if let Some((reader, _, key)) = self.readers.remove(&clip) {
+                    self.give_up(key, reader);
+                }
+            }
+        }
+    }
+
+    /// Lets `reader` go: into the pool, if there is one.
+    fn give_up(&self, key: ReaderKey, reader: Reader) {
+        if let Some(pool) = &self.pool {
+            pool.keep(key, reader);
+        }
+    }
+}
+
+impl Drop for Feed {
+    fn drop(&mut self) {
+        for (_, (reader, _, key)) in std::mem::take(&mut self.readers) {
+            self.give_up(key, reader);
+        }
+    }
 }
 
 impl ClipFeed for Feed {
@@ -92,17 +217,25 @@ impl ClipFeed for Feed {
         out: &mut [&mut [f32]],
     ) -> Result<(), FeedError> {
         self.read.insert(clip);
-        match self.fill(clip, range, out) {
+        let filled = self.fill(clip, range, out);
+        self.prune();
+        match filled {
             Ok(()) => Ok(()),
             // A clip that is not heard (a muted track, which a track that was off before schema
-            // 4 is) plays silence when its media cannot be read, as it did when it was not read.
-            Err(message) if !self.sources[clip].heard => {
+            // 4 is) plays silence when its media cannot be read, as it did when it was not read;
+            // in playback, a clip that is heard does too, so that the rest plays on.
+            Err(message) if self.lenient || !self.sources[clip].heard => {
                 for out in out.iter_mut() {
                     out.fill(0.0);
                 }
                 if self.silenced.insert(clip) {
+                    let event = if self.sources[clip].heard {
+                        "sound_failed"
+                    } else {
+                        "sound_of_a_clip_unread"
+                    };
                     log(
-                        "sound_of_a_clip_unread",
+                        event,
                         &json!({"clip": self.sources[clip].clip, "message": message}),
                     );
                 }
@@ -149,15 +282,12 @@ impl Mixer {
                 Options::new(MAX_BLOCK, self.purpose),
             )
             .map_err(|error| error.to_string())?;
-            self.feed = Some(Feed {
-                project: Arc::clone(&self.project),
-                timeline: self.timeline,
-                sources: graph.clips().to_vec(),
-                readers: BTreeMap::new(),
-                read: BTreeSet::new(),
-                error: None,
-                silenced: BTreeSet::new(),
-            });
+            self.feed = Some(Feed::new(
+                Arc::clone(&self.project),
+                self.timeline,
+                graph.clips(),
+                false,
+            ));
             for clip in graph.unplayable() {
                 log("sound_of_a_clip_unplayable", &json!({ "clip": clip }));
             }
@@ -221,130 +351,73 @@ impl Mixer {
         Ok(mixed)
     }
 
+    /// The mix made into the sound of a device of `format` from sample `from` of the timeline,
+    /// 20 ms at a time, until the end of the timeline (an export of T4b, until T6).
     pub fn source(self, format: AudioFormat, from: i64) -> Box<dyn crate::audio::Source> {
+        let timeline = &self.project.timelines[self.timeline];
+        let end = end_of(timeline);
+        let mut resampler = Resampler::new(
+            timeline.sample_rate,
+            format.rate,
+            usize::from(format.channels),
+            MAX_BLOCK,
+        );
+        resampler.start(from);
         Box::new(OutputSource {
+            next: resampler.first_input(),
             mixer: self,
-            format,
-            from,
-            played: 0,
-            window: [vec![], vec![]],
-            window_from: 0,
+            resampler,
+            end,
+            frames: usize::try_from(format.rate / 50).unwrap_or(1).max(1),
         })
     }
 }
 
-/// Converts the stereo timeline mix to the device rate/layout without restarting the
-/// fractional resampling phase at each 20 ms output block. The mix of the timeline is kept
-/// between blocks, so that the graph runs through each sample once, in order (the plan's check
-/// of the code, 1), and each block mixes only what the last did not; the sound for the device is
-/// clipped here, and only here.
+/// The sample of the timeline at the end of `timeline`, at its rate of sound.
+pub(crate) fn end_of(timeline: &columbina_model::Timeline) -> i64 {
+    i64::try_from(
+        i128::from(resolve::duration(timeline))
+            * i128::from(timeline.sample_rate)
+            * i128::from(timeline.rate.den)
+            / i128::from(timeline.rate.num),
+    )
+    .unwrap_or(i64::MAX)
+}
+
+/// The mix of the timeline made into the rate and channels of a device by the streaming
+/// resampler of T5 (`columbina_audio::stream`), which keeps the samples of the mix that its
+/// filter reaches back to: the graph runs through each sample once, in order (the plan's check of
+/// the code, 1), and the sound for the device is clipped there, and only there.
 struct OutputSource {
     mixer: Mixer,
-    format: AudioFormat,
-    from: i64,
-    played: i64,
-    /// The mix of the timeline from `window_from`, left and right.
-    window: [Vec<f32>; 2],
-    window_from: i64,
+    resampler: Resampler,
+    /// The sample of the timeline mixed next.
+    next: i64,
+    end: i64,
+    /// The frames of each run.
+    frames: usize,
 }
 
 impl crate::audio::Source for OutputSource {
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "the resampling phase is a fraction in [0, 1)"
-    )]
     fn next(&mut self) -> Result<Option<Vec<f32>>, String> {
-        let timeline = &self.mixer.project.timelines[self.mixer.timeline];
-        let rate = timeline.sample_rate;
-        let frames = self.format.rate / 50;
-        let end = i128::from(resolve::duration(timeline))
-            * i128::from(rate)
-            * i128::from(timeline.rate.den)
-            / i128::from(timeline.rate.num);
-        let (start, device) = (self.from, self.format.rate);
-        let at = |played: i64| {
-            let position =
-                i128::from(start) * i128::from(device) + i128::from(played) * i128::from(rate);
-            (
-                position.div_euclid(i128::from(device)),
-                position.rem_euclid(i128::from(device)),
-            )
-        };
-        let (first, _) = at(self.played);
-        if first >= end {
+        if self.resampler.next_output() >= self.end {
             return Ok(None);
         }
-        let (last, _) = at(self.played + i64::from(frames) - 1);
-        let cutoff = (f64::from(self.format.rate) / f64::from(rate)).min(1.0);
-        let radius = i128::from(graph::radius(cutoff));
-        let from = i64::try_from(first - radius)
-            .map_err(|_| "output time is outside audio sample time")?;
-        let to = i64::try_from(last + radius + 1)
-            .map_err(|_| "output time is outside audio sample time")?;
-        self.mix(from, to)?;
-        let window = [self.window[0].as_slice(), self.window[1].as_slice()];
-        let mut output = Vec::with_capacity(
-            usize::try_from(frames).expect("device run") * usize::from(self.format.channels),
-        );
-        for offset in 0..frames {
-            let (sample, remainder) = at(self.played + i64::from(offset));
-            let index =
-                usize::try_from(sample - i128::from(from)).expect("sample in output window");
-            let mut stereo = [0.0; 2];
-            graph::resampled(
-                &window,
-                index,
-                remainder as f64 / f64::from(self.format.rate),
-                cutoff,
-                &mut stereo,
-            );
-            if self.format.channels == 1 {
-                output.push(
-                    ((stereo[0] + stereo[1]) * std::f32::consts::FRAC_1_SQRT_2).clamp(-1.0, 1.0),
-                );
-            } else {
-                output.extend(stereo.map(|side| side.clamp(-1.0, 1.0)));
-                output.extend(std::iter::repeat_n(
-                    0.0,
-                    usize::from(self.format.channels) - 2,
-                ));
+        let channels = self.resampler.channels();
+        let mut output = vec![0.0; self.frames * channels];
+        let mut made = 0;
+        loop {
+            made += self.resampler.pull(&mut output[made * channels..]);
+            if made == self.frames {
+                return Ok(Some(output));
             }
+            let count = self.resampler.room().clamp(1, MAX_BLOCK);
+            let mixed = self.mixer.block(self.next, count)?;
+            let (left, right): (Vec<f32>, Vec<f32>) =
+                mixed.iter().map(|pair| (pair[0], pair[1])).unzip();
+            self.resampler.push(&left, &right);
+            self.next += i64::try_from(count).map_err(|_| "audio block is too long")?;
         }
-        self.played += i64::from(frames);
-        Ok(Some(output))
-    }
-}
-
-impl OutputSource {
-    /// Keeps the mix of the timeline from `from` to the sample before `to` in the window: what
-    /// it already has of it is kept, and only what follows is mixed, so that the mixer runs on.
-    fn mix(&mut self, from: i64, to: i64) -> Result<(), String> {
-        let have = self.window_from
-            + i64::try_from(self.window[0].len()).map_err(|_| "audio window is too large")?;
-        if from < self.window_from || from > have {
-            for side in &mut self.window {
-                side.clear();
-            }
-        } else {
-            let gone = usize::try_from(from - self.window_from).expect("within the window");
-            for side in &mut self.window {
-                side.drain(..gone);
-            }
-        }
-        self.window_from = from;
-        let have =
-            from + i64::try_from(self.window[0].len()).map_err(|_| "audio window is too large")?;
-        if to > have {
-            let more = self.mixer.block(
-                have,
-                usize::try_from(to - have).map_err(|_| "output audio window is too large")?,
-            )?;
-            for pair in more {
-                self.window[0].push(pair[0]);
-                self.window[1].push(pair[1]);
-            }
-        }
-        Ok(())
     }
 }
 

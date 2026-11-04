@@ -14,6 +14,10 @@
 //! - [`fx`]: the nodes of the effects (the EQ, T7; Dynamics, T8).
 //! - [`graph`]: the graph of a timeline built from its project, its routing, mixing, delays and
 //!   levels (T4b), and [`feed`], where it takes the sound of its clips from.
+//! - [`play`]: playback (T5): the thread of the mix that runs a graph ahead of the device, takes
+//!   the changes of its settings and swaps in a new graph at the edge of a block; the clips' sound
+//!   read ahead into rings; and what the device takes from its ring. [`stream`] makes the mix into
+//!   the device's rate and channels.
 //! - [`meter`], [`loudness`], [`standards`], [`analysis`]: the level meters, the loudness of
 //!   BS.1770, the table of the loudness standards, and the analysis of a whole sound with the
 //!   gains of Normalize Audio Levels and Level Matcher (T9).
@@ -35,8 +39,10 @@ pub mod graph;
 pub mod loudness;
 pub mod meter;
 pub mod node;
+pub mod play;
 pub mod rt;
 pub mod standards;
+pub mod stream;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 

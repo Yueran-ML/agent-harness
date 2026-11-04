@@ -822,11 +822,19 @@ export interface Imported {
   next_id: number;
 }
 
+/** The codec of the picture of an export. */
+export type RenderCodec = 'h264' | 'hevc' | 'prores';
+/** The quality of the picture of an export. */
+export type RenderQuality = 'high' | 'medium' | 'small';
+
 /** Export options from the page. Only the native Save As dialog supplies the output path. */
 export interface RenderOptions {
   timeline: string;
-  codec: 'h264' | 'hevc' | 'prores';
-  quality: 'high' | 'medium' | 'small';
+  /** The picture's codec and quality: both for a film, neither for the sound alone. */
+  codec?: RenderCodec;
+  quality?: RenderQuality;
+  /** `null`: the sound alone, into a `.wav` or an `.m4a`, without `codec` or `quality`. */
+  video?: null;
   range?: { from: number; to: number };
   /**
    * The subtitle tracks of the timeline whose SRT is saved beside the film, shown or hidden, as the

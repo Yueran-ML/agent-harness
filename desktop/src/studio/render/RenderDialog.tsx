@@ -1,14 +1,14 @@
 import { useState, type FormEvent } from 'react';
 import { useWords } from '../../app/locale';
 import { Sheet } from '../../app/Sheet';
-import type { RenderOptions, SubtitleTrack, Timeline } from '../engine';
+import type { RenderCodec, RenderOptions, RenderQuality, SubtitleTrack, Timeline } from '../engine';
 import { outFrame, timecode } from '../timecode';
 import { duration } from '../timeline/geometry';
 import type { Marks } from '../timeline/snap';
 import type { RenderRefusal, RenderStart } from './renders';
 
 /** The codecs, by the names that every editor knows them by in every language. */
-export const CODECS: readonly { id: RenderOptions['codec']; name: string }[] = [
+export const CODECS: readonly { id: RenderCodec; name: string }[] = [
   { id: 'h264', name: 'H.264' },
   { id: 'hevc', name: 'HEVC (H.265)' },
   { id: 'prores', name: 'ProRes' },
@@ -69,8 +69,8 @@ export function RenderDialog({ timelines, chosen, marks, running, onStart, onClo
   // The marks are those of the timeline that the page shows, and of no other.
   const range = timeline !== null && timeline.id === chosen ? markedRange(marks, duration(timeline)) : null;
   const [part, setPart] = useState<'whole' | 'marked'>(() => (range !== null ? 'marked' : 'whole'));
-  const [codec, setCodec] = useState<RenderOptions['codec']>('h264');
-  const [quality, setQuality] = useState<RenderOptions['quality']>('high');
+  const [codec, setCodec] = useState<RenderCodec>('h264');
+  const [quality, setQuality] = useState<RenderQuality>('high');
   // The subtitle tracks checked, for the timeline chosen: another timeline starts from its shown one.
   const [subtitles, setSubtitles] = useState<{ timeline: string; tracks: string[] }>(() => ({ timeline: timelineId, tracks: shownSubtitleTracks(timeline) }));
   const tracks = subtitleTracksOf(timeline);
@@ -127,7 +127,7 @@ export function RenderDialog({ timelines, chosen, marks, running, onStart, onClo
       </fieldset>
 
       <label className="setting-name" htmlFor="render-quality">{labels.quality}</label>
-      <select id="render-quality" className="field" value={quality} onChange={event => setQuality(event.target.value as RenderOptions['quality'])} data-test="render-quality">
+      <select id="render-quality" className="field" value={quality} onChange={event => setQuality(event.target.value as RenderQuality)} data-test="render-quality">
         {QUALITIES.map(each => <option key={each} value={each}>{labels[each === 'small' ? 'low' : each]}</option>)}
       </select>
 

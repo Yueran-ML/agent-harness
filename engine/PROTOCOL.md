@@ -3807,7 +3807,7 @@ real ids. For example:
 | `engine.yielding` | `{"to": "desktop"}`: the engine is about to end, to yield the project to the desktop's engine (see `engine.yield`) |
 | `media.proxy` | `{"media": "m1", "state": "queued" \| "running" \| "done" \| "failed", "progress": 0.5, "message"?: "..."}` (see Proxies) |
 | `media.waveform` | `{"media": "m1"}`, or `{"media": "m1", "stream": 1}` for the waveform of a stream (background analysis finished; query again for data or error) |
-| `render.progress` | `{"job", "state": "running" \| "done" \| "failed" \| "cancelled", "frame", "frames", "fps", "path", "encoder"?, "message"?, "missing_luts"?, "normalization"?}` (see Rendering a timeline, Grades in the picture, and The sound of an export) |
+| `render.progress` | `{"job", "state": "running" \| "done" \| "failed" \| "cancelled", "frame", "frames", "fps", "path", "encoder"?, "message"?, "missing_luts"?, "measuring"?, "normalization"?}` (see Rendering a timeline, Grades in the picture, and The sound of an export) |
 | `scopes.frame` | `{"scope_id": "scope-1", "view": "timeline", "frame": n, "width": w, "height": h, "rgba": "<base64>"}`: a picture of a scope, to the connection that subscribed it only (see Scopes) |
 | `gallery.changed` | `{}`: the Gallery was changed; call `gallery.list` again (see The Gallery) |
 | `window_presets.changed` | `{}`: the window presets were changed; call `window_presets.list` again (see Window presets) |
@@ -4102,10 +4102,24 @@ tracks, buses, VCAs, effects and lanes), built for export from the snapshot: a L
 sidechain is never exported, every clip is read by a reader that waits for it (a clip that is
 heard and cannot be read fails the export), and the graph starts at the first sample of the
 range with the preroll that playback from the same sample has (the graph's settling, at most
-10 s). So the sound exported from a frame is, to the bit, the sound that playback from that frame
-gives the device (the null test: a playback captured with `--sound capture=<path>` less an export
-as `pcm_f32le` is nothing but zeros); an export of a range and one of the whole timeline come
-within −90 dBFS of each other after the preroll where the graph settles within 10 s.
+10 s). So the sound exported from a sample is, to the bit, the sound that playback from that
+sample gives the device (the null test: a playback captured with `--sound capture=<path>` less an
+export as `pcm_f32le` is nothing but zeros), where:
+
+- the file is at the rate of the device (another rate is made by another filter);
+- the bus is stereo, or is compared as the device hears it (another format is folded into two
+  sides by the device);
+- no sample goes beyond ±1, or the file is of floats (the device's copy, and AAC and PCM of 24
+  bits, are clipped);
+- the playback started where it was asked: a playback whose graph is not built and prerolled
+  within 2 s goes on by the clock of the system and starts its sound again half a second ahead of
+  the picture (see The transport), at a sample of its own and not at the requested frame. The
+  session that a playback starts as the device is first made ready starts where the clock is by
+  then, a sample or so after the frame; the digest's `audio_sample` less `audio_samples` is where
+  each session started.
+
+An export of a range and one of the whole timeline come within −90 dBFS of each other after the
+preroll where the graph settles within 10 s.
 
 `audio` is optional, every field of it too; unknown fields are refused:
 
@@ -4115,8 +4129,10 @@ within −90 dBFS of each other after the preroll where the graph settles within
   libav's channels: 5.0 and 5.1 with the surrounds at the back (5.1 is `FL FR FC LFE BL BR`, as
   WAV and AAC have it), 7.0 and 7.1 with the surrounds at the sides and the rears at the back
   (`FL FR FC LFE BL BR SL SR`), the S of 4.0 at the back centre.
-- `rate`: samples a second of the file, 8000 to 192000; by default the timeline's
-  (`sample_rate`). Another rate is made by the windowed sinc that makes the device's rate.
+- `rate`: samples a second of the file, 7350 to 192000; by default the timeline's
+  (`sample_rate`). Another rate is made by the windowed sinc that makes the device's rate. AAC
+  takes only the rates of the table of MPEG-4 audio: 7350, 8000, 11025, 12000, 16000, 22050,
+  24000, 32000, 44100, 48000, 64000, 88200 and 96000.
 - `codec`: `aac` (in `.mp4`, `.mov`, `.m4a`), `pcm_s24le` or `pcm_f32le` (in `.mov`, `.wav`); by
   default `pcm_s24le` in `.wav` and `aac` else. AAC and PCM of 24 bits are clipped to −1…1, the
   one place where the sound of an export is clipped; PCM of floats is written as the graph gives
@@ -4133,6 +4149,15 @@ within −90 dBFS of each other after the preroll where the graph settles within
   after it (the Limiter effect, its ceiling at the highest true peak, release 100 ms), and
   measures again: the loudness that the limiter took is given back once where it is more than
   0.1 LU, and the ceiling is lowered by what the true peak still goes over, twice at the most.
+
+Without `audio`, a film of a timeline that has no clip of sound that is on has no sound and
+needs no bus. Audio Normalization asked for of a film without sound is not done, and `message`
+says so.
+
+While Audio Normalization measures, before the first frame is written, `render.progress` carries
+`measuring`: `{"pass", "passes", "frame", "frames"}` (pass `pass` of at most `passes`, `frame` of
+`frames` samples of it measured); each pass is told as it starts. `fps` counts from the end of
+the measuring.
 
 With `"video": null` the sound is exported alone, without `codec` or `quality`, into a `.wav` or
 an `.m4a`; the range is still in frames of the timeline, and the progress counts them. A bus,

@@ -1050,7 +1050,7 @@ automation_arm, strip: trim_db, fader_db -100..10, pan, eq, dynamics, sends, out
 inserts, track_fx Ducker); lists are replaced whole; tracks of an active track group follow
 (fader/pan/send levels by the same change, mute/solo alike) unless follow_groups:false. Ops:
 add_bus/set_bus/remove_bus (bus {id:"",name,color:"#rrggbbaa",format,strip:{outputs:[{bus}]}};
-a bus no strip outputs to is a main output), add_vca/set_vca/remove_vca, add_track_group/
+a bus that outputs to no bus is a main output), add_vca/set_vca/remove_vca, add_track_group/
 set_track_group/remove_track_group (group {id:"",name,members,linked}), set_bus/set_vca/
 set_track_group/set_timeline_audio take a patch; add_insert {of:{track|bus|clip:id},insert:
 {effect:{kind:"gain",gain_db:-3}},index?}, set_insert {of,slot,insert|null}, move_insert

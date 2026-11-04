@@ -55,3 +55,22 @@ unsafe_code = "deny"
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
+
+# The sound's DSP optimised in debug builds too (plan T6): playback in a debug build builds its
+# graph and runs its preroll (up to 10 s of sound) before its first sound, and unoptimised that
+# took more than the 2 s after which playback falls back to the clock of the system, so that the
+# engine's null test (server/tests/rpc/null.rs) could not run in a plain `cargo test`.
+[profile.dev.package.columbina-audio]
+opt-level = 3
+
+[profile.dev.package.columbina-stretch]
+opt-level = 3
+
+[profile.dev.package.rustfft]
+opt-level = 3
+
+[profile.dev.package.realfft]
+opt-level = 3
+
+[profile.dev.package.nnnoiseless]
+opt-level = 3

@@ -5,6 +5,16 @@
 //! (EQ, Dynamics, Limiter, Noise Reduction, Ducker, Pitch, a send to a bus, a VCA, a lane of the
 //! fader, a crossfade, a clip at 0.8 times its speed with its pitch kept and one at 1.5 times,
 //! mono, stereo and 5.1 tracks), and their media are WAV, not Matroska (T3's note).
+//!
+//! Playback must start where it is asked: a session whose graph is not built and prerolled within
+//! 2 s falls back to the clock of the system and starts its sound again elsewhere (T5), outside
+//! the promise of the null test. The workspace's `Cargo.toml` therefore builds the DSP
+//! (`columbina-audio`, `columbina-stretch`, `rustfft`, `realfft`, `nnnoiseless`) optimised in
+//! debug builds too; unoptimised, the preroll of these timelines took about 5 s. The sessions'
+//! starts are read from the digest (`audio_sample` less `audio_samples`): the first, started as
+//! the device is first made ready, may start a sample after its frame. `COLUMBINA_REQUIRE_GPU=1`
+//! makes a machine without a card fail the test instead of skipping it, and
+//! `COLUMBINA_NULL_KEEP=<folder>` keeps the captures and the exports there.
 
 use std::path::Path;
 use std::time::Duration;
@@ -418,6 +428,12 @@ fn difference(a: &[f32], b: &[f32]) -> (usize, f32) {
 )]
 async fn the_sound_played_less_the_sound_exported_is_nothing_but_zeros() {
     if columbina_compose::gpu_for_tests().is_none() {
+        // Under the gate a machine without a card fails this test instead of passing it unrun.
+        assert_ne!(
+            std::env::var("COLUMBINA_REQUIRE_GPU").as_deref(),
+            Ok("1"),
+            "COLUMBINA_REQUIRE_GPU=1 and no graphics card"
+        );
         return;
     }
     let dir = super::project_dir();

@@ -191,8 +191,10 @@ pub const EQ_ZONES: [(f32, f32); 4] = [
 /// The slope of a shelf of the EQ, the S of the RBJ cookbook (C-E4).
 pub const EQ_SHELF_SLOPE: f32 = 1.0;
 
-/// The crossfade between the filters of the old and the new coefficients when a band changes
-/// (plan T7: the coefficients are not interpolated).
+/// The crossfade between the old and the new structure of a band of the EQ when what is not a
+/// number on a line changes: a band or the EQ switched, a type, a slope (plan T7). The
+/// frequency, the gain and the Q ramp over [`SMOOTHING`] instead, the filters designed again
+/// at each sample (the review of T7).
 pub const EQ_CROSSFADE: f64 = 0.010;
 
 /// The highest frequency of a band of the EQ, as a part of the rate: 20 kHz, or less where the

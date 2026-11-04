@@ -240,7 +240,8 @@ impl Coefficients {
     /// `output` (the newest first): y\[n\]. `output` is moved on, `input` is left to the caller,
     /// since it may be the output of the filter before. The sums go in pairs, b0·x + (b1·x1 −
     /// a1·y1) + (b2·x2 − a2·y2), so that a filter whose b equal its a passes the sound to the bit
-    /// once its past in and out are the same. The output is put to 0 below 1e-30.
+    /// once its past in and out are the same, but for a sample below 1e-30 in size: the output
+    /// is put to 0 there.
     #[inline]
     pub fn tick(&self, x: f64, input: [f64; 2], output: &mut [f64; 2]) -> f64 {
         let y = flush(

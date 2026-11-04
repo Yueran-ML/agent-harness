@@ -7,7 +7,7 @@
     clippy::float_cmp,
     clippy::many_single_char_names,
     clippy::cast_possible_truncation,
-    reason = "exact values compared on purpose, the letters of the cookbook, frequencies and               samples of a test in f32"
+    reason = "exact values compared on purpose, the letters of the cookbook, test samples in f32"
 )]
 
 use std::f64::consts::{PI, TAU};
@@ -15,13 +15,16 @@ use std::f64::consts::{PI, TAU};
 use columbina_audio::constants::{samples, EQ_CROSSFADE, SILENCE_DB};
 use columbina_audio::fx::biquad::{butterworth_q, butterworth_q_of, Coefficients};
 use columbina_audio::fx::eq::{
-    param, response, Band, Eq, Field, Kind, Settings, Variant, Zone, GAIN, MAX_BANDS, ON,
+    param, response, settle_for, Band, Eq, Field, Kind, Settings, Variant, Zone, FREQUENCY_RANGE,
+    GAIN, GAIN_RANGE_DB, LANE_SETTLE, MAX_BANDS, ON, Q_RANGE,
 };
 use columbina_audio::testing::{
     assert_latency, assert_settle, chunk_invariance, impulse, noise, realtime, render, sine,
     CountingAllocator, Run,
 };
-use columbina_audio::{Automated, Automation, Block, Layout, Node, Planar, Spec};
+use columbina_audio::{
+    Automated, Automation, Block, Layout, Node, ParamId, Planar, Spec, Unsupported,
+};
 
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
@@ -1110,4 +1113,313 @@ fn the_cost_of_a_strip_on_stereo() {
             elapsed.as_secs_f64() / 10.0 * 100.0
         );
     }
+}
+
+// --- The review of T7 ------------------------------------------------------------------------
+
+/// An EQ that reports the settling of other settings: what the graph does with `settle_for`
+/// and the worst values of the lanes in the preroll (T4b).
+struct Settled {
+    eq: Eq,
+    settle: u32,
+}
+
+impl Node for Settled {
+    fn prepare(&mut self, spec: &Spec) -> Result<(), Unsupported> {
+        self.eq.prepare(spec)
+    }
+    fn process(&mut self, ctx: &Block, input: &[&[f32]], output: &mut [&mut [f32]]) {
+        self.eq.process(ctx, input, output);
+    }
+    fn latency(&self) -> u32 {
+        self.eq.latency()
+    }
+    fn settle(&self) -> u32 {
+        self.settle
+    }
+    fn reset(&mut self) {
+        self.eq.reset();
+    }
+    fn set(&mut self, param: ParamId, value: f32) {
+        self.eq.set(param, value);
+    }
+}
+
+#[test]
+fn a_lane_slower_than_the_setting_settles_in_the_time_of_its_worst_values() {
+    // A bell of +20 dB and Q 10.3 set at 5 kHz, its lane at 20 Hz, a tone of 20 Hz.
+    let set = clip(|s| {
+        s.bands[1].freq = 5_000.0;
+        s.bands[1].gain_db = 20.0;
+        s.bands[1].q = 10.3;
+    });
+    let mut worst = set;
+    worst.bands[1].freq = 20.0;
+    let settle = settle_for(&worst, RATE);
+    let spec = Spec::new(RATE, 1_024, Layout::Mono);
+    let from = settle as usize;
+    let frames = 2 * from + 4_800;
+    let run = Run::new(vec![sine(RATE, 20.0, 0.25, frames)])
+        .with_automation(param(1, Field::Freq), vec![20.0; frames]);
+    assert_settle(
+        || Settled {
+            eq: Eq::new(&set),
+            settle,
+        },
+        &spec,
+        &run,
+        from,
+    );
+}
+
+#[test]
+fn an_eq_set_off_and_turned_on_by_its_lane_settles_as_reported() {
+    let mut settings = high_pass(24);
+    settings.bands[0].freq = 20.0;
+    settings.on = false;
+    let spec = Spec::new(RATE, 1_024, Layout::Mono);
+    let mut probe = Eq::new(&settings);
+    probe.prepare(&spec).unwrap();
+    let from = probe.settle() as usize;
+    let frames = 2 * from + 4_800;
+    let run = Run::new(vec![sine(RATE, 25.0, 0.5, frames)]).with_automation(ON, vec![1.0; frames]);
+    assert_settle(|| Eq::new(&settings), &spec, &run, from);
+    // And a band set off, turned on by its lane.
+    let mut band_off = high_pass(24);
+    band_off.bands[0].freq = 20.0;
+    band_off.bands[0].on = false;
+    let run = Run::new(vec![sine(RATE, 25.0, 0.5, frames)])
+        .with_automation(param(0, Field::On), vec![1.0; frames]);
+    assert_settle(|| Eq::new(&band_off), &spec, &run, from);
+}
+
+#[test]
+fn settle_for_counts_every_band_as_on_and_is_what_the_eq_reports() {
+    let settings = busy_strip();
+    let mut off = settings;
+    off.on = false;
+    for band in &mut off.bands {
+        band.on = false;
+    }
+    assert_eq!(settle_for(&off, RATE), settle_for(&settings, RATE));
+    let mut eq = Eq::new(&off);
+    eq.prepare(&Spec::new(RATE, 512, Layout::Mono)).unwrap();
+    assert_eq!(eq.settle(), settle_for(&settings, RATE));
+    // Slower poles settle later.
+    let mut slower = settings;
+    slower.bands[2].q = 10.0;
+    assert!(settle_for(&slower, RATE) > settle_for(&settings, RATE));
+}
+
+#[test]
+fn the_ramps_that_follow_a_lane_are_counted_from_the_widest_range() {
+    // Two values following the same lane from the ends of a range come within 1e-6 of each
+    // other in LANE_SETTLE ramps: (1 − 1/N)^(kN) < e^(−k).
+    let widest = [
+        f64::from(FREQUENCY_RANGE.1 / FREQUENCY_RANGE.0).ln(),
+        10_f64.powf(f64::from(GAIN_RANGE_DB.1) / 20.0)
+            - 10_f64.powf(f64::from(GAIN_RANGE_DB.0) / 20.0),
+        f64::from(Q_RANGE.1 / Q_RANGE.0).ln(),
+    ]
+    .into_iter()
+    .fold(0.0, f64::max);
+    #[allow(clippy::cast_sign_loss, reason = "a count")]
+    let ramps = (widest / 1e-6).ln().ceil() as u64;
+    assert_eq!(LANE_SETTLE, ramps);
+}
+
+/// The response in dB of a shelf of the cookbook (S given), written out again here.
+fn cookbook_shelf_db(rate: f64, f0: f64, gain_db: f64, slope: f64, high: bool, freq: f64) -> f64 {
+    let a = 10_f64.powf(gain_db / 40.0);
+    let w0 = TAU * f0 / rate;
+    let (c, s) = (w0.cos(), w0.sin());
+    let alpha = s / 2.0 * ((a + 1.0 / a) * (1.0 / slope - 1.0) + 2.0).sqrt();
+    let k = 2.0 * a.sqrt() * alpha;
+    let (b, d) = if high {
+        (
+            [
+                a * ((a + 1.0) + (a - 1.0) * c + k),
+                -2.0 * a * ((a - 1.0) + (a + 1.0) * c),
+                a * ((a + 1.0) + (a - 1.0) * c - k),
+            ],
+            [
+                (a + 1.0) - (a - 1.0) * c + k,
+                2.0 * ((a - 1.0) - (a + 1.0) * c),
+                (a + 1.0) - (a - 1.0) * c - k,
+            ],
+        )
+    } else {
+        (
+            [
+                a * ((a + 1.0) - (a - 1.0) * c + k),
+                2.0 * a * ((a - 1.0) - (a + 1.0) * c),
+                a * ((a + 1.0) - (a - 1.0) * c - k),
+            ],
+            [
+                (a + 1.0) + (a - 1.0) * c + k,
+                -2.0 * ((a - 1.0) + (a + 1.0) * c),
+                (a + 1.0) + (a - 1.0) * c - k,
+            ],
+        )
+    };
+    let w = TAU * freq / rate;
+    let at = |c: [f64; 3]| {
+        let re = c[0] + c[1] * w.cos() + c[2] * (2.0 * w).cos();
+        let im = -(c[1] * w.sin() + c[2] * (2.0 * w).sin());
+        re.hypot(im)
+    };
+    20.0 * (at(b) / at(d)).log10()
+}
+
+#[test]
+fn the_shelves_are_those_of_the_cookbook_and_half_their_gain_at_their_frequency() {
+    for (kind, high) in [(Kind::LowShelf, false), (Kind::HighShelf, true)] {
+        for gain_db in [12.0, -9.0] {
+            let settings = clip(|s| {
+                s.bands[1] = Band {
+                    gain_db,
+                    ..Band::new(true, kind, 1_000.0, None)
+                };
+            });
+            let h = impulse_response(&settings, RATE, 1 << 15);
+            for freq in log_frequencies(50) {
+                let expected = cookbook_shelf_db(
+                    f64::from(RATE),
+                    1_000.0,
+                    f64::from(gain_db),
+                    1.0,
+                    high,
+                    freq,
+                );
+                let measured = gain_at(&h, RATE, freq);
+                assert!(
+                    (measured - expected).abs() <= 0.01,
+                    "{kind:?} {gain_db}: {freq} Hz: {measured}, the cookbook {expected}"
+                );
+            }
+            let (low_end, high_end) = if high {
+                (0.0, f64::from(gain_db))
+            } else {
+                (f64::from(gain_db), 0.0)
+            };
+            let at = gain_at(&h, RATE, 1_000.0);
+            assert!(
+                (at - f64::from(gain_db) / 2.0).abs() <= 0.01,
+                "{kind:?} at f0: {at}"
+            );
+            let at = gain_at(&h, RATE, 20.0);
+            assert!((at - low_end).abs() <= 0.1, "{kind:?} at 20 Hz: {at}");
+            let at = gain_at(&h, RATE, 20_000.0);
+            assert!((at - high_end).abs() <= 0.1, "{kind:?} at 20 kHz: {at}");
+        }
+    }
+}
+
+/// The frequency between `low` and `high` at which the response of `h` crosses `level` dB, by
+/// halving; `rising` when it is below `level` at `low`.
+fn crossing(h: &[f32], level: f64, mut low: f64, mut high: f64, rising: bool) -> f64 {
+    for _ in 0..50 {
+        let middle = (low * high).sqrt();
+        if (gain_at(h, RATE, middle) < level) == rising {
+            low = middle;
+        } else {
+            high = middle;
+        }
+    }
+    (low * high).sqrt()
+}
+
+#[test]
+fn a_notch_is_three_db_down_over_its_frequency_over_q() {
+    for q in [2.0_f32, 5.0] {
+        let settings = clip(|s| {
+            s.bands[1] = Band {
+                q,
+                ..Band::new(true, Kind::Notch, 1_000.0, None)
+            };
+        });
+        let h = impulse_response(&settings, RATE, 1 << 15);
+        let half = -10.0 * 2_f64.log10();
+        let below = crossing(&h, half, 100.0, 1_000.0, false);
+        let above = crossing(&h, half, 1_000.0, 10_000.0, true);
+        let width = above - below;
+        let expected = 1_000.0 / f64::from(q);
+        assert!(
+            (width / expected - 1.0).abs() <= 0.005,
+            "Q {q}: {below}–{above}, {width} Hz wide"
+        );
+        assert!(((below * above).sqrt() / 1_000.0 - 1.0).abs() <= 0.005);
+    }
+}
+
+#[test]
+fn values_of_lanes_that_are_not_numbers_keep_the_values_set() {
+    let frames = 9_000;
+    let with_nan = |at: usize, value: f32| {
+        let mut lane = vec![0.0; frames];
+        lane[at] = value;
+        lane
+    };
+    let mut freq = vec![700.0; frames];
+    freq[3_000] = f32::NAN;
+    let mut q = vec![3.0; frames];
+    q[4_000] = f32::INFINITY;
+    let mut on = vec![1.0; frames];
+    on[5_000] = f32::NAN;
+    let run = Run::new(vec![noise(35, 0.5, frames)])
+        .with_automation(GAIN, with_nan(1_000, f32::NAN))
+        .with_automation(param(2, Field::Gain), with_nan(2_000, f32::NAN))
+        .with_automation(param(2, Field::Freq), freq)
+        .with_automation(param(2, Field::Q), q)
+        .with_automation(ON, on.clone())
+        .with_automation(param(3, Field::On), on);
+    let spec = Spec::new(RATE, 512, Layout::Mono);
+    let mut eq = Eq::new(&busy_strip());
+    eq.prepare(&spec).unwrap();
+    let output = render(&mut eq, &spec, &run, |_| 500).remove(0);
+    if let Some(n) = output.iter().position(|x| !x.is_finite()) {
+        panic!("sample {n}: {}", output[n]);
+    }
+}
+
+#[test]
+fn a_band_is_designed_at_most_at_0_45_of_the_rate() {
+    let settings = strip(|s| s.bands[5] = Band::new(true, Kind::LowPass, 20_000.0, None));
+    let h = impulse_response(&settings, 32_000, 1 << 14);
+    let at = gain_at(&h, 32_000, 14_400.0);
+    assert!((at + 3.0103).abs() <= 0.05, "{at} dB at 14.4 kHz");
+}
+
+#[test]
+fn a_frequency_ramps_in_its_logarithm_and_a_gain_in_its_amplitude() {
+    let settings = clip(|s| {
+        s.bands[1].freq = 100.0;
+        s.bands[1].gain_db = 0.0;
+    });
+    let spec = Spec::new(RATE, 512, Layout::Mono);
+    let mut eq = Eq::new(&settings);
+    eq.prepare(&spec).unwrap();
+    eq.set(param(1, Field::Freq), 10_000.0);
+    eq.set(param(1, Field::Gain), 20.0);
+    let half = samples(columbina_audio::constants::SMOOTHING, RATE) / 2;
+    let input = vec![0.0; half];
+    let mut output = vec![0.0; half];
+    eq.process(
+        &Block::new(0, RATE, half),
+        &[&input],
+        &mut [output.as_mut_slice()],
+    );
+    let (freq, gain_db, q) = eq.heard(1);
+    assert!((freq / 1_000.0 - 1.0).abs() < 1e-4, "{freq} Hz half way");
+    let gain = 10_f32.powf(gain_db / 20.0);
+    assert!((gain - 5.5).abs() < 1e-4, "{gain} half way from 1 to 10");
+    assert_eq!(q, 1.0);
+}
+
+#[test]
+fn the_eq_takes_no_sidechain() {
+    let mut eq = Eq::strip();
+    assert!(eq
+        .prepare(&Spec::new(RATE, 512, Layout::Stereo).with_sidechain(2))
+        .is_err());
 }

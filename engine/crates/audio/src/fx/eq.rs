@@ -32,16 +32,32 @@
 //!   bands takes its lane as it is.
 //! - What is not a number on a line (a band on or off, the EQ on or off, a type, a slope) changes
 //!   the structure of the band: the new structure is put in the band's other slot, starting from
-//!   the real past of the sound, and the two are crossfaded over 10 ms ([`EQ_CROSSFADE`]). A
+//!   the past of the sound, and the two are crossfaded over 10 ms ([`EQ_CROSSFADE`]). The past
+//!   is true for the first input of the new structure (the band's input) and taken from the
+//!   band's output for every section after it: the outputs of the inner sections of a structure
+//!   that was not running are not known, and the band's output is the nearest there is. A
 //!   change back to the structure that is going is a turn of the same crossfade; a third
 //!   structure waits until the crossfade has ended.
 //!
 //! Why not crossfade every change (the plan's first idea): a node started in the middle (the
 //! preview from the playhead, the zero test of T6) must come to sound as the node that played
 //! from the start ([`Node::settle`]). Ramps and automation do: their values at each sample are
-//! the same in both, or (lanes followed through a ramp) come together. A crossfade at each change would start when the last one ended, which is
-//! not the same sample in the two, and under automation that moves all the time the two would
-//! never meet.
+//! the same in both, or (lanes followed through a ramp) come together. A crossfade at each
+//! change would start when the last one ended, which is not the same sample in the two, and
+//! under automation that moves all the time the two would never meet.
+//!
+//! # Settling
+//!
+//! [`Node::settle`] is worked out from the parameters set ([`settle_for`]), every band counted
+//! as on whatever its switch and the EQ's: a switch turned on by its lane costs nothing more.
+//! Lanes that take a band where it rings longer than its setting (a lower frequency, a higher
+//! Q, a larger gain) are the graph's to count: it calls [`settle_for`] with the worst values of
+//! the lanes in its preroll (T4b).
+//!
+//! # To the bit
+//!
+//! An EQ off, a band off, and a bell or a shelf of 0 dB pass the sound to the bit, but for a
+//! sample smaller than 1e-30 in size, which the filters put to 0 ([`crate::rt::flush`]).
 //!
 //! # Parameters
 //!
@@ -51,15 +67,18 @@
 
 use super::biquad::{butterworth_q, Coefficients};
 use crate::constants::{
-    samples, EQ_CROSSFADE, EQ_MAX_FREQUENCY_FRACTION, EQ_SHELF_SLOPE, EQ_ZONES,
+    samples, EQ_CROSSFADE, EQ_MAX_FREQUENCY_FRACTION, EQ_SHELF_SLOPE, EQ_ZONES, SMOOTHING,
 };
 use crate::node::{Block, Node, ParamId, Spec, Unsupported};
 use crate::rt::{flush, Domain, Smoothed};
 use crate::{db_to_gain, Layout};
 
 /// The ramps of 10 ms in which two parameters following the same lane from different values come
-/// within 1e-6 of each other: (1 − 1/N)^(14·N) < e^(−14) < 1e-6.
-const LANE_SETTLE: u64 = 14;
+/// within 1e-6 of each other: each sample takes 1/N of what is left, (1 − 1/N)^(k·N) < e^(−k),
+/// and the widest difference, in the domain of its ramp, is the gain's, 10 − 0.1 = 9.9 of
+/// amplitude (the frequency's is ln 1000 = 6.9, the Q's ln 34.3 = 3.5): k = ⌈ln(9.9 / 1e-6)⌉ =
+/// 17.
+pub const LANE_SETTLE: u64 = 17;
 
 /// The most bands: a strip's 6.
 pub const MAX_BANDS: usize = 6;
@@ -405,7 +424,8 @@ impl Settings {
     }
 }
 
-/// The EQ on (1) or off (0): off, the bands pass the sound to the bit and the gain is 0 dB.
+/// The EQ on (1) or off (0): off, the bands pass the sound to the bit (but for samples below
+/// 1e-30) and the gain is 0 dB.
 pub const ON: ParamId = ParamId(0);
 
 /// The gain after the bands, in dB.
@@ -795,6 +815,67 @@ impl Eq {
     fn rate(&self) -> f64 {
         f64::from(self.rate)
     }
+
+    /// The frequency (Hz), the gain (dB) and the Q that band `band` has at the last sample
+    /// processed: where its ramps are.
+    #[must_use]
+    pub fn heard(&self, band: usize) -> (f32, f32, f32) {
+        let band = &self.bands[band];
+        (
+            band.freq.current(),
+            crate::gain_to_db(band.gain.current()),
+            band.q.current(),
+        )
+    }
+}
+
+/// The samples after which an EQ of `settings` at `rate`, started late, sounds within −90 dBFS
+/// of one that played from earlier ([`Node::settle`]): two crossfades; [`LANE_SETTLE`] ramps, in
+/// which values following the same lane come together; and for each biquad of each band, every
+/// band counted as on whatever its switch and the EQ's, the samples in which a difference of
+/// state falls to 1e-6 by its slowest pole ([`Coefficients::decay`]), added up along the bands.
+/// The EQ reports it for its parameters as set; the graph calls it with the worst values of the
+/// lanes in its preroll (the lowest frequency, the highest Q, the largest gain in size).
+#[must_use]
+pub fn settle_for(settings: &Settings, rate: u32) -> u32 {
+    let settings = settings.sanitized();
+    settle_of(
+        settings.variant,
+        rate,
+        settings.bands.iter().map(|band| {
+            (
+                band.kind,
+                band.slope,
+                [band.freq, db_to_gain(band.gain_db), band.q],
+            )
+        }),
+    )
+}
+
+/// [`settle_for`] the kind, slope, and frequency, gain of amplitude and Q of each band.
+fn settle_of(
+    variant: Variant,
+    rate: u32,
+    bands: impl Iterator<Item = (Kind, u8, [f32; 3])>,
+) -> u32 {
+    if rate == 0 {
+        return 0;
+    }
+    let crossfade = u64::try_from(samples(EQ_CROSSFADE, rate)).unwrap_or(u64::MAX);
+    let ramp = u64::try_from(samples(SMOOTHING, rate)).unwrap_or(u64::MAX);
+    let mut total = 2 * crossfade + LANE_SETTLE * ramp;
+    for (kind, slope, [freq, gain, q]) in bands.take(variant.bands()) {
+        let (coefficients, sections) = Structure::of(true, kind, slope).design(
+            f64::from(rate),
+            f64::from(freq),
+            f64::from(gain),
+            f64::from(q),
+        );
+        for section in &coefficients[..sections] {
+            total = total.saturating_add(u64::from(section.decay(SETTLE_RESIDUE)));
+        }
+    }
+    u32::try_from(total).unwrap_or(u32::MAX)
 }
 
 /// The values of a parameter through a block: automated, or none.
@@ -802,6 +883,13 @@ type Lane<'a> = Option<&'a [f32]>;
 
 /// The automated parameters of a band: on, frequency, gain, Q.
 type BandLanes<'a> = [Lane<'a>; 4];
+
+/// The value of `lane` at sample `n`, if there is a lane and its value is a number: a value that
+/// is not (NaN, ±∞) leaves the parameter as it is set.
+#[inline]
+fn value(lane: Lane, n: usize) -> Option<f32> {
+    lane.map(|lane| lane[n]).filter(|value| value.is_finite())
+}
 
 impl Eq {
     /// The structure that band `index` should have, the EQ on or not, its on given.
@@ -813,7 +901,7 @@ impl Eq {
     /// Moves band `index` on by a sample, `n` of the block: its structure, its crossfade, its
     /// ramps and its design. How it sounds at this sample.
     fn advance(&mut self, index: usize, n: usize, eq_on: bool, lanes: &BandLanes) -> Mix {
-        let on = lanes[0].map_or(self.bands[index].on, |lane| lane[n] >= 0.5);
+        let on = value(lanes[0], n).map_or(self.bands[index].on, |on| on >= 0.5);
         let target = self.structure(index, eq_on, on);
         let rate = self.rate();
         let band = &mut self.bands[index];
@@ -845,10 +933,10 @@ impl Eq {
         // no automation, however rough, moves the coefficients faster than a ramp does.
         let [freq, gain, q] = band.set;
         band.freq
-            .set(lanes[1].map_or(freq, |lane| clamp_freq(lane[n], band.zone)));
+            .set(value(lanes[1], n).map_or(freq, |freq| clamp_freq(freq, band.zone)));
         band.gain
-            .set(lanes[2].map_or(gain, |lane| db_to_gain(clamp_gain(lane[n]))));
-        band.q.set(lanes[3].map_or(q, |lane| clamp_q(lane[n])));
+            .set(value(lanes[2], n).map_or(gain, |db| db_to_gain(clamp_gain(db))));
+        band.q.set(value(lanes[3], n).map_or(q, clamp_q));
         let moving = band.freq.is_ramping() || band.gain.is_ramping() || band.q.is_ramping();
         if moving || band.designed.is_none() {
             let freq = band.freq.next_value();
@@ -864,7 +952,11 @@ impl Eq {
 
 impl Node for Eq {
     fn prepare(&mut self, spec: &Spec) -> Result<(), Unsupported> {
-        if spec.layout != spec.output || spec.layout == Layout::Empty || spec.rate == 0 {
+        let unsupported = spec.layout != spec.output
+            || spec.layout == Layout::Empty
+            || spec.sidechain > 0
+            || spec.rate == 0;
+        if unsupported {
             return Err(Unsupported::from(spec));
         }
         self.rate = spec.rate;
@@ -897,11 +989,11 @@ impl Node for Eq {
         }
         let mut mixes = [Mix::Rest(0); MAX_BANDS];
         for n in 0..ctx.frames {
-            let eq_on = eq_lane.map_or(self.on, |lane| lane[n] >= 0.5);
+            let eq_on = value(eq_lane, n).map_or(self.on, |on| on >= 0.5);
             self.wet.set(if eq_on { 1.0 } else { 0.0 });
             let wet = self.wet.next_value();
             let gain = self.gain.next_value();
-            let gain = gain_lane.map_or(gain, |lane| db_to_gain(clamp_gain(lane[n])));
+            let gain = value(gain_lane, n).map_or(gain, |db| db_to_gain(clamp_gain(db)));
             let after = 1.0 + wet * (f64::from(gain) - 1.0);
             for (index, mix) in mixes.iter_mut().enumerate().take(count) {
                 *mix = self.advance(index, n, eq_on, &lanes[index]);
@@ -920,31 +1012,15 @@ impl Node for Eq {
         0
     }
 
-    /// Two crossfades; 14 ramps, in which two parameters that follow the same lane from two
-    /// values come within 1e-6 of each other (each sample takes 1/480 of what is left, at 48
-    /// kHz; a value set is reached in one); and for each biquad of the bands as they are set, the
-    /// samples in which a difference of state falls to 1e-6 by its slowest pole, added up along
-    /// the bands.
+    /// [`settle_for`] the parameters set.
     fn settle(&self) -> u32 {
-        if self.rate == 0 {
-            return 0;
-        }
-        let ramp = u64::try_from(samples(crate::constants::SMOOTHING, self.rate)).unwrap_or(0);
-        let mut total = 2 * u64::from(self.crossfade) + LANE_SETTLE * ramp;
-        for index in 0..self.variant.bands() {
-            let band = &self.bands[index];
-            let structure = self.structure(index, self.on, band.on);
-            let (coefficients, sections) = structure.design(
-                self.rate(),
-                f64::from(band.set[0]),
-                f64::from(band.set[1]),
-                f64::from(band.set[2]),
-            );
-            for section in &coefficients[..sections] {
-                total += u64::from(section.decay(SETTLE_RESIDUE));
-            }
-        }
-        u32::try_from(total).unwrap_or(u32::MAX)
+        settle_of(
+            self.variant,
+            self.rate,
+            self.bands
+                .iter()
+                .map(|band| (band.kind, band.slope, band.set)),
+        )
     }
 
     fn reset(&mut self) {

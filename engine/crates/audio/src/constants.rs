@@ -179,6 +179,15 @@ pub const DIM_DB: f32 = -20.0;
 /// constant of a one-pole smoother, 1 − 1/e (plan T8).
 pub const DYNAMICS_TIME_CONSTANT_FRACTION: f64 = 1.0 - 1.0 / std::f64::consts::E;
 
+/// The level, in dBFS, that Dynamics hears in silence: the floor of its detector (T8).
+pub const DYNAMICS_LEVEL_FLOOR_DB: f64 = -200.0;
+
+/// How many of its time constants (attack plus release, and its hold) a module of Dynamics
+/// takes to settle (`Node::settle`, T8): a difference of the gain of 200 dB, at an output up to
+/// +12 dBFS, comes under −90 dBFS in ln(200 / 6.9e-5) ≈ 15 time constants, and 3 more cover the
+/// two stages of its detector (the hold of the peak, then the attack).
+pub const DYNAMICS_SETTLE_TIME_CONSTANTS: f64 = 18.0;
+
 /// The zones of the frequency of the bands 2 to 5 of the track EQ, in Hz: L, ML, MH, H (plan; the
 /// reference's C-E3 has wider ones).
 pub const EQ_ZONES: [(f32, f32); 4] = [

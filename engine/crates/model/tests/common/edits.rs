@@ -10,10 +10,10 @@
 //! and tracks of the project most of the time, and now and then ones that are not there.
 
 use columbina_model::{
-    apply, apply_done, Alignment, AudioFacts, AudioFade, ChannelMap, ChannelSource, ChannelSources,
-    Clip, CueItem, Edge, Edit, Facts, Identity, Material, Media, Op, Project, Rate, Rgba, Source,
-    Speed, Straddling, TextAlign, Time, Timeline, TitleStyle, Track, TrackKind, Transition,
-    TransitionKind, VideoFacts,
+    apply, apply_done, Alignment, AudioFacts, AudioFade, AudioParam, ChannelMap, ChannelSource,
+    ChannelSources, Clip, CueItem, Edge, Edit, Facts, Identity, Material, Media, Op, Project, Rate,
+    Rgba, Source, Speed, Straddling, TextAlign, Time, Timeline, TitleStyle, Track, TrackKind,
+    Transition, TransitionKind, VideoFacts,
 };
 use proptest::prelude::*;
 
@@ -380,6 +380,19 @@ pub fn project_of(recipe: &Recipe) -> Project {
             apply(&mut project, op).unwrap();
         }
     }
+    // Now and then the tracks of sound in a group, which links what it may, and a second bus.
+    if recipe.pieces.len() % 2 == 1 {
+        for op in [
+            serde_json::json!({"op": "add_track_group", "timeline": "t1",
+                "group": {"id": "", "name": "Sound", "members": ["A1", "A2"]}}),
+            serde_json::json!({"op": "add_bus", "timeline": "t1", "bus": {"id": "", "name": "Verb",
+                "color": "#808080ff", "format": "stereo", "strip": {"outputs": [{"bus": "B1"}]}}}),
+            serde_json::json!({"op": "set_track_audio", "timeline": "t1", "track": "A2",
+                "patch": {"strip": {"fader_db": -6, "sends": [{"bus": "B2", "level_db": -12}]}}}),
+        ] {
+            apply(&mut project, serde_json::from_value(op).unwrap()).unwrap();
+        }
+    }
     project
 }
 
@@ -403,6 +416,11 @@ fn fades(
         fade_out: Some(fade_out),
         audio_fade_in: Some(sound_in),
         audio_fade_out: Some(sound_out),
+        eq: None,
+        effects: None,
+        pitch_correction: None,
+        pitch: None,
+        channels: None,
         source: None,
     }
 }
@@ -457,7 +475,7 @@ pub struct Making {
 }
 
 /// The kinds of edit, as `edit_of` numbers them.
-pub const KINDS: usize = 28;
+pub const KINDS: usize = 36;
 
 pub fn making() -> impl Strategy<Value = Making> {
     making_of(0..KINDS)
@@ -800,6 +818,7 @@ pub fn edit_of(project: &Project, making: &Making) -> Edit {
             kind: None,
             length: delta.abs() / 2,
             align: [Alignment::Center, Alignment::Start, Alignment::End][m.c % 3],
+            linked: m.flag(3),
         },
         19 => Edit::RemoveTransition {
             timeline,
@@ -858,10 +877,110 @@ pub fn edit_of(project: &Project, making: &Making) -> Edit {
             name: None,
             language: None,
         },
-        _ => Edit::RemoveTrack {
+        27 => Edit::RemoveTrack {
             timeline,
             track: track_of(m.c),
         },
+        _ => sound_edit_of(project, m, &timeline, &clip, &clips),
+    }
+}
+
+/// A media time of a clip of t1: one of its keys, or a second or a fraction of one.
+fn media_time_of(project: &Project, clip: &str, n: usize) -> Time {
+    let keys = clips_of(project)
+        .into_iter()
+        .find(|c| c.id == clip)
+        .and_then(|c| match &c.gain_db {
+            AudioParam::Keys(keys) => Some(keys.clone()),
+            AudioParam::Fixed(_) => None,
+        })
+        .unwrap_or_default();
+    match (n % 4, keys.is_empty()) {
+        (0, false) => keys[n / 4 % keys.len()].at,
+        (1, _) => Time {
+            ticks: i64::try_from(n % 97).unwrap() * 500,
+            scale: 48000,
+        },
+        _ => Time {
+            ticks: i64::try_from(n % 9).unwrap(),
+            scale: [1, 2, 4][n % 3],
+        },
+    }
+}
+
+/// An edit of sound made of `m`, kinds 28 to 35.
+fn sound_edit_of(
+    project: &Project,
+    m: &Making,
+    timeline: &str,
+    clip: &str,
+    clips: &[String],
+) -> Edit {
+    let delta_db = [3.0, -1.0, -6.0, 40.0, 0.0][m.c % 5];
+    let edit = |value: serde_json::Value| -> Edit { serde_json::from_value(value).unwrap() };
+    let tracks = ["A1", "A2", "V1", "A9"];
+    match m.kind {
+        28 => {
+            let patch = match m.b % 6 {
+                0 => serde_json::json!({"strip": {"fader_db": m.delta.clamp(-30, 12)}}),
+                1 => serde_json::json!({"mute": m.flag(1), "solo": m.flag(2)}),
+                2 => serde_json::json!({"strip": {"pan": {"x": 0.5, "divergence": 40}}}),
+                3 => {
+                    serde_json::json!({"strip": {"sends": [{"bus": "B2", "level_db": m.delta.clamp(-30, 12), "on": m.flag(2)}]}})
+                }
+                4 => serde_json::json!({"automation_arm": m.flag(1), "strip": {"fader_db": -3}}),
+                _ => serde_json::json!({"format": "mono"}),
+            };
+            edit(
+                serde_json::json!({"edit": "set_track_audio", "timeline": timeline,
+                "track": tracks[m.c % 4], "patch": patch, "follow_groups": !m.flag(4)}),
+            )
+        }
+        29 => {
+            let action = ["add", "remove", "move", "set_interp"][m.b % 4];
+            let at = media_time_of(project, clip, m.c);
+            let to = media_time_of(project, clip, m.c / 3 + 1);
+            edit(
+                serde_json::json!({"edit": "clip_gain_keys", "timeline": timeline, "clip": clip,
+                "param": (["gain_db", "pan"][usize::from(m.flag(1))]), "action": action, "at": at,
+                "to": to, "value": (m.flag(2).then_some(-3.0)), "interp": (["ease_in", "linear"][usize::from(m.flag(3))])}),
+            )
+        }
+        30 => {
+            let from = media_time_of(project, clip, m.c);
+            let to = media_time_of(project, clip, m.c + 2);
+            edit(
+                serde_json::json!({"edit": "clip_gain_range", "timeline": timeline, "clip": clip,
+                "from": from, "to": to, "delta_db": delta_db}),
+            )
+        }
+        31 => edit(
+            serde_json::json!({"edit": "nudge_clip_gain", "timeline": timeline,
+            "clips": clips, "delta_db": delta_db, "linked": !m.flag(0)}),
+        ),
+        32 => edit(
+            serde_json::json!({"edit": "paste_attributes", "timeline": timeline,
+            "from": clip, "to": clips, "items": (["volume", "plugins", "equalizer"][..=(m.b % 3)])}),
+        ),
+        33 => edit(
+            serde_json::json!({"edit": "remove_attributes", "timeline": timeline,
+            "clips": clips, "items": (["volume", "plugins", "equalizer"][(m.b % 3)..])}),
+        ),
+        34 => edit(
+            serde_json::json!({"edit": "fade_to_playhead", "timeline": timeline,
+            "clip": clip, "side": (["in", "out"][usize::from(m.flag(1))]), "at": frame_of(project, m.c)}),
+        ),
+        _ => {
+            let of = |n: usize| match n % 3 {
+                0 => serde_json::json!({"track": tracks[n / 3 % 4]}),
+                1 => serde_json::json!({"bus": (["B1", "B2", "B9"][n / 3 % 3])}),
+                _ => serde_json::json!({"clip": clip}),
+            };
+            edit(
+                serde_json::json!({"edit": "copy_effects", "timeline": timeline,
+                "from": of(m.b), "to": [of(m.c), of(m.c / 7)]}),
+            )
+        }
     }
 }
 

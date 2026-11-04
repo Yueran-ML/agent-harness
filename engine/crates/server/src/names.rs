@@ -21,8 +21,8 @@ use std::fmt;
 use columbina_model::edit::Created;
 use columbina_model::history::ChangeMapper;
 use columbina_model::{
-    Change, Edit, Expansion, Grade, Id, Link, Material, Op, OpError, Source, Target, Track,
-    TrackKind,
+    Change, Edit, Expansion, Grade, Id, InsertsOf, Link, Material, Op, OpError, Source, Target,
+    Track, TrackKind,
 };
 use serde::{Deserialize, Deserializer};
 
@@ -446,7 +446,15 @@ fn visit_edit<E>(
         | Edit::RemoveCue { timeline, .. }
         | Edit::CuesFrom { timeline, .. }
         | Edit::AddTrack { timeline, .. }
-        | Edit::RemoveTrack { timeline, .. } => timeline,
+        | Edit::RemoveTrack { timeline, .. }
+        | Edit::SetTrackAudio { timeline, .. }
+        | Edit::ClipGainKeys { timeline, .. }
+        | Edit::ClipGainRange { timeline, .. }
+        | Edit::NudgeClipGain { timeline, .. }
+        | Edit::PasteAttributes { timeline, .. }
+        | Edit::RemoveAttributes { timeline, .. }
+        | Edit::FadeToPlayhead { timeline, .. }
+        | Edit::CopyEffects { timeline, .. } => timeline,
     };
     let of = timeline.clone();
     f(timeline, Role::Names)?;
@@ -541,9 +549,44 @@ fn visit_edit<E>(
         | Edit::SetCue { id, .. }
         | Edit::RemoveCue { id, .. } => f(id, Role::Names)?,
         Edit::AddTrack { .. } => {}
+        Edit::SetTrackAudio { track, .. } => f(track, Role::NamesTrack(of))?,
+        Edit::ClipGainKeys { clip, .. }
+        | Edit::ClipGainRange { clip, .. }
+        | Edit::FadeToPlayhead { clip, .. } => f(clip, Role::Names)?,
+        Edit::NudgeClipGain { clips, .. } | Edit::RemoveAttributes { clips, .. } => {
+            for id in clips {
+                f(id, Role::Names)?;
+            }
+        }
+        Edit::PasteAttributes { from, to, .. } => {
+            f(from, Role::Names)?;
+            for id in to {
+                f(id, Role::Names)?;
+            }
+        }
+        Edit::CopyEffects { from, to, .. } => {
+            visit_inserts_of(from, &of, f)?;
+            for chain in to {
+                visit_inserts_of(chain, &of, f)?;
+            }
+        }
         _ => unreachable!("the edits of grades are visited above"),
     }
     Ok(())
+}
+
+/// Call `f` on the id of the track of sound or the clip whose inserts a chain is, of timeline
+/// `of`; a bus has no name of a transaction.
+fn visit_inserts_of<E>(
+    chain: &mut InsertsOf,
+    of: &Id,
+    f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>,
+) -> Result<(), E> {
+    match chain {
+        InsertsOf::Track(id) => f(id, Role::NamesTrack(of.clone())),
+        InsertsOf::Clip(id) => f(id, Role::Names),
+        InsertsOf::Bus(_) => Ok(()),
+    }
 }
 
 /// Call `f` on the ids of the timeline, the clip or the group that a grade is of.
@@ -906,6 +949,41 @@ fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> 
                 Some(group) => f(group, Role::Names),
                 None => Ok(()),
             }
+        }
+        // The buses, VCAs and groups of tracks of a timeline are named by their own ids, not by
+        // names of a transaction; the tracks that a group has are.
+        Op::SetTrackAudio {
+            timeline, track, ..
+        } => {
+            let of = timeline.clone();
+            f(timeline, Role::Names)?;
+            f(track, Role::NamesTrack(of))
+        }
+        Op::AddTrackGroup {
+            timeline, group, ..
+        } => {
+            let of = timeline.clone();
+            f(timeline, Role::Names)?;
+            for member in &mut group.members {
+                f(member, Role::NamesTrack(of.clone()))?;
+            }
+            Ok(())
+        }
+        Op::AddBus { timeline, .. }
+        | Op::RemoveBus { timeline, .. }
+        | Op::SetBus { timeline, .. }
+        | Op::AddVca { timeline, .. }
+        | Op::RemoveVca { timeline, .. }
+        | Op::SetVca { timeline, .. }
+        | Op::RemoveTrackGroup { timeline, .. }
+        | Op::SetTrackGroup { timeline, .. }
+        | Op::SetTimelineAudio { timeline, .. } => f(timeline, Role::Names),
+        Op::AddInsert { timeline, of, .. }
+        | Op::SetInsert { timeline, of, .. }
+        | Op::MoveInsert { timeline, of, .. } => {
+            let at = timeline.clone();
+            f(timeline, Role::Names)?;
+            visit_inserts_of(of, &at, f)
         }
     }
 }

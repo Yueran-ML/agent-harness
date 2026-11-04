@@ -44,7 +44,21 @@ pub(super) fn check(edit: &Edit) -> Result<(), OpError> {
             }
             Ok(())
         }
-        Edit::Lift { .. }
+        Edit::FadeToPlayhead { at, .. } => within("at", i128::from(*at)),
+        Edit::ClipGainKeys { at, to, .. } => {
+            within("at", i128::from(at.ticks))?;
+            optional("to", to.map(|to| to.ticks))
+        }
+        Edit::ClipGainRange { from, to, .. } => {
+            within("from", i128::from(from.ticks))?;
+            within("to", i128::from(to.ticks))
+        }
+        Edit::SetTrackAudio { .. }
+        | Edit::NudgeClipGain { .. }
+        | Edit::PasteAttributes { .. }
+        | Edit::RemoveAttributes { .. }
+        | Edit::CopyEffects { .. }
+        | Edit::Lift { .. }
         | Edit::RippleDelete { .. }
         | Edit::RemoveTransition { .. }
         | Edit::SetSpeed { .. }

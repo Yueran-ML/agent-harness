@@ -852,6 +852,11 @@ pub(super) fn set_fades(timeline: &str, clip: &str, fade_in: i64, fade_out: i64)
         fade_out: Some(fade_out),
         audio_fade_in: None,
         audio_fade_out: None,
+        eq: None,
+        effects: None,
+        pitch_correction: None,
+        pitch: None,
+        channels: None,
         source: None,
     }
 }

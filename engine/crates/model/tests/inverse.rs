@@ -49,3 +49,31 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn the_random_operations_on_sound_are_applied_as_well_as_refused() {
+    use std::collections::BTreeMap;
+    let mut project = tidy();
+    let mut applied: BTreeMap<String, usize> = BTreeMap::new();
+    let mut refused = 0;
+    let mut n: usize = 0x9e37_79b9;
+    for _ in 0..4000 {
+        let mut next = || {
+            n = n.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            n >> 7
+        };
+        let op = common::sounds::sound_op_of(&project, [next(), next(), next(), next()]);
+        let name = serde_json::to_value(&op).unwrap()["op"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        match apply(&mut project, op) {
+            Ok(_) => *applied.entry(name).or_default() += 1,
+            Err(_) => refused += 1,
+        }
+        check(&project);
+    }
+    assert_eq!(applied.len(), 15, "{applied:?}");
+    assert!(applied.values().all(|&n| n >= 5), "{applied:?}");
+    assert!(refused >= 400, "{refused} refused");
+}

@@ -102,6 +102,85 @@ pub(super) fn check_fits(
     }
 }
 
+/// The cuts of the clips of sound that are linked to `left` and `right`, where two of them meet
+/// on a track of sound that is not locked and has no transition at their cut: the track and the
+/// two clips of each.
+fn linked_cuts(work: &Work, left: &Clip, right: &Clip) -> Vec<(Id, Id, Id)> {
+    let (Some(l), Some(r)) = (&left.link, &right.link) else {
+        return vec![];
+    };
+    let mut cuts = vec![];
+    for track in &work.timeline().tracks {
+        if track.kind != TrackKind::Audio || track.locked {
+            continue;
+        }
+        for a in track.clips.iter().filter(|c| c.link.as_ref() == Some(l)) {
+            let Some(b) = track
+                .clips
+                .iter()
+                .find(|c| c.link.as_ref() == Some(r) && c.start == a.end())
+            else {
+                continue;
+            };
+            let taken = track
+                .transitions
+                .iter()
+                .any(|x| x.left == a.id || x.right == b.id);
+            if !taken {
+                cuts.push((track.id.clone(), a.id.clone(), b.id.clone()));
+            }
+        }
+    }
+    cuts
+}
+
+/// Add a crossfade of `length` and `align` at the cut of `left` and `right` on track `track`, or
+/// one as long as fits where that is too long, saying that it was clamped; none where none fits.
+fn add_crossfade(
+    work: &mut Work,
+    (track, left, right): (Id, Id, Id),
+    length: i64,
+    align: Alignment,
+) -> Result<(), EditError> {
+    let at = work.track(&track)?;
+    let (Some(l), Some(r)) = (
+        at.clips.iter().find(|c| c.id == left),
+        at.clips.iter().find(|c| c.id == right),
+    ) else {
+        return Ok(());
+    };
+    let length = match check_fits(work, at, (l, r), length, align, None) {
+        Ok(()) => length,
+        Err(EditError::NoHandles {
+            longest: Some(longest),
+            ..
+        }) => {
+            work.clamp();
+            longest
+        }
+        Err(error) => return Err(error),
+    };
+    if length < 1 {
+        return Ok(());
+    }
+    let timeline = work.timeline_id();
+    work.op(Op::AddTransition {
+        timeline,
+        track,
+        transition: Transition {
+            id: String::new(),
+            kind: TransitionKind::Crossfade,
+            left,
+            right,
+            length,
+            align,
+            fade_in_level_db: CrossfadeLevel::default(),
+            fade_out_level_db: CrossfadeLevel::default(),
+        },
+    })?;
+    Ok(())
+}
+
 pub(super) fn add_transition(
     work: &mut Work,
     left: &str,
@@ -109,6 +188,7 @@ pub(super) fn add_transition(
     kind: Option<TransitionKind>,
     length: i64,
     align: Alignment,
+    linked: bool,
 ) -> Result<(), EditError> {
     let (track, l) = work.clip(left)?;
     let r = track.clips.iter().find(|c| c.id == right);
@@ -128,6 +208,13 @@ pub(super) fn add_transition(
         TrackKind::Audio => TransitionKind::Crossfade,
         _ => TransitionKind::Dissolve,
     });
+    // A transition of picture brings crossfades at the cuts of the sound linked to its clips,
+    // where they meet as the picture does (p. 973).
+    let cuts = if linked && track.kind == TrackKind::Video {
+        linked_cuts(work, l, r)
+    } else {
+        vec![]
+    };
     let track = track.id.clone();
     let timeline = work.timeline_id();
     let done = work.op(Op::AddTransition {
@@ -146,6 +233,9 @@ pub(super) fn add_transition(
     })?;
     if let Op::AddTransition { transition, .. } = done {
         work.created(Created::Transition(transition.id));
+    }
+    for cut in cuts {
+        add_crossfade(work, cut, length, align)?;
     }
     Ok(())
 }
@@ -201,6 +291,8 @@ pub(super) fn set_transition(
         kind,
         length,
         align,
+        fade_in_level_db: None,
+        fade_out_level_db: None,
     })?;
     Ok(())
 }
@@ -225,6 +317,10 @@ fn ends_at(group: &[(Id, Clip)], speed: Speed, rate: Rate) -> i64 {
         .unwrap_or(0)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "a step for each part of a change of speed"
+)]
 pub(super) fn set_speed(
     work: &mut Work,
     clip: &str,
@@ -320,6 +416,11 @@ pub(super) fn set_speed(
             fade_out: None,
             audio_fade_in: None,
             audio_fade_out: None,
+            eq: None,
+            effects: None,
+            pitch_correction: None,
+            pitch: None,
+            channels: None,
             source: None,
         };
         // A clip that gets shorter is shortened at its old speed, and one that gets longer is
@@ -549,6 +650,7 @@ mod tests {
             kind: None,
             length,
             align,
+            linked: false,
         }
     }
 

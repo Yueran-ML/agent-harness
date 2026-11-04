@@ -671,3 +671,28 @@ fn the_random_timelines_have_fades_of_sound_and_channels_named() {
         "{faded} faded, {mapped} mapped"
     );
 }
+
+#[test]
+fn the_random_edits_of_sound_are_applied_as_well_as_refused() {
+    use proptest::strategy::{Strategy, ValueTree};
+    let mut runner = proptest::test_runner::TestRunner::deterministic();
+    let mut applied = [0usize; 8];
+    let mut followed = 0;
+    for _ in 0..300 {
+        let recipe = recipe().new_tree(&mut runner).unwrap().current();
+        let mut project = project_of(&recipe);
+        for kind in 28..36 {
+            let making = making_of(Just(kind))
+                .new_tree(&mut runner)
+                .unwrap()
+                .current();
+            let edit = edit_of(&project, &making);
+            if let Ok(expansion) = expand(&mut project, edit) {
+                applied[kind - 28] += 1;
+                followed += usize::from(kind == 28 && expansion.done.len() > 1);
+            }
+        }
+    }
+    assert!(applied.iter().all(|&n| n >= 20), "{applied:?}");
+    assert!(followed >= 10, "{followed} followed by a group");
+}

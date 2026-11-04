@@ -54,6 +54,11 @@ fn set_clip(id: &str) -> Op {
         fade_out: None,
         audio_fade_in: None,
         audio_fade_out: None,
+        eq: None,
+        effects: None,
+        pitch_correction: None,
+        pitch: None,
+        channels: None,
         source: None,
     }
 }
@@ -648,6 +653,8 @@ fn examples() -> Vec<(&'static str, Vec<Op>, Op)> {
                 kind: Some(TransitionKind::DipWhite),
                 length: Some(20),
                 align: Some(Alignment::Start),
+                fade_in_level_db: None,
+                fade_out_level_db: None,
             },
         ),
         (

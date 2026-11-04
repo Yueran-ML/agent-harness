@@ -42,7 +42,7 @@ const second: Media = { ...media, id: 'm2', name: 'Street', facts: { ...media.fa
 
 /** An engine that keeps a project and the two transports, and tells what changed as the real one does. */
 function fakeEngine(empty = false) {
-  let project: Project = { schema: 3, groups: [], next_id: 10, bins: [], media: [media, second], timelines: empty ? [] : [timeline(), { ...timeline([clip('c3')]), id: 't2', name: 'Alternate' }] };
+  let project: Project = { schema: 4, groups: [], next_id: 10, bins: [], media: [media, second], timelines: empty ? [] : [timeline(), { ...timeline([clip('c3')]), id: 't2', name: 'Alternate' }] };
   let revision = 0;
   let refuse: string | null = null;
   const listeners = new Set<(event: EngineEvent) => void>();

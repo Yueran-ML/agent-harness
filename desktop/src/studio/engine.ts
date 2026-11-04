@@ -40,11 +40,15 @@ export interface VideoFacts {
   rotation: number;
 }
 
-/** The sound of a file. */
+/** The sound of a file. `layout` and `streams` are left out where they were not read. */
 export interface AudioFacts {
   rate: number;
   channels: number;
   codec: string;
+  /** The layout of its channels, as libav names it (`5.1(side)`). */
+  layout?: string;
+  /** Each stream of sound of the file, numbered as libav numbers all its streams. */
+  streams?: { index: number; channels: number; layout: string | null }[];
 }
 
 /** What a file holds. A file without a picture has no `video`, one without sound no `audio`. */
@@ -107,21 +111,66 @@ export interface Clip {
   reverse: boolean;
   link: string | null;
   transform: Transform;
-  gain_db: number;
-  pan: number;
+  /** Decibels from -96 to 24: one number, or keyframes at times of the source (schema 4). */
+  gain_db: AudioParam;
+  /** From -1 (left) to 1 (right): one number, or keyframes. */
+  pan: AudioParam;
   fade_in: number;
   fade_out: number;
   /** Its grade, which colours its picture before it is put on the tracks below it. A clip of sound keeps one too. */
   grade: Grade;
   /** The group that it is graded in, or null. */
   group: string | null;
+  // The sound of schema 4 (engine/crates/model/src/audio.rs). The engine always writes these; a
+  // clip that a client builds may leave them out, and is read with the defaults.
+  /** How its sound fades in, where not over `fade_in` frames on a straight line. */
+  audio_fade_in?: AudioFade | null;
+  /** How its sound fades out, where not over `fade_out` frames on a straight line. */
+  audio_fade_out?: AudioFade | null;
+  /** Its equalizer of 4 bands, off for a new clip. */
+  eq?: Equalizer;
+  /** Its effects, in order. */
+  effects?: Insert[];
+  /** Whether a change of speed keeps its pitch: not, for a new clip. */
+  pitch_correction?: boolean;
+  pitch?: ClipPitch;
+  /** What each channel of its track plays, or null for its channels mixed as libav mixes them. */
+  channels?: ChannelMap[] | null;
 }
 export type TransitionKind = 'dissolve' | 'dip_black' | 'dip_white' | 'crossfade';
 export type Alignment = 'start' | 'center' | 'end';
-export interface Transition { id: string; kind: TransitionKind; left: string; right: string; length: number; align: Alignment }
+/** The level of a side of a crossfade: 0 dB a straight line (new), +3 dB equal power, -3 dB `t^1.5`. */
+export type CrossfadeLevel = -3 | 0 | 3;
+export interface Transition {
+  id: string; kind: TransitionKind; left: string; right: string; length: number; align: Alignment;
+  /** How the clip that starts at the cut rises, on a crossfade. Left out, 0. */
+  fade_in_level_db?: CrossfadeLevel;
+  /** How the clip that ends at the cut falls, on a crossfade. Left out, 0. */
+  fade_out_level_db?: CrossfadeLevel;
+}
 export interface Cue { id: string; start: number; length: number; text: string }
 interface TrackBase { id: string; name: string; enabled: boolean; locked: boolean }
-export interface ClipTrack extends TrackBase { kind: 'video' | 'audio'; clips: Clip[]; transitions: Transition[] }
+/**
+ * What a track of sound has of its own (schema 4): written by the engine for tracks of sound only,
+ * and each may be left out by a client, as the default.
+ */
+export interface TrackSound {
+  format?: TrackFormat;
+  /** As many as its format has, or from 1 to 24 for an adaptive track (which may not leave it out). */
+  channels?: number;
+  order?: 'smpte' | 'film';
+  /** Not heard nor rendered, but read and metered (unlike `enabled: false`, Disable Track). */
+  mute?: boolean;
+  solo?: boolean;
+  solo_safe?: boolean;
+  /** Its delay made up with the others' (ADC): on for a new track. */
+  adc?: boolean;
+  automation_arm?: boolean;
+  /** Out to bus B1 at unity, for a new track. */
+  strip?: Strip;
+  lanes?: Lanes;
+}
+export interface ClipTrack extends TrackBase, TrackSound { kind: 'video' | 'audio'; clips: Clip[]; transitions: Transition[] }
 export interface SubtitleTrack extends TrackBase { kind: 'subtitle'; language: string; cues: Cue[] }
 export type Track = ClipTrack | SubtitleTrack;
 export interface Timeline {
@@ -134,12 +183,107 @@ export interface Timeline {
   tracks: Track[];
   /** Its grade, which colours the picture once its tracks are put together. */
   grade: Grade;
+  // The sound of schema 4; each may be left out by a client, as a new timeline has it.
+  /** Its buses: one, B1 "Bus 1", stereo, for a new timeline. */
+  buses?: Bus[];
+  vcas?: Vca[];
+  track_groups?: TrackGroup[];
+  audio?: TimelineAudio;
 }
 /**
  * A project. `color` is always written by the engine; a project that a client builds may leave it
  * out, and it is read as not colour managed (`keptColor`).
  */
-export interface Project { schema: 3; next_id: number; bins: Bin[]; media: Media[]; timelines: Timeline[]; groups: Group[]; color?: ColorSettings }
+export interface Project { schema: 4; next_id: number; bins: Bin[]; media: Media[]; timelines: Timeline[]; groups: Group[]; color?: ColorSettings }
+
+// The sound of schema 4 (PROTOCOL.md, "Sound"; engine/crates/model/src/audio.rs and audio/), as
+// DaVinci Resolve's Fairlight page has it (Reference Manual 20, Ch. 170-182).
+
+export type KeyInterp = 'linear' | 'ease_in' | 'ease_out';
+/** A keyframe of a setting of a clip, at a time from the start of its media. */
+export interface AudioKey { at: Time; value: number; interp?: KeyInterp }
+/** One value, or keyframes in the order of their times. */
+export type AudioParam = number | { keys: AudioKey[] };
+/** The one value of a setting, or null where it has keyframes. */
+export function fixedOf(param: AudioParam): number | null {
+  return typeof param === 'number' ? param : null;
+}
+/** A fade of sound over `length`, `curve` 0 a straight line, `skew` moving its middle (each -1 to 1). */
+export interface AudioFade { length: Time; curve?: number; skew?: number }
+export interface ChannelSource { stream: number; channel: number }
+/** What a channel of a track plays: null for silence, one channel, or several whose mean it plays. */
+export interface ChannelMap { source?: ChannelSource | ChannelSource[] | null; enabled?: boolean; mute?: boolean; level_db?: number }
+export interface ClipPitch { semitones: number; cents: number }
+export type TrackFormat = 'mono' | 'stereo' | '5.1' | 'adaptive';
+export type BusFormat = 'mono' | 'stereo' | '3.0' | '4.0' | '5.0' | '5.1' | '7.0' | '7.1';
+export type EqKind = 'low_shelf' | 'bell' | 'high_shelf' | 'high_pass' | 'low_pass' | 'notch';
+export type EqRange = 'low' | 'medium_low' | 'medium_high' | 'high';
+export interface EqBand { on: boolean; kind: EqKind; freq: number; gain_db: number; q: number; slope: 6 | 12 | 18 | 24; range: EqRange | null }
+/** 4 bands on a clip, 6 on a strip; off for a new one. */
+export interface Equalizer { on: boolean; bands: EqBand[]; gain_db: number }
+export type SourceRef = { track: string } | { bus: string };
+export interface Sidechain { on: boolean; listen: boolean; source: SourceRef | null }
+export interface Dynamics {
+  on: boolean;
+  expander: { on: boolean; mode: 'expander' | 'gate'; threshold_db: number; range_db: number; ratio: number; attack_ms: number; hold_ms: number; release_ms: number };
+  compressor: { on: boolean; threshold_db: number; ratio: number; knee_db: number; mix: number; attack_ms: number; hold_ms: number; release_ms: number; sidechain: Sidechain };
+  limiter: { on: boolean; threshold_db: number; attack_ms: number; hold_ms: number; release_ms: number };
+  makeup_db: number;
+}
+export interface Ducker { on: boolean; sources: SourceRef[]; amount_db: number; lookahead_ms: number; rise_ms: number; hold_ms: number; recovery_ms: number }
+export type Effect =
+  | { kind: 'gain'; gain_db: number }
+  | { kind: 'limiter'; input_db: number; soft: boolean; ceiling_db: number; release_ms: number; sidechain: Sidechain }
+  | { kind: 'soft_clipper'; threshold_db: number; shape: number; output_db: number }
+  | { kind: 'stereo_width'; width: number; diffusion: number; sparkle: number }
+  | { kind: 'de_esser'; frequency_hz: number; range: 'narrow' | 'wide' | 'all_high'; amount: number; reaction: 'slow' | 'medium' | 'fast'; listen: boolean }
+  | { kind: 'de_hummer'; frequency_hz: number; amount: number; slope: number; listen: boolean }
+  | { kind: 'noise_reduction'; mode: 'auto_speech' | 'manual' | 'voice'; threshold_db: number; attack_ms: number; sensitivity: number; ratio: number; frequency_smoothing: number; time_smoothing: boolean; dry_wet: number; level_db: number; listen: boolean; profile: number[] | null }
+  | { kind: 'pitch'; semitones: number; cents: number; dry_wet: number };
+export interface Insert { on: boolean; effect: Effect }
+export interface Pan { on: boolean; x: number; y: number; rotate: number; spread: number; divergence: number; lfe_db: number; lfe_on: boolean; lfe_pre: boolean }
+export interface Send { bus: string; on: boolean; pre: boolean; level_db: number; pan: Pan }
+export interface Output { bus: string; on: boolean }
+export type Stage = 'fx' | 'dynamics' | 'eq';
+/** A strip of a track or a bus. Decibels of a fader, send or VCA: at most +10, -100 or below is -inf. */
+export interface Strip {
+  trim_db: number; invert: boolean; track_fx: Ducker | null; order: Stage[]; inserts: Insert[]; inserts_on: boolean;
+  dynamics: Dynamics; eq: Equalizer; fader_db: number; pan: Pan; sends: Send[]; outputs: Output[]; vcas: string[];
+}
+export interface LanePoint { at: Time; value: number }
+export interface Lane { points: LanePoint[]; kind?: 'continuous' | 'switch' }
+/** Lanes of automation by the path of their setting (`fader`, `pan.x`, ...). */
+export type Lanes = Record<string, Lane>;
+export interface Bus { id: string; name: string; color: string; format: BusFormat; strip?: Strip; lanes?: Lanes }
+export interface Vca { id: string; name: string; fader_db?: number; mute?: boolean; solo?: boolean; vcas?: string[]; lanes?: Lanes }
+export type GroupControl = 'editing' | 'fader' | 'solo' | 'mute' | 'sends' | 'panning' | 'automation';
+export interface TrackGroup { id: string; name: string; color?: string; members: string[]; linked?: GroupControl[]; active?: boolean }
+export type LoudnessStandard =
+  | 'bs1770_1' | 'bs1770_4' | 'atsc_a85' | 'ebu_r128' | 'op_59' | 'tr_b32' | 'agcom_219' | 'netflix' | 'youtube'
+  | 'disney_2_0' | 'disney_5_1' | 'apple_podcasts' | 'spotify' | 'aes_streaming' | 'web_video';
+export interface TimelineAudio {
+  monitor: string | null;
+  meter: 'ppm' | 'vu' | 'custom';
+  custom_meter: { detector: 'sample' | 'vu' | 'rms'; scale: 'iec' | 'linear'; decay_s: number; peak: 'off' | 'short_hold_fall' | 'medium_hold_fall' | 'medium_hold' | 'long_hold' | 'infinite_hold' };
+  prefader_metering: boolean;
+  loudness: { standard: LoudnessStandard; target: number; scale: 'ebu9' | 'ebu18'; relative: boolean; lock_to_transport: boolean };
+  exclusive_solo: boolean;
+  follows_edit: boolean;
+  record: {
+    mode: 'write' | 'trim'; touch: 'off' | 'latch' | 'snap' | 'snap_latch'; on_stop: 'event' | 'hold' | 'return';
+    categories: Record<'fader' | 'mute' | 'pan' | 'eq' | 'comp' | 'gate' | 'lim' | 'sends' | 'plugins' | 'misc', boolean>;
+    preview: boolean; active_range: { start: Time; end: Time; on: boolean } | null;
+  };
+}
+
+/** The fields that schema 4 adds to a clip, a track of sound and a timeline, as the engine writes them. */
+export const SOUND_FIELDS = {
+  clip: ['audio_fade_in', 'audio_fade_out', 'eq', 'effects', 'pitch_correction', 'pitch', 'channels'] satisfies (keyof Clip)[],
+  track: ['format', 'channels', 'order', 'mute', 'solo', 'solo_safe', 'adc', 'automation_arm', 'strip', 'lanes'] satisfies (keyof TrackSound)[],
+  timeline: ['buses', 'vcas', 'track_groups', 'audio'] satisfies (keyof Timeline)[],
+  strip: ['trim_db', 'invert', 'track_fx', 'order', 'inserts', 'inserts_on', 'dynamics', 'eq', 'fader_db', 'pan', 'sends', 'outputs', 'vcas'] satisfies (keyof Strip)[],
+  timelineAudio: ['monitor', 'meter', 'custom_meter', 'prefader_metering', 'loudness', 'exclusive_solo', 'follows_edit', 'record'] satisfies (keyof TimelineAudio)[],
+};
 
 // Colour management (PROTOCOL.md, "Colour management"; engine/crates/model/src/color_management.rs),
 // as DaVinci Resolve's Project Settings > Color Management sets it (Reference Manual 20, pp. 149-153,

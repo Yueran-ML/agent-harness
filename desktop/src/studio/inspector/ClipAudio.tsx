@@ -1,5 +1,5 @@
 import { useWords } from '../../app/locale';
-import type { Clip, Timeline } from '../engine';
+import { fixedOf, type Clip, type Timeline } from '../engine';
 import { Fades } from './ClipVideo';
 import { common, setClips } from './common';
 import { NumberField } from './fields';
@@ -13,10 +13,10 @@ export function ClipAudio({ clips, timeline, commit }: { clips: readonly Clip[];
   const labels = useWords().label.studio.inspector;
   const ids = clips.map(clip => clip.id);
   return <div className="inspector-panel" data-panel="audio">
-    <NumberField name="volume" label={labels.volume} value={common(clips, clip => clip.gain_db)} fallback={0} unit="dB"
+    <NumberField name="volume" label={labels.volume} value={common(clips, clip => fixedOf(clip.gain_db))} fallback={0} unit="dB"
       min={-96} max={24} digits={1} scrub={0.1} slider={{ min: -96, max: 24, step: 0.1 }}
       onCommit={gain => void commit(setClips(ids, () => ({ gain_db: gain })))} />
-    <NumberField name="pan" label={labels.pan} value={common(clips, clip => clip.pan * 100)} fallback={0}
+    <NumberField name="pan" label={labels.pan} value={common(clips, clip => { const pan = fixedOf(clip.pan); return pan === null ? null : pan * 100; })} fallback={0}
       min={-100} max={100} digits={0} scrub={0.5} slider={{ min: -100, max: 100, step: 1 }}
       onCommit={pan => void commit(setClips(ids, () => ({ pan: pan / 100 })))} />
     <h3 className="inspector-section">{labels.fades}</h3>

@@ -1,14 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
-  applyOp, CopyMismatch, defaultColorSettings, emptyGrade, keptColor, mergePatch, sortLinks,
+  applyOp, CopyMismatch, defaultColorSettings, emptyGrade, fixedOf, keptColor, mergePatch, SOUND_FIELDS, sortLinks,
   type Clip, type ClipTrack, type GradeNode, type Link, type Media, type Op, type Project, type Timeline,
 } from '../src/studio/engine';
 
 interface Example { name: string; before: Project; after: Project; done: Op; inverse: Op }
 const examples: Example[] = JSON.parse(readFileSync(new URL('../../engine/crates/model/tests/data/ops-examples.json', import.meta.url), 'utf8'));
 
-describe('the schema 3 project copy agrees with the Rust model', () => {
+describe('the schema 4 project copy agrees with the Rust model', () => {
   for (const example of examples) {
     it(example.name, () => {
       const before = structuredClone(example.before);
@@ -19,6 +19,34 @@ describe('the schema 3 project copy agrees with the Rust model', () => {
       expect(applyOp(changed, example.inverse)).toStrictEqual({ ...before, next_id: example.after.next_id });
     });
   }
+});
+
+describe('the sound of schema 4 in the copy is what the engine writes, field by field', () => {
+  const example = examples.find(each => each.name === 'add_track of sound, 5.1, muted, with a strip')!;
+  const keys = (value: object) => Object.keys(value).sort();
+
+  it('names every field of a track of sound, its strip, its clips and its timeline', () => {
+    const timeline = example.after.timelines[0];
+    const track = timeline.tracks.find(each => each.kind === 'audio' && each.format === '5.1') as ClipTrack;
+    expect(keys(track)).toEqual([...SOUND_FIELDS.track, 'id', 'kind', 'name', 'enabled', 'locked', 'clips', 'transitions'].sort());
+    expect(keys(track.strip!)).toEqual([...SOUND_FIELDS.strip].sort());
+    expect(keys(track.clips[0]).filter(key => (SOUND_FIELDS.clip as string[]).includes(key))).toEqual([...SOUND_FIELDS.clip].sort());
+    expect(keys(timeline).filter(key => (SOUND_FIELDS.timeline as string[]).includes(key))).toEqual([...SOUND_FIELDS.timeline].sort());
+    expect(keys(timeline.audio!)).toEqual([...SOUND_FIELDS.timelineAudio].sort());
+    expect(example.after.schema).toBe(4);
+    // A track of picture writes none of it.
+    const picture = timeline.tracks.find(each => each.kind === 'video')!;
+    expect(keys(picture).filter(key => (SOUND_FIELDS.track as string[]).includes(key))).toEqual([]);
+  });
+
+  it('reads a channel of one source, of several and of none as the engine writes them', () => {
+    const track = example.after.timelines[0].tracks.find(each => each.kind === 'audio' && each.format === '5.1') as ClipTrack;
+    const sources = track.clips[0].channels!.map(map => map.source);
+    expect(sources.slice(0, 4)).toEqual([{ stream: 1, channel: 0 }, { stream: 1, channel: 1 }, [{ stream: 1, channel: 0 }, { stream: 1, channel: 1 }], null]);
+    expect(fixedOf(track.clips[0].gain_db)).toBe(0);
+    const keyed = examples.find(each => each.name === 'set_clip of a gain of keyframes')!;
+    expect(fixedOf((keyed.done as Extract<Op, { op: 'set_clip' }>).gain_db!)).toBeNull();
+  });
 });
 
 describe('the grades of the copy, where the examples do not reach', () => {

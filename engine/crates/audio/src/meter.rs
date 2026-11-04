@@ -6,8 +6,9 @@
 //! On the thread of the mix, a [`LevelTap`] at each point where a level is taken (before and
 //! after the fader of each track and bus, T4b) sums each block into cells of 10 ms
 //! ([`METER_CELL`]): the peak and the mean square of each channel. It publishes the last
-//! [`LEVEL_CELLS_KEPT`] cells in a seqlock, so that a reader 30 times a second loses no peak that
-//! falls between two of its reads. It takes no memory once made and never waits.
+//! [`LEVEL_CELLS_KEPT`] cells, each in a seqlock of its own
+//! ([`rt::cells`](mod@crate::rt::cells): one cell of 50 words written each 10 ms), so that a
+//! reader 30 times a second loses no peak that falls between two of its reads. It takes no memory once made and never waits.
 //!
 //! Off it, a [`LevelReader`] gives the cells in order to [`Ballistics`], which makes what the
 //! meter shows: the bar by the detector of the meter type (the peak of the samples that falls
@@ -30,7 +31,7 @@ use crate::constants::{
     METER_CELL, METER_FLOOR_DB, METER_IEC_MIDDLE_DB, PEAK_HOLD, PEAK_HOLD_LONG, PEAK_HOLD_SHORT,
     PPM_FALL_DB, PPM_FALL_TIME, RMS_WINDOW, VU_STAGE,
 };
-use crate::rt::{seqlock, SeqReader, SeqWriter, Words};
+use crate::rt::{cells, CellReader, CellWriter, Words};
 
 /// What a level tap publishes of 10 ms: for each channel, the largest size of a sample and the
 /// mean of the squares. Channels past the tap's are 0.
@@ -62,10 +63,6 @@ impl Words for LevelCell {
     }
 }
 
-/// What a level tap's seqlock holds: the cells published so far, and the last
-/// [`LEVEL_CELLS_KEPT`], the cell `n` at `n % LEVEL_CELLS_KEPT`.
-type Published = (u64, [LevelCell; LEVEL_CELLS_KEPT]);
-
 /// The half of a level meter that runs on the thread of the mix (see the module). Made by
 /// [`level_tap`], off it.
 #[derive(Debug)]
@@ -75,16 +72,14 @@ pub struct LevelTap {
     filled: usize,
     peaks: [f32; MAX_CHANNELS],
     sums: [f64; MAX_CHANNELS],
-    count: u64,
-    history: [LevelCell; LEVEL_CELLS_KEPT],
-    writer: SeqWriter<Published>,
+    writer: CellWriter<LevelCell>,
 }
 
 /// A tap of the levels of `channels` (at most [`MAX_CHANNELS`]) at `rate`, and its first reader.
 /// Off the thread of the mix: it takes its memory here.
 #[must_use]
 pub fn level_tap(rate: u32, channels: usize) -> (LevelTap, LevelReader) {
-    let (writer, reader) = seqlock::<Published>((0, [LevelCell::default(); LEVEL_CELLS_KEPT]));
+    let (writer, reader) = cells(LEVEL_CELLS_KEPT, LevelCell::default());
     let cell = samples(METER_CELL, rate).max(1);
     let tap = LevelTap {
         channels: channels.min(MAX_CHANNELS),
@@ -92,13 +87,10 @@ pub fn level_tap(rate: u32, channels: usize) -> (LevelTap, LevelReader) {
         filled: 0,
         peaks: [0.0; MAX_CHANNELS],
         sums: [0.0; MAX_CHANNELS],
-        count: 0,
-        history: [LevelCell::default(); LEVEL_CELLS_KEPT],
         writer,
     };
     let reader = LevelReader {
         reader,
-        seen: 0,
         seconds: METER_CELL,
     };
     (tap, reader.with_cell(rate, cell))
@@ -114,11 +106,8 @@ impl LevelTap {
     /// Another reader, off the thread of the mix; it reads the cells published from now on.
     #[must_use]
     pub fn reader(&self, rate: u32) -> LevelReader {
-        let reader = self.writer.reader();
-        let seen = reader.read().0;
         LevelReader {
-            reader,
-            seen,
+            reader: self.writer.reader(),
             seconds: METER_CELL,
         }
         .with_cell(rate, self.cell)
@@ -137,6 +126,7 @@ impl LevelTap {
                 let mut peak = self.peaks[channel];
                 let mut sum = self.sums[channel];
                 for &x in &samples[at..end] {
+                    let x = crate::loudness::finite(x);
                     peak = peak.max(x.abs());
                     sum += f64::from(x) * f64::from(x);
                 }
@@ -165,9 +155,7 @@ impl LevelTap {
         for (square, sum) in cell.squares.iter_mut().zip(&self.sums) {
             *square = (sum / self.cell as f64) as f32;
         }
-        self.history[(self.count % LEVEL_CELLS_KEPT as u64) as usize] = cell;
-        self.count += 1;
-        self.writer.write((self.count, self.history));
+        self.writer.push(cell);
         self.filled = 0;
         self.peaks = [0.0; MAX_CHANNELS];
         self.sums = [0.0; MAX_CHANNELS];
@@ -185,8 +173,7 @@ impl LevelTap {
 /// A reader of a [`LevelTap`]: the cells that it has not read yet.
 #[derive(Clone, Debug)]
 pub struct LevelReader {
-    reader: SeqReader<Published>,
-    seen: u64,
+    reader: CellReader<LevelCell>,
     seconds: f64,
 }
 
@@ -206,17 +193,8 @@ impl LevelReader {
     /// Gives `cell` each cell published since the last call, in order, and says how many were
     /// lost (more than [`LEVEL_CELLS_KEPT`] published in between). Not on the thread of the mix:
     /// it may spin while a write is under way.
-    pub fn drain(&mut self, mut cell: impl FnMut(&LevelCell)) -> u64 {
-        let (count, history) = self.reader.read();
-        let kept = LEVEL_CELLS_KEPT as u64;
-        let from = self.seen.max(count.saturating_sub(kept));
-        let lost = from - self.seen;
-        for n in from..count {
-            #[allow(clippy::cast_possible_truncation, reason = "below 16")]
-            cell(&history[(n % kept) as usize]);
-        }
-        self.seen = count;
-        lost
+    pub fn drain(&mut self, cell: impl FnMut(&LevelCell)) -> u64 {
+        self.reader.drain(cell)
     }
 }
 
@@ -461,7 +439,13 @@ impl Ballistics {
         let len = self.squares.len();
         #[allow(clippy::cast_possible_truncation, reason = "below the length")]
         let at = (self.count % len as u64) as usize;
-        self.squares[at] = cell.squares;
+        for (kept, &square) in self.squares[at].iter_mut().zip(&cell.squares) {
+            *kept = if square.is_finite() {
+                square.max(0.0)
+            } else {
+                0.0
+            };
+        }
         self.count += 1;
         let dt = self.seconds;
         let bar_fall = self.meter.bar_fall() * dt;
@@ -478,9 +462,15 @@ impl Ballistics {
         let vu_step = 1.0 - (-dt / VU_STAGE).exp();
         for channel in 0..self.channels {
             let state = &mut self.state[channel];
+            // A level that is not a finite number is heard as silence (the taps never give one).
             let peak = db(f64::from(cell.peaks[channel]));
+            let peak = if peak.is_finite() {
+                peak
+            } else {
+                f64::NEG_INFINITY
+            };
             state.bar = peak.max(state.bar - bar_fall);
-            let rms = f64::from(cell.squares[channel]).max(0.0).sqrt();
+            let rms = f64::from(self.squares[at][channel]).sqrt();
             state.vu.0 += (rms - state.vu.0) * vu_step;
             state.vu.1 += (state.vu.0 - state.vu.1) * vu_step;
             if peak >= state.peak {

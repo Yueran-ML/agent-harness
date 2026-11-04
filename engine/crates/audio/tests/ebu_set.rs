@@ -8,12 +8,14 @@
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
     reason = "samples of a file"
 )]
 
 use std::path::{Path, PathBuf};
 
 use columbina_audio::analysis::analyze;
+use columbina_audio::loudness::{loudness_tap, Loudness};
 use columbina_audio::Layout;
 
 /// A WAV read: its rate and its channels, planar.
@@ -99,19 +101,23 @@ fn files() -> Vec<PathBuf> {
 }
 
 /// The case of `document` (3341 or 3342) that the name of a file gives, and the number after it.
+/// A year after the number of the document (`3341-2011-8_…`, a file of 2011) is passed over.
 fn case(name: &str, document: &str) -> Option<(u32, Option<u32>)> {
-    let rest = &name[name.find(&format!("{document}-"))? + document.len() + 1..];
-    let mut numbers = rest
-        .split(|c: char| !c.is_ascii_digit())
-        .filter(|part| !part.is_empty())
-        .map(|part| part.parse::<u32>().ok());
-    let case = numbers.next()??;
+    let mut rest = &name[name.find(&format!("{document}-"))? + document.len() + 1..];
+    let number = |text: &str| -> Option<(u32, usize)> {
+        let digits = text.chars().take_while(char::is_ascii_digit).count();
+        text[..digits].parse().ok().map(|value| (value, digits))
+    };
+    let (mut case, mut digits) = number(rest)?;
+    if case >= 1_990 {
+        rest = rest[digits..].strip_prefix('-')?;
+        (case, digits) = number(rest)?;
+    }
     // A second number right after a dash names the file of a case of many (10-1 … 10-20).
-    let second = rest
-        .strip_prefix(&case.to_string())
-        .and_then(|after| after.strip_prefix('-'))
-        .and_then(|after| after.split(|c: char| !c.is_ascii_digit()).next())
-        .and_then(|digits| digits.parse().ok());
+    let second = rest[digits..]
+        .strip_prefix('-')
+        .and_then(number)
+        .map(|(value, _)| value);
     Some((case, second))
 }
 
@@ -125,65 +131,204 @@ fn layout(channels: usize) -> Layout {
     }
 }
 
+/// The momentary and the short-term loudness after each cell of 10 ms of `wav`.
+fn cells(wav: &Wav) -> Vec<(f64, f64)> {
+    let (mut tap, mut reader) = loudness_tap(wav.rate, layout(wav.channels.len()), false);
+    let mut loudness = Loudness::new();
+    let cell = tap.cell();
+    let frames = wav.channels[0].len();
+    let mut read = Vec::new();
+    for at in (0..frames).step_by(cell) {
+        let end = frames.min(at + cell);
+        let slices: Vec<&[f32]> = wav.channels.iter().map(|c| &c[at..end]).collect();
+        tap.take(&slices);
+        reader.drain(|c| {
+            loudness.push(c);
+            let reading = loudness.reading();
+            read.push((reading.momentary, reading.short_term));
+        });
+    }
+    read
+}
+
+/// Tech 3341 cases 11 and 14 (meters that read live): segments of `seconds`, each a tone of
+/// its own level after a silence that grows; the loudest S (case 11) or M (case 14) of each
+/// segment is a whole level, one LU over the one before.
+fn rising_levels(name: &str, wav: &Wav, seconds: f64, short_term: bool) {
+    let read = cells(wav);
+    let per = (seconds / 0.01).round() as usize;
+    let maxima: Vec<f64> = read
+        .chunks(per)
+        .filter(|chunk| chunk.len() == per)
+        .map(|chunk| {
+            chunk
+                .iter()
+                .map(|&(m, s)| if short_term { s } else { m })
+                .fold(f64::NEG_INFINITY, f64::max)
+        })
+        .collect();
+    assert!(maxima.len() >= 2, "{name}: {} segments", maxima.len());
+    for (index, max) in maxima.iter().enumerate() {
+        assert!(
+            (max - max.round()).abs() <= 0.1,
+            "{name}: segment {index} reads {max}"
+        );
+        if index > 0 {
+            let step = max - maxima[index - 1];
+            assert!(
+                (step - 1.0).abs() <= 0.1,
+                "{name}: segment {index} rises {step}"
+            );
+        }
+    }
+}
+
+/// Checks a file of the set; says whether it was one of its cases.
+fn check(name: &str, wav: &Wav) -> bool {
+    let tech3341 = case(name, "3341");
+    let tech3342 = case(name, "3342");
+    if tech3341.is_none() && tech3342.is_none() {
+        return false;
+    }
+    let slices: Vec<&[f32]> = wav.channels.iter().map(Vec::as_slice).collect();
+    let true_peak = matches!(tech3341, Some((15..=23, _)));
+    let reading = analyze(wav.rate, layout(wav.channels.len()), true_peak, &slices);
+    let near = |what: &str, value: f64, expected: f64| {
+        assert!(
+            (value - expected).abs() <= 0.1,
+            "{name}: {what} {value}, expected {expected} ± 0.1"
+        );
+    };
+    match tech3341 {
+        Some((2, _)) => near("I", reading.integrated.unwrap(), -33.0),
+        Some((1 | 3..=8, _)) => near("I", reading.integrated.unwrap(), -23.0),
+        Some((9, _)) => {
+            // S holds at −23 once 3 s are heard.
+            for (index, &(_, s)) in cells(wav).iter().enumerate().skip(300) {
+                near(&format!("S at cell {index}"), s, -23.0);
+            }
+        }
+        Some((10, Some(_))) => near("max S", reading.short_term_max, -23.0),
+        Some((11, _)) => rising_levels(name, wav, 6.0, true),
+        Some((12, _)) => {
+            // M holds at −23 once a second is heard.
+            for (index, &(m, _)) in cells(wav).iter().enumerate().skip(100) {
+                near(&format!("M at cell {index}"), m, -23.0);
+            }
+        }
+        Some((13, Some(_))) => near("max M", reading.momentary_max, -23.0),
+        Some((14, _)) => rising_levels(name, wav, 0.8, false),
+        Some((15..=18, _)) => {
+            let tp = reading.true_peak;
+            assert!((-6.4..=-5.8).contains(&tp), "{name}: {tp} dBTP");
+        }
+        Some((19, _)) => {
+            let tp = reading.true_peak;
+            assert!((2.6..=3.2).contains(&tp), "{name}: {tp} dBTP");
+        }
+        Some((20..=23, _)) => {
+            let tp = reading.true_peak;
+            assert!((-0.4..=0.2).contains(&tp), "{name}: {tp} dBTP");
+        }
+        _ => {}
+    }
+    if let Some((case, _)) = tech3342 {
+        let expected = match case {
+            1 => Some(10.0),
+            2 | 5 => Some(5.0),
+            3 => Some(20.0),
+            4 | 6 => Some(15.0),
+            _ => None,
+        };
+        if let Some(expected) = expected {
+            let range = reading.range.unwrap();
+            assert!(
+                (range - expected).abs() <= 1.0,
+                "{name}: LRA {range}, expected {expected} ± 1"
+            );
+        }
+    }
+    eprintln!("{name}: {reading:?}");
+    true
+}
+
 #[test]
 fn the_ebu_set_reads_what_tech_3341_and_3342_require() {
     let mut checked = 0;
     for path in files() {
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        let tech3341 = case(&name, "3341");
-        let tech3342 = case(&name, "3342");
-        if tech3341.is_none() && tech3342.is_none() {
-            continue;
+        if check(&name, &read_wav(&path)) {
+            checked += 1;
         }
-        let wav = read_wav(&path);
-        let slices: Vec<&[f32]> = wav.channels.iter().map(Vec::as_slice).collect();
-        let true_peak = matches!(tech3341, Some((15..=23, _)));
-        let reading = analyze(wav.rate, layout(wav.channels.len()), true_peak, &slices);
-        let near = |what: &str, value: f64, expected: f64| {
-            assert!(
-                (value - expected).abs() <= 0.1,
-                "{name}: {what} {value}, expected {expected} ± 0.1"
-            );
-        };
-        match tech3341 {
-            Some((2, _)) => near("I", reading.integrated.unwrap(), -33.0),
-            Some((1 | 3..=8, _)) => near("I", reading.integrated.unwrap(), -23.0),
-            Some((10, Some(_))) => near("max S", reading.short_term_max, -23.0),
-            Some((13, Some(_))) => near("max M", reading.momentary_max, -23.0),
-            Some((15..=18, _)) => {
-                let tp = reading.true_peak;
-                assert!((-6.4..=-5.8).contains(&tp), "{name}: {tp} dBTP");
-            }
-            Some((19, _)) => {
-                let tp = reading.true_peak;
-                assert!((2.6..=3.2).contains(&tp), "{name}: {tp} dBTP");
-            }
-            Some((20..=23, _)) => {
-                let tp = reading.true_peak;
-                assert!((-0.4..=0.2).contains(&tp), "{name}: {tp} dBTP");
-            }
-            _ => {}
-        }
-        if let Some((case, _)) = tech3342 {
-            let expected = match case {
-                1 => Some(10.0),
-                2 | 5 => Some(5.0),
-                3 => Some(20.0),
-                4 | 6 => Some(15.0),
-                _ => None,
-            };
-            if let Some(expected) = expected {
-                let range = reading.range.unwrap();
-                assert!(
-                    (range - expected).abs() <= 1.0,
-                    "{name}: LRA {range}, expected {expected} ± 1"
-                );
-            }
-        }
-        eprintln!("{name}: {reading:?}");
-        checked += 1;
     }
     eprintln!("{checked} files of the EBU set checked");
+}
+
+/// A stereo tone of 1 kHz at 48 kHz through `segments` of (seconds, dBFS or silence).
+fn tone(segments: &[(f64, Option<f64>)]) -> Wav {
+    let mut signal = Vec::new();
+    for &(seconds, level) in segments {
+        let frames = (seconds * 48_000.0).round() as usize;
+        let amplitude = level.map_or(0.0, |db| 10.0_f64.powf(db / 20.0));
+        let start = signal.len();
+        signal.extend((start..start + frames).map(|n| {
+            (amplitude * (std::f64::consts::TAU * 1_000.0 * n as f64 / 48_000.0).sin()) as f32
+        }));
+    }
+    Wav {
+        rate: 48_000,
+        channels: vec![signal.clone(), signal],
+    }
+}
+
+#[test]
+fn the_checks_of_cases_9_11_12_and_14_hold_for_the_signals_of_the_tables() {
+    // The signals as Tech 3341 V4 describes them, made here: the checks that the files of the
+    // set will meet, met first by these.
+    let mut case9 = Vec::new();
+    let mut case12 = Vec::new();
+    for _ in 0..5 {
+        case9.extend([(1.34, Some(-20.0)), (1.66, Some(-30.0))]);
+    }
+    for _ in 0..25 {
+        case12.extend([(0.18, Some(-20.0)), (0.22, Some(-30.0))]);
+    }
+    let mut case11 = Vec::new();
+    let mut case14 = Vec::new();
+    for i in 1..=20 {
+        let i = f64::from(i);
+        case11.extend([
+            (i * 0.15, None),
+            (3.0, Some(-38.0 + i)),
+            (3.0 - i * 0.15, None),
+        ]);
+        case14.extend([
+            (i * 0.02, None),
+            (0.4, Some(-38.0 + i)),
+            (0.4 - i * 0.02, None),
+        ]);
+    }
+    assert!(check("seq-3341-9-24bit.wav", &tone(&case9)));
+    assert!(check("seq-3341-11-24bit.wav", &tone(&case11)));
+    assert!(check("seq-3341-12-24bit.wav", &tone(&case12)));
+    assert!(check("seq-3341-14-24bit.wav", &tone(&case14)));
+    assert!(check(
+        "seq-3341-2011-8_seq-3342-6-24bit-v02.wav",
+        // I −23 with the −38 under the relative gate; LRA 15 with it over the gate of the range.
+        &tone(&[(20.0, Some(-38.0)), (20.0, Some(-23.0))])
+    ));
+}
+
+#[test]
+#[should_panic(expected = "rises")]
+fn the_check_of_case_11_finds_a_level_out_of_step() {
+    let mut segments = Vec::new();
+    for i in 1..=4 {
+        let level = if i == 3 { -33.0 } else { -38.0 + f64::from(i) };
+        let i = f64::from(i);
+        segments.extend([(i * 0.15, None), (3.0, Some(level)), (3.0 - i * 0.15, None)]);
+    }
+    check("seq-3341-11-24bit.wav", &tone(&segments));
 }
 
 #[test]
@@ -197,6 +342,14 @@ fn the_names_of_the_files_give_their_cases() {
     assert_eq!(
         case("seq-3341-7_seq-3342-5-24bit.wav", "3341"),
         Some((7, None))
+    );
+    assert_eq!(
+        case("seq-3341-2011-8_seq-3342-6-24bit-v02.wav", "3341"),
+        Some((8, None))
+    );
+    assert_eq!(
+        case("seq-3341-2011-8_seq-3342-6-24bit-v02.wav", "3342"),
+        Some((6, Some(24)))
     );
     assert_eq!(case("1kHz Sine -20 LUFS-16bit.wav", "3341"), None);
 }

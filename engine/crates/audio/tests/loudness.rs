@@ -18,7 +18,8 @@ use std::f64::consts::TAU;
 
 use columbina_audio::analysis::analyze;
 use columbina_audio::loudness::{
-    cell_frames, energy, loudness_tap, lufs, weight, Cell, KFilter, Loudness, OFFSET,
+    cell_frames, energy, loudness_tap, lufs, percentile_rank, weight, Cell, KFilter, Loudness,
+    OFFSET,
 };
 use columbina_audio::testing::{noise, realtime, rt_violations, CountingAllocator, Rng};
 use columbina_audio::{Layout, Role};
@@ -175,6 +176,10 @@ fn ffmpeg(channels: &[Vec<f32>], true_peak: bool, name: &str) -> Option<Ffmpeg> 
 
 /// Checks `ours` against ffmpeg's reading of the same sound (convention 5), if there is an
 /// ffmpeg: I, LRA, the loudest M and S within 0.1 LU, the true peak within 0.2 dB.
+///
+/// No case here is of 7.1: ffmpeg weighs the rear surrounds of 7.1 (its back channels) by 1.41,
+/// where BS.1770's table 4 gives 1.0 to a channel more than 120° from the front, which we keep
+/// (`weight(Role::LeftRear)`); a 7.1 sound with sound in its rears reads louder in ffmpeg.
 fn beside_ffmpeg(
     name: &str,
     channels: &[Vec<f32>],
@@ -805,6 +810,83 @@ fn the_code_of_the_taps_holds_no_word_of_the_threads_of_the_sound() {
     for file in ["loudness.rs", "meter.rs"] {
         let source = std::fs::read_to_string(src.join(file)).unwrap();
         assert_eq!(rt_violations(&source), [], "{file}");
+    }
+}
+
+#[test]
+fn the_ranks_of_the_loudness_range_are_those_of_ffmpeg() {
+    // ffmpeg's `f_ebur128.c`: the rank ⌊N·p + 0.5⌋ (at least 1) at both ends, in whole
+    // percents.
+    assert_eq!(percentile_rank(271, 10), 27);
+    assert_eq!(percentile_rank(271, 95), 257);
+    assert_eq!(percentile_rank(280, 10), 28);
+    assert_eq!(percentile_rank(275, 10), 28);
+    assert_eq!(percentile_rank(5, 10), 1);
+    assert_eq!(percentile_rank(1, 95), 1);
+    assert_eq!(percentile_rank(100, 95), 95);
+}
+
+#[test]
+fn a_ramp_then_a_hold_has_the_range_that_ffmpeg_reads() {
+    // A ramp of 10 s from −40 to −20 dBFS, then a hold of 20 to 21 s: short-term values
+    // spread over the low tail, where the rank tells (the review found −0.24 LU with ⌈N·p⌉).
+    for hold in [20.0, 20.3, 20.6, 21.0] {
+        let ramp_frames = 10 * RATE as usize;
+        let hold_frames = (hold * f64::from(RATE)) as usize;
+        let signal: Vec<f32> = (0..ramp_frames + hold_frames)
+            .map(|n| {
+                let db = if n < ramp_frames {
+                    -40.0 + 20.0 * n as f64 / ramp_frames as f64
+                } else {
+                    -20.0
+                };
+                (gain(db) * (TAU * 1_000.0 * n as f64 / f64::from(RATE)).sin()) as f32
+            })
+            .collect();
+        let channels = stereo(&signal);
+        let reading = ours(Layout::Stereo, &channels, false);
+        beside_ffmpeg(&format!("ramp{hold}"), &channels, &reading, false);
+    }
+}
+
+#[test]
+fn a_sample_that_is_not_a_number_does_not_stop_the_meter() {
+    // One infinite and one NaN sample in a tone at −23: read as silence, so that the filters
+    // and the peaks go on; 3 s on, M and S read the tone again.
+    let mut signal = tone(1_000.0, &[(8.0, Some(-23.0))]);
+    signal[48_000] = f32::INFINITY;
+    signal[72_000] = f32::NAN;
+    signal[72_001] = f32::NEG_INFINITY;
+    let channels = stereo(&signal);
+    let reading = ours(Layout::Stereo, &channels, true);
+    assert_near("M", reading.momentary, -23.0, 0.1);
+    assert_near("S", reading.short_term, -23.0, 0.1);
+    assert_near("I", reading.integrated.unwrap(), -23.0, 0.1);
+    assert_near("sample peak", reading.sample_peak, -23.0, 0.01);
+    assert_near("true peak", reading.true_peak, -23.0, 0.05);
+    assert!(reading.range.unwrap().is_finite());
+}
+
+#[test]
+fn rates_other_than_48_khz_weigh_as_the_crate_ebur128() {
+    // The K filter made for each rate: +4 dB at 10 kHz at every rate, and the integrated
+    // loudness of noise as the crate ebur128 reads it at that rate.
+    for rate in [44_100, 96_000, 192_000] {
+        let filter = KFilter::new(rate);
+        let at_10k = 10.0 * filter.power_at(10_000.0, rate).log10();
+        assert_near(&format!("{rate}: 10 kHz"), at_10k, 4.0, 0.1);
+        let frames = rate as usize * 4;
+        let channels = vec![noise(31, 0.3, frames), noise(37, 0.3, frames)];
+        let reading = analyze(rate, Layout::Stereo, false, &slices(&channels));
+        let mut theirs = ebur128::EbuR128::new(2, rate, ebur128::Mode::I).unwrap();
+        theirs.add_frames_planar_f32(&slices(&channels)).unwrap();
+        let integrated = theirs.loudness_global().unwrap();
+        assert_near(
+            &format!("{rate}: I"),
+            reading.integrated.unwrap(),
+            integrated,
+            0.01,
+        );
     }
 }
 

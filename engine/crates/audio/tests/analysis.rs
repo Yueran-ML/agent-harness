@@ -14,7 +14,8 @@
 use std::f64::consts::TAU;
 
 use columbina_audio::analysis::{
-    analyze, level_match, normalize, normalize_clips, Analysis, Analyzer, Level, SetLevel,
+    analyze, level_match, normalize, normalize_clips, Analysis, Analyzer, Level, Normalized,
+    SetLevel, Volume,
 };
 use columbina_audio::constants::LOUDNESS_DEFAULT_TOLERANCE;
 use columbina_audio::standards::{self, by_id, Measure, Verdict, STANDARDS};
@@ -72,6 +73,11 @@ fn together(clips: &[&[Vec<f32>]]) -> Analysis {
     analyzer.finish()
 }
 
+/// The gains of Normalize, without whether they are clamped.
+fn gains(normalized: Vec<Normalized>) -> Vec<Option<f64>> {
+    normalized.into_iter().map(|clip| clip.gain).collect()
+}
+
 fn assert_near(what: &str, value: f64, expected: f64, within: f64) {
     assert!(
         (value - expected).abs() <= within,
@@ -86,10 +92,25 @@ fn independent_brings_each_clip_to_the_target_and_relative_moves_all_by_one() {
     let each = [of(&a), of(&b)];
     let both = together(&[&a, &b]);
     let level = Level::of(by_id("ebu-r128").unwrap());
-    let independent = normalize_clips(level, SetLevel::Independent, -23.0, &each, &both);
+    let volumes = [Volume::fixed(0.0); 2];
+    let independent = gains(normalize_clips(
+        level,
+        SetLevel::Independent,
+        -23.0,
+        &each,
+        &both,
+        &volumes,
+    ));
     assert_near("a", independent[0].unwrap(), 7.0, 0.1);
     assert_near("b", independent[1].unwrap(), -3.0, 0.1);
-    let relative = normalize_clips(level, SetLevel::Relative, -23.0, &each, &both);
+    let relative = gains(normalize_clips(
+        level,
+        SetLevel::Relative,
+        -23.0,
+        &each,
+        &both,
+        &volumes,
+    ));
     assert_eq!(relative[0], relative[1]);
     let expected = -23.0 - both.integrated.unwrap();
     assert_near("relative", relative[0].unwrap(), expected, 1e-12);
@@ -117,10 +138,25 @@ fn the_peak_modes_bring_the_highest_sample_or_true_peak_to_the_level() {
     let quiet = vec![quiet.clone(), quiet];
     let each = [of(&loud), of(&quiet)];
     let both = together(&[&loud, &quiet]);
-    let sample = normalize_clips(Level::SamplePeak, SetLevel::Independent, -9.0, &each, &both);
+    let volumes = [Volume::fixed(0.0); 2];
+    let sample = gains(normalize_clips(
+        Level::SamplePeak,
+        SetLevel::Independent,
+        -9.0,
+        &each,
+        &both,
+        &volumes,
+    ));
     assert_near("loud", sample[0].unwrap(), -9.0 + 9.03, 0.01);
     assert_near("quiet", sample[1].unwrap(), -9.0 + 29.03, 0.01);
-    let relative = normalize_clips(Level::SamplePeak, SetLevel::Relative, -9.0, &each, &both);
+    let relative = gains(normalize_clips(
+        Level::SamplePeak,
+        SetLevel::Relative,
+        -9.0,
+        &each,
+        &both,
+        &volumes,
+    ));
     assert_near("relative", relative[1].unwrap(), -9.0 + 9.03, 0.01);
     let true_peak = normalize(Level::TruePeak, -1.0, &each[0]).unwrap();
     assert_near("true peak", true_peak, -1.0 + 6.02, 0.2);
@@ -174,7 +210,8 @@ fn level_matcher_adds_the_difference_of_loudness() {
     let reference = of(&program(11, -18.0, 5.0));
     let clip = of(&program(13, -27.0, 5.0));
     assert_near("match", level_match(&reference, &clip).unwrap(), 9.0, 0.1);
-    // A clip shorter than a block falls back to the ungated mean of both.
+    // A clip shorter than a block is taken by its ungated mean, the reference by its integrated
+    // loudness still.
     let short: Vec<Vec<f32>> = program(17, -30.0, 5.0)
         .into_iter()
         .map(|mut channel| {
@@ -188,12 +225,90 @@ fn level_matcher_adds_the_difference_of_loudness() {
     assert_near(
         "short",
         matched,
-        reference.mean.unwrap() - short.mean.unwrap(),
+        reference.integrated.unwrap() - short.mean.unwrap(),
         1e-12,
     );
     assert_near("short, about", matched, 12.0, 0.6);
     let silence = of(&vec![vec![0.0; 48_000]; 2]);
     assert_eq!(level_match(&reference, &silence), None);
+    // A reference with silence in it: its integrated loudness (−18) is what is matched, not its
+    // ungated mean (3 dB lower), when the clip has only a mean.
+    let mut paused = program(11, -18.0, 5.0);
+    for channel in &mut paused {
+        channel.resize(10 * 48_000, 0.0);
+    }
+    let paused = of(&paused);
+    assert_near("paused", paused.integrated.unwrap(), -18.0, 0.2);
+    assert!(paused.mean.unwrap() < -20.5);
+    let matched = level_match(&paused, &short).unwrap();
+    assert_near(
+        "paused reference",
+        matched,
+        paused.integrated.unwrap() - short.mean.unwrap(),
+        1e-12,
+    );
+    // And the other way: a short reference, a long clip.
+    let back = level_match(&short, &paused).unwrap();
+    assert_near(
+        "short reference",
+        back,
+        short.mean.unwrap() - paused.integrated.unwrap(),
+        1e-12,
+    );
+}
+
+#[test]
+fn normalize_says_which_clips_the_range_of_volume_would_clamp() {
+    // Volumes from −96 to +24 dB (C-F13): a gain that takes a clip's Volume, or any key of it,
+    // out of the range is applied clamped, and Normalize says so.
+    let a = of(&program(29, -40.0, 5.0));
+    let b = of(&program(31, -10.0, 5.0));
+    let level = Level::of(by_id("ebu-r128").unwrap());
+    let each = [a, b, a];
+    let volumes = [
+        Volume::fixed(10.0),
+        Volume {
+            lowest: -94.0,
+            highest: 0.0,
+        },
+        Volume::fixed(0.0),
+    ];
+    let normalized = normalize_clips(level, SetLevel::Independent, -23.0, &each, &a, &volumes);
+    // +17 on +10 is over +24; −13 on a key at −94 is under −96; +17 on 0 is within.
+    assert_eq!(
+        normalized
+            .iter()
+            .map(|clip| clip.clamped)
+            .collect::<Vec<_>>(),
+        [true, true, false]
+    );
+    assert_near("gain", normalized[0].gain.unwrap(), 17.0, 0.1);
+    let silence = of(&vec![vec![0.0; 48_000]; 2]);
+    let none = normalize_clips(
+        level,
+        SetLevel::Independent,
+        -23.0,
+        &[silence],
+        &silence,
+        &[Volume::fixed(24.0)],
+    );
+    assert_eq!(
+        none,
+        [Normalized {
+            gain: None,
+            clamped: false
+        }]
+    );
+}
+
+#[test]
+fn more_channels_than_a_layout_has_are_not_heard() {
+    let clip = program(41, -23.0, 2.0);
+    let mut wide: Vec<Vec<f32>> = clip.clone();
+    wide.extend((0..28).map(|seed| noise(100 + seed, 1.0, clip[0].len())));
+    let mut analyzer = Analyzer::new(RATE, Layout::Stereo, true);
+    analyzer.take(&slices(&wide));
+    assert_eq!(analyzer.finish(), of(&clip));
 }
 
 #[test]
@@ -258,6 +373,8 @@ fn the_table_holds_the_eleven_of_resolve_then_the_presets() {
         (standard.target, standard.tolerance, standard.true_peak)
     };
     assert_eq!(numbers("ebu-r128"), (Some(-23.0), Some(1.0), Some(-1.0)));
+    assert_eq!(numbers("agcom-219"), (Some(-24.0), Some(0.5), Some(-2.0)));
+    assert!(!by_id("agcom-219").unwrap().verified);
     assert_eq!(numbers("atsc-a85"), (Some(-24.0), Some(2.0), Some(-2.0)));
     assert_eq!(numbers("op-59"), (Some(-24.0), Some(1.0), Some(-2.0)));
     assert_eq!(numbers("tr-b32"), (Some(-24.0), Some(1.0), Some(-1.0)));

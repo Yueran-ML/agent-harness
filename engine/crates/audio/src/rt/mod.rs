@@ -6,13 +6,16 @@
 //!   samples and of messages (`rtrb`).
 //! - [`seqlock`](mod@seqlock): a value written by one thread and read by any, the reader never
 //!   holding the writer back.
+//! - [`cells`](mod@cells): the last cells of a tap of the meters, one place written at a time.
 //! - [`smooth`]: the 10 ms ramp of a parameter changed while the sound plays.
 //! - [`flush`], [`flush32`]: the state of a feedback put to 0 before it turns denormal.
 
+pub mod cells;
 pub mod ring;
 pub mod seqlock;
 pub mod smooth;
 
+pub use cells::{cells, CellReader, CellWriter};
 pub use ring::{
     messages, samples, MessageConsumer, MessageProducer, SampleConsumer, SampleProducer,
 };

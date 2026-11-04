@@ -14,8 +14,10 @@
 //! - ATSC A/85:2026-07 measures long-form content by its dialogue, Netflix too; the dialogue
 //!   cannot be told apart here, so both are measured over the whole programme, gated (the plan:
 //!   "按全节目测量").
-//! - AGCOM 219/09/CSP sets no level of its own: it compares each advertisement with its channel.
-//!   Fairlight's preset is −23 LUFS, taken here; the true peak is EBU's −1 dBTP. Unofficial.
+//! - AGCOM 219/09/CSP sets no level of its own (the delibera, linked in the module's history):
+//!   it compares each advertisement with its channel. The presets of the trade (iZotope Insight
+//!   2, its source here) take −24 LUFS ±0.5 LU and −2 dBTP, taken here, unofficial and
+//!   unverified (the review of T9; Fairlight's −23 was only an excerpt of a search).
 //! - `YouTube` publishes no target; −14 LUFS is what is measured. Disney publishes nothing; −24
 //!   LKFS and −2 dBTP come from an unofficial guide, unverified.
 
@@ -191,12 +193,12 @@ pub const STANDARDS: [Standard; 15] = [
     row(
         "agcom-219",
         "AGCOM 219",
-        Some(-23.0),
-        None,
-        Some(-1.0),
+        Some(-24.0),
+        Some(0.5),
+        Some(-2.0),
         Measure::Gated,
-        (false, true, false, true),
-        "https://www.agcom.it/sites/default/files/migration/attachment/Allegato%2016-12-2009.pdf",
+        (false, true, false, false),
+        "https://s3.amazonaws.com/izotopedownloads/docs/insight200/en/loudness/index.html",
     ),
     row(
         "netflix",

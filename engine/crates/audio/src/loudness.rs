@@ -9,7 +9,8 @@
 //! rate as libebur128 works them out), sums the weighted power of every channel into a cell of
 //! 10 ms ([`METER_CELL`]), with the true peak (`fx::true_peak`, the interpolator that the Limiter
 //! hears by) and the sample peak of the cell, and publishes the last
-//! [`LOUDNESS_CELLS_KEPT`] cells in a seqlock. It takes no memory once made and never waits.
+//! [`LOUDNESS_CELLS_KEPT`] cells, each in a seqlock of its own
+//! ([`rt::cells`](mod@crate::rt::cells)). It takes no memory once made and never waits.
 //!
 //! Another thread reads them ([`LoudnessReader`]) into a [`Loudness`], which keeps what a meter
 //! keeps: the windows of 400 ms and 3 s, the maxima, and the histograms of the blocks that make
@@ -30,10 +31,12 @@
 //!   BS.1770-1 had no gate: [`Reading::integrated_ungated`].
 //! - Loudness Range: the short-term loudness every 100 ms once 3 s have been heard; those above
 //!   −70 LUFS, then those above their power mean less 20 LU; the 95th percentile less the 10th,
-//!   by the nearest rank: the least value with at least p·n values at or under it, as ffmpeg's
-//!   `ebur128` takes it (convention 5). Tech 3342's code and libebur128 take the value at
-//!   round((n − 1)·p) instead; the two differ by a value, which tells only over a short sound
-//!   (10 s at −60 then −75: 3.8 LU against 3.5).
+//!   each the value of rank ⌊n·p + 0.5⌋ (from 1, at least 1, in whole numbers), as ffmpeg's
+//!   `ebur128` takes them at both ends (`f_ebur128.c`; convention 5). Tech 3342's code and
+//!   libebur128 take the value at round((n − 1)·p) from 0 instead, which differs by a value: it
+//!   tells only over a short sound (10 s at −60 then −75: 3.8 LU against 3.5).
+//! - A sample that is not a finite number (∞, NaN) is heard as silence, so that the filters and
+//!   the peaks go on (the review of T9).
 //! - The histograms have bins of 0.01 LU ([`LOUDNESS_BIN`]) that keep the count and the sum of
 //!   the energy of their blocks: the means are exact, and a gate is placed to the bin.
 
@@ -45,7 +48,7 @@ use crate::constants::{
 };
 use crate::fx::true_peak::{TruePeak, DELAY};
 use crate::node::{Layout, Role};
-use crate::rt::{seqlock, SeqReader, SeqWriter, Words};
+use crate::rt::{cells, CellReader, CellWriter, Words};
 
 /// The offset of the loudness of BS.1770: −0.691 dB, so that a sine of 1 kHz at 0 dBFS in one
 /// channel reads −3.01 LKFS.
@@ -77,6 +80,24 @@ pub fn weight(role: Role) -> f64 {
         Role::Lfe => 0.0,
         Role::LeftSurround | Role::RightSurround => LOUDNESS_SURROUND_WEIGHT,
         _ => 1.0,
+    }
+}
+
+/// The rank, from 1, of the value at `percent` (whole percents) of `count` sorted values:
+/// ⌊count · percent / 100 + 0.5⌋, at least 1, in whole numbers, as ffmpeg's `ebur128` takes it
+/// (`f_ebur128.c`, at both ends of the loudness range; see the module).
+#[must_use]
+pub fn percentile_rank(count: u64, percent: u64) -> u64 {
+    ((count * percent + 50) / 100).max(1)
+}
+
+/// `x`, or silence when it is not a finite number.
+#[inline]
+pub(crate) fn finite(x: f32) -> f32 {
+    if x.is_finite() {
+        x
+    } else {
+        0.0
     }
 }
 
@@ -197,10 +218,6 @@ impl Words for Cell {
     }
 }
 
-/// What a loudness tap's seqlock holds: the cells published so far, and the last
-/// [`LOUDNESS_CELLS_KEPT`] of them, the cell `n` at `n % LOUDNESS_CELLS_KEPT`.
-type Published = (u64, [Cell; LOUDNESS_CELLS_KEPT]);
-
 /// The half of the loudness that runs on the thread of the mix (see the module). Made by
 /// [`loudness_tap`], off it.
 #[derive(Debug)]
@@ -218,16 +235,14 @@ pub struct LoudnessTap {
     sums: [f64; MAX_CHANNELS],
     true_peak: f64,
     sample_peak: f32,
-    count: u64,
-    history: [Cell; LOUDNESS_CELLS_KEPT],
-    writer: SeqWriter<Published>,
+    writer: CellWriter<Cell>,
 }
 
 /// The tap of the loudness of a bus of `layout` at `rate`, reading the true peak if `true_peak`,
 /// and its first reader. Off the thread of the mix: it takes its memory here.
 #[must_use]
 pub fn loudness_tap(rate: u32, layout: Layout, true_peak: bool) -> (LoudnessTap, LoudnessReader) {
-    let (writer, reader) = seqlock::<Published>((0, [Cell::default(); LOUDNESS_CELLS_KEPT]));
+    let (writer, reader) = cells(LOUDNESS_CELLS_KEPT, Cell::default());
     let channels = layout.channels();
     let mut weights = [0.0; MAX_CHANNELS];
     for (weight, &role) in weights.iter_mut().zip(layout.roles()) {
@@ -249,11 +264,9 @@ pub fn loudness_tap(rate: u32, layout: Layout, true_peak: bool) -> (LoudnessTap,
         sums: [0.0; MAX_CHANNELS],
         true_peak: 0.0,
         sample_peak: 0.0,
-        count: 0,
-        history: [Cell::default(); LOUDNESS_CELLS_KEPT],
         writer,
     };
-    (tap, LoudnessReader { reader, seen: 0 })
+    (tap, LoudnessReader { reader })
 }
 
 impl LoudnessTap {
@@ -272,9 +285,9 @@ impl LoudnessTap {
     /// Another reader, off the thread of the mix; it reads the cells published from now on.
     #[must_use]
     pub fn reader(&self) -> LoudnessReader {
-        let reader = self.writer.reader();
-        let seen = reader.read().0;
-        LoudnessReader { reader, seen }
+        LoudnessReader {
+            reader: self.writer.reader(),
+        }
     }
 
     /// Hears a block: `input` planar, a slice for each channel (as many as the tap's; more are
@@ -291,6 +304,7 @@ impl LoudnessTap {
                 let mut sum = self.sums[channel];
                 let mut peak = self.sample_peak;
                 for &x in &samples[at..end] {
+                    let x = finite(x);
                     let y = state.push(&self.filter, f64::from(x));
                     sum += y * y;
                     peak = peak.max(x.abs());
@@ -300,7 +314,7 @@ impl LoudnessTap {
                 if let Some(detector) = self.true_peaks.get_mut(channel) {
                     let mut true_peak = self.true_peak;
                     for &x in &samples[at..end] {
-                        true_peak = true_peak.max(detector.push(f64::from(x)));
+                        true_peak = true_peak.max(detector.push(f64::from(finite(x))));
                     }
                     self.true_peak = true_peak;
                 }
@@ -344,9 +358,7 @@ impl LoudnessTap {
             true_peak: self.true_peak as f32,
             sample_peak: self.sample_peak,
         };
-        self.history[(self.count % LOUDNESS_CELLS_KEPT as u64) as usize] = cell;
-        self.count += 1;
-        self.writer.write((self.count, self.history));
+        self.writer.push(cell);
         self.filled = 0;
         self.sums = [0.0; MAX_CHANNELS];
         self.true_peak = 0.0;
@@ -386,26 +398,16 @@ impl LoudnessTap {
 /// A reader of a [`LoudnessTap`]: the cells that it has not read yet.
 #[derive(Clone, Debug)]
 pub struct LoudnessReader {
-    reader: SeqReader<Published>,
-    seen: u64,
+    reader: CellReader<Cell>,
 }
 
 impl LoudnessReader {
     /// Gives `cell` each cell published since the last call, in order, and says how many were
-    /// lost (published and gone from the seqlock before they were read: more than
-    /// [`LOUDNESS_CELLS_KEPT`] in between). Not on the thread of the mix: it may spin while a
+    /// lost (written over before they were read: more than [`LOUDNESS_CELLS_KEPT`] in
+    /// between). Not on the thread of the mix: it may spin while a
     /// write is under way.
     pub fn drain(&mut self, mut cell: impl FnMut(Cell)) -> u64 {
-        let (count, history) = self.reader.read();
-        let kept = LOUDNESS_CELLS_KEPT as u64;
-        let from = self.seen.max(count.saturating_sub(kept));
-        let lost = from - self.seen;
-        for n in from..count {
-            #[allow(clippy::cast_possible_truncation, reason = "below 32")]
-            cell(history[(n % kept) as usize]);
-        }
-        self.seen = count;
-        lost
+        self.reader.drain(|&value| cell(value))
     }
 }
 
@@ -487,25 +489,25 @@ impl Histogram {
         (count > 0).then(|| lufs(energy / count as f64))
     }
 
-    /// The loudness at percentile `p` (0 to 1) of the blocks that pass the gate `relative`: the
-    /// mean of the bin of the block at the nearest rank ⌈n·p⌉ in order (see the module).
+    /// The loudness at `percent` of the blocks that pass the gate `relative`: the mean of the bin
+    /// of the block of rank [`percentile_rank`] in order.
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         reason = "counts of blocks"
     )]
-    fn percentile(&self, relative: f32, p: f32) -> Option<f64> {
+    fn percentile(&self, relative: f32, percent: u64) -> Option<f64> {
         let first = self.gate(relative)?;
         let count: u64 = self.counts[first..].iter().sum();
         if count == 0 {
             return None;
         }
-        let index = ((count as f64 * f64::from(p)).ceil() as u64).max(1) - 1;
+        let rank = percentile_rank(count, percent);
         let mut seen = 0;
         for bin in first..self.counts.len() {
             seen += self.counts[bin];
-            if seen > index {
+            if seen >= rank {
                 return Some(lufs(self.energies[bin] / self.counts[bin] as f64));
             }
         }

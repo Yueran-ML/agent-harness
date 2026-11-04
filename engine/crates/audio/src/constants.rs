@@ -209,9 +209,10 @@ pub const LOUDNESS_RELATIVE_GATE: f32 = -10.0;
 /// The gate relative to the ungated loudness, for the loudness range, in LU (Tech 3342; C-R5).
 pub const LOUDNESS_RANGE_GATE: f32 = -20.0;
 
-/// The low and the high percentile of the short-term loudness that make the loudness range
-/// (Tech 3342; C-R5).
-pub const LOUDNESS_RANGE_PERCENTILES: (f32, f32) = (0.10, 0.95);
+/// The low and the high percentile of the short-term loudness that make the loudness range, in
+/// whole percents, so that the ranks are worked out in whole numbers as ffmpeg's are (Tech 3342;
+/// C-R5; the review of T9: 0.1 as an f32 is a little over 0.1).
+pub const LOUDNESS_RANGE_PERCENTILES: (u64, u64) = (10, 95);
 
 /// The width of a bin of the histograms of the gated loudness and of the loudness range, in LU:
 /// the meter on the thread of the mix keeps no list that grows (we decide; ffmpeg's `ebur128`
@@ -242,6 +243,10 @@ pub const NORMALIZE_PEAK_DEFAULT: f32 = -9.0;
 
 /// See [`NORMALIZE_PEAK_DEFAULT`]: the least and the most Reference Level, dBFS or LUFS.
 pub const NORMALIZE_RANGE: (f32, f32) = (-60.0, 0.0);
+
+/// The range of a clip's Volume, in dB: what Normalize and Level Matcher clamp a gain to
+/// (`gain_db` of the model, −96 to +24; C-F13).
+pub const CLIP_VOLUME_RANGE: (f64, f64) = (-96.0, 24.0);
 
 /// The cut of the monitor by DIM, in dB (C-M1).
 pub const DIM_DB: f32 = -20.0;

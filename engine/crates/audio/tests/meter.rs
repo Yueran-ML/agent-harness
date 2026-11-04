@@ -272,3 +272,93 @@ fn the_scales_place_their_levels() {
     assert_eq!(MeterType::Iec60268_18.scale(), Scale::Iec);
     assert_eq!(MeterType::Iec60268_18.peak(), PeakIndicator::MediumHoldFall);
 }
+
+#[test]
+fn a_sample_or_a_level_that_is_not_a_number_does_not_stop_the_meter() {
+    // An infinite and a NaN sample in a tone: heard as silence, the cells stay finite.
+    let mut signal = sine(RATE, 1_000.0, 0.5, 48_000);
+    signal[4_800] = f32::INFINITY;
+    signal[9_600] = f32::NAN;
+    for meter in [MeterType::Iec60268_18, MeterType::DigitalVu] {
+        let shown = shown(meter, &signal);
+        assert!(
+            shown
+                .iter()
+                .all(|&(bar, peak)| bar.is_finite() && peak.is_none_or(f64::is_finite)),
+            "{meter:?}"
+        );
+    }
+    // The tap hears them as silence: its cells hold the tone's peak and finite squares.
+    let (mut tap, mut reader) = level_tap(RATE, 1);
+    let mut cells = Vec::new();
+    for block in signal.chunks(480) {
+        tap.take(&[block]);
+        reader.drain(|cell| cells.push(*cell));
+    }
+    assert_eq!(cells.len(), 100);
+    for cell in &cells {
+        assert!(
+            cell.peaks[0] <= 0.5 && cell.squares[0].is_finite(),
+            "{cell:?}"
+        );
+    }
+    // A cell that is not finite (from elsewhere than a tap) is taken for silence, and the
+    // meter reads the tone again after it.
+    for detector in [Detector::SamplePeak, Detector::Vu, Detector::Rms] {
+        let meter = MeterType::Custom {
+            detector,
+            scale: Scale::Iec,
+            decay: 1.7,
+            peak: PeakIndicator::MediumHoldFall,
+        };
+        let mut ballistics = Ballistics::new(meter, 1, 0.01);
+        let mut bad = LevelCell::default();
+        bad.peaks[0] = f32::INFINITY;
+        bad.squares[0] = f32::NAN;
+        let mut tone = LevelCell::default();
+        tone.peaks[0] = 0.5;
+        tone.squares[0] = 0.125;
+        ballistics.push(&bad);
+        let mut nan = LevelCell::default();
+        nan.peaks[0] = f32::NAN;
+        ballistics.push(&nan);
+        for _ in 0..100 {
+            ballistics.push(&tone);
+        }
+        let shown = ballistics.shown(0);
+        assert!(shown.bar.is_finite(), "{detector:?}: {shown:?}");
+        let expected = if detector == Detector::SamplePeak {
+            -6.02
+        } else {
+            -9.03
+        };
+        assert_near(&format!("{detector:?}"), shown.bar, expected, 0.05);
+        assert_near("peak", shown.peak.unwrap(), -6.02, 0.01);
+    }
+}
+
+/// The work of 200 taps of stereo on the thread of the mix (10 s of blocks of 480 at 48 kHz),
+/// measured in release: `cargo test --release -p columbina-audio --test meter -- --ignored`.
+#[test]
+#[ignore = "a measure, run in release"]
+fn two_hundred_taps_cost_little() {
+    let signal = noise(3, 0.5, 480);
+    let mut taps: Vec<_> = (0..200).map(|_| level_tap(RATE, 2)).collect();
+    let start = std::time::Instant::now();
+    for _ in 0..1_000 {
+        for (tap, _) in &mut taps {
+            tap.take(&[&signal, &signal]);
+        }
+    }
+    let elapsed = start.elapsed();
+    let mut cells = 0;
+    for (_, reader) in &mut taps {
+        reader.drain(|_| cells += 1);
+    }
+    eprintln!(
+        "200 taps, 10 s: {elapsed:?}, {:.2} % of one core, {:.0} ns a cell",
+        elapsed.as_secs_f64() / 10.0 * 100.0,
+        elapsed.as_secs_f64() * 1e9 / (200.0 * 1_000.0)
+    );
+    assert_eq!(cells, 200 * 16);
+}

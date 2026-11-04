@@ -270,6 +270,7 @@ impl Timeline {
                         aside: false,
                         clock: None,
                         sound: SoundSlot::new(sound),
+                        playback: super::sound::Playback::new(),
                         mixed_from: None,
                         heard: Cell::new(0),
                         fine: None,
@@ -495,6 +496,9 @@ struct Worker {
     aside: bool,
     clock: Option<Clock>,
     sound: SoundSlot,
+    /// The sound of the timeline as it plays: its graph, the thread of the mix, and the changes
+    /// of the project sent to it (plan T5).
+    playback: super::sound::Playback,
     /// The sample of the timeline that the mixer that plays started at, and the timeline's
     /// rate of samples: where the sound is, for the test hook to tell.
     mixed_from: Option<(i64, u32)>,
@@ -541,6 +545,7 @@ impl Worker {
             return;
         };
         let place = clock.place(self.clock_now());
+        self.playback.stop();
         self.sound.stop();
         self.status.sound = if self.has_sound() {
             Sound::Off
@@ -562,12 +567,8 @@ impl Worker {
             .map_err(|_| "timeline audio start is outside sample time".to_owned())
             .and_then(|from| {
                 let output = self.sound.ready().ok_or("audio output is unavailable")?;
-                let mixer = super::mix::Mixer::new(
-                    Arc::clone(project),
-                    index,
-                    columbina_audio::graph::Purpose::Preview,
-                );
-                output.start(mixer.source(output.format(), from))
+                self.playback
+                    .start(output, Arc::clone(project), index, from)
             });
         match result {
             Ok(()) => {
@@ -586,12 +587,16 @@ impl Worker {
         }
     }
 
+    /// What the thread that builds the mix has done taken; and, where the device or the graph
+    /// of the session failed, playing goes on by the clock of the system.
     fn check_sound(&mut self) {
-        if self.status.sound == Sound::On && self.sound.working().is_none() {
+        let unbuilt = self.playback.poll();
+        if self.status.sound == Sound::On && (self.sound.working().is_none() || unbuilt.is_some()) {
             if let Some(clock) = self.clock {
                 let place = clock.place(self.heard.get());
                 self.clock = Some(Clock::at(place, clock.speed(), clock.rate(), self.now()));
             }
+            self.playback.stop();
             self.sound.stop();
             self.status.sound = Sound::Unavailable;
             log(
@@ -711,6 +716,7 @@ impl Worker {
     }
 
     fn pause(&mut self) {
+        self.playback.stop();
         self.sound.stop();
         self.status.sound = if self.has_sound() {
             Sound::Off
@@ -853,6 +859,7 @@ impl Worker {
                                 samples,
                                 self.clock.map(|clock| clock.frame(self.clock_now())),
                                 mixed,
+                                output.short_runs(),
                             ))
                         })
                     })
@@ -863,10 +870,16 @@ impl Worker {
                     .ok_or_else(not_loaded)
                     .and_then(|target| super::digest(target, self.status.shown, Monitor::Timeline))
                     .map(|mut digest| {
-                        if let Some((samples, frame, mixed)) = sound {
+                        if let Some((samples, frame, mixed, short)) = sound {
                             digest["audio_samples"] = json!(samples);
                             digest["audio_frame"] = json!(frame);
                             digest["audio_sample"] = json!(mixed);
+                            // What the threads of the sound counted (T5): runs of the device short
+                            // of sound, reads of clips not yet read ahead, graphs swapped in.
+                            let (underruns, swaps) = self.playback.counts();
+                            digest["audio_short_runs"] = json!(short);
+                            digest["audio_underruns"] = json!(underruns);
+                            digest["audio_swaps"] = json!(swaps);
                         }
                         digest
                     });
@@ -1099,7 +1112,17 @@ impl Worker {
             } else {
                 Sound::None
             };
+        } else if self.status.sound == Sound::On && self.playback.playing() {
+            // The graph that plays takes the change as it plays, or another is swapped in: the
+            // sound starts again only where the rates of the timeline changed (T5).
+            let project = Arc::clone(self.project.as_ref().expect("taken above"));
+            let heard = self.playback.changed(&project, index);
+            if heard == super::sound::Heard::Again {
+                self.restart_sound();
+            }
         } else if !sound {
+            // Sound that is not on (another speed, a device that failed) is started again as
+            // before, by which it may come on.
             self.restart_sound();
         }
         !(picture && sound && graded) || fresh
@@ -1809,9 +1832,23 @@ type GradesOf<'p> = (
 );
 
 /// Whether a timeline sounds the same in `after` as in `before` from sample `from` to its end:
-/// the same pieces of the same clips, of the same media, at the same rates and length. Only
-/// then may a mixer of the old project play on.
+/// the same pieces of the same clips, of the same media, at the same rates and length, mixed the
+/// same ([`same_clips`], [`same_mixing`]).
 fn same_sound(
+    before: &Project,
+    was: &columbina_model::Timeline,
+    after: &Project,
+    now: &columbina_model::Timeline,
+    from: i64,
+) -> bool {
+    same_mixing(was, now) && same_clips(before, was, after, now, from)
+}
+
+/// Whether the clips of a timeline sound the same in `after` as in `before` from sample `from`
+/// to its end: the same pieces of the same clips, of the same media, at the same rates and
+/// length, through the same equalizers, effects and pitch. Only then may a graph of the old
+/// project play on, its settings changed (T5, `sound.rs`).
+pub(super) fn same_clips(
     before: &Project,
     was: &columbina_model::Timeline,
     after: &Project,
@@ -1820,7 +1857,7 @@ fn same_sound(
 ) -> bool {
     if (was.rate, was.sample_rate) != (now.rate, now.sample_rate)
         || resolve::duration(was) != resolve::duration(now)
-        || !same_mixing(was, now)
+        || !same_chains(was, now)
     {
         return false;
     }
@@ -1843,9 +1880,9 @@ fn same_sound(
 }
 
 /// Whether the graph of the sound (T4b) mixes the clips of `was` as those of `now`: the same
-/// tracks of sound with the same strips, formats, mutes, solos and lanes, the same equalizers,
-/// effects and pitch of their clips, the same buses and VCAs, and the same bus monitored. Until T5 sends such changes into the graph as it plays, a change of
-/// them starts the sound again.
+/// tracks of sound with the same strips, formats, mutes, solos and lanes, the same buses and
+/// VCAs, and the same bus monitored. While the sound plays, the graph takes a change of them as
+/// it plays, or another graph is swapped in (T5, `sound.rs`); this tells whether there is any.
 fn same_mixing(was: &columbina_model::Timeline, now: &columbina_model::Timeline) -> bool {
     fn mixing(
         timeline: &columbina_model::Timeline,
@@ -1856,7 +1893,15 @@ fn same_mixing(was: &columbina_model::Timeline, now: &columbina_model::Timeline)
             .filter(|track| track.kind == TrackKind::Audio)
             .map(|track| (track.id.as_str(), track.enabled, &track.audio))
     }
-    /// What the chain of each clip of sound does besides its gain, pan and fades.
+    mixing(was).eq(mixing(now))
+        && was.buses == now.buses
+        && was.vcas == now.vcas
+        && was.audio.monitor == now.audio.monitor
+}
+
+/// Whether the chain of each clip of sound does the same besides its gain, pan and fades: its
+/// equalizer, effects and pitch.
+fn same_chains(was: &columbina_model::Timeline, now: &columbina_model::Timeline) -> bool {
     fn chains(
         timeline: &columbina_model::Timeline,
     ) -> impl Iterator<
@@ -1883,11 +1928,7 @@ fn same_mixing(was: &columbina_model::Timeline, now: &columbina_model::Timeline)
                 )
             })
     }
-    mixing(was).eq(mixing(now))
-        && chains(was).eq(chains(now))
-        && was.buses == now.buses
-        && was.vcas == now.vcas
-        && was.audio.monitor == now.audio.monitor
+    chains(was).eq(chains(now))
 }
 
 fn drawing(message: &str) -> Fault {
@@ -1976,6 +2017,7 @@ mod tests {
             aside: false,
             clock: None,
             sound: SoundSlot::new(crate::audio::Kind::Null),
+            playback: super::super::sound::Playback::new(),
             mixed_from: None,
             heard: Cell::new(0),
             fine: None,
@@ -2089,6 +2131,42 @@ mod tests {
             &quieter_muted.timelines[0],
             0,
         ));
+    }
+
+    #[test]
+    fn a_change_of_what_is_heard_while_it_plays_never_starts_the_sound_again() {
+        let mut worker = worker();
+        worker.status.timeline = Some("t1".into());
+        let project = Project::sample();
+        worker.replace(0, Arc::new(project.clone()));
+        let rate = project.timelines[0].rate;
+        worker.clock = Some(Clock::starting(0, 1, rate, worker.now()));
+        worker.status.playing = true;
+        worker.restart_sound();
+        assert_eq!(worker.status.sound, Sound::On);
+        let session = worker.sound.working().unwrap().session();
+        let mut changed = project.clone();
+        let edits: [fn(&mut Project); 5] = [
+            |p| p.timelines[0].tracks[1].audio.strip.fader_db = -6.0,
+            |p| p.timelines[0].tracks[1].clips[0].gain_db = (-3.0).into(),
+            |p| p.timelines[0].tracks[1].audio.strip.eq.on = true,
+            |p| p.timelines[0].tracks[1].clips[0].fade_in = 10,
+            |p| p.timelines[0].tracks[1].audio.mute = true,
+        ];
+        for edit in edits {
+            edit(&mut changed);
+            worker.replace(0, Arc::new(changed.clone()));
+            worker.check_sound();
+            assert_eq!(worker.status.sound, Sound::On);
+            assert_eq!(worker.sound.working().unwrap().session(), session);
+        }
+        // Only another rate of the sound of the timeline starts it again.
+        changed.timelines[0].sample_rate = 44_100;
+        worker.replace(0, Arc::new(changed));
+        assert_eq!(worker.status.sound, Sound::On);
+        assert_eq!(worker.sound.working().unwrap().session(), session + 1);
+        worker.pause();
+        assert!(!worker.playback.playing());
     }
 
     #[test]

@@ -107,6 +107,7 @@ fn worker(grading: Grading) -> Worker {
         aside: false,
         clock: None,
         sound: SoundSlot::new(crate::audio::Kind::Null),
+        playback: super::super::sound::Playback::new(),
         mixed_from: None,
         heard: Cell::new(0),
         fine: None,

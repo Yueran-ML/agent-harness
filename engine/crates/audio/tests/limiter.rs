@@ -313,7 +313,7 @@ fn ffmpeg_true_peak(channels: &[Vec<f32>]) -> Option<f64> {
     let path = std::env::temp_dir().join(format!("columbina-limiter-{}.wav", std::process::id()));
     std::fs::write(&path, &wav).unwrap();
     // The LGPL build of the toolchain (convention 5), unless FFMPEG names another.
-    let lgpl = r"F:gent harness\_review	oolchainfmpeg-lgpl-8.1infmpeg.exe";
+    let lgpl = r"F:\agent harness\_review\toolchain\ffmpeg-lgpl-8.1\bin\ffmpeg.exe";
     let ffmpeg = std::env::var("FFMPEG").unwrap_or_else(|_| {
         if std::path::Path::new(lgpl).exists() {
             lgpl.into()

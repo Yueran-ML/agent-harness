@@ -17,7 +17,7 @@ use columbina_audio::fx::dynamics::{
     Dynamics, Param, Settings, PARAMS,
 };
 use columbina_audio::testing::{
-    assert_latency, assert_settle, chunk_invariance, noise, realtime, render, rt_violations, sine,
+    assert_latency, assert_settle, chunk_invariance, noise, realtime, render, sine,
     CountingAllocator, Run,
 };
 use columbina_audio::{db_to_gain, Automated, Automation, Block, Layout, Node, Planar, Spec};
@@ -904,13 +904,6 @@ fn the_ball_shows_the_level_and_the_reduction() {
     assert!((seen.compressor_db - -5.0).abs() < 1e-3, "{seen:?}");
     assert!((seen.output_db - -10.0).abs() < 1e-3, "{seen:?}");
     assert_eq!((seen.expander_db, seen.limiter_db), (0.0, 0.0));
-}
-
-#[test]
-fn the_code_of_dynamics_does_not_lock_allocate_or_log_on_the_thread_of_the_mix() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/fx/dynamics.rs");
-    let source = std::fs::read_to_string(path).unwrap();
-    assert_eq!(rt_violations(&source), []);
 }
 
 #[test]

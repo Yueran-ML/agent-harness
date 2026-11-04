@@ -51,6 +51,7 @@ fn the_code_of_the_threads_of_the_sound_does_not_lock_allocate_or_log() {
         "seqlock.rs",
         "smooth.rs",
         "biquad.rs",
+        "dynamics.rs",
         "eq.rs",
     ] {
         assert!(

@@ -933,3 +933,22 @@ async def test_a_migration_that_fails_as_a_whole_is_reported_and_the_call_goes_o
 
     assert "another client is migrating" in told["migrations"][0]["error"]
     assert told["timelines"] == []
+
+
+async def test_an_operation_of_sound_is_given_the_timeline_of_the_tool(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    batch = [
+        edits.add_timeline("Cut", edits.Rate(num=25, den=1), tracks=[edits.track("audio", id="A1")])
+    ]
+    result(await desk.call("video_edit", edits=batch))
+    patch = {"strip": {"fader_db": -6}, "mute": True}
+    result(
+        await desk.call(
+            "video_edit", edits=[{"op": "set_track_audio", "track": "A1", "patch": patch}]
+        )
+    )
+    (track,) = fake.project["timelines"][0]["tracks"]
+    assert track["strip"] == {"fader_db": -6}
+    assert track["mute"] is True

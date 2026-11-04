@@ -54,6 +54,11 @@ fn set_clip(id: &str) -> Op {
         fade_out: None,
         audio_fade_in: None,
         audio_fade_out: None,
+        eq: None,
+        effects: None,
+        pitch_correction: None,
+        pitch: None,
+        channels: None,
         source: None,
     }
 }
@@ -648,6 +653,8 @@ fn examples() -> Vec<(&'static str, Vec<Op>, Op)> {
                 kind: Some(TransitionKind::DipWhite),
                 length: Some(20),
                 align: Some(Alignment::Start),
+                fade_in_level_db: None,
+                fade_out_level_db: None,
             },
         ),
         (
@@ -704,7 +711,199 @@ fn examples() -> Vec<(&'static str, Vec<Op>, Op)> {
         ),
     ];
     all.extend(grade_examples());
+    all.extend(sound_examples());
     all
+}
+
+/// An operation written as a client writes it.
+fn written_op(value: serde_json::Value) -> Op {
+    serde_json::from_value(value).unwrap()
+}
+
+/// The examples of the operations on sound (T2), over a second track of sound A2 and, where they
+/// need them, a bus B2, a VCA, a group, inserts and a crossfade on A1.
+#[allow(clippy::too_many_lines)]
+fn sound_examples() -> Vec<(&'static str, Vec<Op>, Op)> {
+    use serde_json::json;
+    let a2 = Op::AddTrack {
+        timeline: "t1".into(),
+        track: Track::new("", TrackKind::Audio),
+        index: None,
+    };
+    let b2 = written_op(json!({"op": "add_bus", "timeline": "t1", "bus": {"id": "",
+        "name": "Music", "color": "#40c080ff", "format": "stereo",
+        "strip": {"outputs": [{"bus": "B1"}]}}}));
+    let vca = written_op(json!({"op": "add_vca", "timeline": "t1",
+        "vca": {"id": "", "name": "Dialogue"}}));
+    let group = written_op(json!({"op": "add_track_group", "timeline": "t1",
+        "group": {"id": "", "name": "Dialogue", "members": ["A1", "A2"]}}));
+    let gains = |of: serde_json::Value| -> Vec<Op> {
+        [-3, -6]
+            .into_iter()
+            .map(|db| {
+                written_op(json!({"op": "add_insert", "timeline": "t1", "of": of,
+                "insert": {"effect": {"kind": "gain", "gain_db": db}}}))
+            })
+            .collect()
+    };
+    let mut tail = Clip::of_media("tail", "m1", at(4), 100, 50);
+    tail.link = None;
+    let crossfade = vec![
+        Op::InsertClip {
+            timeline: "t1".into(),
+            track: "A1".into(),
+            clip: tail,
+        },
+        written_op(
+            json!({"op": "add_transition", "timeline": "t1", "track": "A1",
+            "transition": {"id": "fade", "kind": "crossfade", "left": "c2", "right": "tail",
+                "length": 10, "align": "center"}}),
+        ),
+    ];
+    vec![
+        (
+            "set_track_audio of a fader, a pan and a Ducker that A2 drives",
+            vec![a2.clone()],
+            written_op(
+                json!({"op": "set_track_audio", "timeline": "t1", "track": "A1",
+                "patch": {"mute": true, "strip": {"fader_db": -6, "pan": {"x": 0.25},
+                    "track_fx": {"sources": [{"track": "A2"}], "amount_db": 12}}}}),
+            ),
+        ),
+        (
+            "set_track_audio of a format, which sets the channels",
+            vec![a2.clone()],
+            written_op(
+                json!({"op": "set_track_audio", "timeline": "t1", "track": "A2",
+                "patch": {"format": "mono"}}),
+            ),
+        ),
+        (
+            "add_bus",
+            vec![],
+            written_op(json!({"op": "add_bus", "timeline": "t1", "bus": {"id": "",
+                "name": "Effects", "color": "#c04080ff", "format": "5.1",
+                "strip": {"outputs": [{"bus": "B1"}],
+                    "inserts": [{"effect": {"kind": "limiter", "ceiling_db": -1}}]}}})),
+        ),
+        (
+            "remove_bus",
+            vec![b2.clone()],
+            written_op(json!({"op": "remove_bus", "timeline": "t1", "id": "B2"})),
+        ),
+        (
+            "set_bus",
+            vec![b2.clone()],
+            written_op(json!({"op": "set_bus", "timeline": "t1", "id": "B2",
+                "patch": {"name": "Score", "mute": true, "strip": {"fader_db": -3}}})),
+        ),
+        (
+            "add_vca",
+            vec![],
+            written_op(json!({"op": "add_vca", "timeline": "t1",
+                "vca": {"id": "", "name": "All", "fader_db": -2}})),
+        ),
+        (
+            "remove_vca",
+            vec![vca.clone()],
+            written_op(json!({"op": "remove_vca", "timeline": "t1", "id": "VCA1"})),
+        ),
+        (
+            "set_vca",
+            vec![vca],
+            written_op(json!({"op": "set_vca", "timeline": "t1", "id": "VCA1",
+                "patch": {"fader_db": -4.5, "solo": true}})),
+        ),
+        (
+            "add_track_group",
+            vec![a2.clone()],
+            written_op(json!({"op": "add_track_group", "timeline": "t1",
+                "group": {"id": "", "name": "Dialogue", "members": ["A1", "A2"],
+                    "linked": ["fader", "mute"]}})),
+        ),
+        (
+            "remove_track_group",
+            vec![a2.clone(), group.clone()],
+            written_op(json!({"op": "remove_track_group", "timeline": "t1", "id": "TG1"})),
+        ),
+        (
+            "set_track_group",
+            vec![a2, group],
+            written_op(
+                json!({"op": "set_track_group", "timeline": "t1", "id": "TG1",
+                "patch": {"active": false, "linked": ["fader"]}}),
+            ),
+        ),
+        (
+            "add_insert of a strip, given an id",
+            gains(json!({"track": "A1"})),
+            written_op(
+                json!({"op": "add_insert", "timeline": "t1", "of": {"track": "A1"},
+                "insert": {"effect": {"kind": "de_esser"}}, "index": 1}),
+            ),
+        ),
+        (
+            "add_insert of a clip",
+            vec![],
+            written_op(
+                json!({"op": "add_insert", "timeline": "t1", "of": {"clip": "c2"},
+                "insert": {"effect": {"kind": "pitch", "semitones": 3}}}),
+            ),
+        ),
+        (
+            "set_insert in place of another",
+            gains(json!({"bus": "B1"})),
+            written_op(
+                json!({"op": "set_insert", "timeline": "t1", "of": {"bus": "B1"},
+                "slot": 0, "insert": {"on": false, "effect": {"kind": "soft_clipper"}}}),
+            ),
+        ),
+        (
+            "set_insert to take one away",
+            gains(json!({"track": "A1"})),
+            written_op(
+                json!({"op": "set_insert", "timeline": "t1", "of": {"track": "A1"},
+                "slot": 0, "insert": null}),
+            ),
+        ),
+        (
+            "move_insert",
+            gains(json!({"track": "A1"})),
+            written_op(
+                json!({"op": "move_insert", "timeline": "t1", "of": {"track": "A1"},
+                "from": 1, "to": 0}),
+            ),
+        ),
+        (
+            "set_clip of the sound of schema 4",
+            vec![],
+            written_op(json!({"op": "set_clip", "timeline": "t1", "id": "c2",
+                "eq": {"on": true, "bands": [
+                    {"on": true, "kind": "high_pass", "freq": 80, "gain_db": 0, "q": 0.7},
+                    {"kind": "bell", "freq": 400, "gain_db": -3, "q": 1},
+                    {"kind": "bell", "freq": 3000, "gain_db": 2, "q": 1},
+                    {"kind": "high_shelf", "freq": 10000, "gain_db": 0, "q": 0.7}]},
+                "effects": [{"effect": {"kind": "gain", "gain_db": 2}}],
+                "pitch_correction": true, "pitch": {"semitones": -2, "cents": 25},
+                "channels": [{"source": {"stream": 1, "channel": 1}},
+                    {"source": {"stream": 1, "channel": 0}, "level_db": -3}]})),
+        ),
+        (
+            "set_transition of the levels of a crossfade",
+            crossfade,
+            written_op(
+                json!({"op": "set_transition", "timeline": "t1", "id": "fade",
+                "fade_in_level_db": 3, "fade_out_level_db": -3}),
+            ),
+        ),
+        (
+            "set_timeline_audio",
+            vec![b2],
+            written_op(json!({"op": "set_timeline_audio", "timeline": "t1",
+                "patch": {"monitor": "B2", "exclusive_solo": true,
+                    "loudness": {"standard": "youtube", "target": -14}}})),
+        ),
+    ]
 }
 
 /// The grade of c1.
@@ -1220,6 +1419,20 @@ fn the_examples_of_the_operations_are_as_the_engine_applies_them() {
         "set_clip_group",
         "set_color_settings",
         "set_media_color",
+        "set_track_audio",
+        "add_bus",
+        "remove_bus",
+        "set_bus",
+        "add_vca",
+        "remove_vca",
+        "set_vca",
+        "add_track_group",
+        "remove_track_group",
+        "set_track_group",
+        "add_insert",
+        "set_insert",
+        "move_insert",
+        "set_timeline_audio",
     ] {
         assert!(names.iter().any(|name| name == op), "no example of {op}");
     }

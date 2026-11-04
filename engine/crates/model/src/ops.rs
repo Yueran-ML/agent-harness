@@ -114,7 +114,10 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize, Serializer};
 
-use crate::audio::{self, AudioFade, AudioParam};
+use crate::audio::{
+    self, AudioFade, AudioParam, Bus, ChannelMap, ClipPitch, CrossfadeLevel, Equalizer, Insert,
+    TrackGroup, Vca,
+};
 use crate::color_management::{Levels, LutPair};
 use crate::grade::{
     Grade, Group, Link, Node, Port, Pos, Target, LONGEST_LABEL, LONGEST_PATH, MOST_INPUTS,
@@ -128,8 +131,11 @@ use crate::time::{Rate, Speed, Time};
 
 mod color;
 mod grade;
+mod sound;
 
 pub(crate) use grade::{grade_at, group_of_clip, keeps_node_id, reserve_node_ids};
+pub(crate) use sound::inserts_of;
+pub use sound::InsertsOf;
 
 /// The largest integer that JavaScript holds exactly, 2^53 - 1. No integer that an operation
 /// writes into a project is further than this from 0.
@@ -368,6 +374,26 @@ pub enum Op {
             skip_serializing_if = "Option::is_none"
         )]
         audio_fade_out: Option<Option<AudioFade>>,
+        /// Its equalizer, whole (p. 3827).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        eq: Option<Equalizer>,
+        /// Its effects, whole, in order (p. 986).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effects: Option<Vec<Insert>>,
+        /// Whether a change of its speed keeps its pitch (p. 3827).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pitch_correction: Option<bool>,
+        /// Its pitch, apart from its speed (p. 3826).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pitch: Option<ClipPitch>,
+        /// What each channel of its track plays, one for each, or `null` for its media's channels
+        /// mixed as libav mixes them (pp. 3833–3836).
+        #[serde(
+            default,
+            deserialize_with = "nullable",
+            skip_serializing_if = "Option::is_none"
+        )]
+        channels: Option<Option<Vec<ChannelMap>>>,
         /// Its source: a title for a clip of a title, a colour for a clip of a colour. A clip of
         /// media is given other media by taking it away and putting a new one in its place.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -464,6 +490,12 @@ pub enum Op {
         /// Where it lies about the cut.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         align: Option<Alignment>,
+        /// How the clip that starts at the cut rises across a crossfade: -3, 0 or 3 (p. 3831).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fade_in_level_db: Option<CrossfadeLevel>,
+        /// How the clip that ends at the cut falls across a crossfade: -3, 0 or 3.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fade_out_level_db: Option<CrossfadeLevel>,
     },
     /// Put a subtitle on a track of subtitles, in the order of the starts of those there.
     AddCue {
@@ -641,6 +673,148 @@ pub enum Op {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         inverse_drt: Option<bool>,
     },
+    /// Set what a track of sound has of sound by a patch (see [`audio`]): its `format`,
+    /// `channels`, `order`, `mute`, `solo`, `solo_safe`, `adc`, `automation_arm` and `strip`, of
+    /// which any field may be patched. A format of a number of channels that is given without
+    /// `channels` sets them too. Its lanes are not set so.
+    SetTrackAudio {
+        /// The timeline.
+        timeline: Id,
+        /// The track of sound.
+        track: Id,
+        /// The settings that change.
+        patch: serde_json::Value,
+    },
+    /// Add a bus to a timeline, at `index` in its list of buses or at the end.
+    AddBus {
+        /// The timeline.
+        timeline: Id,
+        /// The bus, with an empty id for the engine to give it one.
+        bus: Bus,
+        /// Where it goes in the list of buses.
+        #[serde(default)]
+        index: Option<usize>,
+    },
+    /// Take a bus that nothing names away from a timeline.
+    RemoveBus {
+        /// The timeline.
+        timeline: Id,
+        /// The bus.
+        id: Id,
+    },
+    /// Set the settings of a bus by a patch: any of its fields but its id and lanes.
+    SetBus {
+        /// The timeline.
+        timeline: Id,
+        /// The bus.
+        id: Id,
+        /// The settings that change.
+        patch: serde_json::Value,
+    },
+    /// Add a VCA to a timeline, at `index` in its list of VCAs or at the end.
+    AddVca {
+        /// The timeline.
+        timeline: Id,
+        /// The VCA, with an empty id for the engine to give it one.
+        vca: Vca,
+        /// Where it goes in the list of VCAs.
+        #[serde(default)]
+        index: Option<usize>,
+    },
+    /// Take a VCA that no strip and no VCA is a member of away from a timeline.
+    RemoveVca {
+        /// The timeline.
+        timeline: Id,
+        /// The VCA.
+        id: Id,
+    },
+    /// Set the settings of a VCA by a patch: any of its fields but its id and lanes.
+    SetVca {
+        /// The timeline.
+        timeline: Id,
+        /// The VCA.
+        id: Id,
+        /// The settings that change.
+        patch: serde_json::Value,
+    },
+    /// Add a group of tracks to a timeline, at `index` in its list of groups or at the end.
+    AddTrackGroup {
+        /// The timeline.
+        timeline: Id,
+        /// The group, with an empty id for the engine to give it one.
+        group: TrackGroup,
+        /// Where it goes in the list of groups.
+        #[serde(default)]
+        index: Option<usize>,
+    },
+    /// Take a group of tracks away from a timeline; its tracks stay as they are.
+    RemoveTrackGroup {
+        /// The timeline.
+        timeline: Id,
+        /// The group.
+        id: Id,
+    },
+    /// Set the settings of a group of tracks by a patch: any of its fields but its id.
+    SetTrackGroup {
+        /// The timeline.
+        timeline: Id,
+        /// The group.
+        id: Id,
+        /// The settings that change.
+        patch: serde_json::Value,
+    },
+    /// Add an insert to the strip of a track of sound or of a bus, or an effect to a clip, at
+    /// `index` in the chain or at its end.
+    AddInsert {
+        /// The timeline.
+        timeline: Id,
+        /// The chain.
+        of: InsertsOf,
+        /// The insert; one of a strip with an empty id is given the next `fx<n>` of the strip.
+        insert: Insert,
+        /// Where it goes in the chain.
+        #[serde(default)]
+        index: Option<usize>,
+    },
+    /// Put an insert in place of the one at `slot` of a chain, or take that one away (`null`);
+    /// those after it move up.
+    SetInsert {
+        /// The timeline.
+        timeline: Id,
+        /// The chain.
+        of: InsertsOf,
+        /// The place in the chain, from 0.
+        slot: usize,
+        /// The insert, or `null` to take the one there away.
+        #[serde(deserialize_with = "nullable_required")]
+        insert: Option<Insert>,
+    },
+    /// Move the insert at `from` of a chain to `to`, those between moving up or down; its id,
+    /// and so its lanes, go with it.
+    MoveInsert {
+        /// The timeline.
+        timeline: Id,
+        /// The chain.
+        of: InsertsOf,
+        /// Where it is.
+        from: usize,
+        /// Where it goes.
+        to: usize,
+    },
+    /// Set the settings of the sound of a timeline (its `audio`) by a patch.
+    SetTimelineAudio {
+        /// The timeline.
+        timeline: Id,
+        /// The settings that change.
+        patch: serde_json::Value,
+    },
+}
+
+/// Read a field that must be there and may be `null`.
+fn nullable_required<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    Option::<T>::deserialize(deserializer)
 }
 
 /// Read a field of a change that may be `null`, to take a thing away, as well as left out, to
@@ -1069,6 +1243,14 @@ pub enum OpError {
         /// The VCA at the end of the chain.
         id: Id,
     },
+    /// The patch of the settings of the sound of a track, a bus, a VCA, a group of tracks or a
+    /// timeline is not an object, sets what it may not (an id, or lanes), or does not make
+    /// settings of that kind: a field that is not known, or a value of the wrong kind.
+    #[error("the settings of sound cannot be set so: {why}")]
+    AudioSettings {
+        /// What is wrong with them.
+        why: String,
+    },
 }
 
 /// Why a project that is read is not one that the operations can work on: the thing of it that
@@ -1273,6 +1455,9 @@ enum Fields {
     },
     VcaDepth {
         id: Id,
+    },
+    AudioSettings {
+        why: String,
     },
 }
 
@@ -1483,6 +1668,11 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
             fade_out,
             audio_fade_in,
             audio_fade_out,
+            eq,
+            effects,
+            pitch_correction,
+            pitch,
+            channels,
             source,
         } => set_clip(
             project,
@@ -1500,6 +1690,11 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
                 fade_out,
                 audio_fade_in,
                 audio_fade_out,
+                eq,
+                effects,
+                pitch_correction,
+                pitch,
+                channels,
                 source,
             },
         ),
@@ -1526,7 +1721,20 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
             kind,
             length,
             align,
-        } => set_transition(project, &timeline, &id, kind, length, align),
+            fade_in_level_db,
+            fade_out_level_db,
+        } => set_transition(
+            project,
+            &timeline,
+            &id,
+            TransitionSettings {
+                kind,
+                length,
+                align,
+                fade_in_level_db,
+                fade_out_level_db,
+            },
+        ),
         Op::AddCue {
             timeline,
             track,
@@ -1600,6 +1808,65 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
                 inverse_drt,
             },
         ),
+        Op::SetTrackAudio {
+            timeline,
+            track,
+            patch,
+        } => sound::set_track_audio(project, &timeline, &track, &patch),
+        Op::AddBus {
+            timeline,
+            bus,
+            index,
+        } => sound::add_bus(project, &timeline, bus, index),
+        Op::RemoveBus { timeline, id } => sound::remove_bus(project, &timeline, &id),
+        Op::SetBus {
+            timeline,
+            id,
+            patch,
+        } => sound::set_bus(project, &timeline, &id, &patch),
+        Op::AddVca {
+            timeline,
+            vca,
+            index,
+        } => sound::add_vca(project, &timeline, vca, index),
+        Op::RemoveVca { timeline, id } => sound::remove_vca(project, &timeline, &id),
+        Op::SetVca {
+            timeline,
+            id,
+            patch,
+        } => sound::set_vca(project, &timeline, &id, &patch),
+        Op::AddTrackGroup {
+            timeline,
+            group,
+            index,
+        } => sound::add_track_group(project, &timeline, group, index),
+        Op::RemoveTrackGroup { timeline, id } => sound::remove_track_group(project, &timeline, &id),
+        Op::SetTrackGroup {
+            timeline,
+            id,
+            patch,
+        } => sound::set_track_group(project, &timeline, &id, &patch),
+        Op::AddInsert {
+            timeline,
+            of,
+            insert,
+            index,
+        } => sound::add_insert(project, &timeline, of, insert, index),
+        Op::SetInsert {
+            timeline,
+            of,
+            slot,
+            insert,
+        } => sound::set_insert(project, &timeline, of, slot, insert),
+        Op::MoveInsert {
+            timeline,
+            of,
+            from,
+            to,
+        } => sound::move_insert(project, &timeline, of, from, to),
+        Op::SetTimelineAudio { timeline, patch } => {
+            sound::set_timeline_audio(project, &timeline, &patch)
+        }
     }
 }
 
@@ -1629,7 +1896,11 @@ pub fn apply_done(project: &mut Project, op: Op) -> Result<(Op, Op), OpError> {
         | Op::AddBin { .. }
         | Op::AddTransition { .. }
         | Op::AddCue { .. }
-        | Op::AddGroup { .. } => None,
+        | Op::AddGroup { .. }
+        | Op::AddBus { .. }
+        | Op::AddVca { .. }
+        | Op::AddTrackGroup { .. }
+        | Op::AddInsert { .. } => None,
         _ => Some(op.clone()),
     };
     let inverse = apply(project, op)?;
@@ -1643,6 +1914,15 @@ pub fn apply_done(project: &mut Project, op: Op) -> Result<(Op, Op), OpError> {
         ) => grade::done(project, op, &inverse),
         // The settings are given back as the engine writes them.
         Some(Op::SetColorSettings { settings }) => color::done(project, &settings),
+        // So are those of sound, and an insert with the id that it was given.
+        Some(
+            op @ (Op::SetTrackAudio { .. }
+            | Op::SetBus { .. }
+            | Op::SetVca { .. }
+            | Op::SetTrackGroup { .. }
+            | Op::SetTimelineAudio { .. }
+            | Op::SetInsert { .. }),
+        ) => sound::done(project, op, &inverse),
         // A group that the engine made is named as it was made.
         Some(Op::SetClip {
             timeline,
@@ -1658,6 +1938,11 @@ pub fn apply_done(project: &mut Project, op: Op) -> Result<(Op, Op), OpError> {
             fade_out,
             audio_fade_in,
             audio_fade_out,
+            eq,
+            effects,
+            pitch_correction,
+            pitch,
+            channels,
             source,
         }) if group.is_empty() => {
             let t = &project.timelines
@@ -1678,6 +1963,11 @@ pub fn apply_done(project: &mut Project, op: Op) -> Result<(Op, Op), OpError> {
                 fade_out,
                 audio_fade_in,
                 audio_fade_out,
+                eq,
+                effects,
+                pitch_correction,
+                pitch,
+                channels,
                 source,
             }
         }
@@ -1755,7 +2045,7 @@ fn added(project: &Project, inverse: &Op) -> Option<Op> {
                 index: Some(at),
             })
         }
-        _ => None,
+        _ => sound::added(project, inverse),
     }
 }
 
@@ -2291,6 +2581,11 @@ struct ClipSettings {
     fade_out: Option<i64>,
     audio_fade_in: Option<Option<AudioFade>>,
     audio_fade_out: Option<Option<AudioFade>>,
+    eq: Option<Equalizer>,
+    effects: Option<Vec<Insert>>,
+    pitch_correction: Option<bool>,
+    pitch: Option<ClipPitch>,
+    channels: Option<Option<Vec<ChannelMap>>>,
     source: Option<Source>,
 }
 
@@ -2316,6 +2611,11 @@ fn set_clip(
     swap(&mut new.fade_out, set.fade_out);
     swap(&mut new.audio_fade_in, set.audio_fade_in);
     swap(&mut new.audio_fade_out, set.audio_fade_out);
+    swap(&mut new.eq, set.eq.clone());
+    swap(&mut new.effects, set.effects.clone());
+    swap(&mut new.pitch_correction, set.pitch_correction);
+    swap(&mut new.pitch, set.pitch);
+    swap(&mut new.channels, set.channels.clone());
     if let Some(source) = &set.source {
         let alike = matches!(
             (&old.source, source),
@@ -2333,6 +2633,7 @@ fn set_clip(
         self::link(&mut counter, &mut new.link, &links_of(project))?;
     }
     check_clip(project, timeline.rate, track.kind, &new)?;
+    audio::check_channels(track, &new)?;
     if unattached(track, id).is_err() {
         let mut beside = track.clone();
         beside.clips[at] = new.clone();
@@ -2352,6 +2653,11 @@ fn set_clip(
         fade_out: set.fade_out.map(|_| old.fade_out),
         audio_fade_in: set.audio_fade_in.map(|_| old.audio_fade_in),
         audio_fade_out: set.audio_fade_out.map(|_| old.audio_fade_out),
+        eq: set.eq.map(|_| old.eq.clone()),
+        effects: set.effects.map(|_| old.effects.clone()),
+        pitch_correction: set.pitch_correction.map(|_| old.pitch_correction),
+        pitch: set.pitch.map(|_| old.pitch),
+        channels: set.channels.map(|_| old.channels.clone()),
         source: set.source.map(|_| old.source.clone()),
     };
     project.timelines[t].tracks[r].clips[at] = new;
@@ -2548,13 +2854,21 @@ fn remove_transition(project: &mut Project, timeline_id: &str, id: &str) -> Resu
     })
 }
 
+/// The settings of a transition that a [`Op::SetTransition`] sets.
+#[derive(Clone, Copy)]
+struct TransitionSettings {
+    kind: Option<TransitionKind>,
+    length: Option<i64>,
+    align: Option<Alignment>,
+    fade_in_level_db: Option<CrossfadeLevel>,
+    fade_out_level_db: Option<CrossfadeLevel>,
+}
+
 fn set_transition(
     project: &mut Project,
     timeline_id: &str,
     id: &str,
-    kind: Option<TransitionKind>,
-    length: Option<i64>,
-    align: Option<Alignment>,
+    set: TransitionSettings,
 ) -> Result<Op, OpError> {
     let t = timeline_at(project, timeline_id)?;
     let timeline = &project.timelines[t];
@@ -2562,16 +2876,20 @@ fn set_transition(
     let old = &timeline.tracks[r].transitions[at];
     let mut beside = timeline.tracks[r].clone();
     let new = &mut beside.transitions[at];
-    swap(&mut new.kind, kind);
-    swap(&mut new.length, length);
-    swap(&mut new.align, align);
+    swap(&mut new.kind, set.kind);
+    swap(&mut new.length, set.length);
+    swap(&mut new.align, set.align);
+    swap(&mut new.fade_in_level_db, set.fade_in_level_db);
+    swap(&mut new.fade_out_level_db, set.fade_out_level_db);
     check_transitions(project, timeline.rate, &beside)?;
     let inverse = Op::SetTransition {
         timeline: timeline_id.into(),
         id: id.into(),
-        kind: kind.map(|_| old.kind),
-        length: length.map(|_| old.length),
-        align: align.map(|_| old.align),
+        kind: set.kind.map(|_| old.kind),
+        length: set.length.map(|_| old.length),
+        align: set.align.map(|_| old.align),
+        fade_in_level_db: set.fade_in_level_db.map(|_| old.fade_in_level_db),
+        fade_out_level_db: set.fade_out_level_db.map(|_| old.fade_out_level_db),
     };
     project.timelines[t].tracks[r].transitions = beside.transitions;
     Ok(inverse)
@@ -6201,6 +6519,11 @@ mod tests {
             fade_out: None,
             audio_fade_in: None,
             audio_fade_out: None,
+            eq: None,
+            effects: None,
+            pitch_correction: None,
+            pitch: None,
+            channels: None,
             source: None,
         }
     }
@@ -6881,6 +7204,8 @@ mod tests {
             kind,
             length,
             align,
+            fade_in_level_db: None,
+            fade_out_level_db: None,
         };
         let done = round_trip(
             &project,
@@ -7191,6 +7516,8 @@ mod tests {
                     kind: Some(TransitionKind::DipWhite),
                     length: None,
                     align: Some(Alignment::Start),
+                    fade_in_level_db: None,
+                    fade_out_level_db: None,
                 },
                 serde_json::json!({
                     "op": "set_transition", "timeline": "t1", "id": "x4",

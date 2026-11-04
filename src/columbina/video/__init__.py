@@ -1044,6 +1044,27 @@ Basic operations: {op:"set_clip",timeline:"t1",id:"c1",gain_db:-6} or set_track 
 name/locked/enabled, and on an audio track mute/solo/solo_safe (silence a track with mute:true;
 enabled:false stops reading it at all), set_media with name/bin/mark_in/mark_out. Omitted
 settings stay unchanged. Muted and soloed tracks are rendered as heard.
+Mixing (Fairlight): {edit:"set_track_audio",track:"A1",patch:{strip:{fader_db:-6,pan:{x:0.2}},
+mute:false}} merges a patch into an audio track (format, channels, mute, solo, solo_safe, adc,
+automation_arm, strip: trim_db, fader_db -100..10 where -100 or below is -inf, pan, eq,
+dynamics, sends (one per bus), outputs, vcas, inserts, track_fx Ducker); lists are replaced
+whole; tracks of an active track group follow (fader/pan/send levels by the same change,
+mute/solo alike) unless follow_groups:false. Ops:
+add_bus/set_bus/remove_bus (bus {id:"",name,color:"#rrggbbaa",format,strip:{outputs:[{bus}]}};
+a bus that outputs to no bus is a main output; give a new bus an explicit id such as "B2" to
+route to it in the same batch, as buses have no $names), add_vca/set_vca/remove_vca,
+add_track_group/set_track_group/remove_track_group (group {id:"",name,members,linked});
+set_bus/set_vca/set_track_group/set_timeline_audio take a patch; add_insert
+{of:{track|bus|clip:id},insert:{effect:{kind:"gain",gain_db:-3}},index?}, set_insert
+{of,slot,insert|null}, move_insert {of,from,to}. Clip sound: set_clip
+eq/effects/pitch/pitch_correction/channels; set_transition fade_in_level_db/fade_out_level_db
+-3|0|3 on crossfades. Edits: clip_gain_keys
+{clip,action:add|remove|move|set_interp,at:{ticks,scale} of the clip's media,value?,to?,interp?};
+clip_gain_range {clip,from,to,delta_db}; nudge_clip_gain {clips,delta_db}; paste_attributes
+{from,to,items:[volume,plugins,equalizer]}; remove_attributes {clips,items}; fade_to_playhead
+{clips,side:"in"|"out",at}; copy_effects {from,to:[...]}; set_bus edit {id,patch} (an exclusive
+solo clears other solos); add_transition with linked:true also crossfades the linked audio
+(do not add that crossfade yourself then).
 To create a timeline, use {op:"add_timeline",timeline:{id:"$film",name:"Cut",
 rate:{num:25,den:1},width:1920,height:1080,sample_rate:48000,tracks:[]}}, followed in the same
 batch by {edit:"add_track",timeline:"$film",kind:"video"} and an audio track as needed.

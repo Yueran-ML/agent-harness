@@ -14,6 +14,7 @@ use proptest::prelude::*;
 
 pub mod colors;
 pub mod grades;
+pub mod sounds;
 
 /// The levels of a side of a crossfade.
 const LEVELS: [columbina_model::CrossfadeLevel; 3] = [
@@ -37,11 +38,11 @@ const RATES: [Rate; 3] = [
 
 /// The kinds of operation, as `op_of` numbers them, each as often as it is wanted: clips are
 /// put in, moved, trimmed and set most often, and timelines are taken away least. 27 is an
-/// operation on grades or groups, and 28 one of colour management.
-const KINDS: [u8; 64] = [
+/// operation on grades or groups, 28 one of colour management, and 29 one of sound.
+const KINDS: [u8; 72] = [
     0, 0, 1, 2, 3, 4, 4, 5, 6, 6, 6, 6, 6, 6, 7, 7, 8, 8, 8, 8, 9, 9, 9, 9, 10, 10, 11, 12, 12, 13,
     13, 13, 13, 14, 15, 16, 17, 17, 18, 18, 18, 19, 20, 20, 21, 21, 22, 23, 24, 24, 24, 25, 26, 26,
-    26, 27, 27, 27, 27, 27, 27, 28, 28, 28,
+    26, 27, 27, 27, 27, 27, 27, 28, 28, 28, 29, 29, 29, 29, 29, 29, 29, 29,
 ];
 
 /// The speeds that a clip is set to, the last of them too slow.
@@ -293,6 +294,7 @@ pub fn op_of(project: &Project, spec: &Spec) -> Op {
         26 => shift_of(spec, chosen, clip_timeline, clip_id),
         27 => grades::grade_op_of(project, [spec.a, spec.b, spec.c, spec.d]),
         28 => colors::color_op_of(project, [spec.a, spec.b, spec.c, spec.d]),
+        29 => sounds::sound_op_of(project, [spec.a, spec.b, spec.c, spec.d]),
         _ => {
             let Op::InsertClip {
                 timeline,
@@ -470,6 +472,11 @@ fn set_clip_of(
         fade_out: bit(spec, 10).then_some(spec.start % 12),
         audio_fade_in: None,
         audio_fade_out: None,
+        eq: None,
+        effects: None,
+        pitch_correction: None,
+        pitch: None,
+        channels: None,
         source: source.filter(|_| bit(spec, 11)),
     }
 }
@@ -643,6 +650,9 @@ fn transition_op_of(project: &Project, spec: &Spec, kind: u8) -> Op {
         length: bit(spec, 1).then_some(spec.length % 60),
         align: bit(spec, 2)
             .then(|| [Alignment::Center, Alignment::Start, Alignment::End][spec.b % 3]),
+        // Now and then a level on a transition of picture, which is refused.
+        fade_in_level_db: bit(spec, 3).then(|| LEVELS[spec.c % 3]),
+        fade_out_level_db: bit(spec, 4).then(|| LEVELS[spec.a % 3]),
     }
 }
 
@@ -982,6 +992,17 @@ pub fn tidy() -> Project {
         apply(&mut project, op).unwrap();
     }
     assert_eq!(project.timelines[0].tracks[0].transitions[0].id, "x6");
+    // A bus beside B1 that feeds it, a VCA and a group of the tracks of sound, for the
+    // operations on sound to name.
+    for op in [
+        serde_json::json!({"op": "add_bus", "timeline": "t1", "bus": {"id": "", "name": "Music",
+            "color": "#40c080ff", "format": "stereo", "strip": {"outputs": [{"bus": "B1"}]}}}),
+        serde_json::json!({"op": "add_vca", "timeline": "t1", "vca": {"id": "", "name": "All"}}),
+        serde_json::json!({"op": "add_track_group", "timeline": "t1",
+            "group": {"id": "", "name": "Sound", "members": ["A1", "A2"]}}),
+    ] {
+        apply(&mut project, serde_json::from_value(op).unwrap()).unwrap();
+    }
     project
 }
 

@@ -207,6 +207,20 @@ impl Strip {
         }
     }
 
+    /// The strip of a track that is added without one: at unity, out to the first bus of its
+    /// timeline where it has one, and to none where it has not. The output is named by an empty
+    /// id until the track is in its timeline (see [`place_outputs`]).
+    #[must_use]
+    pub fn to_first_bus_if_any() -> Self {
+        Self {
+            outputs: vec![Output {
+                bus: String::new(),
+                on: true,
+            }],
+            ..Self::default()
+        }
+    }
+
     /// Check its settings, as the strip of a bus where `bus`, but not what it names, which
     /// [`routing::check_routing`] checks.
     ///
@@ -886,6 +900,24 @@ fn lanes_valid(lanes: &Lanes) -> Result<(), OpError> {
         Ok(())
     } else {
         Err(out("lane"))
+    }
+}
+
+/// Put the output of a track that names no bus, as one added without a strip does
+/// ([`Strip::to_first_bus_if_any`]), to the first bus of its timeline, `B1`, where `buses` has it,
+/// and take it away where it has not.
+pub fn place_outputs(buses: &[Bus], track: &mut Track) {
+    if track.kind != crate::project::TrackKind::Audio {
+        return;
+    }
+    let outputs = &mut track.audio.strip.outputs;
+    let named = outputs.iter().any(|o| o.bus == FIRST_BUS);
+    if !named && buses.iter().any(|b| b.id == FIRST_BUS) {
+        for output in outputs.iter_mut().filter(|o| o.bus.is_empty()) {
+            output.bus = FIRST_BUS.into();
+        }
+    } else {
+        outputs.retain(|o| !o.bus.is_empty());
     }
 }
 

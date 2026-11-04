@@ -1827,6 +1827,9 @@ fn add_timeline(
         timeline.id = counter.make('t', held)?;
     }
     name(&mut counter, &mut claims, &[], &mut timeline.tracks)?;
+    for track in &mut timeline.tracks {
+        audio::place_outputs(&timeline.buses, track);
+    }
     check_tracks(project, timeline.rate, &mut timeline.tracks)?;
     one_shown(&timeline.tracks).map_err(|(_, error)| error)?;
     routed(&timeline, |_| {})?;
@@ -1858,6 +1861,7 @@ fn add_track(
     let mut added = [track];
     let mut claims = claim(project, &counter, &timeline.tracks, &added)?;
     name(&mut counter, &mut claims, &timeline.tracks, &mut added)?;
+    audio::place_outputs(&timeline.buses, &mut added[0]);
     check_tracks(project, timeline.rate, &mut added)?;
     let [track] = added;
     if track.kind == TrackKind::Subtitle && track.enabled {
@@ -3593,7 +3597,9 @@ impl Project {
     /// timelines and groups in the project, tracks in their timeline, clips, transitions and
     /// subtitles in the project, and nodes in their grade.
     ///
-    /// Two things are put right rather than refused. The things of each track are put in order:
+    /// Three things are put right rather than refused. The output of a track that names no bus
+    /// goes to the first bus of its timeline, or to none where it has none (see
+    /// [`audio::place_outputs`]). The things of each track are put in order:
     /// its clips and subtitles in the order of their start, and its transitions in the order of
     /// their cuts; and the links of each grade in the order of the inputs that they go into.
     /// `next_id` is raised above the number of every id of the project that the engine could
@@ -3605,6 +3611,7 @@ impl Project {
     pub fn validate(&mut self) -> Result<(), Invalid> {
         for timeline in &mut self.timelines {
             for track in &mut timeline.tracks {
+                audio::place_outputs(&timeline.buses, track);
                 order(track);
             }
             timeline.grade.sort_links();

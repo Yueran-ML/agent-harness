@@ -600,7 +600,8 @@ are at most +10; −100 or below is −∞.
 - **Track of sound.** Beside `clips` and `transitions`: `format` (`mono|stereo|5.1|adaptive`,
   stereo), `channels` (as many as the format has; 1–24 for `adaptive`, which may not leave it
   out), `order` (`smpte|film`, of 5.1), `mute`, `solo`, `solo_safe`, `adc` (true),
-  `automation_arm`, `strip` (out to `B1` at unity) and `lanes`. A track of picture or subtitles
+  `automation_arm`, `strip` (where it is left out, at unity, out to `B1` where the timeline has it,
+  and to none where it has not) and `lanes`. A track of picture or subtitles
   has none of them (refused if given). `enabled: false` is Disable Track (not read, not heard);
   `mute` is the header's button (p. 3885): not heard nor rendered. A track is heard (and
   rendered) where it is on and not muted, its sound reaches a main output through outputs and

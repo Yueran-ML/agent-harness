@@ -493,6 +493,8 @@ pub(super) fn new_track(
     if let Some(language) = language {
         track.language = language;
     }
+    // Its sound goes to the first bus of the timeline where there is one (p. 3721).
+    track.audio.strip = crate::audio::Strip::to_first_bus_if_any();
     work.op(Op::AddTrack {
         timeline: work.timeline_id(),
         track,

@@ -434,6 +434,81 @@ fn a_track_is_heard_through_buses_that_are_not_muted_and_as_buses_are_soloed() {
 }
 
 #[test]
+fn a_track_added_without_a_strip_goes_to_bus_1_if_there_is_one_and_else_to_none() {
+    use columbina_model::edit::{expand, Edit};
+    let added = json!({ "op": "add_track", "timeline": "t1", "track": {
+        "id": "", "kind": "audio", "name": "x", "enabled": true, "locked": false,
+        "clips": [], "transitions": [],
+    } });
+    let outputs = |project: &Project| -> Vec<String> {
+        let track = project.timelines[0].tracks.last().unwrap();
+        track
+            .audio
+            .strip
+            .outputs
+            .iter()
+            .map(|o| o.bus.clone())
+            .collect()
+    };
+    let mut project = Project::sample();
+    let inverse = apply(&mut project, serde_json::from_value(added.clone()).unwrap()).unwrap();
+    assert_eq!(outputs(&project), ["B1"]);
+    apply(&mut project, inverse).unwrap();
+    // Only B2: the track outputs to none, and an explicit B1 is still refused.
+    let t = &mut project.timelines[0];
+    t.buses = vec![bus(2)];
+    t.audio.monitor = Some("B2".into());
+    t.tracks[1].audio.strip.outputs = vec![output("B2")];
+    project.validate().unwrap();
+    let inverse = apply(&mut project, serde_json::from_value(added).unwrap()).unwrap();
+    assert_eq!(outputs(&project), Vec::<String>::new());
+    // Taken back and done again, it is added as it was: to no bus.
+    let added = project.clone();
+    let back = apply(&mut project, inverse).unwrap();
+    apply(&mut project, back).unwrap();
+    assert_eq!(project, added);
+    apply(
+        &mut project,
+        Op::RemoveTrack {
+            timeline: "t1".into(),
+            id: "A2".into(),
+        },
+    )
+    .unwrap();
+    let error = apply(
+        &mut project,
+        Op::AddTrack {
+            timeline: "t1".into(),
+            track: Track::new("", TrackKind::Audio),
+            index: None,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error, OpError::UnknownBus { id: "B1".into() });
+    // The edit that adds a track lets the engine choose.
+    expand(
+        &mut project,
+        Edit::AddTrack {
+            timeline: "t1".into(),
+            kind: TrackKind::Audio,
+            name: None,
+            language: None,
+            index: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(outputs(&project), Vec::<String>::new());
+    // Read from a project that leaves the strip out, the track goes to B1.
+    let mut value = serde_json::to_value(Project::sample()).unwrap();
+    value["timelines"][0]["tracks"][1]
+        .as_object_mut()
+        .unwrap()
+        .remove("strip");
+    let read = Project::from_value(value).unwrap();
+    assert_eq!(outputs(&read), ["B1"]);
+}
+
+#[test]
 fn a_track_of_sound_is_muted_and_soloed_by_set_track_and_taken_back() {
     let mut project = Project::sample();
     let set = |id: &str, mute, solo, solo_safe| Op::SetTrack {

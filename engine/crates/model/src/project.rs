@@ -462,7 +462,11 @@ impl TryFrom<RawTrack> for Track {
             solo_safe: raw.solo_safe.unwrap_or(made.solo_safe),
             adc: raw.adc.unwrap_or(made.adc),
             automation_arm: raw.automation_arm.unwrap_or(made.automation_arm),
-            strip: raw.strip.unwrap_or(made.strip),
+            strip: match (raw.strip, kind) {
+                (Some(strip), _) => strip,
+                (None, TrackKind::Audio) => Strip::to_first_bus_if_any(),
+                (None, _) => made.strip,
+            },
             lanes: raw.lanes.unwrap_or(made.lanes),
         };
         Ok(Self {

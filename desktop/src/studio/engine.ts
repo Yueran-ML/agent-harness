@@ -166,7 +166,7 @@ export interface TrackSound {
   /** Its delay made up with the others' (ADC): on for a new track. */
   adc?: boolean;
   automation_arm?: boolean;
-  /** Out to bus B1 at unity, for a new track. */
+  /** At unity, out to bus B1 where the timeline has it and to none where not, where it is left out. */
   strip?: Strip;
   lanes?: Lanes;
 }

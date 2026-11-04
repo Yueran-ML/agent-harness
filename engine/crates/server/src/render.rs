@@ -200,6 +200,7 @@ impl Renders {
             message: None,
             restored: 0,
             normalization: None,
+            measuring: None,
             #[cfg(test)]
             lose_at: None,
         };
@@ -267,8 +268,8 @@ struct Plan {
     range: Range<i64>,
     /// The picture; none where the sound is exported alone.
     video: Option<VideoSettings>,
-    /// The sound.
-    sound: sound::SoundPlan,
+    /// The sound; none for a film of a timeline without sound whose sound was not asked for.
+    sound: Option<sound::SoundPlan>,
     /// What the frames are put out as, by the project's colour management: the tags of the
     /// file, the matrix of its Y'CbCr, and of HDR its mastering.
     output: Output,
@@ -332,7 +333,12 @@ impl Plan {
             (_, Some(_)) => return Err(Fault::params("export to .mp4 (h264/hevc) or .mov")),
             (_, None) => return Err(Fault::params("export the sound alone to .wav or .m4a")),
         };
-        let sound = sound::plan(request.audio, timeline, container)?;
+        // A film of a timeline without sound, its sound not asked for, needs no bus.
+        let sound = if request.audio.is_none() && codec.is_some() && !has_sound(timeline) {
+            None
+        } else {
+            Some(sound::plan(request.audio, timeline, container)?)
+        };
         for (at, id) in request.subtitle_tracks.iter().enumerate() {
             let subtitles = timeline
                 .tracks
@@ -429,6 +435,8 @@ struct Worker {
     restored: u32,
     /// What Audio Normalization did, told with each `render.progress` once it is found.
     normalization: Option<serde_json::Value>,
+    /// How far Audio Normalization has measured, told while it measures.
+    measuring: Option<sound::Measuring>,
     /// The frame, counted from the start of the export, at which a test loses the card.
     #[cfg(test)]
     lose_at: Option<i64>,
@@ -466,6 +474,10 @@ impl Worker {
         }
         if let Some(normalization) = &self.normalization {
             note["normalization"] = normalization.clone();
+        }
+        if let Some(measuring) = &self.measuring {
+            note["measuring"] = json!({"pass": measuring.pass, "passes": measuring.passes,
+                "frame": measuring.done, "frames": measuring.frames});
         }
         (self.notify)(&note);
         self.told = Some(Instant::now());
@@ -534,36 +546,39 @@ impl Worker {
         project: &Arc<Project>,
         timeline: &columbina_model::Timeline,
     ) -> Result<Option<sound::Mix>, String> {
-        let sound = timeline.tracks.iter().any(|track| {
-            track.kind == TrackKind::Audio
-                && track.enabled
-                && track.clips.iter().any(|clip| clip.enabled)
-        });
-        if !sound && self.plan.video.is_some() {
+        let Some(plan) = self.plan.sound.clone() else {
+            return Ok(None);
+        };
+        if !has_sound(timeline) && self.plan.video.is_some() {
+            if plan.normalize.is_some() {
+                self.tell_too("there is no sound to normalize: the film has no sound");
+            }
             return Ok(None);
         }
         let at = sample_at(timeline, self.plan.range.start, timeline.sample_rate)?;
         let frames = sample_at(
             timeline,
             self.plan.range.end - self.plan.range.start,
-            self.plan.sound.rate,
+            plan.rate,
         )?;
         let frames = usize::try_from(frames).map_err(|_| "export exceeds audio sample time")?;
-        let cancel = Arc::clone(&self.cancel);
-        let go_on = move || {
-            if cancel.load(Ordering::Acquire) {
-                Err("the export was cancelled".to_owned())
-            } else {
-                Ok(())
-            }
-        };
         let found = sound::normalize(
             project,
             self.plan.timeline,
-            &self.plan.sound,
+            &plan,
             (at, frames),
-            &go_on,
-        )?;
+            &mut |measuring| {
+                // Each pass is told as it starts; within it, every 250 ms at the most.
+                if self.measuring.is_none_or(|was| was.pass != measuring.pass) {
+                    self.told = None;
+                }
+                self.measuring = Some(measuring);
+                self.tell("running");
+                self.cancelled()
+            },
+        );
+        self.measuring = None;
+        let found = found?;
         let finish = match &found {
             Some((normalizing, found)) => {
                 if !found.met {
@@ -572,17 +587,22 @@ impl Worker {
                     } else {
                         "the sound could not be brought to the standard; it is as near as it came"
                     };
-                    self.message = Some(match self.message.take() {
-                        Some(earlier) => format!("{earlier}; {why}"),
-                        None => why.to_owned(),
-                    });
+                    self.tell_too(why);
                 }
                 self.normalization = Some(sound::told(normalizing, found));
                 found.finish
             }
             None => columbina_audio::deliver::Finish::default(),
         };
-        sound::Mix::start(project, self.plan.timeline, &self.plan.sound, finish, at).map(Some)
+        sound::Mix::start(project, self.plan.timeline, &plan, finish, at).map(Some)
+    }
+
+    /// Adds `why` to the message of the export.
+    fn tell_too(&mut self, why: &str) {
+        self.message = Some(match self.message.take() {
+            Some(earlier) => format!("{earlier}; {why}"),
+            None => why.to_owned(),
+        });
     }
 
     #[allow(
@@ -596,9 +616,12 @@ impl Worker {
         self.tell("running");
         let mut mix = self.mix(&project, timeline)?;
         self.cancelled()?;
-        let audio = mix
-            .as_ref()
-            .map(|mix| sound::settings(&self.plan.sound, mix.layout()));
+        // The frames a second are of the frames written, not of the measuring before them.
+        self.since = Instant::now();
+        let audio = match (&mix, &self.plan.sound) {
+            (Some(mix), Some(plan)) => Some(sound::settings(plan, mix.layout())),
+            _ => None,
+        };
         let mut outputs = output::Files::new(self.plan.replace);
         let mut file = if self.plan.video.is_some() {
             File::Movie(self.writer(&mut outputs, audio)?)
@@ -661,7 +684,8 @@ impl Worker {
             }
             self.frame += 1;
             if let Some(mix) = &mut mix {
-                let end = sample_at(timeline, self.frame, self.plan.sound.rate)?;
+                let rate = self.plan.sound.as_ref().map_or(48_000, |plan| plan.rate);
+                let end = sample_at(timeline, self.frame, rate)?;
                 let needed = usize::try_from(end - samples).map_err(|_| "invalid audio block")?;
                 let run = mix.take(needed)?;
                 file.audio(&run)
@@ -832,6 +856,15 @@ impl File {
             File::Sound(writer) => writer.audio(samples),
         }
     }
+}
+
+/// Whether `timeline` has a clip of sound that is on, on a track of sound that is on.
+fn has_sound(timeline: &columbina_model::Timeline) -> bool {
+    timeline.tracks.iter().any(|track| {
+        track.kind == TrackKind::Audio
+            && track.enabled
+            && track.clips.iter().any(|clip| clip.enabled)
+    })
 }
 
 /// The sample at `rate` of the start of frame `frame` of `timeline` (counted from its start, or
@@ -1064,6 +1097,7 @@ mod tests {
             message: None,
             restored: 0,
             normalization: None,
+            measuring: None,
             lose_at: None,
         }
     }

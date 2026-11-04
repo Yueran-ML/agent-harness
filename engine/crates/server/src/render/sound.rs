@@ -25,7 +25,19 @@ const MAX_BLOCK: usize = 4096;
 const BIT_RATES: [u32; 4] = [128_000, 192_000, 256_000, 320_000];
 
 /// The lowest and the highest rate of the sound of a file, samples a second.
-const RATES: (u32, u32) = (8_000, 192_000);
+const RATES: (u32, u32) = (7_350, 192_000);
+
+/// The rates that AAC is written at: those of the table of MPEG-4 audio (ISO/IEC 14496-3,
+/// `samplingFrequencyIndex`) from 7350 to 96000; libav's encoder takes no other.
+const AAC_RATES: [u32; 13] = [
+    7_350, 8_000, 11_025, 12_000, 16_000, 22_050, 24_000, 32_000, 44_100, 48_000, 64_000, 88_200,
+    96_000,
+];
+
+/// The most times that Audio Normalization measures the sound: once to Normalize; to Optimize,
+/// once as it is, once with the limiter, once more with the loudness given back, and once for
+/// each lowering of the ceiling.
+const MOST_PASSES: u32 = 3 + columbina_audio::constants::NORMALIZE_CEILING_LOWERINGS;
 
 /// The `audio` of `render.start`.
 #[derive(Default, Deserialize)]
@@ -211,6 +223,12 @@ pub(super) fn plan(
         SoundCodec::PcmS24le => AudioCodec::PcmS24,
         SoundCodec::PcmF32le => AudioCodec::PcmF32,
     };
+    if !codec.is_pcm() && !AAC_RATES.contains(&rate) {
+        return Err(refused(
+            "AAC is written at a rate of the table of MPEG-4 audio, 7350 to 96000",
+            json!({"reason": "rate", "rate": rate}),
+        ));
+    }
     let normalize = request
         .normalize
         .map(|asked| normalizing(&asked, timeline))
@@ -387,22 +405,46 @@ impl Mix {
     }
 }
 
+/// How far Audio Normalization is: pass `pass` (from 1) of at most `passes`, `done` of
+/// `frames` samples of it measured.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Measuring {
+    pub(super) pass: u32,
+    pub(super) passes: u32,
+    pub(super) done: usize,
+    pub(super) frames: usize,
+}
+
 /// What Audio Normalization of `plan` finds for `frames` samples of the file of the bus from
 /// sample `at` of the timeline, measuring it with a graph of its own each time (a graph is not
-/// run twice: `RNNoise` has no reset, T12); `go_on` is asked between blocks, and stops it where it
-/// fails (the export is cancelled).
+/// run twice: `RNNoise` has no reset, T12); `progress` is told before each block, and stops it
+/// where it fails (the export is cancelled).
 pub(super) fn normalize(
     project: &Arc<Project>,
     timeline: usize,
     plan: &SoundPlan,
     (at, frames): (i64, usize),
-    go_on: &dyn Fn() -> Result<(), String>,
+    progress: &mut dyn FnMut(Measuring) -> Result<(), String>,
 ) -> Result<Option<(Normalizing, Normalization)>, String> {
     let Some(normalizing) = plan.normalize else {
         return Ok(None);
     };
+    let passes = match normalizing.mode {
+        Mode::Normalize => 1,
+        Mode::Optimize => MOST_PASSES,
+    };
+    let mut pass = 0;
     let found = normalization(normalizing.mode, &normalizing.aim, |finish| {
-        measure(project, timeline, plan, finish, (at, frames), go_on)
+        pass += 1;
+        let mut told = |done| {
+            progress(Measuring {
+                pass,
+                passes,
+                done,
+                frames,
+            })
+        };
+        measure(project, timeline, plan, finish, (at, frames), &mut told)
     })?;
     Ok(Some((normalizing, found)))
 }
@@ -415,13 +457,13 @@ fn measure(
     plan: &SoundPlan,
     finish: Finish,
     (at, frames): (i64, usize),
-    go_on: &dyn Fn() -> Result<(), String>,
+    progress: &mut dyn FnMut(usize) -> Result<(), String>,
 ) -> Result<Analysis, String> {
     let mut mix = Mix::start(project, timeline, plan, finish, at)?;
     let mut analyzer = Analyzer::new(plan.rate, mix.layout(), true);
     let mut left = frames;
     while left > 0 {
-        go_on()?;
+        progress(frames - left)?;
         let count = left.min(MAX_BLOCK);
         let run = mix.planar(count)?;
         let channels: Vec<&[f32]> = run.iter().map(Vec::as_slice).collect();

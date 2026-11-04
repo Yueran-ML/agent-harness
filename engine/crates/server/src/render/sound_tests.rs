@@ -20,9 +20,14 @@ use crate::test_media::{self, Sample};
 /// frames a second) from the start of the timeline.
 fn project_of(sample: Sample) -> Option<Project> {
     let made = test_media::media(sample)?;
+    Some(project_with(&made.path))
+}
+
+/// [`project_of`] the media at `path`.
+fn project_with(path: &Path) -> Project {
     let mut project = Project::sample();
-    let facts = probe(&made.path).unwrap();
-    project.media[0].path = made.path.to_string_lossy().into_owned();
+    let facts = probe(path).unwrap();
+    project.media[0].path = path.to_string_lossy().into_owned();
     project.media[0].facts = facts.clone();
     let timeline = &mut project.timelines[0];
     timeline
@@ -38,7 +43,7 @@ fn project_of(sample: Sample) -> Option<Project> {
     };
     clip.start = 0;
     clip.length = 50;
-    Some(project)
+    project
 }
 
 /// A request of `render.start` read from `request`, of timeline t1, written to `name` in `dir`.
@@ -272,6 +277,27 @@ fn what_the_sound_of_an_export_cannot_be_is_refused_with_its_reason() {
         "bitrate"
     );
     assert_eq!(refused("a.mov", film(json!({"rate": 7}))), "rate");
+    // AAC at a rate that MPEG-4 has no index for; PCM takes it.
+    assert_eq!(refused("a.mov", film(json!({"rate": 192_000}))), "rate");
+    assert_eq!(refused("a.mov", film(json!({"rate": 50_000}))), "rate");
+    for rate in [7350, 44_100, 96_000] {
+        assert!(Plan::new(
+            project.clone(),
+            request(dir.path(), "b.mov", film(json!({"rate": rate}))),
+            dir.path()
+        )
+        .is_ok());
+    }
+    assert!(Plan::new(
+        project.clone(),
+        request(
+            dir.path(),
+            "c.mov",
+            film(json!({"codec": "pcm_s24le", "rate": 50_000}))
+        ),
+        dir.path()
+    )
+    .is_ok());
     assert_eq!(
         refused(
             "a.mov",
@@ -308,4 +334,160 @@ fn the_speakers_of_each_format_of_a_bus() {
         (0x63F, vec![0, 1, 2, 3, 6, 7, 4, 5])
     );
     assert_eq!(super::speakers(Layout::Lcrs), (0x107, vec![0, 1, 2, 3]));
+}
+
+/// The sample project with no sound and no bus: its tracks of picture only, its buses gone.
+fn silent_without_buses() -> Project {
+    let mut project = Project::sample();
+    let timeline = &mut project.timelines[0];
+    timeline
+        .tracks
+        .retain(|track| track.kind == TrackKind::Video);
+    timeline.buses.clear();
+    timeline.audio.monitor = None;
+    project
+}
+
+#[test]
+fn a_film_of_a_timeline_without_sound_or_buses_is_exported_without_its_sound() {
+    let dir = tempfile::tempdir().unwrap();
+    let film = json!({"codec": "prores", "quality": "high"});
+    let plan = Plan::new(
+        silent_without_buses(),
+        request(dir.path(), "a.mov", film.clone()),
+        dir.path(),
+    );
+    assert!(plan.is_ok(), "{:?}", plan.err().map(|fault| fault.message));
+    // Its sound asked for, there is no bus to take it from.
+    let mut asked = film;
+    asked["audio"] = json!({"codec": "aac"});
+    let Err(fault) = Plan::new(
+        silent_without_buses(),
+        request(dir.path(), "b.mov", asked),
+        dir.path(),
+    ) else {
+        panic!("sound of no bus");
+    };
+    assert_eq!(fault.data.unwrap()["reason"], "bus");
+}
+
+#[test]
+fn audio_normalization_of_a_film_without_sound_is_told_and_not_done() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut project = Project::sample();
+    project.timelines[0]
+        .tracks
+        .retain(|track| track.kind == TrackKind::Video);
+    let mut worker = super::super::tests::worker(dir.path());
+    worker.plan = Plan::new(
+        project,
+        request(
+            dir.path(),
+            "a.mov",
+            json!({"codec": "prores", "quality": "high",
+                "audio": {"normalize": {"standard": "ebu-r128", "mode": "optimize"}}}),
+        ),
+        dir.path(),
+    )
+    .unwrap();
+    let project = Arc::clone(&worker.plan.project);
+    let mix = worker.mix(&project, &project.timelines[0]).unwrap();
+    assert!(mix.is_none());
+    let message = worker.message.clone().unwrap_or_default();
+    assert!(message.contains("no sound to normalize"), "{message}");
+    assert!(worker.normalization.is_none());
+}
+
+/// A WAV of 16 bits in stereo at 48 kHz, 2 s, silent but for an impulse of 0.5 at sample 1000.
+fn impulse(path: &Path) {
+    let frames: u32 = 96_000;
+    let data = frames * 4;
+    let mut bytes = Vec::with_capacity(44 + data as usize);
+    bytes.extend(b"RIFF");
+    bytes.extend((36 + data).to_le_bytes());
+    bytes.extend(b"WAVEfmt ");
+    bytes.extend(16_u32.to_le_bytes());
+    bytes.extend(1_u16.to_le_bytes());
+    bytes.extend(2_u16.to_le_bytes());
+    bytes.extend(48_000_u32.to_le_bytes());
+    bytes.extend(192_000_u32.to_le_bytes());
+    bytes.extend(4_u16.to_le_bytes());
+    bytes.extend(16_u16.to_le_bytes());
+    bytes.extend(b"data");
+    bytes.extend(data.to_le_bytes());
+    for n in 0..frames {
+        let code: i16 = if n == 1000 { 16_384 } else { 0 };
+        bytes.extend(code.to_le_bytes());
+        bytes.extend(code.to_le_bytes());
+    }
+    std::fs::write(path, bytes).unwrap();
+}
+
+#[test]
+fn an_impulse_on_a_track_with_a_limiter_and_one_on_a_track_without_meet_on_their_sample() {
+    use columbina_model::audio::fx::LimiterFx;
+    use columbina_model::{Effect, Insert};
+    let dir = tempfile::tempdir().unwrap();
+    let media = dir.path().join("impulse.wav");
+    impulse(&media);
+    let mut project = project_with(&media);
+    let timeline = &mut project.timelines[0];
+    let mut second = timeline.tracks[0].clone();
+    second.id = "A2".into();
+    second.clips[0].id = "c9".into();
+    // The Limiter looks 64 samples ahead; the impulse is under its ceiling, and passes.
+    second.audio.strip.inserts.push(Insert {
+        id: "fx1".into(),
+        on: true,
+        effect: Effect::Limiter(LimiterFx::default()),
+    });
+    timeline.tracks.push(second);
+    export(
+        dir.path(),
+        &project,
+        "both.wav",
+        json!({"video": null, "audio": {"codec": "pcm_f32le"}}),
+    );
+    let got = read_back(&dir.path().join("both.wav"));
+    let left: Vec<f32> = got.iter().step_by(2).copied().collect();
+    let loud: Vec<usize> = (0..left.len()).filter(|&n| left[n].abs() > 1e-6).collect();
+    assert_eq!(loud, [1000], "the two impulses at one sample");
+    assert!((left[1000] - 1.0).abs() < 1e-6, "{}", left[1000]);
+}
+
+#[test]
+fn render_progress_tells_each_pass_that_measures_the_sound() {
+    let Some(project) = project_of(Sample::LeftRight) else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let notes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut worker = super::super::tests::worker(dir.path());
+    let told = Arc::clone(&notes);
+    worker.notify = Arc::new(move |note| told.lock().unwrap().push(note.clone()));
+    worker.plan = Plan::new(
+        project,
+        request(
+            dir.path(),
+            "loud.wav",
+            json!({"video": null, "audio": {"normalize": {"standard": "spotify", "mode": "normalize"}}}),
+        ),
+        dir.path(),
+    )
+    .unwrap();
+    worker.run().unwrap();
+    worker.tell("done");
+    let notes = notes.lock().unwrap();
+    let measuring: Vec<&serde_json::Value> = notes
+        .iter()
+        .filter_map(|note| note.get("measuring"))
+        .collect();
+    assert!(!measuring.is_empty(), "{notes:?}");
+    assert_eq!(measuring[0]["pass"], 1);
+    assert_eq!(measuring[0]["passes"], 1);
+    assert!(measuring[0]["frames"].as_i64().unwrap() > 0);
+    // Once it writes, it measures no more.
+    let last = notes.last().unwrap();
+    assert!(last.get("measuring").is_none(), "{last}");
+    assert!(last.get("normalization").is_some(), "{last}");
 }

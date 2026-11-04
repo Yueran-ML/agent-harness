@@ -35,6 +35,7 @@
 
 mod build;
 mod build_fx;
+mod build_retune;
 mod clip;
 mod pdc;
 mod process;
@@ -46,8 +47,9 @@ mod tests;
 
 use columbina_model::Id;
 
-pub use build::{node_of, BuildError, Context, Made, Maker};
-pub use clip::{radius, resampled};
+pub use build::{audible, node_of, BuildError, Context, Controls, Made, Maker};
+pub use build_retune::retune;
+pub use clip::{radius, resampled, Reach};
 pub use taps::Level;
 
 use crate::constants::{samples, PREROLL_MAX};
@@ -331,5 +333,12 @@ impl Graph {
     #[must_use]
     pub fn at(&self) -> i64 {
         self.position - i64::from(self.latency)
+    }
+
+    /// The sample of the timeline whose clips are read next: [`Graph::at`] and the latency
+    /// ahead of it.
+    #[must_use]
+    pub fn reads_at(&self) -> i64 {
+        self.position
     }
 }

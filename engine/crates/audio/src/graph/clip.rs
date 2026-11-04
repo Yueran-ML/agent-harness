@@ -235,6 +235,52 @@ pub(crate) struct ClipScratch {
     pub(crate) after: Planar,
 }
 
+/// Where a clip of a graph reads its media ([`crate::graph::Graph::reaches`]): the samples of the
+/// timeline it sounds on, and the samples of its media (at the rate of the timeline, as
+/// [`ClipFeed::read`] counts them) that any of them reads, the filter's reach and all. The
+/// threads that read clips ahead of the graph (T5) read what it will ask for.
+#[derive(Clone, Copy, Debug)]
+pub struct Reach {
+    from: i64,
+    to: i64,
+    mapping: Mapping,
+    radius: i64,
+}
+
+impl Reach {
+    /// The samples of the timeline that the clip sounds on.
+    #[must_use]
+    pub fn span(&self) -> Range<i64> {
+        self.from..self.to
+    }
+
+    /// The samples of the media that the samples `timeline` of the timeline read, where the
+    /// clip sounds on any of them.
+    #[must_use]
+    pub fn source(&self, timeline: Range<i64>) -> Option<Range<i64>> {
+        let (from, to) = (self.from.max(timeline.start), self.to.min(timeline.end));
+        if from >= to {
+            return None;
+        }
+        let (first, _) = self.mapping.at(from);
+        let (last, _) = self.mapping.at(to - 1);
+        Some(first.min(last) - self.radius..first.max(last) + self.radius + 1)
+    }
+
+    /// Whether it reads its media backwards (a clip played in reverse).
+    #[must_use]
+    pub fn backward(&self) -> bool {
+        self.mapping.step < 0
+    }
+
+    /// The samples of its media that a sample of the timeline moves on by: its speed.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss, reason = "a speed")]
+    pub fn speed(&self) -> f64 {
+        self.mapping.step.unsigned_abs() as f64 / self.mapping.denominator as f64
+    }
+}
+
 /// A clip in the graph.
 pub(crate) struct ClipChain {
     /// The strip of its track.
@@ -265,6 +311,16 @@ impl ClipChain {
         let (first, _) = self.mapping.at(range.start);
         let (last, _) = self.mapping.at(range.end - 1);
         first.min(last) - self.radius..first.max(last) + self.radius + 1
+    }
+
+    /// Where it reads its media.
+    pub(crate) fn reach(&self) -> Reach {
+        Reach {
+            from: self.from,
+            to: self.to,
+            mapping: self.mapping,
+            radius: self.radius,
+        }
     }
 
     /// Adds what the clip sounds on the `frames` samples of the timeline from `start` to `into`

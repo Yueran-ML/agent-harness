@@ -1,6 +1,7 @@
 //! The code of the threads of the sound holds none of the words of locks, waits, allocations,
-//! text or logs (convention 3 of the plan): `src/rt/`, `src/fx/` and `src/graph/` (all of it but
-//! `build*.rs`, where the graph is made, and `tests.rs`; at least its `process*.rs`), read as
+//! text or logs (convention 3 of the plan): `src/rt/`, `src/fx/`, `src/graph/` (all of it but
+//! `build*.rs`, where the graph is made, and `tests.rs`; at least its `process*.rs`), `src/play/`
+//! (all of it but `fetcher.rs`, the reader ahead, and `thread.rs`, the loop of naps) and `src/stream.rs`, read as
 //! text, comments aside, and lines of code that runs when things are made tagged
 //! `// rt-ok: <reason>`.
 
@@ -23,6 +24,20 @@ fn realtime_files() -> (Vec<PathBuf>, bool) {
             }
         }
     }
+    // Playback (T5): the thread of the mix, the callback of the device, the feed of what is
+    // read ahead, and the stream to the device; not the reader ahead (`fetcher.rs`), which is
+    // not real time, nor the loop that naps between the steps of the mix (`thread.rs`).
+    for entry in std::fs::read_dir(src.join("play")).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        if path.extension().is_some_and(|extension| extension == "rs")
+            && name != "fetcher.rs"
+            && name != "thread.rs"
+        {
+            files.push(path);
+        }
+    }
+    files.push(src.join("stream.rs"));
     let graph = std::fs::read_dir(src.join("graph"));
     let has_graph = graph.is_ok();
     if let Ok(graph) = graph {
@@ -70,6 +85,10 @@ fn the_code_of_the_threads_of_the_sound_does_not_lock_allocate_or_log() {
         "true_peak.rs",
         "denoise.rs",
         "rnnoise.rs",
+        "engine.rs",
+        "device.rs",
+        "feed.rs",
+        "stream.rs",
     ] {
         assert!(
             names.iter().any(|name| name == expected),

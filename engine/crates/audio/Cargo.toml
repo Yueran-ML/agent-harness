@@ -21,6 +21,9 @@ realfft.workspace = true
 rustfft.workspace = true
 # The ring between one thread that writes and one that reads (src/rt/ring.rs).
 rtrb.workspace = true
+# The settings of a strip as the model lists them for its lanes, to tell a change that the graph
+# takes as it plays from one that needs another graph (src/graph/build_retune.rs).
+serde_json.workspace = true
 thiserror.workspace = true
 # RNNoise, the voice mode of Noise Reduction (src/fx/rnnoise.rs).
 nnnoiseless.workspace = true

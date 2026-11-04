@@ -12,13 +12,20 @@
 // (`Random::state`), and `cs_stretch_reset` sets it back to the seed: the same input after a
 // reset gives the same output, to the bit.
 //
-// No function lets an exception out: making a stretcher catches them and answers null; the
-// others do not throw.
+// No function lets an exception out (each is `noexcept`): making a stretcher catches them and
+// answers null; the others do not throw.
+//
+// The library's `reset` leaves one flag as it was: whether the next silence is the first of a run
+// (`silenceFirst`). A stretcher whose last input ended in a long digital silence would then go
+// into its silence mode at another moment than a new one does, and stretch the same input to
+// other bits. `cs_stretch_reset` therefore feeds it one sample of sound (and asks for no output),
+// which sets the flag as a new stretcher has it, and resets it again.
 
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
+#include <memory>
 #include <new>
 
 #include "signalsmith-stretch/signalsmith-stretch.h"
@@ -70,19 +77,22 @@ struct cs_stretch
 
 extern "C" {
 
-cs_stretch *cs_stretch_new(int channels, float rate, std::uint64_t seed)
+/// The most channels of a stretcher (columbina-stretch's MAX_CHANNELS).
+constexpr int MAX_CHANNELS = 24;
+
+cs_stretch *cs_stretch_new(int channels, float rate, std::uint64_t seed) noexcept
 {
-    if (channels < 1 || !(rate > 0))
+    if (channels < 1 || channels > MAX_CHANNELS || !(rate > 0))
     {
         return nullptr;
     }
     try
     {
-        cs_stretch *made = new cs_stretch(seed);
+        std::unique_ptr<cs_stretch> made(new cs_stretch(seed));
         made->stretch.presetDefault(channels, rate);
         made->channels = channels;
         made->state = made->seed;
-        return made;
+        return made.release();
     }
     catch (...)
     {
@@ -90,59 +100,70 @@ cs_stretch *cs_stretch_new(int channels, float rate, std::uint64_t seed)
     }
 }
 
-void cs_stretch_free(cs_stretch *stretch)
+void cs_stretch_free(cs_stretch *stretch) noexcept
 {
     delete stretch;
 }
 
-int cs_stretch_channels(const cs_stretch *stretch)
+int cs_stretch_channels(const cs_stretch *stretch) noexcept
 {
     return stretch->channels;
 }
 
-int cs_stretch_block_samples(const cs_stretch *stretch)
+int cs_stretch_block_samples(const cs_stretch *stretch) noexcept
 {
     return stretch->stretch.blockSamples();
 }
 
-int cs_stretch_interval_samples(const cs_stretch *stretch)
+int cs_stretch_interval_samples(const cs_stretch *stretch) noexcept
 {
     return stretch->stretch.intervalSamples();
 }
 
-int cs_stretch_input_latency(const cs_stretch *stretch)
+int cs_stretch_input_latency(const cs_stretch *stretch) noexcept
 {
     return stretch->stretch.inputLatency();
 }
 
-int cs_stretch_output_latency(const cs_stretch *stretch)
+int cs_stretch_output_latency(const cs_stretch *stretch) noexcept
 {
     return stretch->stretch.outputLatency();
 }
 
-int cs_stretch_seek_length(const cs_stretch *stretch)
+int cs_stretch_seek_length(const cs_stretch *stretch) noexcept
 {
     return stretch->stretch.seekLength();
 }
 
-void cs_stretch_reset(cs_stretch *stretch)
+void cs_stretch_reset(cs_stretch *stretch) noexcept
 {
+    stretch->stretch.reset();
+    // One sample of sound, no output: the flag of the first silence as a new stretcher has it.
+    float one = 1.0f, none = 0.0f;
+    const float *inputs[MAX_CHANNELS];
+    float *outputs[MAX_CHANNELS];
+    for (int c = 0; c < MAX_CHANNELS; ++c)
+    {
+        inputs[c] = &one;
+        outputs[c] = &none;
+    }
+    stretch->stretch.process(inputs, 1, outputs, 0);
     stretch->stretch.reset();
     stretch->state = stretch->seed;
 }
 
-void cs_stretch_set_transpose(cs_stretch *stretch, float factor)
+void cs_stretch_set_transpose(cs_stretch *stretch, float factor) noexcept
 {
     stretch->stretch.setTransposeFactor(factor);
 }
 
-void cs_stretch_seek(cs_stretch *stretch, const float *const *inputs, int samples, double rate)
+void cs_stretch_seek(cs_stretch *stretch, const float *const *inputs, int samples, double rate) noexcept
 {
     stretch->stretch.seek(inputs, samples, rate);
 }
 
 void cs_stretch_process(cs_stretch *stretch, const float *const *inputs, int input_samples,
-                        float *const *outputs, int output_samples)
+                        float *const *outputs, int output_samples) noexcept
 {
     stretch->stretch.process(inputs, input_samples, outputs, output_samples);
 }
@@ -264,19 +285,19 @@ void operator delete[](void *memory, const std::nothrow_t &) noexcept
 
 extern "C" {
 
-int cs_alloc_arm(int on)
+int cs_alloc_arm(int on) noexcept
 {
     bool was = armed;
     armed = on != 0;
     return was ? 1 : 0;
 }
 
-std::size_t cs_alloc_allocations(void)
+std::size_t cs_alloc_allocations(void) noexcept
 {
     return allocations;
 }
 
-std::size_t cs_alloc_frees(void)
+std::size_t cs_alloc_frees(void) noexcept
 {
     return frees;
 }

@@ -204,3 +204,79 @@ fn a_seek_then_process_and_a_reset_take_no_memory_of_cpp() {
         "allocations and frees of C++ while processing"
     );
 }
+
+/// Runs `stretch` from a reset as a segment does: `seek` with silence, then calls of 64 outputs
+/// at `rate` input samples each over a tone of 440 Hz at `sample_rate` that starts after
+/// `silent` input samples (never, for `usize::MAX`).
+fn segment(
+    stretch: &mut Stretch,
+    sample_rate: u32,
+    silent: usize,
+    outputs: usize,
+    rate: f64,
+) -> Vec<f32> {
+    let seek = stretch.config().seek_length;
+    stretch.reset();
+    let zeros = vec![0.0_f32; seek];
+    stretch.seek(&[&zeros], rate);
+    let signal = |x: usize| -> f32 {
+        if x < silent {
+            0.0
+        } else {
+            #[allow(
+                clippy::cast_precision_loss,
+                clippy::cast_possible_truncation,
+                reason = "a test tone"
+            )]
+            let s = (0.5
+                * (std::f64::consts::TAU * 440.0 * x as f64 / f64::from(sample_rate)).sin())
+                as f32;
+            s
+        }
+    };
+    let mut out = Vec::with_capacity(outputs);
+    let mut chunk = [0.0_f32; 64];
+    let mut call = 0usize;
+    while out.len() < outputs {
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            clippy::cast_precision_loss,
+            reason = "a count of samples of a test"
+        )]
+        let (x0, x1) = (
+            ((call * 64) as f64 * rate).floor() as usize,
+            (((call + 1) * 64) as f64 * rate).floor() as usize,
+        );
+        let input: Vec<f32> = (x0..x1).map(signal).collect();
+        stretch.process(&[&input], &mut [&mut chunk[..]]);
+        out.extend_from_slice(&chunk);
+        call += 1;
+    }
+    out
+}
+
+#[test]
+fn a_stretcher_whose_last_sound_was_silence_starts_again_as_a_new_one() {
+    for (sample_rate, rate) in [(RATE, 0.7), (RATE, 1.3), (44_100, 1.0)] {
+        let mut fresh = Stretch::new(1, sample_rate).unwrap();
+        let mut used = Stretch::new(1, sample_rate).unwrap();
+        // The last segment of `used` ended in long digital silence (the library's silence mode).
+        let _ = segment(&mut used, sample_rate, usize::MAX, 48_000, rate);
+        let a = segment(&mut fresh, sample_rate, 20_000, 96_000, rate);
+        let b = segment(&mut used, sample_rate, 20_000, 96_000, rate);
+        assert!(a.iter().any(|s| s.abs() > 0.1), "it sounds");
+        let differs = a
+            .iter()
+            .zip(&b)
+            .position(|(a, b)| a.to_bits() != b.to_bits());
+        assert_eq!(differs, None, "{sample_rate} Hz at {rate}");
+    }
+}
+
+#[test]
+fn a_stretcher_takes_a_rate_of_8_khz_or_more() {
+    assert_eq!(Stretch::new(1, 7_999).unwrap_err(), Error::Rate);
+    assert_eq!(Stretch::new(1, 1).unwrap_err(), Error::Rate);
+    assert!(Stretch::new(1, 8_000).is_ok());
+}

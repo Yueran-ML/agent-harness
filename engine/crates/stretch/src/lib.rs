@@ -49,8 +49,8 @@ pub enum Error {
     /// Of no channel, or of more than [`MAX_CHANNELS`].
     #[error("a stretcher takes 1 to {MAX_CHANNELS} channels, not {0}")]
     Channels(usize),
-    /// At a rate of 0 samples a second.
-    #[error("a stretcher needs a sample rate above 0")]
+    /// At a rate below 8000 samples a second.
+    #[error("a stretcher needs a sample rate of at least 8 kHz")]
     Rate,
     /// The library failed to make it (it ran out of memory).
     #[error("the stretcher could not be made")]

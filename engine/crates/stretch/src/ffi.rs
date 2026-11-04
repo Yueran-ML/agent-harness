@@ -55,6 +55,10 @@ pub(crate) fn counted() -> (usize, usize) {
 /// stretches to the same bits.
 const SEED: u64 = 0x5EED_0FC0_1B14_A0C5;
 
+/// The lowest rate a stretcher takes: far below it the library's block of 120 ms would be of
+/// no sample.
+const LOWEST_RATE: u32 = 8_000;
+
 /// A count of samples as the shim takes it.
 fn count(samples: usize) -> c_int {
     c_int::try_from(samples).unwrap_or(c_int::MAX)
@@ -83,12 +87,12 @@ impl Stretch {
     ///
     /// # Errors
     ///
-    /// No channel or more than [`MAX_CHANNELS`]; a rate of 0; the library could not make it.
+    /// No channel or more than [`MAX_CHANNELS`]; a rate below 8 kHz; the library could not make it.
     pub fn new(channels: usize, rate: u32) -> Result<Stretch, Error> {
         if !(1..=MAX_CHANNELS).contains(&channels) {
             return Err(Error::Channels(channels));
         }
-        if rate == 0 {
+        if rate < LOWEST_RATE {
             return Err(Error::Rate);
         }
         #[allow(clippy::cast_precision_loss, reason = "a sample rate, far below 2^24")]

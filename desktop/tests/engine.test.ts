@@ -265,7 +265,7 @@ describe('a session with the engine', () => {
     const session = await engine.open();
     const [main, view] = engine.reached();
     const server = engine.world.servers.get(PIPE_A)!;
-    server.answers.set('project.get', () => ({ result: { revision: 0, next_id: 1, project: { schema: 3, groups: [], bins: [], next_id: 1, media: [], timelines: [] } } }));
+    server.answers.set('project.get', () => ({ result: { revision: 0, next_id: 1, project: { schema: 4, groups: [], bins: [], next_id: 1, media: [], timelines: [] } } }));
     server.answers.set('view.attach', () => 'hold');
     const attaching = session.view('view.attach', { monitor: 'source', parent: '1', x: 0, y: 0, width: 1, height: 1 });
     // The main connection answers while the view is being made.

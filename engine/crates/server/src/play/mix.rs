@@ -41,7 +41,11 @@ impl Mixer {
                 if !self.readers.contains_key(&clip.id) {
                     self.readers.insert(
                         clip.id.clone(),
-                        Reader::new(media, timeline.sample_rate, &Layout::Auto(2))?,
+                        Reader::new(
+                            media,
+                            timeline.sample_rate,
+                            &Layout::of_clip(clip, 2).stereo(),
+                        )?,
                     );
                 }
                 let pcm = self
@@ -392,6 +396,8 @@ mod tests {
             right: "c2".into(),
             length: 10,
             align: Alignment::Center,
+            fade_in_level_db: columbina_model::CrossfadeLevel::Plus3,
+            fade_out_level_db: columbina_model::CrossfadeLevel::Plus3,
         });
         timeline.tracks = vec![track];
         let timeline = &project.timelines[0];
@@ -427,8 +433,8 @@ mod tests {
     fn gain_pan_muting_and_final_limiting_are_applied_to_the_mix() {
         let mut project = Project::sample();
         let track = &mut project.timelines[0].tracks[1];
-        track.clips[0].gain_db = -6.0;
-        track.clips[0].pan = -1.0;
+        track.clips[0].gain_db = (-6.0).into();
+        track.clips[0].pan = (-1.0).into();
         let read = |_: &Clip, _: &Media, range: Range<i64>| Ok(samples(range, |_| [0.25, 0.25]));
         let got = block(&project.timelines[0], &project, 0, 100, read).unwrap();
         let half = 0.125 * std::f32::consts::SQRT_2;
@@ -441,8 +447,8 @@ mod tests {
         .unwrap();
         assert_eq!(muted, vec![[0.0; 2]; 100]);
         project.timelines[0].tracks[1].enabled = true;
-        project.timelines[0].tracks[1].clips[0].gain_db = 24.0;
-        project.timelines[0].tracks[1].clips[0].pan = 0.0;
+        project.timelines[0].tracks[1].clips[0].gain_db = 24.0.into();
+        project.timelines[0].tracks[1].clips[0].pan = 0.0.into();
         let limited = block(&project.timelines[0], &project, 0, 100, |_, _, range| {
             Ok(samples(range, |_| [0.8, -0.8]))
         })
@@ -538,7 +544,7 @@ mod tests {
     #[test]
     fn a_half_pan_of_a_stereo_clip_is_a_balance_of_its_two_channels() {
         let mut project = Project::sample();
-        project.timelines[0].tracks[1].clips[0].pan = 0.5;
+        project.timelines[0].tracks[1].clips[0].pan = 0.5.into();
         let read = |_: &Clip, _: &Media, range: Range<i64>| Ok(samples(range, |_| [0.2, 0.1]));
         let got = block(&project.timelines[0], &project, 0, 100, read).unwrap();
         let (sin, cos) = std::f64::consts::FRAC_PI_8.sin_cos();

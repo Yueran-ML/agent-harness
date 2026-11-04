@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use columbina_model::{AudioFacts, ColorFacts, Facts, Rate, Time, VideoFacts};
+use columbina_model::{AudioFacts, AudioStream, ColorFacts, Facts, Rate, Time, VideoFacts};
 use ff::format::context::Input;
 use ff::format::stream::{Disposition, Stream};
 use ff::media::Type;
@@ -13,7 +13,9 @@ use crate::{color, ffi, timing, Hardware, MediaError, VideoDecoder};
 /// What a file holds, as libav finds it. This blocks.
 ///
 /// - The picture is the best stream of pictures that is not the cover of an album, and the
-///   sound the best stream of sound that libav can decode, as libav ranks them.
+///   sound the best stream of sound that libav can decode, as libav ranks them. The facts of the
+///   sound name the layout of its channels where the file gives one, and list every stream of
+///   sound that libav can decode, as [`sounds`] does.
 /// - Its duration is that of the picture if it has one, else that of the sound, in the time
 ///   base of that stream, from the start of the stream (see the crate's doc). Where the file
 ///   does not say how long the stream lasts, as Matroska does not, the end of the stream is
@@ -51,7 +53,9 @@ pub fn probe(path: &Path) -> Result<Facts, MediaError> {
             "png_pipe" | "jpeg_pipe" | "webp_pipe" | "tiff_pipe" | "exr_pipe"
         );
     }
-    let audio = audio.map(|index| sound(&stream_of(index)?)).transpose()?;
+    let audio = audio
+        .map(|index| sound_facts(&input, &stream_of(index)?))
+        .transpose()?;
     if let Some(video) = &mut video {
         video.color = video
             .color
@@ -103,9 +107,17 @@ pub struct Sounds {
 /// The file cannot be opened (as [`probe`]).
 pub fn sounds(path: &Path) -> Result<Sounds, MediaError> {
     let input = open(path)?;
+    Ok(Sounds {
+        best: sound_stream(&input),
+        streams: sound_streams(&input),
+    })
+}
+
+/// The streams of sound of an open file that libav can decode, in the order of their indices.
+fn sound_streams(input: &Input) -> Vec<SoundStream> {
     let mut streams = Vec::new();
     for found in input.streams() {
-        if decodable_sound(&input, found.index()).is_none() {
+        if decodable_sound(input, found.index()).is_none() {
             continue;
         }
         // A stream that says no rate or no channels is passed over, as one that cannot be
@@ -121,10 +133,27 @@ pub fn sounds(path: &Path) -> Result<Sounds, MediaError> {
             codec: facts.codec,
         });
     }
-    Ok(Sounds {
-        best: sound_stream(&input),
-        streams,
-    })
+    streams
+}
+
+/// The facts of the sound of a file whose best stream of sound is `best`: those of that stream,
+/// with the layout of its channels, and every stream of sound of the file that libav can
+/// decode (see [`sounds`]). A stream whose number does not fit the model is left out.
+fn sound_facts(input: &Input, best: &Stream) -> Result<AudioFacts, MediaError> {
+    let mut facts = sound(best)?;
+    facts.layout = ffi::sound_layout(best);
+    let streams: Vec<AudioStream> = sound_streams(input)
+        .into_iter()
+        .filter_map(|stream| {
+            Some(AudioStream {
+                index: u32::try_from(stream.index).ok()?,
+                channels: stream.channels,
+                layout: stream.layout,
+            })
+        })
+        .collect();
+    facts.streams = Some(streams);
+    Ok(facts)
 }
 
 /// The index of the sound of a file: the best stream of sound that this build of libav can
@@ -557,6 +586,9 @@ fn sound(stream: &Stream) -> Result<AudioFacts, MediaError> {
         rate,
         channels,
         codec: stream.parameters().id().name().to_owned(),
+        // Filled in by `sound_facts` for the sound of a file.
+        layout: None,
+        streams: None,
     })
 }
 

@@ -4,6 +4,7 @@ use std::collections::HashSet;
 
 use super::work::{fit_fades, most, Work};
 use super::{Created, CueItem, Edge, EditError};
+use crate::audio::CrossfadeLevel;
 use crate::ops::{Op, OpError};
 use crate::project::{Alignment, Clip, Cue, Id, Track, TrackKind, Transition, TransitionKind};
 use crate::span::{frames_for_span, source_span};
@@ -45,6 +46,8 @@ pub(super) fn check_fits(
             right: String::new(),
             length,
             align,
+            fade_in_level_db: CrossfadeLevel::default(),
+            fade_out_level_db: CrossfadeLevel::default(),
         }
         .handles()
     };
@@ -137,6 +140,8 @@ pub(super) fn add_transition(
             right: right.into(),
             length,
             align,
+            fade_in_level_db: CrossfadeLevel::default(),
+            fade_out_level_db: CrossfadeLevel::default(),
         },
     })?;
     if let Op::AddTransition { transition, .. } = done {
@@ -278,7 +283,7 @@ pub(super) fn set_speed(
             length,
             ..c.clone()
         };
-        fit_fades(&mut new, Edge::Out);
+        fit_fades(&mut new, Edge::Out, rate);
         changed.push((c, new));
     }
     let shift = changed
@@ -313,6 +318,8 @@ pub(super) fn set_speed(
             pan: None,
             fade_in: None,
             fade_out: None,
+            audio_fade_in: None,
+            audio_fade_out: None,
             source: None,
         };
         // A clip that gets shorter is shortened at its old speed, and one that gets longer is
@@ -486,6 +493,8 @@ pub(super) fn new_track(
     if let Some(language) = language {
         track.language = language;
     }
+    // Its sound goes to the first bus of the timeline where there is one (p. 3721).
+    track.audio.strip = crate::audio::Strip::to_first_bus_if_any();
     work.op(Op::AddTrack {
         timeline: work.timeline_id(),
         track,
@@ -1143,6 +1152,9 @@ mod tests {
                 enabled: Some(false),
                 locked: None,
                 language: None,
+                mute: None,
+                solo: None,
+                solo_safe: None,
             }],
         );
         let subtitles = Edit::AddTrack {

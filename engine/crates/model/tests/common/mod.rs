@@ -15,6 +15,13 @@ use proptest::prelude::*;
 pub mod colors;
 pub mod grades;
 
+/// The levels of a side of a crossfade.
+const LEVELS: [columbina_model::CrossfadeLevel; 3] = [
+    columbina_model::CrossfadeLevel::Minus3,
+    columbina_model::CrossfadeLevel::Zero,
+    columbina_model::CrossfadeLevel::Plus3,
+];
+
 /// The rates of the timelines that are added.
 const RATES: [Rate; 3] = [
     Rate { num: 25, den: 1 },
@@ -399,6 +406,10 @@ fn set_track_of(project: &Project, spec: &Spec, timeline_id: String) -> Op {
         locked: bit(spec, 3).then(|| bit(spec, 4)),
         // Only a track of subtitles has a language, and only one that is a tag.
         language: bit(spec, 5).then(|| ["zh", "en-GB", "", "english"][spec.c % 4].into()),
+        // Only a track of sound is muted and soloed.
+        mute: bit(spec, 6).then(|| bit(spec, 7)),
+        solo: bit(spec, 8).then(|| bit(spec, 9)),
+        solo_safe: bit(spec, 10).then(|| bit(spec, 2)),
     }
 }
 
@@ -453,10 +464,12 @@ fn set_clip_of(
         reverse: bit(spec, 3).then(|| bit(spec, 4)),
         link: bit(spec, 5).then_some(link),
         transform: bit(spec, 6).then_some(transform),
-        gain_db: bit(spec, 7).then_some(gain_db),
-        pan: bit(spec, 8).then_some(pan),
+        gain_db: bit(spec, 7).then(|| keyed(spec, gain_db)),
+        pan: bit(spec, 8).then_some(pan.into()),
         fade_in: bit(spec, 9).then_some(spec.length % 12),
         fade_out: bit(spec, 10).then_some(spec.start % 12),
+        audio_fade_in: None,
+        audio_fade_out: None,
         source: source.filter(|_| bit(spec, 11)),
     }
 }
@@ -591,6 +604,8 @@ fn add_transition_of(
             right,
             length: spec.length % 40,
             align: [Alignment::Center, Alignment::Start, Alignment::End][spec.b % 3],
+            fade_in_level_db: LEVELS[spec.c % 3],
+            fade_out_level_db: LEVELS[spec.d % 3],
         },
     }
 }
@@ -766,13 +781,25 @@ fn track_of(project: &Project, rate: Rate, spec: &Spec) -> Track {
             ..Track::new(id_of(spec, &["S1", "S2"]), TrackKind::Subtitle)
         };
     }
-    Track::new(id_of(spec, &["V1", "V2", "A1", "A4"]), kind_of(spec.b)).with_clips(
+    let mut track = Track::new(id_of(spec, &["V1", "V2", "A1", "A4"]), kind_of(spec.b)).with_clips(
         if spec.b.is_multiple_of(3) {
             vec![]
         } else {
             vec![clip_of(project, rate, spec, &["c3", "c40", "y"])]
         },
-    )
+    );
+    // A track of sound muted, soloed, mono or at another level, now and then.
+    if track.kind == TrackKind::Audio {
+        let sound = &mut track.audio;
+        (sound.mute, sound.solo) = (bit(spec, 1), bit(spec, 2));
+        if bit(spec, 3) {
+            (sound.format, sound.channels) = (columbina_model::TrackFormat::Mono, 1);
+        }
+        if bit(spec, 4) {
+            sound.strip.fader_db = -6.0;
+        }
+    }
+    track
 }
 
 /// A timeline to add, at one of the rates, with no tracks, one, or two; and now and then two of
@@ -946,6 +973,8 @@ pub fn tidy() -> Project {
                 right: "c5".into(),
                 length: 10,
                 align: Alignment::Center,
+                fade_in_level_db: columbina_model::CrossfadeLevel::Zero,
+                fade_out_level_db: columbina_model::CrossfadeLevel::Zero,
             },
         },
     ];
@@ -1152,4 +1181,23 @@ fn engine_number(id: &str) -> Option<u64> {
         && (digits == "0" || !digits.starts_with('0'));
     let number: u64 = digits.parse().ok().filter(|_| plain)?;
     (number < LARGEST.unsigned_abs()).then_some(number)
+}
+
+/// A gain to set: now and then keyframes, from it to 0 dB over a second of the source, in order
+/// or (to be refused) not.
+fn keyed(spec: &Spec, gain_db: f64) -> columbina_model::AudioParam {
+    use columbina_model::{AudioKey, AudioParam, KeyInterp};
+    let key = |seconds: i64, value| AudioKey {
+        at: Time {
+            ticks: seconds * 48000,
+            scale: 48000,
+        },
+        value,
+        interp: KeyInterp::EaseOut,
+    };
+    match spec.d % 6 {
+        0 => AudioParam::Keys(vec![key(1, gain_db), key(2, 0.0)]),
+        1 => AudioParam::Keys(vec![key(2, gain_db), key(1, 0.0)]),
+        _ => gain_db.into(),
+    }
 }

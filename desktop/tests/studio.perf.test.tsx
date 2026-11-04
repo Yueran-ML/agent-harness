@@ -43,7 +43,7 @@ describe('the media pool of a large project', () => {
   it('is not drawn again as the playhead moves, and draws again only the row whose proxy changed', async () => {
     const listeners = new Set<(event: EngineEvent) => void>();
     const tell = (event: EngineEvent) => act(() => { for (const listener of [...listeners]) listener(event); });
-    const project = { schema: 3, groups: [], bins: [], next_id: COUNT + 1, media: Array.from({ length: COUNT }, (_, at) => media(at + 1)), timelines: [] };
+    const project = { schema: 4, groups: [], bins: [], next_id: COUNT + 1, media: Array.from({ length: COUNT }, (_, at) => media(at + 1)), timelines: [] };
     const bridge = {
       open: async () => {
         const opened = { session: 1, project: 'F:\\film\\.columbina\\studio', owned: true, pid: 1, revision: 0 };

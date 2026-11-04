@@ -17,9 +17,15 @@ export const TrackHeader = memo(function TrackHeader({ timeline, track, height, 
   // A track of subtitles that is off is not drawn in the timeline viewer. As in DaVinci Resolve, one
   // is shown at a time (Reference Manual 20, p. 1084): showing one hides the one shown, in the same
   // transaction, which the engine takes in that order. Which are saved as SRT is chosen in the export.
-  const enabled = track.kind === 'audio' ? track.enabled ? words.mute : words.unmute
+  // The speaker of a track of sound is its mute (p. 3885), not Disable Track: it is on while the
+  // track is heard. A click mutes a track that is heard; on one that is not, it clears the mute,
+  // and turns on a track that is off (as one of a project of schema 2 may be), so that it is heard.
+  const heard = track.kind === 'audio' && track.enabled && !track.mute;
+  const enabled = track.kind === 'audio' ? heard ? words.mute : words.unmute
     : track.kind === 'subtitle' ? track.enabled ? words.hideSubtitles : words.showSubtitles : track.enabled ? words.hide : words.show;
-  const Visible = track.kind === 'audio' ? track.enabled ? Volume2 : VolumeX : track.enabled ? Eye : EyeOff;
+  const Visible = track.kind === 'audio' ? heard ? Volume2 : VolumeX : track.enabled ? Eye : EyeOff;
+  const sound: Op[] = heard ? [{ op: 'set_track', timeline, id: track.id, mute: true }]
+    : [{ op: 'set_track', timeline, id: track.id, mute: false, ...(track.enabled ? {} : { enabled: true }) }];
   const changeHeight = (value: number) => onHeight(track.id, Math.max(40, Math.min(240, value)));
   return <div className="timeline-track-header">
     {renaming ? <NameField name={track.name} onCommit={name => onEdit([{ op: 'set_track', timeline, id: track.id, name }])} onCancel={() => setRenaming(false)} />
@@ -31,8 +37,8 @@ export const TrackHeader = memo(function TrackHeader({ timeline, track, height, 
         onClick={() => onTarget(track.id)}><Crosshair size={13} /></button>}
       <button type="button" className="icon-btn" aria-label={`${lock}: ${track.name}`} title={lock} aria-pressed={track.locked}
         onClick={() => void onEdit([{ op: 'set_track', timeline, id: track.id, locked: !track.locked }])}>{track.locked ? <Lock size={13} /> : <Unlock size={13} />}</button>
-      <button type="button" className="icon-btn" aria-label={`${enabled}: ${track.name}`} title={enabled} aria-pressed={track.enabled}
-        onClick={() => void onEdit([
+      <button type="button" className="icon-btn" aria-label={`${enabled}: ${track.name}`} title={enabled} aria-pressed={track.kind === 'audio' ? heard : track.enabled}
+        onClick={() => void onEdit(track.kind === 'audio' ? sound : [
           ...(track.kind === 'subtitle' && !track.enabled && shownSubtitles !== null && shownSubtitles !== track.id
             ? [{ op: 'set_track' as const, timeline, id: shownSubtitles, enabled: false }] : []),
           { op: 'set_track', timeline, id: track.id, enabled: !track.enabled },

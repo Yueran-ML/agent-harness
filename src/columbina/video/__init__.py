@@ -1041,7 +1041,9 @@ it is refused as subtitle_shown. A hidden subtitle track can still be exported a
 add_cue: track,start,length,text; set_cue: id,start?,length?,text?; remove_cue: id;
 cues_from: track,items:[{start,length,text}]. Linked edits include partner clips by default.
 Basic operations: {op:"set_clip",timeline:"t1",id:"c1",gain_db:-6} or set_track with
-enabled/locked, set_media with name/bin/mark_in/mark_out. Omitted settings stay unchanged.
+name/locked/enabled, and on an audio track mute/solo/solo_safe (silence a track with mute:true;
+enabled:false stops reading it at all), set_media with name/bin/mark_in/mark_out. Omitted
+settings stay unchanged. Muted and soloed tracks are rendered as heard.
 To create a timeline, use {op:"add_timeline",timeline:{id:"$film",name:"Cut",
 rate:{num:25,den:1},width:1920,height:1080,sample_rate:48000,tracks:[]}}, followed in the same
 batch by {edit:"add_track",timeline:"$film",kind:"video"} and an audio track as needed.

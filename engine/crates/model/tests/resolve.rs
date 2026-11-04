@@ -151,7 +151,7 @@ fn project_of(plan: &Plan) -> Project {
             clip.fade_in = making.fades.0.min(making.length);
             clip.fade_out = making.fades.1.min(making.length - clip.fade_in);
             clip.enabled = making.enabled;
-            clip.gain_db = making.gain_db;
+            clip.gain_db = making.gain_db.into();
             let op = Op::InsertClip {
                 timeline: "t2".into(),
                 track: track.into(),
@@ -207,6 +207,8 @@ fn project_of(plan: &Plan) -> Project {
                 pan: None,
                 fade_in,
                 fade_out,
+                audio_fade_in: None,
+                audio_fade_out: None,
                 source: None,
             };
             apply(&mut project, op).unwrap();
@@ -221,6 +223,8 @@ fn project_of(plan: &Plan) -> Project {
                 right,
                 length,
                 align: [Alignment::Center, Alignment::Start, Alignment::End][usize::from(align)],
+                fade_in_level_db: columbina_model::CrossfadeLevel::Zero,
+                fade_out_level_db: columbina_model::CrossfadeLevel::Zero,
             },
         };
         let _ = apply(&mut project, op);
@@ -382,7 +386,7 @@ proptest! {
         for (at, piece) in pieces.iter().enumerate() {
             prop_assert!(from <= piece.from && piece.from < piece.to && piece.to <= to, "{piece:?}");
             let clip = timeline.tracks.iter().flat_map(|r| &r.clips).find(|c| c.id == piece.clip).unwrap();
-            let most = 10f64.powf(clip.gain_db / 20.0) * 1.0001;
+            let most = 10f64.powf(clip.gain_db.fixed().unwrap() / 20.0) * 1.0001;
             for sample in [piece.from, i64::midpoint(piece.from, piece.to), piece.to - 1] {
                 let gain = piece.gain.at(sample);
                 prop_assert!(gain.is_finite() && (0.0..=most).contains(&f64::from(gain)), "{gain} of {piece:?}");

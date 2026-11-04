@@ -286,13 +286,23 @@ impl<'a> Work<'a> {
     pub fn reshape(&mut self, new: &Clip) -> Result<(), EditError> {
         let (_, old) = self.owned(&new.id)?;
         self.detach(&new.id)?;
-        if (old.fade_in, old.fade_out) != (new.fade_in, new.fade_out) {
-            self.op(set_fades(
-                &self.timeline_id(),
-                &new.id,
-                new.fade_in,
-                new.fade_out,
-            ))?;
+        let sound =
+            (old.audio_fade_in, old.audio_fade_out) != (new.audio_fade_in, new.audio_fade_out);
+        if sound || (old.fade_in, old.fade_out) != (new.fade_in, new.fade_out) {
+            let mut op = set_fades(&self.timeline_id(), &new.id, new.fade_in, new.fade_out);
+            if let (
+                true,
+                Op::SetClip {
+                    audio_fade_in,
+                    audio_fade_out,
+                    ..
+                },
+            ) = (sound, &mut op)
+            {
+                (*audio_fade_in, *audio_fade_out) =
+                    (Some(new.audio_fade_in), Some(new.audio_fade_out));
+            }
+            self.op(op)?;
         }
         if (old.start, old.length, old.source_in()) != (new.start, new.length, new.source_in()) {
             self.op(Op::TrimClip {
@@ -639,7 +649,8 @@ pub(super) fn beyond(track: &Track, clip: &str) -> (i64, i64) {
 /// The two halves of a clip cut at `at`, which it lies across. Each shows what the clip shows
 /// there, from where the other ends in the media: forward, the second begins where the first
 /// ends; backward, the first begins where the second ends. The first keeps the fade in and the
-/// second the fade out, each as far as it lasts. The second has no id.
+/// second the fade out, each as far as it lasts, of the picture and of the sound: no fade is
+/// left at the cut. The second has no id.
 pub(super) fn halves_of(clip: &Clip, at: i64, rate: Rate) -> (Clip, Clip) {
     let a = at - clip.start;
     let b = clip.length - a;
@@ -647,6 +658,7 @@ pub(super) fn halves_of(clip: &Clip, at: i64, rate: Rate) -> (Clip, Clip) {
         length: a,
         fade_in: clip.fade_in.min(a),
         fade_out: 0,
+        audio_fade_out: None,
         ..clip.clone()
     };
     let mut second = Clip {
@@ -655,8 +667,11 @@ pub(super) fn halves_of(clip: &Clip, at: i64, rate: Rate) -> (Clip, Clip) {
         length: b,
         fade_in: 0,
         fade_out: clip.fade_out.min(b),
+        audio_fade_in: None,
         ..clip.clone()
     };
+    fit_sound_fades(&mut first, Edge::In, rate);
+    fit_sound_fades(&mut second, Edge::Out, rate);
     if let Some(begins) = clip.source_in() {
         let later = |frames| Time {
             ticks: begins.ticks + ticks_of_scaled(frames, clip.speed, rate, begins.scale),
@@ -704,23 +719,115 @@ pub(super) fn edged(clip: &Clip, edge: Edge, delta: i64, keep_start: bool, rate:
             },
         );
     }
-    fit_fades(&mut new, edge);
+    fit_fades(&mut new, edge, rate);
     new
 }
 
-/// Shorten the fades of a clip that would last longer than it does: the one at `edge` first.
-pub(super) fn fit_fades(clip: &mut Clip, edge: Edge) {
+/// Shorten the fades of a clip, on a timeline of `rate`, that would last longer than it does:
+/// the one at `edge` first; those of its picture in frames, and those of its sound in time.
+pub(super) fn fit_fades(clip: &mut Clip, edge: Edge, rate: Rate) {
     let over = clip.fade_in + clip.fade_out - clip.length.max(0);
-    if over <= 0 {
-        return;
+    if over > 0 {
+        let (first, second) = match edge {
+            Edge::In => (&mut clip.fade_in, &mut clip.fade_out),
+            Edge::Out => (&mut clip.fade_out, &mut clip.fade_in),
+        };
+        let cut = over.min(*first);
+        *first -= cut;
+        *second -= (over - cut).min(*second);
     }
-    let (first, second) = match edge {
-        Edge::In => (&mut clip.fade_in, &mut clip.fade_out),
-        Edge::Out => (&mut clip.fade_out, &mut clip.fade_in),
+    fit_sound_fades(clip, edge, rate);
+}
+
+/// Shorten the fades of the sound of a clip, on a timeline of `rate`, that would last longer
+/// together than it does: the one at `edge` first, each in its own scale, rounded down. A fade
+/// of its frames (`None`) is as its picture's, which fits already.
+fn fit_sound_fades(clip: &mut Clip, edge: Edge, rate: Rate) {
+    // Seconds as fractions: a fade of sound, or of frames where it has none.
+    let frames = |count: i64| {
+        (
+            i128::from(count) * i128::from(rate.den),
+            i128::from(rate.num),
+        )
     };
-    let cut = over.min(*first);
-    *first -= cut;
-    *second -= (over - cut).min(*second);
+    let lasts = |fade: Option<crate::audio::AudioFade>, count: i64| {
+        fade.map_or(frames(count), |f| {
+            (
+                i128::from(f.length.ticks),
+                i128::from(f.length.scale.max(1)),
+            )
+        })
+    };
+    let (rises, rise_scale) = lasts(clip.audio_fade_in, clip.fade_in);
+    let (falls, fall_scale) = lasts(clip.audio_fade_out, clip.fade_out);
+    let (whole, whole_scale) = frames(clip.length.max(0));
+    // How far over, as p/q seconds: the two fades less the clip, over the product of their
+    // scales; each product checked, as one of three scales of 32 bits may pass i128.
+    let (Some(mut q), Some(mut p)) = (
+        rise_scale
+            .checked_mul(fall_scale)
+            .and_then(|both| both.checked_mul(whole_scale)),
+        (|| {
+            rises
+                .checked_mul(fall_scale)?
+                .checked_mul(whole_scale)?
+                .checked_add(falls.checked_mul(rise_scale)?.checked_mul(whole_scale)?)?
+                .checked_sub(whole.checked_mul(rise_scale)?.checked_mul(fall_scale)?)
+        })(),
+    ) else {
+        return;
+    };
+    let order = match edge {
+        Edge::In => [true, false],
+        Edge::Out => [false, true],
+    };
+    for fade_in in order {
+        if p <= 0 {
+            return;
+        }
+        let fade = if fade_in {
+            &mut clip.audio_fade_in
+        } else {
+            &mut clip.audio_fade_out
+        };
+        let Some(fade) = fade else {
+            continue;
+        };
+        let (ticks, scale) = (
+            i128::from(fade.length.ticks),
+            i128::from(fade.length.scale.max(1)),
+        );
+        // The longest it may last now, ticks/scale - p/q, as one fraction in its lowest terms
+        // where its denominator is a scale; otherwise in its own scale, rounded down.
+        let (Some(whole), Some(cut), Some(under)) = (
+            ticks.checked_mul(q),
+            p.checked_mul(scale),
+            q.checked_mul(scale),
+        ) else {
+            return;
+        };
+        let left = (whole - cut).max(0);
+        let common = gcd(left, under).max(1);
+        let exact = (i64::try_from(left / common), u32::try_from(under / common));
+        fade.length = match exact {
+            (Ok(ticks), Ok(scale)) if left < whole => Time { ticks, scale },
+            _ => Time {
+                ticks: i64::try_from((left / q).clamp(0, ticks)).unwrap_or(0),
+                scale: fade.length.scale,
+            },
+        };
+        // What is left over: p/q - (what was cut)/scale, at least nothing.
+        let now = i128::from(fade.length.ticks) * under / i128::from(fade.length.scale.max(1));
+        (p, q) = (cut - (whole - now), under);
+    }
+}
+
+/// The greatest common divisor of two numbers of no less than 0.
+fn gcd(mut a: i128, mut b: i128) -> i128 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
 }
 
 pub(super) fn set_source_in(clip: &mut Clip, time: Time) {
@@ -743,6 +850,8 @@ pub(super) fn set_fades(timeline: &str, clip: &str, fade_in: i64, fade_out: i64)
         pan: None,
         fade_in: Some(fade_in),
         fade_out: Some(fade_out),
+        audio_fade_in: None,
+        audio_fade_out: None,
         source: None,
     }
 }

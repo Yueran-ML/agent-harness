@@ -59,7 +59,7 @@ const mediaOf = (id: string, given: { path?: string; video?: Partial<NonNullable
     audio: { rate: 48000, channels: 2, codec: 'aac' },
   },
 });
-const projectOf = (...media: Media[]): Project => ({ schema: 3, groups: [], bins: [], next_id: 10, media, timelines: [] });
+const projectOf = (...media: Media[]): Project => ({ schema: 4, groups: [], bins: [], next_id: 10, media, timelines: [] });
 const stateOf = (given: Partial<TransportState> = {}): TransportState => ({
   monitor: 'source', media: 'm1', frame: 0, playing: false, speed: 1, exact: true, shown: 0, last: 249, sound: 'off', source: 'original', proxies: true, ...given,
 });

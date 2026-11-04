@@ -259,6 +259,8 @@ export interface Bus { id: string; name: string; color: string; format: BusForma
 export interface Vca { id: string; name: string; fader_db?: number; mute?: boolean; solo?: boolean; vcas?: string[]; lanes?: Lanes }
 export type GroupControl = 'editing' | 'fader' | 'solo' | 'mute' | 'sends' | 'panning' | 'automation';
 export interface TrackGroup { id: string; name: string; color?: string; members: string[]; linked?: GroupControl[]; active?: boolean }
+/** The chain of inserts that an operation on inserts works on: the strip of a track of sound or a bus, or the effects of a clip. */
+export type InsertsOf = { track: string } | { bus: string } | { clip: string };
 export type LoudnessStandard =
   | 'bs1770_1' | 'bs1770_4' | 'atsc_a85' | 'ebu_r128' | 'op_59' | 'tr_b32' | 'agcom_219' | 'netflix' | 'youtube'
   | 'disney_2_0' | 'disney_5_1' | 'apple_podcasts' | 'spotify' | 'aes_streaming' | 'web_video';
@@ -627,10 +629,10 @@ export type Op =
   | { op: 'shift_clips'; timeline: string; track: string; clips: string[]; by: number }
   | { op: 'shift_cues'; timeline: string; track: string; cues: string[]; by: number }
   | { op: 'trim_clip'; timeline: string; id: string; source_in?: Time | null; start: number; length: number }
-  | ({ op: 'set_clip'; timeline: string; id: string } & Settings<Clip, 'enabled' | 'speed' | 'reverse' | 'link' | 'transform' | 'gain_db' | 'pan' | 'fade_in' | 'fade_out' | 'audio_fade_in' | 'audio_fade_out' | 'source'>)
+  | ({ op: 'set_clip'; timeline: string; id: string } & Settings<Clip, 'enabled' | 'speed' | 'reverse' | 'link' | 'transform' | 'gain_db' | 'pan' | 'fade_in' | 'fade_out' | 'audio_fade_in' | 'audio_fade_out' | 'eq' | 'effects' | 'pitch_correction' | 'pitch' | 'channels' | 'source'>)
   | { op: 'add_transition'; timeline: string; track: string; transition: Transition }
   | { op: 'remove_transition'; timeline: string; id: string }
-  | ({ op: 'set_transition'; timeline: string; id: string } & Settings<Transition, 'kind' | 'length' | 'align'>)
+  | ({ op: 'set_transition'; timeline: string; id: string } & Settings<Transition, 'kind' | 'length' | 'align' | 'fade_in_level_db' | 'fade_out_level_db'>)
   | { op: 'add_cue'; timeline: string; track: string; cue: Cue }
   | { op: 'remove_cue'; timeline: string; id: string }
   | ({ op: 'set_cue'; timeline: string; id: string } & Settings<Cue, 'start' | 'length' | 'text'>)
@@ -650,7 +652,25 @@ export type Op =
   /** `settings` is a patch of `color`, merged as `set_node` merges `params`; `done` and the inverse carry the values as the engine writes them. */
   | { op: 'set_color_settings'; settings: Record<string, unknown> }
   /** `input` left out keeps it; null sets it back to the project's default. */
-  | { op: 'set_media_color'; id: string; input?: string | null; levels?: DataLevels | null; lut?: LutPair; inverse_drt?: boolean };
+  | { op: 'set_media_color'; id: string; input?: string | null; levels?: DataLevels | null; lut?: LutPair; inverse_drt?: boolean }
+  // The sound of schema 4 (PROTOCOL.md, "Operations of sound"). A `patch` is merged as `set_node`
+  // merges `params`; `done` and the inverse carry the values as the engine writes them.
+  /** A patch of `format`, `channels`, `order`, `mute`, `solo`, `solo_safe`, `adc`, `automation_arm`, `strip` of a track of sound. */
+  | { op: 'set_track_audio'; timeline: string; track: string; patch: Record<string, unknown> }
+  | { op: 'add_bus'; timeline: string; bus: Bus; index?: number | null }
+  | { op: 'remove_bus'; timeline: string; id: string }
+  | { op: 'set_bus'; timeline: string; id: string; patch: Record<string, unknown> }
+  | { op: 'add_vca'; timeline: string; vca: Vca; index?: number | null }
+  | { op: 'remove_vca'; timeline: string; id: string }
+  | { op: 'set_vca'; timeline: string; id: string; patch: Record<string, unknown> }
+  | { op: 'add_track_group'; timeline: string; group: TrackGroup; index?: number | null }
+  | { op: 'remove_track_group'; timeline: string; id: string }
+  | { op: 'set_track_group'; timeline: string; id: string; patch: Record<string, unknown> }
+  | { op: 'add_insert'; timeline: string; of: InsertsOf; insert: Insert; index?: number | null }
+  /** `insert: null` takes the one at `slot` away. */
+  | { op: 'set_insert'; timeline: string; of: InsertsOf; slot: number; insert: Insert | null }
+  | { op: 'move_insert'; timeline: string; of: InsertsOf; from: number; to: number }
+  | { op: 'set_timeline_audio'; timeline: string; patch: Record<string, unknown> };
 
 /** Who asked for a change, or made the step that it takes back or does again. */
 export type ClientKind = 'desktop' | 'agent' | 'cli' | 'engine';
@@ -1499,6 +1519,32 @@ export function mergePatch(base: unknown, patch: unknown): unknown {
   return merged;
 }
 
+/** A list of things with ids, the one `id` merged with `patch` (a bus, a VCA, a group of tracks). */
+function patchedIn<T extends { id: string }>(list: readonly T[], id: string, what: string, patch: Record<string, unknown>): T[] {
+  const at = placeOf(list, id, what);
+  return replaced(list, at, mergePatch(list[at], patch) as T);
+}
+
+/** Change the chain of inserts `of` of a timeline: a strip's inserts, or a clip's effects. */
+function inInserts(timeline: Timeline, of: InsertsOf, change: (inserts: Insert[]) => Insert[]): Timeline {
+  const stripOf = <T extends { strip?: Strip }>(owner: T, what: string): T => {
+    if (owner.strip === undefined) throw new CopyMismatch(`${what} has no strip in the copy`);
+    return { ...owner, strip: { ...owner.strip, inserts: change(owner.strip.inserts) } };
+  };
+  if ('track' in of) {
+    return inTrack(timeline, placeOf(timeline.tracks, of.track, 'track'), track => {
+      if (track.kind !== 'audio') throw new CopyMismatch(`track ${track.id} holds no sound`);
+      return stripOf(track, `track ${track.id}`);
+    });
+  }
+  if ('bus' in of) {
+    const buses = timeline.buses ?? [];
+    const at = placeOf(buses, of.bus, 'bus');
+    return { ...timeline, buses: replaced(buses, at, stripOf(buses[at], `bus ${of.bus}`)) };
+  }
+  return inClip(timeline, of.clip, clip => ({ ...clip, effects: change(clip.effects ?? []) }));
+}
+
 function setNode(node: GradeNode, op: Extract<Op, { op: 'set_node' }>): GradeNode {
   // `pos: null` puts a node back where the editor lays it out; left out, it stays.
   const changed = patched(node, op, ['label', 'enabled', 'locked', 'pos'], ['pos']);
@@ -1568,14 +1614,15 @@ export function applyOp(project: Project, op: Op): Project {
     case 'set_clip': return inTimeline(project, op.timeline, timeline => {
       const [track, at] = clipAt(timeline, op.id);
       return inClips(timeline, track, clips => replaced(clips, at, patched(clips[at], op,
-        ['enabled', 'speed', 'reverse', 'link', 'transform', 'gain_db', 'pan', 'fade_in', 'fade_out', 'audio_fade_in', 'audio_fade_out', 'source'], ['link', 'audio_fade_in', 'audio_fade_out'])));
+        ['enabled', 'speed', 'reverse', 'link', 'transform', 'gain_db', 'pan', 'fade_in', 'fade_out', 'audio_fade_in', 'audio_fade_out', 'eq', 'effects', 'pitch_correction', 'pitch', 'channels', 'source'],
+        ['link', 'audio_fade_in', 'audio_fade_out', 'channels'])));
     });
     case 'add_transition': return inTimeline(project, op.timeline, timeline => inTrack(timeline, placeOf(timeline.tracks, op.track, 'track'), track => {
       const to = clipTrack(track);
       return ordered({ ...to, transitions: [...to.transitions, op.transition] });
     }));
     case 'remove_transition': return inTimeline(project, op.timeline, timeline => inTransition(timeline, op.id, (items, at) => without(items, at)));
-    case 'set_transition': return inTimeline(project, op.timeline, timeline => inTransition(timeline, op.id, (items, at) => replaced(items, at, patched(items[at], op, ['kind', 'length', 'align']))));
+    case 'set_transition': return inTimeline(project, op.timeline, timeline => inTransition(timeline, op.id, (items, at) => replaced(items, at, patched(items[at], op, ['kind', 'length', 'align', 'fade_in_level_db', 'fade_out_level_db']))));
     case 'add_cue': return inTimeline(project, op.timeline, timeline => inTrack(timeline, placeOf(timeline.tracks, op.track, 'track'), track => {
       if (track.kind !== 'subtitle') throw new CopyMismatch(`track ${track.id} holds no subtitles`);
       return ordered({ ...track, cues: [...track.cues, op.cue] });
@@ -1621,6 +1668,32 @@ export function applyOp(project: Project, op: Op): Project {
       const override = patched(keptOverride(media), set, ['input', 'levels', 'lut', 'inverse_drt'], ['input']);
       return { ...project, media: replaced(project.media, at, { ...media, color_override: override }) };
     }
+    case 'set_track_audio': return inTimeline(project, op.timeline, timeline => inTrack(timeline, placeOf(timeline.tracks, op.track, 'track'), track => {
+      if (track.kind !== 'audio') throw new CopyMismatch(`track ${track.id} holds no sound`);
+      return mergePatch(track, op.patch) as Track;
+    }));
+    case 'add_bus': return inTimeline(project, op.timeline, timeline => ({ ...timeline, buses: inserted(timeline.buses ?? [], op.bus, op.index) }));
+    case 'remove_bus': return inTimeline(project, op.timeline, timeline => ({ ...timeline, buses: without(timeline.buses ?? [], placeOf(timeline.buses ?? [], op.id, 'bus')) }));
+    case 'set_bus': return inTimeline(project, op.timeline, timeline => ({ ...timeline, buses: patchedIn(timeline.buses ?? [], op.id, 'bus', op.patch) }));
+    case 'add_vca': return inTimeline(project, op.timeline, timeline => ({ ...timeline, vcas: inserted(timeline.vcas ?? [], op.vca, op.index) }));
+    case 'remove_vca': return inTimeline(project, op.timeline, timeline => ({ ...timeline, vcas: without(timeline.vcas ?? [], placeOf(timeline.vcas ?? [], op.id, 'VCA')) }));
+    case 'set_vca': return inTimeline(project, op.timeline, timeline => ({ ...timeline, vcas: patchedIn(timeline.vcas ?? [], op.id, 'VCA', op.patch) }));
+    case 'add_track_group': return inTimeline(project, op.timeline, timeline => ({ ...timeline, track_groups: inserted(timeline.track_groups ?? [], op.group, op.index) }));
+    case 'remove_track_group': return inTimeline(project, op.timeline, timeline => ({ ...timeline, track_groups: without(timeline.track_groups ?? [], placeOf(timeline.track_groups ?? [], op.id, 'group of tracks')) }));
+    case 'set_track_group': return inTimeline(project, op.timeline, timeline => ({ ...timeline, track_groups: patchedIn(timeline.track_groups ?? [], op.id, 'group of tracks', op.patch) }));
+    case 'add_insert': return inTimeline(project, op.timeline, timeline => inInserts(timeline, op.of, inserts => inserted(inserts, op.insert, op.index)));
+    case 'set_insert': return inTimeline(project, op.timeline, timeline => inInserts(timeline, op.of, inserts => {
+      if (!Number.isInteger(op.slot) || op.slot < 0 || op.slot >= inserts.length) throw new CopyMismatch(`there is no insert ${op.slot} in the copy`);
+      return op.insert === null ? without(inserts, op.slot) : replaced(inserts, op.slot, op.insert);
+    }));
+    case 'move_insert': return inTimeline(project, op.timeline, timeline => inInserts(timeline, op.of, inserts => {
+      if (![op.from, op.to].every(at => Number.isInteger(at) && at >= 0 && at < inserts.length)) throw new CopyMismatch(`there is no insert ${op.from} or ${op.to} in the copy`);
+      return inserted(without(inserts, op.from), inserts[op.from], op.to);
+    }));
+    case 'set_timeline_audio': return inTimeline(project, op.timeline, timeline => {
+      if (timeline.audio === undefined) throw new CopyMismatch(`timeline ${timeline.id} has no settings of sound in the copy`);
+      return { ...timeline, audio: mergePatch(timeline.audio, op.patch) as TimelineAudio };
+    });
     default: throw new CopyMismatch(`the operation ${(op as { op: unknown }).op} is not known to the copy`);
   }
 }

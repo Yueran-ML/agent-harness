@@ -425,9 +425,9 @@ impl Settings {
         }
     }
 
-    /// Sets `param` to `value`, clamped; NaN changes nothing.
+    /// Sets `param` to `value`, clamped; NaN and the infinities change nothing.
     pub fn set(&mut self, param: Param, value: f32) {
-        if value.is_nan() {
+        if !value.is_finite() {
             return;
         }
         let value = param.clamp(value);
@@ -457,7 +457,7 @@ impl Settings {
         Param::ALL.map(|param| (param.id(), self.value(param)))
     }
 
-    /// The same, every number within its range (NaN as the default).
+    /// The same, every number within its range (NaN and the infinities as the default).
     #[must_use]
     pub fn clamped(&self) -> Settings {
         let mut clamped = Settings {
@@ -1275,7 +1275,7 @@ impl Node for Spectral {
         let Some(param) = Param::from_id(param) else {
             return;
         };
-        if value.is_nan() {
+        if !value.is_finite() {
             return;
         }
         self.set.set(param, value);

@@ -537,7 +537,16 @@ fn the_parameters_are_those_of_the_model() {
     assert_eq!(Param::Band.clamp(1.6), 2.0);
     let mut settings = Settings::default();
     settings.set(Param::ThresholdDb, f32::NAN);
+    settings.set(Param::LevelDb, f32::INFINITY);
+    settings.set(Param::DryWet, f32::NEG_INFINITY);
     assert_eq!(settings, Settings::default());
+    let mut node = Spectral::default_node();
+    for param in Param::ALL {
+        node.set(param.id(), f32::NAN);
+        node.set(param.id(), f32::INFINITY);
+    }
+    node.set(ParamId(99), 1.0);
+    assert_eq!(node.settings(), &Settings::default());
     for preset in Preset::ALL {
         let mut node = Spectral::new(&Settings::default());
         for (param, value) in Settings::preset(preset).params() {

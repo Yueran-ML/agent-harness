@@ -535,7 +535,7 @@ impl Node for Voice {
         let Some(param) = Param::from_id(param) else {
             return;
         };
-        if value.is_nan() {
+        if !value.is_finite() {
             return;
         }
         self.set.set(param, value);

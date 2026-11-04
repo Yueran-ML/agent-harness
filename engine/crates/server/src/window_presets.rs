@@ -21,7 +21,7 @@
 //!
 //! Save as New Preset and Update Preset keep every window of the node, each as it is on the frame
 //! of the playhead: its shape and parameters interpolated there, with no keyframes and no tracking
-//! data (author decision 2026-11-01). Recalling a preset "overwrite[s] whatever other windows were
+//! data (author decision 2026-11-01). Recalling a preset "overwrite\[s\] whatever other windows were
 //! set up in that node" (p. 3199): it is worked out into a `set_node` of the node's whole window
 //! list, one transaction and one undo step, which writes the windows into the project in full.
 

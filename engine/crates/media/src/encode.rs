@@ -1,5 +1,7 @@
 //! Pictures and sound encoded and written into a file: the picture by an encoder of the graphics
-//! card, or as `ProRes` where it has none, the sound as AAC, in MP4 or `QuickTime`.
+//! card, or as `ProRes` where it has none, the sound as AAC or PCM, in MP4 or `QuickTime`
+//! ([`Writer`]); or sound alone, as PCM in WAV or AAC in MPEG-4 audio (`.m4a`), with
+//! [`SoundWriter`].
 
 use std::fmt;
 use std::path::Path;
@@ -198,27 +200,82 @@ fn write_error(path: &Path) -> impl Fn(String) -> MediaError + '_ {
     move |why| MediaError::Write(format!("{} cannot be written: {why}", path.display()))
 }
 
-/// The sound of a file to be written: AAC, by libav's own encoder, at 192 kb/s.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct AudioSettings {
-    /// Samples a second, of each channel.
-    pub rate: u32,
-    /// How many channels, in the default order of libav for that many (2 is left, right).
-    pub channels: u16,
+/// What the sound is coded as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AudioCodec {
+    /// AAC, by libav's own encoder, at `bitrate` bits a second; in MP4, `QuickTime` or `.m4a`.
+    Aac {
+        /// Bits a second, of all the channels.
+        bitrate: u32,
+    },
+    /// PCM of 24-bit integers, little-endian: each sample clipped to −1…1 and rounded to the
+    /// nearest step of 2⁻²³; in `QuickTime` or WAV.
+    PcmS24,
+    /// PCM of 32-bit floats, little-endian, as they are given (nothing clipped); in `QuickTime`
+    /// or WAV.
+    PcmF32,
 }
 
-impl Default for AudioSettings {
-    /// 48 kHz in stereo.
-    fn default() -> Self {
-        Self {
-            rate: 48000,
-            channels: 2,
+impl AudioCodec {
+    /// Its name, as libav names its encoder (`aac`, `pcm_s24le`, `pcm_f32le`), and as
+    /// [`crate::probe`] gives it.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Aac { .. } => "aac",
+            Self::PcmS24 => "pcm_s24le",
+            Self::PcmF32 => "pcm_f32le",
+        }
+    }
+
+    /// Whether it is PCM.
+    #[must_use]
+    pub fn is_pcm(self) -> bool {
+        !matches!(self, Self::Aac { .. })
+    }
+
+    /// The most channels that it is written with: 8 of AAC, 24 of PCM.
+    #[must_use]
+    pub fn most_channels(self) -> u16 {
+        if self.is_pcm() {
+            24
+        } else {
+            8
         }
     }
 }
 
-/// The bits a second of the sound.
-const AUDIO_BIT_RATE: usize = 192_000;
+/// The sound of a file to be written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AudioSettings {
+    /// Samples a second, of each channel.
+    pub rate: u32,
+    /// How many channels.
+    pub channels: u16,
+    /// The speakers of the channels, as a mask of libav's (`AV_CH_*`): one bit for each channel,
+    /// the channels given in the order of their bits (as WAV and libav keep them); or 0 for the
+    /// default layout of libav for that many channels (2 is left, right).
+    pub mask: u64,
+    /// What it is coded as.
+    pub codec: AudioCodec,
+}
+
+impl Default for AudioSettings {
+    /// 48 kHz in stereo, AAC at 192 kb/s.
+    fn default() -> Self {
+        Self {
+            rate: 48000,
+            channels: 2,
+            mask: 0,
+            codec: AudioCodec::Aac {
+                bitrate: AUDIO_BIT_RATE,
+            },
+        }
+    }
+}
+
+/// The bits a second of the sound of AAC, where none are asked for.
+pub const AUDIO_BIT_RATE: u32 = 192_000;
 
 /// The encoders of the graphics card that are tried, in order.
 const TRIED: &[EncoderPath] = if cfg!(target_os = "macos") {
@@ -294,11 +351,15 @@ fn candidates(codec: Codec) -> &'static [EncoderPath] {
 enum Container {
     Mp4,
     Mov,
+    /// WAV (RF64 where it outgrows 4 GiB), of sound alone.
+    Wav,
+    /// MPEG-4 audio, of sound alone.
+    M4a,
 }
 
 impl Container {
-    /// The container that a path names by its extension, `.mp4` or `.mov`, passing over a last
-    /// `.part`: `cut.mp4.part` is written as MP4.
+    /// The container that a path names by its extension, `.mp4`, `.mov`, `.wav` or `.m4a`,
+    /// passing over a last `.part`: `cut.mp4.part` is written as MP4.
     fn of(path: &Path) -> Result<Self, MediaError> {
         let mut named = path.extension();
         if named.is_some_and(|extension| extension.eq_ignore_ascii_case("part")) {
@@ -307,8 +368,10 @@ impl Container {
         match named.and_then(|extension| extension.to_str()) {
             Some(extension) if extension.eq_ignore_ascii_case("mp4") => Ok(Self::Mp4),
             Some(extension) if extension.eq_ignore_ascii_case("mov") => Ok(Self::Mov),
+            Some(extension) if extension.eq_ignore_ascii_case("wav") => Ok(Self::Wav),
+            Some(extension) if extension.eq_ignore_ascii_case("m4a") => Ok(Self::M4a),
             _ => Err(MediaError::Unsupported(
-                "a file is written as .mp4 or .mov".into(),
+                "a file is written as .mp4, .mov, .wav or .m4a".into(),
             )),
         }
     }
@@ -318,8 +381,48 @@ impl Container {
         match self {
             Self::Mp4 => "mp4",
             Self::Mov => "mov",
+            Self::Wav => "wav",
+            Self::M4a => "ipod",
         }
     }
+
+    /// Whether it holds a picture.
+    fn pictured(self) -> bool {
+        matches!(self, Self::Mp4 | Self::Mov)
+    }
+}
+
+/// Refuse sound that cannot be written so into `container`, before anything is opened: AAC in
+/// WAV, PCM in MP4 or `.m4a`, a rate of 0, too many channels for the codec, or a mask that does
+/// not name as many speakers as there are channels.
+fn check_audio(settings: &AudioSettings, container: Container) -> Result<(), MediaError> {
+    let refuse = |why: String| Err(MediaError::Unsupported(why));
+    let codec = settings.codec;
+    match (codec.is_pcm(), container) {
+        (true, Container::Mp4 | Container::M4a) => {
+            return refuse("PCM is written in .mov or .wav".into())
+        }
+        (false, Container::Wav) => return refuse("AAC is written in .mp4, .mov or .m4a".into()),
+        _ => {}
+    }
+    if settings.rate == 0 || i32::try_from(settings.rate).is_err() {
+        return refuse("a rate of sound too high or 0".into());
+    }
+    if settings.channels == 0 || settings.channels > codec.most_channels() {
+        return refuse(format!(
+            "{} is written with 1 to {} channels",
+            codec.name(),
+            codec.most_channels()
+        ));
+    }
+    if settings.mask != 0 && settings.mask.count_ones() != u32::from(settings.channels) {
+        return refuse(format!(
+            "a mask of {} speakers for {} channels",
+            settings.mask.count_ones(),
+            settings.channels
+        ));
+    }
+    Ok(())
 }
 
 /// Refuse a picture that cannot be written so, before anything is opened.
@@ -346,6 +449,9 @@ fn check(settings: &VideoSettings, container: Container) -> Result<(), MediaErro
     }
     if settings.codec == Codec::ProRes && container == Container::Mp4 {
         return refuse("ProRes is written in .mov");
+    }
+    if !container.pictured() {
+        return refuse("a picture is written in .mp4 or .mov");
     }
     Ok(())
 }
@@ -450,28 +556,54 @@ fn open_video(
         .map_err(|error| format!("{name} cannot be opened: {error}"))
 }
 
-/// Open the encoder of the sound: libav's AAC, of 32-bit floats a channel at a time.
+/// The layout of the channels of `settings`: its mask, in libav's order of the bits, or libav's
+/// default for that many channels.
+fn channel_layout(settings: &AudioSettings) -> ff::ChannelLayout {
+    if settings.mask == 0 {
+        return ff::ChannelLayout::default(i32::from(settings.channels));
+    }
+    ff::ChannelLayout(ff::ffi::AVChannelLayout {
+        order: ff::ffi::AVChannelOrder::AV_CHANNEL_ORDER_NATIVE,
+        nb_channels: i32::from(settings.channels),
+        u: ff::ffi::AVChannelLayout__bindgen_ty_1 {
+            mask: settings.mask,
+        },
+        opaque: std::ptr::null_mut(),
+    })
+}
+
+/// Open the encoder of the sound: libav's AAC, of 32-bit floats a channel at a time; or its PCM,
+/// of 32-bit integers (of which 24 bits are written) or floats, the channels interleaved.
 fn open_audio(settings: AudioSettings) -> Result<ff::encoder::Audio, MediaError> {
-    let failed = |error: ff::Error| MediaError::Encode(format!("aac cannot be opened: {error}"));
-    let found = ff::encoder::find_by_name("aac")
-        .ok_or_else(|| MediaError::Encode("this build of libav has no aac".into()))?;
+    use ff::format::sample::Type;
+    let name = settings.codec.name();
+    let failed = |error: ff::Error| MediaError::Encode(format!("{name} cannot be opened: {error}"));
+    let found = ff::encoder::find_by_name(name)
+        .ok_or_else(|| MediaError::Encode(format!("this build of libav has no {name}")))?;
     let rate = i32::try_from(settings.rate)
         .ok()
         .filter(|&rate| rate > 0)
         .ok_or_else(|| MediaError::Unsupported("a rate of sound too high or 0".into()))?;
-    if settings.channels == 0 || settings.channels > 8 {
-        return Err(MediaError::Unsupported(
-            "sound is written with 1 to 8 channels".into(),
-        ));
+    let most = settings.codec.most_channels();
+    if settings.channels == 0 || settings.channels > most {
+        return Err(MediaError::Unsupported(format!(
+            "{name} is written with 1 to {most} channels"
+        )));
     }
     let mut context = ff::codec::Context::new_with_codec(found)
         .encoder()
         .audio()
         .map_err(failed)?;
     context.set_rate(rate);
-    context.set_format(ff::format::Sample::F32(ff::format::sample::Type::Planar));
-    context.set_channel_layout(ff::ChannelLayout::default(i32::from(settings.channels)));
-    context.set_bit_rate(AUDIO_BIT_RATE);
+    context.set_format(match settings.codec {
+        AudioCodec::Aac { .. } => ff::format::Sample::F32(Type::Planar),
+        AudioCodec::PcmS24 => ff::format::Sample::I32(Type::Packed),
+        AudioCodec::PcmF32 => ff::format::Sample::F32(Type::Packed),
+    });
+    context.set_channel_layout(channel_layout(&settings));
+    if let AudioCodec::Aac { bitrate } = settings.codec {
+        context.set_bit_rate(usize::try_from(bitrate).unwrap_or(usize::MAX));
+    }
     context.set_time_base((1, rate));
     context.set_flags(ff::codec::Flags::GLOBAL_HEADER);
     context.open_as(found).map_err(failed)
@@ -490,6 +622,7 @@ struct Sound {
     encoder: ff::encoder::Audio,
     track: Track,
     frame: ff::frame::Audio,
+    codec: AudioCodec,
     channels: usize,
     /// Samples in each frame of AAC, of each channel.
     frame_size: usize,
@@ -512,13 +645,29 @@ impl Sound {
         ffi::writable(&mut self.frame).map_err(MediaError::Encode)?;
         self.frame.set_samples(count);
         let from = &self.pending[self.taken..self.taken + count * self.channels];
-        for channel in 0..self.channels {
-            let plane = self.frame.plane_mut::<f32>(channel);
-            for (into, sample) in plane
-                .iter_mut()
-                .zip(from.iter().skip(channel).step_by(self.channels))
-            {
-                *into = *sample;
+        match self.codec {
+            AudioCodec::Aac { .. } => {
+                for channel in 0..self.channels {
+                    let plane = self.frame.plane_mut::<f32>(channel);
+                    for (into, sample) in plane
+                        .iter_mut()
+                        .zip(from.iter().skip(channel).step_by(self.channels))
+                    {
+                        *into = *sample;
+                    }
+                }
+            }
+            AudioCodec::PcmF32 => {
+                let bytes = self.frame.data_mut(0);
+                for (into, sample) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(from) {
+                    *into = sample.to_ne_bytes();
+                }
+            }
+            AudioCodec::PcmS24 => {
+                let bytes = self.frame.data_mut(0);
+                for (into, sample) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(from) {
+                    *into = s24(*sample).to_ne_bytes();
+                }
             }
         }
         self.taken += count * self.channels;
@@ -526,10 +675,168 @@ impl Sound {
         self.next += i64::try_from(count).unwrap_or(i64::MAX);
         send(&mut self.encoder, Some(&self.frame), output, self.track)
     }
+
+    /// Take the next samples, interleaved, and encode the whole frames that they make.
+    fn give(
+        &mut self,
+        samples: &[f32],
+        output: &mut ff::format::context::Output,
+    ) -> Result<(), MediaError> {
+        if !samples.len().is_multiple_of(self.channels) {
+            return Err(MediaError::Encode(format!(
+                "{} samples are not whole instants of {} channels",
+                samples.len(),
+                self.channels
+            )));
+        }
+        self.pending.extend_from_slice(samples);
+        let whole = self.frame_size * self.channels;
+        while self.pending.len() - self.taken >= whole {
+            self.encode(self.frame_size, output)?;
+        }
+        self.pending.drain(..self.taken);
+        self.taken = 0;
+        Ok(())
+    }
+
+    /// Encode what is left, in a shorter frame, and the end.
+    fn end(&mut self, output: &mut ff::format::context::Output) -> Result<(), MediaError> {
+        let left = (self.pending.len() - self.taken) / self.channels;
+        if left > 0 {
+            self.encode(left, output)?;
+        }
+        send(&mut self.encoder, None, output, self.track)
+    }
+}
+
+/// A file of sound alone being written: PCM in WAV (RF64 once it outgrows the 4 GiB of WAV), or
+/// AAC in MPEG-4 audio (`.m4a`, its index moved before its data), as its path names (`.wav`,
+/// `.m4a`, either with `.part` after it). Sound is given in runs of any length by
+/// [`SoundWriter::audio`], each after the last, from time 0. A writer that is dropped without
+/// [`SoundWriter::finish`] leaves a file that cannot be played.
+pub struct SoundWriter {
+    output: ff::format::context::Output,
+    sound: Sound,
+}
+
+impl SoundWriter {
+    /// Make a file of sound at `path` and write its header.
+    ///
+    /// # Errors
+    /// The path is not UTF-8 ([`MediaError::NotUtf8`]); it names no container of `.wav` or
+    /// `.m4a`, or the sound cannot be written into it ([`MediaError::Unsupported`]: PCM in
+    /// `.m4a`, AAC in WAV, too many channels); the encoder does not open
+    /// ([`MediaError::Encode`]); or the file cannot be made ([`MediaError::Write`]).
+    pub fn create(path: &Path, settings: AudioSettings) -> Result<Self, MediaError> {
+        crate::init();
+        let container = Container::of(path)?;
+        if container.pictured() {
+            return Err(MediaError::Unsupported(
+                "sound alone is written as .wav or .m4a".into(),
+            ));
+        }
+        check_audio(&settings, container)?;
+        probe::checked(path)?;
+        let encoder = open_audio(settings)?;
+        let full = std::path::absolute(path)?;
+        let url = format!("file:{}", probe::checked(&full)?);
+        let write = |error: ff::Error| {
+            MediaError::Write(format!("{} cannot be written: {error}", path.display()))
+        };
+        let mut output = ff::format::output_as(&url, container.muxer()).map_err(write)?;
+        let index = {
+            let mut stream = output.add_stream_with(&encoder).map_err(write)?;
+            stream.set_time_base(encoder.time_base());
+            stream.index()
+        };
+        let mut options = ff::Dictionary::new();
+        match container {
+            Container::Wav => options.set("rf64", "auto"),
+            _ => options.set("movflags", "+faststart"),
+        }
+        output.write_header_with(options).map_err(write)?;
+        let sound = sound_of(encoder, settings, index, &output);
+        Ok(Self { output, sound })
+    }
+
+    /// The name of its encoder in libav: `pcm_s24le`, `pcm_f32le` or `aac`.
+    #[must_use]
+    pub fn encoder(&self) -> &'static str {
+        self.sound.codec.name()
+    }
+
+    /// Encode the next samples: 32-bit floats, interleaved, as many channels an instant as the
+    /// file has (in the order of the bits of its mask). Those that do not fill a frame of the
+    /// encoder are kept for the next run, or for [`SoundWriter::finish`].
+    ///
+    /// # Errors
+    /// The samples are not whole instants ([`MediaError::Encode`]); or they cannot be encoded,
+    /// or the file cannot be written.
+    pub fn audio(&mut self, samples: &[f32]) -> Result<(), MediaError> {
+        self.sound.give(samples, &mut self.output)
+    }
+
+    /// Encode what is left and write the end of the file.
+    ///
+    /// # Errors
+    /// What is left cannot be encoded, or the file cannot be written.
+    pub fn finish(mut self) -> Result<(), MediaError> {
+        self.sound.end(&mut self.output)?;
+        self.output.write_trailer().map_err(|error| {
+            MediaError::Write(format!("the end of the file cannot be written: {error}"))
+        })
+    }
+}
+
+/// A sample as PCM of 24 bits, in the top 24 bits of an `i32`, as libav's `pcm_s24le` takes it:
+/// clipped to −1…1 and rounded to the nearest of the steps of 2⁻²³, 1 written as the largest,
+/// 1 − 2⁻²³ (and what is not a number as 0).
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "rounded and clamped to the range of 24 bits"
+)]
+fn s24(sample: f32) -> i32 {
+    let scaled = (f64::from(sample).clamp(-1.0, 1.0) * 8_388_608.0).round();
+    let code = scaled.clamp(-8_388_608.0, 8_388_607.0) as i32;
+    code << 8
+}
+
+/// The sound of a file of `settings` written into `output` as stream `index`: its encoder, and
+/// a frame to give it.
+fn sound_of(
+    encoder: ff::encoder::Audio,
+    settings: AudioSettings,
+    index: usize,
+    output: &ff::format::context::Output,
+) -> Sound {
+    let track = Track {
+        index,
+        encoder: encoder.time_base(),
+        file: output
+            .stream(index)
+            .map_or(encoder.time_base(), |stream| stream.time_base()),
+    };
+    let frame_size = usize::try_from(encoder.frame_size())
+        .ok()
+        .filter(|&size| size > 0)
+        .unwrap_or(1024);
+    let mut frame = ff::frame::Audio::new(encoder.format(), frame_size, encoder.channel_layout());
+    frame.set_rate(settings.rate);
+    Sound {
+        encoder,
+        track,
+        frame,
+        codec: settings.codec,
+        channels: usize::from(settings.channels),
+        frame_size,
+        pending: Vec::new(),
+        taken: 0,
+        next: 0,
+    }
 }
 
 /// A file being written: one picture, encoded on the graphics card or as `ProRes`, and sound in
-/// AAC if it was asked for, in MP4 or `QuickTime` as its path names (`.mp4`, `.mov`, either with
+/// AAC or PCM if it was asked for, in MP4 or `QuickTime` as its path names (`.mp4`, `.mov`, either with
 /// `.part` after it). Its index is moved before its data when it is finished, so that it plays
 /// while it is downloaded (`faststart`).
 ///
@@ -587,10 +894,12 @@ impl Writer {
         audio: Option<AudioSettings>,
         tags: &ColorTags,
     ) -> Result<Self, MediaError> {
-        check(&video, Container::of(path)?)?;
+        let container = Container::of(path)?;
+        check(&video, container)?;
         // The sound first: an encoder of sound that does not open is not one of the picture
         // that fails, to be passed for the next.
         if let Some(settings) = audio {
+            check_audio(&settings, container)?;
             drop(open_audio(settings)?);
         }
         let mut fallbacks = Vec::new();
@@ -645,6 +954,9 @@ impl Writer {
         crate::init();
         let container = Container::of(path)?;
         check(&video, container)?;
+        if let Some(settings) = &audio {
+            check_audio(settings, container)?;
+        }
         if encoder.encoder_name(video.codec).is_none() {
             return Err(MediaError::Unsupported(format!(
                 "{encoder} does not encode {}",
@@ -704,24 +1016,7 @@ impl Writer {
         let video_track = track(video_index, opened.time_base());
         let sound = match (sound, audio_index, audio) {
             (Some(encoder), Some(index), Some(settings)) => {
-                let audio_track = track(index, encoder.time_base());
-                let frame_size = usize::try_from(encoder.frame_size())
-                    .ok()
-                    .filter(|&size| size > 0)
-                    .unwrap_or(1024);
-                let mut frame =
-                    ff::frame::Audio::new(encoder.format(), frame_size, encoder.channel_layout());
-                frame.set_rate(settings.rate);
-                Some(Sound {
-                    encoder,
-                    track: audio_track,
-                    frame,
-                    channels: usize::from(settings.channels),
-                    frame_size,
-                    pending: Vec::new(),
-                    taken: 0,
-                    next: 0,
-                })
+                Some(sound_of(encoder, settings, index, &output))
             }
             _ => None,
         };
@@ -840,21 +1135,7 @@ impl Writer {
                 "sound is given to a file without sound".into(),
             ));
         };
-        if !samples.len().is_multiple_of(sound.channels) {
-            return Err(MediaError::Encode(format!(
-                "{} samples are not whole instants of {} channels",
-                samples.len(),
-                sound.channels
-            )));
-        }
-        sound.pending.extend_from_slice(samples);
-        let whole = sound.frame_size * sound.channels;
-        while sound.pending.len() - sound.taken >= whole {
-            sound.encode(sound.frame_size, &mut self.output)?;
-        }
-        sound.pending.drain(..sound.taken);
-        sound.taken = 0;
-        Ok(())
+        sound.give(samples, &mut self.output)
     }
 
     /// Say the light of the content of the picture (`MaxCLL` and `MaxFALL`), measured of its
@@ -883,11 +1164,7 @@ impl Writer {
     /// What is left cannot be encoded, or the file cannot be written.
     pub fn finish(mut self) -> Result<(), MediaError> {
         if let Some(sound) = &mut self.sound {
-            let left = (sound.pending.len() - sound.taken) / sound.channels;
-            if left > 0 {
-                sound.encode(left, &mut self.output)?;
-            }
-            send(&mut sound.encoder, None, &mut self.output, sound.track)?;
+            sound.end(&mut self.output)?;
         }
         send(&mut self.encoder, None, &mut self.output, self.track)
             .map_err(|error| self.named(error))?;

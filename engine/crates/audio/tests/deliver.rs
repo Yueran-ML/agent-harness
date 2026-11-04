@@ -20,7 +20,8 @@ use columbina_audio::standards::{self, Measure};
 use columbina_audio::stream::Resampler;
 use columbina_audio::Layout;
 use columbina_model::audio::fx::{
-    DeEsserFx, DeHummerFx, GainFx, LimiterFx, NoiseReductionFx, SoftClipperFx, StereoWidthFx,
+    DeEsserFx, DeHummerFx, GainFx, LimiterFx, NoiseReductionFx, PitchFx, SoftClipperFx,
+    StereoWidthFx,
 };
 use columbina_model::audio::BusFormat;
 use columbina_model::{Effect, Insert, Output, Project, SourceRef};
@@ -135,8 +136,9 @@ fn most_apart(a: &[f32], b: &[f32]) -> f32 {
         .fold(0.0, f32::max)
 }
 
-/// Sixteen tracks of every kind (T5's) with every effect of T10 and T12 in an insert, a Limiter
-/// on the bus of 5.1, and that bus out to a second main output of 5.1 too.
+/// Sixteen tracks of every kind (T5's) with every effect of T10, T12 and T13 in an insert, a clip
+/// at 0.8 times its speed with its pitch kept (T13), a Limiter on the bus of 5.1, and that bus out
+/// to a second main output of 5.1 too.
 fn every_effect() -> Project {
     let mut project = sixteen_tracks();
     let timeline = &mut project.timelines[0];
@@ -145,7 +147,7 @@ fn every_effect() -> Project {
         on: true,
         effect,
     };
-    let inserts: [(usize, Effect); 8] = [
+    let inserts: [(usize, Effect); 9] = [
         (
             0,
             Effect::Limiter(LimiterFx {
@@ -161,7 +163,18 @@ fn every_effect() -> Project {
         (7, Effect::SoftClipper(SoftClipperFx::default())),
         (9, Effect::StereoWidth(StereoWidthFx::default())),
         (13, Effect::Gain(GainFx { gain_db: -4.0 })),
+        (
+            10,
+            Effect::Pitch(PitchFx {
+                semitones: 3,
+                cents: 20.0,
+                dry_wet: 100.0,
+            }),
+        ),
     ];
+    let slow = &mut timeline.tracks[4].clips[0];
+    slow.speed = columbina_model::Speed { num: 4, den: 5 };
+    slow.pitch_correction = true;
     for (n, (track, effect)) in inserts.into_iter().enumerate() {
         let mut insert = insert(effect);
         insert.id = format!("fx{}", n + 1);

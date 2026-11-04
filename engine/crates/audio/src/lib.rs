@@ -11,6 +11,7 @@
 //!   ramp of a parameter ([`rt::Smoothed`]).
 //! - [`fft`]: the transform of Fourier of real signals, planned before the sound runs.
 //! - [`constants`]: the numbers that the manual does not give, in one place.
+//! - [`fx`]: the nodes of the effects (the EQ, T7).
 //! - `testing` (feature `testing`): the check that the output of a node does not depend on its
 //!   blocks, the allocator that counts what the thread of the mix takes, test nodes, signals.
 //!
@@ -22,6 +23,7 @@
 
 pub mod constants;
 pub mod fft;
+pub mod fx;
 pub mod node;
 pub mod rt;
 #[cfg(any(test, feature = "testing"))]

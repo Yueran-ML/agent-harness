@@ -1,6 +1,7 @@
 //! The code of the threads of the sound holds none of the words of locks, waits, allocations,
-//! text or logs (convention 3 of the plan): `src/rt/` and `src/graph/process*.rs`, read as text,
-//! comments aside, and lines of code that runs when things are made tagged `// rt-ok: <reason>`.
+//! text or logs (convention 3 of the plan): `src/rt/`, `src/fx/` and `src/graph/process*.rs`,
+//! read as text, comments aside, and lines of code that runs when things are made tagged
+//! `// rt-ok: <reason>`.
 
 use std::path::{Path, PathBuf};
 
@@ -10,7 +11,7 @@ use columbina_audio::testing::{rt_violations, RT_FORBIDDEN};
 fn realtime_files() -> (Vec<PathBuf>, bool) {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
-    let mut directories = vec![src.join("rt")];
+    let mut directories = vec![src.join("rt"), src.join("fx")];
     while let Some(directory) = directories.pop() {
         for entry in std::fs::read_dir(&directory).unwrap() {
             let path = entry.unwrap().path();
@@ -44,7 +45,14 @@ fn the_code_of_the_threads_of_the_sound_does_not_lock_allocate_or_log() {
         .iter()
         .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
-    for expected in ["mod.rs", "ring.rs", "seqlock.rs", "smooth.rs"] {
+    for expected in [
+        "mod.rs",
+        "ring.rs",
+        "seqlock.rs",
+        "smooth.rs",
+        "biquad.rs",
+        "eq.rs",
+    ] {
         assert!(
             names.iter().any(|name| name == expected),
             "{expected} in {names:?}"

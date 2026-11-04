@@ -195,6 +195,10 @@ pub const EQ_SHELF_SLOPE: f32 = 1.0;
 /// (plan T7: the coefficients are not interpolated).
 pub const EQ_CROSSFADE: f64 = 0.010;
 
+/// The highest frequency of a band of the EQ, as a part of the rate: 20 kHz, or less where the
+/// rate is below 44.4 kHz (the reference, §9.2).
+pub const EQ_MAX_FREQUENCY_FRACTION: f64 = 0.45;
+
 // --- Effects ---------------------------------------------------------------------------------
 
 /// The window of the RMS by which the Ducker hears its sources (plan; C-X2).

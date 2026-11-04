@@ -1,13 +1,14 @@
 //! One background export of an immutable project snapshot, using original media and the
-//! same compositor and mixer as playback. Subtitles are sidecars, never burned in.
+//! same compositor and graph of the sound as playback. Subtitles are sidecars, never burned in.
+//! The sound may be exported alone (`"video": null`), as WAV or MPEG-4 audio.
 
 #[cfg(test)]
 mod colour;
 mod output;
 #[cfg(test)]
 mod pictures;
+mod sound;
 
-use std::collections::VecDeque;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,8 +20,8 @@ use columbina_compose::{
     Compositor, LayerColor, Scene, SceneLayer, Source, Target, Text, Transform, YuvCoding,
 };
 use columbina_media::{
-    AudioFormat, AudioSettings, Codec, ColorTags, ContentLight, Hardware, Mastering, MediaError,
-    NativePicture, Picture, Quality, VideoSettings, Writer,
+    AudioSettings, Codec, ColorTags, ContentLight, Hardware, Mastering, MediaError, NativePicture,
+    Picture, Quality, SoundWriter, VideoSettings, Writer,
 };
 use columbina_model::{resolve, Project, TrackKind};
 use serde::Deserialize;
@@ -29,7 +30,7 @@ use serde_json::json;
 use crate::gpu::Graphics;
 use crate::grading::{Grading, LutPlaces, MissingLut};
 use crate::managed::{self, Output};
-use crate::play::{mix::Mixer, sources::Sources, Notify};
+use crate::play::{sources::Sources, Notify};
 use crate::rpc::{self, Fault};
 use crate::srt;
 
@@ -38,8 +39,17 @@ use crate::srt;
 pub struct Request {
     timeline: String,
     path: PathBuf,
-    codec: VideoCodec,
-    quality: VideoQuality,
+    /// The codec of the picture; none where there is no picture.
+    #[serde(default)]
+    codec: Option<VideoCodec>,
+    #[serde(default)]
+    quality: Option<VideoQuality>,
+    /// Given as `null`, the sound is exported alone (`Some(())`); left out, with its picture.
+    #[serde(default, deserialize_with = "given_as_null")]
+    video: Option<()>,
+    /// The sound: its bus, rate, codec and Audio Normalization (plan T6).
+    #[serde(default)]
+    audio: Option<sound::AudioRequest>,
     range: Option<FrameRange>,
     /// The tracks of subtitles of the timeline that are written beside the film, each as an SRT,
     /// shown or hidden, as the Deliver page of `DaVinci` has a box to tick for each.
@@ -51,6 +61,13 @@ pub struct Request {
     /// SRT files; refused as `stale_revision` where the project is not at it any more.
     #[serde(default)]
     pub revision: Option<u64>,
+}
+
+/// A field given as `null`: `Some(())`; anything else is refused.
+fn given_as_null<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<()>, D::Error> {
+    <()>::deserialize(deserializer).map(Some)
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -182,6 +199,7 @@ impl Renders {
             encoder: None,
             message: None,
             restored: 0,
+            normalization: None,
             #[cfg(test)]
             lose_at: None,
         };
@@ -247,7 +265,10 @@ struct Plan {
     timeline: usize,
     path: PathBuf,
     range: Range<i64>,
-    video: VideoSettings,
+    /// The picture; none where the sound is exported alone.
+    video: Option<VideoSettings>,
+    /// The sound.
+    sound: sound::SoundPlan,
     /// What the frames are put out as, by the project's colour management: the tags of the
     /// file, the matrix of its Y'CbCr, and of HDR its mastering.
     output: Output,
@@ -283,17 +304,35 @@ impl Plan {
                 "the export range must be nonempty and inside the timeline",
             ));
         }
-        let codec = Codec::from(request.codec);
         let extension = request
             .path
             .extension()
             .and_then(|ext| ext.to_str())
             .unwrap_or_default();
-        if !(extension.eq_ignore_ascii_case("mov")
-            || extension.eq_ignore_ascii_case("mp4") && codec != Codec::ProRes)
-        {
-            return Err(Fault::params("export to .mp4 (h264/hevc) or .mov"));
-        }
+        let container = sound::Container::of(extension);
+        let pictured = request.video.is_none();
+        let codec = match (pictured, request.codec, request.quality) {
+            (true, Some(codec), Some(_)) => Some(Codec::from(codec)),
+            (true, ..) => return Err(Fault::params("a picture takes a codec and a quality")),
+            (false, None, None) => None,
+            (false, ..) => {
+                return Err(Fault::params(
+                    "the sound alone (video null) takes no codec or quality of picture",
+                ))
+            }
+        };
+        let container = match (container, codec) {
+            (Some(container), Some(codec))
+                if container == sound::Container::Mov
+                    || container == sound::Container::Mp4 && codec != Codec::ProRes =>
+            {
+                container
+            }
+            (Some(container), None) if !container.pictured() => container,
+            (_, Some(_)) => return Err(Fault::params("export to .mp4 (h264/hevc) or .mov")),
+            (_, None) => return Err(Fault::params("export the sound alone to .wav or .m4a")),
+        };
+        let sound = sound::plan(request.audio, timeline, container)?;
         for (at, id) in request.subtitle_tracks.iter().enumerate() {
             let subtitles = timeline
                 .tracks
@@ -327,15 +366,15 @@ impl Plan {
                 .with_data(json!({"reason": "color"}))
         })?;
         // HDR is written in 10 bits, as HEVC Main 10 or ProRes; H.264 is written in 8 only.
-        if output.hdr.is_some() && codec == Codec::H264 {
+        if output.hdr.is_some() && codec == Some(Codec::H264) {
             return Err(Fault::params(
                 "an output of HDR (PQ or HLG) is exported as hevc or prores, in 10 bits",
             )
             .with_data(json!({"reason": "hdr_codec"})));
         }
-        let bits = if codec == Codec::ProRes
+        let bits = if codec == Some(Codec::ProRes)
             || output.hdr.is_some()
-            || codec == Codec::Hevc
+            || codec == Some(Codec::Hevc)
                 && project.media.iter().any(|media| {
                     media
                         .facts
@@ -347,14 +386,14 @@ impl Plan {
         } else {
             8
         };
-        let video = VideoSettings {
+        let video = codec.map(|codec| VideoSettings {
             codec,
             width: timeline.width,
             height: timeline.height,
             rate: timeline.rate,
-            quality: request.quality.into(),
+            quality: request.quality.map_or(Quality::High, Quality::from),
             bits,
-        };
+        });
         output::remove_parts(&parts)?;
         Ok(Self {
             project: Arc::new(project),
@@ -362,6 +401,7 @@ impl Plan {
             path: request.path,
             range,
             video,
+            sound,
             output,
             subtitle_tracks: request.subtitle_tracks,
             replace: request.replace,
@@ -387,6 +427,8 @@ struct Worker {
     message: Option<String>,
     /// How many times a card was made again for the export after one was lost.
     restored: u32,
+    /// What Audio Normalization did, told with each `render.progress` once it is found.
+    normalization: Option<serde_json::Value>,
     /// The frame, counted from the start of the export, at which a test loses the card.
     #[cfg(test)]
     lose_at: Option<i64>,
@@ -422,13 +464,20 @@ impl Worker {
         if !self.missing.is_empty() {
             note["missing_luts"] = json!(self.missing);
         }
+        if let Some(normalization) = &self.normalization {
+            note["normalization"] = normalization.clone();
+        }
         (self.notify)(&note);
         self.told = Some(Instant::now());
     }
 
-    fn writer(&mut self, outputs: &mut output::Files, sound: bool) -> Result<Writer, String> {
+    fn writer(
+        &mut self,
+        outputs: &mut output::Files,
+        audio: Option<AudioSettings>,
+    ) -> Result<Writer, String> {
         let tags = tags_of(&self.plan.output);
-        self.writer_with(outputs, sound, |path, video, audio| {
+        self.writer_with(outputs, audio, |path, video, audio| {
             Writer::create_tagged(path, video, audio, &tags)
         })
     }
@@ -436,16 +485,19 @@ impl Worker {
     fn writer_with(
         &mut self,
         outputs: &mut output::Files,
-        sound: bool,
+        audio: Option<AudioSettings>,
         mut open: impl FnMut(&Path, VideoSettings, Option<AudioSettings>) -> Result<Writer, MediaError>,
     ) -> Result<Writer, String> {
         let mut movie = outputs
             .add(&self.plan.path)
             .map_err(|error| error.to_string())?;
-        let audio = sound.then_some(AudioSettings::default());
-        let writer = match open(&movie, self.plan.video, audio) {
+        let mut video = self
+            .plan
+            .video
+            .ok_or("an export of sound alone has no picture")?;
+        let writer = match open(&movie, video, audio) {
             Ok(writer) => writer,
-            Err(MediaError::NoEncoder(why)) if self.plan.video.codec != Codec::ProRes => {
+            Err(MediaError::NoEncoder(why)) if video.codec != Codec::ProRes => {
                 // Recheck the actual destination before creating a fallback. A requested MP4
                 // does not authorize overwriting an unrelated existing MOV or subtitle file.
                 self.plan.path.set_extension("mov");
@@ -459,18 +511,78 @@ impl Worker {
                 movie = outputs
                     .add(&self.plan.path)
                     .map_err(|error| error.to_string())?;
-                self.plan.video.codec = Codec::ProRes;
-                self.plan.video.bits = 10;
+                video.codec = Codec::ProRes;
+                video.bits = 10;
+                self.plan.video = Some(video);
                 self.message = Some(format!(
                     "hardware encoding is unavailable ({why}); writing ProRes to {}",
                     self.plan.path.display()
                 ));
-                open(&movie, self.plan.video, audio).map_err(|error| error.to_string())?
+                open(&movie, video, audio).map_err(|error| error.to_string())?
             }
             Err(error) => return Err(error.to_string()),
         };
         self.encoder = Some(writer.encoder().name().into());
         Ok(writer)
+    }
+
+    /// The sound of the export: Audio Normalization found first where it is asked for, by
+    /// measuring the bus over the whole range; then the bus started at the first sample of the
+    /// range. None for a film whose timeline has no clip of sound that is on.
+    fn mix(
+        &mut self,
+        project: &Arc<Project>,
+        timeline: &columbina_model::Timeline,
+    ) -> Result<Option<sound::Mix>, String> {
+        let sound = timeline.tracks.iter().any(|track| {
+            track.kind == TrackKind::Audio
+                && track.enabled
+                && track.clips.iter().any(|clip| clip.enabled)
+        });
+        if !sound && self.plan.video.is_some() {
+            return Ok(None);
+        }
+        let at = sample_at(timeline, self.plan.range.start, timeline.sample_rate)?;
+        let frames = sample_at(
+            timeline,
+            self.plan.range.end - self.plan.range.start,
+            self.plan.sound.rate,
+        )?;
+        let frames = usize::try_from(frames).map_err(|_| "export exceeds audio sample time")?;
+        let cancel = Arc::clone(&self.cancel);
+        let go_on = move || {
+            if cancel.load(Ordering::Acquire) {
+                Err("the export was cancelled".to_owned())
+            } else {
+                Ok(())
+            }
+        };
+        let found = sound::normalize(
+            project,
+            self.plan.timeline,
+            &self.plan.sound,
+            (at, frames),
+            &go_on,
+        )?;
+        let finish = match &found {
+            Some((normalizing, found)) => {
+                if !found.met {
+                    let why = if found.before.integrated.is_none() {
+                        "the sound has no loudness to measure; it is left as it is"
+                    } else {
+                        "the sound could not be brought to the standard; it is as near as it came"
+                    };
+                    self.message = Some(match self.message.take() {
+                        Some(earlier) => format!("{earlier}; {why}"),
+                        None => why.to_owned(),
+                    });
+                }
+                self.normalization = Some(sound::told(normalizing, found));
+                found.finish
+            }
+            None => columbina_audio::deliver::Finish::default(),
+        };
+        sound::Mix::start(project, self.plan.timeline, &self.plan.sound, finish, at).map(Some)
     }
 
     #[allow(
@@ -481,13 +593,24 @@ impl Worker {
         self.cancelled()?;
         let project = Arc::clone(&self.plan.project);
         let timeline = &project.timelines[self.plan.timeline];
-        let sound = timeline.tracks.iter().any(|track| {
-            track.kind == TrackKind::Audio
-                && track.enabled
-                && track.clips.iter().any(|clip| clip.enabled)
-        });
+        self.tell("running");
+        let mut mix = self.mix(&project, timeline)?;
+        self.cancelled()?;
+        let audio = mix
+            .as_ref()
+            .map(|mix| sound::settings(&self.plan.sound, mix.layout()));
         let mut outputs = output::Files::new(self.plan.replace);
-        let mut writer = self.writer(&mut outputs, sound)?;
+        let mut file = if self.plan.video.is_some() {
+            File::Movie(self.writer(&mut outputs, audio)?)
+        } else {
+            let part = outputs
+                .add(&self.plan.path)
+                .map_err(|error| error.to_string())?;
+            let settings = audio.ok_or("an export of sound alone has sound")?;
+            let writer = SoundWriter::create(&part, settings).map_err(|error| error.to_string())?;
+            self.encoder = Some(writer.encoder().into());
+            File::Sound(writer)
+        };
         let sidecars = srt::files(
             timeline,
             &self.plan.subtitle_tracks,
@@ -501,32 +624,18 @@ impl Worker {
             let part = outputs.add(&path).map_err(|error| error.to_string())?;
             std::fs::write(part, text).map_err(|error| error.to_string())?;
         }
-        let mut drawing = self.drawing(timeline)?;
-        drawing
-            .grading
-            .update(&drawing.gpu, &project, self.plan.timeline);
-        self.missing = drawing.grading.missing().to_vec();
-        let sources = Sources::new(Hardware::Auto, Arc::new(|_, _| {}));
-        let sample_at = |frame: i64, rate: u32| {
-            i64::try_from(
-                i128::from(frame) * i128::from(rate) * i128::from(timeline.rate.den)
-                    / i128::from(timeline.rate.num),
-            )
-            .map_err(|_| "export exceeds audio sample time".to_owned())
+        let mut drawing = match &file {
+            File::Movie(_) => {
+                let mut drawing = self.drawing(timeline)?;
+                drawing
+                    .grading
+                    .update(&drawing.gpu, &project, self.plan.timeline);
+                self.missing = drawing.grading.missing().to_vec();
+                Some(drawing)
+            }
+            File::Sound(_) => None,
         };
-        let mut mix = Mixer::new(
-            Arc::clone(&project),
-            self.plan.timeline,
-            columbina_audio::graph::Purpose::Export,
-        )
-        .source(
-            AudioFormat {
-                rate: 48000,
-                channels: 2,
-            },
-            sample_at(self.plan.range.start, timeline.sample_rate)?,
-        );
-        let mut pending = VecDeque::new();
+        let sources = Sources::new(Hardware::Auto, Arc::new(|_, _| {}));
         let mut samples = 0;
         let mut picture = Picture::default();
         // The light of the content of PQ, measured of each frame: MaxCLL and MaxFALL.
@@ -535,39 +644,27 @@ impl Worker {
         self.tell("running");
         for frame in self.plan.range.clone() {
             self.cancelled()?;
-            let (mut scene, clips) = scene(&project, timeline, frame, &sources)?;
-            self.draw(
-                &mut drawing,
-                timeline,
-                (&mut scene, &clips, frame),
-                &mut picture,
-            )?;
-            if pq {
-                let (most, mean) = managed::light_of(&picture);
-                light = (light.0.max(most), light.1.max(mean));
-            }
-            let encoder = self.encoder.clone().unwrap_or_default();
-            writer.video(&picture).map_err(|error| {
-                format!(
-                    "the encoder {encoder} failed at frame {} of the export: {error}",
-                    self.frame
-                )
-            })?;
-            self.frame += 1;
-            if sound {
-                let end = sample_at(self.frame, 48000)?;
-                let needed =
-                    usize::try_from((end - samples) * 2).map_err(|_| "invalid audio block")?;
-                while pending.len() < needed {
-                    if let Some(block) = mix.next()? {
-                        pending.extend(block);
-                    } else {
-                        pending.resize(needed, 0.0);
-                        break;
-                    }
+            if let (File::Movie(writer), Some(drawing)) = (&mut file, &mut drawing) {
+                let (mut scene, clips) = scene(&project, timeline, frame, &sources)?;
+                self.draw(drawing, timeline, (&mut scene, &clips, frame), &mut picture)?;
+                if pq {
+                    let (most, mean) = managed::light_of(&picture);
+                    light = (light.0.max(most), light.1.max(mean));
                 }
-                writer
-                    .audio(&pending.drain(..needed).collect::<Vec<_>>())
+                let encoder = self.encoder.clone().unwrap_or_default();
+                writer.video(&picture).map_err(|error| {
+                    format!(
+                        "the encoder {encoder} failed at frame {} of the export: {error}",
+                        self.frame
+                    )
+                })?;
+            }
+            self.frame += 1;
+            if let Some(mix) = &mut mix {
+                let end = sample_at(timeline, self.frame, self.plan.sound.rate)?;
+                let needed = usize::try_from(end - samples).map_err(|_| "invalid audio block")?;
+                let run = mix.take(needed)?;
+                file.audio(&run)
                     .map_err(|error| format!("the sound encoder failed: {error}"))?;
                 samples = end;
             }
@@ -586,22 +683,31 @@ impl Worker {
             });
         }
         self.cancelled()?;
-        if pq {
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "nits of at most 10000"
-            )]
-            writer
-                .set_content_light(ContentLight {
-                    max_cll: light.0.ceil() as u32,
-                    max_fall: light.1.ceil() as u32,
-                })
-                .map_err(|error| format!("the light of the movie could not be said: {error}"))?;
+        match file {
+            File::Movie(mut writer) => {
+                if pq {
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "nits of at most 10000"
+                    )]
+                    writer
+                        .set_content_light(ContentLight {
+                            max_cll: light.0.ceil() as u32,
+                            max_fall: light.1.ceil() as u32,
+                        })
+                        .map_err(|error| {
+                            format!("the light of the movie could not be said: {error}")
+                        })?;
+                }
+                writer
+                    .finish()
+                    .map_err(|error| format!("the movie could not be finished: {error}"))?;
+            }
+            File::Sound(writer) => writer
+                .finish()
+                .map_err(|error| format!("the sound could not be finished: {error}"))?,
         }
-        writer
-            .finish()
-            .map_err(|error| format!("the movie could not be finished: {error}"))?;
         self.cancelled()?;
         outputs.publish().map_err(|error| error.to_string())
     }
@@ -610,7 +716,8 @@ impl Worker {
     fn drawing(&self, timeline: &columbina_model::Timeline) -> Result<Drawing, String> {
         let gpu = self.graphics.gpu().map_err(|error| error.to_string())?;
         let compositor = Compositor::new(Arc::clone(&gpu));
-        let target = Target::export(&gpu, timeline.width, timeline.height, self.plan.video.bits)
+        let bits = self.plan.video.map_or(8, |video| video.bits);
+        let target = Target::export(&gpu, timeline.width, timeline.height, bits)
             .map_err(|error| error.to_string())?;
         target.set_matrix(self.plan.output.matrix);
         Ok(Drawing {
@@ -709,6 +816,32 @@ impl Worker {
             std::thread::sleep(Duration::from_millis(250));
         }
     }
+}
+
+/// The file of an export: a film, or sound alone.
+enum File {
+    Movie(Writer),
+    Sound(SoundWriter),
+}
+
+impl File {
+    /// Encodes the next samples of the sound.
+    fn audio(&mut self, samples: &[f32]) -> Result<(), MediaError> {
+        match self {
+            File::Movie(writer) => writer.audio(samples),
+            File::Sound(writer) => writer.audio(samples),
+        }
+    }
+}
+
+/// The sample at `rate` of the start of frame `frame` of `timeline` (counted from its start, or
+/// from the start of the export), to the sample below.
+fn sample_at(timeline: &columbina_model::Timeline, frame: i64, rate: u32) -> Result<i64, String> {
+    i64::try_from(
+        i128::from(frame) * i128::from(rate) * i128::from(timeline.rate.den)
+            / i128::from(timeline.rate.num),
+    )
+    .map_err(|_| "export exceeds audio sample time".to_owned())
 }
 
 /// The tags of a file whose frames are put out as `output`.
@@ -907,8 +1040,10 @@ mod tests {
         let request = Request {
             timeline: project.timelines[0].id.clone(),
             path: dir.join("film.mp4"),
-            codec: VideoCodec::H264,
-            quality: VideoQuality::Medium,
+            codec: Some(VideoCodec::H264),
+            quality: Some(VideoQuality::Medium),
+            video: None,
+            audio: None,
             range: None,
             subtitle_tracks: vec![],
             replace: false,
@@ -928,6 +1063,7 @@ mod tests {
             encoder: None,
             message: None,
             restored: 0,
+            normalization: None,
             lose_at: None,
         }
     }
@@ -946,8 +1082,10 @@ mod tests {
         let request = Request {
             timeline: project.timelines[0].id.clone(),
             path: dir.path().join("film.mov"),
-            codec: VideoCodec::Prores,
-            quality: VideoQuality::Medium,
+            codec: Some(VideoCodec::Prores),
+            quality: Some(VideoQuality::Medium),
+            video: None,
+            audio: None,
             range: None,
             subtitle_tracks: vec![],
             replace: false,
@@ -980,8 +1118,10 @@ mod tests {
         let request = Request {
             timeline: timeline.id.clone(),
             path: dir.path().join("film.mov"),
-            codec: VideoCodec::Prores,
-            quality: VideoQuality::Medium,
+            codec: Some(VideoCodec::Prores),
+            quality: Some(VideoQuality::Medium),
+            video: None,
+            audio: None,
             range: None,
             subtitle_tracks: vec![],
             replace: false,
@@ -1069,8 +1209,10 @@ mod tests {
         let request = Request {
             timeline: timeline.id.clone(),
             path: dir.path().join("graded.mov"),
-            codec: VideoCodec::Prores,
-            quality: VideoQuality::High,
+            codec: Some(VideoCodec::Prores),
+            quality: Some(VideoQuality::High),
+            video: None,
+            audio: None,
             range: Some(FrameRange { from: 2, to: 12 }),
             subtitle_tracks: vec![],
             replace: false,
@@ -1110,8 +1252,10 @@ mod tests {
         let request = Request {
             timeline: "t1".into(),
             path: dir.path().join("graded.mov"),
-            codec: VideoCodec::Prores,
-            quality: VideoQuality::High,
+            codec: Some(VideoCodec::Prores),
+            quality: Some(VideoQuality::High),
+            video: None,
+            audio: None,
             range: Some(FrameRange {
                 from: 0,
                 to: frames,
@@ -1257,9 +1401,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut worker = worker(dir.path());
         let mut outputs = output::Files::new(false);
-        let mut writer = worker
-            .writer_with(&mut outputs, false, no_hardware)
-            .unwrap();
+        let mut writer = worker.writer_with(&mut outputs, None, no_hardware).unwrap();
         assert_eq!(worker.plan.path, dir.path().join("film.mov"));
         assert_eq!(worker.encoder.as_deref(), Some("prores_ks"));
         assert!(worker.message.as_ref().unwrap().contains("ProRes"));
@@ -1296,9 +1438,7 @@ mod tests {
         std::fs::write(&path, b"keep existing movie").unwrap();
         let mut worker = worker(dir.path());
         let mut outputs = output::Files::new(false);
-        assert!(worker
-            .writer_with(&mut outputs, false, no_hardware)
-            .is_err());
+        assert!(worker.writer_with(&mut outputs, None, no_hardware).is_err());
         drop(outputs);
         assert_eq!(std::fs::read(&path).unwrap(), b"keep existing movie");
         assert!(!dir.path().join("film.mp4.part").exists());

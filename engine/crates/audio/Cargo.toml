@@ -27,3 +27,5 @@ nnnoiseless.workspace = true
 # The crate itself with its module `testing`, for the tests in tests/.
 columbina-audio = { path = ".", features = ["testing"] }
 proptest.workspace = true
+# The loudness of BS.1770 by another hand, to check ours against (tests/loudness.rs).
+ebur128.workspace = true

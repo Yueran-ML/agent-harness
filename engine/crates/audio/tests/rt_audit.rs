@@ -53,6 +53,14 @@ fn the_code_of_the_threads_of_the_sound_does_not_lock_allocate_or_log() {
         "biquad.rs",
         "dynamics.rs",
         "eq.rs",
+        "common.rs",
+        "gain.rs",
+        "limiter.rs",
+        "soft_clip.rs",
+        "width.rs",
+        "deesser.rs",
+        "dehummer.rs",
+        "true_peak.rs",
     ] {
         assert!(
             names.iter().any(|name| name == expected),

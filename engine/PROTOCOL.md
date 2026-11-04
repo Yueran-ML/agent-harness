@@ -1815,9 +1815,13 @@ Whatever a patch makes is checked as a project that is read is: a setting out of
 **Ids.** A bus added with an empty id is given `B` and one above the highest number of the ids of
 that shape among the buses of its timeline (`B2` beside `B1`), a VCA `VCA` and such a number, a
 group `TG` and one; they do not use `next_id`, so one taken away and added again without an id may
-get the id it had. One given an id keeps it, unless another of its kind holds it (`taken`), a
+get the id it had; a bus also passes over the ids of the tracks of its timeline (`B3` beside a
+track named `B2`). One given an id keeps it, unless another of its kind holds it (`taken`), a
 track of its timeline holds it (a bus: `taken`, `what: "track"`) or it starts with `$`. Buses,
-VCAs and groups have no names of a transaction; the tracks that a group names may.
+VCAs and groups have no names of a transaction; a track may be named by one where a group names
+it as a member (`add_track_group`, and `members` of a patch of `set_track_group`) and where it
+drives a sidechain or a Ducker (`{"track": "$name"}` anywhere in a patch of `set_track_audio`
+or `set_bus`, in the strip of `add_bus`, and in the insert of `add_insert` and `set_insert`).
 
 **Taking away.** `remove_bus` of a bus that a strip outputs or sends to, or whose sound drives a
 sidechain or a Ducker, is refused as `in_use` (`what: "bus"`, `by` the track or bus); of the bus
@@ -1833,11 +1837,16 @@ given the next `fx<n>` of its strip; one of a clip keeps the id it is given, whi
 `set_insert` puts one in place of the one at `slot`, or with `insert: null` takes that one away,
 those after it moving up; its inverse puts back what was replaced, or adds back what was taken
 away (`add_insert` at `slot`). `move_insert` moves the one at `from` to `to`, those between moving
-over; an insert keeps its id as it moves, and so do its lanes. A `slot`, `from` or `to` that is not
+over; an insert keeps its id as it moves within its chain, and so do its lanes, while an insert
+copied or moved to another strip is a new insert there, which takes the next id of that strip:
+`copy_effects` gives it an empty id, and a client that moves an insert to another strip takes it
+away from the one and adds it to the other with an empty id. A `slot`, `from` or `to` that is not
 a place of the chain is `out_of_list`; a strip of more than 6 inserts is `too_many_inserts`; an
 effect of a clip with a sidechain on is `out_of_range` (`sidechain`); an insert taken away or
 replaced while a lane names its id leaves the lane naming what is not there, refused as
 `out_of_range` (`lane`), so the lane is taken away first.
+
+A strip sends to a bus at most once: two sends to one bus are `out_of_range` (`sends`).
 
 **Clips and crossfades.** `set_clip` also sets `eq` (whole, 4 bands), `effects` (whole),
 `pitch_correction`, `pitch` and `channels` (`null` for the media's channels mixed as libav mixes
@@ -1881,14 +1890,14 @@ id targets that track. Both picture and sound placed together get a new link gro
 | `slide` | `clip`, `delta`, `linked?` | Move the clip while adjusting neighbors, keeping its source and length. A final clip may slide and change total duration. |
 | `add_transition` | `left`, `right`, `length`, `kind?`, `align?`, `linked?` | Default dissolve on video or crossfade on audio, centered; with `linked`, a transition of picture brings the crossfade of its linked sound (see Edits of sound). |
 | `remove_transition` | `id` | Remove the transition. |
-| `set_transition` | `id`, `kind?`, `length?`, `align?` | Change given transition settings. |
+| `set_transition` | `id`, `kind?`, `length?`, `align?`, `fade_in_level_db?`, `fade_out_level_db?` | Change given transition settings; the levels of a crossfade as the operation sets them. |
 | `set_speed` | `clip`, `speed`, `reverse?`, `ripple?`, `linked?` | Preserve source span; optional ripple uses the linked group's change in maximum end, including J/L cuts. |
 | `add_cue` | `track`, `start`, `length`, `text` | Add one subtitle. |
 | `set_cue` | `id`, `start?`, `length?`, `text?` | Change given subtitle settings. |
 | `remove_cue` | `id` | Remove one subtitle. |
 | `cues_from` | `track`, `items:[{start,length,text},...]` | Replace all subtitles on that track. |
 | `add_track` | `kind`, `index?`, `name?`, `language?` | Add an empty track; index is among tracks of its kind; name is its display label. A subtitle track is added disabled (hidden) while another subtitle track of the timeline is enabled, and enabled otherwise. |
-| `remove_track` | `track` | Remove the track and its contents, all restored by undo. |
+| `remove_track` | `track` | Remove the track and its contents, all restored by undo; a track of sound leaves the groups of tracks that it is in, in the same transaction (a sidechain or a Ducker that it drives still refuses it as `in_use`). |
 
 The edits of sound are below (Edits of sound).
 
@@ -1939,7 +1948,8 @@ fades are not silently substituted. All changes are still one reversible transac
 | `nudge_clip_gain` | `clips`, `delta_db`, `linked?` | Move the volume of clips of sound by `delta_db`, keys and all (±1 / ±3 dB, p. 969; a relative drag, p. 3837). |
 | `paste_attributes` | `from`, `to: [clips]`, `items: [volume\|plugins\|equalizer]` | Paste the volume (keys and all), the effects or the equalizer of a clip onto others (p. 3842). |
 | `remove_attributes` | `clips`, `items` | Put them back as a new clip has them: 0 dB with no keys, no effects, the equalizer off (p. 3804). |
-| `fade_to_playhead` | `clip`, `side: in\|out`, `at` | Fade in from the clip's start to frame `at`, or out from it to the end (p. 3812). |
+| `fade_to_playhead` | `clips`, `side: in\|out`, `at` | Fade each clip in from its start to frame `at`, or out from it to its end (p. 3812), in one transaction. |
+| `set_bus` | `id`, `patch` | As the operation; a bus soloed while the solo is exclusive takes the solo off the others (below). |
 | `copy_effects` | `from`, `to: [chains]` | Put the inserts of one chain (`{"track"}`, `{"bus"}` or `{"clip"}`, as `of` of the operations) in place of all those of others (pp. 3855–3860): only the inserts, not Dynamics nor the equalizer. |
 
 `add_transition` takes `linked?` (false where it is left out): a transition of picture with
@@ -1947,24 +1957,30 @@ fades are not silently substituted. All changes are still one reversible transac
 each cut where the clips of sound linked to its two clips meet on a track that is not locked and
 has no transition, as DaVinci Resolve does with linked selection on (p. 973); one that would need
 more of a clip's media than there is is made as long as fits and the edit is `clamped`, and one
-that fits no frame is left out. It is off by default so that a client that adds the crossfade
+that fits no frame is left out. A cut where a clip of sound fades (`fade_out` or `audio_fade_out`
+of the one that ends there, `fade_in` or `audio_fade_in` of the one that starts there) gets no
+crossfade, since a transition does not go where a fade is, and the edit is `clamped`; the
+transition of picture is made all the same. It is off by default so that a client that adds the crossfade
 itself, as the migration of old projects does, is not refused with `cut_taken`.
 
 **Groups of tracks (Ch. 179, p. 3917).** `set_track_audio` with `follow_groups` changes, besides
 `track`, each other track of sound that shares an active group with it whose `linked` has the
 control that changed: `fader` moves the follower's `strip.fader_db` by as much as the track's
-moved, up to +10 dB (a follower at −∞, −100 dB or below, stays there while the group goes down);
+moved, up to +10 dB (a level at −∞, −100 dB or below, counts as −100 dB: the track brought up
+from −120 to −90 dB moved by 10 dB; and a follower at −∞ stays there while the group goes down);
 `panning` moves each number of its `strip.pan` by as much (within its range: `x`, `y` −1…1,
 `rotate` ±180, `spread` 1…99, `divergence` 0…100, `lfe_db` as a fader) and sets its switches to
 the track's; `sends` moves the level of its send to each bus that the track's send to that bus
-moved by as much, and sets its `on` alike (sends are not added or taken away); `mute`, `solo` and
+moved by as much (as a fader moves), and sets its `on` alike (sends are not added or taken away); `mute`, `solo` and
 `automation` (the automation arm) are set to the track's. Nothing else follows; inserts,
 Dynamics and the equalizer never do. Each follower is set by its own `set_track_audio` of only
 what changes of it, in the one transaction, so one undo takes all of them back. A track that is
 locked is not changed: as `track` it is refused as `locked`, and as a follower it is left alone.
-While the timeline's `audio.exclusive_solo` is on (p. 3885), a track that is soloed takes the solo
-off every other track that is not locked (but those soloed with it by a group) and every bus;
-their Solo Safe stays.
+While the timeline's `audio.exclusive_solo` is on (p. 3885), a track that is soloed by the edit
+`set_track_audio`, or a bus by the edit `set_bus`, takes the solo off every other track that is
+not locked (but those soloed with it by a group), every other bus and every VCA, in the same
+transaction; the Solo Safe of a track stays, and a track that is solo-safe and soloed loses its
+solo like any other. The operations set only what they are given.
 
 **Keyframes.** `clip_gain_keys` `add` puts a key at `at` with `value` (the value of the setting
 there where it is left out) and `interp` (linear where left out); one already at `at` (counted
@@ -1972,26 +1988,44 @@ exactly, whatever its scale) is given them instead. `remove` takes the key at `a
 last one taken away leaves its value, fixed. `move` moves the key at `at` to `to`, and to `value`
 where it is given; a key at `to` already is `out_of_range` (`to`). `set_interp` sets its `interp`.
 A key that is not at `at` is `missing` (`what: "key"`, `id` as `ticks/scale`).
-`clip_gain_range` puts keys at the samples of the timeline's rate nearest to `from` and `to`
-(in the scale of the timeline's samples), a pair at each end one sample apart: the outer one at
-the value that was there and the inner one at that value plus `delta_db`; every key between them
-moves by `delta_db`, those outside stay, and any between the two of a pair are taken away. So a
-clip at 0 dB lowered by 6 over [1 s, 2 s) has keys at 1 s − 1 sample (0), 1 s (−6), 2 s − 1
-sample (−6) and 2 s (0). A range of no sample, or `delta_db: 0`, is `empty_range`.
+`clip_gain_range` puts keys on a grid of the timeline's sample rate laid on the time of the
+clip's media (the scale of the keys is the sample rate): at the points of that grid nearest to
+`from` and `to`, a pair at each end one point apart, the outer one at the value that was there and
+the inner one at that value plus `delta_db`; every key between them moves by `delta_db`, those
+outside stay, and any between the two of a pair are taken away. The grid falls on the samples of
+the timeline only where the clip plays at speed 1 from a `source_in` on that grid. So a clip at 0
+dB lowered by 6 over [1 s, 2 s) has keys at 1 s − 1 sample (0), 1 s (−6), 2 s − 1 sample (−6) and
+2 s (0). A key that stands where one of the four goes keeps its interpolation; an inner key is
+linear; an outer key that splits a segment carries the ease of the segment at its side: the outer
+key before the range eases in where the key after it eased in, and the one after the range eases
+out where the key before it eased out. Values outside the range are the same as before where the
+segments are straight lines; under an ease they are close to it but not the same. `from` and
+`to` must be within the media that the clip plays (else `out_of_range`, `from` or `to`); a range
+of no point of the grid, or `delta_db: 0`, is `empty_range`.
 `nudge_clip_gain` with `linked` (true where left out) takes the clips linked to those named too,
 passes over clips that are not on tracks of sound (refused as `out_of_range`, `clips`, where none
 is), and `delta_db: 0` is `empty_range`. A gain that `clip_gain_range` or `nudge_clip_gain` would
 take out of −96…24 dB is kept at that end, and the edit is `clamped`.
-`paste_attributes` puts the keys of the volume of `from` at the same places from where each clip
-begins in its media (a key 1 s after where `from` begins is 1 s after where the clip that it is
-pasted onto begins), exactly, refused as `too_large` (`at`) where the time would not fit.
-`remove_attributes` sets only what differs. Both take no linked clips; an empty `items` or list of
-clips is `out_of_range` (`items`, `clips`). `fade_to_playhead` sets `audio_fade_in` or
+`paste_attributes` puts the keys of the volume of `from` as far from where each clip starts on
+the timeline, in its media, as they were from where `from` starts: from where a clip begins in its
+media, or where it ends there for one that plays backward. A key 1 s into `from` is 1 s into the
+clip that it is pasted onto, whichever way each plays; onto a clip that plays the other way the
+keys are mirrored, and an ease in becomes an ease out. Times are exact, refused as `too_large`
+(`at`) where one would not fit. `remove_attributes` sets only what differs. Both take no linked
+clips; an empty `items` or list of clips is `out_of_range` (`items`, `clips`).
+`clip_gain_keys`, `clip_gain_range`, `paste_attributes` (from and onto) and `remove_attributes`
+refuse a clip that is not on a track of sound as `wrong_track` (`what: "sound"`), while
+`nudge_clip_gain` passes such clips over; a key added or moved outside the media that the clip
+plays is `out_of_range` (`at` or `to`). `fade_to_playhead` sets `audio_fade_in` or
 `audio_fade_out` of a clip of sound (its length the frames from the clip's start to `at`, or from
 `at` to its end, as a time of the timeline; its curve and skew kept), and `fade_in` or `fade_out`
-of a clip of picture; `at` must be after the clip's first frame and before its end, else
-`nothing_at`. `copy_effects` with an empty `to` is `out_of_range` (`to`); a chain that is `from`
-is passed over.
+of a clip of picture, of each clip named, in one transaction; `at` must be after each clip's first
+frame and before its end, else `nothing_at`; a fade that would meet the other fade of its clip
+(the two together longer than the clip) is `out_of_range` (`fade`), and one at a cut where a
+transition is is `fade_at_transition`. `copy_effects` with an empty `to` is `out_of_range` (`to`); a chain that is `from`
+is passed over; the copies are new inserts, which a strip gives the next ids of its own (so a
+lane of the target's old inserts names an insert that is not there, and is refused as
+`out_of_range`, `lane`, until it is taken away).
 
 ## Grades
 

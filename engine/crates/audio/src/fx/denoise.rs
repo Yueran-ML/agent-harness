@@ -5,21 +5,27 @@
 //! # The transform
 //!
 //! A short-time transform of [`FFT`] points every [`HOP`] samples (75 % overlap) on a grid laid
-//! on the timeline ([`Node::align`]). Each frame is weighed by a periodic Hann window
-//! `wa(n) = sin²(πn/N)` before the transform and by a synthesis window `ws` after it, and added
-//! to what the frames before it left:
+//! on the timeline ([`Node::align`]). Each frame is weighed by an analysis window `wa` before the
+//! transform and by a synthesis window `ws` after it, and added to what the frames before it
+//! left. The pair is asymmetric (after D. Mauler and R. Martin, "A low delay, variable
+//! resolution, perfect reconstruction spectral analysis-synthesis system for speech
+//! enhancement", EUSIPCO 2007), with N = 2048, R = 512, L = N − R and M = L/2:
 //!
 //! ```text
-//! ws(n) = 0                                           for n < R
-//! ws(n) = 2R/(N − R) · sin²(π(n − R)/(N − R)) / wa(n)   for R ≤ n < N
+//! wa(n) = sin(πn / (2(N − M)))       for n < N − M      (a slow rise)
+//! wa(n) = sin(π(n − R)/L)            for N − M ≤ n < N  (half a sine down to the end)
+//! ws(n) = 0                          for n < R
+//! ws(n) = h(n) / wa(n)               for R ≤ n < N,  h(n) = 2R/L · sin²(π(n − R)/L)
 //! ```
 //!
-//! with N = 2048 and R = 512. The product `wa·ws` is a Hann window of N − R samples on the end
-//! of the frame, three of which overlap to 1 at every sample (Σ over the hops = 1), so that a
-//! frame left as it is gives the input back. Since `ws` is 0 on the first hop of a frame, a
-//! sample is complete once the frame that ends N − R samples after it is done: the delay is
-//! [`LATENCY`] = N − R = 1536 samples, whatever the blocks, to the sample (the plan; the
-//! symmetric windows of the reference's C-X4 would need 2048).
+//! The product `wa·ws = h` is a Hann window of L samples on the end of the frame, three of which
+//! overlap to 1 at every sample, so that a frame left as it is gives the input back. On the last
+//! M samples `ws` is 2R/L · sin(π(n − R)/L), which falls to 0 at the end of the frame: a gain
+//! that changes from one frame to the next is not cut off at the frame's edge (a synthesis window
+//! that ends high lets such changes through as clicks). Since `ws` is 0 on the first hop of a
+//! frame, a sample is complete once the frame that ends N − R samples after it is done: the delay
+//! is [`LATENCY`] = N − R = 1536 samples, whatever the blocks, to the sample (the plan; symmetric
+//! windows, as the reference's C-X4 has, would need 2048).
 //!
 //! # The gate
 //!
@@ -41,8 +47,22 @@
 //! 4. With Time Smoothing on, the gain follows `g` over the frames with the time constant of
 //!    [`DENOISE_TIME_SMOOTHING`].
 //!
-//! The first frame after a reset that holds N samples of input starts the profiles at what it
-//! hears; the frames before it, partly before the start, pass as they are.
+//! # Silence and the start
+//!
+//! A frame whose level is below [`DENOISE_SILENCE_DBFS`] (digital silence, such as the gap
+//! between two clips) changes neither profile nor any gain: after the gap the noise is the noise
+//! before it. After [`DENOISE_FORGET`] of it, the cap of the pre-roll, the gate forgets and
+//! starts again as new, so that a playback started inside a longer gap hears after it what an
+//! export hears.
+//!
+//! A gate that has heard nothing yet (after a reset, or having forgotten) starts its profiles at
+//! the first frame it hears, which may be a voice: so it lets everything through for the first
+//! half second of sound ([`DENOISE_WARMUP`]), then comes to its full depth over the next. After
+//! k frames heard, the steps of its profiles are c / (1 − (1 − c)^k) for a follower of step c:
+//! what it has heard weighed as a follower that had heard it forever weighs it, its weights
+//! summing to 1 (the first frame is taken whole), so that a gate started in the middle soon
+//! holds what one started earlier holds. The frames before the first whole frame after a reset
+//! (partly before the start) pass as they are.
 //!
 //! # After the gate
 //!
@@ -60,10 +80,11 @@
 //! with them ([`NoiseReduction::new`]) and swaps it in (T4a, T5).
 
 use crate::constants::{
-    samples, DENOISE_FFT, DENOISE_FLOOR_DB, DENOISE_FREQUENCY_SMOOTHING_BINS, DENOISE_HISS_HZ,
-    DENOISE_HOP, DENOISE_INPUT_LIMIT, DENOISE_LATENCY, DENOISE_POWER_CEILING, DENOISE_POWER_FLOOR,
-    DENOISE_RUMBLE_HZ, DENOISE_SENSITIVITY_FACTOR, DENOISE_SETTLE_TIME_CONSTANTS,
-    DENOISE_TIME_SMOOTHING, SMOOTHING,
+    samples, DENOISE_FFT, DENOISE_FLOOR_DB, DENOISE_FORGET, DENOISE_FREQUENCY_SMOOTHING_BINS,
+    DENOISE_HISS_HZ, DENOISE_HOP, DENOISE_INPUT_LIMIT, DENOISE_LATENCY, DENOISE_POWER_CEILING,
+    DENOISE_POWER_FLOOR, DENOISE_RUMBLE_HZ, DENOISE_SENSITIVITY_FACTOR,
+    DENOISE_SETTLE_TIME_CONSTANTS, DENOISE_SILENCE_DBFS, DENOISE_TIME_SMOOTHING, DENOISE_WARMUP,
+    SMOOTHING,
 };
 use crate::fft::{Complex32, RealFft};
 use crate::fx::rnnoise::Voice;
@@ -474,22 +495,20 @@ impl Settings {
 
 // --- The windows and the transform -----------------------------------------------------------
 
-/// The analysis window: a periodic Hann window of [`FFT`] samples, sin²(πn/N).
+/// The analysis window (see the module): a slow quarter sine up to N − M, then half a sine down
+/// to the end of the frame.
 #[must_use]
 #[allow(
     clippy::cast_possible_truncation,
-    clippy::cast_precision_loss,
-    reason = "a window of 2048 samples"
+    reason = "a window of 2048 samples in f32"
 )]
 pub fn analysis_window() -> Vec<f32> {
-    (0..FFT)
-        .map(|n| hann(n as f64 / FFT as f64) as f32)
-        .collect() // rt-ok: made when the node is built
+    (0..FFT).map(|n| analysis(n) as f32).collect() // rt-ok: made when the node is built
 }
 
-/// The synthesis window: 0 on the first [`HOP`], then a periodic Hann window of
-/// [`FFT`] − [`HOP`] samples scaled by 2R/(N − R), divided by the analysis window (see the
-/// module).
+/// The synthesis window (see the module): 0 on the first [`HOP`], then the Hann window of
+/// [`FFT`] − [`HOP`] samples on the end of the frame, scaled by 2R/(N − R), divided by the
+/// analysis window; it falls to 0 at the end of the frame.
 #[must_use]
 #[allow(
     clippy::cast_possible_truncation,
@@ -504,17 +523,31 @@ pub fn synthesis_window() -> Vec<f32> {
             if n < HOP {
                 0.0
             } else {
-                let analysis = hann(n as f64 / FFT as f64);
-                (scale * hann((n - HOP) as f64 / span) / analysis) as f32
+                let x = std::f64::consts::PI * (n - HOP) as f64 / span;
+                (scale * x.sin() * x.sin() / analysis(n)) as f32
             }
         })
         .collect() // rt-ok: made when the node is built
 }
 
-/// sin²(πx).
-fn hann(x: f64) -> f64 {
-    let s = (std::f64::consts::PI * x).sin();
-    s * s
+/// The analysis window at `n`, in f64.
+#[allow(clippy::cast_precision_loss, reason = "a window of 2048 samples")]
+fn analysis(n: usize) -> f64 {
+    use std::f64::consts::PI;
+    let span = (FFT - HOP) as f64;
+    let rise = FFT - (FFT - HOP) / 2;
+    if n < rise {
+        (PI * n as f64 / (2.0 * rise as f64)).sin()
+    } else {
+        (PI * (n - HOP) as f64 / span).sin()
+    }
+}
+
+/// The sum of the squares of the analysis window: the mean power in a bin of white noise of RMS
+/// 1.
+#[must_use]
+pub fn window_power() -> f64 {
+    (0..FFT).map(|n| analysis(n) * analysis(n)).sum()
 }
 
 /// A frame of [`Stft::process`]: the channel, the sample of the block on which it ends, and
@@ -865,8 +898,12 @@ struct Track {
     noise: Vec<f32>,
     /// The gain of each bin, smoothed over time.
     gain: Vec<f32>,
-    /// A whole frame has been heard since the reset.
+    /// A frame that is not silence has been heard since the reset (or since it forgot).
     started: bool,
+    /// The frames that are not silence heard since then.
+    heard: u32,
+    /// The frames of silence in a row.
+    quiet: u32,
 }
 
 impl Track {
@@ -876,6 +913,8 @@ impl Track {
             noise: vec![0.0; BINS],  // rt-ok: when the graph is built
             gain: vec![1.0; BINS],   // rt-ok: when the graph is built
             started: false,
+            heard: 0,
+            quiet: 0,
         }
     }
 
@@ -884,6 +923,15 @@ impl Track {
         self.noise.fill(0.0);
         self.gain.fill(1.0);
         self.started = false;
+        self.heard = 0;
+        self.quiet = 0;
+    }
+
+    /// Starts again as new after a long silence: what was heard is forgotten, the silence kept.
+    fn forget(&mut self) {
+        let quiet = self.quiet;
+        self.reset();
+        self.quiet = quiet;
     }
 }
 
@@ -902,6 +950,29 @@ struct Gate {
     band: Band,
     /// The frequency of a bin.
     bin_hz: f32,
+    /// The mean power of a bin below which a frame is silence.
+    silence: f64,
+    /// The frames of silence after which the gate forgets.
+    forget: u32,
+    /// The frames heard through which a new gate lets everything through, then those over
+    /// which it comes to its depth.
+    open: u32,
+    ramp: u32,
+}
+
+/// [`window_power`] in closed form: (N − M)/2 − 1/2 for the rise and M/2 + 1/2 for the fall,
+/// N/2 = 1024 in all (checked by a test).
+const WINDOW_POWER: f64 = 1024.0;
+
+/// The frames (hops) in `seconds` at `rate`, rounded up.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "a few hundred frames"
+)]
+fn frames(seconds: f64, rate: u32) -> u32 {
+    (seconds * f64::from(rate) / HOP as f64).ceil() as u32
 }
 
 /// 1 − exp(−hop / (τ·rate)): the step of a one-pole follower of time constant `tau` seconds
@@ -938,6 +1009,10 @@ impl Gate {
             half: (widest * value(Param::FrequencySmoothing) / 100.0).round() as usize,
             band: Band::from_code(value(Param::Band)).unwrap_or_default(),
             bin_hz: rate as f32 / FFT as f32,
+            silence: 10.0_f64.powf(f64::from(DENOISE_SILENCE_DBFS) / 10.0) * WINDOW_POWER,
+            forget: frames(DENOISE_FORGET, rate),
+            open: frames(DENOISE_WARMUP.0, rate),
+            ramp: frames(DENOISE_WARMUP.1, rate).max(1),
         }
     }
 }
@@ -1082,9 +1157,16 @@ fn settle_of(follows: bool, attack: f32, ratio: f32, rate: u32) -> u32 {
         } else {
             0.0
         };
+    let warmup = if follows {
+        DENOISE_WARMUP.0 + DENOISE_WARMUP.1
+    } else {
+        0.0
+    };
     let rate = f64::from(rate);
-    let total =
-        (2 * FFT) as f64 + (SMOOTHING * rate).round() + DENOISE_SETTLE_TIME_CONSTANTS * taus * rate;
+    let total = (2 * FFT) as f64
+        + (SMOOTHING * rate).round()
+        + warmup * rate
+        + DENOISE_SETTLE_TIME_CONSTANTS * taus * rate;
     total.ceil().min(f64::from(u32::MAX)) as u32
 }
 
@@ -1106,9 +1188,24 @@ fn gate(
     if !complete {
         return;
     }
+    let mut total = 0.0_f64;
     for (power, bin) in power.iter_mut().zip(spectrum.iter()) {
         *power = bin.norm_sqr();
+        total += f64::from(*power);
     }
+    if total / (BINS as f64) < gate.silence {
+        // Silence: nothing changes but its count; after long enough, the gate forgets.
+        track.quiet = track.quiet.saturating_add(1);
+        if track.quiet >= gate.forget && track.heard > 0 {
+            track.forget();
+        }
+        for (bin, gain) in spectrum.iter_mut().zip(&track.gain) {
+            *bin *= *gain;
+        }
+        return;
+    }
+    track.quiet = 0;
+    track.heard = track.heard.saturating_add(1);
     let mut sum = 0.0_f64;
     let mut low = 0;
     let mut high = 0;
@@ -1124,7 +1221,18 @@ fn gate(
         }
         *smoothed = (sum.max(0.0) / (high - low) as f64) as f32;
     }
-    let floor = crate::db_to_gain(DENOISE_FLOOR_DB);
+    let floor = f64::from(crate::db_to_gain(DENOISE_FLOOR_DB));
+    // A new gate is open, then comes to its depth; Manual with a noise learned knows the noise.
+    let depth = if learned.is_some() {
+        1.0
+    } else {
+        (f64::from(track.heard.saturating_sub(gate.open)) / f64::from(gate.ramp)).min(1.0)
+    };
+    // After a start, the steps of the profiles weigh what was heard as a follower that had
+    // heard it forever would, its weights summing to 1: c / (1 − (1 − c)^k) after k frames.
+    let heard = track.heard as f32;
+    let started = |step: f32| step / (1.0 - (1.0 - step).powf(heard));
+    let (signal_step, rise) = (started(gate.signal_step), started(gate.noise_step));
     for k in 0..BINS {
         let q = smoothed[k].clamp(DENOISE_POWER_FLOOR, DENOISE_POWER_CEILING);
         let noise = if let Some(learned) = learned {
@@ -1132,13 +1240,13 @@ fn gate(
         } else {
             let s = q.ln();
             if track.started {
-                let signal = track.signal[k] + gate.signal_step * (s - track.signal[k]);
+                let signal = track.signal[k] + signal_step * (s - track.signal[k]);
                 let noise = track.noise[k];
                 track.signal[k] = signal;
                 track.noise[k] = if signal < noise {
                     signal
                 } else {
-                    noise + gate.noise_step * (signal - noise)
+                    noise + rise * (signal - noise)
                 };
             } else {
                 track.signal[k] = s;
@@ -1147,9 +1255,12 @@ fn gate(
             track.noise[k]
         };
         let g = if gate.band.gates(k as f32 * gate.bin_hz) {
-            let r = f64::from(q) / (gate.mask * f64::from(noise).exp());
-            let open = 1.0 - 1.0 / (1.0 + r * r);
-            (f64::from(floor) + (1.0 - f64::from(floor)) * open) as f32
+            gain(
+                f64::from(q),
+                gate.mask * f64::from(noise).exp(),
+                floor,
+                depth,
+            )
         } else {
             1.0
         };
@@ -1162,6 +1273,16 @@ fn gate(
         spectrum[k] *= gain;
     }
     track.started = true;
+}
+
+/// The gain of a bin of power `q` under the `mask` (β·θ·N): `f + (1 − f)·r²/(1 + r²)` with
+/// `r = q / mask` and the floor `f`, brought to its `depth` (1 − depth·(1 − g)).
+#[allow(clippy::cast_possible_truncation, reason = "a gain in f32")]
+fn gain(q: f64, mask: f64, floor: f64, depth: f64) -> f32 {
+    let r = q / mask;
+    let open = 1.0 - 1.0 / (1.0 + r * r);
+    let g = floor + (1.0 - floor) * open;
+    (1.0 - depth * (1.0 - g)) as f32
 }
 
 impl Node for Spectral {

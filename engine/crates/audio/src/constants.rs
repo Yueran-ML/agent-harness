@@ -403,6 +403,21 @@ pub const DENOISE_SENSITIVITY_FACTOR: (f32, f32) = (1.0, 4.0);
 /// −90 dBFS (we decide).
 pub const DENOISE_SETTLE_TIME_CONSTANTS: f64 = 15.0;
 
+/// The level of a frame below which Noise Reduction takes it for digital silence, in dBFS of the
+/// RMS of the frame: such a frame changes neither profile, so that a gap of exact zeros between
+/// clips does not make the gate forget the noise (review of T12; we decide).
+pub const DENOISE_SILENCE_DBFS: f32 = -120.0;
+
+/// The digital silence, in seconds, after which the gate forgets the noise and starts again as
+/// new: the pre-roll's cap of 10 s, so that a start of the playback inside a longer gap hears
+/// after it what an export from the start hears (review of T12; we decide).
+pub const DENOISE_FORGET: f64 = 10.0;
+
+/// How long a gate that has heard nothing yet lets everything through, then how long it takes
+/// to come to its full depth, in seconds of sound heard: a voice from the first sample is not
+/// taken for the noise before it has paused (review of T12; we decide).
+pub const DENOISE_WARMUP: (f64, f64) = (0.5, 0.5);
+
 /// The rate at which `RNNoise` works (plan T12).
 pub const RNNOISE_RATE: u32 = 48_000;
 
@@ -419,9 +434,15 @@ pub const RNNOISE_SCALE: f32 = 32_768.0;
 /// as 70 s, and below −130 dBFS after 80 s (we decide on 60).
 pub const RNNOISE_SETTLE: f64 = 60.0;
 
+/// The digital silence, in seconds, after which the voice mode takes a fresh state: `RNNoise`
+/// keeps its state through silence, so that without this the state after a gap would be that of
+/// the clip before it (review of T12).
+pub const RNNOISE_FORGET: f64 = 1.0;
+
 /// The fresh states of `RNNoise` that the voice mode keeps for each channel, to be as new after
-/// a reset without taking memory on the thread of the mix (we decide).
-pub const RNNOISE_SPARE_STATES: usize = 4;
+/// a reset or a second of digital silence without taking memory on the thread of the mix: its
+/// state has no reset, and copying one into another allocates (about 30 kB each; we decide).
+pub const RNNOISE_SPARE_STATES: usize = 8;
 
 /// The zero crossings on each side of the windowed sinc by which the voice mode takes another
 /// rate to 48 kHz and back (as the mixer of phase 2, `server/src/play/mix.rs`).

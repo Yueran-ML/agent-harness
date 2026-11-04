@@ -621,8 +621,9 @@ pub fn assert_latency<N: Node>(mut factory: impl FnMut() -> N, spec: &Spec) -> u
 
 /// Checks that a node settles as it reports: a node started at the sample `from` of `run`, the
 /// changes before it made at once, differs from a node that processed the run from its start by
-/// less than −90 dBFS from [`Node::settle`] samples on. Each is aligned ([`Node::align`]) to
-/// where it starts in the run, as the graph aligns them. The largest difference after settling.
+/// less than −90 dBFS from [`Node::settle`] samples on, which must leave some of the run to
+/// compare. Each is aligned ([`Node::align`]) to where it starts in the run, as the graph aligns
+/// them. The largest difference after settling.
 pub fn assert_settle<N: Node>(
     mut factory: impl FnMut() -> N,
     spec: &Spec,
@@ -642,6 +643,11 @@ pub fn assert_settle<N: Node>(
     late.prepare(spec).expect("the node takes the spec");
     late.align(u64::try_from(from).expect("a start of a test"));
     let settle = late.settle() as usize;
+    assert!(
+        settle < run.frames - from,
+        "a settling of {settle} reaches past the {} samples from {from}: nothing to compare",
+        run.frames - from
+    );
     let tail = render(&mut late, spec, &run.from(from), |left| left);
     let floor = crate::db_to_gain(SETTLE_FLOOR_DBFS);
     let mut largest = 0.0_f32;

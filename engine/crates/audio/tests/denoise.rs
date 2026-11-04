@@ -16,8 +16,8 @@ mod denoise_signals;
 use columbina_audio::constants::{DENOISE_FLOOR_DB, SMOOTHING};
 use columbina_audio::fft::Complex32;
 use columbina_audio::fx::denoise::{
-    analysis_window, learn, synthesis_window, Band, Frame, Mode, NoiseReduction, Param, Preset,
-    Settings, Spectral, Stft, BINS, FFT, HOP, LATENCY, PARAMS,
+    analysis_window, learn, synthesis_window, window_power, Band, Frame, Mode, NoiseReduction,
+    Param, Preset, Settings, Spectral, Stft, BINS, FFT, HOP, LATENCY, PARAMS,
 };
 use columbina_audio::testing::{
     assert_latency, assert_settle, chunk_invariance, noise, realtime, render, rt_violations, sine,
@@ -62,15 +62,24 @@ fn run_mono(settings: &Settings, input: &[f32]) -> Vec<f32> {
 
 /// The windows of the module, worked out here again from their definitions: a periodic Hann of
 /// 2048 points, and a Hann of 1536 points on the end of the frame divided by it, scaled by 2/3.
+/// The windows of the module, worked out here again from their definitions: the analysis
+/// window a quarter sine up to 1280 and half a sine of 1536 down to the end, the synthesis
+/// window such that the product is a Hann window of 1536 on the end of the frame, scaled by 2/3.
 #[test]
-fn the_windows_are_a_hann_and_a_shorter_hann_on_the_end_that_overlap_to_one() {
+fn the_windows_overlap_to_one_and_the_synthesis_falls_to_zero_at_the_end() {
     use std::f64::consts::PI;
     let (analysis, synthesis) = (analysis_window(), synthesis_window());
     assert_eq!((FFT, HOP, LATENCY, BINS), (2048, 512, 1536, 1025));
+    let wa = |n: usize| -> f64 {
+        if n < 1280 {
+            (PI * n as f64 / 2560.0).sin()
+        } else {
+            (PI * (n - 512) as f64 / 1536.0).sin()
+        }
+    };
     for n in 0..FFT {
-        let hann = (PI * n as f64 / 2048.0).sin().powi(2);
         assert!(
-            (f64::from(analysis[n]) - hann).abs() < 1e-7,
+            (f64::from(analysis[n]) - wa(n)).abs() < 1e-7,
             "analysis at {n}"
         );
         let product = if n < 512 {
@@ -82,7 +91,16 @@ fn the_windows_are_a_hann_and_a_shorter_hann_on_the_end_that_overlap_to_one() {
             (f64::from(analysis[n]) * f64::from(synthesis[n]) - product).abs() < 1e-6,
             "the product at {n}"
         );
+        // On the last 768 samples the synthesis window is 2/3·sin, down to 0 at the end.
+        if n >= 1280 {
+            let expected = 2.0 / 3.0 * (PI * (n - 512) as f64 / 1536.0).sin();
+            assert!(
+                (f64::from(synthesis[n]) - expected).abs() < 1e-6,
+                "synthesis at {n}"
+            );
+        }
     }
+    assert!(synthesis[FFT - 1] < 2e-3 && synthesis.iter().all(|&w| w <= 0.6667));
     // Nothing of the first hop comes out: the frame that ends 1536 samples after a sample is
     // the last that adds to it.
     assert!(synthesis[..HOP].iter().all(|&w| w == 0.0));
@@ -93,6 +111,54 @@ fn the_windows_are_a_hann_and_a_shorter_hann_on_the_end_that_overlap_to_one() {
             .sum();
         assert!((total - 1.0).abs() < 1e-6, "{total} at {n}");
     }
+    let power: f64 = (0..FFT).map(|n| wa(n) * wa(n)).sum();
+    assert!((power - 1024.0).abs() < 1e-9 && (window_power() - 1024.0).abs() < 1e-9);
+}
+
+/// A gain that jumps between frames, at random in each bin (the "musical" changes of a gate),
+/// leaves little above a low tone: the synthesis window that falls to 0 at the end of the frame
+/// does not cut it off (a window that ends high left −37 dB above 3 kHz).
+#[test]
+fn gains_that_jump_between_frames_do_not_spread_a_tone() {
+    let frames = 4 * RATE as usize;
+    let tone = sine(RATE, 200.0, 0.5, frames);
+    let mut stft = Stft::new(1);
+    let mut wet = vec![0.0; frames];
+    let mut dry = vec![0.0; frames];
+    let mut rng = Rng::new(9);
+    stft.process(
+        frames,
+        &[&tone],
+        &mut [&mut wet],
+        &mut [&mut dry],
+        |_, spectrum| {
+            for bin in spectrum.iter_mut() {
+                *bin *= 0.0316 + 0.9684 * rng.unit() as f32;
+            }
+        },
+    );
+    let n = 1 << 17;
+    let segment = &wet[2 * FFT..2 * FFT + n];
+    let mut fft = columbina_audio::fft::RealFft::new(n);
+    let mut signal: Vec<f32> = segment
+        .iter()
+        .enumerate()
+        .map(|(i, x)| x * (std::f64::consts::PI * i as f64 / n as f64).sin().powi(2) as f32)
+        .collect();
+    let mut spectrum = fft.spectrum();
+    fft.forward(&mut signal, &mut spectrum);
+    let hz = f64::from(RATE) / n as f64;
+    let (mut above, mut all) = (0.0_f64, 0.0_f64);
+    for (k, bin) in spectrum.iter().enumerate() {
+        let power = f64::from(bin.norm_sqr());
+        all += power;
+        if k as f64 * hz > 3_000.0 {
+            above += power;
+        }
+    }
+    let spread = denoise_signals::db(above / all);
+    println!("above 3 kHz: {spread:.1} dB");
+    assert!(spread < -80.0, "{spread} dB");
 }
 
 /// The transform with every frame left as it is.
@@ -273,7 +339,7 @@ fn the_noise_learned_is_the_mean_power_of_each_bin() {
     let noise = white(41, sigma, 40 * FFT);
     let profile = learn(&[&noise]).unwrap();
     assert_eq!(profile.len(), BINS);
-    let expected = f64::from(sigma).powi(2) * 2048.0 * 3.0 / 8.0;
+    let expected = f64::from(sigma).powi(2) * 1024.0;
     let mean = profile[10..BINS - 10]
         .iter()
         .map(|&p| f64::from(p))
@@ -283,10 +349,20 @@ fn the_noise_learned_is_the_mean_power_of_each_bin() {
         (mean / expected - 1.0).abs() < 0.03,
         "{mean} against {expected}"
     );
-    // A sine at a bin: its power is (A·Σw/2)² = (A·512)².
+    // A sine at a bin: its power is (A·Σw/2)², Σw worked out from the window's definition.
     let tone = sine(RATE, 100.0 * 48_000.0 / 2048.0, 0.5, 8 * FFT);
     let profile = learn(&[&tone]).unwrap();
-    let expected = (0.5_f64 * 512.0).powi(2);
+    let sum: f64 = (0..FFT)
+        .map(|n| {
+            use std::f64::consts::PI;
+            if n < 1280 {
+                (PI * n as f64 / 2560.0).sin()
+            } else {
+                (PI * (n - 512) as f64 / 1536.0).sin()
+            }
+        })
+        .sum();
+    let expected = (0.5 * sum / 2.0).powi(2);
     assert!(
         (f64::from(profile[100]) / expected - 1.0).abs() < 1e-3,
         "{}",
@@ -413,8 +489,8 @@ fn listen_lets_out_what_is_taken_away_and_level_raises_what_is_kept() {
 #[test]
 fn the_mix_ramps_over_ten_milliseconds() {
     let ramp = (SMOOTHING * f64::from(RATE)) as usize;
-    let frames = RATE as usize;
-    let at = 30_000;
+    let frames = 2 * RATE as usize;
+    let at = 70_000;
     // A constant input: the processed sound is the input under the gain of the bins at 0 Hz.
     let input = vec![0.25_f32; frames];
     for (param, from, to) in [
@@ -450,10 +526,21 @@ fn the_mix_ramps_over_ten_milliseconds() {
 /// No zipper when the mix or a number of the gate changes at the peak of a tone over noise.
 #[test]
 fn changes_do_not_click() {
-    let frames = 2 * RATE as usize;
-    let tone = sine(RATE, 1000.0, 0.5, frames);
+    let frames = 3 * RATE as usize;
+    // A tone at −46 dBFS over noise at −60 dBFS, the noise learned: Threshold 40 dB shuts on the
+    // tone, 10 dB lets it through, so that the changes of the gate change the sound.
+    let tone = sine(RATE, 1000.0, 0.005, frames);
     let input = sum(&tone, &white(81, 0.001, frames));
-    let at = 48_012; // a peak of the tone
+    let manual = with(|s| {
+        s.mode = Mode::Manual;
+        s.profile = learn(&[&white(82, 0.001, RATE as usize)]);
+    });
+    let with = |edit: &dyn Fn(&mut Settings)| {
+        let mut settings = manual.clone();
+        edit(&mut settings);
+        settings
+    };
+    let at = 96_012; // a peak of the tone
     let largest_step = |x: &[f32]| {
         x.windows(2)
             .map(|w| (w[1] - w[0]).abs())
@@ -470,14 +557,14 @@ fn changes_do_not_click() {
         (Param::TimeSmoothing, 1.0, 0.0),
         (Param::Band, 0.0, 2.0),
     ] {
-        let settings = with(|s| s.set(param, from));
+        let settings = with(&|s| s.set(param, from));
         let mut node = Spectral::new(&settings);
         let spec = mono().with_max_block(frames);
         node.prepare(&spec).unwrap();
         let run = Run::new(vec![input.clone()]).with_change(at, param.id(), to);
         let output = render(&mut node, &spec, &run, |left| left).remove(0);
         let before = run_mono(&settings, &input);
-        let after = run_mono(&with(|s| s.set(param, to)), &input);
+        let after = run_mono(&with(&|s| s.set(param, to)), &input);
         let steady =
             largest_step(&before[at - 4_000..at]).max(largest_step(&after[at + 4_000..at + 8_000]));
         let changed = largest_step(&output[at - 10..at + 4_000]);
@@ -755,19 +842,18 @@ impl Node for Reported {
 
 #[test]
 fn it_settles_for_the_slowest_settings_that_its_lanes_take() {
-    let frames = 30 * RATE as usize;
-    let input = sum(&voice(RATE, 0.1, frames), &white(111, 0.01, frames));
-    // Set fast, the lane slow: Attack 2000 ms, Ratio 1.
+    // Set fast, the lane slow: Attack 1000 ms, Ratio 1 (31.5 s to settle).
     let fast = with(|s| {
         s.attack_ms = 50.0;
         s.ratio = 20.0;
         s.time_smoothing = false;
     });
     let slowest = with(|s| {
-        s.attack_ms = 2000.0;
+        s.attack_ms = 1000.0;
         s.ratio = 1.0;
     });
-    assert!(Spectral::settle_for(&slowest, RATE) > Spectral::settle_for(&fast, RATE));
+    let settle = Spectral::settle_for(&slowest, RATE);
+    assert!(settle > Spectral::settle_for(&fast, RATE));
     // Time Smoothing and On count as on, whatever they are set to.
     assert_eq!(
         Spectral::settle_for(&with(|s| s.time_smoothing = false), RATE),
@@ -777,11 +863,13 @@ fn it_settles_for_the_slowest_settings_that_its_lanes_take() {
         Spectral::settle_for(&with(|s| s.on = false), RATE),
         Spectral::settle_for(&Settings::default(), RATE)
     );
-    let run = Run::new(vec![input])
-        .with_automation(Param::AttackMs.id(), vec![2000.0; frames])
+    let from = RATE as usize + 999;
+    let frames = from + settle as usize + 5 * RATE as usize;
+    let input = sum(&voice(RATE, 0.1, frames), &white(111, 0.01, frames));
+    let run = Run::new(vec![input.clone()])
+        .with_automation(Param::AttackMs.id(), vec![1000.0; frames])
         .with_automation(Param::Ratio.id(), vec![1.0; frames])
         .with_automation(Param::TimeSmoothing.id(), vec![1.0; frames]);
-    let settle = Spectral::settle_for(&slowest, RATE);
     assert_settle(
         || Reported {
             node: Spectral::new(&fast),
@@ -789,7 +877,26 @@ fn it_settles_for_the_slowest_settings_that_its_lanes_take() {
         },
         &mono(),
         &run,
-        RATE as usize + 999,
+        from,
+    );
+    // Set off, the lane on: Time Smoothing and On, at the settling of the defaults.
+    let off = with(|s| {
+        s.time_smoothing = false;
+        s.on = false;
+    });
+    let settle = Spectral::settle_for(&Settings::default(), RATE);
+    let frames = from + settle as usize + 5 * RATE as usize;
+    let run = Run::new(vec![input[..frames].to_vec()])
+        .with_automation(Param::TimeSmoothing.id(), vec![1.0; frames])
+        .with_automation(Param::On.id(), vec![1.0; frames]);
+    assert_settle(
+        || Reported {
+            node: Spectral::new(&off),
+            settle,
+        },
+        &mono(),
+        &run,
+        from,
     );
 }
 
@@ -1061,4 +1168,326 @@ fn aligned_off_the_start_its_output_does_not_depend_on_the_blocks() {
             &[7],
         );
     }
+}
+
+// --- Digital silence and the start (review of T12) ------------------------------------------
+
+/// Exact zeros between two clips do not make the gate forget the noise: right after a gap of
+/// 0.25 s the noise is down by 20 dB at least (in its steady state, 28.7 dB).
+#[test]
+fn a_gap_of_digital_silence_keeps_the_noise_found_before_it() {
+    let rate = RATE as usize;
+    let mut input = white(301, 0.01, 4 * rate);
+    input.extend(std::iter::repeat_n(0.0, rate / 4));
+    let after = input.len();
+    input.extend(white(302, 0.01, 3 * rate));
+    let output = run_mono(&Settings::default(), &input);
+    for (from, to) in [(0, rate / 2), (rate / 2, rate)] {
+        let range = after + from..after + to;
+        let depth = left(&input, &output, LATENCY, std::slice::from_ref(&range));
+        println!("{from}..{to} after the gap: {depth:.2} dB");
+        assert!(depth <= -20.0, "{depth} dB in {range:?}");
+    }
+}
+
+/// A voice from the first sample is not taken for the noise: its first half second keeps its
+/// level within 1 dB.
+#[test]
+fn a_voice_from_the_start_is_kept() {
+    let frames = 4 * RATE as usize;
+    let clean = voice(RATE, 0.1, frames);
+    let input = sum(&clean, &white(311, 0.01, frames));
+    let output = run_mono(&Settings::default(), &input);
+    let first = 0..RATE as usize / 2;
+    let voice = kept(&clean, &output, LATENCY, std::slice::from_ref(&first));
+    println!("the first half second of the voice: {voice:.3} dB");
+    assert!(voice.abs() <= 1.0, "{voice} dB");
+    // And the later words as before.
+    let voice = kept(
+        &clean,
+        &output,
+        LATENCY,
+        &speeches(RATE, frames - LATENCY, 1.0, 0.05),
+    );
+    assert!(voice.abs() <= 1.0, "{voice} dB");
+}
+
+// --- The numbers of the gate, checked on their own (review of T12) ---------------------------
+
+/// The gate worked out here from its definitions, for a learned noise flat at `noise` in every
+/// bin and a tone at the bin `k0` (a multiple of 4, so that every frame holds the same samples):
+/// the output over one hop in its steady state, from a transform of its own in f64.
+fn by_hand(
+    amplitude: f64,
+    k0: usize,
+    noise: f64,
+    threshold_db: f64,
+    sensitivity: f64,
+    smoothing: f64,
+) -> Vec<f64> {
+    use std::f64::consts::PI;
+    let n = FFT;
+    let wa = |m: usize| -> f64 {
+        if m < 1280 {
+            (PI * m as f64 / 2560.0).sin()
+        } else {
+            (PI * (m - 512) as f64 / 1536.0).sin()
+        }
+    };
+    let ws = |m: usize| -> f64 {
+        if m < 512 {
+            0.0
+        } else {
+            2.0 / 3.0 * (PI * (m - 512) as f64 / 1536.0).sin().powi(2) / wa(m)
+        }
+    };
+    // A frame starts on a multiple of 512, where the tone's phase is 0.
+    let frame: Vec<f64> = (0..n)
+        .map(|m| wa(m) * amplitude * (2.0 * PI * (k0 * m) as f64 / n as f64).sin())
+        .collect();
+    let cos: Vec<f64> = (0..n)
+        .map(|m| (2.0 * PI * m as f64 / n as f64).cos())
+        .collect();
+    let sin: Vec<f64> = (0..n)
+        .map(|m| (2.0 * PI * m as f64 / n as f64).sin())
+        .collect();
+    let spectrum: Vec<(f64, f64)> = (0..BINS)
+        .map(|k| {
+            frame
+                .iter()
+                .enumerate()
+                .fold((0.0, 0.0), |(re, im), (m, x)| {
+                    let at = (k * m) % n;
+                    (re + x * cos[at], im - x * sin[at])
+                })
+        })
+        .collect();
+    let power: Vec<f64> = spectrum.iter().map(|(re, im)| re * re + im * im).collect();
+    let half = (8.0 * smoothing / 100.0_f64).round() as usize;
+    let beta = 1.0 + 3.0 * sensitivity / 100.0;
+    let theta = 10.0_f64.powf(threshold_db / 10.0);
+    let floor = 10.0_f64.powf(-30.0 / 20.0);
+    let gains: Vec<f64> = (0..BINS)
+        .map(|k| {
+            let (from, to) = (k.saturating_sub(half), (k + half).min(BINS - 1));
+            let q =
+                (power[from..=to].iter().sum::<f64>() / (to - from + 1) as f64).clamp(1e-12, 1e12);
+            let r = q / (beta * theta * noise);
+            floor + (1.0 - floor) * r * r / (1.0 + r * r)
+        })
+        .collect();
+    // The inverse of the half spectrum, each bin under its gain.
+    let z: Vec<f64> = (0..n)
+        .map(|m| {
+            let mut sum = 0.0;
+            for k in 0..BINS {
+                let (re, im) = (spectrum[k].0 * gains[k], spectrum[k].1 * gains[k]);
+                let at = (k * m) % n;
+                let term = re * cos[at] - im * sin[at];
+                sum += if k == 0 || k == n / 2 {
+                    term
+                } else {
+                    2.0 * term
+                };
+            }
+            sum / n as f64
+        })
+        .collect();
+    // The frames are all the same: a sample of the hop sums the three frames over it.
+    (0..HOP)
+        .map(|j| (1..4).map(|q| ws(j + q * HOP) * z[j + q * HOP]).sum())
+        .collect()
+}
+
+#[test]
+fn threshold_sensitivity_and_frequency_smoothing_shape_the_gain_as_written() {
+    let (k0, amplitude) = (100, 0.01_f64);
+    let tone = sine(
+        RATE,
+        k0 as f64 * f64::from(RATE) / FFT as f64,
+        amplitude as f32,
+        RATE as usize,
+    );
+    // The noise put where the mask of the defaults meets the tone at its bin (r = 1 there).
+    let power_at_k0 = (amplitude
+        * 0.5
+        * (0..FFT)
+            .map(|m| f64::from(analysis_window()[m]))
+            .sum::<f64>())
+    .powi(2);
+    let noise = power_at_k0 / (2.5 * 10.0);
+    for (threshold, sensitivity, smoothing) in [
+        (10.0, 50.0, 0.0),
+        (10.0, 0.0, 0.0),
+        (20.0, 100.0, 0.0),
+        (0.0, 50.0, 25.0),
+        (10.0, 100.0, 100.0),
+    ] {
+        let settings = with(|s| {
+            s.mode = Mode::Manual;
+            s.profile = Some(vec![noise as f32; BINS]);
+            s.threshold_db = threshold as f32;
+            s.sensitivity = sensitivity as f32;
+            s.frequency_smoothing = smoothing as f32;
+            s.time_smoothing = false;
+        });
+        let output = run_mono(&settings, &tone);
+        let expected = by_hand(amplitude, k0, noise, threshold, sensitivity, smoothing);
+        // A sample t of the output is the hop's sample (t − 1536) mod 512, frames starting on
+        // multiples of 512.
+        let mut largest = 0.0_f64;
+        let start = 3 * FFT;
+        for (t, &sample) in output.iter().enumerate().skip(start).take(4 * HOP) {
+            let j = (t - LATENCY) % HOP;
+            largest = largest.max((f64::from(sample) - expected[j]).abs());
+        }
+        let peak = expected.iter().fold(0.0_f64, |a, b| a.max(b.abs()));
+        println!("T {threshold} S {sensitivity} FS {smoothing}: peak {peak:.6}, error {largest:e}");
+        assert!(
+            largest <= 1e-5 * amplitude,
+            "{threshold} {sensitivity} {smoothing}: {largest}"
+        );
+    }
+}
+
+/// Noise alone, after 2 s, at three values of a parameter.
+fn residuals(param: Param, values: [f32; 3]) -> [f64; 3] {
+    let frames = 5 * RATE as usize;
+    let noise = white(321, 0.01, frames);
+    let range = 2 * RATE as usize..frames - LATENCY;
+    values.map(|value| {
+        let output = run_mono(&with(|s| s.set(param, value)), &noise);
+        left(&noise, &output, LATENCY, std::slice::from_ref(&range))
+    })
+}
+
+#[test]
+fn more_threshold_and_more_sensitivity_leave_less_noise() {
+    for (param, values) in [
+        (Param::ThresholdDb, [0.0, 5.0, 10.0]),
+        (Param::Sensitivity, [0.0, 50.0, 100.0]),
+    ] {
+        let left = residuals(param, values);
+        println!("{param:?} {values:?}: {left:.2?} dB");
+        assert!(
+            left[0] > left[1] + 0.5 && left[1] > left[2] + 0.1,
+            "{param:?}: {left:?}"
+        );
+    }
+}
+
+/// The noise rises 20 dB at 3 s: a longer Attack, or a lower Ratio (a slower signal profile),
+/// follows it more slowly, so that more of it is let through in the half second after.
+#[test]
+fn a_longer_attack_and_a_lower_ratio_follow_a_louder_noise_more_slowly() {
+    let rate = RATE as usize;
+    let mut noise = white(331, 0.001, 3 * rate);
+    noise.extend(white(332, 0.01, 2 * rate));
+    let range = 3 * rate + rate / 4..3 * rate + rate;
+    let after = |edit: &dyn Fn(&mut Settings)| {
+        let mut settings = Settings::default();
+        edit(&mut settings);
+        let output = run_mono(&settings, &noise);
+        left(&noise, &output, LATENCY, std::slice::from_ref(&range))
+    };
+    let attacks = [100.0, 500.0, 2000.0].map(|ms| after(&|s| s.attack_ms = ms));
+    let ratios = [20.0, 4.0, 1.0].map(|ratio| after(&|s| s.ratio = ratio));
+    println!("attack 100, 500, 2000 ms: {attacks:.2?} dB; ratio 20, 4, 1: {ratios:.2?} dB");
+    assert!(
+        attacks[0] < attacks[1] && attacks[1] < attacks[2],
+        "{attacks:?}"
+    );
+    assert!(ratios[0] < ratios[1] && ratios[1] < ratios[2], "{ratios:?}");
+}
+
+/// A run whose settling reaches past its end compares nothing: the check says so.
+#[test]
+#[should_panic(expected = "nothing to compare")]
+fn a_settling_longer_than_the_run_is_refused() {
+    let run = Run::new(vec![white(341, 0.01, 2 * RATE as usize)]);
+    let _ = assert_settle(Spectral::default_node, &mono(), &run, 1_000);
+}
+
+/// The pre-roll of 10 s (T6) for slow settings: after it, a start in the middle differs from an
+/// earlier one by at most −60 dBFS, within 10 to 12 s, from a start in a word and in a pause
+/// (the review measured −53 and −24 dBFS before the profile's rise was sped up after a reset).
+#[test]
+fn ten_seconds_of_pre_roll_bring_slow_settings_within_minus_60_dbfs() {
+    let rate = RATE as usize;
+    let frames = 40 * rate;
+    let input = sum(&voice(RATE, 0.1, frames), &white(351, 0.01, frames));
+    for (attack, ratio) in [(1000.0, 4.0), (2000.0, 1.0), (5000.0, 1.0)] {
+        let settings = with(|s| {
+            s.attack_ms = attack;
+            s.ratio = ratio;
+        });
+        let spec = mono().with_max_block(frames);
+        let mut early = Spectral::new(&settings);
+        early.prepare(&spec).unwrap();
+        let whole = render(&mut early, &spec, &Run::new(vec![input.clone()]), |left| {
+            left
+        })
+        .remove(0);
+        for from in [512 * 47 * 20, 512 * 1003] {
+            let mut late = Spectral::new(&settings);
+            late.prepare(&spec).unwrap();
+            late.align(from as u64);
+            let tail = render(
+                &mut late,
+                &spec,
+                &Run::new(vec![input[from..].to_vec()]),
+                |left| left,
+            )
+            .remove(0);
+            let largest = (10 * rate..12 * rate)
+                .map(|n| (whole[from + n] - tail[n]).abs())
+                .fold(0.0_f32, f32::max);
+            let dbfs = 20.0 * f64::from(largest.max(1e-30)).log10();
+            println!("attack {attack} ratio {ratio} from {from}: {dbfs:.1} dBFS");
+            if attack <= 2000.0 {
+                assert!(dbfs <= -60.0, "{attack} {ratio} from {from}: {dbfs} dBFS");
+            }
+        }
+    }
+}
+
+/// After more than [`DENOISE_FORGET`] of digital silence the gate starts again as new: an
+/// export from the start and a playback started inside the gap give the same bits from the
+/// second clip on.
+#[test]
+fn after_a_long_gap_a_start_inside_it_hears_what_an_export_hears() {
+    let rate = RATE as usize;
+    let clip = |seed: u64| sum(&voice(RATE, 0.1, 3 * rate), &white(seed, 0.01, 3 * rate));
+    let mut input = clip(361);
+    input.extend(std::iter::repeat_n(0.0, 12 * rate));
+    let second = input.len();
+    input.extend(clip(362));
+    let spec = mono().with_max_block(input.len());
+    let mut early = Spectral::default_node();
+    early.prepare(&spec).unwrap();
+    let whole = render(&mut early, &spec, &Run::new(vec![input.clone()]), |left| {
+        left
+    })
+    .remove(0);
+    for from in [8 * rate + 77, second - rate / 3] {
+        let mut late = Spectral::default_node();
+        late.prepare(&spec).unwrap();
+        late.align(from as u64);
+        let tail = render(
+            &mut late,
+            &spec,
+            &Run::new(vec![input[from..].to_vec()]),
+            |left| left,
+        )
+        .remove(0);
+        for t in second..input.len() {
+            assert_eq!(
+                whole[t].to_bits(),
+                tail[t - from].to_bits(),
+                "from {from}, at {t}"
+            );
+        }
+    }
+    // A shorter gap keeps the noise (the test of the gap of 0.25 s), and so differs.
+    const { assert!(columbina_audio::constants::DENOISE_FORGET <= 12.0) };
 }

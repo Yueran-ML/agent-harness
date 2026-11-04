@@ -21,9 +21,11 @@ use columbina_audio::fx::pitch;
 use columbina_audio::graph::{Graph, Options, Owner, Purpose};
 use columbina_audio::testing::{realtime, CountingAllocator, Rng};
 use columbina_model::audio::fx::PitchFx;
-use columbina_model::{ClipPitch, Effect, Insert, Project, Speed, Time, TrackKind};
+use columbina_model::{
+    ClipPitch, Effect, Insert, Lane, LaneKind, LanePoint, Project, Speed, Time, TrackKind,
+};
 
-use common::{cents, level_holds_across, peak_frequency, RATE};
+use common::{cents, level_across, peak_frequency, RATE};
 
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
@@ -400,7 +402,9 @@ fn a_tone_keeps_its_level_where_the_stretch_starts_again() {
         // Every 4 s of the source: at 4 s / speed of the timeline.
         let period = 4 * SECOND * speed.1 as usize / speed.0 as usize;
         for point in [period, 2 * period] {
-            level_holds_across(&out[0], point, &format!("{speed:?} {pitch:?} at {point}"));
+            let what = format!("{speed:?} {pitch:?} at {point}");
+            let (least, most) = level_across(&out[0], point, &what);
+            println!("{what}: {least:.2} to {most:.2} of the steady level");
         }
     }
 }
@@ -447,4 +451,48 @@ fn a_pitch_insert_moves_its_track_an_octave_and_the_graph_makes_up_its_delay() {
         "{:?}",
         &out[0][..8]
     );
+}
+
+#[test]
+fn a_lane_of_the_semitones_of_a_pitch_insert_moves_the_pitch_where_it_steps() {
+    let mut project = project(250, (1, 1), false, (0, 0.0));
+    let audio = &mut project.timelines[0].tracks[0].audio;
+    audio.strip.inserts.push(Insert {
+        id: "fx1".into(),
+        on: true,
+        effect: Effect::Pitch(PitchFx::default()),
+    });
+    let point = |seconds: f64, value: f64| LanePoint {
+        at: Time {
+            ticks: (seconds * 48_000.0) as i64,
+            scale: 48_000,
+        },
+        value,
+    };
+    // An octave up from 3 s.
+    audio.lanes.insert(
+        "insert.fx1.semitones".into(),
+        Lane {
+            points: vec![point(0.0, 0.0), point(3.0, 0.0), point(3.0, 12.0)],
+            kind: LaneKind::Continuous,
+        },
+    );
+    let mut graph = built(&project);
+    let out = whole(&mut graph, &mut feed(tone(440.0)), 0, 250 * FRAME);
+    let at = 3 * SECOND;
+    let ms = SECOND / 1_000;
+    let (before, after) = (
+        &out[0][at - 70 * ms..at - 20 * ms],
+        &out[0][at + 80 * ms..at + 160 * ms],
+    );
+    let (low, high) = (
+        common::amplitude_at(before, 440.0),
+        common::amplitude_at(before, 880.0),
+    );
+    assert!(low > 4.0 * high, "before 3 s: 440 Hz {low}, 880 Hz {high}");
+    let (low, high) = (
+        common::amplitude_at(after, 440.0),
+        common::amplitude_at(after, 880.0),
+    );
+    assert!(high > 4.0 * low, "after 3 s: 440 Hz {low}, 880 Hz {high}");
 }

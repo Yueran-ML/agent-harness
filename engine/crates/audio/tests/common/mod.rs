@@ -205,11 +205,13 @@ pub fn cents(measured: f64, reference: f64) -> f64 {
     1200.0 * (measured / reference).log2()
 }
 
-/// Checks that the level of a steady tone in `signal` (the root mean square over windows of 1 ms)
-/// holds over the crossfade around the sample `point` where a stretch starts again: within
-/// 0.7 (−3 dB) to 1.2 times the lowest and highest level over the half second before it (the stretch's
-/// own ripple). `what` says which.
-pub fn level_holds_across(signal: &[f32], point: usize, what: &str) {
+/// The level of a steady tone in `signal` (the root mean square over windows of 1 ms) over the
+/// crossfade around the sample `point` where a stretch starts again, against the lowest and the
+/// highest level over the half second before it (the stretch's own ripple): the lowest there
+/// over that lowest and the highest over that highest, checked never to be above 1.2 (the
+/// crossfade never raises the sound). Two segments out of phase there make a dip, which is
+/// returned for the test to bound or tell. `what` says which.
+pub fn level_across(signal: &[f32], point: usize, what: &str) -> (f32, f32) {
     let window = RATE as usize / 1_000;
     let level = |at: usize| {
         (signal[at..at + window].iter().map(|s| s * s).sum::<f32>() / window as f32).sqrt()
@@ -221,11 +223,12 @@ pub fn level_holds_across(signal: &[f32], point: usize, what: &str) {
     let (low, high) = steady.iter().fold((f32::MAX, 0.0_f32), |(low, high), &l| {
         (low.min(l), high.max(l))
     });
+    let (mut least, mut most) = (f32::MAX, 0.0_f32);
     for at in (point - 2 * window * 10..point + 2 * window * 10).step_by(window / 4) {
         let l = level(at);
-        assert!(
-            l >= 0.7 * low && l <= 1.2 * high,
-            "{what}: a level of {l} at {at}, the steady ones {low} to {high}"
-        );
+        least = least.min(l / low);
+        most = most.max(l / high);
     }
+    assert!(most <= 1.2, "{what}: raised to {most} of the steady level");
+    (least, most)
 }

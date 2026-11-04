@@ -18,7 +18,7 @@ use columbina_audio::testing::{
 use columbina_audio::{Layout, Node, Spec};
 use columbina_stretch::Config;
 
-use common::{cents, level_holds_across, peak_frequency, process, sine_at, RATE};
+use common::{cents, level_across, peak_frequency, process, sine_at, RATE};
 
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
@@ -288,7 +288,96 @@ fn a_tone_keeps_its_level_where_the_stretch_starts_again() {
         let latency = node.latency() as usize;
         let out = process(node, &spec(Layout::Mono), &Run::new(vec![input]));
         for point in [4 * SECOND + latency, 8 * SECOND + latency] {
-            level_holds_across(&out[0], point, &format!("{semitones} semitones at {point}"));
+            let what = format!("{semitones} semitones at {point}");
+            let (least, most) = level_across(&out[0], point, &what);
+            println!("{what}: {least:.2} to {most:.2} of the steady level");
+            // Two segments of no move are alike: the crossfade adds them up to the sound itself.
+            if semitones.abs() < f32::EPSILON {
+                assert!(least >= 0.9, "{what}: lowered to {least}");
+            }
         }
+    }
+}
+
+#[test]
+fn a_quiet_tone_in_phase_keeps_its_level_where_a_loud_one_cancels_at_a_reset_point() {
+    // A loud low tone (which the two segments may meet out of phase) and a quiet high one; the
+    // high one is read through a second difference, which takes the low one down by about 44 dB
+    // more than the high one.
+    let frames = 41 * SECOND;
+    let input: Vec<f32> = sine_at(97.0, 0.5, 0.0, frames)
+        .iter()
+        .zip(sine_at(3_100.0, 0.05, 0.0, frames))
+        .map(|(low, high)| low + high)
+        .collect();
+    for semitones in [0.0, 3.0, -5.0, 7.0] {
+        let mut node = pitch(semitones, 0.0, 100.0);
+        node.prepare(&spec(Layout::Mono)).unwrap();
+        let latency = node.latency() as usize;
+        let out = process(node, &spec(Layout::Mono), &Run::new(vec![input.clone()]));
+        let y = &out[0];
+        let high: Vec<f64> = (2..frames)
+            .map(|n| f64::from(y[n]) - 2.0 * f64::from(y[n - 1]) + f64::from(y[n - 2]))
+            .collect();
+        let rms = |a: usize, b: usize| {
+            (high[a..b].iter().map(|v| v * v).sum::<f64>() / (b - a) as f64).sqrt()
+        };
+        let ms = SECOND / 1_000;
+        let (mut up, mut down) = (f64::MIN, f64::MAX);
+        for k in 1..10 {
+            let point = k * 4 * SECOND + latency;
+            let steady = rms(point - 60 * ms, point - 20 * ms);
+            for at in (point - 6 * ms..point + 6 * ms).step_by(ms / 2) {
+                let change = 20.0 * (rms(at, at + ms) / steady).log10();
+                up = up.max(change);
+                down = down.min(change);
+            }
+        }
+        println!(
+            "{semitones:+} semitones: the high tone at the points {up:+.1} dB / {down:+.1} dB"
+        );
+        // Never raised; where the low tone cancels and the high one is in phase (−5), kept.
+        assert!(
+            up < 3.0,
+            "{semitones} semitones: the high tone raised {up:+.1} dB"
+        );
+        if (semitones + 5.0_f32).abs() < f32::EPSILON {
+            assert!(
+                down > -3.0,
+                "{semitones} semitones: the high tone lowered {down:+.1} dB"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_stretcher_that_starts_with_a_full_block_reads_all_it_needs() {
+    // The stretcher of the segment at 4 s starts a warming, a seek and half a crossfade before
+    // it; a full block from there brings in its input before it can read the input it is
+    // handed as the sound before its start (the ring of the node must hold both).
+    let frames = 5 * SECOND;
+    let run = Run::new(vec![noise(21, 0.3, frames)]);
+    let config = Config::of(RATE).unwrap();
+    let mut probe = pitch(4.0, 0.0, 100.0);
+    probe.prepare(&spec(Layout::Mono)).unwrap();
+    let latency = probe.latency() as usize;
+    let starts = 4 * SECOND - 240 - (config.block + config.interval) + latency;
+    let whole_spec = Spec::new(RATE, frames, Layout::Mono);
+    let mut node = pitch(4.0, 0.0, 100.0);
+    node.prepare(&whole_spec).unwrap();
+    let whole = render(&mut node, &whole_spec, &run, |left| left);
+    for max_block in [512, 4_096] {
+        let spec = Spec::new(RATE, max_block, Layout::Mono);
+        let mut node = pitch(4.0, 0.0, 100.0);
+        node.prepare(&spec).unwrap();
+        let mut first = Some(starts % max_block);
+        let blocks = render(&mut node, &spec, &run, |_| {
+            first.take().unwrap_or(max_block)
+        });
+        let differs = whole[0]
+            .iter()
+            .zip(&blocks[0])
+            .position(|(a, b)| a.to_bits() != b.to_bits());
+        assert_eq!(differs, None, "blocks of {max_block}");
     }
 }

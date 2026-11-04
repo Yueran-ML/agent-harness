@@ -259,7 +259,12 @@ impl Node for Pitch {
         self.ahead = i64::try_from(config.input_latency + config.output_latency).unwrap_or(0);
         self.grid = Grid::timeline(spec.rate, stretcher.fade());
         self.settle = settle_for(&Settings::default(), spec.rate);
-        let back = (CHUNK + config.seek_length).max(usize::try_from(self.latency).unwrap_or(0));
+        // How far back the ring reaches from the end of a block: the input that a stretcher which
+        // starts at its first sample reads as the sound before its start (a chunk, a crossfade and
+        // a seek back), or the dry sound (the latency back), whichever is further.
+        let fade = usize::try_from(stretcher.fade()).unwrap_or(0);
+        let back =
+            (CHUNK + fade + config.seek_length).max(usize::try_from(self.latency).unwrap_or(0));
         self.ring = Planar::new(channels, spec.max_block + back + 1);
         self.wet = Planar::new(channels, spec.max_block);
         self.factors = Planar::new(1, spec.max_block);

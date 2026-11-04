@@ -80,16 +80,8 @@ impl Graph {
     /// As [`Graph::process`], for the samples thrown away.
     pub fn start(&mut self, at: i64, feed: &mut dyn ClipFeed) -> Result<(), FeedError> {
         let begin = at.saturating_sub(i64::from(self.preroll()));
-        self.reset(begin);
+        let mut result = self.begin(begin, feed);
         let mut left = u64::from(self.preroll()) + u64::from(self.latency);
-        let mut result = Ok(());
-        // The stretched clips under way at `begin` brought there now, not on the thread of the mix.
-        for (index, clip) in self.clips.iter_mut().enumerate() {
-            let primed = clip.prime(index, feed, begin, &mut self.scratch);
-            if let (Err(error), Ok(())) = (primed, &result) {
-                result = Err(error);
-            }
-        }
         while left > 0 {
             let frames = usize::try_from(left)
                 .unwrap_or(usize::MAX)
@@ -100,6 +92,27 @@ impl Graph {
             left -= u64::try_from(frames).unwrap_or(left);
         }
         self.frames = 0;
+        result
+    }
+
+    /// The first step of every run that starts at input sample `begin` (`Graph::start`, and any
+    /// other way in, such as a graph swapped in by the thread that builds them): back to silence
+    /// there ([`Graph::reset`]), then every stretched clip under way there brought there
+    /// (`ClipChain::prime`, T13), so that the work of catching its stretch up is done here, before
+    /// the sound plays, and never in a block of the thread of the mix.
+    ///
+    /// # Errors
+    ///
+    /// The feed could not give the sound of a clip while it was caught up.
+    pub(crate) fn begin(&mut self, begin: i64, feed: &mut dyn ClipFeed) -> Result<(), FeedError> {
+        self.reset(begin);
+        let mut result = Ok(());
+        for (index, clip) in self.clips.iter_mut().enumerate() {
+            let primed = clip.prime(index, feed, begin, &mut self.scratch);
+            if let (Err(error), Ok(())) = (primed, &result) {
+                result = Err(error);
+            }
+        }
         result
     }
 

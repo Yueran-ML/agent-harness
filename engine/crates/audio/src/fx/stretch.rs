@@ -330,9 +330,9 @@ impl Stretcher {
     /// only moves the stretchers on (a warming before a clip sounds) where there is none.
     ///
     /// The crossfade into a segment is equal power, `sin` in and `cos` out, both divided by
-    /// `√(1 + 2ρ·sin·cos)`, where `ρ` is the correlation of the two segments' sound over the
-    /// crossfade: two that are alike (`ρ` = 1) then add up to the sound itself, two that are not
-    /// (`ρ` = 0) keep its power, and two that cancel are raised by at most 12 dB.
+    /// `√(1 + 2ρ·sin·cos)` where `ρ`, the correlation of the two segments' sound over the
+    /// crossfade, is above 0: two that are alike (`ρ` = 1) then add up to the
+    /// sound itself, two that are not (`ρ` ≤ 0) keep its power, and nothing is raised.
     ///
     /// # Errors
     ///
@@ -341,7 +341,7 @@ impl Stretcher {
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
         clippy::many_single_char_names,
-        reason = "a crossfade of a few hundred samples, samples of f32, the names of the module's                   account (segment j, sample v, gains a and b)"
+        reason = "a crossfade of a few hundred samples, samples of f32, the names of the module's account (segment j, sample v, gains a and b)"
     )]
     pub fn render(
         &mut self,
@@ -387,7 +387,7 @@ impl Stretcher {
                     let correlation = self.correlation(j, own, plan, input, factor, &mut result);
                     let t = (i as f64 + 0.5) / self.fade as f64 * half_pi;
                     let (a, b) = (t.sin(), t.cos());
-                    let norm = 1.0 / (1.0 + 2.0 * correlation * a * b).max(1.0 / 16.0).sqrt();
+                    let norm = crossfade_norm(correlation, a, b);
                     let before = self.advance(j - 1, plan, v, input, factor, &mut result);
                     ((a * norm) as f32, Some((before, (b * norm) as f32)))
                 } else {
@@ -516,6 +516,21 @@ impl Stretcher {
         }
         (l, self.lanes[l].at(v))
     }
+}
+
+/// The factor of both gains of a crossfade at the point where they are `a` (in) and `b` (out),
+/// for two segments of correlation `ρ`: `1/√(1 + 2ρab)` where they are alike (`ρ` > 0), so that
+/// two that are the same add up to the sound itself; 1, the plain equal power, where they are not
+/// (`ρ` ≤ 0). It never raises: a correlation is that of the loudest of the sound, and two segments
+/// whose loud low tone cancels may hold a quiet tone in phase, which a raise would make jump
+/// (the review of T13, P1). At most √2 in any case.
+fn crossfade_norm(correlation: f64, a: f64, b: f64) -> f64 {
+    let norm = if correlation > 0.0 {
+        1.0 / (1.0 + 2.0 * correlation * a * b).sqrt()
+    } else {
+        1.0
+    };
+    norm.min(std::f64::consts::SQRT_2)
 }
 
 /// Keeps the first error of `result` and `next`.

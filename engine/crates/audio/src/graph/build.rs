@@ -191,7 +191,9 @@ pub(crate) enum StageKind {
     Ducker,
     Dynamics,
     Eq,
-    Insert(usize, fn(&str) -> Option<ParamId>),
+    /// An insert: its place among the inserts, its parameters by path, and whether its lanes act
+    /// on the sound that leaves it (Pitch, T13), a latency after the sound that comes in.
+    Insert(usize, fn(&str) -> Option<ParamId>, bool),
     Bypass,
 }
 
@@ -283,7 +285,7 @@ pub(crate) fn param_of(meta: &Meta, path: &str) -> Option<StripParam> {
     }
     if let Some(rest) = path.strip_prefix("insert.") {
         for (at, kind) in meta.stages.iter().enumerate() {
-            if let StageKind::Insert(insert, param) = kind {
+            if let StageKind::Insert(insert, param, _) = kind {
                 let id = &meta.inserts[*insert];
                 if let Some(field) = rest
                     .strip_prefix(id.as_str())
@@ -857,7 +859,11 @@ impl Graph {
                             if on || made.switched {
                                 meta.inserts.push(insert.id.clone());
                                 settles[at] += u64::from(made.settle);
-                                let kind = StageKind::Insert(meta.inserts.len() - 1, made.param);
+                                // Pitch takes each value of a lane where it works out the sound
+                                // that leaves it (T13's review, P2-3).
+                                let late = matches!(effect, Effect::Pitch(_));
+                                let kind =
+                                    StageKind::Insert(meta.inserts.len() - 1, made.param, late);
                                 list.push((node, kind, key.into_iter().collect()));
                             } else {
                                 let length = usize::try_from(node.latency()).unwrap_or(0);
@@ -1235,6 +1241,13 @@ impl Graph {
                         if matches!(meta.stages[stage], StageKind::Ducker)
                             && [DuckerParam::On.id(), DuckerParam::AmountDb.id()]
                                 .contains(&param) =>
+                    {
+                        let stage = &strip.stages[stage];
+                        stage.offset + i64::from(stage.node.latency())
+                    }
+                    // So do all the parameters of a Pitch (T13's review, P2-3).
+                    StripParam::Node(stage, _)
+                        if matches!(meta.stages[stage], StageKind::Insert(_, _, true)) =>
                     {
                         let stage = &strip.stages[stage];
                         stage.offset + i64::from(stage.node.latency())

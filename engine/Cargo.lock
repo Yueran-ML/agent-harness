@@ -338,6 +338,7 @@ name = "columbina-server"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "columbina-audio",
  "columbina-compose",
  "columbina-lut",
  "columbina-media",

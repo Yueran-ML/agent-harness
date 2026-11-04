@@ -16,6 +16,9 @@ path = "src/main.rs"
 base64 = "=0.22.1"
 png = "=0.18.1"
 tempfile.workspace = true
+# The graph of the sound of a timeline (plan of phase 3, T4b), which the mixer of the transport
+# and the export is built on.
+columbina-audio = { path = "../audio" }
 columbina-compose = { path = "../compose" }
 # The reader of .cube files, which luts.list parses each file with for its kind.
 columbina-lut = { path = "../lut" }

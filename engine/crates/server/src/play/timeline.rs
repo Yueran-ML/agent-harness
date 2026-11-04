@@ -562,7 +562,11 @@ impl Worker {
             .map_err(|_| "timeline audio start is outside sample time".to_owned())
             .and_then(|from| {
                 let output = self.sound.ready().ok_or("audio output is unavailable")?;
-                let mixer = super::mix::Mixer::new(Arc::clone(project), index);
+                let mixer = super::mix::Mixer::new(
+                    Arc::clone(project),
+                    index,
+                    columbina_audio::graph::Purpose::Preview,
+                );
                 output.start(mixer.source(output.format(), from))
             });
         match result {
@@ -1816,6 +1820,7 @@ fn same_sound(
 ) -> bool {
     if (was.rate, was.sample_rate) != (now.rate, now.sample_rate)
         || resolve::duration(was) != resolve::duration(now)
+        || !same_mixing(was, now)
     {
         return false;
     }
@@ -1834,6 +1839,26 @@ fn same_sound(
             media_of(before, &piece.media).map(heard) == media_of(after, &piece.media).map(heard)
                 && channels(was, &piece.clip) == channels(now, &piece.clip)
         })
+}
+
+/// Whether the graph of the sound (T4b) mixes the clips of `was` as those of `now`: the same
+/// tracks of sound with the same strips, formats, mutes, solos and lanes, the same buses and VCAs,
+/// and the same bus monitored. Until T5 sends such changes into the graph as it plays, a change of
+/// them starts the sound again.
+fn same_mixing(was: &columbina_model::Timeline, now: &columbina_model::Timeline) -> bool {
+    fn mixing(
+        timeline: &columbina_model::Timeline,
+    ) -> impl Iterator<Item = (&str, bool, &columbina_model::TrackAudio)> {
+        timeline
+            .tracks
+            .iter()
+            .filter(|track| track.kind == TrackKind::Audio)
+            .map(|track| (track.id.as_str(), track.enabled, &track.audio))
+    }
+    mixing(was).eq(mixing(now))
+        && was.buses == now.buses
+        && was.vcas == now.vcas
+        && was.audio.monitor == now.audio.monitor
 }
 
 fn drawing(message: &str) -> Fault {
@@ -2023,6 +2048,17 @@ mod tests {
             2
         ]);
         assert!(!check(&mapped, 0));
+        // The graph (T4b) mixes by the strips, the buses and the VCAs: a fader moved, a bus
+        // added or the monitor changed is heard, until T5 hears them without starting again.
+        let mut moved = before.clone();
+        moved.timelines[0].tracks[1].audio.strip.fader_db = -6.0;
+        assert!(!check(&moved, 0));
+        let mut bus = before.clone();
+        bus.timelines[0].buses[0].strip.fader_db = -6.0;
+        assert!(!check(&bus, 0));
+        let mut monitor = before.clone();
+        monitor.timelines[0].audio.monitor = None;
+        assert!(!check(&monitor, 0));
         // What was heard before the playhead does not matter: a clip of sound that has ended.
         let mut earlier = before.clone();
         let sound = &mut earlier.timelines[0].tracks[1].clips;

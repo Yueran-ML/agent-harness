@@ -20,12 +20,13 @@
 
 mod common;
 
-use std::f64::consts::{FRAC_PI_4, PI};
+use std::f64::consts::{FRAC_PI_4, PI, TAU};
 
-use columbina_audio::constants::LIMITER_LOOKAHEAD;
+use columbina_audio::constants::{LIMITER_LOOKAHEAD, LIMITER_TRUE_PEAK_MARGIN_DB};
 use columbina_audio::fx::limiter::{
-    settle_for, Limiter, Param, Settings, TruePeak, ATTACK, HOLD, TRUE_PEAK_DELAY,
+    settle_for, Limiter, Param, Settings, ATTACK, HOLD, TRUE_PEAK_DELAY,
 };
+use columbina_audio::fx::true_peak::TruePeak;
 use columbina_audio::testing::{
     assert_latency, assert_settle, chunk_invariance, noise, render, CountingAllocator, Run,
 };
@@ -36,6 +37,12 @@ use common::{amplitude_at, db, no_zipper, peak, process, realtime_work, sine_at,
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
 const L: usize = LIMITER_LOOKAHEAD;
+
+/// The level to which a steady sound is brought under a ceiling of `ceiling_db`: the ceiling less
+/// the margin for what peaks between the points read.
+fn held(ceiling_db: f64) -> f64 {
+    10_f64.powf((ceiling_db - f64::from(LIMITER_TRUE_PEAK_MARGIN_DB)) / 20.0)
+}
 
 fn limiter(edit: impl FnOnce(&mut Settings)) -> Limiter {
     let mut settings = Settings::default();
@@ -107,7 +114,8 @@ fn the_true_peak_of_a_quarter_of_the_rate_at_45_degrees_is_3_db_over_its_samples
     }
     // The interval read lags the sample pushed by 6; its first point is the sample itself.
     let mut detector = TruePeak::new();
-    let impulse = [0.0, 0.0, 0.8, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let mut impulse = [0.0; 40];
+    impulse[2] = 0.8;
     let readings: Vec<f64> = impulse.iter().map(|&x| detector.push(x)).collect();
     assert_eq!(readings[2 + TRUE_PEAK_DELAY], 0.8);
 }
@@ -120,6 +128,149 @@ fn limited(edit: impl FnOnce(&mut Settings), input: Vec<Vec<f32>>) -> Vec<Vec<f3
     render(&mut node, &spec, &Run::new(input), |_| 480)
 }
 
+/// The response of `taps` (oldest sample first) at `freq` (a part of the rate), against the
+/// delay of the point it reads, `delay` samples behind the newest: the error of the point from
+/// the sound, as the size of their difference, a complex number.
+fn interpolation_error(taps: &[f64], freq: f64, delay: f64) -> f64 {
+    let (mut re, mut im) = (0.0, 0.0);
+    let last = (taps.len() - 1) as f64;
+    for (i, tap) in taps.iter().enumerate() {
+        // The sample i is (last − i) behind the newest, (last − i − delay) behind the point.
+        let lag = last - i as f64 - delay;
+        re += tap * (TAU * freq * lag).cos();
+        im -= tap * (TAU * freq * lag).sin();
+    }
+    (re - 1.0).hypot(im)
+}
+
+#[test]
+fn the_interpolator_reads_8_points_flat_to_0_45_of_the_rate() {
+    let detector = TruePeak::new();
+    for point in 1..8 {
+        let taps = detector.taps(point);
+        assert!((taps.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+        // The point k/8 after the sample 24 behind the newest: 23 + (8 − k)/8 behind it.
+        let delay = TRUE_PEAK_DELAY as f64 - point as f64 / 8.0;
+        for step in 0..=30 {
+            let freq = 0.3 + 0.005 * f64::from(step);
+            let error = interpolation_error(taps, freq, delay);
+            // 6e-4 of the sound: 0.005 dB.
+            assert!(error < 6e-4, "point {point} at {freq}: {error}");
+        }
+    }
+    // Half way between two samples, near the Nyquist frequency: −2.5 dB at 0.48 of the rate.
+    let half = detector.taps(4);
+    let (mut re, mut im) = (0.0, 0.0);
+    for (i, tap) in half.iter().enumerate() {
+        re += tap * (TAU * 0.48 * i as f64).cos();
+        im -= tap * (TAU * 0.48 * i as f64).sin();
+    }
+    let at_048 = db(re.hypot(im));
+    assert!((-2.7..-2.3).contains(&at_048), "{at_048}");
+    // A sine of 0.45 of the rate is read within 0.15 dB under its amplitude, whatever its phase.
+    for phase in [0.0, 0.4, 1.1, 2.3] {
+        let signal = sine_at(21_600.0, 0.5, phase, 9_600);
+        let error = db(steady_true_peak(&signal, 200) / 0.5);
+        assert!((-0.15..0.01).contains(&error), "{phase}: {error}");
+    }
+}
+
+/// Gaussian noise of `deviation`, the same on every machine (the generator of the review's
+/// probe).
+fn gaussian(seed: u64, deviation: f64, frames: usize) -> Vec<f64> {
+    let mut state = seed;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state >> 11) as f64 / (1_u64 << 53) as f64
+    };
+    (0..frames)
+        .map(|_| {
+            let u = next().max(1e-12);
+            let v = next();
+            deviation * (-2.0 * u.ln()).sqrt() * (TAU * v).cos()
+        })
+        .collect()
+}
+
+/// Bursts every `period` samples of `f` of the distance from the middle of each.
+fn bursts(frames: usize, period: usize, f: impl Fn(isize) -> f64) -> Vec<f32> {
+    (0..frames)
+        .map(|n| {
+            let middle = (n / period) * period + period / 2;
+            f(n as isize - middle as isize) as f32
+        })
+        .collect()
+}
+
+/// The signals of the review that read far over the ceiling through the interpolator of 4 points:
+/// hard-clipped noise, the signs of a sinc, and an alternating sign, the last two in bursts.
+fn wideband() -> Vec<(&'static str, Vec<f32>)> {
+    let frames = 48_000;
+    let clipped = |deviation: f64| -> Vec<f32> {
+        gaussian(0x1234_5678_9abc_def1, deviation, frames)
+            .into_iter()
+            .map(|x| x.clamp(-1.0, 1.0) as f32)
+            .collect()
+    };
+    let sinc_sign = |k: isize, amplitude: f64| {
+        bursts(frames, 4_800, move |m| {
+            if m.abs() <= k {
+                let u = m as f64 - 0.5;
+                amplitude * ((PI * u).sin() / (PI * u)).signum()
+            } else {
+                0.0
+            }
+        })
+    };
+    vec![
+        ("clipped noise ×3", clipped(3.0)),
+        ("clipped noise ×10", clipped(10.0)),
+        ("sinc signs 8", sinc_sign(8, 0.9)),
+        ("sinc signs 24", sinc_sign(24, 2.0)),
+        (
+            "alternating",
+            bursts(frames, 4_800, |m| {
+                if m.abs() < 300 {
+                    let sign = if m % 2 == 0 { 1.0 } else { -1.0 };
+                    if m < 0 {
+                        sign
+                    } else {
+                        -sign
+                    }
+                } else {
+                    0.0
+                }
+            }),
+        ),
+    ]
+}
+
+#[test]
+fn wideband_sound_comes_out_under_the_ceiling_in_true_peak() {
+    for (name, input) in wideband() {
+        for soft in [false, true] {
+            let mut input = input.clone();
+            input.extend(std::iter::repeat_n(0.0, 2_000));
+            let frames = input.len();
+            let output = limited(|s| s.soft = soft, vec![input]).remove(0);
+            let ours = db(true_peak_16(&output, 0, frames));
+            assert!(
+                ours <= -1.0 + 0.5,
+                "{name}, soft {soft}: {ours} dBTP by 16 points"
+            );
+            if let Some(read) = ffmpeg_true_peak(&[output]) {
+                eprintln!("{name}, soft {soft}: ffmpeg {read} dBTP, 16 points {ours:.2} dBTP");
+                assert!(
+                    read <= -1.0 + 0.2,
+                    "{name}, soft {soft}: ffmpeg reads {read} dBTP"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn a_tone_of_6_dbfs_comes_out_under_a_ceiling_of_minus_1_dbtp() {
     let input = sine_at(997.0, 2.0, 0.0, 96_000);
@@ -127,7 +278,8 @@ fn a_tone_of_6_dbfs_comes_out_under_a_ceiling_of_minus_1_dbtp() {
     let tail = &output[48_000..];
     // The tone is a tone still: its amplitude is its true peak.
     let amplitude = db(amplitude_at(tail, 997.0));
-    assert!((-1.15..=-0.9).contains(&amplitude), "{amplitude}");
+    // The ceiling less the margin of 0.2 dB.
+    assert!((-1.25..=-1.15).contains(&amplitude), "{amplitude}");
     let read = db(steady_true_peak(&output, 48_000));
     assert!(read <= -1.0 + 1e-6, "{read}");
     let ours = db(true_peak_16(&output, 48_000, 52_800));
@@ -135,7 +287,7 @@ fn a_tone_of_6_dbfs_comes_out_under_a_ceiling_of_minus_1_dbtp() {
 }
 
 /// The true peak that ffmpeg's `ebur128` reads of `channels` (48 kHz), if there is an ffmpeg
-/// (`FFMPEG`, or `ffmpeg` on the path).
+/// (`FFMPEG`, else the LGPL build of the toolchain, else `ffmpeg` on the path).
 fn ffmpeg_true_peak(channels: &[Vec<f32>]) -> Option<f64> {
     let frames = channels[0].len();
     let count = channels.len();
@@ -160,7 +312,15 @@ fn ffmpeg_true_peak(channels: &[Vec<f32>]) -> Option<f64> {
     }
     let path = std::env::temp_dir().join(format!("columbina-limiter-{}.wav", std::process::id()));
     std::fs::write(&path, &wav).unwrap();
-    let ffmpeg = std::env::var("FFMPEG").unwrap_or_else(|_| "ffmpeg".into());
+    // The LGPL build of the toolchain (convention 5), unless FFMPEG names another.
+    let lgpl = r"F:gent harness\_review	oolchainfmpeg-lgpl-8.1infmpeg.exe";
+    let ffmpeg = std::env::var("FFMPEG").unwrap_or_else(|_| {
+        if std::path::Path::new(lgpl).exists() {
+            lgpl.into()
+        } else {
+            "ffmpeg".into()
+        }
+    });
     let output = std::process::Command::new(ffmpeg)
         .args(["-hide_banner", "-nostats", "-i"])
         .arg(&path)
@@ -314,7 +474,8 @@ fn the_attack_falls_within_the_lookahead_and_soft_falls_by_a_raised_cosine() {
     // released (in 1 ms here) to what 2.0 needs.
     let mut key = vec![0.0_f32; 9_600];
     key[4_000..].fill(2.0);
-    let ceiling = 10_f64.powf(-1.0 / 20.0);
+    // Where the gain goes: the ceiling less the margin.
+    let ceiling = held(-1.0);
     let arrives = 4_000 + L;
     for soft in [false, true] {
         let gain = gains(
@@ -440,7 +601,7 @@ fn every_ramp_is_half_way_after_five_ms_the_release_in_its_logarithm() {
     let run = Run::new(vec![vec![2.0; 9_600]]).with_change(4_000, Param::CeilingDb.id(), -12.0);
     // A release of 1 ms lets the ringing of the step at the start go by.
     let output = process(limiter(|s| s.release_ms = 1.0), &spec, &run).remove(0);
-    let (high, low) = (10_f32.powf(-1.0 / 20.0), 10_f32.powf(-12.0 / 20.0));
+    let (high, low) = (held(-1.0) as f32, held(-12.0) as f32);
     assert!((output[3_900] - high).abs() < 1e-6, "{}", output[3_900]);
     assert!((output[9_000] - low).abs() < 1e-6, "{}", output[9_000]);
     let largest = output[1_000..]
@@ -540,7 +701,7 @@ fn the_sidechain_keys_it_and_listen_lets_the_sidechain_out() {
         assert!(channel[..L].iter().all(|x| *x == 0.0));
         assert_eq!(channel[L..], key[..frames - L]);
     }
-    // Listen with the sidechain off changes nothing.
+    // Listen is a button of its own: with the sidechain off, it lets the sidechain out too.
     let off = process(
         limiter(|s| {
             s.ceiling_db = -12.0;
@@ -549,7 +710,8 @@ fn the_sidechain_keys_it_and_listen_lets_the_sidechain_out() {
         &spec,
         &run,
     );
-    assert_eq!(off, own);
+    assert_eq!(off, listened);
+    assert_ne!(off, own);
     // A lane of Listen is not heard: it is for the monitor.
     let lane = run
         .clone()
@@ -593,6 +755,31 @@ fn the_sidechain_keys_it_and_listen_lets_the_sidechain_out() {
         &bare,
     );
     assert_eq!(heard, none);
+}
+
+#[test]
+fn the_sidechain_is_heard_as_it_comes_not_raised_by_input_level() {
+    // A key at −6 dBFS, under the ceiling of −1; Input Level +12 dB on a quiet main. Raised by
+    // Input Level the key would be +6 dBFS and duck the main; as it comes, it does not.
+    let frames = 9_600;
+    let spec = Spec::new(RATE, 1_024, Layout::Mono).with_sidechain(1);
+    let main = sine_at(440.0, 0.05, 0.0, frames);
+    let key = sine_at(1_000.0, 0.5, 0.0, frames);
+    let run = Run::new(vec![main.clone()]).with_sidechain(vec![key]);
+    let keyed = process(
+        limiter(|s| {
+            s.input_db = 12.0;
+            s.sidechain_on = true;
+        }),
+        &spec,
+        &run,
+    )
+    .remove(0);
+    let gain = 10_f64.powf(12.0 / 20.0);
+    for n in L..frames {
+        let expected = f64::from(main[n - L]) * gain;
+        assert!((f64::from(keyed[n]) - expected).abs() < 1e-7, "{n}");
+    }
 }
 
 #[test]
@@ -779,8 +966,8 @@ fn the_work_of_the_thread_of_the_mix_takes_no_memory_and_the_meters_read() {
     render(&mut node, &spec, &run, |_| 480);
     let (input, reduction, output) = meter.read();
     assert!((input - 6.02).abs() < 0.05, "{input}");
-    assert!((reduction + 7.0).abs() < 0.2, "{reduction}");
-    assert!((output + 1.0).abs() < 0.2, "{output}");
+    assert!((reduction + 7.2).abs() < 0.1, "{reduction}");
+    assert!((output + 1.2).abs() < 0.1, "{output}");
 }
 
 #[test]

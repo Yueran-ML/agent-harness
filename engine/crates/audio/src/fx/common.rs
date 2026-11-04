@@ -30,7 +30,8 @@ pub enum Kind {
     Number,
     /// On at 0.5 and above, off below.
     Switch,
-    /// One of a few choices, coded 0, 1, 2 …: the nearest whole number within the range.
+    /// One of a few choices, coded 0, 1, 2 …: the nearest whole number within the range. Never
+    /// automated: the model keeps a choice (De-Esser's Range, Reaction) as a name, with no lane.
     Choice,
     /// A switch of the monitor (Listen): on at 0.5 and above, never automated.
     Monitor,
@@ -96,10 +97,10 @@ impl ParamInfo {
         }
     }
 
-    /// A lane of automation may drive it: all but a switch of the monitor.
+    /// A lane of automation may drive it: all but a switch of the monitor and a choice.
     #[must_use]
     pub const fn is_automatable(&self) -> bool {
-        !matches!(self.kind, Kind::Monitor)
+        !matches!(self.kind, Kind::Monitor | Kind::Choice)
     }
 
     /// It is on or off.

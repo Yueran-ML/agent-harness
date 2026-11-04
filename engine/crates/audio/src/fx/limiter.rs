@@ -4,14 +4,13 @@
 //!
 //! # True peaks
 //!
-//! The level heard is the true peak of the sound ([`TruePeak`]): each channel oversampled 4 times
-//! by a polyphase interpolator of 12 taps a phase (a sinc windowed by Kaiser, β =
-//! [`LIMITER_KAISER_BETA`], each phase summing to 1; the first phase is the sample itself), the
-//! largest of the four points of each interval between two samples, the largest of the
-//! channels, the LFE too. Below a fifth of the rate the four points read the peak within
-//! 0.05 dB; at the Nyquist frequency they may read it 0.69 dB low (the step of an eighth of a
-//! turn between two points), which is also the reading of a meter that oversamples 4 times
-//! (BS.1770, annex 2).
+//! The level heard is the true peak of the sound ([`TruePeak`], `fx::true_peak`): each channel
+//! oversampled 8 times by a polyphase interpolator of 48 taps a phase, flat within 0.005 dB to
+//! 0.45 of the rate, the largest of the 8 points of each interval between two samples, the
+//! largest of the channels, the LFE too, raised by [`LIMITER_TRUE_PEAK_MARGIN_DB`] for what may
+//! peak between two of the points (0.14 dB at 0.45 of the rate). What is nearer the Nyquist
+//! frequency than 0.45 of the rate is read low by the interpolator's slope (−2.5 dB at 0.48),
+//! and is the one place where the output may go over the ceiling between its samples.
 //!
 //! # The gain (Signalsmith, "Designing a straightforward limiter", 2022)
 //!
@@ -27,9 +26,10 @@
 //! A mean of values each at least the attenuation that two intervals need is at least that
 //! attenuation, so the gain at the output of a sample is no more than the gain that the intervals
 //! on either side of it need, when the sound is delayed by [`ATTACK`] + [`TRUE_PEAK_DELAY`] −
-//! 1 = 64 samples, the lookahead: no sample of the output goes over the ceiling, and no point
-//! read between two samples. The gain moves in a straight line (or the raised cosine) over the
-//! 59 samples before a peak, and so has no corner.
+//! 1 = 64 samples, the lookahead of the manual (p. 3964): no sample of the output goes over the
+//! ceiling, and no point read between two samples. The interpolator takes 24 of the 64, and the
+//! gain moves in a straight line (or the raised cosine) over the 41 samples before a peak, and so
+//! has no corner.
 //!
 //! Input Level is applied before the limiter; a sound that needs no limiting passes with the
 //! gain 1 exactly, to the bit, delayed by the lookahead.
@@ -38,10 +38,11 @@
 //!
 //! With its sidechain on and a sidechain in the block, the limiter hears the true peak of the
 //! sidechain, as it comes, not the input (the sidechain is not raised by Input Level): another
-//! track ducks this one under the ceiling (p. 3965). Listen lets out the sidechain, delayed as
-//! the sound is, in place of the sound (each channel its own when they are as many, else their
-//! mean in each); it is for the monitor and is never automated. A block without its sidechain is
-//! heard as one with none. Changing over is a crossfade of 10 ms of the attenuations heard.
+//! track ducks this one under the ceiling (p. 3965). Changing over is a crossfade of 10 ms of the
+//! attenuations heard. Listen, a button of its own beside On (pp. 3932, 3966), lets out the
+//! sidechain whenever there is one, on or not: delayed as the sound is, in place of the sound
+//! (each channel its own when they are as many, else their mean in each); it is for the monitor
+//! and is never automated. A block without its sidechain is heard as one with none.
 //!
 //! # Changes while the sound plays
 //!
@@ -56,8 +57,10 @@
 //! a NaN would stay in the release for ever.
 
 use super::common::{finite, gain_of, lane, mix, params, ParamInfo};
+pub use super::true_peak::TruePeak;
 use crate::constants::{
-    samples, FX_SETTLE_TIME_CONSTANTS, LIMITER_KAISER_BETA, LIMITER_LOOKAHEAD, SMOOTHING,
+    samples, FX_SETTLE_TIME_CONSTANTS, LIMITER_LOOKAHEAD, LIMITER_TRUE_PEAK_MARGIN_DB, SMOOTHING,
+    TRUE_PEAK_TAPS,
 };
 use crate::node::{Block, Node, ParamId, Spec, Unsupported};
 use crate::rt::{flush, seqlock, Domain, SeqReader, SeqWriter, Smoothed};
@@ -153,126 +156,16 @@ impl Settings {
     }
 }
 
-/// The taps of each phase of the interpolator of the true peak.
-pub const TRUE_PEAK_TAPS: usize = 12;
+/// The samples by which the interval that the detector reads lags the sample pushed.
+pub const TRUE_PEAK_DELAY: usize = super::true_peak::DELAY;
 
-/// The points read in each interval between two samples: the oversampling.
-pub const TRUE_PEAK_POINTS: usize = 4;
-
-/// The samples by which the interval read lags the sample pushed: the interval from `n − 6` to
-/// `n − 5` is read when `n` comes in.
-pub const TRUE_PEAK_DELAY: usize = TRUE_PEAK_TAPS / 2;
-
-/// The values of the attenuation over which the mean is taken: the attack, in samples.
+/// The values of the attenuation over which the mean is taken: the attack, in samples, what the
+/// lookahead leaves after the interpolator.
 pub const ATTACK: usize = LIMITER_LOOKAHEAD - TRUE_PEAK_DELAY + 1;
 
 /// The intervals over which the largest attenuation is held: one more than [`ATTACK`], so that
 /// the gain at a sample is held down for the intervals on both sides of it.
 pub const HOLD: usize = ATTACK + 1;
-
-/// The taps of the phases of the interpolator that read between the samples (the first phase
-/// being the sample itself): `taps[k − 1][i]` weighs `x[n − 11 + i]` for the point `k/4` of the
-/// way from `x[n − 6]` to `x[n − 5]`.
-type Phases = [[f64; TRUE_PEAK_TAPS]; TRUE_PEAK_POINTS - 1];
-
-/// The modified Bessel function of the first kind and order 0, by its series.
-fn bessel_i0(x: f64) -> f64 {
-    let mut sum = 1.0;
-    let mut term = 1.0;
-    let mut k = 1.0;
-    while term > 1e-17 * sum {
-        term *= (x / (2.0 * k)).powi(2);
-        sum += term;
-        k += 1.0;
-    }
-    sum
-}
-
-/// The phases of the interpolator: sin(πu)/(πu) at the distance `u` of each tap from the point,
-/// windowed by Kaiser over ±6, each phase scaled to sum to 1.
-#[must_use]
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "the indices of a dozen taps and four points"
-)]
-fn phases() -> Phases {
-    let half = TRUE_PEAK_DELAY as f64;
-    let beta = LIMITER_KAISER_BETA;
-    std::array::from_fn(|phase| {
-        let point = (phase + 1) as f64 / TRUE_PEAK_POINTS as f64;
-        let mut taps: [f64; TRUE_PEAK_TAPS] = std::array::from_fn(|i| {
-            let u = (half - 1.0) + point - i as f64;
-            let sinc = (std::f64::consts::PI * u).sin() / (std::f64::consts::PI * u);
-            let r = u / half;
-            sinc * bessel_i0(beta * (1.0 - r * r).max(0.0).sqrt()) / bessel_i0(beta)
-        });
-        let sum: f64 = taps.iter().sum();
-        for tap in &mut taps {
-            *tap /= sum;
-        }
-        taps
-    })
-}
-
-/// The true peak of one channel, sample by sample: the largest size of the four points of the
-/// interval from `x[n − 6]` to `x[n − 5]` when `x[n]` is pushed (BS.1770, annex 2, with an
-/// interpolator of our own; see the module).
-#[derive(Clone, Copy, Debug)]
-pub struct TruePeak {
-    phases: Phases,
-    /// The last 12 samples, the oldest first.
-    history: [f64; TRUE_PEAK_TAPS],
-}
-
-impl Default for TruePeak {
-    fn default() -> Self {
-        TruePeak::new()
-    }
-}
-
-impl TruePeak {
-    /// A detector that has heard silence.
-    #[must_use]
-    pub fn new() -> Self {
-        TruePeak {
-            phases: phases(),
-            history: [0.0; TRUE_PEAK_TAPS],
-        }
-    }
-
-    /// Back to silence.
-    pub fn reset(&mut self) {
-        self.history = [0.0; TRUE_PEAK_TAPS];
-    }
-
-    /// Pushes `x`: the largest size of the four points from `x[n − 6]` to `x[n − 5]`.
-    #[inline]
-    pub fn push(&mut self, x: f64) -> f64 {
-        self.history.copy_within(1.., 0);
-        self.history[TRUE_PEAK_TAPS - 1] = x;
-        let mut peak = self.history[TRUE_PEAK_TAPS - 1 - TRUE_PEAK_DELAY].abs();
-        for taps in &self.phases {
-            let point: f64 = taps.iter().zip(&self.history).map(|(t, x)| t * x).sum();
-            peak = peak.max(point.abs());
-        }
-        peak
-    }
-
-    /// The true peak of `signal`, silence before and after it, as a gain of amplitude.
-    #[must_use]
-    #[allow(clippy::cast_possible_truncation, reason = "a level")]
-    pub fn of(signal: &[f32]) -> f32 {
-        let mut detector = TruePeak::new();
-        let mut peak = 0.0_f64;
-        for &x in signal {
-            peak = peak.max(detector.push(f64::from(x)));
-        }
-        for _ in 0..TRUE_PEAK_DELAY {
-            peak = peak.max(detector.push(0.0));
-        }
-        peak as f32
-    }
-}
 
 /// The samples after which a Limiter of `settings` at `rate`, started late, sounds within −90
 /// dBFS of one that played from earlier: its ramps (10 ms); the lookahead, the interpolator, the
@@ -351,6 +244,8 @@ pub struct Limiter {
     release: Smoothed,
     /// The release and its factor last worked out.
     factor: (f32, f64),
+    /// The gain of [`LIMITER_TRUE_PEAK_MARGIN_DB`].
+    margin: f64,
     detectors: Vec<TruePeak>,
     side_detectors: Vec<TruePeak>,
     /// The input of each channel over the lookahead, as it came (sanitized).
@@ -400,6 +295,7 @@ impl Limiter {
             ceiling: Smoothed::new(amplitude(value(Param::CeilingDb)), Domain::Linear),
             release: Smoothed::new(value(Param::ReleaseMs), Domain::Log),
             factor: (0.0, 0.0),
+            margin: gain_of(f64::from(LIMITER_TRUE_PEAK_MARGIN_DB)),
             detectors: Vec::new(), // rt-ok: empty, before the graph is built
             side_detectors: Vec::new(), // rt-ok: empty, before the graph is built
             delay: Vec::new(),     // rt-ok: empty, before the graph is built
@@ -569,7 +465,7 @@ impl Node for Limiter {
             let keyed = present && lane(side_lane, n).map_or(self.sidechain_on, |on| on >= 0.5);
             if present {
                 self.side_weight.set(switch(keyed));
-                self.listen_weight.set(switch(keyed && self.listen));
+                self.listen_weight.set(switch(self.listen));
             }
             let side = f64::from(self.side_weight.next_value());
             let listen = f64::from(self.listen_weight.next_value());
@@ -608,8 +504,8 @@ impl Node for Limiter {
                 side_peak = side_peak.max(detector.push(x));
             }
             let needed = mix(
-                Limiter::needed(peak, ceiling),
-                Limiter::needed(side_peak, ceiling),
+                Limiter::needed(peak * self.margin, ceiling),
+                Limiter::needed(side_peak * self.margin, ceiling),
                 side,
             );
             let gain = self.gain(needed, self.factor.1, soft);
@@ -680,7 +576,8 @@ impl Node for Limiter {
         self.soft_weight.jump(switch(self.soft));
         let keyed = self.sidechain > 0 && self.sidechain_on;
         self.side_weight.jump(switch(keyed));
-        self.listen_weight.jump(switch(keyed && self.listen));
+        self.listen_weight
+            .jump(switch(self.sidechain > 0 && self.listen));
         self.input.finish();
         self.ceiling.finish();
         self.release.finish();

@@ -23,7 +23,7 @@ use columbina_audio::testing::{
     assert_latency, assert_settle, chunk_invariance, noise, render, CountingAllocator, Run,
 };
 use columbina_audio::{Layout, Node, Spec};
-use common::{amplitude_at, no_zipper, process, realtime_work, sine_at, RATE};
+use common::{amplitude_at, db, no_zipper, process, realtime_work, sine_at, RATE};
 
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
@@ -35,6 +35,21 @@ fn width(width: f32, diffusion: f32, sparkle: f32) -> StereoWidth {
         diffusion,
         sparkle,
     })
+}
+
+/// The latency at 48 kHz: the all-passes' delays, 18 + 29 + 43 + 63 samples.
+const LATENCY: usize = 153;
+
+/// `channels` delayed by the latency, as long as they were.
+fn delayed(channels: &[Vec<f32>]) -> Vec<Vec<f32>> {
+    channels
+        .iter()
+        .map(|channel| {
+            let mut out = vec![0.0; LATENCY];
+            out.extend_from_slice(&channel[..channel.len() - LATENCY]);
+            out
+        })
+        .collect()
 }
 
 /// Stereo noise whose sides are of very different sizes now and then.
@@ -52,23 +67,24 @@ fn width_0_is_the_same_on_both_sides_and_width_1_is_the_input() {
     let spec = Spec::new(RATE, 9_600, Layout::Stereo);
     let input = stereo(9_600);
     let run = Run::new(input.clone());
+    let late = delayed(&input);
     let mono = process(width(0.0, 0.0, 0.0), &spec, &run);
     for n in 0..9_600 {
         assert_eq!(mono[0][n].to_bits(), mono[1][n].to_bits(), "{n}");
-        let mid = (f64::from(input[0][n]) + f64::from(input[1][n])) / 2.0;
+        let mid = (f64::from(late[0][n]) + f64::from(late[1][n])) / 2.0;
         assert!((f64::from(mono[0][n]) - mid).abs() <= 1e-7);
     }
     // Diffusion and Sparkle work on the side alone: at width 0 there is none.
     let mono = process(width(0.0, 100.0, 100.0), &spec, &run);
     assert_eq!(mono[0], mono[1]);
-    assert_eq!(process(width(1.0, 0.0, 0.0), &spec, &run), input);
+    assert_eq!(process(width(1.0, 0.0, 0.0), &spec, &run), late);
     let off = StereoWidth::new(&Settings {
         on: false,
         width: 2.0,
         diffusion: 50.0,
         sparkle: 50.0,
     });
-    assert_eq!(process(off, &spec, &run), input);
+    assert_eq!(process(off, &spec, &run), late);
 }
 
 #[test]
@@ -76,9 +92,10 @@ fn width_2_doubles_the_side_and_the_mid_is_never_touched() {
     let spec = Spec::new(RATE, 9_600, Layout::Stereo);
     let input = stereo(9_600);
     let run = Run::new(input.clone());
+    let late = delayed(&input);
     let wide = process(width(2.0, 0.0, 0.0), &spec, &run);
     for n in 0..9_600 {
-        let (l, r) = (f64::from(input[0][n]), f64::from(input[1][n]));
+        let (l, r) = (f64::from(late[0][n]), f64::from(late[1][n]));
         // M + 2S and M − 2S: 1.5 L − 0.5 R and 1.5 R − 0.5 L.
         assert!((f64::from(wide[0][n]) - (1.5 * l - 0.5 * r)).abs() < 1e-6);
         assert!((f64::from(wide[1][n]) - (1.5 * r - 0.5 * l)).abs() < 1e-6);
@@ -86,9 +103,38 @@ fn width_2_doubles_the_side_and_the_mid_is_never_touched() {
     for (w, d, s) in [(0.3, 40.0, 0.0), (1.7, 100.0, 100.0), (1.0, 0.0, 60.0)] {
         let output = process(width(w, d, s), &spec, &run);
         for n in 0..9_600 {
-            let mid_in = f64::from(input[0][n]) + f64::from(input[1][n]);
+            let mid_in = f64::from(late[0][n]) + f64::from(late[1][n]);
             let mid_out = f64::from(output[0][n]) + f64::from(output[1][n]);
             assert!((mid_in - mid_out).abs() < 1e-6, "{w} {d} {s} at {n}");
+        }
+    }
+}
+
+/// The gain of the side of a Stereo Width of `diffusion` and `sparkle` at `freq`, in dB: a
+/// side alone (left a sine, right its negative), its steady amplitude out over in.
+fn side_gain_db(diffusion: f32, sparkle: f32, freq: f64) -> f64 {
+    let spec = Spec::new(RATE, 48_000, Layout::Stereo);
+    let side = sine_at(freq, 0.25, 0.3, 48_000);
+    let input = vec![side.clone(), side.iter().map(|x| -x).collect()];
+    let output = process(width(1.0, diffusion, sparkle), &spec, &Run::new(input));
+    let out_side: Vec<f32> = output[0]
+        .iter()
+        .zip(&output[1])
+        .map(|(l, r)| (l - r) / 2.0)
+        .collect();
+    db(amplitude_at(&out_side[24_000..], freq) / 0.25)
+}
+
+#[test]
+fn diffusion_at_any_amount_keeps_the_side_at_every_frequency() {
+    // A mix of the side and an all-pass of it combed it by −37 dB at 683 Hz half way (the
+    // review); the all-passes themselves, of feedback in proportion, do not.
+    for diffusion in [25.0, 50.0, 75.0, 100.0] {
+        for freq in [
+            100.0, 330.0, 683.0, 1_000.0, 2_700.0, 6_100.0, 11_000.0, 17_000.0,
+        ] {
+            let gain = side_gain_db(diffusion, 0.0, freq);
+            assert!(gain.abs() < 0.01, "{diffusion} % at {freq} Hz: {gain} dB");
         }
     }
 }
@@ -108,7 +154,7 @@ fn diffusion_keeps_the_power_of_the_side_and_loses_its_shape() {
         .collect();
     let power = |x: &[f64]| x.iter().map(|x| x * x).sum::<f64>() / x.len() as f64;
     let in_side: Vec<f64> = side.iter().map(|x| f64::from(*x)).collect();
-    let ratio = power(&out_side[4_800..]) / power(&in_side[4_800..]);
+    let ratio = power(&out_side[4_800..]) / power(&in_side[4_800 - LATENCY..frames - LATENCY]);
     assert!((ratio - 1.0).abs() < 0.02, "{ratio}");
     // The impulse response of the chain of all-passes: none at once but −g⁴, then echoes at
     // each sum of delays.
@@ -133,14 +179,14 @@ fn diffusion_keeps_the_power_of_the_side_and_loses_its_shape() {
     assert!(output[0][first] != 0.0);
 }
 
-/// The gain of the high-pass of two poles of the cookbook, Butterworth, at `freq`, as a complex
+/// The gain of the low-pass of two poles of the cookbook, Butterworth, at `freq`, as a complex
 /// number, written out here again.
-fn cookbook_high_pass(f0: f64, freq: f64) -> (f64, f64) {
+fn cookbook_low_pass(f0: f64, freq: f64) -> (f64, f64) {
     let rate = f64::from(RATE);
     let w0 = TAU * f0 / rate;
     let alpha = w0.sin() / (2.0 * std::f64::consts::FRAC_1_SQRT_2);
     let c = w0.cos();
-    let b = [(1.0 + c) / 2.0, -(1.0 + c), (1.0 + c) / 2.0];
+    let b = [(1.0 - c) / 2.0, 1.0 - c, (1.0 - c) / 2.0];
     let a = [1.0 + alpha, -2.0 * c, 1.0 - alpha];
     let w = TAU * freq / rate;
     let at = |k: [f64; 3]| {
@@ -156,25 +202,31 @@ fn cookbook_high_pass(f0: f64, freq: f64) -> (f64, f64) {
 }
 
 #[test]
-fn sparkle_adds_the_high_side_by_the_high_pass_of_the_cookbook() {
-    let spec = Spec::new(RATE, 48_000, Layout::Stereo);
+fn sparkle_adds_the_side_above_its_low_pass_and_never_takes_from_it() {
     for (freq, sparkle) in [
         (12_000.0, 100.0),
         (5_000.0, 100.0),
         (8_000.0, 40.0),
+        (2_800.0, 100.0),
         (200.0, 100.0),
     ] {
-        let side = sine_at(freq, 0.25, 0.3, 48_000);
-        let input = vec![side.clone(), side.iter().map(|x| -x).collect()];
-        let output = process(width(1.0, 0.0, sparkle), &spec, &Run::new(input));
-        let (re, im) = cookbook_high_pass(f64::from(WIDTH_SPARKLE_HZ), freq);
+        // 1 + k (1 − LP), the low-pass of the cookbook.
+        let (re, im) = cookbook_low_pass(f64::from(WIDTH_SPARKLE_HZ), freq);
         let k = f64::from(sparkle) / 100.0;
-        let expected = 0.25 * (1.0 + k * re).hypot(k * im);
-        let measured = amplitude_at(&output[0][24_000..], freq);
+        let expected = db((1.0 + k * (1.0 - re)).hypot(-k * im));
+        let measured = side_gain_db(0.0, sparkle, freq);
         assert!(
-            (measured / expected - 1.0).abs() < 1e-3,
+            (measured - expected).abs() < 0.01,
             "{freq} Hz: {measured} against {expected}"
         );
+    }
+    // No dip anywhere (the high-pass added in its place took 1.57 dB near 2.8 kHz), and at most
+    // 1 + |1 − LP| = 2.27, +7.1 dB, about the frequency, where |1 − LP| peaks at √φ = 1.272.
+    let mut freq = 100.0;
+    while freq < 20_000.0 {
+        let gain = side_gain_db(0.0, 100.0, freq);
+        assert!((-0.01..7.1).contains(&gain), "{freq} Hz: {gain} dB");
+        freq *= 1.25;
     }
 }
 
@@ -183,8 +235,9 @@ fn the_other_channels_pass_to_the_bit_and_a_mono_track_is_turned_away() {
     let spec = Spec::new(RATE, 4_800, Layout::Surround51);
     let input: Vec<Vec<f32>> = (0..6).map(|c| noise(10 + c, 0.5, 4_800)).collect();
     let output = process(width(1.6, 30.0, 30.0), &spec, &Run::new(input.clone()));
+    let late = delayed(&input);
     for channel in 2..6 {
-        assert_eq!(output[channel], input[channel]);
+        assert_eq!(output[channel], late[channel]);
     }
     let stereo = process(
         width(1.6, 30.0, 30.0),
@@ -282,8 +335,9 @@ fn every_ramp_is_half_way_after_five_ms_and_a_lane_turns_the_insert_off() {
         .collect();
     let run = Run::new(input.clone()).with_automation(Param::On.id(), lane);
     let output = process(width(2.0, 30.0, 30.0), &spec, &run);
+    let through = delayed(&input);
     for channel in 0..2 {
-        assert_eq!(output[channel][2_480..], input[channel][2_480..]);
+        assert_eq!(output[channel][2_480..], through[channel][2_480..]);
     }
 }
 
@@ -310,16 +364,22 @@ fn the_width_is_the_same_in_any_blocks() {
 }
 
 #[test]
-fn no_latency_and_a_late_start_settles_as_reported() {
+fn the_latency_is_that_of_the_all_passes_and_a_late_start_settles_as_reported() {
     let spec = Spec::new(RATE, 1_024, Layout::Stereo);
-    assert_eq!(assert_latency(|| width(1.4, 50.0, 50.0), &spec), 0);
+    assert_eq!(assert_latency(|| width(1.4, 50.0, 50.0), &spec), LATENCY);
+    assert_eq!(assert_latency(|| width(1.0, 0.0, 0.0), &spec), LATENCY);
+    let mut at_96k = width(1.0, 0.0, 0.0);
+    at_96k
+        .prepare(&Spec::new(96_000, 64, Layout::Stereo))
+        .unwrap();
+    assert_eq!(at_96k.latency(), 36 + 59 + 85 + 126);
     let mut probe = width(1.4, 50.0, 50.0);
     probe.prepare(&spec).unwrap();
     let settle = probe.settle() as usize;
     assert_eq!(settle, settle_for(&Settings::default(), RATE) as usize);
-    // 480, the four all-passes (82, 149, 206, 283 samples) twenty times each, and the high-pass.
+    // 480, the latency, the four all-passes (153 samples) twenty times each, and the low-pass.
     assert!(
-        (480 + 20 * 720..480 + 20 * 720 + 100).contains(&settle),
+        (480 + 21 * LATENCY..480 + 21 * LATENCY + 100).contains(&settle),
         "{settle}"
     );
     let frames = 3 * settle;

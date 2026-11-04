@@ -18,7 +18,8 @@ use std::f64::consts::{FRAC_1_SQRT_2, TAU};
 
 use columbina_audio::fx::biquad::Coefficients;
 use columbina_audio::fx::deesser::{
-    above, band_pass, band_q, reduction_db, settle_for, DeEsser, Param, Range, Reaction, Settings,
+    above, band_pass, band_q, bandwidth_db, reduction_db, settle_for, DeEsser, Param, Range,
+    Reaction, Settings,
 };
 use columbina_audio::testing::{
     assert_latency, assert_settle, chunk_invariance, noise, render, CountingAllocator, Run,
@@ -204,26 +205,45 @@ fn the_bands_are_as_wide_as_they_are_named_and_all_high_keeps_the_low_pass() {
 
 #[test]
 fn the_reduction_follows_how_far_the_band_stands_out() {
-    assert_eq!(reduction_db(-20.0, -30.0, 100.0), 0.0);
-    assert_eq!(reduction_db(-20.0, -12.0, 100.0), 0.0);
-    assert!((reduction_db(-20.0, -6.0, 100.0) - 10.0).abs() < 1e-12);
-    assert!((reduction_db(-20.0, -3.0, 50.0) - 7.5).abs() < 1e-12);
-    assert_eq!(reduction_db(-20.0, 0.0, 100.0), 20.0);
-    assert_eq!(reduction_db(-20.0, 2.0, 100.0), 20.0);
-    // Far down, nothing; from −60 dBFS, all of it; half way, half.
-    assert_eq!(reduction_db(-75.0, 0.0, 100.0), 0.0);
-    assert_eq!(reduction_db(-60.0, 0.0, 100.0), 20.0);
-    assert!((reduction_db(-65.0, 0.0, 100.0) - 10.0).abs() < 1e-12);
-    // A tone of 1 kHz and a burst of 6 kHz together, each at −10 dBFS: the band (6 kHz, and
-    // 1 kHz down by 18 dB) is about 6 dB under the peaks of the whole, about 10 dB of
-    // reduction; and outside the bursts, the tone to the bit.
-    let mut input = sine_at(1_000.0, 0.316_227_77, 0.0, 38_400);
+    // Density over the sound below: nothing to +6 dB, all of it from +18, half at +12.
+    assert_eq!(reduction_db(-20.0, -10.0, 100.0), 0.0);
+    assert_eq!(reduction_db(-20.0, 6.0, 100.0), 0.0);
+    assert!((reduction_db(-20.0, 12.0, 100.0) - 10.0).abs() < 1e-12);
+    assert!((reduction_db(-20.0, 15.0, 50.0) - 7.5).abs() < 1e-12);
+    assert_eq!(reduction_db(-20.0, 18.0, 100.0), 20.0);
+    assert_eq!(reduction_db(-20.0, 40.0, 100.0), 20.0);
+    // Under −45 dBFS, nothing; from −39 dBFS, all of it; half way, half.
+    assert_eq!(reduction_db(-46.0, 30.0, 100.0), 0.0);
+    assert_eq!(reduction_db(-45.0, 30.0, 100.0), 0.0);
+    assert_eq!(reduction_db(-39.0, 30.0, 100.0), 20.0);
+    assert!((reduction_db(-42.0, 30.0, 100.0) - 10.0).abs() < 1e-12);
+    // The noise bandwidths: of a band-pass π/2Q · f, of the sound below 0.513 f.
+    let widths = bandwidth_db(RATE, 6_000.0);
+    let expected = |q: f64| 10.0 * (std::f64::consts::FRAC_PI_2 / q / 0.513).log10();
+    assert!((widths[0] - expected(band_q(1.0 / 3.0))).abs() < 1e-9);
+    assert!((widths[1] - expected(std::f64::consts::SQRT_2)).abs() < 1e-9);
+    assert!(
+        (widths[2] - 10.0 * ((24_000.0_f64 - 1.111 * 6_000.0) / (0.513 * 6_000.0)).log10()).abs()
+            < 1e-9
+    );
+    // A tone of 1 kHz at −30 dBFS and a burst of 6 kHz at −10 dBFS: the band stands about 13 dB
+    // over the sound below (which holds the tone and 6 kHz down by 24 dB), more than half of the
+    // reduction; and before the bursts, the tone to the bit.
+    let mut input = sine_at(1_000.0, 0.031_622_78, 0.0, 38_400);
     fade(&mut input);
     for (x, s) in input.iter_mut().zip(burst(6_000.0)) {
         *x += s;
     }
     let reduced = change_db(|s| s.amount = 100.0, &input, 6_000.0);
-    assert!((-15.0..-10.0).contains(&reduced), "{reduced}");
+    assert!((-20.1..-12.0).contains(&reduced), "{reduced}");
+    // The tone at −10 dBFS as loud as the burst: not denser above than below, nothing.
+    let mut loud = sine_at(1_000.0, 0.316_227_77, 0.0, 38_400);
+    fade(&mut loud);
+    for (x, s) in loud.iter_mut().zip(burst(6_000.0)) {
+        *x += s;
+    }
+    let kept = change_db(|s| s.amount = 100.0, &loud, 6_000.0);
+    assert!(kept.abs() < 0.01, "{kept}");
     let spec = Spec::new(RATE, 1_024, Layout::Mono);
     let output = process(
         deesser(|s| s.amount = 100.0),
@@ -232,6 +252,127 @@ fn the_reduction_follows_how_far_the_band_stands_out() {
     )
     .remove(0);
     assert_eq!(output[..4_800], input[..4_800]);
+}
+
+/// Pink noise of RMS `rms` (Paul Kellet's filter of white noise, three poles), and white.
+fn pink_and_white(seed: u64, rms: f64, frames: usize) -> [Vec<f32>; 2] {
+    let white = noise(seed, 1.0, frames);
+    let (mut b0, mut b1, mut b2) = (0.0_f64, 0.0_f64, 0.0_f64);
+    let pink: Vec<f64> = white
+        .iter()
+        .map(|&w| {
+            let w = f64::from(w);
+            b0 = 0.997_65 * b0 + w * 0.099_046;
+            b1 = 0.963 * b1 + w * 0.296_516_4;
+            b2 = 0.57 * b2 + w * 1.052_691_3;
+            b0 + b1 + b2 + w * 0.184_8
+        })
+        .collect();
+    let scale = |signal: Vec<f64>| -> Vec<f32> {
+        let now = (signal.iter().map(|x| x * x).sum::<f64>() / signal.len() as f64).sqrt();
+        signal.iter().map(|x| (x * rms / now) as f32).collect()
+    };
+    [
+        scale(pink),
+        scale(white.iter().map(|x| f64::from(*x)).collect()),
+    ]
+}
+
+#[test]
+fn hiss_white_or_pink_is_left_alone() {
+    let spec = Spec::new(RATE, 1_024, Layout::Mono);
+    for rms_db in [-20.0, -40.0] {
+        for (kind, signal) in
+            ["pink", "white"]
+                .into_iter()
+                .zip(pink_and_white(7, 10_f64.powf(rms_db / 20.0), 48_000))
+        {
+            for range in Range::ALL {
+                for freq in [4_000.0, 6_000.0, 9_000.0] {
+                    let output = process(
+                        deesser(|s| {
+                            s.amount = 100.0;
+                            s.range = range;
+                            s.frequency_hz = freq;
+                        }),
+                        &spec,
+                        &Run::new(vec![signal.clone()]),
+                    )
+                    .remove(0);
+                    let power = |x: &[f32]| x.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>();
+                    let change = 10.0 * (power(&output[4_800..]) / power(&signal[4_800..])).log10();
+                    assert!(
+                        change.abs() < 1.0,
+                        "{kind} at {rms_db} dBFS, {range:?} at {freq} Hz: {change} dB"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn all_high_hears_by_its_high_pass_and_leaves_a_tone_under_the_target_alone() {
+    // A tone of 4.5 kHz under a target of 6 kHz: 6 dB down through the high-pass, only 0.4 dB
+    // through 1 − LP, which falls 6 dB an octave below the target, where the high-pass falls
+    // 12. Heard by the high-pass it stands 0.5 dB over the sound below, nothing; heard by
+    // 1 − LP, 7 dB, and it would be lowered.
+    let input = burst(4_500.0);
+    let change = change_db(
+        |s| {
+            s.amount = 100.0;
+            s.range = Range::AllHigh;
+        },
+        &input,
+        4_500.0,
+    );
+    assert!(change.abs() < 0.05, "{change}");
+}
+
+#[test]
+fn a_band_under_the_floor_is_left_alone() {
+    // A burst of 6 kHz alone: at −55 dBFS, under the floor of −45, to the bit; at −30, all of
+    // the reduction.
+    let spec = Spec::new(RATE, 1_024, Layout::Mono);
+    let quiet: Vec<f32> = burst(6_000.0).iter().map(|x| x * 0.005_623_4).collect();
+    let output = process(
+        deesser(|s| s.amount = 100.0),
+        &spec,
+        &Run::new(vec![quiet.clone()]),
+    );
+    assert_eq!(output[0], quiet);
+    let louder: Vec<f32> = burst(6_000.0).iter().map(|x| x * 0.1).collect();
+    let reduced = change_db(|s| s.amount = 100.0, &louder, 6_000.0);
+    assert!((reduced + 20.0).abs() < 0.05, "{reduced}");
+}
+
+#[test]
+fn the_range_crossfades_over_ten_ms_and_range_and_reaction_are_not_automated() {
+    let spec = Spec::new(RATE, 240, Layout::Mono);
+    let quiet = Run::new(vec![vec![0.0; 240]]);
+    let mut node = deesser(|_| {});
+    node.prepare(&spec).unwrap();
+    assert_eq!(node.ranges(), [0.0, 1.0, 0.0]);
+    node.set(Param::Range.id(), Range::AllHigh.code());
+    render(&mut node, &spec, &quiet, |left| left);
+    let [narrow, wide, high] = node.ranges();
+    assert!(narrow == 0.0 && (wide - 0.5).abs() < 1e-6 && (high - 0.5).abs() < 1e-6);
+    render(&mut node, &spec, &quiet, |left| left);
+    assert_eq!(node.ranges(), [0.0, 0.0, 1.0]);
+    // Lanes of the Range and the Reaction change nothing: the model keeps them as names.
+    assert!(!Param::Range.is_automatable() && !Param::Reaction.is_automatable());
+    let spec = Spec::new(RATE, 1_024, Layout::Mono);
+    let mut input = sine_at(1_000.0, 0.03, 0.0, 38_400);
+    for (x, s) in input.iter_mut().zip(burst(7_000.0)) {
+        *x += s;
+    }
+    let run = Run::new(vec![input]);
+    let plain = process(deesser(|s| s.amount = 100.0), &spec, &run);
+    let lanes = run
+        .clone()
+        .with_automation(Param::Range.id(), vec![2.0; 38_400])
+        .with_automation(Param::Reaction.id(), vec![0.0; 38_400]);
+    assert_eq!(process(deesser(|s| s.amount = 100.0), &spec, &lanes), plain);
 }
 
 /// The reduction that a De-Esser of `reaction` reads at each millisecond of `input`.
@@ -256,8 +397,8 @@ fn reductions(reaction: Reaction, input: &[f32]) -> Vec<f32> {
 
 #[test]
 fn the_reaction_sets_how_soon_it_acts() {
-    // A tone of 1 kHz throughout (faded in) and a burst of 6 kHz from 100 ms.
-    let mut input = sine_at(1_000.0, 0.316_227_77, 0.0, 9_600);
+    // A tone of 1 kHz at −40 dBFS throughout (faded in) and a burst of 6 kHz from 100 ms.
+    let mut input = sine_at(1_000.0, 0.01, 0.0, 9_600);
     fade(&mut input[..4_800]);
     for (x, s) in input[4_800..]
         .iter_mut()
@@ -269,20 +410,22 @@ fn the_reaction_sets_how_soon_it_acts() {
     let medium = reductions(Reaction::Medium, &input);
     let fast = reductions(Reaction::Fast, &input);
     for reductions in [&slow, &medium, &fast] {
-        assert!(reductions[199] < -8.0, "{}", reductions[199]);
+        assert!(reductions[199] < -19.0, "{}", reductions[199]);
         // Before the burst, nothing.
         assert!(reductions[30..100].iter().all(|r| *r == 0.0));
     }
-    // 2 ms into the burst, Fast is almost there and Slow has hardly begun.
-    assert!(fast[101] < 0.8 * fast[199], "{} {}", fast[101], fast[199]);
-    assert!(slow[101] > 0.2 * slow[199], "{} {}", slow[101], slow[199]);
-    assert!(medium[101] < slow[101] && medium[101] > fast[101]);
+    // In the first millisecond of the burst, Fast is there and Slow has hardly begun; Medium
+    // between them.
+    assert!(fast[100] < 0.8 * fast[199], "{} {}", fast[100], fast[199]);
+    assert!(slow[100] > 0.2 * slow[199], "{} {}", slow[100], slow[199]);
+    assert!(medium[100] <= slow[100] && medium[100] >= fast[100]);
+    assert!(slow[102] > fast[102]);
 }
 
 #[test]
 fn listen_lets_out_what_is_taken_away_and_the_lfe_is_not_heard() {
     let spec = Spec::new(RATE, 1_024, Layout::Mono);
-    let mut input = sine_at(1_000.0, 0.3, 0.0, 38_400);
+    let mut input = sine_at(1_000.0, 0.03, 0.0, 38_400);
     fade(&mut input);
     for (x, s) in input.iter_mut().zip(burst(7_000.0)) {
         *x += s;
@@ -312,11 +455,12 @@ fn listen_lets_out_what_is_taken_away_and_the_lfe_is_not_heard() {
     .remove(0);
     assert_eq!(laned, heard);
     assert!(!Param::Listen.is_automatable());
-    // Ess on the LFE of 5.1 alone: not heard, nothing lowered.
+    // Ess on the LFE of 5.1, a quiet tone on the left: the LFE is not heard, nothing lowered
+    // (heard, the ess would be lowered on every channel).
     let spec = Spec::new(RATE, 1_024, Layout::Surround51);
     let mut channels = vec![vec![0.0_f32; 38_400]; 6];
     channels[3] = burst(6_000.0);
-    channels[0] = burst(1_000.0);
+    channels[0] = burst(1_000.0).iter().map(|x| x * 0.1).collect();
     let output = process(
         deesser(|s| s.amount = 100.0),
         &spec,
@@ -477,12 +621,9 @@ fn the_de_esser_is_the_same_in_any_blocks() {
     let sweep: Vec<f32> = (0..frames)
         .map(|n| 6_000.0 * 2_f32.powf((n as f32 / 1_000.0).sin()))
         .collect();
-    let ranges: Vec<f32> = (0..frames).map(|n| ((n / 1_700) % 3) as f32).collect();
     let amounts: Vec<f32> = (0..frames).map(|n| (n % 101) as f32).collect();
     let automated = run
         .with_automation(Param::FrequencyHz.id(), sweep)
-        .with_automation(Param::Range.id(), ranges.clone())
-        .with_automation(Param::Reaction.id(), ranges)
         .with_automation(Param::Amount.id(), amounts);
     chunk_invariance(|| deesser(|_| {}), &spec, &automated, &[3]);
 }

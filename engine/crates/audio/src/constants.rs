@@ -145,8 +145,10 @@ pub const RMS_WINDOW: f64 = 0.300;
 /// How often the meters are read and sent (C-L5).
 pub const METER_RATE_HZ: u32 = 30;
 
-/// The oversampling of the true peak (plan T9; C-L1).
-pub const TRUE_PEAK_OVERSAMPLING: usize = 4;
+/// The oversampling of the true peak (plan T9; C-L1): 8, not the 4 of BS.1770's annex 2, whose
+/// short filter reads content near the Nyquist frequency several dB low (the review of T10;
+/// `fx::true_peak`).
+pub const TRUE_PEAK_OVERSAMPLING: usize = 8;
 
 /// The window of Momentary loudness, and how often it is given (BS.1770; p. 3985).
 pub const LOUDNESS_MOMENTARY: f64 = 0.400;
@@ -371,23 +373,36 @@ pub fn fade_gain(curve: f64, skew: f64, t: f64, falling: bool) -> f64 {
 // --- Effects of T10: Gain, Limiter, Soft Clipper, Stereo Width, De-Esser, De-Hummer -----------
 
 /// The time constants of a follower or a release after which two effects that heard the same
-/// sound from different states sound the same (a difference of gain of 1 brought under −90 dBFS
-/// on a sound of up to +30 dBFS: e^(−14) · 31.6 < 3.16e-5): the settling of the Limiter's release
-/// and of the De-Esser's followers (T10).
+/// sound from different states sound the same: the settling of the Limiter's release and of the
+/// De-Esser's followers (T10). Their premise is a difference of linear gain of at most 1, through
+/// one stage, on a sound of up to +30 dBFS: e^(−14) · 31.6 < 3.16e-5, under −90 dBFS. Dynamics
+/// counts 18 ([`DYNAMICS_SETTLE_TIME_CONSTANTS`]) because its premise is wider: a difference of
+/// 200 dB of gain at +12 dBFS, through the two stages of its detector.
 pub const FX_SETTLE_TIME_CONSTANTS: f64 = 14.0;
 
-/// The β of the Kaiser window of the interpolator of the Limiter's true peaks (4 points a
-/// sample, 12 taps a phase): within 0.01 dB below 0.3 of the rate (T10; the reference's C-X5).
-pub const LIMITER_KAISER_BETA: f64 = 6.0;
+/// The taps of each phase of the interpolator of the true peak (`fx::true_peak`): a sinc over
+/// ±24 samples, so that it is flat within 0.01 dB to 0.45 of the rate (the review of T10).
+pub const TRUE_PEAK_TAPS: usize = 48;
+
+/// The β of the Kaiser window of the interpolator of the true peak: with [`TRUE_PEAK_TAPS`], every
+/// point within 0.005 dB (and its phase) of the sound below 0.45 of the rate; −2.5 dB at 0.48.
+pub const TRUE_PEAK_KAISER_BETA: f64 = 7.0;
+
+/// What the Limiter adds to the true peak it reads, in dB: a sine of 0.45 of the rate may peak
+/// 0.14 dB over the larger of two of the 8 points between which it peaks (cos(π · 0.45 / 8)).
+pub const LIMITER_TRUE_PEAK_MARGIN_DB: f32 = 0.2;
 
 /// The delays of the all-passes of Stereo Width's Diffusion, in seconds (C-X11: "a short
-/// decorrelating all-pass on S"): four, of lengths with no common divisor at 48 kHz.
-pub const WIDTH_DIFFUSION_DELAYS: [f64; 4] = [0.001_7, 0.003_1, 0.004_3, 0.005_9];
+/// decorrelating all-pass on S"): four, of 18, 29, 43 and 63 samples at 48 kHz, whose sum, 3.2 ms,
+/// is the latency of Stereo Width (their feedback goes to 0 with Diffusion, where they are a
+/// delay; the review of T10).
+pub const WIDTH_DIFFUSION_DELAYS: [f64; 4] = [0.000_37, 0.000_61, 0.000_89, 0.001_31];
 
-/// The feedback of each all-pass of Diffusion.
+/// The feedback of each all-pass of Diffusion at 100 %, in proportion below.
 pub const WIDTH_DIFFUSION_FEEDBACK: f64 = 0.5;
 
-/// The frequency above which Sparkle widens the side, in Hz (C-X11).
+/// The frequency above which Sparkle widens the side, in Hz (C-X11): the low-pass that the side
+/// less is what it adds.
 pub const WIDTH_SPARKLE_HZ: f32 = 5_000.0;
 
 /// What Sparkle at 100 % adds of the high side to the side: as much again, +6 dB.
@@ -396,13 +411,21 @@ pub const WIDTH_SPARKLE_GAIN: f64 = 1.0;
 /// The most that De-Esser's Amount takes from the band, in dB (C-X7).
 pub const DEESSER_MAX_REDUCTION_DB: f32 = 20.0;
 
-/// How far under the whole sound the band of De-Esser may be before it acts, in dB: the band
-/// within this of the whole is sibilance (T10; the manual has no threshold).
-pub const DEESSER_RELATIVE_THRESHOLD_DB: f32 = -12.0;
+/// How far, in dB, the density of De-Esser's band (its level for its width) must stand over the
+/// density of the sound an octave and more below it before De-Esser acts ...
+pub const DEESSER_DENSITY_ONSET_DB: f32 = 6.0;
 
-/// The level of De-Esser's band under which it does nothing, in dBFS; all of its reduction from
-/// 10 dB above (T10).
-pub const DEESSER_FLOOR_DBFS: f32 = -70.0;
+/// ... and how far for all of its reduction (T10, the review: white noise, of the same density
+/// everywhere, and pink noise, of less above, are left alone; an ess, whose density stands 20 dB
+/// and more over the voice below it, is lowered).
+pub const DEESSER_DENSITY_FULL_DB: f32 = 18.0;
+
+/// The level of De-Esser's band under which it does nothing, in dBFS, and all of its reduction
+/// from [`DEESSER_FLOOR_RAMP_DB`] above (T10; −45 dBFS, the review's proposal).
+pub const DEESSER_FLOOR_DBFS: f32 = -45.0;
+
+/// See [`DEESSER_FLOOR_DBFS`].
+pub const DEESSER_FLOOR_RAMP_DB: f32 = 6.0;
 
 /// The widths of De-Esser's Narrow and Wide bands, in octaves (C-X7).
 pub const DEESSER_BANDWIDTHS: [f64; 2] = [1.0 / 3.0, 1.0];

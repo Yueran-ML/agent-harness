@@ -10,4 +10,5 @@ pub mod eq;
 pub mod gain;
 pub mod limiter;
 pub mod soft_clip;
+pub mod true_peak;
 pub mod width;

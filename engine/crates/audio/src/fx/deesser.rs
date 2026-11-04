@@ -26,23 +26,30 @@
 //!
 //! # When it acts (we decide; the manual has no threshold)
 //!
-//! The effect follows the peaks of the band and of the whole sound, the largest of the channels,
-//! the LFE left out, each by a follower of the Reaction's attack and release
-//! ([`DEESSER_REACTION`]: 10/80, 2/40 and 0.5/20 ms; it rises toward a larger peak by its attack
-//! and falls toward a smaller by its release, as one pole each). Sibilance is the band standing
-//! out of the sound: with `ρ` the level of the band over the level of the whole in dB, the
-//! reduction is
+//! Sibilance is a band of the sound denser than the sound below it: a pure ess, or an "s" over
+//! a voice that is quiet above 3 kHz. A hiss, white or pink, is not: it is as dense, or less,
+//! above as below. So the effect compares densities, not levels:
+//!
+//! - it follows the peaks of the band it hears (as above) and of the sound an octave and more
+//!   below the target (a low-pass of four poles, Butterworth, at half the target), the largest of
+//!   the channels, the LFE left out, each by a follower of the Reaction's attack and release
+//!   ([`DEESSER_REACTION`]: 10/80, 2/40 and 0.5/20 ms; rising toward a larger peak by its attack,
+//!   falling toward a smaller by its release, as one pole each);
+//! - `ρ`, the ratio of the band's level to the low level, in dB, less the ratio of their noise
+//!   bandwidths (π/2Q · f for a band-pass of Q, Nyquist − 1.11 f for the high-pass of All High,
+//!   0.513 f for the low-pass), is how much denser the band is: about 0 for white noise, under 0
+//!   for pink, 20 and more for an ess;
+//! - the reduction is
 //!
 //! ```text
-//! reduction = Amount/100 · DEESSER_MAX_REDUCTION_DB · clamp((ρ − T) / (0 − T), 0, 1)
+//! reduction = Amount/100 · DEESSER_MAX_REDUCTION_DB · clamp((ρ − 6) / (18 − 6), 0, 1)
+//!             · clamp((band − DEESSER_FLOOR_DBFS) / 6, 0, 1)
 //! ```
 //!
-//! with `T` = [`DEESSER_RELATIVE_THRESHOLD_DB`]: nothing while the band is more than 12 dB under
-//! the whole (a voice, a tone of 1 kHz under a band at 6 kHz, which an octave-wide band-pass
-//! lowers by 18 dB), the most when it is all of it (a pure ess). It does not depend on how loud
-//! the sound is, only on its balance, but for a band under [`DEESSER_FLOOR_DBFS`], which is left
-//! alone (all of the reduction from 10 dB above it): the click of a sound that starts out of
-//! silence is high, and far down. Every channel takes the same gain.
+//! ([`DEESSER_DENSITY_ONSET_DB`], [`DEESSER_DENSITY_FULL_DB`], [`DEESSER_FLOOR_DBFS`]): nothing
+//! for a band under −45 dBFS, so that quiet sound is left alone. Every channel takes the same
+//! gain. A tone of 1 kHz under a band at 6 kHz is far below in density; a tone of 6 kHz alone,
+//! all of it.
 //!
 //! # Changes while the sound plays
 //!
@@ -50,7 +57,8 @@
 //! frequency jumps at every sample is not stable; as the EQ), the filters designed again at each
 //! sample while it moves. Amount ramps in its value and its lane is taken as it is. The filters
 //! of the three ranges run all the time and the Range crossfades between them over 10 ms (what
-//! is lowered and what is heard alike); the Reaction changes
+//! is lowered, what is heard and its bandwidth alike). Range and Reaction are set, not automated
+//! (the model keeps them as names); the Reaction changes
 //! the followers at once (their speed, not the sound). The insert and Listen crossfade over 10
 //! ms; Listen is for the monitor and never automated. A sample of input that is not a number is
 //! taken as 0 by the filters and the followers.
@@ -58,8 +66,9 @@
 use super::biquad::Coefficients;
 use super::common::{finite, lane, mix, params, ParamInfo, SETTLE_RESIDUE};
 use crate::constants::{
-    samples, DEESSER_BANDWIDTHS, DEESSER_FLOOR_DBFS, DEESSER_MAX_REDUCTION_DB, DEESSER_REACTION,
-    DEESSER_RELATIVE_THRESHOLD_DB, EQ_MAX_FREQUENCY_FRACTION, FX_SETTLE_TIME_CONSTANTS, SMOOTHING,
+    samples, DEESSER_BANDWIDTHS, DEESSER_DENSITY_FULL_DB, DEESSER_DENSITY_ONSET_DB,
+    DEESSER_FLOOR_DBFS, DEESSER_FLOOR_RAMP_DB, DEESSER_MAX_REDUCTION_DB, DEESSER_REACTION,
+    EQ_MAX_FREQUENCY_FRACTION, FX_SETTLE_TIME_CONSTANTS, SMOOTHING,
 };
 use crate::node::{Block, Node, ParamId, Spec, Unsupported};
 use crate::rt::{flush, seqlock, Domain, SeqReader, SeqWriter, Smoothed};
@@ -72,11 +81,11 @@ params! {
         On => ParamInfo::switch("on", true),
         /// The target, Hz, 2000 to 16000 (C-X7).
         FrequencyHz => ParamInfo::number("frequency_hz", 2_000.0, 16_000.0, 6_000.0),
-        /// The [`Range::code`].
+        /// The [`Range::code`]: set, not automated.
         Range => ParamInfo::choice("range", 3, 1),
         /// Percent, 0 to 100: up to 20 dB of reduction.
         Amount => ParamInfo::number("amount", 0.0, 100.0, 50.0),
-        /// The [`Reaction::code`].
+        /// The [`Reaction::code`]: set, not automated.
         Reaction => ParamInfo::choice("reaction", 3, 1),
         /// Listen to Ess Only: for the monitor, never automated.
         Listen => ParamInfo::monitor("listen"),
@@ -228,34 +237,56 @@ pub fn above(rate: f64, freq: f64) -> Coefficients {
     }
 }
 
-/// The filters at `freq` Hz (at most 0.45 of the rate): the bands of the three ranges, and the
-/// high-pass by which All High hears.
-fn filters(rate: u32, freq: f32) -> [Coefficients; 4] {
+/// The filters at `freq` Hz (at most 0.45 of the rate): the bands of the three ranges, the
+/// high-pass by which All High hears, and the two sections of the low-pass of four poles at half
+/// the target, by which the sound below is heard.
+fn filters(rate: u32, freq: f32) -> [Coefficients; 6] {
     let rate = f64::from(rate);
     let freq = f64::from(freq).min(EQ_MAX_FREQUENCY_FRACTION * rate);
+    let [low, high] = [0.541_196_100_146_197, 1.306_562_964_876_376_5];
     [
         band_pass(rate, freq, band_q(DEESSER_BANDWIDTHS[0])),
         band_pass(rate, freq, band_q(DEESSER_BANDWIDTHS[1])),
         above(rate, freq),
         Coefficients::high_pass(rate, freq, std::f64::consts::FRAC_1_SQRT_2),
+        Coefficients::low_pass(rate, freq / 2.0, low),
+        Coefficients::low_pass(rate, freq / 2.0, high),
     ]
 }
 
-/// The reduction, in dB, of a band at `band_db` dBFS and `ratio_db` above the whole (0 at most),
-/// at `amount` percent: none for a band under [`DEESSER_FLOOR_DBFS`], all of it from 10 dB
-/// above, and between them in proportion, so that the clicks of sound starting out of silence,
-/// which are high but far down, are left alone.
+/// The ratio, in dB, of the noise bandwidth of the band each range hears to that of the sound
+/// below, at `freq` Hz and `rate`: what the ratio of their levels is for white noise.
 #[must_use]
-pub fn reduction_db(band_db: f64, ratio_db: f64, amount: f64) -> f64 {
-    let threshold = f64::from(DEESSER_RELATIVE_THRESHOLD_DB);
-    let part = ((ratio_db - threshold) / -threshold).clamp(0.0, 1.0);
-    let floor = ((band_db - f64::from(DEESSER_FLOOR_DBFS)) / 10.0).clamp(0.0, 1.0);
+pub fn bandwidth_db(rate: u32, freq: f32) -> [f64; 3] {
+    let nyquist = f64::from(rate) / 2.0;
+    let freq = f64::from(freq).min(EQ_MAX_FREQUENCY_FRACTION * f64::from(rate));
+    let below = 0.513 * freq;
+    let band = |q: f64| std::f64::consts::FRAC_PI_2 / q * freq;
+    let high = (nyquist - 1.111 * freq).max(0.1 * nyquist);
+    [
+        band(band_q(DEESSER_BANDWIDTHS[0])),
+        band(band_q(DEESSER_BANDWIDTHS[1])),
+        high,
+    ]
+    .map(|width| 10.0 * (width / below).log10())
+}
+
+/// The reduction, in dB, of a band at `band_db` dBFS whose density stands `density_db` over the
+/// sound below, at `amount` percent (see the module).
+#[must_use]
+pub fn reduction_db(band_db: f64, density_db: f64, amount: f64) -> f64 {
+    let onset = f64::from(DEESSER_DENSITY_ONSET_DB);
+    let full = f64::from(DEESSER_DENSITY_FULL_DB);
+    let part = ((density_db - onset) / (full - onset)).clamp(0.0, 1.0);
+    let floor = ((band_db - f64::from(DEESSER_FLOOR_DBFS)) / f64::from(DEESSER_FLOOR_RAMP_DB))
+        .clamp(0.0, 1.0);
     amount / 100.0 * f64::from(DEESSER_MAX_REDUCTION_DB) * part * floor
 }
 
 /// The samples after which a De-Esser of `settings` at `rate`, started late, sounds within −90
 /// dBFS of one that played from earlier: its ramps (10 ms), and [`LANE_SETTLE`] of them for the
-/// target following a lane; the slowest of its filters to 1e-6 (they run side by side);
+/// target following a lane; the slowest of its filters to 1e-6 (they run side by side, the two
+/// sections of the low-pass one after the other);
 /// and the followers, by [`FX_SETTLE_TIME_CONSTANTS`] of the slowest release and attack of any
 /// Reaction (a lane may choose it).
 #[must_use]
@@ -277,11 +308,12 @@ fn settle_of(freq: f32, rate: u32) -> u32 {
         return 0;
     }
     let ramp = u64::try_from(samples(SMOOTHING, rate)).unwrap_or(u64::MAX);
-    let filters = filters(rate, freq)
+    let filters = filters(rate, freq);
+    let low = u64::from(filters[4].decay(SETTLE_RESIDUE) + filters[5].decay(SETTLE_RESIDUE));
+    let filters = filters[..4]
         .iter()
         .map(|filter| u64::from(filter.decay(SETTLE_RESIDUE)))
-        .max()
-        .unwrap_or(0);
+        .fold(low, u64::max);
     let slowest = DEESSER_REACTION
         .iter()
         .fold(0.0_f64, |slowest, &(attack, release)| {
@@ -304,7 +336,7 @@ const METER_FLOOR_DB: f32 = -200.0;
 #[derive(Clone, Copy, Debug, Default)]
 struct Past {
     input: [f64; 2],
-    outputs: [[f64; 2]; 4],
+    outputs: [[f64; 2]; 6],
     band: f64,
 }
 
@@ -324,13 +356,16 @@ pub struct DeEsser {
     frequency_set: f32,
     frequency: Smoothed,
     amount: Smoothed,
-    filters: [Coefficients; 4],
+    filters: [Coefficients; 6],
+    /// The noise bandwidths of the bands over the sound below, in dB ([`bandwidth_db`]).
+    widths: [f64; 3],
     /// The frequency (its bits) the filters are designed for.
     designed: Option<u32>,
     /// The factors of the followers, rising and falling.
     factors: [(f64, f64); 3],
     past: Vec<Past>,
     band_level: f64,
+    /// The level of the sound below.
     level: f64,
     meter: SeqWriter<Meter>,
     meter_reader: SeqReader<Meter>,
@@ -362,7 +397,8 @@ impl DeEsser {
             frequency_set: value(Param::FrequencyHz),
             frequency: Smoothed::new(value(Param::FrequencyHz), Domain::Log),
             amount: Smoothed::new(value(Param::Amount), Domain::Linear),
-            filters: [Coefficients::IDENTITY; 4],
+            filters: [Coefficients::IDENTITY; 6],
+            widths: [0.0; 3],
             designed: None,
             factors: [(0.0, 0.0); 3],
             past: Vec::new(), // rt-ok: empty, before the graph is built
@@ -383,6 +419,13 @@ impl DeEsser {
     #[must_use]
     pub fn heard(&self) -> (f32, f32) {
         (self.frequency.current(), self.amount.current())
+    }
+
+    /// The weights of Narrow, Wide and All High at the last sample processed: where the
+    /// crossfade of the Range is.
+    #[must_use]
+    pub fn ranges(&self) -> [f32; 3] {
+        self.ranges.each_ref().map(Smoothed::current)
     }
 
     /// A follower of `level` toward `x` with `factors` (rising, falling).
@@ -407,18 +450,6 @@ fn meter_db(gain: f64) -> f32 {
     } else {
         METER_FLOOR_DB
     }
-}
-
-/// The choice of a lane's value at `n`, or `set`.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "a code of 0 to 2"
-)]
-fn choice(values: Option<&[f32]>, n: usize, param: Param, set: usize) -> usize {
-    lane(values, n)
-        .and_then(|value| param.info().clamp(value))
-        .map_or(set, |code| code as usize)
 }
 
 impl Node for DeEsser {
@@ -454,14 +485,8 @@ impl Node for DeEsser {
     #[allow(clippy::cast_possible_truncation, reason = "the samples are f32")]
     fn process(&mut self, ctx: &Block, input: &[&[f32]], output: &mut [&mut [f32]]) {
         let automation = &ctx.automation;
-        let [on_lane, frequency_lane, range_lane, amount_lane, reaction_lane] = [
-            Param::On,
-            Param::FrequencyHz,
-            Param::Range,
-            Param::Amount,
-            Param::Reaction,
-        ]
-        .map(|param| automation.get(param.id()));
+        let [on_lane, frequency_lane, amount_lane] =
+            [Param::On, Param::FrequencyHz, Param::Amount].map(|param| automation.get(param.id()));
         let switch = |on: bool| f32::from(u8::from(on));
         let mut deepest = 0.0_f64;
         let mut output_peak = 0.0_f64;
@@ -471,13 +496,12 @@ impl Node for DeEsser {
             let wet = f64::from(self.wet.next_value());
             self.listen_weight.set(switch(self.listen));
             let listen = f64::from(self.listen_weight.next_value());
-            let range = choice(range_lane, n, Param::Range, self.range);
             let mut weights = [0.0; 3];
             for (k, (ramp, weight)) in self.ranges.iter_mut().zip(&mut weights).enumerate() {
-                ramp.set(switch(k == range));
+                ramp.set(switch(k == self.range));
                 *weight = f64::from(ramp.next_value());
             }
-            let factors = self.factors[choice(reaction_lane, n, Param::Reaction, self.reaction)];
+            let factors = self.factors[self.reaction];
             let amount = self.amount.next_value();
             let amount = lane(amount_lane, n)
                 .and_then(|value| Param::Amount.info().clamp(value))
@@ -489,6 +513,7 @@ impl Node for DeEsser {
             let frequency = self.frequency.next_value();
             if self.designed != Some(frequency.to_bits()) {
                 self.filters = filters(self.rate, frequency);
+                self.widths = bandwidth_db(self.rate, frequency);
                 self.designed = Some(frequency.to_bits());
             }
 
@@ -498,26 +523,36 @@ impl Node for DeEsser {
             for (channel, past) in self.past.iter_mut().enumerate() {
                 let x = finite(input[channel][n]);
                 let mut out = [0.0; 4];
-                for ((filter, outputs), out) in
-                    self.filters.iter().zip(&mut past.outputs).zip(&mut out)
+                for ((filter, outputs), out) in self.filters[..4]
+                    .iter()
+                    .zip(&mut past.outputs)
+                    .zip(&mut out)
                 {
                     *out = filter.tick(x, past.input, outputs);
                 }
+                // The low-pass of four poles: its second section reads the first one's past.
+                let [.., first, second] = &mut past.outputs;
+                let before = *first;
+                let low = self.filters[4].tick(x, past.input, first);
+                let low = self.filters[5].tick(low, before, second);
                 past.input = [x, past.input[0]];
                 let [narrow, wide, high] = weights;
                 past.band = narrow * out[0] + wide * out[1] + high * out[2];
                 let heard = narrow * out[0] + wide * out[1] + high * out[3];
                 if Some(channel) != self.lfe {
                     band_peak = band_peak.max(heard.abs());
-                    peak = peak.max(x.abs());
+                    peak = peak.max(low.abs());
                 }
             }
             self.band_level = DeEsser::follow(self.band_level, band_peak, factors);
             self.level = DeEsser::follow(self.level, peak, factors);
-            let reduction = if self.level > 0.0 && self.band_level > 0.0 {
+            let reduction = if self.band_level > 0.0 {
+                // A band over nothing below stands out by as much as there is room for.
+                let level = self.level.max(1e-12);
+                let width: f64 = weights.iter().zip(self.widths).map(|(w, d)| w * d).sum();
                 reduction_db(
                     20.0 * self.band_level.log10(),
-                    20.0 * (self.band_level / self.level).log10(),
+                    20.0 * (self.band_level / level).log10() - width,
                     f64::from(amount),
                 )
             } else {

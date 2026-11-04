@@ -402,6 +402,15 @@ pub trait Node: Send {
     /// [`crate::constants::SMOOTHING`]) from the next sample processed. Does not change the
     /// latency, does not allocate; an unknown parameter is ignored.
     fn set(&mut self, param: ParamId, value: f32);
+
+    /// Called by the graph after [`Node::prepare`] or [`Node::reset`] and before the first
+    /// [`Node::process`], with the sample of the timeline at which this run starts. A node may
+    /// use `(origin + block.start) mod N` only to place a fixed grid (such as the bins of the
+    /// hold of Dynamics), so that a node started in the middle lays it where one started earlier
+    /// does; nothing else may depend on it. Does nothing by default; does not allocate.
+    fn align(&mut self, origin: u64) {
+        let _ = origin;
+    }
 }
 
 /// Sound in planar layout, a channel after another, each of a fixed length, taken once: the

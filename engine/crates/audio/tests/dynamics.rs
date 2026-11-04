@@ -934,9 +934,11 @@ fn difference_after(
 ) -> f32 {
     let mut early = Dynamics::new(settings);
     early.prepare(spec).unwrap();
+    early.align(0);
     let whole = render(&mut early, spec, run, |left| left);
     let mut late = Dynamics::new(settings);
     late.prepare(spec).unwrap();
+    late.align(from as u64);
     let tail = render(&mut late, spec, &run.from(from), |left| left);
     let mut largest = 0.0_f32;
     for (whole, tail) in whole.iter().zip(&tail) {
@@ -1203,14 +1205,11 @@ fn the_ball_starts_silent_and_shows_the_sidechain_listened_to() {
     assert!((seen.output_db - -6.0).abs() < 1e-3, "{seen:?}");
 }
 
-/// The hold kept in bins of [`DYNAMICS_HOLD_BIN`] is a window of H + 1 to H + 32 samples whose
-/// far edge is on a bin of the node's own count of samples: a node started at a sample that is
-/// not a multiple of 32 after another sees the far edge elsewhere. Where a gate shuts on a tone
-/// falling through its threshold, the two shut up to 31 samples apart, and differ by up to
-/// −52 dBFS after the reported settling (the compressor's case, a steady slope, stays below
-/// −134 dBFS). Kept to show the cost of the bins; see the progress notes of T8.
+/// The hold is kept in bins of [`DYNAMICS_HOLD_BIN`] laid on the timeline ([`Node::align`]): a
+/// node started at a sample that is not a multiple of 32 after another lays its bins where the
+/// other does. Unaligned, a gate shutting on a tone falling through its threshold shut up to 31
+/// samples apart in the two, and they differed by up to −52 dBFS after the reported settling.
 #[test]
-#[ignore = "the bins of the hold have a phase: a gate shutting differs by up to -52 dBFS"]
 fn a_gate_shutting_in_its_hold_settles_whatever_the_phase_of_the_bins() {
     let spec = Spec::new(RATE, 512, Layout::Mono);
     let run = Run::new(vec![decaying(4.0, ms(8000.0))]);
@@ -1223,7 +1222,7 @@ fn a_gate_shutting_in_its_hold_settles_whatever_the_phase_of_the_bins() {
         s.expander.hold_ms = 200.0;
         s.expander.release_ms = 50.0;
     });
-    for from in [ms(1000.0) + 7, ms(1000.0) + 16] {
+    for from in [ms(1000.0) + 7, ms(1000.0) + 16, ms(1000.0) + 31] {
         assert_settle(|| Dynamics::new(&gate), &spec, &run, from);
     }
 }

@@ -26,9 +26,9 @@
 //! is a window: the static gain `t` is that of the loudest level of the last `H + 1` to
 //! `H + 32` samples (the static curves rise with the level, so that this is the largest gain of
 //! the window, turned so that the attack is up), kept as the peaks of bins of 32 samples
-//! ([`DYNAMICS_HOLD_BIN`]). It is a function of those samples and of where the bins fall in the
-//! node's own count, not of a timer: a late start differs only where an event (a gate shutting)
-//! falls in a bin elsewhere. The detector keeps a held gain `h` and its output `y`:
+//! ([`DYNAMICS_HOLD_BIN`]) laid on the timeline ([`Node::align`]). It is a function of those
+//! samples alone, not of a timer, so that a node started in the middle holds as one started
+//! earlier. The detector keeps a held gain `h` and its output `y`:
 //!
 //! ```text
 //! h = t                     if t ≥ h      (a new peak, or one held in the window)
@@ -731,6 +731,8 @@ struct Window {
     now: u32,
     peak: f64,
     filled: u32,
+    /// Cleared: the next push takes the place of its sample in its bin.
+    fresh: bool,
 }
 
 impl Window {
@@ -748,18 +750,24 @@ impl Window {
         self.now = 0;
         self.peak = f64::NEG_INFINITY;
         self.filled = 0;
+        self.fresh = true;
     }
 
     /// The loudest of `level` and the levels before it in a window of `hold + 1` to
-    /// `hold + bin` samples.
+    /// `hold + bin` samples, `phase` being the place of this sample in its bin of the timeline
+    /// ([`Node::align`]): the bins fall where they fall in any node that hears the same sound.
     #[allow(
         clippy::cast_possible_truncation,
         reason = "levels in dB, to a millionth"
     )]
-    fn push(&mut self, level: f64, hold: u32) -> f64 {
+    fn push(&mut self, level: f64, hold: u32, phase: u32) -> f64 {
         let capacity = self.bins.len();
         if capacity == 0 {
             return level;
+        }
+        if self.fresh {
+            self.fresh = false;
+            self.filled = phase;
         }
         self.peak = self.peak.max(level);
         self.filled += 1;
@@ -856,6 +864,12 @@ impl Detector {
     }
 }
 
+/// The place of the sample `at` of the timeline in its bin of the hold.
+#[allow(clippy::cast_possible_truncation, reason = "below the bin")]
+fn bin_phase(at: u64) -> u32 {
+    (at % u64::from(DYNAMICS_HOLD_BIN)) as u32
+}
+
 /// The samples of a hold of `ms`.
 fn hold_samples(ms: f32, rate: u32) -> u32 {
     u32::try_from(samples(f64::from(ms.max(0.0)) / 1000.0, rate)).unwrap_or(u32::MAX)
@@ -920,6 +934,10 @@ pub struct Dynamics {
     own_hold: Window,
     keyed_hold: Window,
     limiter_hold: Window,
+    /// The sample of the timeline at which this run starts ([`Node::align`]), and the place in
+    /// its bin of the hold of the sample under way.
+    origin: u64,
+    phase: u32,
     /// What a module woken hears, of the sound and of the sidechain.
     wake: Follower,
     wake_keyed: Follower,
@@ -973,6 +991,8 @@ impl Dynamics {
             own_hold: Window::default(),
             keyed_hold: Window::default(),
             limiter_hold: Window::default(),
+            origin: 0,
+            phase: 0,
             wake: Follower::default(),
             wake_keyed: Follower::default(),
             ball,
@@ -1183,7 +1203,9 @@ impl Dynamics {
                 Param::ExpanderHoldMs,
                 Param::ExpanderReleaseMs,
             );
-            let held = self.heard_hold.push(level, hold_samples(t.hold, rate));
+            let held = self
+                .heard_hold
+                .push(level, hold_samples(t.hold, rate), self.phase);
             let gating = self.weight(Param::ExpanderMode);
             let expanding = if gating < 1.0 || !on(Param::ExpanderMode) {
                 let target = expander_gain_db(held, threshold, ratio, range);
@@ -1224,7 +1246,7 @@ impl Dynamics {
             let window = hold_samples(t.hold, rate);
             let keying = self.weight(Param::SidechainOn);
             let own = if keying < 1.0 || !on(Param::SidechainOn) {
-                let held = self.own_hold.push(level + expanded, window);
+                let held = self.own_hold.push(level + expanded, window, self.phase);
                 let target = -compressor_gain_db(held, threshold, ratio, knee);
                 let wake = self.keyed.out_or(-compressor_gain_db(
                     woken + expanded,
@@ -1239,7 +1261,7 @@ impl Dynamics {
                 0.0
             };
             let keyed = if keying > 0.0 || on(Param::SidechainOn) {
-                let held = self.keyed_hold.push(side, window);
+                let held = self.keyed_hold.push(side, window, self.phase);
                 let target = -compressor_gain_db(held, threshold, ratio, knee);
                 let wake = self.own.out_or(-compressor_gain_db(
                     self.wake_keyed.level(),
@@ -1271,9 +1293,11 @@ impl Dynamics {
                 Param::LimiterHoldMs,
                 Param::LimiterReleaseMs,
             );
-            let held = self
-                .limiter_hold
-                .push(level + expanded + compressed, hold_samples(t.hold, rate));
+            let held = self.limiter_hold.push(
+                level + expanded + compressed,
+                hold_samples(t.hold, rate),
+                self.phase,
+            );
             let target = -limiter_gain_db(held, threshold);
             let wake = -limiter_gain_db(woken + expanded + compressed, threshold);
             limited = -self.weight(Param::LimiterOn) * self.limiter.step(target, wake, t, rate);
@@ -1304,6 +1328,7 @@ impl Node for Dynamics {
         self.channels = spec.inputs();
         self.sidechain = spec.sidechain;
         self.keyable = spec.sidechain > 0;
+        self.origin = 0;
         self.heard = [true; MAX_CHANNELS];
         if let Some(lfe) = spec.layout.lfe() {
             self.heard[lfe] = false;
@@ -1395,7 +1420,9 @@ impl Node for Dynamics {
 
         let matched = sidechain.len() == self.channels;
         let mut loudest = (-1.0_f64, Ball::default());
+        let first = self.origin.wrapping_add(ctx.start);
         for n in 0..frames {
+            self.phase = bin_phase(first.wrapping_add(n as u64));
             let v = self.values(&lanes, n);
             let peak = peak_at(n);
             let side = side_at(n);
@@ -1490,6 +1517,12 @@ impl Node for Dynamics {
         self.stop();
         self.wake.peak = 0.0;
         self.wake_keyed.peak = 0.0;
+    }
+
+    /// Lays the bins of the hold on the timeline: a bin starts where `origin` plus the samples
+    /// processed is a multiple of [`DYNAMICS_HOLD_BIN`].
+    fn align(&mut self, origin: u64) {
+        self.origin = origin;
     }
 
     fn set(&mut self, param: ParamId, value: f32) {

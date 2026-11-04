@@ -5,6 +5,13 @@
 //!
 //! The mapping and the resampling are those of the mixer of phases 1 and 2 (`server/src/play/
 //! mix.rs`), moved here unchanged, so that a project of before sounds as it did, to the bit.
+//!
+//! A clip whose change of speed keeps its pitch (Pitch Correction, p. 3827), or whose pitch is
+//! moved (p. 3826), is stretched instead ([`Stretched`], T13): with Pitch Correction its source is
+//! stretched to the time of the timeline by Signalsmith Stretch, the pitch moved besides; with a
+//! pitch moved alone, the resampled sound is moved by it at a speed of 1. Its stretchers start a
+//! little before it sounds and read its media ahead, so that the chain has no latency; they are
+//! taken from a pool that the clips of a graph share ([`Pool`]) for as long as each clip sounds.
 
 use std::ops::Range;
 
@@ -13,7 +20,9 @@ use columbina_model::{Clip, Timeline};
 
 use crate::constants::MAX_CHANNELS;
 use crate::feed::{ClipFeed, FeedError};
+use crate::fx::common::finite;
 use crate::fx::eq::Eq;
+use crate::fx::stretch::{Input, Plan, Stretcher, Transpose};
 use crate::node::{Block, Node, Planar};
 use crate::rt::{Domain, Smoothed};
 
@@ -71,6 +80,12 @@ impl Mapping {
     /// built.
     pub(crate) fn at(&self, sample: i64) -> (i64, f64) {
         self.checked_at(sample).unwrap_or((0, 0.0))
+    }
+
+    /// The samples of the source played in some samples of the timeline, and those samples:
+    /// the speed as a ratio, its sign the direction.
+    pub(crate) fn speed(&self) -> (i128, i128) {
+        (self.step, self.denominator)
     }
 }
 
@@ -227,13 +242,242 @@ impl Window {
     }
 }
 
-/// What the clips share: the window of the source, and the sound of a clip before and after its
-/// equalizer.
+/// What the clips share: the window of the source, the sound of a clip before and after its
+/// equalizer, and the stretchers of the clips that are stretched, a pool for each count of
+/// channels.
 #[derive(Debug)]
 pub(crate) struct ClipScratch {
     pub(crate) window: Window,
     pub(crate) before: Planar,
     pub(crate) after: Planar,
+    pub(crate) pools: Vec<Pool>,
+}
+
+impl ClipScratch {
+    /// Every stretcher free again (a reset of the graph).
+    pub(crate) fn reset(&mut self) {
+        for pool in &mut self.pools {
+            pool.reset();
+        }
+    }
+}
+
+/// The stretchers of the clips of a count of channels: as many as the most of them that are
+/// stretched at once (a block either side), each held by a clip from a little before it sounds
+/// to its end.
+#[derive(Debug)]
+pub(crate) struct Pool {
+    pub(crate) stretchers: Vec<Stretcher>,
+    /// Those not held, by their places; made as long as `stretchers`, so that it never grows.
+    pub(crate) free: Vec<usize>,
+}
+
+impl Pool {
+    /// Every stretcher free.
+    pub(crate) fn reset(&mut self) {
+        for stretcher in &mut self.stretchers {
+            stretcher.release();
+        }
+        self.free.clear();
+        for at in (0..self.stretchers.len()).rev() {
+            self.free.push(at);
+        }
+    }
+}
+
+/// How a clip is stretched (T13).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StretchMode {
+    /// Pitch Correction: its source is stretched to the timeline, its pitch kept (and moved by
+    /// its pitch).
+    Source,
+    /// Its pitch moved alone: its sound, resampled to its speed as before, moved at a speed of 1.
+    Resampled,
+}
+
+/// The stretch of a clip (T13): how it runs, and the stretcher it holds while it sounds.
+#[derive(Debug)]
+pub(crate) struct Stretched {
+    pub(crate) mode: StretchMode,
+    pub(crate) plan: Plan,
+    /// The factor that its pitch is moved by.
+    pub(crate) transpose: f32,
+    /// The latencies of the library, input and output.
+    pub(crate) latencies: (i64, i64),
+    /// Where its first stretcher starts: a warming before it sounds.
+    pub(crate) busy_from: i64,
+    /// How far from the sample of the source that a sample of the timeline maps to its stretch
+    /// reads, either way, while it plays on: what a reader ahead must have (T5).
+    pub(crate) reach: i64,
+    /// Its pool, by its place in [`ClipScratch::pools`].
+    pub(crate) pool: usize,
+    /// The stretcher it holds, by its place in its pool.
+    pub(crate) held: Option<usize>,
+}
+
+/// What a clip's stretch is fed: its media through the feed, in the direction it plays (Pitch
+/// Correction), or its sound resampled to its speed (a pitch moved alone).
+struct ClipInput<'a> {
+    feed: &'a mut dyn ClipFeed,
+    window: &'a mut Window,
+    index: usize,
+    channels: usize,
+    film: bool,
+    mapping: Mapping,
+    mode: StretchMode,
+    latencies: (i64, i64),
+    cutoff: f64,
+    radius: i64,
+    max_block: usize,
+}
+
+/// Silence in `into` from `offset`, `length` long.
+fn silence(into: &mut [&mut [f32]], offset: usize, length: usize) {
+    for channel in into.iter_mut() {
+        channel[offset..offset + length].fill(0.0);
+    }
+}
+
+impl ClipInput<'_> {
+    /// Reads `length` samples of the source from position `x` in the direction it plays into
+    /// `into` from `done`.
+    fn source(
+        &mut self,
+        x: i64,
+        length: usize,
+        done: usize,
+        into: &mut [&mut [f32]],
+    ) -> Result<(), FeedError> {
+        let channels = self.channels.min(into.len());
+        let backward = self.mapping.step < 0;
+        let last = x + i64::try_from(length).unwrap_or(0);
+        let source = if backward { 1 - last..1 - x } else { x..last };
+        {
+            let mut slices = self.window.slices_mut(channels, length, self.film);
+            if let Err(error) = self.feed.read(self.index, source, &mut slices[..channels]) {
+                silence(into, done, length);
+                return Err(error);
+            }
+        }
+        let window = self.window.slices(channels, length);
+        for (into, window) in into.iter_mut().zip(&window[..channels]) {
+            let into = &mut into[done..done + length];
+            if backward {
+                for (sample, value) in into.iter_mut().zip(window.iter().rev()) {
+                    *sample = sanitized(*value);
+                }
+            } else {
+                for (sample, value) in into.iter_mut().zip(window.iter()) {
+                    *sample = sanitized(*value);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Writes the clip's sound resampled to its speed at the samples `piece` of the timeline
+    /// (at most a block) into `into` from `done`.
+    fn resampled(
+        &mut self,
+        piece: Range<i64>,
+        done: usize,
+        into: &mut [&mut [f32]],
+    ) -> Result<(), FeedError> {
+        let channels = self.channels.min(into.len());
+        let length = usize::try_from(piece.end - piece.start).unwrap_or(0);
+        let source = source_of(&self.mapping, self.radius, &piece);
+        let span = usize::try_from(source.end - source.start).unwrap_or(usize::MAX);
+        if span > self.window.capacity {
+            silence(into, done, length);
+            return Err(FeedError { clip: self.index });
+        }
+        {
+            let mut slices = self.window.slices_mut(channels, span, self.film);
+            if let Err(error) = self
+                .feed
+                .read(self.index, source.clone(), &mut slices[..channels])
+            {
+                silence(into, done, length);
+                return Err(error);
+            }
+        }
+        let window = self.window.slices(channels, span);
+        let mut values = [0.0_f32; MAX_CHANNELS];
+        for (n, sample) in piece.enumerate() {
+            let (at, phase) = self.mapping.at(sample);
+            let at = usize::try_from(at - source.start).unwrap_or(0);
+            resampled(
+                &window[..channels],
+                at,
+                phase,
+                self.cutoff,
+                &mut values[..channels],
+            );
+            for (into, value) in into.iter_mut().zip(&values[..channels]) {
+                into[done + n] = sanitized(*value);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Input for ClipInput<'_> {
+    fn cursor(&self, v: i64) -> i64 {
+        let (input, output) = self.latencies;
+        match self.mode {
+            StretchMode::Source => {
+                let direction = if self.mapping.step < 0 { -1 } else { 1 };
+                direction * self.mapping.at(v.saturating_add(output)).0 + input
+            }
+            StretchMode::Resampled => v.saturating_add(output).saturating_add(input),
+        }
+    }
+
+    fn fill(&mut self, range: Range<i64>, into: &mut [&mut [f32]]) -> Result<(), FeedError> {
+        let mut result = Ok(());
+        let total = usize::try_from(range.end - range.start).unwrap_or(0);
+        let piece = match self.mode {
+            StretchMode::Source => self.window.capacity,
+            StretchMode::Resampled => self.max_block,
+        }
+        .max(1);
+        let mut done = 0usize;
+        while done < total {
+            let length = (total - done).min(piece);
+            let x = range.start + i64::try_from(done).unwrap_or(0);
+            let read = match self.mode {
+                StretchMode::Source => self.source(x, length, done, into),
+                StretchMode::Resampled => {
+                    let end = x + i64::try_from(length).unwrap_or(0);
+                    self.resampled(x..end, done, into)
+                }
+            };
+            keep(&mut result, read);
+            done += length;
+        }
+        result
+    }
+}
+
+/// A sample as a stretch takes it: 0 when it is not a number, which would stay in its phases.
+#[allow(clippy::cast_possible_truncation, reason = "a sample")]
+fn sanitized(value: f32) -> f32 {
+    finite(value) as f32
+}
+
+/// The samples of the source that the samples `range` of the timeline read through `mapping`,
+/// with `radius` on each side.
+fn source_of(mapping: &Mapping, radius: i64, range: &Range<i64>) -> Range<i64> {
+    let (first, _) = mapping.at(range.start);
+    let (last, _) = mapping.at(range.end - 1);
+    first.min(last) - radius..first.max(last) + radius + 1
+}
+
+/// Keeps the first error of `result` and `next`.
+fn keep(result: &mut Result<(), FeedError>, next: Result<(), FeedError>) {
+    if let (Ok(()), Err(error)) = (&*result, next) {
+        *result = Err(error);
+    }
 }
 
 /// Where a clip of a graph reads its media ([`crate::graph::Graph::reaches`]): the samples of the
@@ -266,6 +510,14 @@ impl Reach {
         let (first, _) = self.mapping.at(from);
         let (last, _) = self.mapping.at(to - 1);
         Some(first.min(last) - self.radius..first.max(last) + self.radius + 1)
+    }
+
+    /// How far either way from the sample of the media that a sample of the timeline maps to
+    /// it reads: the filter's reach, or a stretch's (T13), which also reads what it read before
+    /// again (the sound before a stretcher's start).
+    #[must_use]
+    pub fn radius(&self) -> i64 {
+        self.radius
     }
 
     /// Whether it reads its media backwards (a clip played in reverse).
@@ -342,28 +594,33 @@ pub(crate) struct ClipChain {
     pub(crate) processed: u64,
     /// Its fixed gain and pan, as they are set while it plays.
     pub(crate) level: ClipLevel,
+    /// Its stretch, where its speed keeps its pitch or its pitch is moved (T13).
+    pub(crate) stretch: Option<Stretched>,
 }
 
 impl ClipChain {
     /// The samples of the source that the samples `range` of the timeline read, with the reach
     /// of the filter on each side.
     pub(crate) fn source(&self, range: &Range<i64>) -> Range<i64> {
-        let (first, _) = self.mapping.at(range.start);
-        let (last, _) = self.mapping.at(range.end - 1);
-        first.min(last) - self.radius..first.max(last) + self.radius + 1
+        source_of(&self.mapping, self.radius, range)
     }
 
     /// How far either way from the sample of the source that a sample of the timeline maps to
-    /// the chain reads: the filter's reach. (T13's stretch reads further: its version of this
-    /// takes the place of this one when it is merged, and [`ClipChain::reach`] follows.)
+    /// the chain reads: the filter's reach, or its stretch's (T13), which a reader ahead of the
+    /// graph must cover (T5's `Reach`). A stretched clip also reads before it sounds, from
+    /// [`ClipChain::busy_from`].
     pub(crate) fn reads_within(&self) -> i64 {
-        self.radius
+        self.stretch
+            .as_ref()
+            .map_or(self.radius, |stretch| stretch.reach.max(self.radius))
     }
 
-    /// The first sample of the timeline at which the chain reads its media: where it sounds.
-    /// (T13's stretch warms before that: as [`ClipChain::reads_within`].)
+    /// The first sample of the timeline at which the chain reads its media: where it sounds, or
+    /// where its stretch warms before that.
     pub(crate) fn busy_from(&self) -> i64 {
-        self.from
+        self.stretch
+            .as_ref()
+            .map_or(self.from, |stretch| stretch.busy_from.min(self.from))
     }
 
     /// Where it reads its media, for the readers ahead of the graph (T5): from where it is busy,
@@ -387,6 +644,9 @@ impl ClipChain {
         scratch: &mut ClipScratch,
         into: &mut Planar,
     ) -> Result<(), FeedError> {
+        if self.stretch.is_some() {
+            return self.mix_stretched(index, feed, (start, frames, rate), scratch, into);
+        }
         let end = start.saturating_add(i64::try_from(frames).unwrap_or(i64::MAX));
         let (from, to) = (self.from.max(start), self.to.min(end));
         if from >= to {
@@ -469,11 +729,197 @@ impl ClipChain {
         }
     }
 
-    /// Back to silence, its equalizer cleared.
+    /// Back to silence, its equalizer cleared and its stretcher let go (the pools are freed by
+    /// [`ClipScratch::reset`]).
     pub(crate) fn reset(&mut self) {
         if let Some(eq) = &mut self.eq {
             eq.reset();
         }
         self.processed = 0;
+        if let Some(stretch) = &mut self.stretch {
+            stretch.held = None;
+        }
+    }
+
+    /// Brings the stretch of the clip to the sample `at` of the timeline, where a run starts
+    /// (`Graph::start`): its stretchers worked out from the starts of their segments, as a run
+    /// from earlier did, so that the work is done before the sound plays and the blocks after
+    /// sound as that run's. Nothing for a clip that is not stretched or does not read its media
+    /// just before `at`.
+    pub(crate) fn prime(
+        &mut self,
+        index: usize,
+        feed: &mut dyn ClipFeed,
+        at: i64,
+        scratch: &mut ClipScratch,
+    ) -> Result<(), FeedError> {
+        if self.stretch.is_none() || at <= self.busy_from() || at > self.to {
+            return Ok(());
+        }
+        self.stretch_into(index, feed, at - 1..at, None, scratch)
+    }
+
+    /// Adds what a stretched clip sounds on the `frames` samples of the timeline from `start`,
+    /// and moves its stretchers on where it warms before it sounds; lets go of its stretcher once
+    /// it has sounded its last.
+    fn mix_stretched(
+        &mut self,
+        index: usize,
+        feed: &mut dyn ClipFeed,
+        (start, frames, rate): (i64, usize, u32),
+        scratch: &mut ClipScratch,
+        into: &mut Planar,
+    ) -> Result<(), FeedError> {
+        let end = start.saturating_add(i64::try_from(frames).unwrap_or(i64::MAX));
+        let (first, last) = (self.busy_from().max(start), self.to.min(end));
+        let mut result = Ok(());
+        if first < last {
+            let from = self.from.max(first);
+            if first < from {
+                let warmed = self.stretch_into(index, feed, first..from, None, scratch);
+                keep(&mut result, warmed);
+            }
+            if from < last {
+                let count = usize::try_from(last - from).unwrap_or(0);
+                let stretched = self.stretch_into(index, feed, from..last, Some(count), scratch);
+                keep(&mut result, stretched);
+                self.sound(from, count, rate, start, scratch, into);
+            }
+        }
+        if end >= self.to {
+            self.release(scratch);
+        }
+        result
+    }
+
+    /// Works out the stretch of the samples `span` of the timeline into the first `count`
+    /// samples of [`ClipScratch::before`] where it is given (else only moving the stretchers on),
+    /// taking a stretcher from the pool if the clip holds none. Silence where the pool has none
+    /// left (it is made large enough that it never happens).
+    fn stretch_into(
+        &mut self,
+        index: usize,
+        feed: &mut dyn ClipFeed,
+        span: Range<i64>,
+        count: Option<usize>,
+        scratch: &mut ClipScratch,
+    ) -> Result<(), FeedError> {
+        let (mapping, cutoff, radius, channels, film) = (
+            self.mapping,
+            self.cutoff,
+            self.radius,
+            self.channels,
+            self.film,
+        );
+        let Some(stretch) = &mut self.stretch else {
+            return Ok(());
+        };
+        let ClipScratch {
+            window,
+            before,
+            pools,
+            ..
+        } = scratch;
+        let max_block = before.frames();
+        let held = match (stretch.held, pools.get_mut(stretch.pool)) {
+            (Some(held), _) => Some(held),
+            (None, Some(pool)) => pool.free.pop(),
+            (None, None) => None,
+        };
+        stretch.held = held;
+        let stretcher = held.and_then(|held| {
+            pools
+                .get_mut(stretch.pool)
+                .and_then(|pool| pool.stretchers.get_mut(held))
+        });
+        let Some(stretcher) = stretcher else {
+            if let Some(count) = count {
+                before.write(count, |out| {
+                    for channel in out.iter_mut() {
+                        channel[..count].fill(0.0);
+                    }
+                });
+            }
+            return Ok(());
+        };
+        let mut input = ClipInput {
+            feed,
+            window,
+            index,
+            channels,
+            film,
+            mapping,
+            mode: stretch.mode,
+            latencies: stretch.latencies,
+            cutoff,
+            radius,
+            max_block,
+        };
+        let transpose = Transpose::Fixed(stretch.transpose);
+        let plan = stretch.plan;
+        match count {
+            Some(count) => before.write(count, |out| {
+                stretcher.render(
+                    &plan,
+                    span,
+                    &mut input,
+                    transpose,
+                    Some(&mut out[..channels]),
+                )
+            }),
+            None => stretcher.render(&plan, span, &mut input, transpose, None),
+        }
+    }
+
+    /// Adds the first `count` samples of [`ClipScratch::before`], the clip's sound from the
+    /// sample `from` of the timeline, through its equalizer, by its gain and pan, into `into`,
+    /// whose block starts at `start`.
+    fn sound(
+        &mut self,
+        from: i64,
+        count: usize,
+        rate: u32,
+        start: i64,
+        scratch: &mut ClipScratch,
+        into: &mut Planar,
+    ) {
+        let channels = self.channels;
+        let mut values = [0.0_f32; MAX_CHANNELS];
+        let values = &mut values[..channels];
+        let sound = if let Some(eq) = &mut self.eq {
+            let block = Block::new(self.processed, rate, count);
+            scratch.before.read(count, |input| {
+                scratch.after.write(count, |output| {
+                    eq.process(&block, &input[..channels], &mut output[..channels]);
+                });
+            });
+            self.processed += u64::try_from(count).unwrap_or(0);
+            &scratch.after
+        } else {
+            &scratch.before
+        };
+        for n in 0..count {
+            let sample = from + i64::try_from(n).unwrap_or(0);
+            for (channel, value) in values.iter_mut().enumerate() {
+                *value = sound.channel(channel)[n];
+            }
+            let at = usize::try_from(sample - start).unwrap_or(0);
+            self.add(sample, values, into, at);
+        }
+    }
+
+    /// Lets go of the clip's stretcher, back into its pool.
+    fn release(&mut self, scratch: &mut ClipScratch) {
+        let Some(stretch) = &mut self.stretch else {
+            return;
+        };
+        if let Some(held) = stretch.held.take() {
+            if let Some(pool) = scratch.pools.get_mut(stretch.pool) {
+                if let Some(stretcher) = pool.stretchers.get_mut(held) {
+                    stretcher.release();
+                }
+                pool.free.push(held);
+            }
+        }
     }
 }

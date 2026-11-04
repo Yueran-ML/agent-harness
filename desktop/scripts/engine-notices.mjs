@@ -19,6 +19,10 @@
 // built with, are OCIO_PARTS below and the license files of licenses/ocio/: electron/package.mjs
 // checks with locateOcio() that the OpenColorIO of OCIO_DIR is of their version, and writes them with
 // writeOcioNotices(). tests/engine-ocio-notices.test.ts holds them to engine/crates/ocio/build.rs.
+//
+// The notices of the C++ libraries vendored into the engine's crates (Signalsmith Stretch and Linear,
+// engine/crates/stretch/vendor/) are VENDORED_PARTS below, their license files read from those
+// folders; electron/package.mjs writes them with writeVendoredNotices().
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { copyFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
@@ -138,6 +142,48 @@ export async function writeOcioNotices({ out, from = OCIO_LICENSES }) {
   return [
     `The engine is linked statically with OpenColorIO ${OCIO_VERSION} and with the libraries that it is built with,`,
     'each at the version of its source below. Their license files are copied unchanged into `licenses/<name>/`.',
+    '',
+    '| Library | Version | License | Source | License files |',
+    '| --- | --- | --- | --- | --- |',
+    ...rows,
+    '',
+  ].join('\n');
+}
+
+/**
+ * The C++ libraries that the engine is compiled from, their headers vendored into a crate of it
+ * (`engine/crates/stretch/vendor/<name>/`, columbina-stretch, which links them statically): the
+ * name of each folder there, its version and source (as `engine/crates/stretch/src/lib.rs` lists
+ * them, with the SHA-256 of each archive), and its license files, which are shipped unchanged from
+ * that folder. tests/engine-vendored-notices.test.ts holds this list to the folders and to that table.
+ */
+export const VENDORED_LICENSES = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'engine', 'crates', 'stretch', 'vendor');
+export const VENDORED_PARTS = [
+  {
+    name: 'signalsmith-stretch', title: 'Signalsmith Stretch', version: '1.4.0', license: 'MIT',
+    source: 'https://github.com/Signalsmith-Audio/signalsmith-stretch, tag 1.4.0 (a670068d9aeb64913331d5cc29337b19a457a7df)',
+    files: ['LICENSE.txt'],
+  },
+  {
+    name: 'signalsmith-linear', title: 'Signalsmith Linear', version: '0.6.4', license: 'MIT',
+    source: 'https://github.com/Signalsmith-Audio/linear, tag 0.6.4 (de55e6a50ffcf6f8f43f649692d94691c7025151)',
+    files: ['LICENSE.txt'],
+  },
+];
+
+/** Copy the license files of the vendored libraries into <out>/licenses/<name>/, and answer the Markdown that lists them. */
+export async function writeVendoredNotices({ out, from = VENDORED_LICENSES }) {
+  const rows = [];
+  for (const part of VENDORED_PARTS) {
+    const folder = path.join(out, 'licenses', part.name);
+    await rm(folder, { recursive: true, force: true });
+    await mkdir(folder, { recursive: true });
+    for (const file of part.files) await copyFile(path.join(from, part.name, file), path.join(folder, file));
+    rows.push(`| ${part.title} | ${part.version} | ${part.license} | ${part.source} | ${part.files.map((file) => `\`licenses/${part.name}/${file}\``).join(', ')} |`);
+  }
+  return [
+    'The engine is compiled with these libraries, from their sources at the versions below. Their license files are',
+    'copied unchanged into `licenses/<name>/`.',
     '',
     '| Library | Version | License | Source | License files |',
     '| --- | --- | --- | --- | --- |',

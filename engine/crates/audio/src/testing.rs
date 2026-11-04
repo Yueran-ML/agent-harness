@@ -99,8 +99,9 @@ impl Allocations {
 }
 
 /// Runs `section` on this thread as the thread of the mix would, and counts what it allocates and
-/// frees: its result, and the count. Counts only when [`CountingAllocator`] is the global
-/// allocator.
+/// frees: its result, and the count. Counts the allocations of Rust only when
+/// [`CountingAllocator`] is the global allocator, and those of the C++ of the stretch always
+/// (with the feature `testing`).
 pub fn realtime<R>(section: impl FnOnce() -> R) -> (R, Allocations) {
     struct Armed(bool);
     impl Drop for Armed {
@@ -112,9 +113,11 @@ pub fn realtime<R>(section: impl FnOnce() -> R) -> (R, Allocations) {
         allocations: ALLOCATIONS.get(),
         frees: FREES.get(),
     };
+    let cpp = Cpp::arm();
     let armed = Armed(ARMED.replace(true));
     let result = section();
     drop(armed);
+    let (cpp_allocations, cpp_frees) = cpp.disarm();
     let after = Allocations {
         allocations: ALLOCATIONS.get(),
         frees: FREES.get(),
@@ -122,10 +125,52 @@ pub fn realtime<R>(section: impl FnOnce() -> R) -> (R, Allocations) {
     (
         result,
         Allocations {
-            allocations: after.allocations - before.allocations,
-            frees: after.frees - before.frees,
+            allocations: after.allocations - before.allocations + cpp_allocations,
+            frees: after.frees - before.frees + cpp_frees,
         },
     )
+}
+
+/// The count of the allocations of C++ on this thread (those of the stretch, `columbina-stretch`
+/// with `count-allocations`), armed for a section of [`realtime`].
+struct Cpp {
+    #[cfg(feature = "testing")]
+    was: bool,
+    #[cfg(feature = "testing")]
+    before: (usize, usize),
+}
+
+impl Cpp {
+    #[cfg(feature = "testing")]
+    fn arm() -> Cpp {
+        let was = columbina_stretch::allocations::arm(true);
+        Cpp {
+            was,
+            before: columbina_stretch::allocations::counted(),
+        }
+    }
+
+    #[cfg(not(feature = "testing"))]
+    fn arm() -> Cpp {
+        Cpp {}
+    }
+
+    /// The allocations and frees of C++ since [`Cpp::arm`], the count put back as it was.
+    #[cfg(feature = "testing")]
+    fn disarm(self) -> (usize, usize) {
+        let after = columbina_stretch::allocations::counted();
+        let _ = columbina_stretch::allocations::arm(self.was);
+        (after.0 - self.before.0, after.1 - self.before.1)
+    }
+
+    #[cfg(not(feature = "testing"))]
+    #[allow(
+        clippy::unused_self,
+        reason = "the same call with and without the count"
+    )]
+    fn disarm(self) -> (usize, usize) {
+        (0, 0)
+    }
 }
 
 // --- What the real-time code must not say ----------------------------------------------------

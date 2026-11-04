@@ -94,9 +94,9 @@ pub fn ring_feed(graph: &Graph, from: i64, counters: Arc<Counters>) -> (RingFeed
             let (frames, budget) = {
                 let speed = reach.speed().max(1.0);
                 let frames = PIECE * speed.ceil() as usize;
-                // The window ahead and the filter's reach on both sides, in pieces, and the
-                // pieces at its ends.
-                let span = ahead as f64 * speed + 2.0 * 512.0 + 2.0;
+                // The window ahead and the reach on both sides (the filter's, or a stretch's,
+                // T13), in pieces, and the pieces at its ends.
+                let span = ahead as f64 * speed + 2.0 * reach.radius() as f64 + 2.0;
                 (frames, (span / frames as f64).ceil() as usize + 3)
             };
             Plan {
@@ -156,7 +156,8 @@ pub fn ring_feed(graph: &Graph, from: i64, counters: Arc<Counters>) -> (RingFeed
         per,
         Arc::clone(&reading),
         counters,
-    );
+    )
+    .with_keep(reaches.iter().map(Reach::radius).collect());
     (feed, fetches)
 }
 

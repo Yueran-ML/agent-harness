@@ -4,7 +4,8 @@
 //! the point after the fader → its outputs and sends, each at its level and on its pan, delayed to
 //! line up with the other paths into its bus. A send before the fader is taken after the mute
 //! (C-B4). The Ducker of a track, its Track FX, is the first of its nodes, after Trim and
-//! polarity (p. 3937; T11).
+//! polarity (pp. 3855, 3937; T11). The manual has Trim after the Track FX (p. 3857); both are
+//! gains, so the order changes nothing but rounding, and Trim keeps its lanes at the input.
 //!
 //! What is set once is a parameter ramped over 10 ms ([`Smoothed`], C-T1); where a lane of
 //! automation is, its value takes the place of the parameter, sample by sample (T14).
@@ -51,12 +52,14 @@ pub(crate) struct Stage {
 }
 
 /// Where a sidechain comes from: the sound before the fader of another strip, its channels but
-/// the LFE (T8's review), and the delay that lines it up with the sound it acts on.
+/// the LFE (T8's review), the delay that lines it up with the sound it acts on, and where each of
+/// its channels is added into the sidechain when it is not the first (`build::routes`).
 #[derive(Debug)]
 pub(crate) struct Key {
     pub(crate) source: usize,
     pub(crate) channels: [usize; MAX_CHANNELS],
     pub(crate) count: usize,
+    pub(crate) routes: Box<[(usize, usize)]>,
     pub(crate) side: DelayLine,
 }
 
@@ -292,8 +295,8 @@ impl Strip {
             ..
         } = self;
         for stage in stages.iter_mut() {
-            // The sidechain: the first source as it is, then each other added to it channel by
-            // channel; a channel that the first has not starts silent.
+            // The sidechain: the first source (of the most channels) as it is, then each other
+            // added to it by the roles of its channels.
             let Stage {
                 keys,
                 keyed,
@@ -312,13 +315,9 @@ impl Strip {
                         .copy_from_slice(&source.channel(from)[..frames]);
                 }
                 key.side.process(into, key.count, frames);
-                if index == 0 {
-                    for channel in key.count..keyed.channels() {
-                        keyed.channel_mut(channel)[..frames].fill(0.0);
-                    }
-                } else {
-                    for channel in 0..key.count {
-                        let (from, into) = (summed.channel(channel), keyed.channel_mut(channel));
+                if index > 0 {
+                    for &(from, to) in &key.routes {
+                        let (from, into) = (summed.channel(from), keyed.channel_mut(to));
                         for (into, from) in into[..frames].iter_mut().zip(&from[..frames]) {
                             *into += from;
                         }

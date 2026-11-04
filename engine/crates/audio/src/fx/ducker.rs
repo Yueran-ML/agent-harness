@@ -10,8 +10,10 @@
 //! ([`DUCKER_RMS_WINDOW`]), and the loudest channel: the sources sound when that is at or above
 //! −45 dBFS ([`DUCKER_THRESHOLD_DBFS`]), and stop sounding when it falls under −48 dBFS, 3 dB of
 //! hysteresis ([`DUCKER_HYSTERESIS_DB`]) that keeps a source hovering at the threshold from
-//! switching the Ducker on and off (plan T11; C-X2). A sample of the sidechain that is not a
-//! number (±∞, NaN) is heard as silence.
+//! switching the Ducker on and off (plan T11; C-X2), or when it has stayed between the two for
+//! 0.5 s since it was last at the threshold ([`DUCKER_HYSTERESIS_LATCH`]), so that room tone
+//! inside the hysteresis does not hold the track down through a whole pause. A sample of the
+//! sidechain that is not a number (±∞, NaN) is heard as silence.
 //!
 //! The squares are summed as whole numbers (each square of a sample in units of 2⁻⁴⁰, the
 //! square of a sample being exact in `f64`), so that the sum over the window is exact: it does
@@ -22,7 +24,9 @@
 //!
 //! A level between 0 (not ducked) and 1 (ducked by the amount) follows the sources: while they
 //! sound, and for Hold after they stop, it rises by one part of Rise a sample; then it falls by
-//! one part of Recovery a sample. The gain is the depth (the gain of −Amount dB) to the power of
+//! one part of Recovery a sample. The hold is at least the rise, so that every duck goes all the
+//! way down and the level forgets where it started (T11's review, P2-3); at the defaults (a hold
+//! of 150 ms, a rise of 10) that changes nothing. The gain is the depth (the gain of −Amount dB) to the power of
 //! that level, so that the decibels go down and up in straight lines (C-X2) and a change of the
 //! amount while ducked is a change of the depth. Not ducked, the gain is 1 exactly and the sound
 //! passes to the bit; every channel of the track takes the same gain, the LFE too.
@@ -54,8 +58,8 @@
 
 use super::common::{finite, gain_of, lane, mix, params, ParamInfo};
 use crate::constants::{
-    samples, DUCKER_HYSTERESIS_DB, DUCKER_RMS_WINDOW, DUCKER_THRESHOLD_DBFS, MAX_CHANNELS,
-    SMOOTHING,
+    samples, DUCKER_HYSTERESIS_DB, DUCKER_HYSTERESIS_LATCH, DUCKER_RMS_WINDOW,
+    DUCKER_THRESHOLD_DBFS, MAX_CHANNELS, SMOOTHING,
 };
 use crate::node::{Block, Node, ParamId, Spec, Unsupported};
 use crate::rt::{seqlock, Domain, SeqReader, SeqWriter, Smoothed};
@@ -161,15 +165,17 @@ pub fn lookahead_for(settings: &Settings, rate: u32) -> u32 {
 }
 
 /// The samples after which a Ducker of `settings` at `rate`, started late, sounds as one that
-/// played from earlier: its ramps (10 ms), its lookahead, its window (10 ms), its hold, and a
-/// whole rise and recovery; on or off alike, since a lane may turn it on. See the module.
+/// played from earlier: its ramps (10 ms), its lookahead, its window (10 ms), the latch of its
+/// hysteresis (0.5 s), its hold (at least its rise), and a whole rise and recovery; on or off
+/// alike, since a lane may turn it on. See the module.
 #[must_use]
 pub fn settle_for(settings: &Settings, rate: u32) -> u32 {
     let time = |param: Param| samples_of(settings.clamped(param), rate);
     let total = samples(SMOOTHING, rate)
         + time(Param::LookaheadMs)
         + samples(DUCKER_RMS_WINDOW, rate)
-        + time(Param::HoldMs)
+        + samples(DUCKER_HYSTERESIS_LATCH, rate)
+        + time(Param::HoldMs).max(time(Param::RiseMs))
         + time(Param::RiseMs)
         + time(Param::RecoveryMs);
     u32::try_from(total).unwrap_or(u32::MAX)
@@ -208,7 +214,7 @@ fn amplitude(db: f32) -> f32 {
 /// The decibels of a gain of amplitude, at least the floor of the meters.
 #[allow(clippy::cast_possible_truncation, reason = "a level")]
 fn meter_db(gain: f64) -> f32 {
-    if gain > 0.0 {
+    if gain > 0.0 && gain.is_finite() {
         ((20.0 * gain.log10()) as f32).max(METER_FLOOR_DB)
     } else {
         METER_FLOOR_DB
@@ -246,8 +252,11 @@ pub struct Ducker {
     /// The sums of a window at the threshold, and at the threshold less the hysteresis.
     on_sum: f64,
     off_sum: f64,
-    /// The sources sound.
+    /// The sources sound; the samples since their level was last at the threshold, and the
+    /// samples for which the hysteresis may hold them as sounding after it.
     loud: bool,
+    since_on: u64,
+    latch: u64,
     /// The samples since the sources last sounded, and whether it still holds: until more of them
     /// than the hold have gone by, the hold as it is at each sample.
     quiet: u64,
@@ -286,6 +295,8 @@ impl Ducker {
             on_sum: 0.0,
             off_sum: 0.0,
             loud: false,
+            since_on: 0,
+            latch: 0,
             quiet: 0,
             holding: false,
             level: 0.0,
@@ -336,8 +347,12 @@ impl Ducker {
         let sum = largest as f64;
         if sum >= self.on_sum {
             self.loud = true;
-        } else if sum < self.off_sum {
-            self.loud = false;
+            self.since_on = 0;
+        } else {
+            self.since_on = self.since_on.saturating_add(1);
+            if sum < self.off_sum || self.since_on > self.latch {
+                self.loud = false;
+            }
         }
         largest
     }
@@ -374,6 +389,7 @@ impl Node for Ducker {
         self.delay = vec![0.0; self.channels * self.lookahead].into_boxed_slice(); // rt-ok: when the graph is built
         self.window = samples(DUCKER_RMS_WINDOW, spec.rate).max(1);
         self.squares = vec![0; self.sidechain * self.window].into_boxed_slice(); // rt-ok: when the graph is built
+        self.latch = u64::try_from(samples(DUCKER_HYSTERESIS_LATCH, spec.rate)).unwrap_or(u64::MAX);
         #[allow(
             clippy::cast_precision_loss,
             reason = "a window of a few hundred samples"
@@ -399,7 +415,7 @@ impl Node for Ducker {
         .map(|param| automation.get(param.id()));
         let present = self.sidechain > 0 && ctx.sidechain.len() >= self.sidechain;
         let per_ms = f64::from(self.rate) / 1000.0;
-        let mut input_peak = 0.0_f32;
+        let mut input_peak = 0.0_f64;
         let mut lowest = 1.0_f64;
         let mut largest = 0;
         for n in 0..ctx.frames {
@@ -418,7 +434,15 @@ impl Node for Ducker {
                 clippy::cast_sign_loss,
                 reason = "a hold of at most 4 s"
             )]
-            let hold = (f64::from(hold) * per_ms).round() as u64;
+            let rise = automated(rise_lane, n, Param::RiseMs, self.rise_ms);
+            let rise = f64::from(rise) * per_ms;
+            // At least the rise: every duck goes all the way down.
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a rise of at most 1 s"
+            )]
+            let hold = ((f64::from(hold) * per_ms).round() as u64).max(rise.ceil() as u64);
             if self.loud {
                 self.quiet = 0;
                 self.holding = true;
@@ -429,8 +453,7 @@ impl Node for Ducker {
                 }
             }
             self.level = if self.loud || self.holding {
-                let rise = automated(rise_lane, n, Param::RiseMs, self.rise_ms);
-                (self.level + 1.0 / (f64::from(rise) * per_ms)).min(1.0)
+                (self.level + 1.0 / rise).min(1.0)
             } else {
                 let recovery = automated(recovery_lane, n, Param::RecoveryMs, self.recovery_ms);
                 (self.level - 1.0 / (f64::from(recovery) * per_ms)).max(0.0)
@@ -446,7 +469,7 @@ impl Node for Ducker {
             let at = self.at;
             for (channel, (output, input)) in output.iter_mut().zip(input).enumerate() {
                 let x = input[n];
-                input_peak = input_peak.max(x.abs());
+                input_peak = input_peak.max(finite(x).abs());
                 let leaving = if self.lookahead == 0 {
                     x
                 } else {
@@ -463,7 +486,7 @@ impl Node for Ducker {
             #[allow(clippy::cast_precision_loss, reason = "a level")]
             let source = largest as f64 / SQUARE_UNIT / self.window as f64;
             self.meter.write((
-                meter_db(f64::from(input_peak)),
+                meter_db(input_peak),
                 meter_db(source.sqrt()),
                 meter_db(lowest).min(0.0),
             ));
@@ -487,6 +510,7 @@ impl Node for Ducker {
         self.squares_at = 0;
         self.sums = [0; MAX_CHANNELS];
         self.loud = false;
+        self.since_on = 0;
         self.quiet = 0;
         self.holding = false;
         self.level = 0.0;

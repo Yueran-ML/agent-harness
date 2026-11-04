@@ -327,6 +327,72 @@ fn the_hysteresis_keeps_a_source_that_hovers_at_the_threshold_from_chattering() 
     }
 }
 
+/// Speech (noise at −10 dBFS) until sample 20000, then room tone at −46.5 dBFS, inside the
+/// hysteresis, for the rest of `frames`.
+fn speech_then_room_tone(frames: usize) -> Vec<f32> {
+    let speech = noise_rms(-10.0, 70, frames);
+    let tone = sine_rms(-46.5, frames);
+    (0..frames)
+        .map(|n| if n < 20_000 { speech[n] } else { tone[n] })
+        .collect()
+}
+
+#[test]
+fn room_tone_inside_the_hysteresis_lets_go_half_a_second_after_the_threshold_was_last_reached() {
+    // The hysteresis does not hold the sources as sounding for ever: an export that played the
+    // speech and a preview started in the pause after it sound alike once the pause is 0.5 s on
+    // (T11's review, P1).
+    let frames = 200_000;
+    let source = speech_then_room_tone(frames);
+    let spec = Spec::new(RATE, 1_024, Layout::Mono).with_sidechain(1);
+    let run = Run::new(vec![noise(71, 0.5, frames)]).with_sidechain(vec![source.clone()]);
+    for from in [30_000, 60_000, 90_000] {
+        assert_settle(|| ducker(|_| {}), &spec, &run, from);
+    }
+    // Held as sounding for 0.5 s after the window last reached −45 dBFS, then the hold, then up.
+    let last_on = last_at_or_above(&source, -45.0);
+    let gains = gains(&ducked(ducker(|_| {}), &source), L);
+    let depth = gain(-12.0);
+    let back = (last_on..frames)
+        .find(|&n| gains[n] > depth * 1.000_001)
+        .unwrap();
+    assert!(
+        back.abs_diff(last_on + ms(500) + H + 1) <= 2,
+        "{back}, last on at {last_on}"
+    );
+    assert_eq!(gains[back + C + 1], 1.0);
+}
+
+#[test]
+fn every_duck_goes_all_the_way_down_so_a_source_that_keeps_toggling_settles() {
+    // A rise of 1 s and no hold, the source speaking 100 ms in every 300: the hold is at least the
+    // rise, so the level reaches the bottom and forgets where it started (T11's review, P2-3).
+    let settings = |s: &mut Settings| {
+        s.rise_ms = 1_000.0;
+        s.hold_ms = 0.0;
+        s.recovery_ms = 2_000.0;
+    };
+    let spec = Spec::new(RATE, 1_024, Layout::Mono).with_sidechain(1);
+    let mut probe = ducker(settings);
+    probe.prepare(&spec).unwrap();
+    let settle = probe.settle() as usize;
+    let frames = ms(2_600) + settle + 1_000;
+    let speech = noise_rms(-10.0, 72, frames);
+    let source: Vec<f32> = (0..frames)
+        .map(|n| {
+            if n % ms(300) < ms(100) {
+                speech[n]
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let run = Run::new(vec![noise(73, 0.5, frames)]).with_sidechain(vec![source]);
+    for from in [ms(1_500), ms(2_600)] {
+        assert_settle(|| ducker(settings), &spec, &run, from);
+    }
+}
+
 #[test]
 fn the_rms_is_taken_over_10_ms() {
     // One sample of 0.13 makes a mean square of 0.13² / 480 over 10 ms, −44.53 dBFS: it ducks,
@@ -343,9 +409,11 @@ fn the_rms_is_taken_over_10_ms() {
     let depth = gain(-12.0);
     assert!(gains[999] == 1.0 && gains[1_000] < 1.0);
     assert!((db(gains[1_000 + ms(1) - 1]) + 12.0).abs() <= 1e-4);
-    assert!((db(gains[1_000 + W - 1]) + 12.0).abs() <= 1e-4);
+    // Heard for the 480 samples of the window, then held for the rise of 1 ms (the hold is
+    // at least the rise), then up.
+    assert!((db(gains[1_000 + W + ms(1) - 1]) + 12.0).abs() <= 1e-4);
     assert!(
-        gains[1_000 + W] > depth * 1.000_001,
+        gains[1_000 + W + ms(1)] > depth * 1.000_001,
         "the window is 480 samples"
     );
     let out = ducked(node(), &only(vec![0.12; frames], 1_000..1_001));
@@ -505,16 +573,16 @@ fn the_hold_and_the_recovery_are_read_from_their_lanes() {
     let last = last_at_or_above(&source, -48.0);
     let run = Run::new(vec![vec![LEVEL; frames]]).with_sidechain(vec![source]);
     let depth = gain(-12.0);
-    // No hold, a recovery of 100 ms: up from the sample after the source is last heard, −6 dB
-    // half way.
+    // No hold, which is a hold of the rise (10 ms), a recovery of 100 ms: up from the rise after
+    // the source is last heard, −6 dB half way.
     let run = run
         .with_automation(Param::HoldMs.id(), vec![0.0; frames])
         .with_automation(Param::RecoveryMs.id(), vec![100.0; frames]);
     let gains = gains(&process(ducker(|_| {}), &spec, &run)[0], L);
-    assert!((db(gains[last]) + 12.0).abs() <= 1e-4);
-    assert!(gains[last + 1] > depth * 1.000_001);
-    assert!((db(gains[last + ms(50)]) + 6.0).abs() <= 1e-3);
-    assert_eq!(gains[last + ms(100) + 1], 1.0);
+    assert!((db(gains[last + R]) + 12.0).abs() <= 1e-4);
+    assert!(gains[last + R + 1] > depth * 1.000_001);
+    assert!((db(gains[last + R + ms(50)]) + 6.0).abs() <= 1e-3);
+    assert_eq!(gains[last + R + ms(100) + 1], 1.0);
 }
 
 #[test]
@@ -531,9 +599,9 @@ fn a_hold_cut_short_ends_at_once_and_one_made_longer_after_it_ended_does_not_duc
     let held = gains(&process(ducker(|_| {}), &spec, &cut)[0], L);
     assert!((db(held[at - 1]) + 12.0).abs() <= 1e-4);
     assert!(held[at] > depth * 1.000_001);
-    // No hold, then 4 s of it 5 ms into the recovery: it goes on up.
+    // No hold (the rise of 10 ms), then 4 s of it 5 ms into the recovery: it goes on up.
     let longer = run.with_change(0, Param::HoldMs.id(), 0.0).with_change(
-        last + 1 + ms(5),
+        last + R + 1 + ms(5),
         Param::HoldMs.id(),
         4_000.0,
     );
@@ -541,8 +609,10 @@ fn a_hold_cut_short_ends_at_once_and_one_made_longer_after_it_ended_does_not_duc
         &process(ducker(|s| s.recovery_ms = 100.0), &spec, &longer)[0],
         L,
     );
-    assert!(rising[last + 1] > depth * 1.000_001);
-    assert!(rising[last + 1..].windows(2).all(|pair| pair[1] >= pair[0]));
+    assert!(rising[last + R + 1] > depth * 1.000_001);
+    assert!(rising[last + R + 1..]
+        .windows(2)
+        .all(|pair| pair[1] >= pair[0]));
     assert_eq!(rising[frames - 1], 1.0);
 }
 
@@ -607,7 +677,7 @@ fn the_settling_of_a_new_ducker_is_its_ramp_lookahead_window_hold_rise_and_recov
     let settings = Settings::default();
     assert_eq!(
         settle_for(&settings, RATE) as usize,
-        ms(10) + L + W + H + R + C
+        ms(10) + L + W + ms(500) + H + R + C
     );
     let most = Settings {
         lookahead_ms: 100.0,
@@ -618,7 +688,17 @@ fn the_settling_of_a_new_ducker_is_its_ramp_lookahead_window_hold_rise_and_recov
     };
     assert_eq!(
         settle_for(&most, RATE) as usize,
-        ms(10 + 100 + 10 + 4_000 + 1_000 + 4_000)
+        ms(10 + 100 + 10 + 500 + 4_000 + 1_000 + 4_000)
+    );
+    // A hold shorter than the rise counts as the rise.
+    let short = Settings {
+        rise_ms: 1_000.0,
+        hold_ms: 0.0,
+        ..settings
+    };
+    assert_eq!(
+        settle_for(&short, RATE) as usize,
+        ms(10) + L + W + ms(500) + ms(1_000) + ms(1_000) + C
     );
     // Off, it settles as on: a lane may turn it on.
     let off = Settings {
@@ -704,7 +784,7 @@ fn lanes_slower_than_the_settings_settle_by_settle_for_of_their_worst_values() {
     let spec = Spec::new(RATE, 1_024, Layout::Mono).with_sidechain(1);
     let mut probe = Ducker::new(&set);
     probe.prepare(&spec).unwrap();
-    assert!(probe.settle() < settle_for(&worst, RATE) / 10);
+    assert!(probe.settle() < settle_for(&worst, RATE) / 5);
     let frames = 250_000;
     let run = Run::new(vec![noise(40, 0.5, frames)])
         .with_sidechain(vec![only(noise_rms(-10.0, 41, frames), 20_000..100_000)])
@@ -789,6 +869,22 @@ fn the_meters_read_the_input_the_source_and_the_reduction() {
     assert!((input + 20.0).abs() <= 1e-3, "{input}");
     assert!((source + 10.0).abs() <= 0.01, "{source}");
     assert!((reduction + 12.0).abs() <= 1e-3, "{reduction}");
+}
+
+#[test]
+fn the_meters_read_a_sample_that_is_not_a_number_as_silence() {
+    let frames = 4_800;
+    let spec = Spec::new(RATE, 480, Layout::Mono).with_sidechain(1);
+    let mut node = ducker(|_| {});
+    node.prepare(&spec).unwrap();
+    let mut input = vec![0.1; frames];
+    input[frames - 10] = f32::INFINITY;
+    input[frames - 9] = f32::NEG_INFINITY;
+    let run = Run::new(vec![input]).with_sidechain(vec![vec![0.0; frames]]);
+    columbina_audio::testing::render(&mut node, &spec, &run, |_| 480);
+    let (input, source, reduction) = node.meter().read();
+    assert!((input + 20.0).abs() <= 1e-3, "{input}");
+    assert_eq!((source, reduction), (-200.0, 0.0));
 }
 
 #[test]

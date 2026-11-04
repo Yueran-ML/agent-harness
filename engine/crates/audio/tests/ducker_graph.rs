@@ -383,10 +383,17 @@ fn the_controls_and_lanes_of_a_ducker_are_found_by_their_paths() {
 }
 
 #[test]
-fn a_ducker_is_built_only_where_it_is_on_and_has_sources() {
+fn a_ducker_is_built_where_it_has_a_source_on_or_off() {
     let silent = |p: &Project| play(p, Purpose::Export, scene("c2"));
-    let plain = tracks(2);
-    let (none, _) = silent(&plain);
+    let (none, _) = silent(&tracks(2));
+    // With no source in the graph: not built, no latency.
+    let sourceless = ducked(2, &[], |_| {});
+    let graph = Graph::build(&sourceless, 0, Options::new(4_096, Purpose::Export)).unwrap();
+    assert_eq!((graph.latency(), graph.settle()), (0, 0));
+    assert!(graph.ducker(&Owner::Track("A1".into())).is_none());
+    assert_eq!(silent(&sourceless).0, none);
+    // Off: built all the same, with its latency, so that turning it on changes no latency
+    // (C-X12; T11's review, P2-2); it leaves the music as it is.
     let off = ducked(2, &[track("A2")], |p| {
         p.timelines[0].tracks[0]
             .audio
@@ -396,36 +403,134 @@ fn a_ducker_is_built_only_where_it_is_on_and_has_sources() {
             .unwrap()
             .on = false;
     });
-    let sourceless = ducked(2, &[], |_| {});
-    for (project, what) in [(off, "off"), (sourceless, "with no source")] {
-        let graph = Graph::build(&project, 0, Options::new(4_096, Purpose::Export)).unwrap();
-        assert_eq!(graph.latency(), 0, "{what}");
-        assert_eq!(graph.settle(), 0, "{what}");
-        assert!(graph.ducker(&Owner::Track("A1".into())).is_none(), "{what}");
-        assert_eq!(silent(&project).0, none, "{what}");
-    }
-    // Off, but a lane turns it on: built, and settling for the longest hold of its lane.
+    let graph = Graph::build(&off, 0, Options::new(4_096, Purpose::Export)).unwrap();
+    assert_eq!(graph.latency() as usize, L);
+    let settings = ducker::Settings {
+        amount_db: 12.0,
+        ..ducker::Settings::default()
+    };
+    assert_eq!(graph.settle(), ducker::settle_for(&settings, 48_000));
+    assert!(graph.ducker(&Owner::Track("A1".into())).is_some());
+    assert!(graph.ducker(&Owner::Track("A2".into())).is_none());
+    assert_eq!(silent(&off).0, none);
+    // Settling for the longest hold of its lane.
     let laned = ducked(2, &[track("A2")], |p| {
-        let a1 = &mut p.timelines[0].tracks[0].audio;
-        a1.strip.track_fx.as_mut().unwrap().on = false;
-        a1.lanes
-            .insert("track_fx.on".into(), lane(&[(0, 0.0), (48_000, 1.0)]));
-        a1.lanes.insert(
+        p.timelines[0].tracks[0].audio.lanes.insert(
             "track_fx.hold_ms".into(),
             lane(&[(0, 150.0), (96_000, 4_000.0)]),
         );
     });
     let graph = Graph::build(&laned, 0, Options::new(4_096, Purpose::Export)).unwrap();
-    assert_eq!(graph.latency() as usize, L);
     let slowest = ducker::Settings {
-        on: true,
-        amount_db: 12.0,
         hold_ms: 4_000.0,
-        ..ducker::Settings::default()
+        ..settings
     };
     assert_eq!(graph.settle(), ducker::settle_for(&slowest, 48_000));
-    assert!(graph.ducker(&Owner::Track("A1".into())).is_some());
-    assert!(graph.ducker(&Owner::Track("A2".into())).is_none());
+}
+
+#[test]
+fn turning_a_ducker_on_while_it_plays_keeps_the_latency_and_fades_in_over_10_ms() {
+    let off = ducked(2, &[track("A2")], |p| {
+        let tracks = &mut p.timelines[0].tracks;
+        tracks[0].audio.strip.track_fx.as_mut().unwrap().on = false;
+        tracks[1].audio.mute = true;
+    });
+    let mut graph = Graph::build(&off, 0, Options::new(480, Purpose::Preview)).unwrap();
+    let latency = graph.latency();
+    let on = graph
+        .control(&Owner::Track("A1".into()), "track_fx.on")
+        .unwrap();
+    let mut read = feed(&graph, scene("c2"));
+    graph.start(60_000, &mut read).unwrap();
+    let output = graph.output_of("B1").unwrap();
+    graph.process(&mut read, 480).unwrap();
+    assert!(graph.output(output).channel(0)[..480]
+        .iter()
+        .all(|&s| s == MUSIC));
+    graph.set(on, 1.0);
+    let mut played = Vec::new();
+    for _ in 0..2 {
+        graph.process(&mut read, 480).unwrap();
+        played.extend_from_slice(&graph.output(output).channel(0)[..480]);
+    }
+    assert_eq!(graph.latency(), latency);
+    let depth = 10_f32.powf(-12.0 / 20.0) * MUSIC;
+    let most = (MUSIC - depth) / 480.0 * 1.001;
+    let mut last = MUSIC;
+    for (n, &s) in played.iter().enumerate() {
+        assert!(last - s >= -1e-7 && last - s <= most, "{n}: {last} to {s}");
+        last = s;
+    }
+    assert!((played[700] - depth).abs() <= 1e-6, "{}", played[700]);
+}
+
+#[test]
+fn lanes_of_the_amount_and_the_switch_act_on_the_sound_of_their_time() {
+    // Through the speech, the amount steps from 6 to 24 dB at 1.5 s, and the Ducker is switched
+    // off at 1.75 s: on the timeline, there, not a lookahead early (T11's review, P3-4).
+    let project = ducked(2, &[track("A2")], |p| {
+        let a1 = &mut p.timelines[0].tracks[0].audio;
+        a1.lanes.insert(
+            "track_fx.amount_db".into(),
+            lane(&[(0, 6.0), (71_999, 6.0), (72_000, 24.0)]),
+        );
+        a1.lanes.insert(
+            "track_fx.on".into(),
+            Lane {
+                kind: LaneKind::Switch,
+                ..lane(&[(0, 1.0), (84_000, 0.0)])
+            },
+        );
+        p.timelines[0].tracks[1].audio.mute = true;
+    });
+    let (out, _) = play(&project, Purpose::Export, scene("c2"));
+    let at = |n: usize| db(f64::from(out[n]) / f64::from(MUSIC));
+    assert!((at(71_999) + 6.0).abs() <= 1e-4, "{}", at(71_999));
+    assert!((at(72_000) + 24.0).abs() <= 1e-4, "{}", at(72_000));
+    assert!((at(83_999) + 24.0).abs() <= 1e-4, "{}", at(83_999));
+    assert!(at(84_000) > -24.0 + 1e-3, "{}", at(84_000));
+    assert_eq!(out[84_480], MUSIC);
+}
+
+#[test]
+fn sources_of_different_formats_are_summed_by_the_places_of_their_channels() {
+    // A mono source and a stereo one with the same tone only on its right, each −48.5 dBFS: the
+    // mono one goes to both sides of the stereo, so the right is −42.5 dBFS and ducks. Summed by
+    // the numbers of the channels, the mono would be on the left only and nothing would duck.
+    let tone = |clip: &str, n: i64, channel: usize| match clip {
+        "c1" => MUSIC,
+        "c2" | "c3" if clip == "c2" || channel == 1 => {
+            let amplitude = 10_f64.powf(-48.5 / 20.0) * std::f64::consts::SQRT_2;
+            (amplitude * (std::f64::consts::TAU * 1_000.0 * n as f64 / 48_000.0).sin()) as f32
+        }
+        _ => 0.0,
+    };
+    let project = ducked(3, &[track("A2"), track("A3")], |p| {
+        let tracks = &mut p.timelines[0].tracks;
+        tracks[1].audio.format = columbina_model::audio::TrackFormat::Mono;
+        tracks[1].audio.channels = 1;
+        tracks[1].audio.mute = true;
+        tracks[2].audio.mute = true;
+    });
+    let (out, _) = play(&project, Purpose::Export, tone);
+    let deepest = gains(&out).into_iter().fold(1.0, f64::min);
+    assert!((db(deepest) + 12.0).abs() <= 1e-4, "{}", db(deepest));
+
+    // A stereo source after a silent mono one keeps its two sides: −44 dBFS on each, of opposite
+    // signs, ducks; folded into the mono, the two would cancel.
+    let opposite = |clip: &str, n: i64, channel: usize| match clip {
+        "c1" => MUSIC,
+        "c3" => {
+            let amplitude = 10_f64.powf(-44.0 / 20.0) * std::f64::consts::SQRT_2;
+            let sign = if channel == 0 { 1.0 } else { -1.0 };
+            (sign * amplitude * (std::f64::consts::TAU * 1_000.0 * n as f64 / 48_000.0).sin())
+                as f32
+        }
+        _ => 0.0,
+    };
+    let (out, _) = play(&project, Purpose::Export, opposite);
+    let deepest = gains(&out).into_iter().fold(1.0, f64::min);
+    assert!((db(deepest) + 12.0).abs() <= 1e-4, "{}", db(deepest));
 }
 
 #[test]

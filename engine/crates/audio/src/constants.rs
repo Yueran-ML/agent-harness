@@ -318,6 +318,12 @@ pub const DUCKER_THRESHOLD_DBFS: f32 = -45.0;
 /// The hysteresis of the Ducker between ducking and not, in dB (C-X2).
 pub const DUCKER_HYSTERESIS_DB: f32 = 3.0;
 
+/// How long the hysteresis holds the sources of the Ducker as sounding after their level last
+/// reached the threshold, in seconds: room tone that stays inside the hysteresis lets go after
+/// this, so that a run started in a pause sounds as one that played the speech before it (T11's
+/// review, P1). Long enough for the gaps between the syllables of speech.
+pub const DUCKER_HYSTERESIS_LATCH: f64 = 0.5;
+
 /// The lookahead of the Limiter, in samples (the manual, p. 3964; C-X5).
 pub const LIMITER_LOOKAHEAD: usize = 64;
 

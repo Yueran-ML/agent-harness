@@ -92,9 +92,48 @@ pub enum BuildError {
 /// The graphs built so far: each graph's id is the count before it.
 static GRAPHS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// The roles of the channels of `layout` but the LFE: the channels of a sidechain from it.
+fn keyed_roles(layout: Layout) -> Vec<Role> {
+    layout
+        .roles()
+        .iter()
+        .copied()
+        .filter(|role| *role != Role::Lfe)
+        .collect()
+}
+
+/// Where each channel of a sidechain from a strip of `from` goes in a sidechain of `to` (the
+/// channels of both but the LFE, by their places there), when sources of different formats are
+/// summed for a Ducker (T11's review, P3-7): to the channel of the same role; else mono and the
+/// centre to the centre, or to left and right; the one surround of LCRS to the two surrounds, or
+/// to left and right; a surround or rear of one side to the surround of that side, or to that
+/// side; and anything else (a channel of an Adaptive track, a side into mono) to the channel of
+/// its number, round the channels of `to`.
+pub(crate) fn routes(from: Layout, to: Layout) -> Vec<(usize, usize)> {
+    use Role::{Centre, Left, LeftRear, LeftSurround, Mono, Right, RightRear, RightSurround};
+    let to_roles = keyed_roles(to);
+    let find = |role: Role| to_roles.iter().position(|&r| r == role);
+    let both = |a: Role, b: Role| find(a).zip(find(b)).map(|(a, b)| vec![a, b]);
+    let mut routes = Vec::new();
+    for (channel, role) in keyed_roles(from).into_iter().enumerate() {
+        let into = find(role).map(|at| vec![at]).or_else(|| match role {
+            Mono | Centre => find(Centre).map(|c| vec![c]).or_else(|| both(Left, Right)),
+            Role::Surround => both(LeftSurround, RightSurround).or_else(|| both(Left, Right)),
+            LeftSurround | LeftRear => find(LeftSurround).or_else(|| find(Left)).map(|c| vec![c]),
+            RightSurround | RightRear => {
+                find(RightSurround).or_else(|| find(Right)).map(|c| vec![c])
+            }
+            _ => None,
+        });
+        let into = into.unwrap_or_else(|| vec![channel % to_roles.len().max(1)]);
+        routes.extend(into.into_iter().map(|at| (channel, at)));
+    }
+    routes
+}
+
 /// Where a sidechain from `source`, of `layout`, comes from: its channels but the LFE (T8's
-/// review), delayed by `side` samples.
-fn key_of(source: usize, layout: Layout, side: u32) -> Key {
+/// review), delayed by `side` samples, and summed into a sidechain of `into`.
+fn key_of(source: usize, layout: Layout, side: u32, into: Layout) -> Key {
     let mut channels = [0; MAX_CHANNELS];
     let mut count = 0;
     for (channel, role) in layout.roles().iter().enumerate() {
@@ -107,6 +146,7 @@ fn key_of(source: usize, layout: Layout, side: u32) -> Key {
         source,
         channels,
         count,
+        routes: routes(layout, into).into_boxed_slice(),
         side: delay_line(count, usize::try_from(side).unwrap_or(0)),
     }
 }
@@ -654,16 +694,14 @@ impl Graph {
             let layout = sources[source].layout;
             layout.channels() - usize::from(layout.lfe().is_some())
         };
-        // The Ducker of a track (T11): built where it is on, or its lane turns it on, and some
-        // of its sources are in the graph; the strips of its sources, each once.
+        // The Ducker of a track (T11): built where some of its sources are in the graph, on or
+        // off, so that its latency stays when it is switched (C-X12; T11's review, P2-2); the
+        // strips of its sources, each once.
         let duckers: Vec<Option<(&DuckerModel, Vec<usize>)>> = sources
             .iter()
             .enumerate()
             .map(|(at, source)| {
                 let model = source.strip.track_fx.as_ref().filter(|_| at < tracks)?;
-                if !ever_on(model.on, source.lanes, "track_fx.on") {
-                    return None;
-                }
                 let mut keyed: Vec<usize> = Vec::new();
                 for strip in model.sources.iter().filter_map(strip_of) {
                     if !keyed.contains(&strip) {
@@ -899,11 +937,19 @@ impl Graph {
                     }
                 }
                 let latency = node.latency();
+                // The sidechain is of the format of the source of the most channels, the first
+                // of them; it comes first, the others summed into it by their roles.
+                let mut keyed = keyed;
+                let channels = |source: usize| keyed_roles(sources[source].layout).len();
+                if let Some(widest) = (0..keyed.len()).max_by_key(|&k| (channels(keyed[k]), !k)) {
+                    keyed[..=widest].rotate_right(1);
+                }
+                let into = keyed.first().map_or(Layout::Empty, |&s| sources[s].layout);
                 let keys = keyed
                     .iter()
                     .map(|&source| {
                         let side = offset.saturating_sub(from(source));
-                        key_of(source, sources[source].layout, side)
+                        key_of(source, sources[source].layout, side, into)
                     })
                     .collect();
                 built[at].push(stage(node, keys, max_block, offset));
@@ -1171,6 +1217,16 @@ impl Graph {
                 };
                 let delay = match param {
                     StripParam::Trim | StripParam::Invert => i64::from(arrival[at]),
+                    // The switch and the amount of a Ducker act on the sound that leaves it, a
+                    // lookahead after the sound that comes in (T11's review, P3-4).
+                    StripParam::Node(stage, param)
+                        if matches!(meta.stages[stage], StageKind::Ducker)
+                            && [DuckerParam::On.id(), DuckerParam::AmountDb.id()]
+                                .contains(&param) =>
+                    {
+                        let stage = &strip.stages[stage];
+                        stage.offset + i64::from(stage.node.latency())
+                    }
                     StripParam::Node(stage, _) => strip.stages[stage].offset,
                     _ => after,
                 };

@@ -3598,7 +3598,7 @@ refused only through a bug of the engine. The refusals that are not of a transac
 | `scale` | `scale`, `media_scale` | a time of scale 0, or not of the scale of its media |
 | `overlap` | `with` | the clip covers frames that clip `with` covers |
 | `out_of_timeline` | `start` | the clip starts before frame 0 |
-| `in_use` | `id`, `by` | media still used by clip `by` |
+| `in_use` | `what`, `id`, `by` | media (`what: "media"`) still used by clip `by`, or a track of sound (`what: "track"`) that group of tracks, track or bus `by` names (as a member, or as the source of a sidechain or a Ducker) |
 | `too_large` | `what` | an integer further than 2^53 − 1 from 0 |
 | `zero_rate` | | a rate with a 0 in it |
 | `negative_duration` | `ticks` | media lasting less than no time |
@@ -3659,7 +3659,7 @@ the expanded operation list. Refusal emits no `project.changed` and adds no hist
 | `vca_depth` | `id` | a chain of VCAs would be more than 6 long |
 
 A track that a group, a sidechain or a ducker names is refused as `missing` (`what: "track"`)
-where it is not there, and so is `remove_track` of it while it is named. `out_of_range` also
+where it is not there; `remove_track` of it while it is named is refused as `in_use`. `out_of_range` also
 names (schema 4): of a clip `gain_db`, `pan` (also their keys), `fade`, `eq`, `pitch`,
 `channels`, `sidechain`; of a strip `trim_db`, `track_fx` (on a bus), `fader_db`, `pan`, `send`,
 `outputs` (two to one bus), `eq`, `dynamics`, `ducker`, the kind of an effect, `lane`; of a

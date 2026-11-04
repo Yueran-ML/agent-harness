@@ -758,12 +758,16 @@ pub enum OpError {
         /// The frame.
         start: i64,
     },
-    /// Media that a clip uses is to be taken away.
-    #[error("media {id} is used by clip {by}")]
+    /// A thing that another names is to be taken away: media that a clip uses (`what` is
+    /// `media`, `by` the clip), or a track of sound that a group of tracks, a sidechain or a
+    /// Ducker names (`what` is `track`, `by` the group, track or bus that names it).
+    #[error("{what} {id} is used by {by}")]
     InUse {
-        /// The media.
+        /// The kind of the thing.
+        what: &'static str,
+        /// The thing.
         id: Id,
-        /// A clip that uses it.
+        /// What uses it.
         by: Id,
     },
     /// An integer to be written into the project is further than [`LARGEST`] from 0, and
@@ -1139,6 +1143,7 @@ enum Fields {
         start: i64,
     },
     InUse {
+        what: &'static str,
         id: Id,
         by: Id,
     },
@@ -1793,6 +1798,7 @@ fn remove_media(project: &mut Project, id: &str) -> Result<Op, OpError> {
         .ok_or_else(|| missing("media", id))?;
     if let Some(clip) = clips_of(project).find(|c| c.media().is_some_and(|m| m == id)) {
         return Err(OpError::InUse {
+            what: "media",
             id: id.into(),
             by: clip.id.clone(),
         });
@@ -1891,6 +1897,13 @@ fn remove_track(project: &mut Project, timeline_id: &str, id: &str) -> Result<Op
         .position(|r| r.id == id)
         .ok_or_else(|| missing("track", id))?;
     // A track that a group, a sidechain or a ducker names stays until they no longer do.
+    if let Some(by) = audio::routing::user_of_track(&project.timelines[t], id) {
+        return Err(OpError::InUse {
+            what: "track",
+            id: id.into(),
+            by,
+        });
+    }
     routed(&project.timelines[t], |tracks| {
         tracks.remove(at);
     })?;
@@ -4534,6 +4547,7 @@ mod tests {
         assert_eq!(
             error,
             OpError::InUse {
+                what: "media",
                 id: "m1".into(),
                 by: "c1".into()
             }
@@ -5047,7 +5061,14 @@ mod tests {
             ),
             (OpError::Overlap { with: id() }, "overlap"),
             (OpError::OutOfTimeline { start: -1 }, "out_of_timeline"),
-            (OpError::InUse { id: id(), by: id() }, "in_use"),
+            (
+                OpError::InUse {
+                    what: "media",
+                    id: id(),
+                    by: id(),
+                },
+                "in_use",
+            ),
             (OpError::TooLarge { what: "start" }, "too_large"),
             (OpError::ZeroRate, "zero_rate"),
             (OpError::SubtitleShown { track: id() }, "subtitle_shown"),

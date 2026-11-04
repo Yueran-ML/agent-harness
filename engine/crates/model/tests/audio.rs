@@ -262,15 +262,39 @@ fn a_track_that_a_ducker_names_is_not_taken_away_and_one_that_ducks_is_added_bac
     .unwrap_err();
     assert_eq!(
         error,
-        OpError::Missing {
+        OpError::InUse {
             what: "track",
-            id: "A1".into()
+            id: "A1".into(),
+            by: "A2".into()
         }
     );
     let added = project.clone();
     let back = apply(&mut project, inverse).unwrap();
     apply(&mut project, back).unwrap();
     assert_eq!(project, added);
+    // A member of a group of tracks stays while the group names it.
+    let mut grouped = Project::sample();
+    grouped.timelines[0].track_groups = vec![columbina_model::TrackGroup {
+        id: "TG1".into(),
+        name: "Dialogue".into(),
+        color: columbina_model::Rgba([0, 0, 0, 255]),
+        members: vec!["A1".into()],
+        linked: vec![],
+        active: true,
+    }];
+    grouped.validate().unwrap();
+    let remove = Op::RemoveTrack {
+        timeline: "t1".into(),
+        id: "A1".into(),
+    };
+    assert_eq!(
+        apply(&mut grouped, remove).unwrap_err(),
+        OpError::InUse {
+            what: "track",
+            id: "A1".into(),
+            by: "TG1".into()
+        }
+    );
     // A track that outputs to a bus that is not there is refused.
     let mut lost = Track::new("", TrackKind::Audio);
     lost.audio.strip.outputs = vec![output("B4")];

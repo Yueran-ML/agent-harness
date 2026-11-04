@@ -256,6 +256,42 @@ fn group_colour() -> Rgba {
     Rgba([0xe0, 0x8a, 0x3a, 0xff])
 }
 
+/// What names a track of a timeline, where something does: a group of tracks that it is a
+/// member of, or a track or a bus whose sidechain or Ducker it drives.
+#[must_use]
+pub fn user_of_track(timeline: &Timeline, id: &str) -> Option<Id> {
+    if let Some(group) = timeline
+        .track_groups
+        .iter()
+        .find(|g| g.members.iter().any(|m| m == id))
+    {
+        return Some(group.id.clone());
+    }
+    let named = |strip: &Strip| {
+        strip
+            .track_fx
+            .iter()
+            .flat_map(|ducker| &ducker.sources)
+            .chain(strip.dynamics.compressor.sidechain.source.iter())
+            .chain(
+                strip
+                    .inserts
+                    .iter()
+                    .filter_map(|insert| insert.effect.sidechain())
+                    .filter_map(|sidechain| sidechain.source.as_ref()),
+            )
+            .any(|source| matches!(source, SourceRef::Track(track) if track == id))
+    };
+    timeline
+        .tracks
+        .iter()
+        .filter(|r| r.kind == TrackKind::Audio)
+        .map(|r| (&r.id, &r.audio.strip))
+        .chain(timeline.buses.iter().map(|b| (&b.id, &b.strip)))
+        .find(|(_, strip)| named(strip))
+        .map(|(by, _)| by.clone())
+}
+
 /// Check that a list names each thing once, and each by an id that is there and does not start
 /// with `$`.
 fn ids<'a>(

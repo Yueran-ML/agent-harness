@@ -151,8 +151,10 @@ pub const RMS_WINDOW: f64 = 0.300;
 /// How often the meters are read and sent (C-L5).
 pub const METER_RATE_HZ: u32 = 30;
 
-/// The oversampling of the true peak (plan T9; C-L1).
-pub const TRUE_PEAK_OVERSAMPLING: usize = 4;
+/// The oversampling of the true peak (plan T9; C-L1): 8, not the 4 of BS.1770's annex 2, whose
+/// short filter reads content near the Nyquist frequency several dB low (the review of T10;
+/// `fx::true_peak`).
+pub const TRUE_PEAK_OVERSAMPLING: usize = 8;
 
 /// The window of Momentary loudness, and how often it is given (BS.1770; p. 3985).
 pub const LOUDNESS_MOMENTARY: f64 = 0.400;
@@ -373,3 +375,158 @@ pub fn fade_gain(curve: f64, skew: f64, t: f64, falling: bool) -> f64 {
     };
     t + curve.abs() * (end - t)
 }
+
+// --- Effects of T10: Gain, Limiter, Soft Clipper, Stereo Width, De-Esser, De-Hummer -----------
+
+/// The time constants of a follower or a release after which two effects that heard the same
+/// sound from different states sound the same: the settling of the Limiter's release and of the
+/// De-Esser's followers (T10). Their premise is a difference of linear gain of at most 1, through
+/// one stage, on a sound of up to +30 dBFS: e^(−14) · 31.6 < 3.16e-5, under −90 dBFS. Dynamics
+/// counts 18 ([`DYNAMICS_SETTLE_TIME_CONSTANTS`]) because its premise is wider: a difference of
+/// 200 dB of gain at +12 dBFS, through the two stages of its detector.
+pub const FX_SETTLE_TIME_CONSTANTS: f64 = 14.0;
+
+/// The taps of each phase of the interpolator of the true peak (`fx::true_peak`): a sinc over
+/// ±24 samples, so that it is flat within 0.01 dB to 0.45 of the rate (the review of T10).
+pub const TRUE_PEAK_TAPS: usize = 48;
+
+/// The β of the Kaiser window of the interpolator of the true peak: with [`TRUE_PEAK_TAPS`], every
+/// point within 0.005 dB (and its phase) of the sound below 0.45 of the rate; −2.5 dB at 0.48.
+pub const TRUE_PEAK_KAISER_BETA: f64 = 7.0;
+
+/// What the Limiter adds to the true peak it reads, in dB: a sine of 0.45 of the rate may peak
+/// 0.14 dB over the larger of two of the 8 points between which it peaks (cos(π · 0.45 / 8)).
+pub const LIMITER_TRUE_PEAK_MARGIN_DB: f32 = 0.2;
+
+/// The delays of the all-passes of Stereo Width's Diffusion, in seconds (C-X11: "a short
+/// decorrelating all-pass on S"): four, of 18, 29, 43 and 63 samples at 48 kHz, whose sum, 3.2 ms,
+/// is the latency of Stereo Width (their feedback goes to 0 with Diffusion, where they are a
+/// delay; the review of T10).
+pub const WIDTH_DIFFUSION_DELAYS: [f64; 4] = [0.000_37, 0.000_61, 0.000_89, 0.001_31];
+
+/// The feedback of each all-pass of Diffusion at 100 %, in proportion below.
+pub const WIDTH_DIFFUSION_FEEDBACK: f64 = 0.5;
+
+/// The frequency above which Sparkle widens the side, in Hz (C-X11): the low-pass that the side
+/// less is what it adds.
+pub const WIDTH_SPARKLE_HZ: f32 = 5_000.0;
+
+/// What Sparkle at 100 % adds of the high side to the side: as much again, +6 dB.
+pub const WIDTH_SPARKLE_GAIN: f64 = 1.0;
+
+/// The most that De-Esser's Amount takes from the band, in dB (C-X7).
+pub const DEESSER_MAX_REDUCTION_DB: f32 = 20.0;
+
+/// How far, in dB, the density of De-Esser's band (its level for its width) must stand over the
+/// density of the sound an octave and more below it before De-Esser acts ...
+pub const DEESSER_DENSITY_ONSET_DB: f32 = 6.0;
+
+/// ... and how far for all of its reduction (T10, the review: white noise, of the same density
+/// everywhere, and pink noise, of less above, are left alone; an ess, whose density stands 20 dB
+/// and more over the voice below it, is lowered).
+pub const DEESSER_DENSITY_FULL_DB: f32 = 18.0;
+
+/// The level of De-Esser's band under which it does nothing, in dBFS, and all of its reduction
+/// from [`DEESSER_FLOOR_RAMP_DB`] above (T10; −45 dBFS, the review's proposal).
+pub const DEESSER_FLOOR_DBFS: f32 = -45.0;
+
+/// See [`DEESSER_FLOOR_DBFS`].
+pub const DEESSER_FLOOR_RAMP_DB: f32 = 6.0;
+
+/// The widths of De-Esser's Narrow and Wide bands, in octaves (C-X7).
+pub const DEESSER_BANDWIDTHS: [f64; 2] = [1.0 / 3.0, 1.0];
+
+/// The deepest cut of De-Hummer's notches at Amount 100, in dB (C-X8).
+pub const DEHUMMER_MAX_DEPTH_DB: f32 = 40.0;
+
+// --- Noise Reduction (T12) -------------------------------------------------------------------
+
+/// The most that the spectral gate of Noise Reduction lowers a bin, in dB: the floor of its gain,
+/// which leaves a little of the noise under the voice instead of the "musical" tones of bins let
+/// through alone (C-X4 has no depth; we decide).
+pub const DENOISE_FLOOR_DB: f32 = -30.0;
+
+/// The power of a bin of Noise Reduction below which it is heard as this: so that the profiles
+/// in their logarithms stay finite after silence, and climb back from silence in a bounded time
+/// (about −149 dBFS of white noise in a bin of the 2048-point transform; we decide).
+pub const DENOISE_POWER_FLOOR: f32 = 1e-12;
+
+/// The power of a bin above which it is heard as this (we decide).
+pub const DENOISE_POWER_CEILING: f32 = 1e12;
+
+/// The largest size of a sample that Noise Reduction analyses: a larger one is analysed as this
+/// (the dry sound is let through as it is), so that the power of a bin stays finite (we decide).
+pub const DENOISE_INPUT_LIMIT: f32 = 1e4;
+
+/// The time constant of the gains of Noise Reduction over time with Time Smoothing on, in
+/// seconds (p. 3970 gives no number; we decide).
+pub const DENOISE_TIME_SMOOTHING: f64 = 0.020;
+
+/// The bins on each side over which Frequency Smoothing at 100 % averages the power that Noise
+/// Reduction weighs (p. 3970 gives no number; we decide: ±188 Hz at 48 kHz).
+pub const DENOISE_FREQUENCY_SMOOTHING_BINS: usize = 8;
+
+/// The factor by which Sensitivity at 0 % and at 100 % overestimates the noise (C-X4).
+pub const DENOISE_SENSITIVITY_FACTOR: (f32, f32) = (1.0, 4.0);
+
+/// The time constants of its profiles after which Noise Reduction counts itself settled:
+/// ⌈ln(55 / 3.2e-5)⌉ = 15, the logarithm of a power spanning 1e-12 to 1e12 (55) brought below
+/// −90 dBFS (we decide).
+pub const DENOISE_SETTLE_TIME_CONSTANTS: f64 = 15.0;
+
+/// The level of a frame below which Noise Reduction takes it for digital silence, in dBFS of the
+/// RMS of the frame: such a frame changes neither profile, so that a gap of exact zeros between
+/// clips does not make the gate forget the noise (review of T12; we decide).
+pub const DENOISE_SILENCE_DBFS: f32 = -120.0;
+
+/// The digital silence, in seconds, after which the gate forgets the noise and starts again as
+/// new: the pre-roll's cap of 10 s, so that a start of the playback inside a longer gap hears
+/// after it what an export from the start hears (review of T12; we decide).
+pub const DENOISE_FORGET: f64 = 10.0;
+
+/// How long a gate that has heard nothing yet lets everything through, then how long it takes
+/// to come to its full depth, in seconds of sound heard: a voice from the first sample is not
+/// taken for the noise before it has paused (review of T12; we decide).
+pub const DENOISE_WARMUP: (f64, f64) = (0.5, 0.5);
+
+/// The rate at which `RNNoise` works (plan T12).
+pub const RNNOISE_RATE: u32 = 48_000;
+
+/// The delay of `RNNoise` itself, at 48 kHz: its window of two frames puts out the frame before
+/// the one it takes (measured; the plan's "the first frame is thrown away").
+pub const RNNOISE_DELAY: usize = 480;
+
+/// The scale of the samples that `RNNoise` takes: the range of an i16 (plan T12).
+pub const RNNOISE_SCALE: f32 = 32_768.0;
+
+/// The settling of the voice mode of Noise Reduction, in seconds: its network forgets slowly.
+/// Measured on a voice over noise from five starts: within −60 dBFS of an earlier start after
+/// 10 s (the pre-roll), mostly within −90 dBFS after 20 to 35 s, a difference of −94 dBFS as late
+/// as 70 s, and below −130 dBFS after 80 s (we decide on 60).
+pub const RNNOISE_SETTLE: f64 = 60.0;
+
+/// The digital silence, in seconds, after which the voice mode takes a fresh state: `RNNoise`
+/// keeps its state through silence, so that without this the state after a gap would be that of
+/// the clip before it (review of T12).
+pub const RNNOISE_FORGET: f64 = 1.0;
+
+/// The fresh states of `RNNoise` that the voice mode keeps for each channel, to be as new after
+/// a reset or a second of digital silence without taking memory on the thread of the mix: its
+/// state has no reset, and copying one into another allocates (about 30 kB each; we decide).
+pub const RNNOISE_SPARE_STATES: usize = 8;
+
+/// The zero crossings on each side of the windowed sinc by which the voice mode takes another
+/// rate to 48 kHz and back (as the mixer of phase 2, `server/src/play/mix.rs`).
+pub const RNNOISE_RESAMPLE_ZEROS: f64 = 16.0;
+
+/// The band that the resampling of the voice mode keeps, as a part of the lower Nyquist
+/// frequency (we decide).
+pub const RNNOISE_RESAMPLE_BAND: f64 = 0.95;
+
+/// The longest period, in samples of 48 kHz, of the grid on which another rate meets 48 kHz,
+/// 48000 / gcd(rate, 48000), that the voice mode takes: 640 takes every rate of 8 kHz and of the
+/// families of 44.1 and 48 kHz from 11.025 kHz up (we decide).
+pub const RNNOISE_LONGEST_PERIOD: u64 = 640;
+
+/// The lowest and the highest rate that the voice mode takes (we decide).
+pub const RNNOISE_RATES: (u32, u32) = (8_000, 384_000);

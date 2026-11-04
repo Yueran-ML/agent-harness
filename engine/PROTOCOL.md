@@ -646,7 +646,8 @@ are at most +10; −100 or below is −∞.
   straight lines between points (worked out in ticks), a switch holds; before the first and
   after the last, their values. The path of a lane is the path of the field of the strip that it
   automates, and its kind is that of the field: a number is continuous, a boolean a switch, and
-  any other field has no lane. Paths: `fader_db`, `trim_db`, `mute`, `invert`, `inserts_on`,
+  any other field has no lane, nor has any `listen` (of a sidechain, a De-Esser, a De-Hummer or a
+  Noise Reduction), which is only heard while one listens. Paths: `fader_db`, `trim_db`, `mute`, `invert`, `inserts_on`,
   `pan.<x|y|rotate|spread|divergence|lfe_db|on|lfe_on|lfe_pre>`, `eq.on`, `eq.gain_db`,
   `eq.<band from 0>.<on|freq|gain_db|q>`, `dynamics.<…>` as Dynamics is written
   (`dynamics.compressor.threshold_db`, `dynamics.compressor.sidechain.on`, `dynamics.makeup_db`),

@@ -566,6 +566,16 @@ fn lanes_are_of_the_settings_of_their_strip_by_their_paths_and_kinds() {
         };
         2
     ];
+    for effect in [
+        Effect::Limiter(columbina_model::audio::fx::LimiterFx::default()),
+        Effect::DeEsser(columbina_model::audio::fx::DeEsserFx::default()),
+    ] {
+        strip.inserts.push(Insert {
+            id: String::new(),
+            on: true,
+            effect,
+        });
+    }
     project.validate().unwrap();
     // The inserts are given ids, which their lanes name.
     let ids: Vec<&str> = project.timelines[0].tracks[1]
@@ -575,7 +585,7 @@ fn lanes_are_of_the_settings_of_their_strip_by_their_paths_and_kinds() {
         .iter()
         .map(|i| i.id.as_str())
         .collect();
-    assert_eq!(ids, ["fx1", "fx2"]);
+    assert_eq!(ids, ["fx1", "fx2", "fx3", "fx4"]);
     let continuous = [
         "fader_db",
         "trim_db",
@@ -588,6 +598,7 @@ fn lanes_are_of_the_settings_of_their_strip_by_their_paths_and_kinds() {
         "send.B3.level_db",
         "send.B3.pan.x",
         "insert.fx2.gain_db",
+        "insert.fx3.ceiling_db",
     ];
     let switches = [
         "mute",
@@ -598,6 +609,7 @@ fn lanes_are_of_the_settings_of_their_strip_by_their_paths_and_kinds() {
         "send.B3.on",
         "output.B1.on",
         "insert.fx1.on",
+        "insert.fx3.sidechain.on",
     ];
     let fits = |path: &str, kind| {
         let mut project = project.clone();
@@ -617,14 +629,20 @@ fn lanes_are_of_the_settings_of_their_strip_by_their_paths_and_kinds() {
     for path in [
         "fader",
         "send.B2.level_db",
-        "insert.fx3.on",
+        "insert.fx5.on",
         "eq.6.gain_db",
         "dynamics.expander.mode",
+        // Listening is never written, and a range is not a number.
+        "insert.fx3.sidechain.listen",
+        "insert.fx4.listen",
+        "dynamics.compressor.sidechain.listen",
+        "insert.fx4.range",
         "eq.2.kind",
         "track_fx.amount_db",
         "",
     ] {
         assert!(!fits(path, LaneKind::Continuous), "{path} is of nothing");
+        assert!(!fits(path, LaneKind::Switch), "{path} is of nothing");
     }
     // A VCA has its fader and its mute.
     let mut vca = project.clone();

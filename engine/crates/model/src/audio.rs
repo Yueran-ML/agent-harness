@@ -948,7 +948,18 @@ fn automatable(strip: &Strip) -> serde_json::Value {
     object.insert("output".into(), keyed(output));
     object.insert("insert".into(), keyed(insert));
     object.insert("mute".into(), false.into());
+    // Listening (to a sidechain, to what a De-Esser or a Noise Reduction takes away) is only
+    // heard while one listens, and is never written: it has no lane.
+    unlisten(&mut view);
     view
+}
+
+/// Take every `listen` out of a view of settings, at any depth.
+fn unlisten(view: &mut serde_json::Value) {
+    if let serde_json::Value::Object(object) = view {
+        object.remove("listen");
+        object.values_mut().for_each(unlisten);
+    }
 }
 
 /// The kind of a lane of the setting at `path` of `view` (see [`automatable`]), or none where

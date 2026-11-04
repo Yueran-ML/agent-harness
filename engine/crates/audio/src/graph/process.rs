@@ -6,7 +6,8 @@ use crate::db_to_gain;
 use crate::feed::{ClipFeed, FeedError};
 use crate::node::Node;
 
-use super::{Graph, StripParam, Target};
+use super::route::balance;
+use super::{ClipParam, Graph, StripParam, Target};
 
 impl Graph {
     /// Processes the next `frames` samples (at most [`Graph::max_block`]; more are cut to it):
@@ -79,9 +80,26 @@ impl Graph {
     ///
     /// As [`Graph::process`], for the samples thrown away.
     pub fn start(&mut self, at: i64, feed: &mut dyn ClipFeed) -> Result<(), FeedError> {
-        let begin = at.saturating_sub(i64::from(self.preroll()));
+        self.start_within(at, u32::MAX, feed)
+    }
+
+    /// [`Graph::start`] with at most `most` samples of preroll: a graph swapped in as the sound
+    /// plays (T5), which a crossfade brings in, needs not settle as long as a run that starts
+    /// does.
+    ///
+    /// # Errors
+    ///
+    /// As [`Graph::process`], for the samples thrown away.
+    pub fn start_within(
+        &mut self,
+        at: i64,
+        most: u32,
+        feed: &mut dyn ClipFeed,
+    ) -> Result<(), FeedError> {
+        let preroll = self.preroll().min(most);
+        let begin = at.saturating_sub(i64::from(preroll));
         self.reset(begin);
-        let mut left = u64::from(self.preroll()) + u64::from(self.latency);
+        let mut left = u64::from(preroll) + u64::from(self.latency);
         let mut result = Ok(());
         while left > 0 {
             let frames = usize::try_from(left)
@@ -136,6 +154,26 @@ impl Graph {
             Target::VcaMute(vca) => {
                 if let Some(vca) = self.vcas.get_mut(vca) {
                     vca.mute.set(1.0 - switch(value));
+                }
+            }
+            Target::Clip(clip, param) => {
+                let Some(level) = self.clips.get_mut(clip).map(|clip| &mut clip.level) else {
+                    return;
+                };
+                match (param, level.gain_db) {
+                    (ClipParam::Gain, Some(built)) => {
+                        level
+                            .scale
+                            .set(db_to_gain(value) / db_to_gain(built).max(f32::MIN_POSITIVE));
+                        level.scaled = true;
+                    }
+                    (ClipParam::Pan, _) if level.fixed_pan => {
+                        let sides = balance(value.clamp(-1.0, 1.0));
+                        level.sides[0].set(sides[0]);
+                        level.sides[1].set(sides[1]);
+                        level.panned = true;
+                    }
+                    _ => {}
                 }
             }
             Target::Strip(strip, param) => {

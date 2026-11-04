@@ -84,6 +84,10 @@ pub const SMOOTHING: f64 = 0.010;
 /// a block (plan T5; the reference's C-T3 has 5 ms).
 pub const GRAPH_SWAP_CROSSFADE: f64 = 0.010;
 
+/// The block that the thread of the mix runs the graph by while it plays (plan T5, "我们定"): a
+/// change of a setting is heard within [`OUTPUT_AHEAD`] and one block of it.
+pub const MIX_BLOCK: f64 = 0.005;
+
 /// The sound the mix thread keeps ahead of the card (plan; C-T2).
 pub const OUTPUT_AHEAD: f64 = 0.030;
 

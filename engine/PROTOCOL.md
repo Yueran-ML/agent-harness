@@ -15,7 +15,15 @@ columbina-engine --project <DIR> [--headless] [--idle-seconds <N>] [--no-proxies
   for tests only. The engine takes a few more options for its own tests (`--proxy-ffmpeg
   <absolute file>`, which comes before `COLUMBINA_PROXY_FFMPEG`, `--mute`, `--sound`,
   `--queue-capacity`, `--queue-bytes`, `--read-gate`, `--fail-card-at`, `--proxy-readrate`,
-  `--proxy-encoder`, `--proxy-watchdog`); clients do not use them.
+  `--proxy-encoder`, `--proxy-watchdog`); clients do not use them. `--sound` takes `device`,
+  `null`, `stall`, `fail-after=<ms>` or `capture=<path>`: `capture` plays as `null` does (runs of
+  10 ms by the clock of the system, heard 20 ms later) and writes every frame of the timeline
+  monitor's sound that it counts as played, in order, as 32-bit floats, little-endian, two
+  channels interleaved at 48 kHz: the first session of sound (from a play, a seek, a change of
+  speed) into `<path>`, the second into `<path>.2`, the third into `<path>.3`, and so on, so that
+  frame `n` of a file is the sample `from + n` of the timeline that its session started at (the
+  source monitor then plays on `null`). Frames that the capture could not keep up with are left
+  out and counted (`audio_capture_dropped`, below).
 
 - The engine reads media with libav (FFmpeg's libraries, an LGPL shared build), which it finds
   beside itself or on `PATH`: on Windows `avcodec-62.dll`, `avformat-62.dll`, `avutil-60.dll`,
@@ -1557,9 +1565,19 @@ notification `transport.state`):
   a change of another timeline, of bins, of media that the timeline does not use (a proxy the
   engine made of it too) keeps the read-ahead pictures and the sound; a change only of what is
   seen (tracks of picture, the media and proxies under them, size, rate) starts the read-ahead
-  again and keeps the sound playing; and the sound starts again at the playhead only when what
-  is heard from the playhead to the end (the pieces of clips, their gains, fades, pans and
-  speeds, their media, the rates and the duration) is not as it was.
+  again and keeps the sound playing; and a change of what is heard never starts the sound
+  again (phase 3, T5): a change of a setting that the mix takes as it plays (a fader, a pan, a
+  trim, a send's level, a mute, a solo, a parameter of Dynamics, the equalizer or an effect, a
+  clip's gain or pan where it is one number) is heard within some 35 ms, ramped over 10 ms; any
+  other change of what is heard from where the mix is to the end (clips added, moved or
+  trimmed, their keyframes, fades and speeds, effects added or turned on, the routing, the
+  lanes) is heard once another mix, built in the background, takes the place of the one that
+  plays at a sample some 150 ms ahead (further where the mix takes longer to build), the two
+  crossfaded over 10 ms. Only a change of the rates of the timeline starts the sound again at
+  the playhead. Where the mix of a play or a seek is not ready within 2 s (a drive that sleeps),
+  the picture goes on by the clock of the system (`sound` is `"unavailable"`), and once it is
+  ready the sound starts again half a second ahead of the picture and becomes the clock when it
+  is heard (`sound` is `"on"` again).
 - Each enabled video track reads ahead independently, including upcoming cut/transition
   handles. The shared decoder pool allows twelve decoders, and of one media and source kind
   two for each enabled track of picture that uses it (two at least), so that tracks reading one
@@ -1594,8 +1612,14 @@ heard since that output started), `audio_frame` (the corresponding timeline cloc
 at plus those heard, at the timeline's `sample_rate`), so a test can tell the sound from the
 picture by the mixer itself rather than by the clock that the sound drives.
 They are given while the timeline's sound is `"on"`; `audio_frame` or `audio_sample` is `null`
-while the output has no clock yet or the mixer has not started. These fields are absent after
-pause and are only for audio/picture regression checks.
+while the output has no clock yet or the mixer has not started. With them come
+`audio_short_runs` (runs of the device short of sound since the output started),
+`audio_underruns` (reads of a clip whose sound was not read ahead yet, since the monitor first
+played), `audio_swaps` (graphs of the mix swapped in as the project changed, likewise),
+`audio_late_swaps` (graphs that were ready after their sample and were built again),
+`audio_mix_priority` (`"ProAudio"`, `"TimeCritical"` or `"Normal"`: what the thread of the mix
+was given by the system) and `audio_capture_dropped` (frames that a `capture` output left out).
+These fields are absent after pause and are only for audio/picture regression checks.
 
 The media-specific details below describe the source monitor. Seek, pause, step, speed bounds,
 scrub settling and end-of-playback rules also apply to the timeline monitor.

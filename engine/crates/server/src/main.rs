@@ -135,9 +135,9 @@ struct Options {
     /// it reads each file until FILE is there, to see the engine answer meanwhile.
     read_gate: Option<PathBuf>,
     /// Not in the usage, for the tests: what plays the sound (`--sound
-    /// device|null|stall|fail-after=<ms>`, see `audio::Kind`; `--mute` plays silence on the
-    /// device, which is the clock all the same), and `--fail-card-at <frame>`, from which frame
-    /// on the first frame on the graphics card fails to be copied.
+    /// device|null|stall|fail-after=<ms>|capture=<path>`, see `audio::Kind`; `--mute` plays
+    /// silence on the device, which is the clock all the same), and `--fail-card-at <frame>`,
+    /// from which frame on the first frame on the graphics card fails to be copied.
     setup: transport::Setup,
     /// Whether proxies are made (not by a headless engine, nor with `--no-proxies`, which the
     /// tests give where they would get in the way), and, not in the usage, the `ffmpeg` that
@@ -388,7 +388,7 @@ fn start(options: &Options, dir: &Path, address: &Address) -> Ending {
         options.limits,
         options.read_gate.clone(),
         options.headless,
-        options.setup,
+        options.setup.clone(),
         &options.proxies,
     );
     let ending = runtime.block_on(serve(options, address, engine, save_errors));

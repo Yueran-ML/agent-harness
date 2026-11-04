@@ -114,7 +114,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize, Serializer};
 
-use crate::audio::{self, AudioParam};
+use crate::audio::{self, AudioFade, AudioParam};
 use crate::color_management::{Levels, LutPair};
 use crate::grade::{
     Grade, Group, Link, Node, Port, Pos, Target, LONGEST_LABEL, LONGEST_PATH, MOST_INPUTS,
@@ -345,6 +345,20 @@ pub enum Op {
         /// The frames that it fades out over.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fade_out: Option<i64>,
+        /// How its sound fades in, or `null` for over `fade_in` frames on a straight line.
+        #[serde(
+            default,
+            deserialize_with = "nullable",
+            skip_serializing_if = "Option::is_none"
+        )]
+        audio_fade_in: Option<Option<AudioFade>>,
+        /// How its sound fades out, or `null` for over `fade_out` frames on a straight line.
+        #[serde(
+            default,
+            deserialize_with = "nullable",
+            skip_serializing_if = "Option::is_none"
+        )]
+        audio_fade_out: Option<Option<AudioFade>>,
         /// Its source: a title for a clip of a title, a colour for a clip of a colour. A clip of
         /// media is given other media by taking it away and putting a new one in its place.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1444,6 +1458,8 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
             pan,
             fade_in,
             fade_out,
+            audio_fade_in,
+            audio_fade_out,
             source,
         } => set_clip(
             project,
@@ -1459,6 +1475,8 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
                 pan,
                 fade_in,
                 fade_out,
+                audio_fade_in,
+                audio_fade_out,
                 source,
             },
         ),
@@ -1615,6 +1633,8 @@ pub fn apply_done(project: &mut Project, op: Op) -> Result<(Op, Op), OpError> {
             pan,
             fade_in,
             fade_out,
+            audio_fade_in,
+            audio_fade_out,
             source,
         }) if group.is_empty() => {
             let t = &project.timelines
@@ -1633,6 +1653,8 @@ pub fn apply_done(project: &mut Project, op: Op) -> Result<(Op, Op), OpError> {
                 pan,
                 fade_in,
                 fade_out,
+                audio_fade_in,
+                audio_fade_out,
                 source,
             }
         }
@@ -2207,6 +2229,8 @@ struct ClipSettings {
     pan: Option<AudioParam>,
     fade_in: Option<i64>,
     fade_out: Option<i64>,
+    audio_fade_in: Option<Option<AudioFade>>,
+    audio_fade_out: Option<Option<AudioFade>>,
     source: Option<Source>,
 }
 
@@ -2230,6 +2254,8 @@ fn set_clip(
     swap(&mut new.pan, set.pan.clone());
     swap(&mut new.fade_in, set.fade_in);
     swap(&mut new.fade_out, set.fade_out);
+    swap(&mut new.audio_fade_in, set.audio_fade_in);
+    swap(&mut new.audio_fade_out, set.audio_fade_out);
     if let Some(source) = &set.source {
         let alike = matches!(
             (&old.source, source),
@@ -2264,6 +2290,8 @@ fn set_clip(
         pan: set.pan.map(|_| old.pan.clone()),
         fade_in: set.fade_in.map(|_| old.fade_in),
         fade_out: set.fade_out.map(|_| old.fade_out),
+        audio_fade_in: set.audio_fade_in.map(|_| old.audio_fade_in),
+        audio_fade_out: set.audio_fade_out.map(|_| old.audio_fade_out),
         source: set.source.map(|_| old.source.clone()),
     };
     project.timelines[t].tracks[r].clips[at] = new;
@@ -6091,6 +6119,8 @@ mod tests {
             pan: None,
             fade_in: None,
             fade_out: None,
+            audio_fade_in: None,
+            audio_fade_out: None,
             source: None,
         }
     }

@@ -626,7 +626,7 @@ export type Op =
   | { op: 'shift_clips'; timeline: string; track: string; clips: string[]; by: number }
   | { op: 'shift_cues'; timeline: string; track: string; cues: string[]; by: number }
   | { op: 'trim_clip'; timeline: string; id: string; source_in?: Time | null; start: number; length: number }
-  | ({ op: 'set_clip'; timeline: string; id: string } & Settings<Clip, 'enabled' | 'speed' | 'reverse' | 'link' | 'transform' | 'gain_db' | 'pan' | 'fade_in' | 'fade_out' | 'source'>)
+  | ({ op: 'set_clip'; timeline: string; id: string } & Settings<Clip, 'enabled' | 'speed' | 'reverse' | 'link' | 'transform' | 'gain_db' | 'pan' | 'fade_in' | 'fade_out' | 'audio_fade_in' | 'audio_fade_out' | 'source'>)
   | { op: 'add_transition'; timeline: string; track: string; transition: Transition }
   | { op: 'remove_transition'; timeline: string; id: string }
   | ({ op: 'set_transition'; timeline: string; id: string } & Settings<Transition, 'kind' | 'length' | 'align'>)
@@ -1567,7 +1567,7 @@ export function applyOp(project: Project, op: Op): Project {
     case 'set_clip': return inTimeline(project, op.timeline, timeline => {
       const [track, at] = clipAt(timeline, op.id);
       return inClips(timeline, track, clips => replaced(clips, at, patched(clips[at], op,
-        ['enabled', 'speed', 'reverse', 'link', 'transform', 'gain_db', 'pan', 'fade_in', 'fade_out', 'source'], ['link'])));
+        ['enabled', 'speed', 'reverse', 'link', 'transform', 'gain_db', 'pan', 'fade_in', 'fade_out', 'audio_fade_in', 'audio_fade_out', 'source'], ['link', 'audio_fade_in', 'audio_fade_out'])));
     });
     case 'add_transition': return inTimeline(project, op.timeline, timeline => inTrack(timeline, placeOf(timeline.tracks, op.track, 'track'), track => {
       const to = clipTrack(track);

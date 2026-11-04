@@ -464,6 +464,8 @@ fn set_clip_of(
         pan: bit(spec, 8).then_some(pan.into()),
         fade_in: bit(spec, 9).then_some(spec.length % 12),
         fade_out: bit(spec, 10).then_some(spec.start % 12),
+        audio_fade_in: None,
+        audio_fade_out: None,
         source: source.filter(|_| bit(spec, 11)),
     }
 }

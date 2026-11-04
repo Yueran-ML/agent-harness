@@ -10,9 +10,10 @@
 //! and tracks of the project most of the time, and now and then ones that are not there.
 
 use columbina_model::{
-    apply, apply_done, Alignment, AudioFacts, Clip, CueItem, Edge, Edit, Facts, Identity, Material,
-    Media, Op, Project, Rate, Rgba, Source, Speed, Straddling, TextAlign, Time, Timeline,
-    TitleStyle, Track, TrackKind, Transition, TransitionKind, VideoFacts,
+    apply, apply_done, Alignment, AudioFacts, AudioFade, ChannelMap, ChannelSource, ChannelSources,
+    Clip, CueItem, Edge, Edit, Facts, Identity, Material, Media, Op, Project, Rate, Rgba, Source,
+    Speed, Straddling, TextAlign, Time, Timeline, TitleStyle, Track, TrackKind, Transition,
+    TransitionKind, VideoFacts,
 };
 use proptest::prelude::*;
 
@@ -258,6 +259,25 @@ pub fn project_of(recipe: &Recipe) -> Project {
             clip.reverse = piece.reverse;
             clip.fade_in = piece.fades.0;
             clip.fade_out = piece.fades.1;
+            // On a track of sound, now and then fades of sound of their own, and its channels
+            // named.
+            if r >= 3 {
+                let sound = |units: i64, curve| {
+                    (units % 2 == 1).then_some(AudioFade {
+                        length: Time {
+                            ticks: units * 7,
+                            scale: 100,
+                        },
+                        curve,
+                        skew: -0.25,
+                    })
+                };
+                clip.audio_fade_in = sound(piece.fades.0, 0.5);
+                clip.audio_fade_out = sound(piece.fades.1, -1.0);
+                if piece.into % 5 == 0 {
+                    clip.channels = Some(channels_of(piece.into));
+                }
+            }
             clip.link.clone_from(&group);
             let op = Op::InsertClip {
                 timeline: "t1".into(),
@@ -313,9 +333,9 @@ pub fn project_of(recipe: &Recipe) -> Project {
                 .find(|c| c.id == *id)
                 .unwrap();
             let (fade_in, fade_out) = if edge == 0 {
-                (0, clip.fade_out)
+                ((0, None), (clip.fade_out, clip.audio_fade_out))
             } else {
-                (clip.fade_in, 0)
+                ((clip.fade_in, clip.audio_fade_in), (0, None))
             };
             let _ = apply(&mut project, fades(id, fade_in, fade_out));
         }
@@ -360,7 +380,12 @@ pub fn project_of(recipe: &Recipe) -> Project {
     project
 }
 
-fn fades(id: &str, fade_in: i64, fade_out: i64) -> Op {
+/// Set the fades of a clip: of its frames, and of its sound.
+fn fades(
+    id: &str,
+    (fade_in, sound_in): (i64, Option<AudioFade>),
+    (fade_out, sound_out): (i64, Option<AudioFade>),
+) -> Op {
     Op::SetClip {
         timeline: "t1".into(),
         id: id.into(),
@@ -373,6 +398,8 @@ fn fades(id: &str, fade_in: i64, fade_out: i64) -> Op {
         pan: None,
         fade_in: Some(fade_in),
         fade_out: Some(fade_out),
+        audio_fade_in: Some(sound_in),
+        audio_fade_out: Some(sound_out),
         source: None,
     }
 }
@@ -846,5 +873,26 @@ pub fn check(project: &Project) {
         for pair in track.clips.windows(2) {
             assert!(pair[0].end() <= pair[1].start, "{pair:?}");
         }
+    }
+}
+
+/// The channels of a stereo clip of sound that names them: left and right as they are, the other
+/// way round, or both the mean of the two.
+fn channels_of(n: i64) -> Vec<ChannelMap> {
+    let pick = |channels: &[u32]| ChannelMap {
+        source: ChannelSources(
+            channels
+                .iter()
+                .map(|&channel| ChannelSource { stream: 0, channel })
+                .collect(),
+        ),
+        enabled: true,
+        mute: false,
+        level_db: 0.0,
+    };
+    match n % 3 {
+        0 => vec![pick(&[0]), pick(&[1])],
+        1 => vec![pick(&[1]), pick(&[0])],
+        _ => vec![pick(&[0, 1]), pick(&[0, 1])],
     }
 }

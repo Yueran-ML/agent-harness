@@ -593,7 +593,10 @@ are at most +10; −100 or below is −∞.
   (silence), `{stream, channel}` (a stream as libav/ffprobe number all streams of the file, and a
   channel of it in its own order) or a list of them, whose mean is played (a stereo pair made
   mono is `0.5·(L+R)`); a stream or channel that the media has not plays silence; `level_db` is at
-  most 24.
+  most 24. A blade leaves no fade of sound at its cut (the first half has no `audio_fade_out`, the
+  second no `audio_fade_in`); a blade or a trim shortens a fade of sound that the clip no longer
+  holds, the one at the edge that moves first, exactly where a scale of 32 bits holds the new
+  length and otherwise rounded down in its own scale.
 - **Track of sound.** Beside `clips` and `transitions`: `format` (`mono|stereo|5.1|adaptive`,
   stereo), `channels` (as many as the format has; 1–24 for `adaptive`, which may not leave it
   out), `order` (`smpte|film`, of 5.1), `mute`, `solo`, `solo_safe`, `adc` (true),
@@ -1691,7 +1694,7 @@ An operation is an object that names itself in `op` (unknown fields are refused,
 | `set_proxy` | `media`, `proxy` (a proxy, or `null` or left out to take it away; its inverse sets the one before). A proxy must be a file of the engine's own (see Security), else it is refused as `not_a_proxy_path`; so must one on media that `add_media` adds |
 | `set_timeline` | `id`, `name?`, `rate?`, `width?`, `height?`, `sample_rate?` |
 | `set_track` | `timeline`, `id`, `name?`, `enabled?`, `locked?`, `language?` |
-| `set_clip` | `timeline`, `id`, `enabled?`, `speed?`, `reverse?`, `link?`, `transform?`, `gain_db?`, `pan?`, `fade_in?`, `fade_out?`, `source?` |
+| `set_clip` | `timeline`, `id`, `enabled?`, `speed?`, `reverse?`, `link?`, `transform?`, `gain_db?`, `pan?`, `fade_in?`, `fade_out?`, `audio_fade_in?`, `audio_fade_out?` (an `AudioFade` or `null` for a straight fade over the frames), `source?` |
 | `add_bin` | `bin`, `index?` |
 | `remove_bin` | `id` |
 | `set_bin` | `id`, `name?`, `parent?` |

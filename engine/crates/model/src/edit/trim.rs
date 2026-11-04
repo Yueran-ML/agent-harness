@@ -689,6 +689,8 @@ mod tests {
                 pan: None,
                 fade_in: None,
                 fade_out: None,
+                audio_fade_in: None,
+                audio_fade_out: None,
                 source: None,
             }],
         );
@@ -897,6 +899,8 @@ mod tests {
             pan: None,
             fade_in: None,
             fade_out: None,
+            audio_fade_in: None,
+            audio_fade_out: None,
             source: None,
         }
     }
@@ -981,6 +985,8 @@ mod tests {
             pan: None,
             fade_in: None,
             fade_out: None,
+            audio_fade_in: None,
+            audio_fade_out: None,
             source: None,
         };
         let mut project = with(project(), vec![backward]);

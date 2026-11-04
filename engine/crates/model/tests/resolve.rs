@@ -207,6 +207,8 @@ fn project_of(plan: &Plan) -> Project {
                 pan: None,
                 fade_in,
                 fade_out,
+                audio_fade_in: None,
+                audio_fade_out: None,
                 source: None,
             };
             apply(&mut project, op).unwrap();

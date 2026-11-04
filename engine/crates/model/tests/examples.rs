@@ -52,6 +52,8 @@ fn set_clip(id: &str) -> Op {
         pan: None,
         fade_in: None,
         fade_out: None,
+        audio_fade_in: None,
+        audio_fade_out: None,
         source: None,
     }
 }

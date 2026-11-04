@@ -283,7 +283,7 @@ pub(super) fn set_speed(
             length,
             ..c.clone()
         };
-        fit_fades(&mut new, Edge::Out);
+        fit_fades(&mut new, Edge::Out, rate);
         changed.push((c, new));
     }
     let shift = changed
@@ -318,6 +318,8 @@ pub(super) fn set_speed(
             pan: None,
             fade_in: None,
             fade_out: None,
+            audio_fade_in: None,
+            audio_fade_out: None,
             source: None,
         };
         // A clip that gets shorter is shortened at its old speed, and one that gets longer is

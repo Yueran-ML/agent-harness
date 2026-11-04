@@ -371,6 +371,116 @@ fn a_fade_of_sound_lasts_its_time_along_its_curve() {
     assert_eq!(error.error, OpError::OutOfRange { what: "fade" });
 }
 
+/// A fade of sound of half a second.
+fn half_second() -> AudioFade {
+    AudioFade {
+        length: Time { ticks: 1, scale: 2 },
+        curve: 0.0,
+        skew: 0.0,
+    }
+}
+
+/// The audio fades of the clips of A1 of a project, by clip.
+fn fades_of(project: &Project) -> Vec<(i64, i64, Option<Time>, Option<Time>)> {
+    project.timelines[0].tracks[1]
+        .clips
+        .iter()
+        .map(|c| {
+            (
+                c.start,
+                c.length,
+                c.audio_fade_in.map(|f| f.length),
+                c.audio_fade_out.map(|f| f.length),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_blade_leaves_no_fade_at_the_cut_and_cuts_a_fade_too_long_for_its_half() {
+    use columbina_model::edit::{expand, Edit};
+    let blade = |project: &mut Project, at| {
+        expand(
+            project,
+            Edit::Blade {
+                timeline: "t1".into(),
+                at,
+                tracks: Some(vec!["A1".into()]),
+                linked: false,
+            },
+        )
+    };
+    // c2 lasts 100 frames, 4 s: cut in the middle, each half keeps the fade at its far end.
+    let mut project = Project::sample();
+    let clip = &mut project.timelines[0].tracks[1].clips[0];
+    (clip.audio_fade_in, clip.audio_fade_out) = (Some(half_second()), Some(half_second()));
+    project.validate().unwrap();
+    blade(&mut project, 50).unwrap();
+    let half = Time { ticks: 1, scale: 2 };
+    assert_eq!(
+        fades_of(&project),
+        [(0, 50, Some(half), None), (50, 50, None, Some(half))]
+    );
+    // Heard across the cut at full gain: no dip.
+    let pieces = audio_between(&project.timelines[0], &project, 0, 192_000);
+    assert_eq!(pieces[0].gain.at(95_999), 1.0);
+    assert_eq!(pieces[1].gain.at(96_000), 1.0);
+    // Cut 2 frames in, the first half is too short for the fade in: it is cut to the half.
+    let mut project = Project::sample();
+    let clip = &mut project.timelines[0].tracks[1].clips[0];
+    (clip.audio_fade_in, clip.audio_fade_out) = (Some(half_second()), Some(half_second()));
+    project.validate().unwrap();
+    blade(&mut project, 2).unwrap();
+    let fades = fades_of(&project);
+    assert_eq!(fades[0].3, None);
+    let first = fades[0].2.unwrap();
+    assert_eq!(
+        i128::from(first.ticks) * 25,
+        i128::from(first.scale) * 2,
+        "2 frames"
+    );
+    assert_eq!(fades[1], (2, 98, None, Some(half)));
+}
+
+#[test]
+fn a_trim_shortens_a_fade_of_sound_that_the_clip_no_longer_holds() {
+    use columbina_model::edit::{expand, Edit};
+    use columbina_model::Edge;
+    let mut project = Project::sample();
+    let clip = &mut project.timelines[0].tracks[1].clips[0];
+    // Fades of 1.5 s and 2 s on a clip of 4 s: trimmed to 3 s from its start, the fade in goes
+    // first, to 1 s.
+    clip.audio_fade_in = Some(AudioFade {
+        length: Time { ticks: 3, scale: 2 },
+        curve: 0.5,
+        skew: 0.0,
+    });
+    clip.audio_fade_out = Some(AudioFade {
+        length: Time { ticks: 2, scale: 1 },
+        curve: 0.0,
+        skew: 0.0,
+    });
+    project.validate().unwrap();
+    expand(
+        &mut project,
+        Edit::Trim {
+            timeline: "t1".into(),
+            clip: "c2".into(),
+            edge: Edge::In,
+            delta: 25,
+            ripple: false,
+            linked: false,
+        },
+    )
+    .unwrap();
+    let clip = &project.timelines[0].tracks[1].clips[0];
+    assert_eq!(clip.length, 75);
+    let seconds = |t: Time| f64::from(i32::try_from(t.ticks).unwrap()) / f64::from(t.scale);
+    assert!((seconds(clip.audio_fade_in.unwrap().length) - 1.0).abs() < 1e-9);
+    assert_eq!(clip.audio_fade_in.unwrap().curve, 0.5);
+    assert!((seconds(clip.audio_fade_out.unwrap().length) - 2.0).abs() < 1e-9);
+}
+
 #[test]
 fn a_new_crossfade_is_on_straight_lines_and_one_of_3_db_at_equal_power() {
     let mut project = Project::sample();

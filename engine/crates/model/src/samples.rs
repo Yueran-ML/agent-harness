@@ -276,6 +276,9 @@ pub fn schema2_project(seed: u64) -> Value {
 /// its media, and its timelines with their tracks and the places of their clips, each played
 /// as it is, at 48000 samples a second, with no transition. It may not be valid (two clips that
 /// read past the end of their media at another speed): [`Project::from_value_upgrading`] says.
+///
+/// # Panics
+/// Never: the project of schema 3 that it is made from is made so.
 #[must_use]
 pub fn schema1_project(seed: u64) -> Value {
     let project = schema3_project(seed);

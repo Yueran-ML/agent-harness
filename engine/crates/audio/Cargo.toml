@@ -34,3 +34,5 @@ columbina-audio = { path = ".", features = ["testing"] }
 # The random projects of schema 3 (`samples::schema3_project`) and `Project::sample`.
 columbina-model = { path = "../model", features = ["sample"] }
 proptest.workspace = true
+# The loudness of BS.1770 by another hand, to check ours against (tests/loudness.rs).
+ebur128.workspace = true

@@ -128,8 +128,14 @@ def _media(project: Mapping[str, Any], id: str) -> dict[str, Any]:
 
 
 _TIMELINE_OPERATIONS = frozenset(
-    {"set_clip", "set_track", "insert_clip", "remove_clip", "add_track", "remove_track"}
-)
+    {
+        "set_clip", "set_track", "insert_clip", "remove_clip", "add_track", "remove_track",
+        # The operations of sound (schema 4).
+        "set_track_audio", "add_bus", "remove_bus", "set_bus", "add_vca", "remove_vca",
+        "set_vca", "add_track_group", "remove_track_group", "set_track_group", "add_insert",
+        "set_insert", "move_insert", "set_timeline_audio",
+    }
+)  # fmt: skip
 """The basic operations whose ``timeline`` the tool's fills where it is left out."""
 
 _GRADE_EDITS = frozenset(

@@ -130,6 +130,9 @@ fn the_graph_of_a_timeline_plays_ten_seconds_with_no_memory() {
         .control(&Owner::Vca("VCA1".into()), "fader_db")
         .unwrap();
     let pan = graph.control(&Owner::Track("A2".into()), "pan.x").unwrap();
+    let duck = graph
+        .control(&Owner::Track("A7".into()), "track_fx.hold_ms")
+        .unwrap();
     let mut feed = |_: usize, range: std::ops::Range<i64>, out: &mut [&mut [f32]]| {
         for out in out.iter_mut() {
             for (n, sample) in out.iter_mut().enumerate() {
@@ -157,6 +160,7 @@ fn the_graph_of_a_timeline_plays_ten_seconds_with_no_memory() {
                 graph.set(threshold, value);
                 graph.set(vca, value / 2.0);
                 graph.set(pan, value / 20.0);
+                graph.set(duck, -value * 10.0);
             }
             graph.process(&mut feed, 480).unwrap();
             graph.write_device(monitor, 480, &mut device);
@@ -180,9 +184,10 @@ fn ten_seconds_of_a_session_of_sixteen_tracks_take_no_memory_on_the_threads_of_t
         amplitude: 0.3,
     };
     let mut sim = Sim::of(&project, 4800, tone);
-    let (a5, a3, vca) = (
+    let (a5, a3, a7, vca) = (
         Owner::Track("A5".into()),
         Owner::Track("A3".into()),
+        Owner::Track("A7".into()),
         Owner::Vca("VCA1".into()),
     );
     let mut counted = Vec::new();
@@ -200,6 +205,7 @@ fn ten_seconds_of_a_session_of_sixteen_tracks_take_no_memory_on_the_threads_of_t
                 sim.set(&a5, "fader_db", value);
                 sim.set(&a3, "dynamics.compressor.threshold_db", value);
                 sim.set(&vca, "fader_db", value / 2.0);
+                sim.set(&a7, "track_fx.hold_ms", -value * 10.0);
             }
             sim.device_run();
         });

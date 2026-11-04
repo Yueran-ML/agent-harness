@@ -21,8 +21,8 @@ pub mod upgrade;
 
 pub use audio::{
     AudioFade, AudioKey, AudioParam, Bus, BusFormat, ChannelMap, ChannelOrder, ChannelSource,
-    ChannelSources, ClipPitch, CrossfadeLevel, Effect, Equalizer, Insert, KeyInterp, Lane,
-    LaneKind, LanePoint, Lanes, Output, Pan, Send, SourceRef, Stage, Strip, TimelineAudio,
+    ChannelSources, ClipPitch, CrossfadeLevel, Effect, Equalizer, GroupControl, Insert, KeyInterp,
+    Lane, LaneKind, LanePoint, Lanes, Output, Pan, Send, SourceRef, Stage, Strip, TimelineAudio,
     TrackAudio, TrackFormat, TrackGroup, Vca,
 };
 pub use color::{
@@ -31,14 +31,15 @@ pub use color::{
 };
 pub use color_management::{ColorOverride, ColorSettings, Levels, Science};
 pub use edit::{
-    expand, Change, CueItem, Edge, Edit, EditError, Expansion, Given, Material, Straddling,
+    expand, Attribute, Change, CueItem, Edge, Edit, EditError, Expansion, Given, KeyAction, Keyed,
+    Material, Straddling,
 };
 pub use grade::{
     Composite, Corrector, Grade, Group, Interp, Key, Kind, Link, Node, NodeKind, Param, Port, Pos,
     Qualifier, QualifierMode, ShotMatch, Target,
 };
 pub use history::{Applied, Changed, History, Step, TransactionError, HISTORY_MOST};
-pub use ops::{apply, apply_done, Invalid, Op, OpError, LARGEST};
+pub use ops::{apply, apply_done, InsertsOf, Invalid, Op, OpError, LARGEST};
 pub use project::{
     Alignment, AudioFacts, AudioStream, Bin, Clip, Cue, Facts, Id, Identity, Media, Project, Proxy,
     ReadError, Rgba, Source, TextAlign, Timeline, TitleStyle, Track, TrackKind, Transform,

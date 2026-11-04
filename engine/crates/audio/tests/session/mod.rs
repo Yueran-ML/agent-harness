@@ -289,9 +289,10 @@ pub fn largest_step(signal: &[f32]) -> f32 {
         .fold(0.0, f32::max)
 }
 
-/// A project of 16 tracks of every kind of strip: Dynamics keyed by another track, equalizers,
-/// sends before and after the fader to a bus of 5.1, a VCA, lanes of the fader, the pan and a
-/// threshold, a crossfade, clips at speeds, mono, stereo, 5.1 and Adaptive tracks.
+/// A project of 16 tracks of every kind of strip: Dynamics keyed by another track, Duckers keyed
+/// by two, equalizers, sends before and after the fader to a bus of 5.1, a VCA, lanes of the
+/// fader, the pan, a threshold and an amount, a crossfade, clips at speeds, mono, stereo, 5.1
+/// and Adaptive tracks.
 pub fn sixteen_tracks() -> columbina_model::Project {
     use columbina_model::audio::{BusFormat, TrackFormat};
     use columbina_model::{
@@ -366,6 +367,21 @@ pub fn sixteen_tracks() -> columbina_model::Project {
                 },
             });
             audio.strip.vcas = vec!["VCA1".into()];
+            // Every fourth track ducked by the two before it (T11), its amount on a lane.
+            if n >= 2 && n % 4 == 3 {
+                audio.strip.track_fx = Some(columbina_model::audio::fx::Ducker {
+                    on: true,
+                    sources: vec![
+                        SourceRef::Track(format!("A{}", n - 1)),
+                        SourceRef::Track(format!("A{}", n - 2)),
+                    ],
+                    ..Default::default()
+                });
+                audio.lanes.insert(
+                    "track_fx.amount_db".into(),
+                    lane(&[(0, 3.0), (96_000, 20.0)]),
+                );
+            }
             audio
                 .lanes
                 .insert("fader_db".into(), lane(&[(0, -20.0), (96_000, 0.0)]));

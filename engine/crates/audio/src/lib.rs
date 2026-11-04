@@ -18,6 +18,9 @@
 //!   the changes of its settings and swaps in a new graph at the edge of a block; the clips' sound
 //!   read ahead into rings; and what the device takes from its ring. [`stream`] makes the mix into
 //!   the device's rate and channels.
+//! - [`meter`], [`loudness`], [`standards`], [`analysis`]: the level meters, the loudness of
+//!   BS.1770, the table of the loudness standards, and the analysis of a whole sound with the
+//!   gains of Normalize Audio Levels and Level Matcher (T9).
 //! - `testing` (feature `testing`): the check that the output of a node does not depend on its
 //!   blocks, the allocator that counts what the thread of the mix takes, test nodes, signals.
 //!
@@ -27,14 +30,18 @@
 //! I/O, log, or wait for another thread (convention 3 of the plan). Everything they use is taken
 //! when the graph is built ([`Node::prepare`]).
 
+pub mod analysis;
 pub mod constants;
 pub mod feed;
 pub mod fft;
 pub mod fx;
 pub mod graph;
+pub mod loudness;
+pub mod meter;
 pub mod node;
 pub mod play;
 pub mod rt;
+pub mod standards;
 pub mod stream;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;

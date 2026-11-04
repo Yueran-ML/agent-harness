@@ -691,6 +691,11 @@ mod tests {
                 fade_out: None,
                 audio_fade_in: None,
                 audio_fade_out: None,
+                eq: None,
+                effects: None,
+                pitch_correction: None,
+                pitch: None,
+                channels: None,
                 source: None,
             }],
         );
@@ -901,6 +906,11 @@ mod tests {
             fade_out: None,
             audio_fade_in: None,
             audio_fade_out: None,
+            eq: None,
+            effects: None,
+            pitch_correction: None,
+            pitch: None,
+            channels: None,
             source: None,
         }
     }
@@ -987,6 +997,11 @@ mod tests {
             fade_out: None,
             audio_fade_in: None,
             audio_fade_out: None,
+            eq: None,
+            effects: None,
+            pitch_correction: None,
+            pitch: None,
+            channels: None,
             source: None,
         };
         let mut project = with(project(), vec![backward]);

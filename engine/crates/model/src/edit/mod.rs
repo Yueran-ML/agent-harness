@@ -38,6 +38,7 @@
 //! the media, a clip in the way or a clip that would be left with no frame, goes as far as it can
 //! and says that it was clamped. One that cannot go at all is refused, and so is a `delta` of 0.
 
+mod audio;
 mod cut;
 mod grade;
 mod input;
@@ -48,9 +49,10 @@ mod work;
 
 use serde::{Deserialize, Serialize, Serializer};
 
+use crate::audio::KeyInterp;
 use crate::grade::{Target, Window};
 use crate::keyframes::Align;
-use crate::ops::{apply_done, Op, OpError};
+use crate::ops::{apply_done, InsertsOf, Op, OpError};
 use crate::project::{Alignment, Id, Project, Rgba, TitleStyle, TrackKind, TransitionKind};
 use crate::time::{Speed, Time};
 
@@ -387,6 +389,12 @@ pub enum Edit {
         /// Where it lies about the cut.
         #[serde(default = "center")]
         align: Alignment,
+        /// Whether a transition of picture brings a crossfade of the same length at the cut of
+        /// the clips of sound linked to its clips, where they meet on a track that is not locked
+        /// and have no transition there (p. 973). It is off where it is left out, so that a
+        /// client that adds both itself is not refused.
+        #[serde(default, skip_serializing_if = "is_false")]
+        linked: bool,
     },
     /// Take a transition away.
     RemoveTransition {
@@ -410,6 +418,12 @@ pub enum Edit {
         /// Where it lies about the cut.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         align: Option<Alignment>,
+        /// How the clip that starts at the cut rises across a crossfade: -3, 0 or 3 (p. 3831).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fade_in_level_db: Option<crate::audio::CrossfadeLevel>,
+        /// How the clip that ends at the cut falls across a crossfade.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fade_out_level_db: Option<crate::audio::CrossfadeLevel>,
     },
     /// Play a clip at another speed, showing the same stretch of its source: so it lasts more or
     /// fewer frames. With `ripple`, what is after it moves with its end.
@@ -660,6 +674,123 @@ pub enum Edit {
         /// The node that is set.
         to_node: Id,
     },
+    /// Set what a track of sound has of sound by a patch, as the operation `set_track_audio`
+    /// does; and with `follow_groups`, what the active groups of tracks that it is in link of
+    /// what changed, on their other tracks (Ch. 179, p. 3917): a fader, a pan and the level of a
+    /// send by the same change, a mute, a solo, the switch of a send and an automation arm to the
+    /// same value. While the solo of the timeline is exclusive (p. 3885), a track that is soloed
+    /// takes the solo off every other track and bus. A track that is locked is not changed.
+    SetTrackAudio {
+        /// The timeline.
+        timeline: Id,
+        /// The track of sound.
+        track: Id,
+        /// The settings that change.
+        patch: serde_json::Value,
+        /// Whether the tracks grouped with it follow it: so they do where it is left out
+        /// (`false` is the Ctrl+Shift clutch of p. 3920).
+        #[serde(default = "yes")]
+        follow_groups: bool,
+    },
+    /// Add, take away, move or ease a keyframe of the volume or the pan of a clip (pp. 3838–3840).
+    ClipGainKeys {
+        /// The timeline.
+        timeline: Id,
+        /// The clip.
+        clip: Id,
+        /// Its volume (`gain_db`, where it is left out) or its pan.
+        #[serde(default)]
+        param: Keyed,
+        /// What is done.
+        action: KeyAction,
+        /// The time of the key, a time of the media of the clip.
+        at: Time,
+        /// Where a key is moved to.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to: Option<Time>,
+        /// The value of a key that is added or moved: that of the setting there, where it is left
+        /// out of one added.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<f64>,
+        /// How a key that is added or eased comes in and goes out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        interp: Option<KeyInterp>,
+    },
+    /// Raise or lower the volume of a clip between two times of its media (p. 3840).
+    ClipGainRange {
+        /// The timeline.
+        timeline: Id,
+        /// The clip.
+        clip: Id,
+        /// Where it starts, a time of the media of the clip.
+        from: Time,
+        /// Where it ends.
+        to: Time,
+        /// By how many decibels.
+        delta_db: f64,
+    },
+    /// Raise or lower the volume of clips of sound, keys and all (p. 969, p. 3837).
+    NudgeClipGain {
+        /// The timeline.
+        timeline: Id,
+        /// The clips.
+        clips: Vec<Id>,
+        /// By how many decibels.
+        delta_db: f64,
+        /// Whether the clips linked to them change too.
+        #[serde(default = "yes")]
+        linked: bool,
+    },
+    /// Paste attributes of a clip onto others (pp. 3803, 3842).
+    PasteAttributes {
+        /// The timeline.
+        timeline: Id,
+        /// The clip that they are copied from.
+        from: Id,
+        /// The clips that they are pasted onto.
+        to: Vec<Id>,
+        /// What is pasted.
+        items: Vec<Attribute>,
+    },
+    /// Put attributes of clips back as a new clip has them (pp. 3804, 3842).
+    RemoveAttributes {
+        /// The timeline.
+        timeline: Id,
+        /// The clips.
+        clips: Vec<Id>,
+        /// What is put back.
+        items: Vec<Attribute>,
+    },
+    /// Fade clips in to the playhead, or out from it (p. 3812), in one step.
+    FadeToPlayhead {
+        /// The timeline.
+        timeline: Id,
+        /// The clips.
+        clips: Vec<Id>,
+        /// Which end fades.
+        side: Edge,
+        /// The frame of the playhead.
+        at: i64,
+    },
+    /// Set a bus by a patch, as the operation `set_bus` does; while the solo of the timeline is
+    /// exclusive (p. 3885), a bus that is soloed takes the solo off every track, other bus and VCA.
+    SetBus {
+        /// The timeline.
+        timeline: Id,
+        /// The bus.
+        id: Id,
+        /// The settings that change.
+        patch: serde_json::Value,
+    },
+    /// Copy the inserts of one chain onto others, in place of theirs (pp. 3855–3860).
+    CopyEffects {
+        /// The timeline.
+        timeline: Id,
+        /// The chain that they are copied from.
+        from: InsertsOf,
+        /// The chains that they are pasted onto.
+        to: Vec<InsertsOf>,
+    },
 }
 
 /// What an edit puts on a timeline.
@@ -714,6 +845,51 @@ pub enum Edge {
     In,
     /// Its end.
     Out,
+}
+
+/// A setting of a clip that has keyframes (see [`Edit::ClipGainKeys`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Keyed {
+    /// Its volume.
+    #[default]
+    GainDb,
+    /// Its pan.
+    Pan,
+}
+
+/// What [`Edit::ClipGainKeys`] does to a keyframe.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyAction {
+    /// Add one, or set the one there.
+    Add,
+    /// Take one away.
+    Remove,
+    /// Move one to another time, and to another value where one is given.
+    Move,
+    /// Set how one comes in and goes out.
+    SetInterp,
+}
+
+/// An attribute of a clip that is pasted or taken away (pp. 3842, 3803–3804).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Attribute {
+    /// Its volume, keys and all.
+    Volume,
+    /// Its effects.
+    Plugins,
+    /// Its equalizer.
+    Equalizer,
+}
+
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde passes a reference"
+)]
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// What [`Edit::CloseGap`] does with a clip or subtitle of another track that lies across the
@@ -1094,16 +1270,24 @@ pub(crate) fn run(project: &mut Project, edit: Edit) -> Result<Expansion, EditEr
             kind,
             length,
             align,
+            linked,
             ..
-        } => misc::add_transition(&mut work, &left, &right, kind, length, align),
+        } => misc::add_transition(&mut work, &left, &right, kind, length, align, linked),
         Edit::RemoveTransition { id, .. } => misc::remove_transition(&mut work, &id),
         Edit::SetTransition {
             id,
             kind,
             length,
             align,
+            fade_in_level_db,
+            fade_out_level_db,
             ..
-        } => misc::set_transition(&mut work, &id, kind, length, align),
+        } => misc::set_transition(
+            &mut work,
+            &id,
+            (kind, length, align),
+            (fade_in_level_db, fade_out_level_db),
+        ),
         Edit::SetSpeed {
             clip,
             speed,
@@ -1136,6 +1320,46 @@ pub(crate) fn run(project: &mut Project, edit: Edit) -> Result<Expansion, EditEr
             ..
         } => misc::add_track(&mut work, kind, index, name, language),
         Edit::RemoveTrack { track, .. } => misc::remove_track(&mut work, &track),
+        Edit::SetTrackAudio {
+            track,
+            patch,
+            follow_groups,
+            ..
+        } => audio::set_track_audio(&mut work, &track, &patch, follow_groups),
+        Edit::ClipGainKeys {
+            clip,
+            param,
+            action,
+            at,
+            to,
+            value,
+            interp,
+            ..
+        } => audio::clip_gain_keys(&mut work, &clip, param, action, at, to, value, interp),
+        Edit::ClipGainRange {
+            clip,
+            from,
+            to,
+            delta_db,
+            ..
+        } => audio::clip_gain_range(&mut work, &clip, from, to, delta_db),
+        Edit::NudgeClipGain {
+            clips,
+            delta_db,
+            linked,
+            ..
+        } => audio::nudge_clip_gain(&mut work, &clips, delta_db, linked),
+        Edit::PasteAttributes {
+            from, to, items, ..
+        } => audio::paste_attributes(&mut work, &from, &to, &items),
+        Edit::RemoveAttributes { clips, items, .. } => {
+            audio::remove_attributes(&mut work, &clips, &items)
+        }
+        Edit::FadeToPlayhead {
+            clips, side, at, ..
+        } => audio::fade_to_playhead(&mut work, &clips, side, at),
+        Edit::SetBus { id, patch, .. } => audio::set_bus(&mut work, &id, &patch),
+        Edit::CopyEffects { from, to, .. } => audio::copy_effects(&mut work, &from, &to),
         _ => unreachable!("the edits of grades are worked out above"),
     }?;
     work.finish()
@@ -1172,7 +1396,16 @@ pub fn timeline_of(edit: &Edit) -> Option<&Id> {
         | Edit::RemoveCue { timeline, .. }
         | Edit::CuesFrom { timeline, .. }
         | Edit::AddTrack { timeline, .. }
-        | Edit::RemoveTrack { timeline, .. } => timeline,
+        | Edit::RemoveTrack { timeline, .. }
+        | Edit::SetTrackAudio { timeline, .. }
+        | Edit::ClipGainKeys { timeline, .. }
+        | Edit::ClipGainRange { timeline, .. }
+        | Edit::NudgeClipGain { timeline, .. }
+        | Edit::PasteAttributes { timeline, .. }
+        | Edit::RemoveAttributes { timeline, .. }
+        | Edit::FadeToPlayhead { timeline, .. }
+        | Edit::SetBus { timeline, .. }
+        | Edit::CopyEffects { timeline, .. } => timeline,
         Edit::AddSerial { .. }
         | Edit::AddSerialBefore { .. }
         | Edit::AppendNode { .. }

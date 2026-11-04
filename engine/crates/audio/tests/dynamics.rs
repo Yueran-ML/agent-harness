@@ -760,7 +760,7 @@ fn started_in_the_middle_it_settles_as_it_reports() {
         s.limiter.threshold_db = -10.0;
         s.limiter.release_ms = 50.0;
     });
-    let frames = ms(9000.0);
+    let frames = ms(12000.0);
     let input: Vec<Vec<f32>> = (0..2)
         .map(|c| {
             noise(60 + c, 1.0, frames)
@@ -787,7 +787,7 @@ fn started_in_the_middle_it_settles_as_it_reports() {
         node.prepare(&spec).unwrap();
         node.settle() as usize
     };
-    assert!(settle > ms(1000.0) && settle < ms(4000.0), "{settle}");
+    assert!(settle > ms(2000.0) && settle < ms(6000.0), "{settle}");
     // Started loud and compressing, and started in a quiet part with the gate holding.
     for from in [ms(350.0), ms(1450.0), ms(2120.0)] {
         assert_settle(|| Dynamics::new(&settings), &spec, &run, from);
@@ -908,4 +908,286 @@ fn a_makeup_gain_of_6_db_doubles_the_sound() {
     let output = mono(&settings, level(-20.0, 1000));
     let gain = f64::from(output[998]) / f64::from(amplitude(-20.0));
     assert!((gain - f64::from(db_to_gain(6.0))).abs() < 1e-6, "{gain}");
+}
+
+// --- Review (P1–P3) --------------------------------------------------------------------------
+
+/// The largest difference, from `settle` samples after the late start on, between a node that
+/// processed `run` from its start and one started at `from`.
+fn difference_after(
+    settings: &Settings,
+    spec: &Spec,
+    run: &Run,
+    from: usize,
+    settle: usize,
+) -> f32 {
+    let mut early = Dynamics::new(settings);
+    early.prepare(spec).unwrap();
+    let whole = render(&mut early, spec, run, |left| left);
+    let mut late = Dynamics::new(settings);
+    late.prepare(spec).unwrap();
+    let tail = render(&mut late, spec, &run.from(from), |left| left);
+    let mut largest = 0.0_f32;
+    for (whole, tail) in whole.iter().zip(&tail) {
+        for (a, b) in whole[from..].iter().zip(tail).skip(settle) {
+            largest = largest.max((a - b).abs());
+        }
+    }
+    largest
+}
+
+/// A 1 kHz tone from 0 dBFS, falling `db_per_second`.
+fn decaying(db_per_second: f64, frames: usize) -> Vec<f32> {
+    (0..frames)
+        .map(|n| {
+            let t = n as f64 / f64::from(RATE);
+            let a = 10_f64.powf(-db_per_second * t / 20.0);
+            (a * (std::f64::consts::TAU * 1000.0 * t).sin()) as f32
+        })
+        .collect()
+}
+
+#[test]
+fn a_hold_keeps_no_phase_of_its_own_and_a_late_start_settles() {
+    // The reviewer's case: a tone falling 4 dB/s, a hold of 500 ms.
+    let spec = Spec::new(RATE, 512, Layout::Mono);
+    let run = Run::new(vec![decaying(4.0, ms(8000.0))]);
+    let compressor = on(|s| {
+        s.compressor.on = true;
+        s.compressor.threshold_db = -50.0;
+        s.compressor.ratio = 4.0;
+        s.compressor.attack_ms = 1.0;
+        s.compressor.hold_ms = 500.0;
+        s.compressor.release_ms = 50.0;
+    });
+    let expander = on(|s| {
+        s.expander.on = true;
+        s.expander.threshold_db = -10.0;
+        s.expander.ratio = 2.0;
+        s.expander.range_db = 40.0;
+        s.expander.attack_ms = 1.0;
+        s.expander.hold_ms = 500.0;
+        s.expander.release_ms = 50.0;
+    });
+    for settings in [compressor, expander] {
+        for from in [ms(1000.0), ms(1234.0), ms(2100.0)] {
+            assert_settle(|| Dynamics::new(&settings), &spec, &run, from);
+        }
+    }
+}
+
+#[test]
+fn listen_is_not_automated() {
+    assert!(!Param::SidechainListen.is_automatable());
+    assert!(Param::ALL
+        .iter()
+        .filter(|&&p| p != Param::SidechainListen)
+        .all(|p| p.is_automatable()));
+    let spec = Spec::new(RATE, 512, Layout::Mono).with_sidechain(1);
+    let tone = sine(RATE, 1000.0, 0.5, 4800);
+    let key = noise(3, 0.25, 4800);
+    let run = Run::new(vec![tone]).with_sidechain(vec![key]);
+    let plain = process(&keyed(), &spec, &run);
+    let lane = run.with_automation(Param::SidechainListen.id(), vec![1.0; 4800]);
+    assert_eq!(process(&keyed(), &spec, &lane), plain);
+}
+
+#[test]
+fn settle_for_the_slowest_settings_covers_a_lane() {
+    // The Compressor off as set, on by a lane: the graph asks for the settling of it on.
+    let frames = ms(10000.0);
+    let spec = Spec::new(RATE, 512, Layout::Mono);
+    let input: Vec<f32> = noise(9, 0.9, frames)
+        .iter()
+        .enumerate()
+        .map(|(n, x)| {
+            if (n / ms(700.0)).is_multiple_of(2) {
+                *x
+            } else {
+                x * 0.01
+            }
+        })
+        .collect();
+    let set = on(|s| {
+        s.compressor.threshold_db = -40.0;
+        s.compressor.ratio = 8.0;
+        s.compressor.release_ms = 300.0;
+    });
+    let run = Run::new(vec![input]).with_automation(Param::CompressorOn.id(), vec![1.0; frames]);
+    let mut node = Dynamics::new(&set);
+    node.prepare(&spec).unwrap();
+    assert_eq!(node.settle(), Dynamics::settle_for(&set, RATE));
+    assert_eq!(node.settle() as usize, ms(10.0));
+    let mut slowest = set;
+    slowest.compressor.on = true;
+    let settle = Dynamics::settle_for(&slowest, RATE) as usize;
+    assert!(settle > ms(5000.0), "{settle}");
+    let floor = db_to_gain(-90.0);
+    for from in [ms(300.0), ms(500.0)] {
+        let largest = difference_after(&set, &spec, &run, from, settle);
+        assert!(largest < floor, "{from}: {largest}");
+    }
+}
+
+/// The largest change of the gain from one sample to the next, in the units of `unit`, through
+/// a steady level in which `param` is set to `value` at 0.5 s; and the whole change.
+fn largest_change(
+    settings: &Settings,
+    param: Param,
+    value: f32,
+    unit: fn(f64) -> f64,
+) -> (f64, f64) {
+    let input = level(-20.0, ms(1000.0));
+    let spec = Spec::new(RATE, 512, Layout::Mono);
+    let run = Run::new(vec![input.clone()]).with_change(ms(500.0), param.id(), value);
+    let output = process(settings, &spec, &run).remove(0);
+    let gain: Vec<f64> = input
+        .iter()
+        .zip(&output)
+        .map(|(x, y)| unit((f64::from(*y) / f64::from(*x)).abs()))
+        .collect();
+    let largest = gain[ms(500.0) - 1..]
+        .windows(2)
+        .fold(0.0_f64, |m, w| m.max((w[1] - w[0]).abs()));
+    (largest, (gain[gain.len() - 1] - gain[ms(500.0) - 1]).abs())
+}
+
+#[test]
+fn the_numbers_ramp_over_10_ms() {
+    let linear = |g: f64| g;
+    let db = |g: f64| 20.0 * g.log10();
+    let ramp = ms(10.0) as f64;
+    // Make Up: in the linear gain.
+    let (step, total) = largest_change(&on(|_| {}), Param::MakeupDb, 12.0, linear);
+    assert!(total > 2.9, "{total}");
+    assert!(step <= total / ramp + 1e-6, "{step} of {total}");
+    // Mix: after the detector, in the linear gain.
+    let compressing = on(|s| {
+        s.compressor.on = true;
+        s.compressor.threshold_db = -40.0;
+        s.compressor.ratio = 10.0;
+    });
+    let (step, total) = largest_change(&compressing, Param::CompressorMix, 100.0, linear);
+    assert!(total > 0.8, "{total}");
+    assert!(step <= total / ramp + 1e-6, "{step} of {total}");
+    // Range: a gate shut, opening from 18 to 3 dB below, no faster than the ramp.
+    let gating = on(|s| {
+        s.expander.on = true;
+        s.expander.gate = true;
+        s.expander.threshold_db = -10.0;
+    });
+    let (step, total) = largest_change(&gating, Param::ExpanderRangeDb, 3.0, db);
+    assert!((total - 15.0).abs() < 1e-3, "{total}");
+    assert!(step <= total / ramp + 1e-4, "{step} of {total}");
+}
+
+#[test]
+fn a_lane_of_nan_keeps_the_value_set() {
+    let spec = Spec::new(RATE, 512, Layout::Mono);
+    let settings = on(|s| {
+        s.compressor.on = true;
+        s.expander.on = true;
+    });
+    let tone = sine(RATE, 1000.0, 0.5, 4800);
+    let run = Run::new(vec![tone]);
+    let plain = process(&settings, &spec, &run);
+    let lanes = run
+        .with_automation(Param::CompressorThresholdDb.id(), vec![f32::NAN; 4800])
+        .with_automation(Param::ExpanderOn.id(), vec![f32::NAN; 4800]);
+    assert_eq!(process(&settings, &spec, &lanes), plain);
+}
+
+#[test]
+fn one_infinite_sample_does_not_mute_the_track() {
+    let spec = Spec::new(RATE, 512, Layout::Mono);
+    let settings = on(|s| s.compressor.on = true);
+    let tone = sine(RATE, 1000.0, 0.5, ms(4000.0));
+    let mut broken = tone.clone();
+    broken[100] = f32::INFINITY;
+    let clean = process(&settings, &spec, &Run::new(vec![tone]));
+    let out = process(&settings, &spec, &Run::new(vec![broken]));
+    let mut node = Dynamics::new(&settings);
+    node.prepare(&spec).unwrap();
+    let after = 101 + node.settle() as usize;
+    let floor = db_to_gain(-90.0);
+    for (a, b) in clean[0][after..].iter().zip(&out[0][after..]) {
+        assert!((a - b).abs() < floor, "{a}, {b}");
+    }
+}
+
+#[test]
+fn a_block_without_its_sidechain_is_heard_as_one_with_none() {
+    let settings = on(|s| {
+        s.compressor.on = true;
+        s.compressor.threshold_db = -30.0;
+        s.compressor.ratio = 4.0;
+        s.compressor.sidechain = true;
+        s.compressor.listen = true;
+    });
+    let tone = sine(RATE, 1000.0, 0.5, 4800);
+    let mono_spec = Spec::new(RATE, 4800, Layout::Mono);
+    let unkeyed = process(&settings, &mono_spec, &Run::new(vec![tone.clone()]));
+    let spec = mono_spec.with_sidechain(1);
+    let mut node = Dynamics::new(&settings);
+    node.prepare(&spec).unwrap();
+    let mut input = Planar::new(1, 4800);
+    input.channel_mut(0).copy_from_slice(&tone);
+    let mut output = Planar::new(1, 4800);
+    for k in 0..10 {
+        let block = Block::new(k * 480, RATE, 480);
+        let at = k as usize * 480;
+        input.read_range(at, 480, |i| {
+            output.write_range(at, 480, |o| node.process(&block, i, o));
+        });
+    }
+    assert_eq!(output.channel(0), &unkeyed[0][..]);
+    assert!(peak_db(&output.channel(0)[2400..]) < -10.0);
+}
+
+/// The deepest dip of the gain of a steady loud level when `param` is set to `value` at 0.5 s.
+fn dip(settings: &Settings, param: Param, value: f32) -> f64 {
+    let input = level(-6.0, ms(1000.0));
+    let spec = Spec::new(RATE, 512, Layout::Mono);
+    let run = Run::new(vec![input.clone()]).with_change(ms(500.0), param.id(), value);
+    let output = process(settings, &spec, &run).remove(0);
+    gains(&input, &output)[ms(500.0)..]
+        .iter()
+        .fold(0.0_f64, |low, &g| low.min(g))
+}
+
+#[test]
+fn a_module_turned_on_starts_from_the_gain_of_what_it_hears() {
+    let open = |gate: bool| {
+        on(move |s| {
+            s.expander.gate = gate;
+            s.expander.threshold_db = -40.0;
+            s.expander.range_db = 40.0;
+            s.expander.attack_ms = 100.0;
+        })
+    };
+    // A loud sound, above the threshold: a gate turned on stays open.
+    let low = dip(&open(true), Param::ExpanderOn, 1.0);
+    assert!(low > -0.01, "{low}");
+    // Expander to Gate: the gate starts where the expander was.
+    let mut expanding = open(false);
+    expanding.expander.on = true;
+    let low = dip(&expanding, Param::ExpanderMode, 1.0);
+    assert!(low > -0.01, "{low}");
+}
+
+#[test]
+fn the_ball_starts_silent_and_shows_the_sidechain_listened_to() {
+    let spec = Spec::new(RATE, 512, Layout::Mono).with_sidechain(1);
+    let mut settings = keyed();
+    settings.compressor.listen = true;
+    let mut node = Dynamics::new(&settings);
+    node.prepare(&spec).unwrap();
+    let ball = node.ball();
+    assert_eq!(ball.read().input_db, -200.0);
+    assert_eq!(ball.read().output_db, -200.0);
+    let run = Run::new(vec![level(-20.0, 4800)]).with_sidechain(vec![level(-6.0, 4800)]);
+    render(&mut node, &spec, &run, |_| 480);
+    let seen = ball.read();
+    assert!((seen.input_db - -20.0).abs() < 1e-3, "{seen:?}");
+    assert!((seen.output_db - -6.0).abs() < 1e-3, "{seen:?}");
 }

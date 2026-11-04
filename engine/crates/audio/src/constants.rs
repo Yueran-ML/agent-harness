@@ -182,6 +182,14 @@ pub const DYNAMICS_TIME_CONSTANT_FRACTION: f64 = 1.0 - 1.0 / std::f64::consts::E
 /// The level, in dBFS, that Dynamics hears in silence: the floor of its detector (T8).
 pub const DYNAMICS_LEVEL_FLOOR_DB: f64 = -200.0;
 
+/// The loudest level, in dBFS, that Dynamics hears: an infinite sample is heard as this (T8).
+pub const DYNAMICS_LEVEL_CEILING_DB: f64 = 200.0;
+
+/// How fast the peak that a module of Dynamics hears when it is turned on falls, in dB a second:
+/// it bridges the dips of a wave (4 dB in the 10 ms of half a wave of 50 Hz) and forgets the
+/// 400 dB between the floor and the ceiling in a second (T8).
+pub const DYNAMICS_WAKE_FALL_DB_PER_SECOND: f64 = 400.0;
+
 /// How many of its time constants (attack plus release, and its hold) a module of Dynamics
 /// takes to settle (`Node::settle`, T8): a difference of the gain of 200 dB, at an output up to
 /// +12 dBFS, comes under −90 dBFS in ln(200 / 6.9e-5) ≈ 15 time constants, and 3 more cover the

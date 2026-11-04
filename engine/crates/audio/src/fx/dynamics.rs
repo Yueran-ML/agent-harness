@@ -22,16 +22,17 @@
 //! # The detector
 //!
 //! Each module follows its gain in the direction that the module acts in, its *attack*: down for
-//! the Compressor and the Limiter (more reduction), up for the Expander/Gate (it opens). With `u`
-//! the gain turned so that its attack is up, the detector keeps a held peak `h` and its output
-//! `y`, for each sample of the static gain `t`:
+//! the Compressor and the Limiter (more reduction), up for the Expander/Gate (it opens). Its Hold
+//! is a window: the static gain `t` is that of the loudest level of the last `H + 1` samples
+//! (the static curves rise with the level, so that this is the largest gain of the window, turned
+//! so that the attack is up), a function of those samples alone, so that it keeps no phase of
+//! its own. The detector keeps a held gain `h` and its output `y`:
 //!
 //! ```text
-//! h = t,                    hold = H     if t ≥ h      (a new peak)
-//! h = h,                    hold -= 1    if hold > 0   (Hold: the gain stays)
-//! h = t + αR·(h − t)                     otherwise     (Release)
-//! y = h + αA·(y − h)                     if h ≥ y      (Attack)
-//! y = h                                  otherwise
+//! h = t                     if t ≥ h      (a new peak, or one held in the window)
+//! h = t + αR·(h − t)        otherwise     (Release)
+//! y = h + αA·(y − h)        if h ≥ y      (Attack)
+//! y = h                     otherwise
 //! ```
 //!
 //! with α = exp(−1 / (τ·rate)): a step of the gain is gone 63 % of the way (1 − 1/e,
@@ -39,7 +40,7 @@
 //! the release counted after the hold. The peak is held through the dips of a wave, so that a
 //! steady tone is made steady with little ripple. For the Expander/Gate, Hold keeps the gate
 //! open after the sound falls below the threshold (the reference's reading of p. 3863, §16
-//! item 6).
+//! item 6). The windows take their memory in `prepare`, for the longest hold (4 s).
 //!
 //! # Changes while the sound plays
 //!
@@ -47,18 +48,30 @@
 //! over 10 ms ([`Smoothed`]). The switches (Dynamics, each module, Expander or Gate, the
 //! sidechain, Listen) cross-fade over 10 ms: a module's gain is multiplied by its weight in
 //! decibels, Dynamics' by its weight in the linear gain, Listen's between the output and the
-//! sidechain. A module that is off and whose weight has come to 0 sleeps: its detector stops, and
-//! wakes, when the module is turned on again, at rest (no reduction; a gate shut), the same in a
-//! node started long ago as in a node just started. Every parameter may be automated (T14).
+//! sidechain. A module that is off and whose weight has come to 0 sleeps: its detector stops and
+//! its window forgets. It wakes, when it is turned on again, where its partner is (Expander and
+//! Gate, the Compressor keyed by its own sound and by the sidechain), or else at the static gain
+//! of a peak of what it hears that falls 400 dB a second
+//! ([`DYNAMICS_WAKE_FALL_DB_PER_SECOND`]), which bridges the dips of a wave: so that a gate
+//! turned on in a loud passage does not first shut. All of it is a function of the sound of the
+//! last second, the same in a node started long ago as in a node just started. Every parameter
+//! but Listen may be automated (T14); a lane's NaN keeps the value set.
 //!
 //! # Listen
 //!
 //! With Listen on, the sidechain is let out in place of the sound (p. 3866), channel by channel
 //! when they are as many, else their mean on every channel. Listen is for the monitor: the graph
-//! sets it on the monitored path only, never in an export.
+//! sets it on the monitored path only, never in an export, and no lane sets it
+//! ([`Param::is_automatable`]).
+//!
+//! # Bad input
+//!
+//! A level is heard within −200 and +200 dBFS, so that an infinite sample does not stick; a
+//! block whose sidechain is missing (or shorter than the spec's) is heard as one with none.
 
 use crate::constants::{
-    samples, DYNAMICS_LEVEL_FLOOR_DB, DYNAMICS_SETTLE_TIME_CONSTANTS, MAX_CHANNELS,
+    samples, DYNAMICS_LEVEL_CEILING_DB, DYNAMICS_LEVEL_FLOOR_DB, DYNAMICS_SETTLE_TIME_CONSTANTS,
+    DYNAMICS_WAKE_FALL_DB_PER_SECOND, MAX_CHANNELS, SMOOTHING,
 };
 use crate::node::{Block, Layout, Node, ParamId, Spec, Unsupported};
 use crate::rt::{flush, seqlock, Domain, SeqReader, SeqWriter, Smoothed, Words};
@@ -198,6 +211,13 @@ impl Param {
             Param::LimiterReleaseMs => "limiter.release_ms",
             Param::MakeupDb => "makeup_db",
         }
+    }
+
+    /// Whether a lane of automation may set it: all but Listen, which is for the monitor and
+    /// never in an export.
+    #[must_use]
+    pub const fn is_automatable(self) -> bool {
+        !matches!(self, Param::SidechainListen)
     }
 
     /// Whether it is a switch, on at 0.5 and above.
@@ -581,10 +601,11 @@ fn db_gain(db: f64) -> f64 {
     10.0_f64.powf(db / 20.0)
 }
 
-/// The level of a peak `peak`, dBFS, no lower than the floor.
+/// The level of a peak `peak`, dBFS, within the floor and the ceiling: silence, NaN and an
+/// infinite sample are heard as a level of their own and never stick.
 fn level_db(peak: f64) -> f64 {
     if peak > 0.0 {
-        (20.0 * peak.log10()).max(DYNAMICS_LEVEL_FLOOR_DB)
+        (20.0 * peak.log10()).clamp(DYNAMICS_LEVEL_FLOOR_DB, DYNAMICS_LEVEL_CEILING_DB)
     } else {
         DYNAMICS_LEVEL_FLOOR_DB
     }
@@ -594,12 +615,13 @@ fn level_db(peak: f64) -> f64 {
 
 /// Where the ball of the graph of Dynamics is (p. 3861), and the gain of each module, at the
 /// loudest sample of the last block: the level in and out, dBFS, and the gains, dB. Written by
-/// the thread of the mix, read by any ([`Dynamics::ball`]).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+/// the thread of the mix, read by any ([`Dynamics::ball`]). Before any sound, both levels are
+/// the floor, −200 dBFS.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Ball {
     /// The level that Dynamics hears.
     pub input_db: f32,
-    /// The level it lets out: the input with every gain.
+    /// The level it lets out: what it outputs, the sidechain while it is listened to.
     pub output_db: f32,
     /// The gain of the Expander/Gate.
     pub expander_db: f32,
@@ -607,6 +629,19 @@ pub struct Ball {
     pub compressor_db: f32,
     /// The gain of the Limiter.
     pub limiter_db: f32,
+}
+
+impl Default for Ball {
+    #[allow(clippy::cast_possible_truncation, reason = "−200 is an f32")]
+    fn default() -> Self {
+        Ball {
+            input_db: DYNAMICS_LEVEL_FLOOR_DB as f32,
+            output_db: DYNAMICS_LEVEL_FLOOR_DB as f32,
+            expander_db: 0.0,
+            compressor_db: 0.0,
+            limiter_db: 0.0,
+        }
+    }
 }
 
 impl Words for Ball {
@@ -677,12 +712,69 @@ impl Coefficient {
     }
 }
 
+/// The loudest of the levels of the last `hold + 1` samples, this one with them: the Hold of a
+/// module, a function of those samples alone, whatever came before them (a monotonic deque,
+/// each sample pushed and popped once). Its memory is taken in `prepare` for the longest hold.
+#[derive(Clone, Debug, Default)]
+struct Window {
+    /// A ring of (the sample, its level), the levels falling from the front.
+    entries: Vec<(u32, f32)>,
+    head: usize,
+    len: usize,
+    now: u32,
+}
+
+impl Window {
+    /// Room for a hold of `hold` samples.
+    fn prepare(&mut self, hold: usize) {
+        self.entries = vec![(0, 0.0); hold + 1]; // rt-ok: taken in prepare
+        self.clear();
+    }
+
+    /// Forgets every sample.
+    fn clear(&mut self) {
+        self.head = 0;
+        self.len = 0;
+        self.now = 0;
+    }
+
+    /// The loudest of `level` and the levels of the `hold` samples before it.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "levels in dB, to a millionth"
+    )]
+    fn push(&mut self, level: f64, hold: u32) -> f64 {
+        let capacity = self.entries.len();
+        if capacity == 0 {
+            return level;
+        }
+        let hold = hold.min(u32::try_from(capacity - 1).unwrap_or(u32::MAX));
+        while self.len > 0 && self.now.wrapping_sub(self.entries[self.head].0) > hold {
+            self.head = (self.head + 1) % capacity;
+            self.len -= 1;
+        }
+        let stored = level as f32;
+        while self.len > 0 && self.entries[(self.head + self.len - 1) % capacity].1 <= stored {
+            self.len -= 1;
+        }
+        self.entries[(self.head + self.len) % capacity] = (self.now, stored);
+        self.len += 1;
+        let (at, loudest) = self.entries[self.head];
+        let current = at == self.now;
+        self.now = self.now.wrapping_add(1);
+        if current {
+            level
+        } else {
+            f64::from(loudest)
+        }
+    }
+}
+
 /// The detector of a module (see the module's "The detector").
 #[derive(Clone, Copy, Debug, Default)]
 struct Detector {
     held: f64,
     out: f64,
-    hold: u32,
     awake: bool,
     attack: Coefficient,
     release: Coefficient,
@@ -697,25 +789,30 @@ struct Times {
 }
 
 impl Detector {
-    /// Stops; the next step starts at rest.
+    /// Stops; the next step wakes it.
     fn stop(&mut self) {
         self.awake = false;
     }
 
-    /// The output for the static gain `target` (turned so that the attack is up), waking at
-    /// `rest`.
-    fn step(&mut self, target: f64, rest: f64, times: Times, rate: u32) -> f64 {
+    /// Its output, if it is awake, else `otherwise`.
+    fn out_or(&self, otherwise: f64) -> f64 {
+        if self.awake {
+            self.out
+        } else {
+            otherwise
+        }
+    }
+
+    /// The output for `target`, the static gain of the loudest level of the hold (turned so
+    /// that the attack is up), waking at `wake`.
+    fn step(&mut self, target: f64, wake: f64, times: Times, rate: u32) -> f64 {
         if !self.awake {
-            self.held = rest;
-            self.out = rest;
-            self.hold = 0;
+            self.held = wake;
+            self.out = wake;
             self.awake = true;
         }
         if target >= self.held {
             self.held = target;
-            self.hold = hold_samples(times.hold, rate);
-        } else if self.hold > 0 {
-            self.hold -= 1;
         } else {
             let release = self.release.get(times.release, rate);
             self.held = target + flush(release * (self.held - target));
@@ -735,6 +832,36 @@ fn hold_samples(ms: f32, rate: u32) -> u32 {
     u32::try_from(samples(f64::from(ms.max(0.0)) / 1000.0, rate)).unwrap_or(u32::MAX)
 }
 
+/// A peak that falls [`DYNAMICS_WAKE_FALL_DB_PER_SECOND`], as a linear amplitude: what a module
+/// woken hears, through the dips of a wave. It forgets what it held in at most 400 dB of fall,
+/// so that two followers of the same sound are the same within a second.
+#[derive(Clone, Copy, Debug, Default)]
+struct Follower {
+    peak: f64,
+    fall: f64,
+    floor: f64,
+    ceiling: f64,
+}
+
+impl Follower {
+    fn prepare(&mut self, rate: u32) {
+        self.fall = 10.0_f64.powf(-DYNAMICS_WAKE_FALL_DB_PER_SECOND / 20.0 / f64::from(rate));
+        self.floor = 10.0_f64.powf(DYNAMICS_LEVEL_FLOOR_DB / 20.0);
+        self.ceiling = 10.0_f64.powf(DYNAMICS_LEVEL_CEILING_DB / 20.0);
+        self.peak = 0.0;
+    }
+
+    fn push(&mut self, peak: f64) {
+        let fallen = self.peak * self.fall;
+        let fallen = if fallen <= self.floor { 0.0 } else { fallen };
+        self.peak = fallen.max(peak).min(self.ceiling);
+    }
+
+    fn level(&self) -> f64 {
+        level_db(self.peak)
+    }
+}
+
 /// The Dynamics of a strip, a node of any layout in and the same out, with a sidechain of any
 /// channels (see the module). No latency: it does not look ahead.
 #[derive(Debug)]
@@ -744,6 +871,8 @@ pub struct Dynamics {
     /// The channels that it hears: all but the LFE.
     heard: [bool; MAX_CHANNELS],
     sidechain: usize,
+    /// Whether the block has its sidechain: the spec's has one and the block gives it.
+    keyable: bool,
     /// The numbers, by the index of their [`Param`]; the make-up as a linear gain. The switches'
     /// places are not used.
     knobs: [Smoothed; PARAMS],
@@ -756,6 +885,15 @@ pub struct Dynamics {
     own: Detector,
     keyed: Detector,
     limiter: Detector,
+    /// The holds: of the level that the Expander/Gate hears, of the Compressor's own level, of
+    /// the sidechain's, and of the Limiter's.
+    heard_hold: Window,
+    own_hold: Window,
+    keyed_hold: Window,
+    limiter_hold: Window,
+    /// What a module woken hears, of the sound and of the sidechain.
+    wake: Follower,
+    wake_keyed: Follower,
     ball: SeqWriter<Ball>,
     ball_reader: SeqReader<Ball>,
 }
@@ -793,6 +931,7 @@ impl Dynamics {
             channels: 0,
             heard: [true; MAX_CHANNELS],
             sidechain: 0,
+            keyable: false,
             knobs,
             switches,
             step: f64::INFINITY,
@@ -801,6 +940,12 @@ impl Dynamics {
             own: Detector::default(),
             keyed: Detector::default(),
             limiter: Detector::default(),
+            heard_hold: Window::default(),
+            own_hold: Window::default(),
+            keyed_hold: Window::default(),
+            limiter_hold: Window::default(),
+            wake: Follower::default(),
+            wake_keyed: Follower::default(),
             ball,
             ball_reader,
         }
@@ -830,11 +975,57 @@ impl Dynamics {
         settings
     }
 
+    /// The settling ([`Node::settle`]) of Dynamics set as `settings`, at `rate`: the ramp of
+    /// 10 ms and, when Dynamics and a module are on, the second in which what a woken module
+    /// hears is forgotten, and for each module on its hold and 18 of its time constants (attack
+    /// plus release, [`DYNAMICS_SETTLE_TIME_CONSTANTS`]), the modules one after the other, as
+    /// each hears the gain of those before it.
+    ///
+    /// [`Node::settle`] gives it for the parameters as they are set (the longer of a time and
+    /// the time it ramps to). Lanes of automation are not set: the graph (T4b) asks for the
+    /// settling of the slowest settings that the lanes take in the window of the pre-roll (each
+    /// switch on that is on anywhere in it, each time at its longest).
+    #[must_use]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a count of samples"
+    )]
+    pub fn settle_for(settings: &Settings, rate: u32) -> u32 {
+        let s = settings.clamped();
+        let rate = f64::from(rate);
+        let ramp = (SMOOTHING * rate).round();
+        if !s.on {
+            return ramp as u32;
+        }
+        let module = |on: bool, attack: f32, hold: f32, release: f32| {
+            if on {
+                (DYNAMICS_SETTLE_TIME_CONSTANTS * f64::from(attack + release) + f64::from(hold))
+                    * rate
+                    / 1000.0
+            } else {
+                0.0
+            }
+        };
+        let (e, c, l) = (&s.expander, &s.compressor, &s.limiter);
+        let wake = if e.on || c.on || l.on {
+            (DYNAMICS_LEVEL_CEILING_DB - DYNAMICS_LEVEL_FLOOR_DB) / DYNAMICS_WAKE_FALL_DB_PER_SECOND
+                * rate
+        } else {
+            0.0
+        };
+        let total = ramp
+            + wake
+            + module(e.on, e.attack_ms, e.hold_ms, e.release_ms)
+            + module(c.on, c.attack_ms, c.hold_ms, c.release_ms)
+            + module(l.on, l.attack_ms, l.hold_ms, l.release_ms);
+        total.ceil().min(f64::from(u32::MAX)) as u32
+    }
+
     /// What each switch goes to, `raw` being what is set or automated: the sidechain only where
-    /// there is one, and Listen only where the sidechain keys.
+    /// the block has one, and Listen only where the sidechain keys.
     fn targets(&self, mut raw: [bool; PARAMS]) -> [bool; PARAMS] {
-        let side = self.sidechain > 0;
-        raw[Param::SidechainOn as usize] &= side;
+        raw[Param::SidechainOn as usize] &= self.keyable;
         raw[Param::SidechainListen as usize] &= raw[Param::SidechainOn as usize];
         raw
     }
@@ -859,14 +1050,17 @@ impl Dynamics {
             && !targets[Param::SidechainListen as usize]
     }
 
-    /// The values at sample `n` of the block, the ramps moved on by one.
+    /// The values at sample `n` of the block, the ramps moved on by one. A lane's NaN keeps the
+    /// value set.
     fn values(&mut self, lanes: &[Option<&[f32]>; PARAMS], n: usize) -> Values {
         let mut values = Values {
             knobs: [0.0; PARAMS],
             on: [false; PARAMS],
         };
         for (index, param) in Param::ALL.into_iter().enumerate() {
-            let lane = lanes[index].map(|lane| lane[n]);
+            let lane = lanes[index]
+                .map(|lane| lane[n])
+                .filter(|value| !value.is_nan());
             if param.is_switch() {
                 values.on[index] = lane.map_or(self.switches[index].on, |value| value >= 0.5);
             } else {
@@ -887,10 +1081,31 @@ impl Dynamics {
         values
     }
 
+    /// Whether the block has its sidechain, of `given` channels: one shorter than the spec's is
+    /// heard as none. Whether the graph gives the sidechain is not a parameter: the sidechain and
+    /// Listen go at once to what it allows.
+    fn take_sidechain(&mut self, given: usize) {
+        debug_assert!(
+            given == 0 || given >= self.sidechain,
+            "a sidechain of {given} channels for a spec of {}",
+            self.sidechain
+        );
+        let keyable = self.sidechain > 0 && given >= self.sidechain;
+        if keyable != self.keyable {
+            self.keyable = keyable;
+            let targets = self.targets(self.set_switches());
+            for param in [Param::SidechainOn, Param::SidechainListen] {
+                let index = param as usize;
+                self.switches[index].weight = f64::from(u8::from(targets[index]));
+            }
+        }
+    }
+
     fn weight(&self, param: Param) -> f64 {
         self.switches[param as usize].weight
     }
 
+    /// Stops every module.
     fn stop(&mut self) {
         for detector in [
             &mut self.expander,
@@ -901,10 +1116,22 @@ impl Dynamics {
         ] {
             detector.stop();
         }
+        for window in [
+            &mut self.heard_hold,
+            &mut self.own_hold,
+            &mut self.keyed_hold,
+            &mut self.limiter_hold,
+        ] {
+            window.clear();
+        }
     }
 
     /// The gains, dB, of the three modules at a sample of level `level` and of sidechain level
     /// `side`.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the three modules, one after the other"
+    )]
     fn gains(&mut self, v: &Values, level: f64, side: f64) -> [f64; 3] {
         let knob = |param: Param| f64::from(v.knobs[param as usize]);
         let on = |param: Param| v.on[param as usize];
@@ -914,27 +1141,34 @@ impl Dynamics {
             release: v.knobs[release as usize],
         };
         let rate = self.rate;
+        let woken = self.wake.level();
 
         let mut expanded = 0.0;
         if self.weight(Param::ExpanderOn) > 0.0 || on(Param::ExpanderOn) {
             let threshold = knob(Param::ExpanderThresholdDb);
             let range = knob(Param::ExpanderRangeDb);
+            let ratio = knob(Param::ExpanderRatio);
             let t = times(
                 Param::ExpanderAttackMs,
                 Param::ExpanderHoldMs,
                 Param::ExpanderReleaseMs,
             );
+            let held = self.heard_hold.push(level, hold_samples(t.hold, rate));
             let gating = self.weight(Param::ExpanderMode);
             let expanding = if gating < 1.0 || !on(Param::ExpanderMode) {
-                let target = expander_gain_db(level, threshold, knob(Param::ExpanderRatio), range);
-                self.expander.step(target, -range, t, rate)
+                let target = expander_gain_db(held, threshold, ratio, range);
+                let wake = self
+                    .gate
+                    .out_or(expander_gain_db(woken, threshold, ratio, range));
+                self.expander.step(target, wake, t, rate)
             } else {
                 self.expander.stop();
                 0.0
             };
             let gate = if gating > 0.0 || on(Param::ExpanderMode) {
-                self.gate
-                    .step(gate_gain_db(level, threshold, range), -range, t, rate)
+                let target = gate_gain_db(held, threshold, range);
+                let wake = self.expander.out_or(gate_gain_db(woken, threshold, range));
+                self.gate.step(target, wake, t, rate)
             } else {
                 self.gate.stop();
                 0.0
@@ -944,6 +1178,7 @@ impl Dynamics {
         } else {
             self.expander.stop();
             self.gate.stop();
+            self.heard_hold.clear();
         }
 
         let mut compressed = 0.0;
@@ -956,19 +1191,36 @@ impl Dynamics {
                 Param::CompressorHoldMs,
                 Param::CompressorReleaseMs,
             );
+            let window = hold_samples(t.hold, rate);
             let keying = self.weight(Param::SidechainOn);
             let own = if keying < 1.0 || !on(Param::SidechainOn) {
-                let target = -compressor_gain_db(level + expanded, threshold, ratio, knee);
-                self.own.step(target, 0.0, t, rate)
+                let held = self.own_hold.push(level + expanded, window);
+                let target = -compressor_gain_db(held, threshold, ratio, knee);
+                let wake = self.keyed.out_or(-compressor_gain_db(
+                    woken + expanded,
+                    threshold,
+                    ratio,
+                    knee,
+                ));
+                self.own.step(target, wake, t, rate)
             } else {
                 self.own.stop();
+                self.own_hold.clear();
                 0.0
             };
             let keyed = if keying > 0.0 || on(Param::SidechainOn) {
-                let target = -compressor_gain_db(side, threshold, ratio, knee);
-                self.keyed.step(target, 0.0, t, rate)
+                let held = self.keyed_hold.push(side, window);
+                let target = -compressor_gain_db(held, threshold, ratio, knee);
+                let wake = self.own.out_or(-compressor_gain_db(
+                    self.wake_keyed.level(),
+                    threshold,
+                    ratio,
+                    knee,
+                ));
+                self.keyed.step(target, wake, t, rate)
             } else {
                 self.keyed.stop();
+                self.keyed_hold.clear();
                 0.0
             };
             let reduction = (1.0 - keying) * own + keying * keyed;
@@ -977,22 +1229,27 @@ impl Dynamics {
         } else {
             self.own.stop();
             self.keyed.stop();
+            self.own_hold.clear();
+            self.keyed_hold.clear();
         }
 
         let mut limited = 0.0;
         if self.weight(Param::LimiterOn) > 0.0 || on(Param::LimiterOn) {
-            let target = -limiter_gain_db(
-                level + expanded + compressed,
-                knob(Param::LimiterThresholdDb),
-            );
+            let threshold = knob(Param::LimiterThresholdDb);
             let t = times(
                 Param::LimiterAttackMs,
                 Param::LimiterHoldMs,
                 Param::LimiterReleaseMs,
             );
-            limited = -self.weight(Param::LimiterOn) * self.limiter.step(target, 0.0, t, rate);
+            let held = self
+                .limiter_hold
+                .push(level + expanded + compressed, hold_samples(t.hold, rate));
+            let target = -limiter_gain_db(held, threshold);
+            let wake = -limiter_gain_db(woken + expanded + compressed, threshold);
+            limited = -self.weight(Param::LimiterOn) * self.limiter.step(target, wake, t, rate);
         } else {
             self.limiter.stop();
+            self.limiter_hold.clear();
         }
         [expanded, compressed, limited]
     }
@@ -1016,6 +1273,7 @@ impl Node for Dynamics {
         self.rate = spec.rate;
         self.channels = spec.inputs();
         self.sidechain = spec.sidechain;
+        self.keyable = spec.sidechain > 0;
         self.heard = [true; MAX_CHANNELS];
         if let Some(lfe) = spec.layout.lfe() {
             self.heard[lfe] = false;
@@ -1029,6 +1287,17 @@ impl Node for Dynamics {
         } else {
             1.0 / f64::from(ramp)
         };
+        let longest = samples(
+            f64::from(Param::ExpanderHoldMs.range().1) / 1000.0,
+            spec.rate,
+        );
+        self.heard_hold.prepare(longest);
+        self.own_hold.prepare(longest);
+        self.limiter_hold.prepare(longest);
+        self.keyed_hold
+            .prepare(if spec.sidechain > 0 { longest } else { 0 });
+        self.wake.prepare(spec.rate);
+        self.wake_keyed.prepare(spec.rate);
         self.reset();
         Ok(())
     }
@@ -1036,15 +1305,28 @@ impl Node for Dynamics {
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_precision_loss,
-        reason = "samples, and a mean of at most 24 channels"
+        clippy::too_many_lines,
+        reason = "samples, a mean of at most 24 channels, and a sample's work in one place"
     )]
     fn process(&mut self, ctx: &Block, input: &[&[f32]], output: &mut [&mut [f32]]) {
         let frames = ctx.frames;
         if frames == 0 {
             return;
         }
-        let lanes: [Option<&[f32]>; PARAMS] =
-            std::array::from_fn(|index| ctx.automation.get(Param::ALL[index].id()));
+        self.take_sidechain(ctx.sidechain.len());
+        let sidechain: &[&[f32]] = if self.keyable {
+            &ctx.sidechain[..self.sidechain]
+        } else {
+            &[]
+        };
+        let lanes: [Option<&[f32]>; PARAMS] = std::array::from_fn(|index| {
+            let param = Param::ALL[index];
+            if param.is_automatable() {
+                ctx.automation.get(param.id())
+            } else {
+                None
+            }
+        });
         let heard = self.heard;
         let peak_at = |n: usize| -> f64 {
             input
@@ -1055,13 +1337,24 @@ impl Node for Dynamics {
                     peak.max(f64::from(channel[n].abs()))
                 })
         };
+        let side_at = |n: usize| -> f64 {
+            sidechain.iter().fold(0.0_f64, |peak, channel| {
+                peak.max(f64::from(channel[n].abs()))
+            })
+        };
 
         if self.idle(&lanes) {
             for (out, x) in output.iter_mut().zip(input) {
                 out[..frames].copy_from_slice(&x[..frames]);
             }
-            let peak = (0..frames).map(peak_at).fold(0.0, f64::max);
-            let level = level_db(peak) as f32;
+            let mut loudest = 0.0_f64;
+            for n in 0..frames {
+                let peak = peak_at(n);
+                self.wake.push(peak);
+                self.wake_keyed.push(side_at(n));
+                loudest = loudest.max(peak);
+            }
+            let level = level_db(loudest) as f32;
             self.ball.write(Ball {
                 input_db: level,
                 output_db: level,
@@ -1070,19 +1363,18 @@ impl Node for Dynamics {
             return;
         }
 
-        let sidechain = &ctx.sidechain[..ctx.sidechain.len().min(self.sidechain)];
         let matched = sidechain.len() == self.channels;
         let mut loudest = (-1.0_f64, Ball::default());
         for n in 0..frames {
             let v = self.values(&lanes, n);
             let peak = peak_at(n);
+            let side = side_at(n);
+            self.wake.push(peak);
+            self.wake_keyed.push(side);
             let on = self.weight(Param::On);
             let mut gain = 1.0;
             let mut gains = [0.0; 3];
             if on > 0.0 || v.on[Param::On as usize] {
-                let side = sidechain.iter().fold(0.0_f64, |peak, channel| {
-                    peak.max(f64::from(channel[n].abs()))
-                });
                 gains = self.gains(&v, level_db(peak), level_db(side));
                 let makeup = f64::from(v.knobs[Param::MakeupDb as usize]);
                 let dynamics = db_gain(gains[0] + gains[1] + gains[2]) * makeup;
@@ -1100,6 +1392,7 @@ impl Node for Dynamics {
             } else {
                 0.0
             };
+            let mut out_peak = 0.0_f64;
             for (channel, (out, x)) in output.iter_mut().zip(input).enumerate() {
                 let processed = f64::from(x[n]) * gain;
                 out[n] = if listen > 0.0 {
@@ -1112,14 +1405,16 @@ impl Node for Dynamics {
                 } else {
                     processed as f32
                 };
+                if heard[channel] {
+                    out_peak = out_peak.max(f64::from(out[n].abs()));
+                }
             }
             if peak > loudest.0 {
-                let input_db = level_db(peak);
                 loudest = (
                     peak,
                     Ball {
-                        input_db: input_db as f32,
-                        output_db: (input_db + 20.0 * gain.log10()) as f32,
+                        input_db: level_db(peak) as f32,
+                        output_db: level_db(out_peak) as f32,
                         expander_db: gains[0] as f32,
                         compressor_db: gains[1] as f32,
                         limiter_db: gains[2] as f32,
@@ -1134,55 +1429,24 @@ impl Node for Dynamics {
         0
     }
 
-    /// The ramp of 10 ms, and for each module that is on, or fading, 18 of its time constants
-    /// (attack plus release) and its hold ([`DYNAMICS_SETTLE_TIME_CONSTANTS`]), the longest of
-    /// the times set and ramping: the modules one after the other, as each hears the gain of
-    /// those before it.
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "a count of samples"
-    )]
+    /// [`Dynamics::settle_for`] the parameters as set: each switch on that is on or still
+    /// fading, each time the longer of where it is and where it ramps to.
     fn settle(&self) -> u32 {
-        let ramp = f64::from(self.knobs[0].ramp_len());
         let targets = self.targets(self.set_switches());
-        let live = |param: Param| targets[param as usize] || self.weight(param) > 0.0;
-        if !live(Param::On) {
-            return ramp as u32;
-        }
-        let longest = |param: Param| {
-            let knob = &self.knobs[param as usize];
-            f64::from(knob.current().max(knob.target()))
-        };
-        let rate = f64::from(self.rate);
-        let module = |on: Param, attack: Param, hold: Param, release: Param| {
-            if live(on) {
-                (DYNAMICS_SETTLE_TIME_CONSTANTS * (longest(attack) + longest(release))
-                    + longest(hold))
-                    * rate
-                    / 1000.0
-            } else {
+        let mut settings = Settings::default();
+        for param in Param::ALL {
+            let index = param as usize;
+            let value = if param.is_switch() {
+                switch(targets[index] || self.switches[index].weight > 0.0)
+            } else if param == Param::MakeupDb {
                 0.0
-            }
-        };
-        let total =
-            ramp + module(
-                Param::ExpanderOn,
-                Param::ExpanderAttackMs,
-                Param::ExpanderHoldMs,
-                Param::ExpanderReleaseMs,
-            ) + module(
-                Param::CompressorOn,
-                Param::CompressorAttackMs,
-                Param::CompressorHoldMs,
-                Param::CompressorReleaseMs,
-            ) + module(
-                Param::LimiterOn,
-                Param::LimiterAttackMs,
-                Param::LimiterHoldMs,
-                Param::LimiterReleaseMs,
-            );
-        total.ceil().min(f64::from(u32::MAX)) as u32
+            } else {
+                let knob = &self.knobs[index];
+                knob.current().max(knob.target())
+            };
+            settings.set(param, value);
+        }
+        Dynamics::settle_for(&settings, self.rate)
     }
 
     fn reset(&mut self) {
@@ -1194,6 +1458,8 @@ impl Node for Dynamics {
             switch.weight = if on { 1.0 } else { 0.0 };
         }
         self.stop();
+        self.wake.peak = 0.0;
+        self.wake_keyed.peak = 0.0;
     }
 
     fn set(&mut self, param: ParamId, value: f32) {

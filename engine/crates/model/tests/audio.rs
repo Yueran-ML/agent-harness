@@ -645,6 +645,52 @@ fn lanes_are_of_the_settings_of_their_strip_by_their_paths_and_kinds() {
 }
 
 #[test]
+fn times_of_sound_further_than_2_to_the_53_ticks_are_refused_and_never_overflow() {
+    let far = Time {
+        ticks: 1 << 53,
+        scale: u32::MAX,
+    };
+    // A fade, a key and the end of an active range.
+    let error = refused(|value| {
+        value["timelines"][0]["tracks"][1]["clips"][0]["audio_fade_in"] =
+            json!({ "length": far, "curve": 0.0, "skew": 0.0 });
+    });
+    assert_eq!(error, OpError::OutOfRange { what: "fade" });
+    let error = refused(|value| {
+        value["timelines"][0]["tracks"][1]["clips"][0]["gain_db"] =
+            json!({ "keys": [{ "at": far, "value": 0.0 }] });
+    });
+    assert_eq!(error, OpError::OutOfRange { what: "gain_db" });
+    let error = refused(|value| {
+        value["timelines"][0]["audio"]["record"]["active_range"] = json!({
+            "start": { "ticks": 0, "scale": 1 }, "end": far, "on": true,
+        });
+    });
+    assert_eq!(error, OpError::OutOfRange { what: "audio" });
+    // The longest fades and clip there are, of the finest scales: compared without overflow.
+    let mut project = Project::sample();
+    let clip = &mut project.timelines[0].tracks[1].clips[0];
+    let longest = Time {
+        ticks: (1 << 53) - 1,
+        scale: u32::MAX,
+    };
+    clip.audio_fade_in = Some(AudioFade {
+        length: longest,
+        curve: 0.0,
+        skew: 0.0,
+    });
+    clip.audio_fade_out = Some(AudioFade {
+        length: Time {
+            ticks: (1 << 53) - 1,
+            scale: u32::MAX - 1,
+        },
+        curve: 0.0,
+        skew: 0.0,
+    });
+    assert!(project.validate().is_err());
+}
+
+#[test]
 fn a_track_of_sound_is_muted_and_soloed_by_set_track_and_taken_back() {
     let mut project = Project::sample();
     let set = |id: &str, mute, solo, solo_safe| Op::SetTrack {

@@ -1086,7 +1086,7 @@ pub fn check_clip(clip: &Clip, rate: Rate) -> Result<(), OpError> {
                 i128::from(rate.num),
             )),
             Some(f) => (f.length.scale > 0
-                && f.length.ticks >= 0
+                && (0..=crate::ops::LARGEST).contains(&f.length.ticks)
                 && within(f.curve, -1.0, 1.0)
                 && within(f.skew, -1.0, 1.0))
             .then_some((i128::from(f.length.ticks), i128::from(f.length.scale))),
@@ -1102,9 +1102,17 @@ pub fn check_clip(clip: &Clip, rate: Rate) -> Result<(), OpError> {
         i128::from(clip.length) * i128::from(rate.den),
         i128::from(rate.num),
     );
-    // a/b + c/d <= length/seconds, all of them at least 0 and the denominators above 0.
-    if (a * d + c * b) * seconds > length * b * d {
-        return Err(out("fade"));
+    // a/b + c/d <= length/seconds, all of them at least 0 and the denominators above 0. Each
+    // product is checked: a length of 2^53 frames times three scales of 32 bits passes i128.
+    let fades = (|| {
+        a.checked_mul(d)?
+            .checked_add(c.checked_mul(b)?)?
+            .checked_mul(seconds)
+    })();
+    let room = (|| length.checked_mul(b)?.checked_mul(d))();
+    match (fades, room) {
+        (Some(fades), Some(room)) if fades <= room => {}
+        _ => return Err(out("fade")),
     }
     clip.eq.check(false)?;
     for insert in &clip.effects {
@@ -1151,7 +1159,11 @@ pub fn check_timeline(timeline: &Timeline) -> Result<(), routing::Wrong> {
     }
     let settings = &timeline.audio;
     let range = settings.record.active_range.is_none_or(|r| {
-        r.start.scale > 0 && r.end.scale > 0 && r.start.ticks >= 0 && param::earlier(r.start, r.end)
+        r.start.scale > 0
+            && r.end.scale > 0
+            && r.start.ticks >= 0
+            && r.end.ticks <= crate::ops::LARGEST
+            && param::earlier(r.start, r.end)
     });
     let fine = within(settings.loudness.target, -36.0, -10.0)
         && within(settings.custom_meter.decay_s, 0.1, 5.0)

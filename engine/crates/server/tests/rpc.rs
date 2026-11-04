@@ -439,7 +439,7 @@ fn media(id: &str, path: &str) -> Value {
 }
 
 fn clip(id: &str, media: &str, start: i64, length: i64) -> Value {
-    json!({
+    let mut clip = json!({
         "id": id, "start": start, "length": length,
         "source": { "kind": "media", "media": media, "in": { "ticks": 0, "scale": 15360 } },
         "enabled": true, "speed": { "num": 1, "den": 1 }, "reverse": false, "link": null,
@@ -447,7 +447,24 @@ fn clip(id: &str, media: &str, start: i64, length: i64) -> Value {
         "gain_db": 0.0, "pan": 0.0, "fade_in": 0, "fade_out": 0,
         "grade": { "nodes": [], "links": [{ "from": "source", "to": "output", "kind": "rgb", "input": 0 }] },
         "group": null,
-    })
+    });
+    // What schema 4 adds, as a new clip has it: the engine writes it whole.
+    let source_in = columbina_model::Time {
+        ticks: 0,
+        scale: 15360,
+    };
+    let made = serde_json::to_value(columbina_model::Clip::of_media(
+        id, media, source_in, start, length,
+    ))
+    .unwrap();
+    for (name, value) in made.as_object().unwrap() {
+        clip.as_object_mut()
+            .unwrap()
+            .entry(name.clone())
+            .or_insert_with(|| value.clone());
+    }
+    assert_eq!(clip, made, "a clip written as schema 4 writes it");
+    clip
 }
 
 fn add_media(path: &str) -> Value {
@@ -509,7 +526,7 @@ async fn the_engine_says_where_it_listens_and_answers_hello() {
     assert_eq!(
         got["project"],
         json!({
-            "schema": 3, "next_id": 1, "bins": [], "media": [], "timelines": [], "groups": [],
+            "schema": 4, "next_id": 1, "bins": [], "media": [], "timelines": [], "groups": [],
             "color": serde_json::to_value(columbina_model::ColorSettings::default()).unwrap(),
         })
     );

@@ -475,6 +475,7 @@ fn a_lane_of_the_semitones_of_a_pitch_insert_moves_the_pitch_where_it_steps() {
         Lane {
             points: vec![point(0.0, 0.0), point(3.0, 0.0), point(3.0, 12.0)],
             kind: LaneKind::Continuous,
+            scale: None,
         },
     );
     let mut graph = built(&project);

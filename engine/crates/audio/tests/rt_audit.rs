@@ -1,6 +1,7 @@
 //! The code of the threads of the sound holds none of the words of locks, waits, allocations,
-//! text or logs (convention 3 of the plan): `src/rt/`, `src/fx/` and `src/graph/process*.rs`,
-//! read as text, comments aside, and lines of code that runs when things are made tagged
+//! text or logs (convention 3 of the plan): `src/rt/`, `src/fx/` and `src/graph/` (all of it but
+//! `build*.rs`, where the graph is made, and `tests.rs`; at least its `process*.rs`), read as
+//! text, comments aside, and lines of code that runs when things are made tagged
 //! `// rt-ok: <reason>`.
 
 use std::path::{Path, PathBuf};
@@ -29,7 +30,7 @@ fn realtime_files() -> (Vec<PathBuf>, bool) {
             let path = entry.unwrap().path();
             let name = path.file_name().unwrap().to_string_lossy().into_owned();
             let source = path.extension().is_some_and(|extension| extension == "rs");
-            if name.starts_with("process") && source {
+            if source && !name.starts_with("build") && name != "tests.rs" {
                 files.push(path);
             }
         }
@@ -53,6 +54,12 @@ fn the_code_of_the_threads_of_the_sound_does_not_lock_allocate_or_log() {
         "biquad.rs",
         "dynamics.rs",
         "eq.rs",
+        "process.rs",
+        "clip.rs",
+        "strip.rs",
+        "route.rs",
+        "pdc.rs",
+        "taps.rs",
         "common.rs",
         "gain.rs",
         "limiter.rs",

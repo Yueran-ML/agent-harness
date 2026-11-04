@@ -242,7 +242,7 @@ fn the_frames_of_the_transform_end_on_the_grid_of_the_timeline() {
                 ends.push(frame.at);
             },
         );
-        assert_ne!(ends, []);
+        assert_ne!(ends, Vec::<usize>::new());
         for at in ends {
             assert_eq!(
                 (origin + at as u64 + 1) % HOP as u64,

@@ -514,7 +514,12 @@ impl Worker {
             )
             .map_err(|_| "export exceeds audio sample time".to_owned())
         };
-        let mut mix = Mixer::new(Arc::clone(&project), self.plan.timeline).source(
+        let mut mix = Mixer::new(
+            Arc::clone(&project),
+            self.plan.timeline,
+            columbina_audio::graph::Purpose::Export,
+        )
+        .source(
             AudioFormat {
                 rate: 48000,
                 channels: 2,

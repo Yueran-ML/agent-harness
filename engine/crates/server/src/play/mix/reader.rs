@@ -38,20 +38,6 @@ impl Layout {
             ),
         }
     }
-
-    /// The layout as the stereo mixer of the transport takes it, until the graph (T4b) takes
-    /// any: auto in two channels, and a mapping of its first two lanes as left and right, or of
-    /// its one lane on both.
-    pub(crate) fn stereo(self) -> Self {
-        match self {
-            Self::Auto(_) => Self::Auto(2),
-            Self::Mapped(lanes) => {
-                let left = lanes.first().cloned();
-                let right = lanes.get(1).cloned().or_else(|| left.clone());
-                Self::Mapped(left.into_iter().chain(right).collect())
-            }
-        }
-    }
 }
 
 /// A channel of the media: the index of its stream among all the streams of the file (as
@@ -729,7 +715,7 @@ mod tests {
     fn the_channels_of_a_clip_of_the_model_are_laid_out_as_it_names_them() {
         // None: auto, in the channels of the track, as every clip before schema 4 was.
         assert_eq!(Layout::of_clip(&mapped(None), 2), Layout::Auto(2));
-        assert_eq!(Layout::of_clip(&mapped(None), 6).stereo(), Layout::Auto(2));
+        assert_eq!(Layout::of_clip(&mapped(None), 6), Layout::Auto(6));
         // One pick, a mean of two, none, and a channel past 65535, which is of none.
         let clip = mapped(Some(vec![
             channel(&[(1, 0)]),
@@ -754,17 +740,6 @@ mod tests {
         assert!(lanes
             .iter()
             .all(|lane| (lane.gain - 1.0).abs() < f32::EPSILON));
-        // The stereo mixer takes the first two lanes, or the one lane on both sides.
-        let Layout::Mapped(two) = Layout::of_clip(&clip, 4).stereo() else {
-            panic!("mapped")
-        };
-        assert_eq!(two, lanes[..2]);
-        let one = mapped(Some(vec![channel(&[(0, 1)])]));
-        let Layout::Mapped(both) = Layout::of_clip(&one, 1).stereo() else {
-            panic!("mapped")
-        };
-        assert_eq!(both.len(), 2);
-        assert_eq!(both[0], both[1]);
     }
 
     #[test]
@@ -779,19 +754,19 @@ mod tests {
                 .unwrap()
         };
         let auto = read(&Layout::Auto(2));
-        let model = read(&Layout::of_clip(&mapped(None), 2).stereo());
+        let model = read(&Layout::of_clip(&mapped(None), 2));
         assert_eq!(auto.len(), model.len());
         assert!(auto
             .iter()
             .zip(&model)
             .all(|(a, b)| a.to_bits() == b.to_bits()));
-        // The left on both sides; and a channel of 65536, cut down to none, is silence.
-        let left = read(&Layout::of_clip(&mapped(Some(vec![channel(&[(0, 0)])])), 1).stereo());
-        let (l, r): (Vec<f32>, Vec<f32>) = left.chunks(2).map(|pair| (pair[0], pair[1])).unzip();
-        assert!((amplitude(&l, 440.0) - 0.25).abs() < 1e-3 && amplitude(&l, 880.0) < 1e-5);
-        assert_eq!(l, r);
+        // The left alone, on a track of one channel; and a channel of 65536, cut down to none,
+        // is silence.
+        let left = read(&Layout::of_clip(&mapped(Some(vec![channel(&[(0, 0)])])), 1));
+        assert_eq!(left.len(), 48000);
+        assert!((amplitude(&left, 440.0) - 0.25).abs() < 1e-3 && amplitude(&left, 880.0) < 1e-5);
         let far = mapped(Some(vec![channel(&[(0, 65_536)])]));
-        let far = read(&Layout::of_clip(&far, 1).stereo());
+        let far = read(&Layout::of_clip(&far, 1));
         assert!(far.iter().all(|&sample| sample == 0.0));
     }
 }

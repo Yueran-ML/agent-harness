@@ -1,5 +1,6 @@
-//! Sample-accurate timeline mixing. Media readers supply PCM at the timeline rate, in stereo;
-//! the pure mixer maps clip time, resamples speed, applies gain/pan and sums before limiting.
+//! The sound of a timeline for the transport and the export: the graph of `columbina-audio`
+//! (plan T4b), built from the project and fed by the media readers of its clips. The mix stays in
+//! 32-bit floats to the device; only the copy for the device is clipped.
 
 mod reader;
 
@@ -7,57 +8,217 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::sync::Arc;
 
+use columbina_audio::feed::{ClipFeed, ClipSource, FeedError};
+use columbina_audio::graph::{self, route, Graph, Options, Purpose};
+use columbina_audio::node::Layout as Channels;
 use columbina_media::AudioFormat;
-use columbina_model::{resolve, Clip, Media, Project, Timeline};
+use columbina_model::{resolve, Project};
+use serde_json::json;
+
+use crate::log::log;
 use reader::{Layout, Reader};
 
 type Stereo = [f32; 2];
 
+/// The most samples that the graph of a mixer processes at once.
+const MAX_BLOCK: usize = 4096;
+
+/// The readers of the clips of a graph, opened as the graph first asks for each.
+struct Feed {
+    project: Arc<Project>,
+    timeline: usize,
+    sources: Vec<ClipSource>,
+    readers: BTreeMap<usize, Reader>,
+    /// The clips read in the block under way.
+    read: BTreeSet<usize>,
+    /// What went wrong first, since it was last taken.
+    error: Option<String>,
+    /// The clips that the mix does not need and could not be read, told of once each.
+    silenced: BTreeSet<usize>,
+}
+
+impl Feed {
+    fn fill(
+        &mut self,
+        clip: usize,
+        range: Range<i64>,
+        out: &mut [&mut [f32]],
+    ) -> Result<(), String> {
+        if !self.readers.contains_key(&clip) {
+            let source = &self.sources[clip];
+            let timeline = &self.project.timelines[self.timeline];
+            let model = timeline
+                .tracks
+                .iter()
+                .find(|track| track.id == source.track)
+                .and_then(|track| track.clips.iter().find(|c| c.id == source.clip))
+                .ok_or("the resolved audio clip is missing")?;
+            let media = self
+                .project
+                .media
+                .iter()
+                .find(|media| media.id == source.media)
+                .ok_or("the resolved audio media is missing")?;
+            let channels =
+                u16::try_from(source.channels).map_err(|_| "too many channels of sound")?;
+            let reader = Reader::new(
+                media,
+                timeline.sample_rate,
+                &Layout::of_clip(model, channels),
+            )?;
+            self.readers.insert(clip, reader);
+        }
+        let reader = self.readers.get_mut(&clip).expect("opened above");
+        let frames = usize::try_from(range.end - range.start).map_err(|_| "a backward read")?;
+        let pcm = reader.read(range)?;
+        let channels = out.len();
+        if pcm.len() != frames * channels {
+            return Err("the audio reader returned the wrong number of samples".into());
+        }
+        for (n, frame) in pcm.chunks_exact(channels).enumerate() {
+            for (out, &sample) in out.iter_mut().zip(frame) {
+                out[n] = sample;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl ClipFeed for Feed {
+    fn read(
+        &mut self,
+        clip: usize,
+        range: Range<i64>,
+        out: &mut [&mut [f32]],
+    ) -> Result<(), FeedError> {
+        self.read.insert(clip);
+        match self.fill(clip, range, out) {
+            Ok(()) => Ok(()),
+            // A clip that is not heard (a muted track, which a track that was off before schema
+            // 4 is) plays silence when its media cannot be read, as it did when it was not read.
+            Err(message) if !self.sources[clip].heard => {
+                for out in out.iter_mut() {
+                    out.fill(0.0);
+                }
+                if self.silenced.insert(clip) {
+                    log(
+                        "sound_of_a_clip_unread",
+                        &json!({"clip": self.sources[clip].clip, "message": message}),
+                    );
+                }
+                Ok(())
+            }
+            Err(message) => {
+                self.error.get_or_insert(message);
+                Err(FeedError { clip })
+            }
+        }
+    }
+}
+
 pub struct Mixer {
     project: Arc<Project>,
     timeline: usize,
-    readers: BTreeMap<String, Reader>,
+    purpose: Purpose,
+    graph: Option<Graph>,
+    feed: Option<Feed>,
+    /// The sample of the timeline that the graph gives next, while it runs on.
+    next: Option<i64>,
 }
 
 impl Mixer {
-    pub fn new(project: Arc<Project>, timeline: usize) -> Self {
+    /// The mixer of timeline `timeline` of `project`, for `purpose`: playback hears the Listen
+    /// of a sidechain, an export never does.
+    pub fn new(project: Arc<Project>, timeline: usize, purpose: Purpose) -> Self {
         Self {
             project,
             timeline,
-            readers: BTreeMap::new(),
+            purpose,
+            graph: None,
+            feed: None,
+            next: None,
         }
     }
 
+    /// The graph and its readers, built when first wanted.
+    fn graph(&mut self) -> Result<(&mut Graph, &mut Feed), String> {
+        if self.graph.is_none() {
+            let graph = Graph::build(
+                &self.project,
+                self.timeline,
+                Options::new(MAX_BLOCK, self.purpose),
+            )
+            .map_err(|error| error.to_string())?;
+            self.feed = Some(Feed {
+                project: Arc::clone(&self.project),
+                timeline: self.timeline,
+                sources: graph.clips().to_vec(),
+                readers: BTreeMap::new(),
+                read: BTreeSet::new(),
+                error: None,
+                silenced: BTreeSet::new(),
+            });
+            for clip in graph.unplayable() {
+                log("sound_of_a_clip_unplayable", &json!({ "clip": clip }));
+            }
+            self.graph = Some(graph);
+        }
+        Ok((
+            self.graph.as_mut().expect("built above"),
+            self.feed.as_mut().expect("built above"),
+        ))
+    }
+
+    /// The monitored bus of `frames` samples of the timeline from `from`, in stereo (a bus of
+    /// another format folded or spread into two by `route::convert`), not clipped. The graph
+    /// runs on from where it was when `from` follows the last block, and starts again at `from`
+    /// otherwise.
     pub fn block(&mut self, from: i64, frames: usize) -> Result<Vec<Stereo>, String> {
-        let timeline = &self.project.timelines[self.timeline];
-        let mut active = BTreeSet::new();
-        let result = block(
-            timeline,
-            &self.project,
-            from,
-            frames,
-            |clip, media, range| {
-                active.insert(clip.id.clone());
-                if !self.readers.contains_key(&clip.id) {
-                    self.readers.insert(
-                        clip.id.clone(),
-                        Reader::new(
-                            media,
-                            timeline.sample_rate,
-                            &Layout::of_clip(clip, 2).stereo(),
-                        )?,
-                    );
+        let next = self.next.take();
+        let (graph, feed) = self.graph()?;
+        let failed = |feed: &mut Feed| {
+            feed.error
+                .take()
+                .unwrap_or_else(|| "the sound of a clip could not be read".into())
+        };
+        feed.read.clear();
+        if next != Some(from) {
+            graph.start(from, feed).map_err(|_| failed(feed))?;
+        }
+        let monitor = graph.monitor();
+        let matrix = monitor.map(|output| {
+            let layout = graph.outputs()[output].layout;
+            route::convert(layout, Channels::Stereo)
+        });
+        let mut mixed = Vec::with_capacity(frames);
+        let mut done = 0;
+        while done < frames {
+            let count = (frames - done).min(MAX_BLOCK);
+            graph.process(feed, count).map_err(|_| failed(feed))?;
+            match (monitor, &matrix) {
+                (Some(output), Some(matrix)) => {
+                    let sound = graph.output(output);
+                    for n in 0..count {
+                        let mut pair = [0.0; 2];
+                        for (side, pair) in pair.iter_mut().enumerate() {
+                            for channel in 0..matrix.inputs() {
+                                let gain = matrix.gain(side, channel);
+                                if gain != 0.0 {
+                                    *pair += gain * sound.channel(channel)[n];
+                                }
+                            }
+                        }
+                        mixed.push(pair);
+                    }
                 }
-                let pcm = self
-                    .readers
-                    .get_mut(&clip.id)
-                    .expect("opened above")
-                    .read(range)?;
-                Ok(pcm.as_chunks::<2>().0.to_vec())
-            },
-        );
-        self.readers.retain(|clip, _| active.contains(clip));
-        result
+                _ => mixed.extend(std::iter::repeat_n([0.0; 2], count)),
+            }
+            done += count;
+        }
+        let read = std::mem::take(&mut feed.read);
+        feed.readers.retain(|clip, _| read.contains(clip));
+        self.next = Some(from + i64::try_from(frames).map_err(|_| "audio block is too long")?);
+        Ok(mixed)
     }
 
     pub fn source(self, format: AudioFormat, from: i64) -> Box<dyn crate::audio::Source> {
@@ -66,17 +227,25 @@ impl Mixer {
             format,
             from,
             played: 0,
+            window: [vec![], vec![]],
+            window_from: 0,
         })
     }
 }
 
 /// Converts the stereo timeline mix to the device rate/layout without restarting the
-/// fractional resampling phase at each 20 ms output block.
+/// fractional resampling phase at each 20 ms output block. The mix of the timeline is kept
+/// between blocks, so that the graph runs through each sample once, in order (the plan's check
+/// of the code, 1), and each block mixes only what the last did not; the sound for the device is
+/// clipped here, and only here.
 struct OutputSource {
     mixer: Mixer,
     format: AudioFormat,
     from: i64,
     played: i64,
+    /// The mix of the timeline from `window_from`, left and right.
+    window: [Vec<f32>; 2],
+    window_from: i64,
 }
 
 impl crate::audio::Source for OutputSource {
@@ -92,12 +261,13 @@ impl crate::audio::Source for OutputSource {
             * i128::from(rate)
             * i128::from(timeline.rate.den)
             / i128::from(timeline.rate.num);
+        let (start, device) = (self.from, self.format.rate);
         let at = |played: i64| {
-            let position = i128::from(self.from) * i128::from(self.format.rate)
-                + i128::from(played) * i128::from(rate);
+            let position =
+                i128::from(start) * i128::from(device) + i128::from(played) * i128::from(rate);
             (
-                position.div_euclid(i128::from(self.format.rate)),
-                position.rem_euclid(i128::from(self.format.rate)),
+                position.div_euclid(i128::from(device)),
+                position.rem_euclid(i128::from(device)),
             )
         };
         let (first, _) = at(self.played);
@@ -106,15 +276,13 @@ impl crate::audio::Source for OutputSource {
         }
         let (last, _) = at(self.played + i64::from(frames) - 1);
         let cutoff = (f64::from(self.format.rate) / f64::from(rate)).min(1.0);
-        let radius = i128::from(radius(cutoff));
+        let radius = i128::from(graph::radius(cutoff));
         let from = i64::try_from(first - radius)
             .map_err(|_| "output time is outside audio sample time")?;
         let to = i64::try_from(last + radius + 1)
             .map_err(|_| "output time is outside audio sample time")?;
-        let pcm = self.mixer.block(
-            from,
-            usize::try_from(to - from).map_err(|_| "output audio window is too large")?,
-        )?;
+        self.mix(from, to)?;
+        let window = [self.window[0].as_slice(), self.window[1].as_slice()];
         let mut output = Vec::with_capacity(
             usize::try_from(frames).expect("device run") * usize::from(self.format.channels),
         );
@@ -122,18 +290,20 @@ impl crate::audio::Source for OutputSource {
             let (sample, remainder) = at(self.played + i64::from(offset));
             let index =
                 usize::try_from(sample - i128::from(from)).expect("sample in output window");
-            let stereo = resampled(
-                &pcm,
+            let mut stereo = [0.0; 2];
+            graph::resampled(
+                &window,
                 index,
                 remainder as f64 / f64::from(self.format.rate),
                 cutoff,
+                &mut stereo,
             );
             if self.format.channels == 1 {
                 output.push(
                     ((stereo[0] + stereo[1]) * std::f32::consts::FRAC_1_SQRT_2).clamp(-1.0, 1.0),
                 );
             } else {
-                output.extend(stereo);
+                output.extend(stereo.map(|side| side.clamp(-1.0, 1.0)));
                 output.extend(std::iter::repeat_n(
                     0.0,
                     usize::from(self.format.channels) - 2,
@@ -145,471 +315,43 @@ impl crate::audio::Source for OutputSource {
     }
 }
 
-fn block(
-    timeline: &Timeline,
-    project: &Project,
-    from: i64,
-    frames: usize,
-    mut read: impl FnMut(&Clip, &Media, Range<i64>) -> Result<Vec<Stereo>, String>,
-) -> Result<Vec<Stereo>, String> {
-    let to = from
-        .checked_add(i64::try_from(frames).map_err(|_| "audio block is too long")?)
-        .ok_or("audio block is outside sample time")?;
-    let mut mixed = vec![[0.0; 2]; frames];
-    for piece in resolve::audio_between(timeline, project, from, to) {
-        let clip = timeline
-            .tracks
-            .iter()
-            .find(|track| track.id == piece.track)
-            .and_then(|track| track.clips.iter().find(|clip| clip.id == piece.clip))
-            .ok_or("the resolved audio clip is missing")?;
-        let media = project
-            .media
-            .iter()
-            .find(|media| media.id == piece.media)
-            .ok_or("the resolved audio media is missing")?;
-        let mapping = Mapping::new(clip, timeline);
-        let (first, _) = mapping.at(piece.from)?;
-        let (last, _) = mapping.at(piece.to - 1)?;
-        let cutoff = (f64::from(clip.speed.den) / f64::from(clip.speed.num)).min(1.0);
-        let radius = radius(cutoff);
-        let range = first
-            .min(last)
-            .checked_sub(radius)
-            .ok_or("audio source time is too small")?
-            ..first
-                .max(last)
-                .checked_add(radius + 1)
-                .ok_or("audio source time is too large")?;
-        let pcm = read(clip, media, range.clone())?;
-        if i64::try_from(pcm.len()).ok() != range.end.checked_sub(range.start) {
-            return Err("the audio reader returned the wrong number of samples".into());
-        }
-        let pan = pan(piece.pan);
-        for sample in piece.from..piece.to {
-            let (index, phase) = mapping.at(sample)?;
-            let index =
-                usize::try_from(index - range.start).expect("source window covers the piece");
-            let value = resampled(&pcm, index, phase, cutoff);
-            let gain = piece.gain.at(sample);
-            let destination =
-                &mut mixed[usize::try_from(sample - from).expect("piece is in the block")];
-            destination[0] += value[0] * gain * pan[0];
-            destination[1] += value[1] * gain * pan[1];
-        }
-    }
-    // Limiting individual clips before addition would give a different mix.
-    for sample in mixed.iter_mut().flatten() {
-        *sample = sample.clamp(-1.0, 1.0);
-    }
-    Ok(mixed)
-}
-
-/// Absolute rational positions keep fractional speed/trim phase across audio block boundaries.
-struct Mapping {
-    start: i128,
-    step: i128,
-    denominator: i128,
-}
-
-impl Mapping {
-    fn new(clip: &Clip, timeline: &Timeline) -> Self {
-        let source = clip.source_in().expect("resolved media clip");
-        let sample_at = |frame: i64| {
-            i128::from(frame) * i128::from(timeline.sample_rate) * i128::from(timeline.rate.den)
-                / i128::from(timeline.rate.num)
-        };
-        let direction = if clip.reverse { -1 } else { 1 };
-        let origin = if clip.reverse {
-            sample_at(clip.end()) - 1
+impl OutputSource {
+    /// Keeps the mix of the timeline from `from` to the sample before `to` in the window: what
+    /// it already has of it is kept, and only what follows is mixed, so that the mixer runs on.
+    fn mix(&mut self, from: i64, to: i64) -> Result<(), String> {
+        let have = self.window_from
+            + i64::try_from(self.window[0].len()).map_err(|_| "audio window is too large")?;
+        if from < self.window_from || from > have {
+            for side in &mut self.window {
+                side.clear();
+            }
         } else {
-            -sample_at(clip.start)
-        };
-        let step = i128::from(clip.speed.num) * i128::from(source.scale);
-        Self {
-            start: i128::from(source.ticks)
-                * i128::from(timeline.sample_rate)
-                * i128::from(clip.speed.den)
-                + origin * step,
-            step: step * direction,
-            denominator: i128::from(source.scale) * i128::from(clip.speed.den),
+            let gone = usize::try_from(from - self.window_from).expect("within the window");
+            for side in &mut self.window {
+                side.drain(..gone);
+            }
         }
-    }
-
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "only a rational fraction in [0, 1) is converted to f64"
-    )]
-    fn at(&self, sample: i64) -> Result<(i64, f64), String> {
-        let numerator = self.start + i128::from(sample) * self.step;
-        let whole = numerator.div_euclid(self.denominator);
-        let fraction = numerator.rem_euclid(self.denominator) as f64 / self.denominator as f64;
-        Ok((
-            i64::try_from(whole).map_err(|_| "audio source is outside sample time")?,
-            fraction,
-        ))
-    }
-}
-
-/// Equal-power pan, normalized so a centred stereo clip keeps its original level. Each channel
-/// of the media is scaled by its own side's gain, so on stereo media pan is a balance: a hard
-/// pan keeps one channel, louder by 3 dB, and drops the other.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "audio coefficients are f32"
-)]
-fn pan(value: f32) -> Stereo {
-    match value {
-        -1.0 => [std::f32::consts::SQRT_2, 0.0],
-        1.0 => [0.0, std::f32::consts::SQRT_2],
-        _ => {
-            let theta = (f64::from(value) + 1.0) * std::f64::consts::FRAC_PI_4;
-            [
-                (std::f64::consts::SQRT_2 * theta.cos()) as f32,
-                (std::f64::consts::SQRT_2 * theta.sin()) as f32,
-            ]
+        self.window_from = from;
+        let have =
+            from + i64::try_from(self.window[0].len()).map_err(|_| "audio window is too large")?;
+        if to > have {
+            let more = self.mixer.block(
+                have,
+                usize::try_from(to - have).map_err(|_| "output audio window is too large")?,
+            )?;
+            for pair in more {
+                self.window[0].push(pair[0]);
+                self.window[1].push(pair[1]);
+            }
         }
+        Ok(())
     }
-}
-
-/// How many zero crossings of the sinc lie on each side of its centre, at full bandwidth.
-const CROSSINGS: i64 = 16;
-
-/// The most source samples on each side of the centre that one output sample reads: 32 times
-/// the reach at full bandwidth, which keeps 16 zero crossings up to a speed of 32.
-const LONGEST: i64 = CROSSINGS * 32;
-
-/// How many source samples on each side of the centre the filter reads at `cutoff` (the new
-/// band as a part of the old). The sinc is stretched as the band narrows, so that a speed-up
-/// keeps as many zero crossings, and with them as deep a stopband, as playing at speed 1 does:
-/// a 32-tap filter at 16 times would have barely two lobes and let much of what is above the
-/// new Nyquist frequency fold back into what is heard.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_precision_loss,
-    reason = "the reach is at most LONGEST"
-)]
-fn radius(cutoff: f64) -> i64 {
-    ((CROSSINGS as f64 / cutoff).ceil() as i64).clamp(CROSSINGS, LONGEST)
-}
-
-/// Windowed sinc resampling low-passes a speed-up before decimation. Unity speed at an
-/// integer position is exact, so the ordinary playback path does no filtering at all. The sine
-/// and cosine of each tap are stepped from the last by a rotation, which a filter of a
-/// thousand taps needs to be cheap.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "normalized audio samples are f32"
-)]
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "filter taps are at most LONGEST from the centre"
-)]
-#[allow(
-    clippy::float_cmp,
-    reason = "the exact unity-rate, integer-phase case must preserve PCM samples"
-)]
-fn resampled(pcm: &[Stereo], index: usize, phase: f64, cutoff: f64) -> Stereo {
-    use std::f64::consts::PI;
-    if phase == 0.0 && cutoff == 1.0 {
-        return pcm[index];
-    }
-    let radius = radius(cutoff);
-    let reach = radius as f64;
-    let first = 1 - radius;
-    let distance = first as f64 - phase;
-    // The angle of the sinc and of the window at the first tap, each stepped by a rotation.
-    let (step_sin, step_cos) = (PI * cutoff).sin_cos();
-    let (mut sin, mut cos) = (PI * cutoff * distance).sin_cos();
-    let (window_step_sin, window_step_cos) = (PI / reach).sin_cos();
-    let (mut window_sin, mut window_cos) = (PI * distance / reach).sin_cos();
-    let mut sum = [0.0; 2];
-    let mut weights = 0.0;
-    for tap in first..=radius {
-        let angle = PI * cutoff * (tap as f64 - phase);
-        let sinc = if angle.abs() < 1e-12 {
-            1.0
-        } else {
-            sin / angle
-        };
-        let weight = sinc * 0.5_f64.mul_add(window_cos, 0.5);
-        let at = index
-            .checked_add_signed(isize::try_from(tap).expect("filter taps fit an isize"))
-            .expect("the source window includes filter support");
-        sum[0] += f64::from(pcm[at][0]) * weight;
-        sum[1] += f64::from(pcm[at][1]) * weight;
-        weights += weight;
-        (sin, cos) = (
-            sin.mul_add(step_cos, cos * step_sin),
-            cos.mul_add(step_cos, -sin * step_sin),
-        );
-        (window_sin, window_cos) = (
-            window_sin.mul_add(window_step_cos, window_cos * window_step_sin),
-            window_cos.mul_add(window_step_cos, -window_sin * window_step_sin),
-        );
-    }
-    [(sum[0] / weights) as f32, (sum[1] / weights) as f32]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use columbina_model::{Alignment, Speed, Time, Track, TrackKind, Transition, TransitionKind};
-
-    fn samples(range: Range<i64>, value: impl Fn(i64) -> Stereo) -> Vec<Stereo> {
-        range.map(value).collect()
-    }
-
-    fn number(value: i64) -> f32 {
-        f32::from(i16::try_from(value).unwrap())
-    }
-
-    #[test]
-    fn two_tones_crossfade_sample_by_sample_at_equal_power() {
-        let mut project = Project::sample();
-        let timeline = &mut project.timelines[0];
-        let first = Clip::of_media(
-            "c1",
-            "m1",
-            Time {
-                ticks: 0,
-                scale: 15360,
-            },
-            0,
-            50,
-        );
-        let second = Clip::of_media(
-            "c2",
-            "m1",
-            Time {
-                ticks: 30720,
-                scale: 15360,
-            },
-            50,
-            50,
-        );
-        let mut track = Track::new("A1", TrackKind::Audio).with_clips(vec![first, second]);
-        track.transitions.push(Transition {
-            id: "x1".into(),
-            kind: TransitionKind::Crossfade,
-            left: "c1".into(),
-            right: "c2".into(),
-            length: 10,
-            align: Alignment::Center,
-            fade_in_level_db: columbina_model::CrossfadeLevel::Plus3,
-            fade_out_level_db: columbina_model::CrossfadeLevel::Plus3,
-        });
-        timeline.tracks = vec![track];
-        let timeline = &project.timelines[0];
-        let tone = |id: &str, sample: i64| {
-            let phase = f64::from(i32::try_from(sample).unwrap());
-            #[allow(clippy::cast_possible_truncation)]
-            let value = if id == "c1" {
-                0.2 * (phase * 0.007).sin()
-            } else {
-                0.3 * (phase * 0.009).cos()
-            } as f32;
-            [value, value]
-        };
-        let got = block(timeline, &project, 86400, 19200, |clip, _, range| {
-            Ok(samples(range, |sample| tone(&clip.id, sample)))
-        })
-        .unwrap();
-        for (i, pair) in got.iter().enumerate() {
-            let sample = 86400 + i64::try_from(i).unwrap();
-            let theta = number(i64::try_from(i).unwrap()) / 19200.0 * std::f32::consts::FRAC_PI_2;
-            let expected =
-                tone("c1", sample)[0] * theta.cos() + tone("c2", sample)[0] * theta.sin();
-            for channel in pair {
-                assert!(
-                    (channel - expected).abs() < 1e-5,
-                    "sample {sample}: {pair:?} != {expected}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn gain_pan_muting_and_final_limiting_are_applied_to_the_mix() {
-        let mut project = Project::sample();
-        let track = &mut project.timelines[0].tracks[1];
-        track.clips[0].gain_db = (-6.0).into();
-        track.clips[0].pan = (-1.0).into();
-        let read = |_: &Clip, _: &Media, range: Range<i64>| Ok(samples(range, |_| [0.25, 0.25]));
-        let got = block(&project.timelines[0], &project, 0, 100, read).unwrap();
-        let half = 0.125 * std::f32::consts::SQRT_2;
-        assert!((got[50][0] - half).abs() < half * 0.01);
-        assert_eq!(got[50][1], 0.0);
-        project.timelines[0].tracks[1].enabled = false;
-        let muted = block(&project.timelines[0], &project, 0, 100, |_, _, _| {
-            panic!("disabled tracks must not decode")
-        })
-        .unwrap();
-        assert_eq!(muted, vec![[0.0; 2]; 100]);
-        project.timelines[0].tracks[1].enabled = true;
-        project.timelines[0].tracks[1].clips[0].gain_db = 24.0.into();
-        project.timelines[0].tracks[1].clips[0].pan = 0.0.into();
-        let limited = block(&project.timelines[0], &project, 0, 100, |_, _, range| {
-            Ok(samples(range, |_| [0.8, -0.8]))
-        })
-        .unwrap();
-        assert_eq!(limited, vec![[1.0, -1.0]; 100]);
-
-        // Opposing hot tracks must cancel before the final limiter, not after clipping each.
-        let mut second = project.timelines[0].tracks[1].clone();
-        second.id = "A2".into();
-        second.clips[0].id = "other".into();
-        project.timelines[0].tracks.push(second);
-        let cancelled = block(&project.timelines[0], &project, 0, 100, |clip, _, range| {
-            let value = if clip.id == "other" { -0.75 } else { 0.8 };
-            Ok(samples(range, |_| [value, value]))
-        })
-        .unwrap();
-        let expected = 0.05 * 10.0_f32.powf(24.0 / 20.0);
-        assert!(cancelled
-            .iter()
-            .flatten()
-            .all(|value| (value - expected).abs() < 1e-5));
-    }
-
-    #[test]
-    fn reverse_fractional_speed_preserves_sample_phase_across_blocks() {
-        let mut project = Project::sample();
-        let clip = &mut project.timelines[0].tracks[1].clips[0];
-        clip.speed = Speed { num: 3, den: 2 };
-        clip.reverse = true;
-        let read = |_: &Clip, _: &Media, range: Range<i64>| {
-            Ok(samples(range, |sample| {
-                #[allow(clippy::cast_possible_truncation)]
-                let value = (f64::from(i32::try_from(sample).unwrap()) / 1_000_000.0) as f32;
-                [value, -value]
-            }))
-        };
-        let timeline = &project.timelines[0];
-        let whole = block(timeline, &project, 101, 400, read).unwrap();
-        let mut split = block(timeline, &project, 101, 91, read).unwrap();
-        split.extend(block(timeline, &project, 192, 309, read).unwrap());
-        assert_eq!(whole, split);
-        for (i, pair) in whole.iter().enumerate() {
-            let offset = 101 + i64::try_from(i).unwrap();
-            #[allow(clippy::cast_possible_truncation)]
-            let expected =
-                (f64::from(i32::try_from(191_999 - offset).unwrap()) * 1.5 / 1_000_000.0) as f32;
-            assert!(
-                (pair[0] - expected).abs() < 1e-5,
-                "sample {offset}: {pair:?} != {expected}"
-            );
-            assert_eq!(pair[1], -pair[0]);
-        }
-    }
-
-    #[test]
-    fn speed_up_filters_frequencies_above_the_new_nyquist_limit() {
-        let mut project = Project::sample();
-        project.timelines[0].tracks[1].clips[0].speed = Speed { num: 2, den: 1 };
-        let got = block(&project.timelines[0], &project, 100, 100, |_, _, range| {
-            Ok(samples(range, |n| {
-                let value = if n % 2 == 0 { 0.5 } else { -0.5 };
-                [value, value]
-            }))
-        })
-        .unwrap();
-        assert!(
-            got.iter().flatten().all(|value| value.abs() < 0.002),
-            "aliased Nyquist tone: {got:?}"
-        );
-    }
-
-    #[test]
-    fn pan_is_equal_power_between_the_hard_pans_and_keeps_its_sides() {
-        let close = |got: Stereo, want: [f64; 2]| {
-            for (got, want) in got.into_iter().zip(want) {
-                assert!((f64::from(got) - want).abs() < 1e-6, "{got} != {want}");
-            }
-        };
-        let sqrt2 = std::f64::consts::SQRT_2;
-        let (sin, cos) = std::f64::consts::FRAC_PI_8.sin_cos();
-        close(pan(0.0), [1.0, 1.0]);
-        // Halfway to the left, the left side is the louder: cos and sin of an eighth of pi.
-        close(pan(-0.5), [sqrt2 * cos, sqrt2 * sin]);
-        close(pan(0.5), [sqrt2 * sin, sqrt2 * cos]);
-        close(pan(-1.0), [sqrt2, 0.0]);
-        close(pan(1.0), [0.0, sqrt2]);
-        for value in [-0.9_f32, -0.5, -0.2, 0.0, 0.3, 0.5, 0.8] {
-            let [left, right] = pan(value);
-            assert!((left * left + right * right - 2.0).abs() < 1e-5, "{value}");
-        }
-    }
-
-    #[test]
-    fn a_half_pan_of_a_stereo_clip_is_a_balance_of_its_two_channels() {
-        let mut project = Project::sample();
-        project.timelines[0].tracks[1].clips[0].pan = 0.5.into();
-        let read = |_: &Clip, _: &Media, range: Range<i64>| Ok(samples(range, |_| [0.2, 0.1]));
-        let got = block(&project.timelines[0], &project, 0, 100, read).unwrap();
-        let (sin, cos) = std::f64::consts::FRAC_PI_8.sin_cos();
-        let sqrt2 = std::f64::consts::SQRT_2;
-        let want = [0.2 * sqrt2 * sin, 0.1 * sqrt2 * cos];
-        for pair in got {
-            assert!((f64::from(pair[0]) - want[0]).abs() < 1e-6, "{pair:?}");
-            assert!((f64::from(pair[1]) - want[1]).abs() < 1e-6, "{pair:?}");
-        }
-    }
-
-    /// How loud a mix is: the root of its mean square, of the left channel.
-    fn loudness(mix: &[Stereo]) -> f64 {
-        let sum: f64 = mix.iter().map(|pair| f64::from(pair[0]).powi(2)).sum();
-        #[allow(clippy::cast_precision_loss)]
-        let count = mix.len() as f64;
-        (sum / count).sqrt()
-    }
-
-    /// A clip at `speed` of a tone of `hertz` at 48 kHz and amplitude 0.5, mixed for 4800
-    /// samples from sample 2400.
-    fn sped(speed: u32, hertz: f64) -> Vec<Stereo> {
-        let mut project = Project::sample();
-        project.timelines[0].tracks[1].clips[0].speed = Speed { num: speed, den: 1 };
-        block(
-            &project.timelines[0],
-            &project,
-            2400,
-            4800,
-            |_, _, range| {
-                Ok(samples(range, |n| {
-                    let phase =
-                        2.0 * std::f64::consts::PI * hertz * f64::from(i32::try_from(n).unwrap())
-                            / 48000.0;
-                    #[allow(clippy::cast_possible_truncation)]
-                    let value = (0.5 * phase.sin()) as f32;
-                    [value, value]
-                }))
-            },
-        )
-        .unwrap()
-    }
-
-    #[test]
-    fn at_16_times_tones_above_the_new_nyquist_frequency_do_not_fold_back() {
-        // At 16 times, what is above 1500 Hz in the media would be above 24 kHz when heard.
-        let mut hertz = 2000.0;
-        while hertz < 20000.0 {
-            let heard = loudness(&sped(16, hertz));
-            // A tone of amplitude 0.5 is 0.35 loud; folded back, it must be 40 dB quieter.
-            assert!(heard < 0.0035, "{hertz} Hz at 16 times is {heard} loud");
-            hertz *= 1.21;
-        }
-        // What is below the new Nyquist frequency is heard, as loud as it was.
-        let heard = loudness(&sped(16, 600.0));
-        assert!(
-            (heard - 0.3535).abs() < 0.01,
-            "600 Hz at 16 times is {heard} loud"
-        );
-        let heard = loudness(&sped(4, 3000.0));
-        assert!(
-            (heard - 0.3535).abs() < 0.01,
-            "3000 Hz at 4 times is {heard} loud"
-        );
-    }
+    use columbina_model::{Time, TrackKind};
 
     fn real_project(sample: crate::test_media::Sample) -> Option<Project> {
         let made = crate::test_media::media(sample)?;
@@ -650,12 +392,12 @@ mod tests {
         while let Some(packet) = decoder.next().unwrap() {
             expected.extend(packet.data.as_chunks::<2>().0.iter().copied());
         }
-        let mut mixer = Mixer::new(Arc::new(project), 0);
+        let mut mixer = Mixer::new(Arc::new(project), 0, Purpose::Preview);
         for from in [0, 960, 12000, 60000, 59000, 2000, 0] {
             let actual = mixer.block(from, 960).unwrap();
             let at = usize::try_from(from).unwrap();
             assert_eq!(actual, &expected[at..at + 960], "PCM at {from}");
-            assert_eq!(mixer.readers.len(), 1);
+            assert_eq!(mixer.feed.as_ref().unwrap().readers.len(), 1);
         }
     }
 
@@ -664,7 +406,7 @@ mod tests {
         let Some(project) = real_project(crate::test_media::Sample::MkvOffsetAudio) else {
             return;
         };
-        let mut mixer = Mixer::new(Arc::new(project), 0);
+        let mut mixer = Mixer::new(Arc::new(project), 0, Purpose::Preview);
         for from in [0, 60000, 0] {
             let actual = mixer.block(from, 960).unwrap();
             for (sample, pair) in actual.iter().enumerate() {
@@ -683,7 +425,7 @@ mod tests {
             return;
         };
         let project = Arc::new(project);
-        let mut source = Mixer::new(Arc::clone(&project), 0).source(
+        let mut source = Mixer::new(Arc::clone(&project), 0, Purpose::Preview).source(
             AudioFormat {
                 rate: 44100,
                 channels: 6,
@@ -714,67 +456,6 @@ mod tests {
         assert!(left.iter().any(|value| value.abs() > 0.08));
     }
 
-    #[test]
-    #[allow(clippy::float_cmp, reason = "a hard pan drops the other side exactly")]
-    fn a_hard_pan_drops_the_other_side_exactly() {
-        assert_eq!(pan(-1.0), [std::f32::consts::SQRT_2, 0.0]);
-        assert_eq!(pan(1.0), [0.0, std::f32::consts::SQRT_2]);
-    }
-
-    #[test]
-    #[allow(
-        clippy::cast_precision_loss,
-        clippy::float_cmp,
-        reason = "taps and samples far within an f64; the case that is given back as it is"
-    )]
-    fn a_sample_between_samples_is_a_windowed_sinc_of_those_about_it() {
-        use std::f64::consts::PI;
-        let pcm: Vec<Stereo> = (0..2048_i32)
-            .map(|n| {
-                let n = f64::from(n);
-                #[allow(clippy::cast_possible_truncation)]
-                let pair = [
-                    (0.4 * (n * 0.37).sin()) as f32,
-                    (0.3 * (n * 1.91).cos()) as f32,
-                ];
-                pair
-            })
-            .collect();
-        for cutoff in [1.0, 0.91875, 0.5, 1.0 / 16.0] {
-            for phase in [0.0, 0.25, 0.5, 0.875] {
-                if phase == 0.0 && cutoff == 1.0 {
-                    continue;
-                }
-                let index = 1000;
-                let reach = radius(cutoff);
-                let (mut sum, mut weights) = ([0.0; 2], 0.0);
-                for tap in 1 - reach..=reach {
-                    let x = tap as f64 - phase;
-                    let angle = PI * cutoff * x;
-                    let sinc = if angle.abs() < 1e-12 {
-                        1.0
-                    } else {
-                        angle.sin() / angle
-                    };
-                    let weight = sinc * (0.5 + 0.5 * (PI * x / reach as f64).cos());
-                    let at = usize::try_from(index + tap).unwrap();
-                    sum[0] += f64::from(pcm[at][0]) * weight;
-                    sum[1] += f64::from(pcm[at][1]) * weight;
-                    weights += weight;
-                }
-                let got = resampled(&pcm, 1000, phase, cutoff);
-                for side in 0..2 {
-                    let want = sum[side] / weights;
-                    assert!(
-                        (f64::from(got[side]) - want).abs() < 1e-5,
-                        "{cutoff} at {phase}: {} != {want}",
-                        got[side]
-                    );
-                }
-            }
-        }
-    }
-
     /// The blocks that a mix of the sound of `project` played on a device of `format` from
     /// sample `from` gives, at most `most` of them, until it ends.
     fn played(
@@ -783,7 +464,7 @@ mod tests {
         from: i64,
         most: usize,
     ) -> Vec<Vec<f32>> {
-        let mut source = Mixer::new(Arc::clone(project), 0).source(format, from);
+        let mut source = Mixer::new(Arc::clone(project), 0, Purpose::Preview).source(format, from);
         let mut blocks = vec![];
         while let Some(block) = source.next().unwrap() {
             blocks.push(block);
@@ -836,6 +517,71 @@ mod tests {
         }
         assert!(mono[0].iter().any(|value| value.abs() > 0.1));
         assert!(mono[0].iter().any(|value| *value < -0.1));
+    }
+
+    #[test]
+    fn a_muted_track_of_offline_media_leaves_the_mix_of_the_others_as_it_is() {
+        let Some(project) = real_project(crate::test_media::Sample::Wav) else {
+            return;
+        };
+        // A track muted (a track that was off before schema 4), of media that is not there.
+        let mut with = project.clone();
+        let mut offline = with.media[0].clone();
+        offline.id = "m9".into();
+        offline.path = "C:/nowhere/that/is/offline.wav".into();
+        with.media.push(offline);
+        let mut track = with.timelines[0].tracks[0].clone();
+        track.id = "A9".into();
+        track.audio.mute = true;
+        track.clips[0].id = "c9".into();
+        track.clips[0].source = columbina_model::Source::Media {
+            media: "m9".into(),
+            source_in: Time {
+                ticks: 0,
+                scale: 48000,
+            },
+        };
+        with.timelines[0].tracks.push(track);
+        let (with, without) = (Arc::new(with), Arc::new(project));
+        for purpose in [Purpose::Preview, Purpose::Export] {
+            let heard = Mixer::new(Arc::clone(&without), 0, purpose)
+                .block(0, 9600)
+                .unwrap();
+            let mut mixer = Mixer::new(Arc::clone(&with), 0, purpose);
+            assert_eq!(mixer.block(0, 9600).unwrap(), heard, "{purpose:?}");
+            assert_eq!(mixer.block(9600, 960).unwrap().len(), 960);
+        }
+        // Heard, the same track fails the mix, as it always did.
+        let mut loud = (*with).clone();
+        loud.timelines[0].tracks[1].audio.mute = false;
+        assert!(Mixer::new(Arc::new(loud), 0, Purpose::Export)
+            .block(0, 9600)
+            .is_err());
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp, reason = "the clipped copy is exactly at the rails")]
+    fn a_hot_mix_is_clipped_only_in_the_copy_for_the_device() {
+        let Some(mut project) = real_project(crate::test_media::Sample::Wav) else {
+            return;
+        };
+        project.timelines[0].tracks[0].clips[0].gain_db = 24.0.into();
+        let project = Arc::new(project);
+        let mixed = Mixer::new(Arc::clone(&project), 0, Purpose::Preview)
+            .block(0, 4800)
+            .unwrap();
+        let loudest = mixed
+            .iter()
+            .flatten()
+            .fold(0.0_f32, |most, sample| most.max(sample.abs()));
+        assert!(loudest > 1.2, "the mix itself is not clipped: {loudest}");
+        let stereo = AudioFormat {
+            rate: 48000,
+            channels: 2,
+        };
+        let played = played(&project, stereo, 0, 5);
+        assert!(played.iter().flatten().all(|sample| sample.abs() <= 1.0));
+        assert!(played.iter().flatten().any(|&sample| sample == 1.0));
     }
 
     /// A WAV of 16 bits, stereo, at 48 kHz, of `frames` frames that `sample` gives.

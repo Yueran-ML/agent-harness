@@ -101,6 +101,12 @@ pub const PREFETCH_WINDOW: f64 = 0.25;
 /// (plan T4a, `Node::settle`; and the zero test from the middle, T6).
 pub const SETTLE_FLOOR_DBFS: f32 = -90.0;
 
+/// The most that a graph runs before the sample where a run starts in the middle (playback from
+/// the middle, an export of a range): its settling, `Graph::settle`, but at most this, 10 s
+/// (plan, the coordinator's note on T8's review). What settles longer is not the same to the bit
+/// as a run from the start, only close to it.
+pub const PREROLL_MAX: f64 = 10.0;
+
 // --- Change of speed -------------------------------------------------------------------------
 
 /// The time of the source between two points where the stretch that keeps the pitch starts again

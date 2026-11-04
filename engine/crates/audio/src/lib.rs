@@ -12,6 +12,8 @@
 //! - [`fft`]: the transform of Fourier of real signals, planned before the sound runs.
 //! - [`constants`]: the numbers that the manual does not give, in one place.
 //! - [`fx`]: the nodes of the effects (the EQ, T7; Dynamics, T8).
+//! - [`graph`]: the graph of a timeline built from its project, its routing, mixing, delays and
+//!   levels (T4b), and [`feed`], where it takes the sound of its clips from.
 //! - `testing` (feature `testing`): the check that the output of a node does not depend on its
 //!   blocks, the allocator that counts what the thread of the mix takes, test nodes, signals.
 //!
@@ -22,8 +24,10 @@
 //! when the graph is built ([`Node::prepare`]).
 
 pub mod constants;
+pub mod feed;
 pub mod fft;
 pub mod fx;
+pub mod graph;
 pub mod node;
 pub mod rt;
 #[cfg(any(test, feature = "testing"))]

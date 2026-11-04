@@ -69,9 +69,6 @@ pub enum BuildError {
     /// The sound goes round in a loop through this strip (the model refuses it).
     #[error("the sound goes round in a loop through {0}")]
     Loop(Id),
-    /// A clip reads samples of its media beyond what a sample count holds.
-    #[error("clip {0} reads outside the samples of its media")]
-    Outside(Id),
 }
 
 /// A node of no sound of its own that delays by the latency of the insert it stands for: a
@@ -786,9 +783,46 @@ impl Graph {
         // of their tracks.
         let mut settle_in = vec![0u64; count];
 
+        // What the mix needs of each track: that it is heard, or that it drives a sidechain or a
+        // Ducker, itself or through the buses it feeds.
+        let mut driving: Vec<usize> = Vec::new();
+        for source in &sources {
+            let strip = source.strip;
+            let refs = strip
+                .dynamics
+                .compressor
+                .sidechain
+                .source
+                .iter()
+                .chain(strip.inserts.iter().filter_map(|insert| {
+                    insert.effect.sidechain().and_then(|s| s.source.as_ref())
+                }))
+                .chain(strip.track_fx.iter().flat_map(|ducker| &ducker.sources));
+            for reference in refs {
+                let at = match reference {
+                    SourceRef::Track(id) => track_at.get(id.as_str()),
+                    SourceRef::Bus(id) => bus_at.get(id.as_str()),
+                };
+                driving.extend(at.copied());
+            }
+        }
+        let needed: Vec<bool> = t
+            .tracks
+            .iter()
+            .filter(|r| r.kind == TrackKind::Audio && r.enabled)
+            .enumerate()
+            .map(|(at, track)| {
+                resolve::heard(t, track) || {
+                    let reached = reach(&feeds, &[at]);
+                    driving.iter().any(|&strip| reached[strip])
+                }
+            })
+            .collect();
+
         // The clips.
         let mut chains: Vec<ClipChain> = Vec::new();
         let mut clip_sources: Vec<ClipSource> = Vec::new();
+        let mut unplayable: Vec<Id> = Vec::new();
         let mut window = 0usize;
         for piece in resolve::sources_between(t, project, i64::MIN, i64::MAX) {
             let Some(&strip) = track_at.get(piece.track.as_str()) else {
@@ -800,18 +834,20 @@ impl Graph {
             let Some(clip) = track.clips.iter().find(|c| c.id == piece.clip) else {
                 continue;
             };
-            let mapping =
-                Mapping::new(clip, t).ok_or_else(|| BuildError::Outside(clip.id.clone()))?;
             let cut = cutoff(piece.speed);
             let reach = radius(cut);
-            let fits = |sample: i64| {
+            let fits = |mapping: &Mapping, sample: i64| {
                 mapping.checked_at(sample).is_some_and(|(at, _)| {
                     at.checked_sub(reach).is_some() && at.checked_add(reach + 1).is_some()
                 })
             };
-            if !fits(piece.from) || !fits(piece.to - 1) {
-                return Err(BuildError::Outside(clip.id.clone()));
-            }
+            // A clip that reads beyond what a count of samples holds is silent, and told of.
+            let Some(mapping) = Mapping::new(clip, t)
+                .filter(|mapping| fits(mapping, piece.from) && fits(mapping, piece.to - 1))
+            else {
+                unplayable.push(clip.id.clone());
+                continue;
+            };
             let layout = sources[strip].layout;
             let channels = layout.channels();
             let speed = (i128::from(piece.speed.0), i128::from(piece.speed.1));
@@ -843,6 +879,7 @@ impl Graph {
                 track: track.id.clone(),
                 media: piece.media.clone(),
                 channels,
+                heard: needed[strip],
             });
             chains.push(ClipChain {
                 strip,
@@ -1085,6 +1122,7 @@ impl Graph {
             clips_of,
             clips: chains,
             sources: clip_sources,
+            unplayable,
             scratch: ClipScratch {
                 window: Window {
                     data: vec![0.0; MAX_CHANNELS * window].into_boxed_slice(),

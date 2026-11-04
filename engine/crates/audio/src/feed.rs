@@ -15,6 +15,10 @@ pub struct ClipSource {
     pub media: String,
     /// The channels it is read in: its track's.
     pub channels: usize,
+    /// Whether the mix needs it: its track is heard (`resolve::heard`), or drives a sidechain or
+    /// a Ducker, itself or through the buses it feeds. A feed may give silence for a clip that
+    /// is not needed and cannot be read (a muted track of offline media), and go on.
+    pub heard: bool,
 }
 
 /// The sound of a clip could not be given; what went wrong is the feed's to keep (the thread of

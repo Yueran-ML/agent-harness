@@ -204,6 +204,8 @@ pub struct Graph {
     clips_of: Vec<std::ops::Range<usize>>,
     clips: Vec<ClipChain>,
     sources: Vec<ClipSource>,
+    /// The clips that read beyond what a count of samples holds, which are silent.
+    unplayable: Vec<Id>,
     scratch: ClipScratch,
     /// What feeds each strip, through a block.
     inputs: Vec<Planar>,
@@ -289,6 +291,13 @@ impl Graph {
     #[must_use]
     pub fn clips(&self) -> &[ClipSource] {
         &self.sources
+    }
+
+    /// The clips left silent because they read beyond the samples that a count holds (a speed
+    /// and a place in their media that no `i64` reaches): the rest of the graph plays.
+    #[must_use]
+    pub fn unplayable(&self) -> &[Id] {
+        &self.unplayable
     }
 
     /// The output of bus `bus`, if it is one.

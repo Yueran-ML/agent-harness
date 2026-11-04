@@ -1267,3 +1267,40 @@ fn a_gate_shuts_on_the_same_sample_whether_the_run_starts_at_the_beginning_or_in
         .fold(0.0_f32, |most, (a, b)| most.max((a - b).abs()));
     assert!(largest < 3.16e-5, "{largest}");
 }
+
+#[test]
+fn a_clip_that_reads_beyond_a_count_of_samples_is_silent_and_the_rest_plays() {
+    let mut project = tracks(2);
+    project.timelines[0].tracks[1].clips[0].source = columbina_model::Source::Media {
+        media: "m1".into(),
+        source_in: Time {
+            ticks: 1 << 62,
+            scale: 1,
+        },
+    };
+    let mut graph = built(&project, Purpose::Export);
+    assert_eq!(graph.unplayable(), ["c2".to_owned()]);
+    assert_eq!(graph.clips().len(), 1);
+    let mut read = feed(&graph, level(0.25));
+    close(play(&mut graph, &mut read, 0, 100)[0][50], 0.25, 0.0, "A1 alone");
+}
+
+#[test]
+fn a_clip_is_needed_where_its_track_is_heard_or_drives_a_sidechain() {
+    let mut project = tracks(3);
+    let timeline = &mut project.timelines[0];
+    timeline.tracks[1].audio.mute = true;
+    timeline.tracks[2].audio.mute = true;
+    timeline.buses.push(bus("B2", &[]));
+    timeline.tracks[2].audio.strip.outputs[0].bus = "B2".into();
+    let dynamics = &mut timeline.tracks[0].audio.strip.dynamics;
+    dynamics.compressor.sidechain.source = Some(SourceRef::Bus("B2".into()));
+    let graph = built(&project, Purpose::Export);
+    let heard: Vec<(&str, bool)> = graph
+        .clips()
+        .iter()
+        .map(|clip| (clip.clip.as_str(), clip.heard))
+        .collect();
+    // A2 is muted and drives nothing; A3 is muted but feeds B2, which keys A1.
+    assert_eq!(heard, [("c1", true), ("c2", false), ("c3", true)]);
+}

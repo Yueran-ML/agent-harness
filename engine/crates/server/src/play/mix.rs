@@ -13,6 +13,9 @@ use columbina_audio::graph::{self, route, Graph, Options, Purpose};
 use columbina_audio::node::Layout as Channels;
 use columbina_media::AudioFormat;
 use columbina_model::{resolve, Project};
+use serde_json::json;
+
+use crate::log::log;
 use reader::{Layout, Reader};
 
 type Stereo = [f32; 2];
@@ -30,6 +33,8 @@ struct Feed {
     read: BTreeSet<usize>,
     /// What went wrong first, since it was last taken.
     error: Option<String>,
+    /// The clips that the mix does not need and could not be read, told of once each.
+    silenced: BTreeSet<usize>,
 }
 
 impl Feed {
@@ -87,10 +92,27 @@ impl ClipFeed for Feed {
         out: &mut [&mut [f32]],
     ) -> Result<(), FeedError> {
         self.read.insert(clip);
-        self.fill(clip, range, out).map_err(|message| {
-            self.error.get_or_insert(message);
-            FeedError { clip }
-        })
+        match self.fill(clip, range, out) {
+            Ok(()) => Ok(()),
+            // A clip that is not heard (a muted track, which a track that was off before schema
+            // 4 is) plays silence when its media cannot be read, as it did when it was not read.
+            Err(message) if !self.sources[clip].heard => {
+                for out in out.iter_mut() {
+                    out.fill(0.0);
+                }
+                if self.silenced.insert(clip) {
+                    log(
+                        "sound_of_a_clip_unread",
+                        &json!({"clip": self.sources[clip].clip, "message": message}),
+                    );
+                }
+                Ok(())
+            }
+            Err(message) => {
+                self.error.get_or_insert(message);
+                Err(FeedError { clip })
+            }
+        }
     }
 }
 
@@ -134,7 +156,11 @@ impl Mixer {
                 readers: BTreeMap::new(),
                 read: BTreeSet::new(),
                 error: None,
+                silenced: BTreeSet::new(),
             });
+            for clip in graph.unplayable() {
+                log("sound_of_a_clip_unplayable", &json!({ "clip": clip }));
+            }
             self.graph = Some(graph);
         }
         Ok((
@@ -491,6 +517,46 @@ mod tests {
         }
         assert!(mono[0].iter().any(|value| value.abs() > 0.1));
         assert!(mono[0].iter().any(|value| *value < -0.1));
+    }
+
+    #[test]
+    fn a_muted_track_of_offline_media_leaves_the_mix_of_the_others_as_it_is() {
+        let Some(project) = real_project(crate::test_media::Sample::Wav) else {
+            return;
+        };
+        // A track muted (a track that was off before schema 4), of media that is not there.
+        let mut with = project.clone();
+        let mut offline = with.media[0].clone();
+        offline.id = "m9".into();
+        offline.path = "C:/nowhere/that/is/offline.wav".into();
+        with.media.push(offline);
+        let mut track = with.timelines[0].tracks[0].clone();
+        track.id = "A9".into();
+        track.audio.mute = true;
+        track.clips[0].id = "c9".into();
+        track.clips[0].source = columbina_model::Source::Media {
+            media: "m9".into(),
+            source_in: Time {
+                ticks: 0,
+                scale: 48000,
+            },
+        };
+        with.timelines[0].tracks.push(track);
+        let (with, without) = (Arc::new(with), Arc::new(project));
+        for purpose in [Purpose::Preview, Purpose::Export] {
+            let heard = Mixer::new(Arc::clone(&without), 0, purpose)
+                .block(0, 9600)
+                .unwrap();
+            let mut mixer = Mixer::new(Arc::clone(&with), 0, purpose);
+            assert_eq!(mixer.block(0, 9600).unwrap(), heard, "{purpose:?}");
+            assert_eq!(mixer.block(9600, 960).unwrap().len(), 960);
+        }
+        // Heard, the same track fails the mix, as it always did.
+        let mut loud = (*with).clone();
+        loud.timelines[0].tracks[1].audio.mute = false;
+        assert!(Mixer::new(Arc::new(loud), 0, Purpose::Export)
+            .block(0, 9600)
+            .is_err());
     }
 
     #[test]

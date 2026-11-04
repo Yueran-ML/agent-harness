@@ -273,7 +273,13 @@ pub fn panned(from: Layout, to: Layout, pan: &PanAt) -> Matrix {
     if !pan.on || to == Layout::Mono {
         return convert(from, to);
     }
-    let mono_like = matches!(from, Layout::Mono | Layout::Adaptive(_));
+    // An Adaptive track pans each of its channels as a mono source into a bus of fewer
+    // channels (C-F9), and goes into one of as many or more channel by channel (T4b's review).
+    let mono_like = match from {
+        Layout::Mono => true,
+        Layout::Adaptive(count) => count == 1 || usize::from(count) > to.channels(),
+        _ => false,
+    };
     let mut matrix = if to == Layout::Stereo {
         if mono_like {
             let [left, right] = equal_power(pan.x);

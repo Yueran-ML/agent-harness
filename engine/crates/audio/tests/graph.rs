@@ -9,7 +9,7 @@ use std::ops::Range;
 
 use columbina_audio::feed::{ClipFeed, FeedError};
 use columbina_audio::fx::{dynamics, eq};
-use columbina_audio::graph::{Graph, Made, Options, Owner, Purpose};
+use columbina_audio::graph::{Context, Graph, Made, Options, Owner, Purpose};
 use columbina_audio::node::{Block, Node, ParamId, Spec, Unsupported};
 use columbina_audio::testing::{Delay, Rng};
 use columbina_model::audio::fx::GainFx;
@@ -658,8 +658,9 @@ fn a_solo_silences_what_is_not_soloed_nor_solo_safe() {
     );
 }
 
-/// A maker of the nodes of the tests: a Gain effect of `n` decibels is a delay of `n` samples.
-fn delays(effect: &Effect) -> Option<Made> {
+/// A maker of the nodes of the tests: a Gain effect of `n` decibels is a delay of `n` samples,
+/// which knows no switch of its own; a De-Hummer is a [`Stepper`] whose `amount` is its value.
+fn delays(effect: &Effect, _: &Context) -> Option<Made> {
     match effect {
         Effect::Gain(gain) => {
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -667,9 +668,45 @@ fn delays(effect: &Effect) -> Option<Made> {
             Some(Made {
                 node: Box::new(Delay::new(samples)),
                 param: |_| None,
+                settle: 0,
+                switched: false,
             })
         }
+        Effect::DeHummer(_) => Some(Made {
+            node: Box::new(Stepper(0.0)),
+            param: |path| (path == "amount").then_some(ParamId(0)),
+            settle: 0,
+            switched: true,
+        }),
         _ => None,
+    }
+}
+
+/// A node that gives its parameter 0, as it is set or as its lane goes, on every channel, and
+/// nothing of what comes in.
+struct Stepper(f32);
+
+impl Node for Stepper {
+    fn prepare(&mut self, _: &Spec) -> Result<(), Unsupported> {
+        Ok(())
+    }
+    fn process(&mut self, ctx: &Block, _: &[&[f32]], output: &mut [&mut [f32]]) {
+        let lane = ctx.automation.get(ParamId(0));
+        for output in output.iter_mut() {
+            for (n, sample) in output.iter_mut().enumerate() {
+                *sample = lane.map_or(self.0, |lane| lane[n]);
+            }
+        }
+    }
+    fn latency(&self) -> u32 {
+        0
+    }
+    fn settle(&self) -> u32 {
+        0
+    }
+    fn reset(&mut self) {}
+    fn set(&mut self, _: ParamId, value: f32) {
+        self.0 = value;
     }
 }
 
@@ -761,10 +798,12 @@ fn an_insert_that_does_not_take_its_channels_is_left_out() {
         .strip
         .inserts
         .push(delay_insert(1));
-    let refusing = |_: &Effect| {
+    let refusing = |_: &Effect, _: &Context| {
         Some(Made {
             node: Box::new(Refusing),
             param: |_| None,
+            settle: 0,
+            switched: false,
         })
     };
     let mut graph = Graph::build(
@@ -837,8 +876,8 @@ fn the_controls_are_found_by_the_paths_of_their_lanes() {
         level_db: 0.0,
         pan: columbina_model::Pan::default(),
     });
-    let with_params = |effect: &Effect| {
-        delays(effect).map(|made| Made {
+    let with_params = |effect: &Effect, context: &Context| {
+        delays(effect, context).map(|made| Made {
             param: |path| (path == "gain_db").then_some(ParamId(7)),
             ..made
         })
@@ -1282,7 +1321,12 @@ fn a_clip_that_reads_beyond_a_count_of_samples_is_silent_and_the_rest_plays() {
     assert_eq!(graph.unplayable(), ["c2".to_owned()]);
     assert_eq!(graph.clips().len(), 1);
     let mut read = feed(&graph, level(0.25));
-    close(play(&mut graph, &mut read, 0, 100)[0][50], 0.25, 0.0, "A1 alone");
+    close(
+        play(&mut graph, &mut read, 0, 100)[0][50],
+        0.25,
+        0.0,
+        "A1 alone",
+    );
 }
 
 #[test]
@@ -1303,4 +1347,430 @@ fn a_clip_is_needed_where_its_track_is_heard_or_drives_a_sidechain() {
         .collect();
     // A2 is muted and drives nothing; A3 is muted but feeds B2, which keys A1.
     assert_eq!(heard, [("c1", true), ("c2", false), ("c3", true)]);
+}
+
+// --- The review of T4b -----------------------------------------------------------------------
+
+#[test]
+fn an_insert_is_given_its_listen_only_in_a_preview() {
+    // A maker that hears Listen: a De-Esser listened to is a delay of 5 samples.
+    fn listening(effect: &Effect, _: &Context) -> Option<Made> {
+        let Effect::DeEsser(fx) = effect else {
+            return None;
+        };
+        Some(Made {
+            node: Box::new(Delay::new(if fx.listen { 5 } else { 0 })),
+            param: |_| None,
+            settle: 0,
+            switched: false,
+        })
+    }
+    let mut project = base();
+    project.timelines[0].tracks[0]
+        .audio
+        .strip
+        .inserts
+        .push(Insert {
+            id: "fx1".into(),
+            on: true,
+            effect: Effect::DeEsser(columbina_model::audio::fx::DeEsserFx {
+                listen: true,
+                ..Default::default()
+            }),
+        });
+    let latency = |purpose| {
+        Graph::build(
+            &project,
+            0,
+            Options::new(256, purpose).with_maker(listening),
+        )
+        .unwrap()
+        .latency()
+    };
+    assert_eq!(latency(Purpose::Preview), 5);
+    assert_eq!(latency(Purpose::Export), 0);
+    assert_eq!(latency(Purpose::Analysis), 0);
+}
+
+/// Runs `graph` from 0 to `to`, in blocks of at most `block`, calling `at(graph, sample)` at
+/// each of `stops`, and gives the left of the monitor.
+fn run_with(
+    graph: &mut Graph,
+    feed: &mut dyn ClipFeed,
+    to: usize,
+    block: usize,
+    stops: &[usize],
+    mut at: impl FnMut(&mut Graph, usize),
+) -> Vec<f32> {
+    graph.start(0, feed).unwrap();
+    let monitor = graph.monitor().unwrap();
+    let mut left = Vec::new();
+    let mut done = 0;
+    while done < to {
+        if stops.contains(&done) {
+            at(graph, done);
+        }
+        let next = stops
+            .iter()
+            .copied()
+            .filter(|&s| s > done)
+            .min()
+            .unwrap_or(to);
+        let n = block.min(next - done).min(to - done);
+        graph.process(feed, n).unwrap();
+        left.extend_from_slice(&graph.output(monitor).channel(0)[..n]);
+        done += n;
+    }
+    left
+}
+
+#[test]
+fn an_output_switched_off_and_on_holds_nothing_stale_in_its_delay() {
+    // A1 into B1 delayed by 1000 to meet A2, which has a delay of 1000; A2 is silent.
+    let mut project = tracks(2);
+    project.timelines[0].tracks[1]
+        .audio
+        .strip
+        .inserts
+        .push(delay_insert(1000));
+    let run = |block: usize| {
+        let mut graph = Graph::build(
+            &project,
+            0,
+            Options::new(512, Purpose::Export).with_maker(delays),
+        )
+        .unwrap();
+        let output = graph
+            .control(&Owner::Track("A1".into()), "output.B1.on")
+            .unwrap();
+        let mut read = feed(&graph, |clip, _, _| if clip == "c1" { 0.5 } else { 0.0 });
+        run_with(
+            &mut graph,
+            &mut read,
+            40_000,
+            block,
+            &[5000, 30_000],
+            |graph, at| {
+                graph.set(output, if at == 5000 { 0.0 } else { 1.0 });
+            },
+        )
+    };
+    let left = run(512);
+    // Switched on again at 30000: for the first 1000 samples it lets out what went into its
+    // delay while it was off, which is silence.
+    assert!(
+        left[30_000..31_000].iter().all(|&s| s == 0.0),
+        "stale sound"
+    );
+    assert!(left[31_480..32_000].iter().all(|&s| (s - 0.5).abs() < 1e-6));
+    // Switched off, its tail still comes out after it.
+    assert!(left[5500] > 0.4 && left[6500..30_000].iter().all(|&s| s == 0.0));
+    let cut = run(97);
+    assert!(left
+        .iter()
+        .zip(&cut)
+        .all(|(a, b)| a.to_bits() == b.to_bits()));
+}
+
+#[test]
+fn a_control_of_another_graph_or_a_value_that_is_no_number_changes_nothing() {
+    let project = base();
+    let mut one = built(&project, Purpose::Export);
+    let other = built(&project, Purpose::Export);
+    let a1 = Owner::Track("A1".into());
+    let foreign = other.control(&a1, "fader_db").unwrap();
+    let own = one.control(&a1, "fader_db").unwrap();
+    assert_ne!(foreign, own);
+    one.set(foreign, -100.0);
+    one.set(own, f32::NAN);
+    one.set(own, f32::INFINITY);
+    let mut read = feed(&one, level(0.5));
+    one.process(&mut read, 1000).unwrap();
+    close(one.output(0).channel(0)[999], 0.5, 0.0, "as it was");
+}
+
+#[test]
+fn lanes_act_on_the_sound_of_their_time_behind_a_delay() {
+    let mut project = base();
+    let audio = &mut project.timelines[0].tracks[0].audio;
+    // A delay of 64 before a Stepper, which plays its lane: its step lands on sample 48000.
+    audio.strip.inserts.push(delay_insert(64));
+    audio.strip.inserts.push(Insert {
+        id: "fx2".into(),
+        on: true,
+        effect: Effect::DeHummer(columbina_model::audio::fx::DeHummerFx::default()),
+    });
+    audio.lanes.insert(
+        "insert.fx2.amount".into(),
+        lane(LaneKind::Continuous, &[(1.0, 0.25), (1.0, 0.5)]),
+    );
+    // And the mute after both, at 1.5 s.
+    audio.lanes.insert(
+        "mute".into(),
+        lane(LaneKind::Switch, &[(0.0, 0.0), (1.5, 1.0)]),
+    );
+    let mut graph = Graph::build(
+        &project,
+        0,
+        Options::new(512, Purpose::Export).with_maker(delays),
+    )
+    .unwrap();
+    assert_eq!(graph.latency(), 64);
+    let mut read = feed(&graph, level(0.0));
+    let left = play(&mut graph, &mut read, 0, 96_000).swap_remove(0);
+    close(left[47_999], 0.25, 0.0, "the step, before");
+    close(left[48_000], 0.5, 0.0, "the step, on its sample");
+    close(left[71_999], 0.5, 0.0, "the mute, before");
+    close(left[72_000], 0.0, 0.0, "the mute, on its sample");
+}
+
+#[test]
+fn a_gate_behind_a_delay_shuts_on_the_same_sample_from_any_start() {
+    let mut project = base();
+    project.timelines[0].tracks[0].clips[0].length = 225;
+    let strip = &mut project.timelines[0].tracks[0].audio.strip;
+    strip.inserts.push(delay_insert(13));
+    strip.dynamics.on = true;
+    let gate = &mut strip.dynamics.expander;
+    gate.on = true;
+    gate.mode = columbina_model::audio::fx::GateMode::Gate;
+    gate.threshold_db = -20.0;
+    gate.range_db = 40.0;
+    gate.hold_ms = 200.0;
+    let mut graph = Graph::build(
+        &project,
+        0,
+        Options::new(1024, Purpose::Export).with_maker(delays),
+    )
+    .unwrap();
+    let falling = |_: &str, n: i64, _: usize| {
+        #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+        let value = {
+            let seconds = n as f64 / 48000.0;
+            10f64.powf(-4.0 * seconds / 20.0)
+                * (2.0 * std::f64::consts::PI * 1000.0 * seconds).sin()
+        } as f32;
+        value
+    };
+    let mut read = feed(&graph, falling);
+    let frames = 48_000 * 8;
+    let whole = play(&mut graph, &mut read, 0, frames).swap_remove(0);
+    let preroll = i64::from(graph.preroll());
+    for skew in [7, 19] {
+        let late = preroll + 32 * ((3 * 48_000 - preroll) / 32) + skew;
+        let late_at = usize::try_from(late).unwrap();
+        let part = play(&mut graph, &mut read, late, frames - late_at).swap_remove(0);
+        let largest = whole[late_at..]
+            .iter()
+            .zip(&part)
+            .fold(0.0_f32, |most, (a, b)| most.max((a - b).abs()));
+        assert!(largest < 3.16e-5, "{skew}: {largest}");
+    }
+    // The same gate with no delay before it: its holds lie on the same grid of the timeline,
+    // and it shuts on the same sample.
+    project.timelines[0].tracks[0].audio.strip.inserts.clear();
+    let mut plain = Graph::build(
+        &project,
+        0,
+        Options::new(1024, Purpose::Export).with_maker(delays),
+    )
+    .unwrap();
+    let mut read = feed(&plain, falling);
+    let alone = play(&mut plain, &mut read, 0, frames).swap_remove(0);
+    let largest = whole
+        .iter()
+        .zip(&alone)
+        .fold(0.0_f32, |most, (a, b)| most.max((a - b).abs()));
+    assert!(largest < 3.16e-5, "behind a delay and not: {largest}");
+}
+
+#[test]
+fn the_equalizer_of_a_clip_does_not_depend_on_its_blocks_nor_on_where_the_run_starts() {
+    let mut project = tracks(2);
+    let eq = &mut project.timelines[0].tracks[0].clips[0].eq;
+    eq.on = true;
+    eq.bands[1].gain_db = 12.0;
+    eq.bands[1].freq = 80.0;
+    eq.bands[1].q = 8.0;
+    project.timelines[0].tracks[0].clips[0].speed = Speed { num: 3, den: 2 };
+    let mut graph = built(&project, Purpose::Export);
+    assert!(graph.settle() > 0, "the equalizer of the clip counts");
+    let noise = |clip: &str, n: i64, channel: usize| {
+        let mut rng = Rng::new(n.cast_unsigned() ^ ((channel as u64) << 40) ^ clip.len() as u64);
+        rng.signed() * 0.3
+    };
+    let mut read = feed(&graph, noise);
+    let whole = play_output(&mut graph, &mut read, None, (0, 150_000), &mut || 4096);
+    let mut rng = Rng::new(9);
+    let cut = play_output(&mut graph, &mut read, None, (0, 150_000), &mut || {
+        rng.log_range(4096)
+    });
+    assert_eq!(whole, cut);
+    assert!(whole[0].iter().any(|&s| s != 0.0));
+    let late = 70_011;
+    let part = play(&mut graph, &mut read, late, 80_000);
+    let largest = whole[0][70_011..]
+        .iter()
+        .zip(&part[0])
+        .fold(0.0_f32, |most, (a, b)| most.max((a - b).abs()));
+    assert!(largest < 3.16e-5, "{largest}");
+}
+
+#[test]
+fn the_effects_of_inserts_are_made_into_nodes() {
+    use columbina_model::audio::fx::{LimiterFx, NoiseReductionFx, StereoWidthFx};
+    let insert = |id: &str, effect| Insert {
+        id: id.into(),
+        on: true,
+        effect,
+    };
+    // A Gain of +6 dB.
+    let mut project = base();
+    project.timelines[0].tracks[0]
+        .audio
+        .strip
+        .inserts
+        .push(insert("fx1", Effect::Gain(GainFx { gain_db: 6.0 })));
+    let mut graph = built(&project, Purpose::Export);
+    assert!(graph
+        .control(&Owner::Track("A1".into()), "insert.fx1.gain_db")
+        .is_some());
+    let mut read = feed(&graph, level(0.25));
+    close(
+        play(&mut graph, &mut read, 0, 2000)[0][1500],
+        0.25 * 1.995_262_3,
+        1e-5,
+        "+6 dB",
+    );
+    // Off, it passes the sound as it is, by its own switch.
+    project.timelines[0].tracks[0].audio.strip.inserts[0].on = false;
+    let mut graph = built(&project, Purpose::Export);
+    let mut read = feed(&graph, level(0.25));
+    close(
+        play(&mut graph, &mut read, 0, 2000)[0][1500],
+        0.25,
+        0.0,
+        "off",
+    );
+    // A Limiter looks 64 samples ahead; Noise Reduction 1536.
+    let mut project = tracks(2);
+    project.timelines[0].tracks[0]
+        .audio
+        .strip
+        .inserts
+        .push(insert("fx1", Effect::Limiter(LimiterFx::default())));
+    project.timelines[0].tracks[1]
+        .audio
+        .strip
+        .inserts
+        .push(insert(
+            "fx1",
+            Effect::NoiseReduction(NoiseReductionFx::default()),
+        ));
+    assert_eq!(built(&project, Purpose::Export).latency(), 1536);
+    // Stereo Width does not take a mono track: left out.
+    let mut project = base();
+    let audio = &mut project.timelines[0].tracks[0].audio;
+    audio.format = TrackFormat::Mono;
+    audio.channels = 1;
+    audio
+        .strip
+        .inserts
+        .push(insert("fx1", Effect::StereoWidth(StereoWidthFx::default())));
+    let graph = built(&project, Purpose::Export);
+    assert!(graph
+        .control(&Owner::Track("A1".into()), "insert.fx1.width")
+        .is_none());
+}
+
+#[test]
+fn a_sidechain_is_lined_up_with_the_sound_that_it_acts_on() {
+    use columbina_model::audio::fx::NoiseReductionFx;
+    let dry = || Insert {
+        id: "fx1".into(),
+        on: true,
+        effect: Effect::NoiseReduction(NoiseReductionFx {
+            dry_wet: 0.0,
+            ..Default::default()
+        }),
+    };
+    // A1 is keyed by A2 and listens to it: what is heard is the burst of A2 at 10000, whichever
+    // of them is behind the other.
+    let heard = |delayed_source: bool| {
+        let mut project = tracks(2);
+        let timeline = &mut project.timelines[0];
+        let a1 = &mut timeline.tracks[0].audio.strip;
+        a1.dynamics.on = true;
+        a1.dynamics.compressor.on = true;
+        a1.dynamics.compressor.sidechain.on = true;
+        a1.dynamics.compressor.sidechain.listen = true;
+        a1.dynamics.compressor.sidechain.source = Some(SourceRef::Track("A2".into()));
+        let behind = usize::from(delayed_source);
+        timeline.tracks[behind].audio.strip.inserts.push(dry());
+        timeline.tracks[1].audio.strip.outputs.clear();
+        let mut graph = built(&project, Purpose::Preview);
+        let mut read = feed(&graph, |clip, n, _| {
+            f32::from(u8::from(clip == "c2" && (10_000..10_100).contains(&n)))
+        });
+        let left = play(&mut graph, &mut read, 0, 20_000).swap_remove(0);
+        left.iter().position(|&s| s.abs() > 0.5)
+    };
+    assert_eq!(heard(true), Some(10_000), "the source behind");
+    assert_eq!(heard(false), Some(10_000), "the target behind");
+}
+
+#[test]
+fn a_lane_of_the_pan_acts_on_the_sound_of_its_time_behind_the_delay_of_its_output() {
+    // A1, mono, panned by its lane from all left to all right at 0.5 s; its output is delayed
+    // by 1000 to meet A2, which has a delay of 1000 and is silent.
+    let mut project = tracks(2);
+    let timeline = &mut project.timelines[0];
+    let audio = &mut timeline.tracks[0].audio;
+    audio.format = TrackFormat::Mono;
+    audio.channels = 1;
+    audio.lanes.insert(
+        "pan.x".into(),
+        lane(LaneKind::Continuous, &[(0.5, -1.0), (0.5, 1.0)]),
+    );
+    timeline.tracks[1]
+        .audio
+        .strip
+        .inserts
+        .push(delay_insert(1000));
+    let mut graph = Graph::build(
+        &project,
+        0,
+        Options::new(512, Purpose::Export).with_maker(delays),
+    )
+    .unwrap();
+    assert_eq!(graph.latency(), 1000);
+    let mut read = feed(&graph, |clip, _, _| if clip == "c1" { 0.5 } else { 0.0 });
+    let got = play(&mut graph, &mut read, 0, 30_000);
+    close(got[0][23_999], 0.5, 1e-6, "left, before");
+    close(got[1][23_999], 0.0, 0.0, "right, before");
+    close(got[0][24_000], 0.0, 0.0, "left, on its sample");
+    close(got[1][24_000], 0.5, 1e-6, "right, on its sample");
+}
+
+#[test]
+fn an_adaptive_track_goes_into_a_bus_of_as_many_channels_one_by_one() {
+    let mut project = base();
+    let audio = &mut project.timelines[0].tracks[0].audio;
+    audio.format = TrackFormat::Adaptive;
+    audio.channels = 2;
+    let mut graph = built(&project, Purpose::Export);
+    let mut read = feed(
+        &graph,
+        |_, _, channel| if channel == 0 { 0.5 } else { 0.25 },
+    );
+    let got = play(&mut graph, &mut read, 0, 100);
+    close(got[0][50], 0.5, 1e-7, "the first into the left");
+    close(got[1][50], 0.25, 1e-7, "the second into the right");
+    // Of three into stereo, each is a mono source at the centre (C-F9).
+    let audio = &mut project.timelines[0].tracks[0].audio;
+    audio.channels = 3;
+    let mut graph = built(&project, Purpose::Export);
+    let mut read = feed(&graph, level(0.5));
+    let got = play(&mut graph, &mut read, 0, 100);
+    close(got[0][50], 1.5 * FRAC_1_SQRT_2, 1e-6, "three at the centre");
 }

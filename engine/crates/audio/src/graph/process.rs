@@ -120,14 +120,28 @@ impl Graph {
 
     /// Sets `control` to `value`, in the units of the model (decibels, −1 to 1, percent, and
     /// 0 or 1 for a switch, on at 0.5 and above): ramped over 10 ms from the next sample. A lane
-    /// of the same setting, where there is one, still takes its place.
+    /// of the same setting, where there is one, still takes its place. A control of another
+    /// graph, and a value that is not a number (NaN, ±∞), change nothing.
     pub fn set(&mut self, control: super::Control, value: f32) {
         let switch = |value: f32| if value >= 0.5 { 1.0 } else { 0.0 };
-        match control.0 {
-            Target::VcaFader(vca) => self.vcas[vca].fader.set(db_to_gain(value)),
-            Target::VcaMute(vca) => self.vcas[vca].mute.set(1.0 - switch(value)),
+        if control.0 != self.id || !value.is_finite() {
+            return;
+        }
+        match control.1 {
+            Target::VcaFader(vca) => {
+                if let Some(vca) = self.vcas.get_mut(vca) {
+                    vca.fader.set(db_to_gain(value));
+                }
+            }
+            Target::VcaMute(vca) => {
+                if let Some(vca) = self.vcas.get_mut(vca) {
+                    vca.mute.set(1.0 - switch(value));
+                }
+            }
             Target::Strip(strip, param) => {
-                let strip = &mut self.strips[strip];
+                let Some(strip) = self.strips.get_mut(strip) else {
+                    return;
+                };
                 match param {
                     StripParam::Trim => strip.trim.set(db_to_gain(value)),
                     StripParam::Invert => strip.sign.set(1.0 - 2.0 * switch(value)),
@@ -143,11 +157,31 @@ impl Graph {
                             }
                         }
                     }
-                    StripParam::Level(edge) => strip.edges[edge].level.set(db_to_gain(value)),
-                    StripParam::On(edge) => strip.edges[edge].on.set(switch(value)),
-                    StripParam::EdgePanX(edge) => strip.edges[edge].pan.x.set(value),
-                    StripParam::EdgePanY(edge) => strip.edges[edge].pan.y.set(value),
-                    StripParam::Node(stage, param) => strip.stages[stage].node.set(param, value),
+                    StripParam::Level(edge) => {
+                        if let Some(edge) = strip.edges.get_mut(edge) {
+                            edge.level.set(db_to_gain(value));
+                        }
+                    }
+                    StripParam::On(edge) => {
+                        if let Some(edge) = strip.edges.get_mut(edge) {
+                            edge.on.set(switch(value));
+                        }
+                    }
+                    StripParam::EdgePanX(edge) => {
+                        if let Some(edge) = strip.edges.get_mut(edge) {
+                            edge.pan.x.set(value);
+                        }
+                    }
+                    StripParam::EdgePanY(edge) => {
+                        if let Some(edge) = strip.edges.get_mut(edge) {
+                            edge.pan.y.set(value);
+                        }
+                    }
+                    StripParam::Node(stage, param) => {
+                        if let Some(stage) = strip.stages.get_mut(stage) {
+                            stage.node.set(param, value);
+                        }
+                    }
                 }
             }
         }

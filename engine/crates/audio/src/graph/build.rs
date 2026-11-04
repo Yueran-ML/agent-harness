@@ -16,41 +16,56 @@ use crate::db_to_gain;
 use crate::feed::ClipSource;
 use crate::fx::dynamics::{self, Dynamics, Param as DynamicsParam};
 use crate::fx::eq::{self, Eq, Field, Kind, Variant, Zone};
-use crate::node::{Block, Layout, Node, ParamId, Planar, Role, Spec, Unsupported};
+use crate::node::{Layout, Node, ParamId, Planar, Role, Spec};
 use crate::rt::{seqlock, Domain, Smoothed};
 
 use super::clip::{cutoff, radius, ClipChain, ClipPan, ClipScratch, Mapping, Window};
-use super::pdc::DelayLine;
+use super::pdc::{DelayLine, Delayer};
 use super::route::{balance, panned, PanAt};
 use super::strip::{Edge, Key, LaneOf, Pan, Stage, Strip, VcaState, VcaTerm};
 use super::taps::Tap;
 use super::{Control, Graph, Meter, Options, Out, OutputInfo, Owner, Purpose, StripParam, Target};
 
-/// An effect made into a node: the node, and the parameter of each path of its settings (the
-/// path after `insert.<id>.` of a lane, such as `ceiling_db`).
+/// What a maker is told of an insert besides its effect.
+#[derive(Clone, Copy, Debug)]
+pub struct Context<'a> {
+    /// The rate of the timeline.
+    pub rate: u32,
+    /// What the graph is for. The effect a maker is given has every Listen off already but in
+    /// a preview.
+    pub purpose: Purpose,
+    /// Whether the insert is on: its own switch, and the Effects In of its strip.
+    pub on: bool,
+    /// The lanes of the insert, by the path after `insert.<id>.` (`ceiling_db`).
+    pub lanes: &'a [(&'a str, &'a Lane)],
+}
+
+/// An effect made into a node.
 pub struct Made {
-    /// The node.
+    /// The node, not yet prepared.
     pub node: Box<dyn Node>,
-    /// The parameter of a path of its settings, if a lane may set it.
+    /// The parameter of a path of its settings (`ceiling_db`), if a lane may set it.
     pub param: fn(&str) -> Option<ParamId>,
+    /// Its settling for the slowest settings that its lanes take (T8's `settle_for`).
+    pub settle: u32,
+    /// Whether it takes the switch of its insert itself (`Context::on`, and its `on` lane): a
+    /// node that does not is replaced by a delay of its latency while the insert is off.
+    pub switched: bool,
 }
 
 impl std::fmt::Debug for Made {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Made").finish_non_exhaustive()
+        f.debug_struct("Made")
+            .field("settle", &self.settle)
+            .field("switched", &self.switched)
+            .finish_non_exhaustive()
     }
 }
 
-/// What makes the node of an effect of an insert, or none where there is no node for it yet.
-pub type Maker = fn(&Effect) -> Option<Made>;
+/// What makes the node of an effect of an insert, or none where there is no node for it.
+pub type Maker = fn(&Effect, &Context) -> Option<Made>;
 
-/// The node of an effect of an insert: none yet. The effects of T10–T13 add theirs here; an
-/// insert with no node passes its sound as it is.
-#[must_use]
-pub fn node_of(effect: &Effect) -> Option<Made> {
-    let _ = effect;
-    None
-}
+pub use super::build_fx::node_of;
 
 /// Why a graph could not be built.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -71,56 +86,40 @@ pub enum BuildError {
     Loop(Id),
 }
 
-/// A node of no sound of its own that delays by the latency of the insert it stands for: a
-/// bypassed insert, which "still delays its sound as it does when it is on" (the model's
-/// `Insert`).
-struct Bypass {
-    line: DelayLine,
+/// The graphs built so far: each graph's id is the count before it.
+static GRAPHS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Where a sidechain from `source`, of `layout`, comes from: its channels but the LFE (T8's
+/// review).
+fn key_of(source: usize, layout: Layout) -> Key {
+    let mut channels = [0; MAX_CHANNELS];
+    let mut count = 0;
+    for (channel, role) in layout.roles().iter().enumerate() {
+        if *role != Role::Lfe {
+            channels[count] = channel;
+            count += 1;
+        }
+    }
+    Key {
+        source,
+        channels,
+        count,
+    }
 }
 
-impl Node for Bypass {
-    fn prepare(&mut self, spec: &Spec) -> Result<(), Unsupported> {
-        if spec.layout != spec.output {
-            return Err(Unsupported::from(spec));
-        }
-        self.line = delay_line(spec.inputs(), self.line.length());
-        Ok(())
+/// A node of a strip, `offset` samples behind the input of the graph, with its sidechain `key`
+/// delayed by `side` samples.
+fn stage(node: Box<dyn Node>, key: Option<Key>, side: u32, max_block: usize, offset: u32) -> Stage {
+    let count = key.map_or(0, |key| key.count);
+    Stage {
+        node,
+        lanes: Box::new([]),
+        key,
+        keyed: Planar::new(count, if count > 0 { max_block } else { 0 }),
+        side: delay_line(count, usize::try_from(side).unwrap_or(0)),
+        offset: i64::from(offset),
+        processed: 0,
     }
-
-    fn process(&mut self, ctx: &Block, input: &[&[f32]], output: &mut [&mut [f32]]) {
-        for (output, input) in output.iter_mut().zip(input) {
-            output.copy_from_slice(input);
-        }
-        let length = self.line.length;
-        if length == 0 {
-            return;
-        }
-        for (output, line) in output
-            .iter_mut()
-            .zip(self.line.lines.chunks_exact_mut(length))
-        {
-            let mut at = self.line.at;
-            for sample in output.iter_mut() {
-                std::mem::swap(sample, &mut line[at]);
-                at = (at + 1) % length;
-            }
-        }
-        self.line.at = (self.line.at + ctx.frames) % length;
-    }
-
-    fn latency(&self) -> u32 {
-        u32::try_from(self.line.length()).unwrap_or(u32::MAX)
-    }
-
-    fn settle(&self) -> u32 {
-        0
-    }
-
-    fn reset(&mut self) {
-        self.line.reset();
-    }
-
-    fn set(&mut self, _: ParamId, _: f32) {}
 }
 
 /// A line that delays `channels` by `length` samples.
@@ -131,6 +130,10 @@ fn delay_line(channels: usize, length: usize) -> DelayLine {
         at: 0,
     }
 }
+
+/// A node of a strip before the latencies are known: the node, what it is, and the strip that
+/// its sidechain comes from.
+type Unplaced = (Box<dyn Node>, StageKind, Option<usize>);
 
 /// What a node of a strip is, to find the parameters that lanes and controls set.
 #[derive(Clone, Copy, Debug)]
@@ -234,6 +237,20 @@ pub(crate) fn param_of(meta: &Meta, path: &str) -> Option<StripParam> {
         }
     }
     None
+}
+
+/// `effect` with every Listen off: what an export or an analysis hears of it (Listen is only
+/// for the monitor, T8; the model's `unlisten` does the same to the lanes).
+pub(crate) fn unlistened(effect: &Effect) -> Effect {
+    let mut effect = effect.clone();
+    match &mut effect {
+        Effect::Limiter(fx) => fx.sidechain.listen = false,
+        Effect::DeEsser(fx) => fx.listen = false,
+        Effect::DeHummer(fx) => fx.listen = false,
+        Effect::NoiseReduction(fx) => fx.listen = false,
+        Effect::Gain(_) | Effect::SoftClipper(_) | Effect::StereoWidth(_) | Effect::Pitch(_) => {}
+    }
+    effect
 }
 
 /// The layout of a track of `format` and `channels`.
@@ -580,31 +597,47 @@ impl Graph {
                 }
             }
         }
-        // Sidechains: the source of the Compressor of Dynamics that is built.
+        // Sidechains: the sources of the Compressor of Dynamics that is built and of the Limiters
+        // of the inserts.
         let built_dynamics: Vec<bool> = sources
             .iter()
             .map(|s| ever_on(s.strip.dynamics.on, s.lanes, "dynamics.on"))
             .collect();
-        let keys: Vec<Option<usize>> = sources
+        let strip_of = |reference: &SourceRef| match reference {
+            SourceRef::Track(id) => track_at.get(id.as_str()).copied(),
+            SourceRef::Bus(id) => bus_at.get(id.as_str()).copied(),
+        };
+        let side_channels = |source: usize| {
+            let layout = sources[source].layout;
+            layout.channels() - usize::from(layout.lfe().is_some())
+        };
+        let keys: Vec<Vec<usize>> = sources
             .iter()
             .zip(&built_dynamics)
             .map(|(source, &built)| {
-                if !built {
-                    return None;
-                }
-                match &source.strip.dynamics.compressor.sidechain.source {
-                    Some(SourceRef::Track(id)) => track_at.get(id.as_str()).copied(),
-                    Some(SourceRef::Bus(id)) => bus_at.get(id.as_str()).copied(),
-                    None => None,
-                }
+                let dynamics = if built {
+                    source.strip.dynamics.compressor.sidechain.source.as_ref()
+                } else {
+                    None
+                };
+                let inserts = source
+                    .strip
+                    .inserts
+                    .iter()
+                    .filter_map(|insert| insert.effect.sidechain()?.source.as_ref());
+                dynamics
+                    .into_iter()
+                    .chain(inserts)
+                    .filter_map(strip_of)
+                    .collect()
             })
             .collect();
 
         // The order: Kahn's, the lowest place first, so that tracks keep their order.
         let mut before: Vec<Vec<usize>> = feeds.clone();
-        for (at, key) in keys.iter().enumerate() {
-            if let Some(source) = key {
-                before[*source].push(at);
+        for (at, keys) in keys.iter().enumerate() {
+            for &source in keys {
+                before[source].push(at);
             }
         }
         let mut waiting = vec![0usize; count];
@@ -659,7 +692,7 @@ impl Graph {
 
         // The nodes of each strip, in its Order.
         let listen = options.purpose == Purpose::Preview;
-        let mut stages: Vec<Vec<Stage>> = Vec::with_capacity(count);
+        let mut stages: Vec<Vec<Unplaced>> = Vec::with_capacity(count);
         let mut settles: Vec<u64> = vec![0; count];
         for (at, source) in sources.iter().enumerate() {
             let layout = source.layout;
@@ -670,49 +703,70 @@ impl Graph {
                 match stage {
                     Order::Fx => {
                         for insert in &source.strip.inserts {
-                            let Some(made) = (options.maker)(&insert.effect) else {
+                            let effect = if listen {
+                                insert.effect.clone()
+                            } else {
+                                unlistened(&insert.effect)
+                            };
+                            let prefix = format!("insert.{}.", insert.id);
+                            let lanes: Vec<(&str, &Lane)> = source
+                                .lanes
+                                .iter()
+                                .filter_map(|(path, lane)| {
+                                    Some((path.strip_prefix(prefix.as_str())?, lane))
+                                })
+                                .collect();
+                            let on = insert.on && source.strip.inserts_on;
+                            let context = Context {
+                                rate,
+                                purpose: options.purpose,
+                                on,
+                                lanes: &lanes,
+                            };
+                            let Some(made) = (options.maker)(&effect, &context) else {
                                 continue;
                             };
+                            let key = effect
+                                .sidechain()
+                                .and_then(|side| side.source.as_ref())
+                                .and_then(strip_of);
                             let mut node = made.node;
-                            if node.prepare(&spec).is_err() {
+                            let keyed = spec.with_sidechain(key.map_or(0, side_channels));
+                            if node.prepare(&keyed).is_err() {
                                 continue;
                             }
-                            let on = insert.on && source.strip.inserts_on;
-                            let (node, kind): (Box<dyn Node>, StageKind) = if on {
+                            if on || made.switched {
                                 meta.inserts.push(insert.id.clone());
-                                (node, StageKind::Insert(meta.inserts.len() - 1, made.param))
+                                settles[at] += u64::from(made.settle);
+                                let kind = StageKind::Insert(meta.inserts.len() - 1, made.param);
+                                list.push((node, kind, key));
                             } else {
                                 let length = usize::try_from(node.latency()).unwrap_or(0);
-                                let mut bypass = Bypass {
-                                    line: delay_line(0, length),
-                                };
-                                if bypass.prepare(&spec).is_err() {
-                                    continue;
+                                let mut bypass = Delayer::new(length);
+                                if bypass.prepare(&spec).is_ok() {
+                                    list.push((Box::new(bypass), StageKind::Bypass, None));
                                 }
-                                (Box::new(bypass), StageKind::Bypass)
-                            };
-                            settles[at] += u64::from(node.settle());
-                            list.push((node, kind, false));
+                            }
                         }
                     }
                     Order::Dynamics if built_dynamics[at] => {
                         let settings = dynamics_settings(&source.strip.dynamics, listen);
                         let mut node = Dynamics::new(&settings);
-                        let key = keys[at].map(|source| {
-                            sources[source].layout.channels()
-                                - usize::from(sources[source].layout.lfe().is_some())
-                        });
-                        let spec = spec.with_sidechain(key.unwrap_or(0));
+                        let key = source
+                            .strip
+                            .dynamics
+                            .compressor
+                            .sidechain
+                            .source
+                            .as_ref()
+                            .and_then(strip_of);
+                        let spec = spec.with_sidechain(key.map_or(0, side_channels));
                         if node.prepare(&spec).is_err() {
                             continue;
                         }
                         let slowest = slowest_dynamics(settings, source.lanes);
                         settles[at] += u64::from(Dynamics::settle_for(&slowest, rate));
-                        list.push((
-                            Box::new(node) as Box<dyn Node>,
-                            StageKind::Dynamics,
-                            key.is_some(),
-                        ));
+                        list.push((Box::new(node) as Box<dyn Node>, StageKind::Dynamics, key));
                     }
                     Order::Eq if ever_on(source.strip.eq.on, source.lanes, "eq.on") => {
                         let settings = eq_settings(&source.strip.eq, Variant::Strip);
@@ -722,38 +776,28 @@ impl Graph {
                         }
                         let slowest = slowest_eq(settings, source.lanes);
                         settles[at] += u64::from(eq::settle_for(&slowest, rate));
-                        list.push((Box::new(node) as Box<dyn Node>, StageKind::Eq, false));
+                        list.push((Box::new(node) as Box<dyn Node>, StageKind::Eq, None));
                     }
                     Order::Dynamics | Order::Eq => {}
                 }
             }
-            meta.stages = list.iter().map(|(_, kind, _)| *kind).collect();
-            stages.push(
-                list.into_iter()
-                    .map(|(node, _, keyed)| Stage {
-                        node,
-                        lanes: Box::new([]),
-                        keyed,
-                        offset: 0,
-                        processed: 0,
-                    })
-                    .collect(),
-            );
+            stages.push(list);
         }
 
-        // The latencies: of each strip its nodes'; at the input of a bus the longest of what
-        // feeds it, the tracks whose ADC is off aside; and what each connection is delayed by.
-        let latencies: Vec<u32> = stages
-            .iter()
-            .map(|list| list.iter().map(|stage| stage.node.latency()).sum())
-            .collect();
-        let mut arrival = vec![0u32; count];
+        // The latencies, strip by strip in their order: at the input of a bus the longest of what
+        // feeds it, the tracks whose ADC is off aside; through a strip its nodes'; a node with a
+        // sidechain has its sidechain delayed to the sound it acts on, or, where the sidechain is
+        // the later, the strip delayed before the node to the sidechain (T4b's review, P3-6).
         let mut feeders: Vec<Vec<usize>> = vec![Vec::new(); count];
         for (from, to) in feeds.iter().enumerate() {
             for &to in to {
                 feeders[to].push(from);
             }
         }
+        let mut arrival = vec![0u32; count];
+        let mut latencies = vec![0u32; count];
+        let mut built: Vec<Vec<Stage>> = (0..count).map(|_| Vec::new()).collect();
+        let mut lists: Vec<Option<Vec<_>>> = stages.into_iter().map(Some).collect();
         for &at in &order {
             arrival[at] = feeders[at]
                 .iter()
@@ -761,6 +805,31 @@ impl Graph {
                 .map(|&from| arrival[from] + latencies[from])
                 .max()
                 .unwrap_or(0);
+            let spec = Spec::new(rate, max_block, sources[at].layout);
+            let mut offset = arrival[at];
+            let mut kinds = Vec::new();
+            for (node, kind, key) in lists[at].take().unwrap_or_default() {
+                let mut side = 0;
+                if let Some(source) = key {
+                    let from = arrival[source] + latencies[source];
+                    if from > offset {
+                        let mut align = Delayer::new(usize::try_from(from - offset).unwrap_or(0));
+                        if align.prepare(&spec).is_ok() {
+                            built[at].push(stage(Box::new(align), None, 0, max_block, offset));
+                            kinds.push(StageKind::Bypass);
+                            offset = from;
+                        }
+                    }
+                    side = offset.saturating_sub(from);
+                }
+                let latency = node.latency();
+                let key = key.map(|source| key_of(source, sources[source].layout));
+                built[at].push(stage(node, key, side, max_block, offset));
+                kinds.push(kind);
+                offset += latency;
+            }
+            metas[at].stages = kinds;
+            latencies[at] = offset - arrival[at];
         }
         let out = |at: usize| arrival[at] + latencies[at];
         let mains: Vec<usize> = (tracks..count)
@@ -788,16 +857,17 @@ impl Graph {
         let mut driving: Vec<usize> = Vec::new();
         for source in &sources {
             let strip = source.strip;
-            let refs = strip
-                .dynamics
-                .compressor
-                .sidechain
-                .source
-                .iter()
-                .chain(strip.inserts.iter().filter_map(|insert| {
-                    insert.effect.sidechain().and_then(|s| s.source.as_ref())
-                }))
-                .chain(strip.track_fx.iter().flat_map(|ducker| &ducker.sources));
+            let refs =
+                strip
+                    .dynamics
+                    .compressor
+                    .sidechain
+                    .source
+                    .iter()
+                    .chain(strip.inserts.iter().filter_map(|insert| {
+                        insert.effect.sidechain().and_then(|s| s.source.as_ref())
+                    }))
+                    .chain(strip.track_fx.iter().flat_map(|ducker| &ducker.sources));
             for reference in refs {
                 let at = match reference {
                     SourceRef::Track(id) => track_at.get(id.as_str()),
@@ -916,7 +986,7 @@ impl Graph {
             for &feeder in &feeders[at] {
                 from = from.max(settle_out[feeder]);
             }
-            if let Some(source) = keys[at] {
+            for &source in &keys[at] {
                 from = from.max(settle_out[source]);
             }
             settle_out[at] = from.saturating_add(settles[at]);
@@ -930,18 +1000,13 @@ impl Graph {
 
         // The strips themselves, their lanes found and their buffers taken.
         let mut strips = Vec::with_capacity(count);
-        let mut lists = stages.into_iter();
+        let mut lists = built.into_iter();
         for (at, source) in sources.iter().enumerate() {
             let meta = &metas[at];
             let layout = source.layout;
             let channels = layout.channels();
             let model = source.strip;
-            let mut list = lists.next().unwrap_or_default();
-            let mut offset = i64::from(arrival[at]);
-            for stage in &mut list {
-                stage.offset = offset;
-                offset += i64::from(stage.node.latency());
-            }
+            let list = lists.next().unwrap_or_default();
             let after = i64::from(out(at));
             let strip_pan = pan_at(&model.pan);
             let mut edges = Vec::new();
@@ -974,11 +1039,13 @@ impl Graph {
                         y: smoothed(pan.y, rate),
                         divergence: smoothed(pan.divergence, rate),
                         lanes: [None; 3],
+                        last: pan,
                     },
                     from: layout,
                     to,
                     matrix: panned(layout, to, &pan),
                     delay: delay_line(channels, usize::try_from(delay).unwrap_or(0)),
+                    stale: 0,
                 });
             }
             let mut strip = Strip {
@@ -988,26 +1055,6 @@ impl Graph {
                 sign: smoothed(if model.invert { -1.0 } else { 1.0 }, rate),
                 sign_lane: None,
                 stages: list,
-                key: keys[at].map(|source| {
-                    let roles = sources[source].layout.roles();
-                    let mut channels = [0; MAX_CHANNELS];
-                    let mut count = 0;
-                    for (channel, role) in roles.iter().enumerate() {
-                        if *role != Role::Lfe {
-                            channels[count] = channel;
-                            count += 1;
-                        }
-                    }
-                    Key {
-                        source,
-                        channels,
-                        count,
-                    }
-                }),
-                keyed: match keys[at] {
-                    Some(source) => Planar::new(sources[source].layout.channels(), max_block),
-                    None => Planar::new(0, 0),
-                },
                 fader: smoothed(db_to_gain(single(model.fader_db)), rate),
                 fader_lane: None,
                 mute: smoothed(switch(!source.mute), rate),
@@ -1062,14 +1109,33 @@ impl Graph {
                             StripParam::PanY => 1,
                             _ => 2,
                         };
+                        // A pan acts after the delay of its connection: each reads its lane that
+                        // much later (T4b's review, P3-7).
+                        let mut first = true;
                         for edge in strip.edges.iter_mut().filter(|edge| !edge.send) {
-                            edge.pan.lanes[which] = Some(index);
+                            let mut at = index;
+                            if !first {
+                                at = strip.lanes.len();
+                                strip.lanes.push(LaneOf {
+                                    lane: lane.clone(),
+                                    delay: 0,
+                                });
+                            }
+                            first = false;
+                            strip.lanes[at].delay =
+                                after + i64::try_from(edge.delay.length()).unwrap_or(0);
+                            edge.pan.lanes[which] = Some(at);
                         }
                     }
                     StripParam::Level(edge) => strip.edges[edge].level_lane = Some(index),
                     StripParam::On(edge) => strip.edges[edge].on_lane = Some(index),
-                    StripParam::EdgePanX(edge) => strip.edges[edge].pan.lanes[0] = Some(index),
-                    StripParam::EdgePanY(edge) => strip.edges[edge].pan.lanes[1] = Some(index),
+                    StripParam::EdgePanX(edge) | StripParam::EdgePanY(edge) => {
+                        let which = usize::from(matches!(param, StripParam::EdgePanY(_)));
+                        let edge = &mut strip.edges[edge];
+                        strip.lanes[index].delay =
+                            after + i64::try_from(edge.delay.length()).unwrap_or(0);
+                        edge.pan.lanes[which] = Some(index);
+                    }
                     StripParam::Node(stage, param) => node_lanes[stage].push((param, index)),
                 }
             }
@@ -1094,8 +1160,8 @@ impl Graph {
         }
 
         let mut keyed_sources = vec![false; count];
-        for source in keys.iter().flatten() {
-            keyed_sources[*source] = true;
+        for &source in keys.iter().flatten() {
+            keyed_sources[source] = true;
         }
         let outputs: Vec<Out> = outs
             .iter()
@@ -1114,6 +1180,7 @@ impl Graph {
             .collect();
         let monitor = monitor_strip.and_then(|strip| outs.iter().position(|&at| at == strip));
         let mut graph = Graph {
+            id: GRAPHS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             rate,
             max_block,
             purpose: options.purpose,
@@ -1182,8 +1249,8 @@ impl Graph {
         if let Owner::Vca(id) = owner {
             let vca = self.vca_ids.iter().position(|v| v == id)?;
             return match path {
-                "fader_db" => Some(Control(Target::VcaFader(vca))),
-                "mute" => Some(Control(Target::VcaMute(vca))),
+                "fader_db" => Some(Control(self.id, Target::VcaFader(vca))),
+                "mute" => Some(Control(self.id, Target::VcaMute(vca))),
                 _ => None,
             };
         }
@@ -1193,7 +1260,7 @@ impl Graph {
         } else {
             param_of(&self.metas[strip], path)?
         };
-        Some(Control(Target::Strip(strip, param)))
+        Some(Control(self.id, Target::Strip(strip, param)))
     }
 
     /// Its outputs: the main outputs, then the bus that is monitored if it is not one.

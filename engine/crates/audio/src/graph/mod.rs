@@ -34,6 +34,7 @@
 //! `build.rs`). Everything is taken when the graph is built.
 
 mod build;
+mod build_fx;
 mod clip;
 mod pdc;
 mod process;
@@ -45,7 +46,7 @@ mod tests;
 
 use columbina_model::Id;
 
-pub use build::{node_of, BuildError, Made, Maker};
+pub use build::{node_of, BuildError, Context, Made, Maker};
 pub use clip::{radius, resampled};
 pub use taps::Level;
 
@@ -121,7 +122,7 @@ pub enum Owner {
 /// A setting of the graph that can be changed while it plays ([`Graph::set`]): found by its
 /// owner and the path of its lane ([`Graph::control`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Control(pub(crate) Target);
+pub struct Control(pub(crate) u64, pub(crate) Target);
 
 /// What a [`Control`] sets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -193,6 +194,8 @@ pub struct Meter {
 
 /// The graph of the sound of a timeline. See the module.
 pub struct Graph {
+    /// Which graph it is, so that a control of another graph does nothing to it.
+    id: u64,
     rate: u32,
     max_block: usize,
     purpose: Purpose,

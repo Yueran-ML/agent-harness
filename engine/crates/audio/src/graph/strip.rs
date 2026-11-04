@@ -36,8 +36,11 @@ pub(crate) struct Stage {
     pub(crate) node: Box<dyn Node>,
     /// Its parameters that lanes set, and the lanes.
     pub(crate) lanes: Box<[(ParamId, usize)]>,
-    /// Whether it takes the strip's sidechain.
-    pub(crate) keyed: bool,
+    /// Where its sidechain comes from, if it has one; the sidechain of the block; and the
+    /// delay that lines the sidechain up with the sound it acts on (T4b's review, P3-6).
+    pub(crate) key: Option<Key>,
+    pub(crate) keyed: Planar,
+    pub(crate) side: DelayLine,
     /// The latency of the graph before it: its sample 0 is that of the timeline this far back.
     pub(crate) offset: i64,
     /// The samples it has processed since it was reset ([`Block::start`]).
@@ -88,6 +91,8 @@ pub(crate) struct Pan {
     pub(crate) y: Smoothed,
     pub(crate) divergence: Smoothed,
     pub(crate) lanes: [Option<usize>; 3],
+    /// What the matrix of its edge was last worked out for, while it moves.
+    pub(crate) last: PanAt,
 }
 
 impl Pan {
@@ -130,6 +135,10 @@ pub(crate) struct Edge {
     pub(crate) matrix: Matrix,
     /// The delay that lines it up with the other paths into its bus.
     pub(crate) delay: DelayLine,
+    /// How many more samples of silence its delay line takes before it holds nothing: what went
+    /// in before it was switched off still comes out, and nothing of it is left for when it is
+    /// switched on again.
+    pub(crate) stale: usize,
 }
 
 impl Edge {
@@ -148,8 +157,6 @@ pub(crate) struct Strip {
     pub(crate) sign: Smoothed,
     pub(crate) sign_lane: Option<usize>,
     pub(crate) stages: Vec<Stage>,
-    pub(crate) key: Option<Key>,
-    pub(crate) keyed: Planar,
     pub(crate) fader: Smoothed,
     pub(crate) fader_lane: Option<usize>,
     /// 1 where it is heard, 0 where it is muted.
@@ -272,25 +279,23 @@ impl Strip {
 
     /// The nodes, in their order, the sidechain taken from `pres`.
     fn nodes(&mut self, rate: u32, frames: usize, pres: &[Planar]) {
-        if let Some(key) = &self.key {
-            let source = &pres[key.source];
-            for (into, &from) in key.channels[..key.count].iter().enumerate() {
-                self.keyed.channel_mut(into)[..frames]
-                    .copy_from_slice(&source.channel(from)[..frames]);
-            }
-        }
-        // The nodes.
         let Strip {
             stages,
             values,
             max_block,
-            keyed,
-            key,
             work,
             spare,
             ..
         } = self;
         for stage in stages.iter_mut() {
+            if let Some(key) = &stage.key {
+                let source = &pres[key.source];
+                for (into, &from) in key.channels[..key.count].iter().enumerate() {
+                    stage.keyed.channel_mut(into)[..frames]
+                        .copy_from_slice(&source.channel(from)[..frames]);
+                }
+                stage.side.process(&mut stage.keyed, key.count, frames);
+            }
             let mut list = [Automated {
                 param: ParamId(0),
                 values: &[],
@@ -304,14 +309,14 @@ impl Strip {
                 count += 1;
             }
             let mut side: [&[f32]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
-            let sides = match key {
-                Some(key) if stage.keyed => {
+            let sides = match &stage.key {
+                Some(key) => {
                     for (side, channel) in side.iter_mut().zip(0..key.count) {
-                        *side = &keyed.channel(channel)[..frames];
+                        *side = &stage.keyed.channel(channel)[..frames];
                     }
                     key.count
                 }
-                _ => 0,
+                None => 0,
             };
             let block = Block {
                 start: stage.processed,
@@ -384,7 +389,8 @@ impl Strip {
         } = self;
         let value = |lane: usize, n: usize| values[lane * *max_block + n];
         for edge in edges.iter_mut() {
-            if edge.silent() {
+            let quiet = edge.silent();
+            if quiet && edge.stale == 0 {
                 continue;
             }
             for (n, level) in levels[..frames].iter_mut().enumerate() {
@@ -436,14 +442,24 @@ impl Strip {
                         Some(lane) => value(lane, n) / 100.0,
                         None => pan.divergence.next_value(),
                     };
-                    panned(edge.from, edge.to, &at).mix_sample(scratch, into, n);
+                    if at != edge.pan.last {
+                        edge.matrix = panned(edge.from, edge.to, &at);
+                        edge.pan.last = at;
+                    }
+                    edge.matrix.mix_sample(scratch, into, n);
                 }
                 if !edge.pan.moves() {
-                    edge.matrix = panned(edge.from, edge.to, &edge.pan.now());
+                    edge.pan.last = edge.pan.now();
+                    edge.matrix = panned(edge.from, edge.to, &edge.pan.last);
                 }
             } else {
                 edge.matrix.mix(scratch, into, frames);
             }
+            edge.stale = if quiet {
+                edge.stale.saturating_sub(frames)
+            } else {
+                edge.delay.length()
+            };
         }
     }
 
@@ -460,6 +476,7 @@ impl Strip {
             smoothed.finish();
         }
         for stage in &mut self.stages {
+            stage.side.reset();
             stage.node.reset();
             stage.processed = 0;
             // The grid of a node is that of the timeline: two's complement keeps the remainder
@@ -478,8 +495,10 @@ impl Strip {
             ] {
                 smoothed.finish();
             }
-            edge.matrix = panned(edge.from, edge.to, &edge.pan.now());
+            edge.pan.last = edge.pan.now();
+            edge.matrix = panned(edge.from, edge.to, &edge.pan.last);
             edge.delay.reset();
+            edge.stale = 0;
         }
         self.pre_tap.reset();
         self.post_tap.reset();

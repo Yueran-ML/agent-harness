@@ -83,6 +83,13 @@ pub fn one_track() -> Project {
     project
 }
 
+/// A session made and not yet sent ([`Sim::prepare`]).
+pub struct Prepared {
+    epoch: u64,
+    session: Box<Session>,
+    ring: columbina_audio::rt::SampleConsumer,
+}
+
 /// A session played on a clock of its own. See the module.
 pub struct Sim {
     pub engine: Engine,
@@ -138,6 +145,46 @@ impl Sim {
     /// A session of `project` with [`node_of`]'s effects.
     pub fn of(project: &Project, from: i64, tone: Tone) -> Sim {
         Sim::start(project, from, tone, node_of)
+    }
+
+    /// Another session of `project` from `from`, made (off the threads of the sound) and not yet
+    /// sent ([`Sim::send`]).
+    pub fn prepare(&mut self, project: &Project, from: i64) -> Prepared {
+        let (producer, consumer) = samples(16_384, 2);
+        let rate = project.timelines[0].sample_rate;
+        let mut resampler = Resampler::new(rate, RATE, 2, MOST_BLOCK);
+        resampler.start(from);
+        let run = self.run_of(project, resampler.first_input());
+        let epoch = self.epoch + 1;
+        let session = Session::new(
+            epoch,
+            run,
+            resampler,
+            producer,
+            Arc::clone(&self.control.shared),
+        );
+        Prepared {
+            epoch,
+            session: Box::new(session),
+            ring: consumer,
+        }
+    }
+
+    /// Sends a session made by [`Sim::prepare`], as a seek does: the session before stopped, the
+    /// device given the new ring, the thread of the mix the new graph. Takes no memory.
+    pub fn send(&mut self, prepared: Prepared) {
+        self.epoch = prepared.epoch;
+        self.commands.push(Command::Stop(self.epoch)).unwrap();
+        self.control
+            .orders
+            .push(Order::Play(Feeding {
+                generation: self.epoch,
+                ring: prepared.ring,
+            }))
+            .unwrap();
+        self.commands
+            .push(Command::Start(prepared.session))
+            .unwrap();
     }
 
     /// Starts another session of `project` from `from`, as a seek does: the device is given its
@@ -200,9 +247,11 @@ impl Sim {
         let mut graph = Graph::build(project, 0, options).unwrap();
         let mut tone = self.tone;
         graph.start(at, &mut tone).unwrap();
-        let (feed, mut fetch) = ring_feed(&graph, graph.reads_at(), Arc::clone(&self.counters));
-        while fetch.pass(&mut tone, 64) > 0 {}
-        self.fetches.push((fetch, tone));
+        let (feed, fetches) = ring_feed(&graph, graph.reads_at(), Arc::clone(&self.counters));
+        for mut fetch in fetches {
+            while fetch.pass(&mut tone, 64) > 0 {}
+            self.fetches.push((fetch, tone));
+        }
         self.controls = Some(graph.controls());
         Box::new(Run::new(graph, feed, None, i64::MAX))
     }
@@ -220,6 +269,11 @@ impl Sim {
     /// Sends a graph of `project` to be swapped in at `at`.
     pub fn swap_at(&mut self, project: &Project, at: i64) {
         let run = self.run_of(project, at);
+        self.send_swap(run, at);
+    }
+
+    /// Sends `run` (made by [`Sim::run_of`]) to be swapped in at `at`. Takes no memory.
+    pub fn send_swap(&mut self, run: Box<Run>, at: i64) {
         self.commands
             .push(Command::Swap {
                 epoch: self.epoch,

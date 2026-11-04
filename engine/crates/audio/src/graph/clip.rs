@@ -15,6 +15,7 @@ use crate::constants::MAX_CHANNELS;
 use crate::feed::{ClipFeed, FeedError};
 use crate::fx::eq::Eq;
 use crate::node::{Block, Node, Planar};
+use crate::rt::{Domain, Smoothed};
 
 use super::route::balance;
 
@@ -281,6 +282,43 @@ impl Reach {
     }
 }
 
+/// The fixed gain and pan of a clip, changed as it plays (T5's review: a clip's volume line or
+/// pan dragged is a setting, not another graph): a multiplier of its gain from what it was built
+/// with, and the two gains of its balance, each ramped over 10 ms. Until either is set, the
+/// clip sounds as it was built, to the bit.
+#[derive(Debug)]
+pub(crate) struct ClipLevel {
+    /// The fixed gain it was built with, in decibels; none for keyframes.
+    pub(crate) gain_db: Option<f32>,
+    pub(crate) scale: Smoothed,
+    pub(crate) scaled: bool,
+    /// Whether its pan is fixed (on a stereo track).
+    pub(crate) fixed_pan: bool,
+    pub(crate) sides: [Smoothed; 2],
+    pub(crate) panned: bool,
+}
+
+impl ClipLevel {
+    /// The level of a clip of a fixed gain `gain_db` (or none) and pan `pan` (or none), at
+    /// `rate`. Made off the thread of the mix.
+    pub(crate) fn new(gain_db: Option<f32>, pan: Option<[f32; 2]>, rate: u32) -> Self {
+        let smoothed = |value: f32| {
+            let mut smoothed = Smoothed::new(value, Domain::Linear);
+            smoothed.prepare(rate);
+            smoothed
+        };
+        let sides = pan.unwrap_or([1.0, 1.0]);
+        ClipLevel {
+            gain_db,
+            scale: smoothed(1.0),
+            scaled: false,
+            fixed_pan: pan.is_some(),
+            sides: [smoothed(sides[0]), smoothed(sides[1])],
+            panned: false,
+        }
+    }
+}
+
 /// A clip in the graph.
 pub(crate) struct ClipChain {
     /// The strip of its track.
@@ -302,6 +340,8 @@ pub(crate) struct ClipChain {
     pub(crate) eq: Option<Eq>,
     /// The samples that its equalizer has processed since it was reset.
     pub(crate) processed: u64,
+    /// Its fixed gain and pan, as they are set while it plays.
+    pub(crate) level: ClipLevel,
 }
 
 impl ClipChain {
@@ -313,13 +353,27 @@ impl ClipChain {
         first.min(last) - self.radius..first.max(last) + self.radius + 1
     }
 
-    /// Where it reads its media.
+    /// How far either way from the sample of the source that a sample of the timeline maps to
+    /// the chain reads: the filter's reach. (T13's stretch reads further: its version of this
+    /// takes the place of this one when it is merged, and [`ClipChain::reach`] follows.)
+    pub(crate) fn reads_within(&self) -> i64 {
+        self.radius
+    }
+
+    /// The first sample of the timeline at which the chain reads its media: where it sounds.
+    /// (T13's stretch warms before that: as [`ClipChain::reads_within`].)
+    pub(crate) fn busy_from(&self) -> i64 {
+        self.from
+    }
+
+    /// Where it reads its media, for the readers ahead of the graph (T5): from where it is busy,
+    /// as far either way as it reads.
     pub(crate) fn reach(&self) -> Reach {
         Reach {
-            from: self.from,
+            from: self.busy_from(),
             to: self.to,
             mapping: self.mapping,
-            radius: self.radius,
+            radius: self.reads_within(),
         }
     }
 
@@ -391,8 +445,11 @@ impl ClipChain {
 
     /// Adds `values`, the sound of the clip at `sample` of the timeline, by its gain and pan,
     /// to sample `at` of `into`: `value · gain · pan`, as the mixer of phase 2 did.
-    fn add(&self, sample: i64, values: &[f32], into: &mut Planar, at: usize) {
-        let gain = self.piece.gain.at(sample);
+    fn add(&mut self, sample: i64, values: &[f32], into: &mut Planar, at: usize) {
+        let mut gain = self.piece.gain.at(sample);
+        if self.level.scaled {
+            gain *= self.level.scale.next_value();
+        }
         let pan = match self.pan {
             ClipPan::None => {
                 for (channel, value) in values.iter().enumerate() {
@@ -400,6 +457,10 @@ impl ClipChain {
                 }
                 return;
             }
+            ClipPan::Fixed(_) if self.level.panned => [
+                self.level.sides[0].next_value(),
+                self.level.sides[1].next_value(),
+            ],
             ClipPan::Fixed(pan) => pan,
             ClipPan::Keyed => balance(self.piece.pan_at(sample)),
         };

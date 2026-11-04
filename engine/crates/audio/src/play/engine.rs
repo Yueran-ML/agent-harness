@@ -39,6 +39,10 @@ use crate::stream::Resampler;
 /// The most samples of the timeline mixed at once.
 pub const MOST_BLOCK: usize = 4096;
 
+/// What the thread of the mix holds that could not be sent back yet, at the most: what ending a
+/// session lets go of (the session, a graph waiting, one after it, one fading out).
+pub const STASH: usize = 8;
+
 /// A graph that plays, with the feed of its clips and their reader ahead.
 pub struct Run {
     graph: Graph,
@@ -248,8 +252,10 @@ pub struct Engine {
     next: Option<(Box<Run>, i64)>,
     /// The graph fading out, and how far it has faded.
     fading: Option<(Box<Run>, usize)>,
-    /// What could not be sent back yet (the ring back was full).
-    stranded: Option<Retired>,
+    /// What could not be sent back yet (the ring back was full): while anything waits here, no
+    /// command is taken and nothing is mixed, so that it never holds more than one command and a
+    /// swap let go of ([`STASH`]), and nothing is ever dropped or leaked on this thread.
+    stash: [Option<Retired>; STASH],
     left: Box<[f32]>,
     right: Box<[f32]>,
     old_left: Box<[f32]>,
@@ -284,7 +290,7 @@ impl Engine {
             incoming: None,
             next: None,
             fading: None,
-            stranded: None,
+            stash: Default::default(),
             left: scratch(),
             right: scratch(),
             old_left: scratch(),
@@ -298,16 +304,34 @@ impl Engine {
         self.session.as_deref()
     }
 
-    /// Sends `what` back, or keeps it to send at the next step (at most one; were there more,
-    /// it would be let go of without being freed here).
+    /// Sends `what` back, or keeps it in the stash to send at a later step.
     fn retire(&mut self, what: Retired) {
         if let Err(what) = self.retired.push(what) {
-            if self.stranded.is_none() {
-                self.stranded = Some(what);
-            } else {
-                std::mem::forget(what);
+            // The stash has room: it is empty whenever a command is taken or a block mixed, and
+            // either lets go of at most `STASH` things.
+            if let Some(place) = self.stash.iter_mut().find(|place| place.is_none()) {
+                *place = Some(what);
             }
         }
+    }
+
+    /// Sends back what waits in the stash, as much as the ring back takes; whether it is empty.
+    fn unstash(&mut self) -> bool {
+        for place in &mut self.stash {
+            if let Some(what) = place.take() {
+                if let Err(what) = self.retired.push(what) {
+                    *place = Some(what);
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// The things waiting in the stash.
+    #[must_use]
+    pub fn stashed(&self) -> usize {
+        self.stash.iter().filter(|place| place.is_some()).count()
     }
 
     /// Ends the session, letting go of its graphs.
@@ -328,7 +352,10 @@ impl Engine {
 
     /// Takes what it is told.
     fn take_commands(&mut self) {
-        while let Some(command) = self.commands.pop() {
+        while self.stashed() == 0 {
+            let Some(command) = self.commands.pop() else {
+                return;
+            };
             match command {
                 Command::Start(session) => {
                     if session.epoch >= self.epoch {
@@ -379,9 +406,13 @@ impl Engine {
         };
         let mixed = session.resampler.next_input();
         let fade = samples(GRAPH_SWAP_CROSSFADE, session.resampler.rate()).max(1);
+        // A crossfade under way ends at the sample where it began and a crossfade on.
+        let fading = self.fading.as_ref().map(|(_, faded)| {
+            mixed - i64::try_from(*faded).unwrap_or(0) + i64::try_from(fade).unwrap_or(0)
+        });
         let first = self.incoming.as_ref().map(|(_, first)| *first);
         match first {
-            None if at >= mixed => {
+            None if at >= mixed && fading.is_none_or(|end| at >= end) => {
                 self.incoming = Some((run, at));
                 self.counters.schedule(at);
             }
@@ -406,10 +437,13 @@ impl Engine {
         reason = "the share of a crossfade of a few hundred samples"
     )]
     pub fn step(&mut self) -> bool {
-        if let Some(what) = self.stranded.take() {
-            self.retire(what);
+        if !self.unstash() {
+            return false;
         }
         self.take_commands();
+        if self.stashed() > 0 {
+            return false;
+        }
         let mut mixed = false;
         let mut made = 0;
         loop {
@@ -432,13 +466,14 @@ impl Engine {
                     if let Some((run, _)) = self.incoming.take() {
                         self.incoming = self.next.take();
                         let old = std::mem::replace(&mut session.run, run);
-                        if let Some((older, _)) = self.fading.replace((old, 0)) {
-                            // A swap within a swap: the graph that was fading out goes now.
-                            if let Err(what) = self.retired.push(Retired::Run(older)) {
-                                self.stranded.get_or_insert(what);
-                            }
-                        }
+                        // A graph waits for its sample only beyond a crossfade under way
+                        // (`take_swap`), so that none is fading out here.
+                        let older = self.fading.replace((old, 0));
                         self.counters.swapped();
+                        if let Some((older, _)) = older {
+                            self.retire(Retired::Run(older));
+                            return mixed;
+                        }
                     }
                 }
                 Some(swap) => {
@@ -467,11 +502,6 @@ impl Engine {
                 *faded += frames;
                 done = *faded >= fade;
             }
-            if done {
-                if let Some((old, _)) = self.fading.take() {
-                    self.retire(Retired::Run(old));
-                }
-            }
             let Some(session) = self.session.as_mut() else {
                 return mixed;
             };
@@ -484,6 +514,14 @@ impl Engine {
             self.counters
                 .mix_to(at + i64::try_from(frames).unwrap_or(0));
             mixed = true;
+            if done {
+                if let Some((old, _)) = self.fading.take() {
+                    self.retire(Retired::Run(old));
+                }
+                if self.stashed() > 0 {
+                    return mixed;
+                }
+            }
         }
     }
 }

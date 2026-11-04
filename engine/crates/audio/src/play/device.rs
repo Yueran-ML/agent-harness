@@ -101,6 +101,8 @@ pub struct Shared {
     short: AtomicU64,
     /// The frames of the device's last run.
     period: AtomicUsize,
+    /// The frames of sound that a capture could not take (its ring was full).
+    dropped: AtomicU64,
 }
 
 impl Shared {
@@ -115,6 +117,23 @@ impl Shared {
     pub fn period(&self) -> usize {
         self.period.load(Ordering::Relaxed)
     }
+
+    /// The frames of sound that a capture could not take, so far: its file lacks them.
+    #[must_use]
+    pub fn dropped(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
+    }
+}
+
+/// Where a test's device writes every frame of sound that it gives (`--sound capture`): a ring
+/// of the frames, and a ring of where each session starts among them (the frames captured
+/// before it), so that the thread that writes them puts each session in a file of its own.
+#[derive(Debug)]
+pub struct Capture {
+    /// The frames.
+    pub ring: SampleProducer,
+    /// The frame at which each session after the first starts.
+    pub sessions: MessageProducer<u64>,
 }
 
 /// The callback's side. See the module.
@@ -122,7 +141,7 @@ pub struct Player {
     orders: MessageConsumer<Order>,
     back: MessageProducer<Feeding>,
     current: Option<Feeding>,
-    /// One that could not be sent back yet.
+    /// One that could not be sent back yet: while it waits, no order is taken.
     stranded: Option<Feeding>,
     channels: usize,
     rate: u32,
@@ -134,7 +153,9 @@ pub struct Player {
     mark: SeqWriter<Mark>,
     shared: Arc<Shared>,
     scratch: Box<[f32]>,
-    capture: Option<SampleProducer>,
+    capture: Option<Capture>,
+    /// The frames captured so far, and whether a session was captured yet.
+    captured: (u64, bool),
 }
 
 impl std::fmt::Debug for Player {
@@ -174,7 +195,7 @@ pub fn player(
     (channels, rate): (usize, u32),
     prime: bool,
     mute: bool,
-    capture: Option<SampleProducer>,
+    capture: Option<Capture>,
 ) -> (Player, Control) {
     assert!(channels > 0 && rate > 0, "a device of nothing");
     let (orders, taken) = messages(16);
@@ -199,6 +220,7 @@ pub fn player(
             shared: Arc::clone(&shared),
             scratch: scratch.into_boxed_slice(),
             capture,
+            captured: (0, false),
         },
         Control {
             orders,
@@ -210,14 +232,11 @@ pub fn player(
 }
 
 impl Player {
-    /// Sends `feeding` back to be dropped, or keeps it to send at the next run.
+    /// Sends `feeding` back to be dropped, or keeps it to send at the next run (no order is
+    /// taken until it is sent, so that there is never more than one).
     fn give_back(&mut self, feeding: Feeding) {
         if let Err(feeding) = self.back.push(feeding) {
-            if self.stranded.is_none() {
-                self.stranded = Some(feeding);
-            } else {
-                std::mem::forget(feeding);
-            }
+            self.stranded = Some(feeding);
         }
     }
 
@@ -234,7 +253,10 @@ impl Player {
         if let Some(feeding) = self.stranded.take() {
             self.give_back(feeding);
         }
-        while let Some(order) = self.orders.pop() {
+        while self.stranded.is_none() {
+            let Some(order) = self.orders.pop() else {
+                break;
+            };
             if let Some(old) = self.current.take() {
                 self.give_back(old);
             }
@@ -243,6 +265,11 @@ impl Player {
                 self.primed = false;
                 self.played = 0;
                 self.fed = None;
+                if let Some(capture) = &mut self.capture {
+                    if std::mem::replace(&mut self.captured.1, true) {
+                        let _ = capture.sessions.push(self.captured.0);
+                    }
+                }
             }
         }
         let channels = self.channels;
@@ -292,7 +319,12 @@ impl Player {
                 *slot = convert(if self.mute { 0.0 } else { sample });
             }
             if let Some(capture) = &mut self.capture {
-                capture.push(samples);
+                let taken = capture.ring.push(samples);
+                self.captured.0 += u64::try_from(taken).unwrap_or(0);
+                let lost = u64::try_from(got - taken).unwrap_or(0);
+                if lost > 0 {
+                    self.shared.dropped.fetch_add(lost, Ordering::Relaxed);
+                }
             }
             done += got;
             if got < count {

@@ -66,11 +66,18 @@ impl Reading {
     }
 }
 
+/// The rings from each reader ahead of a graph, and back to each.
+pub type Rings = (Box<[MessageConsumer<Chunk>]>, Box<[MessageProducer<Chunk>]>);
+
 /// The clips' sound read ahead, as the graph takes it. See the module.
 #[derive(Debug)]
 pub struct RingFeed {
-    incoming: MessageConsumer<Chunk>,
-    back: MessageProducer<Chunk>,
+    /// From each reader ahead.
+    incoming: Box<[MessageConsumer<Chunk>]>,
+    /// Back to each.
+    back: Box<[MessageProducer<Chunk>]>,
+    /// The reader of each clip.
+    reader_of: Box<[usize]>,
     /// The pieces held, `per` places for each clip.
     held: Box<[Option<Chunk>]>,
     per: usize,
@@ -81,12 +88,13 @@ pub struct RingFeed {
 }
 
 impl RingFeed {
-    /// The feed of `backward.len()` clips (whether each reads backwards), holding `per` pieces
-    /// of each, from `incoming`, giving them `back`. Made off the thread of the mix.
+    /// The feed of `backward.len()` clips (whether each reads backwards, and which reader reads
+    /// it), holding `per` pieces of each, from the rings `incoming` of the readers, giving them
+    /// back through `back`. Made off the thread of the mix.
     #[must_use]
     pub fn new(
-        (incoming, back): (MessageConsumer<Chunk>, MessageProducer<Chunk>),
-        backward: Box<[bool]>,
+        (incoming, back): Rings,
+        (backward, reader_of): (Box<[bool]>, Box<[usize]>),
         per: usize,
         reading: Arc<Reading>,
         counters: Arc<Counters>,
@@ -97,6 +105,7 @@ impl RingFeed {
         RingFeed {
             incoming,
             back,
+            reader_of,
             held: held.into_boxed_slice(),
             per,
             backward,
@@ -112,7 +121,14 @@ impl RingFeed {
 
     /// The pieces that have come, each put in a free place of its clip.
     fn take(&mut self) {
-        while let Some(chunk) = self.incoming.pop() {
+        for reader in 0..self.incoming.len() {
+            self.take_from(reader);
+        }
+    }
+
+    /// The pieces that have come from reader `reader`.
+    fn take_from(&mut self, reader: usize) {
+        while let Some(chunk) = self.incoming[reader].pop() {
             let places = chunk.clip * self.per..(chunk.clip + 1) * self.per;
             match self
                 .held
@@ -128,7 +144,12 @@ impl RingFeed {
     /// Sends `chunk` back to be read into again. The ring back holds every piece there is, so
     /// that it is never full; were it, the piece would be let go of without being freed here.
     fn give_back(&mut self, chunk: Chunk) {
-        if let Err(chunk) = self.back.push(chunk) {
+        let reader = self.reader_of.get(chunk.clip).copied().unwrap_or(0);
+        let refused = match self.back.get_mut(reader) {
+            Some(back) => back.push(chunk).err(),
+            None => Some(chunk),
+        };
+        if let Some(chunk) = refused {
             std::mem::forget(chunk);
         }
     }

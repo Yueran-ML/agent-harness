@@ -192,13 +192,35 @@ fn ten_seconds_of_a_session_of_sixteen_tracks_take_no_memory_on_the_threads_of_t
     );
     let mut counted = Vec::new();
     for tick in 0..1000 {
-        // Off the threads of the sound: reading ahead, and the graph to swap in built.
+        // Off the threads of the sound: reading ahead, and the graphs and the session to come
+        // made.
         sim.pump();
         if tick == 400 {
             sim.swap(&other, 4800);
         }
-        // On them: the changes of the settings sent, the mix topped up, the device's run.
+        let prepared = (tick == 600).then(|| sim.prepare(&project, 96_000));
+        // Two graphs sent while another waits (the second takes the place of the first after
+        // it), and one too late.
+        let swaps = (tick == 700).then(|| {
+            let mixed = sim.counters.mixed();
+            [
+                (sim.run_of(&other, mixed + 9_600), mixed + 9_600),
+                (sim.run_of(&project, mixed + 12_000), mixed + 12_000),
+                (sim.run_of(&project, mixed + 12_100), mixed + 12_100),
+                (sim.run_of(&other, mixed - 480), mixed - 480),
+            ]
+        });
+        // On them: the changes of the settings sent, a new session as a seek starts one, the
+        // graphs sent, the mix topped up, the device's run.
         let ((), count) = realtime(|| {
+            if let Some(prepared) = prepared {
+                sim.send(prepared);
+            }
+            if let Some(swaps) = swaps {
+                for (run, at) in swaps {
+                    sim.send_swap(run, at);
+                }
+            }
             if tick % 2 == 0 {
                 #[allow(clippy::cast_precision_loss, reason = "a test value")]
                 let value = -((tick % 20) as f32);
@@ -219,7 +241,12 @@ fn ten_seconds_of_a_session_of_sixteen_tracks_take_no_memory_on_the_threads_of_t
         (0, 0),
         "allocations and frees on the threads of the sound"
     );
-    assert_eq!(sim.counters.swaps(), 1);
+    // The swap at 4 s, and after the seek two of the four sent: the first, and the third, which
+    // took the place of the second behind it; the last came too late.
+    assert_eq!(sim.counters.swaps(), 3);
+    assert_eq!(sim.counters.late(), 1);
+    sim.pump();
+    assert_eq!(sim.late, 1);
     assert_eq!(sim.counters.underruns(), 0);
     assert_eq!(sim.control.shared.short(), 0);
     assert!(sim.played.iter().any(|&sample| sample != 0.0));

@@ -12,7 +12,7 @@
 //! [`PREFETCH_AHEAD`]: crate::constants::PREFETCH_AHEAD
 
 use std::collections::BTreeSet;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -28,8 +28,17 @@ use crate::rt::{messages, MessageConsumer, MessageProducer};
 /// is as many times longer, so that a block reads few pieces.
 pub const PIECE: usize = 2048;
 
-/// The most pieces in the ring from the reader to the graph.
+/// The most pieces in the ring from a reader to the graph.
 const IN_FLIGHT: usize = 256;
+
+/// The most readers ahead of a graph: the clips of a media are read by one of them, the media in
+/// turn, so that a media that is slow to read (a drive asleep, a decoder that hangs) holds up the
+/// clips of the media it shares a reader with and no others.
+pub const READERS: usize = 4;
+
+/// The threads reading ahead that have not ended, of every graph: those whose graph is gone end
+/// once the read they are in returns.
+static LIVE: AtomicUsize = AtomicUsize::new(0);
 
 /// How long the reader sleeps when it has read all that is wanted.
 const NAP: Duration = Duration::from_millis(2);
@@ -49,23 +58,26 @@ struct Plan {
     spare: Vec<Box<[f32]>>,
 }
 
-/// The reading ahead of the clips of a graph: the end of the rings that the reader holds.
+/// The reading ahead of some of the clips of a graph (those of the media given to one reader):
+/// the ends of the rings that the reader holds.
 #[derive(Debug)]
 pub struct Fetch {
     out: MessageProducer<Chunk>,
     back: MessageConsumer<Chunk>,
     reading: Arc<Reading>,
-    clips: Vec<Plan>,
+    /// The plan of each clip of the graph that this reader reads, by its place in the graph.
+    clips: Vec<Option<Plan>>,
     /// How far ahead of where the graph reads.
     ahead: i64,
     /// The clip whose turn it is first.
     turn: usize,
 }
 
-/// The feed of `graph` from what is read ahead, and the reading ahead that fills it, the graph
-/// reading at `from` first. Made off the threads of the sound.
+/// The feed of `graph` from what is read ahead, and the readers ahead that fill it (at most
+/// [`READERS`], the clips of each media given to one), the graph reading at `from` first. Made
+/// off the threads of the sound.
 #[must_use]
-pub fn ring_feed(graph: &Graph, from: i64, counters: Arc<Counters>) -> (RingFeed, Fetch) {
+pub fn ring_feed(graph: &Graph, from: i64, counters: Arc<Counters>) -> (RingFeed, Vec<Fetch>) {
     let rate = graph.rate();
     let ahead = samples(PREFETCH_AHEAD, rate);
     let reaches = graph.reaches();
@@ -99,34 +111,60 @@ pub fn ring_feed(graph: &Graph, from: i64, counters: Arc<Counters>) -> (RingFeed
         .collect();
     let per = clips.iter().map(|plan| plan.budget).max().unwrap_or(1);
     let held = per * clips.len().max(1);
-    let (out, incoming) = messages(IN_FLIGHT);
-    let (give_back, back) = messages(held + IN_FLIGHT);
+    // The media in the order they come, each given to a reader in turn.
+    let mut media: Vec<&str> = Vec::new();
+    for source in graph.clips() {
+        if !media.contains(&source.media.as_str()) {
+            media.push(&source.media);
+        }
+    }
+    let readers = media.len().clamp(1, READERS);
+    let reader_of: Vec<usize> = graph
+        .clips()
+        .iter()
+        .map(|source| media.iter().position(|m| *m == source.media).unwrap_or(0) % readers)
+        .collect();
     let reading = Arc::new(Reading::default());
     reading.set(from);
     let backward = clips.iter().map(|plan| plan.reach.backward()).collect();
+    let mut incoming = Vec::new();
+    let mut give_back = Vec::new();
+    let mut fetches = Vec::new();
+    let mut plans: Vec<Option<Plan>> = clips.into_iter().map(Some).collect();
+    for reader in 0..readers {
+        let (out, taken) = messages(IN_FLIGHT);
+        let (gives, back) = messages(held + IN_FLIGHT);
+        incoming.push(taken);
+        give_back.push(gives);
+        let own = plans
+            .iter_mut()
+            .zip(&reader_of)
+            .map(|(plan, &of)| if of == reader { plan.take() } else { None })
+            .collect();
+        fetches.push(Fetch {
+            out,
+            back,
+            reading: Arc::clone(&reading),
+            clips: own,
+            ahead: i64::try_from(ahead).unwrap_or(i64::MAX),
+            turn: 0,
+        });
+    }
     let feed = RingFeed::new(
-        (incoming, give_back),
-        backward,
+        (incoming.into_boxed_slice(), give_back.into_boxed_slice()),
+        (backward, reader_of.into_boxed_slice()),
         per,
         Arc::clone(&reading),
         counters,
     );
-    let fetch = Fetch {
-        out,
-        back,
-        reading,
-        clips,
-        ahead: i64::try_from(ahead).unwrap_or(i64::MAX),
-        turn: 0,
-    };
-    (feed, fetch)
+    (feed, fetches)
 }
 
 impl Fetch {
     /// The pieces given back made ready to be read into again.
     fn recycle(&mut self) {
         while let Some(chunk) = self.back.pop() {
-            if let Some(plan) = self.clips.get_mut(chunk.clip) {
+            if let Some(Some(plan)) = self.clips.get_mut(chunk.clip) {
                 plan.sent.remove(&chunk.index);
                 plan.spare.push(chunk.data);
             }
@@ -136,7 +174,9 @@ impl Fetch {
     /// The pieces that clip `clip` needs from where the graph reads to the window ahead, nearest
     /// first, that are not sent.
     fn wanted(&self, clip: usize) -> Vec<i64> {
-        let plan = &self.clips[clip];
+        let Some(plan) = &self.clips[clip] else {
+            return Vec::new();
+        };
         let from = self.reading.at();
         let Some(source) = plan.reach.source(from..from.saturating_add(self.ahead)) else {
             return Vec::new();
@@ -163,7 +203,10 @@ impl Fetch {
     pub fn primed(&mut self) -> bool {
         self.recycle();
         (0..self.clips.len()).all(|clip| {
-            self.wanted(clip).is_empty() || self.clips[clip].sent.len() >= self.clips[clip].budget
+            self.wanted(clip).is_empty()
+                || self.clips[clip]
+                    .as_ref()
+                    .is_none_or(|plan| plan.sent.len() >= plan.budget)
         })
     }
 
@@ -178,11 +221,9 @@ impl Fetch {
         while read < most && idle < count && count > 0 {
             let clip = self.turn % count;
             self.turn = (self.turn + 1) % count;
-            let plan = &self.clips[clip];
-            let next = if plan.sent.len() < plan.budget {
-                self.wanted(clip).first().copied()
-            } else {
-                None
+            let next = match &self.clips[clip] {
+                Some(plan) if plan.sent.len() < plan.budget => self.wanted(clip).first().copied(),
+                _ => None,
             };
             let Some(index) = next else {
                 idle += 1;
@@ -192,7 +233,9 @@ impl Fetch {
                 break;
             }
             idle = 0;
-            let plan = &mut self.clips[clip];
+            let Some(plan) = &mut self.clips[clip] else {
+                continue;
+            };
             let (frames, channels) = (plan.frames, plan.channels);
             let mut data = plan
                 .spare
@@ -236,44 +279,66 @@ impl Fetch {
     }
 }
 
-/// The thread that reads ahead for a graph: it ends when it is dropped (without waiting for a
-/// read under way) or when the graph's feed is gone.
+/// The threads that read ahead for a graph, one for each [`Fetch`]: they end when it is
+/// dropped or when the graph's feed is gone. Dropping it tells them to end and does not wait for
+/// a read under way (a media that does not answer): such a thread ends, and lets its decoders
+/// go, once the read returns; [`Fetcher::live`] counts those that have not.
 #[derive(Debug)]
 pub struct Fetcher {
     stop: Arc<AtomicBool>,
-    thread: Option<JoinHandle<()>>,
+    threads: Vec<JoinHandle<()>>,
 }
 
 impl Fetcher {
-    /// Starts reading ahead with `fetch` through `feed`.
+    /// Starts reading ahead with each of `fetches` through the feed of the same place in
+    /// `feeds` (as many).
     ///
     /// # Errors
     ///
-    /// The thread cannot be started.
-    pub fn spawn(mut fetch: Fetch, mut feed: Box<dyn ClipFeed + Send>) -> std::io::Result<Fetcher> {
-        let stop = Arc::new(AtomicBool::new(false));
-        let thread = std::thread::Builder::new()
-            .name("columbina-sound-ahead".into())
-            .spawn({
-                let stop = Arc::clone(&stop);
-                move || {
+    /// A thread cannot be started; those started are told to end.
+    pub fn spawn(
+        fetches: Vec<Fetch>,
+        feeds: Vec<Box<dyn ClipFeed + Send>>,
+    ) -> std::io::Result<Fetcher> {
+        let mut started = Fetcher {
+            stop: Arc::new(AtomicBool::new(false)),
+            threads: Vec::new(),
+        };
+        for (mut fetch, mut feed) in fetches.into_iter().zip(feeds) {
+            let stop = Arc::clone(&started.stop);
+            LIVE.fetch_add(1, Ordering::AcqRel);
+            let thread = std::thread::Builder::new()
+                .name("columbina-sound-ahead".into())
+                .spawn(move || {
                     while !stop.load(Ordering::Acquire) && !fetch.abandoned() {
                         if fetch.pass(feed.as_mut(), 4) == 0 {
                             std::thread::sleep(NAP);
                         }
                     }
+                    drop(feed);
+                    LIVE.fetch_sub(1, Ordering::AcqRel);
+                });
+            match thread {
+                Ok(thread) => started.threads.push(thread),
+                Err(error) => {
+                    LIVE.fetch_sub(1, Ordering::AcqRel);
+                    return Err(error);
                 }
-            })?;
-        Ok(Fetcher {
-            stop,
-            thread: Some(thread),
-        })
+            }
+        }
+        Ok(started)
     }
 
-    /// Whether its thread has ended.
+    /// Whether all its threads have ended.
     #[must_use]
     pub fn ended(&self) -> bool {
-        self.thread.as_ref().is_none_or(JoinHandle::is_finished)
+        self.threads.iter().all(JoinHandle::is_finished)
+    }
+
+    /// The threads reading ahead, of every graph, that have not ended yet.
+    #[must_use]
+    pub fn live() -> usize {
+        LIVE.load(Ordering::Acquire)
     }
 }
 
@@ -282,7 +347,7 @@ impl Drop for Fetcher {
         self.stop.store(true, Ordering::Release);
         // A read under way in a media that does not answer is not waited for: the thread ends
         // once it returns.
-        if let Some(thread) = self.thread.take() {
+        for thread in self.threads.drain(..) {
             if thread.is_finished() {
                 let _ = thread.join();
             }

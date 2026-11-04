@@ -10,15 +10,17 @@
 //! the solos ([`audible`]), sent as the control `solo` of each strip whose outcome changed. A
 //! switch that builds or takes out a node (Dynamics or the equalizer turned on where the graph has
 //! none, an insert added), the routing, the lanes, the formats, the VCAs that a strip belongs to,
-//! a Listen: all need another graph. The clips are not looked at here: the caller compares what
-//! they sound (T5, `play/sound.rs` of the server).
+//! a Listen: all need another graph. Of the clips, a fixed gain or pan changed to another fixed
+//! one is a control of the clip (`clip.<id>.gain_db`, `clip.<id>.pan`); the rest of the clips is
+//! not looked at here: the caller compares what they sound ([`without_clip_levels`], T5,
+//! `play/sound.rs` of the server).
 //!
 //! [`Graph::control`]: super::Graph::control
 
 use std::collections::BTreeMap;
 
 use columbina_model::audio::automatable;
-use columbina_model::{Strip, Timeline, TrackKind};
+use columbina_model::{AudioParam, Strip, Timeline, TrackKind};
 use serde_json::Value;
 
 use super::{audible, Control, Controls, Owner};
@@ -139,6 +141,35 @@ fn strip(
     (was_json == now_json).then_some(())
 }
 
+/// `now` with the fixed gain and pan of each of its clips that has a fixed gain or pan in `was`
+/// too as it is there: what the clips sound but for what [`retune`] sets as controls, for the
+/// caller to compare with `was`.
+#[must_use]
+pub fn without_clip_levels(was: &Timeline, now: &Timeline) -> Timeline {
+    let mut timeline = now.clone();
+    for clip in timeline
+        .tracks
+        .iter_mut()
+        .flat_map(|track| &mut track.clips)
+    {
+        let Some(before) = was
+            .tracks
+            .iter()
+            .flat_map(|track| &track.clips)
+            .find(|old| old.id == clip.id)
+        else {
+            continue;
+        };
+        if let (AudioParam::Fixed(_), AudioParam::Fixed(old)) = (&clip.gain_db, &before.gain_db) {
+            clip.gain_db = AudioParam::Fixed(*old);
+        }
+        if let (AudioParam::Fixed(_), AudioParam::Fixed(old)) = (&clip.pan, &before.pan) {
+            clip.pan = AudioParam::Fixed(*old);
+        }
+    }
+    timeline
+}
+
 /// The tracks of sound of `timeline`.
 fn sound(timeline: &Timeline) -> Vec<&columbina_model::Track> {
     timeline
@@ -186,6 +217,24 @@ pub fn retune(was: &Timeline, now: &Timeline, controls: &Controls) -> Option<Vec
         }
         solos |= x.solo != y.solo || x.solo_safe != y.solo_safe;
         strip(&owner, &x.strip, &y.strip, controls, &mut sets)?;
+        for after in &b.clips {
+            let Some(before) = a.clips.iter().find(|clip| clip.id == after.id) else {
+                continue;
+            };
+            for (field, old, new) in [
+                ("gain_db", &before.gain_db, &after.gain_db),
+                ("pan", &before.pan, &after.pan),
+            ] {
+                if let (AudioParam::Fixed(old), AudioParam::Fixed(new)) = (old, new) {
+                    #[allow(clippy::float_cmp, reason = "a setting changed or not")]
+                    if old != new {
+                        let path = format!("clip.{}.{field}", after.id);
+                        #[allow(clippy::cast_possible_truncation, reason = "a setting")]
+                        sets.push((controls.control(&owner, &path)?, *new as f32));
+                    }
+                }
+            }
+        }
     }
     if was.buses.len() != now.buses.len() {
         return None;

@@ -2,7 +2,7 @@
 //! that it has controls of come out as the values to set them to, and set so the graph sounds as
 //! one built from the changed project; everything else needs another graph.
 
-use columbina_audio::graph::{retune, Graph, Options, Purpose};
+use columbina_audio::graph::{retune, without_clip_levels, Graph, Options, Purpose};
 use columbina_audio::testing::Rng;
 use columbina_model::audio::fx::GainFx;
 use columbina_model::{Effect, Insert, Lane, LaneKind, LanePoint, Project, Time, TrackKind, Vca};
@@ -188,6 +188,55 @@ fn settings_with_controls_are_set_as_the_graph_plays_and_sound_as_built() {
     assert_eq!(
         retune(&base.timelines[0], &base.timelines[0], &graph.controls()),
         Some(vec![])
+    );
+}
+
+#[test]
+fn a_fixed_gain_or_pan_of_a_clip_is_set_as_the_graph_plays_and_sounds_as_built() {
+    let base = project();
+    let mut louder = base.clone();
+    louder.timelines[0].tracks[0].clips[0].gain_db = (-7.5).into();
+    assert_eq!(retuned_sounds_as_built(&base, &louder), 1);
+    let mut panned = louder.clone();
+    panned.timelines[0].tracks[0].clips[0].pan = 0.6.into();
+    assert_eq!(retuned_sounds_as_built(&louder, &panned), 1);
+    // And back, from a graph built with the clip panned.
+    assert_eq!(retuned_sounds_as_built(&panned, &base), 2);
+    // What is left to compare once the levels are taken out is the same.
+    assert_eq!(
+        without_clip_levels(&base.timelines[0], &panned.timelines[0]),
+        base.timelines[0]
+    );
+    // Keyframes are another graph: no control, and left as they are.
+    let mut keyed = base.clone();
+    keyed.timelines[0].tracks[0].clips[0].gain_db =
+        columbina_model::AudioParam::Keys(vec![columbina_model::AudioKey {
+            at: Time {
+                ticks: 0,
+                scale: 48_000,
+            },
+            value: -3.0,
+            interp: columbina_model::KeyInterp::Linear,
+        }]);
+    let graph = built(&keyed);
+    let mut moved = keyed.clone();
+    moved.timelines[0].tracks[0].clips[0].pan = 0.5.into();
+    let controls = graph.controls();
+    assert!(controls
+        .control(
+            &columbina_audio::graph::Owner::Track("A1".into()),
+            "clip.c1.gain_db"
+        )
+        .is_none());
+    assert!(controls
+        .control(
+            &columbina_audio::graph::Owner::Track("A1".into()),
+            "clip.c1.pan"
+        )
+        .is_some());
+    assert_ne!(
+        without_clip_levels(&base.timelines[0], &keyed.timelines[0]),
+        base.timelines[0]
     );
 }
 

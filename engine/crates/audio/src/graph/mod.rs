@@ -49,9 +49,13 @@ mod tests;
 use columbina_model::Id;
 
 pub use build::{audible, node_of, BuildError, Context, Controls, Made, Maker};
-pub use build_retune::retune;
+pub use build_retune::{retune, without_clip_levels};
 pub use clip::{radius, resampled, Reach};
 pub use taps::Level;
+
+/// A clip of a graph as its controls find it: its track, its id, and whether its gain and its
+/// pan are fixed.
+pub(crate) type ClipId = (Id, Id, bool, bool);
 
 use crate::constants::{samples, PREROLL_MAX};
 use crate::feed::ClipSource;
@@ -136,6 +140,15 @@ pub(crate) enum Target {
     VcaFader(usize),
     /// The mute of a VCA.
     VcaMute(usize),
+    /// The fixed gain (decibels) or pan (−1 to 1) of clip `clip` (its place in the clips).
+    Clip(usize, ClipParam),
+}
+
+/// A setting of a clip that a [`Control`] sets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClipParam {
+    Gain,
+    Pan,
 }
 
 /// A setting of a strip, in the units of the model (decibels, −1 to 1, 0 to 100, switches as
@@ -224,6 +237,9 @@ pub struct Graph {
     duckers: Vec<(Owner, SeqReader<crate::fx::ducker::Meter>)>,
     edge: Planar,
     vca_ids: Vec<Id>,
+    /// The track and the id of each clip, and whether its gain and its pan are fixed (which
+    /// controls set).
+    clip_ids: Vec<ClipId>,
     /// What the settings of each strip are found by.
     metas: Vec<build::Meta>,
     vcas: Vec<VcaState>,

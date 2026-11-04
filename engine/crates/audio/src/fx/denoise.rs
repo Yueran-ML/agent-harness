@@ -277,8 +277,8 @@ impl Param {
         Param::ALL.get(usize::try_from(id.0).ok()?).copied()
     }
 
-    /// Where it is in the model: the insert's `on`, the fields of `NoiseReductionFx`, and `band`,
-    /// which the model has yet to take (T1).
+    /// Where it is in the model: the insert's `on` and the fields of `NoiseReductionFx`, whose
+    /// `band` (`NoiseBand`) has the codes of [`Band`] in the same order.
     #[must_use]
     pub const fn path(self) -> &'static str {
         match self {

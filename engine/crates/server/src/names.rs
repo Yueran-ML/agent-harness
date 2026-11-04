@@ -1231,6 +1231,28 @@ mod tests {
     }
 
     #[test]
+    fn a_track_named_in_a_transaction_is_given_lanes_by_its_name() {
+        let mut history = History::new(Project::sample());
+        let track = json!({"id": "$voice", "kind": "audio", "name": "", "enabled": true,
+            "locked": false, "transitions": [], "clips": []});
+        let point = |ticks: i64, value: f64| json!({"at": {"ticks": ticks, "scale": 48000}, "value": value});
+        let transaction = ops(json!([
+            {"op": "add_track", "timeline": "t1", "track": track},
+            {"op": "set_lane", "timeline": "t1", "of": {"track": "$voice"}, "path": "fader_db",
+                "lane": {"points": [point(0, -10.0)]}},
+            {"op": "splice_lane", "timeline": "t1", "of": {"track": "$voice"}, "path": "fader_db",
+                "at": 1, "remove": 0, "points": [point(48000, 0.0)]},
+            {"edit": "lane_points", "timeline": "t1", "of": {"track": "$voice"}, "path": "mute",
+                "action": "add", "points": [{"at": {"ticks": 0, "scale": 48000}, "value": 1}]},
+        ]));
+        let (_, ids) = apply(&mut history, transaction).unwrap();
+        let voice = &history.project().timelines[0].tracks[2];
+        assert_eq!(voice.id, ids["$voice"]);
+        assert_eq!(voice.audio.lanes["fader_db"].points.len(), 2);
+        assert_eq!(voice.audio.lanes["mute"].points[0].value, 1.0);
+    }
+
+    #[test]
     fn things_named_in_a_transaction_are_named_by_the_operations_after_them() {
         let mut history = History::new(Project::sample());
         let transaction = ops(json!([

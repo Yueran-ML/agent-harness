@@ -124,6 +124,21 @@ pub fn radius(cutoff: f64) -> i64 {
     ((CROSSINGS as f64 / cutoff).ceil() as i64).clamp(CROSSINGS, LONGEST)
 }
 
+/// How many source samples on each side of the centre the filter of a clip read while the
+/// timeline is shuttled (played at more than [`crate::constants::SHUTTLE_FROM`] times, T18)
+/// reaches at `cutoff`: [`crate::constants::SHUTTLE_CROSSINGS`] zero crossings in place of 16,
+/// so that a shuttle of sixteen tracks fits in the time of the mix.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "the reach is at most LONGEST"
+)]
+#[must_use]
+pub fn shuttle_radius(cutoff: f64) -> i64 {
+    let crossings = crate::constants::SHUTTLE_CROSSINGS;
+    ((crossings as f64 / cutoff).ceil() as i64).clamp(crossings, LONGEST)
+}
+
 /// The cutoff of a clip played at `speed` (its numbers): the new band as a part of the old.
 pub(crate) fn cutoff(speed: (u32, u32)) -> f64 {
     (f64::from(speed.1) / f64::from(speed.0)).min(1.0)
@@ -142,6 +157,24 @@ pub(crate) fn cutoff(speed: (u32, u32)) -> f64 {
               the exact unity-rate, integer-phase case must preserve PCM samples"
 )]
 pub fn resampled(channels: &[&[f32]], index: usize, phase: f64, cutoff: f64, out: &mut [f32]) {
+    resampled_with(channels, index, phase, (cutoff, radius(cutoff)), out);
+}
+
+/// [`resampled`] with a filter that reaches `radius` source samples on each side of its centre
+/// (T18: a shorter one for shuttling, [`shuttle_radius`]).
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::float_cmp,
+    reason = "normalized audio samples are f32; filter taps are at most LONGEST from the centre;               the exact unity-rate, integer-phase case must preserve PCM samples"
+)]
+pub(crate) fn resampled_with(
+    channels: &[&[f32]],
+    index: usize,
+    phase: f64,
+    (cutoff, radius): (f64, i64),
+    out: &mut [f32],
+) {
     use std::f64::consts::PI;
     if phase == 0.0 && cutoff == 1.0 {
         for (out, channel) in out.iter_mut().zip(channels) {
@@ -149,7 +182,6 @@ pub fn resampled(channels: &[&[f32]], index: usize, phase: f64, cutoff: f64, out
         }
         return;
     }
-    let radius = radius(cutoff);
     let reach = radius as f64;
     let first = 1 - radius;
     let distance = first as f64 - phase;
@@ -419,11 +451,11 @@ impl ClipInput<'_> {
         for (n, sample) in piece.enumerate() {
             let (at, phase) = self.mapping.at(sample);
             let at = usize::try_from(at - source.start).unwrap_or(0);
-            resampled(
+            resampled_with(
                 &window[..channels],
                 at,
                 phase,
-                self.cutoff,
+                (self.cutoff, self.radius),
                 &mut values[..channels],
             );
             for (into, value) in into.iter_mut().zip(&values[..channels]) {
@@ -506,6 +538,21 @@ pub struct Reach {
 }
 
 impl Reach {
+    /// The same on samples out that are `shift` behind the timeline (a graph played at a speed
+    /// of 1 from elsewhere, T18): what sample `u` out reads is what sample `u + shift` reads.
+    #[must_use]
+    pub(crate) fn shifted(self, shift: i64) -> Self {
+        if shift == 0 {
+            return self;
+        }
+        Reach {
+            from: self.from.saturating_sub(shift),
+            to: self.to.saturating_sub(shift),
+            mapping: self.mapping.warped(Warp::new(1, 0, shift)),
+            radius: self.radius,
+        }
+    }
+
     /// The samples of the timeline that the clip sounds on.
     #[must_use]
     pub fn span(&self) -> Range<i64> {
@@ -707,7 +754,7 @@ impl ClipChain {
             for sample in from..to {
                 let (at, phase) = self.mapping.at(sample);
                 let at = usize::try_from(at - source.start).unwrap_or(0);
-                resampled(window, at, phase, self.cutoff, values);
+                resampled_with(window, at, phase, (self.cutoff, self.radius), values);
                 let n = usize::try_from(sample - from).unwrap_or(0);
                 for (channel, value) in values.iter().enumerate() {
                     scratch.before.channel_mut(channel)[n] = *value;
@@ -731,7 +778,7 @@ impl ClipChain {
             for sample in from..to {
                 let (at, phase) = self.mapping.at(sample);
                 let at = usize::try_from(at - source.start).unwrap_or(0);
-                resampled(window, at, phase, self.cutoff, values);
+                resampled_with(window, at, phase, (self.cutoff, self.radius), values);
                 self.add(sample, values, into, offset(sample));
             }
         }
@@ -780,8 +827,14 @@ impl ClipChain {
             cutoff: self.cutoff,
             radius: self.radius,
         });
-        self.warped.warp = warp;
-        if warp.is_identity() {
+        // At a speed of 1 the clip stays on the timeline as it was built, its stretch and all:
+        // the graph shifts the timeline it reads (`Graph::shift`).
+        self.warped.warp = if warp.speed() == 1 {
+            Warp::IDENTITY
+        } else {
+            warp
+        };
+        if warp.speed() == 1 {
             (self.from, self.to, self.mapping) = (base.from, base.to, base.mapping);
             (self.cutoff, self.radius) = (base.cutoff, base.radius);
             if let Some(stretch) = self.warped.stretch.take() {
@@ -794,23 +847,33 @@ impl ClipChain {
         }
         let span = warp.span(base.from..base.to);
         self.mapping = base.mapping.warped(warp);
-        // A clip whose media no sample count reaches at this speed is silent.
-        let fits = |sample: i64| self.mapping.checked_at(sample).is_some();
-        (self.from, self.to) = if span.is_empty() || (fits(span.start) && fits(span.end - 1)) {
-            (span.start, span.end)
-        } else {
-            (span.start, span.start)
-        };
         let (step, denominator) = self.mapping.speed();
-        if warp.speed().abs() == 1 {
-            // Its own speed, forward or backward: its own filter.
+        if warp.speed() == -1 {
+            // Its own speed backward: its own filter.
             (self.cutoff, self.radius) = (base.cutoff, base.radius);
         } else {
             #[allow(clippy::cast_precision_loss, reason = "a speed")]
             let speed = step.unsigned_abs() as f64 / denominator.unsigned_abs().max(1) as f64;
             self.cutoff = (1.0 / speed).min(1.0);
-            self.radius = radius(self.cutoff);
+            self.radius = if warp.speed().abs() > crate::constants::SHUTTLE_FROM {
+                shuttle_radius(self.cutoff)
+            } else {
+                radius(self.cutoff)
+            };
         }
+        // A clip whose media, its filter's reach and all, no sample count reaches at this speed
+        // is silent (as the graph built it, `build.rs`).
+        let reach = self.radius;
+        let fits = |sample: i64| {
+            self.mapping.checked_at(sample).is_some_and(|(at, _)| {
+                at.checked_sub(reach).is_some() && at.checked_add(reach + 1).is_some()
+            })
+        };
+        (self.from, self.to) = if span.is_empty() || (fits(span.start) && fits(span.end - 1)) {
+            (span.start, span.end)
+        } else {
+            (span.start, span.start)
+        };
         let block = i128::try_from(max_block).unwrap_or(i128::MAX);
         let span = (block * step.abs() + denominator - 1) / denominator.max(1)
             + 2 * i128::from(self.radius)

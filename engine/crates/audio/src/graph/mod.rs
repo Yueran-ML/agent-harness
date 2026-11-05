@@ -457,6 +457,18 @@ impl Graph {
         self.warp
     }
 
+    /// How far the timeline is ahead of the samples out where the graph plays at a speed of 1:
+    /// a warp of speed 1 only shifts the timeline, under which the clips (their stretches too)
+    /// and the lanes are read as they were built, from the sample of the timeline it is at
+    /// (T18's review); 0 at any other speed, where the clips are laid on the samples out.
+    pub(crate) fn shift(&self) -> i64 {
+        if self.warp.speed() == 1 {
+            self.warp.timeline(0)
+        } else {
+            0
+        }
+    }
+
     /// The sample out that the next sample out is: the sample of the timeline, where the graph
     /// has no [`Warp`] but the identity.
     #[must_use]

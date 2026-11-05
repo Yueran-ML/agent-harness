@@ -242,9 +242,10 @@ impl Strip {
         }
         for (index, lane) in self.lanes.iter_mut().enumerate() {
             let values = &mut self.values[index * self.max_block..][..frames];
-            if warp.is_identity() {
-                lane.cursor
-                    .fill(&lane.lane, start - lane.delay, rate, values);
+            if warp.speed() == 1 {
+                // The timeline as it is, or shifted (a grain, a speed back to 1).
+                let at = warp.timeline(start - lane.delay);
+                lane.cursor.fill(&lane.lane, at, rate, values);
             } else {
                 // At a speed (T18): each sample out where the warp puts it on the timeline, as
                 // `Lane::value_at` gives it there; the cursor finds its place again after.

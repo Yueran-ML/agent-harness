@@ -135,6 +135,17 @@ pub const STRETCH_CLEAN_SPEEDS: (f64, f64) = (0.5, 2.0);
 /// scrubbing seek plays of the timeline from the frame it seeks, forward at speed 1.
 pub const SCRUB_GRAIN: f64 = 0.060;
 
+/// The speed of playing above which the timeline is shuttled (T18's review, "我们定"): the
+/// clips are read through a shorter filter ([`SHUTTLE_CROSSINGS`]), which sixteen tracks at 8
+/// times need to fit in the time of the mix.
+pub const SHUTTLE_FROM: i64 = 2;
+
+/// The zero crossings on each side of the centre of the filter of a clip while the timeline is
+/// shuttled (T18's review, "我们定"; 16 otherwise): what lies above the new Nyquist frequency
+/// folds back under −40 dB (a tone of 5 kHz at 8 times: −44 dB; 4 crossings gave −66 dB, but
+/// sixteen tracks of effects at 8 times then took 60 % of a core, 3 take 45 %).
+pub const SHUTTLE_CROSSINGS: i64 = 3;
+
 /// The fades at either end of a grain of audio scrubbing (plan T18, "我们定"): straight lines of
 /// 5 ms within it. A grain that comes while another sounds takes its place by a crossfade as
 /// long, the one fading out as the other fades in.

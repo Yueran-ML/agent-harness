@@ -454,3 +454,94 @@ fn the_span_of_a_warp_is_exactly_the_samples_out_that_lie_in_a_range_of_the_time
         }
     }
 }
+
+/// [`one_track`] with its clip at 0.8 with Pitch Correction (T13) and its fader on a lane that
+/// moves from −12 dB to 0 dB over the first 20 s.
+fn corrected() -> Project {
+    let mut project = one_track();
+    let track = &mut project.timelines[0].tracks[0];
+    track.clips[0].speed = columbina_model::Speed { num: 4, den: 5 };
+    track.clips[0].pitch_correction = true;
+    let point = |ticks: i64, value: f64| LanePoint {
+        at: Time { ticks, scale: RATE },
+        value,
+    };
+    track.audio.lanes.insert(
+        "fader_db".into(),
+        Lane {
+            points: vec![point(0, -12.0), point(20 * i64::from(RATE), 0.0)],
+            kind: LaneKind::Continuous,
+            scale: None,
+        },
+    );
+    project
+}
+
+/// The left side of `project` exported from 0 for `frames`, its clips sounding `tone`.
+fn exported(project: &Project, tone: Tone, frames: usize) -> Vec<f32> {
+    let mut tone = tone;
+    through(project, (0, 1), &mut tone, frames)
+}
+
+#[test]
+fn back_at_speed_one_a_clip_keeps_its_pitch_correction_and_its_lanes_and_sounds_as_its_export() {
+    // Backward at 1 from 15 s, then forward at 1 again (L after J): from the end of the
+    // crossfade each sample out is the export's at its sample of the timeline, to the bit.
+    let project = corrected();
+    let mut sim = Sim::at_speed(&project, MIDDLE, TONE, -1);
+    let mut at = 0;
+    let mut warp = Warp::IDENTITY;
+    for tick in 0..120 {
+        if tick == 30 {
+            at = sim.speed_swap(&project, 1, 2_400);
+            warp = sim.warp;
+        }
+        sim.tick();
+    }
+    let left = sim.left();
+    let export = exported(&project, TONE, usize::try_from(MIDDLE).unwrap() + 60_000);
+    let first = usize::try_from(at - MIDDLE).unwrap() + 480;
+    let mut checked = 0;
+    for (n, sample) in left.iter().enumerate().skip(first) {
+        let t = warp.timeline(MIDDLE + i64::try_from(n).unwrap());
+        let want = export[usize::try_from(t).unwrap()];
+        assert_eq!(
+            sample.to_bits(),
+            want.to_bits(),
+            "sample {n} out, {t} of the timeline: {sample}, not {want}"
+        );
+        checked += 1;
+    }
+    assert!(checked > 20_000, "{checked}");
+    assert_eq!(sim.counters.underruns(), 0);
+    assert_eq!(sim.control.shared.short(), 0);
+}
+
+#[test]
+fn every_grain_keeps_the_pitch_correction_of_its_clip_and_sounds_as_its_export() {
+    let project = corrected();
+    let first = 3 * i64::from(RATE);
+    let export = exported(&project, TONE, 10 * RATE as usize);
+    let mut sim = Sim::scrubbing(&project, first, TONE);
+    let mut sent = vec![(first, first)];
+    for tick in 1..60 {
+        if tick % 10 == 0 && tick < 40 {
+            let place = first + 9_973 * i64::from(tick);
+            sent.push((sim.grain(&project, place, 2_400), place));
+        }
+        sim.tick();
+    }
+    let left = sim.left();
+    for &(at, place) in &sent {
+        let start = usize::try_from(at - first).unwrap();
+        for k in 0..2_880 {
+            let gain = Sim::grain_at(0).gain(i64::try_from(k).unwrap());
+            let want = export[usize::try_from(place).unwrap() + k] * gain;
+            let got = left[start + k];
+            assert!(
+                (got - want).abs() < 1e-6,
+                "the grain of {place}, sample {k}: {got}, not {want}"
+            );
+        }
+    }
+}

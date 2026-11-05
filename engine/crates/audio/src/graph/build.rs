@@ -1702,7 +1702,12 @@ impl Graph {
     /// threads that read the clips ahead of the graph (T5).
     #[must_use]
     pub fn reaches(&self) -> Vec<Reach> {
-        self.clips.iter().map(ClipChain::reach).collect()
+        // On the samples out: shifted where the graph plays at a speed of 1 (T18).
+        let shift = self.shift();
+        self.clips
+            .iter()
+            .map(|clip| clip.reach().shifted(shift))
+            .collect()
     }
 
     /// Its outputs: the main outputs, then the bus that is monitored if it is not one.

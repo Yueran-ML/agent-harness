@@ -74,14 +74,25 @@ pub struct Config {
 }
 
 impl Config {
-    /// The configuration of a stretcher at `rate`: the same for any count of channels. Makes a
-    /// stretcher of one channel to ask it, so it takes memory: not for the thread of the mix.
+    /// The configuration of a stretcher at `rate`: the same for any count of channels. The first
+    /// time a rate is asked, makes a stretcher of one channel to ask it, so it takes memory and
+    /// locks: not for the thread of the mix. A rate known already is answered from what was
+    /// asked before (T4c's review: a graph of many Pitches made none for each).
     ///
     /// # Errors
     ///
     /// As [`Stretch::new`].
     pub fn of(rate: u32) -> Result<Config, Error> {
-        Ok(Stretch::new(1, rate)?.config())
+        static KNOWN: std::sync::Mutex<Vec<(u32, Config)>> = std::sync::Mutex::new(Vec::new());
+        let mut known = KNOWN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(&(_, config)) = known.iter().find(|(known, _)| *known == rate) {
+            return Ok(config);
+        }
+        let config = Stretch::new(1, rate)?.config();
+        known.push((rate, config));
+        Ok(config)
     }
 }
 

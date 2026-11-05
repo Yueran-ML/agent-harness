@@ -15,10 +15,11 @@
 use std::ops::Range;
 use std::sync::Arc;
 
+use columbina_audio::constants::{samples as of_seconds, SCRUB_FADE, SCRUB_GRAIN};
 use columbina_audio::feed::{ClipFeed, FeedError};
-use columbina_audio::graph::{node_of, Controls, Graph, Maker, Options, Owner, Purpose};
+use columbina_audio::graph::{node_of, Controls, Graph, Maker, Options, Owner, Purpose, Warp};
 use columbina_audio::play::device::{self, Feeding, Order, Player};
-use columbina_audio::play::engine::{Command, Engine, Retired, Run, Session, MOST_BLOCK};
+use columbina_audio::play::engine::{Command, Engine, Grain, Retired, Run, Session, MOST_BLOCK};
 use columbina_audio::play::fetcher::{ring_feed, Fetch};
 use columbina_audio::play::Counters;
 use columbina_audio::rt::{messages, samples, MessageConsumer, MessageProducer};
@@ -110,12 +111,28 @@ pub struct Sim {
     /// The graphs sent back as too late.
     pub late: usize,
     epoch: u64,
+    /// Where the samples out of the graphs it builds lie on the timeline (T18): the identity, but
+    /// at a speed.
+    pub warp: Warp,
+    /// The grain that the graph it builds next plays, where it plays one (T18).
+    grain: Option<Grain>,
 }
 
 impl Sim {
     /// A session of `project` from sample `from`, its clips sounding `tone`, its effects made by
     /// `maker`; nothing played yet.
     pub fn start(project: &Project, from: i64, tone: Tone, maker: Maker) -> Sim {
+        Sim::through(project, from, tone, (maker, Warp::IDENTITY, None))
+    }
+
+    /// A session of `project` played through `warp` from sample `from` out, its first graph
+    /// playing only `grain` where there is one; nothing played yet.
+    pub fn through(
+        project: &Project,
+        from: i64,
+        tone: Tone,
+        (maker, warp, grain): (Maker, Warp, Option<Grain>),
+    ) -> Sim {
         let counters = Arc::new(Counters::default());
         let (commands, taken) = messages(64);
         let (gone, retired) = messages(64);
@@ -137,9 +154,64 @@ impl Sim {
             now: 0,
             late: 0,
             epoch: 0,
+            warp,
+            grain,
         };
         sim.session(project, from);
+        sim.grain = None;
         sim
+    }
+
+    /// A session of `project` played at `speed` from sample `from` of the timeline (T18).
+    pub fn at_speed(project: &Project, from: i64, tone: Tone, speed: i64) -> Sim {
+        Sim::through(
+            project,
+            from,
+            tone,
+            (node_of, Warp::new(speed, from, from), None),
+        )
+    }
+
+    /// A grain of scrubbing from sample `from` out ([`SCRUB_GRAIN`], faded [`SCRUB_FADE`]).
+    pub fn grain_at(from: i64) -> Grain {
+        Grain {
+            from,
+            length: of_seconds(SCRUB_GRAIN, RATE) as i64,
+            fade: of_seconds(SCRUB_FADE, RATE) as i64,
+        }
+    }
+
+    /// A session of scrubbing: its first graph plays the grain of sample `at` of the timeline.
+    pub fn scrubbing(project: &Project, at: i64, tone: Tone) -> Sim {
+        Sim::through(
+            project,
+            at,
+            tone,
+            (node_of, Warp::IDENTITY, Some(Sim::grain_at(at))),
+        )
+    }
+
+    /// Sends a graph of `project` played at `speed` from where the timeline is `margin` samples
+    /// after what is mixed (as the thread that builds places a swap), to be swapped in there;
+    /// where. The graphs built after it play at that speed.
+    pub fn speed_swap(&mut self, project: &Project, speed: i64, margin: i64) -> i64 {
+        let at =
+            (self.counters.mixed() + margin).max(self.counters.scheduled().saturating_add(720));
+        self.warp = self.warp.with_speed(speed, at);
+        self.swap_at(project, at);
+        at
+    }
+
+    /// Sends a graph of `project` playing the grain of sample `timeline` of the timeline, to be
+    /// swapped in `margin` samples after what is mixed; where.
+    pub fn grain(&mut self, project: &Project, timeline: i64, margin: i64) -> i64 {
+        let at =
+            (self.counters.mixed() + margin).max(self.counters.scheduled().saturating_add(720));
+        self.warp = Warp::new(1, at, timeline);
+        self.grain = Some(Sim::grain_at(at));
+        self.swap_at(project, at);
+        self.grain = None;
+        at
     }
 
     /// A session of `project` with [`node_of`]'s effects.
@@ -245,6 +317,7 @@ impl Sim {
     pub fn run_of(&mut self, project: &Project, at: i64) -> Box<Run> {
         let options = Options::new(MOST_BLOCK, Purpose::Preview).with_maker(self.maker);
         let mut graph = Graph::build(project, 0, options).unwrap();
+        graph.set_warp(self.warp);
         let mut tone = self.tone;
         graph.start(at, &mut tone).unwrap();
         let (feed, fetches) = ring_feed(&graph, graph.reads_at(), Arc::clone(&self.counters));
@@ -253,7 +326,11 @@ impl Sim {
             self.fetches.push((fetch, tone));
         }
         self.controls = Some(graph.controls());
-        Box::new(Run::new(graph, feed, None, i64::MAX))
+        let run = Run::new(graph, feed, None, i64::MAX);
+        Box::new(match self.grain {
+            Some(grain) => run.with_grain(grain),
+            None => run,
+        })
     }
 
     /// Sends a graph of `project` to be swapped in `margin` samples after what is mixed, or a
@@ -281,6 +358,11 @@ impl Sim {
                 at,
             })
             .unwrap();
+    }
+
+    /// Tells the thread of the mix to fade out what the session plays (T18's review).
+    pub fn fade(&mut self) {
+        self.commands.push(Command::Fade(self.epoch)).unwrap();
     }
 
     /// Sets the control `path` of `owner` of the graph built last to `value`.

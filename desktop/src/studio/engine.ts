@@ -733,6 +733,8 @@ export interface TimelineTransportState extends TransportBase {
   color_error?: string;
   /** The frame of the timeline that each reference of the wipe or split screen shows for the frame shown, in their order; while one is on. */
   compared?: (number | null)[];
+  /** Whether dragging the playhead plays its sound (`transport.scrub_audio`, Timeline › Audio Scrubbing, p. 731; phase 3 T18); true where an older engine leaves it out. */
+  scrub_audio?: boolean;
 }
 export type TransportState = SourceTransportState | TimelineTransportState;
 /** A LUT that a grade of the timeline names and the engine could not read (PROTOCOL.md, "Grades in the picture"). */
@@ -928,6 +930,7 @@ export interface PageMethods {
   'transport.step': Record<string, never>;
   'transport.state': TransportState;
   'transport.proxies': Record<string, never>;
+  'transport.scrub_audio': Record<string, never>;
   'view.place': Record<string, never>;
   'view.show': Record<string, never>;
   'scopes.statistics': ScopeStatistics;

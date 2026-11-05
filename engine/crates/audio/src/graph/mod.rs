@@ -38,6 +38,7 @@ mod automation;
 mod build;
 mod build_fx;
 mod build_retune;
+mod build_warp;
 mod clip;
 mod pdc;
 mod process;
@@ -59,6 +60,103 @@ pub use taps::Level;
 /// A clip of a graph as its controls find it: its track, its id, and whether its gain and its
 /// pan are fixed.
 pub(crate) type ClipId = (Id, Id, bool, bool);
+
+/// How the samples out of a graph lie on the timeline (T18): sample `u` out is sample
+/// `offset + speed · u` of the timeline, so that a graph plays the timeline at a whole speed,
+/// forward or backward, its clips resampled to it (their pitch following the speed), its fades,
+/// keyframes and lanes read where the timeline is. The identity (speed 1, offset 0) is the graph
+/// as it was built, to the bit. [`Graph::set_warp`] gives a graph its warp.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Warp {
+    speed: i64,
+    offset: i64,
+}
+
+impl Default for Warp {
+    fn default() -> Self {
+        Warp::IDENTITY
+    }
+}
+
+impl Warp {
+    /// Each sample out is that sample of the timeline.
+    pub const IDENTITY: Warp = Warp {
+        speed: 1,
+        offset: 0,
+    };
+
+    /// Playing at `speed` (not 0; 1 where it is), sample `at` out being sample `timeline` of the
+    /// timeline.
+    #[must_use]
+    pub fn new(speed: i64, at: i64, timeline: i64) -> Warp {
+        let speed = if speed == 0 { 1 } else { speed };
+        Warp {
+            speed,
+            offset: timeline.saturating_sub(speed.saturating_mul(at)),
+        }
+    }
+
+    /// The same timeline at sample `at` out, played from there at `speed`: a change of speed
+    /// that keeps the place.
+    #[must_use]
+    pub fn with_speed(&self, speed: i64, at: i64) -> Warp {
+        Warp::new(speed, at, self.timeline(at))
+    }
+
+    /// The samples of the timeline that a sample out moves on by: its sign the direction.
+    #[must_use]
+    pub fn speed(&self) -> i64 {
+        self.speed
+    }
+
+    /// Whether each sample out is that sample of the timeline.
+    #[must_use]
+    pub fn is_identity(&self) -> bool {
+        *self == Warp::IDENTITY
+    }
+
+    /// The sample of the timeline that sample `sample` out is.
+    #[must_use]
+    pub fn timeline(&self, sample: i64) -> i64 {
+        self.offset
+            .saturating_add(self.speed.saturating_mul(sample))
+    }
+
+    /// The samples out whose samples of the timeline lie in `range`, in the order they come out.
+    #[must_use]
+    pub fn span(&self, range: std::ops::Range<i64>) -> std::ops::Range<i64> {
+        let (from, to, offset) = (
+            i128::from(range.start),
+            i128::from(range.end),
+            i128::from(self.offset),
+        );
+        let speed = i128::from(self.speed);
+        let ceil = |over: i128, under: i128| -(-over).div_euclid(under);
+        let (first, end) = if speed > 0 {
+            (ceil(from - offset, speed), ceil(to - offset, speed))
+        } else {
+            let k = -speed;
+            (
+                (offset - to).div_euclid(k) + 1,
+                (offset - from).div_euclid(k) + 1,
+            )
+        };
+        let clamp = |x: i128| i64::try_from(x).unwrap_or(if x < 0 { i64::MIN } else { i64::MAX });
+        let (first, end) = (clamp(first), clamp(end));
+        first..end.max(first)
+    }
+
+    /// The first sample out from which nothing of a timeline that ends at sample `end` is
+    /// played: past its end forward, before its start (sample 0) backward.
+    #[must_use]
+    pub fn end_of(&self, end: i64) -> i64 {
+        if self.speed > 0 {
+            self.span(i64::MIN..end).end
+        } else {
+            self.span(0..i64::MAX).end
+        }
+    }
+}
 
 use crate::constants::{samples, PREROLL_MAX};
 use crate::feed::ClipSource;
@@ -254,6 +352,8 @@ pub struct Graph {
     position: i64,
     /// The samples processed of the block under way.
     frames: usize,
+    /// Where its samples out lie on the timeline (T18).
+    warp: Warp,
 }
 
 impl std::fmt::Debug for Graph {
@@ -351,7 +451,26 @@ impl Graph {
         self.frames
     }
 
-    /// The sample of the timeline that the next sample out is.
+    /// Where its samples out lie on the timeline ([`Graph::set_warp`]).
+    #[must_use]
+    pub fn warp(&self) -> Warp {
+        self.warp
+    }
+
+    /// How far the timeline is ahead of the samples out where the graph plays at a speed of 1:
+    /// a warp of speed 1 only shifts the timeline, under which the clips (their stretches too)
+    /// and the lanes are read as they were built, from the sample of the timeline it is at
+    /// (T18's review); 0 at any other speed, where the clips are laid on the samples out.
+    pub(crate) fn shift(&self) -> i64 {
+        if self.warp.speed() == 1 {
+            self.warp.timeline(0)
+        } else {
+            0
+        }
+    }
+
+    /// The sample out that the next sample out is: the sample of the timeline, where the graph
+    /// has no [`Warp`] but the identity.
     #[must_use]
     pub fn at(&self) -> i64 {
         self.position - i64::from(self.latency)

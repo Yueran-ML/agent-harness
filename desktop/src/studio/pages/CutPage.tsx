@@ -11,6 +11,7 @@ import { EditButtons } from '../cut/EditButtons';
 import { SourceTape, tapeMedia, tapeOf, tapeStep, useTapeGo } from '../cut/SourceTape';
 import { nearestCut, type EditAction } from '../timeline/editKeys';
 import { Timeline, type TimelineHandle, type TimelineView } from '../timeline/Timeline';
+import { useAudioScrubbing } from '../timeline/scrub';
 import type { MonitorControls } from '../useMonitor';
 import type { ViewerNotice } from '../Viewer';
 import { useTimelineLoad } from './useTimelineLoad';
@@ -111,6 +112,9 @@ export function CutPage({
   // Bypass Color is the timeline monitor's, kept from page to page: shown and turned here too (pp. 550, 672).
   const bypassLoaded = timelineState !== null && timelineMonitor.loaded;
   const bypassColor = useBypassColor({ bridge, session, loaded: bypassLoaded, state: timelineState?.monitor === 'timeline' ? timelineState : null,
+    onFailure: failed });
+  // Timeline › Audio Scrubbing, Shift+S (p. 731; T18).
+  useAudioScrubbing({ bridge, session, loaded: bypassLoaded, state: timelineState?.monitor === 'timeline' ? timelineState : null,
     onFailure: failed });
   // The frame that the timeline monitor shows, which the edits and the indicator of Smart Insert take.
   const frame = timelineState === null ? 0 : timelineMonitor.frame ?? 0;

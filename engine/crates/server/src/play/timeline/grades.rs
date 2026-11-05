@@ -48,6 +48,8 @@ fn monitor(dir: &Path) -> Worker {
         joining: None,
         sound_late: false,
         mixed_from: None,
+        scrub_until: None,
+        speed_change: None,
         heard: Cell::new(0),
         fine: None,
         epoch: Instant::now(),

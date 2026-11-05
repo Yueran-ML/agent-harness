@@ -479,3 +479,301 @@ fn exported_by(project: &Project, frames: usize) -> Vec<Vec<f32>> {
     let mut graph = built(project, Purpose::Export);
     whole(&mut graph, &mut feed(wavering), 0, frames)
 }
+
+// The review of T4c.
+
+/// `frames` samples of the monitor from sample `at`, the run started with at most `most` samples
+/// of preroll, as a graph swapped in or a grain of scrubbing is (T5, T18).
+fn within(
+    graph: &mut Graph,
+    feed: &mut dyn ClipFeed,
+    (at, most): (i64, u32),
+    frames: usize,
+) -> Vec<Vec<f32>> {
+    graph.start_within(at, most, feed).unwrap();
+    let output = graph.monitor().unwrap();
+    let channels = graph.output(output).channels();
+    let mut played = vec![Vec::with_capacity(frames); channels];
+    while played[0].len() < frames {
+        let n = (frames - played[0].len()).min(graph.max_block());
+        graph.process(feed, n).unwrap();
+        for (channel, played) in played.iter_mut().enumerate() {
+            played.extend_from_slice(&graph.output(output).channel(channel)[..n]);
+        }
+    }
+    played
+}
+
+/// The preroll of a grain of scrubbing, 100 ms (T18).
+const GRAIN_PREROLL: u32 = 4_800;
+
+#[test]
+fn a_run_with_a_short_preroll_into_a_clip_with_a_pitch_is_heard_from_its_first_sample() {
+    let pitch = Effect::Pitch(PitchFx {
+        semitones: 7,
+        ..PitchFx::default()
+    });
+    let project = project(250, vec![on(pitch)]);
+    let at = 5 * SECOND as i64 + 77;
+    let frames = 5 * SECOND;
+    let export = exported(&project, 0.5, at as usize + frames);
+    let mut graph = built(&project, Purpose::Export);
+    let heard = within(
+        &mut graph,
+        &mut feed(tone(440.0, 0.5)),
+        (at, GRAIN_PREROLL),
+        frames,
+    );
+    // Not the silence of the latency of the Pitch (6304 samples, 1504 past a preroll of 4800).
+    for window in heard[0][..1_504].chunks(150) {
+        assert!(window.iter().any(|s| s.abs() > 0.05), "a silence in it");
+    }
+    // Once the Pitch has settled from where it started, a preroll before the start: the export.
+    let settled =
+        pitch::settle_for(&pitch::Settings::default(), RATE) as usize - GRAIN_PREROLL as usize;
+    for channel in 0..2 {
+        let most = most_apart(
+            &heard[channel][settled..],
+            &export[channel][at as usize + settled..],
+        );
+        assert!(most < 3.16e-5, "{most} apart");
+    }
+}
+
+#[test]
+fn a_run_with_a_short_preroll_in_the_middle_of_a_clip_with_effects_settles_to_the_export() {
+    for stretched in [false, true] {
+        let project = busy(stretched, false);
+        let mut graph = built(&project, Purpose::Export);
+        let frames = START + LONG as usize * FRAME;
+        let from_0 = whole(&mut graph, &mut feed(wavering), 0, frames);
+        let at = 5 * SECOND + 77;
+        let late = within(
+            &mut graph,
+            &mut feed(wavering),
+            (at as i64, GRAIN_PREROLL),
+            frames - at,
+        );
+        // Settled once its effects have, from where they started, a preroll before the start.
+        let settled = graph.settle() as usize - GRAIN_PREROLL as usize;
+        assert!(late[0][..1_000].iter().any(|s| s.abs() > 0.05));
+        for channel in 0..2 {
+            let most = most_apart(&from_0[channel][at + settled..], &late[channel][settled..]);
+            assert!(most < 3.16e-5, "stretched {stretched}: {most} apart");
+        }
+    }
+}
+
+#[test]
+fn a_dry_pitch_and_an_untouching_limiter_leave_a_reversed_or_warped_clip_as_it_is_to_the_bit() {
+    let effects = || {
+        vec![
+            on(Effect::Pitch(PitchFx {
+                semitones: 12,
+                dry_wet: 0.0,
+                ..PitchFx::default()
+            })),
+            on(Effect::Limiter(LimiterFx::default())),
+        ]
+    };
+    for reverse in [false, true] {
+        let mut with = project(150, effects());
+        let mut plain = project(150, vec![]);
+        for project in [&mut with, &mut plain] {
+            project.timelines[0].tracks[0].clips[0].reverse = reverse;
+        }
+        // As it is, and at twice its speed either way, from 4 s.
+        for speed in [1, 2, -2] {
+            let at = 4 * SECOND as i64;
+            let sound = |project: &Project| {
+                let mut graph = built(project, Purpose::Export);
+                graph.set_warp(Warp::new(speed, at, at));
+                whole(&mut graph, &mut feed(tone(440.0, 0.1)), at, 2 * SECOND)
+            };
+            let (with, plain) = (sound(&with), sound(&plain));
+            assert!(plain[0].iter().any(|s| s.abs() > 0.05));
+            for channel in 0..2 {
+                assert_eq!(
+                    differs(&with[channel], &plain[channel]),
+                    None,
+                    "reverse {reverse}, speed {speed}"
+                );
+            }
+        }
+    }
+}
+
+/// [`project`] with a second track of sound, A2, whose clip c3 sounds from 20 s to 30 s with a
+/// Pitch; A1's clip c2 has no effects.
+fn far_pitch() -> Project {
+    let mut project = project(100, vec![]);
+    let mut second = project.timelines[0].tracks[0].clone();
+    second.id = "A2".into();
+    second.clips[0].id = "c3".into();
+    second.clips[0].start = 20 * 25;
+    second.clips[0].length = 250;
+    second.clips[0].effects = vec![on(Effect::Pitch(PitchFx {
+        semitones: 3,
+        ..PitchFx::default()
+    }))];
+    project.timelines[0].tracks.push(second);
+    project
+}
+
+#[test]
+fn the_preroll_of_a_start_is_what_the_clips_under_way_there_need() {
+    let project = far_pitch();
+    let mut graph = built(&project, Purpose::Export);
+    let pitch_settle = pitch::settle_for(&pitch::Settings::default(), RATE);
+    assert!(graph.preroll() >= pitch_settle);
+    // Far from the Pitch, and before it starts its effects: none.
+    for at in [0, 3 * SECOND as i64, 20 * SECOND as i64 - 7_000] {
+        assert_eq!(graph.preroll_at(at), 0, "{at}");
+    }
+    // In it, its settling; just after it starts, back to where its effects start.
+    assert!(graph.preroll_at(25 * SECOND as i64) >= pitch_settle);
+    let just = 20 * SECOND as i64 + 1_000;
+    assert_eq!(i64::from(graph.preroll_at(just)), 1_000 + 6_304);
+    // What the strips need, they need anywhere: a Limiter on A1.
+    let mut limited = project.clone();
+    limited.timelines[0].tracks[0].audio.strip.inserts = vec![Insert {
+        id: "fx1".into(),
+        on: true,
+        effect: Effect::Limiter(LimiterFx::default()),
+    }];
+    let strips = limiter::settle_for(&limiter::Settings::default(), RATE);
+    assert_eq!(built(&limited, Purpose::Export).preroll_at(0), strips);
+    // A clip's track that drives a Ducker on A2: its effects settle, then the Ducker.
+    let mut ducking = far_pitch();
+    let timeline = &mut ducking.timelines[0];
+    timeline.tracks[1].clips[0].effects.clear();
+    timeline.tracks[0].clips[0].effects = vec![on(Effect::Gain(GainFx { gain_db: -3.0 }))];
+    timeline.tracks[1].audio.strip.track_fx = Some(columbina_model::audio::fx::Ducker {
+        on: true,
+        sources: vec![columbina_model::SourceRef::Track("A1".into())],
+        ..columbina_model::audio::fx::Ducker::default()
+    });
+    let ducked = built(&ducking, Purpose::Export);
+    let strips = ducked.preroll_at(0);
+    assert!(strips > 0);
+    assert_eq!(ducked.preroll_at(3 * SECOND as i64), strips + 480);
+    // Wherever a run starts, it sounds as the export once settled; before the Pitch, to the bit.
+    let frames = 32 * SECOND;
+    let export = whole(&mut graph, &mut feed(tone(440.0, 0.5)), 0, frames);
+    for at in [3 * SECOND, 20 * SECOND - 7_000, just as usize, 25 * SECOND] {
+        let late = whole(
+            &mut graph,
+            &mut feed(tone(440.0, 0.5)),
+            at as i64,
+            frames - at,
+        );
+        for channel in 0..2 {
+            if at <= just as usize {
+                assert_eq!(
+                    differs(&export[channel][at..], &late[channel]),
+                    None,
+                    "{at}"
+                );
+            } else {
+                let most = most_apart(&export[channel][at..], &late[channel]);
+                assert!(most < 3.16e-5, "{at}: {most}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_graph_built_within_a_range_has_only_the_clips_heard_there_and_sounds_as_one_with_all() {
+    let mut project = far_pitch();
+    // A third track, muted, with a Pitch too, under the range.
+    let mut muted = project.timelines[0].tracks[1].clone();
+    muted.id = "A3".into();
+    muted.clips[0].id = "c4".into();
+    muted.clips[0].start = 0;
+    muted.audio.mute = true;
+    project.timelines[0].tracks.push(muted);
+    let range = 2 * SECOND as i64..3 * SECOND as i64;
+    let mut all = built(&project, Purpose::Preview);
+    let mut few = Graph::build(
+        &project,
+        0,
+        Options::new(4096, Purpose::Preview).within(range.clone()),
+    )
+    .unwrap();
+    assert_eq!(all.clips().len(), 3);
+    let kept: Vec<&str> = few.clips().iter().map(|c| c.clip.as_str()).collect();
+    assert_eq!(kept, ["c2"]);
+    let at = range.start + 77;
+    let (all, few) = (
+        whole(&mut all, &mut feed(tone(440.0, 0.5)), at, SECOND / 2),
+        whole(&mut few, &mut feed(tone(440.0, 0.5)), at, SECOND / 2),
+    );
+    assert_eq!(differs(&all[0], &few[0]), None);
+}
+
+#[test]
+#[ignore = "a measure: run with --ignored --nocapture"]
+fn cost_of_building_a_graph_of_a_hundred_clips_with_a_pitch() {
+    let mut project = project(10, vec![]);
+    let track = &mut project.timelines[0].tracks[0];
+    let first = track.clips[0].clone();
+    track.clips = (0..100)
+        .map(|k| {
+            let mut clip = first.clone();
+            clip.id = format!("c{}", 100 + k);
+            clip.start = 25 + 10 * k;
+            clip.effects = vec![on(Effect::Pitch(PitchFx {
+                semitones: 2,
+                ..PitchFx::default()
+            }))];
+            clip
+        })
+        .collect();
+    let _ = built(&project, Purpose::Preview);
+    let (graph, whole) = measured(|| built(&project, Purpose::Preview));
+    let range = 2 * SECOND as i64..3 * SECOND as i64;
+    let (few, within) = measured(|| {
+        Graph::build(
+            &project,
+            0,
+            Options::new(4096, Purpose::Preview).within(range),
+        )
+        .unwrap()
+    });
+    println!(
+        "100 clips with a Pitch: {} clips built in {:?}, {} MB more held; within a \
+         second, {} clips in {:?}, {} MB",
+        graph.clips().len(),
+        whole.0,
+        whole.1 / (1 << 20),
+        few.clips().len(),
+        within.0,
+        within.1 / (1 << 20),
+    );
+}
+
+/// What `make` gives, how long it took, and how much more private memory the process holds
+/// after it than before (Rust and C++ alike, read from the system).
+fn measured<T>(make: impl FnOnce() -> T) -> (T, (std::time::Duration, usize)) {
+    let before = private_bytes();
+    let started = std::time::Instant::now();
+    let thing = make();
+    let took = started.elapsed();
+    (thing, (took, private_bytes().saturating_sub(before)))
+}
+
+/// The private memory of this process, in bytes, as PowerShell reads it.
+fn private_bytes() -> usize {
+    let script = format!(
+        "(Get-Process -Id {}).PrivateMemorySize64",
+        std::process::id()
+    );
+    let out = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command", &script])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0)
+}

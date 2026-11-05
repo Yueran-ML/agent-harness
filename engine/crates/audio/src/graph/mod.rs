@@ -187,6 +187,10 @@ pub struct Options {
     pub purpose: Purpose,
     /// What makes the node of an effect of an insert ([`node_of`]).
     pub maker: Maker,
+    /// The samples of the timeline that the graph is to be heard over, if only some (a grain of
+    /// scrubbing, T18; T4c's review): a clip that sounds on none of them, or whose track is
+    /// neither heard nor drives a sidechain, is left out, silent, and nothing of it is made.
+    pub within: Option<(i64, i64)>,
 }
 
 impl Options {
@@ -197,6 +201,16 @@ impl Options {
             max_block,
             purpose,
             maker: node_of,
+            within: None,
+        }
+    }
+
+    /// The same, the graph heard over the samples `range` of the timeline only.
+    #[must_use]
+    pub fn within(self, range: std::ops::Range<i64>) -> Self {
+        Options {
+            within: Some((range.start, range.end)),
+            ..self
         }
     }
 
@@ -348,6 +362,14 @@ pub struct Graph {
     monitor: Option<usize>,
     latency: u32,
     settle: u32,
+    /// Of each strip, the longest settling of a path from it to an output, its own nodes and
+    /// all, where it reaches one: what a clip of a track adds its own to (T4c's review).
+    paths: Vec<Option<u64>>,
+    /// The settling of the strips alone: the longest of `paths`.
+    strips_settle: u64,
+    /// The longest latency of the effects of a clip: how far ahead of the timeline a clip works
+    /// out its sound at most, which a run's preroll, however short, takes besides.
+    lead: u32,
     /// The sample of the timeline of the next sample in.
     position: i64,
     /// The samples processed of the block under way.
@@ -403,13 +425,42 @@ impl Graph {
         self.settle
     }
 
-    /// The samples that [`Graph::start`] runs before the sample it starts at:
-    /// [`Graph::settle`], but at most [`PREROLL_MAX`] (T8's review). A graph that settles
-    /// longer sounds there as from the beginning but for what is left after this.
+    /// The longest preroll of a run: [`Graph::settle`], but at most [`PREROLL_MAX`] (T8's
+    /// review). A graph that settles longer sounds as from the beginning but for what is left
+    /// after this.
     #[must_use]
     pub fn preroll(&self) -> u32 {
         let most = u32::try_from(samples(PREROLL_MAX, self.rate)).unwrap_or(u32::MAX);
         self.settle.min(most)
+    }
+
+    /// The samples that [`Graph::start`] runs before sample `at` (T4c's review): what the strips
+    /// need to settle, and what each clip under way there needs, its equalizer and effects and
+    /// the strips after them, but no more than takes the run back to where the clip's effects
+    /// start (a run from there is one from earlier, to the bit); at most [`PREROLL_MAX`]. A clip
+    /// that has ended that long before, or starts after, needs none.
+    #[must_use]
+    pub fn preroll_at(&self, at: i64) -> u32 {
+        let at = at.saturating_add(self.shift());
+        let mut need = self.strips_settle;
+        for clip in &self.clips {
+            let Some(path) = self.paths[clip.strip] else {
+                continue;
+            };
+            if clip.settle == 0 {
+                continue;
+            }
+            let full = clip.settle.saturating_add(path);
+            let full_i = i64::try_from(full).unwrap_or(i64::MAX);
+            if clip.to <= at.saturating_sub(full_i) {
+                continue;
+            }
+            let back = at.saturating_add(clip.ahead()).saturating_sub(clip.from);
+            let wanted = full.min(u64::try_from(back).unwrap_or(0));
+            need = need.max(wanted);
+        }
+        let most = u64::try_from(samples(PREROLL_MAX, self.rate)).unwrap_or(u64::MAX);
+        u32::try_from(need.min(most)).unwrap_or(u32::MAX)
     }
 
     /// The clips that it reads, in the order of the `clip` of [`ClipFeed::read`].

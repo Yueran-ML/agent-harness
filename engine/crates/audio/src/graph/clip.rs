@@ -739,6 +739,8 @@ pub(crate) struct ClipChain {
     pub(crate) stretch: Option<Stretched>,
     /// Its effects, where it has any that work on the channels of its track (T4c).
     pub(crate) effects: Option<ClipEffects>,
+    /// How long its equalizer and effects take to settle, their latency besides (T4c's review).
+    pub(crate) settle: u64,
     /// How it lies on the samples out of a graph played at a speed (T18).
     pub(crate) warped: Warped,
 }

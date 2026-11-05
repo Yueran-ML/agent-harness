@@ -1325,6 +1325,12 @@ impl Graph {
             let Some(&strip) = track_at.get(piece.track.as_str()) else {
                 continue;
             };
+            // Only what is heard over the range of a graph that has one (T4c's review).
+            if let Some((low, high)) = options.within {
+                if piece.to <= low || piece.from >= high || !needed[strip] {
+                    continue;
+                }
+            }
             let Some(track) = t.tracks.iter().find(|r| r.id == piece.track) else {
                 continue;
             };
@@ -1376,7 +1382,8 @@ impl Graph {
                 Some((effects, settle)) => (Some(effects), settle),
                 None => (None, 0),
             };
-            settle_in[strip] = settle_in[strip].max(settling.saturating_add(through));
+            let settling = settling.saturating_add(through);
+            settle_in[strip] = settle_in[strip].max(settling);
             let ahead = effects.as_ref().map_or(0, |effects| effects.latency);
             let stretch = stretching.of(clip, &piece, &mapping, (rate, channels), (reach, ahead));
             if let Some(stretch) = &stretch {
@@ -1420,6 +1427,7 @@ impl Graph {
                 piece,
                 stretch,
                 effects,
+                settle: settling,
                 warped: Warped::default(),
             });
         }
@@ -1452,6 +1460,22 @@ impl Graph {
             .max()
             .unwrap_or(0)
             .min(u64::from(u32::MAX));
+        // Of each strip, the longest settling from it to an output, through what it feeds and
+        // the sidechains it drives (T4c's review): what the preroll of a run that starts where
+        // its clips are under way takes besides theirs.
+        let mut paths: Vec<Option<u64>> = vec![None; count];
+        for &at in order.iter().rev() {
+            let mut after = outs.contains(&at).then_some(0u64);
+            let driven = (0..count).filter(|&to| keys[to].contains(&at));
+            for to in feeds[at].iter().copied().chain(driven) {
+                if let Some(path) = paths[to] {
+                    after = Some(after.map_or(path, |after| after.max(path)));
+                }
+            }
+            paths[at] = after.map(|after| after.saturating_add(settles[at]));
+        }
+        let strips_settle = paths.iter().flatten().copied().max().unwrap_or(0);
+        let lead = chains.iter().map(ClipChain::ahead).max().unwrap_or(0);
 
         // The strips themselves, their lanes found and their buffers taken.
         let mut strips = Vec::with_capacity(count);
@@ -1712,6 +1736,9 @@ impl Graph {
             monitor,
             latency,
             settle: u32::try_from(settle).unwrap_or(u32::MAX),
+            paths,
+            strips_settle,
+            lead: u32::try_from(lead).unwrap_or(0),
             position: 0,
             frames: 0,
             warp: Warp::IDENTITY,

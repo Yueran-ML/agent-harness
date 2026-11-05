@@ -202,7 +202,12 @@ class Fake:
         render_frames: How many frames a render writes, if not as many as its timeline lasts.
         render_end: How a render ends, unless it is cancelled: ``done`` or ``failed``.
         render_hold: Whether a render holds on after it begins, until it is cancelled.
-        jobs: The state of each render, by its job.
+        jobs: The state of each render, and of each analysis of sound, by its job.
+        sounds: What each ``audio.analyze``, ``audio.normalize`` and ``audio.level_match`` was
+            asked, in order.
+        sound_end: How an analysis of sound ends, unless it is cancelled: ``done`` or ``failed``.
+        sound_hold: Whether an analysis of sound holds on after it begins, until it is cancelled.
+        sound_found: What an analysis of sound that is done tells besides its job and state.
         rendered: What each ``render.start`` was asked, in order.
         looked: What each ``scopes.statistics`` and ``luts.list`` was asked, in order.
         transactions: The operations and edits of every ``transaction.apply``, as they were sent.
@@ -244,6 +249,10 @@ class Fake:
         self.render_end = "done"
         self.render_hold = False
         self.jobs: dict[str, str] = {}
+        self.sounds: list[tuple[str, dict[str, Any]]] = []
+        self.sound_end = "done"
+        self.sound_hold = False
+        self.sound_found: dict[str, Any] = {}
         self.rendered: list[dict[str, Any]] = []
         self.looked: list[tuple[str, dict[str, Any]]] = []
         self.transactions: list[list[dict[str, Any]]] = []
@@ -555,6 +564,47 @@ class Fake:
             told = {"job": job, "state": "cancelled", "frame": 0, "frames": 0, "fps": 0.0}
             self.tell("render.progress", told)
         return {}
+
+    def audio_analyze(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        return self._sound("audio.analyze", params)
+
+    def audio_normalize(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        return self._sound("audio.normalize", params)
+
+    def audio_level_match(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        return self._sound("audio.level_match", params)
+
+    def audio_cancel(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        job = str(params.get("job"))
+        if self.jobs.get(job) != "running":
+            raise RefusedError(
+                -32602, f"there is no analysis {job} running", {"reason": "missing", "job": job}
+            )
+        self.jobs[job] = "cancelled"
+        self.tell("audio.analysis", {"job": job, "state": "cancelled"})
+        return {}
+
+    def _sound(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Start an analysis of sound: told running, then how it ended, a moment later."""
+        self.sounds.append((method, copy.deepcopy(params)))
+        job = f"audio-{len(self.sounds)}"
+        self.jobs[job] = "running"
+        asyncio.get_running_loop().call_later(0.01, self._measured, job, method)
+        return {"job": job}
+
+    def _measured(self, job: str, method: str) -> None:
+        if self.jobs.get(job) != "running":
+            return
+        self.tell("audio.analysis", {"job": job, "state": "running", "done": 1.0, "total": 2.0})
+        if self.sound_hold:
+            return
+        self.jobs[job] = self.sound_end
+        told: dict[str, Any] = {"job": job, "state": self.sound_end}
+        if self.sound_end == "done":
+            told.update(method=method, **self.sound_found)
+        else:
+            told["message"] = "a clip cannot be read"
+        self.tell("audio.analysis", told)
 
     def _progress(self, job: str, path: Path, frames: int, frame: int) -> None:
         """Tell how far a render has come, and go on with it a moment later."""

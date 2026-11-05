@@ -84,6 +84,7 @@ __all__ = [
     "Progress",
     "RenderState",
     "Rendering",
+    "SoundAnalysis",
     "Statistics",
     "StillFormat",
     "StillKeyframes",
@@ -227,6 +228,9 @@ class Changed:
         said = self.params.get("revision")
         return said if isinstance(said, int) and not isinstance(said, bool) else None
 
+
+SoundAnalysis = Literal["audio.analyze", "audio.normalize", "audio.level_match"]
+"""An analysis of sound that the engine runs as a job (:meth:`Engine.analyze_sound`)."""
 
 RenderState = Literal["running", "done", "failed", "cancelled"]
 """Where a render stands: one that is not ``running`` is over."""
@@ -1525,6 +1529,67 @@ class Engine:
             await heard.aclose()
             raise
         return Rendering(self, job, heard)
+
+    async def analyze_sound(
+        self, method: SoundAnalysis, params: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Have the engine measure sound, and wait for what it found.
+
+        The engine runs ``audio.analyze``, ``audio.normalize`` or ``audio.level_match`` as a job
+        off the threads of its sound, as fast as the clips can be read (PROTOCOL.md, "Meters,
+        loudness and the analysis of sound"); what it tells of the job is followed from before it
+        is asked for. A caller that gives up has the job cancelled.
+
+        Args:
+            method: Which analysis: the loudness and peaks of clips, tracks or buses
+                (``audio.analyze``), the gains of Normalize Audio Levels (``audio.normalize``), or
+                of Level Matcher (``audio.level_match``).
+            params: Its params, as the protocol says (``timeline``, ``targets``, ``clips``,
+                ``apply``, ...).
+
+        Returns:
+            What ``audio.analysis`` told as the job was done: the ``results`` of
+            ``audio.analyze``; the ``clips`` and their gains of the others, and ``applied`` (the
+            transaction that applied them, where ``apply`` was asked for and a clip had a gain).
+
+        Raises:
+            EngineError: The engine refused the params (``missing``, ``standard``, ...) or is
+                busy; the job failed or was cancelled (``data`` is what the engine told of it); or
+                the connection was lost or closed.
+        """
+        heard = self.changes()
+        try:
+            said = await self._call(method, params)
+            job = said.get("job")
+            if not isinstance(job, str):
+                raise EngineError(f"the engine answered {method} with no job", code=UNEXPECTED)
+            try:
+                async for told in heard:
+                    if told.method != "audio.analysis" or told.params.get("job") != job:
+                        continue
+                    state = told.params.get("state")
+                    if state == "running":
+                        continue
+                    if state == "done":
+                        return told.params
+                    why = told.params.get("message")
+                    raise EngineError(
+                        f"the analysis {job} {state}"
+                        + (f": {why}" if isinstance(why, str) else ""),
+                        code=UNEXPECTED,
+                        data=told.params,
+                    )
+            except asyncio.CancelledError:
+                with contextlib.suppress(EngineError, TimeoutError):
+                    async with asyncio.timeout(_STOP_SECONDS):
+                        await self._call("audio.cancel", {"job": job})
+                raise
+            raise EngineError(
+                f"the connection to the engine was closed before the analysis {job} ended",
+                code=UNREACHABLE,
+            )
+        finally:
+            await heard.aclose()
 
     async def _stopped(self, answer: "asyncio.Future[object]") -> None:
         """Cancel the render that a ``render.start`` given up on began, if the engine began one.

@@ -20,12 +20,15 @@ export function moveTracks(timeline: Timeline, ids: string[], before: string): O
   });
   return ops;
 }
-export function IndexTracks({ timeline, hidden, onHidden, onSelect, onEdit }: {
+export function IndexTracks({ timeline, hidden, onHidden, onSelect, onEdit, selection, onSelection }: {
   timeline: Timeline; hidden: readonly string[]; onHidden: (ids: string[]) => void; onSelect: (id: string) => void; onEdit: (ops: Op[]) => void;
+  selection?: readonly string[]; onSelection?: (ids: string[]) => void;
 }) {
   const t = useFairlightText();
   const [renaming, setRenaming] = useState<string | null>(null);
-  const [selected, setSelected] = useState<string[]>([]);
+  const [localSelection, setLocalSelection] = useState<string[]>([]);
+  const selected = selection ?? localSelection;
+  const setSelected = (ids: string[]) => { setLocalSelection(ids); onSelection?.(ids); };
   const dragged = useRef<string[]>([]);
   const sweep = useRef<{ field: 'mute' | 'solo' | 'locked'; value: boolean; ids: Set<string> } | null>(null);
   const submit = useRef(onEdit); submit.current = onEdit;
@@ -57,7 +60,7 @@ export function IndexTracks({ timeline, hidden, onHidden, onSelect, onEdit }: {
   return <section className="fairlight-index" aria-label={t('Index Tracks')}><h2>{t('Tracks')}</h2><table><thead><tr>
     {(['Color', 'Visible', '#', 'Name', 'Controls', 'Format', 'ADC', 'Order'] as const).map(label => <th key={label}>{label === '#' || label === 'ADC' ? label : t(label)}</th>)}
   </tr></thead><tbody>{timeline.tracks.map((track, index) => <tr key={track.id} data-index-track={track.id} aria-selected={selected.includes(track.id)} draggable
-    onDragStart={event => { dragged.current = selected.includes(track.id) ? selected : [track.id]; event.dataTransfer.setData('application/x-fairlight-tracks', dragged.current.join(',')); }}
+    onDragStart={event => { dragged.current = selected.includes(track.id) ? [...selected] : [track.id]; event.dataTransfer.setData('application/x-fairlight-tracks', dragged.current.join(',')); }}
     onDragOver={event => { if (dragged.current.length) event.preventDefault(); }}
     onDrop={event => { event.preventDefault(); onEdit(moveTracks(timeline, dragged.current, track.id)); dragged.current = []; }} onDragEnd={() => { dragged.current = []; }}>
     <td><select aria-label={`${t('Color')} ${track.name}`} value={track.color ?? TRACK_COLORS[8]} style={{ color: track.color ?? TRACK_COLORS[8] }}
@@ -66,7 +69,7 @@ export function IndexTracks({ timeline, hidden, onHidden, onSelect, onEdit }: {
     <td><input type="checkbox" aria-label={`${t('Visible')} ${track.name}`} checked={!hidden.includes(track.id)} onChange={event => toggle(track, 'visible', event.target.checked)} /></td>
     <td><button type="button" onClick={event => { onSelect(track.id); setSelected(event.ctrlKey ? selected.includes(track.id) ? selected.filter(id => id !== track.id) : [...selected, track.id] : [track.id]); }}>{track.id}</button></td>
     <td>{renaming === track.id ? <NameField name={track.name} onCommit={async name => { onEdit([{ op: 'set_track', timeline: timeline.id, id: track.id, name }]); setRenaming(null); return true; }} onCancel={() => setRenaming(null)} />
-      : <button type="button" onClick={() => { onSelect(track.id); setRenaming(track.id); }}>{track.name}</button>}</td>
+      : <button type="button" onClick={() => { onSelect(track.id); setSelected([track.id]); setRenaming(track.id); }}>{track.name}</button>}</td>
     <td>{(['locked', ...(track.kind === 'audio' ? ['solo', 'mute'] : [])] as const).map(field => {
       const checked = field === 'locked' ? track.locked : track.kind === 'audio' && Boolean(track[field as 'solo' | 'mute']);
       return <button type="button" key={field} aria-label={`${t(field as 'locked' | 'solo' | 'mute')} ${track.name}`} aria-pressed={checked}

@@ -22,6 +22,8 @@ import { EffectsLibrary, AUDIO_EFFECT_DRAG, AUDIO_EFFECTS } from '../fairlight/E
 import { LevelMatcher, type LevelMatcherHandle } from '../fairlight/LevelMatcher';
 import { useAudioReadings } from '../fairlight/audioReadings';
 import { useFairlightView } from '../fairlight/viewState';
+import { Mixer } from '../fairlight/Mixer';
+import { analysisStandardId } from '../audio/mixerModel';
 import '../fairlight/fairlight.css';
 
 interface Props {
@@ -51,6 +53,9 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
   const timeline = useRef<TimelineHandle>(null);
   const matcher = useRef<LevelMatcherHandle>(null);
   const [clips, setClips] = useState<string[]>([]); const [track, setTrack] = useState<string | null>(null);
+  const [stripSelection, setStripSelection] = useState<string[]>([]);
+  const chooseStrips = (keys: string[]) => { setStripSelection(keys); setTrack(keys.find(key => key.startsWith('track:'))?.slice(6) ?? null); };
+  const chooseTrack = (id: string) => chooseStrips([`track:${id}`]);
   const [speed, setSpeed] = useState<string[] | null>(null);
   const [cinema, setCinema] = useState(false);
   const [context, setContext] = useState<{ clip: string; x: number; y: number } | null>(null);
@@ -66,7 +71,7 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
   }, [bridge, session]);
   const playing = useTimelineLoad(bridge, selected, timelineMonitor, session, failure => now.current.onProblem(t('Could not load the Fairlight timeline.'), failure));
   const state = selected && playing === selected.id && timelineMonitor.state?.monitor === 'timeline' ? timelineMonitor.state : null;
-  const audio = useAudioReadings(bridge, session, selected?.id ?? null, view.meters);
+  const audio = useAudioReadings(bridge, session, selected?.id ?? null, view.meters || view.mixer);
   useStudioKeys(timelineMonitor.loaded, timelineMonitor.context, timelineMonitor.run);
   useAudioScrubbing({ bridge, session, loaded: Boolean(state && timelineMonitor.loaded), state, onFailure: failure => now.current.onProblem(t('Could not change audio scrubbing.'), failure) });
   useEffect(() => {
@@ -93,7 +98,8 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
     </div>}
     <main className="fairlight-workspace">
       {showLeft && <aside className="fairlight-left">{view.pool && pool}{view.effects && <EffectsLibrary />}
-        {view.index && selected && <IndexTracks timeline={selected} hidden={view.hidden} onHidden={hidden => update({ hidden })} onSelect={setTrack} onEdit={ops => void edit(ops)} />}
+        {view.index && selected && <IndexTracks timeline={selected} hidden={view.hidden} onHidden={hidden => update({ hidden })} onSelect={setTrack}
+          selection={stripSelection.filter(key => key.startsWith('track:')).map(key => key.slice(6))} onSelection={ids => chooseStrips(ids.map(id => `track:${id}`))} onEdit={ops => void edit(ops)} />}
         {view.groups && (groups ?? <section aria-label={t('Groups')}><h2>{t('Groups')}</h2><p>{t('Group controls are not available yet.')}</p></section>)}
       </aside>}
       {showLeft && <Separator label={t('Left panel width')} vertical value={view.leftWidth} min={220} max={700} onChange={leftWidth => update({ leftWidth })} />}
@@ -109,10 +115,11 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
         }}>
         <FairlightTimeline ref={timeline} timeline={selected} bridge={bridge} session={session} revision={revision} media={media}
           frame={state ? timelineMonitor.frame ?? 0 : 0} playing={state?.playing ?? false} onSeek={timelineMonitor.seek}
-          onSelection={setClips} onTrackSelect={setTrack} onSpeed={setSpeed} view={view} update={update}
+          onSelection={setClips} onTrackSelect={chooseTrack} selectedTracks={stripSelection.filter(key => key.startsWith('track:')).map(key => key.slice(6))} onSpeed={setSpeed} view={view} update={update}
           onClipContext={(id, x, y) => { if (selected?.tracks.some(track => track.kind === 'audio' && track.clips.some(clip => clip.id === id))) setContext({ clip: id, x, y }); }} />
-        {view.mixer && <><Separator label={t('Mixer height')} direction={-1} value={view.mixerHeight} min={60} max={400} onChange={mixerHeight => update({ mixerHeight })} />
-          <section className="fairlight-mixer-slot" aria-label={t('Mixer')} style={{ height: view.mixerHeight }}>{mixer ?? <><h2>{t('Mixer')}</h2><p>{t('Mixer controls are not available yet.')}</p></>}</section></>}
+        {view.mixer && <><Separator label={t('Mixer height')} direction={-1} value={view.mixerHeight} min={180} max={500} onChange={mixerHeight => update({ mixerHeight })} />
+          <section className="fairlight-mixer-slot" aria-label={t('Mixer')} style={{ height: view.mixerHeight }}>{mixer ?? (selected && <Mixer bridge={bridge} session={session} revision={revision}
+            timeline={selected} frame={state ? timelineMonitor.frame ?? 0 : 0} meters={audio.meters} selected={stripSelection} onSelect={chooseStrips} />)}</section></>}
       </div>
       {view.inspector && selected && <><Separator label={t('Inspector width')} vertical direction={-1} value={view.rightWidth} min={240} max={600} onChange={rightWidth => update({ rightWidth })} />
         <Inspector bridge={bridge} session={session} revision={revision} timeline={selected} media={media} clips={clips} track={track} onEdit={ops => void edit(ops)} /></>}
@@ -130,7 +137,7 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
     ] }} />}
     {analysisClips && <Sheet title={t('Analyze Audio Level')} onClose={() => { audio.cancel(); setAnalysisClips(null); }}>
       <div className="fairlight-analysis"><select aria-label={t('Analysis standard')} value={analysisStandard} onChange={event => setAnalysisStandard(event.target.value)}>{STANDARDS.map(([id, label]) => <option key={id} value={id}>{standardLabel(label, t)}</option>)}</select>
-      <button type="button" disabled={audio.pending} onClick={() => void audio.analyze(analysisClips, analysisStandard)}>{t('Analyze')}</button>
+      <button type="button" disabled={audio.pending} onClick={() => void audio.analyze(analysisClips, analysisStandardId(analysisStandard))}>{t('Analyze')}</button>
       {audio.pending && <button type="button" onClick={audio.cancel}>{t('Cancel analysis')}</button>}
       <button type="button" data-first onClick={() => { audio.cancel(); setAnalysisClips(null); }}>{t('Close analysis')}</button>
       {audio.analysis?.state === 'running' && <p role="status">{audio.analysis.done.toFixed(1)} / {audio.analysis.total.toFixed(1)} s</p>}

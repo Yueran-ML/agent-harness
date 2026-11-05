@@ -14,10 +14,11 @@ export interface TrackClipDrawing { clip: Clip; track: Track; media?: Media; rat
  * whole steps as the timeline scrolls (see `scrollWindow`), so a row is drawn again only where the
  * scroll crosses a step, or what it shows changes; not as the playhead moves.
  */
-export const TrackRow = memo(function TrackRow({ timeline, track, media, rate, scale, from, to, height, waves, onEdit, onHeight, selected, targeted, onTarget, chosen = null, chosenCue = null, shownSubtitles = null, drawClip, audioOverlay }: {
+export const TrackRow = memo(function TrackRow({ timeline, track, media, rate, scale, from, to, height, waves, onEdit, onHeight, selected, mixerSelected, targeted, onTarget, chosen = null, chosenCue = null, shownSubtitles = null, drawClip, audioOverlay }: {
   timeline: string; track: Track; media: ReadonlyMap<string, Media>; rate: Rate; scale: number; from: number; to: number;
   height: number; waves: Waveforms; onEdit: (ops: Op[]) => Promise<boolean>; onHeight: (id: string, height: number) => void;
   selected: ReadonlySet<string>; targeted: boolean; onTarget: (id: string) => void;
+  mixerSelected?: boolean;
   /** The transition chosen, where it is on this track. */
   chosen?: string | null;
   /** The subtitle chosen, where it is on this track. */
@@ -34,7 +35,7 @@ export const TrackRow = memo(function TrackRow({ timeline, track, media, rate, s
     const starts = new Map(track.clips.map(clip => [clip.id, clip.start]));
     return track.transitions.map(transition => ({ transition, ...transitionSpan(transition, starts.get(transition.right)!) }));
   }, [track]);
-  return <div className="timeline-track" data-track={track.id} data-kind={track.kind} data-enabled={track.enabled} data-locked={track.locked} style={{ height, boxShadow: track.color ? `inset 3px 0 ${track.color}` : undefined }}>
+  return <div className="timeline-track" data-track={track.id} data-kind={track.kind} data-mixer-selected={mixerSelected || undefined} data-enabled={track.enabled} data-locked={track.locked} style={{ height, boxShadow: track.color ? `inset 3px 0 ${track.color}` : undefined }}>
     <TrackHeader timeline={timeline} track={track} height={height} onEdit={onEdit} onHeight={onHeight} targeted={targeted} onTarget={onTarget}
       shownSubtitles={shownSubtitles} />
     <div className="timeline-lane" role="listbox" aria-label={track.name} title={track.kind === 'subtitle' && !track.locked ? all.hint.studio.inspector.addCue : undefined} aria-multiselectable={track.kind === 'subtitle' ? undefined : true}>

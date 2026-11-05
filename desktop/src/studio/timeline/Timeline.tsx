@@ -31,7 +31,7 @@ export interface TimelineHandle {
 /** What of a timeline a view shows: the pixels of a frame, how far it is scrolled, and how wide it is. */
 export interface TimelineView { scale: number; left: number; width: number }
 export function Timeline({ timeline, media, bridge, session, revision, frame, playing, onSeek, source = null, focus = 'timeline', onSpeed, onSelection, onTransition, onCue, ref,
-  cut = false, overview = false, center = false, trackHeight = 72, indicator = null, detail = null, onView, label, hiddenTracks, drawClip, onClipContext, onTrackSelect, audioOnlyDrop, gainLine = true }: {
+  cut = false, overview = false, center = false, trackHeight = 72, indicator = null, detail = null, onView, label, hiddenTracks, drawClip, onClipContext, onTrackSelect, selectedTracks, audioOnlyDrop, gainLine = true }: {
   timeline: TimelineModel | null; media: readonly Media[]; bridge: Pick<EngineBridge, 'call' | 'onEvent'>; session: number;
   revision: number; frame: number; playing: boolean; onSeek: (frame: number, scrubbing: boolean) => void;
   source?: EditContext['source']; focus?: Monitor; onSpeed?: (clips: string[]) => void; onSelection?: (clips: string[]) => void;
@@ -62,6 +62,8 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   drawClip?: (props: TrackClipDrawing) => ReactNode;
   onClipContext?: (clip: string, x: number, y: number) => void;
   onTrackSelect?: (track: string) => void;
+  /** View-only selection shared with the mixer; it does not change edit destination tracks. */
+  selectedTracks?: readonly string[];
   audioOnlyDrop?: boolean;
   gainLine?: boolean;
 }) {
@@ -292,7 +294,7 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
           audioOverlay={!cut && !overview ? { bridge, timeline: timeline.id, revision, session, frame: shown, sampleRate: timeline.sample_rate,
             snapping: editing.snapping, marks: editing.marks, clipboard: audioClipboard.current, gainLine, onSeek,
             onFailure: error => editing.setProblem(refusalText(error, words.hint.studio)) } : undefined}
-          selected={editing.selected} targeted={editing.targets.video_track === track.id || editing.targets.audio_track === track.id} onTarget={editing.target}
+          selected={editing.selected} mixerSelected={selectedTracks?.includes(track.id)} targeted={editing.targets.video_track === track.id || editing.targets.audio_track === track.id} onTarget={editing.target}
           chosen={editing.transition !== null && track.kind !== 'subtitle' && track.transitions.some(each => each.id === editing.transition) ? editing.transition : null}
           chosenCue={editing.cue !== null && track.kind === 'subtitle' && track.cues.some(each => each.id === editing.cue) ? editing.cue : null}
           shownSubtitles={track.kind === 'subtitle' ? shownSubtitles : null} />)}

@@ -313,7 +313,7 @@ it('resizes each panel in the direction of its dragged boundary without adding h
     expect(handle.getAttribute('aria-valuenow')).toBe(String(expected));
   };
   move('Inspector width', 20, 0, 260);
-  move('Mixer height', 0, 20, 68);
+  move('Mixer height', 0, 20, defaultFairlightView().mixerHeight - 20);
   move('Left panel width', 20, 0, 360);
   move('Monitoring height', 0, 20, 260);
   expect(bridge.call.mock.calls.some(([method]) => method === 'transaction.apply')).toBe(false);

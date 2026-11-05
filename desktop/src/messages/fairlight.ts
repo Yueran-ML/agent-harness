@@ -1,5 +1,13 @@
 /** Shared Fairlight catalogue; protocol IDs and media/track names are never translated. */
 const entries = {
+  'Mixer channels': ['调音台条带', 'ミキサーチャンネル'], 'Buses': ['总线', 'バス'],
+  'Input': ['输入', '入力'], 'Track FX': ['轨道效果', 'トラック FX'], 'Effects In': ['插入效果启用', 'エフェクト有効'],
+  'Sends': ['发送', 'センド'], 'Outputs': ['输出', '出力'], 'Fader value': ['推子数值', 'フェーダー値'],
+  'Solo Safe': ['独奏安全', 'ソロセーフ'], 'Exclusive Solo': ['排他独奏', '排他的ソロ'],
+  'Automation controls playback': ['自动化控制播放', 'オートメーションが再生を制御'], 'Base value': ['基础值', '基本値'],
+  'Automation controls playback. Static settings do not replace the lane.': ['自动化控制播放，静态设置不会替换车道。', 'オートメーションが再生を制御します。静的設定はレーンを置き換えません。'],
+  'No monitored bus': ['未选择监听总线', 'モニターバス未選択'],
+  'Ducker': ['闪避器', 'ダッカー'], 'Dynamics': ['动态', 'ダイナミクス'], 'Pan': ['声像', 'パン'],
   'Show Clip Gain Line': ['显示片段音量线', 'クリップゲインラインを表示'],
   'Keyframe interpolation': ['关键帧插值', 'キーフレーム補間'],
   'Clip gain': ['片段音量', 'クリップゲイン'], 'Clip fades': ['片段淡变', 'クリップフェード'],

@@ -6,7 +6,7 @@ export interface FairlightView {
   leftWidth: number; rightWidth: number; monitoringHeight: number; mixerHeight: number;
 }
 export const defaultFairlightView = (): FairlightView => ({ pool: false, effects: false, index: false, groups: false, mixer: true, meters: true, inspector: true,
-  video: false, automation: false, viewer: true, waveform: 1, hidden: [], gainLine: true, leftWidth: 340, rightWidth: 280, monitoringHeight: 240, mixerHeight: 88 });
+  video: false, automation: false, viewer: true, waveform: 1, hidden: [], gainLine: true, leftWidth: 340, rightWidth: 280, monitoringHeight: 240, mixerHeight: 300 });
 // Per engine/session/timeline: returning from Edit retains this layout; a new project session does not.
 const views = new WeakMap<object, Map<string, FairlightView>>();
 export function useFairlightView(bridge: Pick<EngineBridge, 'call'>, session: number, timeline: string) {

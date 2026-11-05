@@ -2,6 +2,7 @@ import { useFairlightText } from './words';
 import { useState, type ReactNode } from 'react';
 import type { LoudnessStandard, MeterChannel, Meters, Timeline } from '../engine';
 import type { FairlightText } from '../../messages/fairlight';
+import { Meter as AudioMeter } from '../audio/Meter';
 
 export const STANDARDS: [LoudnessStandard, string][] = [
   ['bs1770_1', 'BS.1770-1'], ['bs1770_4', 'BS.1770-4'], ['atsc_a85', 'ATSC A/85'], ['ebu_r128', 'EBU R128'],
@@ -15,10 +16,7 @@ export const standardLabel = (label: string, text: (key: FairlightText) => strin
 function Meter({ channel, label }: { channel: MeterChannel; label: string }) {
   // The engine sends dB and the position on the chosen meter scale, not linear amplitudes.
   return <div className="fairlight-meter" title={`${label}: ${reading(channel.bar, 'dBFS')}`}>
-    <div className="fairlight-meter-well" role="meter" aria-label={label} aria-valuemin={-60} aria-valuemax={0} aria-valuenow={channel.bar ?? -60}>
-      <i style={{ height: `${channel.bar_position * 100}%` }} />
-      {channel.peak_position !== null && <b style={{ bottom: `${channel.peak_position * 100}%` }} />}
-    </div><small>{reading(channel.bar, 'dBFS')}</small>
+    <div className="fairlight-meter-well"><AudioMeter label={label} values={[channel]} /></div><small>{reading(channel.bar, 'dBFS')}</small>
   </div>;
 }
 export function Monitoring({ timeline, meters, onAction, onResetPeaks, onPatch, viewer }: {

@@ -54,6 +54,8 @@ pub struct Counters {
     late: AtomicU64,
     /// The sample at which the graph taken last to be swapped in is swapped in.
     scheduled: AtomicI64,
+    /// The session that plays, as the thread of the mix took it last (T18).
+    session: AtomicU64,
 }
 
 impl Counters {
@@ -81,6 +83,14 @@ impl Counters {
         self.swaps.load(Ordering::Relaxed)
     }
 
+    /// The session that plays (its epoch), once the thread of the mix took it; 0 before the
+    /// first: what is mixed is of it from then on (T18: a grain of scrubbing is placed after what
+    /// is mixed of its own session).
+    #[must_use]
+    pub fn session(&self) -> u64 {
+        self.session.load(Ordering::Acquire)
+    }
+
     /// The graphs that came too late to be swapped in at their sample.
     #[must_use]
     pub fn late(&self) -> u64 {
@@ -98,6 +108,10 @@ impl Counters {
     pub(crate) fn underrun(&self, samples: u64) {
         self.underruns.fetch_add(1, Ordering::Relaxed);
         self.missing.fetch_add(samples, Ordering::Relaxed);
+    }
+
+    pub(crate) fn take(&self, epoch: u64) {
+        self.session.store(epoch, Ordering::Release);
     }
 
     pub(crate) fn mix_to(&self, sample: i64) {

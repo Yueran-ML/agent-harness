@@ -20,6 +20,7 @@ use crate::rt::Smoothed;
 use super::pdc::DelayLine;
 use super::route::{panned, Matrix, PanAt};
 use super::taps::Tap;
+use super::Warp;
 
 /// The most lanes of one node that a block hands it.
 pub(crate) const MAX_NODE_LANES: usize = 64;
@@ -206,8 +207,15 @@ impl Strip {
     }
 
     /// Takes the sum that feeds it, and the values of its lanes, for a block of `frames` whose
-    /// input is at sample `start` of the timeline.
-    pub(crate) fn load(&mut self, input: &Planar, start: i64, rate: u32, frames: usize) {
+    /// input is at sample `start` out, which `warp` lays on the timeline (T18: a lane is read
+    /// where the timeline is, at whatever speed it plays).
+    pub(crate) fn load(
+        &mut self,
+        input: &Planar,
+        (start, warp): (i64, Warp),
+        rate: u32,
+        frames: usize,
+    ) {
         for channel in 0..self.channels() {
             self.work.channel_mut(channel)[..frames]
                 .copy_from_slice(&input.channel(channel)[..frames]);
@@ -215,7 +223,8 @@ impl Strip {
         let scale = rate;
         for (index, lane) in self.lanes.iter().enumerate() {
             let values = &mut self.values[index * self.max_block..][..frames];
-            for (ticks, value) in (start - lane.delay..).zip(values) {
+            for (sample, value) in (start - lane.delay..).zip(values) {
+                let ticks = warp.timeline(sample);
                 #[allow(clippy::cast_possible_truncation, reason = "a value of a parameter")]
                 let at = lane.lane.value_at(Time { ticks, scale }) as f32;
                 *value = at;

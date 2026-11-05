@@ -131,8 +131,14 @@ pub const STRETCH_FASTEST: f64 = 32.0;
 /// changes"; the reference's C-C8): the hint beside its checkbox (T19).
 pub const STRETCH_CLEAN_SPEEDS: (f64, f64) = (0.5, 2.0);
 
-/// The sound of each move of the playhead while scrubbing (C-U7).
+/// The sound of each move of the playhead while scrubbing (C-U7; plan T18, "我们定"): what a
+/// scrubbing seek plays of the timeline from the frame it seeks, forward at speed 1.
 pub const SCRUB_GRAIN: f64 = 0.060;
+
+/// The fades at either end of a grain of audio scrubbing (plan T18, "我们定"): straight lines of
+/// 5 ms within it. A grain that comes while another sounds takes its place by a crossfade as
+/// long, the one fading out as the other fades in.
+pub const SCRUB_FADE: f64 = 0.005;
 
 // --- Meters and loudness (T9) ----------------------------------------------------------------
 //

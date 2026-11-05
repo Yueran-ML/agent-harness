@@ -47,7 +47,7 @@ impl Graph {
                 }
             }
             let this = &mut self.strips[strip];
-            this.load(&self.inputs[strip], start, rate, frames);
+            this.load(&self.inputs[strip], (start, self.warp), rate, frames);
             this.run(rate, frames, &self.pres, &self.vcas);
             if self.keys[strip] {
                 for channel in 0..this.channels() {

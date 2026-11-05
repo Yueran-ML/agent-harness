@@ -8,6 +8,7 @@ import { editingAllowed, inStudio, useStudioKeys } from '../keys';
 import { MonitorPane } from '../MonitorPane';
 import { BypassButton, useBypassColor } from '../BypassColor';
 import { Timeline, type TimelineHandle } from '../timeline/Timeline';
+import { useAudioScrubbing } from '../timeline/scrub';
 import type { MonitorControls } from '../useMonitor';
 import type { ViewerNotice } from '../Viewer';
 import { NewTimeline } from './NewTimeline';
@@ -135,6 +136,9 @@ export function EditPage({
   // Bypass Color is the timeline monitor's, kept from page to page: shown and turned here too (pp. 550, 672).
   const bypassLoaded = timelineState !== null && timelineMonitor.loaded;
   const bypassColor = useBypassColor({ bridge, session, loaded: bypassLoaded, state: timelineState?.monitor === 'timeline' ? timelineState : null,
+    onFailure: failure => now.current.onProblem(now.current.words.hint.studio.failed, failure) });
+  // Timeline › Audio Scrubbing, Shift+S (p. 731; T18).
+  useAudioScrubbing({ bridge, session, loaded: bypassLoaded, state: timelineState?.monitor === 'timeline' ? timelineState : null,
     onFailure: failure => now.current.onProblem(now.current.words.hint.studio.failed, failure) });
 
   const create = useCallback(async (made: TimelineModel): Promise<string | null> => {

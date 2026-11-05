@@ -58,7 +58,17 @@ export type Edit = { timeline: string } & (
   | { edit: 'lane_draw'; of: LanesOf; path: string; from: Time; to: Time; points: LanePoint[]; tolerance?: number }
   /** Clear Track Automation: `then` keep (where left out), reset, or hold the value at `at`. */
   | { edit: 'clear_lanes'; of: LanesOf; paths?: string[]; then?: 'keep' | 'reset' | 'hold'; at?: Time }
+  /** A pass of the recording of automation (T16), as the engine writes it at the stop or a Punch In. */
+  | { edit: 'record_pass'; lanes: RecordedLane[] }
 );
+/** What a pass of recording wrote on one lane (PROTOCOL.md, "Recording automation"). */
+export interface RecordedLane {
+  of: LanesOf;
+  path: string;
+  /** The runs are offsets in dB of the lane as it was (Trim), not its values. */
+  trim?: boolean;
+  runs: { points: LanePoint[]; to: Time; then: 'return' | 'hold' | 'event' | 'cut'; glide?: Time }[];
+}
 /** An attribute of a clip that Paste/Remove Attributes takes (p. 3842). */
 export type ClipAttribute = 'volume' | 'plugins' | 'equalizer';
 export type Change = Op | Edit;

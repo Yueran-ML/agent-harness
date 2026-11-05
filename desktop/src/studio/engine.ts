@@ -733,6 +733,8 @@ export interface TimelineTransportState extends TransportBase {
   color_error?: string;
   /** The frame of the timeline that each reference of the wipe or split screen shows for the frame shown, in their order; while one is on. */
   compared?: (number | null)[];
+  /** True while automation is recorded as the timeline plays (`automation.record`). */
+  recording?: boolean;
 }
 export type TransportState = SourceTransportState | TimelineTransportState;
 /** A LUT that a grade of the timeline names and the engine could not read (PROTOCOL.md, "Grades in the picture"). */
@@ -972,8 +974,24 @@ export interface PageMethods {
   'luts.preview': { previews: LutPreview[] };
   'viewer.preview': { monitor: 'timeline'; preview: LivePreview | null };
   'viewer.lut': { monitor: 'timeline'; on: boolean };
+  // The recording of automation of the timeline monitor (PROTOCOL.md, "Recording automation").
+  'automation.record': AutomationRecording;
+  'automation.touch': Record<string, never>;
+  'automation.punch': { lanes: number };
 }
 export type PageMethod = keyof PageMethods;
+
+/**
+ * Whether automation is recorded as the timeline plays (`automation.record`), its Glide Time in
+ * ms (Snap's return and Return's), and how many lanes Preview keeps to be punched in.
+ */
+export interface AutomationRecording { on: boolean; glide_ms: number; pending: number }
+/**
+ * The params of `automation.touch`: a control of the mix touched (`touching: true`), moved, or let
+ * go, in the units of its setting (a fader's dB; under Trim, the dB it moves its lane by).
+ */
+export type AutomationTouch = { timeline: string; path: string; value: number; touching: boolean } &
+  ({ track: string } | { bus: string } | { vca: string });
 
 /**
  * A window preset (RM20 pp. 3198–3199): the windows of a node as they were on the frame of the

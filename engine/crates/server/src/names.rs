@@ -464,6 +464,9 @@ fn visit_edit<E>(
         | Edit::LanePoints { timeline, .. }
         | Edit::LaneRange { timeline, .. }
         | Edit::LaneDraw { timeline, .. }
+        | Edit::LaneFill { timeline, .. }
+        | Edit::AutomationPaste { timeline, .. }
+        | Edit::AutomationErase { timeline, .. }
         | Edit::RecordPass { timeline, .. }
         | Edit::ClearLanes { timeline, .. } => timeline,
     };
@@ -611,6 +614,21 @@ fn visit_edit<E>(
         Edit::RecordPass { lanes, .. } => {
             for lane in lanes {
                 visit_lanes_of(&mut lane.of, &of, f)?;
+            }
+        }
+        Edit::LaneFill { lanes, .. } => {
+            for lane in lanes {
+                visit_lanes_of(&mut lane.of, &of, f)?;
+            }
+        }
+        Edit::AutomationPaste { lanes, .. } => {
+            for lane in lanes {
+                visit_lanes_of(&mut lane.of, &of, f)?;
+            }
+        }
+        Edit::AutomationErase { of: owners, .. } => {
+            for owner in owners {
+                visit_lanes_of(owner, &of, f)?;
             }
         }
         _ => unreachable!("the edits of grades are visited above"),

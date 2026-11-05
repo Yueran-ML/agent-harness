@@ -55,7 +55,7 @@ struct TrackSound {
     solo: bool,
     solo_safe: bool,
     adc: bool,
-    automation_arm: bool,
+    automation_arm: crate::audio::AutomationArm,
     strip: Strip,
 }
 

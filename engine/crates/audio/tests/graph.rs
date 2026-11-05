@@ -549,7 +549,7 @@ fn a_vca_adds_its_decibels_to_its_members_and_mutes_them() {
         mute: false,
         solo: false,
         vcas: vec![],
-        automation_arm: false,
+        automation_arm: columbina_model::AutomationArm::Unarmed,
         lanes: columbina_model::Lanes::new(),
     });
     timeline.tracks[0].audio.strip.fader_db = -6.0;
@@ -568,7 +568,7 @@ fn a_vca_adds_its_decibels_to_its_members_and_mutes_them() {
         mute: false,
         solo: false,
         vcas: vec![],
-        automation_arm: false,
+        automation_arm: columbina_model::AutomationArm::Unarmed,
         lanes: columbina_model::Lanes::new(),
     });
     project.timelines[0].vcas[0].vcas = vec!["VCA2".into()];
@@ -650,7 +650,7 @@ fn a_solo_silences_what_is_not_soloed_nor_solo_safe() {
                 mute: false,
                 solo: true,
                 vcas: vec![],
-                automation_arm: false,
+                automation_arm: columbina_model::AutomationArm::Unarmed,
                 lanes: columbina_model::Lanes::new(),
             });
             timeline.tracks[1].audio.strip.vcas = vec!["VCA1".into()];

@@ -183,6 +183,10 @@ fn sound(timeline: &Timeline) -> Vec<&columbina_model::Track> {
 /// `controls` these are, each with the value to set it to; none where the change needs another
 /// graph. See the module.
 #[must_use]
+#[allow(
+    clippy::too_many_lines,
+    reason = "every track, bus and VCA, compared in turn"
+)]
 pub fn retune(was: &Timeline, now: &Timeline, controls: &Controls) -> Option<Vec<(Control, f32)>> {
     let mut sets = Vec::new();
     let mut solos = false;
@@ -207,6 +211,8 @@ pub fn retune(was: &Timeline, now: &Timeline, controls: &Controls) -> Option<Vec
                 audio.order,
                 audio.adc,
                 audio.lanes.clone(),
+                // An arm turned Off or back takes its lanes out of the graph or puts them in.
+                audio.automation_arm.plays(),
             )
         };
         if rest(x) != rest(y) {
@@ -240,7 +246,8 @@ pub fn retune(was: &Timeline, now: &Timeline, controls: &Controls) -> Option<Vec
         return None;
     }
     for (a, b) in was.buses.iter().zip(&now.buses) {
-        if (&a.id, a.format, &a.lanes) != (&b.id, b.format, &b.lanes) {
+        let (x, y) = (a.automation_arm.plays(), b.automation_arm.plays());
+        if (&a.id, a.format, &a.lanes, x) != (&b.id, b.format, &b.lanes, y) {
             return None;
         }
         let owner = Owner::Bus(a.id.clone());
@@ -254,7 +261,8 @@ pub fn retune(was: &Timeline, now: &Timeline, controls: &Controls) -> Option<Vec
         return None;
     }
     for (a, b) in was.vcas.iter().zip(&now.vcas) {
-        if (&a.id, &a.vcas, &a.lanes) != (&b.id, &b.vcas, &b.lanes) {
+        let (x, y) = (a.automation_arm.plays(), b.automation_arm.plays());
+        if (&a.id, &a.vcas, &a.lanes, x) != (&b.id, &b.vcas, &b.lanes, y) {
             return None;
         }
         let owner = Owner::Vca(a.id.clone());

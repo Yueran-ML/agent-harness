@@ -20,10 +20,10 @@ pub mod time;
 pub mod upgrade;
 
 pub use audio::{
-    AudioFade, AudioKey, AudioParam, Bus, BusFormat, ChannelMap, ChannelOrder, ChannelSource,
-    ChannelSources, ClipPitch, CrossfadeLevel, Effect, Equalizer, GroupControl, Insert, KeyInterp,
-    Lane, LaneKind, LanePoint, LaneScale, Lanes, Output, Pan, Send, SourceRef, Stage, Strip,
-    TimelineAudio, TrackAudio, TrackFormat, TrackGroup, Vca,
+    AudioFade, AudioKey, AudioParam, AutomationArm, Bus, BusFormat, ChannelMap, ChannelOrder,
+    ChannelSource, ChannelSources, ClipPitch, CrossfadeLevel, Effect, Equalizer, GroupControl,
+    Insert, KeyInterp, Lane, LaneKind, LanePoint, LaneScale, Lanes, Output, Pan, Send, SourceRef,
+    Stage, Strip, TimelineAudio, TrackAudio, TrackFormat, TrackGroup, Vca,
 };
 pub use color::{
     input_space, Basis, ColorFacts, ColorRange, DisplayPrimaries, Gamma, Gamut, InputSpace,

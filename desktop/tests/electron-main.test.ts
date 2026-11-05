@@ -4508,8 +4508,9 @@ describe('the engine of the studio', () => {
       'luts.preview', 'viewer.preview', 'viewer.lut',
       // The Tracker palette and the keys of the Color › Tracker menu (T24).
       'track.start', 'track.stop', 'track.edit',
-      // The recording of automation (T16).
+      // The recording of automation (T16), and the rest of it (T16b).
       'automation.record', 'automation.touch', 'automation.punch',
+      'automation.all_read', 'automation.join', 'automation.fill', 'automation.copy',
     ];
     for (const method of allowed) {
       const params = method === 'transaction.apply' ? { ops: [{ op: 'remove_clip', timeline: 't1', id: 'c1' }] } : { frame: 3, monitor: 'source' };

@@ -59,7 +59,10 @@ use crate::ops::{apply_done, InsertsOf, LanesOf, Op, OpError};
 use crate::project::{Alignment, Id, Project, Rgba, TitleStyle, TrackKind, TransitionKind};
 use crate::time::{Speed, Time};
 
-pub use automation::{NewPoint, PointAction, RangeAction, RecordedLane, RecordedRun, RunEnd, Then};
+pub use automation::{
+    arm_of, copy_lanes, group_control, grouped_with, CopiedLane, FilledLane, NewPoint, PointAction,
+    RangeAction, RecordedLane, RecordedRun, RunEnd, Then,
+};
 pub use grade::Given;
 use work::Work;
 
@@ -890,6 +893,10 @@ pub enum Edit {
         /// How far in value the points move.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         delta: Option<f64>,
+        /// Whether the tracks of the active groups that link Automation and the control of the
+        /// setting follow (§11.6, [`grouped_with`]); not where it is left out.
+        #[serde(default, skip_serializing_if = "is_false")]
+        grouped: bool,
     },
     /// Take away, paste over, raise or lower, or thin a range of a lane of automation (pp.
     /// 3898–3899).
@@ -915,6 +922,10 @@ pub enum Edit {
         /// How far a thinned lane may go from the points that it had.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tolerance: Option<f64>,
+        /// Whether the tracks of the active groups that link Automation and the control of the
+        /// setting follow (§11.6, [`grouped_with`]); not where it is left out.
+        #[serde(default, skip_serializing_if = "is_false")]
+        grouped: bool,
     },
     /// Draw a lane of automation with the Pencil from `from` to `to` (pp. 3900, 3911).
     LaneDraw {
@@ -933,6 +944,49 @@ pub enum Edit {
         /// How far the lane may go from them, as they are thinned.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tolerance: Option<f64>,
+        /// Whether the tracks of the active groups that link Automation and the control of the
+        /// setting follow (§11.6, [`grouped_with`]); not where it is left out.
+        #[serde(default, skip_serializing_if = "is_false")]
+        grouped: bool,
+    },
+    /// Fill Range, or Glide Range (pp. 3908, 3913; T16b): lanes written over a range with the
+    /// values that Preview holds, or glided to them from the values at its start.
+    LaneFill {
+        /// The timeline.
+        timeline: Id,
+        /// The lanes and their values.
+        lanes: Vec<FilledLane>,
+        /// Where the range starts, a time of the timeline.
+        from: Time,
+        /// Where it ends.
+        to: Time,
+        /// Whether it glides (Glide Range), not fills.
+        #[serde(default, skip_serializing_if = "is_false")]
+        glide: bool,
+    },
+    /// Paste of automation (pp. 3913–3914; T16b): what Copy took, put at a time, or over a range.
+    AutomationPaste {
+        /// The timeline.
+        timeline: Id,
+        /// Where it goes, a time of the timeline.
+        at: Time,
+        /// The end of the range that it fills, where there is one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to: Option<Time>,
+        /// The lanes, each to the track, bus or VCA and the setting that it names.
+        lanes: Vec<CopiedLane>,
+    },
+    /// Erase of automation (p. 3914; T16b): the points of a range of the lanes of tracks, buses
+    /// and VCAs taken away.
+    AutomationErase {
+        /// The timeline.
+        timeline: Id,
+        /// The tracks of sound, buses and VCAs.
+        of: Vec<LanesOf>,
+        /// Where the range starts, a time of the timeline.
+        from: Time,
+        /// Where it ends.
+        to: Time,
     },
     /// Write what a pass of the recording of automation recorded (T16, pp. 3905–3909): the runs
     /// of each lane in place of what was there, as one step of undo.
@@ -1587,8 +1641,26 @@ pub(crate) fn run(project: &mut Project, edit: Edit) -> Result<Expansion, EditEr
             at,
             by,
             delta,
+            grouped,
             ..
-        } => automation::lane_points(&mut work, &of, &path, action, &points, &at, (by, delta)),
+        } => {
+            let when = points.first().map(|p| p.at);
+            automation::with_group(
+                &mut work,
+                (&of, &path),
+                (grouped, when),
+                |work, of, follow| {
+                    let points: Vec<NewPoint> = points
+                        .iter()
+                        .map(|p| NewPoint {
+                            at: p.at,
+                            value: p.value.map(|v| follow.apply(v)),
+                        })
+                        .collect();
+                    automation::lane_points(work, of, &path, action, &points, &at, (by, delta))
+                },
+            )
+        }
         Edit::LaneRange {
             of,
             path,
@@ -1598,15 +1670,32 @@ pub(crate) fn run(project: &mut Project, edit: Edit) -> Result<Expansion, EditEr
             points,
             delta,
             tolerance,
+            grouped,
             ..
-        } => automation::lane_range(
+        } => automation::with_group(
             &mut work,
-            &of,
-            &path,
-            (from, to),
-            action,
-            points.as_deref(),
-            (delta, tolerance),
+            (&of, &path),
+            (grouped, Some(from)),
+            |work, of, follow| {
+                let points: Option<Vec<LanePoint>> = points.as_ref().map(|points| {
+                    points
+                        .iter()
+                        .map(|p| LanePoint {
+                            at: p.at,
+                            value: follow.apply(p.value),
+                        })
+                        .collect()
+                });
+                automation::lane_range(
+                    work,
+                    of,
+                    &path,
+                    (from, to),
+                    action,
+                    points.as_deref(),
+                    (delta, tolerance),
+                )
+            },
         ),
         Edit::LaneDraw {
             of,
@@ -1615,8 +1704,36 @@ pub(crate) fn run(project: &mut Project, edit: Edit) -> Result<Expansion, EditEr
             to,
             points,
             tolerance,
+            grouped,
             ..
-        } => automation::lane_draw(&mut work, &of, &path, (from, to), &points, tolerance),
+        } => automation::with_group(
+            &mut work,
+            (&of, &path),
+            (grouped, Some(from)),
+            |work, of, follow| {
+                let points: Vec<LanePoint> = points
+                    .iter()
+                    .map(|p| LanePoint {
+                        at: p.at,
+                        value: follow.apply(p.value),
+                    })
+                    .collect();
+                automation::lane_draw(work, of, &path, (from, to), &points, tolerance)
+            },
+        ),
+        Edit::LaneFill {
+            lanes,
+            from,
+            to,
+            glide,
+            ..
+        } => automation::lane_fill(&mut work, &lanes, (from, to), glide),
+        Edit::AutomationPaste { at, to, lanes, .. } => {
+            automation::automation_paste(&mut work, &lanes, at, to)
+        }
+        Edit::AutomationErase { of, from, to, .. } => {
+            automation::automation_erase(&mut work, &of, (from, to))
+        }
         Edit::ClearLanes {
             of,
             paths,
@@ -1677,6 +1794,9 @@ pub fn timeline_of(edit: &Edit) -> Option<&Id> {
         | Edit::LanePoints { timeline, .. }
         | Edit::LaneRange { timeline, .. }
         | Edit::LaneDraw { timeline, .. }
+        | Edit::LaneFill { timeline, .. }
+        | Edit::AutomationPaste { timeline, .. }
+        | Edit::AutomationErase { timeline, .. }
         | Edit::RecordPass { timeline, .. }
         | Edit::ClearLanes { timeline, .. } => timeline,
         Edit::AddSerial { .. }

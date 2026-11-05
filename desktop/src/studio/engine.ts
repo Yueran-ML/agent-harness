@@ -165,7 +165,8 @@ export interface TrackSound {
   solo_safe?: boolean;
   /** Its delay made up with the others' (ADC): on for a new track. */
   adc?: boolean;
-  automation_arm?: boolean;
+  /** The Automation Arm (T16b): armed (`true`), not (`false`), Safe (never recorded nor pasted over) or Off (its lanes not played). */
+  automation_arm?: AutomationArm;
   /** At unity, out to bus B1 where the timeline has it and to none where not, where it is left out. */
   strip?: Strip;
   lanes?: Lanes;
@@ -256,10 +257,12 @@ export interface LanePoint { at: Time; value: number }
 export interface Lane { points: LanePoint[]; kind?: 'continuous' | 'switch'; scale?: 'linear' | 'log' }
 /** Lanes of automation by the path of their setting (`fader_db`, `pan.x`, `send.B2.level_db`, `insert.fx1.gain_db`, ...). */
 export type Lanes = Record<string, Lane>;
-/** A bus; `automation_arm` arms its automation to be recorded under Touch Off (T16), left out while false. */
-export interface Bus { id: string; name: string; color: string; format: BusFormat; strip?: Strip; mute?: boolean; solo?: boolean; solo_safe?: boolean; automation_arm?: boolean; lanes?: Lanes }
+/** The Automation Arm of a track, bus or VCA (PROTOCOL.md, "Recording automation"; `'armed'`/`'unarmed'` are read too). */
+export type AutomationArm = boolean | 'safe' | 'off';
+/** A bus; `automation_arm` as a track's (armed, it is recorded under Touch Off, T16), left out while false. */
+export interface Bus { id: string; name: string; color: string; format: BusFormat; strip?: Strip; mute?: boolean; solo?: boolean; solo_safe?: boolean; automation_arm?: AutomationArm; lanes?: Lanes }
 /** A VCA; `automation_arm` as a bus's. */
-export interface Vca { id: string; name: string; fader_db?: number; mute?: boolean; solo?: boolean; vcas?: string[]; automation_arm?: boolean; lanes?: Lanes }
+export interface Vca { id: string; name: string; fader_db?: number; mute?: boolean; solo?: boolean; vcas?: string[]; automation_arm?: AutomationArm; lanes?: Lanes }
 export type GroupControl = 'editing' | 'fader' | 'solo' | 'mute' | 'sends' | 'panning' | 'automation';
 export interface TrackGroup { id: string; name: string; color?: string; members: string[]; linked?: GroupControl[]; active?: boolean }
 /** The chain of inserts that an operation on inserts works on: the strip of a track of sound or a bus, or the effects of a clip. */
@@ -737,6 +740,8 @@ export interface TimelineTransportState extends TransportBase {
   compared?: (number | null)[];
   /** True while automation is recorded as the timeline plays (`automation.record`). */
   recording?: boolean;
+  /** All Read is on while automation is recorded (`automation.all_read`, T16b); left out while it is not. */
+  all_read?: boolean;
   /** Whether dragging the playhead plays its sound (`transport.scrub_audio`, Timeline › Audio Scrubbing, p. 731; phase 3 T18); true where an older engine leaves it out. */
   scrub_audio?: boolean;
 }
@@ -983,14 +988,19 @@ export interface PageMethods {
   'automation.record': AutomationRecording;
   'automation.touch': Record<string, never>;
   'automation.punch': { lanes: number };
+  'automation.all_read': { read: boolean };
+  'automation.join': { lanes: number; at: Time | null };
+  'automation.fill': { lanes: number };
+  'automation.copy': { lanes: { of: LanesOf; path: string; points?: LanePoint[]; value?: number }[] };
 }
 export type PageMethod = keyof PageMethods;
 
 /**
  * Whether automation is recorded as the timeline plays (`automation.record`), its Glide Time in
- * ms (Snap's return and Return's), and how many lanes Preview keeps to be punched in.
+ * ms (Snap's return and Return's), how many lanes Preview keeps to be punched in, and whether All
+ * Read is on (T16b: touches heard, not written).
  */
-export interface AutomationRecording { on: boolean; glide_ms: number; pending: number }
+export interface AutomationRecording { on: boolean; glide_ms: number; pending: number; read: boolean }
 /**
  * The notification `automation.written`: a pass of the recording of automation, or a Punch In,
  * written (`revision`, null where nothing was), and the lanes that could not be (PROTOCOL.md,

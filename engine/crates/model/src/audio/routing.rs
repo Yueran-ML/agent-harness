@@ -141,10 +141,10 @@ pub struct Bus {
     /// Whether it is heard while others are soloed (Solo Safe), as a bus of returns is.
     #[serde(default)]
     pub solo_safe: bool,
-    /// Whether its automation is armed to record (p. 3906), as a track's is: what Touch Off
-    /// records. Left out where it is not.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub automation_arm: bool,
+    /// Its Automation Arm (p. 3906), as a track's: armed (what Touch Off records), Safe or Off.
+    /// Left out where it is not armed.
+    #[serde(default, skip_serializing_if = "super::unarmed")]
+    pub automation_arm: super::AutomationArm,
     /// The automation of its settings. It may be left out, as none.
     #[serde(default)]
     pub lanes: Lanes,
@@ -166,7 +166,7 @@ impl Bus {
             mute: false,
             solo: false,
             solo_safe: false,
-            automation_arm: false,
+            automation_arm: super::AutomationArm::Unarmed,
             lanes: Lanes::new(),
         }
     }
@@ -193,10 +193,9 @@ pub struct Vca {
     /// The VCAs that it is a member of.
     #[serde(default)]
     pub vcas: Vec<Id>,
-    /// Whether its automation is armed to record (p. 3906): what Touch Off records. Left out
-    /// where it is not.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub automation_arm: bool,
+    /// Its Automation Arm (p. 3906), as a track's. Left out where it is not armed.
+    #[serde(default, skip_serializing_if = "super::unarmed")]
+    pub automation_arm: super::AutomationArm,
     /// The automation of its fader and mute (p. 3884).
     #[serde(default)]
     pub lanes: Lanes,

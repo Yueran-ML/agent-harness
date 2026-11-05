@@ -1514,3 +1514,120 @@ async fn automation_recorded_as_it_plays_is_heard_at_once_and_written_as_one_ste
     assert!(loud > 0.01, "{loud}");
     assert!((db + 40.0).abs() < 1.0, "{db} dB");
 }
+
+#[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "each method of the menu asked for in turn"
+)]
+async fn fill_range_copy_all_read_and_join_mix_are_asked_for_over_the_protocol() {
+    if columbina_compose::gpu_for_tests().is_none() {
+        return;
+    }
+    let dir = project_dir();
+    let capture = dir.path().join("heard.f32");
+    let sound = format!("capture={}", capture.display());
+    let Some((_engine, mut client)) = transport_engine_with(
+        dir.path(),
+        &[support::Sample::Fhd],
+        &["--sound", &sound, "--test-hooks"],
+    )
+    .await
+    else {
+        return;
+    };
+    let names = eight_seconds_of_sound(&mut client).await;
+    let (timeline, track) = (names["$timeline"].clone(), names["$audio"].clone());
+    client
+        .apply(json!([{"op":"set_timeline_audio","timeline":timeline,
+            "patch":{"record":{"touch":"latch","preview":true}}}]))
+        .await;
+    let ms = |ms: i64| json!({"ticks": ms * 48, "scale": 48_000});
+    client
+        .result(
+            "automation.record",
+            Some(json!({"timeline": timeline, "on": true})),
+        )
+        .await;
+    // Stopped, under Preview: the fader held at -12 dB, then Fill Range from 1 s to 2 s.
+    client
+        .result(
+            "automation.touch",
+            Some(
+                json!({"timeline": timeline, "track": track, "path": "fader_db",
+                "value": -12.0, "touching": true}),
+            ),
+        )
+        .await;
+    let filled = client
+        .result(
+            "automation.fill",
+            Some(json!({"timeline": timeline, "from": ms(1000), "to": ms(2000)})),
+        )
+        .await;
+    assert_eq!(filled["lanes"], 1, "{filled}");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let lane = loop {
+        if let Some(lane) = lane_of(&project(&mut client).await, &timeline, &track, "fader_db") {
+            break lane;
+        }
+        assert!(std::time::Instant::now() < deadline, "no lane written");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!((lane_value(&lane, 48 * 1500) + 12.0).abs() < 1e-9, "{lane}");
+    assert!((lane_value(&lane, 48 * 500) - 0.0).abs() < 1e-9, "{lane}");
+    assert!((lane_value(&lane, 48 * 2500) - 0.0).abs() < 1e-9, "{lane}");
+    // Nothing more is held to fill.
+    let again = client
+        .result(
+            "automation.fill",
+            Some(json!({"timeline": timeline, "from": ms(1000), "to": ms(2000), "glide": true})),
+        )
+        .await;
+    assert_eq!(again["lanes"], 0, "{again}");
+    let backwards = client
+        .error(
+            "automation.fill",
+            Some(json!({"timeline": timeline, "from": ms(2000), "to": ms(1000)})),
+        )
+        .await;
+    assert_eq!(backwards["data"]["reason"], "range", "{backwards}");
+    // Copy: the range, and a snapshot.
+    let copied = client
+        .result(
+            "automation.copy",
+            Some(json!({"timeline": timeline, "of": [{"track": track}],
+                "from": ms(1000), "to": ms(2000)})),
+        )
+        .await;
+    let points = copied["lanes"][0]["points"].as_array().unwrap();
+    assert_eq!(copied["lanes"][0]["path"], "fader_db", "{copied}");
+    assert_eq!(points.first().unwrap()["at"]["ticks"], 0, "{copied}");
+    assert_eq!(points.last().unwrap()["at"]["ticks"], 48_000, "{copied}");
+    let snapshot = client
+        .result(
+            "automation.copy",
+            Some(json!({"timeline": timeline, "of": [{"track": track}], "at": ms(1500)})),
+        )
+        .await;
+    assert_eq!(snapshot["lanes"][0]["value"], -12.0, "{snapshot}");
+    let half = client
+        .error(
+            "automation.copy",
+            Some(json!({"timeline": timeline, "of": [{"track": track}], "from": ms(1000)})),
+        )
+        .await;
+    assert_eq!(half["data"]["reason"], "range", "{half}");
+    // All Read while recording is on; Join Mix with no pass written stopped yet.
+    let read = client
+        .result("automation.all_read", Some(json!({"timeline": timeline})))
+        .await;
+    assert_eq!(read["read"], true, "{read}");
+    client
+        .until_state("All Read shown", |s| s["all_read"] == true)
+        .await;
+    let joined = client
+        .result("automation.join", Some(json!({"timeline": timeline})))
+        .await;
+    assert_eq!(joined, json!({"lanes": 0, "at": null}));
+}

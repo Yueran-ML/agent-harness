@@ -1075,7 +1075,14 @@ lane_points {of,path,action:"add",points:[{at,value?}]} (no value keeps the curv
 the lane), {action:"remove",at:[times]}, {action:"move",at:[times],by?,delta?}; lane_range
 {of,path,from,to,action:"delete"|"paste"|"shift_value"|"thin",points?(times from "from"),delta?}
 keeps the values outside the range; lane_draw {of,path,from,to,points} replaces a range with
-thinned points; clear_lanes {of,paths?,then:"keep"|"reset"|"hold",at?}. Ops set_lane
+thinned points; clear_lanes {of,paths?,then:"keep"|"reset"|"hold",at?}; lane_fill
+{lanes:[{of,path,value}],from,to,glide?} fills a range with a value (glide:true slides from the
+value at "from" to it); automation_erase {of:[owners],from,to} and automation_paste
+{at,to?,lanes:[{of,path,points?(times from the start)|value}]} erase/paste the lanes of the
+recording categories that are on. Pass grouped:true to lane_points/lane_range/lane_draw to
+apply a fader/mute/pan/send lane edit to the other tracks of an active group linking
+"automation" (relative for numbers). automation_arm is false, true, "safe" (never written by
+recording, paste or erase) or "off" (lanes not played). Ops set_lane
 {of,path,lane:{points:[{at,value}],kind:"continuous"|"switch"}|null} and splice_lane exist too.
 Values must be in the setting's range. lane_draw and lane_range paste keep the old values
 outside the range: after "to" the lane returns to what it was there. To fade out and stay

@@ -216,7 +216,7 @@ fn a_vca_held_live_reaches_its_member_and_a_key_of_another_graph_does_nothing() 
         mute: false,
         solo: false,
         vcas: vec![],
-        automation_arm: false,
+        automation_arm: columbina_model::AutomationArm::Unarmed,
         lanes: [(
             "fader_db".to_owned(),
             lane(LaneKind::Continuous, &[(0, 0.0)]),

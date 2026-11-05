@@ -323,7 +323,7 @@ fn timeline(id: &str, media: &[String], quick: bool) -> Timeline {
             mute: false,
             solo: false,
             vcas: vec![],
-            automation_arm: false,
+            automation_arm: columbina_model::AutomationArm::Unarmed,
             lanes: columbina_model::Lanes::new(),
         }],
         track_groups: vec![],

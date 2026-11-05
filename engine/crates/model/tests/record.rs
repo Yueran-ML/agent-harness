@@ -548,7 +548,7 @@ fn a_bus_and_a_vca_are_armed_by_a_patch_and_written_only_when_armed() {
         apply(&mut project, op).unwrap();
     }
     let t = &project.timelines[0];
-    assert!(t.buses[0].automation_arm && t.vcas[0].automation_arm);
+    assert!(t.buses[0].automation_arm.armed() && t.vcas[0].automation_arm.armed());
     let written = serde_json::to_value(&t.buses[0]).unwrap();
     assert_eq!(written["automation_arm"], true);
 }

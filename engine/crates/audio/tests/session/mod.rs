@@ -17,7 +17,9 @@ use std::sync::Arc;
 
 use columbina_audio::constants::{samples as of_seconds, SCRUB_FADE, SCRUB_GRAIN};
 use columbina_audio::feed::{ClipFeed, FeedError};
-use columbina_audio::graph::{node_of, Controls, Graph, Maker, Options, Owner, Purpose, Warp};
+use columbina_audio::graph::{
+    node_of, Controls, Graph, Maker, Options, Owner, Purpose, Taps, Warp,
+};
 use columbina_audio::play::device::{self, Feeding, Order, Player};
 use columbina_audio::play::engine::{Command, Engine, Grain, Retired, Run, Session, MOST_BLOCK};
 use columbina_audio::play::fetcher::{ring_feed, Fetch};
@@ -104,6 +106,8 @@ pub struct Sim {
     pub maker: Maker,
     /// The controls of the graph built last.
     pub controls: Option<Controls>,
+    /// What the meters of each graph built read, in the order they were built (T9b).
+    pub taps: Vec<Taps>,
     /// Every frame given to the device, left and right.
     pub played: Vec<f32>,
     run: Vec<f32>,
@@ -149,6 +153,7 @@ impl Sim {
             tone,
             maker,
             controls: None,
+            taps: Vec::new(),
             played: Vec::with_capacity(2 * 60 * RATE as usize),
             run: vec![0.0; 2 * PERIOD],
             now: 0,
@@ -326,6 +331,7 @@ impl Sim {
             self.fetches.push((fetch, tone));
         }
         self.controls = Some(graph.controls());
+        self.taps.push(graph.taps());
         let run = Run::new(graph, feed, None, i64::MAX);
         Box::new(match self.grain {
             Some(grain) => run.with_grain(grain),

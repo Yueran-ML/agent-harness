@@ -88,6 +88,12 @@ impl<T: Words> CellWriter<T> {
 }
 
 impl<T: Words> CellReader<T> {
+    /// The cells published that it has not read yet (some of which may be lost).
+    #[must_use]
+    pub fn waiting(&self) -> u64 {
+        self.count.load(Ordering::Acquire).saturating_sub(self.seen)
+    }
+
     /// Gives `cell` each cell published since the last call, in order, and says how many were
     /// lost (written over before they were read). It may spin while a write is under way.
     pub fn drain(&mut self, mut cell: impl FnMut(&T)) -> u64 {

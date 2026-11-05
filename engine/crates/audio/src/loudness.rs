@@ -409,6 +409,12 @@ impl LoudnessReader {
     pub fn drain(&mut self, mut cell: impl FnMut(Cell)) -> u64 {
         self.reader.drain(|&value| cell(value))
     }
+
+    /// The cells published that it has not read yet.
+    #[must_use]
+    pub fn waiting(&self) -> u64 {
+        self.reader.waiting()
+    }
 }
 
 /// A histogram of the loudness of blocks, in bins of [`LOUDNESS_BIN`] from the absolute gate to

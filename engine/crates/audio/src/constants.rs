@@ -212,6 +212,16 @@ pub const RMS_WINDOW: f64 = 0.300;
 /// How often the meters are read and sent (C-L5).
 pub const METER_RATE_HZ: u32 = 30;
 
+/// How long the meters wait for a cell before they take it that nothing plays, and fall as on
+/// silence for all the time since the last cell (T9b; we decide): three reads at
+/// [`METER_RATE_HZ`], more than the mix is ever ahead of the device or late by while it plays.
+pub const METER_IDLE: f64 = 0.100;
+
+/// The graphs offered to the meters and not yet heard that they keep (T9b; we decide): those
+/// that are swapped in after one another within a read; an older one that never plays (built too
+/// late to be swapped in) is let go of.
+pub const METER_PENDING: usize = 8;
+
 /// The bottom of a meter's scale, in dB (p. 3688; C-L7).
 pub const METER_FLOOR_DB: f32 = -60.0;
 

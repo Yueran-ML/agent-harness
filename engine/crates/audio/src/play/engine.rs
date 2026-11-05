@@ -14,6 +14,10 @@
 //!   latencies taken off, so the swap keeps the time to the sample. A graph that comes after its
 //!   sample has been mixed is sent back, not swapped in ([`super::Counters::late`]).
 //!
+//! The graph that plays is the one whose meters hear the sound (`Graph::set_metering`, T9b): a
+//! session's graph from when it is taken, a graph swapped in from its sample, the one that fades
+//! out no longer from there; so the cells of the meters follow one another as the sound does.
+//!
 //! What it lets go of (a session, a graph and its reader) goes back through a ring of
 //! [`Retired`] to be dropped on another thread. Nothing here locks, allocates, frees, waits or
 //! logs (convention 3).
@@ -267,6 +271,15 @@ impl Session {
     pub fn run(&self) -> &Run {
         &self.run
     }
+
+    /// Plays `run` in place of the graph that plays, which it gives back; the meters hear the new
+    /// graph from here, and the old no longer (T9b). On the thread of the mix: it takes no memory.
+    fn swap_in(&mut self, run: Box<Run>) -> Box<Run> {
+        let mut old = std::mem::replace(&mut self.run, run);
+        old.graph.set_metering(false);
+        self.run.graph.set_metering(true);
+        old
+    }
 }
 
 /// What the thread of the mix is told.
@@ -431,9 +444,11 @@ impl Engine {
                 return;
             };
             match command {
-                Command::Start(session) => {
+                Command::Start(mut session) => {
                     if session.epoch >= self.epoch {
                         self.end_session();
+                        // The graph that plays is the one that the meters hear (T9b).
+                        session.run.graph.set_metering(true);
                         self.epoch = session.epoch;
                         self.counters.mix_to(session.resampler.next_input());
                         self.counters.schedule(i64::MIN);
@@ -545,7 +560,7 @@ impl Engine {
                 Some(swap) if swap == at => {
                     if let Some((run, _)) = self.incoming.take() {
                         self.incoming = self.next.take();
-                        let old = std::mem::replace(&mut session.run, run);
+                        let old = session.swap_in(run);
                         // A graph waits for its sample only beyond a crossfade under way
                         // (`take_swap`), so that none is fading out here.
                         // A grain of scrubbing takes the place of what sounded over its own

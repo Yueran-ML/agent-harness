@@ -24,7 +24,7 @@ use crate::fx::eq::{self, Eq, Field, Kind, Variant, Zone};
 use crate::fx::pitch;
 use crate::fx::stretch::{Grid, Plan, Stretcher, CHUNK};
 use crate::node::{Layout, Node, ParamId, Planar, Role, Spec};
-use crate::rt::{seqlock, Domain, SeqReader, Smoothed};
+use crate::rt::{Domain, SeqReader, Smoothed};
 
 use super::clip::{
     cutoff, radius, ClipChain, ClipLevel, ClipPan, ClipScratch, Mapping, Pool, Reach, StretchMode,
@@ -33,9 +33,9 @@ use super::clip::{
 use super::pdc::{DelayLine, Delayer};
 use super::route::{balance, panned, PanAt};
 use super::strip::{Edge, Key, LaneOf, Pan, Stage, Strip, VcaState, VcaTerm};
-use super::taps::Tap;
+use super::taps::{Loud, Tap};
 use super::{
-    ClipId, ClipParam, Control, Graph, Meter, Options, Out, OutputInfo, Owner, Purpose, StripParam,
+    ClipId, ClipParam, Control, Graph, Options, Out, OutputInfo, Owner, Purpose, StripParam,
     Target, Warp,
 };
 
@@ -670,16 +670,6 @@ fn pan_at(pan: &PanModel) -> PanAt {
         } else {
             0.0
         },
-    }
-}
-
-/// A point where the level is taken.
-fn tap() -> Tap {
-    let (writer, reader) = seqlock((0, [0.0; MAX_CHANNELS], [0.0; MAX_CHANNELS]));
-    Tap {
-        writer,
-        reader,
-        frames: 0,
     }
 }
 
@@ -1465,8 +1455,8 @@ impl Graph {
                 work: Planar::new(channels, max_block),
                 spare: Planar::new(channels, max_block),
                 post: Planar::new(channels, max_block),
-                pre_tap: tap(),
-                post_tap: tap(),
+                pre_tap: Tap::new(rate, channels),
+                post_tap: Tap::new(rate, channels),
             };
             // The lanes of the strip.
             let mut node_lanes: Vec<Vec<(ParamId, usize)>> = vec![Vec::new(); strip.stages.len()];
@@ -1584,6 +1574,9 @@ impl Graph {
             })
             .collect();
         let monitor = monitor_strip.and_then(|strip| outs.iter().position(|&at| at == strip));
+        // The loudness meter measures the bus that is monitored (p. 3985), as it goes out.
+        let loudness = monitor_strip.map(|strip| Loud::new(rate, sources[strip].layout, max_block));
+        let exits: Vec<u32> = (0..count).map(out).collect();
         let clip_ids = clip_ids_of(&clip_sources, &chains);
         let mut graph = Graph {
             id: GRAPHS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
@@ -1642,6 +1635,9 @@ impl Graph {
             strips,
             outputs,
             monitor,
+            loudness,
+            metering: false,
+            exits,
             latency,
             settle: u32::try_from(settle).unwrap_or(u32::MAX),
             position: 0,
@@ -1719,21 +1715,6 @@ impl Graph {
                 bus: out.bus.clone(),
                 layout: self.strips[out.strip].layout,
                 main: out.main,
-            })
-            .collect()
-    }
-
-    /// The levels of each track and bus.
-    #[must_use]
-    pub fn meters(&self) -> Vec<Meter> {
-        self.owners
-            .iter()
-            .zip(&self.strips)
-            .map(|(owner, strip)| Meter {
-                owner: owner.clone(),
-                channels: strip.channels(),
-                pre: strip.pre_tap.reader.clone(),
-                post: strip.post_tap.reader.clone(),
             })
             .collect()
     }

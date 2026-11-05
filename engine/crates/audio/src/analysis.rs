@@ -7,8 +7,30 @@
 //! measures is pure analysis: the change of a clip's Volume that Normalize and Level Matcher
 //! make is an operation of the model (T2), one transaction for all the clips, the whole curve
 //! of a clip with keyframes moved by the same amount (C-C5, C-C7).
+//!
+//! # What is measured of a timeline (T9b)
+//!
+//! A graph built for analysis (`Purpose::Analysis`, as an export: never a Listen) is run over a
+//! range by [`run_strip`], and the sound at a point of one of its strips (`Graph::sound_at`) given
+//! block by block to an [`Analyzer`]:
+//!
+//! - a track or a bus: after its fader (its mute, solo and VCAs too: what an export of it would
+//!   carry), over the range asked for, the whole timeline where none is;
+//! - a clip (Normalize, Level Matcher, Analyze Audio Level, p. 3986): its sound as its track takes
+//!   it, after the configuration of its channels and before its Volume (the reference's §7.1:
+//!   "按片段 Volume 之前、声道配置之后的信号；不含淡变、片段 EQ 和效果"), over the part of it on the
+//!   timeline. [`alone`] makes the project in which a graph gives that before the fader of its
+//!   track: the clip alone on its track, at 0 dB and centred, without its fades, crossfades,
+//!   equalizer and effects; the track without Trim, polarity, Ducker, inserts, Dynamics,
+//!   equalizer and lanes; the other tracks of sound off, so that they are not read.
+
+use std::ops::Range;
+
+use columbina_model::{AudioParam, Project, TrackKind};
 
 use crate::constants::{CLIP_VOLUME_RANGE, LOUDNESS_CELLS_KEPT};
+use crate::feed::{ClipFeed, FeedError};
+use crate::graph::{Graph, Point};
 use crate::loudness::{loudness_tap, Loudness, LoudnessReader, LoudnessTap, Reading};
 use crate::node::Layout;
 use crate::standards::{Measure, Standard};
@@ -163,6 +185,24 @@ impl Volume {
             highest: db,
         }
     }
+
+    /// The Volume of a clip: its one value, or the lowest and the highest of its keyframes.
+    #[must_use]
+    pub fn of(gain: &AudioParam) -> Self {
+        match gain {
+            AudioParam::Fixed(db) => Volume::fixed(*db),
+            AudioParam::Keys(keys) => Volume {
+                lowest: keys
+                    .iter()
+                    .map(|key| key.value)
+                    .fold(f64::INFINITY, f64::min),
+                highest: keys
+                    .iter()
+                    .map(|key| key.value)
+                    .fold(f64::NEG_INFINITY, f64::max),
+            },
+        }
+    }
 }
 
 /// What Normalize does to a clip.
@@ -219,4 +259,96 @@ pub fn level_match(reference: &Analysis, clip: &Analysis) -> Option<f64> {
     let loudness = |analysis: &Analysis| analysis.integrated.or(analysis.mean);
     let difference = loudness(reference).zip(loudness(clip)).map(|(r, c)| r - c);
     difference.filter(|difference| difference.is_finite())
+}
+
+/// Runs `graph` over `range` of the timeline (samples) and gives `sink` the sound at `point` of
+/// strip `strip`, block by block (planar, a slice for each channel of the strip), until `sink`
+/// says no more (`false`: the analysis is cancelled). The graph is started [`Graph::lead`] before
+/// the range, so that the first sound given is sample `range.start` of the strip. Whether it ran
+/// to the end of the range.
+///
+/// # Errors
+///
+/// The feed could not give the sound of a clip (as [`Graph::process`]).
+///
+/// # Panics
+///
+/// When the graph has no such strip.
+pub fn run_strip(
+    graph: &mut Graph,
+    feed: &mut dyn ClipFeed,
+    (strip, point): (usize, Point),
+    range: Range<i64>,
+    sink: &mut dyn FnMut(&[&[f32]]) -> bool,
+) -> Result<bool, FeedError> {
+    let lead = i64::from(graph.lead(strip));
+    graph.start(range.start - lead, feed)?;
+    let mut at = range.start;
+    while at < range.end {
+        let frames = usize::try_from(range.end - at)
+            .unwrap_or(usize::MAX)
+            .min(graph.max_block());
+        graph.process(feed, frames)?;
+        let sound = graph.sound_at(strip, point);
+        if !sound.read(frames, |channels| sink(channels)) {
+            return Ok(false);
+        }
+        at += i64::try_from(frames).unwrap_or(i64::MAX);
+    }
+    Ok(true)
+}
+
+/// The project in which the strip of the track of clip `clip` of timeline `timeline` gives the
+/// clip's sound before its fader as an analysis measures a clip (see the module), the track's id,
+/// and the clip's samples of the timeline; none where there is no such clip on a track of sound.
+#[must_use]
+pub fn alone(
+    project: &Project,
+    timeline: usize,
+    clip: &str,
+) -> Option<(Project, String, Range<i64>)> {
+    let mut project = project.clone();
+    let t = project.timelines.get_mut(timeline)?;
+    let at = t.tracks.iter().position(|track| {
+        track.kind == TrackKind::Audio && track.clips.iter().any(|c| c.id == clip)
+    })?;
+    let (num, den, rate) = (t.rate.num, t.rate.den, t.sample_rate);
+    for (index, track) in t.tracks.iter_mut().enumerate() {
+        if track.kind == TrackKind::Audio && index != at {
+            track.enabled = false;
+        }
+    }
+    let track = &mut t.tracks[at];
+    track.enabled = true;
+    track.clips.retain(|c| c.id == clip);
+    track.transitions.clear();
+    let audio = &mut track.audio;
+    audio.mute = false;
+    audio.solo = false;
+    audio.lanes.clear();
+    let strip = &mut audio.strip;
+    strip.trim_db = 0.0;
+    strip.invert = false;
+    strip.track_fx = None;
+    strip.inserts.clear();
+    strip.eq.on = false;
+    strip.dynamics.on = false;
+    let c = &mut track.clips[0];
+    c.enabled = true;
+    c.gain_db = AudioParam::Fixed(0.0);
+    c.pan = AudioParam::Fixed(0.0);
+    c.fade_in = 0;
+    c.fade_out = 0;
+    c.audio_fade_in = None;
+    c.audio_fade_out = None;
+    c.eq.on = false;
+    c.effects.clear();
+    // The sample of the timeline at the start of a frame, to the sample below (as an export).
+    let sample = |frame: i64| {
+        i64::try_from(i128::from(frame) * i128::from(rate) * i128::from(den) / i128::from(num))
+            .unwrap_or(i64::MAX)
+    };
+    let range = sample(c.start)..sample(c.end());
+    let id = track.id.clone();
+    Some((project, id, range))
 }

@@ -17,7 +17,10 @@
 //!    that is monitored, can be read after each block ([`Graph::output`]). Nothing is clipped in
 //!    the graph: the sound stays in 32-bit floats to the end, and only the copy for a device or a
 //!    fixed-point encoder is clipped ([`Graph::write_device`]).
-//! 5. The levels before and after the fader of every track and bus ([`Graph::meters`]).
+//! 5. The levels before and after the fader of every track and bus ([`Graph::meters`]), and the
+//!    loudness of the bus that is monitored ([`Graph::loudness`]), heard while the graph meters
+//!    ([`Graph::set_metering`]); the sound before and after each fader, for an analysis
+//!    ([`Graph::sound_at`]; `taps.rs`).
 //!
 //! # Order and time
 //!
@@ -55,7 +58,7 @@ pub use build::{
 };
 pub use build_retune::{retune, without_clip_levels};
 pub use clip::{radius, resampled, Reach};
-pub use taps::Level;
+pub use taps::{Point, Taps};
 
 /// A clip of a graph as its controls find it: its track, its id, and whether its gain and its
 /// pan are fixed.
@@ -160,6 +163,7 @@ impl Warp {
 
 use crate::constants::{samples, PREROLL_MAX};
 use crate::feed::ClipSource;
+use crate::meter::LevelReader;
 use crate::node::{Layout, ParamId, Planar};
 use crate::rt::SeqReader;
 
@@ -296,7 +300,8 @@ pub struct OutputInfo {
     pub main: bool,
 }
 
-/// The levels of a track or a bus: before and after its fader ([`Level`]).
+/// The levels of a track or a bus: before and after its fader, cells of 10 ms (T9's
+/// [`crate::meter`]).
 #[derive(Clone, Debug)]
 pub struct Meter {
     /// Whose levels.
@@ -304,9 +309,9 @@ pub struct Meter {
     /// Its channels.
     pub channels: usize,
     /// Before the fader.
-    pub pre: SeqReader<Level>,
+    pub pre: LevelReader,
     /// After the fader.
-    pub post: SeqReader<Level>,
+    pub post: LevelReader,
 }
 
 /// The graph of the sound of a timeline. See the module.
@@ -346,6 +351,12 @@ pub struct Graph {
     vcas: Vec<VcaState>,
     outputs: Vec<Out>,
     monitor: Option<usize>,
+    /// The loudness of the output of the bus that is monitored, where there is one.
+    loudness: Option<taps::Loud>,
+    /// Whether the meters hear the sound ([`Graph::set_metering`]).
+    metering: bool,
+    /// The latency of the paths that come out of each strip.
+    exits: Vec<u32>,
     latency: u32,
     settle: u32,
     /// The sample of the timeline of the next sample in.

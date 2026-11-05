@@ -1039,24 +1039,39 @@ fn the_levels_are_taken_before_and_after_the_fader() {
     let mut project = base();
     project.timelines[0].tracks[0].audio.strip.fader_db = -6.0;
     let mut graph = built(&project, Purpose::Preview);
-    let meters = graph.meters();
+    let mut meters = graph.meters();
     assert_eq!(meters.len(), 2);
     assert_eq!(meters[0].owner, Owner::Track("A1".into()));
     let mut read = feed(&graph, level(0.5));
+    // A graph is built not metering (T9b): nothing is taken.
     play(&mut graph, &mut read, 0, 1000);
-    let (frames, pre, pre_squares) = meters[0].pre.read();
-    let (_, post, _) = meters[0].post.read();
-    assert_eq!(frames, 1000);
-    close(pre[0], 0.5, 0.0, "the peak before the fader");
+    assert_eq!(meters[0].pre.waiting(), 0);
+    graph.set_metering(true);
+    play(&mut graph, &mut read, 0, 1000);
+    // Cells of 10 ms: two of the 1000 samples; the preroll is not taken.
+    let cells = |reader: &mut columbina_audio::meter::LevelReader| {
+        let mut cells = Vec::new();
+        assert_eq!(reader.drain(|cell| cells.push(*cell)), 0);
+        cells
+    };
+    let pre = cells(&mut meters[0].pre);
+    let post = cells(&mut meters[0].post);
+    let bus = cells(&mut meters[1].post);
+    assert_eq!(pre.len(), 2);
+    close(pre[0].peaks[0], 0.5, 0.0, "the peak before the fader");
     close(
-        pre_squares[1],
+        pre[1].squares[1],
         0.25,
         1e-7,
         "the mean square before the fader",
     );
-    close(db(post[0] / pre[0]), -6.0, 1e-4, "after the fader");
-    let (_, bus, _) = meters[1].post.read();
-    close(bus[0], f64::from(post[0]), 0.0, "the bus");
+    close(
+        db(post[0].peaks[0] / pre[0].peaks[0]),
+        -6.0,
+        1e-4,
+        "after the fader",
+    );
+    close(bus[1].peaks[0], f64::from(post[1].peaks[0]), 0.0, "the bus");
 }
 
 #[test]

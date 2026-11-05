@@ -69,6 +69,9 @@ impl Graph {
             }
             out.delay.process(&mut out.buffer, channels, frames);
         }
+        if let (Some(loudness), Some(monitor)) = (&mut self.loudness, self.monitor) {
+            loudness.take(&self.outputs[monitor].buffer, frames);
+        }
         self.position = start.saturating_add(i64::try_from(frames).unwrap_or(0));
         self.frames = frames;
         result
@@ -101,6 +104,9 @@ impl Graph {
     ) -> Result<(), FeedError> {
         let preroll = self.preroll().min(most);
         let begin = at.saturating_sub(i64::from(preroll));
+        // What is thrown away is not metered (`taps.rs`).
+        let metering = self.metering;
+        self.set_metering(false);
         // Reset and the stretched clips brought to `begin` (T13): on this path too.
         let mut result = self.begin(begin, feed);
         let mut left = u64::from(preroll) + u64::from(self.latency);
@@ -113,6 +119,7 @@ impl Graph {
             }
             left -= u64::try_from(frames).unwrap_or(left);
         }
+        self.set_metering(metering);
         self.frames = 0;
         result
     }
@@ -160,6 +167,9 @@ impl Graph {
         }
         for out in &mut self.outputs {
             out.delay.reset();
+        }
+        if let Some(loudness) = &mut self.loudness {
+            loudness.reset();
         }
     }
 

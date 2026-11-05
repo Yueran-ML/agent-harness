@@ -268,7 +268,8 @@ impl Strip {
             }
             // A control touched while automation is recorded (T16), however the lane was read.
             if lane.held.is_held() {
-                lane.held.apply(lane.lane.kind, values);
+                let log = lane.lane.scale == Some(columbina_model::LaneScale::Log);
+                lane.held.apply(lane.lane.kind, log, values);
             }
         }
     }

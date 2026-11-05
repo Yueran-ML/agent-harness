@@ -175,7 +175,11 @@ fn a_fader_trimmed_live_moves_its_lane_by_the_offset_and_leaves_minus_infinity_w
         );
     }
     // Where the lane is at −∞ it stays silent.
-    assert_eq!(trimmed[(1.5 * 48_000.0) as usize - 24_000], 0.0, "silent at −∞");
+    assert_eq!(
+        trimmed[(1.5 * 48_000.0) as usize - 24_000],
+        0.0,
+        "silent at −∞"
+    );
 }
 
 #[test]
@@ -212,6 +216,7 @@ fn a_vca_held_live_reaches_its_member_and_a_key_of_another_graph_does_nothing() 
         mute: false,
         solo: false,
         vcas: vec![],
+        automation_arm: false,
         lanes: [(
             "fader_db".to_owned(),
             lane(LaneKind::Continuous, &[(0, 0.0)]),

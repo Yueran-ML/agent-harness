@@ -230,8 +230,10 @@ impl Held {
         }
     }
 
-    /// Puts what is held in place of the values of a lane of `kind` through a block.
-    pub(crate) fn apply(&mut self, kind: LaneKind, values: &mut [f32]) {
+    /// Puts what is held in place of the values of a lane of `kind` through a block: on the
+    /// lane's own scale, straight in the logarithm of its values where it is `log` (a frequency, a
+    /// Q), as the lane is written (T16's review).
+    pub(crate) fn apply(&mut self, kind: LaneKind, log: bool, values: &mut [f32]) {
         match self.mode {
             Mode::Off => return,
             Mode::Hold => {
@@ -240,8 +242,11 @@ impl Held {
                     let held = self.value.next_value();
                     *value = if weight >= 1.0 || (kind == LaneKind::Switch && weight >= 0.5) {
                         held
-                    } else if kind == LaneKind::Switch {
+                    } else if kind == LaneKind::Switch || weight <= 0.0 {
                         *value
+                    } else if log && *value > 0.0 && held > 0.0 {
+                        let low = value.ln();
+                        (low + (held.ln() - low) * weight).exp()
                     } else {
                         *value + (held - *value) * weight
                     };

@@ -93,7 +93,7 @@ export function EditPage({
   const [creating, setCreating] = useState(false);
   const [chosenClips, setChosenClips] = useState<string[]>([]);
   const [audioContext, setAudioContext] = useState<{ clip: string; x: number; y: number } | null>(null);
-  const normalize = useNormalizeAudio({ bridge, session, revision, timeline: selected, selection: chosenClips });
+  const normalize = useNormalizeAudio({ bridge, session, revision, timeline: selected, selection: chosenClips, commands: () => timeline.current });
   useEffect(() => { setAudioContext(null); setChosenClips([]); }, [session, selected?.id]);
   const [chosenCue, setChosenCue] = useState<string | null>(null);
   // A subtitle added or double-clicked is to be written in: the inspector opens on it, as DaVinci Resolve's does.

@@ -5,22 +5,29 @@ import type { Media, Op, Timeline } from '../engine';
 import { ClipAudio } from '../inspector/ClipAudio';
 import { FieldsLocked, NumberField } from '../inspector/fields';
 import { useCommit } from '../inspector/useCommit';
+import { Inspector as EditInspector } from '../inspector/Inspector';
 import { AUDIO_EFFECTS } from './EffectsLibrary';
 /** Track/clip selection is shared with the timeline. Detailed strip processors plug in with T21. */
-export function Inspector({ bridge, session, revision, timeline, media, clips, track: trackId, onEdit }: {
+export function Inspector({ bridge, session, revision, timeline, media, clips, track: trackId, transition = null, onEdit }: {
   bridge: Pick<EngineBridge, 'call'>; session: number; revision: number; timeline: Timeline; media: readonly Media[];
   clips: string[]; track: string | null; onEdit: (ops: Op[]) => void;
+  transition?: string | null;
 }) {
   const t = useFairlightText();
   const { commit, refusal } = useCommit({ bridge, session, revision, timeline });
   const [mode, setMode] = useState<'clip' | 'track'>('clip');
   const [tab, setTab] = useState<'audio' | 'effects' | 'file'>('audio');
   useEffect(() => { if (clips.length) setMode('clip'); }, [clips]);
+  useEffect(() => { if (trackId !== null && !clips.length && transition === null) setMode('track'); }, [trackId, clips, transition]);
   const track = timeline.tracks.find(each => each.id === trackId);
   const locations = timeline.tracks.flatMap(each => each.kind !== 'audio' ? [] : each.clips.filter(clip => clips.includes(clip.id)).map(clip => ({ clip, locked: each.locked })));
   const unlocked = locations.filter(each => !each.locked);
   const locked = locations.length > 0 && unlocked.length === 0;
   const chosen = (locked ? locations : unlocked).map(each => each.clip);
+  const hasTransition = transition !== null && timeline.tracks.some(each => each.kind !== 'subtitle' && each.transitions.some(item => item.id === transition));
+  if (hasTransition) return <aside className="fairlight-inspector" aria-label={t('Fairlight Inspector')}><h2>{t('Inspector')}</h2>
+    <EditInspector bridge={bridge} session={session} revision={revision} timeline={timeline} media={media} clips={[]} transition={transition} onSpeed={() => {}} />
+  </aside>;
   return <aside className="fairlight-inspector" aria-label={t('Fairlight Inspector')}><h2>{t('Inspector')}</h2>
     <div role="group" aria-label={t('Inspector mode')}><button type="button" aria-pressed={mode === 'clip'} onClick={() => setMode('clip')}>{t('Clip')}</button>
       <button type="button" aria-pressed={mode === 'track'} onClick={() => setMode('track')}>{t('Track')}</button></div>

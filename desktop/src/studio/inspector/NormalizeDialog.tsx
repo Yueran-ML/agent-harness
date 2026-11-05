@@ -7,6 +7,7 @@ import { callEngine, type AudioStandard, type Timeline } from '../engine';
 import { useAudioAnalysis } from '../fairlight/audioReadings';
 import { standardLabel } from '../fairlight/Monitoring';
 import { useFairlightText } from '../fairlight/words';
+import type { TimelineHandle } from '../timeline/Timeline';
 
 type Bridge = Pick<EngineBridge, 'call' | 'onEvent'>;
 /** A selection may include linked video and locked tracks; only editable sound is normalized. */
@@ -17,8 +18,9 @@ export function normalizeTargets(timeline: Timeline | null, selection: readonly 
 }
 
 /** Both pages use the same menu, selection rules and dialog. Opening binds the targets to this project. */
-export function useNormalizeAudio({ bridge, session, revision, timeline, selection }: {
+export function useNormalizeAudio({ bridge, session, revision, timeline, selection, commands }: {
   bridge: Bridge; session: number; revision: number; timeline: Timeline | null; selection: string[];
+  commands?: () => Pick<TimelineHandle, 'perform' | 'canPerform'> | null;
 }) {
   const t = useFairlightText();
   const [opened, setOpened] = useState<{ session: number; timeline: string; clips: string[] } | null>(null);
@@ -33,7 +35,11 @@ export function useNormalizeAudio({ bridge, session, revision, timeline, selecti
     item,
     menu: <><button type="button" className="btn btn-quiet" aria-haspopup="menu" aria-expanded={menu !== null} onClick={event => {
       const rect = event.currentTarget.getBoundingClientRect(); setMenu({ x: rect.left, y: rect.bottom });
-    }}>{t('Audio')}</button>{menu && <CoveringMenu menu={{ ...menu, label: t('Audio'), items: [item()] }} onClose={() => setMenu(null)} />}</>,
+    }}>{t('Audio')}</button>{menu && <CoveringMenu menu={{ ...menu, label: t('Audio'), items: [item(), ...(commands ? [
+      ...([-3, -1, 1, 3] as const).map(delta => ({ id: `gain-${delta}`, label: t(delta === -3 ? 'Decrease Audio Level 3 dB' : delta === -1 ? 'Decrease Audio Level 1 dB' : delta === 1 ? 'Increase Audio Level 1 dB' : 'Increase Audio Level 3 dB'),
+        disabled: !commands()?.canPerform({ kind: 'gain', delta }), run: () => { commands()?.perform({ kind: 'gain', delta }); } })),
+      { id: 'audio-transition', label: t('Add Audio Transition'), disabled: !commands()?.canPerform({ kind: 'audio-transition' }), run: () => { commands()?.perform({ kind: 'audio-transition' }); } },
+    ] : [])] }} onClose={() => setMenu(null)} />}</>,
     dialog: opened && opened.session === session && opened.timeline === timeline?.id
       ? <NormalizeDialog bridge={bridge} session={session} timeline={timeline} revision={revision} clips={opened.clips} onClose={() => setOpened(null)} /> : null,
   };

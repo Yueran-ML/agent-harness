@@ -18,6 +18,8 @@ import { effectTransaction } from '../effects/drop';
 export type PlaceEdit = 'insert' | 'overwrite' | 'replace' | 'place_on_top' | 'append' | 'smart_insert' | 'ripple_overwrite' | 'source_overwrite';
 export type QuickTransition = 'dissolve' | 'dip_black';
 export type EditAction =
+  | { kind: 'gain'; delta: -3 | -1 | 1 | 3 }
+  | { kind: 'audio-transition' }
   | { kind: 'tool'; tool: Tool }
   | { kind: 'snap' | 'linked' | 'fit' | 'cancel' | 'speed' | 'enabled' | 'link' | 'transition' | 'blade' }
   /** Lock or unlock a track by its number among those of its kind (V1 is 1), or all tracks of that kind (`number` null). */
@@ -36,6 +38,11 @@ export function editKey(key: Key): EditAction | null {
   if (key.composing || key.repeat && !['ArrowUp', 'ArrowDown'].includes(key.key)) return null;
   const value = key.key.length === 1 ? key.key.toLowerCase() : key.key;
   const control = key.ctrl || key.meta;
+  if (!key.meta && key.alt && (key.code === 'Equal' || key.code === 'Minus')) {
+    const direction = key.code === 'Equal' ? 1 : -1;
+    if (key.ctrl && !key.shift) return { kind: 'gain', delta: direction };
+    if (!key.ctrl && key.shift) return { kind: 'gain', delta: direction > 0 ? 3 : -3 };
+  }
   if (control) {
     // Ctrl+Alt+L links the clips chosen, or unlinks them (Linked Clips, Reference Manual 20, pp. 771, 1097).
     if (value === 'l' && key.alt && !key.shift) return { kind: 'link' };
@@ -61,6 +68,7 @@ export function editKey(key: Key): EditAction | null {
   }
   if (key.alt) return value === 'x' ? { kind: 'mark', edge: 'clear' } : null;
   if (key.shift) {
+    if (value === 't') return { kind: 'audio-transition' };
     if (value === 'z') return { kind: 'fit' };
     if (value === 'F12') return { kind: 'place', edit: 'append' };
     if (value === 'F10') return { kind: 'place', edit: 'ripple_overwrite' };
@@ -294,6 +302,10 @@ export function editCommand(action: EditAction | null, context: EditContext): Ed
   // pp. 762, 769). The engine refuses an edit that names one (`locked`), and basic operations would
   // change them all the same, so none is named.
   const { movable: selected, lockedPartners } = movableClips(timeline, context.selected, linked);
+  if (action.kind === 'gain') {
+    const clips = selected.filter(id => locations.get(id)!.track.kind === 'audio');
+    return clips.length ? transaction([{ edit: 'nudge_clip_gain', timeline: timeline.id, clips, delta_db: action.delta, linked: false }]) : null;
+  }
   const chosenTracks = [...new Set(selected.map(id => locations.get(id)!.track.id))];
   // Clips chosen, all of them on locked tracks: an edit of the clips chosen does nothing, and says why.
   const bySelection = ['delete', 'blade', 'speed', 'enabled', 'link'].includes(action.kind) || (action.kind === 'transition' && !context.cut);
@@ -391,20 +403,22 @@ export function editCommand(action: EditAction | null, context: EditContext): Ed
     // The first names the new group, and the others join it (an empty link would make a group for each).
     return chosen.length >= 2 ? transaction(chosen.map(clip => ({ op: 'set_clip', timeline: timeline.id, id: clip.id, link: '$link' }))) : null;
   }
-  if (action.kind === 'transition') {
-    if (context.cut) return editCommand({ kind: 'quick', transition: 'dissolve' }, context);
+  if (action.kind === 'transition' || action.kind === 'audio-transition') {
+    const audioOnly = action.kind === 'audio-transition';
+    if (context.cut && !audioOnly) return editCommand({ kind: 'quick', transition: 'dissolve' }, context);
     const edits: Edit[] = [];
     // Whether two clips meet where the key looks: if all of them have a transition already, there
     // is nothing to do; if none do, the page says so, rather than do nothing without a word.
     let met = false;
     for (const track of timeline.tracks) if (track.kind !== 'subtitle') for (let i = 1; i < track.clips.length; i++) {
+      if (audioOnly && (track.kind !== 'audio' || track.locked)) continue;
       const left = track.clips[i - 1];
       const right = track.clips[i];
       if (left.start + left.length !== right.start) continue;
-      if (selected.length ? !selected.includes(left.id) && !selected.includes(right.id) : right.start !== frame || !activeTracks.includes(track.id)) continue;
+      if ((audioOnly ? context.selected.length : selected.length) ? !selected.includes(left.id) && !selected.includes(right.id) : right.start !== frame || !activeTracks.includes(track.id)) continue;
       met = true;
       if (track.transitions.some(t => t.left === left.id && t.right === right.id)) continue;
-      edits.push({ edit: 'add_transition', timeline: timeline.id, left: left.id, right: right.id, kind: track.kind === 'audio' ? 'crossfade' : 'dissolve', length: Math.max(1, Math.round(timeline.rate.num / timeline.rate.den)), align: 'center' });
+      edits.push({ edit: 'add_transition', timeline: timeline.id, left: left.id, right: right.id, kind: track.kind === 'audio' ? 'crossfade' : 'dissolve', length: Math.max(1, Math.round(timeline.rate.num / timeline.rate.den)), align: 'center', ...(audioOnly ? { linked: false } : {}) });
     }
     if (edits.length) return transaction(edits);
     return met ? { kind: 'none' } : { kind: 'refused', reason: selected.length ? 'no_edit_chosen' : 'no_edit_at_playhead' };

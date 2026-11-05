@@ -117,7 +117,7 @@ export function Inspector({ bridge, session, revision, timeline, media, clips: i
   return <div className="inspector" data-test="inspector">
     {refusal && <div className="inspector-problem" role="alert">
       <p>{refusal.text}{refusal.longest !== null && <span> {words.hint.studio.inspector.longest(refusal.longest)}</span>}</p>
-      {refusal.longest !== null && refusal.onLongest && <button type="button" className="btn btn-quiet" data-test="use-longest"
+      {refusal.longest !== null && refusal.onLongest && <button type="button" className="btn btn-quiet" data-test="use-longest" disabled={!found || found.track.locked}
         onClick={() => { const { onLongest, longest } = refusal; setRefusal(null); onLongest?.(longest!); }}>{labels.useLongest(refusal.longest)}</button>}
       <button type="button" className="icon-btn" aria-label={words.label.close} onClick={() => setRefusal(null)}><X size={14} /></button>
     </div>}

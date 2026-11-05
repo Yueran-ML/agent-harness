@@ -54,9 +54,10 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
   const timeline = useRef<TimelineHandle>(null);
   const matcher = useRef<LevelMatcherHandle>(null);
   const [clips, setClips] = useState<string[]>([]); const [track, setTrack] = useState<string | null>(null);
-  const normalize = useNormalizeAudio({ bridge, session, revision, timeline: selected, selection: clips });
+  const [transition, setTransition] = useState<string | null>(null);
+  const normalize = useNormalizeAudio({ bridge, session, revision, timeline: selected, selection: clips, commands: () => timeline.current });
   const [stripSelection, setStripSelection] = useState<string[]>([]);
-  const chooseStrips = (keys: string[]) => { setStripSelection(keys); setTrack(keys.find(key => key.startsWith('track:'))?.slice(6) ?? null); };
+  const chooseStrips = (keys: string[]) => { timeline.current?.clearTransition(); setStripSelection(keys); setTrack(keys.find(key => key.startsWith('track:'))?.slice(6) ?? null); };
   const chooseTrack = (id: string) => chooseStrips([`track:${id}`]);
   const [speed, setSpeed] = useState<string[] | null>(null);
   const [cinema, setCinema] = useState(false);
@@ -100,7 +101,7 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
     </div>}
     <main className="fairlight-workspace">
       {showLeft && <aside className="fairlight-left">{view.pool && pool}{view.effects && <EffectsLibrary />}
-        {view.index && selected && <IndexTracks timeline={selected} hidden={view.hidden} onHidden={hidden => update({ hidden })} onSelect={setTrack}
+        {view.index && selected && <IndexTracks timeline={selected} hidden={view.hidden} onHidden={hidden => update({ hidden })} onSelect={chooseTrack}
           selection={stripSelection.filter(key => key.startsWith('track:')).map(key => key.slice(6))} onSelection={ids => chooseStrips(ids.map(id => `track:${id}`))} onEdit={ops => void edit(ops)} />}
         {view.groups && (groups ?? <section aria-label={t('Groups')}><h2>{t('Groups')}</h2><p>{t('Group controls are not available yet.')}</p></section>)}
       </aside>}
@@ -117,14 +118,14 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
         }}>
         <FairlightTimeline ref={timeline} timeline={selected} bridge={bridge} session={session} revision={revision} media={media}
           frame={state ? timelineMonitor.frame ?? 0 : 0} playing={state?.playing ?? false} onSeek={timelineMonitor.seek}
-          onSelection={setClips} onTrackSelect={chooseTrack} selectedTracks={stripSelection.filter(key => key.startsWith('track:')).map(key => key.slice(6))} onSpeed={setSpeed} view={view} update={update}
+          onSelection={setClips} onTransition={setTransition} onTrackSelect={chooseTrack} selectedTracks={stripSelection.filter(key => key.startsWith('track:')).map(key => key.slice(6))} onSpeed={setSpeed} view={view} update={update}
           onClipContext={(id, x, y) => { if (selected?.tracks.some(track => track.kind === 'audio' && track.clips.some(clip => clip.id === id))) setContext({ clip: id, x, y }); }} />
         {view.mixer && <><Separator label={t('Mixer height')} direction={-1} value={view.mixerHeight} min={180} max={500} onChange={mixerHeight => update({ mixerHeight })} />
           <section className="fairlight-mixer-slot" aria-label={t('Mixer')} style={{ height: view.mixerHeight }}>{mixer ?? (selected && <Mixer bridge={bridge} session={session} revision={revision}
             timeline={selected} frame={state ? timelineMonitor.frame ?? 0 : 0} meters={audio.meters} selected={stripSelection} onSelect={chooseStrips} />)}</section></>}
       </div>
       {view.inspector && selected && <><Separator label={t('Inspector width')} vertical direction={-1} value={view.rightWidth} min={240} max={600} onChange={rightWidth => update({ rightWidth })} />
-        <Inspector bridge={bridge} session={session} revision={revision} timeline={selected} media={media} clips={clips} track={track} onEdit={ops => void edit(ops)} /></>}
+        <Inspector bridge={bridge} session={session} revision={revision} timeline={selected} media={media} clips={clips} track={track} transition={transition} onEdit={ops => void edit(ops)} /></>}
     </main>
     <footer className="fairlight-footer"><button type="button" aria-pressed={view.viewer} onClick={() => update({ viewer: !view.viewer })}>{t('Viewer')}</button>
       {normalize.menu}

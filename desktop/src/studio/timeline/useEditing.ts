@@ -185,6 +185,8 @@ export function useEditing(options: Options) {
     setTargets(old => ({ ...old, [key]: old[key] === id ? null : id }));
   }, []);
   const chooseTool = useCallback((tool: Tool) => { cancel(); setTool(tool); }, [cancel]);
+  /** A track/strip choice leaves the transition, without changing the selected clips. */
+  const clearTransition = useCallback(() => setTransition(null), []);
   /** Choose a subtitle (or none), leaving the clips and the transition; `open` asks for it to be written in. */
   const chooseCue = useCallback((id: string | null, open = false) => {
     setSelection(old => (old.ids.length === 0 ? old : EMPTY_SELECTION)); setTransition(null);
@@ -233,6 +235,7 @@ export function useEditing(options: Options) {
     return perform(action);
   };
   /** Do what a key, or a button of the page, asks: the same edit, whichever asked for it. */
+  const canPerform = (action: EditAction): boolean => editCommand(action, { ...now.current, selected: now.current.selection.ids })?.kind === 'transaction';
   const perform = (action: EditAction): boolean => {
     if ((active.current || cueDrag.current) && action.kind !== 'cancel' && action.kind !== 'snap') return true;
     // N while a clip or a subtitle is dragged turns snapping on or off for that drag alone, as in
@@ -272,7 +275,7 @@ export function useEditing(options: Options) {
       // Ctrl+T, and the transitions of the Cut page, take as many frames as the clips have where
       // they have too few for the standard length, as DaVinci Resolve does (Reference Manual 20,
       // p. 1020): the engine's refusal names the longest, and the transition is sent again so.
-      case 'transaction': void (action.kind === 'transition' || action.kind === 'quick'
+      case 'transaction': void (action.kind === 'transition' || action.kind === 'audio-transition' || action.kind === 'quick'
         ? run('transaction.apply', result.transaction, undefined, (refusal, sent) => shortened(sent, context.timeline!, refusal))
         : apply(result.transaction)); break;
       case 'history': void run(result.method); break;
@@ -518,5 +521,5 @@ export function useEditing(options: Options) {
     if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) { setDropAt(null); setEffectDrop(null); }
   };
   return { tool, chooseTool, snapping, setSnapping, linked, setLinked, selected, transition, targets, target, marks, preview, dropAt, effectDrop, cue, cuePreview, chooseCue, addSubtitleTrack, addCue, doubleClick, problem, setProblem, pending,
-    edit, apply, keyDown, perform, pointerDown, pointerMove, pointerUp, cancel, dragOver, drop, dragLeave };
+    edit, apply, keyDown, perform, canPerform, clearTransition, pointerDown, pointerMove, pointerUp, cancel, dragOver, drop, dragLeave };
 }

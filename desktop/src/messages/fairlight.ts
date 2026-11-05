@@ -1,5 +1,11 @@
 /** Shared Fairlight catalogue; protocol IDs and media/track names are never translated. */
 const entries = {
+  'Increase Audio Level 1 dB': ['提高音频电平 1 dB', 'オーディオレベルを 1 dB 上げる'],
+  'Decrease Audio Level 1 dB': ['降低音频电平 1 dB', 'オーディオレベルを 1 dB 下げる'],
+  'Increase Audio Level 3 dB': ['提高音频电平 3 dB', 'オーディオレベルを 3 dB 上げる'],
+  'Decrease Audio Level 3 dB': ['降低音频电平 3 dB', 'オーディオレベルを 3 dB 下げる'],
+  'Add Audio Transition': ['添加音频转场', 'オーディオトランジションを追加'],
+  'Fade In Level': ['淡入电平', 'フェードインレベル'], 'Fade Out Level': ['淡出电平', 'フェードアウトレベル'],
   'Normalize Audio Levels': ['规范化音频电平', 'オーディオレベルをノーマライズ'], 'Normalize': ['规范化', 'ノーマライズ'],
   'Normalization mode': ['规范化模式', 'ノーマライズモード'], 'Sample Peak': ['采样峰值', 'サンプルピーク'], 'True Peak': ['真峰值', 'トゥルーピーク'],
   'Set Level': ['设置电平', 'レベル設定'], 'Relative': ['相对', '相対'], 'Independent': ['独立', '個別'],

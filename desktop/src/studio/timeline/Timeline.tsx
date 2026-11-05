@@ -25,6 +25,8 @@ export interface TimelineHandle {
   keyDown: (key: Key) => boolean;
   /** Do an edit that a button of the page asks for, as its key would. */
   perform: (action: EditAction) => boolean;
+  canPerform: (action: EditAction) => boolean;
+  clearTransition: () => void;
   /** The In and Out points of the timeline, which exist only on the page: an export may be of the part between them. */
   marks: () => Marks;
 }
@@ -178,7 +180,7 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   }, [center, dragging, shown, view.scale, view.width]);
   useEffect(() => { onView?.(view); }, [view, onView]);
   const editing = useEditing({ timeline, media, bridge, session, revision, frame: shown, focus, source, root, scroll, view, onSeek, fit, zoom, onSpeed, onSelection, onTransition, onCue, cut, audioOnlyDrop });
-  useImperativeHandle(ref, () => ({ keyDown: editing.keyDown, perform: editing.perform, marks: () => editing.marks }));
+  useImperativeHandle(ref, () => ({ keyDown: editing.keyDown, perform: editing.perform, canPerform: editing.canPerform, clearTransition: editing.clearTransition, marks: () => editing.marks }));
   useEffect(() => {
     const element = scroll.current;
     if (!element) return;

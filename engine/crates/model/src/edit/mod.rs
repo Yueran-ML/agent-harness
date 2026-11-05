@@ -41,6 +41,7 @@
 mod audio;
 mod automation;
 mod cut;
+mod follow;
 mod grade;
 mod input;
 mod misc;

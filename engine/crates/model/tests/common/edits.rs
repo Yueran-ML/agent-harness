@@ -120,7 +120,27 @@ pub struct Recipe {
     locked: Vec<bool>,
     /// The track of subtitles that is shown: none, S1 or S2. A timeline shows one at a time.
     shown: usize,
+    /// Lanes of automation of A1 and A2 (T15): of each, its track, its setting (see
+    /// [`LANE_PATHS`]) and its points, at ticks of 48 kHz with values of [`LANE_VALUES`], some
+    /// of them a second point at the time of the one before (a jump).
+    lanes: Vec<LaneRecipe>,
 }
+
+/// A lane of a recipe: A1 or A2, one of [`LANE_PATHS`], and its points, each a tick, a value
+/// and whether a second point jumps from it.
+type LaneRecipe = (usize, usize, Vec<(i64, usize, bool)>);
+
+/// The settings of the random lanes: a fader, a mute (a switch), a pan and the frequency of a
+/// band of EQ (on a scale of logarithms).
+pub const LANE_PATHS: [&str; 4] = ["fader_db", "mute", "pan.x", "eq.0.freq"];
+
+/// The values that the points of a lane of each of [`LANE_PATHS`] take.
+const LANE_VALUES: [&[f64]; 4] = [
+    &[-60.0, -24.5, -12.0, -6.0, 0.0, 3.5, 10.0],
+    &[0.0, 1.0],
+    &[-1.0, -0.5, 0.0, 0.25, 1.0],
+    &[40.0, 100.0, 1000.0, 5000.0, 16000.0],
+];
 
 fn piece() -> impl Strategy<Value = Piece> {
     (
@@ -177,15 +197,29 @@ pub fn recipe() -> impl Strategy<Value = Recipe> {
         prop::collection::vec((0i64..60, 1i64..40, 0usize..2), 0..8),
         prop::collection::vec(prop::bool::weighted(0.12), TRACKS.len()),
         0usize..3,
+        prop::collection::vec(
+            (
+                0usize..2,
+                0usize..LANE_PATHS.len(),
+                prop::collection::vec(
+                    (0i64..170 * 48000, 0usize..16, prop::bool::weighted(0.15)),
+                    1..12,
+                ),
+            ),
+            0..5,
+        ),
     )
-        .prop_map(|(rate, pieces, transitions, cues, locked, shown)| Recipe {
-            rate,
-            pieces,
-            transitions,
-            cues,
-            locked,
-            shown,
-        })
+        .prop_map(
+            |(rate, pieces, transitions, cues, locked, shown, lanes)| Recipe {
+                rate,
+                pieces,
+                transitions,
+                cues,
+                locked,
+                shown,
+                lanes,
+            },
+        )
 }
 
 /// The project of a recipe: timeline t1 with its tracks, and what of the recipe the operations
@@ -425,6 +459,28 @@ pub fn project_of(recipe: &Recipe) -> Project {
         ] {
             apply(&mut project, serde_json::from_value(op).unwrap()).unwrap();
         }
+    }
+    for (track, path, points) in &recipe.lanes {
+        let values = LANE_VALUES[*path];
+        let mut points = points.clone();
+        points.sort_unstable_by_key(|&(at, _, _)| at);
+        let mut made = vec![];
+        for (n, &(at, value, jump)) in points.iter().enumerate() {
+            let point = |value: usize| {
+                serde_json::json!({"at": {"ticks": at, "scale": 48000},
+                    "value": values[value % values.len()]})
+            };
+            made.push(point(value));
+            if jump {
+                made.push(point(value + n + 1));
+            }
+        }
+        let (track, path) = (["A1", "A2"][*track], LANE_PATHS[*path]);
+        let op = serde_json::json!({"op": "set_lane", "timeline": "t1",
+            "of": {"track": track}, "path": path,
+            "lane": {"points": made, "kind": if path == "mute" { "switch" } else { "continuous" }}});
+        apply(&mut project, serde_json::from_value(op.clone()).unwrap())
+            .unwrap_or_else(|e| panic!("{op}: {e:?}"));
     }
     project
 }
@@ -1190,4 +1246,67 @@ fn channels_of(n: i64) -> Vec<ChannelMap> {
         1 => vec![pick(&[1]), pick(&[0])],
         _ => vec![pick(&[0, 1]), pick(&[0, 1])],
     }
+}
+
+/// The clips that an edit of `clips` that the groups of tracks take along works on (T15): those
+/// named, with `linked` those linked to them on tracks that are not locked, and the clips over
+/// some of the frames of one of these on the other tracks, not locked, of the active groups that
+/// link Editing and that its track is in, with those linked to them.
+pub fn worked_on(
+    project: &Project,
+    clips: &[String],
+    linked: bool,
+) -> std::collections::HashSet<String> {
+    let timeline = &project.timelines[0];
+    let on = |id: &str| {
+        timeline
+            .tracks
+            .iter()
+            .find_map(|r| r.clips.iter().find(|c| c.id == id).map(|c| (r, c)))
+    };
+    let with_linked = |ids: &[String]| -> Vec<String> {
+        let mut all: Vec<String> = ids.to_vec();
+        if linked {
+            let links: Vec<&String> = ids
+                .iter()
+                .filter_map(|id| on(id)?.1.link.as_ref())
+                .collect();
+            for r in timeline.tracks.iter().filter(|r| !r.locked) {
+                for c in &r.clips {
+                    if c.link.as_ref().is_some_and(|g| links.contains(&g)) && !all.contains(&c.id) {
+                        all.push(c.id.clone());
+                    }
+                }
+            }
+        }
+        all
+    };
+    let first = with_linked(clips);
+    let mut along: Vec<String> = vec![];
+    for id in &first {
+        let Some((track, clip)) = on(id) else {
+            continue;
+        };
+        let groups = timeline.track_groups.iter().filter(|g| {
+            g.active
+                && g.linked.contains(&columbina_model::GroupControl::Editing)
+                && g.members.contains(&track.id)
+        });
+        for member in groups.flat_map(|g| &g.members) {
+            let Some(other) = timeline
+                .tracks
+                .iter()
+                .find(|r| r.id == *member && r.id != track.id && !r.locked)
+            else {
+                continue;
+            };
+            for c in &other.clips {
+                let over = c.start < clip.end() && clip.start < c.end();
+                if over && !first.contains(&c.id) && !along.contains(&c.id) {
+                    along.push(c.id.clone());
+                }
+            }
+        }
+    }
+    first.into_iter().chain(with_linked(&along)).collect()
 }

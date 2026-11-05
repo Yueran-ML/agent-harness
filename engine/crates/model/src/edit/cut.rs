@@ -9,7 +9,7 @@ use crate::ops::{Op, OpError};
 use crate::project::{Clip, Cue, Id, Track, TrackKind};
 
 pub(super) fn lift(work: &mut Work, clips: &[Id], linked: bool) -> Result<(), EditError> {
-    let all = work.group(clips, linked)?;
+    let all = work.grouped(clips, linked)?;
     if all.is_empty() {
         return Err(EditError::EmptyRange);
     }
@@ -20,7 +20,7 @@ pub(super) fn lift(work: &mut Work, clips: &[Id], linked: bool) -> Result<(), Ed
 }
 
 pub(super) fn ripple_delete(work: &mut Work, clips: &[Id], linked: bool) -> Result<(), EditError> {
-    let all = work.group(clips, linked)?;
+    let all = work.grouped(clips, linked)?;
     if all.is_empty() {
         return Err(EditError::EmptyRange);
     }
@@ -72,7 +72,7 @@ pub(super) fn ripple_delete_range(
         return Err(EditError::EmptyRange);
     }
     let all = [TrackKind::Video, TrackKind::Audio, TrackKind::Subtitle];
-    let tracks = open_tracks(work, tracks, &all)?;
+    let tracks = work.with_groups(open_tracks(work, tracks, &all)?);
     work.clear_clips(&tracks, from, to)?;
     work.shift(&tracks, to, from - to, &HashSet::new())
 }
@@ -149,7 +149,7 @@ pub(super) fn blade(
 ) -> Result<(), EditError> {
     let kinds = [TrackKind::Video, TrackKind::Audio];
     let named = tracks.and_then(|t| (t.len() == 1).then(|| t[0].clone()));
-    let tracks = open_tracks(work, tracks, &kinds)?;
+    let tracks = work.with_groups(open_tracks(work, tracks, &kinds)?);
     let mut across = vec![];
     for track in &tracks {
         across.extend(work.across(track, at)?);
@@ -176,7 +176,7 @@ pub(super) fn move_clips(
     overwrite: bool,
     linked: bool,
 ) -> Result<(), EditError> {
-    let all = work.group(clips, linked)?;
+    let all = work.grouped(clips, linked)?;
     let Some(first) = all.first() else {
         return Err(EditError::EmptyRange);
     };
@@ -273,7 +273,7 @@ pub(super) fn insert_move(
     if at < 0 {
         return Err(EditError::Op(OpError::OutOfTimeline { start: at }));
     }
-    let all = work.group(clips, linked)?;
+    let all = work.grouped(clips, linked)?;
     if all.is_empty() {
         return Err(EditError::EmptyRange);
     }

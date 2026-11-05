@@ -301,7 +301,7 @@ pub(super) fn replace(
                 longest: None,
             });
         }
-        work.remove(&old.id)?;
+        work.remove_alone(&old.id)?;
         work.insert(track, new)?;
         replaced = true;
     }

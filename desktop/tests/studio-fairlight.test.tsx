@@ -407,3 +407,14 @@ it('registers audio menus and analysis sheets as overlays, hides native views an
   expect(document.body.dataset.overlay).toBeUndefined();
   expect(bridge.viewShow).toHaveBeenLastCalledWith(true, 'timeline');
 });
+
+it('keeps cancellation pending until the engine terminal and admits completion winning the race', async () => {
+  const bridge = engine(); render(<Readings bridge={bridge} />); await settle();
+  fireEvent.click(screen.getByText('Analyze')); await settle();
+  fireEvent.click(screen.getByText('Cancel')); await settle();
+  expect(screen.getByTestId('analysis').textContent).toBe('running');
+  fireEvent.click(screen.getByText('Analyze')); await settle();
+  expect(bridge.call.mock.calls.filter(([method]) => method === 'audio.analyze')).toHaveLength(1);
+  bridge.tell({ job: 'audio-1', state: 'done', method: 'audio.analyze', standard: 'ebu-r128', level: -23, results: [] });
+  expect(screen.getByTestId('analysis').textContent).toBe('done');
+});

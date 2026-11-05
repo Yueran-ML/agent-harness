@@ -1,5 +1,12 @@
 /** Shared Fairlight catalogue; protocol IDs and media/track names are never translated. */
 const entries = {
+  'Normalize Audio Levels': ['规范化音频电平', 'オーディオレベルをノーマライズ'], 'Normalize': ['规范化', 'ノーマライズ'],
+  'Normalization mode': ['规范化模式', 'ノーマライズモード'], 'Sample Peak': ['采样峰值', 'サンプルピーク'], 'True Peak': ['真峰值', 'トゥルーピーク'],
+  'Set Level': ['设置电平', 'レベル設定'], 'Relative': ['相对', '相対'], 'Independent': ['独立', '個別'],
+  'Normalization results': ['规范化结果', 'ノーマライズ結果'], 'Measured level': ['测得电平', '測定レベル'], 'Gain added': ['增益增量', 'ゲイン増分'],
+  'Applied': ['已应用', '適用済み'], 'Nothing applied': ['未应用更改', '変更なし'],
+  'No measurable level (silence or too short)': ['无可测电平（静音或过短）', '測定可能なレベルなし（無音または短すぎる）'],
+  'Select at most 256 audio clips.': ['最多选择 256 个音频片段。', 'オーディオクリップは 256 個まで選択できます。'],
   'Mixer channels': ['调音台条带', 'ミキサーチャンネル'], 'Buses': ['总线', 'バス'],
   'Input': ['输入', '入力'], 'Track FX': ['轨道效果', 'トラック FX'], 'Effects In': ['插入效果启用', 'エフェクト有効'],
   'Sends': ['发送', 'センド'], 'Outputs': ['输出', '出力'], 'Fader value': ['推子数值', 'フェーダー値'],

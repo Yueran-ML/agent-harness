@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { EngineBridge } from '../../bridge';
-import { callEngine, type AudioAnalysis, type LoudnessReading, type Meters } from '../engine';
+import { callEngine, EngineError, type AudioAnalysis, type LoudnessReading, type Meters } from '../engine';
 
 type Bridge = Pick<EngineBridge, 'call' | 'onEvent'>;
 interface JobOwner { live: boolean; waiting: boolean; running: boolean; cancelled: boolean; job: string | null; early: Map<string, AudioAnalysis> }
@@ -10,37 +10,50 @@ export function useAudioAnalysis(bridge: Bridge, session: number, timeline: stri
   const [problem, setProblem] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const owner = useRef<JobOwner>({ live: false, waiting: false, running: false, cancelled: false, job: null, early: new Map() });
-  const cancelJob = (job: string) => void callEngine(bridge, 'audio.cancel', { job }, { expectedSession: session }).catch(() => { /* Completion may have won the cancellation race. */ });
+  const cancelJob = (job: string, current?: JobOwner) => void callEngine(bridge, 'audio.cancel', { job }, { expectedSession: session }).catch(error => {
+    // A completed job is already missing: its terminal event, not this reply, settles the result.
+    if (error instanceof EngineError && (error.data as { reason?: string } | undefined)?.reason === 'missing') return;
+    if (current?.live && current.running && current.job === job) {
+      current.cancelled = false;
+      setProblem(error instanceof Error ? error.message : String(error));
+    }
+  });
   useEffect(() => {
     const current: JobOwner = { live: true, waiting: false, running: false, cancelled: false, job: null, early: new Map() };
     owner.current = current; setAnalysis(null); setProblem(null); setPending(false);
     const off = bridge.onEvent(event => {
       if (!current.live || event.kind !== 'notification' || event.session !== session || event.method !== 'audio.analysis') return;
       const update = event.params as AudioAnalysis;
-      if (current.job === update.job && !current.cancelled) { setAnalysis(update); current.running = update.state === 'running'; setPending(current.running); }
+      if (current.job === update.job && current.running) {
+        setAnalysis(update); current.running = update.state === 'running'; setPending(current.running);
+        if (!current.running) setProblem(null);
+      }
       else if (current.waiting) current.early.set(update.job, update);
     });
     return () => { current.live = false; if (current.running && current.job) cancelJob(current.job); current.early.clear(); off(); };
   }, [bridge, session, timeline]);
-  const start = useCallback(async (method: 'audio.analyze' | 'audio.level_match', params: Record<string, unknown>) => {
+  const start = useCallback(async (method: 'audio.analyze' | 'audio.level_match' | 'audio.normalize', params: Record<string, unknown>) => {
     const current = owner.current;
     if (!timeline || !current.live || current.waiting || current.running) return;
     current.waiting = true; current.running = true; current.cancelled = false; current.job = null; current.early.clear(); setPending(true); setProblem(null); setAnalysis(null);
     try {
       const { job } = await callEngine(bridge, method, { timeline, ...params }, { expectedSession: session });
-      if (!current.live || current.cancelled) { cancelJob(job); return; }
+      if (!current.live) { cancelJob(job); return; }
       current.job = job;
       const update = current.early.get(job) ?? { job, state: 'running' as const, done: 0, total: 0 };
       current.running = update.state === 'running'; setAnalysis(update); setPending(current.running);
+      if (current.cancelled && current.running) cancelJob(job, current);
     } catch (error) {
       current.running = false;
       if (current.live) { setProblem(error instanceof Error ? error.message : String(error)); setPending(false); }
     } finally { current.waiting = false; current.early.clear(); }
   }, [bridge, timeline, session]);
   const cancel = () => {
-    const current = owner.current; current.cancelled = true; current.running = false;
-    if (current.job) cancelJob(current.job);
-    setPending(false); setAnalysis({ job: current.job ?? '', state: 'cancelled' });
+    const current = owner.current;
+    if (!current.live || !current.running || current.cancelled) return;
+    current.cancelled = true;
+    if (current.job) cancelJob(current.job, current);
+    // A request to cancel is not a terminal event: completion may already have won.
   };
   return { analysis, problem, pending, start, cancel };
 }

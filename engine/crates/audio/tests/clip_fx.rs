@@ -19,7 +19,7 @@ use std::ops::Range;
 
 use columbina_audio::feed::{ClipFeed, FeedError};
 use columbina_audio::fx::{limiter, pitch};
-use columbina_audio::graph::{Graph, Options, Purpose};
+use columbina_audio::graph::{Graph, Options, Purpose, Warp};
 use columbina_audio::testing::{realtime, CountingAllocator, Rng};
 use columbina_audio::{Layout, Node, Spec};
 use columbina_model::audio::fx::{
@@ -441,4 +441,41 @@ fn a_clip_with_effects_plays_ten_seconds_with_no_memory() {
         });
         assert!(counted.none(), "stretched {stretched}: {counted:?}");
     }
+}
+
+#[test]
+fn a_clip_with_effects_played_from_elsewhere_or_at_another_speed_sounds_through_them() {
+    // At a speed of 1 from 3 s of the timeline (a grain of scrubbing, T18): the export there once
+    // the effects have settled, which the preroll lets them.
+    let project = busy(false, false);
+    let shift = 3 * SECOND as i64;
+    let frames = 4 * SECOND;
+    let export = exported_by(&project, frames + shift as usize);
+    let mut graph = built(&project, Purpose::Export);
+    graph.set_warp(Warp::new(1, 0, shift));
+    let shifted = whole(&mut graph, &mut feed(wavering), 0, frames);
+    for channel in 0..2 {
+        let most = most_apart(&shifted[channel], &export[channel][shift as usize..]);
+        assert!(most < 3.16e-5, "{most} apart");
+    }
+    // Twice as fast either way: the effects run on the samples out, the same however they are
+    // cut into blocks.
+    for speed in [2, -2] {
+        let mut graph = built(&project, Purpose::Export);
+        let at = 6 * SECOND as i64;
+        graph.set_warp(Warp::new(speed, at, at));
+        let reference = whole(&mut graph, &mut feed(wavering), at, SECOND);
+        assert!(reference[0].iter().any(|s| s.abs() > 0.05), "{speed}");
+        let mut rng = Rng::new(7);
+        let cut = play(&mut graph, &mut feed(wavering), (at, SECOND), &mut || {
+            rng.log_range(4096)
+        });
+        assert_eq!(differs(&reference[0], &cut[0]), None, "{speed}");
+    }
+}
+
+/// The project exported whole from 0 for `frames` samples, its media [`wavering`].
+fn exported_by(project: &Project, frames: usize) -> Vec<Vec<f32>> {
+    let mut graph = built(project, Purpose::Export);
+    whole(&mut graph, &mut feed(wavering), 0, frames)
 }

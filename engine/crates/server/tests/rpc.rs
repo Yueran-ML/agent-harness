@@ -76,6 +76,8 @@ mod tracking;
 
 #[path = "rpc/protocol.rs"]
 mod protocol;
+#[path = "rpc/sound.rs"]
+mod sound;
 
 /// How long anything that should happen soon is waited for before the test fails.
 const WAIT: Duration = Duration::from_secs(30);

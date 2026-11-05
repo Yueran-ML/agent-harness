@@ -180,6 +180,9 @@ const PAGE_METHODS = new Set([
   // Window tracking (RM20 pp. 3231–3238): a track of the selected window, its stop, and the edits
   // of its track data, which name the window by its grade, node and id alone.
   'track.start', 'track.stop', 'track.edit',
+  // The meters, the loudness meter and the analyses of sound (phase 3, T9b), which name timelines,
+  // clips, tracks and buses by their ids alone.
+  'audio.meters', 'audio.loudness', 'audio.analyze', 'audio.normalize', 'audio.level_match', 'audio.cancel',
   // The recording of automation of the Fairlight page (T16): on and off, a control touched as the
   // timeline plays, and Punch In; they name a timeline and a setting of its mix alone. All Read,
   // Join Mix, Fill/Glide Range and Copy of automation (T16b) name a timeline and its owners alone.

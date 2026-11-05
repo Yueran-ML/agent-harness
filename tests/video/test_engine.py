@@ -756,6 +756,68 @@ async def test_a_render_that_fails_or_is_cancelled_says_so(tmp_path: Path) -> No
         assert not (tmp_path / "b.mp4").exists()
 
 
+async def test_an_analysis_of_sound_is_followed_until_it_is_done(tmp_path: Path) -> None:
+    async with served(tmp_path / "film") as fake:
+        connected = await attached(tmp_path / "film")
+        fake.sound_found = {"results": [{"target": {"bus": "B1"}, "integrated": -23.0}]}
+        params = {"timeline": "t1", "targets": [{"bus": "B1"}]}
+
+        found = await asyncio.wait_for(connected.analyze_sound("audio.analyze", params), 5)
+        fake.sound_end = "failed"
+        with pytest.raises(EngineError) as failed:
+            await asyncio.wait_for(
+                connected.analyze_sound("audio.normalize", {"timeline": "t1", "clips": ["c1"]}), 5
+            )
+        fake.sound_end = "done"
+        fake.sound_hold = True
+        waiting = asyncio.create_task(
+            connected.analyze_sound(
+                "audio.level_match", {"timeline": "t1", "reference": "c1", "clips": ["c2"]}
+            )
+        )
+        await until(lambda: "audio.level_match" in fake.asked and "audio-3" in fake.jobs)
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+        await until(lambda: fake.jobs["audio-3"] == "cancelled")
+        await connected.aclose()
+
+        assert found["method"] == "audio.analyze"
+        assert found["results"] == [{"target": {"bus": "B1"}, "integrated": -23.0}]
+        assert [method for method, _ in fake.sounds] == [
+            "audio.analyze",
+            "audio.normalize",
+            "audio.level_match",
+        ]
+        assert fake.sounds[0][1] == params
+        assert failed.value.code == UNEXPECTED
+        assert failed.value.data is not None
+        assert failed.value.data["state"] == "failed"
+        assert "a clip cannot be read" in str(failed.value)
+        assert "audio.cancel" in fake.asked
+
+
+async def test_an_analysis_given_up_before_it_is_named_is_cancelled(tmp_path: Path) -> None:
+    async with served(tmp_path / "film") as fake:
+        connected = await attached(tmp_path / "film")
+        fake.sound_hold = True
+        # Its answer is held until another request comes.
+        fake.hold = 2
+        waiting = asyncio.create_task(
+            connected.analyze_sound("audio.analyze", {"timeline": "t1", "targets": [{"bus": "B1"}]})
+        )
+        await until(lambda: "audio.analyze" in fake.asked)
+        waiting.cancel()
+        with contextlib.suppress(EngineError):
+            await connected.duration("t9")
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+        await until(lambda: fake.jobs.get("audio-1") == "cancelled")
+        await connected.aclose()
+
+        assert "audio.cancel" in fake.asked
+
+
 async def test_a_render_that_is_refused_is_followed_no_further(tmp_path: Path) -> None:
     async with served(tmp_path / "film") as fake:
         connected = await attached(tmp_path / "film")

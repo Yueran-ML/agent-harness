@@ -155,9 +155,16 @@ fn the_graph_of_a_timeline_plays_ten_seconds_with_no_memory() {
     let monitor = graph.monitor().unwrap();
     let mut device = vec![0.0_f32; 512 * 2];
     let mut heard = false;
+    // The meters hear it, the loudness of the monitor too (T9b).
+    let taps = graph.taps();
     let ((), counted) = realtime(|| {
+        graph.set_metering(true);
         graph.start(4800, &mut feed).unwrap();
         for block in 0..1000 {
+            if block == 500 {
+                graph.set_metering(false);
+                graph.set_metering(true);
+            }
             if block % 7 == 0 {
                 #[allow(clippy::cast_precision_loss, reason = "a test value")]
                 let value = -((block % 20) as f32);
@@ -187,6 +194,9 @@ fn the_graph_of_a_timeline_plays_ten_seconds_with_no_memory() {
     });
     assert!(counted.none(), "{counted:?}");
     assert!(heard);
+    // 10 s of cells of 10 ms, published on the thread of the mix.
+    assert_eq!(taps.loudness.as_ref().unwrap().waiting(), 1000);
+    assert!(taps.meters.iter().all(|meter| meter.post.waiting() == 1000));
 }
 
 #[test]
@@ -281,6 +291,12 @@ fn ten_seconds_of_a_session_of_sixteen_tracks_take_no_memory_on_the_threads_of_t
     assert_eq!(sim.counters.underruns(), 0);
     assert_eq!(sim.control.shared.short(), 0);
     assert!(sim.played.iter().any(|&sample| sample != 0.0));
+    // The meters of the graphs that played heard them on the thread of the mix (T9b).
+    assert!(sim.taps[0].loudness.as_ref().unwrap().waiting() > 300);
+    assert!(sim.taps[0]
+        .meters
+        .iter()
+        .all(|meter| meter.post.waiting() > 300));
 }
 
 #[test]

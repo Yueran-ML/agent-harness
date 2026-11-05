@@ -196,6 +196,12 @@ impl LevelReader {
     pub fn drain(&mut self, cell: impl FnMut(&LevelCell)) -> u64 {
         self.reader.drain(cell)
     }
+
+    /// The cells published that it has not read yet.
+    #[must_use]
+    pub fn waiting(&self) -> u64 {
+        self.reader.waiting()
+    }
 }
 
 /// What the bar of a meter follows (Custom's Level detector, p. 162).

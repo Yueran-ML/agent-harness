@@ -499,6 +499,11 @@ impl Builder {
         }
         drop(feed);
         let controls = graph.controls();
+        // The meters read the graph from when the thread of the mix plays it (T9b); the first
+        // graph of a session that starts where the playhead was put clears the loudness, with
+        // Lock Metering to Transport on.
+        let of = &project.timelines[timeline];
+        crate::meters::hub().offer(&of.id, &of.audio, &graph, how == How::Start);
         let end = graph.end_out(end_of(&project.timelines[timeline]));
         let run = Run::new(graph, ring, Some(fetcher), end);
         let run = if grain {

@@ -7,8 +7,9 @@
 //! (`done` with what it found, `failed`, `cancelled`); `audio.cancel` stops one.
 //!
 //! What is measured (`columbina_audio::analysis`): a track or a bus after its fader, over a range
-//! of the timeline or the whole of it; a clip as its track takes it, right before its Volume
-//! (through its equalizer and its effects). Normalize
+//! of the timeline or the whole of it; a clip as its track takes it, after its Volume and before
+//! its pan (through its equalizer and its effects), so that the gain found is what its Volume is
+//! moved by, and a clip normalized again is moved by nothing. Normalize
 //! and Level Matcher change only the Volume of the clips, the whole curve of each moved by its
 //! gain (`nudge_clip_gain` of T2, one edit for each clip, all in one transaction: one step to
 //! undo), and only where they are asked to (`apply`); a clip that has no level (silence, or too
@@ -21,13 +22,13 @@ use std::sync::{Arc, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use columbina_audio::analysis::{
-    alone, level_match, normalize_clips, run_strip, Analysis, Analyzer, Level, SetLevel, Volume,
+    alone, level_match, normalize_clips, run_strips, Analysis, Analyzer, Level, SetLevel, Volume,
 };
 use columbina_audio::constants::{CLIP_VOLUME_RANGE, NORMALIZE_PEAK_DEFAULT, NORMALIZE_RANGE};
 use columbina_audio::graph::{Graph, Options, Owner, Point, Purpose};
 use columbina_audio::node::Layout;
 use columbina_audio::standards::{self, Measure, Standard, Verdict};
-use columbina_model::{Clip, Project, Timeline, TrackKind};
+use columbina_model::{Clip, Project, Timeline, TrackFormat, TrackKind};
 use serde::Deserialize;
 use serde_json::{json, value::RawValue, Value};
 use tokio::sync::Mutex;
@@ -45,6 +46,10 @@ const MOST_JOBS: usize = 4;
 
 /// The most clips or targets of one analysis (we decide).
 const MOST_TARGETS: usize = 256;
+
+/// The least gain that Normalize or Level Matcher applies, in dB (we decide): what a clip that is
+/// at its level already is measured off by.
+const SMALLEST_GAIN: f64 = 0.001;
 
 /// How often a job tells how far it is, at the most.
 const TELL_EVERY: Duration = Duration::from_millis(250);
@@ -255,7 +260,18 @@ pub(super) async fn call(
                 params,
             )?;
             let audio = settings(engine, &request.timeline).await?;
-            meters::hub().control(&request.timeline, &audio, request.action)
+            meters::hub()
+                .control(&request.timeline, &audio, request.action)
+                .ok_or_else(|| {
+                    Fault::new(
+                        rpc::REFUSED,
+                        format!(
+                            "timeline {} is not what the meters measure",
+                            request.timeline
+                        ),
+                    )
+                    .with_data(json!({"reason": "not_metered", "timeline": request.timeline}))
+                })?
         }
         "audio.cancel" => {
             let request: Cancel = rpc::params(method, r#"{"job": "audio-1"}"#, params)?;
@@ -343,7 +359,13 @@ fn analyze_work(method: &str, params: Option<&RawValue>, project: &Project) -> R
             json!({"reason": "out_of_range", "what": "targets"}),
         ));
     }
-    for target in &request.targets {
+    for (at, target) in request.targets.iter().enumerate() {
+        if request.targets[..at].contains(target) {
+            return Err(refused(
+                "a target is named twice",
+                json!({"reason": "twice", "target": target.json()}),
+            ));
+        }
         match target {
             Target::Clip(clip) => {
                 clip_of(timeline, clip)?;
@@ -595,13 +617,13 @@ impl Progress<'_> {
     }
 }
 
-/// What a job measures of one target, ready to run: its graph, the strip and the point measured,
-/// its range of the timeline, and the project it reads.
+/// What a job measures of one or more targets in one run of one graph, built only when it is to
+/// run and dropped once it has run (the review of T9b): its graph, the points measured, its range
+/// of the timeline, and the project it reads.
 struct Pass {
     graph: Graph,
     project: Arc<Project>,
-    strip: usize,
-    point: Point,
+    points: Vec<(usize, Point)>,
     range: Range<i64>,
 }
 
@@ -622,18 +644,18 @@ impl Pass {
         Ok(Pass {
             graph,
             project: Arc::new(project),
-            strip,
-            point: Point::BeforeFader,
+            points: vec![(strip, Point::BeforeFader)],
             range,
         })
     }
 
-    /// The measure of the track or the bus `owner` over `range`, the whole timeline where none.
-    fn strip(
+    /// The measure of the tracks and buses `owners`, after their faders, in one graph over
+    /// `range`.
+    fn strips(
         project: &Arc<Project>,
         timeline: usize,
-        owner: &Owner,
-        range: Option<Range<i64>>,
+        owners: &[Owner],
+        range: Range<i64>,
     ) -> Result<Pass, String> {
         let graph = Graph::build(
             project,
@@ -641,50 +663,57 @@ impl Pass {
             Options::new(MAX_BLOCK, Purpose::Analysis),
         )
         .map_err(|error| error.to_string())?;
-        let strip = graph
-            .strip_of(owner)
-            .ok_or_else(|| format!("{owner:?} is not in the mix"))?;
-        let range =
-            range.unwrap_or_else(|| 0..crate::play::mix::end_of(&project.timelines[timeline]));
+        let points = owners
+            .iter()
+            .map(|owner| {
+                graph
+                    .strip_of(owner)
+                    .map(|strip| (strip, Point::AfterFader))
+                    .ok_or_else(|| format!("{owner:?} is not in the mix"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Pass {
             graph,
             project: Arc::clone(project),
-            strip,
-            point: Point::AfterFader,
+            points,
             range,
         })
     }
 
-    fn layout(&self) -> Layout {
-        self.graph.layout_of(self.strip)
+    /// An analyzer of each of its points.
+    fn analyzers(&self, true_peak: bool) -> Vec<Analyzer> {
+        let rate = self.graph.rate();
+        self.points
+            .iter()
+            .map(|&(strip, _)| Analyzer::new(rate, self.graph.layout_of(strip), true_peak))
+            .collect()
     }
 
-    fn frames(&self) -> u64 {
-        u64::try_from(self.range.end - self.range.start).unwrap_or(0)
-    }
-
-    /// Runs it, giving its sound to `analyzer` and to `also` where there is one; `None` where it
-    /// was stopped.
+    /// Runs it, giving the sound of each point to its analyzer, and that of the first to `also`
+    /// where there is one; what they found, `None` where it was stopped.
     fn run(
         mut self,
         timeline: usize,
-        analyzer: &mut Analyzer,
+        mut analyzers: Vec<Analyzer>,
         mut also: Option<&mut Analyzer>,
         progress: &mut Progress,
-    ) -> Result<Option<()>, String> {
+    ) -> Result<Option<Vec<Analysis>>, String> {
         let mut feed = Feed::new(
             Arc::clone(&self.project),
             timeline,
             self.graph.clips(),
             false,
         );
-        let ran = run_strip(
+        let ran = run_strips(
             &mut self.graph,
             &mut feed,
-            (self.strip, self.point),
+            &self.points,
             self.range.clone(),
-            &mut |sound| {
-                analyzer.take(sound);
+            &mut |at, sound| {
+                analyzers[at].take(sound);
+                if at > 0 {
+                    return true;
+                }
                 if let Some(also) = also.as_deref_mut() {
                     also.take(sound);
                 }
@@ -692,11 +721,36 @@ impl Pass {
             },
         );
         match ran {
-            Ok(true) => Ok(Some(())),
+            Ok(true) => Ok(Some(analyzers.into_iter().map(Analyzer::finish).collect())),
             Ok(false) => Ok(None),
             Err(_) => Err(feed.take_error()),
         }
     }
+}
+
+/// The samples of the timeline of clip `clip`, as [`alone`] measures it.
+fn clip_range(timeline: &Timeline, clip: &str) -> Range<i64> {
+    clip_of(timeline, clip).map_or(0..0, |(_, c)| {
+        sample_at(timeline, c.start)..sample_at(timeline, c.end())
+    })
+}
+
+/// The channels of the track of clip `clip`.
+fn clip_layout(timeline: &Timeline, clip: &str) -> Layout {
+    clip_of(timeline, clip).map_or(Layout::Stereo, |(at, _)| {
+        let audio = &timeline.tracks[at].audio;
+        match audio.format {
+            TrackFormat::Mono => Layout::Mono,
+            TrackFormat::Stereo => Layout::Stereo,
+            TrackFormat::FiveOne => Layout::Surround51,
+            TrackFormat::Adaptive => Layout::discrete(usize::from(audio.channels)),
+        }
+    })
+}
+
+/// Samples in a range.
+fn frames(range: &Range<i64>) -> u64 {
+    u64::try_from(range.end - range.start).unwrap_or(0)
 }
 
 /// What an analysis found, by `level` of a standard: the integrated loudness as it measures.
@@ -775,23 +829,19 @@ fn run(
     }
 }
 
-fn progress<'a>(
-    teller: &'a Teller,
-    stop: &'a AtomicBool,
-    rate: u32,
-    measures: &[Pass],
-) -> Progress<'a> {
+fn progress<'a>(teller: &'a Teller, stop: &'a AtomicBool, rate: u32, total: u64) -> Progress<'a> {
     Progress {
         teller,
         stop,
         rate,
         done: 0,
-        total: measures.iter().map(Pass::frames).sum(),
+        total,
         told: None,
     }
 }
 
-/// `audio.analyze`.
+/// `audio.analyze`: the tracks and buses in one pass, then each clip in a pass of its own, each
+/// pass built as it is to run (`stop` read before it is built) and dropped after.
 fn analyze(
     teller: &Teller,
     project: &Arc<Project>,
@@ -799,30 +849,57 @@ fn analyze(
     (standard, target): (&'static Standard, f32),
     stop: &AtomicBool,
 ) -> Result<Option<Value>, String> {
-    let rate = project.timelines[timeline].sample_rate;
-    let measures = targets
+    let t = &project.timelines[timeline];
+    let rate = t.sample_rate;
+    let range = range.unwrap_or_else(|| 0..crate::play::mix::end_of(t));
+    let owners: Vec<(usize, Owner)> = targets
+        .iter()
+        .enumerate()
+        .filter_map(|(at, what)| match what {
+            Target::Track(id) => Some((at, Owner::Track(id.clone()))),
+            Target::Bus(id) => Some((at, Owner::Bus(id.clone()))),
+            Target::Clip(_) => None,
+        })
+        .collect();
+    let clips: u64 = targets
         .iter()
         .map(|what| match what {
-            Target::Clip(clip) => Pass::clip(project, timeline, clip),
-            Target::Track(id) => {
-                Pass::strip(project, timeline, &Owner::Track(id.clone()), range.clone())
-            }
-            Target::Bus(id) => {
-                Pass::strip(project, timeline, &Owner::Bus(id.clone()), range.clone())
-            }
+            Target::Clip(clip) => frames(&clip_range(t, clip)),
+            _ => 0,
         })
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut told = progress(teller, stop, rate, &measures);
-    let mut results = Vec::new();
-    for (what, measure) in targets.iter().zip(measures) {
-        let mut analyzer = Analyzer::new(rate, measure.layout(), true);
-        if measure
-            .run(timeline, &mut analyzer, None, &mut told)?
-            .is_none()
-        {
+        .sum();
+    let strips = if owners.is_empty() { 0 } else { frames(&range) };
+    let mut told = progress(teller, stop, rate, clips + strips);
+    let mut found_of: Vec<Option<Analysis>> = vec![None; targets.len()];
+    if !owners.is_empty() {
+        if stop.load(Ordering::Acquire) {
             return Ok(None);
         }
-        let analysis = analyzer.finish();
+        let only: Vec<Owner> = owners.iter().map(|(_, owner)| owner.clone()).collect();
+        let pass = Pass::strips(project, timeline, &only, range)?;
+        let analyzers = pass.analyzers(true);
+        let Some(analyses) = pass.run(timeline, analyzers, None, &mut told)? else {
+            return Ok(None);
+        };
+        for ((at, _), analysis) in owners.iter().zip(analyses) {
+            found_of[*at] = Some(analysis);
+        }
+    }
+    for (at, what) in targets.iter().enumerate() {
+        let Target::Clip(clip) = what else { continue };
+        if stop.load(Ordering::Acquire) {
+            return Ok(None);
+        }
+        let pass = Pass::clip(project, timeline, clip)?;
+        let analyzers = pass.analyzers(true);
+        let Some(mut analyses) = pass.run(timeline, analyzers, None, &mut told)? else {
+            return Ok(None);
+        };
+        found_of[at] = analyses.pop();
+    }
+    let mut results = Vec::new();
+    for (what, analysis) in targets.iter().zip(found_of) {
+        let analysis = analysis.ok_or("a target was not measured")?;
         let mut result = found(&analysis, standard.measure);
         result["target"] = what.json();
         let integrated = match standard.measure {
@@ -848,6 +925,33 @@ fn analyze(
         "level": decibels(f64::from(target)),
         "results": results,
     })))
+}
+
+/// Measures each clip of `clips` in a pass of its own, in the order of the timeline, each pass
+/// built as it is to run (`stop` read before it is built) and dropped after; and, where
+/// `together` is given, all of them one after another into it. What each was found, `None` where
+/// the job was stopped.
+fn clips_measured(
+    project: &Arc<Project>,
+    timeline: usize,
+    clips: &[String],
+    (true_peak, mut together): (bool, Option<&mut Analyzer>),
+    told: &mut Progress,
+) -> Result<Option<Vec<Analysis>>, String> {
+    let t = &project.timelines[timeline];
+    let mut each: Vec<Option<Analysis>> = vec![None; clips.len()];
+    for at in in_order(t, clips) {
+        if told.stop.load(Ordering::Acquire) {
+            return Ok(None);
+        }
+        let pass = Pass::clip(project, timeline, &clips[at])?;
+        let analyzers = pass.analyzers(true_peak);
+        let Some(mut found) = pass.run(timeline, analyzers, together.as_deref_mut(), told)? else {
+            return Ok(None);
+        };
+        each[at] = found.pop();
+    }
+    Ok(Some(each.into_iter().flatten().collect()))
 }
 
 /// The clips of `clips` in the order of the timeline (by where they start, then by their track).
@@ -886,7 +990,8 @@ fn nudges(timeline: &str, gains: &[(String, Option<f64>)]) -> Vec<Value> {
     gains
         .iter()
         .filter_map(|(clip, gain)| {
-            gain.filter(|gain| *gain != 0.0).map(|gain| {
+            // A gain under a thousandth of a decibel is none (a clip normalized again).
+            gain.filter(|gain| gain.abs() >= SMALLEST_GAIN).map(|gain| {
                 json!({"edit": "nudge_clip_gain", "timeline": timeline, "clips": [clip],
                        "delta_db": gain, "linked": false})
             })
@@ -906,33 +1011,26 @@ fn normalize(
 ) -> Result<Option<Value>, String> {
     let t = &project.timelines[timeline];
     let rate = t.sample_rate;
-    let measures = clips
-        .iter()
-        .map(|clip| Pass::clip(project, timeline, clip))
-        .collect::<Result<Vec<_>, _>>()?;
     // The clips together in one analysis, as one programme (Relative): of the layout of the most
     // channels among them; a clip of fewer is heard on the first of its channels.
-    let layout = measures
+    let layout = clips
         .iter()
-        .map(Pass::layout)
+        .map(|clip| clip_layout(t, clip))
         .max_by_key(|layout| layout.channels())
         .unwrap_or(Layout::Stereo);
     let mut together = Analyzer::new(rate, layout, level.needs_true_peak());
-    let mut told = progress(teller, stop, rate, &measures);
-    let mut each: Vec<Option<Analysis>> = vec![None; clips.len()];
-    let mut measures: Vec<Option<Pass>> = measures.into_iter().map(Some).collect();
-    for at in in_order(t, clips) {
-        let measure = measures[at].take().expect("each clip once");
-        let mut analyzer = Analyzer::new(rate, measure.layout(), level.needs_true_peak());
-        if measure
-            .run(timeline, &mut analyzer, Some(&mut together), &mut told)?
-            .is_none()
-        {
-            return Ok(None);
-        }
-        each[at] = Some(analyzer.finish());
-    }
-    let each: Vec<Analysis> = each.into_iter().flatten().collect();
+    let total = clips.iter().map(|clip| frames(&clip_range(t, clip))).sum();
+    let mut told = progress(teller, stop, rate, total);
+    let Some(each) = clips_measured(
+        project,
+        timeline,
+        clips,
+        (level.needs_true_peak(), Some(&mut together)),
+        &mut told,
+    )?
+    else {
+        return Ok(None);
+    };
     let together = together.finish();
     let set = match mode {
         Mode::Relative => SetLevel::Relative,
@@ -1005,22 +1103,13 @@ fn matched(
 ) -> Result<Option<Value>, String> {
     let t = &project.timelines[timeline];
     let rate = t.sample_rate;
-    let mut measures = vec![Pass::clip(project, timeline, reference)?];
-    for clip in clips {
-        measures.push(Pass::clip(project, timeline, clip)?);
-    }
-    let mut told = progress(teller, stop, rate, &measures);
-    let mut analyses = Vec::new();
-    for measure in measures {
-        let mut analyzer = Analyzer::new(rate, measure.layout(), false);
-        if measure
-            .run(timeline, &mut analyzer, None, &mut told)?
-            .is_none()
-        {
-            return Ok(None);
-        }
-        analyses.push(analyzer.finish());
-    }
+    let mut all = vec![reference.to_owned()];
+    all.extend(clips.iter().cloned());
+    let total = all.iter().map(|clip| frames(&clip_range(t, clip))).sum();
+    let mut told = progress(teller, stop, rate, total);
+    let Some(analyses) = clips_measured(project, timeline, &all, (false, None), &mut told)? else {
+        return Ok(None);
+    };
     let (reference_analysis, each) = analyses.split_first().expect("the reference first");
     let (low, high) = CLIP_VOLUME_RANGE;
     let volumes = volumes(t, clips);

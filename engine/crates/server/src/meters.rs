@@ -156,23 +156,27 @@ impl Meters {
         })
     }
 
-    /// `audio.loudness`: Start, Pause or Reset the loudness meter of timeline `timeline` (one that
-    /// is not metered has nothing to start), and what it reads then.
-    pub(crate) fn control(&self, timeline: &str, audio: &TimelineAudio, action: Action) -> Value {
+    /// `audio.loudness`: Start, Pause or Reset the loudness meter of timeline `timeline`, and what
+    /// it reads then. Only a graph offered switches the timeline of the meters (the review of
+    /// T9b): of another timeline, a read is of nothing measured, and an action is refused (none,
+    /// which the caller tells as `not_metered`).
+    pub(crate) fn control(
+        &self,
+        timeline: &str,
+        audio: &TimelineAudio,
+        action: Action,
+    ) -> Option<Value> {
         let mut board = self.board();
         let ours = board.0.as_deref() == Some(timeline);
-        if !ours {
-            // The meters of another timeline, or none yet: they start anew for this one.
-            *board = (Some(timeline.to_owned()), Board::new(meter_type(audio)));
-        }
         let board = &mut board.1;
-        match action {
-            Action::Start => board.start(),
-            Action::Pause => board.pause(),
-            Action::Reset => board.reset(),
-            Action::Read => {}
+        match (action, ours) {
+            (Action::Read, _) => {}
+            (_, false) => return None,
+            (Action::Start, true) => board.start(),
+            (Action::Pause, true) => board.pause(),
+            (Action::Reset, true) => board.reset(),
         }
-        loudness(board, true, audio)
+        Some(loudness(board, ours, audio))
     }
 }
 
@@ -371,6 +375,31 @@ mod tests {
                 peak: PeakIndicator::InfiniteHold,
             }
         );
+    }
+
+    #[test]
+    fn only_a_graph_offered_switches_the_timeline_of_the_meters() {
+        use columbina_audio::graph::{Options, Purpose};
+        let project = columbina_model::Project::sample();
+        let graph = Graph::build(&project, 0, Options::new(512, Purpose::Preview)).unwrap();
+        let audio = TimelineAudio::default();
+        let meters = Arc::new(Meters::new());
+        // Nothing metered yet: a read reads nothing, an action is refused.
+        let read = meters.control("t1", &audio, Action::Read).unwrap();
+        assert_eq!(read["seconds"], json!(0.0));
+        assert!(meters.control("t1", &audio, Action::Pause).is_none());
+        meters.offer("t1", &audio, &graph, true);
+        assert_eq!(
+            meters.control("t1", &audio, Action::Pause).unwrap()["running"],
+            false
+        );
+        // Another timeline: read, it is of nothing and leaves the meters of t1 as they are.
+        let other = meters.control("t2", &audio, Action::Read).unwrap();
+        assert_eq!(other["running"], true);
+        assert!(meters.control("t2", &audio, Action::Reset).is_none());
+        assert_eq!(meters.shown("t2", &audio, false)["strips"], json!([]));
+        let shown = meters.shown("t1", &audio, false);
+        assert_eq!(shown["loudness"]["running"], false);
     }
 
     #[test]

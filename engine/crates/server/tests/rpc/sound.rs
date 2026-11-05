@@ -256,7 +256,8 @@ async fn the_analysis_of_the_bus_exported_reads_what_ffmpeg_reads_of_the_file() 
     assert_eq!(done["method"], "audio.analyze");
     assert_eq!(done["standard"], "ebu-r128");
     assert_ne!(running.len(), 0);
-    assert_eq!(running.last().unwrap()["total"], json!(36.0));
+    // The bus and the track in one pass of 12 s, the clip in another.
+    assert_eq!(running.last().unwrap()["total"], json!(24.0));
     let results = done["results"].as_array().unwrap();
     assert_eq!(results[0]["target"], json!({"bus": "B1"}));
     assert_eq!(results[1]["target"], json!({"track": "A1"}));
@@ -378,10 +379,8 @@ async fn normalize_brings_two_clips_to_minus_23_independent_and_relative_and_app
     let job = client
         .result(
             "audio.analyze",
-            Some(
-                json!({"timeline": "tl", "targets": [{"bus": "B1"}, {"bus": "B1"}],
-                "range": {"from": 25, "to": 75}}),
-            ),
+            Some(json!({"timeline": "tl", "targets": [{"bus": "B1"}],
+                "range": {"from": 25, "to": 75}})),
         )
         .await["job"]
         .clone();
@@ -393,7 +392,82 @@ async fn normalize_brings_two_clips_to_minus_23_independent_and_relative_and_app
     assert_eq!(volume(&mut client, "c2").await, json!(0.0));
 }
 
+/// Normalize `clips` of `tl` to a sample peak of −9 dBFS, Independent and applied; what it told.
+async fn normalized(client: &mut Client, clips: &[&str]) -> Value {
+    let job = client
+        .result(
+            "audio.normalize",
+            Some(json!({"timeline": "tl", "clips": clips, "mode": "independent", "apply": true})),
+        )
+        .await["job"]
+        .clone();
+    let (done, _) = ended(client, "audio.analysis", &job).await;
+    assert_eq!(done["state"], "done", "{done}");
+    done
+}
+
 #[tokio::test]
+async fn a_clip_with_a_volume_is_normalized_once_and_its_keys_move_together() {
+    let dir = super::project_dir();
+    let sounds = tempfile::tempdir().unwrap();
+    let (_engine, mut client) = two_clips(dir.path(), sounds.path()).await;
+    // c1 (a peak of −30 dBFS) at +6 dB; c2 (−20 dBFS) keyed from −6 to 0 dB.
+    client
+        .apply(json!([
+            {"op": "set_clip", "timeline": "tl", "id": "c1", "gain_db": 6.0},
+            {"op": "set_clip", "timeline": "tl", "id": "c2", "gain_db": {"keys": [
+                {"at": {"ticks": 0, "scale": 48000}, "value": -6.0},
+                {"at": {"ticks": 96000, "scale": 48000}, "value": 0.0}]}}
+        ]))
+        .await;
+    let first = normalized(&mut client, &["c1", "c2"]).await;
+    println!("first: {first}");
+    close(
+        &first["clips"][0]["measured"],
+        -24.0,
+        0.05,
+        "c1 after its Volume",
+    );
+    close(&first["clips"][0]["gain_db"], 15.0, 0.05, "c1's gain");
+    close(&first["clips"][1]["gain_db"], 11.0, 0.05, "c2's gain");
+    close(&volume(&mut client, "c1").await, 21.0, 0.05, "c1's Volume");
+    let keys = volume(&mut client, "c2").await;
+    close(&keys["keys"][0]["value"], 5.0, 0.05, "c2's first key");
+    close(&keys["keys"][1]["value"], 11.0, 0.05, "c2's second key");
+    // Again: nothing to add, so nothing applied.
+    let again = normalized(&mut client, &["c1", "c2"]).await;
+    println!("again: {again}");
+    for clip in 0..2 {
+        close(&again["clips"][clip]["gain_db"], 0.0, 0.01, "a second gain");
+        close(
+            &again["clips"][clip]["measured"],
+            -9.0,
+            0.01,
+            "the peak reached",
+        );
+    }
+    // The mix over c1 peaks at the target.
+    let job = client
+        .result(
+            "audio.analyze",
+            Some(json!({"timeline": "tl", "targets": [{"bus": "B1"}], "range": {"from": 0, "to": 100}})),
+        )
+        .await["job"]
+        .clone();
+    let (mix, _) = ended(&mut client, "audio.analysis", &job).await;
+    close(
+        &mix["results"][0]["sample_peak"],
+        -9.0,
+        0.01,
+        "the peak of the mix over c1",
+    );
+}
+
+#[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Level Matcher, a cancelled job, and a table of refusals"
+)]
 async fn level_matcher_a_cancelled_job_and_what_is_refused() {
     let dir = super::project_dir();
     let sounds = tempfile::tempdir().unwrap();
@@ -469,6 +543,11 @@ async fn level_matcher_a_cancelled_job_and_what_is_refused() {
         (
             "audio.normalize",
             json!({"timeline": "tl", "clips": ["c1", "c1"]}),
+            "twice",
+        ),
+        (
+            "audio.analyze",
+            json!({"timeline": "tl", "targets": [{"bus": "B1"}, {"bus": "B1"}]}),
             "twice",
         ),
         (

@@ -4348,7 +4348,10 @@ buses go of their peaks (a click on the meters: the only end of Infinite hold).
   was held up for a third of a second).
 
 `audio.loudness {timeline, action?}`: `start` (or resume), `pause` (what plays is not heard, what
-was measured is kept), `reset` (nothing measured); without `action`, only what it reads. With Lock
+was measured is kept), `reset` (nothing measured); without `action`, only what it reads. Only
+playing switches the meters to a timeline: for another timeline than the one that played last,
+a read is of nothing measured, and an action is `-32001` with `{"reason": "not_metered",
+"timeline"}`. With Lock
 Metering to Transport on (the default), each start of playing where the playhead was put (a play,
 a seek) resets it as it is first heard. It answers `{"running", "standard", "target",
 "momentary", "short_term", "momentary_max", "short_term_max", "integrated", "range",
@@ -4373,13 +4376,16 @@ What is measured is what an export would carry (a Listen never):
 
 - a track or a bus: after its fader, mute, solo and VCAs, over `range` (frames of the timeline,
   `to` not included) or the whole timeline;
-- a clip: its sound right before its Volume, as its track takes it (its channels configured, at
-  its speed, through its equalizer and its effects, which come before its Volume), without its
-  fades and crossfades, and without the track's Trim, polarity, Ducker, inserts, Dynamics,
-  equalizer and lanes, over the part of it on the timeline (`range` is not read for it).
+- a clip: its sound after its Volume (keys and all) and before its pan, as its track takes it (its
+  channels configured, at its speed, through its equalizer and its effects, which come before its
+  Volume), without its fades and crossfades, and without the track's Trim, polarity, Ducker,
+  inserts, Dynamics, equalizer and lanes, over the part of it on the timeline (`range` is not
+  read for it). So the gain that Normalize and Level Matcher find is what the Volume is moved
+  by, and a clip normalized again is moved by nothing (a gain under 0.001 dB is not applied).
 
 `audio.analyze {timeline, targets, range?, standard?}`: `targets` from 1 to 256, each
-`{"clip"}`, `{"track"}` (a track of sound that is on) or `{"bus"}`; `standard` an id of the table,
+`{"clip"}`, `{"track"}` (a track of sound that is on) or `{"bus"}`, each once (the tracks and buses are measured
+in one run of the mix, each clip in a run of its own); `standard` an id of the table,
 the timeline's by default. Done: `{job, state: "done", method: "audio.analyze", standard, level,
 results: [{target, integrated, range, momentary_max, short_term_max, true_peak, sample_peak,
 seconds, verdict}, ...]}` in the order of `targets`, `level` the target of the standard. Of the
@@ -4395,8 +4401,8 @@ one after another in the order of the timeline, the highest peak among them for 
 for all) or `independent` (each clip by its own level). Done: `{job, state: "done", method:
 "audio.normalize", level, target, mode, measured, clips: [{clip, gain_db, clamped, measured},
 ...], applied}`: `measured` the level of the clips together (`relative`; `null` for
-`independent`) and of each clip; `gain_db` what is added to the clip's Volume, `null` for a clip
-that has no level (silence, or shorter than 400 ms for a loudness), which is left as it is;
+`independent`) and of each clip; `gain_db` what is added to the clip's Volume (the target less the level measured after it),
+`null` for a clip that has no level (silence, or shorter than 400 ms for a loudness), which is left as it is;
 `clamped` where the Volume, or a key of it, moved by the gain would go out of −96…24 dB, so that
 the clip does not come to the target.
 
@@ -4416,5 +4422,5 @@ gains are applied to the project as it is when they are found. A transaction ref
 clip removed meanwhile) is told in `refused` too.
 
 Params that cannot be are `-32602` with `data.reason`: `missing` (`timeline`; or `what`: `clip`,
-`track` or `bus`, and `id`), `disabled` (`track`), `standard` (`standard`), `twice` (`clip`),
+`track` or `bus`, and `id`), `disabled` (`track`), `standard` (`standard`), `twice` (`clip`, or `target`),
 `out_of_range` (`what`: `targets`, `clips`, `range` or `target`).

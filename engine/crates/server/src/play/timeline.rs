@@ -1271,6 +1271,7 @@ impl Worker {
 
     /// The frame shown, before it is compared with anything (`still.grab`).
     /// An order of the recording of automation (T16, `play::record`).
+    #[allow(clippy::too_many_lines, reason = "an arm for each order")]
     fn automate(&mut self, order: super::record::Order) {
         use super::record::Order;
         let loaded = |worker: &Self, timeline: &str| {
@@ -1339,6 +1340,52 @@ impl Worker {
                 let _ = reply.send(result);
             }
             Order::GiveBack { timeline, lanes } => self.automation.give_back(&timeline, lanes),
+            Order::AllRead { timeline, reply } => {
+                let result = if loaded(self, &timeline) {
+                    let project = Arc::clone(self.project.as_ref().expect("loaded"));
+                    let rate = project.timelines[self.timeline.unwrap_or(0)].sample_rate;
+                    let at = self.heard_sample();
+                    let read = self.automation.all_read(at, rate, &mut self.playback);
+                    Ok(json!({ "read": read }))
+                } else {
+                    Err(not_loaded())
+                };
+                let _ = reply.send(result);
+            }
+            Order::Join { timeline, reply } => {
+                let result = if loaded(self, &timeline) {
+                    let project = Arc::clone(self.project.as_ref().expect("loaded"));
+                    let rate = project.timelines[self.timeline.unwrap_or(0)].sample_rate;
+                    let (lanes, at) = self.automation.join(&timeline);
+                    let at = at.map(|ticks| columbina_model::Time { ticks, scale: rate });
+                    Ok(json!({ "lanes": lanes, "at": at }))
+                } else {
+                    Err(not_loaded())
+                };
+                let _ = reply.send(result);
+            }
+            Order::Fill {
+                timeline,
+                from,
+                to,
+                glide,
+                reply,
+            } => {
+                let result = if loaded(self, &timeline) {
+                    let project = Arc::clone(self.project.as_ref().expect("loaded"));
+                    let index = self.timeline.unwrap_or(0);
+                    let lanes = self.automation.fill(
+                        (&project, index),
+                        (from, to),
+                        glide,
+                        &mut self.playback,
+                    );
+                    Ok(json!({ "lanes": lanes }))
+                } else {
+                    Err(not_loaded())
+                };
+                let _ = reply.send(result);
+            }
         }
     }
 
@@ -1644,8 +1691,8 @@ impl Worker {
         if let (Some(at), Some(project), Some(index)) =
             (self.heard_sample(), &self.project, self.timeline)
         {
-            let rate = project.timelines[index].sample_rate;
-            self.automation.tick(at, rate, &mut self.playback);
+            self.automation
+                .tick((project, index), at, &mut self.playback);
         }
         if self
             .scrub_until

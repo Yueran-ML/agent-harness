@@ -333,7 +333,7 @@ fn touch_off_writes_armed_tracks_only_and_categories_off_are_not_written() {
     let heard = touch(&mut recorder, &project, 1.0, "fader_db", -6.0, true);
     assert_eq!(heard.len(), 1, "heard all the same");
     assert_eq!(recorder.end(&project, s(2.0)), None, "A1 not armed");
-    project.timelines[0].tracks[1].audio.automation_arm = true;
+    project.timelines[0].tracks[1].audio.automation_arm = columbina_model::AutomationArm::Armed;
     project.timelines[0].audio.record.categories.pan = false;
     let mut recorder = recording(&project);
     touch(&mut recorder, &project, 1.0, "fader_db", -6.0, true);
@@ -544,9 +544,221 @@ fn touch_off_writes_a_bus_or_a_vca_where_it_is_armed() {
         recorder.end(project, s(2.0))
     };
     assert_eq!(pass(&project), None, "not armed");
-    project.timelines[0].buses[0].automation_arm = true;
+    project.timelines[0].buses[0].automation_arm = columbina_model::AutomationArm::Armed;
     let Some(Edit::RecordPass { lanes, .. }) = pass(&project) else {
         panic!("armed, written");
     };
     assert_eq!(lanes[0].of, columbina_model::LanesOf::Bus("B1".into()));
+}
+
+// T16b: the arm's Safe and Off, All Read, Join Mix, Fill Range and Glide Range, and groups that
+// link Automation.
+
+#[test]
+fn a_safe_or_off_arm_is_heard_and_never_written_whatever_the_touch() {
+    for arm in [
+        columbina_model::AutomationArm::Safe,
+        columbina_model::AutomationArm::Off,
+    ] {
+        for touch_mode in [Touch::Off, Touch::Latch] {
+            let mut project = project(
+                &[(0.0, -10.0)],
+                touch_mode,
+                RecordMode::Write,
+                OnStop::Return,
+            );
+            project.timelines[0].tracks[1].audio.automation_arm = arm;
+            let mut recorder = recording(&project);
+            let heard = touch(&mut recorder, &project, 1.0, "fader_db", -6.0, true);
+            assert_eq!(heard.len(), 1, "heard");
+            touch(&mut recorder, &project, 2.0, "fader_db", -6.0, false);
+            assert_eq!(
+                recorder.end(&project, s(3.0)),
+                None,
+                "{arm:?} {touch_mode:?}"
+            );
+        }
+    }
+    // Armed, under Touch Off, it is.
+    let mut project = project(
+        &[(0.0, -10.0)],
+        Touch::Off,
+        RecordMode::Write,
+        OnStop::Return,
+    );
+    project.timelines[0].tracks[1].audio.automation_arm = columbina_model::AutomationArm::Armed;
+    let mut recorder = recording(&project);
+    touch(&mut recorder, &project, 1.0, "fader_db", -6.0, true);
+    assert!(recorder.end(&project, s(3.0)).is_some());
+}
+
+#[test]
+fn all_read_stops_what_is_written_where_it_is_asked_and_nothing_touched_after_is_written() {
+    let project = project(
+        &[(0.0, -10.0)],
+        Touch::Latch,
+        RecordMode::Write,
+        OnStop::Return,
+    );
+    let mut recorder = recording(&project);
+    touch(&mut recorder, &project, 1.0, "fader_db", -6.0, true);
+    touch(&mut recorder, &project, 1.5, "fader_db", -6.0, false);
+    assert!(recorder.all_read(Some(s(2.0))));
+    // Touched again: heard, not written.
+    let heard = touch(&mut recorder, &project, 3.0, "fader_db", 0.0, true);
+    assert_eq!(heard.len(), 1);
+    let after = written(
+        &project,
+        recorder.end(&project, s(4.0)).expect("the first run"),
+    );
+    for (seconds, want) in [
+        (0.5, -10.0),
+        (1.5, -6.0),
+        (1.999, -6.0),
+        (2.005, -8.0),
+        (2.01, -10.0),
+        (3.5, -10.0),
+    ] {
+        let got = at(&after, "fader_db", seconds);
+        assert!((got - want).abs() < 1e-3, "{seconds} s: {got}, not {want}");
+    }
+    // Recording turned on again writes again.
+    recorder.set(true, 0.25);
+    recorder.begin(&project, 0, 0);
+    touch(&mut recorder, &project, 1.0, "fader_db", -3.0, true);
+    assert!(recorder.end(&project, s(2.0)).is_some());
+    // Off, there is nothing to read.
+    let mut off = Recorder::default();
+    assert!(!off.all_read(None));
+}
+
+#[test]
+fn join_mix_writes_on_from_the_last_values_where_the_next_pass_reaches_the_stop() {
+    let project = project(
+        &[(0.0, -10.0)],
+        Touch::Latch,
+        RecordMode::Write,
+        OnStop::Return,
+    );
+    let mut recorder = recording(&project);
+    touch(&mut recorder, &project, 1.0, "fader_db", -6.0, true);
+    touch(&mut recorder, &project, 1.5, "fader_db", -4.0, false);
+    let first = written(&project, recorder.end(&project, s(3.0)).unwrap());
+    assert_eq!(recorder.join("t1"), (1, Some(s(3.0))));
+    // From 2 s again: nothing before the stop, the last value joined there and held to the stop.
+    recorder.begin(&first, 0, s(2.0));
+    assert!(recorder.joined(&first, 0, s(2.5)).is_empty(), "not yet");
+    let heard = recorder.joined(&first, 0, s(3.0));
+    assert!(matches!(heard[..], [Heard::Hold { live: Live::Hold(v), .. }] if v == -4.0));
+    assert!(recorder.joined(&first, 0, s(3.5)).is_empty(), "joined once");
+    let after = written(&first, recorder.end(&first, s(5.0)).unwrap());
+    for (seconds, want) in [
+        (2.0, -4.0),
+        (2.999, -4.0),
+        (3.1, -4.0),
+        (4.0, -4.0),
+        (4.999, -4.0),
+        (5.25, -10.0),
+    ] {
+        let got = at(&after, "fader_db", seconds);
+        assert!((got - want).abs() < 1e-3, "{seconds} s: {got}, not {want}");
+    }
+    // Of another timeline, or with no stop, nothing.
+    assert_eq!(recorder.join("t2"), (0, None));
+}
+
+#[test]
+fn fill_range_writes_what_preview_holds_and_glide_range_glides_to_it() {
+    let mut project = project(
+        &[(0.0, -10.0)],
+        Touch::Latch,
+        RecordMode::Write,
+        OnStop::Return,
+    );
+    project.timelines[0].audio.record.preview = true;
+    for glide in [false, true] {
+        let mut recorder = Recorder::default();
+        recorder.set(true, 0.25);
+        // Stopped, under Preview: held, not recorded.
+        recorder.touch(&project, 0, (false, None), (&a1(), "fader_db"), -4.0, true);
+        let (edit, gone) = recorder
+            .fill(
+                &project,
+                0,
+                (
+                    Time {
+                        ticks: s(1.0),
+                        scale: 48_000,
+                    },
+                    Time {
+                        ticks: s(3.0),
+                        scale: 48_000,
+                    },
+                ),
+                glide,
+            )
+            .expect("what Preview holds");
+        assert_eq!(gone, vec![(a1(), "fader_db".to_string())]);
+        let after = written(&project, edit);
+        let middle = if glide { -7.0 } else { -4.0 };
+        for (seconds, want) in [(0.5, -10.0), (2.005, middle), (2.999, -4.0), (3.5, -10.0)] {
+            let got = at(&after, "fader_db", seconds);
+            assert!(
+                (got - want).abs() < 1e-2,
+                "{glide} {seconds} s: {got}, not {want}"
+            );
+        }
+        assert!(
+            recorder
+                .fill(
+                    &project,
+                    0,
+                    (Time { ticks: 0, scale: 1 }, Time { ticks: 1, scale: 1 }),
+                    glide
+                )
+                .is_none(),
+            "filled once"
+        );
+    }
+}
+
+#[test]
+fn a_fader_of_a_group_linking_automation_moves_and_writes_the_others_by_the_same_change() {
+    let mut project = project(
+        &[(0.0, -10.0)],
+        Touch::Latch,
+        RecordMode::Write,
+        OnStop::Return,
+    );
+    let mut a2 = columbina_model::Track::new("A2", columbina_model::TrackKind::Audio);
+    a2.audio.strip.fader_db = -20.0;
+    project.timelines[0].tracks.push(a2);
+    let group: columbina_model::TrackGroup = serde_json::from_value(serde_json::json!({
+        "id": "TG1", "name": "Group 1", "members": ["A1", "A2"], "linked": ["fader", "automation"],
+    }))
+    .unwrap();
+    project.timelines[0].track_groups.push(group);
+    project.validate().unwrap();
+    let mut recorder = recording(&project);
+    // A1's lane is at -10 there and A2 at -20: A1 to -6 moves A2 to -16.
+    let heard = touch(&mut recorder, &project, 1.0, "fader_db", -6.0, true);
+    assert_eq!(heard.len(), 2);
+    assert!(
+        matches!(&heard[1], Heard::Hold { owner: Owner::Track(id), live: Live::Hold(v), .. }
+        if id == "A2" && *v == -16.0)
+    );
+    let after = written(&project, recorder.end(&project, s(3.0)).unwrap());
+    let a2 = after.timelines[0].tracks[2].audio.lanes["fader_db"].value_at(Time {
+        ticks: s(2.0),
+        scale: 48_000,
+    });
+    assert!(near(a2, -16.0), "{a2}");
+    // Not where the group does not link Automation.
+    let mut unlinked = project.clone();
+    unlinked.timelines[0].track_groups[0].linked = vec![columbina_model::GroupControl::Fader];
+    let mut recorder = recording(&unlinked);
+    assert_eq!(
+        touch(&mut recorder, &unlinked, 1.0, "fader_db", -6.0, true).len(),
+        1
+    );
 }

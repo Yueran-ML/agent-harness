@@ -9,8 +9,8 @@ use columbina_model::audio::fx::{
 };
 use columbina_model::audio::{BusFormat, ChannelOrder, Pan as PanModel, TrackFormat};
 use columbina_model::{
-    resolve, AudioParam, Effect, Equalizer, Id, Lane, Lanes, Project, SourceRef, Stage as Order,
-    Strip as StripModel, Timeline, TrackKind,
+    resolve, AudioParam, AutomationArm, Effect, Equalizer, Id, Lane, Lanes, Project, SourceRef,
+    Stage as Order, Strip as StripModel, Timeline, TrackKind,
 };
 
 use crate::constants::{
@@ -35,6 +35,19 @@ use super::pdc::{DelayLine, Delayer};
 use super::route::{balance, panned, PanAt};
 use super::strip::{Edge, Key, LaneOf, Pan, Stage, Strip, VcaState, VcaTerm};
 use super::taps::Tap;
+
+/// No lanes: what an owner whose Automation Arm is Off plays (T16b, the interaction reference
+/// §11.4), its settings staying as they are set.
+static NO_LANES: Lanes = Lanes::new();
+
+/// The lanes of an owner as they play: none where its Automation Arm is Off.
+fn played(lanes: &Lanes, arm: AutomationArm) -> &Lanes {
+    if arm.plays() {
+        lanes
+    } else {
+        &NO_LANES
+    }
+}
 use super::{
     ClipId, ClipParam, Control, Graph, LaneKey, Meter, Options, Out, OutputInfo, Owner, Purpose,
     StripParam, Target, Warp,
@@ -938,7 +951,7 @@ impl Graph {
             sources.push(Source {
                 owner: Owner::Track(track.id.clone()),
                 strip: &audio.strip,
-                lanes: &audio.lanes,
+                lanes: played(&audio.lanes, audio.automation_arm),
                 layout: track_layout(audio.format, audio.channels),
                 mute: audio.mute,
                 solo: audio.solo,
@@ -951,7 +964,7 @@ impl Graph {
             sources.push(Source {
                 owner: Owner::Bus(bus.id.clone()),
                 strip: &bus.strip,
-                lanes: &bus.lanes,
+                lanes: played(&bus.lanes, bus.automation_arm),
                 layout: bus_layout(bus.format),
                 mute: bus.mute,
                 solo: bus.solo,
@@ -1661,7 +1674,7 @@ impl Graph {
             for term in &mut strip.vcas {
                 let vca = &t.vcas[term.vca];
                 for (path, slot) in [("fader_db", &mut term.fader), ("mute", &mut term.mute)] {
-                    if let Some(lane) = vca.lanes.get(path) {
+                    if let Some(lane) = played(&vca.lanes, vca.automation_arm).get(path) {
                         *slot = Some(strip.lanes.len());
                         let owner = Owner::Vca(vca.id.clone());
                         strip.lanes.push(LaneOf::new(lane, after, &owner, path));

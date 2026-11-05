@@ -357,8 +357,8 @@ pub struct TrackAudio {
     pub solo_safe: bool,
     /// Whether its delay is made up with the others' (ADC, p. 3706): on for a new track.
     pub adc: bool,
-    /// Whether its automation is armed to record (p. 3906).
-    pub automation_arm: bool,
+    /// Its Automation Arm (p. 3906): armed to record, Safe or Off (T16b).
+    pub automation_arm: AutomationArm,
     /// Its strip: out to the first bus, for a track made without one.
     pub strip: Strip,
     /// The automation of its settings.
@@ -375,10 +375,100 @@ impl Default for TrackAudio {
             solo: false,
             solo_safe: false,
             adc: true,
-            automation_arm: false,
+            automation_arm: AutomationArm::Unarmed,
             strip: Strip::to_first_bus(),
             lanes: Lanes::new(),
         }
+    }
+}
+
+/// The Automation Arm of a track, a bus or a VCA (pp. 3688, 3906–3907; the interaction reference
+/// §11.4): its button armed, or not, or set by its right-click menu to Safe or Off. Written as it
+/// was before T16b, `true` (armed) and `false` (not), and `"safe"` and `"off"`; read also as
+/// `"armed"` and `"unarmed"`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum AutomationArm {
+    /// Not armed: its automation plays back, and is recorded where the Touch is not Off.
+    #[default]
+    Unarmed,
+    /// Armed: recorded under Touch Off too, as Latch.
+    Armed,
+    /// Safe: its automation plays back, but nothing records it, and Copy, Paste and Erase of
+    /// automation (p. 3913) leave it alone.
+    Safe,
+    /// Off: its automation does not play back (its settings stay as they are set), and nothing
+    /// records it.
+    Off,
+}
+
+/// Whether an Automation Arm is not armed: what a bus and a VCA leave out where they are written.
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if"
+)]
+pub(crate) fn unarmed(arm: &AutomationArm) -> bool {
+    *arm == AutomationArm::Unarmed
+}
+
+impl AutomationArm {
+    /// Whether it is armed.
+    #[must_use]
+    pub fn armed(self) -> bool {
+        self == Self::Armed
+    }
+
+    /// Whether a pass of recording may write its lanes: not where it is Safe or Off.
+    #[must_use]
+    pub fn records(self) -> bool {
+        matches!(self, Self::Unarmed | Self::Armed)
+    }
+
+    /// Whether its lanes play back: not where it is Off.
+    #[must_use]
+    pub fn plays(self) -> bool {
+        self != Self::Off
+    }
+
+    /// Whether Copy, Paste and Erase of automation may change its lanes: not where it is Safe.
+    #[must_use]
+    pub fn pastes(self) -> bool {
+        self != Self::Safe
+    }
+}
+
+impl Serialize for AutomationArm {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Unarmed => serializer.serialize_bool(false),
+            Self::Armed => serializer.serialize_bool(true),
+            Self::Safe => serializer.serialize_str("safe"),
+            Self::Off => serializer.serialize_str("off"),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for AutomationArm {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum Named {
+            Unarmed,
+            Armed,
+            Safe,
+            Off,
+        }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Written {
+            Before(bool),
+            Named(Named),
+        }
+        Ok(match Written::deserialize(deserializer)? {
+            Written::Before(true) | Written::Named(Named::Armed) => Self::Armed,
+            Written::Before(false) | Written::Named(Named::Unarmed) => Self::Unarmed,
+            Written::Named(Named::Safe) => Self::Safe,
+            Written::Named(Named::Off) => Self::Off,
+        })
     }
 }
 
@@ -811,6 +901,31 @@ pub struct Categories {
     pub plugins: bool,
     /// The rest: outputs and inserts on and off.
     pub misc: bool,
+}
+
+impl Categories {
+    /// Whether the category of the setting at `path` is on (pp. 3905–3906, 3913): Fader (a
+    /// fader), Mute, Pan (every pan of the strip), EQ, Comp, Gate (the Expander/Gate of Dynamics),
+    /// Lim (its Limiter), Sends, Plugins (the inserts' settings and the Track FX), and Misc (what is
+    /// left: the outputs on and off, an insert on and off, Trim and the polarity). What a pass of
+    /// recording writes, and what Copy, Paste and Erase of automation act on.
+    #[must_use]
+    pub fn covers(&self, path: &str) -> bool {
+        let insert_switch = path.starts_with("insert.") && path.rsplit('.').next() == Some("on");
+        match path {
+            "fader_db" => self.fader,
+            "mute" => self.mute,
+            _ if path.starts_with("pan.") => self.pan,
+            _ if path.starts_with("eq.") => self.eq,
+            _ if path.starts_with("dynamics.expander.") => self.gate,
+            _ if path.starts_with("dynamics.limiter.") => self.lim,
+            _ if path.starts_with("dynamics.") => self.comp,
+            _ if path.starts_with("send.") => self.sends,
+            _ if insert_switch => self.misc,
+            _ if path.starts_with("insert.") || path.starts_with("track_fx.") => self.plugins,
+            _ => self.misc,
+        }
+    }
 }
 
 impl Default for Categories {

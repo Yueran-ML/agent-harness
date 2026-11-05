@@ -262,17 +262,14 @@ fn follow(member: &Track, before: &Track, after: &Track, linked: &HashSet<GroupC
     for (control, was, now, own, name) in [
         (GroupControl::Mute, b.mute, a.mute, m.mute, "mute"),
         (GroupControl::Solo, b.solo, a.solo, m.solo, "solo"),
-        (
-            GroupControl::Automation,
-            b.automation_arm,
-            a.automation_arm,
-            m.automation_arm,
-            "automation_arm",
-        ),
     ] {
         if linked.contains(&control) && was != now && own != now {
             patch.insert(name.into(), now.into());
         }
+    }
+    let (was, now, own) = (b.automation_arm, a.automation_arm, m.automation_arm);
+    if linked.contains(&GroupControl::Automation) && was != now && own != now {
+        patch.insert("automation_arm".into(), json!(now));
     }
     patch.into()
 }

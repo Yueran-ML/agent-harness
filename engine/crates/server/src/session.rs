@@ -671,9 +671,16 @@ fn passes_written(state: &Arc<Mutex<State>>, limits: Limits) -> crate::play::rec
 /// write of a setting still there is given back to the monitor to be punched in again.
 fn write_pass(state: &Mutex<State>, commit: crate::play::record::Commit, limits: Limits) {
     let crate::play::record::Commit { edit, by, punch } = commit;
-    let columbina_model::Edit::RecordPass { timeline, lanes } = edit else {
-        return;
+    let lanes = match edit {
+        columbina_model::Edit::RecordPass { timeline, lanes } => (timeline, lanes),
+        // Fill Range and Glide Range (T16b): one edit, written whole.
+        columbina_model::Edit::LaneFill { .. } => {
+            write_whole(state, edit, by, limits);
+            return;
+        }
+        _ => return,
     };
+    let (timeline, lanes) = lanes;
     let mut locked = state.blocking_lock();
     let mut trial = locked.history.project().clone();
     let (mut kept, mut failed, mut back) = (Vec::new(), Vec::new(), Vec::new());
@@ -751,6 +758,54 @@ fn write_pass(state: &Mutex<State>, commit: crate::play::record::Commit, limits:
     }
 }
 
+/// Write an edit of the recording of automation that is not a pass (Fill Range, Glide Range;
+/// T16b) as one transaction, and tell everyone `automation.written`, as a pass is told.
+fn write_whole(state: &Mutex<State>, edit: columbina_model::Edit, by: Kind, limits: Limits) {
+    let columbina_model::Edit::LaneFill {
+        timeline, lanes, ..
+    } = &edit
+    else {
+        return;
+    };
+    let (timeline, count) = (timeline.clone(), lanes.len());
+    let mut locked = state.blocking_lock();
+    let mut failed = Vec::new();
+    let revision = match locked.apply_changes_locked(by, None, None, Instant::now(), |_| {
+        Ok(vec![Change::Edit(edit)])
+    }) {
+        Ok(result) => Some(result.revision),
+        Err(WorkedOutError::Input(fault) | WorkedOutError::Apply(fault)) => {
+            let reason = fault
+                .data
+                .as_ref()
+                .and_then(|data| data.get("reason"))
+                .cloned()
+                .unwrap_or(json!("refused"));
+            if reason != json!("empty_range") {
+                log(
+                    "automation_record_failed",
+                    &json!({"message": fault.message, "data": fault.data}),
+                );
+                failed.push(json!({ "reason": reason }));
+            }
+            None
+        }
+    };
+    let told = json!({
+        "timeline": timeline,
+        "punch": false,
+        "lanes": if revision.is_some() { count } else { 0 },
+        "revision": revision,
+        "failed": failed,
+    });
+    locked.broadcast(&rpc::notification_line("automation.written", &told));
+    let kicked = std::mem::take(&mut locked.kicked);
+    drop(locked);
+    for (id, kind) in kicked {
+        log_kicked(id, Some(kind), limits);
+    }
+}
+
 /// `automation.record`, `automation.touch`, `automation.punch`: the recording of automation of
 /// the timeline monitor (T16, `play::record`). A touch is answered at once, once it is checked
 /// against the project and recording is on.
@@ -782,6 +837,57 @@ async fn automation_call(
         })?,
         None => Ok(json!({})),
     }
+}
+
+/// The params of `automation.copy`.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CopyParams {
+    timeline: String,
+    of: Vec<columbina_model::LanesOf>,
+    #[serde(default)]
+    from: Option<columbina_model::Time>,
+    #[serde(default)]
+    to: Option<columbina_model::Time>,
+    #[serde(default)]
+    at: Option<columbina_model::Time>,
+}
+
+/// `automation.copy` (T16b, p. 3913): of the tracks, buses and VCAs named, the lanes of the
+/// categories of recording that are on, over a range (`from`, `to`) or at a time (`at`, a
+/// snapshot), for a client to keep and paste with the edit `automation_paste`.
+async fn automation_copy(engine: &Engine, params: Option<&RawValue>) -> Result<Value, Fault> {
+    let asked: CopyParams = rpc::params(
+        "automation.copy",
+        r#"{"timeline": "t1", "of": [{"track": "A1"}], "from"?: {"ticks": 0, "scale": 48000}, "to"?: {"ticks": 48000, "scale": 48000}, "at"?: {"ticks": 0, "scale": 48000}}"#,
+        params,
+    )?;
+    let range = match (asked.from, asked.to) {
+        (Some(from), Some(to)) => Some((from, to)),
+        (None, None) => None,
+        _ => {
+            return Err(Fault::params("give both from and to, or neither")
+                .with_data(json!({"reason": "range"})))
+        }
+    };
+    read_project(engine, |project| {
+        let timeline = project
+            .timelines
+            .iter()
+            .find(|t| t.id == asked.timeline)
+            .ok_or_else(|| {
+                Fault::params(format!("there is no timeline {}", asked.timeline)).with_data(
+                    json!({"reason": "missing", "what": "timeline", "id": asked.timeline}),
+                )
+            })?;
+        let lanes = columbina_model::edit::copy_lanes(timeline, &asked.of, range, asked.at)
+            .map_err(|error| {
+                let data = serde_json::to_value(&error).unwrap_or_default();
+                Fault::params(error.to_string()).with_data(data)
+            })?;
+        Ok(json!({ "lanes": lanes }))
+    })
+    .await
 }
 
 /// Make the proxy of media again, as the transport asks when its file cannot be opened or
@@ -1363,8 +1469,20 @@ async fn dispatch(
                 Err(refused) => Reply::Refused(refused),
             })
         }
-        "automation.record" | "automation.touch" | "automation.punch" => {
+        "automation.record"
+        | "automation.touch"
+        | "automation.punch"
+        | "automation.all_read"
+        | "automation.join"
+        | "automation.fill" => {
             let result = automation_call(engine, kind, method, params).await?;
+            Ok(match connection.queue(rpc::result_line(id, &result)) {
+                Ok(()) => Reply::Queued,
+                Err(refused) => Reply::Refused(refused),
+            })
+        }
+        "automation.copy" => {
+            let result = automation_copy(engine, params).await?;
             Ok(match connection.queue(rpc::result_line(id, &result)) {
                 Ok(()) => Reply::Queued,
                 Err(refused) => Reply::Refused(refused),

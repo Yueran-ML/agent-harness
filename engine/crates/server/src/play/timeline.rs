@@ -973,6 +973,13 @@ impl Worker {
     /// The sample of the timeline heard now, while it plays at speed 1 (T16): by the device's
     /// clock where the sound is on, else by the clock of the system.
     fn heard_sample(&self) -> Option<i64> {
+        self.heard_sample_at(None)
+    }
+
+    /// The sample of the timeline heard at `when` (now where none), while it plays at speed 1
+    /// (T16): an `automation.touch` is placed where it was heard when the engine took it, not
+    /// when this thread got to it (T16's review).
+    fn heard_sample_at(&self, when: Option<Instant>) -> Option<i64> {
         let (Some(clock), Some(project), Some(index)) = (self.clock, &self.project, self.timeline)
         else {
             return None;
@@ -981,7 +988,23 @@ impl Worker {
         if !self.status.playing || clock.speed() != 1 || self.status.speed != 1 {
             return None;
         }
-        let place = clock.place(self.clock_now());
+        let at = match when {
+            None => self.clock_now(),
+            Some(when) => {
+                let device = (self.status.sound == Sound::On)
+                    .then(|| self.sound.working())
+                    .flatten()
+                    .and_then(|output| {
+                        let samples = output.played(when)?;
+                        Some(i128::from(samples) * clock::NANOS / i128::from(output.format().rate))
+                    });
+                device.unwrap_or_else(|| {
+                    let since = when.saturating_duration_since(self.epoch).as_nanos();
+                    i128::try_from(since).unwrap_or(i128::MAX)
+                })
+            }
+        };
+        let place = clock.place(at);
         let nanos = Clock::at(place, 1, clock.rate(), 0).media_nanos(0);
         let rate = i128::from(project.timelines[index].sample_rate);
         i64::try_from(nanos * rate / clock::NANOS).ok()
@@ -990,9 +1013,10 @@ impl Worker {
     /// Ends the pass of the recording of automation under way where the timeline is heard now,
     /// and writes it (T16): where it stops, or plays at another speed.
     fn end_pass(&mut self) {
-        if let Some(project) = self.project.clone() {
+        if let (Some(project), Some(index)) = (self.project.clone(), self.timeline) {
             let at = self.heard_sample();
-            self.automation.end(&project, at, &mut self.playback);
+            self.automation
+                .end((&project, index), at, &mut self.playback);
         }
     }
 
@@ -1017,6 +1041,8 @@ impl Worker {
 
     fn unload(&mut self) {
         self.pause();
+        // A timeline loaded or unloaded lets go of the recording of automation (T16's review).
+        self.automation.reset(&mut self.playback);
         self.settle = None;
         self.project = None;
         self.timeline = None;
@@ -1283,16 +1309,18 @@ impl Worker {
                 path,
                 value,
                 touching,
+                when,
             } => {
                 if !loaded(self, &timeline) {
                     return;
                 }
                 let project = Arc::clone(self.project.as_ref().expect("loaded"));
                 let index = self.timeline.unwrap_or(0);
-                let at = self.heard_sample();
+                // Heard at any speed while it plays; placed, and recorded, at speed 1 alone.
+                let at = self.heard_sample_at(Some(when));
                 self.automation.touch(
                     (&project, index),
-                    at,
+                    (self.status.playing, at),
                     (&owner, &path),
                     value,
                     touching,
@@ -1301,12 +1329,16 @@ impl Worker {
             }
             Order::Punch { timeline, reply } => {
                 let result = if loaded(self, &timeline) {
-                    Ok(json!({ "lanes": self.automation.punch() }))
+                    let project = Arc::clone(self.project.as_ref().expect("loaded"));
+                    let rate = project.timelines[self.timeline.unwrap_or(0)].sample_rate;
+                    let lanes = self.automation.punch(&timeline, rate, &mut self.playback);
+                    Ok(json!({ "lanes": lanes }))
                 } else {
                     Err(not_loaded())
                 };
                 let _ = reply.send(result);
             }
+            Order::GiveBack { timeline, lanes } => self.automation.give_back(&timeline, lanes),
         }
     }
 
@@ -2595,7 +2627,7 @@ mod tests {
         let written: Arc<Mutex<Vec<columbina_model::Edit>>> = Arc::default();
         worker.automate(Order::Hook(Arc::new({
             let written = Arc::clone(&written);
-            move |edit, _| lock(&written).push(edit)
+            move |commit: super::super::record::Commit| lock(&written).push(commit.edit)
         })));
         let (reply, _answer) = oneshot::channel();
         worker.automate(Order::Record {
@@ -2622,6 +2654,7 @@ mod tests {
             path: "fader_db".into(),
             value: -6.0,
             touching: true,
+            when: Instant::now(),
         });
         std::thread::sleep(Duration::from_millis(100));
         let before = worker.heard_sample().unwrap();
@@ -2634,7 +2667,14 @@ mod tests {
             path: "fader_db".into(),
             value: -12.0,
             touching: true,
+            when: Instant::now(),
         });
+        assert!(
+            worker
+                .playback
+                .holds(&Owner::Track("A1".into()), "fader_db"),
+            "heard at speed 2"
+        );
         let edits = lock(&written).clone();
         let [columbina_model::Edit::RecordPass { lanes, .. }] = &edits[..] else {
             panic!("one pass written at the change: {edits:?}");
@@ -2644,6 +2684,13 @@ mod tests {
         // At speed 2 nothing more is recorded; the pause writes nothing more.
         worker.pause();
         assert_eq!(lock(&written).len(), 1);
+        // A timeline loaded or unloaded lets go of recording.
+        assert!(worker.automation.is_on());
+        worker.unload();
+        assert!(!worker.automation.is_on());
+        assert!(!worker
+            .playback
+            .holds(&Owner::Track("A1".into()), "fader_db"));
     }
 
     /// How long the next feed that [`stalls_once`] opens waits first.

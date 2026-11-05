@@ -1362,7 +1362,9 @@ async fn automation_recorded_as_it_plays_is_heard_at_once_and_written_as_one_ste
     let (timeline, track) = (names["$timeline"].clone(), names["$audio"].clone());
     client
         .apply(json!([{"op":"set_timeline_audio","timeline":timeline,
-            "patch":{"record":{"touch":"latch","on_stop":"return"}}}]))
+            "patch":{"record":{"touch":"latch","on_stop":"return"}}},
+            {"op":"add_bus","timeline":timeline,"bus":{"id":"B2","name":"Bus 2",
+            "color":"#336699ff","format":"stereo","strip":{"outputs":[{"bus":"B1"}]}}}]))
         .await;
     let touch = |value: f64, touching: bool| {
         json!({"timeline": timeline, "track": track, "path": "fader_db",
@@ -1395,8 +1397,14 @@ async fn automation_recorded_as_it_plays_is_heard_at_once_and_written_as_one_ste
     tokio::time::sleep(Duration::from_millis(600)).await;
     let before = action(&mut client, "transport.frame_digest", json!({})).await;
     let heard_before = before["audio_sample"].as_i64().unwrap();
+    let asked_after = std::time::Instant::now();
     // The fader touched and held at −40 dB for a second, every 20 ms, then let go (Latch: it
     // holds to the stop).
+    let touched_after = asked_after.elapsed();
+    // B2's fader too, whose bus is taken away before the stop: its lane cannot be written.
+    let mut on_b2 = touch(-20.0, true);
+    on_b2.as_object_mut().unwrap().remove("track");
+    on_b2["bus"] = json!("B2");
     let mut next = std::time::Instant::now();
     for _ in 0..50 {
         client
@@ -1417,6 +1425,10 @@ async fn automation_recorded_as_it_plays_is_heard_at_once_and_written_as_one_ste
         digest["audio_swaps"], 0,
         "held live, no graph swapped: {digest}"
     );
+    client.result("automation.touch", Some(on_b2)).await;
+    client
+        .apply(json!([{"op":"remove_bus","timeline":timeline,"id":"B2"}]))
+        .await;
     let revision = project(&mut client).await["revision"].as_u64().unwrap();
     action(&mut client, "transport.pause", json!({})).await;
 
@@ -1439,13 +1451,40 @@ async fn automation_recorded_as_it_plays_is_heard_at_once_and_written_as_one_ste
         .unwrap()["at"]["ticks"]
         .as_i64()
         .unwrap();
+    // Placed where it was heard when the engine took it: after the digest by no more than the
+    // time from the digest's answer until the touch was sent, and a little more; −40 dB is
+    // reached 10 ms (480 samples) after it, as the fader was heard to ramp.
+    let first = first - 480;
     assert!(first >= heard_before, "{first} before {heard_before}");
-    assert!(
-        first < heard_before + 48_000 / 5,
-        "{first} after {heard_before}"
+    let slack = (touched_after + Duration::from_millis(15)).as_micros() * 48 / 1000;
+    let slack = i64::try_from(slack).unwrap();
+    println!(
+        "a touch placed {} samples after the sample the digest heard, {slack} allowed",
+        first - heard_before
     );
+    assert!(
+        first <= heard_before + slack,
+        "{first} more than {slack} samples after {heard_before}"
+    );
+    // Everyone is told what was written, and what could not be.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let told = loop {
+        if let Some(told) = client
+            .take_notifications()
+            .into_iter()
+            .find(|message| message["method"] == "automation.written")
+        {
+            break told["params"].clone();
+        }
+        assert!(std::time::Instant::now() < deadline, "not told");
+        project(&mut client).await;
+    };
+    assert_eq!(told["lanes"], 1, "{told}");
+    assert_eq!(told["revision"], written, "{told}");
+    assert_eq!(told["failed"][0]["bus"], "B2", "{told}");
+    assert_eq!(told["failed"][0]["path"], "fader_db", "{told}");
     assert!((lane_value(&lane, first - 4_800) - 0.0).abs() < 1e-9);
-    for at in [first, first + 48_000, stopped_near - 4_800] {
+    for at in [first + 480, first + 48_000, stopped_near - 4_800] {
         assert!((lane_value(&lane, at) + 40.0).abs() < 0.11, "{at}: {lane}");
     }
     // Back to 0 dB over 250 ms after the stop.

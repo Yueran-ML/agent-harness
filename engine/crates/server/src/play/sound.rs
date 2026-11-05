@@ -1200,10 +1200,26 @@ impl Playback {
         }
     }
 
-    /// Forgets what is held live, the graph that plays left as it is (a pass that ended: the
-    /// next graph is built of the project as recorded).
-    pub(crate) fn forget_held(&mut self) {
-        self.held.clear();
+    /// Lets the lane of `owner` at `path` take its place back over `samples`, if a value is held
+    /// in its place; where the graph reads no lane of it, glides the setting back to what it was
+    /// set to when the value was held (a Punch In, whose lanes take their place, T16).
+    pub(crate) fn let_go(&mut self, owner: &Owner, path: &str, samples: u32) {
+        if let Some(rest) = self
+            .held
+            .iter()
+            .find(|held| held.owner == *owner && held.path == path)
+            .map(|held| held.rest)
+        {
+            self.release(owner, path, samples, rest);
+        }
+    }
+
+    /// Whether a value is held live in place of the lane of `owner` at `path`.
+    #[cfg(test)]
+    pub(crate) fn holds(&self, owner: &Owner, path: &str) -> bool {
+        self.held
+            .iter()
+            .any(|held| held.owner == *owner && held.path == path)
     }
 
     /// Whether a session plays.

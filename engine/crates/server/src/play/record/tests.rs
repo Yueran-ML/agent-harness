@@ -75,7 +75,14 @@ fn touch(
     value: f64,
     touching: bool,
 ) -> Vec<Heard> {
-    recorder.touch(project, 0, Some(s(seconds)), (&a1(), path), value, touching)
+    recorder.touch(
+        project,
+        0,
+        (true, Some(s(seconds))),
+        (&a1(), path),
+        value,
+        touching,
+    )
 }
 
 /// The project with `edit` applied.
@@ -120,7 +127,7 @@ fn latch_writes_from_the_touch_to_the_stop_and_returns_over_the_glide() {
     for (seconds, want) in [
         (0.5, -10.0),
         (0.9999, -10.0),
-        (1.0, -6.0),
+        (1.01, -6.0),
         (2.5, -6.0),
         (2.9999, -6.0),
         (3.125, -8.0),
@@ -167,7 +174,7 @@ fn snap_writes_to_the_release_then_glides_back_over_250_ms_as_it_is_heard() {
     let after = written(&project, recorder.end(&project, s(3.0)).unwrap());
     for (seconds, want) in [
         (0.9999, -10.0),
-        (1.0, -6.0),
+        (1.01, -6.0),
         (1.9999, -6.0),
         (2.0, -6.0),
         (2.125, -8.0),
@@ -200,7 +207,7 @@ fn trim_moves_the_lane_by_the_offset_recorded_and_is_heard_as_an_offset() {
         touch(&mut recorder, &project, seconds, "fader_db", value, true);
     }
     let after = written(&project, recorder.end(&project, s(3.0)).unwrap());
-    for seconds in [1.0, 1.5, 2.25, 2.9] {
+    for seconds in [1.01, 1.5, 2.25, 2.9] {
         let got = at(&after, "fader_db", seconds);
         assert!(near(got, lane(seconds) + 3.0), "{seconds} s: {got}");
     }
@@ -239,12 +246,12 @@ fn preview_is_heard_and_kept_and_written_only_when_it_is_punched_in() {
     // Stopped, a control is still heard as it is moved (it is kept for the next pass).
     assert_eq!(
         recorder
-            .touch(&project, 0, None, (&a1(), "fader_db"), -5.0, true)
+            .touch(&project, 0, (false, None), (&a1(), "fader_db"), -5.0, true)
             .len(),
         1
     );
     // Punched in: the same as a pass of Latch.
-    let punched = written(&project, recorder.punch().expect("what was kept"));
+    let punched = written(&project, recorder.punch("t1").expect("what was kept"));
     let mut latch = project.clone();
     latch.timelines[0].audio.record.preview = false;
     let mut again = recording(&latch);
@@ -255,13 +262,13 @@ fn preview_is_heard_and_kept_and_written_only_when_it_is_punched_in() {
         punched.timelines[0].tracks[1].audio.lanes,
         latched.timelines[0].tracks[1].audio.lanes
     );
-    assert_eq!(recorder.punch(), None, "punched in once");
+    assert_eq!(recorder.punch("t1"), None, "punched in once");
     // Recording turned off lets go of what Preview kept.
     let mut kept = recording(&project);
     touch(&mut kept, &project, 1.0, "fader_db", -6.0, true);
     kept.end(&project, s(2.0));
     kept.set(false, 0.25);
-    assert_eq!(kept.punch(), None);
+    assert_eq!(kept.punch("t1"), None);
 }
 
 #[test]
@@ -289,13 +296,15 @@ fn the_active_range_is_written_only_and_its_end_punches_out() {
     // After the range, a touch is heard and not written.
     touch(&mut recorder, &project, 2.8, "pan.x", 0.5, true);
     let after = written(&project, recorder.end(&project, s(3.5)).unwrap());
-    for seconds in [0.5, 1.0, 1.4999, 2.5, 3.0, 3.6] {
+    for seconds in [0.5, 1.0, 1.4999, 1.5, 2.51, 3.0, 3.6] {
         let got = at(&after, "fader_db", seconds);
         assert!(near(got, value(seconds)), "{seconds} s: {got}");
     }
-    // Within it, what was recorded: the value at its start, on to −2 at 2 s, held.
-    assert!(near(at(&after, "fader_db", 1.5), -2.5));
-    assert!(near(at(&after, "fader_db", 2.0), -2.0));
+    // Within it, what was recorded: −3 from its start (ramped in over 10 ms), held to 2 s, where
+    // −2 was touched a second after −3 and so heard as a step ramped over 10 ms; held to its end.
+    assert!(near(at(&after, "fader_db", 1.51), -3.0));
+    assert!(near(at(&after, "fader_db", 2.0), -3.0));
+    assert!(near(at(&after, "fader_db", 2.005), -2.5));
     assert!(near(at(&after, "fader_db", 2.4999), -2.0));
     let a1 = &after.timelines[0].tracks[1].audio.lanes;
     assert!(!a1.contains_key("pan.x"));
@@ -313,7 +322,7 @@ fn hold_and_event_at_the_stop() {
     let mut recorder = recording(&event);
     touch(&mut recorder, &event, 1.0, "fader_db", -6.0, true);
     let after = written(&event, recorder.end(&event, s(3.0)).unwrap());
-    assert!(near(at(&after, "fader_db", 4.9999), -6.0));
+    assert!(near(at(&after, "fader_db", 4.9899), -6.0));
     assert!(near(at(&after, "fader_db", 5.5), -15.0));
 }
 
@@ -404,4 +413,140 @@ fn nothing_is_recorded_while_recording_is_off() {
         vec![]
     );
     assert_eq!(recorder.end(&project, s(2.0)), None);
+}
+
+#[test]
+fn a_value_typed_after_a_release_under_latch_steps_over_10_ms_as_it_was_heard() {
+    let project = project(
+        &[(0.0, -10.0)],
+        Touch::Latch,
+        RecordMode::Write,
+        OnStop::Hold,
+    );
+    let mut recorder = recording(&project);
+    touch(&mut recorder, &project, 1.0, "fader_db", -6.0, true);
+    touch(&mut recorder, &project, 2.0, "fader_db", -6.0, false);
+    // Typed: touched and let go at once, 3 s later.
+    touch(&mut recorder, &project, 5.0, "fader_db", -3.0, true);
+    touch(&mut recorder, &project, 5.0, "fader_db", -3.0, false);
+    let after = written(&project, recorder.end(&project, s(6.0)).unwrap());
+    for (seconds, want) in [
+        (3.0, -6.0),
+        (4.999, -6.0),
+        (5.0, -6.0),
+        (5.005, -4.5),
+        (5.01, -3.0),
+        (5.9, -3.0),
+    ] {
+        let got = at(&after, "fader_db", seconds);
+        assert!((got - want).abs() < 1e-3, "{seconds} s: {got}, not {want}");
+    }
+}
+
+#[test]
+fn a_value_out_of_its_range_is_heard_and_written_at_its_end() {
+    let trimming = project(&[], Touch::Latch, RecordMode::Trim, OnStop::Hold);
+    let project = project(&[], Touch::Latch, RecordMode::Write, OnStop::Hold);
+    let mut recorder = recording(&project);
+    for value in [120.0, 1e30] {
+        let heard = touch(&mut recorder, &project, 1.0, "fader_db", value, true);
+        assert!(
+            matches!(heard[..], [Heard::Hold { live: Live::Hold(v), plain, .. }]
+                if v == 10.0 && plain == 10.0),
+            "{heard:?}"
+        );
+    }
+    assert_eq!(
+        touch(&mut recorder, &project, 1.5, "fader_db", f64::NAN, true),
+        vec![]
+    );
+    // A frequency at 0 Hz or below: the least of the band.
+    let heard = touch(&mut recorder, &project, 1.0, "eq.1.freq", -5.0, true);
+    let [Heard::Hold {
+        live: Live::Hold(least),
+        ..
+    }] = heard[..]
+    else {
+        panic!("{heard:?}");
+    };
+    assert!(least > 0.0, "{least}");
+    let after = written(&project, recorder.end(&project, s(2.0)).unwrap());
+    assert!(near(at(&after, "fader_db", 1.5), 10.0));
+    // A Trim moves a fader by no more than its span.
+    let mut recorder = recording(&trimming);
+    let heard = touch(&mut recorder, &trimming, 1.0, "fader_db", -1e30, true);
+    assert!(
+        matches!(heard[..], [Heard::Hold { live: Live::Offset(v), .. }] if v == -110.0),
+        "{heard:?}"
+    );
+}
+
+#[test]
+fn a_touch_at_another_speed_is_heard_and_not_recorded() {
+    let project = project(&[], Touch::Latch, RecordMode::Write, OnStop::Hold);
+    let mut recorder = recording(&project);
+    let heard = recorder.touch(&project, 0, (true, None), (&a1(), "fader_db"), -6.0, true);
+    assert_eq!(heard.len(), 1, "heard");
+    assert_eq!(recorder.end(&project, s(2.0)), None, "not recorded");
+}
+
+#[test]
+fn a_punch_in_is_of_its_timeline_and_what_it_could_not_write_is_given_back() {
+    let mut project = project(&[], Touch::Latch, RecordMode::Write, OnStop::Hold);
+    project.timelines[0].audio.record.preview = true;
+    let mut recorder = recording(&project);
+    touch(&mut recorder, &project, 1.0, "fader_db", -6.0, true);
+    assert_eq!(recorder.end(&project, s(2.0)), None);
+    assert_eq!(recorder.punch("t2"), None, "of another timeline");
+    assert_eq!(recorder.pending(), 1);
+    let Some(Edit::RecordPass { lanes, .. }) = recorder.punch("t1") else {
+        panic!("what was kept");
+    };
+    assert_eq!(recorder.pending(), 0);
+    recorder.give_back("t1", lanes);
+    assert_eq!(recorder.pending(), 1, "given back");
+    recorder.reset();
+    assert_eq!(recorder.pending(), 0);
+    assert!(!recorder.is_on());
+}
+
+#[test]
+fn no_pass_begins_where_no_sound_session_plays() {
+    let project = project(&[], Touch::Latch, RecordMode::Write, OnStop::Hold);
+    let mut automation = super::Automation::default();
+    automation.recorder.set(true, 0.25);
+    let mut playback = super::super::sound::Playback::new();
+    automation.touch(
+        (&project, 0),
+        (true, Some(s(1.0))),
+        (&a1(), "fader_db"),
+        -6.0,
+        true,
+        &mut playback,
+    );
+    assert!(!automation.recorder.recording());
+}
+
+#[test]
+fn touch_off_writes_a_bus_or_a_vca_where_it_is_armed() {
+    let mut project = project(&[], Touch::Off, RecordMode::Write, OnStop::Hold);
+    let b1 = Owner::Bus("B1".into());
+    let pass = |project: &Project| {
+        let mut recorder = recording(project);
+        recorder.touch(
+            project,
+            0,
+            (true, Some(s(1.0))),
+            (&b1, "fader_db"),
+            -6.0,
+            true,
+        );
+        recorder.end(project, s(2.0))
+    };
+    assert_eq!(pass(&project), None, "not armed");
+    project.timelines[0].buses[0].automation_arm = true;
+    let Some(Edit::RecordPass { lanes, .. }) = pass(&project) else {
+        panic!("armed, written");
+    };
+    assert_eq!(lanes[0].of, columbina_model::LanesOf::Bus("B1".into()));
 }

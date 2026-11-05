@@ -335,10 +335,7 @@ impl Engine {
             &scopes,
         );
         // A pass of the recording of automation (T16) is written as one transaction.
-        transport.on_record(Arc::new({
-            let state = Arc::clone(&state);
-            move |edit, kind| write_pass(&state, edit, kind, limits)
-        }));
+        transport.on_record(passes_written(&state, limits));
         let project_now = {
             let mut locked = state.try_lock().expect("no one has the state yet");
             locked.transport = Some(transport.clone());
@@ -632,36 +629,125 @@ fn proxy_made(
     made
 }
 
-/// Write a pass of the recording of automation (T16, `play::record`) as one transaction made by
-/// a client of `kind`, and tell everyone. It is given by the thread of the timeline monitor,
-/// which a request that holds the state may be waiting on, so the state is taken on a thread of
-/// its own.
-fn write_pass(state: &Arc<Mutex<State>>, edit: columbina_model::Edit, kind: Kind, limits: Limits) {
+/// What writes the passes of the recording of automation (T16, `play::record`): one thread that
+/// takes them in the order the timeline monitor gives them and writes each as one transaction
+/// ([`write_pass`]). The state is taken there, not on the thread of the monitor, which a request
+/// that holds the state may be waiting on.
+fn passes_written(state: &Arc<Mutex<State>>, limits: Limits) -> crate::play::record::Hook {
+    let (passes, written) = std::sync::mpsc::channel::<crate::play::record::Commit>();
     let state = Arc::clone(state);
     let spawned = std::thread::Builder::new()
         .name("columbina-record".into())
         .spawn(move || {
-            let mut locked = state.blocking_lock();
-            let written = locked.apply_changes_locked(kind, None, None, Instant::now(), |_| {
-                Ok(vec![Change::Edit(edit)])
-            });
-            if let Err(WorkedOutError::Input(fault) | WorkedOutError::Apply(fault)) = written {
-                log(
-                    "automation_record_failed",
-                    &json!({"message": fault.message, "data": fault.data}),
-                );
-            }
-            let kicked = std::mem::take(&mut locked.kicked);
-            drop(locked);
-            for (id, kind) in kicked {
-                log_kicked(id, Some(kind), limits);
+            while let Ok(commit) = written.recv() {
+                write_pass(&state, commit, limits);
             }
         });
     if let Err(error) = spawned {
         log(
             "automation_record_failed",
-            &json!({"message": format!("the pass cannot be written: {error}")}),
+            &json!({"message": format!("passes cannot be written: {error}")}),
         );
+    }
+    let passes = std::sync::Mutex::new(passes);
+    Arc::new(move |commit| {
+        let sent = passes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .send(commit);
+        if sent.is_err() {
+            log(
+                "automation_record_failed",
+                &json!({"message": "the thread that writes passes has ended"}),
+            );
+        }
+    })
+}
+
+/// Write a pass (T16): of its lanes, those that the project takes as one transaction made by
+/// the kind of client that recorded it; a lane whose track, bus, VCA or setting is gone, or that
+/// the project refuses, is left out and told of, so that the rest is not lost; one that would
+/// change nothing is left out. Everyone is told `automation.written`. What a Punch In could not
+/// write of a setting still there is given back to the monitor to be punched in again.
+fn write_pass(state: &Mutex<State>, commit: crate::play::record::Commit, limits: Limits) {
+    let crate::play::record::Commit { edit, by, punch } = commit;
+    let columbina_model::Edit::RecordPass { timeline, lanes } = edit else {
+        return;
+    };
+    let mut locked = state.blocking_lock();
+    let mut trial = locked.history.project().clone();
+    let (mut kept, mut failed, mut back) = (Vec::new(), Vec::new(), Vec::new());
+    for lane in lanes {
+        let one = columbina_model::Edit::RecordPass {
+            timeline: timeline.clone(),
+            lanes: vec![lane.clone()],
+        };
+        match columbina_model::expand(&mut trial, one) {
+            Ok(_) => kept.push(lane),
+            Err(columbina_model::EditError::EmptyRange) => {}
+            Err(error) => {
+                let reason = serde_json::to_value(&error).unwrap_or_default()["reason"].clone();
+                let mut told = serde_json::to_value(&lane.of).unwrap_or_default();
+                told["path"] = json!(lane.path);
+                told["reason"] = reason;
+                failed.push(told);
+                if punch
+                    && crate::play::record::still_there(locked.history.project(), &timeline, &lane)
+                {
+                    back.push(lane);
+                }
+            }
+        }
+    }
+    let written = kept.len();
+    let revision = if kept.is_empty() {
+        None
+    } else {
+        let edit = columbina_model::Edit::RecordPass {
+            timeline: timeline.clone(),
+            lanes: kept,
+        };
+        match locked.apply_changes_locked(by, None, None, Instant::now(), |_| {
+            Ok(vec![Change::Edit(edit)])
+        }) {
+            Ok(result) => Some(result.revision),
+            Err(WorkedOutError::Input(fault) | WorkedOutError::Apply(fault)) => {
+                log(
+                    "automation_record_failed",
+                    &json!({"message": fault.message, "data": fault.data}),
+                );
+                failed.push(json!({"reason": fault.data.as_ref()
+                    .and_then(|data| data.get("reason")).cloned().unwrap_or(json!("refused"))}));
+                None
+            }
+        }
+    };
+    if !failed.is_empty() {
+        log(
+            "automation_record_failed",
+            &json!({"timeline": timeline, "failed": failed}),
+        );
+    }
+    let told = json!({
+        "timeline": timeline,
+        "punch": punch,
+        "lanes": if revision.is_some() { written } else { 0 },
+        "revision": revision,
+        "failed": failed,
+    });
+    locked.broadcast(&rpc::notification_line("automation.written", &told));
+    if !back.is_empty() {
+        if let Some(transport) = &locked.transport {
+            let _ = transport.automation(crate::play::record::Order::GiveBack {
+                timeline: timeline.clone(),
+                lanes: back,
+            });
+        }
+    }
+    let kicked = std::mem::take(&mut locked.kicked);
+    drop(locked);
+    for (id, kind) in kicked {
+        log_kicked(id, Some(kind), limits);
     }
 }
 

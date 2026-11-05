@@ -307,12 +307,45 @@ fn copy_takes_the_points_of_a_range_from_its_start_with_its_values_at_both_ends(
     assert_eq!(snapshot[1].value, Some(1.0));
     assert!(snapshot[0].points.is_none());
     // Only the categories of recording that are on.
+    // A static mix too: A2's fader, with no lane, at -6, its mute off, its pan centred.
+    let a2 = |path: &str| {
+        snapshot
+            .iter()
+            .find(|c| c.of == LanesOf::Track("A2".into()) && c.path == path)
+            .and_then(|c| c.value)
+    };
+    assert_eq!(a2("fader_db"), Some(-6.0));
+    assert_eq!(a2("mute"), Some(0.0));
+    assert_eq!(a2("pan.x"), Some(0.0));
+    // Nothing of A2 that is not of the mix (its equalizer), nor A1's fader again.
+    assert_eq!(a2("eq.1.gain_db"), None);
+    assert_eq!(
+        snapshot
+            .iter()
+            .filter(|c| c.of == LanesOf::Track("A1".into()) && c.path == "fader_db")
+            .count(),
+        1
+    );
     let mut faders_off = project.clone();
     faders_off.timelines[0].audio.record.categories.fader = false;
     let some = copy_lanes(&faders_off.timelines[0], &of, None, Some(time(1500))).unwrap();
-    assert_eq!(some.len(), 1);
-    assert_eq!(some[0].path, "mute");
-    assert!(copy_lanes(t, &of, None, None).is_err());
+    assert!(some.iter().all(|c| c.path != "fader_db"));
+    assert!(some.iter().any(|c| c.path == "mute"));
+    let reason = |e: columbina_model::OpError| serde_json::to_value(e).unwrap()["what"].clone();
+    assert_eq!(reason(copy_lanes(t, &of, None, None).unwrap_err()), "at");
+    let range = Some((time(1000), time(2000)));
+    assert_eq!(
+        reason(copy_lanes(t, &of, range, Some(time(1500))).unwrap_err()),
+        "at"
+    );
+    let far = Time {
+        ticks: i64::MAX,
+        scale: 1,
+    };
+    assert_eq!(
+        reason(copy_lanes(t, &of, Some((far, time(2000))), None).unwrap_err()),
+        "from"
+    );
 }
 
 fn paste(lanes: Value, at: i64, to: Option<i64>) -> Value {
@@ -387,8 +420,24 @@ fn paste_puts_the_range_copied_on_another_track_filling_the_range_with_its_last_
             (2500.0, -8.0),
         ],
     );
-    edit(&mut project, paste(snapshot, 3000, None));
-    check(&mut project, "A1", "fader_db", &[(3000.0, -3.0)]);
+    // With no range, a snapshot is refused rather than reshaping the lane around a point.
+    let refusal = serde_json::to_value(
+        columbina_model::expand(
+            &mut project.clone(),
+            serde_json::from_value(paste(snapshot, 3000, None)).unwrap(),
+        )
+        .unwrap_err(),
+    )
+    .unwrap();
+    assert_eq!(refusal["what"], "to", "{refusal}");
+    // A lane of no length among others is passed over.
+    let lanes = json!([
+        {"of": {"track": "A2"}, "path": "fader_db", "points": [{"at": ms(0), "value": -1.0}]},
+        {"of": {"track": "A1"}, "path": "fader_db",
+            "points": [{"at": ms(0), "value": -2.0}, {"at": ms(100), "value": -2.0}]},
+    ]);
+    edit(&mut project, paste(lanes, 20_000, None));
+    check(&mut project, "A1", "fader_db", &[(20_050.0, -2.0)]);
 }
 
 #[test]
@@ -523,4 +572,41 @@ fn a_lane_drawn_is_drawn_alone_without_grouped_a_group_linking_automation_or_its
         .audio
         .lanes
         .contains_key("fader_db"));
+}
+
+#[test]
+fn a_level_follows_a_group_as_a_fader_does_from_minus_infinity() {
+    // A1 at -120 dB (-inf), A2 at -50: A1 drawn to -60 moves A2 by 40 dB, to -10, not +10.
+    let mut project = project(&[]);
+    grouped(&mut project, &["fader", "automation"]);
+    track(&mut project, "A1").audio.strip.fader_db = -120.0;
+    track(&mut project, "A2").audio.strip.fader_db = -50.0;
+    let mut drawn = draw(true);
+    drawn["points"] = json!([{"at": ms(1000), "value": -60.0}, {"at": ms(2000), "value": -60.0}]);
+    edit(&mut project, drawn);
+    check(&mut project, "A2", "fader_db", &[(1500.0, -10.0)]);
+    // A2 at -inf stays there as A1 goes down.
+    let mut project = self::project(&[]);
+    grouped(&mut project, &["fader", "automation"]);
+    track(&mut project, "A2").audio.strip.fader_db = -100.0;
+    edit(&mut project, draw(true));
+    check(&mut project, "A2", "fader_db", &[(1500.0, -100.0)]);
+}
+
+#[test]
+fn fill_range_writes_neither_safe_nor_off_and_an_unknown_arm_is_refused_clearly() {
+    let mut project = project(&[(0, -10.0)]);
+    track(&mut project, "A2").audio.automation_arm = AutomationArm::Off;
+    let lanes = json!([
+        {"of": {"track": "A1"}, "path": "fader_db", "value": -4.0},
+        {"of": {"track": "A2"}, "path": "fader_db", "value": -1.0},
+    ]);
+    edit(&mut project, fill(lanes, 1000, 2000, false));
+    check(&mut project, "A1", "fader_db", &[(1500.0, -4.0)]);
+    assert!(!track(&mut project, "A2")
+        .audio
+        .lanes
+        .contains_key("fader_db"));
+    let error = serde_json::from_value::<AutomationArm>(json!("ready")).unwrap_err();
+    assert!(error.to_string().contains("\"safe\" or \"off\""), "{error}");
 }

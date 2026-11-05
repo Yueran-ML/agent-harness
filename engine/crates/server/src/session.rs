@@ -762,39 +762,76 @@ fn write_pass(state: &Mutex<State>, commit: crate::play::record::Commit, limits:
 /// T16b) as one transaction, and tell everyone `automation.written`, as a pass is told.
 fn write_whole(state: &Mutex<State>, edit: columbina_model::Edit, by: Kind, limits: Limits) {
     let columbina_model::Edit::LaneFill {
-        timeline, lanes, ..
-    } = &edit
+        timeline,
+        lanes,
+        from,
+        to,
+        glide,
+    } = edit
     else {
         return;
     };
-    let (timeline, count) = (timeline.clone(), lanes.len());
     let mut locked = state.blocking_lock();
-    let mut failed = Vec::new();
-    let revision = match locked.apply_changes_locked(by, None, None, Instant::now(), |_| {
-        Ok(vec![Change::Edit(edit)])
-    }) {
-        Ok(result) => Some(result.revision),
-        Err(WorkedOutError::Input(fault) | WorkedOutError::Apply(fault)) => {
-            let reason = fault
-                .data
-                .as_ref()
-                .and_then(|data| data.get("reason"))
-                .cloned()
-                .unwrap_or(json!("refused"));
-            if reason != json!("empty_range") {
+    // Each lane tried on a copy, so that one that cannot be written (its track locked or gone
+    // since) leaves the rest to be written, and is told of (T16b's review).
+    let mut trial = locked.history.project().clone();
+    let (mut kept, mut failed) = (Vec::new(), Vec::new());
+    for lane in lanes {
+        let one = columbina_model::Edit::LaneFill {
+            timeline: timeline.clone(),
+            lanes: vec![lane.clone()],
+            from,
+            to,
+            glide,
+        };
+        match columbina_model::expand(&mut trial, one) {
+            Ok(_) => kept.push(lane),
+            Err(columbina_model::EditError::EmptyRange) => {}
+            Err(error) => {
+                let reason = serde_json::to_value(&error).unwrap_or_default()["reason"].clone();
+                let mut told = serde_json::to_value(&lane.of).unwrap_or_default();
+                told["path"] = json!(lane.path);
+                told["reason"] = reason;
+                failed.push(told);
+            }
+        }
+    }
+    let written = kept.len();
+    let revision = if kept.is_empty() {
+        None
+    } else {
+        let edit = columbina_model::Edit::LaneFill {
+            timeline: timeline.clone(),
+            lanes: kept,
+            from,
+            to,
+            glide,
+        };
+        match locked.apply_changes_locked(by, None, None, Instant::now(), |_| {
+            Ok(vec![Change::Edit(edit)])
+        }) {
+            Ok(result) => Some(result.revision),
+            Err(WorkedOutError::Input(fault) | WorkedOutError::Apply(fault)) => {
                 log(
                     "automation_record_failed",
                     &json!({"message": fault.message, "data": fault.data}),
                 );
-                failed.push(json!({ "reason": reason }));
+                failed.push(json!({"reason": fault.data.as_ref()
+                    .and_then(|data| data.get("reason")).cloned().unwrap_or(json!("refused"))}));
+                None
             }
-            None
         }
     };
+    if !failed.is_empty() {
+        log(
+            "automation_record_failed",
+            &json!({"timeline": timeline, "failed": failed}),
+        );
+    }
     let told = json!({
         "timeline": timeline,
         "punch": false,
-        "lanes": if revision.is_some() { count } else { 0 },
+        "lanes": if revision.is_some() { written } else { 0 },
         "revision": revision,
         "failed": failed,
     });

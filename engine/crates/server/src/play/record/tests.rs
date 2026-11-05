@@ -762,3 +762,119 @@ fn a_fader_of_a_group_linking_automation_moves_and_writes_the_others_by_the_same
         1
     );
 }
+
+// T16b's review.
+
+#[test]
+fn fill_writes_what_it_can_and_keeps_held_what_a_locked_or_deleted_track_could_not_take() {
+    let mut project = project(
+        &[(0.0, -10.0)],
+        Touch::Latch,
+        RecordMode::Write,
+        OnStop::Return,
+    );
+    project.timelines[0].audio.record.preview = true;
+    for id in ["A2", "A3"] {
+        project.timelines[0]
+            .tracks
+            .push(columbina_model::Track::new(
+                id,
+                columbina_model::TrackKind::Audio,
+            ));
+    }
+    project.validate().unwrap();
+    let mut recorder = Recorder::default();
+    recorder.set(true, 0.25);
+    for (id, value) in [("A1", -4.0), ("A2", -8.0), ("A3", -2.0)] {
+        let owner = Owner::Track(id.into());
+        recorder.touch(
+            &project,
+            0,
+            (false, None),
+            (&owner, "fader_db"),
+            value,
+            true,
+        );
+    }
+    // A2 locked, A3 taken away since.
+    let mut now = project.clone();
+    now.timelines[0].tracks[2].locked = true;
+    now.timelines[0].tracks.retain(|track| track.id != "A3");
+    let range = (
+        Time {
+            ticks: s(1.0),
+            scale: 48_000,
+        },
+        Time {
+            ticks: s(2.0),
+            scale: 48_000,
+        },
+    );
+    let (edit, gone) = recorder.fill(&now, 0, range, false).expect("A1");
+    assert_eq!(gone, vec![(a1(), "fader_db".to_string())]);
+    let after = written(&now, edit);
+    assert!(near(at(&after, "fader_db", 1.5), -4.0));
+    // A2, unlocked, is filled next.
+    now.timelines[0].tracks[2].locked = false;
+    let (edit, gone) = recorder.fill(&now, 0, range, false).expect("A2 still held");
+    assert_eq!(
+        gone,
+        vec![(Owner::Track("A2".into()), "fader_db".to_string())]
+    );
+    let after = written(&now, edit);
+    let a2 = after.timelines[0].tracks[2].audio.lanes["fader_db"].value_at(Time {
+        ticks: s(1.5),
+        scale: 48_000,
+    });
+    assert!(near(a2, -8.0), "{a2}");
+    // With Preview off, nothing held is filled.
+    let mut plain = now.clone();
+    plain.timelines[0].audio.record.preview = false;
+    let owner = Owner::Track("A2".into());
+    recorder.touch(&now, 0, (false, None), (&owner, "fader_db"), -3.0, true);
+    assert!(recorder.fill(&plain, 0, range, false).is_none());
+}
+
+#[test]
+fn a_level_of_a_group_follows_from_minus_infinity_as_a_fader_does_while_recording() {
+    let mut project = project(&[], Touch::Latch, RecordMode::Write, OnStop::Return);
+    project.timelines[0].tracks[1].audio.strip.fader_db = -120.0;
+    let mut a2 = columbina_model::Track::new("A2", columbina_model::TrackKind::Audio);
+    a2.audio.strip.fader_db = -50.0;
+    project.timelines[0].tracks.push(a2);
+    let group: columbina_model::TrackGroup = serde_json::from_value(serde_json::json!({
+        "id": "TG1", "name": "Group 1", "members": ["A1", "A2"], "linked": ["fader", "automation"],
+    }))
+    .unwrap();
+    project.timelines[0].track_groups.push(group);
+    project.validate().unwrap();
+    let mut recorder = recording(&project);
+    let heard = touch(&mut recorder, &project, 1.0, "fader_db", -60.0, true);
+    assert!(
+        matches!(&heard[1], Heard::Hold { live: Live::Hold(v), .. } if *v == -10.0),
+        "{heard:?}"
+    );
+    // A2 at -inf stays there as A1 goes down.
+    project.timelines[0].tracks[2].audio.strip.fader_db = -100.0;
+    project.timelines[0].tracks[1].audio.strip.fader_db = 0.0;
+    let mut recorder = recording(&project);
+    let heard = touch(&mut recorder, &project, 1.0, "fader_db", -6.0, true);
+    assert!(
+        matches!(&heard[1], Heard::Hold { live: Live::Hold(v), .. } if *v == -100.0),
+        "{heard:?}"
+    );
+}
+
+#[test]
+fn all_read_is_in_the_state_of_recording() {
+    let project = project(&[], Touch::Latch, RecordMode::Write, OnStop::Return);
+    let mut automation = super::Automation::default();
+    automation.recorder.set(true, 0.25);
+    assert_eq!(automation.state()["read"], false);
+    automation.recorder.all_read(None);
+    assert_eq!(automation.state()["read"], true);
+    assert!(automation.reads());
+    automation.recorder.begin(&project, 0, 0);
+    automation.recorder.set(true, 0.25);
+    assert_eq!(automation.state()["read"], false);
+}

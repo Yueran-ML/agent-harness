@@ -35,6 +35,10 @@ use super::pdc::{DelayLine, Delayer};
 use super::route::{balance, panned, PanAt};
 use super::strip::{Edge, Key, LaneOf, Pan, Stage, Strip, VcaState, VcaTerm};
 use super::taps::Tap;
+use super::{
+    ClipId, ClipParam, Control, Graph, LaneKey, Meter, Options, Out, OutputInfo, Owner, Purpose,
+    StripParam, Target, Warp,
+};
 
 /// No lanes: what an owner whose Automation Arm is Off plays (T16b, the interaction reference
 /// §11.4), its settings staying as they are set.
@@ -48,10 +52,6 @@ fn played(lanes: &Lanes, arm: AutomationArm) -> &Lanes {
         &NO_LANES
     }
 }
-use super::{
-    ClipId, ClipParam, Control, Graph, LaneKey, Meter, Options, Out, OutputInfo, Owner, Purpose,
-    StripParam, Target, Warp,
-};
 
 /// What a maker is told of an insert besides its effect.
 #[derive(Clone, Copy, Debug)]

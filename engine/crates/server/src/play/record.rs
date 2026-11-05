@@ -285,6 +285,17 @@ fn lanes_of<'t>(timeline: &'t Timeline, owner: &Owner) -> Option<&'t columbina_m
     }
 }
 
+/// The level of a track of a group at `theirs` as another's goes from `ours` to `value` (§4.2,
+/// as T2's faders of a group follow): by the same change in decibels, −∞ (−100 dB and below)
+/// counted as −100; one at −∞ that would go down stays; no higher than +10 dB.
+fn followed_level(theirs: f64, ours: f64, value: f64) -> f64 {
+    let delta = value.max(SILENT_DB) - ours.max(SILENT_DB);
+    if theirs <= SILENT_DB && delta <= 0.0 {
+        return theirs;
+    }
+    (theirs + delta).clamp(SILENT_DB, FADER_MOST)
+}
+
 /// A fader at `value` moved by `offset` dB: −∞ (−100 dB and below) stays, and no higher than +10.
 fn trimmed(value: f64, offset: f64) -> f64 {
     if value <= SILENT_DB {
@@ -444,8 +455,11 @@ impl Recorder {
             .filter_map(|member| {
                 let member = Owner::Track(member);
                 let (theirs, _) = now(&member)?;
+                let level = path == "fader_db" || path.ends_with("_db");
                 let value = if switch || trim {
                     value
+                } else if level {
+                    followed_level(theirs, ours, value)
                 } else {
                     theirs + (value - ours)
                 };
@@ -821,11 +835,31 @@ impl Recorder {
         glide: bool,
     ) -> Option<(Edit, Vec<(Owner, String)>)> {
         let t = &project.timelines[timeline];
+        // Only what the current Preview holds (T16b's review).
+        if !t.audio.record.preview {
+            return None;
+        }
         let categories = t.audio.record.categories;
+        // What may be written: a setting still there, of a track not locked, an owner neither
+        // Safe nor Off, a category that is on. The rest stays held, to be filled later.
+        let writable = |owner: &Owner, path: &str| {
+            let locked = match owner {
+                Owner::Track(id) => t.tracks.iter().any(|track| track.id == *id && track.locked),
+                Owner::Bus(_) | Owner::Vca(_) => false,
+            };
+            model_owner(t, owner).is_some_and(|(of, _, arm)| {
+                arm.records()
+                    && !locked
+                    && categories.covers(path)
+                    && columbina_model::audio::automation::paths(of)
+                        .iter()
+                        .any(|p| p == path)
+            })
+        };
         let filled: Vec<(Owner, String, f64)> = self
             .previewed
             .iter()
-            .filter(|(of, _, path, _)| *of == t.id && categories.covers(path))
+            .filter(|(of, owner, path, _)| *of == t.id && writable(owner, path))
             .map(|(_, owner, path, value)| (owner.clone(), path.clone(), *value))
             .collect();
         if filled.is_empty() {
@@ -866,6 +900,11 @@ impl Recorder {
         let glide = self.glide;
         *self = Self::default();
         self.glide = glide;
+    }
+
+    /// Whether All Read is on (p. 3913).
+    pub(crate) fn reads(&self) -> bool {
+        self.on && self.read
     }
 
     /// How many lanes Preview keeps to be punched in.
@@ -1311,7 +1350,13 @@ impl Automation {
             "on": self.recorder.is_on(),
             "glide_ms": glide_ms,
             "pending": self.recorder.pending(),
+            "read": self.recorder.reads(),
         })
+    }
+
+    /// Whether All Read is on: what is touched is heard and not written.
+    pub(crate) fn reads(&self) -> bool {
+        self.recorder.reads()
     }
 
     /// The timeline started to play at sample `from`: a pass begins, where recording is on.
@@ -1452,11 +1497,19 @@ impl Automation {
     pub(crate) fn fill(
         &mut self,
         (project, timeline): (&Project, usize),
-        range: (Time, Time),
-        glide: bool,
+        (range, glide): ((Time, Time), bool),
+        at: Option<i64>,
         playback: &mut Playback,
     ) -> usize {
         let rate = project.timelines[timeline].sample_rate;
+        // A pass under way ends first (kept, under Preview), so that a later Punch In of it is
+        // what the range is filled over, not the other way round (T16b's review).
+        if self.recorder.recording() {
+            if let Some(at) = at {
+                let edit = self.recorder.end(project, at);
+                self.write(edit, false);
+            }
+        }
         let Some((edit, written)) = self.recorder.fill(project, timeline, range, glide) else {
             return 0;
         };

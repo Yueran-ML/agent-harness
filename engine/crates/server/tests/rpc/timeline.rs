@@ -1623,6 +1623,9 @@ async fn fill_range_copy_all_read_and_join_mix_are_asked_for_over_the_protocol()
         .result("automation.all_read", Some(json!({"timeline": timeline})))
         .await;
     assert_eq!(read["read"], true, "{read}");
+    client
+        .until_state("All Read shown", |s| s["all_read"] == true)
+        .await;
     let joined = client
         .result("automation.join", Some(json!({"timeline": timeline})))
         .await;

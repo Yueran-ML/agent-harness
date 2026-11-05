@@ -17,8 +17,8 @@ use super::work::{missing, Work};
 use super::EditError;
 use crate::audio::automation::{
     defaults_like, fits, fixed_value, held, kind_of, lanes_of_changed_inserts, no_lane, offset_by,
-    point, range_of, replaced, shifted, switched, thinned, ticks_in, tolerance_of, value_at, view,
-    with_value, Owner, Set, Shape, LANE_RAMP_PER_SECOND,
+    paths, point, range_of, replaced, shifted, switched, thinned, ticks_in, tolerance_of, value_at,
+    view, with_value, Owner, Set, Shape, LANE_RAMP_PER_SECOND,
 };
 use crate::audio::{
     AutomationArm, GroupControl, Insert, Lane, LaneKind, LanePoint, LaneScale, Lanes,
@@ -803,7 +803,8 @@ pub(super) fn lane_fill(
     }
     let mut done = false;
     for filled in lanes {
-        if !arm_of(work.timeline(), &filled.of)?.pastes() {
+        // Neither Safe nor Off is written (T16b's review: Off is not written either).
+        if !arm_of(work.timeline(), &filled.of)?.records() {
             continue;
         }
         if !filled.value.is_finite() {
@@ -854,31 +855,36 @@ pub(super) fn lane_fill(
 /// What Copy of automation takes (p. 3913) of `of` on `timeline`: of each, the lanes of the
 /// categories of recording that are on (pp. 3905–3906); with a range, their points within it at
 /// times from `from` (in the scale of each lane), its value at `from` the first and its value at
-/// `to` the last; with none, the value of each at `at` (a snapshot). A Safe arm is copied from:
-/// it is only not written to.
+/// `to` the last; with none, the value of each at `at` (a snapshot), and the value as it is set
+/// of each fader, mute, pan and send of a category that is on and has no lane, so that a static
+/// mix is copied too. A Safe arm is copied from: it is only not written to.
 ///
 /// # Errors
-/// An owner is not there (as of [`arm_of`]); a range that is empty, or neither a range nor a
-/// time, is `out_of_range` (`to`, `at`).
+/// An owner is not there (as of [`arm_of`]); a `from` or `to` out of the timeline, or a range
+/// that is empty, is `out_of_range` (`from`, `to`); neither a range nor a time, or both, is
+/// `out_of_range` (`at`).
 pub fn copy_lanes(
     timeline: &Timeline,
     of: &[LanesOf],
     range: Option<(Time, Time)>,
     at: Option<Time>,
 ) -> Result<Vec<CopiedLane>, OpError> {
+    if range.is_some() && at.is_some() {
+        return Err(OpError::OutOfRange { what: "at" });
+    }
     let categories = timeline.audio.record.categories;
     let mut copied = Vec::new();
     for owner in of {
-        let (_, lanes) = owner_of(timeline, owner)?;
+        let (model, lanes) = owner_of(timeline, owner)?;
         for (path, lane) in lanes.iter().filter(|(p, _)| categories.covers(p)) {
             let scale = lane.points[0].at.scale;
             let (points, value) = match (range, at) {
                 (Some((from, to)), _) => {
-                    let out = OpError::OutOfRange { what: "to" };
-                    let start = ticks_in(from, scale).ok_or(out.clone())?;
-                    let end = ticks_in(to, scale).ok_or(out.clone())?;
+                    let start =
+                        ticks_in(from, scale).ok_or(OpError::OutOfRange { what: "from" })?;
+                    let end = ticks_in(to, scale).ok_or(OpError::OutOfRange { what: "to" })?;
                     if start >= end {
-                        return Err(out);
+                        return Err(OpError::OutOfRange { what: "to" });
                     }
                     let mut points =
                         vec![point(0, scale, lane.value_at(point(start, scale, 0.0).at))];
@@ -905,6 +911,28 @@ pub fn copy_lanes(
                 value,
             });
         }
+        if range.is_none() {
+            // A snapshot of the mix as it is set too: the faders, mutes, pans and sends that
+            // have no lane, so that a static mix can be pasted (T16b's review).
+            let view = view(model);
+            for path in paths(model) {
+                let mixed = path == "fader_db"
+                    || path == "mute"
+                    || path.starts_with("pan.")
+                    || path.starts_with("send.");
+                if !mixed || lanes.contains_key(&path) || !categories.covers(&path) {
+                    continue;
+                }
+                if let Some(value) = fixed_value(&view, &path) {
+                    copied.push(CopiedLane {
+                        of: owner.clone(),
+                        path,
+                        points: None,
+                        value: Some(value),
+                    });
+                }
+            }
+        }
     }
     Ok(copied)
 }
@@ -913,7 +941,7 @@ pub fn copy_lanes(
 /// level to another level: a fader to a send and back) put at `at`. With `to`, it fills the range
 /// from `at` to `to`: a snapshot's value over all of it, points as far as they go (cut at `to`,
 /// the last value held to it where they end before). With none, points are pasted whole from
-/// `at`, and a snapshot's value is one point at `at`. What was in the range is put in place of,
+/// `at`; a snapshot needs a range (`out_of_range: to`), and a lane of no length is passed over. What was in the range is put in place of,
 /// the values at its ends kept (p. 3898). A Safe arm, and a lane of a category of recording that
 /// is off (p. 3913), is left alone.
 pub(super) fn automation_paste(
@@ -955,7 +983,8 @@ pub(super) fn automation_paste(
                 };
                 let span = end.map_or(last, |end| end - start);
                 if span <= 0 {
-                    return Err(EditError::EmptyRange);
+                    // Nothing of it to paste: passed over (T16b's review).
+                    continue;
                 }
                 let held = value_along(&relative, span);
                 relative.retain(|&(t, _)| t < span);
@@ -988,18 +1017,8 @@ pub(super) fn automation_paste(
                     (None, None),
                 )
             }
-            (None, Some(value), None) => lane_points(
-                work,
-                &lane.of,
-                &lane.path,
-                PointAction::Add,
-                &[NewPoint {
-                    at,
-                    value: Some(value),
-                }],
-                &[],
-                (None, None),
-            ),
+            // A snapshot fills a range; with none it would reshape the lane around a point.
+            (None, Some(_), None) => return Err(range("to")),
             _ => return Err(range("points")),
         };
         done |= changed(one)?;
@@ -1117,20 +1136,60 @@ fn setting_at(work: &Work, of: &LanesOf, path: &str, at: Time) -> Option<f64> {
     Some(value_at(&target.points, target.shape, target.fixed, ticks))
 }
 
-/// How far the setting at `path` of `member` is from that of `of` at `at`, a number followed by
-/// the same change (as a fader of a group follows another, §4.2): 0 for a switch, which follows
-/// to the same state.
-pub(super) fn offset_at(work: &Work, of: &LanesOf, member: &LanesOf, path: &str, at: Time) -> f64 {
+/// How a value given to the setting of one track of a group is given to another's (§4.2, §11.6).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Follow {
+    /// As it is: the track's own, or a switch, which follows to the same state.
+    Same,
+    /// Moved by how far the other's setting is from this one's: a number that is not a level.
+    By(f64),
+    /// A level (a fader, or another setting in decibels), moved by the same change in decibels
+    /// from where this one's is (`ours`) to the value, from where the other's is (`theirs`): as
+    /// T2's faders of a group follow, −∞ (−100 dB and below) counted as −100, and one at −∞ that
+    /// would go down staying; no higher than +10 dB.
+    Level { theirs: f64, ours: f64 },
+}
+
+impl Follow {
+    /// `value` as it is given to the other track.
+    pub(super) fn apply(self, value: f64) -> f64 {
+        match self {
+            Self::Same => value,
+            Self::By(offset) => value + offset,
+            Self::Level { theirs, ours } => super::audio::moved_level(
+                theirs,
+                super::audio::level_change(ours, value),
+                LEVEL_MOST,
+            ),
+        }
+    }
+}
+
+/// The highest a level of a group's follower goes, in decibels (§4.2, as T2's faders).
+const LEVEL_MOST: f64 = 10.0;
+
+/// How the setting at `path` of `member` follows that of `of`, as they are at `at` (§4.2): a
+/// switch to the same state, a level by the same change in decibels, any other number by the
+/// same amount.
+pub(super) fn follow_at(
+    work: &Work,
+    of: &LanesOf,
+    member: &LanesOf,
+    path: &str,
+    at: Time,
+) -> Follow {
     let switch = target(work, of, path).is_ok_and(|t| t.shape.kind == LaneKind::Switch);
     if switch {
-        return 0.0;
+        return Follow::Same;
     }
+    let level = path == "fader_db" || path.ends_with("_db");
     match (
         setting_at(work, member, path, at),
         setting_at(work, of, path, at),
     ) {
-        (Some(theirs), Some(ours)) => theirs - ours,
-        _ => 0.0,
+        (Some(theirs), Some(ours)) if level => Follow::Level { theirs, ours },
+        (Some(theirs), Some(ours)) => Follow::By(theirs - ours),
+        _ => Follow::Same,
     }
 }
 
@@ -1144,25 +1203,25 @@ pub(super) fn with_group(
     work: &mut Work,
     (of, path): (&LanesOf, &str),
     (grouped, at): (bool, Option<Time>),
-    edit: impl Fn(&mut Work, &LanesOf, f64) -> Result<(), EditError>,
+    edit: impl Fn(&mut Work, &LanesOf, Follow) -> Result<(), EditError>,
 ) -> Result<(), EditError> {
     let members = if grouped {
         grouped_with(work.timeline(), of, path)
     } else {
         Vec::new()
     };
-    let offsets: Vec<(LanesOf, f64)> = members
+    let follows: Vec<(LanesOf, Follow)> = members
         .into_iter()
         .map(|id| {
             let member = LanesOf::Track(id);
-            let offset = at.map_or(0.0, |at| offset_at(work, of, &member, path, at));
-            (member, offset)
+            let follow = at.map_or(Follow::Same, |at| follow_at(work, of, &member, path, at));
+            (member, follow)
         })
         .collect();
-    edit(work, of, 0.0)?;
-    for (member, offset) in offsets {
+    edit(work, of, Follow::Same)?;
+    for (member, follow) in follows {
         // A track that cannot follow is passed over (see above).
-        let _ = edit(work, &member, offset);
+        let _ = edit(work, &member, follow);
     }
     Ok(())
 }

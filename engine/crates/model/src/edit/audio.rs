@@ -154,7 +154,7 @@ fn followers(
 
 /// A level moved by `delta` decibels, as a fader of a group follows another (§4.2): no higher than
 /// `top`, and no lower than -∞ (-100), where one that is there already stays as it is.
-fn moved_level(level: f64, delta: f64, top: f64) -> f64 {
+pub(super) fn moved_level(level: f64, delta: f64, top: f64) -> f64 {
     if level <= SILENT_DB && delta <= 0.0 {
         return level;
     }
@@ -163,7 +163,7 @@ fn moved_level(level: f64, delta: f64, top: f64) -> f64 {
 
 /// How far a level moved from `before` to `after`, in decibels, a level at -∞ (-100 or below)
 /// counted as -100: so a fader brought up from -120 dB to -6 dB moved by 94 dB.
-fn level_change(before: f64, after: f64) -> f64 {
+pub(super) fn level_change(before: f64, after: f64) -> f64 {
     after.max(SILENT_DB) - before.max(SILENT_DB)
 }
 

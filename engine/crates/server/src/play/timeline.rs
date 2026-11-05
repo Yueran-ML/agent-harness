@@ -107,6 +107,10 @@ pub struct Status {
     /// out where it is not.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub recording: bool,
+    /// Whether All Read is on while automation is recorded (`automation.all_read`, T16b): what
+    /// is touched is heard and not written; left out where it is not.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub all_read: bool,
 }
 
 impl Default for Status {
@@ -134,6 +138,7 @@ impl Default for Status {
             color_error: None,
             compared: None,
             recording: false,
+            all_read: false,
         }
     }
 }
@@ -1043,6 +1048,7 @@ impl Worker {
         self.pause();
         // A timeline loaded or unloaded lets go of the recording of automation (T16's review).
         self.automation.reset(&mut self.playback);
+        self.status.all_read = false;
         self.settle = None;
         self.project = None;
         self.timeline = None;
@@ -1374,10 +1380,11 @@ impl Worker {
                 let result = if loaded(self, &timeline) {
                     let project = Arc::clone(self.project.as_ref().expect("loaded"));
                     let index = self.timeline.unwrap_or(0);
+                    let at = self.heard_sample();
                     let lanes = self.automation.fill(
                         (&project, index),
-                        (from, to),
-                        glide,
+                        ((from, to), glide),
+                        at,
                         &mut self.playback,
                     );
                     Ok(json!({ "lanes": lanes }))
@@ -1386,6 +1393,12 @@ impl Worker {
                 };
                 let _ = reply.send(result);
             }
+        }
+        // All Read shows in the state as it changes (T16b's review).
+        let read = self.automation.reads();
+        if read != self.status.all_read {
+            self.status.all_read = read;
+            self.tell(true);
         }
     }
 

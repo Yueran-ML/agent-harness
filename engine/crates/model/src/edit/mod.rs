@@ -1649,12 +1649,12 @@ pub(crate) fn run(project: &mut Project, edit: Edit) -> Result<Expansion, EditEr
                 &mut work,
                 (&of, &path),
                 (grouped, when),
-                |work, of, offset| {
+                |work, of, follow| {
                     let points: Vec<NewPoint> = points
                         .iter()
                         .map(|p| NewPoint {
                             at: p.at,
-                            value: p.value.map(|v| v + offset),
+                            value: p.value.map(|v| follow.apply(v)),
                         })
                         .collect();
                     automation::lane_points(work, of, &path, action, &points, &at, (by, delta))
@@ -1676,13 +1676,13 @@ pub(crate) fn run(project: &mut Project, edit: Edit) -> Result<Expansion, EditEr
             &mut work,
             (&of, &path),
             (grouped, Some(from)),
-            |work, of, offset| {
+            |work, of, follow| {
                 let points: Option<Vec<LanePoint>> = points.as_ref().map(|points| {
                     points
                         .iter()
                         .map(|p| LanePoint {
                             at: p.at,
-                            value: p.value + offset,
+                            value: follow.apply(p.value),
                         })
                         .collect()
                 });
@@ -1710,12 +1710,12 @@ pub(crate) fn run(project: &mut Project, edit: Edit) -> Result<Expansion, EditEr
             &mut work,
             (&of, &path),
             (grouped, Some(from)),
-            |work, of, offset| {
+            |work, of, follow| {
                 let points: Vec<LanePoint> = points
                     .iter()
                     .map(|p| LanePoint {
                         at: p.at,
-                        value: p.value + offset,
+                        value: follow.apply(p.value),
                     })
                     .collect();
                 automation::lane_draw(work, of, &path, (from, to), &points, tolerance)

@@ -449,26 +449,30 @@ impl Serialize for AutomationArm {
 
 impl<'de> Deserialize<'de> for AutomationArm {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(rename_all = "snake_case")]
-        enum Named {
-            Unarmed,
-            Armed,
-            Safe,
-            Off,
+        struct Arm;
+        impl serde::de::Visitor<'_> for Arm {
+            type Value = AutomationArm;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an Automation Arm: true, false, \"safe\" or \"off\"")
+            }
+            fn visit_bool<E: serde::de::Error>(self, armed: bool) -> Result<Self::Value, E> {
+                Ok(if armed {
+                    AutomationArm::Armed
+                } else {
+                    AutomationArm::Unarmed
+                })
+            }
+            fn visit_str<E: serde::de::Error>(self, name: &str) -> Result<Self::Value, E> {
+                match name {
+                    "armed" => Ok(AutomationArm::Armed),
+                    "unarmed" => Ok(AutomationArm::Unarmed),
+                    "safe" => Ok(AutomationArm::Safe),
+                    "off" => Ok(AutomationArm::Off),
+                    _ => Err(E::invalid_value(serde::de::Unexpected::Str(name), &self)),
+                }
+            }
         }
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Written {
-            Before(bool),
-            Named(Named),
-        }
-        Ok(match Written::deserialize(deserializer)? {
-            Written::Before(true) | Written::Named(Named::Armed) => Self::Armed,
-            Written::Before(false) | Written::Named(Named::Unarmed) => Self::Unarmed,
-            Written::Named(Named::Safe) => Self::Safe,
-            Written::Named(Named::Off) => Self::Off,
-        })
+        deserializer.deserialize_any(Arm)
     }
 }
 

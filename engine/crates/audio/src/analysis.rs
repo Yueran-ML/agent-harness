@@ -16,13 +16,15 @@
 //!
 //! - a track or a bus: after its fader (its mute, solo and VCAs too: what an export of it would
 //!   carry), over the range asked for, the whole timeline where none is;
-//! - a clip (Normalize, Level Matcher, Analyze Audio Level, p. 3986): its sound as its track takes
-//!   it, after the configuration of its channels and before its Volume (the reference's §7.1:
-//!   "按片段 Volume 之前、声道配置之后的信号；不含淡变、片段 EQ 和效果"), over the part of it on the
-//!   timeline. [`alone`] makes the project in which a graph gives that before the fader of its
-//!   track: the clip alone on its track, at 0 dB and centred, without its fades, crossfades,
-//!   equalizer and effects; the track without Trim, polarity, Ducker, inserts, Dynamics,
-//!   equalizer and lanes; the other tracks of sound off, so that they are not read.
+//! - a clip (Normalize, Level Matcher, Analyze Audio Level, p. 3986): its sound right before its
+//!   Volume, after the configuration of its channels (C-C5): the clip's chain is source → speed
+//!   and stretch → clip EQ → clip effects → Volume → pan, so its equalizer and its effects are
+//!   heard (the coordinator's decision for T9b, from the review of T4c; the reference's §7.1 had
+//!   them left out), over the part of it on the timeline. [`alone`] makes the project in which a
+//!   graph gives that before the fader of its track: the clip alone on its track, at 0 dB and
+//!   centred, without its fades and crossfades; the track without Trim, polarity, Ducker,
+//!   inserts, Dynamics, equalizer and lanes; the other tracks of sound off, so that they are not
+//!   read.
 
 use std::ops::Range;
 
@@ -341,8 +343,7 @@ pub fn alone(
     c.fade_out = 0;
     c.audio_fade_in = None;
     c.audio_fade_out = None;
-    c.eq.on = false;
-    c.effects.clear();
+    // Its equalizer and its effects stay: they come before its Volume.
     // The sample of the timeline at the start of a frame, to the sample below (as an export).
     let sample = |frame: i64| {
         i64::try_from(i128::from(frame) * i128::from(rate) * i128::from(den) / i128::from(num))

@@ -1,8 +1,8 @@
 //! What an analysis measures of a timeline (plan T9b): a strip over a range of the timeline,
-//! whatever latency the paths after it have; a clip as its track takes it, before its Volume and
-//! after the configuration of its channels, without its fades, equalizer and effects and those of
-//! its track, the other tracks not read; and Normalize of two clips at −30 and −20 LUFS to −23,
-//! Independent and Relative.
+//! whatever latency the paths after it have; a clip as its track takes it, right before its Volume
+//! and after the configuration of its channels, through its equalizer and effects, without its
+//! fades and what its track does, the other tracks not read; and Normalize of two clips at −30
+//! and −20 LUFS to −23, Independent and Relative.
 
 #![allow(
     clippy::cast_precision_loss,
@@ -195,9 +195,6 @@ fn a_clip_is_measured_before_its_volume_and_after_its_channels_alone_on_its_trac
     clip.gain_db = AudioParam::Fixed(-12.0);
     clip.pan = AudioParam::Fixed(0.7);
     clip.fade_in = 25;
-    clip.eq.on = true;
-    clip.eq.gain_db = 6.0;
-    clip.effects.push(gain_insert(6.0));
     let strip = &mut track.audio.strip;
     strip.trim_db = 5.0;
     strip.invert = true;
@@ -219,15 +216,31 @@ fn a_clip_is_measured_before_its_volume_and_after_its_channels_alone_on_its_trac
     };
     let (measured, range) = of_clip(&project, "c2", signal);
     assert_eq!(range, 0..192_000);
-    // The clip's sound as it is: to the bit.
+    // The clip's sound as it is, to the bit: nothing of its Volume, pan or fade, nor of its track.
     let source: Vec<f32> = (0..192_000).map(|n| sine(-23.0, n)).collect();
     let want = analyze(RATE, Layout::Stereo, true, &[&source, &source]);
     assert_eq!(measured, want);
+    // Its equalizer comes before its Volume, and is heard (the coordinator's decision for T9b):
+    // its gain of +6 dB on a tone that its bands, at no gain, leave as it is.
+    project.timelines[0].tracks[0].clips[0].eq.on = true;
+    project.timelines[0].tracks[0].clips[0].eq.gain_db = 6.0;
+    let (equalized, _) = of_clip(&project, "c2", signal);
     println!(
-        "c2 alone: I {:?}, TP {}",
-        measured.integrated, measured.true_peak
+        "c2 alone: I {:?}, TP {}; through its EQ of +6 dB: I {:?}",
+        measured.integrated, measured.true_peak, equalized.integrated
     );
     assert!((measured.integrated.unwrap() + 23.0).abs() < 0.05);
+    assert!((equalized.integrated.unwrap() + 17.0).abs() < 0.05);
+    // So are its effects, which come before its Volume too: the project measured keeps them.
+    project.timelines[0].tracks[0].clips[0]
+        .effects
+        .push(gain_insert(6.0));
+    let (kept, _, _) = alone(&project, 0, "c2").unwrap();
+    let clip = &kept.timelines[0].tracks[0].clips[0];
+    assert_eq!(clip.effects.len(), 1);
+    assert!(clip.eq.on);
+    assert_eq!(clip.gain_db, AudioParam::Fixed(0.0));
+    assert_eq!(kept.timelines[0].tracks[0].audio.strip.inserts.len(), 0);
     // The project itself is as it was.
     assert_eq!(
         project.timelines[0].tracks[0].clips[0].gain_db,

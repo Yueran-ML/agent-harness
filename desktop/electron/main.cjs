@@ -180,6 +180,9 @@ const PAGE_METHODS = new Set([
   // Window tracking (RM20 pp. 3231–3238): a track of the selected window, its stop, and the edits
   // of its track data, which name the window by its grade, node and id alone.
   'track.start', 'track.stop', 'track.edit',
+  // The recording of automation of the Fairlight page (T16): on and off, a control touched as the
+  // timeline plays, and Punch In; they name a timeline and a setting of its mix alone.
+  'automation.record', 'automation.touch', 'automation.punch',
 ]);
 /** The points on an edge of the cubes that Generate LUT makes (Reference Manual 20, p. 3413). */
 const LUT_SIZES = [17, 33, 65];

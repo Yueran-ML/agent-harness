@@ -16,9 +16,9 @@ use serde_json::{Map, Value};
 use super::work::{missing, Work};
 use super::EditError;
 use crate::audio::automation::{
-    defaults_like, fits, fixed_value, kind_of, lanes_of_changed_inserts, no_lane, point, range_of,
-    replaced, shifted, switched, thinned, ticks_in, tolerance_of, value_at, view, with_value,
-    Owner, Set, Shape, LANE_RAMP_PER_SECOND,
+    defaults_like, fits, fixed_value, held, kind_of, lanes_of_changed_inserts, no_lane, offset_by,
+    point, range_of, replaced, shifted, switched, thinned, ticks_in, tolerance_of, value_at, view,
+    with_value, Owner, Set, Shape, LANE_RAMP_PER_SECOND,
 };
 use crate::audio::{Insert, Lane, LaneKind, LanePoint, LaneScale, Lanes};
 use crate::ops::{inserts_of, owner_of, InsertsOf, LanesOf, Op, OpError, LARGEST};
@@ -65,6 +65,56 @@ pub enum Then {
     Reset,
     /// At the value of its lane at `at` (Hold).
     Hold,
+}
+
+/// What follows the end of a run of a pass of recording on a lane (p. 3905).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunEnd {
+    /// Back to the lane as it was, on a straight line over the run's `glide` (Snap let go; Return
+    /// at the stop); at once for a switch.
+    Return,
+    /// The last value, to the end of the timeline: the lane after it goes (Hold at the stop).
+    Hold,
+    /// The last value, to the next point of the lane after the end, and the lane as it was from
+    /// there; to the end where there is none (Event at the stop).
+    Event,
+    /// The lane as it was, at once from the end (the end of the Active Range, p. 3908).
+    Cut,
+}
+
+/// A run of a pass of recording on a lane: the values recorded from where a control was touched
+/// (or from the start of the Active Range) to where it stopped being written, and what follows.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordedRun {
+    /// The values recorded, at times of the timeline, in order: the first where the run starts.
+    /// Of a Trim, the offsets in decibels.
+    pub points: Vec<LanePoint>,
+    /// Where the run ends, a time of the timeline at or after its last point: the last value is
+    /// held to it.
+    pub to: Time,
+    /// What follows its end.
+    pub then: RunEnd,
+    /// How long a return takes (C-A1, C-A2); none, at once, where it is left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glide: Option<Time>,
+}
+
+/// What a pass of recording wrote on one lane: its runs, in the order of time.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordedLane {
+    /// The track of sound, bus or VCA.
+    pub of: LanesOf,
+    /// The path of the setting of the lane.
+    pub path: String,
+    /// Whether the runs are offsets in decibels of the lane as it was (Trim, pp. 3900–3901), not
+    /// its values (Write).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub trim: bool,
+    /// The runs.
+    pub runs: Vec<RecordedRun>,
 }
 
 /// A point to add: a time of the timeline and, where it is given, a value; where it is not, the
@@ -508,6 +558,157 @@ pub(super) fn lane_draw(
     let new = thinned(&new, target.shape, tolerance);
     let (shape, fixed, scale) = (target.shape, target.fixed, target.scale);
     let points = replaced(&target.points, shape, fixed, scale, (from, to), &new);
+    if moved.get() {
+        work.clamp();
+    }
+    commit(work, target, points)
+}
+
+/// Write what a pass of the recording of automation recorded (T16, pp. 3905–3909) into the lanes
+/// that it was of, as one transaction: each run, in the order of time, puts the values recorded
+/// (thinned as a lane drawn is, C-A4; kept within the range of the setting, a switch on or off)
+/// in place of the lane from where it starts, the value before it staying as it was, the last
+/// value held to its end, and then what [`RunEnd`] says. A run of a Trim moves the lane as it was
+/// before the edit by the offsets that it recorded (a fader's −∞ staying), and its return takes
+/// the offset back to 0: the lanes of one setting given twice (passes of Preview punched in
+/// together) each move the lane as it was before them all, the later taking the place of the
+/// earlier where it writes. A number never steps where it was heard to ramp: a run comes in
+/// from the lane over 10 ms, and gives it back over 10 ms at least (C-T1); a switch jumps. A
+/// lane that is not there is made, from the value of its setting.
+pub(super) fn record_pass(work: &mut Work, lanes: &[RecordedLane]) -> Result<(), EditError> {
+    if lanes.is_empty() {
+        return Err(range("lanes"));
+    }
+    let mut before: Vec<(&LanesOf, &str, Vec<LanePoint>)> = Vec::new();
+    for recorded in lanes {
+        let known = before
+            .iter()
+            .find(|(of, path, _)| **of == recorded.of && *path == recorded.path);
+        let was = if let Some((_, _, was)) = known {
+            was.clone()
+        } else {
+            let was = target(work, &recorded.of, &recorded.path)?.points;
+            before.push((&recorded.of, &recorded.path, was.clone()));
+            was
+        };
+        record_lane(work, recorded, &was)?;
+    }
+    Ok(())
+}
+
+/// One lane of [`record_pass`], `was` its points before the edit.
+#[allow(
+    clippy::too_many_lines,
+    reason = "a run read, ramped in, ended and put in place, step by step"
+)]
+fn record_lane(
+    work: &mut Work,
+    recorded: &RecordedLane,
+    was: &[LanePoint],
+) -> Result<(), EditError> {
+    let target = target(work, &recorded.of, &recorded.path)?;
+    let (shape, fixed, scale) = (target.shape, target.fixed, target.scale);
+    if recorded.runs.is_empty() {
+        return Err(range("runs"));
+    }
+    let decibels = shape.kind == LaneKind::Continuous
+        && shape.scale == LaneScale::Linear
+        && recorded.path.ends_with("_db");
+    if recorded.trim && !decibels {
+        return Err(range("trim"));
+    }
+    let moved = Cell::new(false);
+    let tolerance = tolerance_for(work, &target);
+    let line = Shape {
+        kind: LaneKind::Continuous,
+        scale: LaneScale::Linear,
+    };
+    // The ramp of a number in and out (C-T1: 10 ms); none for a switch.
+    let ramp = match shape.kind {
+        LaneKind::Continuous => i64::from(scale / LANE_RAMP_PER_SECOND),
+        LaneKind::Switch => 0,
+    };
+    let mut points = target.points.clone();
+    let mut last_from = i64::MIN;
+    for run in &recorded.runs {
+        let mut values = Vec::with_capacity(run.points.len() + 1);
+        for p in &run.points {
+            let at = target.ticks(p.at, "points")?;
+            if values.last().is_some_and(|q: &LanePoint| q.at.ticks > at) {
+                return Err(range("points"));
+            }
+            if !p.value.is_finite() {
+                return Err(range("value"));
+            }
+            let value = if recorded.trim {
+                p.value
+            } else {
+                target.kept(work, p.value, &moved)
+            };
+            values.push(point(at, scale, value));
+        }
+        let (Some(first), Some(last)) = (values.first().cloned(), values.last().cloned()) else {
+            return Err(range("points"));
+        };
+        let (from, to) = (first.at.ticks, target.ticks(run.to, "to")?);
+        if last.at.ticks > to {
+            return Err(range("points"));
+        }
+        if from < last_from {
+            return Err(range("runs"));
+        }
+        last_from = from;
+        let glide = match (run.glide, shape.kind) {
+            (Some(glide), LaneKind::Continuous) => target.ticks(glide, "glide")?.max(ramp),
+            _ => ramp,
+        };
+        // Thinned as recorded (of a Trim, the offsets), the last value held to the end.
+        let mut new = thinned(&values, if recorded.trim { line } else { shape }, tolerance);
+        if last.at.ticks < to {
+            new.push(point(to, scale, last.value));
+        }
+        // It comes in over the ramp: its first value where the ramp ends, unless the next is
+        // there already (of a Trim, from an offset of 0).
+        if ramp > 0 && to > from {
+            let ramped = (from + ramp).min(to);
+            if new.get(1).is_some_and(|next| next.at.ticks <= ramped) {
+                new.remove(0);
+            } else {
+                new[0].at.ticks = ramped;
+            }
+            if recorded.trim {
+                new.insert(0, point(from, scale, 0.0));
+            }
+        }
+        // Where the run gives the lane back: none for one that holds to the end.
+        let next = was.iter().find(|p| p.at.ticks > to).map(|p| p.at.ticks);
+        let end = match run.then {
+            RunEnd::Return => Some(to.saturating_add(glide).min(LARGEST)),
+            RunEnd::Cut => Some(to.saturating_add(ramp).min(LARGEST)),
+            RunEnd::Event => next,
+            RunEnd::Hold => None,
+        };
+        if let (RunEnd::Event, Some(end)) = (run.then, end) {
+            // Held to the next point of the lane, and into it over the ramp.
+            new.push(point((end - ramp).max(to), scale, last.value));
+        }
+        if recorded.trim {
+            if let Some(end) = end.filter(|_| run.then != RunEnd::Hold) {
+                new.push(point(end, scale, 0.0));
+            }
+            new = offset_by(was, shape, fixed, scale, &new, end)
+                .into_iter()
+                .map(|p| {
+                    let value = target.kept(work, p.value, &moved);
+                    point(p.at.ticks, scale, value)
+                })
+                .collect();
+        }
+        points = match end {
+            Some(end) => replaced(&points, shape, fixed, scale, (from, end), &new),
+            None => held(&points, shape, fixed, scale, from, &new),
+        };
+    }
     if moved.get() {
         work.clamp();
     }

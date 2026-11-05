@@ -103,6 +103,10 @@ pub struct Status {
     /// where nothing is compared.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compared: Option<Vec<Option<i64>>>,
+    /// Whether automation is recorded as the timeline plays (`automation.record`, T16); left
+    /// out where it is not.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub recording: bool,
 }
 
 impl Default for Status {
@@ -129,6 +133,7 @@ impl Default for Status {
             color_pending: false,
             color_error: None,
             compared: None,
+            recording: false,
         }
     }
 }
@@ -192,6 +197,9 @@ enum Command {
     ViewerLut(bool, oneshot::Sender<Value>),
     /// Whether the grades are left out of the picture (`viewer.bypass`).
     Bypass(bool, oneshot::Sender<Value>),
+    /// The recording of automation (T16): turned on or off, a control touched, Punch In, and
+    /// what writes a pass.
+    Automation(super::record::Order),
     Stop,
 }
 
@@ -287,6 +295,7 @@ impl Timeline {
                         clock: None,
                         sound: SoundSlot::new(sound),
                         playback: super::sound::Playback::new(),
+                        automation: super::record::Automation::default(),
                         joining: None,
                         sound_late: false,
                         mixed_from: None,
@@ -393,6 +402,14 @@ impl Timeline {
     }
     pub fn stop(&self) {
         let _ = self.send(Command::Stop);
+    }
+
+    /// Tells the thread of the monitor an order of the recording of automation (T16).
+    ///
+    /// # Errors
+    /// The monitor has stopped.
+    pub(crate) fn automation(&self, order: super::record::Order) -> Result<(), Fault> {
+        self.send(Command::Automation(order))
     }
 
     pub async fn pause(&self) -> Result<(), Fault> {
@@ -519,6 +536,8 @@ struct Worker {
     /// The sound of the timeline as it plays: its graph, the thread of the mix, and the changes
     /// of the project sent to it (plan T5).
     playback: super::sound::Playback,
+    /// The recording of automation (plan T16).
+    automation: super::record::Automation,
     /// Where a session started ahead of the picture, after one that was slow to start, starts
     /// sounding: the picture goes by the clock of the system until its sound is heard.
     joining: Option<i128>,
@@ -614,6 +633,10 @@ impl Worker {
                 self.heard.set(0);
                 self.clock = Some(Clock::at(place, speed, clock.rate(), 0));
                 self.mixed_from = started.map(|from| (from, timeline.sample_rate));
+                // A pass of the recording of automation, where it is on (T16).
+                if let Some(from) = started {
+                    self.automation.begin(project, index, from);
+                }
             }
             Err(message) => {
                 self.status.sound = Sound::Unavailable;
@@ -947,7 +970,59 @@ impl Worker {
         }
     }
 
+    /// The sample of the timeline heard now, while it plays at speed 1 (T16): by the device's
+    /// clock where the sound is on, else by the clock of the system.
+    fn heard_sample(&self) -> Option<i64> {
+        self.heard_sample_at(None)
+    }
+
+    /// The sample of the timeline heard at `when` (now where none), while it plays at speed 1
+    /// (T16): an `automation.touch` is placed where it was heard when the engine took it, not
+    /// when this thread got to it (T16's review).
+    fn heard_sample_at(&self, when: Option<Instant>) -> Option<i64> {
+        let (Some(clock), Some(project), Some(index)) = (self.clock, &self.project, self.timeline)
+        else {
+            return None;
+        };
+        // A change of speed asked for and still to come counts as the speed asked for (T18).
+        if !self.status.playing || clock.speed() != 1 || self.status.speed != 1 {
+            return None;
+        }
+        let at = match when {
+            None => self.clock_now(),
+            Some(when) => {
+                let device = (self.status.sound == Sound::On)
+                    .then(|| self.sound.working())
+                    .flatten()
+                    .and_then(|output| {
+                        let samples = output.played(when)?;
+                        Some(i128::from(samples) * clock::NANOS / i128::from(output.format().rate))
+                    });
+                device.unwrap_or_else(|| {
+                    let since = when.saturating_duration_since(self.epoch).as_nanos();
+                    i128::try_from(since).unwrap_or(i128::MAX)
+                })
+            }
+        };
+        let place = clock.place(at);
+        let nanos = Clock::at(place, 1, clock.rate(), 0).media_nanos(0);
+        let rate = i128::from(project.timelines[index].sample_rate);
+        i64::try_from(nanos * rate / clock::NANOS).ok()
+    }
+
+    /// Ends the pass of the recording of automation under way where the timeline is heard now,
+    /// and writes it (T16): where it stops, or plays at another speed.
+    fn end_pass(&mut self) {
+        if let (Some(project), Some(index)) = (self.project.clone(), self.timeline) {
+            let at = self.heard_sample();
+            self.automation
+                .end((&project, index), at, &mut self.playback);
+        }
+    }
+
     fn pause(&mut self) {
+        // A pass of the recording of automation ends where the timeline stops (T16).
+        self.end_pass();
         self.playback.stop();
         self.sound.stop();
         self.scrub_until = None;
@@ -966,6 +1041,8 @@ impl Worker {
 
     fn unload(&mut self) {
         self.pause();
+        // A timeline loaded or unloaded lets go of the recording of automation (T16's review).
+        self.automation.reset(&mut self.playback);
         self.settle = None;
         self.project = None;
         self.timeline = None;
@@ -1070,6 +1147,7 @@ impl Worker {
                 };
                 let _ = reply.send(result);
             }
+            Command::Automation(order) => self.automate(order),
             Command::Pause(reply) => {
                 self.pause();
                 if self.status.timeline.is_some() {
@@ -1192,6 +1270,78 @@ impl Worker {
     }
 
     /// The frame shown, before it is compared with anything (`still.grab`).
+    /// An order of the recording of automation (T16, `play::record`).
+    fn automate(&mut self, order: super::record::Order) {
+        use super::record::Order;
+        let loaded = |worker: &Self, timeline: &str| {
+            worker.status.timeline.as_deref() == Some(timeline) && worker.project.is_some()
+        };
+        match order {
+            Order::Hook(hook) => self.automation.set_hook(hook),
+            Order::Record {
+                timeline,
+                on,
+                glide,
+                by,
+                reply,
+            } => {
+                let result = if loaded(self, &timeline) {
+                    let project = Arc::clone(self.project.as_ref().expect("loaded"));
+                    let index = self.timeline.unwrap_or(0);
+                    let at = self.heard_sample();
+                    let state = self.automation.record(
+                        (on, glide, by),
+                        (&project, index),
+                        at,
+                        &mut self.playback,
+                    );
+                    self.status.recording = self.automation.is_on();
+                    self.tell(true);
+                    Ok(state)
+                } else {
+                    Err(not_loaded())
+                };
+                let _ = reply.send(result);
+            }
+            Order::Touch {
+                timeline,
+                owner,
+                path,
+                value,
+                touching,
+                when,
+            } => {
+                if !loaded(self, &timeline) {
+                    return;
+                }
+                let project = Arc::clone(self.project.as_ref().expect("loaded"));
+                let index = self.timeline.unwrap_or(0);
+                // Heard at any speed while it plays; placed, and recorded, at speed 1 alone.
+                let at = self.heard_sample_at(Some(when));
+                self.automation.touch(
+                    (&project, index),
+                    (self.status.playing, at),
+                    (&owner, &path),
+                    value,
+                    touching,
+                    &mut self.playback,
+                );
+            }
+            Order::Punch { timeline, reply } => {
+                let result = if loaded(self, &timeline) {
+                    let project = Arc::clone(self.project.as_ref().expect("loaded"));
+                    let rate = project.timelines[self.timeline.unwrap_or(0)].sample_rate;
+                    let lanes = self.automation.punch(&timeline, rate, &mut self.playback);
+                    Ok(json!({ "lanes": lanes }))
+                } else {
+                    Err(not_loaded())
+                };
+                let _ = reply.send(result);
+            }
+            Order::GiveBack { timeline, lanes } => self.automation.give_back(&timeline, lanes),
+        }
+    }
+
     fn original(&self) -> Result<crate::stills::Frame, Fault> {
         match (
             &self.current,
@@ -1401,6 +1551,10 @@ impl Worker {
                 };
                 let rate = project.timelines[index].rate;
                 self.settle = None;
+                // A pass is recorded at speed 1 alone: another speed ends it here (T16).
+                if self.clock.is_some() && speed != self.status.speed {
+                    self.end_pass();
+                }
                 if self.clock.is_some()
                     && self.status.sound == Sound::On
                     && self.joining.is_none()
@@ -1487,6 +1641,12 @@ impl Worker {
 
     fn tick(&mut self) {
         self.check_sound();
+        if let (Some(at), Some(project), Some(index)) =
+            (self.heard_sample(), &self.project, self.timeline)
+        {
+            let rate = project.timelines[index].sample_rate;
+            self.automation.tick(at, rate, &mut self.playback);
+        }
         if self
             .scrub_until
             .is_some_and(|until| Instant::now() >= until)
@@ -2299,6 +2459,7 @@ mod tests {
             clock: None,
             sound: SoundSlot::new(crate::audio::Kind::Null),
             playback: super::super::sound::Playback::new(),
+            automation: super::super::record::Automation::default(),
             joining: None,
             sound_late: false,
             mixed_from: None,
@@ -2452,6 +2613,84 @@ mod tests {
         assert_eq!(worker.sound.working().unwrap().session(), session + 1);
         worker.pause();
         assert!(!worker.playback.playing());
+    }
+
+    #[test]
+    fn a_pass_recorded_at_speed_1_ends_where_the_speed_changes() {
+        use super::super::record::Order;
+        use columbina_audio::graph::Owner;
+        let mut worker = worker();
+        worker.status.timeline = Some("t1".into());
+        let mut project = Project::sample();
+        project.timelines[0].audio.record.touch = columbina_model::audio::Touch::Latch;
+        worker.replace(0, Arc::new(project.clone()));
+        let written: Arc<Mutex<Vec<columbina_model::Edit>>> = Arc::default();
+        worker.automate(Order::Hook(Arc::new({
+            let written = Arc::clone(&written);
+            move |commit: super::super::record::Commit| lock(&written).push(commit.edit)
+        })));
+        let (reply, _answer) = oneshot::channel();
+        worker.automate(Order::Record {
+            timeline: "t1".into(),
+            on: true,
+            glide: None,
+            by: crate::session::Kind::Desktop,
+            reply,
+        });
+        let rate = project.timelines[0].rate;
+        worker.clock = Some(Clock::starting(0, 1, rate, worker.now()));
+        worker.status.playing = true;
+        worker.restart_sound();
+        assert_eq!(worker.status.sound, Sound::On);
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while worker.heard_sample().unwrap_or(0) < 4_800 {
+            worker.check_sound();
+            assert!(Instant::now() < deadline, "nothing heard");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        worker.automate(Order::Touch {
+            timeline: "t1".into(),
+            owner: Owner::Track("A1".into()),
+            path: "fader_db".into(),
+            value: -6.0,
+            touching: true,
+            when: Instant::now(),
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        let before = worker.heard_sample().unwrap();
+        worker.action(Action::Play { speed: 2 });
+        let after = before + 48_000 / 10;
+        // At speed 2 a touch is heard and not recorded.
+        worker.automate(Order::Touch {
+            timeline: "t1".into(),
+            owner: Owner::Track("A1".into()),
+            path: "fader_db".into(),
+            value: -12.0,
+            touching: true,
+            when: Instant::now(),
+        });
+        assert!(
+            worker
+                .playback
+                .holds(&Owner::Track("A1".into()), "fader_db"),
+            "heard at speed 2"
+        );
+        let edits = lock(&written).clone();
+        let [columbina_model::Edit::RecordPass { lanes, .. }] = &edits[..] else {
+            panic!("one pass written at the change: {edits:?}");
+        };
+        let to = lanes[0].runs[0].to.ticks;
+        assert!(to >= before && to < after, "{before} <= {to} < {after}");
+        // At speed 2 nothing more is recorded; the pause writes nothing more.
+        worker.pause();
+        assert_eq!(lock(&written).len(), 1);
+        // A timeline loaded or unloaded lets go of recording.
+        assert!(worker.automation.is_on());
+        worker.unload();
+        assert!(!worker.automation.is_on());
+        assert!(!worker
+            .playback
+            .holds(&Owner::Track("A1".into()), "fader_db"));
     }
 
     /// How long the next feed that [`stalls_once`] opens waits first.

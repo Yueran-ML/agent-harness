@@ -50,6 +50,7 @@ mod tests;
 
 use columbina_model::Id;
 
+pub use automation::Live;
 pub use build::{
     audible, lanes_need_a_new_graph, node_of, BuildError, Context, Controls, Made, Maker,
 };
@@ -232,6 +233,13 @@ pub enum Owner {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Control(pub(crate) u64, pub(crate) Target);
 
+/// A lane of the graph, of an owner and a path, that a value set live while it plays takes the
+/// place of ([`Graph::live`], T16): found by [`Graph::lane_key`] or [`Controls::lane_key`]. Every
+/// place of the graph that reads the lane (a pan after each output, a VCA at each member) takes
+/// the value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LaneKey(pub(crate) u64, pub(crate) u32);
+
 /// What a [`Control`] sets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Target {
@@ -343,6 +351,8 @@ pub struct Graph {
     clip_ids: Vec<ClipId>,
     /// What the settings of each strip are found by.
     metas: Vec<build::Meta>,
+    /// The owner and the path of the lanes that the graph reads, by their key ([`LaneKey`]).
+    lane_keys: Vec<(Owner, Box<str>)>,
     vcas: Vec<VcaState>,
     outputs: Vec<Out>,
     monitor: Option<usize>,

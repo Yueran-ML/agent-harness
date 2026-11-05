@@ -33,6 +33,8 @@ pub struct Smoothed {
     step: u32,
     /// The samples of a ramp: 0 before [`Smoothed::prepare`].
     len: u32,
+    /// The samples of the ramp under way: `len`, or those of a glide ([`Smoothed::glide`]).
+    span: u32,
 }
 
 impl Smoothed {
@@ -48,6 +50,7 @@ impl Smoothed {
             target: value,
             step: 0,
             len: 0,
+            span: 0,
         }
     }
 
@@ -74,6 +77,22 @@ impl Smoothed {
         self.to = into(self.domain, target);
         self.target = target;
         self.step = 0;
+        self.span = self.len;
+    }
+
+    /// Ramps from the value now to `target` over `samples` samples, reached at the `samples`-th
+    /// sample given from now (at once for 0): a glide back to a value (Snap's return, T16). The
+    /// next change ([`Smoothed::set`]) ramps over 10 ms again.
+    pub fn glide(&mut self, target: f32, samples: u32) {
+        let target = guard(self.domain, target);
+        self.from = self.at();
+        self.to = into(self.domain, target);
+        self.target = target;
+        self.step = 0;
+        self.span = samples;
+        if samples == 0 {
+            self.from = self.to;
+        }
     }
 
     /// Goes to `value` at once.
@@ -87,13 +106,13 @@ impl Smoothed {
     /// Ends the ramp under way at its target.
     pub fn finish(&mut self) {
         self.from = self.to;
-        self.step = self.len;
+        self.step = self.span;
     }
 
     /// Is ramping.
     #[must_use]
     pub fn is_ramping(&self) -> bool {
-        self.step < self.len
+        self.step < self.span
     }
 
     /// The value it ramps to.
@@ -114,11 +133,11 @@ impl Smoothed {
 
     /// The value of the next sample.
     pub fn next_value(&mut self) -> f32 {
-        if self.step + 1 < self.len {
+        if self.step + 1 < self.span {
             self.step += 1;
             out(self.domain, self.at())
         } else {
-            self.step = self.len;
+            self.step = self.span;
             self.target
         }
     }
@@ -133,7 +152,7 @@ impl Smoothed {
     /// Where the ramp is, in the domain.
     fn at(&self) -> f64 {
         if self.is_ramping() {
-            self.from + (self.to - self.from) * f64::from(self.step) / f64::from(self.len)
+            self.from + (self.to - self.from) * f64::from(self.step) / f64::from(self.span)
         } else {
             self.to
         }

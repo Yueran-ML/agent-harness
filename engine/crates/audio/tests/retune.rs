@@ -53,6 +53,7 @@ fn project() -> Project {
         mute: false,
         solo: false,
         vcas: vec![],
+        automation_arm: false,
         lanes: columbina_model::Lanes::new(),
     });
     timeline.tracks[0].audio.strip.inserts.push(Insert {

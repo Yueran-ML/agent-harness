@@ -116,6 +116,7 @@ pub struct Send {
 /// tracks and buses that output or send to it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[allow(clippy::struct_excessive_bools, reason = "the buttons of a bus")]
 pub struct Bus {
     /// What it is known by, among the buses of its timeline. The engine names the buses it makes
     /// `B1`, `B2` and so on.
@@ -140,6 +141,10 @@ pub struct Bus {
     /// Whether it is heard while others are soloed (Solo Safe), as a bus of returns is.
     #[serde(default)]
     pub solo_safe: bool,
+    /// Whether its automation is armed to record (p. 3906), as a track's is: what Touch Off
+    /// records. Left out where it is not.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub automation_arm: bool,
     /// The automation of its settings. It may be left out, as none.
     #[serde(default)]
     pub lanes: Lanes,
@@ -161,6 +166,7 @@ impl Bus {
             mute: false,
             solo: false,
             solo_safe: false,
+            automation_arm: false,
             lanes: Lanes::new(),
         }
     }
@@ -187,6 +193,10 @@ pub struct Vca {
     /// The VCAs that it is a member of.
     #[serde(default)]
     pub vcas: Vec<Id>,
+    /// Whether its automation is armed to record (p. 3906): what Touch Off records. Left out
+    /// where it is not.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub automation_arm: bool,
     /// The automation of its fader and mute (p. 3884).
     #[serde(default)]
     pub lanes: Lanes,

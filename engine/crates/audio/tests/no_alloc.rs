@@ -114,7 +114,7 @@ fn ten_seconds_of_the_work_of_the_thread_of_the_mix_take_no_memory() {
 #[test]
 fn the_graph_of_a_timeline_plays_ten_seconds_with_no_memory() {
     use columbina_audio::feed::FeedError;
-    use columbina_audio::graph::{Graph, Options, Owner, Purpose};
+    use columbina_audio::graph::{Graph, Live, Options, Owner, Purpose};
     let project = session::sixteen_tracks();
     let mut graph = Graph::build(&project, 0, Options::new(512, Purpose::Preview)).unwrap();
     let fader = graph
@@ -133,6 +133,11 @@ fn the_graph_of_a_timeline_plays_ten_seconds_with_no_memory() {
     let duck = graph
         .control(&Owner::Track("A7".into()), "track_fx.hold_ms")
         .unwrap();
+    // Values held live in place of lanes, and a glide, as automation is recorded (T16).
+    let held = graph
+        .lane_key(&Owner::Track("A4".into()), "fader_db")
+        .unwrap();
+    let panned = graph.lane_key(&Owner::Track("A6".into()), "pan.x").unwrap();
     let mut feed = |_: usize, range: std::ops::Range<i64>, out: &mut [&mut [f32]]| {
         for out in out.iter_mut() {
             for (n, sample) in out.iter_mut().enumerate() {
@@ -162,6 +167,19 @@ fn the_graph_of_a_timeline_plays_ten_seconds_with_no_memory() {
                 graph.set(pan, value / 20.0);
                 graph.set(duck, -value * 10.0);
             }
+            #[allow(clippy::cast_precision_loss, reason = "a test value")]
+            let value = -((block % 13) as f32);
+            match block % 11 {
+                2 => graph.live(held, Live::Hold(value)),
+                4 => graph.live(panned, Live::Hold(value / 13.0)),
+                6 => graph.live(held, Live::Offset(value / 2.0)),
+                8 => {
+                    graph.live(held, Live::Release(2_400));
+                    graph.live(panned, Live::Release(0));
+                    graph.glide(vca, value, 2_400);
+                }
+                _ => {}
+            }
             graph.process(&mut feed, 480).unwrap();
             graph.write_device(monitor, 480, &mut device);
             heard |= device.iter().any(|&sample| sample != 0.0);
@@ -173,7 +191,7 @@ fn the_graph_of_a_timeline_plays_ten_seconds_with_no_memory() {
 
 #[test]
 fn ten_seconds_of_a_session_of_sixteen_tracks_take_no_memory_on_the_threads_of_the_sound() {
-    use columbina_audio::graph::Owner;
+    use columbina_audio::graph::{Live, Owner};
     use session::{Sim, Tone};
     let project = session::sixteen_tracks();
     // Another graph to swap in: an equalizer of A3 off, which takes its node out.
@@ -228,6 +246,19 @@ fn ten_seconds_of_a_session_of_sixteen_tracks_take_no_memory_on_the_threads_of_t
                 sim.set(&a3, "dynamics.compressor.threshold_db", value);
                 sim.set(&vca, "fader_db", value / 2.0);
                 sim.set(&a7, "track_fx.hold_ms", -value * 10.0);
+            }
+            // A control touched, trimmed and let go while automation is recorded (T16).
+            #[allow(clippy::cast_precision_loss, reason = "a test value")]
+            let value = -((tick % 13) as f32);
+            match tick % 9 {
+                1 => sim.live(&a5, "pan.x", Live::Hold(value / 13.0)),
+                3 => sim.live(&a3, "fader_db", Live::Offset(value / 2.0)),
+                5 => sim.live(&a3, "fader_db", Live::Release(2_400)),
+                7 => {
+                    sim.live(&a5, "pan.x", Live::Release(0));
+                    sim.glide(&vca, "fader_db", value, 2_400);
+                }
+                _ => {}
             }
             sim.device_run();
         });

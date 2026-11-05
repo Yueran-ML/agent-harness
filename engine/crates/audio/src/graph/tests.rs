@@ -344,3 +344,121 @@ fn a_stretched_clip_reads_within_its_reach_once_its_run_has_started() {
         }
     }
 }
+
+/// The sample project with its track of sound only, its clip ten seconds long at `speed`, Pitch
+/// Correction as `corrected`, its pitch moved by `semitones`, and a Pitch of its own.
+fn clip_with_a_pitch(
+    speed: (u32, u32),
+    corrected: bool,
+    semitones: i32,
+) -> columbina_model::Project {
+    use columbina_model::audio::fx::PitchFx;
+    use columbina_model::{ClipPitch, Effect, Insert, Project, Speed, Time, TrackKind};
+
+    let mut project = Project::sample();
+    project.timelines[0]
+        .tracks
+        .retain(|track| track.kind == TrackKind::Audio);
+    project.media[0].facts.duration = Time {
+        ticks: 60 * 15_360,
+        scale: 15_360,
+    };
+    let clip = &mut project.timelines[0].tracks[0].clips[0];
+    clip.length = 250;
+    clip.speed = Speed {
+        num: speed.0,
+        den: speed.1,
+    };
+    clip.pitch_correction = corrected;
+    clip.pitch = ClipPitch {
+        semitones,
+        cents: 0.0,
+    };
+    clip.effects = vec![Insert {
+        id: String::new(),
+        on: true,
+        effect: Effect::Pitch(PitchFx {
+            semitones: 4,
+            ..PitchFx::default()
+        }),
+    }];
+    project
+}
+
+/// A clip with effects (T4c) reads its media as far ahead of the timeline as its effects are late,
+/// and only within what its [`super::Reach`] tells a reader ahead of the graph (T5), whichever
+/// way its run starts.
+#[test]
+fn a_clip_with_effects_reads_where_its_reach_says_once_its_run_has_started() {
+    use std::cell::RefCell;
+    use std::ops::Range;
+    use std::rc::Rc;
+
+    use super::{Graph, Options, Purpose};
+    use crate::feed::FeedError;
+
+    // Stretched with its pitch kept, stretched with its pitch moved alone, and resampled.
+    for (within, (speed, corrected, semitones, at)) in
+        [false, true].into_iter().flat_map(|within| {
+            [
+                ((4, 5), true, 0, 6 * 48_000),
+                ((1, 1), false, 2, 5 * 48_000 + 999),
+                ((3, 2), false, 0, 2 * 48_000 + 17),
+            ]
+            .map(|case| (within, case))
+        })
+    {
+        let project = clip_with_a_pitch(speed, corrected, semitones);
+        let mut graph = Graph::build(&project, 0, Options::new(480, Purpose::Export)).unwrap();
+        let reads: Rc<RefCell<Vec<Range<i64>>>> = Rc::default();
+        let seen = Rc::clone(&reads);
+        let mut feed = move |_: usize, range: Range<i64>, out: &mut [&mut [f32]]| {
+            for (channel, out) in out.iter_mut().enumerate() {
+                for (n, sample) in out.iter_mut().enumerate() {
+                    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+                    let x = (range.start + i64::try_from(n).unwrap()) as f64;
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+                    let value = (0.5 * (x * 0.05 + channel as f64).sin()) as f32;
+                    *sample = value;
+                }
+            }
+            seen.borrow_mut().push(range);
+            Ok::<(), FeedError>(())
+        };
+        if within {
+            graph.start_within(at, 480, &mut feed).unwrap();
+        } else {
+            graph.start(at, &mut feed).unwrap();
+        }
+        reads.borrow_mut().clear();
+        let chain = &graph.clips[0];
+        let (ahead, to) = (chain.ahead(), chain.to);
+        assert!(ahead > 6000, "{ahead}");
+        let reach = chain.reach();
+        let span = reach.span();
+        assert_eq!(span.start, chain.busy_from());
+        let mut block = at;
+        let mut read_any = false;
+        while block < span.end + 480 {
+            graph.process(&mut feed, 480).unwrap();
+            let end = block + 480;
+            let wanted = reach.source(block..end);
+            for range in reads.borrow_mut().drain(..) {
+                read_any = true;
+                let Some(wanted) = &wanted else {
+                    panic!(
+                        "{speed:?}: {range:?} read in the block at {block}, where it reads none"
+                    );
+                };
+                assert!(
+                    range.start >= wanted.start && range.end <= wanted.end,
+                    "{speed:?}: {range:?} read in the block at {block}, not within {wanted:?}"
+                );
+            }
+            block = end;
+        }
+        assert!(read_any);
+        // What it reads at the last block that reads is what it sounds a latency later.
+        assert_eq!(span.end, to - ahead);
+    }
+}

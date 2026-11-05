@@ -1,7 +1,14 @@
 //! The chain of a clip (plan T4b, p. 3855): its sound read from its media ([`ClipFeed`]), at its
 //! speed and direction (a rational mapping and a windowed sinc), in the channels of its track,
-//! through its equalizer, by its gain (keyframes, fades and crossfades), and panned, added to the
-//! sum of its track.
+//! through its equalizer and its effects, by its gain (keyframes, fades and crossfades), and
+//! panned, added to the sum of its track.
+//!
+//! The effects of a clip ([`ClipEffects`], T4c) delay what goes through them by their latency.
+//! The clip makes it up itself: everything of it up to its effects runs that far ahead of the
+//! timeline (its media read as far ahead), so that what leaves them is its sound on its own
+//! samples, and the chain has no latency, as a stretched one has none. Its effects take its sound
+//! from where it starts and silence after it ends, until what is in them has come out; what they
+//! give outside the clip is not heard, its gain being none there.
 //!
 //! The mapping and the resampling are those of the mixer of phases 1 and 2 (`server/src/play/
 //! mix.rs`), moved here unchanged, so that a project of before sounds as it did, to the bit.
@@ -486,23 +493,29 @@ fn keep(result: &mut Result<(), FeedError>, next: Result<(), FeedError>) {
 /// threads that read clips ahead of the graph (T5) read what it will ask for.
 #[derive(Clone, Copy, Debug)]
 pub struct Reach {
+    /// The samples of the clip's sound that it reads its media for, from its warming.
     from: i64,
     to: i64,
     mapping: Mapping,
     radius: i64,
+    /// How far ahead of the timeline it works out its sound: the latency of its effects (T4c).
+    ahead: i64,
 }
 
 impl Reach {
-    /// The samples of the timeline that the clip sounds on.
+    /// The samples of the timeline at which the graph reads the clip's media: where it sounds
+    /// (and its stretch warms before), as far earlier as its effects are late.
     #[must_use]
     pub fn span(&self) -> Range<i64> {
-        self.from..self.to
+        self.from - self.ahead..self.to - self.ahead
     }
 
-    /// The samples of the media that the samples `timeline` of the timeline read, where the
-    /// clip sounds on any of them.
+    /// The samples of the media that the graph reads for the clip in the samples `timeline` of
+    /// the timeline, where it reads any.
     #[must_use]
     pub fn source(&self, timeline: Range<i64>) -> Option<Range<i64>> {
+        let timeline =
+            timeline.start.saturating_add(self.ahead)..timeline.end.saturating_add(self.ahead);
         let (from, to) = (self.from.max(timeline.start), self.to.min(timeline.end));
         if from >= to {
             return None;
@@ -571,6 +584,73 @@ impl ClipLevel {
     }
 }
 
+/// An effect of a clip in the graph: its node, and the latency of those before it in the
+/// clip's chain.
+pub(crate) struct ClipStage {
+    pub(crate) node: Box<dyn Node>,
+    pub(crate) offset: i64,
+}
+
+/// The effects of a clip (p. 3855, the interaction reference §10.1; T4c), in their order after
+/// its equalizer: made as the inserts of a strip are, but with no lanes, no sidechain, and
+/// Listen only in a preview.
+pub(crate) struct ClipEffects {
+    pub(crate) stages: Box<[ClipStage]>,
+    /// Their latency, all of them: how far ahead of the timeline the clip works out its sound.
+    pub(crate) latency: i64,
+    /// The samples they have processed since they were reset ([`Block::start`]).
+    pub(crate) processed: u64,
+    /// Whether they have processed nothing since they were reset: each is lined up with the
+    /// timeline ([`Node::align`]) where they start, at the clip's start or where a run starts.
+    pub(crate) fresh: bool,
+}
+
+impl ClipEffects {
+    /// Runs the first `count` samples of [`ClipScratch::after`], the clip's sound from the sample
+    /// `first` of the timeline, through the effects of the `channels` of its track, leaving what
+    /// leaves them there.
+    fn run(
+        &mut self,
+        first: i64,
+        count: usize,
+        rate: u32,
+        channels: usize,
+        scratch: &mut ClipScratch,
+    ) {
+        if self.fresh {
+            for stage in &mut self.stages {
+                // Two's complement keeps the grid of a run that starts before the timeline does.
+                stage
+                    .node
+                    .align(first.wrapping_sub(stage.offset).cast_unsigned());
+            }
+            self.fresh = false;
+        }
+        let block = Block::new(self.processed, rate, count);
+        let ClipScratch { before, after, .. } = scratch;
+        for stage in &mut self.stages {
+            after.read(count, |input| {
+                before.write(count, |output| {
+                    stage
+                        .node
+                        .process(&block, &input[..channels], &mut output[..channels]);
+                });
+            });
+            std::mem::swap(before, after);
+        }
+        self.processed += u64::try_from(count).unwrap_or(0);
+    }
+
+    /// Back to silence, to be lined up again where they next start.
+    fn reset(&mut self) {
+        for stage in &mut self.stages {
+            stage.node.reset();
+        }
+        self.processed = 0;
+        self.fresh = true;
+    }
+}
+
 /// A clip in the graph.
 pub(crate) struct ClipChain {
     /// The strip of its track.
@@ -596,9 +676,24 @@ pub(crate) struct ClipChain {
     pub(crate) level: ClipLevel,
     /// Its stretch, where its speed keeps its pitch or its pitch is moved (T13).
     pub(crate) stretch: Option<Stretched>,
+    /// Its effects, where it has any that work on the channels of its track (T4c).
+    pub(crate) effects: Option<ClipEffects>,
 }
 
 impl ClipChain {
+    /// How far ahead of the timeline it works out its sound: the latency of its effects.
+    pub(crate) fn ahead(&self) -> i64 {
+        self.effects.as_ref().map_or(0, |effects| effects.latency)
+    }
+
+    /// The first sample of its sound for which it reads its media: where it sounds, or where its
+    /// stretch warms before that.
+    fn busy_at(&self) -> i64 {
+        self.stretch
+            .as_ref()
+            .map_or(self.from, |stretch| stretch.busy_from.min(self.from))
+    }
+
     /// The samples of the source that the samples `range` of the timeline read, with the reach
     /// of the filter on each side.
     pub(crate) fn source(&self, range: &Range<i64>) -> Range<i64> {
@@ -616,21 +711,20 @@ impl ClipChain {
     }
 
     /// The first sample of the timeline at which the chain reads its media: where it sounds, or
-    /// where its stretch warms before that.
+    /// where its stretch warms before that, as far earlier as its effects are late.
     pub(crate) fn busy_from(&self) -> i64 {
-        self.stretch
-            .as_ref()
-            .map_or(self.from, |stretch| stretch.busy_from.min(self.from))
+        self.busy_at() - self.ahead()
     }
 
     /// Where it reads its media, for the readers ahead of the graph (T5): from where it is busy,
-    /// as far either way as it reads.
+    /// as far either way as it reads, as far ahead as its effects are late.
     pub(crate) fn reach(&self) -> Reach {
         Reach {
-            from: self.busy_from(),
+            from: self.busy_at(),
             to: self.to,
             mapping: self.mapping,
             radius: self.reads_within(),
+            ahead: self.ahead(),
         }
     }
 
@@ -644,6 +738,9 @@ impl ClipChain {
         scratch: &mut ClipScratch,
         into: &mut Planar,
     ) -> Result<(), FeedError> {
+        if self.effects.is_some() {
+            return self.mix_through_effects(index, feed, (start, frames, rate), scratch, into);
+        }
         if self.stretch.is_some() {
             return self.mix_stretched(index, feed, (start, frames, rate), scratch, into);
         }
@@ -739,13 +836,16 @@ impl ClipChain {
         if let Some(stretch) = &mut self.stretch {
             stretch.held = None;
         }
+        if let Some(effects) = &mut self.effects {
+            effects.reset();
+        }
     }
 
     /// Brings the stretch of the clip to the sample `at` of the timeline, where a run starts
     /// (`Graph::start`): its stretchers worked out from the starts of their segments, as a run
     /// from earlier did, so that the work is done before the sound plays and the blocks after
     /// sound as that run's. Nothing for a clip that is not stretched or does not read its media
-    /// just before `at`.
+    /// just before `at` (where its effects are late, as far ahead).
     pub(crate) fn prime(
         &mut self,
         index: usize,
@@ -753,10 +853,157 @@ impl ClipChain {
         at: i64,
         scratch: &mut ClipScratch,
     ) -> Result<(), FeedError> {
-        if self.stretch.is_none() || at <= self.busy_from() || at > self.to {
+        let at = at.saturating_add(self.ahead());
+        if self.stretch.is_none() || at <= self.busy_at() || at > self.to {
             return Ok(());
         }
         self.stretch_into(index, feed, at - 1..at, None, scratch)
+    }
+
+    /// Adds what a clip with effects sounds on the `frames` samples of the timeline from `start`:
+    /// its sound worked out as far ahead as its effects are late (its stretch moved on where it
+    /// warms), run through them, and what leaves them added on its own samples.
+    fn mix_through_effects(
+        &mut self,
+        index: usize,
+        feed: &mut dyn ClipFeed,
+        (start, frames, rate): (i64, usize, u32),
+        scratch: &mut ClipScratch,
+        into: &mut Planar,
+    ) -> Result<(), FeedError> {
+        let ahead = self.ahead();
+        let length = i64::try_from(frames).unwrap_or(i64::MAX);
+        let (first, last) = (
+            start.saturating_add(ahead),
+            start.saturating_add(length).saturating_add(ahead),
+        );
+        let mut result = Ok(());
+        if let Some(stretch) = &self.stretch {
+            let (warm, sounds) = (stretch.busy_from.max(first), self.from.min(last));
+            if warm < sounds {
+                let warmed = self.stretch_into(index, feed, warm..sounds, None, scratch);
+                keep(&mut result, warmed);
+            }
+        }
+        // Its sound from where it starts, then silence until what is in its effects is out.
+        let (from, to) = (
+            self.from.max(first),
+            self.to.saturating_add(ahead).min(last),
+        );
+        if from < to {
+            let count = usize::try_from(to - from).unwrap_or(0);
+            let sounding = usize::try_from(self.to.min(to) - from)
+                .unwrap_or(0)
+                .min(count);
+            if sounding > 0 {
+                let end = from + i64::try_from(sounding).unwrap_or(0);
+                keep(
+                    &mut result,
+                    self.sound_of(index, feed, from..end, rate, scratch),
+                );
+            }
+            let channels = self.channels;
+            for channel in 0..channels {
+                scratch.after.channel_mut(channel)[sounding..count].fill(0.0);
+            }
+            if let Some(effects) = &mut self.effects {
+                effects.run(from, count, rate, channels, scratch);
+            }
+            let mut values = [0.0_f32; MAX_CHANNELS];
+            for n in 0..count {
+                let sample = from + i64::try_from(n).unwrap_or(0) - ahead;
+                if sample < self.from || sample >= self.to {
+                    continue;
+                }
+                for (channel, value) in values[..channels].iter_mut().enumerate() {
+                    *value = scratch.after.channel(channel)[n];
+                }
+                let at = usize::try_from(sample - start).unwrap_or(0);
+                self.add(sample, &values[..channels], into, at);
+            }
+        }
+        if self.stretch.is_some() && last >= self.to {
+            self.release(scratch);
+        }
+        result
+    }
+
+    /// Works out the clip's sound on the samples `span` of the timeline (where it sounds, at
+    /// most a block), through its equalizer, into the first samples of [`ClipScratch::after`]:
+    /// stretched, or resampled to its speed. Silence where the feed fails.
+    fn sound_of(
+        &mut self,
+        index: usize,
+        feed: &mut dyn ClipFeed,
+        span: Range<i64>,
+        rate: u32,
+        scratch: &mut ClipScratch,
+    ) -> Result<(), FeedError> {
+        let count = usize::try_from(span.end - span.start).unwrap_or(0);
+        let channels = self.channels;
+        let read = if self.stretch.is_some() {
+            self.stretch_into(index, feed, span, Some(count), scratch)
+        } else {
+            self.resampled_into(index, feed, span, scratch)
+        };
+        if let Some(eq) = &mut self.eq {
+            let block = Block::new(self.processed, rate, count);
+            scratch.before.read(count, |input| {
+                scratch.after.write(count, |output| {
+                    eq.process(&block, &input[..channels], &mut output[..channels]);
+                });
+            });
+            self.processed += u64::try_from(count).unwrap_or(0);
+        } else {
+            std::mem::swap(&mut scratch.before, &mut scratch.after);
+        }
+        read
+    }
+
+    /// The clip's sound resampled to its speed on the samples `span` of the timeline (at most a
+    /// block), into the first samples of [`ClipScratch::before`]; silence where the feed fails.
+    fn resampled_into(
+        &self,
+        index: usize,
+        feed: &mut dyn ClipFeed,
+        span: Range<i64>,
+        scratch: &mut ClipScratch,
+    ) -> Result<(), FeedError> {
+        let (count, channels) = (
+            usize::try_from(span.end - span.start).unwrap_or(0),
+            self.channels,
+        );
+        let source = self.source(&span);
+        let length = usize::try_from(source.end - source.start).unwrap_or(usize::MAX);
+        let read = if length > scratch.window.capacity {
+            Err(FeedError { clip: index })
+        } else {
+            let mut slices = scratch.window.slices_mut(channels, length, self.film);
+            feed.read(index, source.clone(), &mut slices[..channels])
+        };
+        if read.is_err() {
+            for channel in 0..channels {
+                scratch.before.channel_mut(channel)[..count].fill(0.0);
+            }
+            return read;
+        }
+        let window = scratch.window.slices(channels, length);
+        let mut values = [0.0_f32; MAX_CHANNELS];
+        for (n, sample) in span.enumerate() {
+            let (at, phase) = self.mapping.at(sample);
+            let at = usize::try_from(at - source.start).unwrap_or(0);
+            resampled(
+                &window[..channels],
+                at,
+                phase,
+                self.cutoff,
+                &mut values[..channels],
+            );
+            for (channel, value) in values[..channels].iter().enumerate() {
+                scratch.before.channel_mut(channel)[n] = *value;
+            }
+        }
+        Ok(())
     }
 
     /// Adds what a stretched clip sounds on the `frames` samples of the timeline from `start`,

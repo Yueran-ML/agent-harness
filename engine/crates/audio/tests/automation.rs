@@ -442,6 +442,15 @@ fn every_setting_that_a_lane_may_be_of_is_one_that_the_graph_moves() {
         "lanes of settings that the graph does not move"
     );
     assert!(checked > 150, "{checked}");
+    // The cents, the mix and the switch of a Pitch have lanes, which the graph moves (T4c).
+    let (a2_owner, a2_model) = &strips[1];
+    for path in ["insert.fx2.cents", "insert.fx2.dry_wet", "insert.fx2.on"] {
+        assert!(
+            paths(*a2_model).iter().any(|p| p == path),
+            "{path} has no lane"
+        );
+        assert!(graph.control(a2_owner, path).is_some(), "{path}");
+    }
     // What the graph does not move as a lane would has no lane, and is refused as such.
     let (_, a1) = &strips[0];
     let (_, a2) = &strips[1];
@@ -457,9 +466,6 @@ fn every_setting_that_a_lane_may_be_of_is_one_that_the_graph_moves() {
         (a1, "send.B2.pan.divergence", "lane_not_wired"),
         (a1, "send.B2.pan.on", "lane_not_wired"),
         (a1, "track_fx.lookahead_ms", "lane_not_wired"),
-        (a2, "insert.fx2.cents", "lane_not_wired"),
-        (a2, "insert.fx2.dry_wet", "lane_not_wired"),
-        (a2, "insert.fx2.on", "lane_not_wired"),
         (a2, "insert.fx2.semitones", "lane_integer"),
         (a1, "eq.1.slope", "lane_integer"),
     ] {

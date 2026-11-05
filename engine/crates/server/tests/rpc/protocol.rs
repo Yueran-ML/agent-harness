@@ -170,7 +170,27 @@ async fn the_streams_of_media_of_an_older_project_are_read_once_its_file_is_ther
     );
     let after = project(&mut agent).await;
     assert_eq!(after["project"]["media"][0]["facts"]["audio"], read);
-    // It is no step of the history: the import was made by another engine, so nothing is undone.
+    // A transaction prepared before it is taken: only the engine changed the project since.
+    let prepared = before["revision"].as_u64().unwrap();
+    let bin = json!([{"op": "add_bin", "bin": {"id": "", "name": "Rushes", "parent": null}}]);
+    let taken = agent
+        .call(
+            "transaction.apply",
+            Some(json!({"ops": bin.clone(), "revision": prepared})),
+        )
+        .await;
+    assert!(taken.get("error").is_none(), "{taken}");
+    // But not one prepared before a step of a client.
+    let stale = agent
+        .error(
+            "transaction.apply",
+            Some(json!({"ops": bin, "revision": prepared})),
+        )
+        .await;
+    assert_eq!(stale["data"]["reason"], "stale_revision", "{stale}");
+    agent.result("history.undo", None).await;
+    // The streams are no step of the history: the import was made by another engine, so
+    // nothing is left to undo.
     let undone = agent.result("history.undo", None).await;
     assert_eq!(undone["done"], Value::Null, "{undone}");
     // And it is saved as every change is.

@@ -4212,8 +4212,9 @@ Plan T6 of phase 3. The export runs the same graph of the sound as playback (the
 tracks, buses, VCAs, effects and lanes), built for export from the snapshot: a Listen of a
 sidechain is never exported, every clip is read by a reader that waits for it (a clip that is
 heard and cannot be read fails the export), and the graph starts at the first sample of the
-range with the preroll that playback from the same sample has (the graph's settling, at most
-10 s). So the sound exported from a sample is, to the bit, the sound that playback from that
+range with the preroll that playback from the same sample has (what the strips need to settle,
+and what each clip under way there needs, its equalizer and effects and the strips after them,
+but no further back than where its effects start; at most 10 s). So the sound exported from a sample is, to the bit, the sound that playback from that
 sample gives the device (the null test: a playback captured with `--sound capture=<path>` less an
 export as `pcm_f32le` is nothing but zeros), where:
 

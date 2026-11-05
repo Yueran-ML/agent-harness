@@ -1,5 +1,10 @@
 /** Shared Fairlight catalogue; protocol IDs and media/track names are never translated. */
 const entries = {
+  'Show Clip Gain Line': ['显示片段音量线', 'クリップゲインラインを表示'],
+  'Keyframe interpolation': ['关键帧插值', 'キーフレーム補間'],
+  'Clip gain': ['片段音量', 'クリップゲイン'], 'Clip fades': ['片段淡变', 'クリップフェード'],
+  'Fade In': ['淡入', 'フェードイン'], 'Fade Out': ['淡出', 'フェードアウト'],
+  'Linear': ['线性', 'リニア'], 'Ease In': ['缓入', 'イーズイン'], 'Ease Out': ['缓出', 'イーズアウト'],
   'Media Pool': ['媒体池', 'メディアプール'], 'Effects': ['效果', 'エフェクト'], 'Index': ['索引', 'インデックス'],
   'Groups': ['编组', 'グループ'], 'Mixer': ['调音台', 'ミキサー'], 'Meters': ['电平表', 'メーター'], 'Inspector': ['检查器', 'インスペクタ'],
   'Fairlight timeline': ['Fairlight 时间线', 'Fairlight タイムライン'], 'Reset Fairlight Layout': ['复位 Fairlight 页布局', 'Fairlight レイアウトをリセット'],

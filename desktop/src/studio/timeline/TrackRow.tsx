@@ -6,6 +6,7 @@ import { spanStyle, transitionSpan, visible } from './geometry';
 import { SubtitleCues } from './SubtitleTrack';
 import { TrackHeader } from './TrackHeader';
 import type { Waveforms } from './waveforms';
+import { AudioOverlay, type AudioOverlayContext } from './AudioOverlay';
 export interface TrackClipDrawing { clip: Clip; track: Track; media?: Media; rate: Rate; scale: number; from: number; to: number; waves: Waveforms }
 
 /**
@@ -13,7 +14,7 @@ export interface TrackClipDrawing { clip: Clip; track: Track; media?: Media; rat
  * whole steps as the timeline scrolls (see `scrollWindow`), so a row is drawn again only where the
  * scroll crosses a step, or what it shows changes; not as the playhead moves.
  */
-export const TrackRow = memo(function TrackRow({ timeline, track, media, rate, scale, from, to, height, waves, onEdit, onHeight, selected, targeted, onTarget, chosen = null, chosenCue = null, shownSubtitles = null, drawClip }: {
+export const TrackRow = memo(function TrackRow({ timeline, track, media, rate, scale, from, to, height, waves, onEdit, onHeight, selected, targeted, onTarget, chosen = null, chosenCue = null, shownSubtitles = null, drawClip, audioOverlay }: {
   timeline: string; track: Track; media: ReadonlyMap<string, Media>; rate: Rate; scale: number; from: number; to: number;
   height: number; waves: Waveforms; onEdit: (ops: Op[]) => Promise<boolean>; onHeight: (id: string, height: number) => void;
   selected: ReadonlySet<string>; targeted: boolean; onTarget: (id: string) => void;
@@ -24,6 +25,7 @@ export const TrackRow = memo(function TrackRow({ timeline, track, media, rate, s
   /** The subtitle track of the timeline that is shown, for a track of subtitles. */
   shownSubtitles?: string | null;
   drawClip?: (props: TrackClipDrawing) => ReactNode;
+  audioOverlay?: AudioOverlayContext;
 }) {
   const all = useWords();
   const words = all.label.studio.timeline;
@@ -41,7 +43,8 @@ export const TrackRow = memo(function TrackRow({ timeline, track, media, rate, s
         // sound is given the window, of which its waveform draws the tiles that it covers.
         : visible(track.clips, from, to).map(clip => <ClipView key={clip.id} clip={clip} kind={track.kind} selected={selected.has(clip.id)}
           media={clip.source.kind === 'media' ? media.get(clip.source.media) : undefined} rate={rate} scale={track.kind === 'audio' ? scale : undefined}
-          from={track.kind === 'audio' ? from : clip.start} to={track.kind === 'audio' ? to : clip.start + clip.length} waves={waves}>
+          from={track.kind === 'audio' ? from : clip.start} to={track.kind === 'audio' ? to : clip.start + clip.length} waves={waves}
+          overlay={track.kind === 'audio' && audioOverlay ? <AudioOverlay context={audioOverlay} drawing={{ clip, track, media: clip.source.kind === 'media' ? media.get(clip.source.media) : undefined, rate, scale, from, to, waves }} /> : undefined}>
           {drawClip?.({ clip, track, media: clip.source.kind === 'media' ? media.get(clip.source.media) : undefined, rate, scale, from, to, waves })}
         </ClipView>)}
       {transitions.filter(span => span.start < to && span.start + span.length > from).map(({ transition, start, length }) => <div

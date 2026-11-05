@@ -17,11 +17,12 @@ export function FairlightTimeline({ view, update, ...props }: ComponentProps<typ
     if (event.ctrlKey && event.altKey) { event.preventDefault(); event.stopPropagation(); update({ waveform: Math.max(1, Math.min(16, view.waveform * (event.deltaY < 0 ? 1.25 : .8))) }); }
   }}>
     <div className="fairlight-timeline-options"><label><input type="checkbox" checked={view.video} onChange={event => update({ video: event.target.checked })} />{t('Video tracks')}</label>
+      <label><input type="checkbox" checked={view.gainLine} onChange={event => update({ gainLine: event.target.checked })} />{t('Show Clip Gain Line')}</label>
       <label>{t('Waveform height')}<input aria-label={t('Waveform height')} type="range" min={1} max={16} step={.25} value={view.waveform} onChange={event => update({ waveform: Number(event.target.value) })} /></label>
       <button type="button" onClick={() => update({ waveform: 1 })}>{t('Reset waveform height')}</button>
       <button type="button" aria-pressed={view.automation} onClick={() => update({ automation: !view.automation })}>{t('Automation view (F4)')}</button>
     </div>
     {view.automation && <p className="caption" role="status">{t('Automation lane editing is not available yet.')}</p>}
-    <Timeline {...props} hiddenTracks={hidden} drawClip={draw} trackHeight={128} audioOnlyDrop={!view.video} label={t('Fairlight timeline')} />
+    <Timeline {...props} hiddenTracks={hidden} drawClip={draw} gainLine={view.gainLine} trackHeight={128} audioOnlyDrop={!view.video} label={t('Fairlight timeline')} />
   </section>;
 }

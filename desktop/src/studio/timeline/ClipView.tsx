@@ -11,11 +11,12 @@ import type { Waveforms } from './waveforms';
  * pixels of a frame, is needed only by the waveform of a clip of sound; a clip of video is not
  * given it, nor drawn again at a zoom.
  */
-export const ClipView = memo(function ClipView({ clip, kind, media, rate, scale = 0, from, to, waves, selected = false, children }: {
+export const ClipView = memo(function ClipView({ clip, kind, media, rate, scale = 0, from, to, waves, selected = false, children, overlay }: {
   clip: Clip; kind: 'video' | 'audio'; media: Media | undefined; rate: Rate; scale?: number; from: number; to: number; waves: Waveforms;
   selected?: boolean;
   /** Page-specific drawing inside the same editable clip (Fairlight channel lanes, T19 overlays). */
   children?: ReactNode;
+  overlay?: ReactNode;
 }) {
   const words = useWords().label.studio.timeline;
   const name = clip.source.kind === 'media' ? media?.name ?? clip.source.media : clip.source.kind === 'title' ? clip.source.text : words.color;
@@ -28,5 +29,6 @@ export const ClipView = memo(function ClipView({ clip, kind, media, rate, scale 
     {changedSpeed && <span className="timeline-clip-speed">{clip.reverse ? '−' : ''}{Number((clip.speed.num / clip.speed.den).toFixed(3))}×</span>}
     {children ?? (kind === 'audio' && media?.facts.audio && clip.source.kind === 'media' && <Waveform cache={waves} media={clip.source.media} clip={clip} rate={rate} scale={scale}
       from={Math.max(from, clip.start)} to={Math.min(to, clip.start + clip.length)} />)}
+    {overlay}
   </div>;
 });

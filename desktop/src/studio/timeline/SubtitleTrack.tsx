@@ -75,7 +75,7 @@ export interface TrackMenu { x: number; y: number; items: { id: string; label: s
  * Subtitle Track (Reference Manual 20, p. 1088); on a track of subtitles, Add Subtitle at the
  * playhead (p. 1089). Escape, a choice, or a press elsewhere puts it away.
  */
-export function TimelineMenu({ menu, onClose }: { menu: TrackMenu; onClose: () => void }) {
+export function TimelineMenu({ menu, onClose, label }: { menu: TrackMenu; onClose: () => void; label?: string }) {
   const words = useWords().label.studio.timeline;
   const box = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => { box.current?.querySelector<HTMLElement>('[role="menuitem"]:not([disabled])')?.focus(); }, [menu]);
@@ -85,7 +85,7 @@ export function TimelineMenu({ menu, onClose }: { menu: TrackMenu; onClose: () =
     window.addEventListener('blur', onClose);
     return () => { window.removeEventListener('pointerdown', away, true); window.removeEventListener('blur', onClose); };
   }, [onClose]);
-  return <div ref={box} className="timeline-menu" role="menu" aria-label={words.trackMenu} style={{ left: menu.x, top: menu.y }} data-test="timeline-menu"
+  return <div ref={box} className="timeline-menu" role="menu" aria-label={label ?? words.trackMenu} style={{ left: menu.x, top: menu.y }} data-test="timeline-menu"
     onPointerDown={event => event.stopPropagation()} onContextMenu={event => event.preventDefault()}
     onKeyDown={event => {
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); onClose(); return; }

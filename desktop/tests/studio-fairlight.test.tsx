@@ -108,6 +108,13 @@ it('mounts the full Fairlight page with channel lanes, shared editing, view-only
   expect(document.querySelectorAll('[data-clip="sound1"] [data-channel]')).toHaveLength(2);
   expect(document.querySelectorAll('[data-clip="surround-clip"] [data-channel]')).toHaveLength(6);
   expect(document.querySelectorAll('[data-clip="adaptive-clip"] [data-channel]')).toHaveLength(24);
+  expect(document.querySelectorAll('[data-clip="adaptive-clip"] .audio-overlay')).toHaveLength(1);
+  expect(document.querySelectorAll('[data-clip="surround-clip"] .audio-volume')).toHaveLength(1);
+  fireEvent.click(screen.getByLabelText('Show Clip Gain Line'));
+  expect(document.querySelectorAll('.audio-volume')).toHaveLength(0);
+  expect(document.querySelector('[data-clip="surround-clip"] .audio-fades')).not.toBeNull();
+  fireEvent.click(screen.getByLabelText('Show Clip Gain Line'));
+  expect(document.querySelectorAll('[data-clip="surround-clip"] .audio-volume')).toHaveLength(1);
   expect(document.querySelector('[data-track="v1"]')).toBeNull();
   fireEvent.click(screen.getByLabelText('Video tracks')); expect(document.querySelector('[data-track="v1"]')).not.toBeNull();
   fireEvent.click(screen.getByText('Index')); fireEvent.click(screen.getByLabelText('Visible Audio 2'));

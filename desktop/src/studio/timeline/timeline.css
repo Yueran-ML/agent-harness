@@ -56,6 +56,22 @@
 .timeline-empty { padding: 16px; }
 .timeline-problem { display: flex; align-items: center; justify-content: space-between; padding: 4px 8px; font-size: 12px; background: var(--warn-wash); }
 .timeline-clip { touch-action: none; user-select: none; cursor: grab; }
+.audio-overlay { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; z-index: 2; }
+.audio-volume, .audio-fades { outline: none; }
+.audio-gain-visible { fill: none; stroke: #f5d99a; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.audio-gain-hit { fill: none; stroke: transparent; stroke-width: 8; vector-effect: non-scaling-stroke; pointer-events: stroke; cursor: ns-resize; }
+.audio-gain-key { fill: transparent; pointer-events: all; cursor: move; }
+.audio-gain-dot { fill: #f5d99a; pointer-events: none; }
+.audio-gain-dot.selected { fill: #ff9e43; stroke: #fff8; }
+.audio-gain-tip { fill: #fff; font-size: 10px; paint-order: stroke; stroke: #15251c; stroke-width: 2; pointer-events: none; }
+.audio-fade-curve { fill: none; stroke: #d9f3e5; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.audio-fade-handle, .audio-fade-shape { fill: #d9f3e5; stroke: transparent; stroke-width: 2; pointer-events: all; cursor: ew-resize; opacity: 0; }
+.audio-fade-shape { cursor: move; opacity: 1; }
+.timeline-clip:hover .audio-fade-handle, .audio-fades:focus-within .audio-fade-handle { opacity: 1; }
+.audio-fade-handle[data-disabled='true'] { cursor: not-allowed; }
+.audio-fade-shadow { fill: #fff2; pointer-events: none; }
+.audio-key-popup { position: fixed; inset: 0; pointer-events: none; z-index: 80; }
+.audio-key-popup .timeline-menu { pointer-events: auto; }
 .timeline-clip[aria-selected='true'] { border-color: #fff; box-shadow: inset 0 0 0 1px #fff; }
 .timeline[data-tool='blade'] .timeline-clip { cursor: crosshair; }
 .timeline[data-tool='trim'] .timeline-clip { cursor: ew-resize; }

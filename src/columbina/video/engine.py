@@ -1749,6 +1749,7 @@ class Engine:
                         )
                         if (
                             isinstance(timeline, str)
+                            and requested.get("candidate") is None
                             and incoming_session == self._session
                             and wire is self._wire
                             and (previous is None or received > previous[0])

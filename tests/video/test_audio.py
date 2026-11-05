@@ -155,15 +155,13 @@ async def test_main_requires_selection_when_there_are_multiple_outputs(
     assert failed.error.code == "VIDEO_MISSING"
 
 
-async def test_clip_range_is_refused_instead_of_silently_ignored(studio: tuple[Desk, Fake]) -> None:
+async def test_clip_range_is_forwarded_in_timeline_frames(studio: tuple[Desk, Fake]) -> None:
     desk, fake = studio
-    failed = await desk.call(
+    measured = await desk.call(
         "video_loudness", action="measure", target="clip", ids=["c1"], range={"from": 0, "to": 25}
     )
-    assert failed.error is not None
-    assert failed.error.code == "VIDEO_INVALID"
-    assert "range" in failed.text
-    assert not fake.sounds
+    assert measured.error is None
+    assert fake.sounds[-1][1]["range"] == {"from": 0, "to": 25}
 
 
 @pytest.mark.parametrize("mode", ["relative", "independent"])
@@ -573,6 +571,25 @@ async def test_cache_does_not_claim_external_jobs_or_unbound_revision_are_curren
     reread = editor.engine.latest_sound("t1", revision=0)
     assert reread is not None
     assert reread["result"]["state"] == "done"
+
+
+async def test_candidate_analysis_does_not_replace_actual_project_measurements(
+    studio: tuple[Desk, Fake], ctx: Context
+) -> None:
+    desk, fake = studio
+    editor = await ctx.use(VIDEOS).editor(ToolRun("inspect", desk.work, desk.session), "video_info")
+    params: dict[str, Any] = {"timeline": "t1", "targets": [{"bus": "MAIN7"}], "revision": 0}
+    await editor.engine.analyze_sound("audio.analyze", params)
+    before = editor.engine.latest_sound("t1", revision=0)
+    params["candidate"] = [
+        {"edit": "set_bus", "timeline": "t1", "id": "MAIN7", "patch": {"strip": {"fader_db": 3}}}
+    ]
+    fake.sound_found = {"results": [{"target": {"bus": "MAIN7"}, "integrated": -14}]}
+    result = await editor.engine.analyze_sound("audio.analyze", params)
+    assert result["results"][0]["integrated"] == -14
+    assert fake.sounds[-1][1]["candidate"] == params["candidate"]
+    assert editor.engine.latest_sound("t1", revision=0) == before
+    assert fake.revision == 0
 
 
 async def test_cancelled_call_keeps_the_previous_success(

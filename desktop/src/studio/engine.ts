@@ -1001,7 +1001,7 @@ export interface ClipGain { clip: string; gain_db: number | null; clamped: boole
 /** What `audio.analysis` tells of a job of `audio.analyze`, `audio.normalize` or `audio.level_match`. */
 export type AudioAnalysis =
   | { job: string; state: 'running'; done: number; total: number }
-  | { job: string; state: 'done'; method: 'audio.analyze'; standard: string; level: number | null; results: AnalysisResult[] }
+  | { job: string; state: 'done'; method: 'audio.analyze'; standard: string; level: number | null; results: AnalysisResult[]; candidate?: true }
   | {
     job: string; state: 'done'; method: 'audio.normalize'; level: string; target: number; mode: 'relative' | 'independent';
     measured: number | null; clips: ClipGain[]; applied: Applied | null; refused?: EngineFailure;

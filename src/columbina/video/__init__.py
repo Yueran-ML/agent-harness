@@ -331,7 +331,7 @@ class _Loudness(_Timeline):
     )
     range: _AudioRange | None = Field(
         default=None,
-        description="Frames [from,to), for measure track/bus/main; clips are measured whole.",
+        description="Timeline frames [from,to) for measurement, intersected with clip bounds.",
     )
     standard: str | None = Field(
         default=None,

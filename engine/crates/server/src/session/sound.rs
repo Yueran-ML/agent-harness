@@ -33,7 +33,9 @@ use serde::Deserialize;
 use serde_json::{json, value::RawValue, Value};
 use tokio::sync::Mutex;
 
-use super::{log_kicked, Connection, Engine, Kind, Limits, Reply, State, WorkedOutError};
+use super::{
+    log_kicked, Connection, Engine, Kind, Limits, Reply, State, WorkedOut, WorkedOutError,
+};
 use crate::meters::{self, decibels, standard_of, Action};
 use crate::play::mix::Feed;
 use crate::rpc::{self, Fault};
@@ -130,6 +132,8 @@ struct Analyze {
     standard: Option<String>,
     #[serde(default)]
     revision: Option<u64>,
+    #[serde(default)]
+    candidate: Option<Vec<Value>>,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -293,9 +297,13 @@ pub(super) async fn call(
         }
         "audio.analyze" | "audio.normalize" | "audio.level_match" => {
             let state = engine.state.lock().await;
-            let work = prepare(method, params, state.history.project())?;
-            check_revision(&work, state.history.revision())?;
-            let project = state.history.project().clone();
+            let (project, work) = prepare_snapshot(
+                method,
+                params,
+                state.history.project(),
+                state.history.revision(),
+                &crate::proxy::proxy_dir(std::path::Path::new(&engine.project)),
+            )?;
             drop(state);
             return start(engine, connection, kind, id, Arc::new(project), work);
         }
@@ -342,6 +350,7 @@ enum Work {
         standard: &'static Standard,
         target: f32,
         revision: Option<u64>,
+        candidate: Option<Vec<Value>>,
     },
     Normalize {
         timeline: usize,
@@ -385,6 +394,58 @@ fn prepare(method: &str, params: Option<&RawValue>, project: &Project) -> Result
         "audio.normalize" => normalize_work(method, params, project),
         _ => match_work(method, params, project),
     }
+}
+
+/// A candidate uses the normal transaction parser and model rules on a disposable history.
+/// No published state, gesture, redo stack or project id is changed by trial measurements.
+fn prepare_snapshot(
+    method: &str,
+    params: Option<&RawValue>,
+    project: &Project,
+    revision: u64,
+    proxy_dir: &std::path::Path,
+) -> Result<(Project, Work), Fault> {
+    let work = prepare(method, params, project)?;
+    check_revision(&work, revision)?;
+    let Work::Analyze {
+        candidate: Some(ops),
+        revision: expected,
+        ..
+    } = &work
+    else {
+        return Ok((project.clone(), work));
+    };
+    if expected.is_none() {
+        return Err(refused(
+            "candidate analysis requires the project revision",
+            json!({"reason":"revision_required"}),
+        ));
+    }
+    let mut inputs = ops
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(index, op)| op.input(index))
+        .collect::<Result<Vec<_>, _>>()?;
+    super::check_proxies(&inputs, proxy_dir)?;
+    let mut names = crate::names::prepare(&mut inputs).map_err(|error| {
+        refused(
+            error.to_string(),
+            json!({"index":error.index,"name":error.name,"reason":error.reason}),
+        )
+    })?;
+    let mut trial = columbina_model::History::new(project.clone());
+    trial
+        .change_with(
+            inputs.into_iter().map(|input| input.change).collect(),
+            "analysis",
+            &mut names,
+        )
+        .map_err(|error| Fault::refused(&error))?;
+    let project = trial.project().clone();
+    // Validate the targets/range again after the candidate may have changed them.
+    let work = prepare(method, params, &project)?;
+    Ok((project, work))
 }
 
 /// `audio.analyze` checked.
@@ -467,6 +528,7 @@ fn analyze_work(method: &str, params: Option<&RawValue>, project: &Project) -> R
         standard,
         target,
         revision: request.revision,
+        candidate: request.candidate,
     })
 }
 
@@ -801,6 +863,14 @@ fn clip_range(timeline: &Timeline, clip: &str) -> Range<i64> {
     })
 }
 
+/// Clip analyses use the intersection in timeline samples, including speed/reverse mapping
+/// already handled by the existing clip graph. No source-time conversion is duplicated here.
+fn limited_clip_range(timeline: &Timeline, clip: &str, range: &Range<i64>) -> Range<i64> {
+    let clip = clip_range(timeline, clip);
+    let start = clip.start.max(range.start);
+    start..clip.end.min(range.end).max(start)
+}
+
 /// The channels of the track of clip `clip`.
 fn clip_layout(timeline: &Timeline, clip: &str) -> Layout {
     clip_of(timeline, clip).map_or(Layout::Stereo, |(at, _)| {
@@ -851,6 +921,7 @@ fn run(
             range,
             standard,
             target,
+            candidate,
             ..
         } => analyze(
             teller,
@@ -858,7 +929,15 @@ fn run(
             (timeline, &targets, range),
             (standard, target),
             stop,
-        ),
+        )
+        .map(|done| {
+            done.map(|mut done| {
+                if candidate.is_some() {
+                    done["candidate"] = json!(true);
+                }
+                done
+            })
+        }),
         Work::Normalize {
             timeline,
             clips,
@@ -931,7 +1010,7 @@ fn analyze(
     let clips: u64 = targets
         .iter()
         .map(|what| match what {
-            Target::Clip(clip) => frames(&clip_range(t, clip)),
+            Target::Clip(clip) => frames(&limited_clip_range(t, clip, &range)),
             _ => 0,
         })
         .sum();
@@ -943,7 +1022,7 @@ fn analyze(
             return Ok(None);
         }
         let only: Vec<Owner> = owners.iter().map(|(_, owner)| owner.clone()).collect();
-        let pass = Pass::strips(project, timeline, &only, range)?;
+        let pass = Pass::strips(project, timeline, &only, range.clone())?;
         let analyzers = pass.analyzers(true);
         let Some(analyses) = pass.run(timeline, analyzers, None, &mut told)? else {
             return Ok(None);
@@ -957,7 +1036,8 @@ fn analyze(
         if stop.load(Ordering::Acquire) {
             return Ok(None);
         }
-        let pass = Pass::clip(project, timeline, clip)?;
+        let mut pass = Pass::clip(project, timeline, clip)?;
+        pass.range = limited_clip_range(t, clip, &range);
         let analyzers = pass.analyzers(true);
         let Some(mut analyses) = pass.run(timeline, analyzers, None, &mut told)? else {
             return Ok(None);
@@ -1205,6 +1285,86 @@ fn matched(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clip_analysis_limits_its_samples_to_the_requested_timeline_interval() {
+        let project = Project::sample();
+        let timeline = &project.timelines[0];
+        let whole = clip_range(timeline, "c2");
+        assert!(whole.end > whole.start + 4);
+        let middle = whole.start + 1..whole.end - 1;
+        assert_eq!(limited_clip_range(timeline, "c2", &middle), middle);
+        assert_eq!(
+            limited_clip_range(timeline, "c2", &(0..whole.end + 1)),
+            whole
+        );
+        let outside = whole.end + 1..whole.end + 10;
+        assert!(limited_clip_range(timeline, "c2", &outside).is_empty());
+    }
+
+    #[test]
+    fn candidate_analysis_changes_only_its_snapshot_and_requires_the_current_revision() {
+        let mut history = columbina_model::History::new(Project::sample());
+        let before = history.project().clone();
+        let request = json!({"timeline":"t1", "targets":[{"clip":"c2"}], "revision":0,
+            "candidate":[{"edit":"nudge_clip_gain", "timeline":"t1", "clips":["c2"], "delta_db":3.0, "linked":false}]});
+        let raw = RawValue::from_string(request.to_string()).unwrap();
+        let (trial, _) = prepare_snapshot(
+            "audio.analyze",
+            Some(&raw),
+            history.project(),
+            0,
+            std::path::Path::new("proxies"),
+        )
+        .unwrap();
+        assert_ne!(trial, before);
+        assert_eq!(history.project(), &before);
+        assert_eq!(history.revision(), 0);
+        assert!(history.undo("test").is_none());
+        let fault = prepare_snapshot(
+            "audio.analyze",
+            Some(&raw),
+            &before,
+            1,
+            std::path::Path::new("proxies"),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(fault.data.unwrap()["reason"], "stale_revision");
+        let mut unbound = request;
+        unbound.as_object_mut().unwrap().remove("revision");
+        let raw = RawValue::from_string(unbound.to_string()).unwrap();
+        let fault = prepare_snapshot(
+            "audio.analyze",
+            Some(&raw),
+            &before,
+            0,
+            std::path::Path::new("proxies"),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(fault.data.unwrap()["reason"], "revision_required");
+    }
+
+    #[test]
+    fn candidate_analysis_refuses_invalid_changes_without_mutating_the_project() {
+        let mut project = Project::sample();
+        project.timelines[0].tracks[1].locked = true;
+        let before = project.clone();
+        let raw = RawValue::from_string(json!({"timeline":"t1", "targets":[{"clip":"c2"}], "revision":0,
+            "candidate":[{"edit":"nudge_clip_gain", "timeline":"t1", "clips":["c2"], "delta_db":3.0, "linked":false}]}).to_string()).unwrap();
+        let fault = prepare_snapshot(
+            "audio.analyze",
+            Some(&raw),
+            &project,
+            0,
+            std::path::Path::new("proxies"),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(fault.data.unwrap()["reason"], "locked");
+        assert_eq!(project, before);
+    }
 
     #[test]
     fn standards_publish_the_source_table_without_own_defaults() {

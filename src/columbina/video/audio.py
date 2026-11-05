@@ -33,17 +33,13 @@ class Loudness:
     ) -> dict[str, Any]:
         """Wait for the analysis, retaining null readings, clamping and apply refusals.
 
-        Ranges are timeline frames and apply only to tracks and buses. Clip normalization
+        Ranges are timeline frames, intersected with clips when measuring them. Clip normalization
         moves the existing Volume curve; it never substitutes a fixed gain for its keys.
         """
         if action == "measure":
             if target == "clip_gain" or mode is not None or level is not None:
                 raise _invalid(
                     "measure takes clip, track, bus or main; mode and level are for apply"
-                )
-            if target == "clip" and frames is not None:
-                raise _invalid(
-                    "clip measurement has no range; use a track, bus or main for a range"
                 )
         elif target != "clip_gain" or frames is not None:
             raise _invalid("apply supports clip_gain only, over whole clips without a range")

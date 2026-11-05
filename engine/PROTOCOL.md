@@ -4641,11 +4641,12 @@ What is measured is what an export would carry (a Listen never):
 - a clip: its sound after its Volume (keys and all) and before its pan, as its track takes it (its
   channels configured, at its speed, through its equalizer and its effects, which come before its
   Volume), without its fades and crossfades, and without the track's Trim, polarity, Ducker,
-  inserts, Dynamics, equalizer and lanes, over the part of it on the timeline (`range` is not
-  read for it). So the gain that Normalize and Level Matcher find is what the Volume is moved
+  inserts, Dynamics, equalizer and lanes, over the part of it on the timeline, intersected with
+  `range` for `audio.analyze`. An empty intersection measures zero seconds with null levels.
+  Normalize and Level Matcher still measure whole clips. The gain they find is what the Volume is moved
   by, and a clip normalized again is moved by nothing (a gain under 0.001 dB is not applied).
 
-`audio.analyze {timeline, targets, range?, standard?, revision?}`: `targets` from 1 to 256, each
+`audio.analyze {timeline, targets, range?, standard?, revision?, candidate?}`: `targets` from 1 to 256, each
 `{"clip"}`, `{"track"}` (a track of sound that is on) or `{"bus"}`, each once (the tracks and buses are measured
 in one run of the mix, each clip in a run of its own); `standard` an id of the table,
 the timeline's by default. Done: `{job, state: "done", method: "audio.analyze", standard, level,
@@ -4656,6 +4657,16 @@ of the exported file (within 0.1 LU and 0.2 dB).
 When `revision` is supplied, it is checked under the snapshot lock before a job is started;
 a mismatch returns `-32001`, `data.reason: "stale_revision"`, with `expected` and `actual`,
 without a job or history change. Omitting it retains the existing unbound behavior.
+
+`candidate`, when present, is a nonempty list of operations/edits using the same transaction
+format and local names as `transaction.apply`. It requires `revision` (`revision_required`
+otherwise), applies the changes only to a cloned project through the normal model validation,
+and measures that clone. Targets must exist before and after the candidate; the requested
+range is evaluated against the candidate timeline. Invalid or locked changes refuse before
+a job starts. No live revision, undo/redo stack, gesture, id counter, playback or saved project
+is changed. Successful results add `candidate: true`. These trial results must not replace
+the cached measurements of the actual project. To accept a candidate, send its original list
+once through `transaction.apply` with the same revision; an intervening edit is refused.
 
 `audio.normalize {timeline, clips, level?, target?, mode?, apply?, revision?}` (Normalize Audio
 Levels, p. 3840–3841): `clips` from 1 to 256 clips of sound, each once; `level` `sample_peak` (the

@@ -324,6 +324,52 @@ async fn volume(client: &mut Client, clip: &str) -> Value {
 }
 
 #[tokio::test]
+async fn candidate_analysis_and_clip_ranges_measure_without_changing_history() {
+    let dir = super::project_dir();
+    let sounds = tempfile::tempdir().unwrap();
+    let (engine, mut client) = two_clips(dir.path(), sounds.path()).await;
+    let before = project(&mut client).await;
+    let revision = before["revision"].as_u64().unwrap();
+    let params = json!({"timeline":"tl", "targets":[{"clip":"c1"}],
+        "range":{"from":25,"to":50}, "revision":revision});
+    let job = client.result("audio.analyze", Some(params.clone())).await["job"].clone();
+    let (original, _) = ended(&mut client, "audio.analysis", &job).await;
+    assert_eq!(original["state"], "done", "{original}");
+    assert_eq!(original["results"][0]["seconds"], 1.0);
+    let mut candidate = params;
+    candidate["candidate"] = json!([{"edit":"nudge_clip_gain", "timeline":"tl", "clips":["c1"], "delta_db":6.0,"linked":false}]);
+    let job = client
+        .result("audio.analyze", Some(candidate.clone()))
+        .await["job"]
+        .clone();
+    let (trial, _) = ended(&mut client, "audio.analysis", &job).await;
+    assert_eq!(trial["state"], "done", "{trial}");
+    assert_eq!(trial["candidate"], true);
+    assert_eq!(trial["results"][0]["seconds"], 1.0);
+    close(
+        &trial["results"][0]["integrated"],
+        original["results"][0]["integrated"].as_f64().unwrap() + 6.0,
+        0.02,
+        "candidate gain",
+    );
+    assert_eq!(project(&mut client).await, before);
+    candidate["revision"] = json!(revision + 1);
+    let error = client.error("audio.analyze", Some(candidate)).await;
+    assert_eq!(error["data"]["reason"], "stale_revision");
+    assert_eq!(project(&mut client).await, before);
+    // The last real step added the timeline; trial analyses must not become undo steps.
+    client.result("history.undo", None).await;
+    let undone = project(&mut client).await;
+    assert!(!undone["project"]["timelines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|timeline| timeline["id"] == "tl"));
+    drop(client);
+    drop(engine);
+}
+
+#[tokio::test]
 async fn normalize_brings_two_clips_to_minus_23_independent_and_relative_and_applied_is_one_undo() {
     let dir = super::project_dir();
     let sounds = tempfile::tempdir().unwrap();

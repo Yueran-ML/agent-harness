@@ -170,6 +170,7 @@ pub(super) fn settled(project: &Project, read: Vec<(Wanted, Found)>) -> Vec<Op> 
 /// own, until it is stopped or the engine has gone.
 pub struct Reader {
     stop: Arc<(std::sync::Mutex<bool>, Condvar)>,
+    /// The thread, until it is let go of as the reader is stopped.
     thread: std::sync::Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -220,22 +221,31 @@ impl Reader {
         }
     }
 
-    /// Stop reading, and wait for the file being read to be done with.
+    /// Stop reading. This does not wait for a file that is being read, which may be on a drive
+    /// that takes long to answer: what is read after this is set on nothing, and the thread ends
+    /// with it.
     pub fn stop(&self) {
         let (lock, told) = &*self.stop;
         *lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
         told.notify_all();
-        let thread = self
-            .thread
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        if let Some(thread) = thread {
-            let _ = thread.join();
-        }
+        // Let go of the thread, which ends by itself.
+        drop(
+            self.thread
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take(),
+        );
     }
+}
+
+/// Whether the reader was stopped.
+fn stopped(stop: &(std::sync::Mutex<bool>, Condvar)) -> bool {
+    *stop
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// One pass: read what is wanted, but what was kept as it was seen and is so still, and set
@@ -250,11 +260,7 @@ fn pass(
     kept.retain(|id, _| wanted.iter().any(|one| &one.id == id));
     let mut found = Vec::new();
     for one in wanted {
-        if *stop
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-        {
+        if stopped(stop) {
             return;
         }
         if kept
@@ -280,6 +286,10 @@ fn pass(
         return;
     }
     let mut locked = state.blocking_lock();
+    // Stopped meanwhile, as the engine ends: nothing more is set.
+    if stopped(stop) {
+        return;
+    }
     let ops = settled(locked.history.project(), found);
     if ops.is_empty() {
         return;

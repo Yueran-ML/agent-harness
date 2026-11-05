@@ -1559,8 +1559,18 @@ class Engine:
         """
         heard = self.changes()
         try:
-            said = await self._call(method, params)
-            job = said.get("job")
+            wire = await self._ensure()
+            number, asked = self._sent(wire, method, params)
+            try:
+                # Shielded as render's: a caller that gives up before the job is named still has
+                # it cancelled.
+                answer: object = await asyncio.shield(asked.answer)
+            except asyncio.CancelledError:
+                await self._stopped(asked.answer, "audio.cancel")
+                raise
+            finally:
+                self._asked.pop(number, None)
+            job = cast("dict[str, Any]", answer).get("job") if isinstance(answer, dict) else None
             if not isinstance(job, str):
                 raise EngineError(f"the engine answered {method} with no job", code=UNEXPECTED)
             try:
@@ -1591,8 +1601,13 @@ class Engine:
         finally:
             await heard.aclose()
 
-    async def _stopped(self, answer: "asyncio.Future[object]") -> None:
-        """Cancel the render that a ``render.start`` given up on began, if the engine began one.
+    async def _stopped(
+        self, answer: "asyncio.Future[object]", cancel: str = "render.cancel"
+    ) -> None:
+        """Cancel the job that a request given up on began, if the engine began one.
+
+        ``cancel`` is the method that cancels it: ``render.cancel`` for a render,
+        ``audio.cancel`` for an analysis of sound.
 
         This waits for the answer a while, and fails silently: the caller is cancelled already.
         """
@@ -1601,7 +1616,7 @@ class Engine:
                 said = await answer
                 job = cast("dict[str, Any]", said).get("job") if isinstance(said, dict) else None
                 if isinstance(job, str):
-                    await self._call("render.cancel", {"job": job})
+                    await self._call(cancel, {"job": job})
 
     def changes(self) -> Changes:
         """What the engine tells from now on: every change of the project, and its other news."""

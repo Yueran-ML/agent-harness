@@ -795,6 +795,27 @@ async def test_an_analysis_of_sound_is_followed_until_it_is_done(tmp_path: Path)
         assert "audio.cancel" in fake.asked
 
 
+async def test_an_analysis_given_up_before_it_is_named_is_cancelled(tmp_path: Path) -> None:
+    async with served(tmp_path / "film") as fake:
+        connected = await attached(tmp_path / "film")
+        fake.sound_hold = True
+        # Its answer is held until another request comes.
+        fake.hold = 2
+        waiting = asyncio.create_task(
+            connected.analyze_sound("audio.analyze", {"timeline": "t1", "targets": [{"bus": "B1"}]})
+        )
+        await until(lambda: "audio.analyze" in fake.asked)
+        waiting.cancel()
+        with contextlib.suppress(EngineError):
+            await connected.duration("t9")
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+        await until(lambda: fake.jobs.get("audio-1") == "cancelled")
+        await connected.aclose()
+
+        assert "audio.cancel" in fake.asked
+
+
 async def test_a_render_that_is_refused_is_followed_no_further(tmp_path: Path) -> None:
     async with served(tmp_path / "film") as fake:
         connected = await attached(tmp_path / "film")

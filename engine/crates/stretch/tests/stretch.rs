@@ -280,3 +280,16 @@ fn a_stretcher_takes_a_rate_of_8_khz_or_more() {
     assert_eq!(Stretch::new(1, 1).unwrap_err(), Error::Rate);
     assert!(Stretch::new(1, 8_000).is_ok());
 }
+
+#[test]
+fn the_configuration_of_a_rate_is_asked_of_the_library_once() {
+    let first = Config::of(44_100).unwrap();
+    let was = allocations::arm(true);
+    let before = allocations::counted();
+    let again = Config::of(44_100).unwrap();
+    let after = allocations::counted();
+    let _ = allocations::arm(was);
+    assert_eq!(first, again);
+    assert_eq!(after, before, "no stretcher made for a rate known already");
+    assert_eq!(Config::of(1), Err(Error::Rate));
+}

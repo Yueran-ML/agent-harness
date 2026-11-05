@@ -914,8 +914,8 @@ pub fn first_buses() -> Vec<Bus> {
 /// a lane of a setting that is on or off. What is neither (a kind, a mode, a source) has none,
 /// nor has a whole number (`eq.<band>.slope`, the semitones of a Pitch), nor what the graph does
 /// not move as a lane would (see [`automation::drop_unwired`]: Effects In, the pan's switch,
-/// Boom, rotation and spread, whether a send is before the fader, the Lookahead of a Ducker, a
-/// Pitch). The engine reads it too, to tell a change of the settings that the graph of the sound
+/// Boom, rotation and spread, whether a send is before the fader, the Lookahead of a Ducker). The
+/// engine reads it too, to tell a change of the settings that the graph of the sound
 /// takes as it plays from one that needs another graph (T5).
 #[must_use]
 pub fn automatable(strip: &Strip) -> serde_json::Value {

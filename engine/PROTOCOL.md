@@ -597,8 +597,11 @@ are at most +10; −100 or below is −∞.
   is a straight fade over `fade_in`/`fade_out` frames; `curve`, `skew` ∈ [−1, 1]: rise
   `g(t') = (1−|c|)·t' + |c|·e(t')`, `t' = t^(2^−skew)`, `e = sin(πt'/2)` for c > 0 and
   `1 − cos(πt'/2)` for c < 0; a fade out is `g(1−t)`; the two together no longer than the clip),
-  `eq` (4 bands, see below; off), `effects` (inserts, see below; an effect of a clip has no
-  sidechain), `pitch_correction` (false), `pitch` (`{semitones: −12…12 whole, cents: −100…100}`)
+  `eq` (4 bands, see below; off), `effects` (inserts, see below, any number, in order: they act
+  after the clip's equalizer and before its volume, fades and pan, their latency made up so that
+  the clip still sounds on its own samples; an effect of a clip has no sidechain and no lanes, and
+  one that cannot work on the channels of the track, a Stereo Width on a mono track, is
+  skipped), `pitch_correction` (false), `pitch` (`{semitones: −12…12 whole, cents: −100…100}`)
   and `channels`: `null` (the media's channels mixed to the track's as libav mixes them) or one
   `{source, enabled, mute, level_db}` per channel of its track (p. 3833); `source` is `null`
   (silence), `{stream, channel}` (a stream as libav/ffprobe number all streams of the file, and a
@@ -674,9 +677,10 @@ are at most +10; −100 or below is −∞.
   listens) is refused as `out_of_range: lane`; a whole number (`eq.<band>.slope`, the
   `semitones` of a Pitch) as `out_of_range: lane_integer`; and what the graph does not move as a
   lane would, as `out_of_range: lane_not_wired`: Effects In (`inserts_on`), the pan's `on`,
-  `rotate`, `spread`, `lfe_db`, `lfe_on` and `lfe_pre`, a send's `pre` and the rest of its pan, the
-  Lookahead of a Ducker (`track_fx.lookahead_ms`, the latency of the graph), and every setting of a
-  Pitch, which has no node yet. With Effects In off, a lane of the switch of an insert
+  `rotate`, `spread`, `lfe_db`, `lfe_on` and `lfe_pre`, a send's `pre` and the rest of its pan, and
+  the Lookahead of a Ducker (`track_fx.lookahead_ms`, the latency of the graph). A Pitch has lanes
+  of its `cents`, `dry_wet` and `on`, which act on the sound that leaves it (read its latency
+  later); its `semitones` move in whole steps and have none. With Effects In off, a lane of the switch of an insert
   (`insert.<id>.on`) turns no insert on. A lane keeps to the range of its setting: each of its
   values is one that the setting may be set to while the rest of the strip is as it is (a fader at
   most +10 dB, a pan −1…1, a frequency within its band, above 0 on a scale of logarithms), and a
@@ -4328,8 +4332,9 @@ Plan T6 of phase 3. The export runs the same graph of the sound as playback (the
 tracks, buses, VCAs, effects and lanes), built for export from the snapshot: a Listen of a
 sidechain is never exported, every clip is read by a reader that waits for it (a clip that is
 heard and cannot be read fails the export), and the graph starts at the first sample of the
-range with the preroll that playback from the same sample has (the graph's settling, at most
-10 s). So the sound exported from a sample is, to the bit, the sound that playback from that
+range with the preroll that playback from the same sample has (what the strips need to settle,
+and what each clip under way there needs, its equalizer and effects and the strips after them,
+but no further back than where its effects start; at most 10 s). So the sound exported from a sample is, to the bit, the sound that playback from that
 sample gives the device (the null test: a playback captured with `--sound capture=<path>` less an
 export as `pcm_f32le` is nothing but zeros), where:
 

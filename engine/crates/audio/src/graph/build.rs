@@ -28,8 +28,8 @@ use crate::rt::{seqlock, Domain, SeqReader, Smoothed};
 
 use super::automation::Held;
 use super::clip::{
-    cutoff, radius, ClipChain, ClipLevel, ClipPan, ClipScratch, Mapping, Pool, Reach, StretchMode,
-    Stretched, Warped, Window,
+    cutoff, radius, ClipChain, ClipEffects, ClipLevel, ClipPan, ClipScratch, ClipStage, Mapping,
+    Pool, Reach, StretchMode, Stretched, Warped, Window,
 };
 use super::pdc::{DelayLine, Delayer};
 use super::route::{balance, panned, PanAt};
@@ -426,6 +426,66 @@ pub(crate) fn unlistened(effect: &Effect) -> Effect {
         Effect::Gain(_) | Effect::SoftClipper(_) | Effect::StereoWidth(_) | Effect::Pitch(_) => {}
     }
     effect
+}
+
+/// The effects of `clip` on a track of `layout` (T4c), and how long the clip's path takes to
+/// settle through them: each made by the maker of `options` as an insert's is, with every Listen
+/// off but in a preview, and with no lanes (a clip has none); one that cannot work on the
+/// channels of the track skipped (Stereo Width on a mono track); one that is off and does not
+/// take its switch itself a delay of its latency. Their settling is their nodes' summed, and
+/// their latency besides: a run that starts in the middle of the clip starts them as far ahead
+/// of it, with nothing in them. None where none is left.
+fn clip_effects(
+    clip: &columbina_model::Clip,
+    options: &Options,
+    rate: u32,
+    layout: Layout,
+) -> Option<(ClipEffects, u64)> {
+    let spec = Spec::new(rate, options.max_block, layout);
+    let (mut stages, mut latency, mut settle) = (Vec::new(), 0i64, 0u64);
+    for insert in &clip.effects {
+        let effect = if options.purpose == Purpose::Preview {
+            insert.effect.clone()
+        } else {
+            unlistened(&insert.effect)
+        };
+        let context = Context {
+            rate,
+            purpose: options.purpose,
+            on: insert.on,
+            lanes: &[],
+        };
+        let Some(made) = (options.maker)(&effect, &context) else {
+            continue;
+        };
+        let mut node = made.node;
+        if node.prepare(&spec).is_err() {
+            continue;
+        }
+        let node: Box<dyn Node> = if insert.on || made.switched {
+            settle += u64::from(made.settle);
+            node
+        } else {
+            let mut bypass = Delayer::new(usize::try_from(node.latency()).unwrap_or(0));
+            if bypass.prepare(&spec).is_err() {
+                continue;
+            }
+            Box::new(bypass)
+        };
+        let offset = latency;
+        latency += i64::from(node.latency());
+        stages.push(ClipStage { node, offset });
+    }
+    if stages.is_empty() {
+        return None;
+    }
+    let effects = ClipEffects {
+        stages: stages.into_boxed_slice(),
+        latency,
+        processed: 0,
+        fresh: true,
+    };
+    Some((effects, settle + latency.unsigned_abs()))
 }
 
 /// The layout of a track of `format` and `channels`.
@@ -1281,6 +1341,12 @@ impl Graph {
             let Some(&strip) = track_at.get(piece.track.as_str()) else {
                 continue;
             };
+            // Only what is heard over the range of a graph that has one (T4c's review).
+            if let Some((low, high)) = options.within {
+                if piece.to <= low || piece.from >= high || !needed[strip] {
+                    continue;
+                }
+            }
             let Some(track) = t.tracks.iter().find(|r| r.id == piece.track) else {
                 continue;
             };
@@ -1314,20 +1380,28 @@ impl Graph {
                 (AudioParam::Keys(_), Layout::Stereo) => ClipPan::Keyed,
                 _ => ClipPan::None,
             };
+            let mut settling = 0u64;
             let eq = if clip.eq.on {
                 let settings = eq_settings(&clip.eq, Variant::Clip);
                 let mut node = Eq::new(&settings);
                 node.prepare(&Spec::new(rate, max_block, layout))
                     .ok()
                     .map(|()| {
-                        settle_in[strip] =
-                            settle_in[strip].max(u64::from(eq::settle_for(&settings, rate)));
+                        settling = u64::from(eq::settle_for(&settings, rate));
                         node
                     })
             } else {
                 None
             };
-            let stretch = stretching.of(clip, &piece, &mapping, (rate, channels), reach);
+            // Its effects after its equalizer (T4c): the path of its track starts with both.
+            let (effects, through) = match clip_effects(clip, &options, rate, layout) {
+                Some((effects, settle)) => (Some(effects), settle),
+                None => (None, 0),
+            };
+            let settling = settling.saturating_add(through);
+            settle_in[strip] = settle_in[strip].max(settling);
+            let ahead = effects.as_ref().map_or(0, |effects| effects.latency);
+            let stretch = stretching.of(clip, &piece, &mapping, (rate, channels), (reach, ahead));
             if let Some(stretch) = &stretch {
                 if stretch.mode == StretchMode::Source {
                     window = window.max(stretching.seek_length());
@@ -1368,6 +1442,8 @@ impl Graph {
                 ),
                 piece,
                 stretch,
+                effects,
+                settle: settling,
                 warped: Warped::default(),
             });
         }
@@ -1400,6 +1476,22 @@ impl Graph {
             .max()
             .unwrap_or(0)
             .min(u64::from(u32::MAX));
+        // Of each strip, the longest settling from it to an output, through what it feeds and
+        // the sidechains it drives (T4c's review): what the preroll of a run that starts where
+        // its clips are under way takes besides theirs.
+        let mut paths: Vec<Option<u64>> = vec![None; count];
+        for &at in order.iter().rev() {
+            let mut after = outs.contains(&at).then_some(0u64);
+            let driven = (0..count).filter(|&to| keys[to].contains(&at));
+            for to in feeds[at].iter().copied().chain(driven) {
+                if let Some(path) = paths[to] {
+                    after = Some(after.map_or(path, |after| after.max(path)));
+                }
+            }
+            paths[at] = after.map(|after| after.saturating_add(settles[at]));
+        }
+        let strips_settle = paths.iter().flatten().copied().max().unwrap_or(0);
+        let lead = chains.iter().map(ClipChain::ahead).max().unwrap_or(0);
 
         // The strips themselves, their lanes found and their buffers taken.
         let mut strips = Vec::with_capacity(count);
@@ -1675,6 +1767,9 @@ impl Graph {
             monitor,
             latency,
             settle: u32::try_from(settle).unwrap_or(u32::MAX),
+            paths,
+            strips_settle,
+            lead: u32::try_from(lead).unwrap_or(0),
             position: 0,
             frames: 0,
             warp: Warp::IDENTITY,
@@ -1804,9 +1899,10 @@ impl Stretching {
     }
 
     /// The stretch of `clip`, which sounds as `piece` with `mapping` on a track of `channels` at
-    /// `rate`, its filter reaching `radius`: Pitch Correction where its speed is not 1 (and at
-    /// most [`STRETCH_FASTEST`]), else its pitch moved alone where it is moved, else none, as
-    /// before (p. 3827, p. 3826).
+    /// `rate`, its filter reaching `radius`, its effects late by `ahead` (it is stretched that far
+    /// ahead of the timeline, T4c): Pitch Correction where its speed is not 1 (and at most
+    /// [`STRETCH_FASTEST`]), else its pitch moved alone where it is moved, else none, as before
+    /// (p. 3827, p. 3826).
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
@@ -1820,7 +1916,7 @@ impl Stretching {
         piece: &resolve::AudioPiece,
         mapping: &Mapping,
         (rate, channels): (u32, usize),
-        radius: i64,
+        (radius, ahead): (i64, i64),
     ) -> Option<Stretched> {
         let (num, den) = piece.speed;
         let speed = f64::from(num) / f64::from(den.max(1));
@@ -1870,7 +1966,8 @@ impl Stretching {
             self.pools.len() - 1
         };
         let of = &mut self.pools[pool];
-        of.spans.push((busy_from, piece.to));
+        // The blocks of the timeline in which it holds a stretcher.
+        of.spans.push((busy_from - ahead, piece.to - ahead));
         of.most = of.most.max(max_input);
         Some(Stretched {
             mode,

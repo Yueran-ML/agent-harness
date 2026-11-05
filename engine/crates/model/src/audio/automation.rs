@@ -72,8 +72,9 @@ pub fn view(owner: Owner<'_>) -> Value {
 /// Take out of a view of the settings of a strip what the graph does not move as a lane would,
 /// and whole numbers (T14's review): Effects In (`inserts_on`); of its pan all but `x`, `y` and
 /// `divergence`; of a send whether it is before the fader (`pre`) and of its pan all but `x` and
-/// `y`; the Lookahead of a Ducker (its latency, a structure of the graph); every setting of a
-/// Pitch (which has no node yet); and any setting written as a whole number.
+/// `y`; the Lookahead of a Ducker (its latency, a structure of the graph); and any setting written
+/// as a whole number, such as the semitones of a Pitch, which move in steps (its cents, its mix
+/// and its switch have lanes, T4c).
 pub fn drop_unwired(view: &mut Value) {
     let Some(object) = view.as_object_mut() else {
         return;
@@ -97,9 +98,6 @@ pub fn drop_unwired(view: &mut Value) {
     }
     if let Some(Value::Object(ducker)) = object.get_mut("track_fx") {
         ducker.remove("lookahead_ms");
-    }
-    if let Some(Value::Object(inserts)) = object.get_mut("insert") {
-        inserts.retain(|_, effect| effect.get("kind").and_then(Value::as_str) != Some("pitch"));
     }
     drop_whole_numbers(view);
 }
@@ -900,6 +898,45 @@ mod tests {
 
     fn points(list: &[(i64, f64)]) -> Vec<LanePoint> {
         list.iter().map(|&(t, v)| point(t, 1000, v)).collect()
+    }
+
+    #[test]
+    fn a_pitch_has_lanes_of_its_cents_its_mix_and_its_switch_but_none_of_its_whole_semitones() {
+        use crate::audio::fx::{Effect, PitchFx};
+        let mut strip = Strip::to_first_bus();
+        strip.inserts.push(Insert {
+            id: "fx1".into(),
+            on: true,
+            effect: Effect::Pitch(PitchFx {
+                semitones: 3,
+                cents: 25.0,
+                dry_wet: 80.0,
+            }),
+        });
+        let owner = Owner::Strip {
+            strip: &strip,
+            mute: false,
+            bus: false,
+        };
+        let view = view(owner);
+        assert_eq!(
+            kind_of(&view, "insert.fx1.cents"),
+            Some(LaneKind::Continuous)
+        );
+        assert_eq!(fixed_value(&view, "insert.fx1.cents"), Some(25.0));
+        assert_eq!(
+            kind_of(&view, "insert.fx1.dry_wet"),
+            Some(LaneKind::Continuous)
+        );
+        assert_eq!(kind_of(&view, "insert.fx1.on"), Some(LaneKind::Switch));
+        assert_eq!(range_of(owner, "insert.fx1.cents", 0.0), (-100.0, 100.0));
+        let listed = paths(owner);
+        for path in ["insert.fx1.cents", "insert.fx1.dry_wet", "insert.fx1.on"] {
+            assert!(listed.iter().any(|p| p == path), "{path}");
+        }
+        // Its semitones are whole: a setting of steps, not a lane (T4c).
+        assert_eq!(kind_of(&view, "insert.fx1.semitones"), None);
+        assert_eq!(no_lane(owner, "insert.fx1.semitones"), "lane_integer");
     }
 
     #[test]

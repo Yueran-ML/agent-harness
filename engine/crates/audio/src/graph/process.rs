@@ -99,7 +99,9 @@ impl Graph {
         most: u32,
         feed: &mut dyn ClipFeed,
     ) -> Result<(), FeedError> {
-        let preroll = self.preroll().min(most);
+        // However short, as long again as the effects of a clip are late (T4c's review): they
+        // start a lead after the run does, and are silent for as long.
+        let preroll = self.preroll_at(at).min(most.saturating_add(self.lead));
         let begin = at.saturating_sub(i64::from(preroll));
         // Reset and the stretched clips brought to `begin` (T13): on this path too.
         let mut result = self.begin(begin, feed);

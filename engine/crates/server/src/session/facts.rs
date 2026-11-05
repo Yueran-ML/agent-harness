@@ -320,7 +320,11 @@ mod tests {
     /// A WAV of two channels of silence, a tenth of a second long, that says they are the left
     /// and the right (`WAVE_FORMAT_EXTENSIBLE`, its mask 3), so that libav names their layout.
     fn wav(path: &Path) {
-        let samples = 4800_u32;
+        wav_of(path, 4800);
+    }
+
+    /// As [`wav`], `samples` long.
+    fn wav_of(path: &Path, samples: u32) {
         let data = samples * 4;
         let mut bytes = Vec::new();
         bytes.extend_from_slice(b"RIFF");
@@ -412,6 +416,13 @@ mod tests {
             panic!("another file is kept as it was seen");
         };
         assert_eq!(seen.size, 13);
+        // Media, but other media than the media's: its sound is not read of it.
+        wav_of(&path, 9600);
+        assert!(matches!(read(&one), Found::Kept(_)));
+        std::fs::write(&path, b"not the media").unwrap();
+        let Found::Kept(seen) = read(&one) else {
+            panic!("another file is kept as it was seen");
+        };
         assert!(unchanged(&one.path, seen));
         std::fs::write(&path, b"not the media, nor this").unwrap();
         assert!(

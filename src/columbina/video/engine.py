@@ -68,6 +68,7 @@ __all__ = [
     "UNSTARTED",
     "AlbumKind",
     "Applied",
+    "AudioCodec",
     "Changed",
     "Changes",
     "Channel",
@@ -81,7 +82,10 @@ __all__ = [
     "LutRoot",
     "LutStatus",
     "NodeSide",
+    "Normalization",
+    "NormalizeMode",
     "Progress",
+    "RenderAudio",
     "RenderState",
     "Rendering",
     "Statistics",
@@ -246,7 +250,14 @@ class Progress:
         fps: How many frames it writes a second, lately.
         path: The file that it wrote, once it is done.
         encoder: The encoder of FFmpeg that it wrote with (``h264_nvenc``, ``prores_ks``).
-        message: Why it failed.
+        message: Why it failed, or what it could not do (Audio Normalization of a film
+            without sound, a standard that it could not meet).
+        measuring: While Audio Normalization measures the sound, before the first frame is
+            written: ``{"pass", "passes", "frame", "frames"}``, the pass and how many samples of
+            it are measured.
+        normalization: Once Audio Normalization has measured: ``{"standard", "mode",
+            "target", "true_peak_max", "gain_db", "ceiling_db", "before", "after", "met"}``
+            (``PROTOCOL.md``, The sound of an export).
     """
 
     job: str
@@ -257,6 +268,8 @@ class Progress:
     path: str | None = None
     encoder: str | None = None
     message: str | None = None
+    measuring: dict[str, Any] | None = None
+    normalization: dict[str, Any] | None = None
 
     @property
     def over(self) -> bool:
@@ -278,6 +291,10 @@ class Progress:
             said = params.get(key)
             return said if isinstance(said, str) else None
 
+        def told(key: str) -> dict[str, Any] | None:
+            said = params.get(key)
+            return dict(cast("Mapping[str, Any]", said)) if isinstance(said, Mapping) else None
+
         fps = params.get("fps")
         return cls(
             job=job,
@@ -288,7 +305,75 @@ class Progress:
             path=text("path"),
             encoder=text("encoder"),
             message=text("message"),
+            measuring=told("measuring"),
+            normalization=told("normalization"),
         )
+
+
+AudioCodec = Literal["aac", "pcm_s24le", "pcm_f32le"]
+"""How the sound of an export is written: AAC (in ``.mp4``, ``.mov``, ``.m4a``), or PCM of 24
+bits or of floats (in ``.mov``, ``.wav``)."""
+
+NormalizeMode = Literal["normalize", "optimize"]
+"""Audio Normalization of the Deliver page: a gain to whichever of the target and the highest
+true peak it meets first, or to the target with a limiter of true peaks after it."""
+
+
+@dataclass(frozen=True)
+class Normalization:
+    """Audio Normalization of one export, never of the project.
+
+    See ``PROTOCOL.md``, The sound of an export.
+
+    Attributes:
+        standard: An id of the table of loudness standards (``ebu-r128``, ``spotify``).
+        mode: How the loudness is brought to the target.
+        target: In LUFS, from -60 to 0; the standard's target where it is not given.
+    """
+
+    standard: str
+    mode: NormalizeMode = "normalize"
+    target: float | None = None
+
+    def params(self) -> dict[str, Any]:
+        """As ``render.start`` takes it."""
+        said: dict[str, Any] = {"standard": self.standard, "mode": self.mode}
+        if self.target is not None:
+            said["target"] = self.target
+        return said
+
+
+@dataclass(frozen=True)
+class RenderAudio:
+    """The sound of an export, each setting the engine's default where it is not given.
+
+    See ``PROTOCOL.md``, The sound of an export.
+
+    Attributes:
+        bus: The bus rendered, a main output or the bus monitored; by default the bus monitored.
+            The file has the channels of its format.
+        rate: Samples a second, 7350 to 192000; by default the timeline's.
+        codec: By default PCM of 24 bits in a ``.wav``, and AAC else.
+        bitrate: Of AAC only: 128000, 192000 (the default), 256000 or 320000.
+        normalize: Audio Normalization of this export.
+    """
+
+    bus: str | None = None
+    rate: int | None = None
+    codec: AudioCodec | None = None
+    bitrate: int | None = None
+    normalize: Normalization | None = None
+
+    def params(self) -> dict[str, Any]:
+        """As ``render.start`` takes it: only what is given."""
+        said: dict[str, Any] = {}
+        for key in ("bus", "rate", "codec", "bitrate"):
+            value = getattr(self, key)
+            if value is not None:
+                said[key] = value
+        if self.normalize is not None:
+            said["normalize"] = self.normalize.params()
+        return said
 
 
 View = Literal["timeline", "source"]
@@ -1467,6 +1552,8 @@ class Engine:
         subtitle_tracks: Sequence[str] = (),
         replace: bool = False,
         revision: int | None = None,
+        audio: RenderAudio | None = None,
+        video: bool = True,
     ) -> Rendering:
         """Have the engine render a timeline into a file, in the background.
 
@@ -1487,20 +1574,31 @@ class Engine:
             revision: The revision of the project that the render was prepared at, such as the
                 names of its SRT files; the engine refuses it where the project is not at that
                 revision any more (``stale_revision``). Not held to any if it is not given.
+            audio: The sound of the export: its bus, rate, codec, rate of bits and Audio
+                Normalization; the engine's defaults where it is not given.
+            video: Whether the picture is rendered; without it the sound is rendered alone,
+                into a ``.wav`` or an ``.m4a``, and ``codec`` and ``quality`` are not sent.
 
         Raises:
             EngineError: The engine refused: no such timeline (``missing``), a relative path, a
                 file that is there already, nothing to render, a subtitle track that is not one of
-                the timeline's (``subtitle_track``), or a revision that is not the project's.
+                the timeline's (``subtitle_track``), a revision that is not the project's, or a
+                bus, rate, codec, rate of bits, standard or target of the sound that cannot be
+                (``bus``, ``rate``, ``audio_codec``, ``bitrate``, ``standard``, ``target``).
         """
         params: dict[str, Any] = {
             "timeline": timeline,
             "path": str(path),
-            "codec": codec,
-            "quality": quality,
             "subtitle_tracks": list(subtitle_tracks),
             "replace": replace,
         }
+        if video:
+            params["codec"] = codec
+            params["quality"] = quality
+        else:
+            params["video"] = None
+        if audio is not None:
+            params["audio"] = audio.params()
         if frames is not None:
             params["range"] = {"from": frames[0], "to": frames[1]}
         if revision is not None:

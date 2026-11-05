@@ -23,7 +23,7 @@ as one transaction.
 """
 
 import enum
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from fractions import Fraction
 from typing import Any, Final, Literal
 
@@ -34,9 +34,15 @@ from columbina.data import Data
 __all__ = [
     "LEFT_OUT",
     "Alignment",
+    "AttributeItem",
+    "AudioParamName",
+    "ChainOf",
     "ColorSource",
+    "CrossfadeLevel",
     "CueItem",
     "Edge",
+    "KeyInterp",
+    "LaneThen",
     "MediaSource",
     "Rate",
     "Source",
@@ -47,42 +53,66 @@ __all__ = [
     "Transform",
     "TransitionKind",
     "add_bin",
+    "add_bus",
     "add_cue",
+    "add_insert",
     "add_timeline",
     "add_track",
+    "add_track_group",
     "add_transition",
+    "add_vca",
     "append",
     "blade",
+    "clear_lanes",
+    "clip_gain_keys",
+    "clip_gain_range",
     "close_gap",
+    "copy_effects",
     "cues_from",
+    "fade_to_playhead",
     "insert",
     "insert_move",
+    "lane_draw",
+    "lane_points",
     "lift",
     "move",
+    "move_insert",
+    "nudge_clip_gain",
     "of_color",
     "of_media",
     "of_title",
     "overwrite",
+    "paste_attributes",
     "place_on_top",
+    "remove_attributes",
     "remove_bin",
+    "remove_bus",
     "remove_cue",
     "remove_media",
     "remove_timeline",
     "remove_track",
+    "remove_track_group",
     "remove_transition",
+    "remove_vca",
     "replace",
     "ripple_delete",
     "ripple_delete_range",
     "ripple_overwrite",
     "roll",
     "set_bin",
+    "set_bus",
     "set_clip",
     "set_cue",
+    "set_insert",
     "set_media",
     "set_speed",
     "set_timeline",
+    "set_timeline_audio",
     "set_track",
+    "set_track_audio",
+    "set_track_group",
     "set_transition",
+    "set_vca",
     "slide",
     "slip",
     "smart_insert",
@@ -93,6 +123,25 @@ __all__ = [
 
 TrackKind = Literal["video", "audio", "subtitle"]
 """What a track holds: picture, sound or subtitles."""
+
+CrossfadeLevel = Literal[-3, 0, 3]
+"""The level of a side of a crossfade in dB: -3 (``t^1.5``), 0 (linear) or +3 (equal power)."""
+
+AudioParamName = Literal["gain_db", "pan"]
+"""A setting of the sound of a clip that has keyframes: its volume or its pan."""
+
+KeyInterp = Literal["linear", "ease_in", "ease_out"]
+"""How the value goes from a keyframe of the sound of a clip to the next."""
+
+AttributeItem = Literal["volume", "plugins", "equalizer"]
+"""What Paste Attributes and Remove Attributes take of the sound of a clip."""
+
+ChainOf = dict[str, str]
+"""A chain of inserts, as ``of`` names it: ``{"track": id}``, ``{"bus": id}`` or
+``{"clip": id}``; or what a lane is of: ``{"track": id}``, ``{"bus": id}`` or ``{"vca": id}``."""
+
+LaneThen = Literal["keep", "reset", "hold"]
+"""What a setting is left at once its lanes are cleared."""
 
 TransitionKind = Literal["dissolve", "dip_black", "dip_white", "crossfade"]
 """How one clip gives way to another: the first three on tracks of picture, ``crossfade`` on
@@ -594,13 +643,21 @@ def set_transition(
     kind: TransitionKind | None = None,
     length: int | None = None,
     align: Alignment | None = None,
+    fade_in_level_db: CrossfadeLevel | None = None,
+    fade_out_level_db: CrossfadeLevel | None = None,
 ) -> dict[str, Any]:
-    """The settings of a transition that are given."""
+    """The settings of a transition that are given.
+
+    ``fade_in_level_db`` and ``fade_out_level_db`` are the levels of the two sides of a crossfade
+    only: -3, 0 or 3 dB.
+    """
     return _set(
         {"edit": "set_transition", "timeline": timeline, "id": id},
         kind=kind,
         length=length,
         align=align,
+        fade_in_level_db=fade_in_level_db,
+        fade_out_level_db=fade_out_level_db,
     )
 
 
@@ -806,14 +863,24 @@ def set_track(
     enabled: bool | None = None,
     locked: bool | None = None,
     language: str | None = None,
+    mute: bool | None = None,
+    solo: bool | None = None,
+    solo_safe: bool | None = None,
 ) -> dict[str, Any]:
-    """The settings of a track that are given."""
+    """The settings of a track that are given.
+
+    ``mute``, ``solo`` and ``solo_safe`` are of a track of sound only: ``enabled`` ``False`` does
+    not read it at all, and ``mute`` silences it.
+    """
     return _set(
         {"op": "set_track", "timeline": timeline, "id": id},
         name=name,
         enabled=enabled,
         locked=locked,
         language=language,
+        mute=mute,
+        solo=solo,
+        solo_safe=solo_safe,
     )
 
 
@@ -893,3 +960,256 @@ def set_media(
 def remove_media(id: str) -> dict[str, Any]:
     """Media that no clip uses is taken away from the project."""
     return {"op": "remove_media", "id": id}
+
+
+# The sound of a timeline (schema 4, the Fairlight page)
+#
+# A patch is merged into the object that it names as the engine merges it: each object in it into
+# the object of that name, any other value (a number, a list, ``None``) in place of the one there.
+# Times of lanes are times of the timeline, :class:`Time` in any scale (that of its samples, say);
+# keyframes of the sound of a clip are times of its media.
+
+
+def set_track_audio(
+    timeline: str, track: str, patch: Mapping[str, Any], *, follow_groups: bool = True
+) -> dict[str, Any]:
+    """A patch of the sound of a track.
+
+    It names its ``format``, ``channels``, ``order``, ``mute``, ``solo``, ``solo_safe``, ``adc``,
+    ``automation_arm`` and ``strip`` (``fader_db`` -100 to 10, where -100 or below is -inf,
+    ``pan``, ``eq``, ``dynamics``, ``sends``, ``outputs``, ``inserts``, ``track_fx``). The other
+    tracks of an active group that it is in follow, unless ``follow_groups`` is ``False``.
+    """
+    written: dict[str, Any] = {
+        "edit": "set_track_audio",
+        "timeline": timeline,
+        "track": track,
+        "patch": dict(patch),
+    }
+    if not follow_groups:
+        written["follow_groups"] = False
+    return written
+
+
+def add_bus(timeline: str, bus: Mapping[str, Any], *, index: int | None = None) -> dict[str, Any]:
+    """A bus of a timeline; one with an empty ``id`` is given the next ``B<n>``.
+
+    A bus that outputs to no bus is a main output.
+    """
+    return _set({"op": "add_bus", "timeline": timeline, "bus": dict(bus)}, index=index)
+
+
+def set_bus(timeline: str, id: str, patch: Mapping[str, Any]) -> dict[str, Any]:
+    """A patch of a bus; soloed while the solo is exclusive, it takes the solo off the others."""
+    return {"edit": "set_bus", "timeline": timeline, "id": id, "patch": dict(patch)}
+
+
+def remove_bus(timeline: str, id: str) -> dict[str, Any]:
+    """A bus that nothing outputs, sends or listens to is taken away."""
+    return {"op": "remove_bus", "timeline": timeline, "id": id}
+
+
+def add_vca(timeline: str, vca: Mapping[str, Any], *, index: int | None = None) -> dict[str, Any]:
+    """A VCA of a timeline; one with an empty ``id`` is given the next ``VCA<n>``."""
+    return _set({"op": "add_vca", "timeline": timeline, "vca": dict(vca)}, index=index)
+
+
+def set_vca(timeline: str, id: str, patch: Mapping[str, Any]) -> dict[str, Any]:
+    """A patch of a VCA."""
+    return {"op": "set_vca", "timeline": timeline, "id": id, "patch": dict(patch)}
+
+
+def remove_vca(timeline: str, id: str) -> dict[str, Any]:
+    """A VCA that nothing is a member of is taken away."""
+    return {"op": "remove_vca", "timeline": timeline, "id": id}
+
+
+def add_track_group(
+    timeline: str, group: Mapping[str, Any], *, index: int | None = None
+) -> dict[str, Any]:
+    """A group of tracks of sound, ``{"id": "", "name", "members", "linked"}``."""
+    return _set({"op": "add_track_group", "timeline": timeline, "group": dict(group)}, index=index)
+
+
+def set_track_group(timeline: str, id: str, patch: Mapping[str, Any]) -> dict[str, Any]:
+    """A patch of a group of tracks."""
+    return {"op": "set_track_group", "timeline": timeline, "id": id, "patch": dict(patch)}
+
+
+def remove_track_group(timeline: str, id: str) -> dict[str, Any]:
+    """A group of tracks is taken away; its tracks stay."""
+    return {"op": "remove_track_group", "timeline": timeline, "id": id}
+
+
+def set_timeline_audio(timeline: str, patch: Mapping[str, Any]) -> dict[str, Any]:
+    """A patch of the settings of the sound of a timeline.
+
+    It names ``follows_edit``, the monitored bus, the meters and the loudness.
+    """
+    return {"op": "set_timeline_audio", "timeline": timeline, "patch": dict(patch)}
+
+
+def add_insert(
+    timeline: str, of: ChainOf, insert: Mapping[str, Any], *, index: int | None = None
+) -> dict[str, Any]:
+    """An insert put in a chain at ``index``, or at its end.
+
+    It is written ``{"effect": {"kind": "limiter", ...}}``; one of a strip with an empty id is
+    given the next ``fx<n>`` of the strip.
+    """
+    return _set(
+        {"op": "add_insert", "timeline": timeline, "of": dict(of), "insert": dict(insert)},
+        index=index,
+    )
+
+
+def set_insert(
+    timeline: str, of: ChainOf, slot: int, insert: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """The insert at ``slot`` of a chain replaced, or taken away (``None``), with its lanes."""
+    written = None if insert is None else dict(insert)
+    return {"edit": "set_insert", "timeline": timeline, "of": dict(of), "slot": slot,
+            "insert": written}  # fmt: skip
+
+
+def move_insert(
+    timeline: str, of: ChainOf, from_: int, to: int, *, to_of: ChainOf | None = None
+) -> dict[str, Any]:
+    """The insert at ``from_`` of a chain moved to ``to``, of the same chain or of ``to_of``."""
+    written: dict[str, Any] = {
+        "edit": "move_insert", "timeline": timeline, "of": dict(of), "from": from_, "to": to,
+    }  # fmt: skip
+    if to_of is not None:
+        written["to_of"] = dict(to_of)
+    return written
+
+
+def copy_effects(timeline: str, from_: ChainOf, to: Sequence[ChainOf]) -> dict[str, Any]:
+    """The inserts of one chain put in place of all those of others."""
+    return {"edit": "copy_effects", "timeline": timeline, "from": dict(from_),
+            "to": [dict(one) for one in to]}  # fmt: skip
+
+
+def clip_gain_keys(
+    timeline: str,
+    clip: str,
+    action: Literal["add", "remove", "move", "set_interp"],
+    at: Time,
+    *,
+    param: AudioParamName = "gain_db",
+    value: float | None = None,
+    to: Time | None = None,
+    interp: KeyInterp | None = None,
+) -> dict[str, Any]:
+    """A keyframe of the volume (or the pan) of a clip, named by its time ``at`` in its media.
+
+    It is added (at the value there where ``value`` is not given), taken away, moved ``to``
+    another time, or given another way to the next.
+    """
+    written = {"edit": "clip_gain_keys", "timeline": timeline, "clip": clip, "action": action,
+               "at": _json(at)}  # fmt: skip
+    if param != "gain_db":
+        written["param"] = param
+    return _set(written, value=value, to=to, interp=interp)
+
+
+def clip_gain_range(
+    timeline: str, clip: str, from_: Time, to: Time, delta_db: float
+) -> dict[str, Any]:
+    """The volume of a clip raised or lowered between two times of its media."""
+    return {"edit": "clip_gain_range", "timeline": timeline, "clip": clip, "from": _json(from_),
+            "to": _json(to), "delta_db": delta_db}  # fmt: skip
+
+
+def nudge_clip_gain(
+    timeline: str, clips: Sequence[str], delta_db: float, *, linked: bool = True
+) -> dict[str, Any]:
+    """The volume of clips of sound moved by ``delta_db``, keyframes and all."""
+    return {"edit": "nudge_clip_gain", "timeline": timeline, "clips": list(clips),
+            "delta_db": delta_db, "linked": linked}  # fmt: skip
+
+
+def paste_attributes(
+    timeline: str, from_: str, to: Sequence[str], items: Sequence[AttributeItem]
+) -> dict[str, Any]:
+    """The volume (keyframes and all), the effects or the equalizer of a clip put on others."""
+    return {"edit": "paste_attributes", "timeline": timeline, "from": from_, "to": list(to),
+            "items": list(items)}  # fmt: skip
+
+
+def remove_attributes(
+    timeline: str, clips: Sequence[str], items: Sequence[AttributeItem]
+) -> dict[str, Any]:
+    """The volume, the effects or the equalizer of clips put back as a new clip has them."""
+    return {"edit": "remove_attributes", "timeline": timeline, "clips": list(clips),
+            "items": list(items)}  # fmt: skip
+
+
+def fade_to_playhead(timeline: str, clips: Sequence[str], side: Edge, at: int) -> dict[str, Any]:
+    """Clips faded in from their start to frame ``at``, or out from it to their end."""
+    return {"edit": "fade_to_playhead", "timeline": timeline, "clips": list(clips), "side": side,
+            "at": at}  # fmt: skip
+
+
+def lane_points(
+    timeline: str,
+    of: ChainOf,
+    path: str,
+    action: Literal["add", "remove", "move"],
+    *,
+    points: Sequence[tuple[Time, float | None]] = (),
+    at: Sequence[Time] = (),
+    by: Time | None = None,
+    delta: float | None = None,
+) -> dict[str, Any]:
+    """Points of the lane of the setting ``path`` (``fader_db``, ``pan.x``, ``mute``, ...).
+
+    They are added (a point without a value keeps the curve there), or those at the times ``at``
+    are taken away, or moved ``by`` a time and ``delta`` of value.
+    """
+    written: dict[str, Any] = {"edit": "lane_points", "timeline": timeline, "of": dict(of),
+                               "path": path, "action": action}  # fmt: skip
+    if action == "add":
+        written["points"] = [_point(time, value) for time, value in points]
+    else:
+        written["at"] = [_json(time) for time in at]
+    return _set(written, by=by, delta=delta)
+
+
+def _point(at: Time, value: float | None) -> dict[str, Any]:
+    point: dict[str, Any] = {"at": _json(at)}
+    if value is not None:
+        point["value"] = value
+    return point
+
+
+def lane_draw(
+    timeline: str,
+    of: ChainOf,
+    path: str,
+    from_: Time,
+    to: Time,
+    points: Sequence[tuple[Time, float]],
+    *,
+    tolerance: float | None = None,
+) -> dict[str, Any]:
+    """Points drawn in place of a range of a lane, thinned; after ``to`` the lane is as it was."""
+    written = {"edit": "lane_draw", "timeline": timeline, "of": dict(of), "path": path,
+               "from": _json(from_), "to": _json(to),
+               "points": [_point(time, value) for time, value in points]}  # fmt: skip
+    return _set(written, tolerance=tolerance)
+
+
+def clear_lanes(
+    timeline: str,
+    of: ChainOf,
+    *,
+    paths: Sequence[str] | None = None,
+    then: LaneThen | None = None,
+    at: Time | None = None,
+) -> dict[str, Any]:
+    """The lanes of ``paths``, or all, taken away, their settings left as ``then`` says."""
+    written: dict[str, Any] = {"edit": "clear_lanes", "timeline": timeline, "of": dict(of)}
+    if paths is not None:
+        written["paths"] = list(paths)
+    return _set(written, then=then, at=at)

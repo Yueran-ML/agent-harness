@@ -533,13 +533,13 @@ mod tests {
         assert!(memory.due(&one, now));
         // Away: tried again after 10 s, then 20 s, 40 s, ... and 320 s at the most.
         memory.found(&one, &Found::Later, now);
-        assert!(!memory.due(&one, now + (RETRY - Duration::from_millis(1))));
+        assert!(!memory.due(&one, now + RETRY.saturating_sub(Duration::from_millis(1))));
         assert!(memory.due(&one, now + RETRY));
         let mut at = now + RETRY;
         for wait in [20, 40, 80, 160, 320, 320] {
             memory.found(&one, &Found::Later, at);
             let wait = Duration::from_secs(wait);
-            assert!(!memory.due(&one, at + (wait - Duration::from_millis(1))));
+            assert!(!memory.due(&one, at + wait.saturating_sub(Duration::from_millis(1))));
             assert!(memory.due(&one, at + wait));
             at += wait;
         }

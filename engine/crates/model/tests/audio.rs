@@ -810,6 +810,7 @@ fn a_track_of_sound_is_muted_and_soloed_by_set_track_and_taken_back() {
         timeline: "t1".into(),
         id: id.into(),
         name: None,
+        color: None,
         enabled: None,
         locked: None,
         language: None,

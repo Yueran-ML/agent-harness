@@ -467,7 +467,7 @@ pub(super) fn lane_range(
                 }
                 new.push(point(at, scale, target.kept(work, p.value, &moved)));
             }
-            replaced(&target.points, shape, fixed, scale, (from, to), &new)
+            crate::audio::automation::pasted(&target.points, shape, fixed, scale, (from, to), &new)
         }
         RangeAction::ShiftValue => {
             let delta = delta.unwrap_or(0.0);
@@ -664,11 +664,7 @@ fn record_lane(
             (Some(glide), LaneKind::Continuous) => target.ticks(glide, "glide")?.max(ramp),
             _ => ramp,
         };
-        // Thinned as recorded (of a Trim, the offsets), the last value held to the end.
-        let mut new = thinned(&values, if recorded.trim { line } else { shape }, tolerance);
-        if last.at.ticks < to {
-            new.push(point(to, scale, last.value));
-        }
+        let mut new = values;
         // It comes in over the ramp: its first value where the ramp ends, unless the next is
         // there already (of a Trim, from an offset of 0).
         if ramp > 0 && to > from {
@@ -678,9 +674,18 @@ fn record_lane(
             } else {
                 new[0].at.ticks = ramped;
             }
-            if recorded.trim {
-                new.insert(0, point(from, scale, 0.0));
-            }
+        }
+        // Thin the trajectory after making its entry ramp. Moving the first point of an
+        // already thinned line would also change its slope beyond the next recorded point.
+        let mut new = thinned(&new, if recorded.trim { line } else { shape }, tolerance);
+        // Keep the entry endpoint as thinning's first point. Adding Trim's zero anchor
+        // before thinning could remove that endpoint and lengthen even a small entry ramp.
+        if recorded.trim && ramp > 0 && to > from {
+            new.insert(0, point(from, scale, 0.0));
+        }
+        // The last recorded value stays exact from its point until the stop.
+        if last.at.ticks < to {
+            new.push(point(to, scale, last.value));
         }
         // Where the run gives the lane back: none for one that holds to the end.
         let next = was.iter().find(|p| p.at.ticks > to).map(|p| p.at.ticks);
@@ -953,14 +958,20 @@ pub(super) fn automation_paste(
     if lanes.is_empty() {
         return Err(range("lanes"));
     }
-    let rate = work.timeline().sample_rate;
-    let start = ticks_in(at, rate).ok_or_else(|| range("at"))?;
-    let end = match to {
-        Some(to) => Some(ticks_in(to, rate).ok_or_else(|| range("to"))?),
-        None => None,
-    };
-    if end.is_some_and(|end| end <= start) {
-        return Err(EditError::EmptyRange);
+    if at.scale == 0 || at.ticks < 0 {
+        return Err(range("at"));
+    }
+    if let Some(to) = to {
+        if to.scale == 0 || to.ticks < 0 {
+            return Err(range("to"));
+        }
+        // Compare actual times here; rounding to the timeline grid can collapse a valid
+        // range on a finer destination lane. Its tick bounds and precision are checked below.
+        if i128::from(to.ticks) * i128::from(at.scale)
+            <= i128::from(at.ticks) * i128::from(to.scale)
+        {
+            return Err(EditError::EmptyRange);
+        }
     }
     let categories = work.timeline().audio.record.categories;
     let mut done = false;
@@ -968,17 +979,36 @@ pub(super) fn automation_paste(
         if !arm_of(work.timeline(), &lane.of)?.pastes() || !categories.covers(&lane.path) {
             continue;
         }
+        let target = target(work, &lane.of, &lane.path)?;
+        let rate = target.scale;
+        let start = target.ticks(at, "at")?;
+        let end = to.map(|to| target.ticks(to, "to")).transpose()?;
+        if end.is_some_and(|end| end <= start) {
+            return Err(EditError::EmptyRange);
+        }
         let one = match (&lane.points, lane.value, end) {
             (Some(points), None, _) => {
                 let mut relative = Vec::with_capacity(points.len() + 1);
                 for p in points {
                     let ticks = ticks_in(p.at, rate).ok_or_else(|| range("points"))?;
-                    if ticks < 0 || relative.last().is_some_and(|q: &(i64, f64)| q.0 > ticks) {
+                    if ticks < 0
+                        || relative
+                            .last()
+                            .is_some_and(|q: &LanePoint| q.at.ticks > ticks)
+                    {
                         return Err(range("points"));
                     }
-                    relative.push((ticks, p.value));
+                    if !p.value.is_finite() {
+                        return Err(range("value"));
+                    }
+                    let moved = Cell::new(false);
+                    let value = target.kept(work, p.value, &moved);
+                    if moved.get() {
+                        work.clamp();
+                    }
+                    relative.push(point(ticks, rate, value));
                 }
-                let Some(&(last, _)) = relative.last() else {
+                let Some(last) = relative.last().map(|p| p.at.ticks) else {
                     return Err(range("points"));
                 };
                 let span = end.map_or(last, |end| end - start);
@@ -986,13 +1016,13 @@ pub(super) fn automation_paste(
                     // Nothing of it to paste: passed over (T16b's review).
                     continue;
                 }
-                let held = value_along(&relative, span);
-                relative.retain(|&(t, _)| t < span);
-                relative.push((span, held));
-                let pasted: Vec<LanePoint> = relative
-                    .into_iter()
-                    .map(|(t, value)| point(t, rate, value))
-                    .collect();
+                let held = value_at(&relative, target.shape, target.fixed, span);
+                // Keep both sides of a source jump at the cut: its left point determines
+                // the curve approaching the exit ramp, even though its right point is at to.
+                relative.retain(|p| p.at.ticks <= span);
+                if relative.last().is_none_or(|p| p.at.ticks < span) {
+                    relative.push(point(span, rate, held));
+                }
                 let to = point(start + span, rate, 0.0).at;
                 let from = point(start, rate, 0.0).at;
                 lane_range(
@@ -1001,7 +1031,7 @@ pub(super) fn automation_paste(
                     &lane.path,
                     (from, to),
                     RangeAction::Paste,
-                    Some(&pasted),
+                    Some(&relative),
                     (None, None),
                 )
             }
@@ -1027,22 +1057,6 @@ pub(super) fn automation_paste(
         Ok(())
     } else {
         Err(EditError::EmptyRange)
-    }
-}
-
-/// The value of points (times, values) joined by straight lines at `at`, held before the first
-/// and past the last.
-fn value_along(points: &[(i64, f64)], at: i64) -> f64 {
-    let i = points.partition_point(|&(t, _)| t <= at);
-    match (i.checked_sub(1).map(|i| points[i]), points.get(i)) {
-        (Some((t, u)), Some(&(next, v))) if next > t => {
-            #[allow(clippy::cast_precision_loss, reason = "a share of the way")]
-            let share = (at - t) as f64 / (next - t) as f64;
-            u + (v - u) * share
-        }
-        (Some((_, u)), _) => u,
-        (None, Some(&(_, v))) => v,
-        (None, None) => 0.0,
     }
 }
 

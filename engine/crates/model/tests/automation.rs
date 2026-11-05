@@ -736,6 +736,50 @@ fn points_pasted_take_the_place_of_a_range_from_its_start() {
 }
 
 #[test]
+fn pasted_points_ramp_inside_both_edges_without_moving_interior_keys() {
+    for duration in [100, 12] {
+        let mut project = project();
+        let points = json!([
+            {"at": ms(0), "value": -6.0},
+            {"at": ms(duration / 2), "value": -12.0},
+            {"at": ms(duration), "value": -6.0}
+        ]);
+        edit(
+            &mut project,
+            range_edit(
+                "fader_db",
+                "paste",
+                1000,
+                1000 + duration,
+                json!({"points": points}),
+            ),
+        );
+        let ramp = 10.min(duration / 2);
+        let inner = -6.0 - 12.0 * ramp as f64 / duration as f64;
+        for (t, want) in [
+            (999.0, 0.0),
+            (1000.0, 0.0),
+            (1000.0 + ramp as f64 / 2.0, inner / 2.0),
+            (1000.0 + ramp as f64, inner),
+            (1000.0 + duration as f64 / 2.0, -12.0),
+            (1000.0 + duration as f64 - ramp as f64 / 2.0, inner / 2.0),
+            (1000.0 + duration as f64, 0.0),
+        ] {
+            let got = value(&project, "A1", "fader_db", t);
+            assert!(
+                near(got, want),
+                "duration={duration}, {t} ms: {got}, not {want}"
+            );
+        }
+        assert!(lane_of(&project, "A1", "fader_db")
+            .unwrap()
+            .points
+            .iter()
+            .any(|p| p.at == at(1000 + duration / 2) && p.value == -12.0));
+    }
+}
+
+#[test]
 fn a_lane_is_thinned_within_its_tolerance() {
     let mut project = project();
     let ramp: Vec<(i64, f64)> = (0..=100)

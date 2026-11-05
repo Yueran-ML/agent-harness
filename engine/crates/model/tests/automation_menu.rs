@@ -416,7 +416,8 @@ fn paste_puts_the_range_copied_on_another_track_filling_the_range_with_its_last_
         &[
             (999.0, -10.0 + 6.0 * 999.0 / 1500.0),
             (1500.0, -3.0),
-            (1999.0, -3.0),
+            (1990.0, -3.0),
+            (1999.0, -5.7),
             (2500.0, -8.0),
         ],
     );
@@ -438,6 +439,214 @@ fn paste_puts_the_range_copied_on_another_track_filling_the_range_with_its_last_
     ]);
     edit(&mut project, paste(lanes, 20_000, None));
     check(&mut project, "A1", "fader_db", &[(20_050.0, -2.0)]);
+}
+
+#[test]
+fn pasted_snapshot_ramps_at_both_edges_of_the_range() {
+    let mut project = project(&[(0, -10.0), (3000, -10.0)]);
+    edit(
+        &mut project,
+        paste(
+            json!([{"of": {"track": "A1"}, "path": "fader_db", "value": -2.0}]),
+            1000,
+            Some(2000),
+        ),
+    );
+    check(
+        &mut project,
+        "A1",
+        "fader_db",
+        &[
+            (999.0, -10.0),
+            (1000.0, -10.0),
+            (1005.0, -6.0),
+            (1010.0, -2.0),
+            (1990.0, -2.0),
+            (1995.0, -6.0),
+            (2000.0, -10.0),
+            (2001.0, -10.0),
+        ],
+    );
+}
+
+#[test]
+fn a_truncated_paste_keeps_logarithmic_and_switch_interpolation() {
+    for (path, values, want) in [
+        (
+            "eq.0.freq",
+            [100.0, 10000.0],
+            100.0_f64 * 100.0_f64.powf(0.49),
+        ),
+        ("mute", [0.0, 1.0], 0.0),
+    ] {
+        let mut project = project(&[]);
+        let points = json!([
+            {"at": ms(0), "value": values[0]}, {"at": ms(1000), "value": values[1]}
+        ]);
+        edit(
+            &mut project,
+            paste(
+                json!([{"of": {"track": "A1"}, "path": path, "points": points}]),
+                1000,
+                Some(1500),
+            ),
+        );
+        let got = at(&mut project, "A1", path, 1490.0);
+        assert!((got - want).abs() < 1e-6, "{path}: {got}, not {want}");
+    }
+}
+
+#[test]
+fn paste_preserves_source_keys_in_the_destination_lanes_timebase() {
+    let mut project = project(&[(0, -10.0)]);
+    track(&mut project, "A1")
+        .audio
+        .lanes
+        .get_mut("fader_db")
+        .unwrap()
+        .points[0]
+        .at
+        .scale = 96000;
+    let key = Time {
+        ticks: 4801,
+        scale: 96000,
+    };
+    let points = json!([
+        {"at": ms(0), "value": -6.0}, {"at": key, "value": -12.0},
+        {"at": ms(100), "value": -6.0}
+    ]);
+    edit(
+        &mut project,
+        paste(
+            json!([{"of": {"track": "A1"}, "path": "fader_db", "points": points}]),
+            1000,
+            None,
+        ),
+    );
+    let lane = &track(&mut project, "A1").audio.lanes["fader_db"];
+    assert!(lane.points.iter().all(|p| p.at.scale == 96000));
+    assert!(lane
+        .points
+        .iter()
+        .any(|p| p.at.ticks == 96000 + key.ticks && p.value == -12.0));
+    assert!(near(
+        lane.value_at(Time {
+            ticks: 96480,
+            scale: 96000
+        }),
+        (-10.0 - 6.0 - 6.0 * 960.0 / 4801.0) / 2.0
+    ));
+}
+
+#[test]
+fn pasted_switches_step_and_continuous_values_are_clamped_before_ramping() {
+    let mut project = project(&[]);
+    edit(
+        &mut project,
+        paste(
+            json!([
+                {"of": {"track": "A1"}, "path": "mute", "points": [
+                    {"at": ms(0), "value": 0.8}, {"at": ms(50), "value": 0.2}, {"at": ms(100), "value": 0.8}]},
+                {"of": {"track": "A1"}, "path": "fader_db", "value": 50.0}
+            ]),
+            1000,
+            Some(1100),
+        ),
+    );
+    check(
+        &mut project,
+        "A1",
+        "mute",
+        &[
+            (999.0, 0.0),
+            (1000.0, 1.0),
+            (1049.0, 1.0),
+            (1050.0, 0.0),
+            (1099.0, 0.0),
+            (1100.0, 0.0),
+        ],
+    );
+    check(
+        &mut project,
+        "A1",
+        "fader_db",
+        &[
+            (1000.0, 0.0),
+            (1005.0, 5.0),
+            (1010.0, 10.0),
+            (1095.0, 5.0),
+            (1100.0, 0.0),
+        ],
+    );
+}
+
+#[test]
+fn a_one_tick_paste_range_is_judged_in_the_destination_lane_timebase() {
+    let mut project = project(&[(0, -10.0)]);
+    track(&mut project, "A1")
+        .audio
+        .lanes
+        .get_mut("fader_db")
+        .unwrap()
+        .points[0]
+        .at
+        .scale = 96000;
+    let start = Time {
+        ticks: 96001,
+        scale: 96000,
+    };
+    let end = Time {
+        ticks: 96002,
+        scale: 96000,
+    };
+    let mut expected = project.clone();
+    edit(
+        &mut expected,
+        json!({"edit": "lane_range", "timeline": "t1", "of": {"track": "A1"},
+        "path": "fader_db", "action": "paste", "from": start, "to": end,
+        "points": [{"at": {"ticks": 0, "scale": 96000}, "value": -2.0},
+                   {"at": {"ticks": 1, "scale": 96000}, "value": -2.0}]}),
+    );
+    edit(
+        &mut project,
+        json!({"edit": "automation_paste", "timeline": "t1", "at": start, "to": end,
+        "lanes": [{"of": {"track": "A1"}, "path": "fader_db", "value": -2.0}]}),
+    );
+    assert_eq!(project, expected);
+    let lane = &track(&mut project, "A1").audio.lanes["fader_db"];
+    assert!(near(lane.value_at(start), -2.0));
+    assert!(near(lane.value_at(end), -10.0));
+}
+
+#[test]
+fn a_paste_clipped_at_a_source_jump_preserves_the_curve_approaching_it() {
+    let mut project = project(&[(0, 0.0)]);
+    let points = json!([
+        {"at": ms(0), "value": -6.0},
+        {"at": ms(500), "value": -6.0},
+        {"at": ms(500), "value": 0.0},
+        {"at": ms(1000), "value": 0.0}
+    ]);
+    edit(
+        &mut project,
+        paste(
+            json!([{"of": {"track": "A1"}, "path": "fader_db", "points": points}]),
+            1000,
+            Some(1500),
+        ),
+    );
+    check(
+        &mut project,
+        "A1",
+        "fader_db",
+        &[
+            (1010.0, -6.0),
+            (1250.0, -6.0),
+            (1490.0, -6.0),
+            (1495.0, -3.0),
+            (1500.0, 0.0),
+        ],
+    );
 }
 
 #[test]

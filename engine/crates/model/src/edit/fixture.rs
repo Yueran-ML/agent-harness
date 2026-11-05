@@ -146,6 +146,7 @@ pub fn lock(track: &str) -> Op {
         timeline: "t1".into(),
         id: track.into(),
         name: None,
+        color: None,
         enabled: None,
         locked: Some(true),
         language: None,

@@ -428,6 +428,7 @@ pub fn project_of(recipe: &Recipe) -> Project {
                 timeline: "t1".into(),
                 id: TRACKS[at].into(),
                 name: None,
+                color: None,
                 enabled: None,
                 locked: Some(true),
                 language: None,

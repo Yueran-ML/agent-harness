@@ -1287,6 +1287,7 @@ mod tests {
                 timeline: "t1".into(),
                 id: "S1".into(),
                 name: None,
+                color: None,
                 enabled: Some(false),
                 locked: None,
                 language: None,

@@ -659,6 +659,40 @@ pub fn replaced(
     without_twins(all)
 }
 
+/// Paste a curve inside a range, joining the old lane over 10 ms at each end within the
+/// range (half the range if shorter than 20 ms). The middle source points stay verbatim;
+/// the edge points give way to the ramps. A switch jumps instead of ramping.
+#[must_use]
+pub fn pasted(
+    points: &[LanePoint],
+    shape: Shape,
+    fixed: f64,
+    scale: u32,
+    (from, to): (i64, i64),
+    new: &[LanePoint],
+) -> Vec<LanePoint> {
+    if new.is_empty() || shape.kind == LaneKind::Switch {
+        return replaced(points, shape, fixed, scale, (from, to), new);
+    }
+    let ramp = i64::from(scale / LANE_RAMP_PER_SECOND).min((to - from) / 2);
+    let (inner_from, inner_to) = (from + ramp, to - ramp);
+    let start = point(inner_from, scale, value_at(new, shape, fixed, inner_from));
+    let end = point(inner_to, scale, value_before(new, shape, fixed, inner_to));
+    let middle = if inner_from == inner_to {
+        vec![end, start]
+    } else {
+        let mut middle = vec![start];
+        middle.extend(
+            new.iter()
+                .filter(|p| p.at.ticks > inner_from && p.at.ticks < inner_to)
+                .cloned(),
+        );
+        middle.push(end);
+        middle
+    };
+    replaced(points, shape, fixed, scale, (from, to), &middle)
+}
+
 /// The points of a lane with those from tick `from` on put in place of by `new`: the value before
 /// `from` stays as it was, as a point at `from` of the value that came to it, and nothing of the
 /// lane is left after `new` (Hold at the stop of a pass of recording, p. 3905: the last value

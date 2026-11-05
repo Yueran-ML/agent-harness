@@ -2277,7 +2277,11 @@ at the end of the range, and the edit is `clamped`.
   came to it with, what the action makes, and a point at `to` of the value that was there. `delete`
   and `cut` (the same; a client keeps what it cut) leave a straight line between those two. `paste`
   puts `points` (times from `from`, in order, none past `to`; `out_of_range: points` otherwise) in
-  between. `shift_value` moves the values of the range by `delta` (0 is `empty_range`): at each end
+  between, with a 10 ms ramp at each end inside the range (half the range when shorter than
+  20 ms). The source curve is evaluated at those inner endpoints in the lane's interpolation
+  domain; source points between them are preserved without thinning, while source points in
+  the edge regions give way to the ramps. A switch jumps at the ends instead. `shift_value`
+  moves the values of the range by `delta` (0 is `empty_range`): at each end
   a point of the value that was there and, 10 ms within (half the range where it is shorter than
   20 ms), one of the value moved, so it ramps in and out (C-A6); the points between the two within
   move by `delta`, and those within 10 ms of an end go. A switch jumps instead, at `from` and at
@@ -2285,7 +2289,8 @@ at the end of the range, and the edit is `clamped`.
   `tolerance` (see `lane_draw`). `delete`, `cut` and `thin` of a lane that is not there are
   `missing`; `paste` and `shift_value` make it, from the value of its setting.
 - `lane_draw` puts `points` (times from `from` to `to`, in order; `out_of_range: points`
-  otherwise), thinned, in place of the range from `from` to `to`, as `lane_range` `paste` does.
+  otherwise), thinned, in place of the range from `from` to `to`, keeping the original bounding
+  values; unlike Paste, Pencil adds no entry or exit ramp.
   Thinning (C-A4) keeps the first and the last point and both points of a jump (two at one time),
   and between them, by Douglas–Peucker, each point without which the lane would go further than
   `tolerance` from a point drawn, in value at its time as its scale measures it (in logarithms
@@ -2451,7 +2456,11 @@ under way and what Preview kept unwritten, and lets go of what is held.
   far as they go (cut at `to`) and their last value held to `to`, a `value` over all of it; with
   none, `points` whole from `at` (a lane whose points have no length is passed over), and a
   `value` is refused (`out_of_range` `to`: a snapshot fills a range). What was in the range is put in
-  place of, the values before it and from its end on kept, as `lane_range` `paste` does. A Safe
+  place of, the values before it and from its end on kept, as `lane_range` `paste` does: 10 ms
+  ramps inside both ends (half the range below 20 ms), preserving the middle source keys and
+  replacing source keys in the edge regions. Clipping and ramps use the lane's interpolation
+  domain, including logarithmic frequencies; switches remain steps. Times are converted to
+  the destination lane's timebase. A Safe
   owner, and a lane of a category that is off, is skipped. **`automation_erase`** `{of: [owners],
   from, to}` (Erase, p. 3914) takes away the points from `from` to `to` of every lane of the
   categories that are on of each owner, not Safe, as `lane_range` `delete` does. Nothing changed

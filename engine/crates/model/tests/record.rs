@@ -477,6 +477,84 @@ fn two_lanes_of_a_pass_are_one_step_of_undo() {
     assert!(near(at(&mut project, "pan.x", 2500.0), 0.5));
 }
 
+#[test]
+fn thinning_does_not_stretch_the_first_recorded_segment_after_the_entry_ramp() {
+    for (start, values, sample) in [
+        (36, [-6.48, -9.54, -12.47], 74),
+        (
+            5585,
+            [-23.98281613536591, -7.304378735987619, 9.527919654749956],
+            5624,
+        ),
+    ] {
+        for trim in [false, true] {
+            let mut project = project(&[(0, 0.0)]);
+            let points = [
+                (start, values[0]),
+                (start + 20, values[1]),
+                (start + 40, values[2]),
+            ];
+            record(
+                &mut project,
+                pass(
+                    "fader_db",
+                    trim,
+                    vec![run(&points, start + 50, "return", Some(0))],
+                ),
+            );
+            let share = (sample - start - 20) as f64 / 20.0;
+            let want = values[1] + (values[2] - values[1]) * share;
+            let got = at(&mut project, "fader_db", sample as f64);
+            assert!(
+                (got - want).abs() <= 0.1 + 1e-9,
+                "trim={trim}, {sample} ms: {got}, not {want}"
+            );
+        }
+    }
+}
+
+#[test]
+fn thinning_keeps_the_last_recorded_value_held_until_the_stop() {
+    let mut project = project(&[(0, 0.0)]);
+    record(
+        &mut project,
+        pass(
+            "fader_db",
+            false,
+            vec![run(&[(1000, 0.0), (1020, 0.05)], 1100, "return", Some(0))],
+        ),
+    );
+    for t in [1020.0, 1040.0, 1099.0, 1100.0] {
+        assert!(
+            near(at(&mut project, "fader_db", t), 0.05),
+            "{t} ms must hold the last value"
+        );
+    }
+}
+
+#[test]
+fn a_small_trim_keeps_its_ten_millisecond_entry_endpoint_when_thinned() {
+    let mut project = project(&[(0, 0.0)]);
+    record(
+        &mut project,
+        pass(
+            "fader_db",
+            true,
+            vec![run(&[(1000, 0.05), (1100, 0.05)], 1200, "return", Some(0))],
+        ),
+    );
+    for (t, want) in [
+        (1000.0, 0.0),
+        (1005.0, 0.025),
+        (1010.0, 0.05),
+        (1100.0, 0.05),
+        (1200.0, 0.05),
+    ] {
+        let got = at(&mut project, "fader_db", t);
+        assert!(near(got, want), "{t} ms: {got}, not {want}");
+    }
+}
+
 proptest! {
     /// Whatever the lane and the run, the lane outside the run and its return is as it was, and
     /// within the run it is what was recorded, within the thinning's tenth of a decibel.

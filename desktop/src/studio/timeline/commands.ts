@@ -10,16 +10,28 @@ export type Edit = { timeline: string } & (
   | ({ edit: 'insert' | 'overwrite' | 'replace' | 'smart_insert' | 'ripple_overwrite'; source: Material; at: number } & Targets)
   | ({ edit: 'append'; source: Material } & Targets)
   | { edit: 'place_on_top'; source: Material; at: number }
-  | { edit: 'lift' | 'ripple_delete'; clips: string[]; linked: boolean }
-  | { edit: 'ripple_delete_range'; from: number; to: number; tracks?: string[] }
+  /**
+   * `grouped: true` (an editor's own action; left out by edits that a client puts together, such
+   * as clearing where copies go) makes the active groups of tracks that link Editing take the
+   * frames of the clips (or, for `blade` and `ripple_delete_range`, the tracks given) along on
+   * their other tracks; see PROTOCOL, Groups of tracks that link Editing.
+   */
+  | { edit: 'lift' | 'ripple_delete'; clips: string[]; linked: boolean; grouped?: boolean }
+  | { edit: 'ripple_delete_range'; from: number; to: number; tracks?: string[]; grouped?: boolean }
   /**
    * `straddling: 'stay'` leaves clips of other tracks across the gap where they are (as Track 1 of
    * the Cut page closes its gaps), instead of refusing; what starts after the gap still moves back.
    */
   | { edit: 'close_gap'; track: string; at: number; straddling?: 'refuse' | 'stay' }
-  | { edit: 'blade'; at: number; tracks?: string[]; linked: boolean }
-  | { edit: 'move'; clips: string[]; delta: number; to_track?: string; overwrite: boolean; linked: boolean }
-  | { edit: 'insert_move'; clips: string[]; at: number; linked: boolean }
+  | { edit: 'blade'; at: number; tracks?: string[]; linked: boolean; grouped?: boolean }
+  | { edit: 'move'; clips: string[]; delta: number; to_track?: string; overwrite: boolean; linked: boolean; grouped?: boolean }
+  | { edit: 'insert_move'; clips: string[]; at: number; linked: boolean; grouped?: boolean }
+  /**
+   * Copies of clips, each from `start` on `track` (an Alt-drag duplicate or a paste): what is there
+   * is cleared as an overwrite clears it, and with Automation Follows Edit each copy takes a copy
+   * of the lanes over its clip. The desktop still sends its own clearing and `insert_clip`s (T19).
+   */
+  | { edit: 'place_copies'; copies: { clip: string; track: string; start: number }[] }
   | { edit: 'trim'; clip: string; edge: 'in' | 'out'; delta: number; ripple: boolean; linked: boolean }
   | { edit: 'roll'; left: string; right: string; delta: number; linked: boolean }
   | { edit: 'slip' | 'slide'; clip: string; delta: number; linked: boolean }

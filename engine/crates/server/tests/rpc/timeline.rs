@@ -1280,6 +1280,10 @@ async fn timeline_scrubbing_plays_a_grain_of_60_ms_for_each_seek_and_none_once_t
         .await;
     assert_eq!(refused["code"], -32602, "{refused}");
     assert_eq!(refused["data"]["reason"], "monitor", "{refused}");
+    assert!(
+        !refused["message"].as_str().unwrap().contains("  "),
+        "{refused}"
+    );
     drop(client);
     drop(engine);
     assert!(

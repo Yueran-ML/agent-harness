@@ -108,6 +108,14 @@ const BUILDER_NAP: Duration = Duration::from_millis(20);
 /// mix went on past it meanwhile, the graph is caught up to a little after what is mixed.
 const GRAIN_AHEAD: f64 = 0.020;
 
+/// The furthest ahead of what is mixed a grain of scrubbing is swapped in, however long the last
+/// took to build (T18's review).
+const GRAIN_LONGEST_AHEAD: f64 = 0.5;
+
+/// How many times a grain is built, each further ahead, before it is caught up to what is mixed
+/// (and so starts after its frame) rather than built again (T18's review).
+const GRAIN_ATTEMPTS: usize = 3;
+
 /// The most preroll of the graph of a grain of scrubbing (T18, "我们定"): a grain is heard at
 /// once, its effects settled for this long (a compressor's release of seconds is not quite
 /// settled in it).
@@ -236,7 +244,8 @@ impl Threads {
                     pool: Arc::new(Readers::default()),
                     last_swap: Duration::ZERO,
                     warp: (0, Warp::IDENTITY),
-                    before: None,
+                    changing: None,
+                    last_grain: Duration::ZERO,
                 };
                 move || builder.run(&inbox)
             })
@@ -272,9 +281,14 @@ struct Builder {
     /// The warp of the graph handed over last, and its session (T18): a graph to swap in plays
     /// on from where that one is, at the speed asked for.
     warp: (u64, Warp),
-    /// The warp before the change of speed of the graph handed over last, while it may come too
-    /// late to be swapped in: then the one built again starts from it.
-    before: Option<Warp>,
+    /// The graph that changes the speed, sent and not yet taken: its sample, its warp, and the
+    /// warp before it. Where that graph (and no other) comes too late to be swapped in, what
+    /// plays is still at the speed before, and the one built again starts from there; once the
+    /// thread of the mix takes it, it is forgotten (T18's review).
+    changing: Option<(i64, Warp, Warp)>,
+    /// How long the graph of the last grain of scrubbing took to build: the next is swapped in
+    /// further ahead where it was slow (T18's review).
+    last_grain: Duration,
 }
 
 /// How a graph of [`Builder::run_of`] starts.
@@ -288,8 +302,10 @@ enum How {
     Swap { speed: bool },
     /// A grain of scrubbing (T18): it prerolls [`GRAIN_PREROLL`] at the most, its clips are read
     /// ahead for [`GRAIN_PRIME`] at the most, and then, one to swap in (`swap`), it is caught up
-    /// where the mix went on.
-    Grain { swap: bool },
+    /// where the mix went on, if it may (`catch`); else it is left where it was to start, and
+    /// how far behind it is told, so that it is built again further ahead (T18's review: its
+    /// sound starts at the frame dragged to).
+    Grain { swap: bool, catch: bool },
 }
 
 impl Builder {
@@ -304,17 +320,28 @@ impl Builder {
             // sample was mixed is built again, further ahead.
             let mut late = None;
             let mut grain = None;
+            // A change of speed that the thread of the mix took can no longer come too late.
+            if self
+                .changing
+                .is_some_and(|(at, _, _)| self.counters.scheduled() >= at)
+            {
+                self.changing = None;
+            }
             while let Some(retired) = self.retired.pop() {
                 if let Retired::Late { epoch, run } = retired {
                     if let Some(sound) = run.grain() {
                         // A grain asked for again where none newer is (T18).
                         grain = Some((epoch, run.graph().warp().timeline(sound.from)));
                     } else {
-                        // One that changed the speed never played: what plays is at the speed
-                        // before.
-                        if self.warp == (epoch, run.graph().warp()) {
-                            if let Some(before) = self.before.take() {
+                        // The one that changed the speed never played: what plays is at the
+                        // speed before. Any other is of the warp that plays.
+                        if let Some((at, warp, before)) = self.changing {
+                            if self.warp == (epoch, warp)
+                                && run.graph().warp() == warp
+                                && run.graph().at() == at
+                            {
                                 self.warp.1 = before;
+                                self.changing = None;
                             }
                         }
                         late = Some(epoch);
@@ -391,7 +418,7 @@ impl Builder {
         timeline: usize,
         (at, warp): (i64, Warp),
         how: How,
-    ) -> Result<(Box<Run>, Controls), String> {
+    ) -> Result<(Box<Run>, Controls, i64), String> {
         let mut graph = Graph::build(
             project,
             timeline,
@@ -433,7 +460,7 @@ impl Builder {
         }
         // Its readers go to the pool, from which the readers ahead take them; a grain's to swap
         // in catch it up first.
-        let mut feed = (how == How::Grain { swap: true }).then_some(feed);
+        let mut feed = matches!(how, How::Grain { swap: true, .. }).then_some(feed);
         let (ring, mut readers) = ring_feed(&graph, graph.reads_at(), Arc::clone(&self.counters));
         let mut feeds: Vec<Box<dyn ClipFeed + Send>> = readers
             .iter()
@@ -452,9 +479,12 @@ impl Builder {
         }
         let fetcher = Fetcher::spawn(readers, feeds)
             .map_err(|error| format!("the reader ahead cannot be started: {error}"))?;
-        if let Some(feed) = &mut feed {
-            // A grain is heard as soon as it can be: from a little after what is mixed, where
-            // the mix went on past where it was to start.
+        // How far a grain is behind the mix (a little after what is mixed).
+        let guard = i64::try_from(samples(GRAIN_AHEAD / 2.0, rate)).unwrap_or(0);
+        let behind = (self.counters.mixed() + guard - graph.at()).max(0);
+        if let (Some(feed), How::Grain { catch: true, .. }) = (&mut feed, how) {
+            // Heard as soon as it can be: from a little after what is mixed, where the mix went
+            // on past where it was to start.
             catch_up(&mut graph, feed.as_mut(), GRAIN_AHEAD / 2.0);
         }
         drop(feed);
@@ -471,7 +501,7 @@ impl Builder {
         } else {
             run
         };
-        Ok((Box::new(run), controls))
+        Ok((Box::new(run), controls, behind))
     }
 
     /// Builds the session `epoch` and hands it to the thread of the mix.
@@ -494,12 +524,15 @@ impl Builder {
             // Sample `from` out is sample `from` of the timeline, at whatever speed (T18).
             let warp = Warp::new(i64::from(speed), from, from);
             let how = if grain {
-                How::Grain { swap: false }
+                How::Grain {
+                    swap: false,
+                    catch: false,
+                }
             } else {
                 How::Start
             };
             // A session starts where it is told, however long its graph took to build.
-            let (run, controls) =
+            let (run, controls, _) =
                 self.run_of(&project, timeline, (resampler.first_input(), warp), how)?;
             let run = if grain {
                 // The grain from `from`, not from where the resampler takes the mix first.
@@ -522,7 +555,7 @@ impl Builder {
                 let warp = session.run().graph().warp();
                 if self.send(Command::Start(Box::new(session))) {
                     self.warp = (epoch, warp);
-                    self.before = None;
+                    self.changing = None;
                     *lock(&self.shared.built) = Some(Built {
                         epoch,
                         project,
@@ -585,7 +618,7 @@ impl Builder {
         let changes = warp != base;
         let how = How::Swap { speed: changes };
         match self.run_of(&project, timeline, (at, warp), how) {
-            Ok((run, controls)) => {
+            Ok((run, controls, _)) => {
                 if epoch != self.shared.epoch.load(Ordering::Acquire) {
                     return;
                 }
@@ -594,7 +627,7 @@ impl Builder {
                 self.last_swap = took;
                 if self.send(Command::Swap { epoch, run, at }) {
                     if changes {
-                        self.before = Some(base);
+                        self.changing = Some((at, warp, base));
                         self.warp = (epoch, warp);
                     }
                     *lock(&self.shared.built) = Some(Built {
@@ -637,23 +670,43 @@ impl Builder {
             std::thread::sleep(Duration::from_millis(1));
         }
         let rate = project.timelines[timeline].sample_rate;
-        let after = self.counters.scheduled()
-            + i64::try_from(samples(GRAPH_SWAP_CROSSFADE + MIX_BLOCK, rate)).unwrap_or(0);
-        let at = (self.counters.mixed() + i64::try_from(samples(GRAIN_AHEAD, rate)).unwrap_or(0))
-            .max(after);
-        let warp = Warp::new(1, at, place);
-        match self.run_of(&project, timeline, (at, warp), How::Grain { swap: true }) {
-            Ok((run, _)) => {
-                if epoch != self.shared.epoch.load(Ordering::Acquire) {
+        for attempt in 0..GRAIN_ATTEMPTS {
+            // Ahead of what is mixed by as long as the last grain took to build and half again,
+            // and the lead of a grain (T18's review).
+            let lead = (self.last_grain.as_secs_f64() * 1.5 + GRAIN_AHEAD).min(GRAIN_LONGEST_AHEAD);
+            let after = self.counters.scheduled()
+                + i64::try_from(samples(GRAPH_SWAP_CROSSFADE + MIX_BLOCK, rate)).unwrap_or(0);
+            let at = (self.counters.mixed() + i64::try_from(samples(lead, rate)).unwrap_or(0))
+                .max(after);
+            let warp = Warp::new(1, at, place);
+            let started = Instant::now();
+            // Caught up only at the last attempt: the sound of a grain starts at its frame.
+            let how = How::Grain {
+                swap: true,
+                catch: attempt + 1 == GRAIN_ATTEMPTS,
+            };
+            match self.run_of(&project, timeline, (at, warp), how) {
+                Ok((run, _, behind)) => {
+                    self.last_grain = started.elapsed();
+                    if epoch != self.shared.epoch.load(Ordering::Acquire) {
+                        return;
+                    }
+                    if behind > 0 && attempt + 1 < GRAIN_ATTEMPTS {
+                        // Too late to start at its frame: again, further ahead.
+                        continue;
+                    }
+                    let at = run.graph().at();
+                    self.send(Command::Swap { epoch, run, at });
                     return;
                 }
-                let at = run.graph().at();
-                self.send(Command::Swap { epoch, run, at });
+                Err(message) => {
+                    log(
+                        "sound_failed",
+                        &json!({"monitor": "timeline", "message": message}),
+                    );
+                    return;
+                }
             }
-            Err(message) => log(
-                "sound_failed",
-                &json!({"monitor": "timeline", "message": message}),
-            ),
         }
     }
 }
@@ -791,8 +844,14 @@ impl Playback {
         from: i64,
     ) -> Result<(), String> {
         let epoch = self.epoch;
+        // A session of grains of another rate of the timeline starts again (T18's review).
+        let same_rates = |current: &Current| {
+            let was = &current.base.timelines[current.timeline];
+            let now = &project.timelines[timeline];
+            (was.rate, was.sample_rate) == (now.rate, now.sample_rate)
+        };
         match (&self.threads, &mut self.current) {
-            (Some(threads), Some(current)) if current.grains => {
+            (Some(threads), Some(current)) if current.grains && same_rates(current) => {
                 current.latest = (Arc::clone(&project), timeline);
                 *lock(&threads.shared.latest) = Some((epoch, project, timeline));
                 *lock(&threads.shared.grain) = Some((epoch, from));
@@ -802,6 +861,16 @@ impl Playback {
                     .map_err(|_| "the thread that builds the mix has ended".to_owned())
             }
             _ => self.begin(output, project, timeline, (from, 1, true)),
+        }
+    }
+
+    /// Fades out what the session of grains plays over [`SCRUB_FADE`] (T18's review), the
+    /// session going on in silence until it is stopped; whether one plays.
+    pub(crate) fn fade_out(&mut self) -> bool {
+        let epoch = self.epoch;
+        match (&self.threads, &self.current) {
+            (Some(threads), Some(current)) if current.grains => threads.send(Command::Fade(epoch)),
+            _ => false,
         }
     }
 
@@ -982,14 +1051,14 @@ impl Playback {
         };
         current.latest = (Arc::clone(project), timeline);
         *lock(&threads.shared.latest) = Some((epoch, Arc::clone(project), timeline));
-        if current.grains {
-            // A grain of scrubbing plays what it was built of; the next is of the newest project.
-            return Heard::Same;
-        }
         let was = &current.base.timelines[current.timeline];
         let now = &project.timelines[timeline];
         if (was.rate, was.sample_rate) != (now.rate, now.sample_rate) {
             return Heard::Again;
+        }
+        if current.grains {
+            // A grain of scrubbing plays what it was built of; the next is of the newest project.
+            return Heard::Same;
         }
         let sets = current
             .controls
@@ -1049,6 +1118,14 @@ impl Playback {
     /// Whether a session plays.
     pub(crate) fn playing(&self) -> bool {
         self.current.is_some()
+    }
+
+    /// The sample out at which the graph taken last to be swapped in is swapped in.
+    #[cfg(test)]
+    pub(crate) fn scheduled(&self) -> i64 {
+        self.threads
+            .as_ref()
+            .map_or(i64::MIN, |threads| threads.counters.scheduled())
     }
 
     /// How long the first graph of the last session took to build.
@@ -1572,5 +1649,162 @@ mod tests {
             let measured = frequency(&left[start + 240..start + length - 240]);
             assert!((measured - 440.0).abs() < 3.0, "{measured}");
         }
+    }
+
+    #[test]
+    fn a_graph_late_after_a_change_of_speed_plays_on_at_that_speed_from_where_it_is() {
+        // T18's review: an ordinary graph that came too late after a change of speed put the
+        // warp back to the one before the change, and the sound jumped.
+        let mut output = Output::open(&Kind::Null).unwrap();
+        let mut playback = Playback::with_opener(slow_to_open);
+        SLOW_TO_OPEN.store(0, Ordering::Release);
+        let project = Project::sample();
+        playback
+            .start(&mut output, Arc::new(project.clone()), 0, (0, 1))
+            .unwrap();
+        let mut speeds = Vec::new();
+        let mut poll = |playback: &mut Playback| {
+            if let Some(Event::Speed { at, speed }) = playback.poll() {
+                speeds.push((at, speed));
+            }
+        };
+        wait("the first graph", || {
+            poll(&mut playback);
+            playback
+                .current
+                .as_ref()
+                .is_some_and(|current| current.handed)
+        });
+        assert!(playback.set_speed(2));
+        wait("the change of speed", || {
+            poll(&mut playback);
+            playback
+                .current
+                .as_ref()
+                .is_some_and(|current| current.speed == 2 && !current.pending)
+        });
+        let warp = playback.current.as_ref().unwrap().warps.last().unwrap().1;
+        // An ordinary graph, slow to build: it comes too late and is built again.
+        SLOW_TO_OPEN.store(200, Ordering::Release);
+        let mut equalized = project.clone();
+        equalized.timelines[0].tracks[1].audio.strip.eq.on = true;
+        assert_eq!(playback.changed(&Arc::new(equalized), 0), Heard::Swap);
+        wait("a graph too late", || {
+            poll(&mut playback);
+            playback.mix_thread().0 > 0
+        });
+        SLOW_TO_OPEN.store(0, Ordering::Release);
+        wait("the graph built again swapped in", || {
+            poll(&mut playback);
+            playback.counts().1 >= 2
+                && playback
+                    .current
+                    .as_ref()
+                    .is_some_and(|current| !current.pending)
+        });
+        std::thread::sleep(Duration::from_millis(200));
+        poll(&mut playback);
+        // Still the one change of speed, and the timeline where that change put it.
+        assert_eq!(speeds.len(), 1, "{speeds:?}");
+        assert_eq!(
+            playback.current.as_ref().unwrap().warps.last().unwrap().1,
+            warp
+        );
+        playback.stop();
+    }
+
+    /// The sample project with its track of sound only, its clip the 4 s of the clicks of the
+    /// tests (a beep of 1 kHz for 10 ms at the start of each second); none where the media
+    /// cannot be made.
+    fn clicks() -> Option<Project> {
+        let made = crate::test_media::media(crate::test_media::Sample::Clicks)?;
+        let mut project = a_tone_of_two_seconds()?;
+        let facts = columbina_media::probe(&made.path).unwrap();
+        project.media[0].path = made.path.to_string_lossy().into_owned();
+        project.media[0].facts = facts.clone();
+        let clip = &mut project.timelines[0].tracks[0].clips[0];
+        clip.source = columbina_model::Source::Media {
+            media: "m1".into(),
+            source_in: columbina_model::Time {
+                ticks: 0,
+                scale: facts.duration.scale,
+            },
+        };
+        clip.length = 100;
+        Some(project)
+    }
+
+    #[test]
+    fn a_grain_built_slowly_still_starts_at_the_frame_dragged_to() {
+        let Some(project) = clicks() else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("heard.f32");
+        let mut output = Output::open(&Kind::Capture(path.clone())).unwrap();
+        let mut playback = Playback::with_opener(slow_to_open);
+        SLOW_TO_OPEN.store(0, Ordering::Release);
+        let project = Arc::new(project);
+        let first = 24_000;
+        playback
+            .scrub(&mut output, Arc::clone(&project), 0, first)
+            .unwrap();
+        wait("the first grain", || {
+            playback.poll();
+            output.played(Instant::now()).is_some()
+        });
+        // Each next grain is slow to build: 60 ms for each reader it opens.
+        SLOW_TO_OPEN.store(60, Ordering::Release);
+        let mut grains = Vec::new();
+        for (n, place) in [47_520, 95_520].into_iter().enumerate() {
+            playback
+                .scrub(&mut output, Arc::clone(&project), 0, place)
+                .unwrap();
+            wait("the grain", || {
+                playback.poll();
+                playback.counts().1 == u64::try_from(n + 1).unwrap()
+            });
+            grains.push((playback.scheduled(), place));
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        SLOW_TO_OPEN.store(0, Ordering::Release);
+        playback.stop();
+        output.stop();
+        drop(output);
+        let left = captured(&path, 1);
+        for (at, place) in grains {
+            // The beep at 1 s, 2 s of the media: 480 samples into a grain from 990 ms, 1990 ms.
+            let start = usize::try_from(at - first).unwrap();
+            let beep = (start..start + 2_880)
+                .find(|&n| left[n].abs() > 0.01)
+                .unwrap();
+            println!(
+                "the grain of {place} at {start}: its beep {} samples in",
+                beep - start
+            );
+            assert_eq!(beep - start, 480, "the grain of {place}");
+        }
+    }
+
+    #[test]
+    fn grains_of_another_rate_of_the_timeline_start_a_session_again() {
+        let Some(project) = a_tone_of_two_seconds() else {
+            return;
+        };
+        let mut output = Output::open(&Kind::Null).unwrap();
+        let mut playback = Playback::new();
+        playback
+            .scrub(&mut output, Arc::new(project.clone()), 0, 4_800)
+            .unwrap();
+        let session = output.session();
+        let mut other = project;
+        other.timelines[0].sample_rate = 44_100;
+        assert_eq!(playback.changed(&Arc::new(other.clone()), 0), Heard::Again);
+        playback
+            .scrub(&mut output, Arc::new(other), 0, 4_410)
+            .unwrap();
+        assert_eq!(output.session(), session + 1);
+        assert!(playback.scrubbing());
+        playback.stop();
     }
 }

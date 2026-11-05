@@ -327,7 +327,8 @@ impl Transport {
         let (result, target) = match monitor {
             Monitor::Source if matches!(action, Some(Action::ScrubAudio { .. })) => {
                 return Err(Fault::params(
-                    "transport.scrub_audio is of the timeline monitor: the source monitor plays                      no sound while its playhead is dragged",
+                    "transport.scrub_audio is of the timeline monitor: the source monitor plays no sound \
+                     while its playhead is dragged",
                 )
                 .with_data(json!({"reason":"monitor"})));
             }

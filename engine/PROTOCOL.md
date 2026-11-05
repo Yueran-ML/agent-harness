@@ -1617,8 +1617,10 @@ notification `transport.state`):
   speed of playing, so that the pitch follows the speed (2 plays a tone of 440 Hz at 880 Hz, −1
   plays the sound reversed), as a clip's speed without Pitch Correction does; at a speed other
   than 1, Pitch Correction and a clip's own pitch are not applied (in DaVinci Resolve only the
-  slow motion of K+L is pitch-corrected, and only on macOS, p. 3745). Fades, keyframes and lanes
-  are where the timeline is, and the effects run on the sound as it comes out (so that backward
+  slow motion of K+L is pitch-corrected, and only on macOS, p. 3745); back at 1 they are applied
+  again, the sound as the export has it. Above 2 times (shuttling) the clips are read through a
+  shorter filter (3 zero crossings on each side in place of 16), what would fold back staying
+  some 44 dB down. Fades, keyframes and lanes are where the timeline is, and the effects run on the sound as it comes out (so that backward
   they hear it reversed, as a clip played in reverse is). Sample `n` heard after playing started
   at sample `f` of the timeline at speed `s` is sample `f + s·n` (at the timeline's rate), so
   the picture keeps to the sound at every speed. A change of speed while the sound plays does not
@@ -1630,15 +1632,17 @@ notification `transport.state`):
 - **Scrubbing with sound (phase 3, T18).** While `scrub_audio` is on, each scrubbing seek
   (`"scrubbing": true`) of the timeline monitor plays a **grain**: 60 ms of the timeline from the
   start of the frame sought, forward at speed 1, through the whole mix (its effects too), faded
-  in and out on straight lines over 5 ms at either end. The first is heard once its mix is built
-  (some 30–100 ms); each next takes the place of one that still sounds, crossfaded over its fade
-  of 5 ms; seeks that come while a grain is built are taken together (only the last is played).
-  The sound stops when the dragging stops (the last grain plays to its end) and ends a second
-  after the last grain was asked for; a seek that is not scrubbing lets the last grain end as it
-  is, and playing, pausing or turning `scrub_audio` off ends it at once. Changes of the project
-  are heard from the next grain on. A grain of a clip with Pitch Correction or a pitch of its own
-  is played at the pitch of its speed. While grains play, `sound` is not `"on"` (the picture is
-  not played, and the sound is no clock).
+  in and out on straight lines over 5 ms at either end, as the export has it (Pitch Correction and
+  a clip's pitch too). The first is heard once its mix is built (some 30–100 ms); each next takes
+  the place of one that still sounds, crossfaded over its fade of 5 ms, some 20 ms after what is
+  mixed (further where the grain before took longer to build), built again further ahead where it
+  was not ready in time, so that its sound starts at the frame sought; seeks that come while a
+  grain is built are taken together (only the last is played). The sound stops when the dragging
+  stops (the last grain plays to its end) and ends a second after the last grain was asked for; a
+  seek that is not scrubbing lets the last grain end as it is; pausing or turning `scrub_audio`
+  off fades it out over 5 ms, and playing ends it at once. Changes of the project are heard from
+  the next grain on, and a change of the rates of the timeline starts the grains again. While
+  grains play, `sound` is not `"on"` (the picture is not played, and the sound is no clock).
 - At playback speed 1, enabled audio tracks are mixed at the timeline sample rate in stereo,
   then converted to the device's rate and channel layout. Disabled tracks/clips are not decoded.
   Each clip applies its gain, linear fades and equal-power crossfades sample by sample. Pan is

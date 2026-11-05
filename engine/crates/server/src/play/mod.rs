@@ -27,11 +27,24 @@ pub type Notify = Arc<dyn Fn(&Value) + Send + Sync>;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Action {
-    Play { speed: i32 },
+    Play {
+        speed: i32,
+    },
     Pause,
-    Seek { frame: i64, scrubbing: bool },
-    Step { frames: i64 },
-    Proxies { on: bool },
+    Seek {
+        frame: i64,
+        scrubbing: bool,
+    },
+    Step {
+        frames: i64,
+    },
+    Proxies {
+        on: bool,
+    },
+    /// Whether dragging the playhead plays its sound (T18; Timeline › Audio Scrubbing).
+    ScrubAudio {
+        on: bool,
+    },
 }
 
 #[derive(Deserialize)]
@@ -118,6 +131,10 @@ fn action(method: &str, params: &RawValue) -> Result<Option<Action>, Fault> {
         "transport.proxies" => {
             let Proxies { on } = rpc::params(method, r#"{"on":true}"#, Some(params))?;
             Action::Proxies { on }
+        }
+        "transport.scrub_audio" => {
+            let Proxies { on } = rpc::params(method, r#"{"on":true}"#, Some(params))?;
+            Action::ScrubAudio { on }
         }
         _ => {
             return Err(Fault::new(
@@ -242,6 +259,9 @@ impl Transport {
     pub fn check(&self, method: &str) -> Result<(), Fault> {
         if method == "transport.frame_digest" && self.test_hooks && self.timeline.is_some() {
             Ok(())
+        } else if method == "transport.scrub_audio" {
+            // A method of the timeline monitor (T18), where there is one.
+            self.source.check("transport.state")
         } else {
             self.source.check(method)
         }
@@ -305,6 +325,13 @@ impl Transport {
         let action = action(method, &params)?;
         let playing = matches!(action, Some(Action::Play { .. }));
         let (result, target) = match monitor {
+            Monitor::Source if matches!(action, Some(Action::ScrubAudio { .. })) => {
+                return Err(Fault::params(
+                    "transport.scrub_audio is of the timeline monitor: the source monitor plays no sound \
+                     while its playhead is dragged",
+                )
+                .with_data(json!({"reason":"monitor"})));
+            }
             Monitor::Source => {
                 let (mut result, order) = self.source.prepare(method, Some(&params))?;
                 if method == "transport.state" {
@@ -314,10 +341,9 @@ impl Transport {
             }
             Monitor::Timeline => {
                 let timeline = self.timeline.as_ref().expect("not headless");
-                if action
-                    .as_ref()
-                    .is_some_and(|action| !matches!(action, Action::Proxies { .. }))
-                {
+                if action.as_ref().is_some_and(|action| {
+                    !matches!(action, Action::Proxies { .. } | Action::ScrubAudio { .. })
+                }) {
                     timeline.check_loaded()?;
                 }
                 let result = if action.is_none() {

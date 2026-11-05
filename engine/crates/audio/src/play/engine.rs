@@ -30,6 +30,7 @@ use super::fetcher::Fetcher;
 use super::Counters;
 use crate::constants::{
     samples, GRAPH_SWAP_CROSSFADE, MAX_CHANNELS, MIX_BLOCK, OUTPUT_AHEAD, OUTPUT_AHEAD_PERIODS,
+    SCRUB_FADE,
 };
 use crate::graph::{route, Control, Graph};
 use crate::node::Layout;
@@ -43,6 +44,40 @@ pub const MOST_BLOCK: usize = 4096;
 /// session lets go of (the session, a graph waiting, one after it, one fading out).
 pub const STASH: usize = 8;
 
+/// A grain of audio scrubbing (T18): the samples out from `from`, `length` of them, faded in and
+/// out on straight lines over `fade` samples at either end; silence after. A grain swapped in
+/// while another sounds takes its place by a crossfade of `fade`: the other fades out on the
+/// line on which this one fades in, so that the two gains sum to 1.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Grain {
+    /// Its first sample out.
+    pub from: i64,
+    /// Its samples.
+    pub length: i64,
+    /// The samples of each of its fades.
+    pub fade: i64,
+}
+
+impl Grain {
+    /// The gain of sample `sample` out: `(k + 1) / fade` rising, `(length - k) / fade` falling,
+    /// 1 between, 0 outside it, `k` the samples since its first.
+    #[must_use]
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a share of a fade of a few hundred samples"
+    )]
+    pub fn gain(&self, sample: i64) -> f32 {
+        let k = sample - self.from;
+        if k < 0 || k >= self.length {
+            return 0.0;
+        }
+        let fade = self.fade.max(1);
+        let rising = (k + 1).min(fade);
+        let falling = (self.length - k).min(fade);
+        rising.min(falling) as f32 / fade as f32
+    }
+}
+
 /// A graph that plays, with the feed of its clips and their reader ahead.
 pub struct Run {
     graph: Graph,
@@ -52,8 +87,10 @@ pub struct Run {
     monitor: Option<usize>,
     /// The gains of each channel of the monitored bus into the left and the right.
     fold: [[f32; MAX_CHANNELS]; 2],
-    /// The sample of the timeline at its end: silence from there.
+    /// The sample out at the end of the timeline: silence from there.
     end: i64,
+    /// The grain of scrubbing that it plays, where it plays one (T18).
+    grain: Option<Grain>,
 }
 
 impl std::fmt::Debug for Run {
@@ -88,7 +125,21 @@ impl Run {
             monitor,
             fold,
             end,
+            grain: None,
         }
+    }
+
+    /// The same, playing only `grain` (T18). Made off the thread of the mix.
+    #[must_use]
+    pub fn with_grain(mut self, grain: Grain) -> Self {
+        self.grain = Some(grain);
+        self
+    }
+
+    /// The grain of scrubbing that it plays, where it plays one.
+    #[must_use]
+    pub fn grain(&self) -> Option<Grain> {
+        self.grain
     }
 
     /// Its graph.
@@ -107,7 +158,11 @@ impl Run {
     /// `right` as the mixer of T4b folded it (`route::convert`); silence after its end.
     fn produce(&mut self, frames: usize, left: &mut [f32], right: &mut [f32]) {
         let at = self.graph.at();
-        let sounding = usize::try_from(self.end.saturating_sub(at))
+        let end = match self.grain {
+            Some(grain) => self.end.min(grain.from.saturating_add(grain.length)),
+            None => self.end,
+        };
+        let sounding = usize::try_from(end.saturating_sub(at))
             .unwrap_or(0)
             .min(frames);
         left[..frames].fill(0.0);
@@ -132,6 +187,17 @@ impl Run {
                         *out += gain * sample;
                     }
                 }
+            }
+        }
+        if let Some(grain) = self.grain {
+            for (n, (left, right)) in left[..sounding]
+                .iter_mut()
+                .zip(&mut right[..sounding])
+                .enumerate()
+            {
+                let gain = grain.gain(at + i64::try_from(n).unwrap_or(0));
+                *left *= gain;
+                *right *= gain;
             }
         }
     }
@@ -212,6 +278,10 @@ pub enum Command {
     Stop(u64),
     /// Set a control of a graph.
     Set(Control, f32),
+    /// Fade what the session of `epoch` plays out over [`SCRUB_FADE`] from the next block, and
+    /// play silence after, until another graph is swapped in or the session ends (T18's review:
+    /// a grain of scrubbing that is stopped).
+    Fade(u64),
     /// Swap this graph in for the session of `epoch`, at sample `at` of the timeline.
     Swap {
         /// The session.
@@ -250,8 +320,10 @@ pub struct Engine {
     incoming: Option<(Box<Run>, i64)>,
     /// The graph to swap in after it, at least a crossfade later; a newer one takes its place.
     next: Option<(Box<Run>, i64)>,
-    /// The graph fading out, and how far it has faded.
-    fading: Option<(Box<Run>, usize)>,
+    /// The graph fading out, how far it has faded, and over how many samples it fades.
+    fading: Option<(Box<Run>, usize, usize)>,
+    /// How far the sound of the session has faded out, where it is told to ([`Command::Fade`]).
+    fade: Option<usize>,
     /// What could not be sent back yet (the ring back was full): while anything waits here, no
     /// command is taken and nothing is mixed, so that it never holds more than one command and a
     /// swap let go of ([`STASH`]), and nothing is ever dropped or leaked on this thread.
@@ -290,6 +362,7 @@ impl Engine {
             incoming: None,
             next: None,
             fading: None,
+            fade: None,
             stash: Default::default(),
             left: scratch(),
             right: scratch(),
@@ -336,13 +409,14 @@ impl Engine {
 
     /// Ends the session, letting go of its graphs.
     fn end_session(&mut self) {
+        self.fade = None;
         if let Some((run, _)) = self.incoming.take() {
             self.retire(Retired::Run(run));
         }
         if let Some((run, _)) = self.next.take() {
             self.retire(Retired::Run(run));
         }
-        if let Some((run, _)) = self.fading.take() {
+        if let Some((run, _, _)) = self.fading.take() {
             self.retire(Retired::Run(run));
         }
         if let Some(session) = self.session.take() {
@@ -363,6 +437,7 @@ impl Engine {
                         self.epoch = session.epoch;
                         self.counters.mix_to(session.resampler.next_input());
                         self.counters.schedule(i64::MIN);
+                        self.counters.take(session.epoch);
                         self.session = Some(session);
                     } else {
                         self.retire(Retired::Session(session));
@@ -385,11 +460,16 @@ impl Engine {
                     if let Some((run, _)) = &mut self.next {
                         run.graph.set(control, value);
                     }
-                    if let Some((run, _)) = &mut self.fading {
+                    if let Some((run, _, _)) = &mut self.fading {
                         run.graph.set(control, value);
                     }
                 }
                 Command::Swap { epoch, run, at } => self.take_swap(epoch, run, at),
+                Command::Fade(epoch) => {
+                    if epoch == self.epoch && self.session.is_some() {
+                        self.fade = Some(0);
+                    }
+                }
             }
         }
     }
@@ -407,8 +487,8 @@ impl Engine {
         let mixed = session.resampler.next_input();
         let fade = samples(GRAPH_SWAP_CROSSFADE, session.resampler.rate()).max(1);
         // A crossfade under way ends at the sample where it began and a crossfade on.
-        let fading = self.fading.as_ref().map(|(_, faded)| {
-            mixed - i64::try_from(*faded).unwrap_or(0) + i64::try_from(fade).unwrap_or(0)
+        let fading = self.fading.as_ref().map(|(_, faded, length)| {
+            mixed - i64::try_from(*faded).unwrap_or(0) + i64::try_from(*length).unwrap_or(0)
         });
         let first = self.incoming.as_ref().map(|(_, first)| *first);
         match first {
@@ -468,9 +548,16 @@ impl Engine {
                         let old = std::mem::replace(&mut session.run, run);
                         // A graph waits for its sample only beyond a crossfade under way
                         // (`take_swap`), so that none is fading out here.
-                        let older = self.fading.replace((old, 0));
+                        // A grain of scrubbing takes the place of what sounded over its own
+                        // fade (T18).
+                        let length = match session.run.grain {
+                            Some(grain) => usize::try_from(grain.fade).unwrap_or(1).max(1),
+                            None => samples(GRAPH_SWAP_CROSSFADE, rate).max(1),
+                        };
+                        let older = self.fading.replace((old, 0, length));
+                        self.fade = None;
                         self.counters.swapped();
-                        if let Some((older, _)) = older {
+                        if let Some((older, _, _)) = older {
                             self.retire(Retired::Run(older));
                             return mixed;
                         }
@@ -481,26 +568,37 @@ impl Engine {
                 }
                 None => {}
             }
-            let fade = samples(GRAPH_SWAP_CROSSFADE, rate).max(1);
-            if let Some((_, faded)) = &self.fading {
-                frames = frames.min(fade - faded);
+            if let Some((_, faded, length)) = &self.fading {
+                frames = frames.min(length - faded);
             }
             frames = frames.min(session.resampler.room());
             if frames == 0 || session.out.free() < session.resampler.most_out(frames) {
                 return mixed;
             }
             session.run.produce(frames, &mut self.left, &mut self.right);
+            // A grain fades itself in (T18): the line it rises on is its own.
+            let ramped = session.run.grain.is_none();
             let mut done = false;
-            if let Some((old, faded)) = &mut self.fading {
+            if let Some((old, faded, length)) = &mut self.fading {
                 old.produce(frames, &mut self.old_left, &mut self.old_right);
                 for n in 0..frames {
-                    let new = (*faded + n + 1) as f32 / fade as f32;
+                    let new = (*faded + n + 1) as f32 / *length as f32;
                     let gone = 1.0 - new;
+                    let new = if ramped { new } else { 1.0 };
                     self.left[n] = self.old_left[n] * gone + self.left[n] * new;
                     self.right[n] = self.old_right[n] * gone + self.right[n] * new;
                 }
                 *faded += frames;
-                done = *faded >= fade;
+                done = *faded >= *length;
+            }
+            if let Some(faded) = &mut self.fade {
+                let length = samples(SCRUB_FADE, rate).max(1);
+                for n in 0..frames {
+                    let gain = (1.0 - (*faded + n + 1) as f32 / length as f32).max(0.0);
+                    self.left[n] *= gain;
+                    self.right[n] *= gain;
+                }
+                *faded = (*faded + frames).min(length);
             }
             let Some(session) = self.session.as_mut() else {
                 return mixed;
@@ -515,7 +613,7 @@ impl Engine {
                 .mix_to(at + i64::try_from(frames).unwrap_or(0));
             mixed = true;
             if done {
-                if let Some((old, _)) = self.fading.take() {
+                if let Some((old, _, _)) = self.fading.take() {
                     self.retire(Retired::Run(old));
                 }
                 if self.stashed() > 0 {

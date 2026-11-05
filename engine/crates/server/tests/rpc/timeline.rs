@@ -935,12 +935,15 @@ async fn timeline_sound_survives_seek_and_is_handed_over_before_source_playback(
         })
         .await;
     assert_eq!(source["sound"], "off");
-    let (fast, _) = client
-        .until_state("timeline shuttles silently", |s| {
-            s["monitor"] == "timeline" && s["playing"] == true && s["speed"] == 2
+    // At 2 the timeline plays its sound too (T18), and it is the clock.
+    client
+        .until_state("timeline shuttles with its sound", |s| {
+            s["monitor"] == "timeline"
+                && s["playing"] == true
+                && s["speed"] == 2
+                && s["sound"] == "on"
         })
         .await;
-    assert_eq!(fast["sound"], "off");
 }
 
 #[tokio::test]
@@ -1108,4 +1111,192 @@ async fn timeline_sound_plays_on_the_output_device_through_a_change() {
     assert_eq!(after["audio_underruns"], 0, "{after}");
     action(&mut client, "transport.pause", json!({})).await;
     eprintln!("{}", engine.stderr());
+}
+
+/// The frequency of a steady tone in `signal` at 48 kHz: its upward zero crossings, each placed
+/// between its two samples on a line, counted over the time from the first to the last.
+#[allow(clippy::cast_precision_loss, reason = "samples of a test")]
+fn frequency(signal: &[f32]) -> f64 {
+    let crossings: Vec<f64> = signal
+        .windows(2)
+        .enumerate()
+        .filter(|(_, pair)| pair[0] < 0.0 && pair[1] >= 0.0)
+        .map(|(n, pair)| n as f64 + f64::from(-pair[0]) / f64::from(pair[1] - pair[0]))
+        .collect();
+    let (first, last) = (crossings[0], crossings[crossings.len() - 1]);
+    (crossings.len() - 1) as f64 * 48_000.0 / (last - first)
+}
+
+#[tokio::test]
+async fn timeline_sound_plays_an_octave_up_at_twice_the_speed_and_changes_speed_in_one_session() {
+    if columbina_compose::gpu_for_tests().is_none() {
+        return;
+    }
+    let dir = project_dir();
+    let capture = dir.path().join("heard.f32");
+    let sound = format!("capture={}", capture.display());
+    let Some((engine, mut client)) = transport_engine_with(
+        dir.path(),
+        &[support::Sample::Fhd],
+        &["--sound", &sound, "--test-hooks"],
+    )
+    .await
+    else {
+        return;
+    };
+    eight_seconds_of_sound(&mut client).await;
+    // At 2 the sound is played, and is the clock (T18).
+    action(&mut client, "transport.play", json!({"speed":2})).await;
+    client
+        .until_state("timeline audio at 2", |s| {
+            s["monitor"] == "timeline" && s["sound"] == "on" && s["speed"] == 2
+        })
+        .await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    let at_two = action(&mut client, "transport.frame_digest", json!({})).await;
+    // Backward at 1 from where it is: in the same session, the picture with it.
+    action(&mut client, "transport.play", json!({"speed":-1})).await;
+    tokio::time::sleep(Duration::from_millis(900)).await;
+    let back = action(&mut client, "transport.frame_digest", json!({})).await;
+    action(&mut client, "transport.pause", json!({})).await;
+    drop(client);
+    drop(engine);
+    for digest in [&at_two, &back] {
+        assert_eq!(digest["audio_short_runs"], 0, "{digest}");
+        assert_eq!(digest["audio_underruns"], 0, "{digest}");
+        // The mixer and the picture at the same place of the timeline (1920 samples a frame).
+        let (sample, frame) = (
+            digest["audio_sample"].as_i64().unwrap(),
+            digest["frame"].as_i64().unwrap(),
+        );
+        assert!(sample.abs_diff(frame * 1920 + 960) <= 2 * 1920, "{digest}");
+    }
+    assert!(
+        back["audio_samples"].as_i64() > at_two["audio_samples"].as_i64(),
+        "the sound started again: {at_two} then {back}"
+    );
+    assert_eq!(back["audio_swaps"], 1, "{back}");
+    assert!(
+        !columbina_server_capture_file(&capture, 2).exists(),
+        "a second session"
+    );
+    let left: Vec<f32> = captured(&capture).into_iter().step_by(2).collect();
+    let early = frequency(&left[4_800..24_000]);
+    let late = frequency(&left[left.len() - 24_000..left.len() - 4_800]);
+    println!(
+        "at 2: {early:.2} Hz; then at -1: {late:.2} Hz; {} frames",
+        left.len()
+    );
+    assert!((early - 880.0).abs() < 1.0, "{early}");
+    assert!((late - 440.0).abs() < 1.0, "{late}");
+}
+
+/// The file of session `session` of a capture at `path` (`path`, then `path.2`, ...).
+fn columbina_server_capture_file(path: &std::path::Path, session: u64) -> std::path::PathBuf {
+    if session <= 1 {
+        path.to_owned()
+    } else {
+        let mut name = path.as_os_str().to_owned();
+        name.push(format!(".{session}"));
+        std::path::PathBuf::from(name)
+    }
+}
+
+/// The runs of `signal` that are not silent, gaps of fewer than 16 silent samples within them
+/// taken in (where a tone crosses 0): where each starts, and how long it is.
+fn sounding(signal: &[f32]) -> Vec<(usize, usize)> {
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    for (n, sample) in signal.iter().enumerate() {
+        if *sample == 0.0 {
+            continue;
+        }
+        match runs.last_mut() {
+            Some((start, length)) if n - (*start + *length) < 16 => *length = n + 1 - *start,
+            _ => runs.push((n, 1)),
+        }
+    }
+    runs
+}
+
+#[tokio::test]
+async fn timeline_scrubbing_plays_a_grain_of_60_ms_for_each_seek_and_none_once_turned_off() {
+    if columbina_compose::gpu_for_tests().is_none() {
+        return;
+    }
+    let dir = project_dir();
+    let capture = dir.path().join("heard.f32");
+    let sound = format!("capture={}", capture.display());
+    let Some((engine, mut client)) = transport_engine_with(
+        dir.path(),
+        &[support::Sample::Fhd],
+        &["--sound", &sound, "--test-hooks"],
+    )
+    .await
+    else {
+        return;
+    };
+    eight_seconds_of_sound(&mut client).await;
+    let state = action(&mut client, "transport.state", json!({})).await;
+    assert_eq!(state["scrub_audio"], true, "{state}");
+    // Ten seeks of a drag, 150 ms apart, and the one that ends it.
+    for n in 1..=10 {
+        action(
+            &mut client,
+            "transport.seek",
+            json!({"frame": n * 17, "scrubbing": true}),
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+    action(
+        &mut client,
+        "transport.seek",
+        json!({"frame": 170, "scrubbing": false}),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Off (Shift+S): seeks of a drag play nothing.
+    action(&mut client, "transport.scrub_audio", json!({"on": false})).await;
+    client
+        .until_state("audio scrubbing off", |s| {
+            s["monitor"] == "timeline" && s["scrub_audio"] == false
+        })
+        .await;
+    for n in 1..=5 {
+        action(
+            &mut client,
+            "transport.seek",
+            json!({"frame": n * 13, "scrubbing": true}),
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+    // The source monitor has no such switch.
+    let refused = client
+        .error(
+            "transport.scrub_audio",
+            Some(json!({"monitor":"source", "on": true})),
+        )
+        .await;
+    assert_eq!(refused["code"], -32602, "{refused}");
+    assert_eq!(refused["data"]["reason"], "monitor", "{refused}");
+    assert!(
+        !refused["message"].as_str().unwrap().contains("  "),
+        "{refused}"
+    );
+    drop(client);
+    drop(engine);
+    assert!(
+        !columbina_server_capture_file(&capture, 2).exists(),
+        "a session of grains after audio scrubbing was turned off"
+    );
+    let left: Vec<f32> = captured(&capture).into_iter().step_by(2).collect();
+    let grains = sounding(&left);
+    println!("grains: {grains:?}");
+    assert_eq!(grains.len(), 10, "{grains:?}");
+    for (start, length) in grains {
+        assert!(length.abs_diff(2_880) <= 1, "{length}");
+        let measured = frequency(&left[start + 240..start + length - 240]);
+        assert!((measured - 440.0).abs() < 3.0, "{measured}");
+    }
 }

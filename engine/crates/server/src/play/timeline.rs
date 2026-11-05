@@ -43,6 +43,14 @@ const COMPILED_POLL: Duration = Duration::from_millis(10);
 /// start (T5's review), the picture going on by the clock of the system until it is heard.
 const REJOIN_LEAD: Duration = Duration::from_millis(500);
 
+/// How long a session of grains of scrubbing is kept once its last grain was asked for (T18),
+/// so that the grains of a drag play in one: after that, it ends.
+const SCRUB_IDLE: Duration = Duration::from_secs(1);
+
+/// How long a session of grains of scrubbing told to fade out is kept before it ends (T18's
+/// review): the sound ahead of the device, its latency, and the fade.
+const SCRUB_FADE_OUT: Duration = Duration::from_millis(100);
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -61,6 +69,9 @@ pub struct Status {
     pub sound: Sound,
     pub source: Option<Source>,
     pub proxies: bool,
+    /// Whether dragging the playhead plays the sound under it (`transport.scrub_audio`, Timeline ›
+    /// Audio Scrubbing, p. 731; on at first).
+    pub scrub_audio: bool,
     /// The LUTs that the grades of the timeline name and that cannot be read (left out where
     /// there are none).
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -109,6 +120,7 @@ impl Default for Status {
             sound: Sound::None,
             source: None,
             proxies: true,
+            scrub_audio: true,
             missing_luts: Vec::new(),
             highlight: None,
             bypass: false,
@@ -278,6 +290,8 @@ impl Timeline {
                         joining: None,
                         sound_late: false,
                         mixed_from: None,
+                        scrub_until: None,
+                        speed_change: None,
                         heard: Cell::new(0),
                         fine: None,
                         epoch: Instant::now(),
@@ -514,6 +528,12 @@ struct Worker {
     /// The sample of the timeline that the mixer that plays started at, and the timeline's
     /// rate of samples: where the sound is, for the test hook to tell.
     mixed_from: Option<(i64, u32)>,
+    /// When the session of grains of scrubbing that plays ends, its last grain long played (T18).
+    scrub_until: Option<Instant>,
+    /// The change of speed of the sound heard last, and whether the clock of the picture is yet
+    /// to take it: the instant of the sound (`clock_now`) from which it plays at that speed
+    /// (T18's review: the picture changes its speed when that instant comes, not before).
+    speed_change: Option<(i128, i32, bool)>,
     heard: Cell<i128>,
     fine: Option<crate::timer::Fine>,
     epoch: Instant,
@@ -567,13 +587,17 @@ impl Worker {
             Sound::None
         };
         self.clock = Some(Clock::at(place, clock.speed(), clock.rate(), self.now()));
-        if clock.speed() != 1 || !self.has_sound() {
+        self.scrub_until = None;
+        self.speed_change = None;
+        if !self.has_sound() {
             return;
         }
         let (Some(project), Some(index)) = (&self.project, self.timeline) else {
             return;
         };
         let timeline = &project.timelines[index];
+        // At any speed, forward or backward, its pitch following it (T18).
+        let speed = clock.speed();
         let nanos = Clock::at(place, 1, clock.rate(), 0).media_nanos(0);
         let from = i64::try_from(nanos * i128::from(timeline.sample_rate) / clock::NANOS);
         let started = from.as_ref().ok().copied();
@@ -582,13 +606,13 @@ impl Worker {
             .and_then(|from| {
                 let output = self.sound.ready().ok_or("audio output is unavailable")?;
                 self.playback
-                    .start(output, Arc::clone(project), index, from)
+                    .start(output, Arc::clone(project), index, (from, speed))
             });
         match result {
             Ok(()) => {
                 self.status.sound = Sound::On;
                 self.heard.set(0);
-                self.clock = Some(Clock::at(place, 1, clock.rate(), 0));
+                self.clock = Some(Clock::at(place, speed, clock.rate(), 0));
                 self.mixed_from = started.map(|from| (from, timeline.sample_rate));
             }
             Err(message) => {
@@ -611,7 +635,12 @@ impl Worker {
         else {
             return;
         };
-        if clock.speed() != 1 || !self.has_sound() {
+        // At the speed asked for last, which a change still in flight may not have brought the
+        // picture to yet (T18's review).
+        let clock = clock.with_speed(self.status.speed, self.now());
+        self.clock = Some(clock);
+        self.speed_change = None;
+        if !self.has_sound() {
             return;
         }
         log(
@@ -622,7 +651,9 @@ impl Worker {
         );
         let lead = REJOIN_LEAD;
         let place = clock.place(self.now())
-            + i128::try_from(lead.as_nanos()).unwrap_or(0) * i128::from(clock.rate().num);
+            + i128::try_from(lead.as_nanos()).unwrap_or(0)
+                * i128::from(clock.speed())
+                * i128::from(clock.rate().num);
         let timeline = &project.timelines[index];
         let nanos = Clock::at(place, 1, clock.rate(), 0).media_nanos(0);
         let Ok(from) = i64::try_from(nanos * i128::from(timeline.sample_rate) / clock::NANOS)
@@ -634,7 +665,10 @@ impl Worker {
         let Some(output) = self.sound.ready() else {
             return;
         };
-        match self.playback.start(output, project, index, from) {
+        match self
+            .playback
+            .start(output, project, index, (from, clock.speed()))
+        {
             Ok(()) => {
                 self.joining = Some(place);
                 self.mixed_from = Some((from, rate));
@@ -663,7 +697,7 @@ impl Worker {
                 self.sound_late = false;
                 self.status.sound = Sound::On;
                 self.heard.set(0);
-                self.clock = Some(Clock::at(place, 1, clock.rate(), 0));
+                self.clock = Some(Clock::at(place, clock.speed(), clock.rate(), 0));
                 log(
                     "transport_sound_back",
                     &json!({"monitor":"timeline","message":"the sound joins the picture"}),
@@ -690,6 +724,7 @@ impl Worker {
             {
                 self.rejoin_sound();
             }
+            Some(super::sound::Event::Speed { at, speed }) => self.speed_heard(*at, *speed),
             _ => {}
         }
         let failed = matches!(event, Some(super::sound::Event::Failed(_)));
@@ -715,7 +750,96 @@ impl Worker {
         }
     }
 
+    /// The sound plays at `speed` from its sample `at` out on (T18): the clock of the picture,
+    /// which the sound is, changes its speed at the instant of the sound when that sample is
+    /// heard, so that the place does not jump and the picture keeps to the sound.
+    fn speed_heard(&mut self, at: i64, speed: i32) {
+        let (Some(_), Some((from, rate))) = (self.clock, self.mixed_from) else {
+            return;
+        };
+        if self.status.sound != Sound::On || self.joining.is_some() {
+            return;
+        }
+        // The sound out is counted from `from` at the rate of the timeline, as the device's
+        // instants are (`clock_now`).
+        let since = i128::from(at - from) * clock::NANOS / i128::from(rate.max(1));
+        self.speed_change = Some((since, speed, true));
+        self.clock_due();
+        self.tell(true);
+    }
+
+    /// The clock of the picture, its change of speed taken where the instant of it has come.
+    fn clock_due(&mut self) -> Option<Clock> {
+        if let (Some((since, speed, true)), Some(clock)) = (self.speed_change, self.clock) {
+            if self.clock_now() >= since {
+                self.clock = Some(clock.with_speed(speed, since));
+                self.speed_change = Some((since, speed, false));
+            }
+        }
+        self.clock
+    }
+
+    /// Plays the grain of scrubbing of `frame` (T18), where scrubbing plays sound: in the session
+    /// of grains that plays, or a new one.
+    fn scrub_sound(&mut self, frame: i64) {
+        if !self.status.scrub_audio || !self.has_sound() {
+            return;
+        }
+        let (Some(project), Some(index)) = (&self.project, self.timeline) else {
+            return;
+        };
+        let timeline = &project.timelines[index];
+        let from = resolve::samples_at(frame, timeline.rate, timeline.sample_rate);
+        let project = Arc::clone(project);
+        let Some(output) = self.sound.ready() else {
+            return;
+        };
+        match self.playback.scrub(output, project, index, from) {
+            Ok(()) => self.scrub_until = Some(Instant::now() + SCRUB_IDLE),
+            Err(message) => log(
+                "sound_unavailable",
+                &json!({"monitor":"timeline","message":message}),
+            ),
+        }
+    }
+
+    /// Ends the session of grains of scrubbing, if one plays: at once, or, where it `fade`s,
+    /// once what it plays has faded out over 5 ms and been heard (T18's review).
+    fn end_scrub(&mut self, fade: bool) {
+        if self.scrub_until.is_none() || !self.playback.scrubbing() {
+            self.scrub_until = None;
+            return;
+        }
+        if fade && self.playback.fade_out() {
+            self.scrub_until = Some(Instant::now() + SCRUB_FADE_OUT);
+            return;
+        }
+        self.scrub_until = None;
+        self.playback.stop();
+        self.sound.stop();
+    }
+
     fn wait(&self) -> Option<Duration> {
+        let wait = self.wait_for_picture();
+        // A change of speed still to come: woken when its instant does.
+        let wait = match self.speed_change {
+            Some((since, _, true)) => {
+                let nanos = u64::try_from((since - self.clock_now()).max(0)).unwrap_or(u64::MAX);
+                let change = Duration::from_nanos(nanos);
+                Some(wait.map_or(change, |wait| wait.min(change)))
+            }
+            _ => wait,
+        };
+        match self.scrub_until {
+            Some(until) => {
+                let scrub = until.saturating_duration_since(Instant::now());
+                Some(wait.map_or(scrub, |wait| wait.min(scrub)))
+            }
+            None => wait,
+        }
+    }
+
+    fn wait_for_picture(&self) -> Option<Duration> {
         if let Some(clock) = self.clock {
             let now = self.clock_now();
             let next = clock
@@ -826,6 +950,8 @@ impl Worker {
     fn pause(&mut self) {
         self.playback.stop();
         self.sound.stop();
+        self.scrub_until = None;
+        self.speed_change = None;
         self.joining = None;
         self.sound_late = false;
         self.status.sound = if self.has_sound() {
@@ -852,6 +978,7 @@ impl Worker {
         self.targets.clear();
         self.status = Status {
             proxies: self.status.proxies,
+            scrub_audio: self.status.scrub_audio,
             ..Status::default()
         };
         let instance = {
@@ -958,12 +1085,15 @@ impl Worker {
                             let samples = output.played(Instant::now())?;
                             // Where the mixer is in the timeline: the sample that it started
                             // at, and as many more as have been heard, at the timeline's rate.
+                            // At a speed, where the timeline is at that sample out (T18).
                             let mixed = self.mixed_from.map(|(from, rate)| {
-                                from + i64::try_from(
-                                    i128::from(samples) * i128::from(rate)
-                                        / i128::from(output.format().rate),
-                                )
-                                .unwrap_or(i64::MAX)
+                                let out = from
+                                    + i64::try_from(
+                                        i128::from(samples) * i128::from(rate)
+                                            / i128::from(output.format().rate),
+                                    )
+                                    .unwrap_or(i64::MAX);
+                                self.playback.timeline_at(out).unwrap_or(out)
                             });
                             Some((
                                 samples,
@@ -1271,6 +1401,20 @@ impl Worker {
                 };
                 let rate = project.timelines[index].rate;
                 self.settle = None;
+                if self.clock.is_some()
+                    && self.status.sound == Sound::On
+                    && self.joining.is_none()
+                    && self.playback.playing()
+                    && self.playback.set_speed(speed)
+                {
+                    // The sound changes its speed a little ahead, in the same session, and the
+                    // picture with it there (`speed_heard`, T18).
+                    self.status.speed = speed;
+                    self.request(frame, false);
+                    self.tell(true);
+                    return;
+                }
+                self.end_scrub(false);
                 if let Some(clock) = self.clock {
                     self.clock = Some(clock.with_speed(speed, self.clock_now()));
                 } else {
@@ -1288,14 +1432,23 @@ impl Worker {
                 self.restart_sound();
                 self.request(frame, false);
             }
+            // A grain of scrubbing is faded out (T18's review).
+            Action::Pause if self.playback.scrubbing() => self.end_scrub(true),
             Action::Pause => self.pause(),
             Action::Seek { frame, scrubbing } => {
                 let resume = self.clock.filter(|_| !scrubbing);
-                self.pause();
+                // A session of grains of scrubbing plays on through a seek while still: the
+                // grain of the last drag ends as it is (T18).
+                if self.clock.is_some() {
+                    self.pause();
+                }
                 let frame = clock::clamped(frame, last);
                 self.status.frame = Some(frame);
                 self.settle = scrubbing.then(|| Instant::now() + SETTLE);
                 let _ = self.draw(true, scrubbing);
+                if scrubbing {
+                    self.scrub_sound(frame);
+                }
                 if let Some(clock) = resume {
                     self.prime(frame.saturating_add(i64::from(clock.speed().signum())));
                     self.clock = Some(Clock::starting(
@@ -1315,6 +1468,12 @@ impl Worker {
                 self.status.frame = Some(clock::stepped(frame, frames, last));
                 let _ = self.draw(true, false);
             }
+            Action::ScrubAudio { on } => {
+                self.status.scrub_audio = on;
+                if !on {
+                    self.end_scrub(true);
+                }
+            }
             Action::Proxies { on } => {
                 self.status.proxies = on;
                 self.invalidate();
@@ -1328,7 +1487,13 @@ impl Worker {
 
     fn tick(&mut self) {
         self.check_sound();
-        if let Some(clock) = self.clock {
+        if self
+            .scrub_until
+            .is_some_and(|until| Instant::now() >= until)
+        {
+            self.end_scrub(false);
+        }
+        if let Some(clock) = self.clock_due() {
             let target = clock.frame(self.clock_now());
             let frame = clock::clamped(target, self.status.last.unwrap_or(0));
             if self.status.frame != Some(frame) {
@@ -2137,6 +2302,8 @@ mod tests {
             joining: None,
             sound_late: false,
             mixed_from: None,
+            scrub_until: None,
+            speed_change: None,
             heard: Cell::new(0),
             fine: None,
             epoch: Instant::now(),
@@ -2453,5 +2620,178 @@ mod tests {
             .present(&filled([255, 255, 255, 255]), 0, None)
             .unwrap();
         assert_eq!(worker.targets.len(), 3);
+    }
+
+    /// Waits for `until`, taking what the sound did meanwhile, for at most 30 s.
+    fn sound_until(worker: &mut Worker, what: &str, mut until: impl FnMut(&Worker) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !until(worker) {
+            assert!(Instant::now() < deadline, "{what}");
+            worker.check_sound();
+            worker.clock_due();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn at_another_speed_the_sound_plays_is_the_clock_and_changes_its_speed_in_the_same_session() {
+        let mut worker = worker();
+        worker.status.timeline = Some("t1".into());
+        let project = Project::sample();
+        worker.replace(0, Arc::new(project.clone()));
+        let rate = project.timelines[0].rate;
+        worker.clock = Some(Clock::starting(50, -2, rate, worker.now()));
+        worker.status.playing = true;
+        worker.status.speed = -2;
+        worker.restart_sound();
+        assert_eq!(worker.status.sound, Sound::On, "sound at −2 (T18)");
+        assert_eq!(worker.clock.unwrap().speed(), -2);
+        let session = worker.sound.working().unwrap().session();
+        sound_until(&mut worker, "its first sound", |worker| {
+            worker
+                .sound
+                .working()
+                .and_then(|output| output.played(Instant::now()))
+                .is_some()
+        });
+        // Another speed while it plays: the sound changes in the same session, and the clock of
+        // the picture with it where it does.
+        worker.action(Action::Play { speed: 4 });
+        assert_eq!(worker.status.speed, 4);
+        assert_eq!(worker.status.sound, Sound::On);
+        assert_eq!(
+            worker.clock.unwrap().speed(),
+            -2,
+            "the picture keeps its speed until the sound changes it"
+        );
+        sound_until(&mut worker, "the clock at 4", |worker| {
+            worker.clock.is_some_and(|clock| clock.speed() == 4)
+        });
+        assert_eq!(worker.sound.working().unwrap().session(), session);
+        assert_eq!(worker.playback.counts().1, 1, "one graph swapped in");
+        worker.pause();
+        assert!(!worker.playback.playing());
+    }
+
+    #[test]
+    fn scrubbing_plays_grains_in_one_session_until_audio_scrubbing_is_turned_off() {
+        let mut worker = worker();
+        worker.status.timeline = Some("t1".into());
+        let project = Project::sample();
+        worker.replace(0, Arc::new(project));
+        assert!(worker.status.scrub_audio, "on at first (p. 731)");
+        worker.action(Action::Seek {
+            frame: 10,
+            scrubbing: true,
+        });
+        assert!(worker.playback.scrubbing());
+        let session = worker.sound.working().unwrap().session();
+        worker.action(Action::Seek {
+            frame: 20,
+            scrubbing: true,
+        });
+        // The seek that ends the drag lets the last grain sound on.
+        worker.action(Action::Seek {
+            frame: 20,
+            scrubbing: false,
+        });
+        assert!(worker.playback.scrubbing());
+        assert_eq!(worker.sound.working().unwrap().session(), session);
+        assert!(worker.wait().is_some_and(|wait| wait <= SCRUB_IDLE));
+        // Off: the grain fades out and the session ends after, and none plays.
+        worker.action(Action::ScrubAudio { on: false });
+        assert!(!worker.status.scrub_audio);
+        std::thread::sleep(SCRUB_FADE_OUT);
+        worker.tick();
+        assert!(!worker.playback.playing());
+        worker.action(Action::Seek {
+            frame: 30,
+            scrubbing: true,
+        });
+        assert!(!worker.playback.playing());
+        // On again: a grain, which ends once no other is asked for within a second.
+        worker.action(Action::ScrubAudio { on: true });
+        worker.action(Action::Seek {
+            frame: 40,
+            scrubbing: true,
+        });
+        assert!(worker.playback.scrubbing());
+        worker.scrub_until = Some(Instant::now());
+        worker.tick();
+        assert!(!worker.playback.playing());
+    }
+
+    #[test]
+    fn the_picture_turns_back_at_the_instant_the_sound_does_never_ahead_of_it() {
+        // Forward at 2, then backward at 2: the place of the picture rises to where the sound
+        // turns, and never past it (T18's review: the clock took the new speed for the instants
+        // before the change and jumped ahead, then back).
+        let mut worker = worker();
+        worker.status.timeline = Some("t1".into());
+        let project = Project::sample();
+        worker.replace(0, Arc::new(project.clone()));
+        let rate = project.timelines[0].rate;
+        worker.clock = Some(Clock::starting(20, 2, rate, worker.now()));
+        worker.status.playing = true;
+        worker.status.speed = 2;
+        worker.restart_sound();
+        sound_until(&mut worker, "its first sound", |worker| {
+            worker
+                .sound
+                .working()
+                .and_then(|output| output.played(Instant::now()))
+                .is_some()
+        });
+        let forward = worker.clock.unwrap();
+        worker.action(Action::Play { speed: -2 });
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut highest = i128::MIN;
+        let mut turned = None;
+        loop {
+            assert!(Instant::now() < deadline, "the turn");
+            worker.check_sound();
+            let clock = worker.clock_due().unwrap();
+            let now = worker.clock_now();
+            highest = highest.max(clock.place(now));
+            if clock.speed() == -2 && turned.is_none() {
+                turned = Some(now);
+            }
+            if turned.is_some_and(|at| now > at + 100_000_000) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let (since, speed, pending) = worker.speed_change.unwrap();
+        assert_eq!((speed, pending), (-2, false));
+        let turn = forward.place(since);
+        // A millisecond of the place at 2, for the instants between two looks.
+        let slack = 2 * 1_000_000 * i128::from(rate.num);
+        assert!(highest <= turn + slack, "{highest} > {turn}");
+        assert!(worker.clock.unwrap().place(worker.clock_now()) < turn);
+        worker.pause();
+    }
+
+    #[test]
+    fn a_grain_paused_or_turned_off_fades_out_and_its_session_ends_after() {
+        let mut worker = worker();
+        worker.status.timeline = Some("t1".into());
+        worker.replace(0, Arc::new(Project::sample()));
+        for stop in [Action::Pause, Action::ScrubAudio { on: false }] {
+            worker.action(Action::ScrubAudio { on: true });
+            worker.action(Action::Seek {
+                frame: 10,
+                scrubbing: true,
+            });
+            assert!(worker.playback.scrubbing());
+            worker.action(stop);
+            // Fading: the session plays on a little, silent, and ends.
+            assert!(worker.playback.scrubbing(), "{stop:?}");
+            assert!(worker
+                .scrub_until
+                .is_some_and(|until| until <= Instant::now() + SCRUB_FADE_OUT));
+            std::thread::sleep(SCRUB_FADE_OUT);
+            worker.tick();
+            assert!(!worker.playback.playing(), "{stop:?}");
+        }
     }
 }

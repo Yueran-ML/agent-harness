@@ -583,12 +583,14 @@ async fn timeline_picture_follows_the_mixed_audio_clock_and_pauses_it() {
             "sound/picture drift: {digest}"
         );
         // Where the mixer is in the timeline, which the clock does not tell: at 25 frames a
-        // second and 48000 samples, 1920 samples a frame. Sound that started a frame or more
-        // away from the picture is caught here.
+        // second and 48000 samples, 1920 samples a frame. The mixer is never behind the frame
+        // shown, and is ahead of it by at most the rest of that frame and what the ring holds
+        // before the device (30 ms, at least two periods: 60 ms is ample). Sound that started
+        // behind the picture, or a frame and more ahead of it, is caught here.
         let mixed = digest["audio_sample"].as_i64().unwrap();
         let shown = digest["frame"].as_i64().unwrap() * 1920;
         assert!(
-            mixed.abs_diff(shown) <= 1920,
+            (0..=1920 + 2880).contains(&(mixed - shown)),
             "the sound is {} samples from the picture: {digest}",
             mixed - shown
         );

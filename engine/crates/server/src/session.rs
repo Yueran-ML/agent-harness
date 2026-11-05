@@ -1475,8 +1475,8 @@ async fn dispatch(
         "window.bind" | "window.input" | "window.unbind" => {
             window::call(engine, connection, kind, id, method, params).await
         }
-        "audio.meters" | "audio.loudness" | "audio.analyze" | "audio.normalize"
-        | "audio.level_match" | "audio.cancel" => {
+        "audio.standards" | "audio.meters" | "audio.loudness" | "audio.analyze"
+        | "audio.normalize" | "audio.level_match" | "audio.cancel" => {
             sound::call(engine, connection, kind, id, method, params).await
         }
         "track.start" | "track.stop" | "track.edit" => {

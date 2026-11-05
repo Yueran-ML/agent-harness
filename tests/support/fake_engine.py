@@ -257,6 +257,7 @@ class Fake:
         self.sound_end = "done"
         self.sound_hold = False
         self.sound_found: dict[str, Any] = {}
+        self.standards: list[dict[str, Any]] = []
         self.rendered: list[dict[str, Any]] = []
         self.looked: list[tuple[str, dict[str, Any]]] = []
         self.transactions: list[list[dict[str, Any]]] = []
@@ -576,6 +577,9 @@ class Fake:
             told = {"job": job, "state": "cancelled", "frame": 0, "frames": 0, "fps": 0.0}
             self.tell("render.progress", told)
         return {}
+
+    def audio_standards(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        return {"standards": copy.deepcopy(self.standards)}
 
     def audio_analyze(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
         return self._sound("audio.analyze", params)

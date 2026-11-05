@@ -1628,8 +1628,13 @@ class Engine:
             raise
         return Rendering(self, job, heard)
 
+    async def audio_standards(self) -> list[dict[str, Any]]:
+        """Read the engine's loudness presets, including their sources and official status."""
+        said = await self._call("audio.standards")
+        return cast("list[dict[str, Any]]", said["standards"])
+
     async def analyze_sound(
-        self, method: SoundAnalysis, params: Mapping[str, Any]
+        self, method: SoundAnalysis, params: Mapping[str, Any], *, session: int | None = None
     ) -> dict[str, Any]:
         """Have the engine measure sound, and wait for what it found.
 
@@ -1644,6 +1649,8 @@ class Engine:
                 of Level Matcher (``audio.level_match``).
             params: Its params, as the protocol says (``timeline``, ``targets``, ``clips``,
                 ``apply``, ...).
+            session: The connection session in which the params' revision was read; as with
+                ``apply``, a new engine refuses the request before it is sent.
 
         Returns:
             What ``audio.analysis`` told as the job was done: the ``results`` of
@@ -1658,6 +1665,12 @@ class Engine:
         heard = self.changes()
         try:
             wire = await self._ensure()
+            if session is not None and session != self._session:
+                raise EngineError(
+                    "the engine was started again since the project was read; read it again",
+                    code=-32001,
+                    data={"reason": "stale_revision", "session": self._session},
+                )
             number, asked = self._sent(wire, method, params)
             try:
                 # Shielded as render's: a caller that gives up before the job is named still has

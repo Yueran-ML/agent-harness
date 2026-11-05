@@ -39,7 +39,9 @@ async def test_on_windows_the_tools_are_offered(
     await ctx.plugin(columbina.tools)
     await ctx.plugin(columbina.video, {"enabled": True})
     offered = ctx.use(TOOLS).registry
-    assert {"video_info", "video_edit", "video_render", "video_apply"} <= set(offered)
+    assert {"video_info", "video_edit", "video_render", "video_apply", "video_loudness"} <= set(
+        offered
+    )
     assert "video editing" not in told(ctx)
 
 

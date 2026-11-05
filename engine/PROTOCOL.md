@@ -167,7 +167,8 @@ Before `hello`, every other request is refused with `-32600`.
 | `render.cancel` | `{"job": "render-1"}` | `{}` |
 | `audio.meters` | `{"timeline": "t1", "reset"?: false}` | what the meters of the timeline show now: `{"timeline", "playing", "rate": 30, "scale", "strips": [...], "control_room", "loudness": {...}, "lost"}` (see Meters, loudness and the analysis of sound) |
 | `audio.loudness` | `{"timeline": "t1", "action"?: "start" \| "pause" \| "reset"}` | the loudness meter after the action: `{"running", "standard", "target", "momentary", ...}` |
-| `audio.analyze` | `{"timeline": "t1", "targets": [{"clip": "c1"} \| {"track": "A1"} \| {"bus": "B1"}, ...], "range"?: {"from": 0, "to": 250}, "standard"?: "ebu-r128"}` | `{"job": "audio-1"}` at once, then `audio.analysis` |
+| `audio.standards` | none | `{"standards": [{"id", "name", "target", "tolerance", "true_peak", "measure", "dialogue", "resolve", "official", "verified", "source"}, ...]}` |
+| `audio.analyze` | `{"timeline": "t1", "targets": [{"clip": "c1"} \| {"track": "A1"} \| {"bus": "B1"}, ...], "range"?: {"from": 0, "to": 250}, "standard"?: "ebu-r128", "revision"?: n}` | `{"job": "audio-1"}` at once, then `audio.analysis` |
 | `audio.normalize` | `{"timeline": "t1", "clips": ["c1", ...], "level"?: "sample_peak" \| "true_peak" \| "<standard>", "target"?: -9, "mode"?: "relative" \| "independent", "apply"?: false, "revision"?: n}` | `{"job": "audio-2"}` at once, then `audio.analysis` with the gains (Normalize Audio Levels) |
 | `audio.level_match` | `{"timeline": "t1", "reference": "c1", "clips": ["c2", ...], "apply"?: false, "revision"?: n}` | `{"job": "audio-3"}` at once, then `audio.analysis` with the gains (Level Matcher) |
 | `audio.cancel` | `{"job": "audio-1"}` | `{}`; the job ends `cancelled` |
@@ -4583,6 +4584,13 @@ by the integrated loudness to a tenth, `null` before there is one.
 
 ### Analyses
 
+`audio.standards` reads the 15 rows of `columbina_audio::standards::STANDARDS`, in menu order,
+without changing the project or starting a job. Each row has `id`, `name`, `target` (LUFS or
+`null` for the timeline's Target Loudness), `tolerance` (LU or `null`), `true_peak` (dBTP or
+`null`), `measure` (`gated` or `ungated`), `dialogue`, `resolve`, `official`, `verified`, and
+`source`. A `null` target is not an official numeric target. Unofficial or unverified rows
+keep that provenance; clients must not replace it with an official claim.
+
 `audio.analyze`, `audio.normalize` and `audio.level_match` check their params against the project
 as it is, answer `{"job": "audio-<n>"}` at once, and measure on a thread of their own, as fast as
 the clips can be read (never through the device). Every connection is told `audio.analysis`:
@@ -4603,7 +4611,7 @@ What is measured is what an export would carry (a Listen never):
   read for it). So the gain that Normalize and Level Matcher find is what the Volume is moved
   by, and a clip normalized again is moved by nothing (a gain under 0.001 dB is not applied).
 
-`audio.analyze {timeline, targets, range?, standard?}`: `targets` from 1 to 256, each
+`audio.analyze {timeline, targets, range?, standard?, revision?}`: `targets` from 1 to 256, each
 `{"clip"}`, `{"track"}` (a track of sound that is on) or `{"bus"}`, each once (the tracks and buses are measured
 in one run of the mix, each clip in a run of its own); `standard` an id of the table,
 the timeline's by default. Done: `{job, state: "done", method: "audio.analyze", standard, level,
@@ -4611,6 +4619,9 @@ results: [{target, integrated, range, momentary_max, short_term_max, true_peak, 
 seconds, verdict}, ...]}` in the order of `targets`, `level` the target of the standard. Of the
 bus that is exported, the integrated loudness and the true peak are what `ebur128` of ffmpeg reads
 of the exported file (within 0.1 LU and 0.2 dB).
+When `revision` is supplied, it is checked under the snapshot lock before a job is started;
+a mismatch returns `-32001`, `data.reason: "stale_revision"`, with `expected` and `actual`,
+without a job or history change. Omitting it retains the existing unbound behavior.
 
 `audio.normalize {timeline, clips, level?, target?, mode?, apply?, revision?}` (Normalize Audio
 Levels, p. 3840–3841): `clips` from 1 to 256 clips of sound, each once; `level` `sample_peak` (the
@@ -4636,10 +4647,23 @@ With `apply: true`, once they are found, the gains are applied in one transactio
 client that asked, one step to undo: a `nudge_clip_gain` of each clip by its gain (`linked:
 false`; the whole curve of a clip with keys moved, clamped to −96…24 dB), none where no clip has
 a gain. `applied` is what `transaction.apply` answers, `null` where nothing was applied.
-`revision`, where it is given, binds it as it binds `transaction.apply`: where the project changed
+`revision`, where it is given with `apply: true`, is checked before the snapshot is taken and
+again when applying the result. An initial mismatch refuses the request without a job; a change
+during measurement is reported in `refused` when the job finishes. It binds the commit as it
+binds `transaction.apply`: where the project changed
 since, nothing is applied and `refused` holds the refusal (`stale_revision`); without it, the
 gains are applied to the project as it is when they are found. A transaction refused otherwise (a
 clip removed meanwhile) is told in `refused` too.
+
+The classic agent tool `video_loudness` currently exposes `measure` for clip/track/bus/main and
+`apply` for `clip_gain` Normalize only (phase 3 T24a). It waits for the terminal event and reports
+`status: measured | applied | unchanged | refused`, preserving the engine's nulls, clamping,
+transaction receipt and refusal. Its `measured_revision` identifies the checked snapshot;
+`session` identifies the Python connection generation. Main resolves a bus with no outputs;
+multiple main outputs require an explicit bus id. Range is accepted only for track/bus/main,
+since clip analysis currently measures the whole clip. T24 is not complete: track/main apply,
+candidate analysis, clip-range analysis, `video_duck`, audio info and shared range/neutral-value
+validation remain separate increments. No main limiter or ducking guarantee is made by T24a.
 
 Params that cannot be are `-32602` with `data.reason`: `missing` (`timeline`; or `what`: `clip`,
 `track` or `bus`, and `id`), `disabled` (`track`), `standard` (`standard`), `twice` (`clip`, or `target`),

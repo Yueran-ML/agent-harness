@@ -128,6 +128,8 @@ struct Analyze {
     range: Option<Frames>,
     #[serde(default)]
     standard: Option<String>,
+    #[serde(default)]
+    revision: Option<u64>,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -248,6 +250,10 @@ pub(super) async fn call(
     params: Option<&RawValue>,
 ) -> Result<Reply, Reply> {
     let result = match method {
+        "audio.standards" => {
+            rpc::no_params(method, params)?;
+            standards_table()
+        }
         "audio.meters" => {
             let request: Metering = rpc::params(method, r#"{"timeline": "t1"}"#, params)?;
             let audio = settings(engine, &request.timeline).await?;
@@ -286,8 +292,11 @@ pub(super) async fn call(
             json!({})
         }
         "audio.analyze" | "audio.normalize" | "audio.level_match" => {
-            let project = engine.state.lock().await.history.project().clone();
-            let work = prepare(method, params, &project)?;
+            let state = engine.state.lock().await;
+            let work = prepare(method, params, state.history.project())?;
+            check_revision(&work, state.history.revision())?;
+            let project = state.history.project().clone();
+            drop(state);
             return start(engine, connection, kind, id, Arc::new(project), work);
         }
         _ => {
@@ -298,6 +307,23 @@ pub(super) async fn call(
         Ok(()) => Reply::Queued,
         Err(refused) => Reply::Refused(refused),
     })
+}
+
+/// The source table, without a second copy of its targets or provenance.
+fn standards_table() -> Value {
+    json!({"standards": standards::STANDARDS.iter().map(|standard| json!({
+        "id": standard.id,
+        "name": standard.name,
+        "target": standard.target,
+        "tolerance": standard.tolerance,
+        "true_peak": standard.true_peak,
+        "measure": match standard.measure { Measure::Gated => "gated", Measure::Ungated => "ungated" },
+        "dialogue": standard.dialogue,
+        "resolve": standard.resolve,
+        "official": standard.official,
+        "verified": standard.verified,
+        "source": standard.source,
+    })).collect::<Vec<_>>()})
 }
 
 /// The settings of the sound of timeline `id`.
@@ -315,6 +341,7 @@ enum Work {
         range: Option<Range<i64>>,
         standard: &'static Standard,
         target: f32,
+        revision: Option<u64>,
     },
     Normalize {
         timeline: usize,
@@ -336,6 +363,21 @@ enum Work {
 #[derive(Clone, Copy, Debug)]
 struct Apply(Option<u64>);
 
+/// Bind the snapshot under its lock, before allocating or starting a job. Apply also checks
+/// the revision again when committing its gains, as another client may edit during analysis.
+fn check_revision(work: &Work, actual: u64) -> Result<(), Fault> {
+    let expected = match work {
+        Work::Analyze { revision, .. } => *revision,
+        Work::Normalize { apply, .. } | Work::Match { apply, .. } => {
+            apply.as_ref().and_then(|Apply(revision)| *revision)
+        }
+    };
+    if let Some(expected) = expected.filter(|expected| *expected != actual) {
+        return Err(super::stale_revision(expected, actual));
+    }
+    Ok(())
+}
+
 /// Checks the params of `method` against `project`.
 fn prepare(method: &str, params: Option<&RawValue>, project: &Project) -> Result<Work, Fault> {
     match method {
@@ -349,7 +391,7 @@ fn prepare(method: &str, params: Option<&RawValue>, project: &Project) -> Result
 fn analyze_work(method: &str, params: Option<&RawValue>, project: &Project) -> Result<Work, Fault> {
     let request: Analyze = rpc::params(
         method,
-        r#"{"timeline": "t1", "targets": [{"clip": "c1"} | {"track": "A1"} | {"bus": "B1"}], "range"?: {"from": 0, "to": 250}, "standard"?: "ebu-r128"}"#,
+        r#"{"timeline": "t1", "targets": [{"clip": "c1"} | {"track": "A1"} | {"bus": "B1"}], "range"?: {"from": 0, "to": 250}, "standard"?: "ebu-r128", "revision"?: 0}"#,
         params,
     )?;
     let (at, timeline) = timeline_of(project, &request.timeline)?;
@@ -424,6 +466,7 @@ fn analyze_work(method: &str, params: Option<&RawValue>, project: &Project) -> R
         range,
         standard,
         target,
+        revision: request.revision,
     })
 }
 
@@ -808,6 +851,7 @@ fn run(
             range,
             standard,
             target,
+            ..
         } => analyze(
             teller,
             project,
@@ -1156,4 +1200,125 @@ fn matched(
     });
     applied(teller, kind, &t.id, &gains, apply, &mut done);
     Ok(Some(done))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn standards_publish_the_source_table_without_own_defaults() {
+        let table = standards_table();
+        let rows = table["standards"].as_array().unwrap();
+        assert_eq!(rows.len(), 15);
+        for (row, standard) in rows.iter().zip(standards::STANDARDS) {
+            assert_eq!(row["id"], standard.id);
+            assert_eq!(row["name"], standard.name);
+            assert_eq!(row["target"], json!(standard.target));
+            assert_eq!(row["tolerance"], json!(standard.tolerance));
+            assert_eq!(row["true_peak"], json!(standard.true_peak));
+            assert_eq!(row["official"], standard.official);
+            assert_eq!(row["verified"], standard.verified);
+            assert_eq!(row["source"], standard.source);
+            assert_eq!(row["resolve"], standard.resolve);
+            assert_eq!(row["dialogue"], standard.dialogue);
+            assert_eq!(
+                row["measure"],
+                if standard.measure == Measure::Gated {
+                    "gated"
+                } else {
+                    "ungated"
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn analysis_revision_is_checked_before_starting_a_job() {
+        let project = Project::sample();
+        let timeline = &project.timelines[0];
+        let params = json!({"timeline": timeline.id, "targets": [{"bus": timeline.buses[0].id}], "revision": 4});
+        let raw = RawValue::from_string(params.to_string()).unwrap();
+        let work = prepare("audio.analyze", Some(&raw), &project).unwrap();
+        let fault = check_revision(&work, 5).unwrap_err();
+        assert_eq!(fault.code, rpc::REFUSED);
+        assert_eq!(fault.data.unwrap()["reason"], "stale_revision");
+        check_revision(&work, 4).unwrap();
+        let mut unbound = params;
+        unbound.as_object_mut().unwrap().remove("revision");
+        let raw = RawValue::from_string(unbound.to_string()).unwrap();
+        let work = prepare("audio.analyze", Some(&raw), &project).unwrap();
+        check_revision(&work, 99).unwrap();
+    }
+
+    #[test]
+    fn normalize_snapshot_refuses_stale_revision_without_jobs_or_history_changes() {
+        let mut history = columbina_model::History::new(Project::sample());
+        let before = history.project().clone();
+        let running = jobs().running().len();
+        let raw = RawValue::from_string(
+            json!({
+                "timeline": "t1", "clips": ["c2"], "apply": true, "revision": 1
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let work = prepare("audio.normalize", Some(&raw), history.project()).unwrap();
+        let fault = check_revision(&work, history.revision()).unwrap_err();
+        assert_eq!(
+            fault.data.unwrap(),
+            json!({"reason": "stale_revision", "expected": 1, "actual": 0})
+        );
+        assert_eq!(history.project(), &before);
+        assert_eq!(history.revision(), 0);
+        assert!(history.undo("agent").is_none());
+        assert_eq!(jobs().running().len(), running);
+        let raw = RawValue::from_string(
+            json!({
+                "timeline": "t1", "clips": ["c2"], "apply": true
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let work = prepare("audio.normalize", Some(&raw), history.project()).unwrap();
+        check_revision(&work, 99).unwrap();
+    }
+
+    #[test]
+    fn normalized_nudges_keep_keys_clamp_and_undo_as_one_step() {
+        for (gain, expected) in [(4.0, [-2.0, 1.0]), (50.0, [24.0, 24.0])] {
+            let mut project = Project::sample();
+            project.timelines[0].tracks[1].clips[0].gain_db = serde_json::from_value(json!({
+                "keys": [
+                    {"at": {"ticks": 0, "scale": 25}, "value": -6},
+                    {"at": {"ticks": 25, "scale": 25}, "value": -3}
+                ]
+            }))
+            .unwrap();
+            let before = project.clone();
+            let mut history = columbina_model::History::new(project);
+            let changes = nudges("t1", &[("c2".into(), Some(gain)), ("silent".into(), None)]);
+            assert_eq!(changes.len(), 1);
+            history
+                .edit(
+                    changes
+                        .into_iter()
+                        .map(|change| serde_json::from_value(change).unwrap())
+                        .collect(),
+                    "agent",
+                )
+                .unwrap();
+            let keys =
+                serde_json::to_value(&history.project().timelines[0].tracks[1].clips[0].gain_db)
+                    .unwrap();
+            assert_eq!(keys["keys"][0]["at"], json!({"ticks": 0, "scale": 25}));
+            assert_eq!(keys["keys"][1]["at"], json!({"ticks": 25, "scale": 25}));
+            assert_eq!(keys["keys"][0]["value"], expected[0]);
+            assert_eq!(keys["keys"][1]["value"], expected[1]);
+            assert_eq!(history.revision(), 1);
+            history.undo("agent").unwrap().unwrap();
+            assert_eq!(history.project(), &before);
+            assert!(history.undo("agent").is_none());
+        }
+    }
 }

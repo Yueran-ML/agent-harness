@@ -23,7 +23,7 @@ from columbina.agent import RUNTIME_FACTS, Facts
 from columbina.fs import FS, Access, Fs
 from columbina.kernel import Context, EmitEvent, ServiceKey
 from columbina.tools import TOOLS, Tool, ToolFailure, ToolRun
-from columbina.video import grading
+from columbina.video import audio, grading
 from columbina.video.editing import Editor, chosen_subtitles, receipt, safe_name, sidecars
 from columbina.video.engine import (
     Engine,
@@ -302,6 +302,47 @@ class _Render(_Timeline):
 
 class _Undo(_Project):
     redo: bool = False
+
+
+class _AudioRange(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    start: int = Field(alias="from", ge=0)
+    to: int = Field(gt=0)
+
+
+class _Loudness(_Timeline):
+    action: Literal["measure", "apply"]
+    target: Literal["clip", "track", "bus", "main", "clip_gain"]
+    ids: list[str] = Field(
+        default_factory=list,
+        max_length=256,
+        description="Clip, track or bus ids. For main, omit only with one main output.",
+    )
+    range: _AudioRange | None = Field(
+        default=None,
+        description="Frames [from,to), for measure track/bus/main; clips are measured whole.",
+    )
+    standard: str | None = Field(
+        default=None,
+        description=(
+            "Engine loudness standard id; apply also accepts sample_peak or true_peak. "
+            "Omitted: timeline standard for measure, sample_peak for apply."
+        ),
+    )
+    level: float | None = Field(
+        default=None,
+        ge=-60,
+        le=0,
+        description="Apply target in LUFS or dBFS; omitted uses the engine preset target.",
+    )
+    mode: Literal["relative", "independent"] | None = Field(
+        default=None,
+        description=(
+            "Apply clip_gain only: relative (default) moves all clips together; "
+            "independent normalizes each."
+        ),
+    )
 
 
 class _Target(BaseModel):
@@ -694,6 +735,21 @@ def tools_of(videos: Videos) -> list[Tool[Any, str]]:
             batch = _media_checked(args.edits, videos, run, tool) if isinstance(args, _Edit) else []
             editor = await videos.editor(run, tool, args.project)
             async with editor.lock:
+                if isinstance(args, _Loudness):
+                    return receipt(
+                        await audio.Loudness(
+                            editor.engine, lambda path: videos.checked(run, tool, path, "read")
+                        ).run(
+                            action=args.action,
+                            target=args.target,
+                            timeline=args.timeline,
+                            ids=args.ids,
+                            frames=(args.range.start, args.range.to) if args.range else None,
+                            standard=args.standard,
+                            level=args.level,
+                            mode=args.mode,
+                        )
+                    )
                 if isinstance(args, _Import):
                     return await editor.imported(paths, args.bin)
                 if isinstance(args, _Edit):
@@ -879,6 +935,17 @@ def tools_of(videos: Videos) -> list[Tool[Any, str]]:
         ),
         tool("video_edit", _Edit, _EDIT),
         tool(
+            "video_loudness",
+            _Loudness,
+            "Measure clip, track, bus or main loudness and peaks; ranges only for track/bus/main. "
+            "Apply supports clip_gain Normalize Audio Levels (relative or independent), moving "
+            "existing gain keys in one undo step. Main means a bus with no outputs; select ids "
+            "when there are multiple. Null means no measurable level; "
+            "clamped/refused are reported. Standards and official status come from the engine. "
+            "Track/main apply is not supported.",
+            long=True,
+        ),
+        tool(
             "video_render",
             _Render,
             (
@@ -1057,7 +1124,8 @@ add_track_group/set_track_group/remove_track_group (group {id:"",name,members,li
 set_bus/set_vca/set_track_group/set_timeline_audio take a patch; add_insert
 {of:{track|bus|clip:id},insert:{effect:{kind:"gain",gain_db:-3}},index?}, set_insert
 {of,slot,insert|null}, move_insert {of,from,to} (prefer the edits set_insert/move_insert of the
-same fields, plus to_of to move to another chain: they also drop the insert's lanes). Clip sound: set_clip
+same fields, plus to_of to move to another chain: they also drop the insert's lanes).
+Clip sound: set_clip
 eq/effects/pitch/pitch_correction/channels; set_transition fade_in_level_db/fade_out_level_db
 -3|0|3 on crossfades. Edits: clip_gain_keys
 {clip,action:add|remove|move|set_interp,at:{ticks,scale} of the clip's media,value?,to?,interp?};

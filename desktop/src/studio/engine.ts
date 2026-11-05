@@ -961,6 +961,29 @@ export interface Meters {
 }
 /** What an analysis measures: a clip before its Volume, a track or a bus after its fader. */
 export type AnalysisTarget = { clip: string } | { track: string } | { bus: string };
+/** A row of `audio.standards`, read from the engine's source table. */
+export interface AudioStandard {
+  id: string;
+  name: string;
+  target: number | null;
+  tolerance: number | null;
+  true_peak: number | null;
+  measure: 'gated' | 'ungated';
+  dialogue: boolean;
+  resolve: boolean;
+  official: boolean;
+  verified: boolean;
+  source: string;
+}
+/** `revision` binds the snapshot before a job is started; omitted for older clients. */
+export interface AudioAnalyzeParams {
+  timeline: string;
+  targets: ({ clip: string } | { track: string } | { bus: string })[];
+  range?: { from: number; to: number };
+  standard?: string;
+  revision?: number;
+}
+
 /** What `audio.analyze` found of a target. */
 export interface AnalysisResult {
   target: AnalysisTarget;
@@ -1040,6 +1063,7 @@ export interface PageMethods {
   'track.stop': Record<string, never>;
   'track.edit': { revision: number };
   // The meters, the loudness and the analyses of sound (PROTOCOL.md, "Meters, loudness and the analysis of sound").
+  'audio.standards': { standards: AudioStandard[] };
   'audio.meters': Meters;
   'audio.loudness': LoudnessReading;
   'audio.analyze': { job: string };

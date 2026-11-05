@@ -121,6 +121,11 @@ const GRAIN_ATTEMPTS: usize = 3;
 /// settled in it).
 const GRAIN_PREROLL: f64 = 0.100;
 
+/// How far either way of the place of a grain of scrubbing its graph has the clips (T4c's
+/// review, "我们定"): beyond its preroll, its length, a catching up and the latency of any clip's
+/// effects, so that a clip further away, which it never hears, is not made at all.
+const GRAIN_WITHIN: f64 = 1.0;
+
 /// How long the thread that builds reads the clips of a grain ahead itself before it hands the
 /// graph over (T18): the start of the grain; its readers ahead read the rest.
 const GRAIN_PRIME: Duration = Duration::from_millis(30);
@@ -419,12 +424,17 @@ impl Builder {
         (at, warp): (i64, Warp),
         how: How,
     ) -> Result<(Box<Run>, Controls, i64), String> {
-        let mut graph = Graph::build(
-            project,
-            timeline,
-            Options::new(MOST_BLOCK, Purpose::Preview),
-        )
-        .map_err(|error| error.to_string())?;
+        let mut options = Options::new(MOST_BLOCK, Purpose::Preview);
+        if let (How::Grain { .. }, Some(of)) = (how, project.timelines.get(timeline)) {
+            // A grain is heard for a moment where it is: only the clips about it are made, their
+            // effects and all (T4c's review).
+            let place = warp.timeline(at);
+            let rate = of.sample_rate;
+            let about = i64::try_from(samples(GRAIN_WITHIN, rate)).unwrap_or(i64::MAX);
+            options = options.within(place.saturating_sub(about)..place.saturating_add(about));
+        }
+        let mut graph =
+            Graph::build(project, timeline, options).map_err(|error| error.to_string())?;
         for clip in graph.unplayable() {
             log("sound_of_a_clip_unplayable", &json!({ "clip": clip }));
         }

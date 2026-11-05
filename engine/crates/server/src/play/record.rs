@@ -917,6 +917,10 @@ impl Automation {
         touching: bool,
         playback: &mut Playback,
     ) {
+        // Back at speed 1 in the same session (T18), a pass begins with the first touch.
+        if let Some(at) = at {
+            self.recorder.begin(project, timeline, at);
+        }
         for heard in self
             .recorder
             .touch(project, timeline, at, (owner, path), value, touching)

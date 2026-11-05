@@ -21,6 +21,7 @@ use super::automation::{Cursor, Held};
 use super::pdc::DelayLine;
 use super::route::{panned, Matrix, PanAt};
 use super::taps::Tap;
+use super::Warp;
 
 /// The most lanes of one node that a block hands it.
 pub(crate) const MAX_NODE_LANES: usize = 64;
@@ -232,17 +233,40 @@ impl Strip {
     }
 
     /// Takes the sum that feeds it, and the values of its lanes, for a block of `frames` whose
-    /// input is at sample `start` of the timeline.
-    pub(crate) fn load(&mut self, input: &Planar, start: i64, rate: u32, frames: usize) {
+    /// input is at sample `start` out, which `warp` lays on the timeline (T18: a lane is read
+    /// where the timeline is, at whatever speed it plays).
+    pub(crate) fn load(
+        &mut self,
+        input: &Planar,
+        (start, warp): (i64, Warp),
+        rate: u32,
+        frames: usize,
+    ) {
         for channel in 0..self.channels() {
             self.work.channel_mut(channel)[..frames]
                 .copy_from_slice(&input.channel(channel)[..frames]);
         }
         for (index, lane) in self.lanes.iter_mut().enumerate() {
             let values = &mut self.values[index * self.max_block..][..frames];
-            lane.cursor
-                .fill(&lane.lane, start - lane.delay, rate, values);
-            // A control touched while automation is recorded (T16).
+            if warp.speed() == 1 {
+                // The timeline as it is, or shifted (a grain, a speed back to 1).
+                let at = warp.timeline(start - lane.delay);
+                lane.cursor.fill(&lane.lane, at, rate, values);
+            } else {
+                // At a speed (T18): each sample out where the warp puts it on the timeline, as
+                // `Lane::value_at` gives it there; the cursor finds its place again after.
+                lane.cursor.reset();
+                for (sample, value) in (start - lane.delay..).zip(values.iter_mut()) {
+                    let ticks = warp.timeline(sample);
+                    #[allow(clippy::cast_possible_truncation, reason = "a value of a parameter")]
+                    let at = lane
+                        .lane
+                        .value_at(columbina_model::Time { ticks, scale: rate })
+                        as f32;
+                    *value = at;
+                }
+            }
+            // A control touched while automation is recorded (T16), however the lane was read.
             if lane.held.is_held() {
                 lane.held.apply(lane.lane.kind, values);
             }

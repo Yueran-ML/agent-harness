@@ -299,3 +299,29 @@ fn what_is_set_live_sounds_the_same_however_the_blocks_are_cut() {
         .zip(&other)
         .all(|(a, b)| a.to_bits() == b.to_bits()));
 }
+
+#[test]
+fn a_value_held_live_takes_the_place_of_a_lane_read_at_another_speed_too() {
+    use columbina_audio::graph::Warp;
+    // A lane that ramps, read at speed 2 (T18): held, the value; let go, the lane again.
+    let mut project = base();
+    project.timelines[0].tracks[0].audio.lanes.insert(
+        "fader_db".into(),
+        lane(LaneKind::Continuous, &[(0, -10.0), (192_000, 0.0)]),
+    );
+    let mut graph = built(&project);
+    graph.set_warp(Warp::new(2, 0, 0));
+    let key = graph.lane_key(&a1(), "fader_db").unwrap();
+    let mut feed = half();
+    graph.start(0, &mut feed).unwrap();
+    let read = more(&mut graph, &mut feed, 4_800, 480);
+    // At speed 2, sample 4799 out is at 9598 of the timeline: −10 + 10 · 9598 / 192000 dB.
+    assert!((db(read[4_799]) - (-10.0 + 10.0 * 9_598.0 / 192_000.0)).abs() < 1e-3);
+    graph.live(key, Live::Hold(-30.0));
+    let held = more(&mut graph, &mut feed, 960, 480);
+    assert!((db(held[959]) + 30.0).abs() < 1e-3, "{}", db(held[959]));
+    graph.live(key, Live::Release(0));
+    let back = more(&mut graph, &mut feed, 480, 480);
+    let at = 2.0 * f64::from(4_800 + 960 + 479);
+    assert!((db(back[479]) - (-10.0 + 10.0 * at / 192_000.0)).abs() < 1e-3);
+}

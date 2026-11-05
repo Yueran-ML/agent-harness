@@ -29,7 +29,7 @@ use crate::rt::{seqlock, Domain, SeqReader, Smoothed};
 use super::automation::Held;
 use super::clip::{
     cutoff, radius, ClipChain, ClipLevel, ClipPan, ClipScratch, Mapping, Pool, Reach, StretchMode,
-    Stretched, Window,
+    Stretched, Warped, Window,
 };
 use super::pdc::{DelayLine, Delayer};
 use super::route::{balance, panned, PanAt};
@@ -37,7 +37,7 @@ use super::strip::{Edge, Key, LaneOf, Pan, Stage, Strip, VcaState, VcaTerm};
 use super::taps::Tap;
 use super::{
     ClipId, ClipParam, Control, Graph, LaneKey, Meter, Options, Out, OutputInfo, Owner, Purpose,
-    StripParam, Target,
+    StripParam, Target, Warp,
 };
 
 /// What a maker is told of an insert besides its effect.
@@ -1368,6 +1368,7 @@ impl Graph {
                 ),
                 piece,
                 stretch,
+                warped: Warped::default(),
             });
         }
         let mut clips_of = vec![0..0; count];
@@ -1676,6 +1677,7 @@ impl Graph {
             settle: u32::try_from(settle).unwrap_or(u32::MAX),
             position: 0,
             frames: 0,
+            warp: Warp::IDENTITY,
         };
         graph.reset(0);
         Ok(graph)
@@ -1741,7 +1743,12 @@ impl Graph {
     /// threads that read the clips ahead of the graph (T5).
     #[must_use]
     pub fn reaches(&self) -> Vec<Reach> {
-        self.clips.iter().map(ClipChain::reach).collect()
+        // On the samples out: shifted where the graph plays at a speed of 1 (T18).
+        let shift = self.shift();
+        self.clips
+            .iter()
+            .map(|clip| clip.reach().shifted(shift))
+            .collect()
     }
 
     /// Its outputs: the main outputs, then the bus that is monitored if it is not one.

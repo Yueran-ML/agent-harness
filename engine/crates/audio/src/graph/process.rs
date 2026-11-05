@@ -22,6 +22,9 @@ impl Graph {
     pub fn process(&mut self, feed: &mut dyn ClipFeed, frames: usize) -> Result<(), FeedError> {
         let frames = frames.min(self.max_block);
         let start = self.position;
+        // Where the clips are on the timeline at a speed of 1 (T18's review: a warp of speed 1
+        // is a shift, under which the clips and lanes read the timeline as they are built).
+        let timeline = start.saturating_add(self.shift());
         let rate = self.rate;
         let mut result = Ok(());
         for input in &mut self.inputs {
@@ -38,7 +41,7 @@ impl Graph {
                 let mixed = self.clips[clip].mix(
                     clip,
                     feed,
-                    (start, frames, rate),
+                    (timeline, frames, rate),
                     &mut self.scratch,
                     &mut self.inputs[strip],
                 );
@@ -47,7 +50,7 @@ impl Graph {
                 }
             }
             let this = &mut self.strips[strip];
-            this.load(&self.inputs[strip], start, rate, frames);
+            this.load(&self.inputs[strip], (start, self.warp), rate, frames);
             this.run(rate, frames, &self.pres, &self.vcas);
             if self.keys[strip] {
                 for channel in 0..this.channels() {
@@ -126,6 +129,7 @@ impl Graph {
     pub(crate) fn begin(&mut self, begin: i64, feed: &mut dyn ClipFeed) -> Result<(), FeedError> {
         self.reset(begin);
         let mut result = Ok(());
+        let begin = begin.saturating_add(self.shift());
         for (index, clip) in self.clips.iter_mut().enumerate() {
             let primed = clip.prime(index, feed, begin, &mut self.scratch);
             if let (Err(error), Ok(())) = (primed, &result) {
@@ -139,6 +143,7 @@ impl Graph {
     pub(crate) fn reset(&mut self, begin: i64) {
         self.position = begin;
         self.frames = 0;
+        let begin = begin.saturating_add(self.shift());
         for strip in &mut self.strips {
             strip.reset(begin);
         }

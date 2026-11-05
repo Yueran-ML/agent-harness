@@ -1519,6 +1519,7 @@ playing, including stopping its sound, before starting the requested monitor.
 | `transport.step` | `{"monitor":m, "frames":n}` | `{}` |
 | `transport.state` | `{"monitor":m}` | the state |
 | `transport.proxies` | `{"monitor":m, "on":true \| false}` | `{}` |
+| `transport.scrub_audio` | `{"monitor":"timeline", "on":true \| false}` (phase 3, T18) | `{}` |
 
 Here `m` is `"source"` or `"timeline"`. Missing, null or unknown monitors, unknown parameters,
 and fields for the wrong monitor are refused with `-32602`.
@@ -1545,7 +1546,8 @@ notification `transport.state`):
 - `last`: the last frame: from the duration of the media (`round(duration × rate) − 1`), until
   the engine decodes to the end and finds where it truly is.
 - `sound`: `"none"` (the media has no sound), `"on"` (played, and the clock of the picture),
-  `"off"` (not played now: paused, or a speed other than 1), or `"unavailable"` (there is no
+  `"off"` (not played now: paused, or, on the source monitor, a speed other than 1), or
+  `"unavailable"` (there is no
   output device, or it failed: the picture plays alone, by the clock of the system; the engine
   logs `sound_unavailable` or `sound_failed`). A device fails when it says so (unplugged, turned
   off), when it asks for no sound within 750 ms of being started (a Bluetooth headset takes some
@@ -1565,8 +1567,14 @@ notification `transport.state`):
 ```json
 {"monitor":"timeline", "timeline":"t1", "frame":37, "playing":false, "speed":1,
  "exact":true, "shown":37, "last":249, "late":0, "sound":"off",
- "source":"mixed", "proxies":true}
+ "source":"mixed", "proxies":true, "scrub_audio":true}
 ```
+
+- `scrub_audio` (phase 3, T18): whether dragging the playhead plays the sound under it (Timeline ›
+  Audio Scrubbing, Shift+S, on at first, p. 731), as `transport.scrub_audio` sets it. It is kept
+  when another timeline is loaded. `transport.scrub_audio` is of the timeline monitor only: with
+  `"monitor":"source"` it is refused with `-32602 {reason:"monitor"}` (the source monitor plays
+  no sound while its playhead is dragged).
 
 - Timeline positions use the timeline's frame rate; `last` is `max(duration - 1, 0)`.
   An empty timeline shows black at frame 0. Removing the loaded timeline unloads it and clears
@@ -1608,6 +1616,38 @@ notification `transport.state`):
   media at once do not take turns with its decoders. At most twelve decoders of the monitor and
   an export together use the graphics card; any more decode on the processor.
   Only unheld composition targets are reused, so a view never samples a target being rewritten.
+- **Sound at every speed (phase 3, T18).** At every speed of `transport.play` (−8 to 8) the
+  timeline's sound is played and is the clock of the picture, `sound` `"on"`: the mix plays the
+  timeline at that speed, forward or backward, each clip resampled to its own speed times the
+  speed of playing, so that the pitch follows the speed (2 plays a tone of 440 Hz at 880 Hz, −1
+  plays the sound reversed), as a clip's speed without Pitch Correction does; at a speed other
+  than 1, Pitch Correction and a clip's own pitch are not applied (in DaVinci Resolve only the
+  slow motion of K+L is pitch-corrected, and only on macOS, p. 3745); back at 1 they are applied
+  again, the sound as the export has it. Above 2 times (shuttling) the clips are read through a
+  shorter filter (3 zero crossings on each side in place of 16), what would fold back staying
+  some 44 dB down. Fades, keyframes and lanes are where the timeline is, and the effects run on the sound as it comes out (so that backward
+  they hear it reversed, as a clip played in reverse is). Sample `n` heard after playing started
+  at sample `f` of the timeline at speed `s` is sample `f + s·n` (at the timeline's rate), so
+  the picture keeps to the sound at every speed. A change of speed while the sound plays does not
+  start it again: the mix at the new speed is built in the background from where the sound will
+  be some 150 ms ahead (further where it takes longer to build) and takes the place of the one
+  that plays there, crossfaded over 10 ms; the playhead keeps its speed until then, and changes
+  it at the sample where the sound does (`speed` in the state is the new one at once). Speeds
+  below 1 (K+J, K+L) cannot be asked for (the speed is a whole number): they are later.
+- **Scrubbing with sound (phase 3, T18).** While `scrub_audio` is on, each scrubbing seek
+  (`"scrubbing": true`) of the timeline monitor plays a **grain**: 60 ms of the timeline from the
+  start of the frame sought, forward at speed 1, through the whole mix (its effects too), faded
+  in and out on straight lines over 5 ms at either end, as the export has it (Pitch Correction and
+  a clip's pitch too). The first is heard once its mix is built (some 30–100 ms); each next takes
+  the place of one that still sounds, crossfaded over its fade of 5 ms, some 20 ms after what is
+  mixed (further where the grain before took longer to build), built again further ahead where it
+  was not ready in time, so that its sound starts at the frame sought; seeks that come while a
+  grain is built are taken together (only the last is played). The sound stops when the dragging
+  stops (the last grain plays to its end) and ends a second after the last grain was asked for; a
+  seek that is not scrubbing lets the last grain end as it is; pausing or turning `scrub_audio`
+  off fades it out over 5 ms, and playing ends it at once. Changes of the project are heard from
+  the next grain on, and a change of the rates of the timeline starts the grains again. While
+  grains play, `sound` is not `"on"` (the picture is not played, and the sound is no clock).
 - At playback speed 1, enabled audio tracks are mixed at the timeline sample rate in stereo,
   then converted to the device's rate and channel layout. Disabled tracks/clips are not decoded.
   Each clip applies its gain, linear fades and equal-power crossfades sample by sample. Pan is
@@ -1622,8 +1662,8 @@ notification `transport.state`):
   monitor handover stop that output. Direct seek preserves playback and starts the mix at the
   new position; edits replace the queued old mix at the current playhead. A failed device falls
   back to the monotonic clock from the last heard position and is retried on the next play.
-  Shuttle playback speeds other than 1 are silent, as in the source monitor. No enabled audio
-  clips reports `"none"`; paused/shuttling audio reports `"off"`.
+  Every speed plays its sound (phase 3, above; the source monitor's speeds other than 1 are still
+  silent). No enabled audio clips reports `"none"`; paused audio reports `"off"`.
 
 **Test hook.** Only with `--test-hooks`, `transport.frame_digest {"monitor":m}` reads the current
 rendered frame and returns `{monitor, frame, width, height, hash, pixels}`. `hash` is SHA-256 of
@@ -1633,7 +1673,8 @@ the method returns `-32601`; before a picture is loaded it returns `-32004` `not
 While timeline sound is playing, the hook also returns `audio_samples` (device-rate samples
 heard since that output started), `audio_frame` (the corresponding timeline clock frame) and
 `audio_sample` (where the mixer is in the timeline, in timeline samples: the sample it started
-at plus those heard, at the timeline's `sample_rate`), so a test can tell the sound from the
+at plus those heard, at the timeline's `sample_rate`, each times the speed it was heard at, T18),
+so a test can tell the sound from the
 picture by the mixer itself rather than by the clock that the sound drives.
 They are given while the timeline's sound is `"on"`; `audio_frame` or `audio_sample` is `null`
 while the output has no clock yet or the mixer has not started. With them come
@@ -2242,10 +2283,14 @@ and each track's `automation_arm`. The Glide Time (C-A1) is the client's, not th
 - **`automation.record`** `{timeline, on, glide_ms?}` turns recording of the timeline loaded in
   the timeline monitor on or off (`-32004 {reason:"not_loaded"}` for another), its Glide Time
   `glide_ms` 0–10 000 (250 where it was never given; `-32602 {reason:"glide_ms"}` outside). The
-  state says `recording: true` while it is on. On, a **pass** begins each time the timeline starts
-  to play at speed 1 (`transport.play`, or a seek while it plays), and at once where it plays
-  already; it ends where it stops (pause, the end of the timeline, a seek, a load), or where
-  recording is turned off, which writes it. A seek while playing is so two passes.
+  state says `recording: true` while it is on. On, a **pass** is recorded while the timeline
+  plays forward at speed 1 only: it begins where it starts to play so (`transport.play`, or a
+  seek while it plays), at once where it plays so already, and otherwise at the first touch once
+  it plays at speed 1 again; it ends, and is written, where it stops (pause, the end of the
+  timeline, a seek, a load), where its speed is changed (at the sample heard when the change is
+  asked for, before the sound changes speed), where scrubbing plays a grain, or where recording
+  is turned off. A seek while playing is so two passes, each a step of undo. At another speed a
+  touch is heard and not recorded.
 - **`automation.touch`** `{timeline, track|bus|vca, path, value, touching}` is a control of the
   mix touched (`touching: true`, sent as it moves, every 10–20 ms) or let go (`false`), at the
   sample of the timeline heard when the engine takes it; it is answered at once. `path` is a path
@@ -4031,7 +4076,7 @@ commits to it; and any client may send transactions. So:
 | `-32700` | the line is not JSON (id `null`) | |
 | `-32600` | not a request object, `jsonrpc` is not `"2.0"`, no `method`, a bad `id` (answered with id `null`), a request before `hello`, a second `hello`, a `hello` of another protocol, a line over 16 MiB, `view.*` or `engine.yield` from a client that is not the desktop | `{"reason": "protocol", "supported": [2]}` for a `hello` of another protocol |
 | `-32601` | no such method; `view.*` (but `view.sample` of a frame drawn off screen), `transport.*` and `scopes.*` (but `scopes.statistics` of a frame drawn off screen) in a `--headless` engine; `media.make_proxy` in an engine that makes no proxies; `engine.yield` in an engine that is not headless | |
-| `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name`; a speed of `transport.play` out of −8…8 or 0; `transport.load` of media or a timeline not in the project; `timeline.duration` of a timeline not there; `media.import` or `media.inspect` with no paths or a relative path; `media.thumbnail`, `media.waveform` or `media.make_proxy` of media not there; `media.waveform` of a `stream` that is not a stream of sound of the media; `media.thumbnail` of a frame outside the media, a height outside 1…270 or a width over 16384; a bad parent or rectangle of `view.*`; `render.start` with a bad path, codec, quality, timeline, range (an empty timeline has none, so it cannot be exported), `subtitle_tracks` or `audio` (see The sound of an export), and `render.cancel` of a job that is not there; `scopes.*` with bad settings, a scope that is not the connection's, too many scopes or bins out of range; `luts.list` with a `folder` outside the roots; `grade.export_lut` of a size, path, grade or node that it does not take; `transaction.apply` with a `gesture` id that is empty or longer than 64 characters; `view.sample` off the frame or of an even size, and `view.sample` or `scopes.statistics` naming a node that cannot be drawn | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above; `{"reason": "speed"}`; `{"index": i, "path": "...", "reason": "relative"}`; `{"reason": "parent"}` or `{"reason": "rect"}` (`view.*`); `{"reason": "missing", "media": "..."}` or `{"reason": "missing", "timeline": "..."}` (`render.start` too); `{"reason": "stream", "stream": n}` (`media.waveform`); `{"reason": "out_of_range", "frame": n}`; `{"reason": "subtitle_track", "track": "..."}` for a `subtitle_tracks` entry that is not a subtitle track of the timeline, or is named twice; `{"reason": "bus" \| "rate" \| "audio_codec" \| "bitrate" \| "standard" \| "target", ...}` (the `audio` of `render.start`); `{"reason": "settings" \| "missing" \| "too_many" \| "bins", ...}` (`scopes.*`, see Scopes); `{"reason": "outside_roots", "folder": "..."}` (`luts.list`); `{"reason": "size" \| "path" \| "missing" \| "not_a_corrector" \| "cannot_bake", ...}` (`grade.export_lut`, see Generate LUT); `{"reason": "gesture"}`; `{"reason": "outside" \| "size" \| "monitor" \| "node" \| "grade" \| "timeline" \| "clip"}` (see Samples and the pointer) |
+| `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name`; a speed of `transport.play` out of −8…8 or 0; `transport.scrub_audio` of the source monitor (`{"reason": "monitor"}`); `transport.load` of media or a timeline not in the project; `timeline.duration` of a timeline not there; `media.import` or `media.inspect` with no paths or a relative path; `media.thumbnail`, `media.waveform` or `media.make_proxy` of media not there; `media.waveform` of a `stream` that is not a stream of sound of the media; `media.thumbnail` of a frame outside the media, a height outside 1…270 or a width over 16384; a bad parent or rectangle of `view.*`; `render.start` with a bad path, codec, quality, timeline, range (an empty timeline has none, so it cannot be exported), `subtitle_tracks` or `audio` (see The sound of an export), and `render.cancel` of a job that is not there; `scopes.*` with bad settings, a scope that is not the connection's, too many scopes or bins out of range; `luts.list` with a `folder` outside the roots; `grade.export_lut` of a size, path, grade or node that it does not take; `transaction.apply` with a `gesture` id that is empty or longer than 64 characters; `view.sample` off the frame or of an even size, and `view.sample` or `scopes.statistics` naming a node that cannot be drawn | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above; `{"reason": "speed"}`; `{"index": i, "path": "...", "reason": "relative"}`; `{"reason": "parent"}` or `{"reason": "rect"}` (`view.*`); `{"reason": "missing", "media": "..."}` or `{"reason": "missing", "timeline": "..."}` (`render.start` too); `{"reason": "stream", "stream": n}` (`media.waveform`); `{"reason": "out_of_range", "frame": n}`; `{"reason": "subtitle_track", "track": "..."}` for a `subtitle_tracks` entry that is not a subtitle track of the timeline, or is named twice; `{"reason": "bus" \| "rate" \| "audio_codec" \| "bitrate" \| "standard" \| "target", ...}` (the `audio` of `render.start`); `{"reason": "settings" \| "missing" \| "too_many" \| "bins", ...}` (`scopes.*`, see Scopes); `{"reason": "outside_roots", "folder": "..."}` (`luts.list`); `{"reason": "size" \| "path" \| "missing" \| "not_a_corrector" \| "cannot_bake", ...}` (`grade.export_lut`, see Generate LUT); `{"reason": "gesture"}`; `{"reason": "outside" \| "size" \| "monitor" \| "node" \| "grade" \| "timeline" \| "clip"}` (see Samples and the pointer) |
 | `-32001` | a transaction, undo or redo was refused; the project is exactly as it was; or `render.start` was refused before anything was written or taken away (with `{"reason":"stopping"}` while the engine is stopping; with no `data` when the export could not be started) | the refusal, below |
 | `-32002` | `media.import` or `media.inspect`: a file cannot be read; nothing was added. `transport.load`, `media.thumbnail`, `media.waveform`: the file of the media cannot be opened or decoded. The analysis of the engine stopped (no `data`) | `{"path": "<as sent>", "reason": "...", "message": "..."}`, below |
 | `-32003` | `view.*`: the view cannot be made, there is none, or its window is gone | `{"reason": "..."}`, see The view |

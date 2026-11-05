@@ -735,6 +735,8 @@ export interface TimelineTransportState extends TransportBase {
   compared?: (number | null)[];
   /** True while automation is recorded as the timeline plays (`automation.record`). */
   recording?: boolean;
+  /** Whether dragging the playhead plays its sound (`transport.scrub_audio`, Timeline › Audio Scrubbing, p. 731; phase 3 T18); true where an older engine leaves it out. */
+  scrub_audio?: boolean;
 }
 export type TransportState = SourceTransportState | TimelineTransportState;
 /** A LUT that a grade of the timeline names and the engine could not read (PROTOCOL.md, "Grades in the picture"). */
@@ -930,6 +932,7 @@ export interface PageMethods {
   'transport.step': Record<string, never>;
   'transport.state': TransportState;
   'transport.proxies': Record<string, never>;
+  'transport.scrub_audio': Record<string, never>;
   'view.place': Record<string, never>;
   'view.show': Record<string, never>;
   'scopes.statistics': ScopeStatistics;

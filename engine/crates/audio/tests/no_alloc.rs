@@ -282,3 +282,75 @@ fn ten_seconds_of_a_session_of_sixteen_tracks_take_no_memory_on_the_threads_of_t
     assert_eq!(sim.control.shared.short(), 0);
     assert!(sim.played.iter().any(|&sample| sample != 0.0));
 }
+
+#[test]
+fn a_session_at_speeds_and_one_of_grains_of_scrubbing_take_no_memory_on_the_threads_of_the_sound() {
+    use columbina_audio::graph::Owner;
+    use session::{Sim, Tone};
+    // Sixteen tracks played backward at 3, changed to 8 forward while they play (T18); then a
+    // session of grains of one track, each next swapped in while the one before sounds.
+    let project = session::sixteen_tracks();
+    let tone = Tone {
+        hz: 440.0,
+        amplitude: 0.3,
+    };
+    let a5 = Owner::Track("A5".into());
+    let mut counted = Vec::new();
+    let mut sim = Sim::at_speed(&project, 240_000, tone, -3);
+    for tick in 0..300 {
+        sim.pump();
+        let change = (tick == 100).then(|| {
+            let at = sim.counters.mixed() + 4_800;
+            sim.warp = sim.warp.with_speed(8, at);
+            (sim.run_of(&project, at), at)
+        });
+        let ((), count) = realtime(|| {
+            if let Some((run, at)) = change {
+                sim.send_swap(run, at);
+            }
+            if tick % 4 == 0 {
+                #[allow(clippy::cast_precision_loss, reason = "a test value")]
+                sim.set(&a5, "fader_db", -((tick % 12) as f32));
+            }
+            sim.device_run();
+        });
+        counted.push(count);
+    }
+    assert_eq!(sim.counters.swaps(), 1);
+    // Grains of one track (a graph is made for each of a hundred of them).
+    let project = session::one_track();
+    let mut grains = Sim::scrubbing(&project, 96_000, tone);
+    for tick in 0..300 {
+        grains.pump();
+        // A grain every 30 ms: off the threads of the sound, its graph is made.
+        let grain = (tick % 3 == 0).then(|| {
+            let at = grains.counters.mixed() + 960;
+            let (warp, place) = (grains.warp, 96_000 + 997 * i64::from(tick));
+            grains.warp = columbina_audio::graph::Warp::new(1, at, place);
+            let run = grains.run_of(&project, at);
+            grains.warp = warp;
+            (Box::new(run.with_grain(Sim::grain_at(at))), at)
+        });
+        let ((), count) = realtime(|| {
+            if let Some((run, at)) = grain {
+                grains.send_swap(run, at);
+            }
+            grains.device_run();
+        });
+        counted.push(count);
+    }
+    let all = counted
+        .iter()
+        .fold((0, 0), |(a, f), c| (a + c.allocations, f + c.frees));
+    assert_eq!(
+        all,
+        (0, 0),
+        "allocations and frees on the threads of the sound"
+    );
+    assert!(grains.counters.swaps() > 90, "{}", grains.counters.swaps());
+    for sim in [&sim, &grains] {
+        assert_eq!(sim.counters.underruns(), 0);
+        assert_eq!(sim.control.shared.short(), 0);
+        assert!(sim.played.iter().any(|&sample| sample != 0.0));
+    }
+}

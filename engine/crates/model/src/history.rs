@@ -1133,6 +1133,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_streams_that_the_engine_reads_are_no_step_and_setting_them_again_is_none() {
+        let mut history = History::new(Project::sample());
+        history.apply(vec![insert("V1", 100, 10)], "agent").unwrap();
+        let read = Op::SetMediaStreams {
+            id: "m1".into(),
+            layout: Some("stereo".into()),
+            streams: Some(vec![crate::project::AudioStream {
+                index: 0,
+                channels: 2,
+                layout: Some("stereo".into()),
+            }]),
+        };
+        let applied = history
+            .apply_unrecorded(vec![read.clone()], "engine")
+            .unwrap();
+        assert_eq!(applied.done, std::slice::from_ref(&read));
+        assert_eq!(applied.made_by, "engine");
+        // The undo takes back the agent's clip, and the streams stay read.
+        history.undo("desktop").unwrap().unwrap();
+        assert!(!history.can_undo());
+        let audio = history.project().media[0].facts.audio.clone().unwrap();
+        assert_eq!(audio.layout.as_deref(), Some("stereo"));
+        assert_eq!(audio.streams.map(|s| s.len()), Some(1));
+        // Set to what they are by a client, they change nothing and make no step.
+        assert_eq!(
+            history.change(vec![Change::Op(read)], "agent", |change, _| change),
+            Err(TransactionError::Empty)
+        );
+    }
+
     mod gestures {
         use super::super::*;
         use super::{insert, move_to, with_next_id_of};

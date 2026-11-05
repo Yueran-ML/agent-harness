@@ -33,6 +33,8 @@ interface Options {
    * `EditContext.cut`).
    */
   cut?: boolean;
+  /** Fairlight with Video Tracks hidden accepts only the sound from the media pool. */
+  audioOnlyDrop?: boolean;
 }
 /** How long a subtitle added at the playhead is, unless the next one starts sooner: 3 seconds, as in DaVinci Resolve. */
 export const CUE_SECONDS = 3;
@@ -508,7 +510,8 @@ export function useEditing(options: Options) {
     }
     event.preventDefault();
     const ids = draggedMedia(event.dataTransfer, context.session);
-    const transaction = dropMedia(context.timeline!, context.revision, context.media, ids, track, context.targets, dropFrame(event), dropMode(event));
+    const mode = dropMode(event);
+    const transaction = dropMedia(context.timeline!, context.revision, context.media, ids, track, context.targets, dropFrame(event), context.audioOnlyDrop ? { ...mode, picture: false, sound: true } : mode);
     if (transaction) void apply(transaction);
   };
   const dragLeave = (event: DragEvent) => {

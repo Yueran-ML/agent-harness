@@ -78,6 +78,7 @@ __all__ = [
     "lift",
     "move",
     "move_insert",
+    "move_track",
     "nudge_clip_gain",
     "of_color",
     "of_media",
@@ -868,13 +869,14 @@ def set_track(
     mute: bool | None = None,
     solo: bool | None = None,
     solo_safe: bool | None = None,
+    color: str | _Kept | None = LEFT_OUT,
 ) -> dict[str, Any]:
     """The settings of a track that are given.
 
     ``mute``, ``solo`` and ``solo_safe`` are of a track of sound only: ``enabled`` ``False`` does
     not read it at all, and ``mute`` silences it.
     """
-    return _set(
+    written = _set(
         {"op": "set_track", "timeline": timeline, "id": id},
         name=name,
         enabled=enabled,
@@ -884,6 +886,14 @@ def set_track(
         solo=solo,
         solo_safe=solo_safe,
     )
+    if color is not LEFT_OUT:
+        written["color"] = color
+    return written
+
+
+def move_track(timeline: str, id: str, index: int) -> dict[str, Any]:
+    """Move an existing track to its final zero-based index in the complete track list."""
+    return {"op": "move_track", "timeline": timeline, "id": id, "index": index}
 
 
 def set_clip(

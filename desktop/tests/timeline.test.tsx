@@ -171,7 +171,7 @@ describe('the timeline display', () => {
     const bridge = { call, onEvent: listener => { tell = listener; return () => {}; } } as Pick<EngineBridge, 'call' | 'onEvent'>;
     render(<Timeline timeline={t} media={[media, { ...media, id: 'm2' }]} bridge={bridge} session={1} revision={0} frame={0} playing={false} onSeek={() => {}} />);
     await settle();
-    expect(call.mock.calls).toEqual([['media.waveform', { media: 'm1' }]]);
+    expect(call.mock.calls).toEqual([['media.waveform', { media: 'm1' }, { expectedSession: 1 }]]);
     expect(screen.getAllByText('Preparing waveform…')).toHaveLength(2);
     act(() => tell({ kind: 'notification', session: 1, method: 'media.waveform', params: { media: 'm1' } }));
     await settle();

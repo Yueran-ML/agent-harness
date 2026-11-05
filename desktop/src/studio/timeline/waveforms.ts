@@ -64,7 +64,8 @@ export function sourceInterval(clip: Clip, rate: Rate, from: number, to: number)
 }
 
 export type WaveState = { state: 'loading' | 'pending' } | { state: 'ready'; data: PeakData } | { state: 'failed'; message: string };
-interface Entry { value: WaveState; listeners: Set<() => void>; running: boolean; again: boolean }
+interface Entry { media: string; stream?: number; value: WaveState; listeners: Set<() => void>; running: boolean; again: boolean }
+const waveformKey = (media: string, stream?: number) => `${media}/${stream ?? 'default'}`;
 
 /** One cache per project session. Completion notifications can precede the pending response. */
 export class Waveforms {
@@ -78,28 +79,29 @@ export class Waveforms {
     this.active = true;
     this.off = this.bridge.onEvent(event => {
       if (event.kind !== 'notification' || event.session !== this.session || event.method !== 'media.waveform') return;
-      const id = (event.params as { media?: string })?.media;
-      const entry = id ? this.entries.get(id) : null;
+      const { media: id, stream } = event.params as { media?: string; stream?: number };
+      const entry = id ? this.entries.get(waveformKey(id, stream)) : null;
       if (!id || !entry) return;
       if (entry.running) entry.again = true;
-      else this.fetch(id, entry);
+      else this.fetch(entry);
     });
-    for (const [id, entry] of this.entries) if (entry.listeners.size && !entry.running && entry.value.state !== 'ready') this.fetch(id, entry);
+    for (const entry of this.entries.values()) if (entry.listeners.size && !entry.running && entry.value.state !== 'ready') this.fetch(entry);
   }
   disconnect(): void {
     this.off?.(); this.off = null; this.active = false; this.epoch++;
     for (const entry of this.entries.values()) entry.running = false;
   }
-  private entry(id: string): Entry {
-    let entry = this.entries.get(id);
-    if (!entry) { entry = { value: { state: 'loading' }, listeners: new Set(), running: false, again: false }; this.entries.set(id, entry); }
+  private entry(id: string, stream?: number): Entry {
+    const key = waveformKey(id, stream);
+    let entry = this.entries.get(key);
+    if (!entry) { entry = { media: id, stream, value: { state: 'loading' }, listeners: new Set(), running: false, again: false }; this.entries.set(key, entry); }
     return entry;
   }
-  get(id: string): WaveState { return this.entry(id).value; }
-  subscribe(id: string, listener: () => void): () => void {
-    const entry = this.entry(id);
+  get(id: string, stream?: number): WaveState { return this.entry(id, stream).value; }
+  subscribe(id: string, listener: () => void, stream?: number): () => void {
+    const entry = this.entry(id, stream);
     entry.listeners.add(listener);
-    if (entry.value.state === 'loading' || entry.value.state === 'failed') this.fetch(id, entry);
+    if (entry.value.state === 'loading' || entry.value.state === 'failed') this.fetch(entry);
     return () => {
       entry.listeners.delete(listener);
       this.trim();
@@ -116,12 +118,12 @@ export class Waveforms {
       }
     }
   }
-  private fetch(id: string, entry: Entry): void {
+  private fetch(entry: Entry): void {
     if (!this.active || entry.running) return;
     entry.running = true;
     entry.again = false;
     const epoch = this.epoch;
-    void callEngine(this.bridge, 'media.waveform', { media: id }).then(answer => {
+    void callEngine(this.bridge, 'media.waveform', { media: entry.media, ...(entry.stream === undefined ? {} : { stream: entry.stream }) }, { expectedSession: this.session }).then(answer => {
       if (epoch !== this.epoch) return;
       entry.value = 'pending' in answer ? { state: 'pending' } : { state: 'ready', data: new PeakData(answer.rate, answer.channels, answer.peaks) };
     }).catch(error => {
@@ -130,7 +132,7 @@ export class Waveforms {
       if (epoch !== this.epoch) return;
       entry.running = false;
       for (const listener of entry.listeners) listener();
-      if (entry.again) this.fetch(id, entry);
+      if (entry.again) this.fetch(entry);
       this.trim();
     });
   }

@@ -130,6 +130,7 @@ fn track(id: &str, format: TrackFormat, clips: Vec<Clip>) -> Track {
         _ => 2,
     };
     Track {
+        color: None,
         id: id.into(),
         kind: TrackKind::Audio,
         name: id.into(),
@@ -166,6 +167,7 @@ fn timeline(id: &str, media: &[String], quick: bool) -> Timeline {
         color: Rgba([255, 0, 0, 255]),
     };
     let pictures = Track {
+        color: None,
         id: format!("{id}v"),
         kind: TrackKind::Video,
         name: "Picture".into(),

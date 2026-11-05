@@ -200,6 +200,15 @@ pub enum Op {
         /// The track.
         id: Id,
     },
+    /// Move an existing track to `index` in the final complete track list. IDs and references stay.
+    MoveTrack {
+        /// Timeline containing the track.
+        timeline: Id,
+        /// Existing track ID.
+        id: Id,
+        /// Zero-based position in the complete list after moving.
+        index: usize,
+    },
     /// Put a clip on a track, in the order of the starts of the clips there.
     InsertClip {
         /// The timeline.
@@ -306,6 +315,13 @@ pub enum Op {
         /// Its name.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
+        /// Its display colour; null restores the unspecified default.
+        #[serde(
+            default,
+            deserialize_with = "nullable",
+            skip_serializing_if = "Option::is_none"
+        )]
+        color: Option<Option<crate::project::Rgba>>,
         /// Whether it is seen or heard.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         enabled: Option<bool>,
@@ -1636,6 +1652,11 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
             index,
         } => add_track(project, &timeline, track, index),
         Op::RemoveTrack { timeline, id } => remove_track(project, &timeline, &id),
+        Op::MoveTrack {
+            timeline,
+            id,
+            index,
+        } => move_track(project, &timeline, &id, index),
         Op::InsertClip {
             timeline,
             track,
@@ -1695,6 +1716,7 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
             timeline,
             id,
             name,
+            color,
             enabled,
             locked,
             language,
@@ -1707,6 +1729,7 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
             &id,
             TrackSettings {
                 name,
+                color,
                 enabled,
                 locked,
                 language,
@@ -2318,6 +2341,28 @@ fn remove_track(project: &mut Project, timeline_id: &str, id: &str) -> Result<Op
     })
 }
 
+fn move_track(
+    project: &mut Project,
+    timeline_id: &str,
+    id: &str,
+    index: usize,
+) -> Result<Op, OpError> {
+    let t = timeline_at(project, timeline_id)?;
+    let at = track_at(&project.timelines[t], id)?;
+    let tracks = &mut project.timelines[t].tracks;
+    if index >= tracks.len() || index == at {
+        return Err(range("track index"));
+    }
+    // A basic operation, like set_track, remains usable while locked so history can undo it.
+    let track = tracks.remove(at);
+    tracks.insert(index, track);
+    Ok(Op::MoveTrack {
+        timeline: timeline_id.into(),
+        id: id.into(),
+        index: at,
+    })
+}
+
 fn insert_clip(
     project: &mut Project,
     timeline_id: &str,
@@ -2612,6 +2657,7 @@ fn set_timeline(project: &mut Project, id: &str, set: TimelineSettings) -> Resul
 /// The settings of a track that a [`Op::SetTrack`] sets.
 struct TrackSettings {
     name: Option<String>,
+    color: Option<Option<crate::project::Rgba>>,
     enabled: Option<bool>,
     locked: Option<bool>,
     language: Option<String>,
@@ -2656,6 +2702,7 @@ fn set_track(
         timeline: timeline_id.into(),
         id: id.into(),
         name: set.name.as_ref().map(|_| track.name.clone()),
+        color: set.color.map(|_| track.color),
         enabled: set.enabled.map(|_| track.enabled),
         locked: set.locked.map(|_| track.locked),
         language: set.language.as_ref().map(|_| track.language.clone()),
@@ -2665,6 +2712,7 @@ fn set_track(
     };
     let track = &mut project.timelines[t].tracks[r];
     swap(&mut track.name, set.name);
+    swap(&mut track.color, set.color);
     swap(&mut track.enabled, set.enabled);
     swap(&mut track.locked, set.locked);
     swap(&mut track.language, set.language);
@@ -4209,6 +4257,7 @@ fn routing_of(timeline: &Timeline) -> Timeline {
 /// A copy of a track with what its sound is routed by, and nothing on it.
 fn routing_of_track(track: &Track) -> Track {
     Track {
+        color: None,
         id: track.id.clone(),
         kind: track.kind,
         name: String::new(),
@@ -6826,6 +6875,7 @@ mod tests {
             timeline: "t1".into(),
             id: id.into(),
             name: name.map(Into::into),
+            color: None,
             enabled: Some(false),
             locked,
             language: language.map(Into::into),
@@ -7521,6 +7571,7 @@ mod tests {
             timeline: "t1".into(),
             id: id.into(),
             name: None,
+            color: None,
             enabled: Some(enabled),
             locked: None,
             language: None,
@@ -7622,6 +7673,7 @@ mod tests {
                     timeline: "t1".into(),
                     id: "V1".into(),
                     name: None,
+                    color: None,
                     enabled: None,
                     locked: Some(true),
                     language: None,

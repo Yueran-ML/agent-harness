@@ -363,6 +363,8 @@ pub struct Track {
     pub kind: TrackKind,
     /// The name that it is shown by.
     pub name: String,
+    /// Optional display colour, shared by every page; absent in older projects.
+    pub color: Option<Rgba>,
     /// Whether it is seen or heard. A track that is not is left out when the timeline is
     /// played or rendered.
     pub enabled: bool,
@@ -388,6 +390,7 @@ struct RawTrack {
     id: Id,
     kind: TrackKind,
     name: String,
+    color: Option<Rgba>,
     enabled: bool,
     locked: bool,
     clips: Option<Vec<Clip>>,
@@ -473,6 +476,7 @@ impl TryFrom<RawTrack> for Track {
             id: raw.id,
             kind,
             name: raw.name,
+            color: raw.color,
             enabled: raw.enabled,
             locked: raw.locked,
             clips: raw.clips.unwrap_or_default(),
@@ -490,6 +494,9 @@ impl Serialize for Track {
         track.serialize_field("id", &self.id)?;
         track.serialize_field("kind", &self.kind)?;
         track.serialize_field("name", &self.name)?;
+        if let Some(color) = self.color {
+            track.serialize_field("color", &color)?;
+        }
         track.serialize_field("enabled", &self.enabled)?;
         track.serialize_field("locked", &self.locked)?;
         if self.kind == TrackKind::Subtitle {
@@ -916,6 +923,7 @@ impl Track {
         let id = id.into();
         Self {
             name: id.clone(),
+            color: None,
             id,
             kind,
             enabled: true,

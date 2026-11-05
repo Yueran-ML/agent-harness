@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent, type Ref } from 'react';
+import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent, type Ref, type ReactNode } from 'react';
 import { X } from 'lucide-react';
 import { useWords } from '../../app/locale';
 import { keyOf, type Key } from '../../app/keys';
@@ -11,7 +11,7 @@ import { Ruler } from './Ruler';
 import { Scrub } from './scrub';
 import { AddSubtitleTrack, pageLanguage, TimelineMenu, type TrackMenu } from './SubtitleTrack';
 import { Toolbar } from './Toolbar';
-import { TrackRow } from './TrackRow';
+import { TrackRow, type TrackClipDrawing } from './TrackRow';
 import { Waveforms } from './waveforms';
 import { useEditing } from './useEditing';
 import type { EditAction, EditContext } from './editKeys';
@@ -29,7 +29,7 @@ export interface TimelineHandle {
 /** What of a timeline a view shows: the pixels of a frame, how far it is scrolled, and how wide it is. */
 export interface TimelineView { scale: number; left: number; width: number }
 export function Timeline({ timeline, media, bridge, session, revision, frame, playing, onSeek, source = null, focus = 'timeline', onSpeed, onSelection, onTransition, onCue, ref,
-  cut = false, overview = false, center = false, trackHeight = 72, indicator = null, detail = null, onView, label }: {
+  cut = false, overview = false, center = false, trackHeight = 72, indicator = null, detail = null, onView, label, hiddenTracks, drawClip, onClipContext, onTrackSelect, audioOnlyDrop }: {
   timeline: TimelineModel | null; media: readonly Media[]; bridge: Pick<EngineBridge, 'call' | 'onEvent'>; session: number;
   revision: number; frame: number; playing: boolean; onSeek: (frame: number, scrubbing: boolean) => void;
   source?: EditContext['source']; focus?: Monitor; onSpeed?: (clips: string[]) => void; onSelection?: (clips: string[]) => void;
@@ -55,6 +55,12 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   onView?: (view: TimelineView) => void;
   /** The name of the region, where a page shows more than one view of a timeline. */
   label?: string;
+  /** View filtering only; editing still sees the complete, accepted timeline. */
+  hiddenTracks?: readonly string[];
+  drawClip?: (props: TrackClipDrawing) => ReactNode;
+  onClipContext?: (clip: string, x: number, y: number) => void;
+  onTrackSelect?: (track: string) => void;
+  audioOnlyDrop?: boolean;
 }) {
   const words = useWords();
   const labels = words.label.studio.timeline;
@@ -85,7 +91,7 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
     ...timeline.tracks.filter(track => track.kind === 'subtitle').reverse(),
     ...timeline.tracks.filter(track => track.kind === 'video').reverse(),
     ...timeline.tracks.filter(track => track.kind === 'audio'),
-  ] : [], [timeline]);
+  ].filter(track => !hiddenTracks?.includes(track.id)) : [], [timeline, hiddenTracks]);
 
   useLayoutEffect(() => {
     const element = scroll.current;
@@ -164,7 +170,7 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
     setView(old => { const left = Math.max(0, Math.round(shown * old.scale - old.width / 2)); return old.left === left ? old : { ...old, left }; });
   }, [center, dragging, shown, view.scale, view.width]);
   useEffect(() => { onView?.(view); }, [view, onView]);
-  const editing = useEditing({ timeline, media, bridge, session, revision, frame: shown, focus, source, root, scroll, view, onSeek, fit, zoom, onSpeed, onSelection, onTransition, onCue, cut });
+  const editing = useEditing({ timeline, media, bridge, session, revision, frame: shown, focus, source, root, scroll, view, onSeek, fit, zoom, onSpeed, onSelection, onTransition, onCue, cut, audioOnlyDrop });
   useImperativeHandle(ref, () => ({ keyDown: editing.keyDown, perform: editing.perform, marks: () => editing.marks }));
   useEffect(() => {
     const element = scroll.current;
@@ -239,12 +245,16 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
       if (editing.keyDown(key)) { event.preventDefault(); event.stopPropagation(); }
     }}
     onPointerDown={event => {
+      const track = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-track]')?.dataset.track : undefined;
+      if (track) onTrackSelect?.(track);
       // A press on a track of the overview, not on what lies on it, moves the playhead there.
       if (overview && event.target instanceof Element && event.target.classList.contains('timeline-lane')) down(event);
       else editing.pointerDown(event);
     }}
     onDragOver={editing.dragOver} onDrop={editing.drop} onDragLeave={editing.dragLeave} onDoubleClick={editing.doubleClick}
     onContextMenu={event => {
+      const clip = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-clip]')?.dataset.clip : undefined;
+      if (clip && onClipContext) { event.preventDefault(); onClipContext(clip, event.clientX, event.clientY); return; }
       // As DaVinci Resolve: a track header offers Add Subtitle Track, a track of subtitles Add Subtitle (Reference Manual 20, pp. 1088–1089).
       // Resolve adds the subtitle at the playhead; here it goes where the track was clicked, as the author chose.
       const track = !overview && timeline && event.target instanceof Element ? event.target.closest<HTMLElement>('[data-track]') : null;
@@ -273,7 +283,7 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
           {editing.marks.in !== null && editing.marks.out !== null && <span className="timeline-mark-range" style={{ left: HEADER_WIDTH + editing.marks.in * view.scale, width: (editing.marks.out - editing.marks.in) * view.scale }} />}
           <div className="timeline-ruler-corner">{!overview && <AddSubtitleTrack onAdd={editing.addSubtitleTrack} disabled={editing.pending} />}</div></div>
         {tracks.map(track => <TrackRow key={track.id} timeline={timeline.id} track={track} media={byId} rate={timeline.rate} scale={view.scale}
-          from={from} to={to} height={heights[track.id] ?? trackHeight} waves={waves} onEdit={editing.edit} onHeight={onHeight}
+          from={from} to={to} height={heights[track.id] ?? trackHeight} waves={waves} onEdit={editing.edit} onHeight={onHeight} drawClip={drawClip}
           selected={editing.selected} targeted={editing.targets.video_track === track.id || editing.targets.audio_track === track.id} onTarget={editing.target}
           chosen={editing.transition !== null && track.kind !== 'subtitle' && track.transitions.some(each => each.id === editing.transition) ? editing.transition : null}
           chosenCue={editing.cue !== null && track.kind === 'subtitle' && track.cues.some(each => each.id === editing.cue) ? editing.cue : null}

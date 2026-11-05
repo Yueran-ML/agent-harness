@@ -13,6 +13,7 @@
  *   between two Japanese characters.
  * - The terms are those of the Japanese guide: ターン, タスク, ステップ, 承認.
  */
+import { fairlightJa } from './fairlight';
 import { splitDuration } from './duration';
 import type { Messages, Weekday } from './en';
 import { afterWord, beforeWord, between } from './spacing';
@@ -723,6 +724,7 @@ export const ja: Messages = {
     },
 
     studio: {
+      fairlightPage: fairlightJa,
       timeline: {
         select: '選択モード', trim: 'トリム編集モード', blade: 'ブレード編集モード', snap: 'スナップ', linked: 'リンク選択', target: 'ターゲットトラック',
         title: 'タイムライン', position: 'タイムラインの再生ヘッド',
@@ -745,7 +747,7 @@ export const ja: Messages = {
       open: 'スタジオ',
       close: 'スタジオを閉じる',
       pages: 'スタジオのページ',
-      page: { media: 'メディア', cut: 'カット', edit: 'エディット', color: 'カラー' },
+      page: { media: 'メディア', cut: 'カット', edit: 'エディット', color: 'カラー', fairlight: 'Fairlight' },
       monitor: {
         source: 'ソース', timeline: 'タイムライン', sourceTitle: 'ソースビューア', timelineTitle: 'タイムラインビューア', choose: '表示するビューア',
         colorPending: 'カラーマネージメントを適用しています…',

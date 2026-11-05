@@ -13,6 +13,7 @@ import { MonitorPane } from './MonitorPane';
 import { ColorPage } from './pages/ColorPage';
 import { CutPage } from './pages/CutPage';
 import { EditPage } from './pages/EditPage';
+import { FairlightPage } from './pages/FairlightPage';
 import { MediaPage } from './pages/MediaPage';
 import { RenderDialog } from './render/RenderDialog';
 import { ExportProgress } from './render/RenderProgress';
@@ -27,14 +28,14 @@ import { useMonitor } from './useMonitor';
 import type { ViewerNotice } from './Viewer';
 
 /** The pages of the studio, at its foot as in DaVinci Resolve. Those of the later phases come with them. */
-export type StudioPage = 'media' | 'cut' | 'edit' | 'color';
-const PAGE_ICONS = { media: FolderOpen, cut: Scissors, edit: Film, color: Palette } as const;
+export type StudioPage = 'media' | 'cut' | 'edit' | 'color' | 'fairlight';
+const PAGE_ICONS = { media: FolderOpen, cut: Scissors, edit: Film, color: Palette, fairlight: Film } as const;
 /**
  * The pages, in DaVinci Resolve's order. The studio opens only on Windows (the author's decision);
  * the Color page is held to that besides, so that it never shows elsewhere before its time.
  */
 export function studioPages(): readonly StudioPage[] {
-  return studioSupported() ? ['media', 'cut', 'edit', 'color'] : ['media', 'cut', 'edit'];
+  return studioSupported() ? ['media', 'cut', 'edit', 'color', 'fairlight'] : ['media', 'cut', 'edit'];
 }
 
 /** The timelines of a project that is not there yet: the same list each time, so that the pool is not drawn again for it. */
@@ -257,6 +258,7 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
     onLoad={onLoad}
     onMakeAgain={onMakeAgain}
     initialGrid={page === 'cut'}
+    audioFilters={page === 'fairlight'}
     onBin={setBin}
     follow={page === 'cut' && onTape ? loaded?.id ?? null : null}
     color={project?.color}
@@ -341,6 +343,9 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
       onProblem={(said, failure) => fail(said)(failure)}
       onExport={onExport}
     />}
+    {page === 'fairlight' && pages.includes('fairlight') && <FairlightPage bridge={bridge} native={native} session={snapshot.session ?? 0} revision={snapshot.revision ?? 0}
+      pool={pool} media={project?.media ?? NO_MEDIA} timelines={timelines} selected={selected} onSelect={setChosenTimeline} timelineMonitor={timelineMonitor}
+      noticeOf={noticeOf} onRetry={again} onProblem={(said, failure) => fail(said)(failure)} />}
     {page === 'color' && pages.includes('color') && <ColorPage
       bridge={bridge}
       native={native}

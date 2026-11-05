@@ -12,6 +12,7 @@
  *   between two Chinese characters.
  * - The user is 你.
  */
+import { fairlightZh } from './fairlight';
 import { splitDuration } from './duration';
 import type { Messages, Weekday } from './en';
 import { afterWord, beforeWord, between } from './spacing';
@@ -674,6 +675,7 @@ export const zhCN: Messages = {
     },
 
     studio: {
+      fairlightPage: fairlightZh,
       timeline: {
         select: '选择模式', trim: '修剪编辑模式', blade: '刀片编辑模式', snap: '吸附', linked: '链接选择', target: '目标轨道',
         title: '时间线', position: '时间线播放头',
@@ -696,7 +698,7 @@ export const zhCN: Messages = {
       open: '工作室',
       close: '关闭工作室',
       pages: '工作室的页面',
-      page: { media: '媒体', cut: '快编', edit: '剪辑', color: '调色' },
+      page: { media: '媒体', cut: '快编', edit: '剪辑', color: '调色', fairlight: 'Fairlight' },
       monitor: {
         source: '源', timeline: '时间线', sourceTitle: '源检视器', timelineTitle: '时间线检视器', choose: '显示的检视器',
         colorPending: '正在应用色彩管理…',

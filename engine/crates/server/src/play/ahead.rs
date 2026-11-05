@@ -411,6 +411,7 @@ mod tests {
                 rate,
                 sample_rate: 48000,
                 tracks: vec![Track {
+                    color: None,
                     id: "V1".into(),
                     name: "Picture".into(),
                     kind: TrackKind::Video,

@@ -1,0 +1,48 @@
+/** Shared Fairlight catalogue; protocol IDs and media/track names are never translated. */
+const entries = {
+  'Media Pool': ['媒体池', 'メディアプール'], 'Effects': ['效果', 'エフェクト'], 'Index': ['索引', 'インデックス'],
+  'Groups': ['编组', 'グループ'], 'Mixer': ['调音台', 'ミキサー'], 'Meters': ['电平表', 'メーター'], 'Inspector': ['检查器', 'インスペクタ'],
+  'Fairlight timeline': ['Fairlight 时间线', 'Fairlight タイムライン'], 'Reset Fairlight Layout': ['复位 Fairlight 页布局', 'Fairlight レイアウトをリセット'],
+  'No timeline': ['没有时间线', 'タイムラインなし'], 'Monitoring': ['监听面板', 'モニタリング'],
+  'Two rows': ['双行', '2 行'], 'One row': ['单行', '1 行'], 'Narrow meters': ['窄表', '狭いメーター'], 'Wide meters': ['宽表', '広いメーター'],
+  'Track meters': ['轨道电平表', 'トラックメーター'], 'Bus meters': ['总线电平表', 'バスメーター'], 'Reset meter peaks': ['清零峰值保持', 'ピークをリセット'],
+  'Control Room': ['控制室', 'コントロールルーム'], 'Monitor bus': ['监听总线', 'モニターバス'], 'Speakers: Auto': ['扬声器：自动', 'スピーカー：自動'],
+  'Loudness': ['响度', 'ラウドネス'], 'Standard': ['标准', '規格'], 'Loudness standard': ['响度标准', 'ラウドネス規格'],
+  'Absolute scale': ['绝对刻度', '絶対スケール'], 'Loudness scale': ['响度刻度', 'ラウドネススケール'],
+  'Lock Metering to Transport': ['电平测量跟随走带', 'メーターをトランスポートに連動'], 'Pause': ['暂停', '一時停止'], 'Resume': ['继续', '再開'], 'Start': ['开始', '開始'], 'Reset': ['复位', 'リセット'],
+  'Index Tracks': ['轨道索引', 'トラックインデックス'], 'Tracks': ['轨道', 'トラック'], 'Color': ['颜色', 'カラー'], 'Visible': ['显示', '表示'],
+  'Name': ['名称', '名前'], 'Controls': ['控件', 'コントロール'], 'Format': ['格式', '形式'], 'Order': ['顺序', '順序'], 'Channels': ['声道数', 'チャンネル数'],
+  'Move track up': ['上移 {name}', '{name} を上へ'], 'Move track down': ['下移 {name}', '{name} を下へ'],
+  'locked': ['锁定', 'ロック'], 'solo': ['独奏', 'ソロ'], 'mute': ['静音', 'ミュート'], 'Mono': ['单声道', 'モノ'], 'Stereo': ['立体声', 'ステレオ'],
+  'Adaptive': ['自适应', 'アダプティブ'], 'Audio effects': ['音频效果', 'オーディオエフェクト'], 'Audio FX': ['音频效果', 'オーディオ FX'],
+  'Drag to an audio clip or track.': ['拖到音频片段或轨道上。', 'オーディオクリップまたはトラックにドラッグします。'],
+  'Favorite': ['收藏', 'お気に入り'], 'Gain': ['增益', 'ゲイン'], 'Limiter': ['限制器', 'リミッター'], 'Soft Clipper': ['软削波器', 'ソフトクリッパー'],
+  'Stereo Width': ['立体声宽度', 'ステレオ幅'], 'De-Esser': ['消齿音', 'ディエッサー'], 'De-Hummer': ['去嗡声', 'ディハマー'], 'Noise Reduction': ['降噪', 'ノイズリダクション'], 'Pitch': ['音调', 'ピッチ'],
+  'Inspector mode': ['检查器模式', 'インスペクタモード'], 'Inspector tabs': ['检查器标签', 'インスペクタタブ'], 'Fairlight Inspector': ['Fairlight 检查器', 'Fairlight インスペクタ'],
+  'Clip': ['片段', 'クリップ'], 'Track': ['轨道', 'トラック'], 'Audio': ['音频', 'オーディオ'], 'File': ['文件', 'ファイル'],
+  'Select a track': ['请选择轨道', 'トラックを選択'], 'clips': ['个片段', 'クリップ'], 'Fader': ['推子', 'フェーダー'], 'On': ['开', 'オン'], 'Off': ['关', 'オフ'],
+  'Select audio clips': ['请选择音频片段', 'オーディオクリップを選択'],
+  'Remixed waveform unavailable': ['重混波形暂不可用', 'リミックス波形は未対応'],
+  'Mixed waveform unavailable': ['暂不提供混合声道波形', 'ミックス波形は未対応'], 'Video': ['视频', 'ビデオ'], 'Subtitles': ['字幕', '字幕'], 'Short Max': ['短时最大值', '短期最大'],
+  'Level Matcher': ['电平匹配', 'レベルマッチャー'], 'Capture Level Profile': ['捕获电平特征', 'レベルプロファイルを取得'], 'Apply Level Profile': ['应用电平特征', 'レベルプロファイルを適用'],
+  'Reference': ['参照', '参照'], 'Cancel Level Matcher': ['取消电平匹配', 'レベルマッチをキャンセル'], 'Analyzing': ['分析中', '解析中'], 'clamped': ['已限幅', '制限済み'],
+  'Video tracks': ['视频轨道', 'ビデオトラック'], 'Waveform height': ['波形高度', '波形の高さ'], 'Reset waveform height': ['复位波形高度', '波形の高さをリセット'],
+  'Automation view (F4)': ['自动化视图（F4）', 'オートメーション表示（F4）'],
+  'Automation lane editing is not available yet.': ['自动化通道编辑尚未提供。', 'オートメーションレーンの編集はまだ利用できません。'],
+  'Monitoring height': ['监听面板高度', 'モニタリングの高さ'], 'Left panel width': ['左侧面板宽度', '左パネルの幅'], 'Mixer height': ['调音台高度', 'ミキサーの高さ'], 'Inspector width': ['检查器宽度', 'インスペクタの幅'],
+  'Group controls are not available yet.': ['编组控件尚未提供。', 'グループコントロールはまだ利用できません。'],
+  'Mixer controls are not available yet.': ['调音台控件尚未提供。', 'ミキサーコントロールはまだ利用できません。'],
+  'Dismiss': ['关闭提示', '閉じる'], 'Viewer': ['检视器', 'ビューア'], 'Cinema viewer': ['影院检视', 'シネマビューア'], 'Exit cinema': ['退出影院检视', 'シネマ表示を終了'],
+  'Audio clip': ['音频片段', 'オーディオクリップ'], 'Analyze Audio Level': ['分析音频电平', 'オーディオレベルを解析'], 'Close': ['关闭', '閉じる'],
+  'Analysis standard': ['分析标准', '解析規格'], 'Analyze': ['分析', '解析'], 'Cancel analysis': ['取消分析', '解析をキャンセル'], 'Close analysis': ['关闭分析', '解析を閉じる'], 'Cancelled': ['已取消', 'キャンセル済み'], 'Target': ['目标', 'ターゲット'],
+  'Could not load the Fairlight timeline.': ['无法加载 Fairlight 时间线。', 'Fairlight タイムラインを読み込めませんでした。'],
+  'Could not change audio scrubbing.': ['无法更改拖动试听。', 'オーディオスクラブを変更できませんでした。'],
+  'Media audio filter': ['媒体音频筛选', 'メディアのオーディオフィルター'], 'All clips': ['所有片段', 'すべてのクリップ'], 'Audio only': ['纯音频片段', 'オーディオのみ'], 'Clips with audio': ['含音频片段', '音声付きクリップ'],
+  'unofficial preset': ['非官方预设', '非公式プリセット'], 'unofficial': ['非官方', '非公式'], 'unverified': ['未核实', '未検証'], 'Web video': ['网络视频', 'Web 動画'], 'mix': ['混合', 'ミックス'],
+} as const;
+export type FairlightText = keyof typeof entries;
+const catalogue = (language: 'en' | 'zh' | 'ja'): Record<FairlightText, string> => Object.fromEntries(Object.entries(entries).map(([key, value]) => [key,
+  language === 'en' ? key === 'Move track up' ? 'Move {name} up' : key === 'Move track down' ? 'Move {name} down' : key : value[language === 'zh' ? 0 : 1]])) as Record<FairlightText, string>;
+export const fairlightEn = catalogue('en');
+export const fairlightZh = catalogue('zh');
+export const fairlightJa = catalogue('ja');

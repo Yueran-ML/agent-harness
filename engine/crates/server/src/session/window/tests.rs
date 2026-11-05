@@ -1963,6 +1963,7 @@ fn unrecorded_external_revision_flushes_only_the_captures_old_key() {
                 timeline: "t1".into(),
                 id: "V1".into(),
                 name: Some("proxy-like".into()),
+                color: None,
                 enabled: None,
                 locked: None,
                 language: None,

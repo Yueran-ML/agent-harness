@@ -24,6 +24,19 @@ from columbina.video.engine import Engine
 from support import fake_engine
 from support.fake_engine import served
 
+
+def test_fairlight_track_color_and_final_index_operation() -> None:
+    assert edits.move_track("t1", "A3", 1) == {
+        "op": "move_track",
+        "timeline": "t1",
+        "id": "A3",
+        "index": 1,
+    }
+    assert edits.set_track("t1", "A1", color="#5aa0e0ff")["color"] == "#5aa0e0ff"
+    assert edits.set_track("t1", "A1", color=None)["color"] is None
+    assert "color" not in edits.set_track("t1", "A1", name="Dialog")
+
+
 FROM = Time(ticks=0, scale=12800)
 
 

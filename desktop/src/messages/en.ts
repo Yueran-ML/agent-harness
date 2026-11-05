@@ -15,6 +15,7 @@
  * - Short, calm and concrete, without exclamation marks.
  * - A sentence that takes a number is a function.
  */
+import { fairlightEn } from './fairlight';
 import { splitDuration } from './duration';
 
 function duration(seconds: number): string {
@@ -788,6 +789,7 @@ export const en = {
 
     /** The studio: a workspace for editing the media of the project. */
     studio: {
+      fairlightPage: fairlightEn,
       timeline: {
         select: 'Selection mode', trim: 'Trim edit mode', blade: 'Blade edit mode', snap: 'Snapping', linked: 'Linked selection', target: 'Target track',
         title: 'Timeline', position: 'Timeline position',
@@ -813,7 +815,7 @@ export const en = {
       open: 'Studio',
       close: 'Close the studio',
       pages: 'Pages of the studio',
-      page: { media: 'Media', cut: 'Cut', edit: 'Edit', color: 'Color' },
+      page: { media: 'Media', cut: 'Cut', edit: 'Edit', color: 'Color', fairlight: 'Fairlight' },
       /** The two viewers of the Edit page, as DaVinci Resolve names them. */
       monitor: {
         source: 'Source', timeline: 'Timeline', sourceTitle: 'Source viewer', timelineTitle: 'Timeline viewer', choose: 'Viewer shown',

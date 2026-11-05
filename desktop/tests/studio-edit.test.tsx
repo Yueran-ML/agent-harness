@@ -121,23 +121,25 @@ describe('the Edit page', () => {
     expect(monitor('Source viewer').dataset.focused).toBe('false');
   });
 
-  it('has its pages as DaVinci Resolve orders them, the arrows going round all four', async () => {
+  it('has its pages as DaVinci Resolve orders them, the arrows going round all five', async () => {
     await mount();
     // The tabs of the pages, not those of the palettes of the Color page.
     const tabs = () => [...document.querySelectorAll<HTMLElement>('.studio-pages [role="tab"]')].map(tab => [tab.textContent, tab.tabIndex]);
-    expect(tabs()).toEqual([['Media', -1], ['Cut', -1], ['Edit', 0], ['Color', -1]]);
+    expect(tabs()).toEqual([['Media', -1], ['Cut', -1], ['Edit', 0], ['Color', -1], ['Fairlight', -1]]);
     const edit = screen.getByRole('tab', { name: 'Edit' });
     edit.focus();
     fireEvent.keyDown(edit, { key: 'ArrowRight' });
-    expect(tabs()).toEqual([['Media', -1], ['Cut', -1], ['Edit', -1], ['Color', 0]]);
+    expect(tabs()).toEqual([['Media', -1], ['Cut', -1], ['Edit', -1], ['Color', 0], ['Fairlight', -1]]);
     fireEvent.keyDown(document.activeElement!, { key: 'ArrowRight' });
-    expect(tabs()).toEqual([['Media', 0], ['Cut', -1], ['Edit', -1], ['Color', -1]]);
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'Fairlight' }));
+    fireEvent.keyDown(document.activeElement!, { key: 'ArrowRight' });
+    expect(tabs()).toEqual([['Media', 0], ['Cut', -1], ['Edit', -1], ['Color', -1], ['Fairlight', -1]]);
     fireEvent.keyDown(document.activeElement!, { key: 'ArrowRight' });
     expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'Cut' }));
     expect(document.querySelector('[data-test="cut-page"]')).not.toBeNull();
     fireEvent.keyDown(document.activeElement!, { key: 'ArrowLeft' });
     fireEvent.keyDown(document.activeElement!, { key: 'ArrowLeft' });
-    expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'Color' }));
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'Fairlight' }));
   });
 
   it('puts away and brings back the pool and the inspector', async () => {
@@ -402,7 +404,7 @@ describe('the Edit page', () => {
     await mount(false, zhCN);
     expect(screen.getByRole('region', { name: '源检视器' })).toBeDefined();
     expect(screen.getByRole('region', { name: '时间线检视器' })).toBeDefined();
-    expect(screen.getAllByRole('tab').map(tab => tab.textContent)).toEqual(['媒体', '快编', '剪辑', '调色']);
+    expect(screen.getAllByRole('tab').map(tab => tab.textContent)).toEqual(['媒体', '快编', '剪辑', '调色', 'Fairlight']);
   });
 });
 

@@ -905,7 +905,9 @@ fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> 
             f(timeline, Role::Names)?;
             visit_track(track, None, Some(of), f)
         }
-        Op::RemoveTrack { timeline, id } | Op::SetTrack { timeline, id, .. } => {
+        Op::RemoveTrack { timeline, id }
+        | Op::MoveTrack { timeline, id, .. }
+        | Op::SetTrack { timeline, id, .. } => {
             let of = timeline.clone();
             f(timeline, Role::Names)?;
             f(id, Role::NamesTrack(of))

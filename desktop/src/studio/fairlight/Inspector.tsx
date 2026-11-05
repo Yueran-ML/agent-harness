@@ -1,0 +1,39 @@
+import { useFairlightText } from './words';
+import { useEffect, useState } from 'react';
+import type { EngineBridge } from '../../bridge';
+import type { Media, Op, Timeline } from '../engine';
+import { ClipAudio } from '../inspector/ClipAudio';
+import { FieldsLocked, NumberField } from '../inspector/fields';
+import { useCommit } from '../inspector/useCommit';
+import { AUDIO_EFFECTS } from './EffectsLibrary';
+/** Track/clip selection is shared with the timeline. Detailed strip processors plug in with T21. */
+export function Inspector({ bridge, session, revision, timeline, media, clips, track: trackId, onEdit }: {
+  bridge: Pick<EngineBridge, 'call'>; session: number; revision: number; timeline: Timeline; media: readonly Media[];
+  clips: string[]; track: string | null; onEdit: (ops: Op[]) => void;
+}) {
+  const t = useFairlightText();
+  const { commit, refusal } = useCommit({ bridge, session, revision, timeline });
+  const [mode, setMode] = useState<'clip' | 'track'>('clip');
+  const [tab, setTab] = useState<'audio' | 'effects' | 'file'>('audio');
+  useEffect(() => { if (clips.length) setMode('clip'); }, [clips]);
+  const track = timeline.tracks.find(each => each.id === trackId);
+  const locations = timeline.tracks.flatMap(each => each.kind !== 'audio' ? [] : each.clips.filter(clip => clips.includes(clip.id)).map(clip => ({ clip, locked: each.locked })));
+  const unlocked = locations.filter(each => !each.locked);
+  const locked = locations.length > 0 && unlocked.length === 0;
+  const chosen = (locked ? locations : unlocked).map(each => each.clip);
+  return <aside className="fairlight-inspector" aria-label={t('Fairlight Inspector')}><h2>{t('Inspector')}</h2>
+    <div role="group" aria-label={t('Inspector mode')}><button type="button" aria-pressed={mode === 'clip'} onClick={() => setMode('clip')}>{t('Clip')}</button>
+      <button type="button" aria-pressed={mode === 'track'} onClick={() => setMode('track')}>{t('Track')}</button></div>
+    <div role="tablist" aria-label={t('Inspector tabs')}>{(['audio', 'effects', 'file'] as const).map(each => <button type="button" role="tab" key={each} aria-selected={tab === each} onClick={() => setTab(each)}>{t(each === 'audio' ? 'Audio' : each === 'effects' ? 'Effects' : 'File')}</button>)}</div>
+    <strong>{mode === 'track' ? track?.name ?? t('Select a track') : `${chosen.length} ${t('clips')}`}</strong>
+    {refusal && <p role="alert">{refusal.text}</p>}
+    {tab === 'audio' && mode === 'clip' && (chosen.length ? <FieldsLocked.Provider value={locked}><ClipAudio timeline={timeline} clips={chosen} commit={commit} /></FieldsLocked.Provider> : <p>{t('Select audio clips')}</p>)}
+    {tab === 'audio' && mode === 'track' && track?.kind === 'audio' && <>
+      <NumberField name="track-fader" label={t('Fader')} value={track.strip?.fader_db ?? 0} fallback={0} unit="dB" min={-100} max={10} digits={1} scrub={.1}
+        onCommit={fader_db => onEdit([{ op: 'set_track_audio', timeline: timeline.id, track: track.id, patch: { strip: { fader_db } } }])} />
+      <span>{track.format === '5.1' ? '5.1' : t(track.format === 'mono' ? 'Mono' : track.format === 'adaptive' ? 'Adaptive' : 'Stereo')}</span>
+    </>}
+    {tab === 'effects' && <ul>{(mode === 'track' && track?.kind === 'audio' ? track.strip?.inserts ?? [] : chosen.flatMap(clip => clip.effects ?? [])).map((insert, index) => <li key={index}>{t(AUDIO_EFFECTS.find(([id]) => id === insert.effect.kind)![1])} · {t(insert.on ? 'On' : 'Off')}</li>)}</ul>}
+    {tab === 'file' && <ul>{chosen.map(clip => <li key={clip.id}>{clip.source.kind === 'media' ? media.find(item => item.id === (clip.source as { media: string }).media)?.path ?? clip.source.media : clip.source.kind}</li>)}</ul>}
+  </aside>;
+}

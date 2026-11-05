@@ -69,6 +69,7 @@ fn project_of(media: Media, color: ColorSettings) -> Project {
             rate: Rate { num: 25, den: 1 },
             sample_rate: 48000,
             tracks: vec![Track {
+                color: None,
                 id: "V1".into(),
                 name: "Picture".into(),
                 kind: TrackKind::Video,

@@ -401,6 +401,7 @@ fn set_track_of(project: &Project, spec: &Spec, timeline_id: String) -> Op {
         .map(|t| t.tracks.iter().map(|r| r.id.clone()).collect())
         .unwrap_or_default();
     Op::SetTrack {
+        color: None,
         id: pick(&track_ids, spec.b, "V99"),
         timeline: timeline_id,
         name: bit(spec, 0).then(|| "Track".into()),

@@ -1,0 +1,66 @@
+.fairlight-page { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; background: var(--surface, #202329); }
+.fairlight-page h2 { font-size: 12px; margin: 8px; }
+.fairlight-page button, .fairlight-page select { font: inherit; color: inherit; background: var(--surface-raised, #292d35); border: 1px solid var(--border, #40454e); border-radius: 3px; padding: 3px 6px; }
+.fairlight-page button[aria-pressed=true], .fairlight-page [aria-selected=true] { border-color: #69b8b5; background-color: #304b4e; }
+.fairlight-page button:disabled { opacity: .5; }
+.fairlight-toolbar, .fairlight-footer, .fairlight-timeline-options { display: flex; align-items: center; gap: 6px; padding: 6px; flex-wrap: wrap; }
+.fairlight-toolbar { border-bottom: 1px solid var(--border, #40454e); }
+.fairlight-toolbar select { margin-left: auto; }
+.fairlight-monitoring-wrap { flex: 0 0 auto; min-height: 0; display: flex; flex-direction: column; }
+.fairlight-monitoring { display: flex; flex: 1; min-height: 0; gap: 8px; overflow: auto; position: relative; padding: 5px; }
+.fairlight-meter-options { display: flex; flex-direction: column; gap: 4px; width: 65px; flex-shrink: 0; }
+.fairlight-strip-meters { display: flex; gap: 4px; min-width: 25px; overflow: auto; }
+.fairlight-monitoring[data-rows="2"] .fairlight-strip-meters { flex-wrap: wrap; }
+.fairlight-strip-meter { display: flex; flex-direction: column; min-width: 62px; }
+.fairlight-monitoring[data-wide=false] .fairlight-strip-meter { min-width: 25px; max-width: 45px; overflow: hidden; }
+.fairlight-meter-channels { display: flex; flex: 1; min-height: 0; }
+.fairlight-meter { display: flex; flex-direction: column; align-items: center; flex: 1; min-width: 12px; min-height: 55px; }
+.fairlight-meter small { font-size: 9px; white-space: nowrap; }
+.fairlight-meter-well { position: relative; width: 12px; flex: 1; background: #11171b; min-height: 24px; overflow: hidden; }
+.fairlight-meter-well i { position: absolute; bottom: 0; left: 0; right: 0; background: linear-gradient(to top, #4a9b7b, #cdb456 85%, #cb5e58); }
+.fairlight-meter-well b { position: absolute; left: 0; right: 0; border-top: 2px solid #ededcf; }
+.fairlight-control-room { display: flex; flex-direction: column; width: 125px; flex-shrink: 0; }
+.fairlight-control-room .fairlight-meter-well i { background: #bca85c; }
+.fairlight-control-room select { max-width: 125px; }
+.fairlight-loudness { min-width: 240px; max-width: 410px; resize: horizontal; overflow: auto; font-size: 11px; }
+.fairlight-loudness label { display: inline-block; margin: 3px; }
+.fairlight-loudness-values { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; padding: 5px; }
+.fairlight-loudness-values span { position: relative; background: #171c22; padding: 3px; }
+.fairlight-loudness-values output { display: block; font-variant-numeric: tabular-nums; }
+.fairlight-loudness-bar { display: block; height: 3px; background: currentColor; }
+.fairlight-page [data-verdict=low] { color: #65a5d0; }
+.fairlight-page [data-verdict=within] { color: #e2c758; }
+.fairlight-page [data-verdict=high] { color: #e77c75; }
+.fairlight-small-viewer { min-width: 190px; width: 300px; resize: horizontal; overflow: auto; flex-shrink: 0; }
+.fairlight-small-viewer .monitor { height: 100%; min-height: 0; }
+.fairlight-small-viewer .viewer { flex: 1; min-height: 40px; }
+.fairlight-workspace { display: flex; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
+.fairlight-left { width: var(--fairlight-left); flex-shrink: 0; overflow: auto; }
+.fairlight-center { flex: 1; display: flex; flex-direction: column; min-width: 180px; min-height: 0; }
+.fairlight-timeline { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.fairlight-timeline .timeline { flex: 1; min-height: 0; }
+.fairlight-timeline-options { font-size: 11px; }
+.fairlight-channel-lanes { display: grid; position: absolute; left: 0; right: 0; top: 18px; bottom: 0; pointer-events: none; }
+.fairlight-channel-lane { position: relative; overflow: hidden; border-bottom: 1px solid #ffffff26; }
+.fairlight-channel-lane small { position: absolute; z-index: 1; left: 2px; font-size: 9px; opacity: .8; }
+.fairlight-channel-lane .timeline-waveform { top: 0; height: 100%; }
+.fairlight-channel-lane .timeline-wave-tiles { position: absolute; top: 0; bottom: 0; }
+.fairlight-timeline .pool-thumbnail { display: block; height: calc(100% - 18px); margin-top: 18px; }
+.fairlight-timeline .pool-thumbnail img { height: 100%; object-fit: contain; }
+.fairlight-inspector { width: var(--fairlight-right); flex-shrink: 0; overflow: auto; }
+.fairlight-separator { height: 5px; flex: 0 0 5px; background: #11151a; cursor: row-resize; }
+.fairlight-separator[aria-orientation=vertical] { width: 5px; height: auto; cursor: col-resize; }
+.fairlight-separator:focus { outline: 1px solid #69b8b5; }
+.fairlight-mixer-slot { overflow: auto; flex-shrink: 0; border-top: 1px solid #48505b; }
+.fairlight-mixer-slot p, .fairlight-left p { padding: 6px; font-size: 12px; opacity: .7; }
+.fairlight-index { overflow: auto; font-size: 11px; }
+.fairlight-index th { font-weight: 500; }
+.fairlight-index td { white-space: nowrap; padding: 3px; }
+.fairlight-index select { max-width: 90px; }
+.fairlight-index input[type=checkbox] { width: 13px; }
+.fairlight-effect { padding: 8px; display: flex; justify-content: space-between; cursor: grab; }
+.fairlight-level-matcher { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 11px; }
+.fairlight-analysis { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.fairlight-cinema { position: fixed; z-index: 80; inset: 0; display: flex; flex-direction: column; background: #111; }
+.fairlight-cinema .monitor { flex: 1; min-height: 0; }
+@media (max-width: 1100px) { .fairlight-left { max-width: 35vw; } .fairlight-inspector { max-width: 28vw; } .fairlight-toolbar { font-size: 11px; } }

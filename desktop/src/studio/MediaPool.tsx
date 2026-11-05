@@ -1,3 +1,4 @@
+import { useFairlightText } from './fairlight/words';
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { Grid2X2, Import, List, RotateCw, Trash2, X } from 'lucide-react';
 import { useWords } from '../app/locale';
@@ -16,7 +17,7 @@ import { Thumbnails } from './media/Thumbnails';
 export { factsOf, proxyStanding } from './media/facts';
 
 /** Media IDs and metadata are edited through one engine transaction; the original files stay where they are. */
-export const MediaPool = memo(function MediaPool({ media, bins, timelines, proxies, loaded, bridge, session, onImport, onLoad, onMakeAgain, initialGrid = false, onBin, follow = null, color }: {
+export const MediaPool = memo(function MediaPool({ media, bins, timelines, proxies, loaded, bridge, session, onImport, onLoad, onMakeAgain, initialGrid = false, onBin, follow = null, color, audioFilters = false }: {
   media: readonly Media[] | null; bins: readonly Bin[]; timelines: readonly { rate: Rate }[];
   proxies: Readonly<Record<string, ProxyEvent>>; loaded: string | null; bridge: Pick<EngineBridge, 'call'>; session: number;
   onImport: (bin: string | null) => void; onLoad: (id: string) => void; onMakeAgain: (id: string) => void;
@@ -28,12 +29,16 @@ export const MediaPool = memo(function MediaPool({ media, bins, timelines, proxi
   follow?: string | null;
   /** The colour management of the project, which says what the menu of media offers (its Input Color Space, p. 230). */
   color?: ColorSettings;
+  /** Fairlight's three views of the shared pool; only its visible list is filtered. */
+  audioFilters?: boolean;
 }) {
   const words = useWords();
+  const t = useFairlightText();
   const labels = words.label.studio.media;
   const [bin, setBin] = useState<string | null>(null);
   const [selection, setSelection] = useState<Selection>(EMPTY_SELECTION);
   const [grid, setGrid] = useState(initialGrid);
+  const [audioFilter, setAudioFilter] = useState('all');
   const [problem, setProblem] = useState<{ said: string; detail: string } | null>(null);
   // The right-click menu: where, and of which media; its items are made as it is drawn, so the LUTs listed meanwhile show.
   const [menuOf, setMenu] = useState<{ x: number; y: number; of: Media[] } | null>(null);
@@ -41,7 +46,8 @@ export const MediaPool = memo(function MediaPool({ media, bins, timelines, proxi
   const selectedBin = bins.some(each => each.id === bin) ? bin : null;
   useEffect(() => { onBin?.(selectedBin); }, [selectedBin, onBin]);
   useEffect(() => { if (follow !== null) setSelection({ ids: [follow], focus: follow, anchor: follow }); }, [follow]);
-  const visible = useMemo(() => (media ?? []).filter(each => each.bin === selectedBin), [media, selectedBin]);
+  const visible = useMemo(() => (media ?? []).filter(each => each.bin === selectedBin && (!audioFilters || audioFilter === 'all' ||
+    (each.facts.audio !== null && (audioFilter === 'with-audio' || each.facts.video === null)))), [media, selectedBin, audioFilters, audioFilter]);
   const chosen = visible.filter(each => selection.ids.includes(each.id));
   const details = chosen.find(each => each.id === selection.focus) ?? chosen[0];
   const failed = chosen.find(each => proxies[each.id]?.state === 'failed');
@@ -97,6 +103,9 @@ export const MediaPool = memo(function MediaPool({ media, bins, timelines, proxi
         <button type="button" className="btn btn-quiet" onClick={() => onImport(selectedBin)} data-test="import"><Import size={14} aria-hidden="true" />{words.label.studio.import}</button>
       </div>
     </header>
+    {audioFilters && <select aria-label={t('Media audio filter')} value={audioFilter} onChange={event => setAudioFilter(event.target.value)}>
+      <option value="all">{t('All clips')}</option><option value="audio-only">{t('Audio only')}</option><option value="with-audio">{t('Clips with audio')}</option>
+    </select>}
     {problem && <div className="pool-problem" role="alert"><p>{problem.said}<span className="caption">{problem.detail}</span></p>
       <button type="button" className="icon-btn" aria-label={words.label.close} onClick={() => setProblem(null)}><X size={14} /></button></div>}
     <div className="pool-browser">

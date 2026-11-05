@@ -156,7 +156,7 @@ export interface Transition {
   fade_out_level_db?: CrossfadeLevel;
 }
 export interface Cue { id: string; start: number; length: number; text: string }
-interface TrackBase { id: string; name: string; enabled: boolean; locked: boolean }
+interface TrackBase { id: string; name: string; enabled: boolean; locked: boolean; color?: string | null }
 /**
  * What a track of sound has of its own (schema 4): written by the engine for tracks of sound only,
  * and each may be left out by a client, as the default.
@@ -639,7 +639,8 @@ export type Op =
   | ({ op: 'set_timeline'; id: string } & Settings<Timeline, 'name' | 'rate' | 'width' | 'height' | 'sample_rate'>)
   | { op: 'add_track'; timeline: string; track: Track; index?: number | null }
   | { op: 'remove_track'; timeline: string; id: string }
-  | ({ op: 'set_track'; timeline: string; id: string; language?: string | null; mute?: boolean | null; solo?: boolean | null; solo_safe?: boolean | null } & Settings<Track, 'name' | 'enabled' | 'locked'>)
+  | { op: 'move_track'; timeline: string; id: string; index: number }
+  | ({ op: 'set_track'; timeline: string; id: string; color?: string | null; language?: string | null; mute?: boolean | null; solo?: boolean | null; solo_safe?: boolean | null } & Settings<Track, 'name' | 'enabled' | 'locked'>)
   | { op: 'insert_clip'; timeline: string; track: string; clip: Clip }
   | { op: 'remove_clip'; timeline: string; id: string }
   | { op: 'move_clip'; timeline: string; id: string; track: string; start: number }
@@ -1821,7 +1822,19 @@ export function applyOp(project: Project, op: Op): Project {
     case 'set_timeline': return inTimeline(project, op.id, timeline => patched(timeline, op, ['name', 'rate', 'width', 'height', 'sample_rate']));
     case 'add_track': return inTimeline(project, op.timeline, timeline => ({ ...timeline, tracks: inserted(timeline.tracks, keptTrack(op.track), op.index) }));
     case 'remove_track': return inTimeline(project, op.timeline, timeline => ({ ...timeline, tracks: without(timeline.tracks, placeOf(timeline.tracks, op.id, 'track')) }));
-    case 'set_track': return inTimeline(project, op.timeline, timeline => inTrack(timeline, placeOf(timeline.tracks, op.id, 'track'), track => patched(track, op, ['name', 'enabled', 'locked', ...(track.kind === 'subtitle' ? ['language'] : []), ...(track.kind === 'audio' ? ['mute', 'solo', 'solo_safe'] : [])])));
+    case 'move_track': return inTimeline(project, op.timeline, timeline => {
+      const tracks = [...timeline.tracks]; const at = placeOf(tracks, op.id, 'track');
+      if (!Number.isInteger(op.index) || op.index < 0 || op.index >= tracks.length) throw new Error('Track index out of range.');
+      tracks.splice(op.index, 0, tracks.splice(at, 1)[0]); return { ...timeline, tracks };
+    });
+    case 'set_track': return inTimeline(project, op.timeline, timeline => inTrack(timeline, placeOf(timeline.tracks, op.id, 'track'), track => {
+      const next = patched(track, op, ['name', 'enabled', 'locked', ...(track.kind === 'subtitle' ? ['language'] : []), ...(track.kind === 'audio' ? ['mute', 'solo', 'solo_safe'] : [])]);
+      if ('color' in op) {
+        if (op.color == null) delete next.color;
+        else next.color = op.color;
+      }
+      return next;
+    }));
     case 'insert_clip': return inTimeline(project, op.timeline, timeline => inClips(timeline, placeOf(timeline.tracks, op.track, 'track'), clips => put(clips, keptClip(op.clip))));
     case 'remove_clip': return inTimeline(project, op.timeline, timeline => {
       const [track, at] = clipAt(timeline, op.id);

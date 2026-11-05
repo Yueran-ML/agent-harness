@@ -71,6 +71,7 @@ fn at(seconds: f64) -> Time {
 /// A stereo track of sound `id`, its clips `clips`.
 fn track(id: &str, clips: Vec<Clip>) -> Track {
     Track {
+        color: None,
         id: id.into(),
         kind: TrackKind::Audio,
         name: id.into(),

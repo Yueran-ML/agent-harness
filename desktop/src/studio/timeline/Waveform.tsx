@@ -65,15 +65,18 @@ function tileShapes(data: PeakData, clip: Clip, rate: Rate, scale: number, index
  * once for its peaks, clip and zoom, and kept a while: a tile already drawn stays as the window
  * moves past it, and is found again at a zoom that it was drawn at before.
  */
-const WaveTile = memo(function WaveTile({ data, media, clip, rate, scale, index }: {
+const WaveTile = memo(function WaveTile({ data, media, clip, rate, scale, index, channel, gain = 1 }: {
   data: PeakData; media: string; clip: Clip; rate: Rate; scale: number; index: number;
+  channel?: number; gain?: number;
 }) {
   const left = index * TILE;
   const width = Math.max(1, Math.min(TILE, clip.length * scale - left));
   const drawn = useMemo(() => tileShapes(data, clip, rate, scale, index, width), [data, clip, rate, scale, index, width]);
-  return <svg className="timeline-waveform" viewBox={`0 0 ${width} 64`} preserveAspectRatio="none" aria-hidden="true"
+  const y = channel === undefined ? 0 : channel * 60 / data.channels + 2;
+  const height = channel === undefined ? 64 : 60 / data.channels;
+  return <svg className="timeline-waveform" viewBox={`0 ${y} ${width} ${height}`} preserveAspectRatio="none" aria-hidden="true"
     style={{ left, width }} data-waveform={media} data-tile={index}>
-    {drawn.map((path, at) => <path key={at} d={path} />)}
+    {drawn.map((path, at) => channel !== undefined && at !== channel ? null : <path key={at} d={path} transform={`translate(0,${(at + .5) * 60 / data.channels + 2}) scale(1,${gain}) translate(0,${-((at + .5) * 60 / data.channels + 2)})`} />)}
   </svg>;
 });
 
@@ -87,12 +90,13 @@ const NOTHING = { from: 0, to: 0, scale: 1 };
  * New tiles are worked out after the scroll or the zoom has been drawn (a deferred value): until
  * then the tiles drawn before stay, stretched to the new zoom, so that neither waits for them.
  */
-export const Waveform = memo(function Waveform({ cache, media, clip, rate, from, to, scale }: {
+export const Waveform = memo(function Waveform({ cache, media, clip, rate, from, to, scale, channel, gain, stream }: {
   cache: Waveforms; media: string; clip: Clip; rate: Rate; from: number; to: number; scale: number;
+  channel?: number; gain?: number; stream?: number;
 }) {
   const words = useWords().label.studio.timeline;
-  const subscribe = useCallback((listener: () => void) => cache.subscribe(media, listener), [cache, media]);
-  const snapshot = useCallback(() => cache.get(media), [cache, media]);
+  const subscribe = useCallback((listener: () => void) => cache.subscribe(media, listener, stream), [cache, media, stream]);
+  const snapshot = useCallback(() => cache.get(media, stream), [cache, media, stream]);
   const state = useSyncExternalStore(subscribe, snapshot, snapshot);
   const wanted = useMemo(() => ({ from, to, scale }), [from, to, scale]);
   // A clip that comes into the window draws its tiles after it is drawn itself.
@@ -108,6 +112,6 @@ export const Waveform = memo(function Waveform({ cache, media, clip, rate, from,
   for (let index = first; index < last; index++) tiles.push(index);
   const stretch = shown === NOTHING ? 1 : scale / shown.scale;
   return <div className="timeline-wave-tiles" style={stretch === 1 ? undefined : { transform: `scaleX(${stretch})` }}>
-    {tiles.map(index => <WaveTile key={index} data={state.data} media={media} clip={clip} rate={rate} scale={shown.scale} index={index} />)}
+    {tiles.map(index => <WaveTile key={index} data={state.data} media={media} clip={clip} rate={rate} scale={shown.scale} index={index} channel={channel} gain={gain} />)}
   </div>;
 });

@@ -45,6 +45,12 @@ pub(super) fn check(edit: &Edit) -> Result<(), OpError> {
             Ok(())
         }
         Edit::FadeToPlayhead { at, .. } => within("at", i128::from(*at)),
+        Edit::PlaceCopies { copies, .. } => {
+            for copy in copies {
+                within("start", i128::from(copy.start))?;
+            }
+            Ok(())
+        }
         Edit::ClipGainKeys { at, to, .. } => {
             within("at", i128::from(at.ticks))?;
             optional("to", to.map(|to| to.ticks))
@@ -187,6 +193,7 @@ mod tests {
                 at: LARGEST,
                 tracks: None,
                 linked: true,
+                grouped: false,
             },
         );
         assert_eq!(
@@ -209,6 +216,7 @@ mod tests {
                         timeline: "t1".into(),
                         clips: vec!["c5".into()],
                         linked: true,
+                        grouped: false,
                     },
                     Edit::Move {
                         timeline: "t1".into(),
@@ -217,6 +225,7 @@ mod tests {
                         to_track: None,
                         overwrite: false,
                         linked: true,
+                        grouped: false,
                     },
                 ],
                 "agent",

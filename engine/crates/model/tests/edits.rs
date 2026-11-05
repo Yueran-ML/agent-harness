@@ -70,7 +70,8 @@ fn clip<'p>(project: &'p Project, id: &str) -> Option<&'p Clip> {
 }
 
 /// The clips that an edit of `clips` works on with the clips linked to them: a clip linked to one
-/// of them on a locked track is left alone.
+/// of them on a locked track is left alone. (A lift, a ripple delete, a move and an insert move
+/// take the clips of the groups of tracks along too: see `gen::worked_on`.)
 fn group(project: &Project, clips: &[String], linked: bool) -> HashSet<String> {
     let given: Vec<&Clip> = clips.iter().filter_map(|id| clip(project, id)).collect();
     let groups: HashSet<&String> = given.iter().filter_map(|c| c.link.as_ref()).collect();
@@ -110,7 +111,7 @@ fn ripple_of(project: &Project, edit: &Edit) -> Option<(i64, HashSet<String>)> {
             Some((end, HashSet::new()))
         }
         Edit::RippleDelete { clips, linked, .. } => {
-            let changed = group(project, clips, *linked);
+            let changed = gen::worked_on(project, clips, *linked);
             Some((end_of(&changed)?, changed))
         }
         Edit::RippleDeleteRange {
@@ -137,7 +138,7 @@ fn ripple_of(project: &Project, edit: &Edit) -> Option<(i64, HashSet<String>)> {
         Edit::InsertMove {
             clips, at, linked, ..
         } => {
-            let changed = group(project, clips, *linked);
+            let changed = gen::worked_on(project, clips, *linked);
             Some((end_of(&changed)?.max(*at), changed))
         }
         _ => None,
@@ -209,7 +210,8 @@ fn shift_of(before: &Project, edit: &Edit, after: &Project) -> Option<i64> {
             Some(from - to)
         }
         Edit::RippleDelete { clips, linked, .. } => {
-            let changed = group(clips, *linked);
+            let mut changed = gen::worked_on(before, clips, *linked);
+            changed.retain(|id| open.contains(id));
             let spans = changed
                 .iter()
                 .filter_map(|id| clip(before, id))
@@ -475,7 +477,7 @@ proptest! {
             // A subtitle over a clip that moves keeps its id and its place on the clip.
             let open: HashSet<&String> = before.timelines[0].tracks.iter().filter(|r| !r.locked)
                 .flat_map(|r| r.clips.iter().map(|c| &c.id)).collect();
-            let mut moved = group(before, clips, *linked);
+            let mut moved = gen::worked_on(before, clips, *linked);
             moved.retain(|id| open.contains(id));
             for track in before.timelines[0].tracks.iter().filter(|r| !r.locked) {
                 let now = track_in(after, &track.id).unwrap();
@@ -621,7 +623,7 @@ proptest! {
             let offset = i64::try_from(place(to).unwrap()).unwrap()
                 - i64::try_from(place(first).unwrap()).unwrap();
             // What moves: the clips named, and those linked to them on tracks that are open.
-            let moved: Vec<(String, &Track)> = group(before, clips, *linked)
+            let moved: Vec<(String, &Track)> = gen::worked_on(before, clips, *linked)
                 .into_iter()
                 .filter_map(|id| on(&id).map(|r| (id, r)))
                 .collect();
@@ -679,7 +681,7 @@ fn the_random_edits_of_sound_are_applied_as_well_as_refused() {
     let mut applied = [0usize; 14];
     let mut followed = 0;
     let mut crossfaded = 0;
-    for _ in 0..300 {
+    for _ in 0..600 {
         let recipe = recipe().new_tree(&mut runner).unwrap().current();
         let mut project = project_of(&recipe);
         // A transition of picture, linked, at a cut of picture whose sound meets too.

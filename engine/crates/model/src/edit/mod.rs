@@ -41,6 +41,7 @@
 mod audio;
 mod automation;
 mod cut;
+mod follow;
 mod grade;
 mod input;
 mod misc;
@@ -221,6 +222,14 @@ pub enum Edit {
         audio_track: Option<Option<Id>>,
     },
     /// Take clips away, leaving gaps.
+    ///
+    /// Given `grouped`, as an editor's own action is, an edit of clips (`lift`, `ripple_delete`,
+    /// `move` without `to_track`, `insert_move`) does on each other track, not locked, of the
+    /// active groups of tracks that link Editing (Ch. 179, p. 3917) and that the track of one of
+    /// its clips is in, what it does over the frames of that clip: the clips there are cut at
+    /// its ends and what is between them is taken too. A `blade` or a `ripple_delete_range` given
+    /// `tracks` cuts the other tracks of their groups too. Edits that a client makes of several,
+    /// such as clearing where copies go, leave it out.
     Lift {
         /// The timeline.
         timeline: Id,
@@ -229,6 +238,10 @@ pub enum Edit {
         /// Whether the clips linked to them go too.
         #[serde(default = "yes")]
         linked: bool,
+        /// Whether the active groups of tracks that link Editing take the frames of the clips on
+        /// their other tracks along (see [`Edit::Lift`]); not where it is left out.
+        #[serde(default, skip_serializing_if = "is_false")]
+        grouped: bool,
     },
     /// Take clips away and close the gaps that they leave, on every track that is not locked.
     RippleDelete {
@@ -239,6 +252,10 @@ pub enum Edit {
         /// Whether the clips linked to them go too.
         #[serde(default = "yes")]
         linked: bool,
+        /// Whether the active groups of tracks that link Editing take the frames of the clips on
+        /// their other tracks along (see [`Edit::Lift`]); not where it is left out.
+        #[serde(default, skip_serializing_if = "is_false")]
+        grouped: bool,
     },
     /// Cut frames `from` to `to` out of every track that is not locked, or of the tracks given,
     /// and close the gap.
@@ -252,6 +269,10 @@ pub enum Edit {
         /// The tracks to cut, or all those that are not locked.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tracks: Option<Vec<Id>>,
+        /// Whether the active groups of tracks that link Editing take the frames of the clips on
+        /// their other tracks along (see [`Edit::Lift`]); not where it is left out.
+        #[serde(default, skip_serializing_if = "is_false")]
+        grouped: bool,
     },
     /// Close the gap that `at` is in on `track`, moving what is after it on every track that is
     /// not locked.
@@ -279,6 +300,10 @@ pub enum Edit {
         /// Whether the clips linked to those cut are cut too.
         #[serde(default = "yes")]
         linked: bool,
+        /// Whether the active groups of tracks that link Editing take the frames of the clips on
+        /// their other tracks along (see [`Edit::Lift`]); not where it is left out.
+        #[serde(default, skip_serializing_if = "is_false")]
+        grouped: bool,
     },
     /// Move clips by `delta` frames and, given `to_track`, each to the track as far from its own,
     /// among the tracks of its kind, as `to_track` is from the track of the first clip: the
@@ -303,6 +328,10 @@ pub enum Edit {
         /// Whether the clips linked to them move too.
         #[serde(default = "yes")]
         linked: bool,
+        /// Whether the active groups of tracks that link Editing take the frames of the clips on
+        /// their other tracks along (see [`Edit::Lift`]); not where it is left out.
+        #[serde(default, skip_serializing_if = "is_false")]
+        grouped: bool,
     },
     /// Take clips away, close the gaps, and insert them at `at`, a frame of the timeline as it
     /// was before.
@@ -316,6 +345,21 @@ pub enum Edit {
         /// Whether the clips linked to them move too.
         #[serde(default = "yes")]
         linked: bool,
+        /// Whether the active groups of tracks that link Editing take the frames of the clips on
+        /// their other tracks along (see [`Edit::Lift`]); not where it is left out.
+        #[serde(default, skip_serializing_if = "is_false")]
+        grouped: bool,
+    },
+    /// Put copies of clips where they are given to go, as an Alt-drag duplicates clips or a
+    /// paste puts copied ones (pp. 811, 3814): what is there is cleared as an overwrite clears it,
+    /// each copy has all the settings of its clip but its transitions, the copies of clips linked
+    /// together are linked together in a new group, and with Automation Follows Edit each copy
+    /// takes a copy of the lanes over its clip (p. 3910).
+    PlaceCopies {
+        /// The timeline.
+        timeline: Id,
+        /// The copies.
+        copies: Vec<CopyOf>,
     },
     /// Move an edge of a clip by `delta` frames, later if it is above 0. Without `ripple`, the
     /// clip's start or end moves and nothing else does; with it, the clip's start stays where
@@ -1033,6 +1077,18 @@ impl Straddling {
     }
 }
 
+/// A copy of [`Edit::PlaceCopies`]: of which clip, on which track and from which frame.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CopyOf {
+    /// The clip copied.
+    pub clip: Id,
+    /// The track that the copy goes on, of the clip's kind.
+    pub track: Id,
+    /// The frame that it starts at.
+    pub start: i64,
+}
+
 /// A subtitle of [`Edit::CuesFrom`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1327,11 +1383,25 @@ pub(crate) fn run(project: &mut Project, edit: Edit) -> Result<Expansion, EditEr
             audio_track,
             ..
         } => place::ripple_overwrite(&mut work, &source, at, &[video_track, audio_track]),
-        Edit::Lift { clips, linked, .. } => cut::lift(&mut work, &clips, linked),
-        Edit::RippleDelete { clips, linked, .. } => cut::ripple_delete(&mut work, &clips, linked),
+        Edit::Lift {
+            clips,
+            linked,
+            grouped,
+            ..
+        } => cut::lift(&mut work, &clips, linked, grouped),
+        Edit::RippleDelete {
+            clips,
+            linked,
+            grouped,
+            ..
+        } => cut::ripple_delete(&mut work, &clips, linked, grouped),
         Edit::RippleDeleteRange {
-            from, to, tracks, ..
-        } => cut::ripple_delete_range(&mut work, from, to, tracks.as_deref()),
+            from,
+            to,
+            tracks,
+            grouped,
+            ..
+        } => cut::ripple_delete_range(&mut work, (from, to), tracks.as_deref(), grouped),
         Edit::CloseGap {
             track,
             at,
@@ -1339,26 +1409,35 @@ pub(crate) fn run(project: &mut Project, edit: Edit) -> Result<Expansion, EditEr
             ..
         } => cut::close_gap(&mut work, &track, at, straddling),
         Edit::Blade {
-            at, tracks, linked, ..
-        } => cut::blade(&mut work, at, tracks.as_deref(), linked),
+            at,
+            tracks,
+            linked,
+            grouped,
+            ..
+        } => cut::blade(&mut work, at, tracks.as_deref(), (linked, grouped)),
         Edit::Move {
             clips,
             delta,
             to_track,
             overwrite,
             linked,
+            grouped,
             ..
         } => cut::move_clips(
             &mut work,
             &clips,
-            delta,
-            to_track.as_deref(),
+            (delta, to_track.as_deref()),
             overwrite,
-            linked,
+            (linked, grouped),
         ),
         Edit::InsertMove {
-            clips, at, linked, ..
-        } => cut::insert_move(&mut work, &clips, at, linked),
+            clips,
+            at,
+            linked,
+            grouped,
+            ..
+        } => cut::insert_move(&mut work, &clips, at, (linked, grouped)),
+        Edit::PlaceCopies { copies, .. } => cut::place_copies(&mut work, &copies),
         Edit::Trim {
             clip,
             edge,
@@ -1560,6 +1639,7 @@ pub fn timeline_of(edit: &Edit) -> Option<&Id> {
         | Edit::Blade { timeline, .. }
         | Edit::Move { timeline, .. }
         | Edit::InsertMove { timeline, .. }
+        | Edit::PlaceCopies { timeline, .. }
         | Edit::Trim { timeline, .. }
         | Edit::Roll { timeline, .. }
         | Edit::Slip { timeline, .. }

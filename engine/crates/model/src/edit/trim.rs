@@ -133,6 +133,24 @@ pub(super) fn trim(
     for id in &all {
         work.detach(id)?;
     }
+    if ripple && edge == Edge::In {
+        // A clip trimmed at its start with a ripple plays what it played `delta` frames later from
+        // where it starts: its lanes ripple from there with it, as frames taken away from (or put
+        // in at) its start, and with them what follows it on its track.
+        for c in &changed {
+            let (track, _) = work.owned(&c.clip.id)?;
+            let place = c.clip.start + delta.max(0);
+            let mut spans = vec![(place, c.clip.end())];
+            let after = work.track(&track)?.clips.iter();
+            spans.extend(
+                after
+                    .filter(|o| o.start >= c.clip.end() && !skip.contains(&o.id))
+                    .map(|o| (o.start, o.end())),
+            );
+            spans.sort_unstable();
+            work.ripple_lanes(&track, (place, shift), &spans);
+        }
+    }
     if ripple && shift > 0 {
         work.shift(&tracks, place, shift, &skip)?;
     }

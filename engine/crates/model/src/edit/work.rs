@@ -5,7 +5,9 @@
 
 use std::collections::{HashMap, HashSet};
 
+use super::follow::Follow;
 use super::{Created, EditError, Expansion};
+use crate::audio::GroupControl;
 use crate::ops::{apply_done, in_source, Op, OpError, LARGEST};
 use crate::project::{Clip, Cue, Id, Project, Source, Timeline, Track, TrackKind, Transition};
 use crate::span::ticks_of_scaled;
@@ -23,13 +25,25 @@ pub(super) struct Work<'a> {
     created: Vec<Created>,
     /// The transitions taken off clips that change, to be put back where they still meet.
     detached: Vec<Transition>,
+    /// The lanes that follow the edit (Automation Follows Edit).
+    follow: Follow,
+}
+
+/// The timeline `id` of a project, which no edit takes away.
+fn timeline_in<'p>(project: &'p Project, id: &str) -> &'p Timeline {
+    project
+        .timelines
+        .iter()
+        .find(|t| t.id == id)
+        .expect("no edit takes its timeline away")
 }
 
 impl<'a> Work<'a> {
     pub fn new(project: &'a mut Project, timeline: &str) -> Result<Self, EditError> {
-        if !project.timelines.iter().any(|t| t.id == timeline) {
+        let Some(found) = project.timelines.iter().find(|t| t.id == timeline) else {
             return Err(missing("timeline", timeline));
-        }
+        };
+        let follow = Follow::new(found);
         Ok(Self {
             project,
             timeline: timeline.into(),
@@ -38,6 +52,7 @@ impl<'a> Work<'a> {
             clamped: false,
             created: vec![],
             detached: vec![],
+            follow,
         })
     }
 
@@ -46,11 +61,7 @@ impl<'a> Work<'a> {
     }
 
     pub fn timeline(&self) -> &Timeline {
-        self.project
-            .timelines
-            .iter()
-            .find(|t| t.id == self.timeline)
-            .expect("no edit takes its timeline away")
+        timeline_in(self.project, &self.timeline)
     }
 
     pub fn timeline_id(&self) -> Id {
@@ -147,6 +158,112 @@ impl<'a> Work<'a> {
         Ok(all)
     }
 
+    /// The other tracks that an edit of `track` takes along: those, not locked, of the active
+    /// groups of tracks that link Editing and that it is in (Ch. 179, p. 3917).
+    pub fn edited_with(&self, track: &str) -> Vec<Id> {
+        let timeline = self.timeline();
+        let mut along: Vec<Id> = vec![];
+        let groups = timeline.track_groups.iter().filter(|g| {
+            g.active
+                && g.linked.contains(&GroupControl::Editing)
+                && g.members.iter().any(|m| m == track)
+        });
+        for member in groups.flat_map(|g| &g.members) {
+            let open = timeline.tracks.iter().any(|r| r.id == *member && !r.locked);
+            if member != track && open && !along.contains(member) {
+                along.push(member.clone());
+            }
+        }
+        along
+    }
+
+    /// `tracks`, each once, with the tracks that an edit of each takes along.
+    pub fn with_groups(&self, tracks: Vec<Id>) -> Vec<Id> {
+        let mut all = tracks;
+        for track in all.clone() {
+            for other in self.edited_with(&track) {
+                if !all.contains(&other) {
+                    all.push(other);
+                }
+            }
+        }
+        all
+    }
+
+    /// For an edit of `clips` told `grouped`: the frames of each of them, from its start to its
+    /// end, on each other track that an edit of its track takes along.
+    pub fn group_ranges(&self, clips: &[Id]) -> Result<Vec<(Id, i64, i64)>, EditError> {
+        let mut ranges = vec![];
+        for id in clips {
+            let (track, clip) = self.clip(id)?;
+            for other in self.edited_with(&track.id) {
+                ranges.push((other, clip.start, clip.end()));
+            }
+        }
+        Ok(ranges)
+    }
+
+    /// Cut the clips of `track` but for `keep` that lie across `from` or `to` there, and give the
+    /// ids of those, but for `keep`, that are then from `from` to `to`.
+    pub fn cut_out(
+        &mut self,
+        track: &str,
+        (from, to): (i64, i64),
+        keep: &[Id],
+    ) -> Result<Vec<Id>, EditError> {
+        for at in [from, to] {
+            let mut across = self.across(track, at)?;
+            across.retain(|id| !keep.contains(id));
+            self.blade(&across, at)?;
+        }
+        Ok(self
+            .track(track)?
+            .clips
+            .iter()
+            .filter(|c| from <= c.start && c.end() <= to && !keep.contains(&c.id))
+            .map(|c| c.id.clone())
+            .collect())
+    }
+
+    /// Keep what the lanes of `track` are over `clip`, which is copied, for its copies.
+    pub fn keep_lanes(&mut self, track: &str, clip: &Clip) {
+        self.follow
+            .keep(timeline_in(self.project, &self.timeline), track, clip);
+    }
+
+    /// Put a copy of the clip `source` on a track, with a copy of the lanes over `source` (see
+    /// [`Work::keep_lanes`]), and give it back with the ids that it was given.
+    pub fn insert_copy(
+        &mut self,
+        track: &str,
+        clip: Clip,
+        source: &str,
+    ) -> Result<Clip, EditError> {
+        let done = self.op(Op::InsertClip {
+            timeline: self.timeline_id(),
+            track: track.into(),
+            clip,
+        })?;
+        let Op::InsertClip { clip, .. } = done else {
+            unreachable!("an insert is done as an insert")
+        };
+        self.follow.put_copy(
+            timeline_in(self.project, &self.timeline),
+            track,
+            &clip,
+            source,
+        );
+        Ok(clip)
+    }
+
+    /// Ripple the lanes of `track` at frame `place` by `by` frames, `spans` moving with them, and
+    /// leave them alone in the ripples of the rest of the edit.
+    pub fn ripple_lanes(&mut self, track: &str, (place, by): (i64, i64), spans: &[(i64, i64)]) {
+        let timeline = timeline_in(self.project, &self.timeline);
+        self.follow.ripple_with(timeline, track, (place, by), spans);
+        self.follow.hold(track);
+    }
+
     /// Whether `clip` would show what is in its media, with `before` and `after` frames more
     /// beyond its ends.
     pub fn fits(&self, clip: &Clip, before: i64, after: i64) -> bool {
@@ -238,6 +355,11 @@ impl<'a> Work<'a> {
                 transition,
             })?;
         }
+        let fresh = Follow::new(timeline_in(self.project, &self.timeline));
+        let follow = std::mem::replace(&mut self.follow, fresh);
+        for op in follow.ops(self.timeline()) {
+            self.op(op)?;
+        }
         Ok(Expansion {
             done: self.done,
             inverse: self.inverse,
@@ -246,8 +368,20 @@ impl<'a> Work<'a> {
         })
     }
 
-    /// Take a clip away.
+    /// Take a clip away, and the automation over it (Automation Follows Edit), which goes with it
+    /// where it is put back.
     pub fn remove(&mut self, clip: &str) -> Result<(), EditError> {
+        if let Some((track, found)) = find_clip(self.timeline(), clip) {
+            let (track, found) = (track.id.clone(), found.clone());
+            self.follow
+                .take(timeline_in(self.project, &self.timeline), &track, &found);
+        }
+        self.remove_alone(clip)
+    }
+
+    /// Take a clip away, leaving the automation over it as it is: for a clip put back where it
+    /// was, or on a track that goes too.
+    pub fn remove_alone(&mut self, clip: &str) -> Result<(), EditError> {
         self.detach(clip)?;
         self.op(Op::RemoveClip {
             timeline: self.timeline_id(),
@@ -257,6 +391,7 @@ impl<'a> Work<'a> {
     }
 
     /// Put a clip on a track, and give it back with the ids that it was given.
+    /// A clip taken away by [`Work::remove`] and put back takes its automation along.
     pub fn insert(&mut self, track: &str, clip: Clip) -> Result<Clip, EditError> {
         let done = self.op(Op::InsertClip {
             timeline: self.timeline_id(),
@@ -264,13 +399,20 @@ impl<'a> Work<'a> {
             clip,
         })?;
         match done {
-            Op::InsertClip { clip, .. } => Ok(clip),
+            Op::InsertClip { clip, .. } => {
+                self.follow
+                    .put(timeline_in(self.project, &self.timeline), track, &clip);
+                Ok(clip)
+            }
             _ => unreachable!("an insert is done as an insert"),
         }
     }
 
-    /// Move a clip to `start` on `track`.
+    /// Move a clip to `start` on `track`, with the automation over it.
     pub fn move_to(&mut self, clip: &str, track: &str, start: i64) -> Result<(), EditError> {
+        let (from, old) = self.owned(clip)?;
+        self.follow
+            .take(timeline_in(self.project, &self.timeline), &from, &old);
         self.detach(clip)?;
         self.op(Op::MoveClip {
             timeline: self.timeline_id(),
@@ -278,6 +420,9 @@ impl<'a> Work<'a> {
             track: track.into(),
             start,
         })?;
+        let (_, new) = self.owned(clip)?;
+        self.follow
+            .put(timeline_in(self.project, &self.timeline), track, &new);
         Ok(())
     }
 
@@ -509,6 +654,12 @@ impl<'a> Work<'a> {
         skip: &HashSet<Id>,
     ) -> Result<(), EditError> {
         for id in tracks {
+            self.follow.ripple(
+                timeline_in(self.project, &self.timeline),
+                id,
+                (from, by),
+                skip,
+            );
             let track = self.track(id)?;
             let clips: Vec<Id> = track
                 .clips

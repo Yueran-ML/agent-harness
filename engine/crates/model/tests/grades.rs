@@ -1385,6 +1385,7 @@ fn a_grade_is_kept_on_both_halves_of_a_clip_that_is_bladed() {
         at: 40,
         tracks: Some(vec!["V1".into()]),
         linked: false,
+        grouped: false,
     };
     expand(&mut project, edit).unwrap();
     let clips = &project.timelines[0].tracks[0].clips;

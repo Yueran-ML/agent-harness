@@ -22,8 +22,8 @@ pub mod upgrade;
 pub use audio::{
     AudioFade, AudioKey, AudioParam, Bus, BusFormat, ChannelMap, ChannelOrder, ChannelSource,
     ChannelSources, ClipPitch, CrossfadeLevel, Effect, Equalizer, GroupControl, Insert, KeyInterp,
-    Lane, LaneKind, LanePoint, LaneScale, Lanes, Output, Pan, Send, SourceRef, Stage, Strip, TimelineAudio,
-    TrackAudio, TrackFormat, TrackGroup, Vca,
+    Lane, LaneKind, LanePoint, LaneScale, Lanes, Output, Pan, Send, SourceRef, Stage, Strip,
+    TimelineAudio, TrackAudio, TrackFormat, TrackGroup, Vca,
 };
 pub use color::{
     input_space, Basis, ColorFacts, ColorRange, DisplayPrimaries, Gamma, Gamut, InputSpace,
@@ -31,8 +31,8 @@ pub use color::{
 };
 pub use color_management::{ColorOverride, ColorSettings, Levels, Science};
 pub use edit::{
-    expand, Attribute, Change, CueItem, Edge, Edit, EditError, Expansion, Given, KeyAction, Keyed,
-    Material, Straddling,
+    expand, Attribute, Change, CopyOf, CueItem, Edge, Edit, EditError, Expansion, Given, KeyAction,
+    Keyed, Material, Straddling,
 };
 pub use grade::{
     Composite, Corrector, Grade, Group, Interp, Key, Kind, Link, Node, NodeKind, Param, Port, Pos,

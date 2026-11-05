@@ -1432,6 +1432,7 @@ mod tests {
                 timeline: "t1".into(),
                 clips: vec![clip.into()],
                 linked: true,
+                grouped: false,
             }
         }
 

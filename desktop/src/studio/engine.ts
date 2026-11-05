@@ -1109,6 +1109,7 @@ export interface EngineNotifications {
   'track.progress': TrackProgress;
   'track.state': TrackEnded;
   'automation.written': AutomationWritten;
+  'audio.analysis': AudioAnalysis;
 }
 export type EngineNotification = keyof EngineNotifications;
 

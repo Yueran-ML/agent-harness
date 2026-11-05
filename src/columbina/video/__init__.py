@@ -1082,6 +1082,13 @@ outside the range: after "to" the lane returns to what it was there. To fade out
 silent, add points instead: a fade of the fader from 0 dB at 2 s to -inf at 4 s, held after:
 {edit:"lane_points",timeline:"t1",of:{track:"A1"},path:"fader_db",action:"add",
 points:[{at:{ticks:96000,scale:48000},value:0},{at:{ticks:192000,scale:48000},value:-100}]}.
+Automation follows clip edits while the timeline's audio follows_edit is true (the default;
+set_timeline_audio patch {follows_edit:false} turns it off): a moved clip takes the lane points
+over it along (to another track too), a lifted or deleted one leaves a straight line between the
+values at its ends, a ripple moves later points; trim, roll, slip and blade leave lanes alone.
+In an active track group whose linked has "editing", lift/ripple_delete/move/insert_move also
+take the overlapping clips of its other tracks, and blade/ripple_delete_range with tracks cut
+them too.
 To create a timeline, use {op:"add_timeline",timeline:{id:"$film",name:"Cut",
 rate:{num:25,den:1},width:1920,height:1080,sample_rate:48000,tracks:[]}}, followed in the same
 batch by {edit:"add_track",timeline:"$film",kind:"video"} and an audio track as needed.

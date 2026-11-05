@@ -645,7 +645,7 @@ are at most +10; −100 or below is −∞.
   (editing|fader|solo|mute|sends|panning|automation; all), active (true)}`. `audio` is
   `{monitor ("B1"), meter (ppm|vu|custom), custom_meter, prefader_metering (false), loudness:
   {standard (ebu_r128), target (−23, −36…−10), scale (ebu9), relative (true), lock_to_transport
-  (true)}, exclusive_solo (false), follows_edit (true), record: {mode, touch, on_stop,
+  (true)}, exclusive_solo (false), follows_edit (true; see Edits), record: {mode, touch, on_stop,
   categories, preview, active_range}}`. At most 64 buses and 64 VCAs; no path of buses longer
   than 6, nor chain of VCAs; no loop through outputs, sends, sidechains and duckers.
 - **Lane** (automation of a track, bus or VCA, by the path of its setting): `{points: [{at:
@@ -1995,6 +1995,51 @@ named that is on a locked track stays where it is. No track is made: a clip with
 its kind that far up or down is refused with `no_track` (`kind`), and one whose track to go to
 is locked with `locked` (`track`). `to_track` must be of the kind of the first clip
 (`wrong_kind`). Without `to_track`, clips stay on their tracks.
+
+**Groups of tracks that link Editing** (Reference Manual 20, p. 3917). Where a track of sound is
+in an active group of tracks whose `linked` has `editing`, `lift`, `ripple_delete`, `move` and
+`insert_move` also take the clips of the other tracks of the group, not locked, that are over
+some of the same frames as a clip that they take (after the clips linked to the named ones),
+with the clips linked to those; and `blade` and `ripple_delete_range` given `tracks` also cut
+the other tracks, not locked, of the groups of the tracks given. It is one edit, so one step of
+undo. A locked member is left alone and refuses nothing. Trims, rolls, slips, slides and
+changes of speed, which move the edges of clips, are not taken along (the manual's exception);
+nor are the placing edits.
+
+**Automation Follows Edit** (pp. 3910–3911; while the timeline's `audio.follows_edit` is true,
+as it is for a new one; `set_timeline_audio` sets it). The lanes of a track of sound go with
+what the edits of clips do to its clips, as `splice_lane` (or `set_lane`, for a lane made)
+operations of the same transaction, one for each lane that changed, after those of the clips:
+
+- A clip taken away (`lift`, `ripple_delete`, an `overwrite` or `move` over it, the frames that
+  `ripple_delete_range` cuts out of it) leaves its lanes, from its start to its end, going
+  straight from the value that came to its start to the value at its end (a switch holds the
+  first): the points within it are taken away, and the values before and after it stay as they
+  were.
+- A clip moved (`move`, `insert_move`, `slide`) takes the lanes over it along, to where it is
+  now, the points that were at its new place replaced (with a point at each end of the value that
+  was there, so that what is outside stays as it was). To another track, its lanes go to the
+  lanes of the same settings there, made from what the setting is set to where there is none; one
+  that the track cannot have (an insert or a send that it has not) is not taken, and stays behind
+  as on a lift.
+- A ripple moves the points after its place on the tracks that it ripples: one that takes frames
+  away takes away the points in them, the two sides meeting at the place with their values (a
+  jump); one that puts frames in goes straight across them from the value that came to the place
+  to the value that was there. Where a clip that does not move lies across the place (`close_gap`
+  with `straddling: "stay"`, a ripple `trim` of a split edit), the lanes are cut at its end, so
+  that they stay with it.
+- `trim` without a ripple, `roll`, `slip`, `blade`, `set_speed` without a ripple, `replace` and
+  the transitions change no lane: what a trim shortens is not taken away, and what it lengthens
+  over holds the values that were there. A clip placed from its media brings no automation. The
+  lanes of buses and VCAs, which have no clips, stay where they are.
+
+Frame `f` is at tick `⌊f · scale · den / num⌋` of a lane (as the graph places the first sample of
+a clip), and the points over a clip move by as many ticks as its start does, so that they stay
+on the same samples of the clip. At a rate of frames whose frames are not whole ticks (29.97 fps
+at 48 kHz) two clips moved by one number of frames can move by ticks that differ by one: the
+points over the ends of each are then held by points of their values first, and the last tick of
+a clip may take the value of what follows it. A value that an edit gives a point is always one
+that the lane had, or between two that it had.
 
 Trims, rolls, slips and slides clamp to available handles and space, reporting their input
 index in `clamped`; zero delta or an impossible movement is refused. Editing through a

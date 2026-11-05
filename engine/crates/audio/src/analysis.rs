@@ -16,15 +16,16 @@
 //!
 //! - a track or a bus: after its fader (its mute, solo and VCAs too: what an export of it would
 //!   carry), over the range asked for, the whole timeline where none is;
-//! - a clip (Normalize, Level Matcher, Analyze Audio Level, p. 3986): its sound right before its
-//!   Volume, after the configuration of its channels (C-C5): the clip's chain is source → speed
-//!   and stretch → clip EQ → clip effects → Volume → pan, so its equalizer and its effects are
-//!   heard (the coordinator's decision for T9b, from the review of T4c; the reference's §7.1 had
-//!   them left out), over the part of it on the timeline. [`alone`] makes the project in which a
-//!   graph gives that before the fader of its track: the clip alone on its track, at 0 dB and
-//!   centred, without its fades and crossfades; the track without Trim, polarity, Ducker,
-//!   inserts, Dynamics, equalizer and lanes; the other tracks of sound off, so that they are not
-//!   read.
+//! - a clip (Normalize, Level Matcher, Analyze Audio Level, p. 3986): its sound after its Volume
+//!   (keys and all) and before its pan, after the configuration of its channels: the clip's chain
+//!   is source → speed and stretch → clip EQ → clip effects → Volume → pan, so its equalizer and
+//!   its effects are heard (the coordinator's decision for T9b, from the review of T4c), and so is
+//!   its Volume, so that the gain that brings it to a level is what is added to its Volume and a
+//!   second Normalize adds nothing (the review of T9b). Over the part of it on the timeline.
+//!   [`alone`] makes the project in which a graph gives that before the fader of its track: the
+//!   clip alone on its track, centred, without its fades and crossfades; the track without Trim,
+//!   polarity, Ducker, inserts, Dynamics, equalizer and lanes; the other tracks of sound off, so
+//!   that they are not read.
 
 use std::ops::Range;
 
@@ -265,9 +266,8 @@ pub fn level_match(reference: &Analysis, clip: &Analysis) -> Option<f64> {
 
 /// Runs `graph` over `range` of the timeline (samples) and gives `sink` the sound at `point` of
 /// strip `strip`, block by block (planar, a slice for each channel of the strip), until `sink`
-/// says no more (`false`: the analysis is cancelled). The graph is started [`Graph::lead`] before
-/// the range, so that the first sound given is sample `range.start` of the strip. Whether it ran
-/// to the end of the range.
+/// says no more (`false`: the analysis is cancelled). Whether it ran to the end of the range.
+/// [`run_strips`] for one point.
 ///
 /// # Errors
 ///
@@ -279,23 +279,64 @@ pub fn level_match(reference: &Analysis, clip: &Analysis) -> Option<f64> {
 pub fn run_strip(
     graph: &mut Graph,
     feed: &mut dyn ClipFeed,
-    (strip, point): (usize, Point),
+    point: (usize, Point),
     range: Range<i64>,
     sink: &mut dyn FnMut(&[&[f32]]) -> bool,
 ) -> Result<bool, FeedError> {
-    let lead = i64::from(graph.lead(strip));
-    graph.start(range.start - lead, feed)?;
-    let mut at = range.start;
-    while at < range.end {
-        let frames = usize::try_from(range.end - at)
+    run_strips(graph, feed, &[point], range, &mut |_, sound| sink(sound))
+}
+
+/// Runs `graph` once over `range` of the timeline (samples) and gives `sink` the sound at each
+/// of `points` (a strip and a point of it), with the place of the point among them, block by
+/// block, until `sink` says no more (`false`: the analysis is cancelled); the same range of the
+/// timeline of each, however far ahead of the outputs its strip is ([`Graph::lead`]): the graph
+/// starts as far before the range as the strip furthest ahead is, and runs on as far after it as
+/// the one least ahead is behind that. Whether it ran to the end.
+///
+/// # Errors
+///
+/// The feed could not give the sound of a clip (as [`Graph::process`]).
+///
+/// # Panics
+///
+/// When the graph has no such strip.
+pub fn run_strips(
+    graph: &mut Graph,
+    feed: &mut dyn ClipFeed,
+    points: &[(usize, Point)],
+    range: Range<i64>,
+    sink: &mut dyn FnMut(usize, &[&[f32]]) -> bool,
+) -> Result<bool, FeedError> {
+    let leads: Vec<i64> = points
+        .iter()
+        .map(|&(strip, _)| i64::from(graph.lead(strip)))
+        .collect();
+    let most = leads.iter().copied().max().unwrap_or(0);
+    let least = leads.iter().copied().min().unwrap_or(0);
+    let length = range.end - range.start;
+    graph.start(range.start - most, feed)?;
+    // Sample `p` of the run is sample `range.start + p − most + lead` of a strip's timeline.
+    let mut at = 0;
+    while at < length + most - least {
+        let frames = usize::try_from(length + most - least - at)
             .unwrap_or(usize::MAX)
             .min(graph.max_block());
         graph.process(feed, frames)?;
-        let sound = graph.sound_at(strip, point);
-        if !sound.read(frames, |channels| sink(channels)) {
-            return Ok(false);
+        let end = at + i64::try_from(frames).unwrap_or(i64::MAX);
+        for (index, (&(strip, point), lead)) in points.iter().zip(&leads).enumerate() {
+            // The part of the block within the range, for this strip.
+            let first = most - lead;
+            let (from, to) = (at.max(first), end.min(first + length));
+            if from < to {
+                let offset = usize::try_from(from - at).unwrap_or(0);
+                let count = usize::try_from(to - from).unwrap_or(0);
+                let sound = graph.sound_at(strip, point);
+                if !sound.read_range(offset, count, |channels| sink(index, channels)) {
+                    return Ok(false);
+                }
+            }
         }
-        at += i64::try_from(frames).unwrap_or(i64::MAX);
+        at = end;
     }
     Ok(true)
 }
@@ -337,7 +378,8 @@ pub fn alone(
     strip.dynamics.on = false;
     let c = &mut track.clips[0];
     c.enabled = true;
-    c.gain_db = AudioParam::Fixed(0.0);
+    // Its Volume stays, keys and all: a gain to bring it to a level is added to it (the review
+    // of T9b), so it is measured after it.
     c.pan = AudioParam::Fixed(0.0);
     c.fade_in = 0;
     c.fade_out = 0;

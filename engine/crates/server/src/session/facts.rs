@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Condvar, Weak};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use columbina_media::MediaError;
 use columbina_model::{AudioStream, Id, Identity, Op, Project};
@@ -186,12 +186,12 @@ impl Reader {
         let spawned = std::thread::Builder::new()
             .name("columbina-streams".into())
             .spawn(move || {
-                let mut kept = HashMap::new();
+                let mut memory = Memory::default();
                 loop {
                     let Some(state) = state.upgrade() else {
                         return;
                     };
-                    pass(&state, &mut kept, limits, &stopped);
+                    pass(&state, &mut memory, limits, &stopped);
                     drop(state);
                     let (lock, told) = &*stopped;
                     let guard = lock
@@ -248,51 +248,126 @@ fn stopped(stop: &(std::sync::Mutex<bool>, Condvar)) -> bool {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// One pass: read what is wanted, but what was kept as it was seen and is so still, and set
-/// what was read in one change of the engine.
+/// How many media read are set in one change, at most: the rest of a pass goes on in the next.
+const BATCH: usize = 16;
+
+/// How long a pass reads before what it read is set, at most.
+const BATCH_TIME: Duration = Duration::from_secs(2);
+
+/// The longest that media whose file could not be read waits to be tried again: the wait
+/// doubles from [`RETRY`] each time it is tried in vain (we decide).
+const LONGEST_WAIT: Duration = Duration::from_secs(320);
+
+/// What the reader remembers of the media it could not read.
+#[derive(Default)]
+pub(super) struct Memory {
+    /// Media whose file is another file, or one that libav cannot open, as it was seen: its
+    /// path and digest as the media has them, and the file then.
+    kept: HashMap<Id, (String, String, Seen)>,
+    /// Media whose file was not there: when it is tried again, and how long it waits after.
+    later: HashMap<Id, (Instant, Duration)>,
+}
+
+impl Memory {
+    /// Whether media is to be read now: not one kept whose file is as it was seen, nor one that
+    /// waits to be tried again.
+    pub(super) fn due(&self, one: &Wanted, now: Instant) -> bool {
+        let kept = self.kept.get(&one.id).is_some_and(|(path, digest, seen)| {
+            *path == one.path && *digest == one.identity.digest && unchanged(path, *seen)
+        });
+        let waits = self.later.get(&one.id).is_some_and(|(at, _)| now < *at);
+        !kept && !waits
+    }
+
+    /// Remember what was found of media.
+    pub(super) fn found(&mut self, one: &Wanted, found: &Found, now: Instant) {
+        match found {
+            Found::Kept(seen) => {
+                self.later.remove(&one.id);
+                let kept = (one.path.clone(), one.identity.digest.clone(), *seen);
+                self.kept.insert(one.id.clone(), kept);
+            }
+            Found::Later => {
+                self.kept.remove(&one.id);
+                let wait = self
+                    .later
+                    .get(&one.id)
+                    .map_or(RETRY, |(_, wait)| (*wait * 2).min(LONGEST_WAIT));
+                self.later.insert(one.id.clone(), (now + wait, wait));
+            }
+            Found::Read { .. } => {
+                self.kept.remove(&one.id);
+                self.later.remove(&one.id);
+            }
+        }
+    }
+
+    /// Forget media that is no longer wanted.
+    fn keep_only(&mut self, wanted: &[Wanted]) {
+        let still = |id: &Id| wanted.iter().any(|one| &one.id == id);
+        self.kept.retain(|id, _| still(id));
+        self.later.retain(|id, _| still(id));
+    }
+}
+
+/// One pass: read what is wanted and due, and set what was read, [`BATCH`] media or
+/// [`BATCH_TIME`] of reading at a time, each in one change of the engine.
 fn pass(
     state: &Mutex<State>,
-    kept: &mut HashMap<Id, (String, Seen)>,
+    memory: &mut Memory,
     limits: Limits,
     stop: &(std::sync::Mutex<bool>, Condvar),
 ) {
     let wanted = wanted(state.blocking_lock().history.project());
-    kept.retain(|id, _| wanted.iter().any(|one| &one.id == id));
+    memory.keep_only(&wanted);
     let mut found = Vec::new();
+    let mut since = Instant::now();
     for one in wanted {
         if stopped(stop) {
             return;
         }
-        if kept
-            .get(&one.id)
-            .is_some_and(|(path, seen)| *path == one.path && unchanged(path, *seen))
-        {
+        if !memory.due(&one, Instant::now()) {
             continue;
         }
-        match read(&one) {
-            Found::Kept(seen) => {
-                log(
-                    "media_streams_kept",
-                    &json!({"media": one.id, "path": one.path,
-                        "message": "the file is not that of the media, or cannot be opened"}),
-                );
-                kept.insert(one.id.clone(), (one.path.clone(), seen));
-            }
+        let read = read(&one);
+        memory.found(&one, &read, Instant::now());
+        match read {
+            Found::Kept(_) => log(
+                "media_streams_kept",
+                &json!({"media": one.id, "path": one.path,
+                    "message": "the file is not that of the media, or cannot be opened"}),
+            ),
             Found::Later => {}
             streams @ Found::Read { .. } => found.push((one, streams)),
         }
+        if found.len() >= BATCH || (!found.is_empty() && since.elapsed() >= BATCH_TIME) {
+            if !set(state, std::mem::take(&mut found), limits, stop) {
+                return;
+            }
+            since = Instant::now();
+        }
     }
+    set(state, found, limits, stop);
+}
+
+/// Set what was read in one change of the engine; false where the reader was stopped.
+fn set(
+    state: &Mutex<State>,
+    found: Vec<(Wanted, Found)>,
+    limits: Limits,
+    stop: &(std::sync::Mutex<bool>, Condvar),
+) -> bool {
     if found.is_empty() {
-        return;
+        return true;
     }
     let mut locked = state.blocking_lock();
     // Stopped meanwhile, as the engine ends: nothing more is set.
     if stopped(stop) {
-        return;
+        return false;
     }
     let ops = settled(locked.history.project(), found);
     if ops.is_empty() {
-        return;
+        return true;
     }
     let count = ops.len();
     let applied = locked.history.apply_unrecorded(ops, "engine");
@@ -311,6 +386,7 @@ fn pass(
             &json!({"message": error.to_string()}),
         ),
     }
+    true
 }
 
 #[cfg(test)]
@@ -443,6 +519,51 @@ mod tests {
         let broken = project_of(&path);
         let again = wanted(&broken).remove(0);
         assert!(matches!(read(&again), Found::Kept(_)));
+    }
+
+    #[test]
+    fn media_away_waits_longer_each_time_and_media_kept_is_kept_by_its_path_and_digest() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.wav");
+        wav(&path);
+        let project = project_of(&path);
+        let one = wanted(&project).remove(0);
+        let mut memory = Memory::default();
+        let now = Instant::now();
+        assert!(memory.due(&one, now));
+        // Away: tried again after 10 s, then 20 s, 40 s, ... and 320 s at the most.
+        memory.found(&one, &Found::Later, now);
+        assert!(!memory.due(&one, now + (RETRY - Duration::from_millis(1))));
+        assert!(memory.due(&one, now + RETRY));
+        let mut at = now + RETRY;
+        for wait in [20, 40, 80, 160, 320, 320] {
+            memory.found(&one, &Found::Later, at);
+            let wait = Duration::from_secs(wait);
+            assert!(!memory.due(&one, at + (wait - Duration::from_millis(1))));
+            assert!(memory.due(&one, at + wait));
+            at += wait;
+        }
+        // Read at last: it waits no more.
+        let read = Found::Read {
+            layout: None,
+            streams: vec![],
+        };
+        memory.found(&one, &read, at);
+        assert!(memory.due(&one, at));
+        // Kept as the file was seen: not read while it stays so, for the same media.
+        let seen = Seen {
+            size: one.identity.size,
+            modified_us: one.identity.modified_us,
+        };
+        memory.found(&one, &Found::Kept(seen), at);
+        assert!(!memory.due(&one, at));
+        // Media whose digest or path is another now (named anew) is read.
+        let mut other = one.clone();
+        other.identity.digest = "f".repeat(64);
+        assert!(memory.due(&other, at));
+        let mut moved = one.clone();
+        moved.path = dir.path().join("b.wav").to_str().unwrap().into();
+        assert!(memory.due(&moved, at));
     }
 
     #[test]

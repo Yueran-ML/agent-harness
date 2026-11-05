@@ -291,8 +291,10 @@ fn exported(directory: &Path, project: Project, codec: VideoCodec, name: &str) -
     let request = Request {
         timeline: "t1".into(),
         path: directory.join(name),
-        codec,
-        quality: VideoQuality::Medium,
+        codec: Some(codec),
+        quality: Some(VideoQuality::Medium),
+        video: None,
+        audio: None,
         range: None,
         subtitle_tracks: vec![],
         replace: true,
@@ -305,6 +307,10 @@ fn exported(directory: &Path, project: Project, codec: VideoCodec, name: &str) -
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "each output space in turn, then a refusal"
+)]
 fn an_export_says_its_output_space_and_the_light_of_its_hdr() {
     let Some(_gpu) = columbina_compose::gpu_for_tests() else {
         return;
@@ -402,8 +408,10 @@ fn an_export_says_its_output_space_and_the_light_of_its_hdr() {
         Request {
             timeline: "t1".into(),
             path: directory.path().join("hdr264.mp4"),
-            codec: VideoCodec::H264,
-            quality: VideoQuality::Medium,
+            codec: Some(VideoCodec::H264),
+            quality: Some(VideoQuality::Medium),
+            video: None,
+            audio: None,
             range: None,
             subtitle_tracks: vec![],
             replace: true,

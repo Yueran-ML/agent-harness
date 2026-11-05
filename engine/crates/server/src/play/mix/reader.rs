@@ -91,7 +91,7 @@ impl Lane {
         Self::mean(source.into_iter().collect(), enabled, mute, level_db)
     }
 
-    /// The mean of several channels of the media, as [`Lane::of`] has one.
+    /// The mean of several channels of the media, as `Lane::of` (of the tests) has one.
     pub(crate) fn mean(sources: Vec<Pick>, enabled: bool, mute: bool, level_db: f64) -> Self {
         let gain = if !enabled || mute || level_db <= SILENT_DB {
             0.0

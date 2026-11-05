@@ -5,7 +5,7 @@
  * the user edits, or leaves the studio, and is found as it is when the studio is shown again.
  */
 import type { EngineBridge } from '../../bridge';
-import { callEngine, type EngineEvent, type RenderOptions, type RenderProgress } from '../engine';
+import { callEngine, type EngineEvent, type RenderCodec, type RenderOptions, type RenderProgress } from '../engine';
 
 /** Why the engine (or the shell) would not start an export, as the page says it. */
 export type RenderRefusal = 'busy' | 'exists' | 'part_exists' | 'source' | 'invalid' | 'other';
@@ -22,9 +22,12 @@ export interface RenderJob {
   job: string;
   /** The session of the engine that renders it. */
   session: number;
-  /** The timeline, by its name as it was when it was started, and the codec that was asked for. */
+  /**
+   * The timeline, by its name as it was when it was started, and the codec that was asked for:
+   * none for the sound alone.
+   */
   name: string;
-  codec: RenderOptions['codec'];
+  codec: RenderCodec | null;
   state: RenderProgress['state'] | 'cancelling' | 'stopped';
   frame: number;
   frames: number;
@@ -80,7 +83,7 @@ export class Renders {
       const told = this.early.get(result.job);
       this.early.clear();
       this.job = {
-        job: result.job, session, name: options.name, codec: options.codec,
+        job: result.job, session, name: options.name, codec: options.codec ?? null,
         state: 'running', frame: 0, frames: 0, fps: 0, path: null, encoder: null, message: null,
       };
       if (told) this.take(told);

@@ -1,6 +1,6 @@
 //! The sound of a timeline for the transport and the export: the graph of `columbina-audio`
-//! (plan T4b), built from the project and fed by the media readers of its clips. The mix stays in
-//! 32-bit floats to the device; only the copy for the device is clipped.
+//! (plan T4b), built from the project and fed by the media readers of its clips ([`Feed`]). The
+//! mix stays in 32-bit floats to the device; only the copy for the device is clipped.
 
 mod reader;
 
@@ -9,9 +9,13 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use columbina_audio::feed::{ClipFeed, ClipSource, FeedError};
+#[cfg(test)]
 use columbina_audio::graph::{route, Graph, Options, Purpose};
+#[cfg(test)]
 use columbina_audio::node::Layout as Channels;
+#[cfg(test)]
 use columbina_audio::stream::Resampler;
+#[cfg(test)]
 use columbina_media::AudioFormat;
 use columbina_model::{resolve, Project};
 use serde_json::json;
@@ -19,9 +23,11 @@ use serde_json::json;
 use crate::log::log;
 use reader::{Layout, Reader};
 
+#[cfg(test)]
 type Stereo = [f32; 2];
 
 /// The most samples that the graph of a mixer processes at once.
+#[cfg(test)]
 const MAX_BLOCK: usize = 4096;
 
 /// The readers of the clips of a graph, opened as the graph first asks for each: the feed of a
@@ -193,6 +199,14 @@ impl Feed {
         }
     }
 
+    /// What went wrong first since it was last taken, as a sentence; a sentence of its own where
+    /// nothing was kept.
+    pub(crate) fn take_error(&mut self) -> String {
+        self.error
+            .take()
+            .unwrap_or_else(|| "the sound of a clip could not be read".into())
+    }
+
     /// Lets `reader` go: into the pool, if there is one.
     fn give_up(&self, key: ReaderKey, reader: Reader) {
         if let Some(pool) = &self.pool {
@@ -249,6 +263,9 @@ impl ClipFeed for Feed {
     }
 }
 
+/// The mix of the monitored bus block by block, for the tests of the graph with real media: the
+/// export (T6) and playback (T5) run the graph themselves.
+#[cfg(test)]
 pub struct Mixer {
     project: Arc<Project>,
     timeline: usize,
@@ -259,6 +276,7 @@ pub struct Mixer {
     next: Option<i64>,
 }
 
+#[cfg(test)]
 impl Mixer {
     /// The mixer of timeline `timeline` of `project`, for `purpose`: playback hears the Listen
     /// of a sidechain, an export never does.
@@ -388,6 +406,7 @@ pub(crate) fn end_of(timeline: &columbina_model::Timeline) -> i64 {
 /// resampler of T5 (`columbina_audio::stream`), which keeps the samples of the mix that its
 /// filter reaches back to: the graph runs through each sample once, in order (the plan's check of
 /// the code, 1), and the sound for the device is clipped there, and only there.
+#[cfg(test)]
 struct OutputSource {
     mixer: Mixer,
     resampler: Resampler,
@@ -398,6 +417,7 @@ struct OutputSource {
     frames: usize,
 }
 
+#[cfg(test)]
 impl crate::audio::Source for OutputSource {
     fn next(&mut self) -> Result<Option<Vec<f32>>, String> {
         if self.resampler.next_output() >= self.end {

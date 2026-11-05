@@ -21,7 +21,7 @@
 //!
 //! A view takes the pointer while a connection of the desktop asks it to (`view.pointer`), for a
 //! tool of the page that is used on the picture; what the pointer does there is told to that
-//! connection alone, as `view.pointer` notifications ([`pointer`]).
+//! connection alone, as `view.pointer` notifications ([`pointer`](mod@pointer)).
 
 mod pointer;
 

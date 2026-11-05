@@ -1027,6 +1027,14 @@ class Fake:
             # Only the patch is put in: the engine's checks of sound are not copied here.
             track = self._track(str(op["timeline"]), str(op["track"]), index)
             track.update(_patched(track, op["patch"]))
+        elif name == "set_lane" and "track" in op["of"]:
+            # A lane of a track, put in or taken away; the engine's checks are not copied here.
+            track = self._track(str(op["timeline"]), str(op["of"]["track"]), index)
+            lanes = track.setdefault("lanes", {})
+            if op["lane"] is None:
+                lanes.pop(str(op["path"]), None)
+            else:
+                lanes[str(op["path"])] = op["lane"]
         elif name == "set_color_settings":
             self.project["color"] = _patched(self.project.get("color", {}), op["settings"])
         elif name == "set_media_color":

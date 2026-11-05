@@ -133,7 +133,7 @@ pub fn sound_op_of(project: &Project, n: [usize; 4]) -> Op {
     };
     let op = |value: Value| -> Op { serde_json::from_value(value).unwrap() };
     let t = timeline_id.clone();
-    match d % 16 {
+    match d % 19 {
         0 | 1 => op(json!({"op": "set_track_audio", "timeline": t,
             "track": pick(&tracks, b, "V1"), "patch": track_patch(c, d / 16, &buses, &vcas, &tracks)})),
         2 => op(
@@ -219,7 +219,111 @@ pub fn sound_op_of(project: &Project, n: [usize; 4]) -> Op {
             };
             op(json!({"op": "set_timeline_audio", "timeline": t, "patch": patch}))
         }
+        16 | 17 => lane_op(timeline, &t, [a, b, c, d / 19]),
         _ => set_sound_of_clip(project, &t, &pick(&clips, b, "c99"), [a, c, d]),
+    }
+}
+
+/// The paths that lanes are made of: of settings that the strips of `tidy` have, of settings that
+/// a strip may have (a send, an insert), of a setting of a switch, and of nothing.
+const PATHS: [&str; 10] = [
+    "fader_db",
+    "mute",
+    "pan.x",
+    "eq.2.gain_db",
+    "send.B2.level_db",
+    "insert.fx1.gain_db",
+    "insert.fx1.on",
+    "dynamics.compressor.ratio",
+    "eq.9.freq",
+    "order",
+];
+
+/// A lane of one to four points at times of 48 kHz, of `kind`; now and then out of order, of a
+/// value out of range, or of a switch that is neither on nor off.
+fn lane_of(n: usize, kind: &str) -> Value {
+    let count = 1 + n % 4;
+    let points: Vec<Value> = (0..count)
+        .map(|k| {
+            let ticks = if n % 23 == 7 {
+                (count - k) * 4800
+            } else {
+                (k + n % 3) * 4800
+            };
+            let value = match (kind, (n / 4 + k) % 9) {
+                ("switch", 8) => json!(0.5),
+                ("switch", v) => json!(v % 2),
+                (_, 8) => json!(40.0),
+                (_, v) => json!(-0.25 * f64::from(u8::try_from(v).unwrap())),
+            };
+            json!({"at": {"ticks": ticks, "scale": 48000}, "value": value})
+        })
+        .collect();
+    json!({"points": points, "kind": kind})
+}
+
+/// An operation on a lane: one set or taken away, or points of one spliced, of a track of sound,
+/// a bus or a VCA of the timeline, or of what is not there.
+#[allow(
+    clippy::many_single_char_names,
+    reason = "the four numbers of a making"
+)]
+fn lane_op(timeline: Option<&Timeline>, t: &str, n: [usize; 4]) -> Op {
+    let [a, b, c, d] = n;
+    let tracks = sound_tracks(timeline);
+    let buses = ids_of(timeline.map(|t| &t.buses), |x| &x.id);
+    let vcas = ids_of(timeline.map(|t| &t.vcas), |x| &x.id);
+    let (of, lanes) = match a % 3 {
+        0 => {
+            let id = pick(&tracks, b, "V1");
+            let lanes = timeline
+                .and_then(|t| t.tracks.iter().find(|r| r.id == id))
+                .map(|r| r.audio.lanes.clone());
+            (json!({"track": id}), lanes)
+        }
+        1 => {
+            let id = pick(&buses, b, "B99");
+            let lanes = timeline
+                .and_then(|t| t.buses.iter().find(|x| x.id == id))
+                .map(|x| x.lanes.clone());
+            (json!({"bus": id}), lanes)
+        }
+        _ => {
+            let id = pick(&vcas, b, "VCA99");
+            let lanes = timeline
+                .and_then(|t| t.vcas.iter().find(|x| x.id == id))
+                .map(|x| x.lanes.clone());
+            (json!({"vca": id}), lanes)
+        }
+    };
+    let lanes = lanes.unwrap_or_default();
+    let op = |value: Value| -> Op { serde_json::from_value(value).unwrap() };
+    let held: Vec<&String> = lanes.keys().collect();
+    if c % 2 == 0 || held.is_empty() {
+        let path = PATHS[d % PATHS.len()];
+        let kind = if matches!(path, "mute" | "insert.fx1.on") == (c % 7 != 3) {
+            "switch"
+        } else {
+            "continuous"
+        };
+        let lane = if c % 5 == 4 {
+            Value::Null
+        } else {
+            lane_of(d / 10, kind)
+        };
+        op(json!({"op": "set_lane", "timeline": t, "of": of, "path": path, "lane": lane}))
+    } else {
+        let path = held[d % held.len()].clone();
+        let lane = &lanes[&path];
+        let len = lane.points.len();
+        let kind = serde_json::to_value(lane.kind).unwrap();
+        let points = lane_of(d / 3, kind.as_str().unwrap())["points"].clone();
+        let points = points.as_array().unwrap();
+        let points = points[..points.len().min((d / 5) % 3)].to_vec();
+        op(
+            json!({"op": "splice_lane", "timeline": t, "of": of, "path": path,
+            "at": (c / 2) % (len + 2), "remove": (d / 7) % 3, "points": points}),
+        )
     }
 }
 

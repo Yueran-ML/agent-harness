@@ -559,7 +559,9 @@ fn inserts_are_added_put_in_place_taken_away_and_moved_with_their_ids() {
     else {
         panic!()
     };
-    assert_eq!(put.id, "fx2");
+    // A new insert, given an id above every one that the strip had, fx2 among them, so that
+    // no lane of the one replaced is taken for its (T14's review).
+    assert_eq!(put.id, "fx3");
     let Op::SetInsert {
         insert: Some(back), ..
     } = inverse

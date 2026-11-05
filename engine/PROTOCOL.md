@@ -163,7 +163,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `track.start` | `{grade,node,window,revision,frame,direction,tracker?,components?}` | `{job,first,last,frame_size,direction}` at once, then `track.progress` and `track.state` (see Window tracking) |
 | `track.stop` | `{job}` | `{}`; the track ends between frames, keeping what it tracked |
 | `track.edit` | `{grade,node,window,revision?,edit:{kind,...}}` | `{revision}`; one step to undo (see Window tracking) |
-| `render.start` | `{"timeline":"t1", "path":"<file>", "codec":"h264", "quality":"high", "range"?:{"from":0,"to":250}, "subtitle_tracks"?:["S1"], "replace"?:false, "revision"?:n}` | `{"job": "render-1"}` (see Rendering a timeline) |
+| `render.start` | `{"timeline":"t1", "path":"<file>", "codec":"h264", "quality":"high", "range"?:{"from":0,"to":250}, "subtitle_tracks"?:["S1"], "replace"?:false, "revision"?:n, "audio"?:{"bus"?, "rate"?, "codec"?, "bitrate"?, "normalize"?}}`, or with `"video":null` and no `codec` or `quality` for the sound alone | `{"job": "render-1"}` (see Rendering a timeline, and The sound of an export) |
 | `render.cancel` | `{"job": "render-1"}` | `{}` |
 | `transport.frame_digest` | `{"monitor": m}` | test hook only, with `--test-hooks` (see The transport); `-32601` otherwise |
 | `transport.*` | see The transport | |
@@ -649,20 +649,39 @@ are at most +10; −100 or below is −∞.
   categories, preview, active_range}}`. At most 64 buses and 64 VCAs; no path of buses longer
   than 6, nor chain of VCAs; no loop through outputs, sends, sidechains and duckers.
 - **Lane** (automation of a track, bus or VCA, by the path of its setting): `{points: [{at:
-  {ticks, scale}, value}], kind: continuous|switch}`, points in time order, all of one scale and
-  within 0…2^53−1 ticks (two may share a time: the later holds from it), times of the timeline;
-  straight lines between points (worked out in ticks), a switch holds; before the first and
-  after the last, their values. The path of a lane is the path of the field of the strip that it
-  automates, and its kind is that of the field: a number is continuous, a boolean a switch, and
-  any other field has no lane, nor has any `listen` (of a sidechain, a De-Esser, a De-Hummer or a
-  Noise Reduction), which is only heard while one listens. Paths: `fader_db`, `trim_db`, `mute`, `invert`, `inserts_on`,
-  `pan.<x|y|rotate|spread|divergence|lfe_db|on|lfe_on|lfe_pre>`, `eq.on`, `eq.gain_db`,
-  `eq.<band from 0>.<on|freq|gain_db|q>`, `dynamics.<…>` as Dynamics is written
+  {ticks, scale}, value}], kind: continuous|switch, scale: linear|log}`, points in time order,
+  all of one scale and within 0…2^53−1 ticks (two may share a time: the later holds from it),
+  times of the timeline; straight lines between points (worked out in ticks), a switch holds;
+  before the first and after the last, their values. `scale` is what a continuous lane goes
+  straight on (the decision of T14's review, C-A7): `log` for a frequency (a path whose last part
+  is `freq` or ends in `frequency_hz`) and a Q (`q`), where the value at a share `s` of the way
+  from `a` to `b` is `exp(ln a + (ln b − ln a)·s)` (100 Hz to 10 kHz passes 1 kHz half way), and
+  `linear` for everything else (decibels are straight in decibels, a pan in its units). It is set
+  by the path: a lane read or set without it is given the one of its path, the engine always
+  writes it, and one given another is refused. The path of a lane is the path of the field of the
+  strip that it automates, and its kind is that of the field: a number is continuous, a boolean a
+  switch. Paths: `fader_db`, `trim_db`, `mute`, `invert`, `pan.<x|y|divergence>`, `eq.on`,
+  `eq.gain_db`, `eq.<band from 0>.<on|freq|gain_db|q>`, `dynamics.<…>` as Dynamics is written
   (`dynamics.compressor.threshold_db`, `dynamics.compressor.sidechain.on`, `dynamics.makeup_db`),
-  `track_fx.<…>` of a track with a Ducker (`track_fx.amount_db`), `send.<bus id>.<level_db|on|pre|pan.x|…>`,
-  `output.<bus id>.on`, and `insert.<insert id>.<on|setting>` (`insert.fx1.ceiling_db`). A VCA has
-  `fader_db` and `mute`. A lane of a setting that the strip has not, or of another kind, is
-  refused as `out_of_range: lane`.
+  `track_fx.<…>` of a track with a Ducker (`track_fx.amount_db`, `track_fx.on`),
+  `send.<bus id>.<level_db|on|pan.x|pan.y>`, `output.<bus id>.on`, and
+  `insert.<insert id>.<on|setting>` (`insert.fx1.ceiling_db`). A VCA has `fader_db` and `mute`.
+  No other field has a lane: a kind, a mode, a source or any `listen` (only heard while one
+  listens) is refused as `out_of_range: lane`; a whole number (`eq.<band>.slope`, the
+  `semitones` of a Pitch) as `out_of_range: lane_integer`; and what the graph does not move as a
+  lane would, as `out_of_range: lane_not_wired`: Effects In (`inserts_on`), the pan's `on`,
+  `rotate`, `spread`, `lfe_db`, `lfe_on` and `lfe_pre`, a send's `pre` and the rest of its pan, the
+  Lookahead of a Ducker (`track_fx.lookahead_ms`, the latency of the graph), and every setting of a
+  Pitch, which has no node yet. With Effects In off, a lane of the switch of an insert
+  (`insert.<id>.on`) turns no insert on. A lane keeps to the range of its setting: each of its
+  values is one that the setting may be set to while the rest of the strip is as it is (a fader at
+  most +10 dB, a pan −1…1, a frequency within its band, above 0 on a scale of logarithms), and a
+  switch is 0 or 1; a lane of a setting that the strip has not, of another kind or scale, or out
+  of that range is refused as `out_of_range: lane`. A project read with such a lane is refused
+  (none was written before these checks). The engine reads a lane at each sample of the timeline
+  exactly as written here: the times are compared in ticks, a point whose time falls between two
+  samples acts from the first sample at or after it, and the share of the way between two points
+  is worked in doubles (T14).
 - **Transition.** Added `fade_in_level_db` and `fade_out_level_db`, each −3, 0 or 3 (0): how the
   clip that starts at the cut rises and the one that ends there falls on a crossfade: 0 dB `t`,
   +3 dB `sin(πt/2)`, −3 dB `t^1.5`; the falling side is the rising curve reversed.
@@ -1815,6 +1834,8 @@ its inverse:
 | `set_insert` | `timeline`, `of`, `slot`, `insert` (an insert, or `null`, which must be written, to take the one at `slot` away) |
 | `move_insert` | `timeline`, `of`, `from`, `to` |
 | `set_timeline_audio` | `timeline`, `patch` |
+| `set_lane` | `timeline`, `of`, `path`, `lane` (a lane, or `null`, which must be written, to take it away) |
+| `splice_lane` | `timeline`, `of`, `path`, `at`, `remove`, `points` |
 
 **Patches.** `set_track_audio`, `set_bus`, `set_vca`, `set_track_group` and
 `set_timeline_audio` set their thing by a patch, as `set_color_settings` does: each object in it
@@ -1857,7 +1878,10 @@ tracks stay. A bus, VCA or group that is not there is `unknown_bus`, `unknown_vc
 **Inserts.** `of` names a chain of inserts: `{"track": id}` (the strip of a track of sound),
 `{"bus": id}` (the strip of a bus) or `{"clip": id}` (the effects of a clip, in order). `add_insert`
 puts one at `index` (at the end where it is left out), and an insert of a strip with an empty id is
-given the next `fx<n>` of its strip; one of a clip keeps the id it is given, which may be none.
+given the next `fx<n>` of its strip, above every id that the strip had before the operation, so
+that an insert given no id is always new and never takes the id, and so the lanes, of one that it
+replaces (the same for the inserts of a patch of `set_track_audio` or `set_bus`); one of a clip
+keeps the id it is given, which may be none.
 `set_insert` puts one in place of the one at `slot`, or with `insert: null` takes that one away,
 those after it moving up; its inverse puts back what was replaced, or adds back what was taken
 away (`add_insert` at `slot`). `move_insert` moves the one at `from` to `to`, those between moving
@@ -1868,9 +1892,25 @@ away from the one and adds it to the other with an empty id. A `slot`, `from` or
 a place of the chain is `out_of_list`; a strip of more than 6 inserts is `too_many_inserts`; an
 effect of a clip with a sidechain on is `out_of_range` (`sidechain`); an insert taken away or
 replaced while a lane names its id leaves the lane naming what is not there, refused as
-`out_of_range` (`lane`), so the lane is taken away first.
+`out_of_range` (`lane`), and so is an insert that keeps its id with an effect of another kind
+while a lane names it; so the lane is taken away first: the edits `set_insert`, `move_insert`,
+`copy_effects`, `set_track_audio` and `set_bus` (below) do that in the same transaction.
 
 A strip sends to a bus at most once: two sends to one bus are `out_of_range` (`sends`).
+
+**Lanes** (`crates/model/src/ops/automation.rs`). `of` names what a lane is of: `{"track": id}`
+(a track of sound), `{"bus": id}` or `{"vca": id}`; `path` names its setting (see Lane above).
+`set_lane` puts `lane` in place of the lane of `path`, or adds it where there is none, or with
+`lane: null` takes it away; its inverse puts back what was there (`null` where nothing was).
+`splice_lane` puts `points` in place of the `remove` points of the lane from its point `at` (from
+0) on, as JavaScript's `splice` does; its inverse is the `splice_lane` that puts back the points it
+took away in place of those it put, so a change to a few points of a long lane is a short step of
+undo. A lane must keep at least one point (`set_lane` with `null` takes one away), and what either
+makes is checked as a lane that is read is (`out_of_range: lane`). A lane that is not there is
+`missing` (`what: "lane"`, `id` its path) for `splice_lane` and for `set_lane` with `null`; an `at`
+and `remove` that reach past the points is `out_of_list` (`at` their sum); a track that is not of
+sound is `wrong_track` (`what: "lanes"`); a bus or VCA that is not there `unknown_bus`,
+`unknown_vca`. A track may be named by a name of a transaction (`{"track": "$a"}`).
 
 **Clips and crossfades.** `set_clip` also sets `eq` (whole, 4 bands), `effects` (whole),
 `pitch_correction`, `pitch` and `channels` (`null` for the media's channels mixed as libav mixes
@@ -1974,7 +2014,13 @@ fades are not silently substituted. All changes are still one reversible transac
 | `remove_attributes` | `clips`, `items` | Put them back as a new clip has them: 0 dB with no keys, no effects, the equalizer off (p. 3804). |
 | `fade_to_playhead` | `clips`, `side: in\|out`, `at` | Fade each clip in from its start to frame `at`, or out from it to its end (p. 3812), in one transaction. |
 | `set_bus` | `id`, `patch` | As the operation; a bus soloed while the solo is exclusive takes the solo off the others (below). |
-| `copy_effects` | `from`, `to: [chains]` | Put the inserts of one chain (`{"track"}`, `{"bus"}` or `{"clip"}`, as `of` of the operations) in place of all those of others (pp. 3855–3860): only the inserts, not Dynamics nor the equalizer. |
+| `copy_effects` | `from`, `to: [chains]` | Put the inserts of one chain (`{"track"}`, `{"bus"}` or `{"clip"}`, as `of` of the operations) in place of all those of others (pp. 3855–3860): only the inserts, not Dynamics nor the equalizer. The lanes of the inserts of a strip that they replace are taken away first. |
+| `set_insert` | `of`, `slot`, `insert` (an insert or `null`, which must be written) | As the operation, with the lanes of the insert that goes (`insert.<id>.…`) taken away first; an insert of a strip put in place of another is given a new id, one above every id of the strip and the one it replaces. |
+| `move_insert` | `of`, `from`, `to`, `to_of?` | Within `of` (or `to_of` equal to it), as the operation: the insert keeps its id and its lanes. To another chain `to_of`: its lanes taken away, the insert taken from `of` and added to `to_of` at `to` with an empty id, so it is a new insert there. |
+| `lane_points` | `of`, `path`, `action: add\|remove\|move`, `points?`, `at?`, `by?`, `delta?` | Points of a lane (pp. 3898–3900, 3911): add `points` (`[{at, value?}]`), take away or move the points at the times `at`. |
+| `lane_range` | `of`, `path`, `from`, `to`, `action: delete\|cut\|paste\|shift_value\|thin`, `points?`, `delta?`, `tolerance?` | A range of a lane (pp. 3898–3899): taken away, pasted over, raised or lowered, or thinned. |
+| `lane_draw` | `of`, `path`, `from`, `to`, `points`, `tolerance?` | The Pencil (pp. 3900, 3911): the points drawn, thinned, in place of the range. |
+| `clear_lanes` | `of`, `paths?`, `then?: keep\|reset\|hold`, `at?` | Clear Track Automation (p. 3912): the lanes of `paths`, or all, taken away. |
 
 `add_transition` takes `linked?` (false where it is left out): a transition of picture with
 `linked: true` brings, in the same transaction, a crossfade of the same length and alignment at
@@ -2050,6 +2096,66 @@ transition is is `fade_at_transition`. `copy_effects` with an empty `to` is `out
 is passed over; the copies are new inserts, which a strip gives the next ids of its own (so a
 lane of the target's old inserts names an insert that is not there, and is refused as
 `out_of_range`, `lane`, until it is taken away).
+
+**Automation (T14, Ch. 178).** The edits of lanes name a lane by `of` and `path`, as the
+operations do, and work in times of the timeline (`{ticks, scale}`), each put on the nearest tick
+of the lane's scale (that of its points; the timeline's sample rate for a lane that is not there
+yet); a time that falls outside 0…2^53−1 ticks there is `out_of_range` (`at`, `from`, `to`,
+`points`, `by`). A lane of a track that is locked is `locked`; a path of no lane is refused as the
+operations refuse it (`lane`, `lane_integer`, `lane_not_wired`). Each is one transaction: a lane
+made is one `set_lane`, one taken away one `set_lane` of `null`, and any other change one
+`splice_lane` of the points from the first that changes to the last; an edit that would change
+nothing (a point added where one of that value is, a lane already as thin as asked) is
+`empty_range`. A value of a switch is on
+(1) at 0.5 and above and off (0) below; a value of a number past the range of its setting is kept
+at the end of the range, and the edit is `clamped`.
+- `lane_points` `add` puts each of `points` at its time, after any there already, or, where one
+  is there, sets the value of the last one there; a point given no `value` takes the value that
+  the lane has at its time, so nothing is heard to change (p. 3898). Where the lane is not there,
+  it is made, of the kind of its setting, from the value its setting has. `remove` takes away
+  every point at each time of `at`; the last taken away takes the lane away, and the setting is
+  heard again as it is set. `move` moves every point at the times of `at` by `by` in time (back
+  where its ticks are below 0) and by `delta` in value: each run of points moved stays between the
+  points beside it and within the timeline, as far as it can (`clamped` where it stops). A time of
+  `at` with no point is `missing` (`what: "point"`, `id` the time as `ticks/scale`); a lane that is
+  not there is `missing` (`what: "lane"`); `move` with no change is `empty_range`; `points` or `at`
+  empty is `out_of_range` (`points`, `at`).
+- `lane_range` works on the range from `from` to `to` (`from` before `to`, else `empty_range`).
+  The value before `from` and the value from `to` on stay as they were (pp. 3898–3899): the points
+  from `from` to `to` (both in) are put in place of by a point at `from` of the value that the lane
+  came to it with, what the action makes, and a point at `to` of the value that was there. `delete`
+  and `cut` (the same; a client keeps what it cut) leave a straight line between those two. `paste`
+  puts `points` (times from `from`, in order, none past `to`; `out_of_range: points` otherwise) in
+  between. `shift_value` moves the values of the range by `delta` (0 is `empty_range`): at each end
+  a point of the value that was there and, 10 ms within (half the range where it is shorter than
+  20 ms), one of the value moved, so it ramps in and out (C-A6); the points between the two within
+  move by `delta`, and those within 10 ms of an end go. A switch jumps instead, at `from` and at
+  `to`. `thin` keeps of the points from `from` to `to` those that Douglas–Peucker keeps within
+  `tolerance` (see `lane_draw`). `delete`, `cut` and `thin` of a lane that is not there are
+  `missing`; `paste` and `shift_value` make it, from the value of its setting.
+- `lane_draw` puts `points` (times from `from` to `to`, in order; `out_of_range: points`
+  otherwise), thinned, in place of the range from `from` to `to`, as `lane_range` `paste` does.
+  Thinning (C-A4) keeps the first and the last point and both points of a jump (two at one time),
+  and between them, by Douglas–Peucker, each point without which the lane would go further than
+  `tolerance` from a point drawn, in value at its time as its scale measures it (in logarithms
+  on a scale of logarithms): where `tolerance` is left out, 0.1 dB for a fader or the level of a
+  send, 0.5 % of the range of a pan (`pan.*`, and the pan of a send: 0.01 of `x`), and 0.1 % of
+  the range of any other setting as its control shows it (of the logarithms of its ends for a
+  frequency or a Q); of a switch, the points where its value changes. The constants are
+  `LANE_THIN_*` and `LANE_RAMP_PER_SECOND` of `crates/model/src/audio/automation.rs`. A negative
+  or not finite `tolerance` is `out_of_range` (`tolerance`).
+- `clear_lanes` takes away the lanes of `paths` (each must be there, else `missing`; an empty
+  list is `out_of_range: paths`), or every lane of `of` where it is left out, as one step of undo
+  (Clear Track Automation, p. 3912). `then` says what each setting is left at: `keep` (where it is
+  left out) as it is set; `reset` as a new strip has it (an insert as a new effect of its kind, a
+  send as a new send to its bus; a VCA at 0 dB and not muted); `hold` at the value of its lane at
+  `at` (required: `out_of_range: at`). The settings are set by one `set_track_audio`, `set_bus`
+  or `set_vca` of what changes, after the lanes are gone.
+- The edits `set_track_audio` and `set_bus` take away, first, the lanes that their patch would
+  leave naming a setting that is no longer there or is of another kind: of a send, an output or
+  an insert that a patch of `sends`, `outputs`, `inserts` or `track_fx` takes away, of a Ducker
+  gone, or of an insert that keeps its id with an effect of another kind. A lane left out of its
+  range by a patch is still refused.
 
 ## Grades
 
@@ -3701,7 +3807,7 @@ real ids. For example:
 | `engine.yielding` | `{"to": "desktop"}`: the engine is about to end, to yield the project to the desktop's engine (see `engine.yield`) |
 | `media.proxy` | `{"media": "m1", "state": "queued" \| "running" \| "done" \| "failed", "progress": 0.5, "message"?: "..."}` (see Proxies) |
 | `media.waveform` | `{"media": "m1"}`, or `{"media": "m1", "stream": 1}` for the waveform of a stream (background analysis finished; query again for data or error) |
-| `render.progress` | `{"job", "state": "running" \| "done" \| "failed" \| "cancelled", "frame", "frames", "fps", "path", "encoder"?, "message"?, "missing_luts"?}` (see Rendering a timeline, and Grades in the picture) |
+| `render.progress` | `{"job", "state": "running" \| "done" \| "failed" \| "cancelled", "frame", "frames", "fps", "path", "encoder"?, "message"?, "missing_luts"?, "measuring"?, "normalization"?}` (see Rendering a timeline, Grades in the picture, and The sound of an export) |
 | `scopes.frame` | `{"scope_id": "scope-1", "view": "timeline", "frame": n, "width": w, "height": h, "rgba": "<base64>"}`: a picture of a scope, to the connection that subscribed it only (see Scopes) |
 | `gallery.changed` | `{}`: the Gallery was changed; call `gallery.list` again (see The Gallery) |
 | `window_presets.changed` | `{}`: the window presets were changed; call `window_presets.list` again (see Window presets) |
@@ -3772,7 +3878,7 @@ commits to it; and any client may send transactions. So:
 | `-32700` | the line is not JSON (id `null`) | |
 | `-32600` | not a request object, `jsonrpc` is not `"2.0"`, no `method`, a bad `id` (answered with id `null`), a request before `hello`, a second `hello`, a `hello` of another protocol, a line over 16 MiB, `view.*` or `engine.yield` from a client that is not the desktop | `{"reason": "protocol", "supported": [2]}` for a `hello` of another protocol |
 | `-32601` | no such method; `view.*` (but `view.sample` of a frame drawn off screen), `transport.*` and `scopes.*` (but `scopes.statistics` of a frame drawn off screen) in a `--headless` engine; `media.make_proxy` in an engine that makes no proxies; `engine.yield` in an engine that is not headless | |
-| `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name`; a speed of `transport.play` out of −8…8 or 0; `transport.load` of media or a timeline not in the project; `timeline.duration` of a timeline not there; `media.import` or `media.inspect` with no paths or a relative path; `media.thumbnail`, `media.waveform` or `media.make_proxy` of media not there; `media.waveform` of a `stream` that is not a stream of sound of the media; `media.thumbnail` of a frame outside the media, a height outside 1…270 or a width over 16384; a bad parent or rectangle of `view.*`; `render.start` with a bad path, codec, quality, timeline, range (an empty timeline has none, so it cannot be exported) or `subtitle_tracks`, and `render.cancel` of a job that is not there; `scopes.*` with bad settings, a scope that is not the connection's, too many scopes or bins out of range; `luts.list` with a `folder` outside the roots; `grade.export_lut` of a size, path, grade or node that it does not take; `transaction.apply` with a `gesture` id that is empty or longer than 64 characters; `view.sample` off the frame or of an even size, and `view.sample` or `scopes.statistics` naming a node that cannot be drawn | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above; `{"reason": "speed"}`; `{"index": i, "path": "...", "reason": "relative"}`; `{"reason": "parent"}` or `{"reason": "rect"}` (`view.*`); `{"reason": "missing", "media": "..."}` or `{"reason": "missing", "timeline": "..."}` (`render.start` too); `{"reason": "stream", "stream": n}` (`media.waveform`); `{"reason": "out_of_range", "frame": n}`; `{"reason": "subtitle_track", "track": "..."}` for a `subtitle_tracks` entry that is not a subtitle track of the timeline, or is named twice; `{"reason": "settings" \| "missing" \| "too_many" \| "bins", ...}` (`scopes.*`, see Scopes); `{"reason": "outside_roots", "folder": "..."}` (`luts.list`); `{"reason": "size" \| "path" \| "missing" \| "not_a_corrector" \| "cannot_bake", ...}` (`grade.export_lut`, see Generate LUT); `{"reason": "gesture"}`; `{"reason": "outside" \| "size" \| "monitor" \| "node" \| "grade" \| "timeline" \| "clip"}` (see Samples and the pointer) |
+| `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name`; a speed of `transport.play` out of −8…8 or 0; `transport.load` of media or a timeline not in the project; `timeline.duration` of a timeline not there; `media.import` or `media.inspect` with no paths or a relative path; `media.thumbnail`, `media.waveform` or `media.make_proxy` of media not there; `media.waveform` of a `stream` that is not a stream of sound of the media; `media.thumbnail` of a frame outside the media, a height outside 1…270 or a width over 16384; a bad parent or rectangle of `view.*`; `render.start` with a bad path, codec, quality, timeline, range (an empty timeline has none, so it cannot be exported), `subtitle_tracks` or `audio` (see The sound of an export), and `render.cancel` of a job that is not there; `scopes.*` with bad settings, a scope that is not the connection's, too many scopes or bins out of range; `luts.list` with a `folder` outside the roots; `grade.export_lut` of a size, path, grade or node that it does not take; `transaction.apply` with a `gesture` id that is empty or longer than 64 characters; `view.sample` off the frame or of an even size, and `view.sample` or `scopes.statistics` naming a node that cannot be drawn | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above; `{"reason": "speed"}`; `{"index": i, "path": "...", "reason": "relative"}`; `{"reason": "parent"}` or `{"reason": "rect"}` (`view.*`); `{"reason": "missing", "media": "..."}` or `{"reason": "missing", "timeline": "..."}` (`render.start` too); `{"reason": "stream", "stream": n}` (`media.waveform`); `{"reason": "out_of_range", "frame": n}`; `{"reason": "subtitle_track", "track": "..."}` for a `subtitle_tracks` entry that is not a subtitle track of the timeline, or is named twice; `{"reason": "bus" \| "rate" \| "audio_codec" \| "bitrate" \| "standard" \| "target", ...}` (the `audio` of `render.start`); `{"reason": "settings" \| "missing" \| "too_many" \| "bins", ...}` (`scopes.*`, see Scopes); `{"reason": "outside_roots", "folder": "..."}` (`luts.list`); `{"reason": "size" \| "path" \| "missing" \| "not_a_corrector" \| "cannot_bake", ...}` (`grade.export_lut`, see Generate LUT); `{"reason": "gesture"}`; `{"reason": "outside" \| "size" \| "monitor" \| "node" \| "grade" \| "timeline" \| "clip"}` (see Samples and the pointer) |
 | `-32001` | a transaction, undo or redo was refused; the project is exactly as it was; or `render.start` was refused before anything was written or taken away (with `{"reason":"stopping"}` while the engine is stopping; with no `data` when the export could not be started) | the refusal, below |
 | `-32002` | `media.import` or `media.inspect`: a file cannot be read; nothing was added. `transport.load`, `media.thumbnail`, `media.waveform`: the file of the media cannot be opened or decoded. The analysis of the engine stopped (no `data`) | `{"path": "<as sent>", "reason": "...", "message": "..."}`, below |
 | `-32003` | `view.*`: the view cannot be made, there is none, or its window is gone | `{"reason": "..."}`, see The view |
@@ -3872,6 +3978,14 @@ the expanded operation list. Refusal emits no `project.changed` and adds no hist
 | `unknown_group` | `id` | an operation names a group of tracks that is not there |
 | `audio_settings` | `why` | a patch of sound (`set_track_audio`, `set_bus`, `set_vca`, `set_track_group`, `set_timeline_audio`) is not an object, names a field that is not known or may not be set so (`id`, `lanes`), or holds a value of the wrong kind; `why` is the reason |
 
+Of automation (T14): `missing` with `what: "lane"` (`id` its path) or `what: "point"` (`id`
+`ticks/scale`); `out_of_range` with `what` `lane` (a lane of no setting, of another kind or scale,
+of no point, out of the range of its setting, or a switch that is neither 0 nor 1; an insert that
+keeps its id with an effect of another kind while a lane names it), `lane_integer` (of a whole
+number), `lane_not_wired` (of a setting that the graph does not move as a lane would), `points`, `at`,
+`from`, `to`, `by`, `value`, `delta`, `tolerance` or `paths` (see Automation, above);
+`wrong_track` with `what: "lanes"`; `empty_range` of a range or a move of nothing.
+
 A track that a group, a sidechain or a ducker names is refused as `missing` (`what: "track"`)
 where it is not there; `remove_track` of it while it is named is refused as `in_use`. `out_of_range` also
 names (schema 4): of a clip `gain_db`, `pan` (also their keys), `fade`, `eq`, `pitch`,
@@ -3942,7 +4056,8 @@ again. `path` reports the actual destination.
 The project revision and undo history are not changed by an export.
 
 The export uses a snapshot taken at start, independent original-media decoders, the same
-scene compositor as preview, and the same stereo timeline mixer. It never uses proxies.
+scene compositor as preview, and the same graph of the sound (see The sound of an export). It
+never uses proxies.
 Edits, undo, or deletion of that timeline after start do not change the export. Titles are
 composited into the picture. Subtitle tracks are **not burned into the picture**.
 The GPU is shared with preview: a waiting preview composition takes the next turn; export
@@ -3952,8 +4067,10 @@ again and goes on: no frame was written for it yet, so the file is whole; the fi
 says the device was made again. If none can be made, or it is lost three times on one frame,
 the export fails, saying so. An encoder that fails after it opened (a frame, the sound or
 finishing the file) fails the export with a message naming the encoder and the frame; the
-ProRes fallback is only ever taken when no encoder opens, never in the middle of a file. Audio is AAC, 192 kb/s, 48 kHz stereo; a timeline with no enabled
-clip on an enabled audio track gives a file with no sound. H.264 uses 8-bit picture; HEVC uses
+ProRes fallback is only ever taken when no encoder opens, never in the middle of a file. The
+sound is AAC at 192 kb/s by default, at the rate of the timeline, in the channels of the bus
+monitored (see The sound of an export); a film of a timeline with no enabled clip on an enabled
+audio track has no sound. H.264 uses 8-bit picture; HEVC uses
 10 bits when the project contains media of more than 8 bits or its output is of HDR; ProRes always
 10 bits. The picture is tagged with the colours of the project's output space (Colour management,
 What colour management does to the picture). If no hardware
@@ -3977,6 +4094,83 @@ with no `>` after it (`<3`, `a<b`) is written as it is. `{\…}` override codes 
 are, so `{\an8}` places a line at the top as players expect.
 Tracks not listed are omitted, shown or not; a listed track with no cue in the range produces
 an empty SRT.
+
+### The sound of an export
+
+Plan T6 of phase 3. The export runs the same graph of the sound as playback (the timeline's
+tracks, buses, VCAs, effects and lanes), built for export from the snapshot: a Listen of a
+sidechain is never exported, every clip is read by a reader that waits for it (a clip that is
+heard and cannot be read fails the export), and the graph starts at the first sample of the
+range with the preroll that playback from the same sample has (the graph's settling, at most
+10 s). So the sound exported from a sample is, to the bit, the sound that playback from that
+sample gives the device (the null test: a playback captured with `--sound capture=<path>` less an
+export as `pcm_f32le` is nothing but zeros), where:
+
+- the file is at the rate of the device (another rate is made by another filter);
+- the bus is stereo, or is compared as the device hears it (another format is folded into two
+  sides by the device);
+- no sample goes beyond ±1, or the file is of floats (the device's copy, and AAC and PCM of 24
+  bits, are clipped);
+- the playback started where it was asked: a playback whose graph is not built and prerolled
+  within 2 s goes on by the clock of the system and starts its sound again half a second ahead of
+  the picture (see The transport), at a sample of its own and not at the requested frame. The
+  session that a playback starts as the device is first made ready starts where the clock is by
+  then, a sample or so after the frame; the digest's `audio_sample` less `audio_samples` is where
+  each session started.
+
+An export of a range and one of the whole timeline come within −90 dBFS of each other after the
+preroll where the graph settles within 10 s.
+
+`audio` is optional, every field of it too; unknown fields are refused:
+
+- `bus`: the bus rendered, a main output (a bus that outputs to no bus) or the bus monitored; by
+  default the bus monitored, else the first main output. The file has the channels of its format
+  (mono, stereo, 3.0, 4.0, 5.0, 5.1, 7.0, 7.1), laid on the speakers of the file in the order of
+  libav's channels: 5.0 and 5.1 with the surrounds at the back (5.1 is `FL FR FC LFE BL BR`, as
+  WAV and AAC have it), 7.0 and 7.1 with the surrounds at the sides and the rears at the back
+  (`FL FR FC LFE BL BR SL SR`), the S of 4.0 at the back centre.
+- `rate`: samples a second of the file, 7350 to 192000; by default the timeline's
+  (`sample_rate`). Another rate is made by the windowed sinc that makes the device's rate. AAC
+  takes only the rates of the table of MPEG-4 audio: 7350, 8000, 11025, 12000, 16000, 22050,
+  24000, 32000, 44100, 48000, 64000, 88200 and 96000.
+- `codec`: `aac` (in `.mp4`, `.mov`, `.m4a`), `pcm_s24le` or `pcm_f32le` (in `.mov`, `.wav`); by
+  default `pcm_s24le` in `.wav` and `aac` else. AAC and PCM of 24 bits are clipped to −1…1, the
+  one place where the sound of an export is clipped; PCM of floats is written as the graph gives
+  it, over 1 too.
+- `bitrate`: of AAC only, 128000, 192000 (the default), 256000 or 320000.
+- `normalize`: Audio Normalization of the Deliver page (p. 4055), of this export only, never of
+  the project: `{"standard", "target"?, "mode": "normalize" | "optimize"}`. `standard` is an id
+  of the table of loudness standards (`ebu-r128`, `spotify`, `apple-podcasts`, …); `target`, in
+  LUFS from −60 to 0, is the standard's target by default (the timeline's Target Loudness for a
+  standard without one). The bus is measured first over the whole range (BS.1770, its true peak
+  by 8 times oversampling), then: `normalize` adds the gain that brings it to whichever of the
+  target and the standard's highest true peak it meets first; `optimize` adds the gain that brings
+  it to the target and, where its true peak would go over the highest, a limiter of true peaks
+  after it (the Limiter effect, its ceiling at the highest true peak, release 100 ms), and
+  measures again: the loudness that the limiter took is given back once where it is more than
+  0.1 LU, and the ceiling is lowered by what the true peak still goes over, twice at the most.
+
+Without `audio`, a film of a timeline that has no clip of sound that is on has no sound and
+needs no bus. Audio Normalization asked for of a film without sound is not done, and `message`
+says so.
+
+While Audio Normalization measures, before the first frame is written, `render.progress` carries
+`measuring`: `{"pass", "passes", "frame", "frames"}` (pass `pass` of at most `passes`, `frame` of
+`frames` samples of it measured); each pass is told as it starts. `fps` counts from the end of
+the measuring.
+
+With `"video": null` the sound is exported alone, without `codec` or `quality`, into a `.wav` or
+an `.m4a`; the range is still in frames of the timeline, and the progress counts them. A bus,
+rate, codec, rate of bits, standard or target that cannot be is refused with `-32602` and
+`{"reason": "bus" | "rate" | "audio_codec" | "bitrate" | "standard" | "target"}` (`bus`,
+`rate`, `bitrate` or `standard` beside it) before anything is written.
+
+`render.progress` carries, once Audio Normalization has measured, `normalization`:
+`{"standard", "mode", "target", "true_peak_max", "gain_db", "ceiling_db" | null,
+"before": {"integrated", "true_peak"}, "after": {"integrated", "true_peak"}, "met"}`
+(LUFS and dBTP; `after` measured again where a limiter was put in, else `before` raised by the
+gain; `null` for silence). Where it could not meet the standard (`met` false: a sound of no
+loudness, left as it is, or one that came as near as it could), `message` says so too.
 
 `render.cancel {job}` answers `{}` and requests cancellation; wait for the terminal progress
 notification before assuming its files have been cleaned up. An unknown job is `-32602`.

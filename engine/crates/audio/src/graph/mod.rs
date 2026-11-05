@@ -34,6 +34,7 @@
 //! (convention 3; `tests/no_alloc.rs`, `tests/rt_audit.rs`, which reads every file here but
 //! `build.rs`). Everything is taken when the graph is built.
 
+mod automation;
 mod build;
 mod build_fx;
 mod build_retune;
@@ -49,7 +50,9 @@ mod tests;
 
 use columbina_model::Id;
 
-pub use build::{audible, node_of, BuildError, Context, Controls, Made, Maker};
+pub use build::{
+    audible, lanes_need_a_new_graph, node_of, BuildError, Context, Controls, Made, Maker,
+};
 pub use build_retune::{retune, without_clip_levels};
 pub use clip::{radius, resampled, Reach};
 pub use taps::Level;

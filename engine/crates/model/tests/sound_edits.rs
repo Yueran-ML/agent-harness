@@ -552,9 +552,13 @@ fn effects_are_copied_from_one_chain_onto_others_in_place_of_theirs() {
             "to": [{"track": "A2"}, {"bus": "B1"}, {"clip": "s5"}, {"track": "A1"}]}),
     );
     let a1 = &track(&project, "A1").audio.strip.inserts;
-    assert_eq!(&track(&project, "A2").audio.strip.inserts, a1);
-    assert_eq!(&project.timelines[0].buses[0].strip.inserts, a1);
     let effects = |list: &[Insert]| list.iter().map(|i| i.effect.clone()).collect::<Vec<_>>();
+    let ids = |list: &[Insert]| list.iter().map(|i| i.id.clone()).collect::<Vec<_>>();
+    // The copies are new inserts: on A2, above the fx1 that they replace (T14's review).
+    let a2 = &track(&project, "A2").audio.strip.inserts;
+    assert_eq!(effects(a2), effects(a1));
+    assert_eq!(ids(a2), ["fx2", "fx3"]);
+    assert_eq!(&project.timelines[0].buses[0].strip.inserts, a1);
     assert_eq!(effects(&clip(&project, "s5").effects), effects(a1));
 }
 

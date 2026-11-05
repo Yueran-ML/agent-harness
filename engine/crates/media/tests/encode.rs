@@ -418,7 +418,7 @@ fn what_cannot_be_written_is_refused() {
         settings,
         Some(AudioSettings {
             rate: 7,
-            channels: 2,
+            ..AudioSettings::default()
         }),
     )
     .err()

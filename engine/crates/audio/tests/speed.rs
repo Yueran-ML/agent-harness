@@ -249,6 +249,7 @@ fn stepped(step: i64) -> Project {
         Lane {
             points: vec![point(step, -100.0), point(step + 1, 0.0)],
             kind: LaneKind::Continuous,
+            scale: None,
         },
     );
     track.clips[0].fade_out = 25;

@@ -99,8 +99,8 @@ pub use decode::{
     video_start, Converter, Decoded, Hardware, HardwarePath, Picture, Rgba, VideoDecoder,
 };
 pub use encode::{
-    encoders_for, AudioSettings, Codec, ColorTags, ContentLight, EncoderPath, Mastering, Quality,
-    VideoSettings, Writer,
+    encoders_for, AudioCodec, AudioSettings, Codec, ColorTags, ContentLight, EncoderPath,
+    Mastering, Quality, SoundWriter, VideoSettings, Writer, AUDIO_BIT_RATE,
 };
 pub use error::MediaError;
 pub use identity::identity;

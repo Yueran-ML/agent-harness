@@ -22,6 +22,7 @@
 //! A fader, a send, a VCA and a boom are written in decibels, at most +10; -100 or below is -∞
 //! (see [`gain_of_db`]).
 
+pub mod automation;
 pub mod fx;
 pub mod param;
 pub mod routing;
@@ -29,7 +30,7 @@ pub mod routing;
 use serde::{Deserialize, Serialize};
 
 pub use fx::{Effect, Equalizer, Insert, SourceRef};
-pub use param::{AudioKey, AudioParam, KeyInterp, Lane, LaneKind, LanePoint, Lanes};
+pub use param::{AudioKey, AudioParam, KeyInterp, Lane, LaneKind, LanePoint, LaneScale, Lanes};
 pub use routing::{Bus, BusFormat, GroupControl, Output, Send, TrackGroup, Vca, FIRST_BUS};
 
 use crate::ops::OpError;
@@ -904,17 +905,28 @@ pub fn first_buses() -> Vec<Bus> {
 }
 
 /// The settings of a strip that lanes of automation may be of, as an object whose paths are
-/// the paths of the lanes: those of its fields (`fader_db`, `trim_db`, `inserts_on`, `pan.x`,
+/// the paths of the lanes: those of its fields (`fader_db`, `trim_db`, `pan.x`,
 /// `eq.on`, `eq.gain_db`, `dynamics.compressor.threshold_db`, `track_fx.amount_db`), its bands of
 /// equalizer by their place from 0 (`eq.2.gain_db`), its sends and outputs by their bus
 /// (`send.B3.level_db`, `send.B3.pan.x`, `output.B2.on`), and its inserts by their id
 /// (`insert.fx1.on`, `insert.fx1.ceiling_db`); and `mute`, which a track and a bus have beside
 /// it. A number is a setting that changes smoothly, and a lane of it is continuous; a switch is
-/// a lane of a setting that is on or off. What is neither (a kind, a mode, a source) has none.
-/// The engine reads it too, to tell a change of the settings that the graph of the sound takes
-/// as it plays from one that needs another graph (T5).
+/// a lane of a setting that is on or off. What is neither (a kind, a mode, a source) has none,
+/// nor has a whole number (`eq.<band>.slope`, the semitones of a Pitch), nor what the graph does
+/// not move as a lane would (see [`automation::drop_unwired`]: Effects In, the pan's switch,
+/// Boom, rotation and spread, whether a send is before the fader, the Lookahead of a Ducker, a
+/// Pitch). The engine reads it too, to tell a change of the settings that the graph of the sound
+/// takes as it plays from one that needs another graph (T5).
 #[must_use]
 pub fn automatable(strip: &Strip) -> serde_json::Value {
+    let mut view = settings_of_strip(strip);
+    automation::drop_unwired(&mut view);
+    view
+}
+
+/// The settings of a strip laid out as [`automatable`] lays them out, but with those that no lane
+/// is of yet: what a path names, to say why a lane of it is refused.
+pub(crate) fn settings_of_strip(strip: &Strip) -> serde_json::Value {
     let mut view = serde_json::to_value(strip).unwrap_or_default();
     let Some(object) = view.as_object_mut() else {
         return serde_json::Value::Null;
@@ -971,48 +983,19 @@ fn unlisten(view: &mut serde_json::Value) {
     }
 }
 
-/// The kind of a lane of the setting at `path` of `view` (see [`automatable`]), or none where
-/// there is no such setting. A key that holds a `.` (a bus or an insert named so) is found as a
-/// whole.
-fn lane_kind(view: &serde_json::Value, path: &str) -> Option<LaneKind> {
-    match view {
-        serde_json::Value::Number(_) if path.is_empty() => Some(LaneKind::Continuous),
-        serde_json::Value::Bool(_) if path.is_empty() => Some(LaneKind::Switch),
-        serde_json::Value::Object(object) if !path.is_empty() => {
-            object.iter().find_map(|(key, inner)| {
-                if path == key {
-                    lane_kind(inner, "")
-                } else {
-                    lane_kind(inner, path.strip_prefix(key.as_str())?.strip_prefix('.')?)
-                }
-            })
-        }
-        _ => None,
-    }
-}
-
-/// Check the lanes of automation of a strip, or of a VCA where `strip` is none: each of a
-/// setting that it has, of the kind of that setting, with points (see [`Lane::is_valid`]).
-fn lanes_valid(lanes: &Lanes, strip: Option<&Strip>) -> Result<(), OpError> {
-    let view = match strip {
-        Some(strip) => automatable(strip),
-        None => serde_json::json!({ "fader_db": 0.0, "mute": false }),
-    };
-    if lanes
-        .iter()
-        .all(|(path, lane)| lane.is_valid() && lane_kind(&view, path) == Some(lane.kind))
-    {
-        Ok(())
-    } else {
-        Err(out("lane"))
-    }
-}
-
 /// Give each insert of a strip that has no id the next `fx<n>` of the strip.
 pub fn name_inserts(strip: &mut Strip) {
+    name_inserts_after(strip, &[]);
+}
+
+/// Give each insert of a strip that has no id the next `fx<n>` above every id of the strip and of
+/// `before`, the inserts that it had before it was changed: so an insert given no id is always a
+/// new one, and never takes the id, and so the lanes, of one that it replaces (T14's review).
+pub fn name_inserts_after(strip: &mut Strip, before: &[Insert]) {
     let mut highest = strip
         .inserts
         .iter()
+        .chain(before)
         .filter_map(|insert| insert.id.strip_prefix("fx")?.parse::<u64>().ok())
         .max()
         .unwrap_or(0);
@@ -1030,6 +1013,7 @@ pub fn place_outputs(buses: &[Bus], track: &mut Track) {
         return;
     }
     name_inserts(&mut track.audio.strip);
+    automation::fill_scales(&mut track.audio.lanes);
     let outputs = &mut track.audio.strip.outputs;
     let named = outputs.iter().any(|o| o.bus == FIRST_BUS);
     if !named && buses.iter().any(|b| b.id == FIRST_BUS) {
@@ -1062,7 +1046,14 @@ pub fn check_track(track: &Track) -> Result<(), OpError> {
         check_channels(track, clip)?;
     }
     audio.strip.check(false)?;
-    lanes_valid(&audio.lanes, Some(&audio.strip))
+    automation::check_lanes(
+        &audio.lanes,
+        automation::Owner::Strip {
+            strip: &audio.strip,
+            mute: audio.mute,
+            bus: false,
+        },
+    )
 }
 
 /// Check that a clip on a track of sound plays as many channels as the track has, where it
@@ -1168,7 +1159,12 @@ pub fn check_timeline(timeline: &Timeline) -> Result<(), routing::Wrong> {
             return Err(wrong(out("label")));
         }
         bus.strip.check(true).map_err(wrong)?;
-        lanes_valid(&bus.lanes, Some(&bus.strip)).map_err(wrong)?;
+        let owner = automation::Owner::Strip {
+            strip: &bus.strip,
+            mute: bus.mute,
+            bus: true,
+        };
+        automation::check_lanes(&bus.lanes, owner).map_err(wrong)?;
     }
     for group in &timeline.track_groups {
         if group.name.chars().count() > crate::grade::LONGEST_LABEL {
@@ -1183,7 +1179,7 @@ pub fn check_timeline(timeline: &Timeline) -> Result<(), routing::Wrong> {
         if !level(vca.fader_db) {
             return Err(wrong(out("fader_db")));
         }
-        lanes_valid(&vca.lanes, None).map_err(wrong)?;
+        automation::check_lanes(&vca.lanes, automation::Owner::Vca(vca)).map_err(wrong)?;
     }
     let settings = &timeline.audio;
     let range = settings.record.active_range.is_none_or(|r| {

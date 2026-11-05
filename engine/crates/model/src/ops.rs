@@ -129,10 +129,13 @@ use crate::project::{
 use crate::span;
 use crate::time::{Rate, Speed, Time};
 
+mod automation;
 mod color;
 mod grade;
 mod sound;
 
+pub(crate) use automation::owner_of;
+pub use automation::LanesOf;
 pub(crate) use grade::{grade_at, group_of_clip, keeps_node_id, reserve_node_ids};
 pub(crate) use sound::inserts_of;
 pub use sound::InsertsOf;
@@ -807,6 +810,36 @@ pub enum Op {
         timeline: Id,
         /// The settings that change.
         patch: serde_json::Value,
+    },
+    /// Put a lane of automation in place of the one of the setting at `path` of a track of
+    /// sound, a bus or a VCA, or add it where there is none, or take it away (`null`). Its inverse
+    /// puts back the lane that was there, or takes it away.
+    SetLane {
+        /// The timeline.
+        timeline: Id,
+        /// The track of sound, bus or VCA.
+        of: LanesOf,
+        /// The path of the setting (see [`crate::audio::automation`]).
+        path: String,
+        /// The lane, or `null`, which must be written, to take it away.
+        #[serde(deserialize_with = "nullable_required")]
+        lane: Option<crate::audio::Lane>,
+    },
+    /// Put `points` in place of the `remove` points of a lane from its point `at` on. Its
+    /// inverse puts back the points that it took away, in place of those that it put.
+    SpliceLane {
+        /// The timeline.
+        timeline: Id,
+        /// The track of sound, bus or VCA.
+        of: LanesOf,
+        /// The path of the setting of the lane.
+        path: String,
+        /// The place of the first point that is put in place of, from 0.
+        at: usize,
+        /// How many points are taken away.
+        remove: usize,
+        /// The points that are put there.
+        points: Vec<crate::audio::LanePoint>,
     },
 }
 
@@ -1530,6 +1563,13 @@ fn range_message(what: &str) -> String {
         "input_sat_rolloff" | "output_sat_rolloff" => "the saturation rolloff does not start              below its limit, each a number of nits from 1 to 10000"
             .into(),
         "limit_gamut" => "the output gamut cannot be limited to camera native".into(),
+        "lane" => "the lane is not of a setting that a lane may be of, of its kind and scale,                    with points within the range of the setting"
+            .into(),
+        "lane_integer" => "the setting is a whole number, which has no lane".into(),
+        "lane_not_wired" => {
+            "the setting is not one that the mix moves as a lane would (Effects In, the pan's              switch, Boom, rotation or spread, a send's place before the fader, the Lookahead              of a Ducker, or a Pitch), so it has no lane"
+                .into()
+        }
         "media_lut" => format!(
             "a LUT of the source clip is not a name relative to the folders of LUTs: empty, \
              longer than {LONGEST_PATH} characters, absolute, going up, or holding a NUL or a \
@@ -1867,6 +1907,20 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
         Op::SetTimelineAudio { timeline, patch } => {
             sound::set_timeline_audio(project, &timeline, &patch)
         }
+        Op::SetLane {
+            timeline,
+            of,
+            path,
+            lane,
+        } => automation::set_lane(project, &timeline, of, path, lane),
+        Op::SpliceLane {
+            timeline,
+            of,
+            path,
+            at,
+            remove,
+            points,
+        } => automation::splice_lane(project, &timeline, of, path, (at, remove), points),
     }
 }
 
@@ -1923,6 +1977,8 @@ pub fn apply_done(project: &mut Project, op: Op) -> Result<(Op, Op), OpError> {
             | Op::SetTimelineAudio { .. }
             | Op::SetInsert { .. }),
         ) => sound::done(project, op, &inverse),
+        // A lane is given back with the scale that it was given.
+        Some(op @ Op::SetLane { .. }) => automation::done(project, op),
         // A group that the engine made is named as it was made.
         Some(Op::SetClip {
             timeline,
@@ -2128,6 +2184,10 @@ fn add_timeline(
     name(&mut counter, &mut claims, &[], &mut timeline.tracks)?;
     for bus in &mut timeline.buses {
         audio::name_inserts(&mut bus.strip);
+        audio::automation::fill_scales(&mut bus.lanes);
+    }
+    for vca in &mut timeline.vcas {
+        audio::automation::fill_scales(&mut vca.lanes);
     }
     for track in &mut timeline.tracks {
         audio::place_outputs(&timeline.buses, track);
@@ -3955,6 +4015,10 @@ impl Project {
         for timeline in &mut self.timelines {
             for bus in &mut timeline.buses {
                 audio::name_inserts(&mut bus.strip);
+                audio::automation::fill_scales(&mut bus.lanes);
+            }
+            for vca in &mut timeline.vcas {
+                audio::automation::fill_scales(&mut vca.lanes);
             }
             for track in &mut timeline.tracks {
                 audio::place_outputs(&timeline.buses, track);

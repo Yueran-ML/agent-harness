@@ -552,6 +552,52 @@ fn points(lane: &Lane) -> impl Iterator<Item = f64> + '_ {
     lane.points.iter().map(|point| point.value)
 }
 
+/// Whether putting the lanes `after` in place of `before`, of a strip `strip` of a timeline of
+/// `rate`, changes what the graph was built from, so that a new graph must be built and swapped
+/// in, rather than the lanes alone put in place of those of the graph that plays (for T5's
+/// message "replace a lane"; T14's review): a lane added or taken away; or one whose values
+/// change whether Dynamics or the equalizer is built, or the settling of the strip (the slowest
+/// settings that its lanes reach, T8); any lane of the Ducker or of an insert, whose settling is
+/// worked out from the values of their lanes too. A lane of the fader, the trim, the polarity,
+/// the mute, a pan, a send or an output changes nothing of it.
+#[must_use]
+pub fn lanes_need_a_new_graph(
+    strip: &StripModel,
+    before: &Lanes,
+    after: &Lanes,
+    rate: u32,
+) -> bool {
+    if before.keys().ne(after.keys()) {
+        return true;
+    }
+    let changed: Vec<&str> = before
+        .iter()
+        .filter(|(path, lane)| after.get(*path) != Some(lane))
+        .map(|(path, _)| path.as_str())
+        .collect();
+    let starts = |prefix: &str| changed.iter().any(|path| path.starts_with(prefix));
+    if starts("insert.") || starts("track_fx.") {
+        return true;
+    }
+    if starts("dynamics.") {
+        let on = |lanes| ever_on(strip.dynamics.on, lanes, "dynamics.on");
+        let settings = dynamics_settings(&strip.dynamics, false);
+        let settle = |lanes| Dynamics::settle_for(&slowest_dynamics(settings, lanes), rate);
+        if on(before) != on(after) || settle(before) != settle(after) {
+            return true;
+        }
+    }
+    if starts("eq.") {
+        let on = |lanes| ever_on(strip.eq.on, lanes, "eq.on");
+        let settings = eq_settings(&strip.eq, Variant::Strip);
+        let settle = |lanes| eq::settle_for(&slowest_eq(settings, lanes), rate);
+        if on(before) != on(after) || settle(before) != settle(after) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Whether the switch of `path` is on, as set or anywhere its lane goes.
 fn ever_on(on: bool, lanes: &Lanes, path: &str) -> bool {
     on || lanes
@@ -1428,6 +1474,13 @@ impl Graph {
                 let Some(param) = param_of(meta, path) else {
                     continue;
                 };
+                // With Effects In off no insert sounds, whatever the lane of its switch says
+                // (T14's review): the lane is not read.
+                let insert_switch =
+                    path.starts_with("insert.") && path.rsplit('.').next() == Some("on");
+                if insert_switch && !model.inserts_on {
+                    continue;
+                }
                 let delay = match param {
                     StripParam::Trim | StripParam::Invert => i64::from(arrival[at]),
                     // The switch and the amount of a Ducker act on the sound that leaves it, a
@@ -1451,10 +1504,9 @@ impl Graph {
                     _ => after,
                 };
                 let index = strip.lanes.len();
-                strip.lanes.push(LaneOf {
-                    lane: lane.clone(),
-                    delay,
-                });
+                strip
+                    .lanes
+                    .push(LaneOf::new(lane, delay, &source.owner, path));
                 match param {
                     StripParam::Trim => strip.trim_lane = Some(index),
                     StripParam::Invert => strip.sign_lane = Some(index),
@@ -1474,10 +1526,7 @@ impl Graph {
                             let mut at = index;
                             if !first {
                                 at = strip.lanes.len();
-                                strip.lanes.push(LaneOf {
-                                    lane: lane.clone(),
-                                    delay: 0,
-                                });
+                                strip.lanes.push(LaneOf::new(lane, 0, &source.owner, path));
                             }
                             first = false;
                             strip.lanes[at].delay =
@@ -1506,10 +1555,8 @@ impl Graph {
                 for (path, slot) in [("fader_db", &mut term.fader), ("mute", &mut term.mute)] {
                     if let Some(lane) = vca.lanes.get(path) {
                         *slot = Some(strip.lanes.len());
-                        strip.lanes.push(LaneOf {
-                            lane: lane.clone(),
-                            delay: after,
-                        });
+                        let owner = Owner::Vca(vca.id.clone());
+                        strip.lanes.push(LaneOf::new(lane, after, &owner, path));
                     }
                 }
             }
@@ -1610,6 +1657,19 @@ impl Graph {
     /// `fader_db` and `mute`), if the graph has it; and `solo`, whether a track or a bus is heard
     /// while others are soloed (1) or silenced (0), which [`Graph::set`] takes as the outcome of
     /// the solos, not as a solo button.
+    /// How many places of the graph read the lane of `owner` at `path`: one for a lane of a
+    /// strip, one for each output of a lane of the pan of a strip (each read after its own
+    /// delay), and one for each member of a lane of a VCA; none where the graph does not read it.
+    /// What a lane put in place of another while the graph plays has to reach (T5).
+    #[must_use]
+    pub fn reads_of_lane(&self, owner: &Owner, path: &str) -> usize {
+        self.strips
+            .iter()
+            .flat_map(|strip| &strip.lanes)
+            .filter(|lane| lane.owner == *owner && &*lane.path == path)
+            .count()
+    }
+
     #[must_use]
     pub fn control(&self, owner: &Owner, path: &str) -> Option<Control> {
         find_control(

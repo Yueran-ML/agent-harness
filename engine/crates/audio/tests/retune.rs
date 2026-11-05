@@ -268,6 +268,7 @@ fn a_change_of_what_the_graph_is_made_of_needs_another_graph() {
             value: -3.0,
         }],
         kind: LaneKind::Continuous,
+        scale: None,
     };
     let changes: Vec<Change> = vec![
         (

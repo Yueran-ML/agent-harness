@@ -406,6 +406,22 @@ pub fn project_of(recipe: &Recipe) -> Project {
                 "color": "#808080ff", "format": "stereo", "strip": {"outputs": [{"bus": "B1"}]}}}),
             serde_json::json!({"op": "set_track_audio", "timeline": "t1", "track": "A2",
                 "patch": {"strip": {"fader_db": -6, "sends": [{"bus": "B2", "level_db": -12}]}}}),
+            // Lanes of automation: of a send, of a fader, and of an insert (T14).
+            serde_json::json!({"op": "add_insert", "timeline": "t1", "of": {"track": "A1"},
+                "insert": {"effect": {"kind": "gain", "gain_db": -2}}}),
+            serde_json::json!({"op": "add_insert", "timeline": "t1", "of": {"bus": "B2"},
+                "insert": {"effect": {"kind": "soft_clipper"}}}),
+            serde_json::json!({"op": "set_lane", "timeline": "t1", "of": {"track": "A2"},
+                "path": "send.B2.level_db", "lane": {"points": [
+                    {"at": {"ticks": 0, "scale": 48000}, "value": -12},
+                    {"at": {"ticks": 96000, "scale": 48000}, "value": -3}]}}),
+            serde_json::json!({"op": "set_lane", "timeline": "t1", "of": {"track": "A1"},
+                "path": "fader_db", "lane": {"points": [
+                    {"at": {"ticks": 24000, "scale": 48000}, "value": -10},
+                    {"at": {"ticks": 48000, "scale": 48000}, "value": 0}]}}),
+            serde_json::json!({"op": "set_lane", "timeline": "t1", "of": {"track": "A1"},
+                "path": "insert.fx1.gain_db", "lane": {"points": [
+                    {"at": {"ticks": 0, "scale": 48000}, "value": 3}]}}),
         ] {
             apply(&mut project, serde_json::from_value(op).unwrap()).unwrap();
         }
@@ -492,7 +508,7 @@ pub struct Making {
 }
 
 /// The kinds of edit, as `edit_of` numbers them.
-pub const KINDS: usize = 36;
+pub const KINDS: usize = 42;
 
 pub fn making() -> impl Strategy<Value = Making> {
     making_of(0..KINDS)
@@ -953,7 +969,8 @@ fn sound_clip_of(project: &Project, n: usize, other: &str) -> String {
     }
 }
 
-/// An edit of sound made of `m`, kinds 28 to 35.
+/// An edit of sound made of `m`, kinds 28 to 41 (36 to 41 of inserts and lanes, T14).
+#[allow(clippy::too_many_lines, reason = "an arm for each edit of sound")]
 fn sound_edit_of(
     project: &Project,
     m: &Making,
@@ -1033,7 +1050,7 @@ fn sound_edit_of(
                 "clips": chosen, "side": (["in", "out"][usize::from(m.flag(1))]), "at": at}),
             )
         }
-        _ => {
+        35 => {
             let of = |n: usize| match n % 3 {
                 0 => serde_json::json!({"track": tracks[n / 3 % 4]}),
                 1 => serde_json::json!({"bus": (["B1", "B2", "B9"][n / 3 % 3])}),
@@ -1042,6 +1059,99 @@ fn sound_edit_of(
             edit(
                 serde_json::json!({"edit": "copy_effects", "timeline": timeline,
                 "from": of(m.b), "to": [of(m.c), of(m.c / 7)]}),
+            )
+        }
+        36 | 37 => {
+            // A1 has a Gain with a lane, B2 a Soft Clipper; the rest none.
+            let of = |n: usize| {
+                [
+                    serde_json::json!({"track": "A1"}),
+                    serde_json::json!({"track": "A1"}),
+                    serde_json::json!({"bus": "B2"}),
+                    serde_json::json!({"clip": clip}),
+                    serde_json::json!({"track": "V1"}),
+                ][n % 5]
+                    .clone()
+            };
+            let slot = usize::from(m.c.is_multiple_of(7));
+            if m.kind == 36 {
+                let insert = (!m.flag(1)).then(
+                    || serde_json::json!({"id": "fx1", "effect": {"kind": "gain", "gain_db": -4}}),
+                );
+                edit(
+                    serde_json::json!({"edit": "set_insert", "timeline": timeline,
+                    "of": of(m.b), "slot": slot, "insert": insert}),
+                )
+            } else {
+                let to_of = m.flag(2).then(|| of(m.c));
+                edit(
+                    serde_json::json!({"edit": "move_insert", "timeline": timeline,
+                    "of": of(m.b), "from": slot, "to": m.a % 2, "to_of": to_of}),
+                )
+            }
+        }
+        _ => lane_edit_of(m, timeline),
+    }
+}
+
+/// An edit of a lane of automation (T14): of A1, A2, B2, a VCA that is not there, or V1; of a
+/// fader, a send, an insert, a mute or a pan.
+fn lane_edit_of(m: &Making, timeline: &str) -> Edit {
+    let of = [
+        serde_json::json!({"track": "A1"}),
+        serde_json::json!({"track": "A2"}),
+        serde_json::json!({"bus": "B2"}),
+        serde_json::json!({"vca": "VCA9"}),
+        serde_json::json!({"track": "V1"}),
+    ][m.a % 5]
+        .clone();
+    let path = [
+        "fader_db",
+        "send.B2.level_db",
+        "insert.fx1.gain_db",
+        "mute",
+        "pan.x",
+    ][m.b % 5];
+    let ms = |n: i64| serde_json::json!({"ticks": n * 48, "scale": 48000});
+    #[allow(clippy::cast_possible_wrap, reason = "a small number")]
+    let (c, d) = ((m.c % 3000) as i64, m.delta);
+    let value = [-6.0, 0.5, 1.0, 20.0, -0.75][m.c % 5];
+    let edit = |value: serde_json::Value| -> Edit { serde_json::from_value(value).unwrap() };
+    match m.kind {
+        38 => {
+            let action = ["add", "remove", "move"][m.c % 3];
+            edit(
+                serde_json::json!({"edit": "lane_points", "timeline": timeline, "of": of,
+                "path": path, "action": action,
+                "points": [{"at": ms(c)}, {"at": ms(c + d.abs()), "value": value}],
+                "at": [ms([0, 500, 1000, 2000, c][m.a / 5 % 5])], "by": ms(d * 10),
+                "delta": (m.flag(1).then_some(value))}),
+            )
+        }
+        39 => {
+            let action = ["delete", "cut", "paste", "shift_value", "thin"][m.c % 5];
+            edit(
+                serde_json::json!({"edit": "lane_range", "timeline": timeline, "of": of,
+                "path": path, "action": action, "from": ms(c), "to": ms(c + d * 20),
+                "points": [{"at": ms(0), "value": value}, {"at": ms(d.abs() * 5), "value": 0}],
+                "delta": value, "tolerance": (m.flag(3).then_some(0.5))}),
+            )
+        }
+        40 => {
+            let points: Vec<serde_json::Value> = (0..20)
+                .map(|k| serde_json::json!({"at": ms(c + k * d.abs()), "value": value * f64::from(i32::try_from(k % 3).unwrap())}))
+                .collect();
+            edit(
+                serde_json::json!({"edit": "lane_draw", "timeline": timeline, "of": of,
+                "path": path, "from": ms(c), "to": ms(c + 20 * d.abs()), "points": points}),
+            )
+        }
+        _ => {
+            let paths = m.flag(1).then(|| vec![path]);
+            edit(
+                serde_json::json!({"edit": "clear_lanes", "timeline": timeline, "of": of,
+                "paths": paths, "then": (["keep", "reset", "hold"][m.c % 3]),
+                "at": (m.flag(2).then(|| ms(c)))}),
             )
         }
     }

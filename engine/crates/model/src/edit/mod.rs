@@ -39,6 +39,7 @@
 //! and says that it was clamped. One that cannot go at all is refused, and so is a `delta` of 0.
 
 mod audio;
+mod automation;
 mod cut;
 mod grade;
 mod input;
@@ -50,12 +51,14 @@ mod work;
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::audio::KeyInterp;
+use crate::audio::{Insert, LanePoint};
 use crate::grade::{Target, Window};
 use crate::keyframes::Align;
-use crate::ops::{apply_done, InsertsOf, Op, OpError};
+use crate::ops::{apply_done, InsertsOf, LanesOf, Op, OpError};
 use crate::project::{Alignment, Id, Project, Rgba, TitleStyle, TrackKind, TransitionKind};
 use crate::time::{Speed, Time};
 
+pub use automation::{NewPoint, PointAction, RangeAction, Then};
 pub use grade::Given;
 use work::Work;
 
@@ -782,7 +785,8 @@ pub enum Edit {
         /// The settings that change.
         patch: serde_json::Value,
     },
-    /// Copy the inserts of one chain onto others, in place of theirs (pp. 3855–3860).
+    /// Copy the inserts of one chain onto others, in place of theirs (pp. 3855–3860); the lanes
+    /// of the inserts of a strip that they replace are taken away with them.
     CopyEffects {
         /// The timeline.
         timeline: Id,
@@ -790,6 +794,117 @@ pub enum Edit {
         from: InsertsOf,
         /// The chains that they are pasted onto.
         to: Vec<InsertsOf>,
+    },
+    /// Put an insert in place of the one at `slot` of a chain, or take that one away (`null`), as
+    /// the operation `set_insert` does, the lanes of the one that goes taken away with it; an
+    /// insert of a strip put in place of another is given a new id.
+    SetInsert {
+        /// The timeline.
+        timeline: Id,
+        /// The chain.
+        of: InsertsOf,
+        /// The place in the chain, from 0.
+        slot: usize,
+        /// The insert, or `null`, which must be written, to take the one there away.
+        #[serde(deserialize_with = "nullable_required")]
+        insert: Option<Insert>,
+    },
+    /// Move the insert at `from` of a chain to `to`, within it (its lanes going with it), or to
+    /// the chain `to_of`, where it is a new insert (its lanes taken away).
+    MoveInsert {
+        /// The timeline.
+        timeline: Id,
+        /// The chain.
+        of: InsertsOf,
+        /// Where it is.
+        from: usize,
+        /// Where it goes.
+        to: usize,
+        /// The chain that it goes to, where it is not `of`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to_of: Option<InsertsOf>,
+    },
+    /// Add, take away or move points of a lane of automation (pp. 3898–3900, 3911–3912).
+    LanePoints {
+        /// The timeline.
+        timeline: Id,
+        /// The track of sound, bus or VCA.
+        of: LanesOf,
+        /// The path of the setting of the lane.
+        path: String,
+        /// What is done.
+        action: PointAction,
+        /// The points that are added.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        points: Vec<NewPoint>,
+        /// The times of the points that are taken away or moved.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        at: Vec<Time>,
+        /// How far in time the points move (back where it is below 0).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        by: Option<Time>,
+        /// How far in value the points move.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delta: Option<f64>,
+    },
+    /// Take away, paste over, raise or lower, or thin a range of a lane of automation (pp.
+    /// 3898–3899).
+    LaneRange {
+        /// The timeline.
+        timeline: Id,
+        /// The track of sound, bus or VCA.
+        of: LanesOf,
+        /// The path of the setting of the lane.
+        path: String,
+        /// Where the range starts, a time of the timeline.
+        from: Time,
+        /// Where it ends.
+        to: Time,
+        /// What is done.
+        action: RangeAction,
+        /// The points pasted, at times from `from`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        points: Option<Vec<LanePoint>>,
+        /// How far the values move.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delta: Option<f64>,
+        /// How far a thinned lane may go from the points that it had.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tolerance: Option<f64>,
+    },
+    /// Draw a lane of automation with the Pencil from `from` to `to` (pp. 3900, 3911).
+    LaneDraw {
+        /// The timeline.
+        timeline: Id,
+        /// The track of sound, bus or VCA.
+        of: LanesOf,
+        /// The path of the setting of the lane.
+        path: String,
+        /// Where the drawing starts, a time of the timeline.
+        from: Time,
+        /// Where it ends.
+        to: Time,
+        /// The points drawn, at times of the timeline, in order.
+        points: Vec<LanePoint>,
+        /// How far the lane may go from them, as they are thinned.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tolerance: Option<f64>,
+    },
+    /// Take lanes of automation away (Clear Track Automation, p. 3912).
+    ClearLanes {
+        /// The timeline.
+        timeline: Id,
+        /// The track of sound, bus or VCA.
+        of: LanesOf,
+        /// The paths of the lanes; all of them where it is left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        paths: Option<Vec<String>>,
+        /// What each setting is left at.
+        #[serde(default)]
+        then: Then,
+        /// The time whose value a setting holds, for `hold`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<Time>,
     },
 }
 
@@ -936,6 +1051,13 @@ fn yes() -> bool {
 
 fn center() -> Alignment {
     Alignment::Center
+}
+
+/// Read a field that must be there and may be `null`.
+fn nullable_required<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    Option::<T>::deserialize(deserializer)
 }
 
 /// Read a field that may be `null` as well as left out: one that is there is read as `Some`.
@@ -1360,6 +1482,61 @@ pub(crate) fn run(project: &mut Project, edit: Edit) -> Result<Expansion, EditEr
         } => audio::fade_to_playhead(&mut work, &clips, side, at),
         Edit::SetBus { id, patch, .. } => audio::set_bus(&mut work, &id, &patch),
         Edit::CopyEffects { from, to, .. } => audio::copy_effects(&mut work, &from, &to),
+        Edit::SetInsert {
+            of, slot, insert, ..
+        } => automation::set_insert(&mut work, &of, slot, insert.as_ref()),
+        Edit::MoveInsert {
+            of,
+            from,
+            to,
+            to_of,
+            ..
+        } => automation::move_insert(&mut work, &of, (from, to), to_of.as_ref()),
+        Edit::LanePoints {
+            of,
+            path,
+            action,
+            points,
+            at,
+            by,
+            delta,
+            ..
+        } => automation::lane_points(&mut work, &of, &path, action, &points, &at, (by, delta)),
+        Edit::LaneRange {
+            of,
+            path,
+            from,
+            to,
+            action,
+            points,
+            delta,
+            tolerance,
+            ..
+        } => automation::lane_range(
+            &mut work,
+            &of,
+            &path,
+            (from, to),
+            action,
+            points.as_deref(),
+            (delta, tolerance),
+        ),
+        Edit::LaneDraw {
+            of,
+            path,
+            from,
+            to,
+            points,
+            tolerance,
+            ..
+        } => automation::lane_draw(&mut work, &of, &path, (from, to), &points, tolerance),
+        Edit::ClearLanes {
+            of,
+            paths,
+            then,
+            at,
+            ..
+        } => automation::clear_lanes(&mut work, &of, paths.as_deref(), then, at),
         _ => unreachable!("the edits of grades are worked out above"),
     }?;
     work.finish()
@@ -1405,7 +1582,13 @@ pub fn timeline_of(edit: &Edit) -> Option<&Id> {
         | Edit::RemoveAttributes { timeline, .. }
         | Edit::FadeToPlayhead { timeline, .. }
         | Edit::SetBus { timeline, .. }
-        | Edit::CopyEffects { timeline, .. } => timeline,
+        | Edit::CopyEffects { timeline, .. }
+        | Edit::SetInsert { timeline, .. }
+        | Edit::MoveInsert { timeline, .. }
+        | Edit::LanePoints { timeline, .. }
+        | Edit::LaneRange { timeline, .. }
+        | Edit::LaneDraw { timeline, .. }
+        | Edit::ClearLanes { timeline, .. } => timeline,
         Edit::AddSerial { .. }
         | Edit::AddSerialBefore { .. }
         | Edit::AppendNode { .. }

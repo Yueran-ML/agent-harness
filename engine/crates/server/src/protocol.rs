@@ -255,6 +255,10 @@ fn methods_matched() -> BTreeMap<String, String> {
     found
 }
 
+/// Dotted names in the arms of a `match` that are no methods, and the files they are in.
+const NOT_METHODS: [(&str, &str); 2] =
+    [("a.cube", "viewer_preview.rs"), ("ffmpeg.exe", "proxy.rs")];
+
 /// The old names that edits are read by.
 const OLD_NAMES: [&str; 1] = ["append_grade"];
 
@@ -416,19 +420,17 @@ fn every_method_that_the_engine_answers_by_name_is_in_the_protocol() {
     assert!(notifications.contains("project.changed"));
     let matched = methods_matched();
     assert!(matched.contains_key("automation.punch"), "{matched:?}");
-    // Of the names of the kinds of methods of the protocol: not `a.cube`.
-    let kinds: BTreeSet<&str> = methods
-        .iter()
-        .chain(&notifications)
-        .filter_map(|name| name.split('.').next())
-        .collect();
+    // Every dotted name of an arm is a method, of a namespace known or new (`meters.*`), but
+    // these, which are names of files that a match tells apart.
+    for (name, file) in NOT_METHODS {
+        assert!(
+            matched.get(name).is_some_and(|found| found.ends_with(file)),
+            "{name} is no longer in {file}: take it off NOT_METHODS"
+        );
+    }
     let missing: Vec<_> = matched
         .iter()
-        .filter(|(name, _)| {
-            name.split('.')
-                .next()
-                .is_some_and(|kind| kinds.contains(kind))
-        })
+        .filter(|(name, _)| !NOT_METHODS.iter().any(|(not, _)| not == name))
         .filter(|(name, _)| !methods.contains(*name) && !notifications.contains(*name))
         .collect();
     assert!(

@@ -247,7 +247,7 @@ impl Graph {
     ///
     /// When the graph has no such strip.
     #[must_use]
-    pub fn lead(&self, strip: usize) -> u32 {
+    pub fn strip_lead(&self, strip: usize) -> u32 {
         self.latency.saturating_sub(self.exits[strip])
     }
 }

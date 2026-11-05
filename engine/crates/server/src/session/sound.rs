@@ -401,7 +401,9 @@ fn analyze_work(method: &str, params: Option<&RawValue>, project: &Project) -> R
     let range = match request.range {
         None => None,
         Some(Frames { from, to }) if from >= 0 && to > from => {
-            Some(sample_at(timeline, from)..sample_at(timeline, to))
+            // Not past the end of the timeline (the review of T9b).
+            let end = crate::play::mix::end_of(timeline);
+            Some(sample_at(timeline, from).min(end)..sample_at(timeline, to).min(end))
         }
         Some(_) => {
             return Err(refused(
@@ -539,10 +541,15 @@ fn start(
         });
     if let Err(error) = started {
         jobs().running().remove(&job);
-        crate::log::log(
-            "analysis_failed",
-            &json!({"job": job, "message": error.to_string()}),
-        );
+        let message = format!("the thread of the analysis cannot be started: {error}");
+        crate::log::log("analysis_failed", &json!({"job": job, "message": message}));
+        // Its end is told all the same, after its name (the review of T9b).
+        Teller {
+            state: Arc::clone(&engine.state),
+            limits: engine.limits,
+            job: job.clone(),
+        }
+        .told_now(&json!({"state": "failed", "message": message}));
     }
     Ok(reply)
 }
@@ -555,6 +562,22 @@ struct Teller {
 }
 
 impl Teller {
+    /// Tells `audio.analysis` with `what`, the job's name added, from a task of the runtime (where
+    /// the state cannot be locked by blocking).
+    fn told_now(self, what: &Value) {
+        let mut what = what.clone();
+        what["job"] = json!(self.job);
+        tokio::spawn(async move {
+            let mut state = self.state.lock().await;
+            state.broadcast(&rpc::notification_line("audio.analysis", &what));
+            let kicked = std::mem::take(&mut state.kicked);
+            drop(state);
+            for (id, kind) in kicked {
+                log_kicked(id, Some(kind), self.limits);
+            }
+        });
+    }
+
     /// Tells `audio.analysis` with `what`, the job's name added.
     fn tell(&self, what: &Value) {
         let mut what = what.clone();

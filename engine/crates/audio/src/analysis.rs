@@ -243,7 +243,8 @@ pub fn normalize_clips(
         .map(|(analysis, volume)| {
             let gain = match set {
                 SetLevel::Independent => normalize(level, target, analysis),
-                SetLevel::Relative => relative,
+                // A clip of no level of its own (silence) is left as it is (the review of T9b).
+                SetLevel::Relative => relative.filter(|_| level.of_analysis(analysis).is_some()),
             };
             let (low, high) = CLIP_VOLUME_RANGE;
             let clamped =
@@ -309,7 +310,7 @@ pub fn run_strips(
 ) -> Result<bool, FeedError> {
     let leads: Vec<i64> = points
         .iter()
-        .map(|&(strip, _)| i64::from(graph.lead(strip)))
+        .map(|&(strip, _)| i64::from(graph.strip_lead(strip)))
         .collect();
     let most = leads.iter().copied().max().unwrap_or(0);
     let least = leads.iter().copied().min().unwrap_or(0);

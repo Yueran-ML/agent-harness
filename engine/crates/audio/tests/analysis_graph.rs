@@ -136,7 +136,14 @@ fn a_strip_is_measured_over_its_range_whatever_the_latency_of_the_paths_after_it
     let a1 = graph.strip_of(&Owner::Track("A1".into())).unwrap();
     let a2 = graph.strip_of(&Owner::Track("A2".into())).unwrap();
     let b1 = graph.strip_of(&Owner::Bus("B1".into())).unwrap();
-    assert_eq!((graph.lead(a1), graph.lead(a2), graph.lead(b1)), (64, 0, 0));
+    assert_eq!(
+        (
+            graph.strip_lead(a1),
+            graph.strip_lead(a2),
+            graph.strip_lead(b1)
+        ),
+        (64, 0, 0)
+    );
     let ramp: Signal = |clip, n, _| {
         if clip == "c2" {
             (n % 4801) as f32 / 4801.0
@@ -327,6 +334,19 @@ fn normalize_brings_clips_at_minus_30_and_minus_20_lufs_to_minus_23_independent_
         "{gain}"
     );
     assert!(independent.iter().chain(&relative).all(|n| !n.clamped));
+    // Relative leaves a silent clip as it is (the review of T9b).
+    let silence = vec![0.0_f32; 96_000];
+    let silent = analyze(RATE, Layout::Stereo, false, &[&silence, &silence]);
+    let with_silence = normalize_clips(
+        level,
+        SetLevel::Relative,
+        -23.0,
+        &[each[0], silent],
+        &together,
+        &volumes,
+    );
+    assert_eq!(with_silence[0].gain, relative[0].gain);
+    assert_eq!(with_silence[1].gain, None);
     // A Volume of keys is as low and as high as they go.
     let keys: AudioParam = serde_json::from_value(serde_json::json!({"keys": [
         {"at": {"ticks": 0, "scale": 48000}, "value": -6.0},

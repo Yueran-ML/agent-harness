@@ -115,7 +115,9 @@ fn a_latch_from_one_second_to_the_stop_at_three_writes_its_value_then_returns_ov
     for (ms, want) in [
         (0.0, -10.0),
         (999.98, -10.0),
-        (1000.0, -6.0),
+        (1000.0, -10.0),
+        (1005.0, -8.0),
+        (1010.0, -6.0),
         (2000.0, -6.0),
         (2999.98, -6.0),
         (3000.0, -6.0),
@@ -146,7 +148,8 @@ fn a_snap_released_at_two_seconds_glides_back_over_250_ms() {
     );
     for (ms, want) in [
         (999.98, -10.0),
-        (1000.0, -6.0),
+        (1000.0, -10.0),
+        (1010.0, -6.0),
         (1500.0, -7.0),
         (2000.0, -6.0),
         (2125.0, -8.0),
@@ -188,7 +191,8 @@ fn hold_keeps_the_last_value_to_the_end_and_event_to_the_next_point_of_the_lane(
     // The last value to the next point after the stop (5 s), the lane as it was from there.
     for (ms, want) in [
         (3000.0, -6.0),
-        (4999.98, -6.0),
+        (4990.0, -6.0),
+        (4995.0, -8.0),
         (5000.0, -10.0),
         (5500.0, -15.0),
         (7000.0, -10.0),
@@ -210,7 +214,7 @@ fn hold_keeps_the_last_value_to_the_end_and_event_to_the_next_point_of_the_lane(
 }
 
 #[test]
-fn a_cut_gives_the_lane_back_at_once_at_the_end_of_the_run() {
+fn a_cut_gives_the_lane_back_over_10_ms_at_the_end_of_the_run() {
     let mut project = project(&[(0, -10.0), (4000, 0.0)]);
     record(
         &mut project,
@@ -222,10 +226,12 @@ fn a_cut_gives_the_lane_back_at_once_at_the_end_of_the_run() {
     );
     for (ms, want) in [
         (1499.98, -10.0 + 10.0 * 1499.98 / 4000.0),
-        (1500.0, -3.0),
+        (1500.0, -10.0 + 10.0 * 1500.0 / 4000.0),
+        (1510.0, -3.0),
         (2000.0, -4.0),
-        (2499.98, -4.0),
-        (2500.0, -10.0 + 10.0 * 2500.0 / 4000.0),
+        (2500.0, -4.0),
+        (2505.0, (-4.0 + (-10.0 + 10.0 * 2510.0 / 4000.0)) / 2.0),
+        (2510.0, -10.0 + 10.0 * 2510.0 / 4000.0),
         (3000.0, -2.5),
     ] {
         let got = at(&mut project, "fader_db", ms);
@@ -246,14 +252,16 @@ fn a_trim_adds_its_offset_to_the_lane_as_it_was_and_returns_to_it() {
             vec![run(&[(1000, 3.0)], 3000, "return", Some(250))],
         ),
     );
-    for ms in [1000.0, 1234.5, 2000.0, 2999.98, 3000.0] {
+    for ms in [1010.0, 1234.5, 2000.0, 2999.98, 3000.0] {
         let got = at(&mut project, "fader_db", ms);
         assert!((got - (lane(ms) + 3.0)).abs() < 1e-4, "{ms} ms: {got}");
     }
+    let got = at(&mut project, "fader_db", 1005.0);
+    assert!((got - (lane(1005.0) + 1.5)).abs() < 1e-4, "{got}");
     // Half way back, half the offset; then the lane as it was.
     let got = at(&mut project, "fader_db", 3125.0);
     assert!((got - (lane(3125.0) + 1.5)).abs() < 1e-6, "{got}");
-    for ms in [0.0, 999.98, 3250.0, 3500.0, 4000.0] {
+    for ms in [0.0, 999.98, 1000.0, 3250.0, 3500.0, 4000.0] {
         let got = at(&mut project, "fader_db", ms);
         assert!((got - lane(ms)).abs() < 1e-4, "{ms} ms: {got}");
     }
@@ -309,7 +317,8 @@ fn runs_of_a_pass_follow_one_another_a_later_one_taking_over_a_glide_under_way()
     for (ms, want) in [
         (2000.0, -6.0),
         (2099.98, -6.0 - 4.0 * 99.98 / 250.0),
-        (2100.0, -2.0),
+        (2100.0, -6.0 - 4.0 * 100.0 / 250.0),
+        (2110.0, -2.0),
         (2500.0, -2.0),
         (2625.0, -6.0),
         (2750.0, -10.0),
@@ -355,7 +364,7 @@ fn what_is_recorded_is_thinned_within_a_tenth_of_a_decibel() {
     );
     let kept = a1(&mut project).audio.lanes["fader_db"].points.len();
     assert!(kept <= 8, "{kept} points kept");
-    for &(t, v) in &points {
+    for &(t, v) in points.iter().filter(|&&(t, _)| t >= 1010) {
         #[allow(clippy::cast_precision_loss, reason = "a time of the test")]
         let got = at(&mut project, "fader_db", t as f64);
         assert!((got - v).abs() <= 0.1 + 1e-9, "{t} ms: {got}, not {v}");
@@ -424,6 +433,37 @@ fn a_pass_that_is_not_what_it_should_be_is_refused() {
 }
 
 #[test]
+fn a_switch_jumps_where_a_number_ramps() {
+    let mut project = project(&[]);
+    record(
+        &mut project,
+        pass("mute", false, vec![run(&[(1000, 1.0)], 2000, "cut", None)]),
+    );
+    assert!(near(at(&mut project, "mute", 1000.0), 1.0));
+    assert!(near(at(&mut project, "mute", 2000.0), 0.0));
+}
+
+#[test]
+fn trims_of_one_lane_in_one_pass_each_move_the_lane_as_it_was() {
+    // Two passes of Preview punched in together: each offset is of the lane before both, and
+    // the later takes the place of the earlier where it writes (as was heard: neither was
+    // written while the other played).
+    let lane = |ms: f64| -10.0 + 10.0 * ms / 4000.0;
+    let mut project = project(&[(0, -10.0), (4000, 0.0)]);
+    let edit = json!({"edit": "record_pass", "timeline": "t1", "lanes": [
+        {"of": {"track": "A1"}, "path": "fader_db", "trim": true,
+            "runs": [run(&[(1000, 3.0)], 3000, "cut", None)]},
+        {"of": {"track": "A1"}, "path": "fader_db", "trim": true,
+            "runs": [run(&[(2000, -2.0)], 3500, "cut", None)]},
+    ]});
+    record(&mut project, edit);
+    for (ms, by) in [(1500.0, 3.0), (2500.0, -2.0), (3200.0, -2.0), (3700.0, 0.0)] {
+        let got = at(&mut project, "fader_db", ms);
+        assert!((got - (lane(ms) + by)).abs() < 1e-4, "{ms} ms: {got}");
+    }
+}
+
+#[test]
 fn two_lanes_of_a_pass_are_one_step_of_undo() {
     let mut project = project(&[(0, -10.0)]);
     let edit = json!({"edit": "record_pass", "timeline": "t1", "lanes": [
@@ -466,10 +506,10 @@ proptest! {
             #[allow(clippy::cast_precision_loss, reason = "a time of the test")]
             let t = ms as f64;
             let got = at(&mut project, "fader_db", t);
-            if ms < start || ms > to + glide {
+            if ms < start || ms > to + glide.max(10) {
                 let was = at(&mut before, "fader_db", t);
                 prop_assert!((got - was).abs() < 1e-9, "{ms} ms: {got}, was {was}");
-            } else if ms < to {
+            } else if ms < to && ms >= points.get(1).map_or(start + 10, |p| p.0) {
                 // The points recorded, joined by straight lines, held from the last.
                 let i = points.partition_point(|&(p, _)| p <= ms) - 1;
                 let want = match points.get(i + 1) {
@@ -485,4 +525,30 @@ proptest! {
             }
         }
     }
+}
+
+#[test]
+fn a_bus_and_a_vca_are_armed_by_a_patch_and_written_only_when_armed() {
+    let mut project = project(&[]);
+    project.timelines[0]
+        .vcas
+        .push(serde_json::from_value(json!({"id": "VCA1", "name": "VCA 1"})).unwrap());
+    let written = serde_json::to_value(&project.timelines[0].buses[0]).unwrap();
+    assert!(
+        written.get("automation_arm").is_none(),
+        "left out while off"
+    );
+    for op in [
+        json!({"op": "set_bus", "timeline": "t1", "id": "B1",
+            "patch": {"automation_arm": true}}),
+        json!({"op": "set_vca", "timeline": "t1", "id": "VCA1",
+            "patch": {"automation_arm": true}}),
+    ] {
+        let op: columbina_model::Op = serde_json::from_value(op).unwrap();
+        apply(&mut project, op).unwrap();
+    }
+    let t = &project.timelines[0];
+    assert!(t.buses[0].automation_arm && t.vcas[0].automation_arm);
+    let written = serde_json::to_value(&t.buses[0]).unwrap();
+    assert_eq!(written["automation_arm"], true);
 }

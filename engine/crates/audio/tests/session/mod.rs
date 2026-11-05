@@ -479,6 +479,7 @@ pub fn sixteen_tracks() -> columbina_model::Project {
         mute: false,
         solo: false,
         vcas: vec![],
+        automation_arm: false,
         lanes: columbina_model::Lanes::new(),
     });
     let lane = |points: &[(i64, f64)]| Lane {

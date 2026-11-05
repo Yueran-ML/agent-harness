@@ -569,20 +569,43 @@ pub(super) fn lane_draw(
 /// (thinned as a lane drawn is, C-A4; kept within the range of the setting, a switch on or off)
 /// in place of the lane from where it starts, the value before it staying as it was, the last
 /// value held to its end, and then what [`RunEnd`] says. A run of a Trim moves the lane as it was
-/// before the pass by the offsets that it recorded (a fader's −∞ staying), and its return takes
-/// the offset back to 0. A lane that is not there is made, from the value of its setting.
+/// before the edit by the offsets that it recorded (a fader's −∞ staying), and its return takes
+/// the offset back to 0: the lanes of one setting given twice (passes of Preview punched in
+/// together) each move the lane as it was before them all, the later taking the place of the
+/// earlier where it writes. A number never steps where it was heard to ramp: a run comes in
+/// from the lane over 10 ms, and gives it back over 10 ms at least (C-T1); a switch jumps. A
+/// lane that is not there is made, from the value of its setting.
 pub(super) fn record_pass(work: &mut Work, lanes: &[RecordedLane]) -> Result<(), EditError> {
     if lanes.is_empty() {
         return Err(range("lanes"));
     }
+    let mut before: Vec<(&LanesOf, &str, Vec<LanePoint>)> = Vec::new();
     for recorded in lanes {
-        record_lane(work, recorded)?;
+        let known = before
+            .iter()
+            .find(|(of, path, _)| **of == recorded.of && *path == recorded.path);
+        let was = if let Some((_, _, was)) = known {
+            was.clone()
+        } else {
+            let was = target(work, &recorded.of, &recorded.path)?.points;
+            before.push((&recorded.of, &recorded.path, was.clone()));
+            was
+        };
+        record_lane(work, recorded, &was)?;
     }
     Ok(())
 }
 
-/// One lane of [`record_pass`].
-fn record_lane(work: &mut Work, recorded: &RecordedLane) -> Result<(), EditError> {
+/// One lane of [`record_pass`], `was` its points before the edit.
+#[allow(
+    clippy::too_many_lines,
+    reason = "a run read, ramped in, ended and put in place, step by step"
+)]
+fn record_lane(
+    work: &mut Work,
+    recorded: &RecordedLane,
+    was: &[LanePoint],
+) -> Result<(), EditError> {
     let target = target(work, &recorded.of, &recorded.path)?;
     let (shape, fixed, scale) = (target.shape, target.fixed, target.scale);
     if recorded.runs.is_empty() {
@@ -600,8 +623,12 @@ fn record_lane(work: &mut Work, recorded: &RecordedLane) -> Result<(), EditError
         kind: LaneKind::Continuous,
         scale: LaneScale::Linear,
     };
-    let was = target.points.clone();
-    let mut points = was.clone();
+    // The ramp of a number in and out (C-T1: 10 ms); none for a switch.
+    let ramp = match shape.kind {
+        LaneKind::Continuous => i64::from(scale / LANE_RAMP_PER_SECOND),
+        LaneKind::Switch => 0,
+    };
+    let mut points = target.points.clone();
     let mut last_from = i64::MIN;
     for run in &recorded.runs {
         let mut values = Vec::with_capacity(run.points.len() + 1);
@@ -632,40 +659,50 @@ fn record_lane(work: &mut Work, recorded: &RecordedLane) -> Result<(), EditError
         }
         last_from = from;
         let glide = match (run.glide, shape.kind) {
-            (Some(glide), LaneKind::Continuous) => target.ticks(glide, "glide")?,
-            _ => 0,
+            (Some(glide), LaneKind::Continuous) => target.ticks(glide, "glide")?.max(ramp),
+            _ => ramp,
         };
         // Thinned as recorded (of a Trim, the offsets), the last value held to the end.
         let mut new = thinned(&values, if recorded.trim { line } else { shape }, tolerance);
         if last.at.ticks < to {
             new.push(point(to, scale, last.value));
         }
+        // It comes in over the ramp: its first value where the ramp ends, unless the next is
+        // there already (of a Trim, from an offset of 0).
+        if ramp > 0 && to > from {
+            let ramped = (from + ramp).min(to);
+            if new.get(1).is_some_and(|next| next.at.ticks <= ramped) {
+                new.remove(0);
+            } else {
+                new[0].at.ticks = ramped;
+            }
+            if recorded.trim {
+                new.insert(0, point(from, scale, 0.0));
+            }
+        }
         // Where the run gives the lane back: none for one that holds to the end.
         let next = was.iter().find(|p| p.at.ticks > to).map(|p| p.at.ticks);
         let end = match run.then {
             RunEnd::Return => Some(to.saturating_add(glide).min(LARGEST)),
-            RunEnd::Cut => Some(to),
+            RunEnd::Cut => Some(to.saturating_add(ramp).min(LARGEST)),
             RunEnd::Event => next,
             RunEnd::Hold => None,
         };
+        if let (RunEnd::Event, Some(end)) = (run.then, end) {
+            // Held to the next point of the lane, and into it over the ramp.
+            new.push(point((end - ramp).max(to), scale, last.value));
+        }
         if recorded.trim {
-            match (run.then, end) {
-                (RunEnd::Event, Some(end)) => {
-                    new.push(point(end, scale, last.value));
-                    new.push(point(end, scale, 0.0));
-                }
-                (RunEnd::Return | RunEnd::Cut, Some(end)) => new.push(point(end, scale, 0.0)),
-                _ => {}
+            if let Some(end) = end.filter(|_| run.then != RunEnd::Hold) {
+                new.push(point(end, scale, 0.0));
             }
-            new = offset_by(&was, shape, fixed, scale, &new, end)
+            new = offset_by(was, shape, fixed, scale, &new, end)
                 .into_iter()
                 .map(|p| {
                     let value = target.kept(work, p.value, &moved);
                     point(p.at.ticks, scale, value)
                 })
                 .collect();
-        } else if let (RunEnd::Event, Some(end)) = (run.then, end) {
-            new.push(point(end, scale, last.value));
         }
         points = match end {
             Some(end) => replaced(&points, shape, fixed, scale, (from, end), &new),

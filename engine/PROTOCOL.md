@@ -167,7 +167,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `render.cancel` | `{"job": "render-1"}` | `{}` |
 | `transport.frame_digest` | `{"monitor": m}` | test hook only, with `--test-hooks` (see The transport); `-32601` otherwise |
 | `transport.*` | see The transport | |
-| `automation.record` | `{"timeline": "t1", "on": true, "glide_ms"?: 250}` | `{"on": true, "glide_ms": 250, "pending": 0}` (see Recording automation) |
+| `automation.record` | `{"timeline": "t1", "on": true, "glide_ms"?: 250}` | `{"on": true, "glide_ms": 250, "pending": 0, "read": false}` (see Recording automation) |
 | `automation.touch` | `{"timeline": "t1", "track" \| "bus" \| "vca": "A1", "path": "fader_db", "value": -6.0, "touching": true}` | `{}`, at once (see Recording automation) |
 | `automation.punch` | `{"timeline": "t1"}` | `{"lanes": n}` (see Recording automation) |
 | `automation.all_read` | `{"timeline": "t1"}` | `{"read": bool}` (All Read, T16b; see Recording automation) |
@@ -619,7 +619,8 @@ are at most +10; −100 or below is −∞.
   stereo), `channels` (as many as the format has; 1–24 for `adaptive`, which may not leave it
   out), `order` (`smpte|film`, of 5.1), `mute`, `solo`, `solo_safe`, `adc` (true),
   `automation_arm` (the Automation Arm, p. 3906: `false` not armed, `true` armed, `"safe"` or
-  `"off"`, T16b; read also as `"armed"`, `"unarmed"`; see Recording automation), `strip` (where it is left out, at unity, out to `B1` where the timeline has it,
+  `"off"`, T16b; read also as `"armed"`, `"unarmed"`; anything else is refused; see Recording
+  automation), `strip` (where it is left out, at unity, out to `B1` where the timeline has it,
   and to none where it has not) and `lanes`. A track of picture or subtitles
   has none of them (refused if given). `enabled: false` is Disable Track (not read, not heard);
   `mute` is the header's button (p. 3885): not heard nor rendered. A track is heard (and
@@ -1597,7 +1598,8 @@ notification `transport.state`):
 - `compared` (where a wipe or split screen is on): the frame of the timeline that each of its
   references shows for the frame shown (see Comparisons in the viewer).
 - `recording: true` while automation is recorded as the timeline plays (`automation.record`; see
-  Recording automation); left out where it is not.
+  Recording automation); left out where it is not. `all_read: true` while All Read is on
+  (`automation.all_read`, T16b); left out where it is not.
 - `source` is `"original"`, `"proxy"`, or `"mixed"` when the composition contains both. A frame
   of only titles/colours or black uses `"original"`. Proxy switches and repairs of media that
   the timeline shows invalidate read-ahead and take effect on the next composition,
@@ -2277,8 +2279,10 @@ at the end of the range, and the edit is `clamped`.
   `fader`; `mute`; `pan.*`: `panning`; `send.*`: `sends`; no other setting follows, a plugin's
   never, p. 3917), in the same transaction: a number moved relatively, each value given plus how
   far that track's setting (its lane, or as it is set) is from this one's at `from` (of
-  `lane_points`, at the time of its first point) before the edit, as a fader of a group follows
-  another (§4.2); a switch to the same state; `shift_value` by the same `delta`, and `delete`,
+  `lane_points`, at the time of its first point) before the edit; a level (`fader_db`, any
+  `*_db`) as a fader of a group follows another (§4.2): by the same change in decibels from this
+  one's, −∞ (−100 dB and below) counted as −100, one at −∞ that would go down staying, no higher
+  than +10 dB (the same while recording); a switch to the same state; `shift_value` by the same `delta`, and `delete`,
   `cut`, `thin`, `remove` and `move` as they are. A track that the edit cannot be made to (no
   such setting, lane or point, or nothing would change) is passed over. Not where it is left
   out.
@@ -2388,7 +2392,8 @@ under way and what Preview kept unwritten, and lets go of what is held.
   run being written (as at the end of the Active Range: the lane given back over 10 ms), lets go
   of what is held over 10 ms, and from then on what is touched is heard and not written, until
   `automation.record` turns recording on again, `automation.punch` or `automation.join`.
-  `{"read": false}` where recording is off (nothing changes).
+  `{"read": false}` where recording is off (nothing changes). Whether it is on is `read` in the
+  answer of `automation.record` and `all_read` in the state of the transport.
 - **`automation.join`** `{timeline}` (Join Mix, p. 3913): where the last pass that was written
   (not under Preview) stopped, and the last values of what it was still writing at its stop (not
   a Trim's offsets), are kept. Asked, the next pass, where the heard position reaches that stop
@@ -2397,27 +2402,33 @@ under way and what Preview kept unwritten, and lets go of what is held.
   pass, by its `on_stop`), once. Answers how many settings and the stop (`{"lanes": 0, "at":
   null}` where there is none of that timeline).
 - **`automation.fill`** `{timeline, from, to, glide?}` (Fill Range, Glide Range; pp. 3908,
-  3913): of the settings touched under `preview` (their last values, a fader under Trim
-  excepted), those of the categories that are on are written over the range by the edit
-  `lane_fill`, as one transaction (told by `automation.written`), let go of over 10 ms as their
-  lanes take their place, and dropped from what Preview kept to be punched in. Answers how many
-  lanes (0 where Preview holds none). `from` not before `to` is refused (`-32602`, `reason:
-  range`). **`lane_fill`** `{lanes: [{of, path, value}], from, to, glide?}`: each lane is written
+  3913), while `preview` is on: of the settings touched under it (their last values, a fader
+  under Trim excepted), those that may be written (the setting still there, its track not locked,
+  its owner neither Safe nor Off, its category on) are written over the range by the edit
+  `lane_fill`, as one transaction (told by `automation.written`, its `lanes` those written, and
+  its `failed` those that could not be), let go of over 10 ms as their lanes take their place,
+  and dropped from what Preview kept to be punched in; the others stay held, to be filled later.
+  A pass under way ends first (kept, under Preview). Answers how many lanes it gave to be
+  written (0 where Preview is off or holds none). `from` not before `to` is refused (`-32602`,
+  `reason: range`). **`lane_fill`** `{lanes: [{of, path, value}], from, to, glide?}`: each lane is written
   `value` from `from` to `to`; with `glide`, from the value the lane has at `from` on a straight
   line to `value` at `to` (a switch is filled). A number ramps in over the first 10 ms of the
   range and back to the lane over the 10 ms after `to`, as `record_pass` with a `cut` run
-  writes it. A Safe owner is skipped; nothing written is `empty_range`.
+  writes it. A Safe or Off owner is skipped; nothing written is `empty_range`.
 - **`automation.copy`** `{timeline, of: [{track|bus|vca}], from?, to?, at?}` (Copy, p. 3913)
   answers, of each owner named (a Safe one too), each lane of a category of recording that is
   on: with `from` and `to`, `points` of the range at times from `from` in the lane's scale (its
   value at `from` the first, the points within, its value at `to` the last); with `at` alone,
-  `value`, the lane's value there (a snapshot). Only lanes that are there are copied. Given
-  neither, or one of `from` and `to`, it is refused (`-32602`, `out_of_range` `at`, or `reason:
-  range`). The clipboard is the client's: **`automation_paste`** `{at, to?, lanes: [{of, path,
+  `value`, the lane's value there (a snapshot), and also, of each fader, mute, pan and send of a
+  category that is on and has no lane, its `value` as it is set, so that a static mix is copied.
+  A range copies only lanes that are there. Given neither, or a range and `at`, it is refused
+  (`-32602`, `out_of_range` `at`); one of `from` and `to` alone, `reason: range`; a `from` or `to`
+  out of the timeline, `out_of_range` `from` or `to`. The clipboard is the client's: **`automation_paste`** `{at, to?, lanes: [{of, path,
   points?, value?}]}` puts each lane (any track, bus or VCA, and any setting: a fader's level to
   a send's and back, kept within its range) at `at`: with `to`, it fills the range, `points` as
   far as they go (cut at `to`) and their last value held to `to`, a `value` over all of it; with
-  none, `points` whole from `at`, a `value` as one point at `at`. What was in the range is put in
+  none, `points` whole from `at` (a lane whose points have no length is passed over), and a
+  `value` is refused (`out_of_range` `to`: a snapshot fills a range). What was in the range is put in
   place of, the values before it and from its end on kept, as `lane_range` `paste` does. A Safe
   owner, and a lane of a category that is off, is skipped. **`automation_erase`** `{of: [owners],
   from, to}` (Erase, p. 3914) takes away the points from `from` to `to` of every lane of the

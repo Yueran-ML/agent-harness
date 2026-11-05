@@ -740,6 +740,8 @@ export interface TimelineTransportState extends TransportBase {
   compared?: (number | null)[];
   /** True while automation is recorded as the timeline plays (`automation.record`). */
   recording?: boolean;
+  /** All Read is on while automation is recorded (`automation.all_read`, T16b); left out while it is not. */
+  all_read?: boolean;
   /** Whether dragging the playhead plays its sound (`transport.scrub_audio`, Timeline › Audio Scrubbing, p. 731; phase 3 T18); true where an older engine leaves it out. */
   scrub_audio?: boolean;
 }
@@ -995,9 +997,10 @@ export type PageMethod = keyof PageMethods;
 
 /**
  * Whether automation is recorded as the timeline plays (`automation.record`), its Glide Time in
- * ms (Snap's return and Return's), and how many lanes Preview keeps to be punched in.
+ * ms (Snap's return and Return's), how many lanes Preview keeps to be punched in, and whether All
+ * Read is on (T16b: touches heard, not written).
  */
-export interface AutomationRecording { on: boolean; glide_ms: number; pending: number }
+export interface AutomationRecording { on: boolean; glide_ms: number; pending: number; read: boolean }
 /**
  * The notification `automation.written`: a pass of the recording of automation, or a Punch In,
  * written (`revision`, null where nothing was), and the lanes that could not be (PROTOCOL.md,

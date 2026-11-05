@@ -7,8 +7,14 @@
 //! between two points. A run that goes on from where the last block ended keeps its place; one
 //! that starts elsewhere (a start, a seek) finds it again by halving. Nothing here allocates,
 //! locks or waits.
+//!
+//! While automation is recorded (T16), a lane gives way to the value of a control that is
+//! touched, or is moved by an offset ([`Live`], [`Held`]), after its cursor has filled the block.
 
 use columbina_model::{Lane, LaneKind, LaneScale};
+
+use crate::constants::{FADER_MAX_DB, SILENCE_DB};
+use crate::rt::{Domain, Smoothed};
 
 /// Where a cursor is in its lane: `upper` is the first point whose time is after the sample
 /// `next`, which the next block is expected to start at.
@@ -133,5 +139,132 @@ impl Cursor {
             done += run;
         }
         self.next = start.saturating_add(i64::try_from(out.len()).unwrap_or(i64::MAX));
+    }
+}
+
+/// What a value set live does to a lane of the graph while it plays (T16, the recording of
+/// automation; [`super::Graph::live`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Live {
+    /// The lane gives way to this value, in the units of the model, a control that is touched:
+    /// over 10 ms from the lane where it was not held (at once for a switch), and a value that
+    /// moves ramps over 10 ms from where it was.
+    Hold(f32),
+    /// The lane is moved by this many decibels (Trim, pp. 3900–3901), over 10 ms; where the lane
+    /// is at −∞ (−100 dB and below) it stays there, and it goes no higher than +10 dB.
+    Offset(f32),
+    /// The lane takes its place back over so many samples, on a straight line from what was
+    /// heard (Snap's glide, p. 3905); at once where it is 0, and for a switch.
+    Release(u32),
+}
+
+/// How a lane is held live.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mode {
+    Off,
+    Hold,
+    Offset,
+}
+
+/// The value held live in place of a lane, or the offset of it, and how far it has taken the
+/// lane's place (its weight, 0 to 1), each worked out from the samples since it changed, so that
+/// it does not depend on how the blocks are cut.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Held {
+    mode: Mode,
+    value: Smoothed,
+    weight: Smoothed,
+}
+
+impl Held {
+    /// Nothing held, its ramps of 10 ms at `rate`.
+    pub(crate) fn new(rate: u32) -> Self {
+        let mut value = Smoothed::new(0.0, Domain::Linear);
+        let mut weight = Smoothed::new(0.0, Domain::Linear);
+        value.prepare(rate);
+        weight.prepare(rate);
+        Self {
+            mode: Mode::Off,
+            value,
+            weight,
+        }
+    }
+
+    /// Whether anything is held.
+    pub(crate) fn is_held(&self) -> bool {
+        self.mode != Mode::Off
+    }
+
+    /// Takes `live`, for a lane of `kind`.
+    pub(crate) fn take(&mut self, live: Live, kind: LaneKind) {
+        let switch = kind == LaneKind::Switch;
+        let (mode, value) = match live {
+            Live::Hold(value) => (Mode::Hold, value),
+            Live::Offset(offset) => (Mode::Offset, offset),
+            Live::Release(samples) => {
+                if self.mode == Mode::Off {
+                    return;
+                }
+                if switch || samples == 0 {
+                    self.weight.jump(0.0);
+                    self.mode = Mode::Off;
+                } else {
+                    self.weight.glide(0.0, samples);
+                }
+                return;
+            }
+        };
+        if !value.is_finite() {
+            return;
+        }
+        if self.mode == mode {
+            self.value.set(value);
+        } else {
+            self.value.jump(value);
+            self.mode = mode;
+        }
+        if switch {
+            self.weight.jump(1.0);
+        } else {
+            self.weight.set(1.0);
+        }
+    }
+
+    /// Puts what is held in place of the values of a lane of `kind` through a block.
+    pub(crate) fn apply(&mut self, kind: LaneKind, values: &mut [f32]) {
+        match self.mode {
+            Mode::Off => return,
+            Mode::Hold => {
+                for value in values.iter_mut() {
+                    let weight = self.weight.next_value();
+                    let held = self.value.next_value();
+                    *value = if weight >= 1.0 || (kind == LaneKind::Switch && weight >= 0.5) {
+                        held
+                    } else if kind == LaneKind::Switch {
+                        *value
+                    } else {
+                        *value + (held - *value) * weight
+                    };
+                }
+            }
+            Mode::Offset => {
+                for value in values.iter_mut() {
+                    let weight = self.weight.next_value();
+                    let offset = self.value.next_value();
+                    if *value > SILENCE_DB {
+                        *value = (*value + offset * weight).min(FADER_MAX_DB);
+                    }
+                }
+            }
+        }
+        if !self.weight.is_ramping() && self.weight.target() <= 0.0 {
+            self.mode = Mode::Off;
+        }
+    }
+
+    /// Nothing held, at once.
+    pub(crate) fn reset(&mut self) {
+        self.mode = Mode::Off;
+        self.weight.jump(0.0);
     }
 }

@@ -89,6 +89,39 @@ fn a_frequency_ramped_to_zero_and_back_never_gives_nan() {
 }
 
 #[test]
+fn a_glide_ramps_over_its_own_length_and_the_next_change_over_ten_milliseconds() {
+    // Snap's return (T16): a straight ramp of as many samples as it is told, from where it was.
+    let mut gain = Smoothed::new(0.0, Domain::Linear);
+    gain.prepare(1_000); // 10 samples of ramp
+    gain.glide(1.0, 40);
+    let glide: Vec<f32> = (0..50).map(|_| gain.next_value()).collect();
+    for (k, value) in glide.iter().enumerate().take(40) {
+        #[allow(clippy::cast_precision_loss, reason = "small counts")]
+        let expected = (k + 1) as f32 / 40.0;
+        assert!((value - expected).abs() <= 1e-6, "sample {k}: {value}");
+    }
+    assert!(glide[40..]
+        .iter()
+        .all(|&value| value.to_bits() == 1.0_f32.to_bits()));
+    assert!(!gain.is_ramping());
+    // A glide of no samples goes at once; then a change ramps over 10 samples again.
+    gain.glide(0.5, 0);
+    assert_eq!(gain.next_value(), 0.5);
+    gain.set(0.0);
+    let back: Vec<f32> = (0..10).map(|_| gain.next_value()).collect();
+    assert!((back[0] - 0.45).abs() < 1e-6, "{back:?}");
+    assert_eq!(back[9], 0.0);
+    // A change in the middle of a glide starts from where the glide was.
+    gain.glide(1.0, 100);
+    for _ in 0..50 {
+        gain.next_value();
+    }
+    assert!((gain.current() - 0.5).abs() < 1e-6);
+    gain.set(0.5);
+    assert!((gain.next_value() - 0.5).abs() < 1e-6);
+}
+
+#[test]
 fn before_it_is_prepared_a_change_takes_at_once() {
     let mut gain = Smoothed::new(0.0, Domain::Linear);
     gain.set(1.0);

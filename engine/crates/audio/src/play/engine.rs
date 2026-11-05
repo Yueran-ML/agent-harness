@@ -5,8 +5,10 @@
 //! [`Command`]s and is taken at the edge of the next block:
 //!
 //! - a new session, which ends the one before; or the end of the session;
-//! - a setting of a control ([`Graph::set`]), given to every graph of the session (the one that
-//!   plays, one waiting to be swapped in, one fading out), each of which takes only its own;
+//! - a setting of a control ([`Graph::set`]), a glide of one ([`Graph::glide`]), or a value held
+//!   live in place of a lane while automation is recorded ([`Graph::live`], T16), given to every
+//!   graph of the session (the one that plays, one waiting to be swapped in, one fading out), each
+//!   of which takes only its own;
 //! - a new graph to swap in at a sample of the timeline ahead of what is mixed: the blocks are cut
 //!   to end there, and from there the old graph and the new play together for
 //!   [`GRAPH_SWAP_CROSSFADE`], the old fading out and the new in on straight lines whose sum is
@@ -31,7 +33,7 @@ use super::Counters;
 use crate::constants::{
     samples, GRAPH_SWAP_CROSSFADE, MAX_CHANNELS, MIX_BLOCK, OUTPUT_AHEAD, OUTPUT_AHEAD_PERIODS,
 };
-use crate::graph::{route, Control, Graph};
+use crate::graph::{route, Control, Graph, LaneKey, Live};
 use crate::node::Layout;
 use crate::rt::{MessageConsumer, MessageProducer, SampleProducer};
 use crate::stream::Resampler;
@@ -212,6 +214,10 @@ pub enum Command {
     Stop(u64),
     /// Set a control of a graph.
     Set(Control, f32),
+    /// Glide a control of a graph to a value over so many samples ([`Graph::glide`], T16).
+    Glide(Control, f32, u32),
+    /// Hold a value live in place of a lane of a graph ([`Graph::live`], T16).
+    Live(LaneKey, Live),
     /// Swap this graph in for the session of `epoch`, at sample `at` of the timeline.
     Swap {
         /// The session.
@@ -375,22 +381,27 @@ impl Engine {
                         self.counters.schedule(i64::MIN);
                     }
                 }
-                Command::Set(control, value) => {
-                    if let Some(session) = &mut self.session {
-                        session.run.graph.set(control, value);
-                    }
-                    if let Some((run, _)) = &mut self.incoming {
-                        run.graph.set(control, value);
-                    }
-                    if let Some((run, _)) = &mut self.next {
-                        run.graph.set(control, value);
-                    }
-                    if let Some((run, _)) = &mut self.fading {
-                        run.graph.set(control, value);
-                    }
+                Command::Set(control, value) => self.each_graph(|graph| graph.set(control, value)),
+                Command::Glide(control, value, samples) => {
+                    self.each_graph(|graph| graph.glide(control, value, samples));
                 }
+                Command::Live(key, live) => self.each_graph(|graph| graph.live(key, live)),
                 Command::Swap { epoch, run, at } => self.take_swap(epoch, run, at),
             }
+        }
+    }
+
+    /// Does `what` to every graph of the session: the one that plays, one waiting to be swapped
+    /// in, one after it, and one fading out; each takes only what is its own.
+    fn each_graph(&mut self, mut what: impl FnMut(&mut Graph)) {
+        if let Some(session) = &mut self.session {
+            what(&mut session.run.graph);
+        }
+        for (run, _) in [&mut self.incoming, &mut self.next].into_iter().flatten() {
+            what(&mut run.graph);
+        }
+        if let Some((run, _)) = &mut self.fading {
+            what(&mut run.graph);
         }
     }
 

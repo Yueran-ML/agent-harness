@@ -293,6 +293,28 @@ impl Sim {
         self.commands.push(Command::Set(control, value)).unwrap();
     }
 
+    /// Holds `live` in place of the lane `path` of `owner` of the graph built last (T16).
+    pub fn live(&mut self, owner: &Owner, path: &str, live: columbina_audio::graph::Live) {
+        let key = self
+            .controls
+            .as_ref()
+            .and_then(|controls| controls.lane_key(owner, path))
+            .unwrap();
+        self.commands.push(Command::Live(key, live)).unwrap();
+    }
+
+    /// Glides the control `path` of `owner` of the graph built last to `value` (T16).
+    pub fn glide(&mut self, owner: &Owner, path: &str, value: f32, samples: u32) {
+        let control = self
+            .controls
+            .as_ref()
+            .and_then(|controls| controls.control(owner, path))
+            .unwrap();
+        self.commands
+            .push(Command::Glide(control, value, samples))
+            .unwrap();
+    }
+
     /// What is done off the threads of the sound between runs: the clips read ahead, and what
     /// the thread of the mix let go of dropped.
     pub fn pump(&mut self) {

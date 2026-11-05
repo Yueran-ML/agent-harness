@@ -38,6 +38,7 @@ newest 20 are kept.
 import asyncio
 import base64
 import contextlib
+import copy
 import itertools
 import json
 import os
@@ -225,6 +226,8 @@ class Changed:
 
     method: str
     params: dict[str, Any]
+    # Local receive order, outside the RPC params and unaffected by reader scheduling.
+    _sound_order: int = field(default=0, repr=False, compare=False)
 
     @property
     def revision(self) -> int | None:
@@ -1079,6 +1082,8 @@ class Engine:
         self._readers: weakref.WeakSet[Changes] = weakref.WeakSet()
         self._revision = -1
         self._session = 0
+        self._sound_cache: dict[str, tuple[int, dict[str, Any]]] = {}
+        self._sound_received = 0
         self._next_id = 0
         self._fetching = False
         self._closed = False
@@ -1633,6 +1638,22 @@ class Engine:
         said = await self._call("audio.standards")
         return cast("list[dict[str, Any]]", said["standards"])
 
+    def latest_sound(self, timeline: str, *, revision: int) -> dict[str, Any] | None:
+        """Last successful analysis requested by this client, never an external desktop job.
+
+        Measurements describe the requested snapshot, before any normalize/level-match apply.
+        Only analyze, or normalize/level-match with apply=true, checks a requested revision.
+        An unchecked or absent revision cannot establish freshness. No I/O is done here.
+        """
+        entry = self._sound_cache.get(timeline)
+        if entry is None or entry[1]["session"] != self._session:
+            return None
+        _, cached = entry
+        return {
+            **copy.deepcopy(cached),
+            "stale": cached["measured_revision"] is None or cached["measured_revision"] != revision,
+        }
+
     async def analyze_sound(
         self, method: SoundAnalysis, params: Mapping[str, Any], *, session: int | None = None
     ) -> dict[str, Any]:
@@ -1671,7 +1692,9 @@ class Engine:
                     code=-32001,
                     data={"reason": "stale_revision", "session": self._session},
                 )
-            number, asked = self._sent(wire, method, params)
+            incoming_session = self._session
+            requested = copy.deepcopy(dict(params))
+            number, asked = self._sent(wire, method, requested)
             try:
                 # Shielded as render's: a caller that gives up before the job is named still has
                 # it cancelled.
@@ -1692,6 +1715,37 @@ class Engine:
                     if state == "running":
                         continue
                     if state == "done":
+                        timeline = requested.get("timeline")
+                        received = told._sound_order  # pyright: ignore[reportPrivateUsage]
+                        previous = (
+                            self._sound_cache.get(timeline) if isinstance(timeline, str) else None
+                        )
+                        if (
+                            isinstance(timeline, str)
+                            and incoming_session == self._session
+                            and wire is self._wire
+                            and (previous is None or received > previous[0])
+                        ):
+                            self._sound_cache[timeline] = (
+                                received,
+                                {
+                                    "session": incoming_session,
+                                    "timeline": timeline,
+                                    # The server ignores revision for dry-run gain jobs.
+                                    "measured_revision": requested.get("revision")
+                                    if method == "audio.analyze" or requested.get("apply") is True
+                                    else None,
+                                    "method": method,
+                                    "request": requested,
+                                    "range": copy.deepcopy(requested.get("range")),
+                                    "range_unit": "timeline_frames; null means whole targets",
+                                    "completed_at": datetime.now(UTC).isoformat(),
+                                    "measurement_phase": "snapshot"
+                                    if method == "audio.analyze"
+                                    else "before_apply",
+                                    "result": copy.deepcopy(told.params),
+                                },
+                            )
                         return told.params
                     why = told.params.get("message")
                     raise EngineError(
@@ -1933,6 +1987,8 @@ class Engine:
     def _drop(self) -> None:
         """Close the connection, if there is one."""
         wire, self._wire = self._wire, None
+        self._sound_cache.clear()
+        self._sound_received = 0
         if wire is not None:
             wire.close()
 
@@ -2043,7 +2099,11 @@ class Engine:
             self._revision = revision
             if isinstance(next_id, int):
                 self._next_id = next_id
-        self._tell(Changed(method, params))
+        sound_order = 0
+        if method == "audio.analysis" and params.get("state") == "done":
+            self._sound_received += 1
+            sound_order = self._sound_received
+        self._tell(Changed(method, params, _sound_order=sound_order))
 
     def _fetch(self) -> None:
         """Ask for the whole project anew, as a change was missed."""
@@ -2058,6 +2118,8 @@ class Engine:
             return
         self._wire = None
         self._fetching = False
+        self._sound_cache.clear()
+        self._sound_received = 0
         self._failed(error)
         self._tell(error)
 

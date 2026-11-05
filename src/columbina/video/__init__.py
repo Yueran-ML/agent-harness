@@ -224,6 +224,16 @@ class _Timeline(_Project):
     )
 
 
+class _Info(_Timeline):
+    scope: Literal["audio"] | None = Field(
+        default=None,
+        description=(
+            "audio: static mixer settings and this client's latest completed analysis; "
+            "omit for the usual project summary."
+        ),
+    )
+
+
 class _Import(_Project):
     paths: list[str] = Field(
         min_length=1, description="Video, audio or image files to import into the media pool."
@@ -851,7 +861,9 @@ def tools_of(videos: Videos) -> list[Tool[Any, str]]:
                         failure = _failing(error)
                         raise ToolFailure(f"{failure}; {hint}", code=failure.code) from None
                 return await editor.info(
-                    args.timeline if isinstance(args, _Timeline) else None, readable
+                    args.timeline if isinstance(args, _Timeline) else None,
+                    readable,
+                    scope=args.scope if isinstance(args, _Info) else None,
                 )
         except _FAILURES as error:
             raise _failing(error) from None
@@ -968,11 +980,14 @@ def tools_of(videos: Videos) -> list[Tool[Any, str]]:
         ),
         tool(
             "video_info",
-            _Timeline,
+            _Info,
             (
                 "List media, bins and timelines, with tracks, clips, source in/out, "
                 "placement, duration, speed and transitions; graded clips and timelines with "
-                "their grades in short, and the groups of grades. Omit timeline to list all."
+                "their grades in short, and the groups of grades. Omit timeline to list all. "
+                "scope=audio lists static mixer settings and this client's latest completed "
+                "analysis per timeline, with snapshot revision and stale status. It does not "
+                "measure audio or monitor jobs started by other clients."
             ),
             effect="read",
         ),

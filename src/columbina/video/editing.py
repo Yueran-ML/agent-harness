@@ -501,7 +501,11 @@ class Editor:
         )
 
     async def info(
-        self, timeline: str | None = None, readable: Callable[[str], Path | None] | None = None
+        self,
+        timeline: str | None = None,
+        readable: Callable[[str], Path | None] | None = None,
+        *,
+        scope: Literal["audio"] | None = None,
     ) -> str:
         """List engine ids and timeline positions for subsequent edits.
 
@@ -512,6 +516,28 @@ class Editor:
         """
         revision, project = await self.engine.project()
         timelines = [_timeline(project, timeline)] if timeline else project["timelines"]
+        if scope == "audio":
+            from columbina.video.audio_info import mixer
+
+            return receipt(
+                {
+                    "project": str(self.directory),
+                    "revision": revision,
+                    "session": self.engine.session,
+                    "scope": "audio",
+                    "values": "static; automation and VCA contributions are not evaluated",
+                    "analysis_cache_source": "engine_client_calls",
+                    "timelines": [
+                        {
+                            **mixer(target),
+                            "latest_analysis": self.engine.latest_sound(
+                                target["id"], revision=revision
+                            ),
+                        }
+                        for target in timelines
+                    ],
+                }
+            )
         groups: list[dict[str, Any]] = project.get("groups", [])
         names: set[str] = set()
         for target in timelines:

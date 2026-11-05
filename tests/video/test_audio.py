@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -11,7 +12,13 @@ import pytest
 from columbina.kernel import Context
 from columbina.tools import TOOLS, ToolRun
 from columbina.video import VIDEOS
-from columbina.video.engine import EngineError
+from columbina.video.engine import (
+    Changes,
+    Engine,
+    EngineError,
+    SoundAnalysis,
+    _Wire,  # pyright: ignore[reportPrivateUsage]
+)
 from support.desk import Desk
 from support.fake_engine import Fake, served
 from support.studio_tools import desk_of, result
@@ -386,3 +393,315 @@ async def test_standards_and_project_are_bound_to_the_same_session(
     assert failed.error is not None
     assert failed.error.code == "VIDEO_STALE_REVISION"
     assert not fake.sounds
+
+
+async def test_audio_info_is_a_compact_snapshot_without_analysis_or_asset_io(
+    studio: tuple[Desk, Fake], ctx: Context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    desk, fake = studio
+    timeline = fake.project["timelines"][0]
+    track = timeline["tracks"][0]
+    track.update(name="Voice", format="mono", enabled=False, mute=True, solo_safe=True)
+    track["strip"] = {
+        "fader_db": -4,
+        "pan": {"x": 0.3},
+        "inserts_on": False,
+        "inserts": [{"id": "fx9", "effect": {"kind": "limiter"}}],
+        "track_fx": {"on": True, "sources": [{"track": "A2"}]},
+        "outputs": [{"bus": "MAIN7", "on": False}],
+        "sends": [{"bus": "RETURN2", "level_db": -8, "pre": True}],
+        "vcas": ["VCA2"],
+    }
+    track["lanes"] = {"fader_db": {"points": [{"at": {"ticks": 0, "scale": 25}, "value": 2}]}}
+    timeline["tracks"].append({"id": "V1", "kind": "video", "clips": []})
+    timeline["vcas"] = [{"id": "VCA2", "name": "Voices"}]
+    timeline["track_groups"] = [{"id": "TG2", "name": "Speakers", "members": ["A1"]}]
+    from columbina.video import grading, words
+
+    def unwanted(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("audio info must not inspect LUTs or transcripts")
+
+    monkeypatch.setattr(grading, "missing_luts", unwanted)
+    monkeypatch.setattr(words, "transcripts_of", unwanted)
+    info = result(await desk.call("video_info", scope="audio"))
+    assert info["scope"] == "audio"
+    assert info["analysis_cache_source"] == "engine_client_calls"
+    audio = info["timelines"][0]
+    assert len(audio["tracks"]) == 1
+    voice = audio["tracks"][0]
+    assert (voice["id"], voice["name"], voice["format"]) == ("A1", "Voice", "mono")
+    assert (voice["fader_db"], voice["pan"]["x"]) == (-4, 0.3)
+    assert (voice["enabled"], voice["mute"], voice["solo"], voice["solo_safe"]) == (
+        False,
+        True,
+        False,
+        True,
+    )
+    assert voice["outputs"] == [{"bus": "MAIN7", "on": False}]
+    assert voice["sends"][0]["level_db"] == -8
+    assert voice["sends"][0]["on"] is True
+    assert voice["inserts"] == [{"id": "fx9", "name": "limiter", "on": True}]
+    assert voice["inserts_on"] is False
+    assert voice["track_fx"] == {"name": "ducker", "on": True}
+    assert voice["lanes"] == ["fader_db"]
+    assert "clips" not in voice
+    assert audio["buses"][0]["outputs"] == []
+    assert audio["vcas"][0]["fader_db"] == 0
+    assert audio["groups"][0]["members"] == ["A1"]
+    assert audio["latest_analysis"] is None
+    assert not fake.sounds
+    assert ctx.use(TOOLS).registry["video_info"].effect == "read"
+
+
+@pytest.mark.parametrize(
+    ("buses", "strip", "outputs"),
+    [
+        ([{"id": "MAIN7", "name": "Main"}], None, []),
+        ([{"id": "B1", "name": "Bus 1"}], None, [{"bus": "B1", "on": True}]),
+        ([{"id": "B1", "name": "Bus 1"}], {}, []),
+        ([], None, []),
+    ],
+)
+async def test_audio_info_uses_model_defaults_for_omitted_strip(
+    studio: tuple[Desk, Fake],
+    buses: list[dict[str, Any]],
+    strip: dict[str, Any] | None,
+    outputs: list[dict[str, Any]],
+) -> None:
+    desk, fake = studio
+    timeline = fake.project["timelines"][0]
+    timeline["buses"] = buses
+    if strip is not None:
+        timeline["tracks"][0]["strip"] = strip
+    audio = result(await desk.call("video_info", scope="audio"))["timelines"][0]
+    track = audio["tracks"][0]
+    assert track["outputs"] == outputs
+    assert (track["format"], track["fader_db"], track["pan"]["x"]) == ("stereo", 0, 0)
+    assert track["pan"]["spread"] == 99
+    assert track["inserts"] == []
+    assert track["lanes"] == []
+
+
+async def test_audio_cache_is_success_only_revision_bound_and_isolated(
+    studio: tuple[Desk, Fake], ctx: Context
+) -> None:
+    desk, fake = studio
+    other = copy.deepcopy(fake.project["timelines"][0])
+    other["id"] = "t2"
+    fake.project["timelines"].append(other)
+    readings = [{"target": {"bus": "MAIN7"}, "integrated": None, "true_peak": -4}]
+    fake.sound_found = {"results": readings}
+    result(
+        await desk.call(
+            "video_loudness",
+            action="measure",
+            target="main",
+            timeline="t1",
+            range={"from": 10, "to": 40},
+        )
+    )
+    info = result(await desk.call("video_info", scope="audio"))
+    cached = info["timelines"][0]["latest_analysis"]
+    assert cached["result"]["results"] == readings
+    assert cached["request"]["range"] == {"from": 10, "to": 40}
+    assert cached["range"] == {"from": 10, "to": 40}
+    assert cached["request"]["targets"] == [{"bus": "MAIN7"}]
+    assert cached["measured_revision"] == 0
+    assert cached["session"] == info["session"]
+    assert cached["completed_at"]
+    assert cached["stale"] is False
+    assert info["timelines"][1]["latest_analysis"] is None
+    for state in ("failed", "cancelled"):
+        fake.sound_end = state
+        await desk.call("video_loudness", action="measure", target="main", timeline="t1")
+        again = result(await desk.call("video_info", scope="audio", timeline="t1"))
+        assert again["timelines"][0]["latest_analysis"] == cached
+    fake.revision += 1
+    stale = result(await desk.call("video_info", scope="audio", timeline="t1"))
+    assert stale["timelines"][0]["latest_analysis"]["stale"] is True
+    editor = await ctx.use(VIDEOS).editor(ToolRun("inspect", desk.work, desk.session), "video_info")
+    editor.engine._drop()  # pyright: ignore[reportPrivateUsage]
+    reconnected = result(await desk.call("video_info", scope="audio", timeline="t1"))
+    assert reconnected["timelines"][0]["latest_analysis"] is None
+    fake.sound_end = "done"
+    result(await desk.call("video_loudness", action="measure", target="main", timeline="t1"))
+    current = result(await desk.call("video_info", scope="audio", timeline="t1"))
+    fresh = current["timelines"][0]["latest_analysis"]
+    assert fresh["session"] == cached["session"] + 1
+    assert fresh["measured_revision"] == fake.revision
+    assert fresh["stale"] is False
+
+
+async def test_normalization_cache_identifies_before_apply_measurements(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    fake.sound_found = {
+        "clips": [{"clip": "c1", "measured": -30, "gain_db": 7, "clamped": False}],
+        "applied": {"revision": 1},
+    }
+    result(await desk.call("video_loudness", action="apply", target="clip_gain", ids=["c1"]))
+    fake.revision = 1
+    cached = result(await desk.call("video_info", scope="audio"))["timelines"][0]["latest_analysis"]
+    assert cached["measurement_phase"] == "before_apply"
+    assert cached["measured_revision"] == 0
+    assert cached["result"]["applied"]["revision"] == 1
+    assert cached["stale"] is True
+    assert cached["result"]["clips"][0]["measured"] == -30
+    assert "after" not in cached["result"]
+
+
+async def test_cache_does_not_claim_external_jobs_or_unbound_revision_are_current(
+    studio: tuple[Desk, Fake], ctx: Context
+) -> None:
+    desk, fake = studio
+    editor = await ctx.use(VIDEOS).editor(ToolRun("inspect", desk.work, desk.session), "video_info")
+    fake.tell("audio.analysis", {"job": "desktop-1", "state": "done", "results": []})
+    assert editor.engine.latest_sound("t1", revision=0) is None
+    params: dict[str, Any] = {"timeline": "t1", "targets": [{"bus": "MAIN7"}]}
+    done = await editor.engine.analyze_sound("audio.analyze", params)
+    params["targets"].clear()
+    done["state"] = "tampered"
+    cached = editor.engine.latest_sound("t1", revision=0)
+    assert cached is not None
+    assert cached["measured_revision"] is None
+    assert cached["stale"] is True
+    assert cached["range"] is None
+    assert cached["request"]["targets"] == [{"bus": "MAIN7"}]
+    assert cached["result"]["state"] == "done"
+    cached["result"]["state"] = "mutated"
+    reread = editor.engine.latest_sound("t1", revision=0)
+    assert reread is not None
+    assert reread["result"]["state"] == "done"
+
+
+async def test_cancelled_call_keeps_the_previous_success(
+    studio: tuple[Desk, Fake], ctx: Context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    desk, fake = studio
+    result(await desk.call("video_loudness", action="measure", target="main"))
+    editor = await ctx.use(VIDEOS).editor(ToolRun("inspect", desk.work, desk.session), "video_info")
+    cached = editor.engine.latest_sound("t1", revision=0)
+    fake.sound_hold = True
+    started = asyncio.Event()
+    sound = fake._sound  # pyright: ignore[reportPrivateUsage]
+
+    def start(method: str, params: dict[str, Any]) -> dict[str, Any]:
+        answer = sound(method, params)
+        started.set()
+        return answer
+
+    monkeypatch.setattr(fake, "_sound", start)
+    task = asyncio.create_task(
+        editor.engine.analyze_sound(
+            "audio.analyze", {"timeline": "t1", "targets": [{"bus": "MAIN7"}], "revision": 0}
+        )
+    )
+    await asyncio.wait_for(started.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert editor.engine.latest_sound("t1", revision=0) == cached
+
+
+async def test_audio_scope_validates_timeline_and_scope(studio: tuple[Desk, Fake]) -> None:
+    desk, _ = studio
+    missing = await desk.call("video_info", scope="audio", timeline="missing")
+    assert missing.error is not None
+    assert missing.error.code == "VIDEO_MISSING"
+    invalid = await desk.call("video_info", scope="other")
+    assert invalid.error is not None
+
+
+@pytest.mark.parametrize("method", ["audio.normalize", "audio.level_match"])
+@pytest.mark.parametrize("apply", [False, None])
+async def test_dry_run_revision_is_not_a_bound_measurement_snapshot(
+    studio: tuple[Desk, Fake], ctx: Context, method: SoundAnalysis, apply: bool | None
+) -> None:
+    desk, fake = studio
+    editor = await ctx.use(VIDEOS).editor(ToolRun("inspect", desk.work, desk.session), "video_info")
+    params: dict[str, Any] = {"timeline": "t1", "clips": ["c1"], "revision": 7}
+    if method == "audio.level_match":
+        params["reference"] = "c2"
+    if apply is not None:
+        params["apply"] = apply
+    await editor.engine.analyze_sound(method, params)
+    cached = result(await desk.call("video_info", scope="audio"))["timelines"][0]["latest_analysis"]
+    assert cached["request"]["revision"] == 7
+    assert cached["stale"] is True
+    # Reaching the requested revision later does not make the old dry-run a measurement of it.
+    fake.revision = 7
+    later = result(await desk.call("video_info", scope="audio"))["timelines"][0]["latest_analysis"]
+    assert later["stale"] is True
+    assert cached["measured_revision"] is None
+    assert later["measured_revision"] is None
+
+
+@pytest.mark.parametrize("reverse_notifications", [False, True])
+async def test_latest_analysis_follows_wire_completion_order_not_reader_wake_order(
+    tmp_path: Path, reverse_notifications: bool
+) -> None:
+    engine = Engine(tmp_path, "unused", "cache-order-test", None)
+    wire = _Wire(engine._heard, engine._lost)  # pyright: ignore[reportPrivateUsage]
+    engine._wire = wire  # pyright: ignore[reportPrivateUsage]
+
+    class MemoryTransport(asyncio.Transport):
+        def write(self, data: Any) -> None:
+            request = json.loads(data)
+            response = {
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": {"job": f"job-{request['id']}"},
+            }
+            wire.data_received((json.dumps(response) + "\n").encode())
+
+        def close(self) -> None:
+            pass
+
+    wire.connection_made(MemoryTransport())
+    readers: dict[Changes, str] = {}
+    tasks: list[asyncio.Task[dict[str, Any]]] = []
+    consumed: list[str] = []
+
+    async def measure(number: int) -> dict[str, Any]:
+        result = await engine.analyze_sound(
+            "audio.analyze", {"timeline": "t1", "revision": 0, "targets": [{"track": f"A{number}"}]}
+        )
+        consumed.append(result["job"])
+        return result
+
+    for number in (1, 2):
+        previous = set(engine._readers)  # pyright: ignore[reportPrivateUsage]
+        tasks.append(asyncio.create_task(measure(number)))
+        await asyncio.sleep(0)
+        reader = (set(engine._readers) - previous).pop()  # pyright: ignore[reportPrivateUsage]
+        readers[reader] = f"job-{number}"
+    wake_order = [readers[reader] for reader in engine._readers]  # pyright: ignore[reportPrivateUsage]
+    notification_order = list(reversed(wake_order)) if reverse_notifications else wake_order
+    lines = [
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "method": "audio.analysis",
+                "params": {
+                    "job": job,
+                    "state": "done",
+                    "results": [{"integrated": -20 - index}],
+                },
+            }
+        )
+        for index, job in enumerate(notification_order)
+    ]
+    # One actual Wire batch: both Changed messages arrive before either consumer resumes.
+    wire.data_received(("\n".join(lines) + "\n").encode())
+    found = await asyncio.wait_for(asyncio.gather(*tasks), 5)
+    assert [done["job"] for done in found] == ["job-1", "job-2"]
+    assert consumed == wake_order
+    if reverse_notifications:
+        assert consumed == list(reversed(notification_order))
+    cached = engine.latest_sound("t1", revision=0)
+    assert cached is not None
+    assert cached["result"]["job"] == notification_order[-1]
+    assert cached["result"]["results"] == [{"integrated": -21}]
+    assert cached["stale"] is False
+    await engine.aclose()

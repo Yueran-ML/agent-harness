@@ -896,6 +896,81 @@ export interface RenderProgress {
   normalization?: RenderNormalization;
 }
 
+/** A channel of a meter, as `audio.meters` gives it (PROTOCOL.md, "Meters, loudness and the analysis of sound"): dB (`null` for silence), and where on the scale, 0 to 1. */
+export interface MeterChannel {
+  bar: number | null;
+  /** The peak indicator; `null` where it is Off, or silent. */
+  peak: number | null;
+  bar_position: number;
+  peak_position: number | null;
+}
+/** Whose meters: a track or a bus. */
+export type MeterOwner = { track: string } | { bus: string };
+/** The meters of a track or a bus: before its fader (and its mute and solo), and after. */
+export interface StripMeters { owner: MeterOwner; pre: MeterChannel[]; post: MeterChannel[] }
+/** Where the integrated loudness stands against the standard: blue, yellow, red (p. 3984). */
+export type LoudnessVerdict = 'low' | 'within' | 'high';
+/** The loudness meter of the bus monitored (`audio.loudness`): LUFS, LU, dBTP, dBFS; `null` before there is one. */
+export interface LoudnessReading {
+  running: boolean;
+  standard: string;
+  target: number | null;
+  momentary: number | null;
+  short_term: number | null;
+  momentary_max: number | null;
+  short_term_max: number | null;
+  /** As the standard measures it: BS.1770-1 ungated, the others gated. */
+  integrated: number | null;
+  range: number | null;
+  true_peak: number | null;
+  sample_peak: number | null;
+  seconds: number;
+  verdict: LoudnessVerdict | null;
+}
+/** What the meters of a timeline show now (`audio.meters`), read by the engine 30 times a second. */
+export interface Meters {
+  timeline: string;
+  /** Whether a graph of it gave sound in the last 0.1 s. */
+  playing: boolean;
+  rate: number;
+  scale: 'iec' | 'linear';
+  strips: StripMeters[];
+  /** The Control Room meter: the sum of the channels of the bus monitored (p. 3983). */
+  control_room: MeterChannel | null;
+  loudness: LoudnessReading;
+  lost: number;
+}
+/** What an analysis measures: a clip before its Volume, a track or a bus after its fader. */
+export type AnalysisTarget = { clip: string } | { track: string } | { bus: string };
+/** What `audio.analyze` found of a target. */
+export interface AnalysisResult {
+  target: AnalysisTarget;
+  integrated: number | null;
+  range: number | null;
+  momentary_max: number | null;
+  short_term_max: number | null;
+  true_peak: number | null;
+  sample_peak: number | null;
+  seconds: number;
+  verdict: LoudnessVerdict | null;
+}
+/** The gain that Normalize Audio Levels or Level Matcher found for a clip; `null` for one left as it is. */
+export interface ClipGain { clip: string; gain_db: number | null; clamped: boolean; measured: number | null }
+/** What `audio.analysis` tells of a job of `audio.analyze`, `audio.normalize` or `audio.level_match`. */
+export type AudioAnalysis =
+  | { job: string; state: 'running'; done: number; total: number }
+  | { job: string; state: 'done'; method: 'audio.analyze'; standard: string; level: number | null; results: AnalysisResult[] }
+  | {
+    job: string; state: 'done'; method: 'audio.normalize'; level: string; target: number; mode: 'relative' | 'independent';
+    measured: number | null; clips: ClipGain[]; applied: Applied | null; refused?: EngineFailure;
+  }
+  | {
+    job: string; state: 'done'; method: 'audio.level_match'; reference: { clip: string; measured: number | null };
+    clips: ClipGain[]; applied: Applied | null; refused?: EngineFailure;
+  }
+  | { job: string; state: 'failed'; message: string }
+  | { job: string; state: 'cancelled' };
+
 /**
  * What became of one old project of the folder as the studio was opened: the timeline that it
  * became and what of it was left out, or why it could not be migrated (`error`).
@@ -945,6 +1020,13 @@ export interface PageMethods {
   'track.start': TrackStarted;
   'track.stop': Record<string, never>;
   'track.edit': { revision: number };
+  // The meters, the loudness and the analyses of sound (PROTOCOL.md, "Meters, loudness and the analysis of sound").
+  'audio.meters': Meters;
+  'audio.loudness': LoudnessReading;
+  'audio.analyze': { job: string };
+  'audio.normalize': { job: string };
+  'audio.level_match': { job: string };
+  'audio.cancel': Record<string, never>;
   // The Gallery and the comparisons of the viewer (PROTOCOL.md, "The Gallery", "Comparisons in the viewer").
   'viewer.wipe': Compared;
   'viewer.split': Compared;

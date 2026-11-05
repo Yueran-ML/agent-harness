@@ -4508,6 +4508,8 @@ describe('the engine of the studio', () => {
       'luts.preview', 'viewer.preview', 'viewer.lut',
       // The Tracker palette and the keys of the Color › Tracker menu (T24).
       'track.start', 'track.stop', 'track.edit',
+      // The meters and the analyses of sound (phase 3, T9b).
+      'audio.meters', 'audio.loudness', 'audio.analyze', 'audio.normalize', 'audio.level_match', 'audio.cancel',
     ];
     for (const method of allowed) {
       const params = method === 'transaction.apply' ? { ops: [{ op: 'remove_clip', timeline: 't1', id: 'c1' }] } : { frame: 3, monitor: 'source' };

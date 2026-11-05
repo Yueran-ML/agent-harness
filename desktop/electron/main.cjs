@@ -180,6 +180,9 @@ const PAGE_METHODS = new Set([
   // Window tracking (RM20 pp. 3231–3238): a track of the selected window, its stop, and the edits
   // of its track data, which name the window by its grade, node and id alone.
   'track.start', 'track.stop', 'track.edit',
+  // The meters, the loudness meter and the analyses of sound (phase 3, T9b), which name timelines,
+  // clips, tracks and buses by their ids alone.
+  'audio.meters', 'audio.loudness', 'audio.analyze', 'audio.normalize', 'audio.level_match', 'audio.cancel',
 ]);
 /** The points on an edge of the cubes that Generate LUT makes (Reference Manual 20, p. 3413). */
 const LUT_SIZES = [17, 33, 65];

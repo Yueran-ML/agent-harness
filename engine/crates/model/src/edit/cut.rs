@@ -1,34 +1,76 @@
-//! Taking clips away, cutting frames out, cutting clips in two and moving clips: lift, ripple
-//! delete, ripple delete of a range, close gap, blade, move and insert move.
+//! Taking clips away, cutting frames out, cutting clips in two, moving clips and putting copies
+//! of them: lift, ripple delete, ripple delete of a range, close gap, blade, move, insert move and
+//! place copies.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::work::{union, Work};
-use super::{EditError, Straddling};
+use super::{CopyOf, EditError, Straddling};
 use crate::ops::{Op, OpError};
 use crate::project::{Clip, Cue, Id, Track, TrackKind};
 
-pub(super) fn lift(work: &mut Work, clips: &[Id], linked: bool) -> Result<(), EditError> {
-    let all = work.grouped(clips, linked)?;
+pub(super) fn lift(
+    work: &mut Work,
+    clips: &[Id],
+    linked: bool,
+    grouped: bool,
+) -> Result<(), EditError> {
+    let all = work.group(clips, linked)?;
     if all.is_empty() {
         return Err(EditError::EmptyRange);
     }
+    let along = if grouped {
+        work.group_ranges(&all)?
+    } else {
+        vec![]
+    };
     for id in &all {
         work.remove(id)?;
+    }
+    for (track, from, to) in along {
+        work.clear_clips(&[track], from, to)?;
     }
     Ok(())
 }
 
-pub(super) fn ripple_delete(work: &mut Work, clips: &[Id], linked: bool) -> Result<(), EditError> {
-    let all = work.grouped(clips, linked)?;
+pub(super) fn ripple_delete(
+    work: &mut Work,
+    clips: &[Id],
+    linked: bool,
+    grouped: bool,
+) -> Result<(), EditError> {
+    let all = work.group(clips, linked)?;
     if all.is_empty() {
         return Err(EditError::EmptyRange);
     }
     let spans = spans_of(work, &all)?;
+    let along = if grouped {
+        work.group_ranges(&all)?
+    } else {
+        vec![]
+    };
     for id in &all {
         work.remove(id)?;
     }
+    for (track, from, to) in along {
+        work.clear_clips(&[track], from, to)?;
+    }
     work.close(&spans)
+}
+
+/// With `grouped`, `all` and the clips of the frames of each of them on the other tracks of its
+/// groups (cut out of what is there at the ends of those frames).
+fn with_ranges(work: &mut Work, mut all: Vec<Id>, grouped: bool) -> Result<Vec<Id>, EditError> {
+    if grouped {
+        for (track, from, to) in work.group_ranges(&all)? {
+            for id in work.cut_out(&track, (from, to), &all)? {
+                if !all.contains(&id) {
+                    all.push(id);
+                }
+            }
+        }
+    }
+    Ok(all)
 }
 
 /// Where each of `clips` lies: its start and end.
@@ -61,9 +103,9 @@ fn open_tracks(
 
 pub(super) fn ripple_delete_range(
     work: &mut Work,
-    from: i64,
-    to: i64,
+    (from, to): (i64, i64),
     tracks: Option<&[Id]>,
+    grouped: bool,
 ) -> Result<(), EditError> {
     if from < 0 {
         return Err(EditError::Op(OpError::OutOfTimeline { start: from }));
@@ -72,7 +114,10 @@ pub(super) fn ripple_delete_range(
         return Err(EditError::EmptyRange);
     }
     let all = [TrackKind::Video, TrackKind::Audio, TrackKind::Subtitle];
-    let tracks = work.with_groups(open_tracks(work, tracks, &all)?);
+    let mut tracks = open_tracks(work, tracks, &all)?;
+    if grouped {
+        tracks = work.with_groups(tracks);
+    }
     work.clear_clips(&tracks, from, to)?;
     work.shift(&tracks, to, from - to, &HashSet::new())
 }
@@ -145,11 +190,14 @@ pub(super) fn blade(
     work: &mut Work,
     at: i64,
     tracks: Option<&[Id]>,
-    linked: bool,
+    (linked, grouped): (bool, bool),
 ) -> Result<(), EditError> {
     let kinds = [TrackKind::Video, TrackKind::Audio];
     let named = tracks.and_then(|t| (t.len() == 1).then(|| t[0].clone()));
-    let tracks = work.with_groups(open_tracks(work, tracks, &kinds)?);
+    let mut tracks = open_tracks(work, tracks, &kinds)?;
+    if grouped {
+        tracks = work.with_groups(tracks);
+    }
     let mut across = vec![];
     for track in &tracks {
         across.extend(work.across(track, at)?);
@@ -171,12 +219,13 @@ pub(super) fn blade(
 pub(super) fn move_clips(
     work: &mut Work,
     clips: &[Id],
-    delta: i64,
-    to_track: Option<&str>,
+    (delta, to_track): (i64, Option<&str>),
     overwrite: bool,
-    linked: bool,
+    (linked, grouped): (bool, bool),
 ) -> Result<(), EditError> {
-    let all = work.grouped(clips, linked)?;
+    // A move to another track takes no other track of a group along.
+    let all = work.group(clips, linked)?;
+    let all = with_ranges(work, all, grouped && to_track.is_none())?;
     let Some(first) = all.first() else {
         return Err(EditError::EmptyRange);
     };
@@ -268,12 +317,13 @@ pub(super) fn insert_move(
     work: &mut Work,
     clips: &[Id],
     at: i64,
-    linked: bool,
+    (linked, grouped): (bool, bool),
 ) -> Result<(), EditError> {
     if at < 0 {
         return Err(EditError::Op(OpError::OutOfTimeline { start: at }));
     }
-    let all = work.grouped(clips, linked)?;
+    let all = work.group(clips, linked)?;
+    let all = with_ranges(work, all, grouped)?;
     if all.is_empty() {
         return Err(EditError::EmptyRange);
     }
@@ -357,6 +407,64 @@ fn lift_cues(work: &mut Work, spans: &[(i64, i64)]) -> Result<Vec<(Id, Cue, i64)
     Ok(carried)
 }
 
+pub(super) fn place_copies(work: &mut Work, copies: &[CopyOf]) -> Result<(), EditError> {
+    if copies.is_empty() {
+        return Err(EditError::EmptyRange);
+    }
+    // Every copy as its clip is now, before anything is cleared: a copy may go over its clip.
+    let mut made: Vec<(Id, Id, Clip)> = vec![];
+    for copy in copies {
+        let (from, clip) = work.owned(&copy.clip)?;
+        let to = work.open(&copy.track)?;
+        let kind = work.track(&from)?.kind;
+        if to.kind != kind || kind == TrackKind::Subtitle {
+            return Err(EditError::Op(OpError::WrongKind {
+                track: copy.track.clone(),
+                kind: to.kind,
+            }));
+        }
+        if copy.start < 0 {
+            return Err(EditError::Op(OpError::OutOfTimeline { start: copy.start }));
+        }
+        work.keep_lanes(&from, &clip);
+        made.push((copy.track.clone(), from, clip));
+    }
+    for (copy, (track, _, clip)) in copies.iter().zip(&made) {
+        work.clear_clips(
+            std::slice::from_ref(track),
+            copy.start,
+            copy.start + clip.length,
+        )?;
+    }
+    // Copies of two or more clips of a group are put in a new group together.
+    let mut linked: HashMap<Id, usize> = HashMap::new();
+    for (_, _, clip) in &made {
+        if let Some(link) = &clip.link {
+            *linked.entry(link.clone()).or_default() += 1;
+        }
+    }
+    let mut groups: HashMap<Id, Id> = HashMap::new();
+    for (copy, (track, _, clip)) in copies.iter().zip(made) {
+        let link = clip
+            .link
+            .as_ref()
+            .filter(|link| linked[*link] > 1)
+            .map(|link| groups.get(link).cloned().unwrap_or_default());
+        let source = clip.id.clone();
+        let new = Clip {
+            id: String::new(),
+            start: copy.start,
+            link,
+            ..clip.clone()
+        };
+        let put = work.insert_copy(&track, new, &source)?;
+        if let (Some(old), Some(new)) = (&clip.link, put.link) {
+            groups.insert(old.clone(), new);
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::fixture::*;
@@ -368,6 +476,7 @@ mod tests {
             timeline: "t1".into(),
             clips: clips.iter().map(|&c| c.into()).collect(),
             linked: true,
+            grouped: false,
         }
     }
 
@@ -377,6 +486,7 @@ mod tests {
             from,
             to,
             tracks: None,
+            grouped: false,
         }
     }
 
@@ -386,6 +496,7 @@ mod tests {
             at,
             tracks: tracks.map(|t| t.iter().map(|&t| t.into()).collect()),
             linked,
+            grouped: false,
         }
     }
 
@@ -397,6 +508,7 @@ mod tests {
             to_track: to_track.map(Into::into),
             overwrite,
             linked: true,
+            grouped: false,
         }
     }
 
@@ -409,6 +521,7 @@ mod tests {
                 timeline: "t1".into(),
                 clips: vec!["c3".into()],
                 linked: true,
+                grouped: false,
             },
         );
         assert_eq!(clips(&project, "V1"), rows(&[("c1", 0, 100, 0)]));
@@ -423,6 +536,7 @@ mod tests {
             timeline: "t1".into(),
             clips: vec!["c1".into()],
             linked,
+            grouped: false,
         };
         edit(&mut project, lift(false));
         assert_eq!(clips(&project, "A1").len(), 2);
@@ -532,6 +646,7 @@ mod tests {
                 from: 20,
                 to: 30,
                 tracks: Some(vec!["V1".into(), "A1".into()]),
+                grouped: false,
             },
         );
         assert_eq!(cues(&project, "S1"), before);
@@ -564,6 +679,7 @@ mod tests {
             from: 10,
             to: 20,
             tracks: Some(vec!["V1".into(), "A9".into()]),
+            grouped: false,
         };
         assert!(matches!(refused(project(), edit_), EditError::Op(_)));
     }
@@ -784,6 +900,7 @@ mod tests {
                 timeline: "t1".into(),
                 clips: vec!["c5".into()],
                 linked: false,
+                grouped: false,
             },
         );
         edit(&mut project, move_by(&["c1"], 0, Some("V2"), true));
@@ -817,6 +934,7 @@ mod tests {
                 clips: vec!["c3".into()],
                 at: 0,
                 linked: true,
+                grouped: false,
             },
         );
         assert_eq!(
@@ -847,6 +965,7 @@ mod tests {
                     clips: vec!["c3".into(), "c1".into()],
                     at: 100,
                     linked: false,
+                    grouped: false,
                 }],
                 "test",
             )
@@ -874,6 +993,7 @@ mod tests {
             clips: clips.iter().map(|&id| id.into()).collect(),
             at,
             linked,
+            grouped: false,
         }
     }
 
@@ -1016,6 +1136,7 @@ mod tests {
                 timeline: "t1".into(),
                 clips: vec!["c3".into()],
                 linked: true,
+                grouped: false,
             },
         );
         assert_eq!(transitions(&project, "V1"), []);
@@ -1029,6 +1150,7 @@ mod tests {
             from: 0,
             to: 50,
             tracks: Some(vec!["V1".into(), "A1".into()]),
+            grouped: false,
         };
         edit(&mut project, edit_);
         assert_eq!(
@@ -1073,6 +1195,7 @@ mod tests {
                 clips: vec!["c3".into()],
                 at: 50,
                 linked: true,
+                grouped: false,
             },
         );
         assert_eq!(
@@ -1101,6 +1224,7 @@ mod tests {
             clips: vec!["c1".into()],
             at: 150,
             linked: true,
+            grouped: false,
         };
         let error = refused(project, edit_);
         assert_eq!(
@@ -1120,6 +1244,7 @@ mod tests {
             timeline: "t1".into(),
             clips: vec!["c1".into()],
             linked: true,
+            grouped: false,
         };
         edit(&mut project, lift);
         project
@@ -1188,6 +1313,7 @@ mod tests {
                 timeline: "t1".into(),
                 clips: vec!["c5".into(), "c2".into()],
                 linked: false,
+                grouped: false,
             },
         );
         edit(
@@ -1199,6 +1325,7 @@ mod tests {
                 to_track: Some("V2".into()),
                 overwrite: true,
                 linked: false,
+                grouped: false,
             },
         );
         assert!(matches!(
@@ -1222,6 +1349,7 @@ mod tests {
                 timeline: "t1".into(),
                 clips: vec!["c5".into()],
                 linked: false,
+                grouped: false,
             },
         );
         edit(
@@ -1233,6 +1361,7 @@ mod tests {
                 to_track: Some("V2".into()),
                 overwrite: true,
                 linked: false,
+                grouped: false,
             },
         );
         assert_eq!(

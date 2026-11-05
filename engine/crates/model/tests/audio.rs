@@ -876,6 +876,7 @@ fn a_blade_leaves_no_fade_at_the_cut_and_cuts_a_fade_too_long_for_its_half() {
                 at,
                 tracks: Some(vec!["A1".into()]),
                 linked: false,
+                grouped: false,
             },
         )
     };

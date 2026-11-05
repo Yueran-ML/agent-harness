@@ -190,32 +190,78 @@ impl<'a> Work<'a> {
         all
     }
 
-    /// The clips that an edit of `clips` that a group of tracks takes along works on: those of
-    /// [`Work::group`], and the clips of the other tracks of the groups that link Editing over
-    /// some of the same frames as one of them, with the clips linked to these (p. 3917).
-    pub fn grouped(&self, clips: &[Id], linked: bool) -> Result<Vec<Id>, EditError> {
-        let mut all = self.group(clips, linked)?;
-        let mut along: Vec<Id> = vec![];
-        for id in &all {
+    /// For an edit of `clips` told `grouped`: the frames of each of them, from its start to its
+    /// end, on each other track that an edit of its track takes along.
+    pub fn group_ranges(&self, clips: &[Id]) -> Result<Vec<(Id, i64, i64)>, EditError> {
+        let mut ranges = vec![];
+        for id in clips {
             let (track, clip) = self.clip(id)?;
             for other in self.edited_with(&track.id) {
-                for c in &self.track(&other)?.clips {
-                    let over = c.start < clip.end() && clip.start < c.end();
-                    if over && !all.contains(&c.id) && !along.contains(&c.id) {
-                        along.push(c.id.clone());
-                    }
-                }
+                ranges.push((other, clip.start, clip.end()));
             }
         }
-        if along.is_empty() {
-            return Ok(all);
+        Ok(ranges)
+    }
+
+    /// Cut the clips of `track` but for `keep` that lie across `from` or `to` there, and give the
+    /// ids of those, but for `keep`, that are then from `from` to `to`.
+    pub fn cut_out(
+        &mut self,
+        track: &str,
+        (from, to): (i64, i64),
+        keep: &[Id],
+    ) -> Result<Vec<Id>, EditError> {
+        for at in [from, to] {
+            let mut across = self.across(track, at)?;
+            across.retain(|id| !keep.contains(id));
+            self.blade(&across, at)?;
         }
-        for id in self.group(&along, linked)? {
-            if !all.contains(&id) {
-                all.push(id);
-            }
-        }
-        Ok(all)
+        Ok(self
+            .track(track)?
+            .clips
+            .iter()
+            .filter(|c| from <= c.start && c.end() <= to && !keep.contains(&c.id))
+            .map(|c| c.id.clone())
+            .collect())
+    }
+
+    /// Keep what the lanes of `track` are over `clip`, which is copied, for its copies.
+    pub fn keep_lanes(&mut self, track: &str, clip: &Clip) {
+        self.follow
+            .keep(timeline_in(self.project, &self.timeline), track, clip);
+    }
+
+    /// Put a copy of the clip `source` on a track, with a copy of the lanes over `source` (see
+    /// [`Work::keep_lanes`]), and give it back with the ids that it was given.
+    pub fn insert_copy(
+        &mut self,
+        track: &str,
+        clip: Clip,
+        source: &str,
+    ) -> Result<Clip, EditError> {
+        let done = self.op(Op::InsertClip {
+            timeline: self.timeline_id(),
+            track: track.into(),
+            clip,
+        })?;
+        let Op::InsertClip { clip, .. } = done else {
+            unreachable!("an insert is done as an insert")
+        };
+        self.follow.put_copy(
+            timeline_in(self.project, &self.timeline),
+            track,
+            &clip,
+            source,
+        );
+        Ok(clip)
+    }
+
+    /// Ripple the lanes of `track` at frame `place` by `by` frames, `spans` moving with them, and
+    /// leave them alone in the ripples of the rest of the edit.
+    pub fn ripple_lanes(&mut self, track: &str, (place, by): (i64, i64), spans: &[(i64, i64)]) {
+        let timeline = timeline_in(self.project, &self.timeline);
+        self.follow.ripple_with(timeline, track, (place, by), spans);
+        self.follow.hold(track);
     }
 
     /// Whether `clip` would show what is in its media, with `before` and `after` frames more

@@ -24,7 +24,7 @@ const SECOND: i64 = 48000;
 
 /// Timeline t1 at 25 frames a second and 48 kHz: V1 empty; A1 with c2 [50, 100) (2–4 s) and e
 /// [100, 150) (4–6 s); A2 with d [50, 100). A1 has a lane of its fader: 0 dB at 1 s, −6 at 3 s,
-/// −12 at 5 s and 0 at 7 s.
+/// −8 at 5 s and 0 at 7 s.
 fn project() -> Project {
     let mut project = Project::sample();
     let of = |id: &str, start: i64, from: i64| {
@@ -51,7 +51,7 @@ fn project() -> Project {
         &mut project,
         "A1",
         "fader_db",
-        &[(1, 0.0), (3, -6.0), (5, -12.0), (7, 0.0)],
+        &[(1, 0.0), (3, -6.0), (5, -8.0), (7, 0.0)],
     );
     project
 }
@@ -128,13 +128,13 @@ fn a_clip_moved_takes_the_automation_over_it_and_leaves_the_values_at_the_ends_b
         vec![
             (1.0, 0.0),
             (2.0, -3.0),
-            (4.0, -9.0),
-            (5.0, -12.0),
+            (4.0, -7.0),
+            (5.0, -8.0),
             (7.0, 0.0),
             (10.0, 0.0),
             (10.0, -3.0),
             (11.0, -6.0),
-            (12.0, -9.0),
+            (12.0, -7.0),
             (12.0, 0.0),
         ]
     );
@@ -189,8 +189,8 @@ fn a_ripple_delete_takes_the_points_inside_away_and_the_rest_back() {
         vec![
             (1.0, 0.0),
             (2.0, -3.0),
-            (2.0, -9.0),
-            (3.0, -12.0),
+            (2.0, -7.0),
+            (3.0, -8.0),
             (5.0, 0.0)
         ]
     );
@@ -220,8 +220,8 @@ fn a_lift_leaves_the_values_at_the_ends_of_the_gap_and_moves_nothing() {
         vec![
             (1.0, 0.0),
             (2.0, -3.0),
-            (4.0, -9.0),
-            (5.0, -12.0),
+            (4.0, -7.0),
+            (5.0, -8.0),
             (7.0, 0.0)
         ]
     );
@@ -241,7 +241,7 @@ fn an_insert_moves_the_points_after_it_on_and_holds_the_value_over_what_it_puts_
             (1.0, 0.0),
             (3.0, -6.0),
             (4.0, -6.0),
-            (6.0, -12.0),
+            (6.0, -8.0),
             (8.0, 0.0)
         ]
     );
@@ -280,7 +280,7 @@ fn a_clip_moved_to_another_track_takes_its_automation_into_a_lane_made_there() {
             (2.0, 0.0),
             (2.0, -3.0),
             (3.0, -6.0),
-            (4.0, -9.0),
+            (4.0, -7.0),
             (4.0, 0.0)
         ]
     );
@@ -289,8 +289,8 @@ fn a_clip_moved_to_another_track_takes_its_automation_into_a_lane_made_there() {
         vec![
             (1.0, 0.0),
             (2.0, -3.0),
-            (4.0, -9.0),
-            (5.0, -12.0),
+            (4.0, -7.0),
+            (5.0, -8.0),
             (7.0, 0.0)
         ]
     );
@@ -304,9 +304,38 @@ fn grouped(project: &mut Project, linked: &Value, active: bool) {
     );
 }
 
+/// A track A2 with a music bed m [0, 250) in place of d.
+fn with_a_bed(project: &mut Project) {
+    op(
+        project,
+        json!({"op": "remove_clip", "timeline": "t1", "id": "d"}),
+    );
+    let bed = Clip::of_media(
+        "m",
+        "m1",
+        Time {
+            ticks: 0,
+            scale: 15360,
+        },
+        0,
+        250,
+    );
+    op(
+        project,
+        json!({"op": "insert_clip", "timeline": "t1", "track": "A2", "clip": bed}),
+    );
+}
+
+fn spans(project: &Project, id: &str) -> Vec<(i64, i64)> {
+    track(project, id)
+        .clips
+        .iter()
+        .map(|c| (c.start, c.end()))
+        .collect()
+}
+
 #[test]
-fn a_move_of_a_clip_of_a_group_that_links_editing_moves_the_clips_of_its_other_tracks_in_one_step()
-{
+fn a_grouped_move_of_a_clip_moves_what_its_other_tracks_have_over_its_frames_in_one_step() {
     let mut history = History::new({
         let mut project = project();
         grouped(&mut project, &json!(["editing"]), true);
@@ -314,7 +343,7 @@ fn a_move_of_a_clip_of_a_group_that_links_editing_moves_the_clips_of_its_other_t
     });
     let before = history.project().clone();
     let moved: Edit = serde_json::from_value(json!({
-        "edit": "move", "timeline": "t1", "clips": ["c2"], "delta": 200,
+        "edit": "move", "timeline": "t1", "clips": ["c2"], "delta": 200, "grouped": true,
     }))
     .unwrap();
     history.edit(vec![moved], "agent").unwrap();
@@ -323,6 +352,32 @@ fn a_move_of_a_clip_of_a_group_that_links_editing_moves_the_clips_of_its_other_t
     history.undo("desktop").unwrap().unwrap();
     assert_eq!(start_of(history.project(), "d"), start_of(&before, "d"));
     assert_eq!(start_of(history.project(), "c2"), start_of(&before, "c2"));
+}
+
+#[test]
+fn a_grouped_move_takes_only_the_frames_of_the_clip_from_a_longer_clip_of_another_track() {
+    let mut project = project();
+    with_a_bed(&mut project);
+    grouped(&mut project, &json!(["editing"]), true);
+    edit(
+        &mut project,
+        json!({"edit": "move", "timeline": "t1", "clips": ["c2"], "delta": 200, "grouped": true}),
+    );
+    assert_eq!(spans(&project, "A2"), vec![(0, 50), (100, 250), (250, 300)]);
+    assert_eq!(start_of(&project, "m"), Some(("A2".into(), 0)));
+}
+
+#[test]
+fn a_grouped_move_to_another_track_takes_no_other_track_along() {
+    let mut project = project();
+    grouped(&mut project, &json!(["editing"]), true);
+    edit(
+        &mut project,
+        json!({"edit": "move", "timeline": "t1", "clips": ["c2"], "delta": 200,
+            "to_track": "A2", "grouped": true}),
+    );
+    assert_eq!(start_of(&project, "c2"), Some(("A2".into(), 250)));
+    assert_eq!(start_of(&project, "d"), Some(("A2".into(), 50)));
 }
 
 #[test]
@@ -342,7 +397,8 @@ fn a_group_that_is_off_or_links_no_editing_or_a_locked_member_takes_no_clip_alon
         }
         edit(
             &mut project,
-            json!({"edit": "move", "timeline": "t1", "clips": ["c2"], "delta": 200}),
+            json!({"edit": "move", "timeline": "t1", "clips": ["c2"], "delta": 200,
+                "grouped": true}),
         );
         assert_eq!(
             start_of(&project, "d"),
@@ -353,33 +409,73 @@ fn a_group_that_is_off_or_links_no_editing_or_a_locked_member_takes_no_clip_alon
 }
 
 #[test]
-fn a_lift_a_ripple_delete_and_a_blade_of_a_track_of_a_group_take_its_other_tracks_along() {
+fn edits_not_told_grouped_take_no_other_track_of_a_group_along() {
+    // What the desktop sends for an Alt+drag duplicate (a lift to clear where the copies go) and
+    // for Backspace over marks (blades of the tracks given) is left as it was.
     let mut project = project();
     grouped(&mut project, &json!(["editing"]), true);
     let mut lifted = project.clone();
     edit(
         &mut lifted,
-        json!({"edit": "lift", "timeline": "t1", "clips": ["c2"]}),
+        json!({"edit": "lift", "timeline": "t1", "clips": ["c2"], "linked": false}),
+    );
+    assert_eq!(start_of(&lifted, "d"), Some(("A2".into(), 50)));
+    let mut bladed = project.clone();
+    edit(
+        &mut bladed,
+        json!({"edit": "blade", "timeline": "t1", "at": 75, "tracks": ["A1"], "linked": false}),
+    );
+    assert_eq!(spans(&bladed, "A2"), vec![(50, 100)]);
+    let mut moved = project.clone();
+    edit(
+        &mut moved,
+        json!({"edit": "move", "timeline": "t1", "clips": ["c2"], "delta": 200}),
+    );
+    assert_eq!(start_of(&moved, "d"), Some(("A2".into(), 50)));
+}
+
+#[test]
+fn a_grouped_lift_of_two_seconds_of_dialogue_leaves_the_music_bed_outside_them() {
+    let mut project = project();
+    with_a_bed(&mut project);
+    grouped(&mut project, &json!(["editing"]), true);
+    edit(
+        &mut project,
+        json!({"edit": "lift", "timeline": "t1", "clips": ["c2"], "grouped": true}),
+    );
+    assert_eq!(start_of(&project, "c2"), None);
+    assert_eq!(spans(&project, "A2"), vec![(0, 50), (100, 250)]);
+    assert_eq!(start_of(&project, "m"), Some(("A2".into(), 0)));
+}
+
+#[test]
+fn a_grouped_lift_a_ripple_delete_and_a_blade_take_the_other_tracks_of_a_group_along() {
+    let mut project = project();
+    grouped(&mut project, &json!(["editing"]), true);
+    let mut lifted = project.clone();
+    edit(
+        &mut lifted,
+        json!({"edit": "lift", "timeline": "t1", "clips": ["c2"], "grouped": true}),
     );
     assert_eq!(start_of(&lifted, "d"), None);
     let mut deleted = project.clone();
     edit(
         &mut deleted,
-        json!({"edit": "ripple_delete", "timeline": "t1", "clips": ["e"]}),
+        json!({"edit": "ripple_delete", "timeline": "t1", "clips": ["e"], "grouped": true}),
     );
-    // d is under e's neighbour, not e: only what overlaps the clip named goes with it.
+    // d is under e's neighbour, not e: only the frames of the clip named go.
     assert_eq!(start_of(&deleted, "d"), Some(("A2".into(), 50)));
     let mut bladed = project.clone();
     edit(
         &mut bladed,
-        json!({"edit": "blade", "timeline": "t1", "at": 75, "tracks": ["A1"]}),
+        json!({"edit": "blade", "timeline": "t1", "at": 75, "tracks": ["A1"], "grouped": true}),
     );
     assert_eq!(track(&bladed, "A2").clips.len(), 2);
     let mut cut = project.clone();
     edit(
         &mut cut,
         json!({"edit": "ripple_delete_range", "timeline": "t1", "from": 60, "to": 70,
-            "tracks": ["A1"]}),
+            "tracks": ["A1"], "grouped": true}),
     );
     let lengths: Vec<i64> = track(&cut, "A2").clips.iter().map(|c| c.length).collect();
     assert_eq!(lengths, vec![10, 30]);
@@ -516,6 +612,21 @@ fn each_applied(
     Ok(())
 }
 
+/// Sequences of edits of clips: every kind of `common/edits.rs` that is not of sound, and copies
+/// put now and then.
+fn edits() -> impl Strategy<Value = Vec<gen::Making>> {
+    prop::collection::vec(
+        gen::making_of(prop_oneof![9 => 0usize..28, 1 => Just(gen::PLACE_COPIES)]),
+        1..6,
+    )
+}
+
+/// Whether a frame of t1 lasts a whole number of ticks of 48 kHz.
+fn whole_ticks(project: &Project) -> bool {
+    let rate = project.timelines[0].rate;
+    (u64::from(SCALE) * u64::from(rate.den)).is_multiple_of(u64::from(rate.num))
+}
+
 /// Whether a clip is as it was but for where it is.
 fn rigid(a: &Clip, b: &Clip) -> bool {
     (a.length, &a.source, a.speed, a.reverse) == (b.length, &b.source, b.speed, b.reverse)
@@ -525,13 +636,13 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(1024))]
 
     /// 1. The lanes over a clip that an edit moves whole, by `delta` frames and to any track,
-    /// are where it is now, tick for tick (but for the last tick of the clip, which the start of
-    /// a clip after it that moved with it by a tick more or less may take at a rate of frames
-    /// whose frames are not whole ticks).
+    /// are where it is now, tick for tick; but, at a rate of frames whose frames are not whole
+    /// ticks, for the last tick of the clip, which the start of a clip after it that moved with
+    /// it by a tick more or less may take.
     #[test]
     fn the_lanes_over_a_clip_move_with_it(
         recipe in gen::recipe(),
-        makings in prop::collection::vec(gen::making_of(0usize..28), 1..6),
+        makings in edits(),
     ) {
         each_applied(&recipe, &makings, true, |before, edit, after| {
             for (track, clip) in sound_clips(before) {
@@ -542,7 +653,8 @@ proptest! {
                     continue;
                 }
                 let (from, to) = (tick(before, clip.start), tick(after, now.start));
-                let length = (tick(before, clip.end()) - from).min(tick(after, now.end()) - to) - 1;
+                let last = i64::from(!whole_ticks(before));
+                let length = (tick(before, clip.end()) - from).min(tick(after, now.end()) - to) - last;
                 for (path, lane) in &track.audio.lanes {
                     let Some(moved) = now_on.audio.lanes.get(path) else {
                         // Only a track that cannot have the setting is left without its lane.
@@ -569,7 +681,7 @@ proptest! {
     #[test]
     fn the_lanes_outside_what_an_edit_changes_stay_as_they_were(
         recipe in gen::recipe(),
-        makings in prop::collection::vec(gen::making_of(0usize..28), 1..6),
+        makings in edits(),
     ) {
         each_applied(&recipe, &makings, true, |before, edit, after| {
             let all_before = sound_clips(before);
@@ -630,11 +742,181 @@ proptest! {
         })?;
     }
 
+    /// 2b. After the place of a ripple that moves what follows it by one number of frames, the
+    /// lanes of the tracks that it ripples are where what follows went (within a tick, as frames
+    /// that are not whole ticks move by ticks a tick apart), and the lanes of a locked track are
+    /// as they were.
+    #[test]
+    fn the_lanes_after_a_ripple_move_with_what_follows(
+        recipe in gen::recipe(),
+        makings in edits(),
+    ) {
+        each_applied(&recipe, &makings, true, |before, edit, after| {
+            for track in sound_tracks(before).filter(|r| r.locked) {
+                let now = sound_tracks(after).find(|r| r.id == track.id).unwrap();
+                prop_assert_eq!(&now.audio.lanes, &track.audio.lanes, "{:?}", edit);
+            }
+            if !ripples(edit) || matches!(edit, Edit::InsertMove { .. }) {
+                return Ok(());
+            }
+            let all = |p: &Project| -> Vec<(String, Clip)> {
+                p.timelines[0].tracks.iter().flat_map(|r| r.clips.iter().map(move |c| (r.id.clone(), c.clone()))).collect()
+            };
+            let (was, is) = (all(before), all(after));
+            let mut shifts = BTreeSet::new();
+            let mut place = i64::MAX;
+            for (r, c) in &was {
+                if let Some((_, n)) = is.iter().find(|(s, n)| s == r && n.id == c.id && rigid(c, n) && n.start != c.start) {
+                    shifts.insert(n.start - c.start);
+                    place = place.min(c.start);
+                }
+            }
+            let (Some(&by), 1) = (shifts.iter().next(), shifts.len()) else { return Ok(()) };
+            // A ripple delete of clips apart closes each gap: what is after the last moves further.
+            if matches!(edit, Edit::RippleDelete { .. }) {
+                let mut gone: Vec<(i64, i64)> = was.iter().filter(|(_, c)| !is.iter().any(|(_, n)| n.id == c.id))
+                    .map(|(_, c)| (c.start, c.end())).collect();
+                gone.sort_unstable();
+                let (mut reach, mut parts) = (i64::MIN, 0);
+                for (from, to) in gone {
+                    parts += usize::from(from > reach);
+                    reach = reach.max(to);
+                }
+                if parts > 1 {
+                    return Ok(());
+                }
+            }
+            let moved = tick(before, place + by) - tick(before, place);
+            // A ripple of a range of tracks named ripples those only.
+            let named = match edit {
+                Edit::RippleDeleteRange { tracks: Some(tracks), .. } => Some(tracks),
+                _ => None,
+            };
+            for track in sound_tracks(before).filter(|r| !r.locked && named.is_none_or(|n| n.contains(&r.id))) {
+                let now = sound_tracks(after).find(|r| r.id == track.id).unwrap();
+                // From the end of what does not move across the place, past what changes: a clip
+                // made shorter there ends `by` frames before where its lanes are cut.
+                let end = |c: &Clip| {
+                    let now = now.clips.iter().find(|n| n.id == c.id);
+                    now.map_or(c.end(), |n| c.end().max(n.end() - by))
+                };
+                let from = track.clips.iter().filter(|c| c.start < place).map(end).fold(place, i64::max);
+                let changed: Vec<(i64, i64)> = track.clips.iter()
+                    .filter(|c| !now.clips.iter().any(|n| n.id == c.id && rigid(c, n) && n.start == c.start + by))
+                    .map(|c| (tick(before, c.start), tick(before, c.end()))).collect();
+                for (path, lane) in &track.audio.lanes {
+                    let Some(went) = now.audio.lanes.get(path) else { continue };
+                    let was = Curve::Lane(lane.clone());
+                    for t in ticks_within(&[&was], tick(before, from), 200 * 48000) {
+                        if changed.iter().any(|&(a, b)| (a..=b).contains(&t)) {
+                            continue;
+                        }
+                        // Within a tick each way: where two pieces next to each other move by
+                        // ticks a tick apart, the one tick between them is the second's.
+                        let a = was.at(t, SCALE);
+                        let found = (-1..=1).any(|d| (-1..=1).any(|e| {
+                            near(was.at(t + e, SCALE), went.value_at(Time { ticks: t + moved + d, scale: SCALE }))
+                        }));
+                        prop_assert!(found, "{}.{} at {} (by {}): {} in {:?}", track.id, path, t, moved, a, edit);
+                    }
+                }
+            }
+            Ok(())
+        })?;
+    }
+
+    /// 2c. A clip trimmed at its start with a ripple keeps its lanes on what it still plays:
+    /// what was over its frame `f` is over its frame `f − delta`.
+    #[test]
+    fn a_clip_trimmed_at_its_start_with_a_ripple_keeps_its_lanes_on_what_it_plays(
+        recipe in gen::recipe(),
+        makings in prop::collection::vec(
+            prop_oneof![3 => gen::making_of(Just(14usize)), 1 => gen::making()],
+            1..6,
+        ),
+    ) {
+        each_applied(&recipe, &makings, true, |before, edit, after| {
+            if !matches!(edit, Edit::Trim { edge: columbina_model::Edge::In, ripple: true, .. }) {
+                return Ok(());
+            }
+            for (track, clip) in sound_clips(before) {
+                let Some((now_on, now)) = sound_clips(after).into_iter().find(|(r, c)| c.id == clip.id && r.id == track.id) else {
+                    continue;
+                };
+                if now.start != clip.start || now.length == clip.length {
+                    continue;
+                }
+                let delta = clip.length - now.length;
+                let kept = clip.start + delta.max(0);
+                let (from, to) = (tick(before, kept), tick(after, kept - delta));
+                let last = i64::from(!whole_ticks(before));
+                let length = (tick(before, clip.end()) - from).min(tick(after, now.end()) - to) - last;
+                for (path, lane) in &track.audio.lanes {
+                    let Some(moved) = now_on.audio.lanes.get(path) else { continue };
+                    let was = Curve::Lane(lane.clone());
+                    for k in ticks_within(&[&was], from, from + length) {
+                        let k = k - from;
+                        let (a, b) = (was.at(from + k, SCALE), moved.value_at(Time { ticks: to + k, scale: SCALE }));
+                        prop_assert!(near(a, b), "{}.{} over {} at +{}: {} then {} in {:?}", track.id, path, clip.id, k, a, b, edit);
+                    }
+                }
+            }
+            Ok(())
+        })?;
+    }
+
+    /// 2d. A ripple adds to a lane no more than four points and two for each sloped line of it
+    /// that crosses an end of a clip of its track that the edit changes (T15's review: the points
+    /// that hold a lane across the starts of clips that move by ticks a tick apart).
+    #[test]
+    fn a_ripple_adds_few_points_to_a_lane(
+        recipe in gen::recipe(),
+        makings in edits(),
+    ) {
+        each_applied(&recipe, &makings, true, |before, edit, after| {
+            if !ripples(edit) || matches!(edit, Edit::InsertMove { .. }) {
+                return Ok(());
+            }
+            for track in sound_tracks(before) {
+                let Some(now) = sound_tracks(after).find(|r| r.id == track.id) else { continue };
+                // The ends of what changes on any track (a ripple cuts every track that it moves
+                // where it closes or opens frames), and the frames that the edit names.
+                let kept = |c: &Clip| after.timelines[0].tracks.iter().flat_map(|r| &r.clips)
+                    .any(|n| n.id == c.id && n.start == c.start && n.length == c.length);
+                let mut ends: Vec<i64> = before.timelines[0].tracks.iter().flat_map(|r| &r.clips)
+                    .filter(|c| !kept(c))
+                    .flat_map(|c| [tick(before, c.start), tick(before, c.end())]).collect();
+                match edit {
+                    Edit::Insert { at, .. } | Edit::RippleOverwrite { at, .. } | Edit::CloseGap { at, .. } => ends.push(tick(before, *at)),
+                    Edit::RippleDeleteRange { from, to, .. } => ends.extend([tick(before, *from), tick(before, *to)]),
+                    _ => {}
+                }
+                if let Edit::CloseGap { track: gap, at, .. } = edit {
+                    let spans = before.timelines[0].tracks.iter().filter(|r| r.id == *gap).flat_map(|r| r.clips.iter().map(|c| (c.start, c.end())).chain(r.cues.iter().map(|q| (q.start, q.start + q.length))));
+                    let spans: Vec<(i64, i64)> = spans.collect();
+                    ends.push(tick(before, spans.iter().map(|s| s.1).filter(|e| e <= at).max().unwrap_or(0)));
+                    if let Some(to) = spans.iter().map(|s| s.0).filter(|s| s > at).min() {
+                        ends.push(tick(before, to));
+                    }
+                }
+                for (path, lane) in &track.audio.lanes {
+                    let Some(went) = now.audio.lanes.get(path) else { continue };
+                    let crossed = ends.iter().filter(|&&b| lane.points.windows(2).any(|w| {
+                        w[0].at.ticks < b && b <= w[1].at.ticks && w[0].value.to_bits() != w[1].value.to_bits()
+                    })).count();
+                    let added = went.points.len().saturating_sub(lane.points.len());
+                    prop_assert!(added <= 4 + 2 * crossed, "{}.{}: {} points added, {} crossed, in {:?}", track.id, path, added, crossed, edit);
+                }
+            }
+            Ok(())
+        })?;
+    }
+
     /// 3. An edit undone leaves every lane as it was, to the bit.
     #[test]
     fn an_edit_undone_leaves_the_lanes_as_they_were(
         recipe in gen::recipe(),
-        makings in prop::collection::vec(gen::making_of(0usize..28), 1..6),
+        makings in edits(),
     ) {
         let mut history = History::new(gen::project_of(&recipe));
         for making in &makings {
@@ -655,7 +937,7 @@ proptest! {
     #[test]
     fn with_follows_edit_off_the_lanes_stay_as_they_are(
         recipe in gen::recipe(),
-        makings in prop::collection::vec(gen::making_of(0usize..28), 1..6),
+        makings in edits(),
     ) {
         each_applied(&recipe, &makings, false, |before, edit, after| {
             for track in sound_tracks(before) {
@@ -673,11 +955,12 @@ proptest! {
     #[test]
     fn no_edit_takes_a_lane_beyond_its_values(
         recipe in gen::recipe(),
-        makings in prop::collection::vec(gen::making_of(0usize..28), 1..6),
+        makings in edits(),
     ) {
         each_applied(&recipe, &makings, true, |before, edit, after| {
             let track_of = |p: &Project, id: &str| sound_clips(p).into_iter().find(|(_, c)| c.id == id).map(|(r, _)| r.id.clone());
-            let across = sound_clips(after).iter().any(|(r, c)| track_of(before, &c.id).is_some_and(|t| t != r.id));
+            let across = matches!(edit, Edit::PlaceCopies { .. })
+                || sound_clips(after).iter().any(|(r, c)| track_of(before, &c.id).is_some_and(|t| t != r.id));
             for now in sound_tracks(after) {
                 for (path, lane) in &now.audio.lanes {
                     let mut allowed: Vec<f64> = sound_tracks(before)
@@ -805,4 +1088,273 @@ fn a_lane_that_the_track_moved_to_cannot_have_stays_behind_and_the_move_is_made(
         points(&project, "A1", "insert.fx1.gain_db").unwrap(),
         vec![(1.0, 0.0), (2.0, 3.0), (4.0, 6.0)]
     );
+}
+
+fn value_at(project: &Project, id: &str, path: &str, ticks: i64) -> f64 {
+    track(project, id).audio.lanes[path].value_at(Time {
+        ticks,
+        scale: 48000,
+    })
+}
+
+#[test]
+fn a_ripple_trim_of_a_start_keeps_the_lane_on_what_the_clip_still_plays() {
+    // c2 [50, 100) trimmed in by 10 with a ripple plays from 60 of what it played, from 50, and
+    // ends at 90: its automation goes back 10 frames with it, and the 10 frames trimmed go.
+    let mut project = project();
+    op(
+        &mut project,
+        json!({"op": "remove_clip", "timeline": "t1", "id": "d"}),
+    );
+    let before = project.clone();
+    edit(
+        &mut project,
+        json!({"edit": "trim", "timeline": "t1", "clip": "c2", "edge": "in", "delta": 10,
+            "ripple": true}),
+    );
+    assert_eq!(spans(&project, "A1"), vec![(50, 90), (90, 140)]);
+    let frame = 1920;
+    for k in [0, 1000, 20 * frame, 39 * frame, 40 * frame, 89 * frame] {
+        let (was, is) = (
+            value_at(&before, "A1", "fader_db", 60 * frame + k),
+            value_at(&project, "A1", "fader_db", 50 * frame + k),
+        );
+        assert!((was - is).abs() < 1e-9, "+{k}: {was} then {is}");
+    }
+    // Before the clip, as it was.
+    for t in [0, 48000, 50 * frame - 1] {
+        assert!(
+            (value_at(&before, "A1", "fader_db", t) - value_at(&project, "A1", "fader_db", t))
+                .abs()
+                < 1e-9
+        );
+    }
+    // Lengthened by 10 again, it plays from 50 once more, its lane back where it was.
+    edit(
+        &mut project,
+        json!({"edit": "trim", "timeline": "t1", "clip": "c2", "edge": "in", "delta": -10,
+            "ripple": true}),
+    );
+    for k in [0, 10 * frame, 49 * frame] {
+        let (was, is) = (
+            value_at(&before, "A1", "fader_db", 60 * frame + k),
+            value_at(&project, "A1", "fader_db", 60 * frame + k),
+        );
+        assert!((was - is).abs() < 1e-9, "+{k}: {was} then {is}");
+    }
+}
+
+#[test]
+fn a_linked_clip_that_starts_after_the_place_of_a_ripple_trim_keeps_its_lane() {
+    // V1 c1 [0, 50) is linked to A1's c2 [50, 100), which starts where c1 ends (an L cut). A
+    // ripple trim of c1's end by −10 trims c2 too, which stays where it starts.
+    let mut project = project();
+    op(
+        &mut project,
+        json!({"op": "remove_clip", "timeline": "t1", "id": "d"}),
+    );
+    let mut picture = Clip::of_media(
+        "c1",
+        "m1",
+        Time {
+            ticks: 0,
+            scale: 15360,
+        },
+        0,
+        50,
+    );
+    picture.link = Some("g1".into());
+    op(
+        &mut project,
+        json!({"op": "insert_clip", "timeline": "t1", "track": "V1", "clip": picture}),
+    );
+    op(
+        &mut project,
+        json!({"op": "set_clip", "timeline": "t1", "id": "c2", "link": "g1"}),
+    );
+    let before = project.clone();
+    edit(
+        &mut project,
+        json!({"edit": "trim", "timeline": "t1", "clip": "c1", "edge": "out", "delta": -10,
+            "ripple": true}),
+    );
+    assert_eq!(spans(&project, "A1"), vec![(50, 90), (90, 140)]);
+    let frame = 1920;
+    for k in [0, 1000, 20 * frame, 39 * frame] {
+        let (was, is) = (
+            value_at(&before, "A1", "fader_db", 50 * frame + k),
+            value_at(&project, "A1", "fader_db", 50 * frame + k),
+        );
+        assert!((was - is).abs() < 1e-9, "c2 +{k}: {was} then {is}");
+    }
+    for k in [0, 25 * frame, 49 * frame] {
+        let (was, is) = (
+            value_at(&before, "A1", "fader_db", 100 * frame + k),
+            value_at(&project, "A1", "fader_db", 90 * frame + k),
+        );
+        assert!((was - is).abs() < 1e-9, "e +{k}: {was} then {is}");
+    }
+}
+
+#[test]
+fn a_ripple_at_29_97_frames_a_second_adds_points_only_where_a_slope_crosses_a_moved_clip() {
+    let mut project = project();
+    let timeline = &mut project.timelines[0];
+    timeline.rate = columbina_model::Rate {
+        num: 30000,
+        den: 1001,
+    };
+    timeline.tracks[1].clips = (0..40)
+        .map(|n| {
+            Clip::of_media(
+                format!("k{n}"),
+                "m1",
+                Time {
+                    ticks: 0,
+                    scale: 15360,
+                },
+                n * 35,
+                30,
+            )
+        })
+        .collect();
+    timeline.tracks[2].clips.clear();
+    project.validate().unwrap();
+    lane(
+        &mut project,
+        "A1",
+        "fader_db",
+        &[(0, 0.0), (1, -6.0), (2, 0.0), (50, 0.0)],
+    );
+    for n in 0..5 {
+        edit(
+            &mut project,
+            json!({"edit": "insert", "timeline": "t1", "at": 0, "video_track": null,
+                "audio_track": "A1", "source": {"kind": "media", "media": "m1", "length": 1}}),
+        );
+        let count = track(&project, "A1").audio.lanes["fader_db"].points.len();
+        // The four points, and for each insert at most its two ends and two points about each of
+        // the few starts of clips (four of them) that the slopes of the first two seconds cross.
+        assert!(
+            count <= 4 + (n + 1) * (2 + 2 * 4),
+            "{count} after {}",
+            n + 1
+        );
+    }
+}
+
+#[test]
+fn a_copy_of_a_clip_takes_a_copy_of_its_automation_and_clears_where_it_goes() {
+    let mut history = History::new({
+        let mut project = project();
+        op(
+            &mut project,
+            json!({"op": "remove_clip", "timeline": "t1", "id": "d"}),
+        );
+        project
+    });
+    let before = history.project().clone();
+    let copy: Edit = serde_json::from_value(json!({"edit": "place_copies", "timeline": "t1",
+        "copies": [{"clip": "c2", "track": "A1", "start": 120}]}))
+    .unwrap();
+    history.edit(vec![copy], "desktop").unwrap();
+    let after = history.project().clone();
+    assert_eq!(spans(&after, "A1"), vec![(50, 100), (100, 120), (120, 170)]);
+    let made = &track(&after, "A1").clips[2];
+    assert!(made.id != "c2" && !made.id.is_empty());
+    let frame = 1920;
+    for k in [0, 1000, 25 * frame, 49 * frame] {
+        let (was, copied, kept) = (
+            value_at(&before, "A1", "fader_db", 50 * frame + k),
+            value_at(&after, "A1", "fader_db", 120 * frame + k),
+            value_at(&after, "A1", "fader_db", 50 * frame + k),
+        );
+        assert!((was - copied).abs() < 1e-9, "+{k}: {was} then {copied}");
+        assert!((was - kept).abs() < 1e-9, "+{k}: {was} then {kept}");
+    }
+    history.undo("desktop").unwrap().unwrap();
+    assert_eq!(history.project().timelines, before.timelines);
+}
+
+#[test]
+fn copies_of_clips_linked_together_are_linked_together_anew_and_take_no_lane_while_it_is_off() {
+    let mut project = project();
+    let mut picture = Clip::of_media(
+        "c1",
+        "m1",
+        Time {
+            ticks: 0,
+            scale: 15360,
+        },
+        50,
+        50,
+    );
+    picture.link = Some("g1".into());
+    op(
+        &mut project,
+        json!({"op": "insert_clip", "timeline": "t1", "track": "V1", "clip": picture}),
+    );
+    op(
+        &mut project,
+        json!({"op": "set_clip", "timeline": "t1", "id": "c2", "link": "g1"}),
+    );
+    follows(&mut project, false);
+    let lanes = track(&project, "A1").audio.lanes.clone();
+    edit(
+        &mut project,
+        json!({"edit": "place_copies", "timeline": "t1", "copies": [
+            {"clip": "c1", "track": "V1", "start": 300}, {"clip": "c2", "track": "A1", "start": 300}]}),
+    );
+    let at = |id: &str| {
+        track(&project, id)
+            .clips
+            .iter()
+            .find(|c| c.start == 300)
+            .unwrap()
+    };
+    let (v, a) = (at("V1"), at("A1"));
+    assert!(v.link.is_some() && v.link == a.link && v.link.as_deref() != Some("g1"));
+    assert_eq!(track(&project, "A1").audio.lanes, lanes);
+}
+
+#[test]
+fn a_clip_moved_where_its_frame_is_a_tick_shorter_keeps_its_lane_to_its_last_tick() {
+    // At 29.97 frames a second a frame lasts 1601.6 ticks of 48 kHz: frame 1 is [1601, 3203) and
+    // frame 2 [3203, 4804). A clip of frame 1 moved to frame 2 is a tick shorter there.
+    let mut project = project();
+    let timeline = &mut project.timelines[0];
+    timeline.rate = columbina_model::Rate {
+        num: 30000,
+        den: 1001,
+    };
+    timeline.tracks[1].clips = vec![Clip::of_media(
+        "c2",
+        "m1",
+        Time {
+            ticks: 0,
+            scale: 15360,
+        },
+        1,
+        1,
+    )];
+    timeline.tracks[2].clips.clear();
+    project.validate().unwrap();
+    op(
+        &mut project,
+        json!({"op": "set_lane", "timeline": "t1", "of": {"track": "A1"}, "path": "fader_db",
+            "lane": {"points": [{"at": {"ticks": 0, "scale": 48000}, "value": 0},
+                {"at": {"ticks": 10000, "scale": 48000}, "value": -10}]}}),
+    );
+    let before = project.clone();
+    edit(
+        &mut project,
+        json!({"edit": "move", "timeline": "t1", "clips": ["c2"], "delta": 1}),
+    );
+    for k in [0, 800, 1599] {
+        let (was, is) = (
+            value_at(&before, "A1", "fader_db", 1601 + k),
+            value_at(&project, "A1", "fader_db", 3203 + k),
+        );
+        assert!((was - is).abs() < 1e-9, "+{k}: {was} then {is}");
+    }
 }

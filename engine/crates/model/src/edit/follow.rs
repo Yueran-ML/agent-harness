@@ -1,7 +1,7 @@
 //! Automation Follows Edit (Reference Manual 20, pp. 3910–3911; reference C-A9): the automation
 //! written over a clip of a track of sound "lives with" it, so an edit that moves the clip takes
-//! the points over it along, one that takes a section away takes them away, and a ripple moves
-//! what is after its place.
+//! the points over it along, one that takes a section away takes them away, a ripple moves what
+//! is after its place, and a copy of a clip takes a copy of them.
 //!
 //! It is worked out on the steps that every edit of clips is made of ([`super::work::Work`]), not
 //! edit by edit, on copies of the lanes of the tracks that they touch, which are written back as
@@ -14,28 +14,33 @@
 //!   to another: the lanes there between its new ends are put in place of by it, the values
 //!   before and after them staying as they were. A lane of the clip's track that the new track
 //!   cannot have (an insert or a send that it has not) is not taken; one that it has not yet is
-//!   made, from its setting as it is set.
+//!   made, from its setting as it is set. A copy of a clip takes a copy of them in the same way.
 //! - A ripple from a frame moves the points after it with what moves: a ripple that takes frames
 //!   away takes their points away too, and the two sides meet with their values (a jump); one
 //!   that puts frames in goes straight across them from the value that came to the place to the
-//!   value that was there. Where a clip that stays lies across the place, the cut is made at its
-//!   end instead, so that its lanes stay with it.
-//! - A clip that is trimmed, rolled, slipped or cut in two changes no lane, nor does one that is
-//!   put on the timeline from its media. The lanes of buses and VCAs, which have no clips, stay
-//!   where they are.
+//!   value that was there. Where a clip that stays lies across the place, or starts after it, the
+//!   cut is made at its end instead, so that its lanes stay with it. A clip trimmed at its start
+//!   with a ripple has its lanes rippled from its start (see [`Follow::ripple_with`]).
+//! - A clip that is trimmed (without a ripple), rolled, slipped or cut in two changes no lane, nor
+//!   does one that is put on the timeline from its media. The lanes of buses and VCAs, which
+//!   have no clips, stay where they are.
 //!
 //! A frame `f` is at tick `⌊f · scale / rate⌋` of a lane (as the graph places a clip's first
 //! sample), and the points over a clip move by as many ticks as its start does, so that a lane
-//! stays with the samples of the clip exactly. Nothing is done while the timeline's
+//! stays with the samples of the clip exactly. A point that an edit adds and that lies on the
+//! straight line between the points beside it is left out. Nothing is done while the timeline's
 //! `follows_edit` is off.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use crate::audio::automation::{check_lane, fixed_value, view, Owner, Shape};
-use crate::audio::{Lane, LanePoint, Lanes};
+use crate::audio::automation::{
+    bounded, check_lane, fixed_value, point, replaced, value_at, value_before, view, without_twins,
+    Owner, Shape,
+};
+use crate::audio::{Lane, LaneKind, LanePoint, Lanes};
 use crate::ops::{LanesOf, Op};
 use crate::project::{Clip, Id, Timeline, Track, TrackKind};
-use crate::time::{Rate, Time};
+use crate::time::Rate;
 
 /// The lanes that an edit changes, as it goes.
 pub(super) struct Follow {
@@ -45,10 +50,15 @@ pub(super) struct Follow {
     lanes: BTreeMap<Id, Lanes>,
     /// What the lanes of each clip taken away were over it, to go where it is put back.
     carried: HashMap<Id, Vec<Piece>>,
+    /// What the lanes of each clip copied are over it, to go where its copies are put.
+    copied: HashMap<Id, Vec<Piece>>,
+    /// The tracks whose lanes the edit has rippled itself, which a ripple leaves alone.
+    held: HashSet<Id>,
 }
 
 /// What a lane was over a clip: its value at the clip's start, the points within it and the value
 /// that came to its end, in ticks of the lane.
+#[derive(Clone)]
 struct Piece {
     path: String,
     shape: Shape,
@@ -82,80 +92,39 @@ fn sound<'t>(timeline: &'t Timeline, id: &str) -> Option<&'t Track> {
         .find(|r| r.id == id && r.kind == TrackKind::Audio)
 }
 
-/// `value` within the least and the greatest values of `points`: a value that a lane comes to
-/// between two of its points is between theirs, but for the rounding of the sum, which this takes
-/// away, so that no edit gives a lane a value beyond those it had.
-fn bounded(points: &[LanePoint], value: f64) -> f64 {
-    let (least, most) = points
-        .iter()
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
-            (lo.min(p.value), hi.max(p.value))
-        });
-    if least <= most {
-        value.clamp(least, most)
-    } else {
-        value
-    }
-}
-
-/// The value at tick `at`, the later of two points there holding.
+/// The value at tick `at`, the later of two points there holding, within the values of the lane.
 fn at(points: &[LanePoint], shape: Shape, fixed: f64, at: i64) -> f64 {
-    bounded(
-        points,
-        crate::audio::automation::value_at(points, shape, fixed, at),
-    )
+    bounded(points, value_at(points, shape, fixed, at))
 }
 
-/// The value that comes to tick `at`, before a point there holds.
+/// The value that comes to tick `at`, before a point there holds, within the values of the lane.
 fn before(points: &[LanePoint], shape: Shape, fixed: f64, at: i64) -> f64 {
-    bounded(
-        points,
-        crate::audio::automation::value_before(points, shape, fixed, at),
-    )
+    bounded(points, value_before(points, shape, fixed, at))
 }
 
-fn point(ticks: i64, scale: u32, value: f64) -> LanePoint {
-    LanePoint {
-        at: Time { ticks, scale },
-        value,
-    }
-}
-
-/// Points without one that is at the time and of the value of the one before it.
-fn without_twins(points: Vec<LanePoint>) -> Vec<LanePoint> {
-    let mut kept: Vec<LanePoint> = Vec::with_capacity(points.len());
-    for p in points {
-        let twin = kept
-            .last()
-            .is_some_and(|q| q.at.ticks == p.at.ticks && q.value.to_bits() == p.value.to_bits());
-        if !twin {
-            kept.push(p);
+/// The points of a lane without those at ticks `added` that it does not need: one alone at its
+/// tick, between two at other ticks, of the value that the straight line between them has there
+/// (of a switch, the value of the one before it), to the bit.
+fn pruned(mut points: Vec<LanePoint>, shape: Shape, added: &[i64]) -> Vec<LanePoint> {
+    let mut i = 1;
+    while i + 1 < points.len() {
+        let (prev, p, next) = (&points[i - 1], &points[i], &points[i + 1]);
+        let t = p.at.ticks;
+        let alone = prev.at.ticks < t && t < next.at.ticks;
+        let on_line = match shape.kind {
+            LaneKind::Switch => p.value.to_bits() == prev.value.to_bits(),
+            LaneKind::Continuous => {
+                let line = value_at(&[prev.clone(), next.clone()], shape, p.value, t);
+                p.value.to_bits() == line.to_bits()
+            }
+        };
+        if alone && on_line && added.contains(&t) {
+            points.remove(i);
+        } else {
+            i += 1;
         }
     }
-    kept
-}
-
-/// The points of a lane with those from tick `from` to tick `to`, both in, put in place of by
-/// `new` (from `from` to `to`): a point at `from` of the value that came to it and one at `to` of
-/// the value that was there keep the lane as it was outside them.
-fn spliced(
-    points: &[LanePoint],
-    (shape, fixed, scale): (Shape, f64, u32),
-    (from, to): (i64, i64),
-    new: &[LanePoint],
-) -> Vec<LanePoint> {
-    let left = before(points, shape, fixed, from);
-    let right = at(points, shape, fixed, to);
-    let all = points
-        .iter()
-        .filter(|p| p.at.ticks < from)
-        .cloned()
-        .chain([point(from, scale, left)])
-        .chain(new.iter().cloned())
-        .chain([point(to, scale, right)])
-        .chain(points.iter().filter(|p| p.at.ticks > to).cloned())
-        .collect();
-    without_twins(all)
+    points
 }
 
 /// The points of a lane rippled from tick `place` to tick `to`: those after `place` moved by
@@ -189,26 +158,30 @@ fn rippled(
     Some(without_twins(kept.chain(ends).chain(after).collect()))
 }
 
-/// The points of a lane with one at each of `ticks` that is between its first and its last and
-/// has none, of the value there, so that what is between two of them goes as it went whatever
-/// moves outside them.
-fn pinned(
-    points: &[LanePoint],
-    (shape, fixed, scale): (Shape, f64, u32),
-    ticks: impl Iterator<Item = i64>,
-) -> Vec<LanePoint> {
-    let (Some(first), Some(last)) = (points.first(), points.last()) else {
-        return points.to_vec();
-    };
-    let mut all = points.to_vec();
-    for t in ticks {
-        let i = all.partition_point(|p| p.at.ticks < t);
-        let there = all.get(i).is_some_and(|p| p.at.ticks == t);
-        if first.at.ticks < t && t < last.at.ticks && !there {
-            all.insert(i, point(t, scale, at(points, shape, fixed, t)));
+/// The ticks about `boundaries` at which a lane needs a point of the value there before it is
+/// rippled, so that a line from before a boundary to after it, which the ripple stretches or
+/// shrinks by a tick, changes nothing on either side of it: the tick before the boundary and the
+/// boundary itself, where a sloped line crosses there with no point at it.
+fn pins(points: &[LanePoint], shape: Shape, boundaries: &[i64]) -> Vec<i64> {
+    if shape.kind == LaneKind::Switch {
+        return vec![];
+    }
+    let mut ticks = vec![];
+    for &b in boundaries {
+        for t in [b - 1, b] {
+            let i = points.partition_point(|p| p.at.ticks < t);
+            let there = points.get(i).is_some_and(|p| p.at.ticks == t);
+            let (Some(p), Some(q)) = (i.checked_sub(1).map(|i| &points[i]), points.get(i)) else {
+                continue;
+            };
+            let sloped = p.value.to_bits() != q.value.to_bits();
+            if !there && sloped && p.at.ticks < b && b <= q.at.ticks && !ticks.contains(&t) {
+                ticks.push(t);
+            }
         }
     }
-    all
+    ticks.sort_unstable();
+    ticks
 }
 
 impl Follow {
@@ -217,6 +190,8 @@ impl Follow {
             on: timeline.audio.follows_edit,
             lanes: BTreeMap::new(),
             carried: HashMap::new(),
+            copied: HashMap::new(),
+            held: HashSet::new(),
         }
     }
 
@@ -230,19 +205,16 @@ impl Follow {
         )
     }
 
-    /// A clip of `track` is taken away: keep what its lanes are over it, and leave them going
-    /// straight between the values at its ends.
-    pub fn take(&mut self, timeline: &Timeline, track: &str, clip: &Clip) {
-        if !self.on {
-            return;
-        }
+    /// What the lanes of `track` are over `clip`, and, with `clear`, leave them going straight
+    /// between the values at its ends.
+    fn pieces(&mut self, timeline: &Timeline, track: &str, clip: &Clip, clear: bool) -> Vec<Piece> {
         let Some(found) = sound(timeline, track) else {
-            return;
+            return vec![];
         };
         let settings = view(owner(found));
         let rate = timeline.rate;
         let Some(lanes) = self.lanes_of(timeline, track) else {
-            return;
+            return vec![];
         };
         let mut pieces = vec![];
         for (path, lane) in lanes.iter_mut() {
@@ -266,22 +238,51 @@ impl Follow {
                 last: before(points, shape, fixed, to),
                 near_end: (to - 1 > from).then(|| at(points, shape, fixed, to - 1)),
             });
-            if points
+            let over = points
                 .iter()
-                .any(|p| from <= p.at.ticks && p.at.ticks <= to)
-            {
-                lane.points = spliced(points, (shape, fixed, scale), (from, to), &[]);
+                .any(|p| from <= p.at.ticks && p.at.ticks <= to);
+            if clear && over {
+                let cleared = replaced(points, shape, fixed, scale, (from, to), &[]);
+                lane.points = pruned(cleared, shape, &[from, to]);
             }
         }
-        self.carried.insert(clip.id.clone(), pieces);
+        pieces
+    }
+
+    /// A clip of `track` is taken away: keep what its lanes are over it, and leave them going
+    /// straight between the values at its ends.
+    pub fn take(&mut self, timeline: &Timeline, track: &str, clip: &Clip) {
+        if self.on {
+            let pieces = self.pieces(timeline, track, clip, true);
+            self.carried.insert(clip.id.clone(), pieces);
+        }
+    }
+
+    /// A clip of `track` is copied: keep what its lanes are over it for its copies.
+    pub fn keep(&mut self, timeline: &Timeline, track: &str, clip: &Clip) {
+        if self.on && !self.copied.contains_key(&clip.id) {
+            let pieces = self.pieces(timeline, track, clip, false);
+            self.copied.insert(clip.id.clone(), pieces);
+        }
     }
 
     /// A clip taken away is put on `track` as `clip`: what its lanes were over it goes where it
     /// is now.
     pub fn put(&mut self, timeline: &Timeline, track: &str, clip: &Clip) {
-        let Some(pieces) = self.carried.remove(&clip.id) else {
-            return;
-        };
+        if let Some(pieces) = self.carried.remove(&clip.id) {
+            self.paste(timeline, track, clip, pieces);
+        }
+    }
+
+    /// A copy of `source` is put on `track` as `clip`: a copy of what the lanes of `source` were
+    /// over it goes where the copy is.
+    pub fn put_copy(&mut self, timeline: &Timeline, track: &str, clip: &Clip, source: &str) {
+        if let Some(pieces) = self.copied.get(source).cloned() {
+            self.paste(timeline, track, clip, pieces);
+        }
+    }
+
+    fn paste(&mut self, timeline: &Timeline, track: &str, clip: &Clip, pieces: Vec<Piece>) {
         let Some(found) = sound(timeline, track) else {
             return;
         };
@@ -313,12 +314,6 @@ impl Follow {
                 let near = (2 * num + den).div_euclid(2 * den);
                 start + i64::try_from(near).unwrap_or(i64::MAX - start)
             };
-            // As far as the clip goes now: where its frames are not whole ticks, the piece may
-            // come to a tick more than it, which is the first of what follows it.
-            // There, its last tick is held by a point of the value that it had, so that what is
-            // before it goes as it went.
-            let end = place(piece.to);
-            let short = tick(rate, clip.end(), scale).max(start);
             let mut new: Vec<LanePoint> = [point(start, scale, piece.first)]
                 .into_iter()
                 .chain(
@@ -328,19 +323,27 @@ impl Follow {
                         .map(|p| point(place(p.at.ticks), scale, p.value)),
                 )
                 .collect();
+            // As far as the clip goes now: where its frames are not whole ticks, the piece may
+            // come to a tick more than it, the first of what follows it. There, the clip's last
+            // tick is held by a point of the value that it had, so that what is before it goes as
+            // it went, and what follows takes its own value from that tick.
+            let (end, short) = (place(piece.to), tick(rate, clip.end(), scale).max(start));
             let end = match piece.near_end {
                 Some(value) if end > short => {
-                    let last = place(piece.to - 1);
-                    if new.last().is_none_or(|p| p.at.ticks < last) {
-                        new.push(point(last, scale, value));
+                    if new.last().is_none_or(|p| p.at.ticks < short) {
+                        new.push(point(short, scale, value));
                     }
                     short
                 }
-                _ => end.min(short),
+                _ => {
+                    let end = end.min(short);
+                    new.push(point(end, scale, piece.last));
+                    end
+                }
             };
-            new.push(point(end, scale, piece.last));
+            let points = replaced(old, shape, fixed, scale, (start, end), &new);
             let lane = Lane {
-                points: spliced(old, (shape, fixed, scale), (start, end), &new),
+                points: pruned(points, shape, &[start, end]),
                 kind: shape.kind,
                 scale: Some(shape.scale),
             };
@@ -350,15 +353,54 @@ impl Follow {
         }
     }
 
+    /// The lanes of `track` are rippled by the edit itself (see [`Follow::ripple_with`]): a
+    /// ripple of the track leaves them alone.
+    pub fn hold(&mut self, track: &str) {
+        self.held.insert(track.into());
+    }
+
     /// What is on `track` from frame `from` on, but for `skip`, moves by `by` frames: its lanes
-    /// move with it. The cut is made after a clip that stays across `from`, and no later than the
-    /// first clip that moves.
+    /// move with it. The cut is made after a clip that does not move and starts before the first
+    /// that does, and no later than that.
     pub fn ripple(
         &mut self,
         timeline: &Timeline,
         track: &str,
         (from, by): (i64, i64),
         skip: &HashSet<Id>,
+    ) {
+        if !self.on || by == 0 || self.held.contains(track) {
+            return;
+        }
+        let Some(found) = sound(timeline, track) else {
+            return;
+        };
+        let moves = |c: &&Clip| c.start >= from && !skip.contains(&c.id);
+        let mut spans: Vec<(i64, i64)> = found
+            .clips
+            .iter()
+            .filter(moves)
+            .map(|c| (c.start, c.end()))
+            .collect();
+        spans.sort_unstable();
+        let first = spans.first().map_or(i64::MAX, |&(start, _)| start);
+        let stays = found.clips.iter().filter(|c| !moves(c) && c.start < first);
+        let place = stays
+            .map(|c| if by > 0 { c.end() } else { c.end() - by })
+            .fold(from, i64::max)
+            .min(first);
+        self.ripple_with(timeline, track, (place, by), &spans);
+    }
+
+    /// The lanes of `track` rippled at frame `place` by `by` frames, `spans` (in order) moving
+    /// with them: each by as many ticks as its start, and what is after it, up to the next, as
+    /// far as it.
+    pub fn ripple_with(
+        &mut self,
+        timeline: &Timeline,
+        track: &str,
+        (place, by): (i64, i64),
+        spans: &[(i64, i64)],
     ) {
         if !self.on || by == 0 {
             return;
@@ -371,21 +413,6 @@ impl Follow {
         }
         let settings = view(owner(found));
         let rate = timeline.rate;
-        let moves = |c: &&Clip| c.start >= from && !skip.contains(&c.id);
-        let mut spans: Vec<(i64, i64)> = found
-            .clips
-            .iter()
-            .filter(moves)
-            .map(|c| (c.start, c.end()))
-            .collect();
-        spans.sort_unstable();
-        let stays = found.clips.iter().filter(|c| c.start < from && !moves(c));
-        let mut place = stays
-            .map(|c| if by > 0 { c.end() } else { c.end() - by })
-            .fold(from, i64::max);
-        if let Some(&(first, _)) = spans.first() {
-            place = place.min(first);
-        }
         let Some(lanes) = self.lanes_of(timeline, track) else {
             return;
         };
@@ -395,26 +422,34 @@ impl Follow {
             let fixed = fixed_value(&settings, path).unwrap_or(lane.points[0].value);
             let ticks = |frame| tick(rate, frame, scale);
             let (p, to) = (ticks(place), ticks(place + by));
-            // Each clip that moves moves by as many ticks as its start does; what is after it,
-            // up to the next, as far as it.
             let steps: Vec<(i64, i64)> = spans
                 .iter()
                 .map(|&(s, _)| (ticks(s), ticks(s + by) - ticks(s)))
                 .collect();
-            // Where they do not all move as far, a line from a point before a clip to one over it
-            // would be stretched or shrunk by a tick: the first and the last tick of each are held
-            // by points first.
-            if steps.iter().any(|&(_, d)| d != to - p) {
-                let ends = spans.iter().flat_map(|&(s, e)| [ticks(s), ticks(e) - 1]);
-                lane.points = pinned(&lane.points, (shape, fixed, scale), ends);
-            }
             let tick_after = |t: i64| {
                 let i = steps.partition_point(|&(s, _)| s <= t);
                 t + if i == 0 { to - p } else { steps[i - 1].1 }
             };
-            if let Some(points) = rippled(&lane.points, (shape, fixed, scale), (p, to), tick_after)
-            {
-                lane.points = points;
+            // Where two pieces next to each other do not move as far, a line across the start of
+            // the second would be stretched or shrunk by a tick: it is held there first.
+            let mut moving = to - p;
+            let mut boundaries = vec![];
+            for &(s, d) in &steps {
+                if d != moving && s > p {
+                    boundaries.push(s);
+                }
+                moving = d;
+            }
+            let held = pins(&lane.points, shape, &boundaries);
+            let mut points = lane.points.clone();
+            for &t in &held {
+                let i = points.partition_point(|q| q.at.ticks < t);
+                points.insert(i, point(t, scale, at(&lane.points, shape, fixed, t)));
+            }
+            if let Some(done) = rippled(&points, (shape, fixed, scale), (p, to), tick_after) {
+                let mut added: Vec<i64> = held.iter().map(|&t| tick_after(t)).collect();
+                added.extend([p, to]);
+                lane.points = pruned(done, shape, &added);
             }
         }
     }
@@ -477,7 +512,7 @@ fn splice(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio::{LaneKind, LaneScale};
+    use crate::audio::LaneScale;
 
     const LINE: Shape = Shape {
         kind: LaneKind::Continuous,
@@ -497,6 +532,12 @@ mod tests {
         let lane = pts(&[(0, 0.0), (20, 10.0), (40, 0.0)]);
         let done = rippled(&lane, (LINE, 0.0, 10), (30, 10), |t| t - 20).unwrap();
         assert_eq!(plain(&done), vec![(0, 0.0), (10, 5.0), (20, 0.0)]);
+        // A jump where the two sides meet.
+        let done = rippled(&lane, (LINE, 0.0, 10), (20, 10), |t| t - 10).unwrap();
+        assert_eq!(
+            plain(&done),
+            vec![(0, 0.0), (10, 5.0), (10, 10.0), (30, 0.0)]
+        );
     }
 
     #[test]
@@ -520,5 +561,42 @@ mod tests {
                 assert!((-0.9..=0.2).contains(&v), "{v}");
             }
         }
+    }
+
+    #[test]
+    fn a_range_replaced_keeps_the_values_at_its_ends_within_those_of_the_lane() {
+        let lane = vec![point(0, 3, 0.2), point(1, 3, -0.9), point(2, 3, 0.0)];
+        let done = replaced(&lane, LINE, 0.0, 3, (1, 2), &[]);
+        assert!(
+            done.iter().all(|p| (-0.9..=0.2).contains(&p.value)),
+            "{done:?}"
+        );
+    }
+
+    #[test]
+    fn a_point_added_on_the_line_between_its_neighbours_is_left_out_and_others_kept() {
+        let lane = pts(&[
+            (0, 0.0),
+            (10, 5.0),
+            (20, 10.0),
+            (30, 10.0),
+            (30, 0.0),
+            (40, 7.0),
+        ]);
+        // 10 is on the line and was added; 20 is not on it; 30 is a jump.
+        let kept = pruned(lane.clone(), LINE, &[10, 20, 30]);
+        assert_eq!(
+            plain(&kept),
+            vec![(0, 0.0), (20, 10.0), (30, 10.0), (30, 0.0), (40, 7.0)]
+        );
+        // One on the line that was there before stays.
+        assert_eq!(pruned(lane.clone(), LINE, &[]), lane);
+    }
+
+    #[test]
+    fn a_lane_is_held_only_where_a_slope_crosses_a_boundary() {
+        let lane = pts(&[(0, 0.0), (100, 10.0), (200, 10.0)]);
+        // 50 is on the slope; 150 is on the flat; 100 has a point.
+        assert_eq!(pins(&lane, LINE, &[50, 150, 100]), vec![49, 50, 99]);
     }
 }

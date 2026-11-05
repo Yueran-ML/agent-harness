@@ -853,7 +853,17 @@ impl State {
     /// changed that was held. Gives what was done, as it is written.
     fn publish(&mut self, applied: &Applied) -> Box<RawValue> {
         self.flush();
-        self.save_and_draw();
+        // The streams of media that the engine read (T3c) change neither picture nor sound: a
+        // Window that is being dragged goes on.
+        if applied
+            .done
+            .iter()
+            .all(|op| matches!(op, Op::SetMediaStreams { .. }))
+        {
+            self.save_and_draw_unseen();
+        } else {
+            self.save_and_draw();
+        }
         let done = serde_json::value::to_raw_value(&applied.done)
             .expect("an operation is written as JSON");
         self.tell(
@@ -934,6 +944,12 @@ impl State {
     /// Save the project as it is now, and have the transport draw it.
     fn save_and_draw(&mut self) {
         self.window_project_changed();
+        self.save_and_draw_unseen();
+    }
+
+    /// As [`State::save_and_draw`], for a change that nothing shown depends on: what the Window
+    /// controls hold of the project is not checked again.
+    fn save_and_draw_unseen(&mut self) {
         if let Some(saver) = &self.saver {
             saver.changed(self.history.project().clone());
         }

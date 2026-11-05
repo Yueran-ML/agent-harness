@@ -65,6 +65,7 @@ pub(super) fn check(edit: &Edit) -> Result<(), OpError> {
         | Edit::LaneRange { .. }
         | Edit::LaneDraw { .. }
         | Edit::ClearLanes { .. }
+        | Edit::RecordPass { .. }
         | Edit::Lift { .. }
         | Edit::RippleDelete { .. }
         | Edit::RemoveTransition { .. }

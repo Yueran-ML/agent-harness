@@ -58,7 +58,7 @@ use crate::ops::{apply_done, InsertsOf, LanesOf, Op, OpError};
 use crate::project::{Alignment, Id, Project, Rgba, TitleStyle, TrackKind, TransitionKind};
 use crate::time::{Speed, Time};
 
-pub use automation::{NewPoint, PointAction, RangeAction, Then};
+pub use automation::{NewPoint, PointAction, RangeAction, RecordedLane, RecordedRun, RunEnd, Then};
 pub use grade::Given;
 use work::Work;
 
@@ -890,6 +890,14 @@ pub enum Edit {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tolerance: Option<f64>,
     },
+    /// Write what a pass of the recording of automation recorded (T16, pp. 3905–3909): the runs
+    /// of each lane in place of what was there, as one step of undo.
+    RecordPass {
+        /// The timeline.
+        timeline: Id,
+        /// What each lane recorded.
+        lanes: Vec<RecordedLane>,
+    },
     /// Take lanes of automation away (Clear Track Automation, p. 3912).
     ClearLanes {
         /// The timeline.
@@ -1537,6 +1545,7 @@ pub(crate) fn run(project: &mut Project, edit: Edit) -> Result<Expansion, EditEr
             at,
             ..
         } => automation::clear_lanes(&mut work, &of, paths.as_deref(), then, at),
+        Edit::RecordPass { lanes, .. } => automation::record_pass(&mut work, &lanes),
         _ => unreachable!("the edits of grades are worked out above"),
     }?;
     work.finish()
@@ -1588,6 +1597,7 @@ pub fn timeline_of(edit: &Edit) -> Option<&Id> {
         | Edit::LanePoints { timeline, .. }
         | Edit::LaneRange { timeline, .. }
         | Edit::LaneDraw { timeline, .. }
+        | Edit::RecordPass { timeline, .. }
         | Edit::ClearLanes { timeline, .. } => timeline,
         Edit::AddSerial { .. }
         | Edit::AddSerialBefore { .. }

@@ -196,6 +196,40 @@ fn reasons_written(file: &Path) -> BTreeSet<String> {
         .collect()
 }
 
+/// The reasons that the engine itself writes in the data of its errors: `"reason": "…"`, with
+/// or without a space, in the sources of this crate.
+fn reasons_of_the_server() -> BTreeMap<String, String> {
+    let mut found = BTreeMap::new();
+    let mut dirs = vec![crate_dir().join("src")];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs") || path.ends_with("protocol.rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).unwrap();
+            for rest in source.split("\"reason\":").skip(1) {
+                let Some(rest) = rest.trim_start().strip_prefix('"') else {
+                    continue;
+                };
+                let Some(end) = rest.find('"') else {
+                    continue;
+                };
+                let reason = &rest[..end];
+                if !reason.is_empty() && reason.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+                {
+                    found.insert(reason.to_owned(), path.display().to_string());
+                }
+            }
+        }
+    }
+    found
+}
+
 /// `SnakeCase` as `snake_case`.
 fn snake(name: &str) -> String {
     let mut snake = String::new();
@@ -360,6 +394,27 @@ fn every_reason_of_a_refusal_is_in_the_protocol() {
     assert!(
         missing.is_empty(),
         "refusals not in PROTOCOL.md: {missing:?}"
+    );
+}
+
+#[test]
+fn every_reason_that_the_engine_writes_in_an_error_is_in_the_protocol() {
+    let text = protocol();
+    let server = reasons_of_the_server();
+    assert!(
+        server.contains_key("not_recording") && server.contains_key("subtitle_track"),
+        "{server:?}"
+    );
+    // Written as a name, or as the string of the JSON of the error.
+    let missing: Vec<_> = server
+        .iter()
+        .filter(|(reason, _)| {
+            !text.contains(&format!("`{reason}`")) && !text.contains(&format!("\"{reason}\""))
+        })
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "reasons not in PROTOCOL.md: {missing:?}"
     );
 }
 

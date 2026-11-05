@@ -1867,7 +1867,10 @@ pub(crate) fn run_change(project: &mut Project, change: Change) -> Result<Expans
             // and makes no step.
             if matches!(
                 done,
-                Op::SetMedia { .. } | Op::SetMediaColor { .. } | Op::SetColorSettings { .. }
+                Op::SetMedia { .. }
+                    | Op::SetMediaColor { .. }
+                    | Op::SetMediaStreams { .. }
+                    | Op::SetColorSettings { .. }
             ) && done == inverse
             {
                 return Ok(Expansion {

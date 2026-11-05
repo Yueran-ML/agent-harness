@@ -40,7 +40,11 @@ export interface VideoFacts {
   rotation: number;
 }
 
-/** The sound of a file. `layout` and `streams` are left out where they were not read. */
+/**
+ * The sound of a file. `layout` and `streams` are left out where they were not read: the engine
+ * reads them of media of an older project, and sets them by `set_media_streams` (PROTOCOL.md,
+ * "Streams read later").
+ */
 export interface AudioFacts {
   rate: number;
   channels: number;
@@ -48,8 +52,11 @@ export interface AudioFacts {
   /** The layout of its channels, as libav names it (`5.1(side)`). */
   layout?: string;
   /** Each stream of sound of the file, numbered as libav numbers all its streams. */
-  streams?: { index: number; channels: number; layout: string | null }[];
+  streams?: AudioStream[];
 }
+
+/** A stream of sound of a file. */
+export interface AudioStream { index: number; channels: number; layout: string | null }
 
 /** What a file holds. A file without a picture has no `video`, one without sound no `audio`. */
 export interface Facts {
@@ -622,6 +629,8 @@ export type Op =
   | { op: 'remove_media'; id: string }
   | ({ op: 'set_media'; id: string; still?: boolean | null } & Settings<Media, 'name' | 'bin' | 'mark_in' | 'mark_out'>)
   | { op: 'set_proxy'; media: string; proxy: Proxy | null }
+  /** The layout and the streams of the sound of media, null for not read; set by the engine of media of an older project. */
+  | { op: 'set_media_streams'; id: string; layout?: string | null; streams?: AudioStream[] | null }
   | { op: 'add_bin'; bin: Bin; index?: number | null }
   | { op: 'remove_bin'; id: string }
   | ({ op: 'set_bin'; id: string } & Settings<Bin, 'name' | 'parent'>)
@@ -994,6 +1003,32 @@ export interface PageMethods {
   'automation.copy': { lanes: { of: LanesOf; path: string; points?: LanePoint[]; value?: number }[] };
 }
 export type PageMethod = keyof PageMethods;
+
+/**
+ * What the engine tells, by the method of each notification, and its params (PROTOCOL.md,
+ * "Notifications"). Some are told only to the connection that asked for them.
+ */
+export interface EngineNotifications {
+  'project.changed': ProjectChanged;
+  'engine.error': EngineErrorNotice;
+  'transport.state': TransportState;
+  'engine.yielding': { to: 'desktop' };
+  'media.proxy': ProxyEvent;
+  /** The waveform of media, or of one of its streams, is made: ask for it again. */
+  'media.waveform': { media: string; stream?: number };
+  'render.progress': RenderProgress;
+  'scopes.frame': ScopeFrame;
+  'gallery.changed': Record<string, never>;
+  'window_presets.changed': Record<string, never>;
+  'view.pointer': ViewPointer;
+  'window.state': WindowState;
+  'window.unbound': WindowUnbound;
+  'window.points': WindowPointsDropped;
+  'track.progress': TrackProgress;
+  'track.state': TrackEnded;
+  'automation.written': AutomationWritten;
+}
+export type EngineNotification = keyof EngineNotifications;
 
 /**
  * Whether automation is recorded as the timeline plays (`automation.record`), its Glide Time in
@@ -1679,6 +1714,18 @@ export function applyOp(project: Project, op: Op): Project {
       const at = placeOf(project.media, op.media, 'media');
       const { proxy: _before, ...media } = project.media[at];
       return { ...project, media: replaced(project.media, at, op.proxy == null ? media : { ...media, proxy: op.proxy }) };
+    }
+    case 'set_media_streams': {
+      const at = placeOf(project.media, op.id, 'media');
+      const media = project.media[at];
+      if (!media.facts.audio) throw new CopyMismatch(`media ${op.id} has no sound`);
+      const { layout: _layout, streams: _streams, ...audio } = media.facts.audio;
+      const read: AudioFacts = {
+        ...audio,
+        ...(op.layout == null ? {} : { layout: op.layout }),
+        ...(op.streams == null ? {} : { streams: op.streams }),
+      };
+      return { ...project, media: replaced(project.media, at, { ...media, facts: { ...media.facts, audio: read } }) };
     }
     case 'add_bin': return { ...project, bins: inserted(project.bins, op.bin, op.index) };
     case 'remove_bin': return { ...project, bins: without(project.bins, placeOf(project.bins, op.id, 'bin')) };

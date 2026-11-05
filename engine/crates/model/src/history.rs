@@ -50,6 +50,9 @@ pub struct History {
     most: usize,
     /// The gesture that is going on, whose step is the latest of `undo`.
     gesture: Option<Gesture>,
+    /// The revision that the last change that was not the engine's own (a step, an undo, a
+    /// redo) made: since it, only changes of the engine that are no step were made.
+    recorded: u64,
 }
 
 /// A gesture that is going on: its key, the revision before its first transaction, and the
@@ -220,6 +223,7 @@ impl History {
             redo: Vec::new(),
             most,
             gesture: None,
+            recorded: 0,
         }
     }
 
@@ -296,6 +300,7 @@ impl History {
             self.undo.pop_back();
         }
         self.revision += 1;
+        self.recorded = self.revision;
         self.push(Step {
             done: done.clone(),
             inverse,
@@ -385,12 +390,14 @@ impl History {
     }
 
     /// Whether a transaction prepared by the project at `revision` is taken: one prepared at
-    /// the revision that the project is at, or, for a transaction of the gesture `gesture` that
-    /// is going on, at any revision since the one before the gesture began, since only the
-    /// gesture has changed the project since.
+    /// the revision that the project is at, or at one since which only the engine changed it by
+    /// changes that are no step ([`History::apply_unrecorded`]: a proxy, the streams of media),
+    /// which no transaction depends on; or, for a transaction of the gesture `gesture` that is
+    /// going on, at any revision since the one before the gesture began, since only the gesture
+    /// has changed the project since.
     #[must_use]
     pub fn takes_revision(&self, revision: u64, gesture: Option<&str>) -> bool {
-        revision == self.revision
+        (self.recorded..=self.revision).contains(&revision)
             || self.gesture.as_ref().is_some_and(|open| {
                 gesture == Some(open.key.as_str())
                     && (open.base..=self.revision).contains(&revision)
@@ -469,6 +476,7 @@ impl History {
             return Err(TransactionError::Empty);
         }
         self.revision += 1;
+        self.recorded = self.revision;
         if goes_on {
             let step = self
                 .undo
@@ -529,6 +537,13 @@ impl History {
         }
         let (done, _) = run(&mut self.project, ops, |op, _| op)?;
         self.revision += 1;
+        // A gesture that ends where it began leaves no step: the project before it is taken to
+        // have had this change too, which no step of the gesture names.
+        // Where it cannot be (it names what the gesture added), the project before is left as
+        // it was, and the gesture leaves a step however it ends.
+        if let Some(gesture) = &mut self.gesture {
+            let _ = run(&mut gesture.before, done.clone(), |op, _| op);
+        }
         Ok(self.applied(done, by, by))
     }
 
@@ -548,6 +563,7 @@ impl History {
         match run(&mut self.project, ops, |op, _| op) {
             Ok((done, _)) => {
                 self.revision += 1;
+                self.recorded = self.revision;
                 let applied = self.applied(done, by, &step.by);
                 self.redo.push(step);
                 Some(Ok(applied))
@@ -572,6 +588,7 @@ impl History {
         match run(&mut self.project, step.done.clone(), |op, _| op) {
             Ok((done, _)) => {
                 self.revision += 1;
+                self.recorded = self.revision;
                 let applied = self.applied(done, by, &step.by);
                 self.undo.push_back(step);
                 Some(Ok(applied))
@@ -1133,9 +1150,88 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_streams_that_the_engine_reads_are_no_step_and_setting_them_again_is_none() {
+        let mut history = History::new(Project::sample());
+        history.apply(vec![insert("V1", 100, 10)], "agent").unwrap();
+        let read = Op::SetMediaStreams {
+            id: "m1".into(),
+            layout: Some("stereo".into()),
+            streams: Some(vec![crate::project::AudioStream {
+                index: 0,
+                channels: 2,
+                layout: Some("stereo".into()),
+            }]),
+        };
+        let applied = history
+            .apply_unrecorded(vec![read.clone()], "engine")
+            .unwrap();
+        assert_eq!(applied.done, std::slice::from_ref(&read));
+        assert_eq!(applied.made_by, "engine");
+        // The undo takes back the agent's clip, and the streams stay read.
+        history.undo("desktop").unwrap().unwrap();
+        assert!(!history.can_undo());
+        let audio = history.project().media[0].facts.audio.clone().unwrap();
+        assert_eq!(audio.layout.as_deref(), Some("stereo"));
+        assert_eq!(audio.streams.map(|s| s.len()), Some(1));
+        // Set to what they are by a client, they change nothing and make no step.
+        assert_eq!(
+            history.change(vec![Change::Op(read)], "agent", |change, _| change),
+            Err(TransactionError::Empty)
+        );
+    }
+
+    /// The streams of m1, as the engine reads them of an older project.
+    fn streams_read() -> Op {
+        Op::SetMediaStreams {
+            id: "m1".into(),
+            layout: Some("stereo".into()),
+            streams: Some(vec![]),
+        }
+    }
+
+    #[test]
+    fn a_transaction_prepared_before_changes_of_the_engine_alone_is_taken() {
+        let mut history = History::new(Project::sample());
+        history.apply(vec![insert("V1", 100, 10)], "agent").unwrap();
+        let prepared = history.revision();
+        history
+            .apply_unrecorded(vec![streams_read()], "engine")
+            .unwrap();
+        // Only the engine changed the project since: what was prepared is taken.
+        assert!(history.takes_revision(prepared, None));
+        assert!(history.takes_revision(prepared + 1, None));
+        // Not one prepared before a step of a client.
+        assert!(!history.takes_revision(prepared - 1, None));
+        history
+            .apply(vec![move_to("c1", "V1", 300)], "desktop")
+            .unwrap();
+        assert!(!history.takes_revision(prepared, None));
+        assert!(history.takes_revision(history.revision(), None));
+    }
+
     mod gestures {
         use super::super::*;
-        use super::{insert, move_to, with_next_id_of};
+        use super::{insert, move_to, streams_read, with_next_id_of};
+
+        #[test]
+        fn a_gesture_put_back_leaves_no_step_though_the_engine_changed_the_project_meanwhile() {
+            let mut history = History::new(Project::sample());
+            history.apply(vec![insert("A1", 100, 10)], "agent").unwrap();
+            let start = start_of_c1(&history);
+            drag(&mut history, "1:g1", 200, false).unwrap();
+            history
+                .apply_unrecorded(vec![streams_read()], "engine")
+                .unwrap();
+            // Put back where it began (Escape): no step, though the streams were read.
+            drag(&mut history, "1:g1", start, true).unwrap();
+            let undone = history.undo("desktop").unwrap().unwrap();
+            assert!(undone
+                .done
+                .iter()
+                .all(|op| !matches!(op, Op::MoveClip { .. })));
+            assert!(!history.can_undo());
+        }
 
         /// Move c1 on V1 to `start`, as part of the gesture `key`.
         fn drag(

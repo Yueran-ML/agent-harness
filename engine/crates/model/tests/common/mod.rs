@@ -756,9 +756,23 @@ fn insert_after_of(project: &Project, spec: &Spec, chosen: Option<&Placed>) -> O
     }
 }
 
-/// A proxy set on media, or taken away.
+/// A proxy set on media, or taken away; now and then the streams of the sound of media set,
+/// or taken away, as the engine sets them of a project written before they were (T3c).
 fn proxy_op_of(project: &Project, spec: &Spec) -> Op {
     let ids: Vec<String> = project.media.iter().map(|m| m.id.clone()).collect();
+    if spec.c % 8 == 7 {
+        return Op::SetMediaStreams {
+            id: pick(&ids, spec.b, "m99"),
+            layout: bit(spec, 0).then(|| "stereo".into()),
+            streams: bit(spec, 1).then(|| {
+                vec![columbina_model::AudioStream {
+                    index: u32::try_from(spec.a % 3).unwrap(),
+                    channels: 2,
+                    layout: bit(spec, 2).then(|| "stereo".into()),
+                }]
+            }),
+        };
+    }
     Op::SetProxy {
         media: pick(&ids, spec.b, "m99"),
         proxy: match spec.c % 4 {

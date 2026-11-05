@@ -1920,6 +1920,38 @@ fn binding_retirement_queue_failure_stops_only_the_owner() {
 }
 
 #[test]
+fn the_streams_of_media_read_by_the_engine_leave_a_window_drag_going() {
+    let (mut state, registry, pin, frame) = fixture();
+    arm(&mut state);
+    movement(&mut state, &registry, &pin, &frame, 84);
+    let gesture = state
+        .history
+        .gesture()
+        .map(|(key, base)| (key.to_owned(), base));
+    let applied = state
+        .history
+        .apply_unrecorded(
+            vec![Op::SetMediaStreams {
+                id: "m1".into(),
+                layout: Some("stereo".into()),
+                streams: Some(vec![]),
+            }],
+            "engine",
+        )
+        .unwrap();
+    state.publish(&applied);
+    // Neither picture nor sound changed (T3c): the drag goes on, as does its gesture.
+    assert!(state.window.active.is_some());
+    assert_eq!(
+        state
+            .history
+            .gesture()
+            .map(|(key, base)| (key.to_owned(), base)),
+        gesture
+    );
+}
+
+#[test]
 fn unrecorded_external_revision_flushes_only_the_captures_old_key() {
     let (mut state, registry, pin, frame) = fixture();
     arm(&mut state);

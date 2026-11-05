@@ -3,7 +3,8 @@
 It speaks protocol 2 of ``engine/PROTOCOL.md`` over a named pipe of Windows or a socket of
 Unix, one message a line: ``hello``, ``project.get``, ``transaction.apply`` (with names of the
 form ``$name``, and edits beside operations), ``history.undo``, ``history.redo``,
-``media.import``, ``timeline.duration``, ``render.start`` and ``render.cancel``. Every change is
+``media.import``, ``timeline.duration``, ``render.start`` (with the ``audio`` of the sound of an
+export, or the sound alone with ``video`` ``null``) and ``render.cancel``. Every change is
 told to every connection that said hello before it is answered, as the engine does. A test makes
 it misbehave through the attributes of :class:`Fake`.
 
@@ -113,6 +114,9 @@ class RefusedError(Exception):
         if data is not None:
             self.error["data"] = data
 
+
+_AUDIO_FIELDS = {"bus", "rate", "codec", "bitrate", "normalize"}
+"""What the ``audio`` of ``render.start`` takes (``PROTOCOL.md``, The sound of an export)."""
 
 _KINDS = {"add_media": "media", "add_timeline": "timeline", "add_track": "track", "add_bin": "bin"}
 _LETTERS = {"media": "m", "timeline": "t", "clip": "c", "bin": "b"}
@@ -465,6 +469,14 @@ class Fake:
             raise RefusedError(-32002, message, {"path": str(path), "reason": "exists"})
         if "subtitles" in params:
             raise RefusedError(-32602, "render.start takes no subtitles", {"reason": "params"})
+        alone = "video" in params
+        if alone and (params["video"] is not None or {"codec", "quality"} & set(params)):
+            message = "the sound alone is rendered with video null, and no codec or quality"
+            raise RefusedError(-32602, message, {"reason": "params"})
+        audio: object = params.get("audio", {})
+        if not isinstance(audio, dict) or set(cast("dict[str, Any]", audio)) - _AUDIO_FIELDS:
+            message = "render.start: audio is not as it is taken"
+            raise RefusedError(-32602, message, {"reason": "params"})
         chosen = cast("list[str]", params.get("subtitle_tracks") or [])
         subtitles = {one["id"] for one in timeline["tracks"] if one["kind"] == "subtitle"}
         for at, track in enumerate(chosen):

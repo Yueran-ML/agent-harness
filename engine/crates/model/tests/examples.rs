@@ -600,6 +600,26 @@ fn examples() -> Vec<(&'static str, Vec<Op>, Op)> {
             },
         ),
         (
+            "set_media_streams, as the engine reads them of media of an older project",
+            vec![],
+            Op::SetMediaStreams {
+                id: "m1".into(),
+                layout: Some("5.1(side)".into()),
+                streams: Some(vec![
+                    columbina_model::AudioStream {
+                        index: 1,
+                        channels: 6,
+                        layout: Some("5.1(side)".into()),
+                    },
+                    columbina_model::AudioStream {
+                        index: 2,
+                        channels: 1,
+                        layout: None,
+                    },
+                ]),
+            },
+        ),
+        (
             "set_media still classification",
             vec![Op::AddMedia {
                 media: still,

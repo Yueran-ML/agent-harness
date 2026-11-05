@@ -27,7 +27,9 @@ from columbina.video.engine import (
     Engine,
     EngineError,
     Lut,
+    Normalization,
     Progress,
+    RenderAudio,
     not_found,
     program_of,
 )
@@ -799,10 +801,54 @@ async def test_a_render_that_is_refused_is_followed_no_further(tmp_path: Path) -
         assert list(connected._readers) == []  # pyright: ignore[reportPrivateUsage]
 
 
+async def test_the_sound_of_a_render_is_asked_for_as_the_protocol_says_it(tmp_path: Path) -> None:
+    async with served(tmp_path / "film") as fake:
+        connected = await attached(tmp_path / "film")
+        timeline = await timeline_with_a_clip(connected)
+        normalized = RenderAudio(
+            bus="B2",
+            rate=96000,
+            codec="aac",
+            bitrate=256000,
+            normalize=Normalization("spotify", "optimize", target=-16.0),
+        )
+
+        film = await connected.render(timeline, tmp_path / "film.mp4", audio=normalized)
+        await asyncio.wait_for(film.finished(), 5)
+        alone = await connected.render(
+            timeline, tmp_path / "sound.wav", audio=RenderAudio(codec="pcm_f32le"), video=False
+        )
+        await asyncio.wait_for(alone.finished(), 5)
+        await connected.aclose()
+
+        assert fake.rendered[0]["audio"] == {
+            "bus": "B2",
+            "rate": 96000,
+            "codec": "aac",
+            "bitrate": 256000,
+            "normalize": {"standard": "spotify", "mode": "optimize", "target": -16.0},
+        }
+        assert (fake.rendered[0]["codec"], fake.rendered[0]["quality"]) == ("h264", "high")
+        assert fake.rendered[1]["video"] is None
+        assert fake.rendered[1]["audio"] == {"codec": "pcm_f32le"}
+        assert {"codec", "quality"} & set(fake.rendered[1]) == set()
+        # Nothing of the sound is sent where nothing is asked of it.
+        assert RenderAudio().params() == {}
+        assert Normalization("ebu-r128").params() == {"standard": "ebu-r128", "mode": "normalize"}
+
+
 def test_what_a_render_tells_is_read_as_the_protocol_says_it() -> None:
     said = {"job": "r1", "state": "running", "frame": 3, "frames": 9, "fps": 24}
 
     assert Progress.of(said) == Progress("r1", "running", 3, 9, 24.0)
+    measuring = {"pass": 1, "passes": 2, "frame": 4800, "frames": 96000}
+    normalization = {"standard": "ebu-r128", "gain_db": 3.5, "met": True}
+    read = Progress.of({**said, "measuring": measuring, "normalization": normalization})
+    assert read is not None
+    assert (read.measuring, read.normalization) == (measuring, normalization)
+    assert Progress.of({**said, "measuring": [1], "normalization": "loud"}) == Progress(
+        "r1", "running", 3, 9, 24.0
+    )
     assert Progress.of({**said, "frame": "3", "fps": True, "path": 7}) == Progress(
         "r1", "running", 0, 9, 0.0
     )
@@ -1300,6 +1346,118 @@ async def test_the_engine_renders_a_timeline_and_tells_how_far_it_has_come(
     assert ended.encoder
     assert all(one.job == rendering.job for one in heard)
     assert film.stat().st_size > 0
+
+
+async def test_the_engine_renders_the_sound_alone_normalized_as_it_is_asked(
+    tmp_path: Path,
+) -> None:
+    program = real_engine()
+    tone = made(
+        tmp_path / "raw", "tone.wav",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=2",
+        "-af", "volume=-30dB", "-c:a", "pcm_s16le",
+    )  # fmt: skip
+    sound = tmp_path / "out" / "mix.wav"
+    sound.parent.mkdir()
+
+    async with await Engine.attach(tmp_path / "film", program=program, idle_seconds=1) as one:
+        _, added = await one.imported([tone])
+        timeline = (await one.apply([ADD, edits.add_track("$t", "audio")])).names["$t"]
+        await one.apply([edits.append(timeline, edits.of_media(added[0], length=25))])
+        asked = RenderAudio(codec="pcm_f32le", normalize=Normalization("ebu-r128"))
+        rendering = await one.render(timeline, sound, audio=asked, video=False)
+        ended = await asyncio.wait_for(rendering.finished(), 120)
+
+    assert (ended.state, ended.frames, ended.path) == ("done", 25, str(sound)), ended.message
+    assert ended.normalization is not None
+    assert (ended.normalization["standard"], ended.normalization["mode"]) == (
+        "ebu-r128",
+        "normalize",
+    )
+    # A sine at -30 dBFS is brought up towards -23 LUFS.
+    assert ended.normalization["gain_db"] > 0
+    assert sound.read_bytes()[:4] == b"RIFF"
+
+
+async def test_the_engine_takes_the_sound_of_a_timeline_as_it_is_written(tmp_path: Path) -> None:
+    program = real_engine()
+    second = edits.Time(ticks=48000, scale=48000)
+
+    async with await Engine.attach(tmp_path / "film", program=program, idle_seconds=1) as one:
+        applied = await one.apply(
+            [ADD, edits.add_track("$t", "audio"), edits.add_track("$t", "audio")]
+        )
+        timeline = applied.names["$t"]
+        _, before = await one.project()
+        every = [
+            edits.set_track_audio(timeline, "A1", {"strip": {"fader_db": -6.0}}),
+            edits.set_track(timeline, "A2", mute=True),
+            edits.add_bus(
+                timeline, {"id": "B2", "name": "Dialogue", "color": "#ff8800ff", "format": "stereo"}
+            ),
+            edits.set_bus(timeline, "B2", {"strip": {"fader_db": -3.0}}),
+            edits.add_insert(timeline, {"track": "A1"}, {"effect": {"kind": "gain"}}),
+            edits.set_insert(timeline, {"track": "A1"}, 0, None),
+            edits.add_vca(timeline, {"id": "", "name": "Music"}),
+            edits.add_track_group(timeline, {"id": "", "name": "Dialogue", "members": ["A1"]}),
+            edits.lane_points(
+                timeline, {"track": "A1"}, "fader_db", "add", points=[(second, -10.0)]
+            ),
+            edits.set_lane(
+                timeline,
+                {"track": "A1"},
+                "pan.x",
+                {"points": [{"at": second.model_dump(), "value": 0.5}]},
+            ),
+            edits.lane_range(
+                timeline,
+                {"track": "A1"},
+                "pan.x",
+                edits.Time(ticks=0, scale=48000),
+                edits.Time(ticks=96000, scale=48000),
+                "shift_value",
+                delta=0.1,
+            ),
+            edits.clear_lanes(timeline, {"track": "A1"}),
+            edits.set_timeline_audio(timeline, {"follows_edit": False}),
+        ]
+        await one.apply(every)
+        _, after = await one.project()
+        await one.undo()
+        _, undone = await one.project()
+
+    (cut,) = after["timelines"]
+    a1, a2 = cut["tracks"]
+    assert a1["strip"]["fader_db"] == -6.0
+    assert (a1["strip"]["inserts"], a1["lanes"]) == ([], {})
+    assert a2["mute"] is True
+    assert [bus["id"] for bus in cut["buses"]] == ["B1", "B2"]
+    assert cut["buses"][1]["strip"]["fader_db"] == -3.0
+    assert [vca["id"] for vca in cut["vcas"]] == ["VCA1"]
+    assert cut["track_groups"][0]["members"] == ["A1"]
+    assert cut["audio"]["follows_edit"] is False
+    # One step, taken back whole.
+    assert undone["timelines"] == before["timelines"]
+
+
+async def test_the_engine_bakes_a_grade_into_a_lut_of_the_project(tmp_path: Path) -> None:
+    program = real_engine()
+
+    async with await Engine.attach(tmp_path / "film", program=program, idle_seconds=1) as one:
+        timeline = (await one.apply([ADD])).names["$t"]
+        grade = {"level": "timeline", "timeline": timeline}
+        baked = await one.export_lut(grade, "flat.cube", size=17)
+        with pytest.raises(EngineError) as there:
+            await one.export_lut(grade, "flat.cube", size=17)
+        with pytest.raises(EngineError) as size:
+            await one.export_lut(grade, "odd.cube", size=18)  # type: ignore[arg-type]
+
+    assert (baked["size"], baked["nodes"], baked["ignored"]) == (17, [], [])
+    written = Path(baked["path"])
+    assert written.is_file()
+    assert "LUT_3D_SIZE 17" in written.read_text(encoding="utf-8")
+    assert there.value.code == -32001
+    assert size.value.code == -32602
 
 
 async def test_the_engine_lists_the_luts_of_the_project_and_has_no_scopes_headless(

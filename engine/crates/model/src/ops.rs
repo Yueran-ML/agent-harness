@@ -123,8 +123,8 @@ use crate::grade::{
     Grade, Group, Link, Node, Port, Pos, Target, LONGEST_LABEL, LONGEST_PATH, MOST_INPUTS,
 };
 use crate::project::{
-    Alignment, Bin, Clip, Cue, Id, Media, Project, Proxy, Source, Timeline, Track, TrackKind,
-    Transform, Transition, TransitionKind,
+    Alignment, AudioStream, Bin, Clip, Cue, Id, Media, Project, Proxy, Source, Timeline, Track,
+    TrackKind, Transform, Transition, TransitionKind,
 };
 use crate::span;
 use crate::time::{Rate, Speed, Time};
@@ -675,6 +675,22 @@ pub enum Op {
         /// Whether its Inverse DRT for SDR to HDR Conversion is on.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         inverse_drt: Option<bool>,
+    },
+    /// Set what the facts of the sound of media say of its channels: the layout of the channels
+    /// of its best stream of sound, and its streams of sound, each `None` for not read. The
+    /// engine sets them, as a change that is no step of the history, once it has read them from
+    /// the file of media whose project was written before they were (T3c); a client may too.
+    /// Nothing checks them, as nothing does where a project is read: a channel of a clip that
+    /// names a stream that the media has not plays silence.
+    SetMediaStreams {
+        /// The media, which has sound.
+        id: Id,
+        /// The name of the layout of the channels of its best stream of sound.
+        #[serde(default)]
+        layout: Option<String>,
+        /// Its streams of sound.
+        #[serde(default)]
+        streams: Option<Vec<AudioStream>>,
     },
     /// Set what a track of sound has of sound by a patch (see [`audio`]): its `format`,
     /// `channels`, `order`, `mute`, `solo`, `solo_safe`, `adc`, `automation_arm` and `strip`, of
@@ -1652,6 +1668,11 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
             length,
         } => trim_clip(project, &timeline, &id, source_in, start, length),
         Op::SetProxy { media, proxy } => set_proxy(project, &media, proxy),
+        Op::SetMediaStreams {
+            id,
+            layout,
+            streams,
+        } => set_media_streams(project, &id, layout, streams),
         Op::SetTimeline {
             id,
             name,
@@ -2136,6 +2157,32 @@ fn set_proxy(project: &mut Project, id: &str, proxy: Option<Proxy>) -> Result<Op
     Ok(Op::SetProxy {
         media: id.into(),
         proxy: before,
+    })
+}
+
+/// Set the layout and the streams of the sound of media (T3c). Media of no sound has nothing
+/// to set them on (`no_stream`).
+fn set_media_streams(
+    project: &mut Project,
+    id: &str,
+    layout: Option<String>,
+    streams: Option<Vec<AudioStream>>,
+) -> Result<Op, OpError> {
+    let media = project
+        .media
+        .iter_mut()
+        .find(|m| m.id == id)
+        .ok_or_else(|| missing("media", id))?;
+    let Some(audio) = media.facts.audio.as_mut() else {
+        return Err(OpError::NoStream {
+            media: id.into(),
+            kind: TrackKind::Audio,
+        });
+    };
+    Ok(Op::SetMediaStreams {
+        id: id.into(),
+        layout: std::mem::replace(&mut audio.layout, layout),
+        streams: std::mem::replace(&mut audio.streams, streams),
     })
 }
 
@@ -5762,6 +5809,81 @@ mod tests {
         apply(&mut project, back).unwrap();
         apply(&mut project, inverse).unwrap();
         assert_eq!(project, Project::sample());
+    }
+
+    #[test]
+    fn the_streams_of_sound_that_are_set_are_taken_back_by_their_inverse() {
+        let mut project = Project::sample();
+        let streams = vec![
+            AudioStream {
+                index: 1,
+                channels: 2,
+                layout: Some("stereo".into()),
+            },
+            AudioStream {
+                index: 2,
+                channels: 1,
+                layout: None,
+            },
+        ];
+        let set = Op::SetMediaStreams {
+            id: "m1".into(),
+            layout: Some("stereo".into()),
+            streams: Some(streams.clone()),
+        };
+        let (done, inverse) = apply_done(&mut project, set.clone()).unwrap();
+        assert_eq!(done, set);
+        assert_eq!(
+            inverse,
+            Op::SetMediaStreams {
+                id: "m1".into(),
+                layout: None,
+                streams: None,
+            }
+        );
+        let audio = project.media[0].facts.audio.as_ref().unwrap();
+        assert_eq!(audio.layout.as_deref(), Some("stereo"));
+        assert_eq!(audio.streams.as_ref(), Some(&streams));
+        // The rest of the facts stay as they were.
+        assert_eq!(
+            (audio.rate, audio.channels, &*audio.codec),
+            (48000, 2, "aac")
+        );
+        apply(&mut project, inverse).unwrap();
+        assert_eq!(project, Project::sample());
+    }
+
+    #[test]
+    fn the_streams_of_sound_are_set_only_on_media_of_sound_that_is_there() {
+        let error = refused(Op::SetMediaStreams {
+            id: "m9".into(),
+            layout: None,
+            streams: Some(vec![]),
+        });
+        assert_eq!(error, missing("media", "m9"));
+        let mut project = Project::sample();
+        project.media[0].facts.audio = None;
+        let error = refused_in(
+            project,
+            Op::SetMediaStreams {
+                id: "m1".into(),
+                layout: None,
+                streams: Some(vec![]),
+            },
+        );
+        assert_eq!(
+            error,
+            OpError::NoStream {
+                media: "m1".into(),
+                kind: TrackKind::Audio,
+            }
+        );
+        // Left out, they are not read: written so, as `null`.
+        let op: Op = serde_json::from_str(r#"{"op":"set_media_streams","id":"m1"}"#).unwrap();
+        assert_eq!(
+            serde_json::to_value(&op).unwrap(),
+            serde_json::json!({"op":"set_media_streams","id":"m1","layout":null,"streams":null})
+        );
     }
 
     #[test]

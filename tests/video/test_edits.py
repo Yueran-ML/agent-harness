@@ -292,3 +292,117 @@ async def test_every_edit_is_taken_by_the_engine_beside_operations(tmp_path: Pat
 
         assert [one["edit"] for one in fake.edits] == [one["edit"] for one in every]
         assert all("op" in one for one in applied.done)
+
+
+def test_the_sound_of_a_timeline_is_written_as_the_engine_reads_it() -> None:
+    second = Time(ticks=48000, scale=48000)
+    limiter = {"effect": {"kind": "limiter", "ceiling_db": -1.0}}
+
+    assert edits.set_track_audio("t1", "A1", {"strip": {"fader_db": -6}}) == {
+        "edit": "set_track_audio",
+        "timeline": "t1",
+        "track": "A1",
+        "patch": {"strip": {"fader_db": -6}},
+    }
+    assert (
+        edits.set_track_audio("t1", "A1", {"mute": True}, follow_groups=False)["follow_groups"]
+        is False
+    )
+    assert edits.set_bus("t1", "B1", {"strip": {"fader_db": -3}})["edit"] == "set_bus"
+    assert edits.add_bus("t1", {"id": "B2", "name": "Dialogue"}, index=1) == {
+        "op": "add_bus",
+        "timeline": "t1",
+        "bus": {"id": "B2", "name": "Dialogue"},
+        "index": 1,
+    }
+    assert edits.add_insert("t1", {"bus": "B1"}, limiter) == {
+        "op": "add_insert",
+        "timeline": "t1",
+        "of": {"bus": "B1"},
+        "insert": limiter,
+    }
+    assert edits.set_insert("t1", {"track": "A1"}, 0, None)["insert"] is None
+    assert edits.move_insert("t1", {"track": "A1"}, 0, 2, to_of={"bus": "B1"}) == {
+        "edit": "move_insert",
+        "timeline": "t1",
+        "of": {"track": "A1"},
+        "from": 0,
+        "to": 2,
+        "to_of": {"bus": "B1"},
+    }
+    assert edits.clip_gain_keys("t1", "c3", "add", second, param="pan", value=0.5) == {
+        "edit": "clip_gain_keys",
+        "timeline": "t1",
+        "clip": "c3",
+        "action": "add",
+        "at": {"ticks": 48000, "scale": 48000},
+        "param": "pan",
+        "value": 0.5,
+    }
+    assert "param" not in edits.clip_gain_keys("t1", "c3", "remove", second)
+    assert edits.clip_gain_range("t1", "c3", FROM, second, -6.0)["from"] == {
+        "ticks": 0,
+        "scale": 12800,
+    }
+    assert edits.nudge_clip_gain("t1", ["c3"], 3.0)["linked"] is True
+    assert edits.paste_attributes("t1", "c3", ["c4"], ["volume"])["items"] == ["volume"]
+    assert edits.fade_to_playhead("t1", ["c3"], "out", 40)["side"] == "out"
+    assert edits.lane_points(
+        "t1", {"track": "A1"}, "fader_db", "add", points=[(FROM, -10.0), (second, None)]
+    )["points"] == [
+        {"at": {"ticks": 0, "scale": 12800}, "value": -10.0},
+        {"at": second.model_dump()},
+    ]
+    removed = edits.lane_points("t1", {"vca": "VCA1"}, "fader_db", "remove", at=[second])
+    assert (removed["at"], "points" in removed) == ([second.model_dump()], False)
+    assert edits.clear_lanes("t1", {"bus": "B1"}, then="hold", at=second)["then"] == "hold"
+    assert edits.set_track("t1", "A1", mute=True) == {
+        "op": "set_track",
+        "timeline": "t1",
+        "id": "A1",
+        "mute": True,
+    }
+    assert edits.set_transition("t1", "x1", fade_in_level_db=3)["fade_in_level_db"] == 3
+
+
+def test_the_sound_of_a_clip_and_the_lanes_are_written_as_the_engine_reads_them() -> None:
+    second = Time(ticks=48000, scale=48000)
+    fade = {"length": {"ticks": 1, "scale": 2}, "curve": 0.5, "skew": 0.0}
+
+    assert edits.set_clip("t1", "c3", audio_fade_in=fade, channels=None, pitch_correction=True) == {
+        "op": "set_clip",
+        "timeline": "t1",
+        "id": "c3",
+        "audio_fade_in": fade,
+        "channels": None,
+        "pitch_correction": True,
+    }
+    assert "audio_fade_out" not in edits.set_clip("t1", "c3", gain_db=-3.0)
+    mapped = edits.set_clip("t1", "c3", channels=[{"source": {"stream": 1, "channel": 0}}])
+    assert mapped["channels"] == [{"source": {"stream": 1, "channel": 0}}]
+    assert edits.set_lane("t1", {"bus": "B1"}, "fader_db", None) == {
+        "op": "set_lane",
+        "timeline": "t1",
+        "of": {"bus": "B1"},
+        "path": "fader_db",
+        "lane": None,
+    }
+    assert edits.lane_range(
+        "t1", {"track": "A1"}, "pan.x", FROM, second, "shift_value", delta=0.2
+    ) == {
+        "edit": "lane_range",
+        "timeline": "t1",
+        "of": {"track": "A1"},
+        "path": "pan.x",
+        "from": {"ticks": 0, "scale": 12800},
+        "to": {"ticks": 48000, "scale": 48000},
+        "action": "shift_value",
+        "delta": 0.2,
+    }
+    assert "grouped" not in edits.lane_draw("t1", {"track": "A1"}, "fader_db", FROM, second, [])
+    assert (
+        edits.lane_points("t1", {"track": "A1"}, "fader_db", "remove", at=[second], grouped=True)[
+            "grouped"
+        ]
+        is True
+    )

@@ -702,6 +702,19 @@ are at most +10; −100 or below is −∞.
   +3 dB `sin(πt/2)`, −3 dB `t^1.5`; the falling side is the rising curve reversed.
 - **Media.** `facts.audio` may have `layout` (libav's name of its layout) and `streams: [{index,
   channels, layout}]`; both are left out where they were not read.
+- **Streams read later (T3c).** Media of sound whose `streams` were not read (probed before
+  schema 4 read them, or added so by a client) has them read by the engine, from its file, on a
+  thread of its own, at once as the project is opened and then every 10 s while the engine runs:
+  so media whose file is not there (offline, its drive away) is read once it is back. A file that
+  is there but is another file (its `identity.digest` is not the media's) or one that libav
+  cannot open is left as it is, and read again only once it changes (its size or the time it was
+  modified). What is read is set by `set_media_streams` (`layout` the layout of its best stream,
+  `streams` all its streams of sound), the media of a pass in one change of the engine, as a
+  proxy that it made is set: no step of the history (an undo never takes it back, and what could
+  be redone is kept), told to everyone as `project.changed` with `by` and `made_by` `"engine"`,
+  and saved as every change is (the engine saves by itself; there is nothing for a client to
+  save, and nothing to ask). Clients that keep a copy apply it as any `done`; a client that shows
+  the channels of media (Clip Attributes) shows them from then on.
 
 A schema 3 project is upgraded so that it sounds exactly as it did: each timeline gets bus `B1`,
 monitored, which every track of sound outputs to at unity through a strip that changes nothing;
@@ -1812,6 +1825,7 @@ An operation is an object that names itself in `op` (unknown fields are refused,
 | `shift_clips` | `timeline`, `track`, `clips: [id, ...]`, `by` |
 | `shift_cues` | `timeline`, `track`, `cues: [id, ...]`, `by` |
 | `set_proxy` | `media`, `proxy` (a proxy, or `null` or left out to take it away; its inverse sets the one before). A proxy must be a file of the engine's own (see Security), else it is refused as `not_a_proxy_path`; so must one on media that `add_media` adds |
+| `set_media_streams` | `id`, `layout` and `streams` of its `facts.audio` (each `null` or left out for not read; its inverse sets those before). Media without sound is `no_stream` (`kind: "audio"`). Nothing else is checked, as nothing is where a project is read: a channel of a clip that names a stream that the media has not plays silence. The engine sets them of media of an older project (see Streams read later); one that sets them to what they are changes nothing (alone in a transaction, `empty`) |
 | `set_timeline` | `id`, `name?`, `rate?`, `width?`, `height?`, `sample_rate?` |
 | `set_track` | `timeline`, `id`, `name?`, `enabled?`, `locked?`, `language?`, `mute?`, `solo?`, `solo_safe?` (of a track of sound only; on another `wrong_track` with `what` of the setting) |
 | `set_clip` | `timeline`, `id`, `enabled?`, `speed?`, `reverse?`, `link?`, `transform?`, `gain_db?`, `pan?`, `fade_in?`, `fade_out?`, `audio_fade_in?`, `audio_fade_out?` (an `AudioFade` or `null` for a straight fade over the frames), `eq?`, `effects?`, `pitch_correction?`, `pitch?`, `channels?` (see Operations of sound), `source?` |
@@ -2008,7 +2022,7 @@ id targets that track. Both picture and sound placed together get a new link gro
 | `move` | `clips`, `delta`, `to_track?`, `overwrite?`, `linked?`, `grouped?` | Move clips; default refuses occupied destinations, `overwrite:true` clears them. With `to_track`, every clip that moves, the linked ones too, goes as many tracks up or down among the tracks of its own kind as `to_track` is from the track of the first clip (see below). |
 | `insert_move` | `clips`, `at`, `linked?`, `grouped?` | Lift and close original ranges, then insert at the original timeline coordinate. Noncontiguous selections pack their occupied interval union, not the gaps between it. Subtitles on unlocked tracks within a moved range go with it, keeping their ids and their place on the clips; one across an end of a range is cut there, and only its part inside goes along. |
 | `place_copies` | `copies: [{clip, track, start}]` | Put a copy of each clip on `track` from frame `start` (a track of its kind, not locked: `wrong_kind`, `locked`), as an Alt-drag duplicate (p. 811) or a paste does: what is there is cleared as an overwrite clears it, after every copy is made of its clip as it was; each copy has all the settings of its clip but its id and transitions, copies of two or more clips of one link group are linked in a new group, and with Automation Follows Edit each takes a copy of the lanes over its clip (see below). |
-| `trim` | `clip`, `edge:in|out`, `delta`, `ripple?`, `linked?` | Move one edge; ripple defaults false. |
+| `trim` | `clip`, `edge:in\|out`, `delta`, `ripple?`, `linked?` | Move one edge; ripple defaults false. |
 | `roll` | `left`, `right`, `delta`, `linked?` | Move a shared cut, keeping outer endpoints. |
 | `slip` | `clip`, `delta`, `linked?` | Change source in/out while keeping timeline position and length. |
 | `slide` | `clip`, `delta`, `linked?` | Move the clip while adjusting neighbors, keeping its source and length. A final clip may slide and change total duration. |
@@ -4123,6 +4137,7 @@ real ids. For example:
 | `window.points` | `{binding,sequence,revision,selected_points:[]}`: owner-only, when a project change drops the selected Curve's point selection (see Curve Window controls) |
 | `track.progress` | `{job,frame,timeline_frame,done,total,lost,revision}`: to the connection that started the track, each time the track so far is written (see Window tracking) |
 | `track.state` | `{job,phase,reason,frames,lost,frame,revision,tracked,message?}`: how the track ended (`done`, `stopped`, `failed`), to the connection that started it |
+| `automation.written` | `{"timeline", "punch", "lanes", "revision", "failed": [...]}`: a pass of the recording of automation, or a Punch In, written, to every connection (see Recording automation) |
 
 - `by` is the kind of the client that asked (for an undo or a redo, the one that asked for
   that); `made_by` is the kind of the client that made the transaction (for an undo or a redo,

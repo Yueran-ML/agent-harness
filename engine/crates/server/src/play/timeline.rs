@@ -11,7 +11,7 @@ use columbina_compose::{
 };
 use columbina_media::Hardware;
 use columbina_model::project::TrackKind;
-use columbina_model::{resolve, Facts, Grade, Identity, Media, Project, Proxy};
+use columbina_model::{resolve, Facts, Grade, Identity, Media, Project, Proxy, Time, VideoFacts};
 use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
@@ -2224,20 +2224,40 @@ impl Worker {
     }
 }
 
+/// What of the facts of media playback depends on: all but the layout and the streams of its
+/// sound, which tell the channels of the file to whoever shows them (Clip Attributes), and which
+/// the engine reads later of an older project (T3c) without changing what is seen or heard.
+type Played<'m> = (
+    &'m Time,
+    Option<&'m VideoFacts>,
+    Option<(u32, u16, &'m str)>,
+);
+
+fn played(facts: &Facts) -> Played<'_> {
+    (
+        &facts.duration,
+        facts.video.as_ref(),
+        facts
+            .audio
+            .as_ref()
+            .map(|audio| (audio.rate, audio.channels, audio.codec.as_str())),
+    )
+}
+
 /// What of media the picture of a timeline depends on: its file, what it is and holds, and its
 /// proxy.
-fn seen(media: &Media) -> (&str, &Identity, &Facts, Option<&Proxy>) {
+fn seen(media: &Media) -> (&str, &Identity, Played<'_>, Option<&Proxy>) {
     (
         &media.path,
         &media.identity,
-        &media.facts,
+        played(&media.facts),
         media.proxy.as_ref(),
     )
 }
 
 /// What of media the sound depends on, which is always read from the file itself.
-fn heard(media: &Media) -> (&str, &Identity, &Facts) {
-    (&media.path, &media.identity, &media.facts)
+fn heard(media: &Media) -> (&str, &Identity, Played<'_>) {
+    (&media.path, &media.identity, played(&media.facts))
 }
 
 fn media_of<'p>(project: &'p Project, id: &str) -> Option<&'p Media> {
@@ -2573,6 +2593,18 @@ mod tests {
         other.media[0].name = "Renamed".into();
         assert!(!worker.replace(0, Arc::new(other.clone())));
         assert_eq!(worker.generation, read_ahead);
+        // Nor do the streams of the sound of the media, read by the engine of an older project
+        // (T3c): neither the picture nor the sound is read anew.
+        let mut streams = other.clone();
+        let audio = streams.media[0].facts.audio.as_mut().unwrap();
+        audio.layout = Some("stereo".into());
+        audio.streams = Some(vec![columbina_model::AudioStream {
+            index: 1,
+            channels: 2,
+            layout: Some("stereo".into()),
+        }]);
+        assert!(!worker.replace(0, Arc::new(streams)));
+        assert_eq!(worker.generation, read_ahead);
         // What is heard only keeps the pictures that were read.
         let mut louder = other.clone();
         louder.timelines[0].tracks[1].clips[0].gain_db = (-3.0).into();
@@ -2610,6 +2642,16 @@ mod tests {
         let mut monitor = before.clone();
         monitor.timelines[0].audio.monitor = None;
         assert!(!check(&monitor, 0));
+        // The streams of the sound of media read later (T3c) are not heard: they are the same.
+        let mut streams = before.clone();
+        let audio = streams.media[0].facts.audio.as_mut().unwrap();
+        audio.layout = Some("stereo".into());
+        audio.streams = Some(vec![]);
+        assert!(check(&streams, 0));
+        // But other facts of the sound are.
+        let mut rate = before.clone();
+        rate.media[0].facts.audio.as_mut().unwrap().rate = 44100;
+        assert!(!check(&rate, 0));
         // The equalizer and the effects of a clip are heard too.
         let mut equalized = before.clone();
         equalized.timelines[0].tracks[1].clips[0].eq.on = true;

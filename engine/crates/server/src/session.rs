@@ -46,6 +46,7 @@ use crate::scopes::{Scopes, Shown, StatisticsRequest};
 use crate::transport;
 use crate::view::{Monitor, Viewer};
 
+mod facts;
 #[cfg(test)]
 mod tests;
 mod tracker;
@@ -120,6 +121,9 @@ pub struct Engine {
     transport: Transport,
     /// The maker of proxies.
     proxies: Proxies,
+    /// What reads the streams of sound of media of a project written before they were read
+    /// (T3c).
+    streams: facts::Reader,
     /// Background thumbnails and waveforms; they never write the project history.
     analysis: Analysis,
     /// One background export, independent of playback and project edits.
@@ -361,6 +365,7 @@ impl Engine {
                 }),
             },
         );
+        let streams = facts::Reader::start(&state, limits);
         Engine {
             state,
             project,
@@ -374,6 +379,7 @@ impl Engine {
             viewer,
             transport,
             proxies,
+            streams,
             analysis,
             renders,
             scopes,
@@ -398,6 +404,7 @@ impl Engine {
         self.transport.stop();
         self.analysis.stop();
         self.proxies.stop();
+        self.streams.stop();
     }
 
     fn connections(&self) -> std::sync::MutexGuard<'_, Connections> {
@@ -989,7 +996,17 @@ impl State {
     /// changed that was held. Gives what was done, as it is written.
     fn publish(&mut self, applied: &Applied) -> Box<RawValue> {
         self.flush();
-        self.save_and_draw();
+        // The streams of media that the engine read (T3c) change neither picture nor sound: a
+        // Window that is being dragged goes on.
+        if applied
+            .done
+            .iter()
+            .all(|op| matches!(op, Op::SetMediaStreams { .. }))
+        {
+            self.save_and_draw_unseen();
+        } else {
+            self.save_and_draw();
+        }
         let done = serde_json::value::to_raw_value(&applied.done)
             .expect("an operation is written as JSON");
         self.tell(
@@ -1070,6 +1087,12 @@ impl State {
     /// Save the project as it is now, and have the transport draw it.
     fn save_and_draw(&mut self) {
         self.window_project_changed();
+        self.save_and_draw_unseen();
+    }
+
+    /// As [`State::save_and_draw`], for a change that nothing shown depends on: what the Window
+    /// controls hold of the project is not checked again.
+    fn save_and_draw_unseen(&mut self) {
         if let Some(saver) = &self.saver {
             saver.changed(self.history.project().clone());
         }

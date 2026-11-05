@@ -155,3 +155,92 @@ def test_the_timeline_of_every_operation_that_names_one_is_filled_or_left_to_an_
     filled = editing._TIMELINE_OPERATIONS  # pyright: ignore[reportPrivateUsage]
     assert filled <= timelines
     assert timelines - filled == LEFT_TO_EDITS
+
+
+def _fields_of(row: str) -> set[str]:
+    """The fields that a row of a table names: `` `index?` ``, `` `action: add|remove` ``."""
+    return {re.split(r"[?: ]", quote, maxsplit=1)[0] for quote in re.findall(r"`([^`]+)`", row)}
+
+
+def test_every_field_that_a_builder_of_sound_writes_is_one_that_the_engine_takes() -> None:
+    # The rows of PROTOCOL.md name every field that serde takes (the engine's protocol tests).
+    at = edits.Time(ticks=48000, scale=48000)
+    track, bus = {"track": "A1"}, {"bus": "B1"}
+    written = [
+        edits.set_track_audio("t1", "A1", {}, follow_groups=False),
+        edits.add_bus("t1", {}, index=0),
+        edits.set_bus("t1", "B1", {}),
+        edits.remove_bus("t1", "B1"),
+        edits.add_vca("t1", {}, index=0),
+        edits.set_vca("t1", "VCA1", {}),
+        edits.remove_vca("t1", "VCA1"),
+        edits.add_track_group("t1", {}, index=0),
+        edits.set_track_group("t1", "TG1", {}),
+        edits.remove_track_group("t1", "TG1"),
+        edits.set_timeline_audio("t1", {}),
+        edits.add_insert("t1", track, {}, index=0),
+        edits.set_insert("t1", track, 0, None),
+        edits.move_insert("t1", track, 0, 1, to_of=bus),
+        edits.copy_effects("t1", track, [bus]),
+        edits.clip_gain_keys(
+            "t1", "c1", "move", at, param="pan", value=1.0, to=at, interp="linear"
+        ),
+        edits.clip_gain_range("t1", "c1", at, at, 1.0),
+        edits.nudge_clip_gain("t1", ["c1"], 1.0),
+        edits.paste_attributes("t1", "c1", ["c2"], ["volume"]),
+        edits.remove_attributes("t1", ["c1"], ["volume"]),
+        edits.fade_to_playhead("t1", ["c1"], "in", 1),
+        edits.set_lane("t1", track, "fader_db", {"points": []}),
+        edits.lane_points("t1", track, "fader_db", "add", points=[(at, 0.0)], delta=1.0),
+        edits.lane_points("t1", track, "fader_db", "move", at=[at], by=at),
+        edits.lane_range(
+            "t1", track, "fader_db", at, at, "paste", points=[(at, 0.0)], delta=1.0, tolerance=0.5
+        ),
+        edits.lane_draw("t1", track, "fader_db", at, at, [(at, 0.0)], tolerance=0.5),
+        edits.clear_lanes("t1", track, paths=["fader_db"], then="hold", at=at),
+        edits.set_track(
+            "t1",
+            "A1",
+            name="a",
+            enabled=True,
+            locked=False,
+            language="en",
+            mute=True,
+            solo=True,
+            solo_safe=True,
+        ),
+        edits.set_transition(
+            "t1",
+            "x1",
+            kind="crossfade",
+            length=2,
+            align="center",
+            fade_in_level_db=3,
+            fade_out_level_db=-3,
+        ),
+        edits.set_clip(
+            "t1",
+            "c1",
+            enabled=True,
+            gain_db=0.0,
+            pan=0.0,
+            fade_in=1,
+            fade_out=1,
+            audio_fade_in={"length": at.model_dump()},
+            audio_fade_out=None,
+            eq={},
+            effects=[],
+            pitch_correction=True,
+            pitch={},
+            channels=None,
+        ),
+    ]
+    wrong: list[str] = []
+    for one in written:
+        name = one.get("edit") or one["op"]
+        row = (EDITS if "edit" in one else OPERATIONS)[name]
+        taken = _fields_of(row) | {"edit", "op", "timeline"}
+        wrong += [f"{name}: {key}" for key in one if key not in taken]
+    assert wrong == []
+    fields = _fields_of(r"`clips: [id, ...]`, `index?`, `action: add\|remove`")
+    assert fields == {"clips", "index", "action"}

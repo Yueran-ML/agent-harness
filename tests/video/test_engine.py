@@ -1403,6 +1403,21 @@ async def test_the_engine_takes_the_sound_of_a_timeline_as_it_is_written(tmp_pat
             edits.lane_points(
                 timeline, {"track": "A1"}, "fader_db", "add", points=[(second, -10.0)]
             ),
+            edits.set_lane(
+                timeline,
+                {"track": "A1"},
+                "pan.x",
+                {"points": [{"at": second.model_dump(), "value": 0.5}]},
+            ),
+            edits.lane_range(
+                timeline,
+                {"track": "A1"},
+                "pan.x",
+                edits.Time(ticks=0, scale=48000),
+                edits.Time(ticks=96000, scale=48000),
+                "shift_value",
+                delta=0.1,
+            ),
             edits.clear_lanes(timeline, {"track": "A1"}),
             edits.set_timeline_audio(timeline, {"follows_edit": False}),
         ]

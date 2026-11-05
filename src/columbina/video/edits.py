@@ -74,6 +74,7 @@ __all__ = [
     "insert_move",
     "lane_draw",
     "lane_points",
+    "lane_range",
     "lift",
     "move",
     "move_insert",
@@ -104,6 +105,7 @@ __all__ = [
     "set_clip",
     "set_cue",
     "set_insert",
+    "set_lane",
     "set_media",
     "set_speed",
     "set_timeline",
@@ -896,6 +898,13 @@ def set_clip(
     fade_in: int | None = None,
     fade_out: int | None = None,
     source: TitleSource | ColorSource | None = None,
+    audio_fade_in: Mapping[str, Any] | _Kept | None = LEFT_OUT,
+    audio_fade_out: Mapping[str, Any] | _Kept | None = LEFT_OUT,
+    eq: Mapping[str, Any] | None = None,
+    effects: Sequence[Mapping[str, Any]] | None = None,
+    pitch_correction: bool | None = None,
+    pitch: Mapping[str, Any] | None = None,
+    channels: Sequence[Mapping[str, Any]] | _Kept | None = LEFT_OUT,
 ) -> dict[str, Any]:
     """The settings of a clip that are given.
 
@@ -903,6 +912,12 @@ def set_clip(
     an empty id puts it in a new one. A clip of a title or a colour may be given another
     ``source`` of its kind; its length is the clip's, and that of the source is not used. Its
     speed is set with :func:`set_speed`, which keeps the stretch of its source.
+
+    Of its sound (schema 4): ``audio_fade_in`` and ``audio_fade_out`` (an ``AudioFade``
+    ``{"length", "curve", "skew"}``, or ``None`` for a straight fade over the frames), ``eq``
+    (whole, 4 bands), ``effects`` (whole), ``pitch_correction``, ``pitch``, and ``channels`` (as
+    many maps as its track has channels, or ``None`` for the media's channels mixed as libav
+    mixes them).
     """
     written = _set(
         {"op": "set_clip", "timeline": timeline, "id": id},
@@ -912,9 +927,21 @@ def set_clip(
         pan=pan,
         fade_in=fade_in,
         fade_out=fade_out,
+        eq=None if eq is None else dict(eq),
+        effects=None if effects is None else [dict(one) for one in effects],
+        pitch_correction=pitch_correction,
+        pitch=None if pitch is None else dict(pitch),
     )
     if source is not None:
         written["source"] = {key: value for key, value in _json(source).items() if key != "length"}
+    sound = {"audio_fade_in": audio_fade_in, "audio_fade_out": audio_fade_out, "channels": channels}
+    for key, value in sound.items():
+        if isinstance(value, Mapping):
+            written[key] = dict(value)
+        elif value is not LEFT_OUT and value is not None:
+            written[key] = [dict(one) for one in value]
+        elif value is None:
+            written[key] = None
     return _given(written, link=link)
 
 
@@ -1151,6 +1178,42 @@ def fade_to_playhead(timeline: str, clips: Sequence[str], side: Edge, at: int) -
             "at": at}  # fmt: skip
 
 
+def set_lane(
+    timeline: str, of: ChainOf, path: str, lane: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """The lane of the setting ``path`` put in place, or taken away (``None``).
+
+    A lane is written ``{"points": [{"at", "value"}, ...], "kind"?}``.
+    """
+    written = None if lane is None else dict(lane)
+    return {"op": "set_lane", "timeline": timeline, "of": dict(of), "path": path, "lane": written}
+
+
+def lane_range(
+    timeline: str,
+    of: ChainOf,
+    path: str,
+    from_: Time,
+    to: Time,
+    action: Literal["delete", "cut", "paste", "shift_value", "thin"],
+    *,
+    points: Sequence[tuple[Time, float]] = (),
+    delta: float | None = None,
+    tolerance: float | None = None,
+) -> dict[str, Any]:
+    """A range of a lane taken away, pasted over, raised or lowered, or thinned.
+
+    ``points`` are pasted at times from ``from_``, ``delta`` raises or lowers the values; the
+    values outside the range are kept.
+    """
+    written: dict[str, Any] = {"edit": "lane_range", "timeline": timeline, "of": dict(of),
+                               "path": path, "from": _json(from_), "to": _json(to),
+                               "action": action}  # fmt: skip
+    if points:
+        written["points"] = [_point(time, value) for time, value in points]
+    return _set(written, delta=delta, tolerance=tolerance)
+
+
 def lane_points(
     timeline: str,
     of: ChainOf,
@@ -1161,6 +1224,7 @@ def lane_points(
     at: Sequence[Time] = (),
     by: Time | None = None,
     delta: float | None = None,
+    grouped: bool = False,
 ) -> dict[str, Any]:
     """Points of the lane of the setting ``path`` (``fader_db``, ``pan.x``, ``mute``, ...).
 
@@ -1173,6 +1237,8 @@ def lane_points(
         written["points"] = [_point(time, value) for time, value in points]
     else:
         written["at"] = [_json(time) for time in at]
+    if grouped:
+        written["grouped"] = True
     return _set(written, by=by, delta=delta)
 
 
@@ -1192,11 +1258,24 @@ def lane_draw(
     points: Sequence[tuple[Time, float]],
     *,
     tolerance: float | None = None,
+    grouped: bool = False,
 ) -> dict[str, Any]:
-    """Points drawn in place of a range of a lane, thinned; after ``to`` the lane is as it was."""
-    written = {"edit": "lane_draw", "timeline": timeline, "of": dict(of), "path": path,
-               "from": _json(from_), "to": _json(to),
-               "points": [_point(time, value) for time, value in points]}  # fmt: skip
+    """Points drawn in place of a range of a lane, thinned; after ``to`` the lane is as it was.
+
+    ``grouped`` draws the lanes of the same setting of the other tracks of an active group too,
+    as the engine of plan T16b does; one before it refuses the field.
+    """
+    written: dict[str, Any] = {
+        "edit": "lane_draw",
+        "timeline": timeline,
+        "of": dict(of),
+        "path": path,
+        "from": _json(from_),
+        "to": _json(to),
+        "points": [_point(time, value) for time, value in points],
+    }
+    if grouped:
+        written["grouped"] = True
     return _set(written, tolerance=tolerance)
 
 

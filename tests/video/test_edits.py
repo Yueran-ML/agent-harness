@@ -363,3 +363,46 @@ def test_the_sound_of_a_timeline_is_written_as_the_engine_reads_it() -> None:
         "mute": True,
     }
     assert edits.set_transition("t1", "x1", fade_in_level_db=3)["fade_in_level_db"] == 3
+
+
+def test_the_sound_of_a_clip_and_the_lanes_are_written_as_the_engine_reads_them() -> None:
+    second = Time(ticks=48000, scale=48000)
+    fade = {"length": {"ticks": 1, "scale": 2}, "curve": 0.5, "skew": 0.0}
+
+    assert edits.set_clip("t1", "c3", audio_fade_in=fade, channels=None, pitch_correction=True) == {
+        "op": "set_clip",
+        "timeline": "t1",
+        "id": "c3",
+        "audio_fade_in": fade,
+        "channels": None,
+        "pitch_correction": True,
+    }
+    assert "audio_fade_out" not in edits.set_clip("t1", "c3", gain_db=-3.0)
+    mapped = edits.set_clip("t1", "c3", channels=[{"source": {"stream": 1, "channel": 0}}])
+    assert mapped["channels"] == [{"source": {"stream": 1, "channel": 0}}]
+    assert edits.set_lane("t1", {"bus": "B1"}, "fader_db", None) == {
+        "op": "set_lane",
+        "timeline": "t1",
+        "of": {"bus": "B1"},
+        "path": "fader_db",
+        "lane": None,
+    }
+    assert edits.lane_range(
+        "t1", {"track": "A1"}, "pan.x", FROM, second, "shift_value", delta=0.2
+    ) == {
+        "edit": "lane_range",
+        "timeline": "t1",
+        "of": {"track": "A1"},
+        "path": "pan.x",
+        "from": {"ticks": 0, "scale": 12800},
+        "to": {"ticks": 48000, "scale": 48000},
+        "action": "shift_value",
+        "delta": 0.2,
+    }
+    assert "grouped" not in edits.lane_draw("t1", {"track": "A1"}, "fader_db", FROM, second, [])
+    assert (
+        edits.lane_points("t1", {"track": "A1"}, "fader_db", "remove", at=[second], grouped=True)[
+            "grouped"
+        ]
+        is True
+    )

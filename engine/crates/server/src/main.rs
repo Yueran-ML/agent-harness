@@ -51,6 +51,7 @@ mod lut_export;
 mod lut_preview;
 mod luts;
 mod managed;
+mod meters;
 mod names;
 mod notice;
 mod play;

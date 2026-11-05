@@ -46,6 +46,7 @@ use crate::scopes::{Scopes, Shown, StatisticsRequest};
 use crate::transport;
 use crate::view::{Monitor, Viewer};
 
+mod sound;
 #[cfg(test)]
 mod tests;
 mod tracker;
@@ -1150,6 +1151,10 @@ async fn dispatch(
         "view.pointer" => view_pointer(engine, connection, kind, id, params).await,
         "window.bind" | "window.input" | "window.unbind" => {
             window::call(engine, connection, kind, id, method, params).await
+        }
+        "audio.meters" | "audio.loudness" | "audio.analyze" | "audio.normalize"
+        | "audio.level_match" | "audio.cancel" => {
+            sound::call(engine, connection, kind, id, method, params).await
         }
         "track.start" | "track.stop" | "track.edit" => {
             tracker::call(engine, connection, kind, id, method, params).await

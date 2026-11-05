@@ -4510,6 +4510,9 @@ describe('the engine of the studio', () => {
       'track.start', 'track.stop', 'track.edit',
       // The meters and the analyses of sound (phase 3, T9b).
       'audio.meters', 'audio.loudness', 'audio.analyze', 'audio.normalize', 'audio.level_match', 'audio.cancel',
+      // The recording of automation (T16), and the rest of it (T16b).
+      'automation.record', 'automation.touch', 'automation.punch',
+      'automation.all_read', 'automation.join', 'automation.fill', 'automation.copy',
     ];
     for (const method of allowed) {
       const params = method === 'transaction.apply' ? { ops: [{ op: 'remove_clip', timeline: 't1', id: 'c1' }] } : { frame: 3, monitor: 'source' };

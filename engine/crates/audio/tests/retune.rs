@@ -53,6 +53,7 @@ fn project() -> Project {
         mute: false,
         solo: false,
         vcas: vec![],
+        automation_arm: columbina_model::AutomationArm::Unarmed,
         lanes: columbina_model::Lanes::new(),
     });
     timeline.tracks[0].audio.strip.inserts.push(Insert {
@@ -317,6 +318,24 @@ fn a_change_of_what_the_graph_is_made_of_needs_another_graph() {
         (
             "a track turned off",
             Box::new(|p| p.timelines[0].tracks[0].enabled = false),
+        ),
+        (
+            "the Automation Arm of a track turned Off",
+            Box::new(|p| {
+                p.timelines[0].tracks[0].audio.automation_arm = columbina_model::AutomationArm::Off;
+            }),
+        ),
+        (
+            "the Automation Arm of a bus turned Off",
+            Box::new(|p| {
+                p.timelines[0].buses[0].automation_arm = columbina_model::AutomationArm::Off;
+            }),
+        ),
+        (
+            "the Automation Arm of a VCA turned Off",
+            Box::new(|p| {
+                p.timelines[0].vcas[0].automation_arm = columbina_model::AutomationArm::Off;
+            }),
         ),
         (
             "the monitor",

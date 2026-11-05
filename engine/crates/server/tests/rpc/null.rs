@@ -4,7 +4,8 @@
 //! from the other is nothing but zeros. The timelines have every kind of what the graph does
 //! (EQ, Dynamics, Limiter, Noise Reduction, Ducker, Pitch, a send to a bus, a VCA, a lane of the
 //! fader, a crossfade, a clip at 0.8 times its speed with its pitch kept and one at 1.5 times,
-//! mono, stereo and 5.1 tracks), and their media are WAV, not Matroska (T3's note).
+//! effects on clips (T4c: a Pitch on the slow one, a Limiter on one in the crossfade), mono,
+//! stereo and 5.1 tracks), and their media are WAV, not Matroska (T3's note).
 //!
 //! Playback must start where it is asked: a session whose graph is not built and prerolled within
 //! 2 s falls back to the clock of the system and starts its sound again elsewhere (T5), outside
@@ -33,6 +34,10 @@ use super::{project, Client};
 
 /// Samples a second of the timelines and of the capture.
 const RATE: usize = 48_000;
+
+/// The frames that playback starts at besides the first: 2 s, inside D's clip with a Pitch and
+/// before B's clip with a Limiter, and 4.4 s, inside that one (T4c's review).
+const MIDDLES: [i64; 2] = [50, 110];
 
 /// A WAV of 16 bits at 48 kHz, of `channels` channels and `frames` frames, sample `sample(n,
 /// channel)`.
@@ -202,13 +207,21 @@ fn timeline(id: &str, media: &[String], quick: bool) -> Timeline {
     );
     // B: the music, stereo, two clips crossfaded at 4 s, a Limiter (and Noise Reduction), a
     // send after the fader to the bus of effects, in the VCA.
+    // The second clip has a Limiter of its own, 64 samples late, through the crossfade (T4c).
+    let mut b2 = clip(&format!("{id}b2"), music, 4.0, 100, 100);
+    b2.effects.push(insert(
+        "",
+        Effect::Limiter(LimiterFx {
+            input_db: 9.0,
+            ceiling_db: -3.0,
+            release_ms: 30.0,
+            ..LimiterFx::default()
+        }),
+    ));
     let mut b = track(
         &format!("{id}b"),
         TrackFormat::Stereo,
-        vec![
-            clip(&format!("{id}b1"), music, 0.0, 0, 100),
-            clip(&format!("{id}b2"), music, 4.0, 100, 100),
-        ],
+        vec![clip(&format!("{id}b1"), music, 0.0, 0, 100), b2],
     );
     b.transitions = vec![Transition {
         id: format!("{id}x"),
@@ -264,10 +277,19 @@ fn timeline(id: &str, media: &[String], quick: bool) -> Timeline {
             dry_wet: 100.0,
         }),
     ));
-    // D: the music again at 0.8 times its speed with its pitch kept, then at 1.5 times.
+    // D: the music again at 0.8 times its speed with its pitch kept, and a Pitch of its own a
+    // fourth down (T4c), then at 1.5 times.
     let mut slow = clip(&format!("{id}d1"), music, 0.0, 0, 100);
     slow.speed = Speed { num: 4, den: 5 };
     slow.pitch_correction = true;
+    slow.effects.push(insert(
+        "",
+        Effect::Pitch(PitchFx {
+            semitones: -5,
+            cents: 0.0,
+            dry_wet: 100.0,
+        }),
+    ));
     let mut fast = clip(&format!("{id}d2"), music, 1.0, 100, 100);
     fast.speed = Speed { num: 3, den: 2 };
     let mut d = track(&format!("{id}d"), TrackFormat::Stereo, vec![slow, fast]);
@@ -301,6 +323,7 @@ fn timeline(id: &str, media: &[String], quick: bool) -> Timeline {
             mute: false,
             solo: false,
             vcas: vec![],
+            automation_arm: columbina_model::AutomationArm::Unarmed,
             lanes: columbina_model::Lanes::new(),
         }],
         track_groups: vec![],
@@ -476,25 +499,36 @@ async fn the_sound_played_less_the_sound_exported_is_nothing_but_zeros() {
                 Some(json!({"monitor": "timeline", "timeline": id})),
             )
             .await;
-        // From the start for 5 s, and from 2 s for 3 s: each session into a file of its own.
+        // From the start for 5 s, then for 3 s from 2 s (in D's clip with a Pitch, before B's
+        // clip with a Limiter) and from 4.4 s (in that one): each session into a file of its own.
         let first = play(&engine, &mut client, 0, 5.2).await;
-        let second = play(&engine, &mut client, 50, 3.2).await;
-        println!("{id}: sessions from samples {first} and {second}");
+        let mut middles = Vec::new();
+        for frame in MIDDLES {
+            let from = play(&engine, &mut client, frame, 3.2).await;
+            assert_eq!(
+                from,
+                usize::try_from(frame).unwrap() * RATE / 25,
+                "a seek while paused plays from the frame"
+            );
+            let range = dir.path().join(format!("{id}-{frame}.wav"));
+            let took = export(&mut client, id, &range, Some((frame, 200))).await;
+            println!("{id}: from frame {frame}, exported in {took:?}");
+            middles.push(range);
+        }
+        println!("{id}: sessions from samples {first} and {MIDDLES:?} (frames)");
         assert!(first < 480, "{first}");
-        assert_eq!(second, 2 * RATE, "a seek while paused plays from the frame");
         let whole = dir.path().join(format!("{id}.wav"));
-        let range = dir.path().join(format!("{id}-range.wav"));
         let took = export(&mut client, id, &whole, None).await;
-        let took_range = export(&mut client, id, &range, Some((50, 200))).await;
-        println!(
-            "{id}: settles in {settle} samples; exported in {took:?}, from 2 s in {took_range:?}"
-        );
-        runs.push((id, settle, whole, range, first));
+        println!("{id}: settles in {settle} samples; exported in {took:?}");
+        runs.push((id, settle, whole, middles, first));
     }
     drop(client);
     drop(engine);
+    let sessions = runs.len() * (1 + MIDDLES.len());
     let files: Vec<std::path::PathBuf> = std::iter::once(capture.clone())
-        .chain((2..=4).map(|n| std::path::PathBuf::from(format!("{}.{n}", capture.display()))))
+        .chain(
+            (2..=sessions).map(|n| std::path::PathBuf::from(format!("{}.{n}", capture.display()))),
+        )
         .collect();
     if let Ok(keep) = std::env::var("COLUMBINA_NULL_KEEP") {
         for entry in std::fs::read_dir(dir.path()).unwrap() {
@@ -502,22 +536,15 @@ async fn the_sound_played_less_the_sound_exported_is_nothing_but_zeros() {
             let _ = std::fs::copy(entry.path(), Path::new(&keep).join(entry.file_name()));
         }
     }
-    for (run, (id, settle, whole, range, first)) in runs.into_iter().enumerate() {
-        let from_start = captured(&files[2 * run]);
-        let from_middle = captured(&files[2 * run + 1]);
+    let mut files = files.iter();
+    for (id, settle, whole, middles, first) in runs {
+        let from_start = captured(files.next().unwrap());
         let whole = floats_of(&whole);
-        let range = floats_of(&range);
         assert_eq!(whole.len(), 2 * 8 * RATE, "{id}");
-        assert_eq!(range.len(), 2 * 6 * RATE, "{id}");
         assert!(
             from_start.len() >= 2 * 5 * RATE,
             "{id}: {}",
             from_start.len()
-        );
-        assert!(
-            from_middle.len() >= 2 * 3 * RATE,
-            "{id}: {}",
-            from_middle.len()
         );
         assert!(
             whole.iter().any(|sample| sample.abs() > 0.05),
@@ -530,22 +557,33 @@ async fn the_sound_played_less_the_sound_exported_is_nothing_but_zeros() {
         );
         println!("{id}: from the start, {count} samples differ, by {most} at most");
         assert_eq!(count, 0, "{id}: from the start");
-        // Played from 2 s, less the export of the range from 2 s: zeros too.
-        let (count, most) = difference(&from_middle[..2 * 3 * RATE], &range[..2 * 3 * RATE]);
-        println!("{id}: from 2 s, {count} samples differ, by {most} at most");
-        assert_eq!(count, 0, "{id}: from 2 s");
-        // Played from 2 s, less the export of the whole from 2 s: under −90 dBFS where the
-        // preroll is the settling, under −60 dBFS where the settling is longer than 10 s.
-        let floor = if settle as usize <= 10 * RATE {
-            3.16e-5
-        } else {
-            1e-3
-        };
-        let (_, most) = difference(
-            &from_middle[..2 * 3 * RATE],
-            &whole[2 * 2 * RATE..2 * 5 * RATE],
-        );
-        println!("{id}: from 2 s against the whole, {most} at most (floor {floor})");
-        assert!(most < floor, "{id}: {most}");
+        for (frame, range) in MIDDLES.into_iter().zip(&middles) {
+            let from_middle = captured(files.next().unwrap());
+            let range = floats_of(range);
+            let at = usize::try_from(frame).unwrap() * RATE / 25;
+            assert_eq!(range.len(), 2 * (8 * RATE - at), "{id}");
+            assert!(
+                from_middle.len() >= 2 * 3 * RATE,
+                "{id}: {}",
+                from_middle.len()
+            );
+            // Played from the frame, less the export of the range from there: zeros too.
+            let (count, most) = difference(&from_middle[..2 * 3 * RATE], &range[..2 * 3 * RATE]);
+            println!("{id}: from frame {frame}, {count} samples differ, by {most} at most");
+            assert_eq!(count, 0, "{id}: from frame {frame}");
+            // Less the export of the whole from there: under −90 dBFS where the preroll is the
+            // settling, under −60 dBFS where the settling is longer than 10 s.
+            let floor = if settle as usize <= 10 * RATE {
+                3.16e-5
+            } else {
+                1e-3
+            };
+            let (_, most) = difference(
+                &from_middle[..2 * 3 * RATE],
+                &whole[2 * at..2 * (at + 3 * RATE)],
+            );
+            println!("{id}: from frame {frame} against the whole, {most} at most (floor {floor})");
+            assert!(most < floor, "{id}: {most}");
+        }
     }
 }

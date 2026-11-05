@@ -17,7 +17,7 @@ use crate::db_to_gain;
 use crate::node::{Automated, Automation, Block, Layout, Node, ParamId, Planar};
 use crate::rt::Smoothed;
 
-use super::automation::Cursor;
+use super::automation::{Cursor, Held};
 use super::pdc::DelayLine;
 use super::route::{panned, Matrix, PanAt};
 use super::taps::Tap;
@@ -31,7 +31,8 @@ pub(crate) const MAX_NODE_LANES: usize = 64;
 /// time it is at. It is read by its cursor; and it names what it is of, `owner` and `path` (the
 /// lane of a VCA read at the fader of each of its members, the one of a pan read after each
 /// output's delay, are each a lane of their own here, of the same owner and path), so that a lane
-/// of the model may be put in place of it while the graph plays (T5, T14's review).
+/// of the model may be put in place of it while the graph plays (T5, T14's review). The lanes of
+/// one owner and path share a key, by which a value held live reaches all of them (T16).
 #[derive(Debug)]
 pub(crate) struct LaneOf {
     pub(crate) lane: Lane,
@@ -39,10 +40,13 @@ pub(crate) struct LaneOf {
     pub(crate) cursor: Cursor,
     pub(crate) owner: super::Owner,
     pub(crate) path: Box<str>,
+    pub(crate) key: u32,
+    pub(crate) held: Held,
 }
 
 impl LaneOf {
-    /// A lane of `owner` at `path`, read `delay` samples behind, its cursor not yet placed.
+    /// A lane of `owner` at `path`, read `delay` samples behind, its cursor not yet placed; its
+    /// key and its ramps are given once the graph is built.
     pub(crate) fn new(lane: &Lane, delay: i64, owner: &super::Owner, path: &str) -> Self {
         Self {
             lane: lane.clone(),
@@ -50,6 +54,8 @@ impl LaneOf {
             cursor: Cursor::default(),
             owner: owner.clone(),
             path: path.into(),
+            key: 0,
+            held: Held::new(0),
         }
     }
 }
@@ -250,7 +256,7 @@ impl Strip {
                 // At a speed (T18): each sample out where the warp puts it on the timeline, as
                 // `Lane::value_at` gives it there; the cursor finds its place again after.
                 lane.cursor.reset();
-                for (sample, value) in (start - lane.delay..).zip(values) {
+                for (sample, value) in (start - lane.delay..).zip(values.iter_mut()) {
                     let ticks = warp.timeline(sample);
                     #[allow(clippy::cast_possible_truncation, reason = "a value of a parameter")]
                     let at = lane
@@ -259,6 +265,11 @@ impl Strip {
                         as f32;
                     *value = at;
                 }
+            }
+            // A control touched while automation is recorded (T16), however the lane was read.
+            if lane.held.is_held() {
+                let log = lane.lane.scale == Some(columbina_model::LaneScale::Log);
+                lane.held.apply(lane.lane.kind, log, values);
             }
         }
     }
@@ -571,6 +582,7 @@ impl Strip {
         }
         for lane in &mut self.lanes {
             lane.cursor.reset();
+            lane.held.reset();
         }
         self.pre_tap.reset();
         self.post_tap.reset();

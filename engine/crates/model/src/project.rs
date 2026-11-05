@@ -401,7 +401,7 @@ struct RawTrack {
     solo: Option<bool>,
     solo_safe: Option<bool>,
     adc: Option<bool>,
-    automation_arm: Option<bool>,
+    automation_arm: Option<crate::audio::AutomationArm>,
     strip: Option<Strip>,
     lanes: Option<Lanes>,
 }

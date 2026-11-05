@@ -72,8 +72,9 @@ pub fn view(owner: Owner<'_>) -> Value {
 /// Take out of a view of the settings of a strip what the graph does not move as a lane would,
 /// and whole numbers (T14's review): Effects In (`inserts_on`); of its pan all but `x`, `y` and
 /// `divergence`; of a send whether it is before the fader (`pre`) and of its pan all but `x` and
-/// `y`; the Lookahead of a Ducker (its latency, a structure of the graph); every setting of a
-/// Pitch (which has no node yet); and any setting written as a whole number.
+/// `y`; the Lookahead of a Ducker (its latency, a structure of the graph); and any setting written
+/// as a whole number, such as the semitones of a Pitch, which move in steps (its cents, its mix
+/// and its switch have lanes, T4c).
 pub fn drop_unwired(view: &mut Value) {
     let Some(object) = view.as_object_mut() else {
         return;
@@ -97,9 +98,6 @@ pub fn drop_unwired(view: &mut Value) {
     }
     if let Some(Value::Object(ducker)) = object.get_mut("track_fx") {
         ducker.remove("lookahead_ms");
-    }
-    if let Some(Value::Object(inserts)) = object.get_mut("insert") {
-        inserts.retain(|_, effect| effect.get("kind").and_then(Value::as_str) != Some("pitch"));
     }
     drop_whole_numbers(view);
 }
@@ -661,6 +659,93 @@ pub fn replaced(
     without_twins(all)
 }
 
+/// The points of a lane with those from tick `from` on put in place of by `new`: the value before
+/// `from` stays as it was, as a point at `from` of the value that came to it, and nothing of the
+/// lane is left after `new` (Hold at the stop of a pass of recording, p. 3905: the last value
+/// held to the end). `new` must be in order, from `from` on.
+#[must_use]
+pub fn held(
+    points: &[LanePoint],
+    shape: Shape,
+    fixed: f64,
+    scale: u32,
+    from: i64,
+    new: &[LanePoint],
+) -> Vec<LanePoint> {
+    let left = value_before(points, shape, fixed, from);
+    let all: Vec<LanePoint> = points
+        .iter()
+        .filter(|p| p.at.ticks < from)
+        .cloned()
+        .chain([point(from, scale, left)])
+        .chain(new.iter().cloned())
+        .collect();
+    without_twins(all)
+}
+
+/// A lane of decibels moved by an offset that changes (a Trim recorded, pp. 3900–3901, 3905): at
+/// the times of the points of the offset `offset` (in order, from its first, `from`) and of the
+/// lane `points` after `from` (before `until`, where it is given), the value of the lane there
+/// plus the offset there, both straight between those times, so their sum is too; a point of
+/// each value where either jumps. The offset is 0 before `from`, and holds its last value after
+/// its last point. A value of the lane at −∞ ([`super::SILENT_DB`] or below) stays as it was.
+/// The values are not kept within a range.
+#[must_use]
+pub fn offset_by(
+    points: &[LanePoint],
+    shape: Shape,
+    fixed: f64,
+    scale: u32,
+    offset: &[LanePoint],
+    until: Option<i64>,
+) -> Vec<LanePoint> {
+    let Some(first) = offset.first() else {
+        return Vec::new();
+    };
+    let from = first.at.ticks;
+    let line = Shape {
+        kind: LaneKind::Continuous,
+        scale: LaneScale::Linear,
+    };
+    let mut times: Vec<i64> = offset
+        .iter()
+        .map(|p| p.at.ticks)
+        .chain(
+            points
+                .iter()
+                .map(|p| p.at.ticks)
+                .filter(|&t| t > from && until.is_none_or(|until| t < until)),
+        )
+        .collect();
+    times.sort_unstable();
+    times.dedup();
+    let moved = |value: f64, by: f64| {
+        if value <= super::SILENT_DB {
+            value
+        } else {
+            value + by
+        }
+    };
+    let mut out = Vec::with_capacity(times.len() * 2);
+    for t in times {
+        let right = moved(
+            value_at(points, shape, fixed, t),
+            value_at(offset, line, 0.0, t),
+        );
+        if t > from {
+            let left = moved(
+                value_before(points, shape, fixed, t),
+                value_before(offset, line, 0.0, t),
+            );
+            if left.to_bits() != right.to_bits() {
+                out.push(point(t, scale, left));
+            }
+        }
+        out.push(point(t, scale, right));
+    }
+    out
+}
+
 /// The points of a lane with the values from tick `from` to tick `to` moved by `delta`, through
 /// `change` (which keeps a value within the range of its setting), the values outside the range
 /// staying as they were (p. 3899): at each end a point of the value that was there and, `ramp`
@@ -813,6 +898,45 @@ mod tests {
 
     fn points(list: &[(i64, f64)]) -> Vec<LanePoint> {
         list.iter().map(|&(t, v)| point(t, 1000, v)).collect()
+    }
+
+    #[test]
+    fn a_pitch_has_lanes_of_its_cents_its_mix_and_its_switch_but_none_of_its_whole_semitones() {
+        use crate::audio::fx::{Effect, PitchFx};
+        let mut strip = Strip::to_first_bus();
+        strip.inserts.push(Insert {
+            id: "fx1".into(),
+            on: true,
+            effect: Effect::Pitch(PitchFx {
+                semitones: 3,
+                cents: 25.0,
+                dry_wet: 80.0,
+            }),
+        });
+        let owner = Owner::Strip {
+            strip: &strip,
+            mute: false,
+            bus: false,
+        };
+        let view = view(owner);
+        assert_eq!(
+            kind_of(&view, "insert.fx1.cents"),
+            Some(LaneKind::Continuous)
+        );
+        assert_eq!(fixed_value(&view, "insert.fx1.cents"), Some(25.0));
+        assert_eq!(
+            kind_of(&view, "insert.fx1.dry_wet"),
+            Some(LaneKind::Continuous)
+        );
+        assert_eq!(kind_of(&view, "insert.fx1.on"), Some(LaneKind::Switch));
+        assert_eq!(range_of(owner, "insert.fx1.cents", 0.0), (-100.0, 100.0));
+        let listed = paths(owner);
+        for path in ["insert.fx1.cents", "insert.fx1.dry_wet", "insert.fx1.on"] {
+            assert!(listed.iter().any(|p| p == path), "{path}");
+        }
+        // Its semitones are whole: a setting of steps, not a lane (T4c).
+        assert_eq!(kind_of(&view, "insert.fx1.semitones"), None);
+        assert_eq!(no_lane(owner, "insert.fx1.semitones"), "lane_integer");
     }
 
     #[test]

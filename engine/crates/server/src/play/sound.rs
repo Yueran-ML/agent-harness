@@ -56,7 +56,7 @@ use columbina_audio::constants::{
 };
 use columbina_audio::feed::{ClipFeed, ClipSource};
 use columbina_audio::graph::{
-    retune, without_clip_levels, Controls, Graph, Options, Purpose, Warp,
+    retune, without_clip_levels, Controls, Graph, Live, Options, Owner, Purpose, Warp,
 };
 use columbina_audio::play::device;
 use columbina_audio::play::engine::{Command, Engine, Grain, Retired, Run, Session, MOST_BLOCK};
@@ -120,6 +120,11 @@ const GRAIN_ATTEMPTS: usize = 3;
 /// once, its effects settled for this long (a compressor's release of seconds is not quite
 /// settled in it).
 const GRAIN_PREROLL: f64 = 0.100;
+
+/// How far either way of the place of a grain of scrubbing its graph has the clips (T4c's
+/// review, "我们定"): beyond its preroll, its length, a catching up and the latency of any clip's
+/// effects, so that a clip further away, which it never hears, is not made at all.
+const GRAIN_WITHIN: f64 = 1.0;
 
 /// How long the thread that builds reads the clips of a grain ahead itself before it hands the
 /// graph over (T18): the start of the grain; its readers ahead read the rest.
@@ -419,12 +424,17 @@ impl Builder {
         (at, warp): (i64, Warp),
         how: How,
     ) -> Result<(Box<Run>, Controls, i64), String> {
-        let mut graph = Graph::build(
-            project,
-            timeline,
-            Options::new(MOST_BLOCK, Purpose::Preview),
-        )
-        .map_err(|error| error.to_string())?;
+        let mut options = Options::new(MOST_BLOCK, Purpose::Preview);
+        if let (How::Grain { .. }, Some(of)) = (how, project.timelines.get(timeline)) {
+            // A grain is heard for a moment where it is: only the clips about it are made, their
+            // effects and all (T4c's review).
+            let place = warp.timeline(at);
+            let rate = of.sample_rate;
+            let about = i64::try_from(samples(GRAIN_WITHIN, rate)).unwrap_or(i64::MAX);
+            options = options.within(place.saturating_sub(about)..place.saturating_add(about));
+        }
+        let mut graph =
+            Graph::build(project, timeline, options).map_err(|error| error.to_string())?;
         for clip in graph.unplayable() {
             log("sound_of_a_clip_unplayable", &json!({ "clip": clip }));
         }
@@ -784,6 +794,19 @@ struct Current {
     grains: bool,
 }
 
+/// A value held live in place of a lane while automation is recorded (T16): sent to the graph
+/// that plays, and again to each graph handed over after it, until it is let go.
+#[derive(Clone, Debug)]
+struct Held {
+    owner: Owner,
+    path: String,
+    live: Live,
+    /// What the setting is set to where the graph reads no lane of it.
+    plain: f32,
+    /// What it glides back to, so set, where it is let go of at once (Punch Out).
+    rest: f32,
+}
+
 /// The sound of a timeline monitor as it plays. See the module.
 pub(crate) struct Playback {
     threads: Option<Threads>,
@@ -792,6 +815,8 @@ pub(crate) struct Playback {
     current: Option<Current>,
     /// How long the first graph of the last session took to build.
     last_start: Duration,
+    /// The values held live, while automation is recorded (T16).
+    held: Vec<Held>,
 }
 
 impl Playback {
@@ -808,6 +833,7 @@ impl Playback {
             epoch: 0,
             current: None,
             last_start: Duration::ZERO,
+            held: Vec::new(),
         }
     }
 
@@ -1023,6 +1049,10 @@ impl Playback {
             current.base = built.project;
             current.timeline = built.timeline;
             current.controls = Some(built.controls);
+            // What is held live is held by the graph handed over too (T16).
+            for held in &self.held {
+                send_held(threads, current.controls.as_ref(), held);
+            }
             if let Some(changing) = built.speed {
                 // Pending until it plays.
                 current.changing = Some(changing);
@@ -1120,6 +1150,93 @@ impl Playback {
         Heard::Swap
     }
 
+    /// Holds `live` in place of the lane of `owner` at `path` while automation is recorded
+    /// (T16), from the next block of the graph that plays, and of every graph handed over after
+    /// it until it is let go ([`Playback::release`]); where the graph reads no lane of it, sets
+    /// the setting to `plain`. `rest` is what the setting is set to, which a let go at once
+    /// ([`Playback::release_all`]) glides back to. Kept while nothing plays, for what plays next.
+    pub(crate) fn hold(
+        &mut self,
+        owner: &Owner,
+        path: &str,
+        live: Live,
+        (plain, rest): (f32, f32),
+    ) {
+        let held = Held {
+            owner: owner.clone(),
+            path: path.into(),
+            live,
+            plain,
+            rest,
+        };
+        if let Some(threads) = &self.threads {
+            send_held(
+                threads,
+                self.current
+                    .as_ref()
+                    .and_then(|current| current.controls.as_ref()),
+                &held,
+            );
+        }
+        match self
+            .held
+            .iter_mut()
+            .find(|was| was.owner == *owner && was.path == path)
+        {
+            Some(was) => *was = held,
+            None => self.held.push(held),
+        }
+    }
+
+    /// Lets the lane of `owner` at `path` take its place back over `samples` (T16); where the
+    /// graph reads no lane of it, glides the setting back to `plain`.
+    pub(crate) fn release(&mut self, owner: &Owner, path: &str, samples: u32, plain: f32) {
+        self.held
+            .retain(|held| !(held.owner == *owner && held.path == path));
+        let (Some(threads), Some(controls)) = (
+            self.threads.as_ref(),
+            self.current
+                .as_ref()
+                .and_then(|current| current.controls.as_ref()),
+        ) else {
+            return;
+        };
+        if let Some(key) = controls.lane_key(owner, path) {
+            threads.send(Command::Live(key, Live::Release(samples)));
+        } else if let Some(control) = controls.control(owner, path) {
+            threads.send(Command::Glide(control, plain, samples));
+        }
+    }
+
+    /// Lets go of everything held live, over `samples` (the end of the Active Range, T16).
+    pub(crate) fn release_all(&mut self, samples: u32) {
+        for held in std::mem::take(&mut self.held) {
+            self.release(&held.owner, &held.path, samples, held.rest);
+        }
+    }
+
+    /// Lets the lane of `owner` at `path` take its place back over `samples`, if a value is held
+    /// in its place; where the graph reads no lane of it, glides the setting back to what it was
+    /// set to when the value was held (a Punch In, whose lanes take their place, T16).
+    pub(crate) fn let_go(&mut self, owner: &Owner, path: &str, samples: u32) {
+        if let Some(rest) = self
+            .held
+            .iter()
+            .find(|held| held.owner == *owner && held.path == path)
+            .map(|held| held.rest)
+        {
+            self.release(owner, path, samples, rest);
+        }
+    }
+
+    /// Whether a value is held live in place of the lane of `owner` at `path`.
+    #[cfg(test)]
+    pub(crate) fn holds(&self, owner: &Owner, path: &str) -> bool {
+        self.held
+            .iter()
+            .any(|held| held.owner == *owner && held.path == path)
+    }
+
     /// Whether a session plays.
     pub(crate) fn playing(&self) -> bool {
         self.current.is_some()
@@ -1152,6 +1269,19 @@ impl Playback {
             (0, columbina_audio::play::thread::Priority::Normal),
             |threads| (threads.counters.late(), threads.mix.priority()),
         )
+    }
+}
+
+/// Sends what is held live to the graph whose controls are `controls`, if a graph is there: in
+/// place of its lane, or as a setting where it reads none.
+fn send_held(threads: &Threads, controls: Option<&Controls>, held: &Held) {
+    let Some(controls) = controls else {
+        return;
+    };
+    if let Some(key) = controls.lane_key(&held.owner, &held.path) {
+        threads.send(Command::Live(key, held.live));
+    } else if let Some(control) = controls.control(&held.owner, &held.path) {
+        threads.send(Command::Set(control, held.plain));
     }
 }
 
@@ -1811,5 +1941,101 @@ mod tests {
         assert_eq!(output.session(), session + 1);
         assert!(playback.scrubbing());
         playback.stop();
+    }
+
+    /// The track A1 of the sample of 2 s of the WAV of the tests (440 Hz) from the start, its
+    /// fader on a lane at 0 dB; none where the media cannot be made.
+    fn a_tone_on_a_lane() -> Option<Project> {
+        let made = crate::test_media::media(crate::test_media::Sample::Wav)?;
+        let mut project = Project::sample();
+        let facts = columbina_media::probe(&made.path).unwrap();
+        project.media[0].path = made.path.to_string_lossy().into_owned();
+        project.media[0].facts = facts.clone();
+        let track = &mut project.timelines[0].tracks[1];
+        track.clips[0].source = columbina_model::Source::Media {
+            media: "m1".into(),
+            source_in: columbina_model::Time {
+                ticks: 0,
+                scale: facts.duration.scale,
+            },
+        };
+        track.clips[0].length = 50;
+        track.audio.lanes.insert(
+            "fader_db".into(),
+            columbina_model::Lane {
+                points: vec![columbina_model::LanePoint {
+                    at: columbina_model::Time {
+                        ticks: 0,
+                        scale: 48_000,
+                    },
+                    value: 0.0,
+                }],
+                kind: columbina_model::LaneKind::Continuous,
+                scale: None,
+            },
+        );
+        Some(project)
+    }
+
+    #[test]
+    #[allow(clippy::cast_precision_loss, reason = "levels of a test")]
+    fn a_value_held_live_is_held_by_each_graph_swapped_in_after_it_until_it_is_let_go() {
+        let Some(project) = a_tone_on_a_lane() else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("held.f32");
+        let mut output = Output::open(&Kind::Capture(path.clone())).unwrap();
+        let mut playback = Playback::new();
+        playback
+            .start(&mut output, Arc::new(project.clone()), 0, (0, 1))
+            .unwrap();
+        wait("the first graph", || ready(&mut playback));
+        let played = |output: &Output| output.played(Instant::now()).unwrap_or(0);
+        wait("loud for 300 ms", || played(&output) > 14_400);
+        // The fader touched at −40 dB, in place of its lane.
+        let a1 = Owner::Track("A1".into());
+        playback.hold(&a1, "fader_db", Live::Hold(-40.0), (-40.0, 0.0));
+        // A fade: another graph, swapped in; it holds the value too.
+        let mut faded = project.clone();
+        faded.timelines[0].tracks[1].clips[0].fade_out = 5;
+        assert_eq!(playback.changed(&Arc::new(faded), 0), Heard::Swap);
+        wait("the graph swapped in", || {
+            playback.poll();
+            playback.counts().1 == 1 && ready(&mut playback)
+        });
+        let swapped = played(&output);
+        wait("300 ms after the swap", || {
+            played(&output) > swapped + 14_400
+        });
+        // Let go at once: the lane, 0 dB, again.
+        playback.release(&a1, "fader_db", 0, 0.0);
+        let released = played(&output);
+        wait("200 ms after the release", || {
+            played(&output) > released + 9_600
+        });
+        playback.stop();
+        drop(output);
+        let left: Vec<f32> = std::fs::read(crate::audio::capture_file(&path, 1))
+            .unwrap()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|word| f32::from_le_bytes(*word))
+            .step_by(2)
+            .collect();
+        let rms = |from: i64, to: i64| {
+            let part = &left[usize::try_from(from).unwrap()..usize::try_from(to).unwrap()];
+            (part.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>() / part.len() as f64).sqrt()
+        };
+        let loud = rms(4_800, 9_600);
+        // From well after the swap to the release (the release is heard some 30 ms after it is
+        // sent), and from 100 ms after the release.
+        let held = rms(swapped + 7_200, released - 2_400);
+        let back = rms(released + 4_800, released + 9_600);
+        let db = |level: f64| 20.0 * (level / loud).log10();
+        assert!(loud > 0.01, "{loud}");
+        assert!((db(held) + 40.0).abs() < 1.0, "held: {} dB", db(held));
+        assert!(db(back).abs() < 1.0, "let go: {} dB", db(back));
     }
 }

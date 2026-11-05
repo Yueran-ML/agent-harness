@@ -275,6 +275,11 @@ fn a_clip_is_measured_after_its_volume_and_before_its_pan_alone_on_its_track() {
     project.timelines[0].tracks[0].clips[0]
         .effects
         .push(gain_insert(6.0));
+    let (effected, _) = of_clip(&project, "c2", signal);
+    assert!(
+        (effected.integrated.unwrap() + 23.0).abs() < 0.05,
+        "{effected:?}"
+    );
     let (kept, _, _) = alone(&project, 0, "c2").unwrap();
     let clip = &kept.timelines[0].tracks[0].clips[0];
     assert_eq!(clip.effects.len(), 1);

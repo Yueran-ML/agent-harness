@@ -1302,3 +1302,332 @@ async fn timeline_scrubbing_plays_a_grain_of_60_ms_for_each_seek_and_none_once_t
         assert!((measured - 440.0).abs() < 3.0, "{measured}");
     }
 }
+
+/// The lane of `path` of track `track` of timeline `timeline` in the project as `project.get`
+/// gives it, if it has one.
+fn lane_of(project: &Value, timeline: &Value, track: &Value, path: &str) -> Option<Value> {
+    let t = project["project"]["timelines"]
+        .as_array()?
+        .iter()
+        .find(|t| t["id"] == *timeline)?;
+    let track = t["tracks"].as_array()?.iter().find(|r| r["id"] == *track)?;
+    track["lanes"].get(path).cloned()
+}
+
+/// The value of a lane (`{points, kind}`, points at times of 48 kHz) at sample `at`.
+#[allow(clippy::cast_precision_loss, reason = "samples of a test")]
+fn lane_value(lane: &Value, at: i64) -> f64 {
+    let points: Vec<(i64, f64)> = lane["points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            assert_eq!(p["at"]["scale"], 48_000, "{p}");
+            (
+                p["at"]["ticks"].as_i64().unwrap(),
+                p["value"].as_f64().unwrap(),
+            )
+        })
+        .collect();
+    let i = points.partition_point(|&(t, _)| t <= at);
+    match (i.checked_sub(1).map(|i| points[i]), points.get(i)) {
+        (Some((t, u)), Some(&(next, v))) => u + (v - u) * (at - t) as f64 / (next - t) as f64,
+        (Some((_, u)), None) => u,
+        (None, Some(&(_, v))) => v,
+        (None, None) => f64::NAN,
+    }
+}
+
+#[tokio::test]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::too_many_lines,
+    reason = "levels of a test, which follows a pass from the touch to the undo"
+)]
+async fn automation_recorded_as_it_plays_is_heard_at_once_and_written_as_one_step_of_undo() {
+    if columbina_compose::gpu_for_tests().is_none() {
+        return;
+    }
+    let dir = project_dir();
+    let capture = dir.path().join("heard.f32");
+    let sound = format!("capture={}", capture.display());
+    let Some((engine, mut client)) = transport_engine_with(
+        dir.path(),
+        &[support::Sample::Fhd],
+        &["--sound", &sound, "--test-hooks"],
+    )
+    .await
+    else {
+        return;
+    };
+    let names = eight_seconds_of_sound(&mut client).await;
+    let (timeline, track) = (names["$timeline"].clone(), names["$audio"].clone());
+    client
+        .apply(json!([{"op":"set_timeline_audio","timeline":timeline,
+            "patch":{"record":{"touch":"latch","on_stop":"return"}}},
+            {"op":"add_bus","timeline":timeline,"bus":{"id":"B2","name":"Bus 2",
+            "color":"#336699ff","format":"stereo","strip":{"outputs":[{"bus":"B1"}]}}}]))
+        .await;
+    let touch = |value: f64, touching: bool| {
+        json!({"timeline": timeline, "track": track, "path": "fader_db",
+            "value": value, "touching": touching})
+    };
+    // A touch while recording is off, and one of no setting, are refused.
+    let off = client
+        .error("automation.touch", Some(touch(-40.0, true)))
+        .await;
+    assert_eq!(off["data"]["reason"], "not_recording", "{off}");
+    let on = client
+        .result(
+            "automation.record",
+            Some(json!({"timeline": timeline, "on": true})),
+        )
+        .await;
+    assert_eq!(on["on"], true, "{on}");
+    assert_eq!(on["glide_ms"], 250, "{on}");
+    let mut wrong = touch(0.0, true);
+    wrong["path"] = json!("solo");
+    let refused = client.error("automation.touch", Some(wrong)).await;
+    assert_eq!(refused["data"]["reason"], "path", "{refused}");
+
+    action(&mut client, "transport.play", json!({"speed":1})).await;
+    client
+        .until_state("timeline audio started", |s| {
+            s["monitor"] == "timeline" && s["sound"] == "on" && s["recording"] == true
+        })
+        .await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let before = action(&mut client, "transport.frame_digest", json!({})).await;
+    let heard_before = before["audio_sample"].as_i64().unwrap();
+    let asked_after = std::time::Instant::now();
+    // The fader touched and held at −40 dB for a second, every 20 ms, then let go (Latch: it
+    // holds to the stop).
+    let touched_after = asked_after.elapsed();
+    // B2's fader too, whose bus is taken away before the stop: its lane cannot be written.
+    let mut on_b2 = touch(-20.0, true);
+    on_b2.as_object_mut().unwrap().remove("track");
+    on_b2["bus"] = json!("B2");
+    let mut next = std::time::Instant::now();
+    for _ in 0..50 {
+        client
+            .result("automation.touch", Some(touch(-40.0, true)))
+            .await;
+        next += Duration::from_millis(20);
+        tokio::time::sleep_until(next.into()).await;
+    }
+    client
+        .result("automation.touch", Some(touch(-40.0, false)))
+        .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let digest = action(&mut client, "transport.frame_digest", json!({})).await;
+    let stopped_near = digest["audio_sample"].as_i64().unwrap();
+    assert_eq!(digest["audio_short_runs"], 0, "{digest}");
+    assert_eq!(digest["audio_underruns"], 0, "{digest}");
+    assert_eq!(
+        digest["audio_swaps"], 0,
+        "held live, no graph swapped: {digest}"
+    );
+    client.result("automation.touch", Some(on_b2)).await;
+    client
+        .apply(json!([{"op":"remove_bus","timeline":timeline,"id":"B2"}]))
+        .await;
+    let revision = project(&mut client).await["revision"].as_u64().unwrap();
+    action(&mut client, "transport.pause", json!({})).await;
+
+    // Written at the stop, as one transaction.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let (lane, written) = loop {
+        let got = project(&mut client).await;
+        if let Some(lane) = lane_of(&got, &timeline, &track, "fader_db") {
+            break (lane, got["revision"].as_u64().unwrap());
+        }
+        assert!(std::time::Instant::now() < deadline, "no lane written");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(written, revision + 1, "one transaction");
+    let first = lane["points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["value"] == -40.0)
+        .unwrap()["at"]["ticks"]
+        .as_i64()
+        .unwrap();
+    // Placed where it was heard when the engine took it: after the digest by no more than the
+    // time from the digest's answer until the touch was sent, and a little more; −40 dB is
+    // reached 10 ms (480 samples) after it, as the fader was heard to ramp.
+    let first = first - 480;
+    assert!(first >= heard_before, "{first} before {heard_before}");
+    let slack = (touched_after + Duration::from_millis(15)).as_micros() * 48 / 1000;
+    let slack = i64::try_from(slack).unwrap();
+    println!(
+        "a touch placed {} samples after the sample the digest heard, {slack} allowed",
+        first - heard_before
+    );
+    assert!(
+        first <= heard_before + slack,
+        "{first} more than {slack} samples after {heard_before}"
+    );
+    // Everyone is told what was written, and what could not be.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let told = loop {
+        if let Some(told) = client
+            .take_notifications()
+            .into_iter()
+            .find(|message| message["method"] == "automation.written")
+        {
+            break told["params"].clone();
+        }
+        assert!(std::time::Instant::now() < deadline, "not told");
+        project(&mut client).await;
+    };
+    assert_eq!(told["lanes"], 1, "{told}");
+    assert_eq!(told["revision"], written, "{told}");
+    assert_eq!(told["failed"][0]["bus"], "B2", "{told}");
+    assert_eq!(told["failed"][0]["path"], "fader_db", "{told}");
+    assert!((lane_value(&lane, first - 4_800) - 0.0).abs() < 1e-9);
+    for at in [first + 480, first + 48_000, stopped_near - 4_800] {
+        assert!((lane_value(&lane, at) + 40.0).abs() < 0.11, "{at}: {lane}");
+    }
+    // Back to 0 dB over 250 ms after the stop.
+    let end = lane["points"].as_array().unwrap().last().unwrap()["at"]["ticks"]
+        .as_i64()
+        .unwrap();
+    assert!((lane_value(&lane, end) - 0.0).abs() < 1e-9, "{lane}");
+    // One step of undo takes the pass back.
+    client.result("history.undo", None).await;
+    let undone = project(&mut client).await;
+    assert!(lane_of(&undone, &timeline, &track, "fader_db").is_none());
+
+    // Heard at once: the level 100 ms to 300 ms after the touch is 40 dB down.
+    drop(client);
+    drop(engine);
+    let left: Vec<f32> = captured(&capture).into_iter().step_by(2).collect();
+    let rms = |from: i64, to: i64| {
+        let part = &left[usize::try_from(from).unwrap()..usize::try_from(to).unwrap()];
+        (part.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>() / part.len() as f64).sqrt()
+    };
+    let loud = rms(first - 14_400, first - 4_800);
+    let held = rms(first + 4_800, first + 14_400);
+    let db = 20.0 * (held / loud).log10();
+    println!("held live at -40 dB: heard {db:.1} dB from 100 ms after the touch");
+    assert!(loud > 0.01, "{loud}");
+    assert!((db + 40.0).abs() < 1.0, "{db} dB");
+}
+
+#[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "each method of the menu asked for in turn"
+)]
+async fn fill_range_copy_all_read_and_join_mix_are_asked_for_over_the_protocol() {
+    if columbina_compose::gpu_for_tests().is_none() {
+        return;
+    }
+    let dir = project_dir();
+    let capture = dir.path().join("heard.f32");
+    let sound = format!("capture={}", capture.display());
+    let Some((_engine, mut client)) = transport_engine_with(
+        dir.path(),
+        &[support::Sample::Fhd],
+        &["--sound", &sound, "--test-hooks"],
+    )
+    .await
+    else {
+        return;
+    };
+    let names = eight_seconds_of_sound(&mut client).await;
+    let (timeline, track) = (names["$timeline"].clone(), names["$audio"].clone());
+    client
+        .apply(json!([{"op":"set_timeline_audio","timeline":timeline,
+            "patch":{"record":{"touch":"latch","preview":true}}}]))
+        .await;
+    let ms = |ms: i64| json!({"ticks": ms * 48, "scale": 48_000});
+    client
+        .result(
+            "automation.record",
+            Some(json!({"timeline": timeline, "on": true})),
+        )
+        .await;
+    // Stopped, under Preview: the fader held at -12 dB, then Fill Range from 1 s to 2 s.
+    client
+        .result(
+            "automation.touch",
+            Some(
+                json!({"timeline": timeline, "track": track, "path": "fader_db",
+                "value": -12.0, "touching": true}),
+            ),
+        )
+        .await;
+    let filled = client
+        .result(
+            "automation.fill",
+            Some(json!({"timeline": timeline, "from": ms(1000), "to": ms(2000)})),
+        )
+        .await;
+    assert_eq!(filled["lanes"], 1, "{filled}");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let lane = loop {
+        if let Some(lane) = lane_of(&project(&mut client).await, &timeline, &track, "fader_db") {
+            break lane;
+        }
+        assert!(std::time::Instant::now() < deadline, "no lane written");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!((lane_value(&lane, 48 * 1500) + 12.0).abs() < 1e-9, "{lane}");
+    assert!((lane_value(&lane, 48 * 500) - 0.0).abs() < 1e-9, "{lane}");
+    assert!((lane_value(&lane, 48 * 2500) - 0.0).abs() < 1e-9, "{lane}");
+    // Nothing more is held to fill.
+    let again = client
+        .result(
+            "automation.fill",
+            Some(json!({"timeline": timeline, "from": ms(1000), "to": ms(2000), "glide": true})),
+        )
+        .await;
+    assert_eq!(again["lanes"], 0, "{again}");
+    let backwards = client
+        .error(
+            "automation.fill",
+            Some(json!({"timeline": timeline, "from": ms(2000), "to": ms(1000)})),
+        )
+        .await;
+    assert_eq!(backwards["data"]["reason"], "range", "{backwards}");
+    // Copy: the range, and a snapshot.
+    let copied = client
+        .result(
+            "automation.copy",
+            Some(json!({"timeline": timeline, "of": [{"track": track}],
+                "from": ms(1000), "to": ms(2000)})),
+        )
+        .await;
+    let points = copied["lanes"][0]["points"].as_array().unwrap();
+    assert_eq!(copied["lanes"][0]["path"], "fader_db", "{copied}");
+    assert_eq!(points.first().unwrap()["at"]["ticks"], 0, "{copied}");
+    assert_eq!(points.last().unwrap()["at"]["ticks"], 48_000, "{copied}");
+    let snapshot = client
+        .result(
+            "automation.copy",
+            Some(json!({"timeline": timeline, "of": [{"track": track}], "at": ms(1500)})),
+        )
+        .await;
+    assert_eq!(snapshot["lanes"][0]["value"], -12.0, "{snapshot}");
+    let half = client
+        .error(
+            "automation.copy",
+            Some(json!({"timeline": timeline, "of": [{"track": track}], "from": ms(1000)})),
+        )
+        .await;
+    assert_eq!(half["data"]["reason"], "range", "{half}");
+    // All Read while recording is on; Join Mix with no pass written stopped yet.
+    let read = client
+        .result("automation.all_read", Some(json!({"timeline": timeline})))
+        .await;
+    assert_eq!(read["read"], true, "{read}");
+    client
+        .until_state("All Read shown", |s| s["all_read"] == true)
+        .await;
+    let joined = client
+        .result("automation.join", Some(json!({"timeline": timeline})))
+        .await;
+    assert_eq!(joined, json!({"lanes": 0, "at": null}));
+}

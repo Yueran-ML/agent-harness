@@ -197,6 +197,7 @@ fn routed() -> Project {
         mute: false,
         solo: false,
         vcas: vec![],
+        automation_arm: columbina_model::AutomationArm::Unarmed,
         lanes: columbina_model::Lanes::new(),
     });
     let strip = &mut timeline.tracks[0].audio.strip;
@@ -442,6 +443,15 @@ fn every_setting_that_a_lane_may_be_of_is_one_that_the_graph_moves() {
         "lanes of settings that the graph does not move"
     );
     assert!(checked > 150, "{checked}");
+    // The cents, the mix and the switch of a Pitch have lanes, which the graph moves (T4c).
+    let (a2_owner, a2_model) = &strips[1];
+    for path in ["insert.fx2.cents", "insert.fx2.dry_wet", "insert.fx2.on"] {
+        assert!(
+            paths(*a2_model).iter().any(|p| p == path),
+            "{path} has no lane"
+        );
+        assert!(graph.control(a2_owner, path).is_some(), "{path}");
+    }
     // What the graph does not move as a lane would has no lane, and is refused as such.
     let (_, a1) = &strips[0];
     let (_, a2) = &strips[1];
@@ -457,9 +467,6 @@ fn every_setting_that_a_lane_may_be_of_is_one_that_the_graph_moves() {
         (a1, "send.B2.pan.divergence", "lane_not_wired"),
         (a1, "send.B2.pan.on", "lane_not_wired"),
         (a1, "track_fx.lookahead_ms", "lane_not_wired"),
-        (a2, "insert.fx2.cents", "lane_not_wired"),
-        (a2, "insert.fx2.dry_wet", "lane_not_wired"),
-        (a2, "insert.fx2.on", "lane_not_wired"),
         (a2, "insert.fx2.semitones", "lane_integer"),
         (a1, "eq.1.slope", "lane_integer"),
     ] {
@@ -538,4 +545,40 @@ fn a_lane_names_what_it_is_of_and_says_whether_a_new_graph_is_needed_for_another
     let mut eq_on = eq.clone();
     eq_on.insert("eq.on".into(), lane(LaneKind::Switch, 48_000, &[(0, 1.0)]));
     assert!(lanes_need_a_new_graph(&audio.strip, &eq, &eq_on, 48_000));
+}
+
+#[test]
+fn the_lanes_of_a_track_a_bus_or_a_vca_whose_arm_is_off_are_not_played_and_safe_ones_are() {
+    use columbina_model::AutomationArm;
+    let at_one = |project: &Project| f64::from(heard(project, 2000, 0.5)[1000]);
+    let step = |value| lane(LaneKind::Continuous, 48_000, &[(0, value)]);
+    for (arm, plays) in [
+        (AutomationArm::Off, false),
+        (AutomationArm::Safe, true),
+        (AutomationArm::Armed, true),
+    ] {
+        // A track's fader at -20, its lane at -6.
+        let mut project = base();
+        let audio = &mut project.timelines[0].tracks[0].audio;
+        audio.strip.fader_db = -20.0;
+        audio.lanes.insert("fader_db".into(), step(-6.0));
+        audio.automation_arm = arm;
+        let want = 0.5 * gain_of(if plays { -6.0 } else { -20.0 });
+        assert!((at_one(&project) - want).abs() < 1e-6, "track {arm:?}");
+        // A bus's and a VCA's.
+        let mut project = routed();
+        project.timelines[0].buses[0]
+            .lanes
+            .insert("fader_db".into(), step(-3.0));
+        project.timelines[0].buses[0].automation_arm = arm;
+        let want = 0.5 * gain_of(if plays { -3.0 } else { 0.0 });
+        assert!((at_one(&project) - want).abs() < 1e-6, "bus {arm:?}");
+        let mut project = routed();
+        project.timelines[0].vcas[0]
+            .lanes
+            .insert("fader_db".into(), step(-10.0));
+        project.timelines[0].vcas[0].automation_arm = arm;
+        let want = 0.5 * gain_of(if plays { -10.0 } else { 0.0 });
+        assert!((at_one(&project) - want).abs() < 1e-6, "VCA {arm:?}");
+    }
 }

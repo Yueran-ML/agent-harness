@@ -357,8 +357,8 @@ pub struct TrackAudio {
     pub solo_safe: bool,
     /// Whether its delay is made up with the others' (ADC, p. 3706): on for a new track.
     pub adc: bool,
-    /// Whether its automation is armed to record (p. 3906).
-    pub automation_arm: bool,
+    /// Its Automation Arm (p. 3906): armed to record, Safe or Off (T16b).
+    pub automation_arm: AutomationArm,
     /// Its strip: out to the first bus, for a track made without one.
     pub strip: Strip,
     /// The automation of its settings.
@@ -375,10 +375,104 @@ impl Default for TrackAudio {
             solo: false,
             solo_safe: false,
             adc: true,
-            automation_arm: false,
+            automation_arm: AutomationArm::Unarmed,
             strip: Strip::to_first_bus(),
             lanes: Lanes::new(),
         }
+    }
+}
+
+/// The Automation Arm of a track, a bus or a VCA (pp. 3688, 3906–3907; the interaction reference
+/// §11.4): its button armed, or not, or set by its right-click menu to Safe or Off. Written as it
+/// was before T16b, `true` (armed) and `false` (not), and `"safe"` and `"off"`; read also as
+/// `"armed"` and `"unarmed"`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum AutomationArm {
+    /// Not armed: its automation plays back, and is recorded where the Touch is not Off.
+    #[default]
+    Unarmed,
+    /// Armed: recorded under Touch Off too, as Latch.
+    Armed,
+    /// Safe: its automation plays back, but nothing records it, and Copy, Paste and Erase of
+    /// automation (p. 3913) leave it alone.
+    Safe,
+    /// Off: its automation does not play back (its settings stay as they are set), and nothing
+    /// records it.
+    Off,
+}
+
+/// Whether an Automation Arm is not armed: what a bus and a VCA leave out where they are written.
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if"
+)]
+pub(crate) fn unarmed(arm: &AutomationArm) -> bool {
+    *arm == AutomationArm::Unarmed
+}
+
+impl AutomationArm {
+    /// Whether it is armed.
+    #[must_use]
+    pub fn armed(self) -> bool {
+        self == Self::Armed
+    }
+
+    /// Whether a pass of recording may write its lanes: not where it is Safe or Off.
+    #[must_use]
+    pub fn records(self) -> bool {
+        matches!(self, Self::Unarmed | Self::Armed)
+    }
+
+    /// Whether its lanes play back: not where it is Off.
+    #[must_use]
+    pub fn plays(self) -> bool {
+        self != Self::Off
+    }
+
+    /// Whether Copy, Paste and Erase of automation may change its lanes: not where it is Safe.
+    #[must_use]
+    pub fn pastes(self) -> bool {
+        self != Self::Safe
+    }
+}
+
+impl Serialize for AutomationArm {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Unarmed => serializer.serialize_bool(false),
+            Self::Armed => serializer.serialize_bool(true),
+            Self::Safe => serializer.serialize_str("safe"),
+            Self::Off => serializer.serialize_str("off"),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for AutomationArm {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Arm;
+        impl serde::de::Visitor<'_> for Arm {
+            type Value = AutomationArm;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an Automation Arm: true, false, \"safe\" or \"off\"")
+            }
+            fn visit_bool<E: serde::de::Error>(self, armed: bool) -> Result<Self::Value, E> {
+                Ok(if armed {
+                    AutomationArm::Armed
+                } else {
+                    AutomationArm::Unarmed
+                })
+            }
+            fn visit_str<E: serde::de::Error>(self, name: &str) -> Result<Self::Value, E> {
+                match name {
+                    "armed" => Ok(AutomationArm::Armed),
+                    "unarmed" => Ok(AutomationArm::Unarmed),
+                    "safe" => Ok(AutomationArm::Safe),
+                    "off" => Ok(AutomationArm::Off),
+                    _ => Err(E::invalid_value(serde::de::Unexpected::Str(name), &self)),
+                }
+            }
+        }
+        deserializer.deserialize_any(Arm)
     }
 }
 
@@ -813,6 +907,31 @@ pub struct Categories {
     pub misc: bool,
 }
 
+impl Categories {
+    /// Whether the category of the setting at `path` is on (pp. 3905–3906, 3913): Fader (a
+    /// fader), Mute, Pan (every pan of the strip), EQ, Comp, Gate (the Expander/Gate of Dynamics),
+    /// Lim (its Limiter), Sends, Plugins (the inserts' settings and the Track FX), and Misc (what is
+    /// left: the outputs on and off, an insert on and off, Trim and the polarity). What a pass of
+    /// recording writes, and what Copy, Paste and Erase of automation act on.
+    #[must_use]
+    pub fn covers(&self, path: &str) -> bool {
+        let insert_switch = path.starts_with("insert.") && path.rsplit('.').next() == Some("on");
+        match path {
+            "fader_db" => self.fader,
+            "mute" => self.mute,
+            _ if path.starts_with("pan.") => self.pan,
+            _ if path.starts_with("eq.") => self.eq,
+            _ if path.starts_with("dynamics.expander.") => self.gate,
+            _ if path.starts_with("dynamics.limiter.") => self.lim,
+            _ if path.starts_with("dynamics.") => self.comp,
+            _ if path.starts_with("send.") => self.sends,
+            _ if insert_switch => self.misc,
+            _ if path.starts_with("insert.") || path.starts_with("track_fx.") => self.plugins,
+            _ => self.misc,
+        }
+    }
+}
+
 impl Default for Categories {
     fn default() -> Self {
         Self {
@@ -914,8 +1033,8 @@ pub fn first_buses() -> Vec<Bus> {
 /// a lane of a setting that is on or off. What is neither (a kind, a mode, a source) has none,
 /// nor has a whole number (`eq.<band>.slope`, the semitones of a Pitch), nor what the graph does
 /// not move as a lane would (see [`automation::drop_unwired`]: Effects In, the pan's switch,
-/// Boom, rotation and spread, whether a send is before the fader, the Lookahead of a Ducker, a
-/// Pitch). The engine reads it too, to tell a change of the settings that the graph of the sound
+/// Boom, rotation and spread, whether a send is before the fader, the Lookahead of a Ducker). The
+/// engine reads it too, to tell a change of the settings that the graph of the sound
 /// takes as it plays from one that needs another graph (T5).
 #[must_use]
 pub fn automatable(strip: &Strip) -> serde_json::Value {

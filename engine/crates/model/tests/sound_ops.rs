@@ -861,6 +861,7 @@ fn the_ids_of_the_engine_skip_none_and_a_bus_vca_or_group_given_one_keeps_it() {
                 mute: false,
                 solo: false,
                 vcas: vec![],
+                automation_arm: columbina_model::AutomationArm::Unarmed,
                 lanes: columbina_model::Lanes::default(),
             },
             index: Some(0),

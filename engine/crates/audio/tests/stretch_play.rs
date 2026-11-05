@@ -76,6 +76,58 @@ fn a_stretched_clip_plays_as_it_exports_to_the_bit() {
 }
 
 #[test]
+fn a_clip_with_effects_plays_as_it_exports_to_the_bit() {
+    // Its media read as far ahead as its effects are late (T4c): a Pitch and a Limiter, on a clip
+    // as it is and on one stretched, from 1 s.
+    use columbina_model::audio::fx::{LimiterFx, PitchFx};
+    use columbina_model::{Effect, Insert};
+    for project in [
+        stretched((1, 1), false, 0, false),
+        stretched((4, 5), true, 0, false),
+        stretched((3, 2), false, 2, true),
+    ] {
+        let mut project = project;
+        let clip = &mut project.timelines[0].tracks[0].clips[0];
+        clip.start = 25;
+        clip.effects = [
+            Effect::Pitch(PitchFx {
+                semitones: -5,
+                ..PitchFx::default()
+            }),
+            Effect::Limiter(LimiterFx {
+                input_db: 6.0,
+                ..LimiterFx::default()
+            }),
+        ]
+        .into_iter()
+        .map(|effect| Insert {
+            id: String::new(),
+            on: true,
+            effect,
+        })
+        .collect();
+        let mut sim = Sim::of(&project, 0, TONE);
+        for _ in 0..1_250 {
+            sim.tick();
+        }
+        let played = sim.left();
+        let frames = 12 * RATE as usize;
+        let want = exported(&project, frames);
+        assert!(want[RATE as usize..].iter().any(|s| s.abs() > 0.1));
+        let differs = played[..frames]
+            .iter()
+            .zip(&want)
+            .position(|(a, b)| a.to_bits() != b.to_bits());
+        assert_eq!(
+            differs, None,
+            "the first sample played otherwise than exported"
+        );
+        assert_eq!(sim.counters.underruns(), 0);
+        assert_eq!(sim.control.shared.short(), 0);
+    }
+}
+
+#[test]
 fn a_graph_swapped_in_inside_a_segment_sounds_as_the_one_it_takes_over_from() {
     // At 6 s, a second into the segment that starts at 5 s.
     let project = stretched((4, 5), true, 0, false);

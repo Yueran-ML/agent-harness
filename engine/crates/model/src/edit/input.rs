@@ -70,7 +70,11 @@ pub(super) fn check(edit: &Edit) -> Result<(), OpError> {
         | Edit::LanePoints { .. }
         | Edit::LaneRange { .. }
         | Edit::LaneDraw { .. }
+        | Edit::LaneFill { .. }
+        | Edit::AutomationPaste { .. }
+        | Edit::AutomationErase { .. }
         | Edit::ClearLanes { .. }
+        | Edit::RecordPass { .. }
         | Edit::Lift { .. }
         | Edit::RippleDelete { .. }
         | Edit::RemoveTransition { .. }

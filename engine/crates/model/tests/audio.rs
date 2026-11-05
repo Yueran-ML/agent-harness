@@ -220,6 +220,7 @@ fn routing_and_strips_that_cannot_be_played_are_refused_with_their_reasons() {
             mute: false,
             solo: false,
             vcas: vec![of.into()],
+            automation_arm: columbina_model::AutomationArm::Unarmed,
             lanes: columbina_model::Lanes::default(),
         };
         value["timelines"][0]["vcas"] =
@@ -672,6 +673,7 @@ fn lanes_are_of_the_settings_of_their_strip_by_their_paths_and_kinds() {
         mute: false,
         solo: false,
         vcas: vec![],
+        automation_arm: columbina_model::AutomationArm::Unarmed,
         lanes: [("fader_db".to_owned(), lane(LaneKind::Continuous))].into(),
     }];
     vca.validate().unwrap();
@@ -691,6 +693,7 @@ fn vcas_named_twice_or_with_their_masters_a_bus_named_as_a_track_and_levels_of_a
         mute: false,
         solo: false,
         vcas: of.iter().map(|&v| v.into()).collect(),
+        automation_arm: columbina_model::AutomationArm::Unarmed,
         lanes: columbina_model::Lanes::default(),
     };
     let with = |vcas: Vec<Vca>, strip: &'static [&'static str]| {

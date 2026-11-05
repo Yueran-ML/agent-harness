@@ -64,13 +64,36 @@ export type Edit = { timeline: string } & (
   | { edit: 'set_insert'; of: InsertsOf; slot: number; insert: Insert | null }
   /** Within `of` as the operation; to `to_of`, a new insert there, its lanes left behind and taken away. */
   | { edit: 'move_insert'; of: InsertsOf; from: number; to: number; to_of?: InsertsOf }
-  | { edit: 'lane_points'; of: LanesOf; path: string; action: 'add' | 'remove' | 'move'; points?: { at: Time; value?: number }[]; at?: Time[]; by?: Time; delta?: number }
-  | { edit: 'lane_range'; of: LanesOf; path: string; from: Time; to: Time; action: 'delete' | 'cut' | 'paste' | 'shift_value' | 'thin'; points?: LanePoint[]; delta?: number; tolerance?: number }
+  | { edit: 'lane_points'; of: LanesOf; path: string; action: 'add' | 'remove' | 'move'; points?: { at: Time; value?: number }[]; at?: Time[]; by?: Time; delta?: number; grouped?: boolean }
+  | { edit: 'lane_range'; of: LanesOf; path: string; from: Time; to: Time; action: 'delete' | 'cut' | 'paste' | 'shift_value' | 'thin'; points?: LanePoint[]; delta?: number; tolerance?: number; grouped?: boolean }
   /** The Pencil: the points drawn, from `from` to `to` in order, thinned by the engine. */
-  | { edit: 'lane_draw'; of: LanesOf; path: string; from: Time; to: Time; points: LanePoint[]; tolerance?: number }
+  | { edit: 'lane_draw'; of: LanesOf; path: string; from: Time; to: Time; points: LanePoint[]; tolerance?: number; grouped?: boolean }
+  /** Fill Range, or Glide Range with `glide` (T16b), as `automation.fill` writes it. */
+  | { edit: 'lane_fill'; lanes: (LanesOfLane & { value: number })[]; from: Time; to: Time; glide?: boolean }
+  /** Paste of automation (T16b): what `automation.copy` gave, at `at` or over the range to `to`. */
+  | { edit: 'automation_paste'; at: Time; to?: Time; lanes: CopiedLane[] }
+  /** Erase of automation (T16b): the points of the range of the owners' lanes of the categories on. */
+  | { edit: 'automation_erase'; of: LanesOf[]; from: Time; to: Time }
   /** Clear Track Automation: `then` keep (where left out), reset, or hold the value at `at`. */
   | { edit: 'clear_lanes'; of: LanesOf; paths?: string[]; then?: 'keep' | 'reset' | 'hold'; at?: Time }
+  /** A pass of the recording of automation (T16), as the engine writes it at the stop or a Punch In. */
+  | { edit: 'record_pass'; lanes: RecordedLane[] }
 );
+/** A lane of an owner (PROTOCOL.md, "Recording automation"). */
+export interface LanesOfLane { of: LanesOf; path: string }
+/**
+ * A lane as `automation.copy` gives it and `automation_paste` puts it (T16b): the points of a range
+ * at times from its start, or the value at a time (a snapshot).
+ */
+export interface CopiedLane extends LanesOfLane { points?: LanePoint[]; value?: number }
+/** What a pass of recording wrote on one lane (PROTOCOL.md, "Recording automation"). */
+export interface RecordedLane {
+  of: LanesOf;
+  path: string;
+  /** The runs are offsets in dB of the lane as it was (Trim), not its values. */
+  trim?: boolean;
+  runs: { points: LanePoint[]; to: Time; then: 'return' | 'hold' | 'event' | 'cut'; glide?: Time }[];
+}
 /** An attribute of a clip that Paste/Remove Attributes takes (p. 3842). */
 export type ClipAttribute = 'volume' | 'plugins' | 'equalizer';
 export type Change = Op | Edit;

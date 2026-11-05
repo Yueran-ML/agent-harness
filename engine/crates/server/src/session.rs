@@ -48,6 +48,7 @@ use crate::view::{Monitor, Viewer};
 
 mod facts;
 mod sound;
+mod sound_curves;
 #[cfg(test)]
 mod tests;
 mod tracker;
@@ -1474,6 +1475,9 @@ async fn dispatch(
         "view.pointer" => view_pointer(engine, connection, kind, id, params).await,
         "window.bind" | "window.input" | "window.unbind" => {
             window::call(engine, connection, kind, id, method, params).await
+        }
+        "audio.eq_response" | "audio.dynamics_curve" => {
+            sound_curves::call(engine, connection, id, method, params).await
         }
         "audio.standards" | "audio.meters" | "audio.loudness" | "audio.analyze"
         | "audio.normalize" | "audio.level_match" | "audio.cancel" => {

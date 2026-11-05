@@ -1638,6 +1638,33 @@ class Engine:
         said = await self._call("audio.standards")
         return cast("list[dict[str, Any]]", said["standards"])
 
+    async def eq_response(
+        self, timeline: str, target: Mapping[str, str], frequencies: Sequence[float]
+    ) -> dict[str, Any]:
+        """Read the current model-static EQ response, with its revision and sample rate.
+
+        Target names exactly one audio track, bus or clip. Frequencies contain 1–512 finite
+        values from 20 Hz to min(20 kHz, 0.45 × sample rate). This does not read automation
+        at the playhead and never changes project history.
+        """
+        return await self._call(
+            "audio.eq_response",
+            {"timeline": timeline, "target": dict(target), "frequencies": list(frequencies)},
+        )
+
+    async def dynamics_curve(
+        self, timeline: str, target: Mapping[str, str], inputs_db: Sequence[float]
+    ) -> dict[str, Any]:
+        """Read the model-static Dynamics curve for a track or bus, with its revision.
+
+        Inputs contain 1–512 finite levels from −60 to 0 dBFS. Outputs include dry mix and
+        make-up; they are steady-state values, not instantaneous sidechain or meter readings.
+        """
+        return await self._call(
+            "audio.dynamics_curve",
+            {"timeline": timeline, "target": dict(target), "inputs_db": list(inputs_db)},
+        )
+
     def latest_sound(self, timeline: str, *, revision: int) -> dict[str, Any] | None:
         """Last successful analysis requested by this client, never an external desktop job.
 

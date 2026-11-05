@@ -45,6 +45,7 @@ mod build_warp;
 mod clip;
 mod pdc;
 mod process;
+mod response;
 pub mod route;
 mod strip;
 mod taps;
@@ -59,6 +60,7 @@ pub use build::{
 };
 pub use build_retune::{retune, without_clip_levels};
 pub use clip::{radius, resampled, Reach};
+pub use response::{dynamics_curve, eq_response};
 pub use taps::{Point, Taps};
 
 /// A clip of a graph as its controls find it: its track, its id, and whether its gain and its

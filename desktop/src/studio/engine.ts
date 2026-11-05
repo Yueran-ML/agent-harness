@@ -1065,6 +1065,8 @@ export interface PageMethods {
   // The meters, the loudness and the analyses of sound (PROTOCOL.md, "Meters, loudness and the analysis of sound").
   'audio.standards': { standards: AudioStandard[] };
   'audio.meters': Meters;
+  'audio.eq_response': { revision: number; sample_rate: number; frequencies: number[]; gain_db: number[] };
+  'audio.dynamics_curve': { revision: number; inputs_db: number[]; outputs_db: number[] };
   'audio.loudness': LoudnessReading;
   'audio.analyze': { job: string };
   'audio.normalize': { job: string };

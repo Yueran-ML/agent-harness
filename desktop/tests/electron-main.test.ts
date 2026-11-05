@@ -4510,6 +4510,7 @@ describe('the engine of the studio', () => {
       'track.start', 'track.stop', 'track.edit',
       // The meters and the analyses of sound (phase 3, T9b).
       'audio.standards', 'audio.meters', 'audio.loudness', 'audio.analyze', 'audio.normalize', 'audio.level_match', 'audio.cancel',
+      'audio.eq_response', 'audio.dynamics_curve',
       // The recording of automation (T16), and the rest of it (T16b).
       'automation.record', 'automation.touch', 'automation.punch',
       'automation.all_read', 'automation.join', 'automation.fill', 'automation.copy',

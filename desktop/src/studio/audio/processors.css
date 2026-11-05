@@ -1,0 +1,29 @@
+.processor-panel { color: var(--text, #ddd); padding: 10px; min-width: 420px; }
+.processor-toolbar { display: flex; align-items: center; gap: 8px; }
+.processor-note { font-size: 11px; opacity: .7; margin: 5px 0; }
+.processor-curve { display: block; width: 100%; max-height: 250px; background: #171b1e; color: #aaa; }
+.processor-curve text { fill: currentColor; font-size: 10px; }
+.processor-grid { stroke: #384148; stroke-width: .7; }
+.processor-response { stroke: #b4e6b5; stroke-width: 1.7; }
+.eq-handle { fill: #f0c56a; stroke: #332d20; stroke-width: 1; cursor: move; touch-action: none; }
+.eq-handle[aria-disabled=true] { cursor: default; }
+.eq-handle-number { font-weight: 700; font-size: 14px !important; fill: #f0c56a !important; pointer-events: none; }
+.processor-curve g[data-on=false] { opacity: .45; }
+.dynamics-threshold { stroke: #579dde; stroke-dasharray: 3 3; }
+.eq-bands, .dynamics-modules { display: flex; gap: 4px; align-items: stretch; }
+.processor-panel fieldset { border: 1px solid #444; padding: 5px; min-width: 0; flex: 1; }
+.processor-panel select { max-width: 100%; font-size: 11px; }
+.audio-knob { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; margin: 5px 0; font-size: 11px; }
+.audio-knob > span:first-child { flex: 1 0 100%; cursor: default; }
+.audio-knob-cap { font-size: 20px; cursor: ns-resize; touch-action: none; user-select: none; }
+.audio-knob-cap[aria-disabled=true] { opacity: .4; cursor: default; }
+.audio-knob input { width: 64px; min-width: 36px; font-size: 11px; }
+.processor-window { position: fixed; z-index: 70; width: min(800px, 90vw); max-height: 80vh; overflow: auto; background: #24282b; border: 1px solid #68737a; box-shadow: 0 6px 24px #0009; }
+.processor-window > header { display: flex; justify-content: space-between; align-items: center; padding: 7px 12px; background: #333b40; cursor: move; touch-action: none; }
+.processor-window > header button { cursor: pointer; }
+.edit-processor-inspector { position: absolute; right: 0; bottom: 0; z-index: 15; width: min(780px, 90vw); max-height: 85vh; overflow: auto; background: #24282b; border: 1px solid #68737a; }
+.edit-processor-inspector > header { display: flex; justify-content: space-between; padding: 8px; }
+.processor-thumbnail { padding: 0 !important; width: 64px; height: 34px; background: #171b1e; }
+.processor-thumbnail svg { width: 100%; height: 100%; }
+.processor-thumbnail[aria-pressed=true], .effects-in[aria-pressed=true] { border-color: #db8e35; color: #efa64e; }
+.path-settings { position: fixed; z-index: 90; background: #282c30; border: 1px solid #68737a; padding: 10px; width: 190px; }

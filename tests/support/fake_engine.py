@@ -581,6 +581,19 @@ class Fake:
     def audio_standards(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
         return {"standards": copy.deepcopy(self.standards)}
 
+    def audio_eq_response(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        return self._processor_curve("audio.eq_response", params)
+
+    def audio_dynamics_curve(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        return self._processor_curve("audio.dynamics_curve", params)
+
+    def _processor_curve(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Use an explicit reply fixture; the fake never implements a second DSP formula."""
+        self.sounds.append((method, copy.deepcopy(params)))
+        if method not in self.results:
+            raise RefusedError(-32000, f"no static curve fixture configured for {method}")
+        return copy.deepcopy(self.results[method])
+
     def audio_analyze(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
         return self._sound("audio.analyze", params)
 

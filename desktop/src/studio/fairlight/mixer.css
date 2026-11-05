@@ -32,7 +32,8 @@
 .audio-meter-peak { position:absolute; height:2px; width:100%; background:#f7e0ab; }
 .audio-meter[data-shadow] { opacity:.4; }
 .mixer-automation { display:block; color:#80c99b; font-size:9px; }
-.audio-mixer[data-compact] .mixer-summary { display:none; }
+.audio-mixer[data-compact] .mixer-summary { display:block; }
+.audio-mixer[data-compact] .mixer-summary > div:not([data-core]) { display:none; }
 .audio-mixer[data-compact] .mixer-strip { min-height:300px; }
 .edit-mixer { min-height:0; width:300px; flex:none; display:flex; flex-direction:column; border-left:1px solid var(--ink-3); }
 .edit-audio-bottom { display:flex; flex:1; min-height:0; min-width:0; }

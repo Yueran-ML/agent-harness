@@ -10,6 +10,9 @@ import './mixer.css';
 import { keyOf } from '../../app/keys';
 import { writing } from '../keys';
 import { editKey } from '../timeline/editKeys';
+import { processorChanges, targetOf, type ProcessorModule } from '../audio/processorModel';
+import { ProcessorWindow } from './ProcessorWindow';
+import '../audio/processors.css';
 
 /** Keep text/local edits here; ordinary transport and global history keep their existing route. */
 export function isolateMixerKeys(event: KeyboardEvent<HTMLElement>) {
@@ -24,6 +27,7 @@ export interface MixerProps {
 }
 export function Mixer({ bridge, session, revision, timeline, frame, meters, selected, onSelect, compact = false }: MixerProps) {
   const t = useFairlightText(); const [problem, setProblem] = useState<string | null>(null);
+  const [processors, setProcessors] = useState<{ key: string; module: ProcessorModule }[]>([]);
   const strips = mixerStrips(timeline), plan = useRef<FaderPlan | null>(null);
   const [preview, setPreview] = useState<Record<string, number>>({});
   const gesture = useAudioGesture({ bridge, session, revision, identity: `${timeline.id}/mixer`, locked: false, onFailure: error => setProblem(error instanceof Error ? error.message : String(error)) });
@@ -56,7 +60,7 @@ export function Mixer({ bridge, session, revision, timeline, frame, meters, sele
     window.addEventListener('pointerup', finish); window.addEventListener('pointercancel', abandon); window.addEventListener('blur', abandon);
     return () => { abandon(); window.removeEventListener('pointerup', finish); window.removeEventListener('pointercancel', abandon); window.removeEventListener('blur', abandon); };
   }, [session, timeline.id]);
-  useEffect(() => { sweep.current = null; plan.current = null; setPreview({}); }, [session, timeline.id]);
+  useEffect(() => { sweep.current = null; plan.current = null; setPreview({}); setProcessors([]); }, [session, timeline.id]);
   const start = (strip: MixerStrip, modifiers: Modifiers) => {
     const captured = faderPlan(timeline, strip.key, selected, modifiers);
     if (!captured.members.length || !gesture.start(captured.restore)) return false;
@@ -89,7 +93,10 @@ export function Mixer({ bridge, session, revision, timeline, frame, meters, sele
   };
   const draw = (strip: MixerStrip) => {
     const reading = meters?.strips.find(m => 'track' in m.owner ? strip.kind === 'track' && m.owner.track === strip.id : strip.kind === 'bus' && m.owner.bus === strip.id);
-    return <ChannelStrip key={strip.key} strip={strip} seconds={frame * timeline.rate.den / timeline.rate.num} selected={selected.includes(strip.key)}
+    return <ChannelStrip key={strip.key} strip={strip} compact={compact} seconds={frame * timeline.rate.den / timeline.rate.num} selected={selected.includes(strip.key)}
+      processorContext={{ bridge, session, revision, timeline, target: targetOf(strip), selected, seconds: frame * timeline.rate.den / timeline.rate.num }}
+      onProcessor={module => setProcessors(old => [...(compact ? [] : old.filter(p => p.key !== strip.key || p.module !== module)), { key: strip.key, module }])}
+      onStripSetting={(path, value, modifiers) => gesture.commit(processorChanges(timeline.id, operationTargets(strips, strip.key, selected, modifiers), path, value))}
       value={gesture.active() ? preview[strip.key] : undefined} meters={timeline.audio?.prefader_metering ? reading?.pre : reading?.post}
       shadow={Boolean(timeline.audio?.prefader_metering && strips.some(s => s.solo) && !strip.solo && !strip.safe)}
       isActive={gesture.active} onSelect={modifiers => select(strip, modifiers)} onRename={async name => {
@@ -114,5 +121,11 @@ export function Mixer({ bridge, session, revision, timeline, frame, meters, sele
     {problem && <p role="alert">{problem}<button type="button" onClick={() => setProblem(null)}>{t('Dismiss')}</button></p>}
     <div className="mixer-regions"><div className="mixer-region mixer-tracks" aria-label={t('Tracks')}>{strips.filter(s => s.kind === 'track').map(draw)}</div>
       <div className="mixer-region mixer-buses" aria-label={t('Buses')}>{strips.filter(s => s.kind === 'bus').map(draw)}</div></div>
+    {processors.map((p, order) => {
+      const owner = strips.find(s => s.key === p.key); if (!owner) return null;
+      return <ProcessorWindow key={`${p.key}/${p.module}`} context={{ bridge, session, revision, timeline, target: targetOf(owner), selected, seconds: frame * timeline.rate.den / timeline.rate.num }} module={p.module} name={owner.name} compact={compact} order={order}
+        onClose={() => setProcessors(old => old.filter(each => each.key !== p.key || each.module !== p.module))}
+        onFront={() => setProcessors(old => old.at(-1) === p ? old : [...old.filter(each => each !== p), p])} />;
+    })}
   </section>;
 }

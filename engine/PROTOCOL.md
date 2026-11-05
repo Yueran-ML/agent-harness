@@ -168,6 +168,8 @@ Before `hello`, every other request is refused with `-32600`.
 | `audio.meters` | `{"timeline": "t1", "reset"?: false}` | what the meters of the timeline show now: `{"timeline", "playing", "rate": 30, "scale", "strips": [...], "control_room", "loudness": {...}, "lost"}` (see Meters, loudness and the analysis of sound) |
 | `audio.loudness` | `{"timeline": "t1", "action"?: "start" \| "pause" \| "reset"}` | the loudness meter after the action: `{"running", "standard", "target", "momentary", ...}` |
 | `audio.standards` | none | `{"standards": [{"id", "name", "target", "tolerance", "true_peak", "measure", "dialogue", "resolve", "official", "verified", "source"}, ...]}` |
+| `audio.eq_response` | `{"timeline":"t1", "target":{"track":"A1"}, "frequencies":[20,1000,20000]}`; target is exactly one of `track`, `bus`, `clip` | `{"revision", "sample_rate", "frequencies", "gain_db"}`; static EQ response (see Static processor curves) |
+| `audio.dynamics_curve` | `{"timeline":"t1", "target":{"track":"A1"}, "inputs_db":[-60,-20,0]}`; target is exactly one of `track`, `bus` | `{"revision", "inputs_db", "outputs_db"}`; static Dynamics curve (see Static processor curves) |
 | `audio.analyze` | `{"timeline": "t1", "targets": [{"clip": "c1"} \| {"track": "A1"} \| {"bus": "B1"}, ...], "range"?: {"from": 0, "to": 250}, "standard"?: "ebu-r128", "revision"?: n}` | `{"job": "audio-1"}` at once, then `audio.analysis` |
 | `audio.normalize` | `{"timeline": "t1", "clips": ["c1", ...], "level"?: "sample_peak" \| "true_peak" \| "<standard>", "target"?: -9, "mode"?: "relative" \| "independent", "apply"?: false, "revision"?: n}` | `{"job": "audio-2"}` at once, then `audio.analysis` with the gains (Normalize Audio Levels) |
 | `audio.level_match` | `{"timeline": "t1", "reference": "c1", "clips": ["c2", ...], "apply"?: false, "revision"?: n}` | `{"job": "audio-3"}` at once, then `audio.analysis` with the gains (Level Matcher) |
@@ -4533,6 +4535,29 @@ removed. At publication, sidecars are renamed first and the movie last; previous
 are retained in temporary backups until all renames succeed, then removed. A publication
 failure rolls back previously renamed files. If the filesystem prevents restoring a backup,
 the old file is retained and its recovery path is logged as `render_restore_failed`.
+
+## Static processor curves
+
+`audio.eq_response` and `audio.dynamics_curve` are read-only views of the current **model
+static settings**. They reuse the graph's model-to-DSP conversion and the actual EQ response
+and Dynamics steady-state functions. They do not evaluate automation at the playhead, report
+attack/release transients, or expose real-time input/output/reduction meters. Dynamics uses its
+own input level even when an external sidechain is selected, and includes Dry Mix and Make Up.
+EQ bypass returns zero gain; Dynamics bypass returns its input. Clip EQ uses four bands; track
+and bus EQ use six.
+
+The target must name an audio track, a bus, or (for EQ only) a clip on an audio track in the
+requested timeline. Each request contains 1–512 finite points: EQ frequencies from 20 Hz to
+`min(20000, 0.45 * sample_rate)`, or Dynamics input levels from −60 to 0 dBFS. The 512-point
+limit bounds allocation and repeated control reads while covering a processor window's width.
+Unknown fields, invalid owners, empty/oversized arrays and out-of-range/non-finite values are
+refused with `-32602`; neither errors nor successful reads change revision or history. Point
+order is preserved. Values are evaluated at DSP float precision.
+
+Replies carry the revision of the locked snapshot; clients discard replies older than their
+current revision and replies for an obsolete session/owner. Accepted gesture previews are
+model changes and therefore appear in subsequent responses. A client must not label these
+curves as instantaneous automation or display a synthetic moving meter ball from them.
 
 ## Meters, loudness and the analysis of sound
 

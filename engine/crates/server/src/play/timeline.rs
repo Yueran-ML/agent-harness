@@ -862,12 +862,18 @@ impl Worker {
         i64::try_from(nanos * rate / clock::NANOS).ok()
     }
 
-    fn pause(&mut self) {
-        // A pass of the recording of automation ends where the timeline stops (T16).
+    /// Ends the pass of the recording of automation under way where the timeline is heard now,
+    /// and writes it (T16): where it stops, or plays at another speed.
+    fn end_pass(&mut self) {
         if let Some(project) = self.project.clone() {
             let at = self.heard_sample();
             self.automation.end(&project, at, &mut self.playback);
         }
+    }
+
+    fn pause(&mut self) {
+        // A pass of the recording of automation ends where the timeline stops (T16).
+        self.end_pass();
         self.playback.stop();
         self.sound.stop();
         self.joining = None;
@@ -1383,6 +1389,10 @@ impl Worker {
                 let rate = project.timelines[index].rate;
                 self.settle = None;
                 if let Some(clock) = self.clock {
+                    // A pass is recorded at speed 1 alone: another speed ends it there (T16).
+                    if speed != clock.speed() {
+                        self.end_pass();
+                    }
                     self.clock = Some(clock.with_speed(speed, self.clock_now()));
                 } else {
                     self.status.speed = speed;
@@ -2403,6 +2413,61 @@ mod tests {
         assert_eq!(worker.sound.working().unwrap().session(), session + 1);
         worker.pause();
         assert!(!worker.playback.playing());
+    }
+
+    #[test]
+    fn a_pass_recorded_at_speed_1_ends_where_the_speed_changes() {
+        use super::super::record::Order;
+        use columbina_audio::graph::Owner;
+        let mut worker = worker();
+        worker.status.timeline = Some("t1".into());
+        let mut project = Project::sample();
+        project.timelines[0].audio.record.touch = columbina_model::audio::Touch::Latch;
+        worker.replace(0, Arc::new(project.clone()));
+        let written: Arc<Mutex<Vec<columbina_model::Edit>>> = Arc::default();
+        worker.automate(Order::Hook(Arc::new({
+            let written = Arc::clone(&written);
+            move |edit, _| lock(&written).push(edit)
+        })));
+        let (reply, _answer) = oneshot::channel();
+        worker.automate(Order::Record {
+            timeline: "t1".into(),
+            on: true,
+            glide: None,
+            by: crate::session::Kind::Desktop,
+            reply,
+        });
+        let rate = project.timelines[0].rate;
+        worker.clock = Some(Clock::starting(0, 1, rate, worker.now()));
+        worker.status.playing = true;
+        worker.restart_sound();
+        assert_eq!(worker.status.sound, Sound::On);
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while worker.heard_sample().unwrap_or(0) < 4_800 {
+            worker.check_sound();
+            assert!(Instant::now() < deadline, "nothing heard");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        worker.automate(Order::Touch {
+            timeline: "t1".into(),
+            owner: Owner::Track("A1".into()),
+            path: "fader_db".into(),
+            value: -6.0,
+            touching: true,
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        let before = worker.heard_sample().unwrap();
+        worker.action(Action::Play { speed: 2 });
+        let after = before + 48_000 / 10;
+        let edits = lock(&written).clone();
+        let [columbina_model::Edit::RecordPass { lanes, .. }] = &edits[..] else {
+            panic!("one pass written at the change: {edits:?}");
+        };
+        let to = lanes[0].runs[0].to.ticks;
+        assert!(to >= before && to < after, "{before} <= {to} < {after}");
+        // At speed 2 nothing more is recorded; the pause writes nothing more.
+        worker.pause();
+        assert_eq!(lock(&written).len(), 1);
     }
 
     /// How long the next feed that [`stalls_once`] opens waits first.

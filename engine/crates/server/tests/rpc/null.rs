@@ -4,7 +4,8 @@
 //! from the other is nothing but zeros. The timelines have every kind of what the graph does
 //! (EQ, Dynamics, Limiter, Noise Reduction, Ducker, Pitch, a send to a bus, a VCA, a lane of the
 //! fader, a crossfade, a clip at 0.8 times its speed with its pitch kept and one at 1.5 times,
-//! mono, stereo and 5.1 tracks), and their media are WAV, not Matroska (T3's note).
+//! effects on clips (T4c: a Pitch on the slow one, a Limiter on one in the crossfade), mono,
+//! stereo and 5.1 tracks), and their media are WAV, not Matroska (T3's note).
 //!
 //! Playback must start where it is asked: a session whose graph is not built and prerolled within
 //! 2 s falls back to the clock of the system and starts its sound again elsewhere (T5), outside
@@ -202,13 +203,21 @@ fn timeline(id: &str, media: &[String], quick: bool) -> Timeline {
     );
     // B: the music, stereo, two clips crossfaded at 4 s, a Limiter (and Noise Reduction), a
     // send after the fader to the bus of effects, in the VCA.
+    // The second clip has a Limiter of its own, 64 samples late, through the crossfade (T4c).
+    let mut b2 = clip(&format!("{id}b2"), music, 4.0, 100, 100);
+    b2.effects.push(insert(
+        "",
+        Effect::Limiter(LimiterFx {
+            input_db: 9.0,
+            ceiling_db: -3.0,
+            release_ms: 30.0,
+            ..LimiterFx::default()
+        }),
+    ));
     let mut b = track(
         &format!("{id}b"),
         TrackFormat::Stereo,
-        vec![
-            clip(&format!("{id}b1"), music, 0.0, 0, 100),
-            clip(&format!("{id}b2"), music, 4.0, 100, 100),
-        ],
+        vec![clip(&format!("{id}b1"), music, 0.0, 0, 100), b2],
     );
     b.transitions = vec![Transition {
         id: format!("{id}x"),
@@ -264,10 +273,19 @@ fn timeline(id: &str, media: &[String], quick: bool) -> Timeline {
             dry_wet: 100.0,
         }),
     ));
-    // D: the music again at 0.8 times its speed with its pitch kept, then at 1.5 times.
+    // D: the music again at 0.8 times its speed with its pitch kept, and a Pitch of its own a
+    // fourth down (T4c), then at 1.5 times.
     let mut slow = clip(&format!("{id}d1"), music, 0.0, 0, 100);
     slow.speed = Speed { num: 4, den: 5 };
     slow.pitch_correction = true;
+    slow.effects.push(insert(
+        "",
+        Effect::Pitch(PitchFx {
+            semitones: -5,
+            cents: 0.0,
+            dry_wet: 100.0,
+        }),
+    ));
     let mut fast = clip(&format!("{id}d2"), music, 1.0, 100, 100);
     fast.speed = Speed { num: 3, den: 2 };
     let mut d = track(&format!("{id}d"), TrackFormat::Stereo, vec![slow, fast]);

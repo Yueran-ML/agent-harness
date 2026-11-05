@@ -334,6 +334,11 @@ impl Engine {
             repair,
             &scopes,
         );
+        // A pass of the recording of automation (T16) is written as one transaction.
+        transport.on_record(Arc::new({
+            let state = Arc::clone(&state);
+            move |edit, kind| write_pass(&state, edit, kind, limits)
+        }));
         let project_now = {
             let mut locked = state.try_lock().expect("no one has the state yet");
             locked.transport = Some(transport.clone());
@@ -625,6 +630,72 @@ fn proxy_made(
         proxy::delete(dir, Path::new(&before.path));
     }
     made
+}
+
+/// Write a pass of the recording of automation (T16, `play::record`) as one transaction made by
+/// a client of `kind`, and tell everyone. It is given by the thread of the timeline monitor,
+/// which a request that holds the state may be waiting on, so the state is taken on a thread of
+/// its own.
+fn write_pass(state: &Arc<Mutex<State>>, edit: columbina_model::Edit, kind: Kind, limits: Limits) {
+    let state = Arc::clone(state);
+    let spawned = std::thread::Builder::new()
+        .name("columbina-record".into())
+        .spawn(move || {
+            let mut locked = state.blocking_lock();
+            let written = locked.apply_changes_locked(kind, None, None, Instant::now(), |_| {
+                Ok(vec![Change::Edit(edit)])
+            });
+            if let Err(WorkedOutError::Input(fault) | WorkedOutError::Apply(fault)) = written {
+                log(
+                    "automation_record_failed",
+                    &json!({"message": fault.message, "data": fault.data}),
+                );
+            }
+            let kicked = std::mem::take(&mut locked.kicked);
+            drop(locked);
+            for (id, kind) in kicked {
+                log_kicked(id, Some(kind), limits);
+            }
+        });
+    if let Err(error) = spawned {
+        log(
+            "automation_record_failed",
+            &json!({"message": format!("the pass cannot be written: {error}")}),
+        );
+    }
+}
+
+/// `automation.record`, `automation.touch`, `automation.punch`: the recording of automation of
+/// the timeline monitor (T16, `play::record`). A touch is answered at once, once it is checked
+/// against the project and recording is on.
+async fn automation_call(
+    engine: &Engine,
+    kind: Kind,
+    method: &str,
+    params: Option<&RawValue>,
+) -> Result<Value, Fault> {
+    let (order, answer) = crate::play::record::read(method, params, kind)?;
+    if answer.is_none() {
+        read_project(engine, |project| {
+            crate::play::record::check(project, &order)
+        })
+        .await?;
+        if !engine.transport.recording() {
+            return Err(Fault::new(
+                rpc::TRANSPORT_FAILED,
+                "automation is not being recorded: automation.record turns it on",
+            )
+            .with_data(json!({"reason": "not_recording"})));
+        }
+    }
+    engine.transport.automation(order)?;
+    match answer {
+        Some(answer) => answer.await.map_err(|_| {
+            Fault::new(rpc::TRANSPORT_FAILED, "the timeline monitor has stopped")
+                .with_data(json!({"reason": "stopped"}))
+        })?,
+        None => Ok(json!({})),
+    }
 }
 
 /// Make the proxy of media again, as the transport asks when its file cannot be opened or
@@ -1201,6 +1272,13 @@ async fn dispatch(
                 let (monitor, _) = crate::play::monitor_params(method, params)?;
                 engine.transport.redraw(monitor);
             }
+            Ok(match connection.queue(rpc::result_line(id, &result)) {
+                Ok(()) => Reply::Queued,
+                Err(refused) => Reply::Refused(refused),
+            })
+        }
+        "automation.record" | "automation.touch" | "automation.punch" => {
+            let result = automation_call(engine, kind, method, params).await?;
             Ok(match connection.queue(rpc::result_line(id, &result)) {
                 Ok(()) => Reply::Queued,
                 Err(refused) => Reply::Refused(refused),

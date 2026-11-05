@@ -648,7 +648,7 @@ are at most +10; −100 or below is −∞.
   (editing|fader|solo|mute|sends|panning|automation; all), active (true)}`. `audio` is
   `{monitor ("B1"), meter (ppm|vu|custom), custom_meter, prefader_metering (false), loudness:
   {standard (ebu_r128), target (−23, −36…−10), scale (ebu9), relative (true), lock_to_transport
-  (true)}, exclusive_solo (false), follows_edit (true), record: {mode, touch, on_stop,
+  (true)}, exclusive_solo (false), follows_edit (true; see Edits), record: {mode, touch, on_stop,
   categories, preview, active_range}}`. At most 64 buses and 64 VCAs; no path of buses longer
   than 6, nor chain of VCAs; no loop through outputs, sends, sidechains and duckers.
 - **Lane** (automation of a track, bus or VCA, by the path of its setting): `{points: [{at:
@@ -1946,13 +1946,14 @@ id targets that track. Both picture and sound placed together get a new link gro
 | `append` | `source`, `video_track?`, `audio_track?` | Place after the latest clip end on the target tracks. |
 | `smart_insert` | `source`, `at`, `video_track?`, `audio_track?` | Insert at the nearest unlocked audio/video cut; ties choose the earlier cut. |
 | `ripple_overwrite` | same | Replace the clip range at `at` and ripple by the difference in lengths. |
-| `lift` | `clips`, `linked?` | Remove selected clips and leave their gaps. |
-| `ripple_delete` | `clips`, `linked?` | Remove selected clips and close their occupied ranges on unlocked tracks. |
-| `ripple_delete_range` | `from`, `to`, `tracks?` | Cut out `[from,to)` and close it, on all unlocked tracks or the given tracks. |
+| `lift` | `clips`, `linked?`, `grouped?` | Remove selected clips and leave their gaps. |
+| `ripple_delete` | `clips`, `linked?`, `grouped?` | Remove selected clips and close their occupied ranges on unlocked tracks. |
+| `ripple_delete_range` | `from`, `to`, `tracks?`, `grouped?` | Cut out `[from,to)` and close it, on all unlocked tracks or the given tracks. |
 | `close_gap` | `track`, `at`, `straddling?:"refuse"\|"stay"` | Close the gap at `at` and ripple unlocked tracks. With `straddling:"stay"`, clips of other tracks across the gap stay where they are instead of refusing (see below). |
-| `blade` | `at`, `tracks?`, `linked?` | Split crossing clips; original ids stay with first halves, second halves get new ids and link groups. |
-| `move` | `clips`, `delta`, `to_track?`, `overwrite?`, `linked?` | Move clips; default refuses occupied destinations, `overwrite:true` clears them. With `to_track`, every clip that moves, the linked ones too, goes as many tracks up or down among the tracks of its own kind as `to_track` is from the track of the first clip (see below). |
-| `insert_move` | `clips`, `at`, `linked?` | Lift and close original ranges, then insert at the original timeline coordinate. Noncontiguous selections pack their occupied interval union, not the gaps between it. Subtitles on unlocked tracks within a moved range go with it, keeping their ids and their place on the clips; one across an end of a range is cut there, and only its part inside goes along. |
+| `blade` | `at`, `tracks?`, `linked?`, `grouped?` | Split crossing clips; original ids stay with first halves, second halves get new ids and link groups. |
+| `move` | `clips`, `delta`, `to_track?`, `overwrite?`, `linked?`, `grouped?` | Move clips; default refuses occupied destinations, `overwrite:true` clears them. With `to_track`, every clip that moves, the linked ones too, goes as many tracks up or down among the tracks of its own kind as `to_track` is from the track of the first clip (see below). |
+| `insert_move` | `clips`, `at`, `linked?`, `grouped?` | Lift and close original ranges, then insert at the original timeline coordinate. Noncontiguous selections pack their occupied interval union, not the gaps between it. Subtitles on unlocked tracks within a moved range go with it, keeping their ids and their place on the clips; one across an end of a range is cut there, and only its part inside goes along. |
+| `place_copies` | `copies: [{clip, track, start}]` | Put a copy of each clip on `track` from frame `start` (a track of its kind, not locked: `wrong_kind`, `locked`), as an Alt-drag duplicate (p. 811) or a paste does: what is there is cleared as an overwrite clears it, after every copy is made of its clip as it was; each copy has all the settings of its clip but its id and transitions, copies of two or more clips of one link group are linked in a new group, and with Automation Follows Edit each takes a copy of the lanes over its clip (see below). |
 | `trim` | `clip`, `edge:in|out`, `delta`, `ripple?`, `linked?` | Move one edge; ripple defaults false. |
 | `roll` | `left`, `right`, `delta`, `linked?` | Move a shared cut, keeping outer endpoints. |
 | `slip` | `clip`, `delta`, `linked?` | Change source in/out while keeping timeline position and length. |
@@ -2000,6 +2001,71 @@ named that is on a locked track stays where it is. No track is made: a clip with
 its kind that far up or down is refused with `no_track` (`kind`), and one whose track to go to
 is locked with `locked` (`track`). `to_track` must be of the kind of the first clip
 (`wrong_kind`). Without `to_track`, clips stay on their tracks.
+
+**Groups of tracks that link Editing** (Reference Manual 20, p. 3917). `lift`, `ripple_delete`,
+`move`, `insert_move`, `blade` and `ripple_delete_range` take `grouped` (false where it is left
+out, and not written then). An editor's own action (a selection deleted, moved or cut by the
+user, or by the agent for the user) passes `grouped: true`; edits that a client puts together to
+do something else (clearing where copies go, the blades of Backspace over marks) leave it out.
+Given `grouped`, where a track of sound is in an active group of tracks whose `linked` has
+`editing`, `lift`, `ripple_delete`, `move` and `insert_move` do on each other track of the group,
+not locked, what they do over the frames of each clip that they take (after the clips linked to
+the named ones): the clips there are cut at the ends of those frames and what is between them
+is taken, as `ripple_delete_range` takes a range, and nothing outside them (a music bed under 2 s
+of dialogue lifted loses those 2 s only). A `move` with `to_track` takes no other track along.
+`blade` and `ripple_delete_range` given `tracks` also cut the other tracks, not locked, of the
+groups of the tracks given. It is one edit, so one step of undo. A locked member is left alone
+and refuses nothing. Trims, rolls, slips, slides, changes of speed and the placing edits are not
+taken along: the manual names jumping to cuts as what follows each track's own boundaries; the
+rest is our choice.
+
+**Automation Follows Edit** (pp. 3910–3911; while the timeline's `audio.follows_edit` is true,
+as it is for a new one; `set_timeline_audio` sets it). The lanes of a track of sound go with
+what the edits of clips do to its clips, as `splice_lane` (or `set_lane`, for a lane made)
+operations of the same transaction, one for each lane that changed, after those of the clips:
+
+- A clip taken away (`lift`, `ripple_delete`, an `overwrite`, `move` or copy over it, the frames
+  that `ripple_delete_range` cuts out of it) leaves its lanes, from its start to its end, going
+  straight from the value that came to its start to the value at its end (a switch holds the
+  first): the points within it are taken away, and the values before and after it stay as they
+  were.
+- A clip moved (`move`, `insert_move`, `slide`) takes the lanes over it along, to where it is
+  now, the points that were at its new place replaced; the lane jumps at each end of it from the
+  value that the track had there to the clip's own. To another track, its lanes go to the lanes of
+  the same settings there; where the track has no lane of a setting, one is made, holding the
+  value that the setting is set to on that track outside the clip. A lane that the track cannot
+  have (an insert or a send that it has not) is not taken, and stays behind as on a lift.
+- `place_copies` puts copies of clips (an Alt-drag duplicate, a paste) and gives each a copy of
+  the lanes over its clip, as a move to that place would, the clip's own lanes staying as they
+  are.
+- A ripple moves the points after its place on the tracks that it ripples, of tracks with no
+  clips there too, and those after the last clip of a track: one that takes frames away takes
+  away the points in them, the two sides meeting at the place with their values (a jump); one
+  that puts frames in goes straight across them from the value that came to the place to the
+  value that was there. (The reference keeps the automation of gaps where it is on a move; on a
+  ripple, time itself is taken out or put in, so we move it.) Where a clip that does not move
+  lies across the place, or starts after it (`close_gap` with `straddling: "stay"`, a ripple
+  `trim` or `set_speed` of a split edit), the lanes are cut at its end, so that they stay with
+  it. A ripple `trim` of a clip's start ripples the lanes of its track from the start: the
+  points over the frames trimmed away are taken away and what the clip still plays keeps its
+  automation (lengthened, the frames put in go straight across as in an insert).
+- `trim` without a ripple, `roll`, `slip`, `blade`, `set_speed`, `replace` and the transitions
+  change no lane over the clip: what a trim shortens is not taken away (it is there again if the
+  clip is lengthened), and what it lengthens over holds the values that were there; a change of
+  speed does not stretch the lanes. A ripple trim that shortens takes away the points of the
+  frames that it takes out of the timeline. A clip placed from its media brings no automation.
+  The lanes of buses and VCAs, which have no clips, stay where they are.
+
+Frame `f` is at tick `⌊f · scale · den / num⌋` of a lane (as the graph places the first sample of
+a clip), and the points over a clip move by as many ticks as its start does, so that they stay
+on the same samples of the clip. At a rate of frames whose frames are not whole ticks (29.97 fps
+at 48 kHz) two clips moved by one number of frames can move by ticks that differ by one: a lane
+whose sloped line crosses the start of such a clip is held there by points of its values first
+(at the tick before the start and at the start), and the last tick of a clip may take the value
+of what follows it. A point that an edit adds and that lies on the straight line between the
+points beside it is left out. The values at the ends of what is taken away or moved are within
+those that the lane had; a lane made on another track also takes the value that its setting is
+set to there.
 
 Trims, rolls, slips and slides clamp to available handles and space, reporting their input
 index in `clamped`; zero delta or an impossible movement is refused. Editing through a

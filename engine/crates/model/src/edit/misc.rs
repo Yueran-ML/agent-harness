@@ -651,7 +651,7 @@ pub(super) fn remove_track(work: &mut Work, track: &str) -> Result<(), EditError
     }
     // The clips go one by one, each with the transitions at it.
     for c in &track.clips {
-        work.remove(&c.id)?;
+        work.remove_alone(&c.id)?;
     }
     for q in &track.cues {
         work.op(Op::RemoveCue {

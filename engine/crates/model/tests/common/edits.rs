@@ -11,9 +11,9 @@
 
 use columbina_model::{
     apply, apply_done, Alignment, AudioFacts, AudioFade, AudioParam, ChannelMap, ChannelSource,
-    ChannelSources, Clip, CueItem, Edge, Edit, Facts, Identity, Material, Media, Op, Project, Rate,
-    Rgba, Source, Speed, Straddling, TextAlign, Time, Timeline, TitleStyle, Track, TrackKind,
-    Transition, TransitionKind, VideoFacts,
+    ChannelSources, Clip, CopyOf, CueItem, Edge, Edit, Facts, Identity, Material, Media, Op,
+    Project, Rate, Rgba, Source, Speed, Straddling, TextAlign, Time, Timeline, TitleStyle, Track,
+    TrackKind, Transition, TransitionKind, VideoFacts,
 };
 use proptest::prelude::*;
 
@@ -120,7 +120,42 @@ pub struct Recipe {
     locked: Vec<bool>,
     /// The track of subtitles that is shown: none, S1 or S2. A timeline shows one at a time.
     shown: usize,
+    /// Lanes of automation of A1 and A2 (T15): of each, its track, its setting (see
+    /// [`LANE_PATHS`]) and its points, at ticks of 48 kHz with values of [`LANE_VALUES`], some
+    /// of them a second point at the time of the one before (a jump).
+    lanes: Vec<LaneRecipe>,
+    /// Groups of tracks of A1 and A2 (T15's review): of each, which of the two are its members
+    /// (bit 0 A1, bit 1 A2, either of which may be locked), which controls it links (bit `k`
+    /// the `k`th of [`GROUP_CONTROLS`]) and whether it is active.
+    groups: Vec<(u8, u8, bool)>,
 }
+
+/// The controls that a group of tracks may link.
+const GROUP_CONTROLS: [&str; 7] = [
+    "editing",
+    "fader",
+    "solo",
+    "mute",
+    "sends",
+    "panning",
+    "automation",
+];
+
+/// A lane of a recipe: A1 or A2, one of [`LANE_PATHS`], and its points, each a tick, a value
+/// and whether a second point jumps from it.
+type LaneRecipe = (usize, usize, Vec<(i64, usize, bool)>);
+
+/// The settings of the random lanes: a fader, a mute (a switch), a pan and the frequency of a
+/// band of EQ (on a scale of logarithms).
+pub const LANE_PATHS: [&str; 4] = ["fader_db", "mute", "pan.x", "eq.0.freq"];
+
+/// The values that the points of a lane of each of [`LANE_PATHS`] take.
+const LANE_VALUES: [&[f64]; 4] = [
+    &[-60.0, -24.5, -12.0, -6.0, 0.0, 3.5, 10.0],
+    &[0.0, 1.0],
+    &[-1.0, -0.5, 0.0, 0.25, 1.0],
+    &[40.0, 100.0, 1000.0, 5000.0, 16000.0],
+];
 
 fn piece() -> impl Strategy<Value = Piece> {
     (
@@ -177,15 +212,38 @@ pub fn recipe() -> impl Strategy<Value = Recipe> {
         prop::collection::vec((0i64..60, 1i64..40, 0usize..2), 0..8),
         prop::collection::vec(prop::bool::weighted(0.12), TRACKS.len()),
         0usize..3,
+        prop::collection::vec(
+            (
+                0usize..2,
+                0usize..LANE_PATHS.len(),
+                prop::collection::vec(
+                    (0i64..170 * 48000, 0usize..16, prop::bool::weighted(0.15)),
+                    1..12,
+                ),
+            ),
+            0..5,
+        ),
+        prop::collection::vec(
+            (
+                1u8..4,
+                prop_oneof![1 => Just(1u8), 2 => any::<u8>()],
+                any::<bool>(),
+            ),
+            0..3,
+        ),
     )
-        .prop_map(|(rate, pieces, transitions, cues, locked, shown)| Recipe {
-            rate,
-            pieces,
-            transitions,
-            cues,
-            locked,
-            shown,
-        })
+        .prop_map(
+            |(rate, pieces, transitions, cues, locked, shown, lanes, groups)| Recipe {
+                rate,
+                pieces,
+                transitions,
+                cues,
+                locked,
+                shown,
+                lanes,
+                groups,
+            },
+        )
 }
 
 /// The project of a recipe: timeline t1 with its tracks, and what of the recipe the operations
@@ -426,6 +484,45 @@ pub fn project_of(recipe: &Recipe) -> Project {
             apply(&mut project, serde_json::from_value(op).unwrap()).unwrap();
         }
     }
+    for &(members, linked, active) in &recipe.groups {
+        let members: Vec<&str> = ["A1", "A2"]
+            .into_iter()
+            .enumerate()
+            .filter(|&(k, _)| members & (1 << k) != 0)
+            .map(|(_, id)| id)
+            .collect();
+        let linked: Vec<&str> = GROUP_CONTROLS
+            .into_iter()
+            .enumerate()
+            .filter(|&(k, _)| linked & (1 << k) != 0)
+            .map(|(_, control)| control)
+            .collect();
+        let op = serde_json::json!({"op": "add_track_group", "timeline": "t1", "group": {"id": "",
+            "name": "Group", "members": members, "linked": linked, "active": active}});
+        apply(&mut project, serde_json::from_value(op).unwrap()).unwrap();
+    }
+    for (track, path, points) in &recipe.lanes {
+        let values = LANE_VALUES[*path];
+        let mut points = points.clone();
+        points.sort_unstable_by_key(|&(at, _, _)| at);
+        let mut made = vec![];
+        for (n, &(at, value, jump)) in points.iter().enumerate() {
+            let point = |value: usize| {
+                serde_json::json!({"at": {"ticks": at, "scale": 48000},
+                    "value": values[value % values.len()]})
+            };
+            made.push(point(value));
+            if jump {
+                made.push(point(value + n + 1));
+            }
+        }
+        let (track, path) = (["A1", "A2"][*track], LANE_PATHS[*path]);
+        let op = serde_json::json!({"op": "set_lane", "timeline": "t1",
+            "of": {"track": track}, "path": path,
+            "lane": {"points": made, "kind": if path == "mute" { "switch" } else { "continuous" }}});
+        apply(&mut project, serde_json::from_value(op.clone()).unwrap())
+            .unwrap_or_else(|e| panic!("{op}: {e:?}"));
+    }
     project
 }
 
@@ -508,7 +605,10 @@ pub struct Making {
 }
 
 /// The kinds of edit, as `edit_of` numbers them.
-pub const KINDS: usize = 42;
+pub const KINDS: usize = 43;
+
+/// The kind of [`Edit::PlaceCopies`], after those of sound (T15's review).
+pub const PLACE_COPIES: usize = 42;
 
 pub fn making() -> impl Strategy<Value = Making> {
     making_of(0..KINDS)
@@ -699,6 +799,8 @@ pub fn edit_of(project: &Project, making: &Making) -> Edit {
         .collect();
     let frame = frame_of(project, m.b);
     let linked = !m.flag(0);
+    // As an editor's own action is, now and then (T15's review).
+    let grouped = m.flag(6);
     let delta = m.delta;
     let timeline = if m.c.is_multiple_of(50) { "t9" } else { "t1" }.to_string();
     let pairs = meeting(project);
@@ -772,17 +874,20 @@ pub fn edit_of(project: &Project, making: &Making) -> Edit {
             timeline,
             clips,
             linked,
+            grouped,
         },
         8 => Edit::RippleDelete {
             timeline,
             clips,
             linked,
+            grouped,
         },
         9 => Edit::RippleDeleteRange {
             timeline,
             from: frame,
             to: frame + delta.abs(),
             tracks: tracks_of(m.c),
+            grouped,
         },
         10 => {
             let (track, at) = gap_of(project, m.b);
@@ -802,6 +907,7 @@ pub fn edit_of(project: &Project, making: &Making) -> Edit {
             at: frame,
             tracks: tracks_of(m.c),
             linked,
+            grouped,
         },
         12 => Edit::Move {
             timeline,
@@ -810,12 +916,14 @@ pub fn edit_of(project: &Project, making: &Making) -> Edit {
             to_track: m.flag(1).then(|| track_of(m.c)),
             overwrite: m.flag(2),
             linked,
+            grouped,
         },
         13 => Edit::InsertMove {
             timeline,
             clips,
             at: frame,
             linked,
+            grouped,
         },
         14 => Edit::Trim {
             timeline,
@@ -915,6 +1023,25 @@ pub fn edit_of(project: &Project, making: &Making) -> Edit {
         27 => Edit::RemoveTrack {
             timeline,
             track: track_of(m.c),
+        },
+        PLACE_COPIES => Edit::PlaceCopies {
+            timeline,
+            copies: clips
+                .iter()
+                .enumerate()
+                .map(|(k, id)| {
+                    let own = project.timelines[0]
+                        .tracks
+                        .iter()
+                        .find(|r| r.clips.iter().any(|c| c.id == *id))
+                        .map_or_else(|| track_of(m.c), |r| r.id.clone());
+                    CopyOf {
+                        clip: id.clone(),
+                        track: if m.flag(1) { track_of(m.c / 7) } else { own },
+                        start: frame + delta.abs() * i64::try_from(k).unwrap(),
+                    }
+                })
+                .collect(),
         },
         _ => sound_edit_of(project, m, &timeline, &clip, &clips),
     }
@@ -1190,4 +1317,36 @@ fn channels_of(n: i64) -> Vec<ChannelMap> {
         1 => vec![pick(&[1]), pick(&[0])],
         _ => vec![pick(&[0, 1]), pick(&[0, 1])],
     }
+}
+
+/// The clips that an edit of `clips` works on as a whole: those named and, with `linked`, those
+/// linked to them on tracks that are not locked. (Given `grouped`, an edit takes from the other
+/// tracks of the groups of tracks only the frames of these, cut out of what is there; T15.)
+pub fn worked_on(
+    project: &Project,
+    clips: &[String],
+    linked: bool,
+) -> std::collections::HashSet<String> {
+    let timeline = &project.timelines[0];
+    let on = |id: &str| {
+        timeline
+            .tracks
+            .iter()
+            .find_map(|r| r.clips.iter().find(|c| c.id == id))
+    };
+    let mut all: Vec<String> = clips.to_vec();
+    if linked {
+        let links: Vec<&String> = clips
+            .iter()
+            .filter_map(|id| on(id)?.link.as_ref())
+            .collect();
+        for r in timeline.tracks.iter().filter(|r| !r.locked) {
+            for c in &r.clips {
+                if c.link.as_ref().is_some_and(|g| links.contains(&g)) {
+                    all.push(c.id.clone());
+                }
+            }
+        }
+    }
+    all.into_iter().collect()
 }

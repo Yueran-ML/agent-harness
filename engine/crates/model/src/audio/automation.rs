@@ -601,7 +601,8 @@ pub fn point(ticks: i64, scale: u32, value: f64) -> LanePoint {
 }
 
 /// Take away a point that is at the time and of the value of the one before it.
-fn without_twins(points: Vec<LanePoint>) -> Vec<LanePoint> {
+#[must_use]
+pub fn without_twins(points: Vec<LanePoint>) -> Vec<LanePoint> {
     let mut kept: Vec<LanePoint> = Vec::with_capacity(points.len());
     for p in points {
         let twin = kept
@@ -614,11 +615,29 @@ fn without_twins(points: Vec<LanePoint>) -> Vec<LanePoint> {
     kept
 }
 
+/// `value` within the least and the greatest of the values of `points` (as it is, where there
+/// are none): a value that a lane comes to between two of its points is between theirs but for
+/// the rounding of `a + (b − a)·s` (0.2 to −0.9 comes to −0.9000000000000001), which this takes
+/// away, so that a point made of it gives the lane no value beyond those it had.
+#[must_use]
+pub fn bounded(points: &[LanePoint], value: f64) -> f64 {
+    let (least, most) = points
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
+            (lo.min(p.value), hi.max(p.value))
+        });
+    if least <= most {
+        value.clamp(least, most)
+    } else {
+        value
+    }
+}
+
 /// The points of a lane with those from tick `from` to tick `to`, both in, put in place of by
 /// `new`: the value before `from` and the value from `to` on stay as they were, as a point at
 /// `from` of the value that came to it and one at `to` of the value that was there (the bounding
-/// keyframes of p. 3899; the ends of a range taken away keep their values, p. 3898). `new` must be
-/// in order, from `from` to `to`.
+/// keyframes of p. 3899; the ends of a range taken away keep their values, p. 3898), each within
+/// the values that the lane had ([`bounded`]). `new` must be in order, from `from` to `to`.
 #[must_use]
 pub fn replaced(
     points: &[LanePoint],
@@ -628,8 +647,8 @@ pub fn replaced(
     (from, to): (i64, i64),
     new: &[LanePoint],
 ) -> Vec<LanePoint> {
-    let left = value_before(points, shape, fixed, from);
-    let right = value_at(points, shape, fixed, to);
+    let left = bounded(points, value_before(points, shape, fixed, from));
+    let right = bounded(points, value_at(points, shape, fixed, to));
     let before = points.iter().filter(|p| p.at.ticks < from);
     let after = points.iter().filter(|p| p.at.ticks > to);
     let all: Vec<LanePoint> = before

@@ -508,6 +508,7 @@ fn a_clip_of_media_is_graded_at_the_frame_of_the_picture_it_shows() {
                 at: 15,
                 tracks: None,
                 linked: true,
+                grouped: false,
             }),
             vec![14, 15, 30],
         ),

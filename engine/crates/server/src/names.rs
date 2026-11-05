@@ -435,6 +435,7 @@ fn visit_edit<E>(
         | Edit::Blade { timeline, .. }
         | Edit::Move { timeline, .. }
         | Edit::InsertMove { timeline, .. }
+        | Edit::PlaceCopies { timeline, .. }
         | Edit::Trim { timeline, .. }
         | Edit::Roll { timeline, .. }
         | Edit::Slip { timeline, .. }
@@ -538,6 +539,12 @@ fn visit_edit<E>(
             }
             if let Some(id) = to_track {
                 f(id, Role::NamesTrack(of))?;
+            }
+        }
+        Edit::PlaceCopies { copies, .. } => {
+            for copy in copies {
+                f(&mut copy.clip, Role::Names)?;
+                f(&mut copy.track, Role::NamesTrack(of.clone()))?;
             }
         }
         Edit::RippleDeleteRange { tracks, .. } | Edit::Blade { tracks, .. } => {

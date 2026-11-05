@@ -236,6 +236,7 @@ fn the_blade_splits_the_keys_and_the_two_halves_play_as_the_clip_did() {
             at: 115,
             tracks: None,
             linked: true,
+            grouped: false,
         },
     );
     let clips = &project.timelines[0].tracks[0].clips;
@@ -620,6 +621,7 @@ proptest! {
                     at: found.start + delta.rem_euclid(found.length.max(1)),
                     tracks: None,
                     linked: true,
+                    grouped: false,
                 },
                 4 => Edit::SetSpeed {
                     timeline: "t1".into(),

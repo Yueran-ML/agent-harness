@@ -57,7 +57,13 @@ fn at_two_four_and_eight_times_forward_and_backward_a_tone_sounds_as_many_times_
             cents(measured, want).abs() < 5.0,
             "at {speed}: {measured} Hz, not {want}"
         );
-        assert!(left[2_000..].iter().all(|s| s.abs() <= 0.5 + 1e-3));
+        // The level of the tone within 1 % (the filter of shuttling, of 3 zero crossings, lets
+        // its band ripple some 0.35 % at 8).
+        let peak = left[2_000..]
+            .iter()
+            .fold(0.0_f32, |most, s| most.max(s.abs()));
+        println!("at {speed}: the tone's peak {peak}");
+        assert!((peak - 0.5).abs() <= 0.005, "at {speed}: {peak}");
         assert_eq!(sim.counters.underruns(), 0, "at {speed}");
         assert_eq!(sim.control.shared.short(), 0, "at {speed}");
     }
@@ -544,4 +550,36 @@ fn every_grain_keeps_the_pitch_correction_of_its_clip_and_sounds_as_its_export()
             );
         }
     }
+}
+
+#[test]
+fn a_grain_told_to_fade_fades_out_over_5_ms_and_the_next_grain_sounds_again() {
+    let project = one_track();
+    let first = 3 * i64::from(RATE);
+    let mut sim = Sim::scrubbing(&project, first, LEVEL);
+    for _ in 0..2 {
+        sim.tick();
+    }
+    // Into the grain (60 ms from 0): stopped at once, it fades over 240 samples to silence.
+    let sent = sim.sent();
+    sim.fade();
+    let mut next = 0;
+    for tick in 0..20 {
+        if tick == 10 {
+            next = sim.grain(&project, first + 50_000, 960);
+        }
+        sim.tick();
+    }
+    let left = sim.left();
+    let faded = (sent..left.len()).find(|&n| left[n] < 0.5).unwrap();
+    let silent = (faded..left.len()).find(|&n| left[n] == 0.0).unwrap();
+    println!("faded from {faded}, silent from {silent}");
+    assert!(silent - faded <= 240, "{faded} to {silent}");
+    assert!(largest_step(&left[sent..=silent]) <= 0.5 / 240.0 + 1e-6);
+    let next = usize::try_from(next - first).unwrap();
+    assert!(left[silent..next].iter().all(|&x| x == 0.0));
+    assert!(
+        (left[next + 300] - 0.5).abs() < 1e-6,
+        "the next grain sounds"
+    );
 }

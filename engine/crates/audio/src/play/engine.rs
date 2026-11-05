@@ -30,6 +30,7 @@ use super::fetcher::Fetcher;
 use super::Counters;
 use crate::constants::{
     samples, GRAPH_SWAP_CROSSFADE, MAX_CHANNELS, MIX_BLOCK, OUTPUT_AHEAD, OUTPUT_AHEAD_PERIODS,
+    SCRUB_FADE,
 };
 use crate::graph::{route, Control, Graph};
 use crate::node::Layout;
@@ -277,6 +278,10 @@ pub enum Command {
     Stop(u64),
     /// Set a control of a graph.
     Set(Control, f32),
+    /// Fade what the session of `epoch` plays out over [`SCRUB_FADE`] from the next block, and
+    /// play silence after, until another graph is swapped in or the session ends (T18's review:
+    /// a grain of scrubbing that is stopped).
+    Fade(u64),
     /// Swap this graph in for the session of `epoch`, at sample `at` of the timeline.
     Swap {
         /// The session.
@@ -317,6 +322,8 @@ pub struct Engine {
     next: Option<(Box<Run>, i64)>,
     /// The graph fading out, how far it has faded, and over how many samples it fades.
     fading: Option<(Box<Run>, usize, usize)>,
+    /// How far the sound of the session has faded out, where it is told to ([`Command::Fade`]).
+    fade: Option<usize>,
     /// What could not be sent back yet (the ring back was full): while anything waits here, no
     /// command is taken and nothing is mixed, so that it never holds more than one command and a
     /// swap let go of ([`STASH`]), and nothing is ever dropped or leaked on this thread.
@@ -355,6 +362,7 @@ impl Engine {
             incoming: None,
             next: None,
             fading: None,
+            fade: None,
             stash: Default::default(),
             left: scratch(),
             right: scratch(),
@@ -401,6 +409,7 @@ impl Engine {
 
     /// Ends the session, letting go of its graphs.
     fn end_session(&mut self) {
+        self.fade = None;
         if let Some((run, _)) = self.incoming.take() {
             self.retire(Retired::Run(run));
         }
@@ -456,6 +465,11 @@ impl Engine {
                     }
                 }
                 Command::Swap { epoch, run, at } => self.take_swap(epoch, run, at),
+                Command::Fade(epoch) => {
+                    if epoch == self.epoch && self.session.is_some() {
+                        self.fade = Some(0);
+                    }
+                }
             }
         }
     }
@@ -541,6 +555,7 @@ impl Engine {
                             None => samples(GRAPH_SWAP_CROSSFADE, rate).max(1),
                         };
                         let older = self.fading.replace((old, 0, length));
+                        self.fade = None;
                         self.counters.swapped();
                         if let Some((older, _, _)) = older {
                             self.retire(Retired::Run(older));
@@ -575,6 +590,15 @@ impl Engine {
                 }
                 *faded += frames;
                 done = *faded >= *length;
+            }
+            if let Some(faded) = &mut self.fade {
+                let length = samples(SCRUB_FADE, rate).max(1);
+                for n in 0..frames {
+                    let gain = (1.0 - (*faded + n + 1) as f32 / length as f32).max(0.0);
+                    self.left[n] *= gain;
+                    self.right[n] *= gain;
+                }
+                *faded = (*faded + frames).min(length);
             }
             let Some(session) = self.session.as_mut() else {
                 return mixed;

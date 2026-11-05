@@ -360,6 +360,11 @@ impl Sim {
             .unwrap();
     }
 
+    /// Tells the thread of the mix to fade out what the session plays (T18's review).
+    pub fn fade(&mut self) {
+        self.commands.push(Command::Fade(self.epoch)).unwrap();
+    }
+
     /// Sets the control `path` of `owner` of the graph built last to `value`.
     pub fn set(&mut self, owner: &Owner, path: &str, value: f32) {
         let control = self

@@ -2,6 +2,7 @@
 
 mod ahead;
 pub(crate) mod mix;
+pub(crate) mod record;
 mod sound;
 pub(crate) mod sources;
 mod timeline;
@@ -391,6 +392,34 @@ impl Transport {
         if let Some(timeline) = &self.timeline {
             timeline.stop();
         }
+    }
+
+    /// Tells the timeline monitor an order of the recording of automation (T16).
+    ///
+    /// # Errors
+    /// The engine is headless (`-32601`), or the monitor has stopped.
+    pub(crate) fn automation(&self, order: record::Order) -> Result<(), Fault> {
+        let Some(timeline) = &self.timeline else {
+            return Err(Fault::new(
+                rpc::METHOD_NOT_FOUND,
+                "there is no recording of automation in a headless engine: it plays nothing",
+            ));
+        };
+        timeline.automation(order)
+    }
+
+    /// What writes a pass of the recording of automation (T16) from now on.
+    pub(crate) fn on_record(&self, hook: record::Hook) {
+        if let Some(timeline) = &self.timeline {
+            let _ = timeline.automation(record::Order::Hook(hook));
+        }
+    }
+
+    /// Whether the timeline monitor records automation as it plays (T16).
+    pub(crate) fn recording(&self) -> bool {
+        self.timeline
+            .as_ref()
+            .is_some_and(|timeline| timeline.status()["recording"] == true)
     }
 
     /// The timeline that the timeline monitor has loaded, if it has one.

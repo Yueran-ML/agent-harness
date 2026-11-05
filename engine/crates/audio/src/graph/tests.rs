@@ -462,3 +462,29 @@ fn a_clip_with_effects_reads_where_its_reach_says_once_its_run_has_started() {
         assert_eq!(span.end, to - ahead);
     }
 }
+
+/// A value held live on a lane of frequencies comes in and is let go on the lane's own scale,
+/// the logarithm (T16's review): as the lane is written, a glide of a frequency straight in its
+/// logarithm.
+#[test]
+fn a_value_held_on_a_lane_of_logarithms_comes_in_and_goes_on_its_scale() {
+    use super::automation::{Held, Live};
+    use columbina_model::LaneKind;
+    let mut held = Held::new(48_000);
+    held.take(Live::Hold(10_000.0), LaneKind::Continuous);
+    let mut values = vec![100.0_f32; 960];
+    held.apply(LaneKind::Continuous, true, &mut values);
+    // Half way through the 10 ms (the 240th sample), the geometric mean: 1 kHz.
+    assert!((values[239] - 1_000.0).abs() < 1.0, "{}", values[239]);
+    assert!((values[959] - 10_000.0).abs() < 1e-2);
+    held.take(Live::Release(4_800), LaneKind::Continuous);
+    let mut back = vec![100.0_f32; 4_800];
+    held.apply(LaneKind::Continuous, true, &mut back);
+    assert!((back[2_399] - 1_000.0).abs() < 1.0, "{}", back[2_399]);
+    // On a lane of a straight scale, half way is the mean.
+    let mut held = Held::new(48_000);
+    held.take(Live::Hold(10_000.0), LaneKind::Continuous);
+    let mut values = vec![100.0_f32; 480];
+    held.apply(LaneKind::Continuous, false, &mut values);
+    assert!((values[239] - 5_050.0).abs() < 1.0, "{}", values[239]);
+}

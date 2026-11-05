@@ -197,6 +197,7 @@ fn routed() -> Project {
         mute: false,
         solo: false,
         vcas: vec![],
+        automation_arm: false,
         lanes: columbina_model::Lanes::new(),
     });
     let strip = &mut timeline.tracks[0].audio.strip;

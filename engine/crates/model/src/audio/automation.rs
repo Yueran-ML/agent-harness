@@ -659,6 +659,93 @@ pub fn replaced(
     without_twins(all)
 }
 
+/// The points of a lane with those from tick `from` on put in place of by `new`: the value before
+/// `from` stays as it was, as a point at `from` of the value that came to it, and nothing of the
+/// lane is left after `new` (Hold at the stop of a pass of recording, p. 3905: the last value
+/// held to the end). `new` must be in order, from `from` on.
+#[must_use]
+pub fn held(
+    points: &[LanePoint],
+    shape: Shape,
+    fixed: f64,
+    scale: u32,
+    from: i64,
+    new: &[LanePoint],
+) -> Vec<LanePoint> {
+    let left = value_before(points, shape, fixed, from);
+    let all: Vec<LanePoint> = points
+        .iter()
+        .filter(|p| p.at.ticks < from)
+        .cloned()
+        .chain([point(from, scale, left)])
+        .chain(new.iter().cloned())
+        .collect();
+    without_twins(all)
+}
+
+/// A lane of decibels moved by an offset that changes (a Trim recorded, pp. 3900–3901, 3905): at
+/// the times of the points of the offset `offset` (in order, from its first, `from`) and of the
+/// lane `points` after `from` (before `until`, where it is given), the value of the lane there
+/// plus the offset there, both straight between those times, so their sum is too; a point of
+/// each value where either jumps. The offset is 0 before `from`, and holds its last value after
+/// its last point. A value of the lane at −∞ ([`super::SILENT_DB`] or below) stays as it was.
+/// The values are not kept within a range.
+#[must_use]
+pub fn offset_by(
+    points: &[LanePoint],
+    shape: Shape,
+    fixed: f64,
+    scale: u32,
+    offset: &[LanePoint],
+    until: Option<i64>,
+) -> Vec<LanePoint> {
+    let Some(first) = offset.first() else {
+        return Vec::new();
+    };
+    let from = first.at.ticks;
+    let line = Shape {
+        kind: LaneKind::Continuous,
+        scale: LaneScale::Linear,
+    };
+    let mut times: Vec<i64> = offset
+        .iter()
+        .map(|p| p.at.ticks)
+        .chain(
+            points
+                .iter()
+                .map(|p| p.at.ticks)
+                .filter(|&t| t > from && until.is_none_or(|until| t < until)),
+        )
+        .collect();
+    times.sort_unstable();
+    times.dedup();
+    let moved = |value: f64, by: f64| {
+        if value <= super::SILENT_DB {
+            value
+        } else {
+            value + by
+        }
+    };
+    let mut out = Vec::with_capacity(times.len() * 2);
+    for t in times {
+        let right = moved(
+            value_at(points, shape, fixed, t),
+            value_at(offset, line, 0.0, t),
+        );
+        if t > from {
+            let left = moved(
+                value_before(points, shape, fixed, t),
+                value_before(offset, line, 0.0, t),
+            );
+            if left.to_bits() != right.to_bits() {
+                out.push(point(t, scale, left));
+            }
+        }
+        out.push(point(t, scale, right));
+    }
+    out
+}
+
 /// The points of a lane with the values from tick `from` to tick `to` moved by `delta`, through
 /// `change` (which keeps a value within the range of its setting), the values outside the range
 /// staying as they were (p. 3899): at each end a point of the value that was there and, `ramp`

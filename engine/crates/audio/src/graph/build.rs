@@ -26,6 +26,7 @@ use crate::fx::stretch::{Grid, Plan, Stretcher, CHUNK};
 use crate::node::{Layout, Node, ParamId, Planar, Role, Spec};
 use crate::rt::{seqlock, Domain, SeqReader, Smoothed};
 
+use super::automation::Held;
 use super::clip::{
     cutoff, radius, ClipChain, ClipEffects, ClipLevel, ClipPan, ClipScratch, ClipStage, Mapping,
     Pool, Reach, StretchMode, Stretched, Warped, Window,
@@ -35,8 +36,8 @@ use super::route::{balance, panned, PanAt};
 use super::strip::{Edge, Key, LaneOf, Pan, Stage, Strip, VcaState, VcaTerm};
 use super::taps::Tap;
 use super::{
-    ClipId, ClipParam, Control, Graph, Meter, Options, Out, OutputInfo, Owner, Purpose, StripParam,
-    Target, Warp,
+    ClipId, ClipParam, Control, Graph, LaneKey, Meter, Options, Out, OutputInfo, Owner, Purpose,
+    StripParam, Target, Warp,
 };
 
 /// What a maker is told of an insert besides its effect.
@@ -279,6 +280,7 @@ pub struct Controls {
     metas: Vec<Meta>,
     vca_ids: Vec<Id>,
     clip_ids: Vec<ClipId>,
+    lane_keys: Vec<(Owner, Box<str>)>,
 }
 
 impl Controls {
@@ -298,11 +300,25 @@ impl Controls {
         )
     }
 
+    /// As [`Graph::lane_key`].
+    #[must_use]
+    pub fn lane_key(&self, owner: &Owner, path: &str) -> Option<LaneKey> {
+        lane_key_of(self.id, &self.lane_keys, owner, path)
+    }
+
     /// The tracks and buses of the graph, in its order of strips.
     #[must_use]
     pub fn owners(&self) -> &[Owner] {
         &self.owners
     }
+}
+
+/// The key of the lane of `owner` at `path` among `keys`, of graph `id`.
+fn lane_key_of(id: u64, keys: &[(Owner, Box<str>)], owner: &Owner, path: &str) -> Option<LaneKey> {
+    let at = keys
+        .iter()
+        .position(|(of, at)| of == owner && &**at == path)?;
+    Some(LaneKey(id, u32::try_from(at).ok()?))
 }
 
 /// The setting of a strip at `path`, the path of a lane (T1: `model/src/audio.rs`,
@@ -1677,6 +1693,20 @@ impl Graph {
             .collect();
         let monitor = monitor_strip.and_then(|strip| outs.iter().position(|&at| at == strip));
         let clip_ids = clip_ids_of(&clip_sources, &chains);
+        // The lanes of one owner and path share a key, by which a value held live reaches every
+        // place that reads them (T16).
+        let mut lane_keys: Vec<(Owner, Box<str>)> = Vec::new();
+        for lane in strips.iter_mut().flat_map(|strip| strip.lanes.iter_mut()) {
+            let key = lane_keys
+                .iter()
+                .position(|(owner, path)| *owner == lane.owner && *path == lane.path)
+                .unwrap_or_else(|| {
+                    lane_keys.push((lane.owner.clone(), lane.path.clone()));
+                    lane_keys.len() - 1
+                });
+            lane.key = u32::try_from(key).unwrap_or(u32::MAX);
+            lane.held = Held::new(rate);
+        }
         let mut graph = Graph {
             id: GRAPHS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             rate,
@@ -1731,6 +1761,7 @@ impl Graph {
                 })
                 .collect(),
             metas,
+            lane_keys,
             strips,
             outputs,
             monitor,
@@ -1790,7 +1821,17 @@ impl Graph {
             metas: self.metas.clone(),
             vca_ids: self.vca_ids.clone(),
             clip_ids: self.clip_ids.clone(),
+            lane_keys: self.lane_keys.clone(),
         }
+    }
+
+    /// The key of the lane of `owner` at `path` that the graph reads, by which a value set live
+    /// while it plays takes its place ([`Graph::live`], T16); none where the graph reads no such
+    /// lane (the setting has none, or the graph does not read it), where [`Graph::control`] and
+    /// [`Graph::glide`] set the setting itself.
+    #[must_use]
+    pub fn lane_key(&self, owner: &Owner, path: &str) -> Option<LaneKey> {
+        lane_key_of(self.id, &self.lane_keys, owner, path)
     }
 
     /// Where each of its clips reads its media, in the order of [`Graph::clips`]: for the

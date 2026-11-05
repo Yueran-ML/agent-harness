@@ -256,8 +256,10 @@ export interface LanePoint { at: Time; value: number }
 export interface Lane { points: LanePoint[]; kind?: 'continuous' | 'switch'; scale?: 'linear' | 'log' }
 /** Lanes of automation by the path of their setting (`fader_db`, `pan.x`, `send.B2.level_db`, `insert.fx1.gain_db`, ...). */
 export type Lanes = Record<string, Lane>;
-export interface Bus { id: string; name: string; color: string; format: BusFormat; strip?: Strip; mute?: boolean; solo?: boolean; solo_safe?: boolean; lanes?: Lanes }
-export interface Vca { id: string; name: string; fader_db?: number; mute?: boolean; solo?: boolean; vcas?: string[]; lanes?: Lanes }
+/** A bus; `automation_arm` arms its automation to be recorded under Touch Off (T16), left out while false. */
+export interface Bus { id: string; name: string; color: string; format: BusFormat; strip?: Strip; mute?: boolean; solo?: boolean; solo_safe?: boolean; automation_arm?: boolean; lanes?: Lanes }
+/** A VCA; `automation_arm` as a bus's. */
+export interface Vca { id: string; name: string; fader_db?: number; mute?: boolean; solo?: boolean; vcas?: string[]; automation_arm?: boolean; lanes?: Lanes }
 export type GroupControl = 'editing' | 'fader' | 'solo' | 'mute' | 'sends' | 'panning' | 'automation';
 export interface TrackGroup { id: string; name: string; color?: string; members: string[]; linked?: GroupControl[]; active?: boolean }
 /** The chain of inserts that an operation on inserts works on: the strip of a track of sound or a bus, or the effects of a clip. */
@@ -733,6 +735,8 @@ export interface TimelineTransportState extends TransportBase {
   color_error?: string;
   /** The frame of the timeline that each reference of the wipe or split screen shows for the frame shown, in their order; while one is on. */
   compared?: (number | null)[];
+  /** True while automation is recorded as the timeline plays (`automation.record`). */
+  recording?: boolean;
   /** Whether dragging the playhead plays its sound (`transport.scrub_audio`, Timeline › Audio Scrubbing, p. 731; phase 3 T18); true where an older engine leaves it out. */
   scrub_audio?: boolean;
 }
@@ -975,8 +979,36 @@ export interface PageMethods {
   'luts.preview': { previews: LutPreview[] };
   'viewer.preview': { monitor: 'timeline'; preview: LivePreview | null };
   'viewer.lut': { monitor: 'timeline'; on: boolean };
+  // The recording of automation of the timeline monitor (PROTOCOL.md, "Recording automation").
+  'automation.record': AutomationRecording;
+  'automation.touch': Record<string, never>;
+  'automation.punch': { lanes: number };
 }
 export type PageMethod = keyof PageMethods;
+
+/**
+ * Whether automation is recorded as the timeline plays (`automation.record`), its Glide Time in
+ * ms (Snap's return and Return's), and how many lanes Preview keeps to be punched in.
+ */
+export interface AutomationRecording { on: boolean; glide_ms: number; pending: number }
+/**
+ * The notification `automation.written`: a pass of the recording of automation, or a Punch In,
+ * written (`revision`, null where nothing was), and the lanes that could not be (PROTOCOL.md,
+ * "Recording automation").
+ */
+export interface AutomationWritten {
+  timeline: string;
+  punch: boolean;
+  lanes: number;
+  revision: number | null;
+  failed: (({ track: string } | { bus: string } | { vca: string } | Record<string, never>) & { path?: string; reason: string })[];
+}
+/**
+ * The params of `automation.touch`: a control of the mix touched (`touching: true`), moved, or let
+ * go, in the units of its setting (a fader's dB; under Trim, the dB it moves its lane by).
+ */
+export type AutomationTouch = { timeline: string; path: string; value: number; touching: boolean } &
+  ({ track: string } | { bus: string } | { vca: string });
 
 /**
  * A window preset (RM20 pp. 3198–3199): the windows of a node as they were on the frame of the

@@ -1,5 +1,5 @@
 //! What the graph does on the thread of the mix: [`Graph::process`], [`Graph::start`],
-//! [`Graph::set`] and [`Graph::write_device`]. Nothing here locks, allocates or waits
+//! [`Graph::set`], [`Graph::glide`], [`Graph::live`] and [`Graph::write_device`]. Nothing here locks, allocates or waits
 //! (convention 3; `tests/rt_audit.rs`, `tests/no_alloc.rs`).
 
 use crate::db_to_gain;
@@ -170,14 +170,48 @@ impl Graph {
     /// of the same setting, where there is one, still takes its place. A control of another
     /// graph, and a value that is not a number (NaN, ±∞), change nothing.
     pub fn set(&mut self, control: super::Control, value: f32) {
+        self.change(control, value, None);
+    }
+
+    /// Sets `control` to `value` as [`Graph::set`] does, but on a straight line over `samples`
+    /// samples (at once for 0): a setting that no lane is of, let go after it was touched while
+    /// automation is recorded, gliding back to where it is set (Snap, p. 3905; T16). A gain glides
+    /// straight in the gain, a pan in its value; a switch, and a parameter of a node (Dynamics,
+    /// the equalizer, an insert), ramp over 10 ms as [`Graph::set`] ramps them.
+    pub fn glide(&mut self, control: super::Control, value: f32, samples: u32) {
+        self.change(control, value, Some(samples));
+    }
+
+    /// Holds `live` in place of the lane `key` of the graph, at every place that reads it, from
+    /// the next sample (T16): a value of a control that is touched while automation is recorded,
+    /// an offset of a fader trimmed, or the lane let take its place back. A key of another graph
+    /// changes nothing. A run started again ([`Graph::start`]) holds nothing.
+    pub fn live(&mut self, key: super::LaneKey, live: super::Live) {
+        if key.0 != self.id {
+            return;
+        }
+        for strip in &mut self.strips {
+            for lane in strip.lanes.iter_mut().filter(|lane| lane.key == key.1) {
+                lane.held.take(live, lane.lane.kind);
+            }
+        }
+    }
+
+    /// [`Graph::set`] (`glide` none) or [`Graph::glide`].
+    fn change(&mut self, control: super::Control, value: f32, glide: Option<u32>) {
         let switch = |value: f32| if value >= 0.5 { 1.0 } else { 0.0 };
         if control.0 != self.id || !value.is_finite() {
             return;
         }
+        // A number goes to its value over 10 ms, or over the glide.
+        let to = |smoothed: &mut crate::rt::Smoothed, value: f32| match glide {
+            Some(samples) => smoothed.glide(value, samples),
+            None => smoothed.set(value),
+        };
         match control.1 {
             Target::VcaFader(vca) => {
                 if let Some(vca) = self.vcas.get_mut(vca) {
-                    vca.fader.set(db_to_gain(value));
+                    to(&mut vca.fader, db_to_gain(value));
                 }
             }
             Target::VcaMute(vca) => {
@@ -191,15 +225,16 @@ impl Graph {
                 };
                 match (param, level.gain_db) {
                     (ClipParam::Gain, Some(built)) => {
-                        level
-                            .scale
-                            .set(db_to_gain(value) / db_to_gain(built).max(f32::MIN_POSITIVE));
+                        to(
+                            &mut level.scale,
+                            db_to_gain(value) / db_to_gain(built).max(f32::MIN_POSITIVE),
+                        );
                         level.scaled = true;
                     }
                     (ClipParam::Pan, _) if level.fixed_pan => {
                         let sides = balance(value.clamp(-1.0, 1.0));
-                        level.sides[0].set(sides[0]);
-                        level.sides[1].set(sides[1]);
+                        to(&mut level.sides[0], sides[0]);
+                        to(&mut level.sides[1], sides[1]);
                         level.panned = true;
                     }
                     _ => {}
@@ -210,23 +245,23 @@ impl Graph {
                     return;
                 };
                 match param {
-                    StripParam::Trim => strip.trim.set(db_to_gain(value)),
+                    StripParam::Trim => to(&mut strip.trim, db_to_gain(value)),
                     StripParam::Invert => strip.sign.set(1.0 - 2.0 * switch(value)),
-                    StripParam::Fader => strip.fader.set(db_to_gain(value)),
+                    StripParam::Fader => to(&mut strip.fader, db_to_gain(value)),
                     StripParam::Mute => strip.mute.set(1.0 - switch(value)),
                     StripParam::Audible => strip.audible.set(switch(value)),
                     StripParam::PanX | StripParam::PanY | StripParam::PanDivergence => {
                         for edge in strip.edges.iter_mut().filter(|edge| !edge.send) {
                             match param {
-                                StripParam::PanX => edge.pan.x.set(value),
-                                StripParam::PanY => edge.pan.y.set(value),
-                                _ => edge.pan.divergence.set(value / 100.0),
+                                StripParam::PanX => to(&mut edge.pan.x, value),
+                                StripParam::PanY => to(&mut edge.pan.y, value),
+                                _ => to(&mut edge.pan.divergence, value / 100.0),
                             }
                         }
                     }
                     StripParam::Level(edge) => {
                         if let Some(edge) = strip.edges.get_mut(edge) {
-                            edge.level.set(db_to_gain(value));
+                            to(&mut edge.level, db_to_gain(value));
                         }
                     }
                     StripParam::On(edge) => {
@@ -236,12 +271,12 @@ impl Graph {
                     }
                     StripParam::EdgePanX(edge) => {
                         if let Some(edge) = strip.edges.get_mut(edge) {
-                            edge.pan.x.set(value);
+                            to(&mut edge.pan.x, value);
                         }
                     }
                     StripParam::EdgePanY(edge) => {
                         if let Some(edge) = strip.edges.get_mut(edge) {
-                            edge.pan.y.set(value);
+                            to(&mut edge.pan.y, value);
                         }
                     }
                     StripParam::Node(stage, param) => {

@@ -61,8 +61,9 @@ ONLY_WITH_THE_ENGINE = {
     "still.delete", "still.export", "still.get", "still.grab", "still.import", "still.label",
     "still.move", "still.restore",
 }  # fmt: skip
-"""Methods of the client that the fake engine does not answer: the Gallery and Generate LUT are
-tested against the engine (``tests/video/test_stills.py``, ``COLUMBINA_REQUIRE_ENGINE=1``)."""
+"""Methods of the client that the fake engine does not answer: the Gallery is tested against the
+engine in ``tests/video/test_stills.py``, Generate LUT in ``tests/video/test_engine.py``
+(``COLUMBINA_REQUIRE_ENGINE=1``)."""
 
 LEFT_TO_EDITS = {
     "add_cue", "add_transition", "move_clip", "remove_cue", "remove_transition", "set_clip_group",

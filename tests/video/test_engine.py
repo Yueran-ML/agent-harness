@@ -1425,6 +1425,26 @@ async def test_the_engine_takes_the_sound_of_a_timeline_as_it_is_written(tmp_pat
     assert undone["timelines"] == before["timelines"]
 
 
+async def test_the_engine_bakes_a_grade_into_a_lut_of_the_project(tmp_path: Path) -> None:
+    program = real_engine()
+
+    async with await Engine.attach(tmp_path / "film", program=program, idle_seconds=1) as one:
+        timeline = (await one.apply([ADD])).names["$t"]
+        grade = {"level": "timeline", "timeline": timeline}
+        baked = await one.export_lut(grade, "flat.cube", size=17)
+        with pytest.raises(EngineError) as there:
+            await one.export_lut(grade, "flat.cube", size=17)
+        with pytest.raises(EngineError) as size:
+            await one.export_lut(grade, "odd.cube", size=18)  # type: ignore[arg-type]
+
+    assert (baked["size"], baked["nodes"], baked["ignored"]) == (17, [], [])
+    written = Path(baked["path"])
+    assert written.is_file()
+    assert "LUT_3D_SIZE 17" in written.read_text(encoding="utf-8")
+    assert there.value.code == -32001
+    assert size.value.code == -32602
+
+
 async def test_the_engine_lists_the_luts_of_the_project_and_has_no_scopes_headless(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

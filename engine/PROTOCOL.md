@@ -165,6 +165,12 @@ Before `hello`, every other request is refused with `-32600`.
 | `track.edit` | `{grade,node,window,revision?,edit:{kind,...}}` | `{revision}`; one step to undo (see Window tracking) |
 | `render.start` | `{"timeline":"t1", "path":"<file>", "codec":"h264", "quality":"high", "range"?:{"from":0,"to":250}, "subtitle_tracks"?:["S1"], "replace"?:false, "revision"?:n, "audio"?:{"bus"?, "rate"?, "codec"?, "bitrate"?, "normalize"?}}`, or with `"video":null` and no `codec` or `quality` for the sound alone | `{"job": "render-1"}` (see Rendering a timeline, and The sound of an export) |
 | `render.cancel` | `{"job": "render-1"}` | `{}` |
+| `audio.meters` | `{"timeline": "t1", "reset"?: false}` | what the meters of the timeline show now: `{"timeline", "playing", "rate": 30, "scale", "strips": [...], "control_room", "loudness": {...}, "lost"}` (see Meters, loudness and the analysis of sound) |
+| `audio.loudness` | `{"timeline": "t1", "action"?: "start" \| "pause" \| "reset"}` | the loudness meter after the action: `{"running", "standard", "target", "momentary", ...}` |
+| `audio.analyze` | `{"timeline": "t1", "targets": [{"clip": "c1"} \| {"track": "A1"} \| {"bus": "B1"}, ...], "range"?: {"from": 0, "to": 250}, "standard"?: "ebu-r128"}` | `{"job": "audio-1"}` at once, then `audio.analysis` |
+| `audio.normalize` | `{"timeline": "t1", "clips": ["c1", ...], "level"?: "sample_peak" \| "true_peak" \| "<standard>", "target"?: -9, "mode"?: "relative" \| "independent", "apply"?: false, "revision"?: n}` | `{"job": "audio-2"}` at once, then `audio.analysis` with the gains (Normalize Audio Levels) |
+| `audio.level_match` | `{"timeline": "t1", "reference": "c1", "clips": ["c2", ...], "apply"?: false, "revision"?: n}` | `{"job": "audio-3"}` at once, then `audio.analysis` with the gains (Level Matcher) |
+| `audio.cancel` | `{"job": "audio-1"}` | `{}`; the job ends `cancelled` |
 | `transport.frame_digest` | `{"monitor": m}` | test hook only, with `--test-hooks` (see The transport); `-32601` otherwise |
 | `transport.*` | see The transport | |
 | `scopes.subscribe` | `{"view": "timeline" \| "source", "settings": {"kind": "waveform", ...}}` | `{"scope_id": "scope-1", "size": {"width": 512, "height": 256}, "graticule": {...}, "settings": {...}}`, then `scopes.frame` (see Scopes) |
@@ -3924,6 +3930,7 @@ real ids. For example:
 | `window.points` | `{binding,sequence,revision,selected_points:[]}`: owner-only, when a project change drops the selected Curve's point selection (see Curve Window controls) |
 | `track.progress` | `{job,frame,timeline_frame,done,total,lost,revision}`: to the connection that started the track, each time the track so far is written (see Window tracking) |
 | `track.state` | `{job,phase,reason,frames,lost,frame,revision,tracked,message?}`: how the track ended (`done`, `stopped`, `failed`), to the connection that started it |
+| `audio.analysis` | `{job, state: "running", done, total}` (seconds of sound measured, at most 4 a second), then `{job, state: "done", method, ...}`, `{job, state: "failed", message}` or `{job, state: "cancelled"}`: how an `audio.analyze`, `audio.normalize` or `audio.level_match` goes and ends, to every connection (see Meters, loudness and the analysis of sound) |
 
 - `by` is the kind of the client that asked (for an undo or a redo, the one that asked for
   that); `made_by` is the kind of the client that made the transaction (for an undo or a redo,
@@ -4296,3 +4303,118 @@ removed. At publication, sidecars are renamed first and the movie last; previous
 are retained in temporary backups until all renames succeed, then removed. A publication
 failure rolls back previously renamed files. If the filesystem prevents restoring a backup,
 the old file is retained and its recovery path is logged as `render_restore_failed`.
+
+## Meters, loudness and the analysis of sound
+
+Plan T9b of phase 3 (p. 3688, p. 3804–3805, p. 3840–3841, p. 3887–3888, p. 3979–3987). None of
+these changes the project but `audio.normalize` and `audio.level_match` with `apply`. Levels are
+in dBFS, loudness in LUFS and LU, true peaks in dBTP, to a hundredth; silence (−∞), and a measure
+that there is none of, is `null`.
+
+### The meters of the timeline as it plays
+
+While the timeline monitor plays, the engine reads the levels of every track and bus before and
+after its fader, the sum of the channels of the bus that is monitored (the Control Room meter,
+p. 3983) and the loudness of that bus (BS.1770-4: Momentary, Short Term, their maxima, Integrated,
+Loudness Range, the true peak by 8 times oversampling; the LFE not counted), in cells of 10 ms,
+30 times a second, so that nothing is missed however seldom a client asks. What the meters show
+(the bars, the peak indicators, the loudness) goes on across the graphs of the sound that a change
+of the project, a seek or a change of speed swaps in, and falls as on silence once nothing has
+played for 0.1 s. What is metered is what goes to the device, before it is clipped; the loudness
+hears only what plays. The meter type (IEC 60268-18, Digital VU, or Custom with its detector,
+scale, decay and peak indicator), the standard and target of the loudness and Lock Metering to
+Transport are the timeline's (`audio.meter`, `audio.custom_meter`, `audio.loudness`), read at
+each request.
+
+`audio.meters {timeline, reset?}` answers what they show now; a client polls it (the desktop at
+the rate it draws, 30 a second at the most). `reset: true` first lets the meters of the tracks and
+buses go of their peaks (a click on the meters: the only end of Infinite hold).
+
+- `timeline`; `playing`: whether a graph of it gave sound in the last 0.1 s; `rate`: 30, how often
+  the engine reads the meters; `scale`: `iec` (−60 to −20 dB in the lower half of a meter, −20 to
+  0 dB in the upper) or `linear` (Quasi Linear).
+- `strips`: one for each track that is on and each bus, tracks first in the order of the
+  timeline: `{"owner": {"track": "A1"} | {"bus": "B1"}, "pre": [channel, ...], "post": [...]}`, a
+  channel being `{"bar", "peak", "bar_position", "peak_position"}`: the bar of the meter type (the
+  sample peak falling 20 dB in 1.7 s, the VU, or the RMS of 300 ms) and the peak indicator (`null`
+  where it is Off), in dB, and where they stand on the scale, from 0 to 1. `pre` is after the
+  strip's processing and before its mute and solo, `post` after its mute, solo, fader and VCAs
+  (Pre fader metering on tracks picks which one a track shows, p. 162). A timeline that does not
+  play, or another than the one that played last, has none.
+- `control_room`: a channel as above, of the sum of the channels of the bus that is monitored;
+  `null` where none is.
+- `loudness`: as `audio.loudness` answers.
+- `lost`: cells written over before they were read since the engine started (0 unless the engine
+  was held up for a third of a second).
+
+`audio.loudness {timeline, action?}`: `start` (or resume), `pause` (what plays is not heard, what
+was measured is kept), `reset` (nothing measured); without `action`, only what it reads. With Lock
+Metering to Transport on (the default), each start of playing where the playhead was put (a play,
+a seek) resets it as it is first heard. It answers `{"running", "standard", "target",
+"momentary", "short_term", "momentary_max", "short_term_max", "integrated", "range",
+"true_peak", "sample_peak", "seconds", "verdict"}`: `standard` its id (the table of loudness
+standards, see The sound of an export), `target` its target or the timeline's Target Loudness,
+`integrated` as the standard measures it (BS.1770-1 ungated, the others gated), `verdict` `low`,
+`within` or `high` against the target and the standard's tolerance (±1 LU where it gives none),
+by the integrated loudness to a tenth, `null` before there is one.
+
+### Analyses
+
+`audio.analyze`, `audio.normalize` and `audio.level_match` check their params against the project
+as it is, answer `{"job": "audio-<n>"}` at once, and measure on a thread of their own, as fast as
+the clips can be read (never through the device). Every connection is told `audio.analysis`:
+`{job, state: "running", done, total}` (seconds of sound measured, of all the job measures) at
+most 4 times a second, and once how it ended. `audio.cancel {job}` stops one (it ends
+`cancelled`); a job that is not running is `-32602` with `{"reason": "missing", "job"}`. At most
+4 run at once; a fifth is `-32001` with `{"reason": "busy"}`. A clip that cannot be read ends the
+job `failed`, the reason in `message`.
+
+What is measured is what an export would carry (a Listen never):
+
+- a track or a bus: after its fader, mute, solo and VCAs, over `range` (frames of the timeline,
+  `to` not included) or the whole timeline;
+- a clip: its sound right before its Volume, as its track takes it (its channels configured, at
+  its speed, through its equalizer and its effects, which come before its Volume), without its
+  fades and crossfades, and without the track's Trim, polarity, Ducker, inserts, Dynamics,
+  equalizer and lanes, over the part of it on the timeline (`range` is not read for it).
+
+`audio.analyze {timeline, targets, range?, standard?}`: `targets` from 1 to 256, each
+`{"clip"}`, `{"track"}` (a track of sound that is on) or `{"bus"}`; `standard` an id of the table,
+the timeline's by default. Done: `{job, state: "done", method: "audio.analyze", standard, level,
+results: [{target, integrated, range, momentary_max, short_term_max, true_peak, sample_peak,
+seconds, verdict}, ...]}` in the order of `targets`, `level` the target of the standard. Of the
+bus that is exported, the integrated loudness and the true peak are what `ebur128` of ffmpeg reads
+of the exported file (within 0.1 LU and 0.2 dB).
+
+`audio.normalize {timeline, clips, level?, target?, mode?, apply?, revision?}` (Normalize Audio
+Levels, p. 3840–3841): `clips` from 1 to 256 clips of sound, each once; `level` `sample_peak` (the
+default), `true_peak`, or the id of a standard (its integrated loudness, as the standard measures
+it); `target` from −60 to 0, dBFS for a peak (−9 by default) and LUFS for a loudness (the
+standard's target by default); `mode` `relative` (the default: the clips as one programme, heard
+one after another in the order of the timeline, the highest peak among them for a peak, one gain
+for all) or `independent` (each clip by its own level). Done: `{job, state: "done", method:
+"audio.normalize", level, target, mode, measured, clips: [{clip, gain_db, clamped, measured},
+...], applied}`: `measured` the level of the clips together (`relative`; `null` for
+`independent`) and of each clip; `gain_db` what is added to the clip's Volume, `null` for a clip
+that has no level (silence, or shorter than 400 ms for a loudness), which is left as it is;
+`clamped` where the Volume, or a key of it, moved by the gain would go out of −96…24 dB, so that
+the clip does not come to the target.
+
+`audio.level_match {timeline, reference, clips, apply?, revision?}` (Level Matcher,
+p. 3804–3805): the gain that brings each clip to the loudness of `reference`, the difference of
+their integrated loudness, each its ungated mean where it has none (shorter than 400 ms, or under
+the gates). Done: `{job, state: "done", method: "audio.level_match", reference: {clip, measured},
+clips: [{clip, gain_db, clamped, measured}, ...], applied}`.
+
+With `apply: true`, once they are found, the gains are applied in one transaction made by the
+client that asked, one step to undo: a `nudge_clip_gain` of each clip by its gain (`linked:
+false`; the whole curve of a clip with keys moved, clamped to −96…24 dB), none where no clip has
+a gain. `applied` is what `transaction.apply` answers, `null` where nothing was applied.
+`revision`, where it is given, binds it as it binds `transaction.apply`: where the project changed
+since, nothing is applied and `refused` holds the refusal (`stale_revision`); without it, the
+gains are applied to the project as it is when they are found. A transaction refused otherwise (a
+clip removed meanwhile) is told in `refused` too.
+
+Params that cannot be are `-32602` with `data.reason`: `missing` (`timeline`; or `what`: `clip`,
+`track` or `bus`, and `id`), `disabled` (`track`), `standard` (`standard`), `twice` (`clip`),
+`out_of_range` (`what`: `targets`, `clips`, `range` or `target`).

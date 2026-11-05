@@ -74,6 +74,8 @@ mod window;
 mod window_presets;
 
 #[cfg(test)]
+mod protocol;
+#[cfg(test)]
 #[path = "../../media/tests/support/mod.rs"]
 mod test_media;
 

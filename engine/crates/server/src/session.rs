@@ -46,6 +46,7 @@ use crate::scopes::{Scopes, Shown, StatisticsRequest};
 use crate::transport;
 use crate::view::{Monitor, Viewer};
 
+mod facts;
 #[cfg(test)]
 mod tests;
 mod tracker;
@@ -120,6 +121,9 @@ pub struct Engine {
     transport: Transport,
     /// The maker of proxies.
     proxies: Proxies,
+    /// What reads the streams of sound of media of a project written before they were read
+    /// (T3c).
+    streams: facts::Reader,
     /// Background thumbnails and waveforms; they never write the project history.
     analysis: Analysis,
     /// One background export, independent of playback and project edits.
@@ -361,6 +365,7 @@ impl Engine {
                 }),
             },
         );
+        let streams = facts::Reader::start(&state, limits);
         Engine {
             state,
             project,
@@ -374,6 +379,7 @@ impl Engine {
             viewer,
             transport,
             proxies,
+            streams,
             analysis,
             renders,
             scopes,
@@ -398,6 +404,7 @@ impl Engine {
         self.transport.stop();
         self.analysis.stop();
         self.proxies.stop();
+        self.streams.stop();
     }
 
     fn connections(&self) -> std::sync::MutexGuard<'_, Connections> {

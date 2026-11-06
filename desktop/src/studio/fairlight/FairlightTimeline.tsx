@@ -1,19 +1,22 @@
 import { keyOf, type Key } from '../../app/keys';
 import { editingAllowed } from '../keys';
 import { useFairlightText } from './words';
-import { useCallback, useMemo, useRef, useImperativeHandle, useState, type ComponentProps } from 'react';
-import { Timeline, type TimelineHandle } from '../timeline/Timeline';
+import { useCallback, useMemo, useRef, useImperativeHandle, useState, type ComponentProps, type SetStateAction } from 'react';
+import { Timeline, type TimelineHandle, type TimelineViewport, type TimelineScrolling } from '../timeline/Timeline';
 import type { TrackClipDrawing } from '../timeline/TrackRow';
 import { Thumbnail, Thumbnails } from '../media/Thumbnails';
 import { ChannelLanes } from './ChannelLanes';
 import { AutomationLane } from './AutomationLanes';
 import { callEngine } from '../engine';
 import type { Change } from '../timeline/commands';
-import type { FairlightView } from './viewState';
+import type { FairlightView, FairlightViewUpdate } from './viewState';
 export function FairlightTimeline({ view, update, ...props }: ComponentProps<typeof Timeline> & {
-  view: FairlightView; update: (patch: Partial<FairlightView>) => void;
+  view: FairlightView; update: FairlightViewUpdate;
 }) {
   const t = useFairlightText();
+  const updateViewport = useCallback((change: SetStateAction<TimelineViewport>) => update(old => ({
+    timelineViewport: typeof change === 'function' ? change(old.timelineViewport) : change,
+  })), [update]);
   const activeRange=view.automation&&props.timeline?.audio?.record?.active_range;
   const [problem,setProblem]=useState<string|null>(null);
   const commands=useRef(new Map<string,(key:Key)=>boolean>()),active=useRef<string|null>(null);
@@ -46,10 +49,13 @@ export function FairlightTimeline({ view, update, ...props }: ComponentProps<typ
       <label><input type="checkbox" checked={view.gainLine} onChange={event => update({ gainLine: event.target.checked })} />{t('Show Clip Gain Line')}</label>
       <label>{t('Waveform height')}<input aria-label={t('Waveform height')} type="range" min={1} max={16} step={.25} value={view.waveform} onChange={event => update({ waveform: Number(event.target.value) })} /></label>
       <button type="button" onClick={() => update({ waveform: 1 })}>{t('Reset waveform height')}</button>
+      <label>{t('Timeline Scrolling')}<select aria-label={t('Timeline Scrolling')} value={view.scrolling} onChange={event => update({ scrolling: event.target.value as TimelineScrolling })}>
+        <option value="fixed">{t('Fixed Playhead')}</option><option value="page">{t('Page Scrolling')}</option><option value="none">{t('No Scrolling')}</option>
+      </select></label>
       <button type="button" aria-pressed={view.automation} disabled={!view.automation} onClick={toggle}>{t('Automation view (F4)')}</button>
     </div>
     {problem&&<p role="alert">{problem}</p>}
-    <Timeline {...props} ref={handle}
+    <Timeline {...props} ref={handle} viewport={{ value: view.timelineViewport, update: updateViewport }} scrolling={view.scrolling}
       automationRange={activeRange&&activeRange.on&&props.timeline?{from:activeRange.start.ticks/activeRange.start.scale*props.timeline.rate.num/props.timeline.rate.den,to:activeRange.end.ticks/activeRange.end.scale*props.timeline.rate.num/props.timeline.rate.den}:null}
       gainLineDisabled={id => Boolean(view.automation && view.lanePaths[`track:${id}`])}
       trackDecoration={(track,g) => view.automation && track.kind==='audio' ? <AutomationLane register={register} onActive={()=>{active.current=`track:${track.id}`;props.onTrackSelect?.(track.id);}} {...g} bridge={props.bridge} session={props.session} revision={props.revision} timeline={props.timeline!} of={{track:track.id}} lanes={track.lanes} locked={track.locked} arm={track.automation_arm} name={track.name} frame={props.frame} marks={()=>handle.current?.marks()??{in:null,out:null}} path={view.lanePaths[`track:${track.id}`]??''} pencil={view.pencil} onPath={path=>choose(`track:${track.id}`,path)} onEdit={edit}/> : null}

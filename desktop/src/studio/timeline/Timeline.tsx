@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent, type Ref, type ReactNode } from 'react';
+import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent, type Ref, type ReactNode, type Dispatch, type SetStateAction } from 'react';
 import { X } from 'lucide-react';
 import { useWords } from '../../app/locale';
 import { keyOf, type Key } from '../../app/keys';
@@ -32,8 +32,11 @@ export interface TimelineHandle {
 }
 /** What of a timeline a view shows: the pixels of a frame, how far it is scrolled, and how wide it is. */
 export interface TimelineView { scale: number; left: number; width: number }
+/** Persistent view coordinates; viewport width is measured from the current layout. */
+export interface TimelineViewport { scale: number; left: number; top: number; heights: Record<string, number> }
+export type TimelineScrolling = 'fixed' | 'page' | 'none';
 export function Timeline({ timeline, media, bridge, session, revision, frame, playing, onSeek, source = null, focus = 'timeline', onSpeed, onSelection, onTransition, onCue, ref,
-  cut = false, overview = false, center = false, trackHeight = 72, indicator = null, detail = null, onView, label, hiddenTracks, drawClip, onClipContext, onCopyClips, onTrackSelect, selectedTracks, audioOnlyDrop, gainLine = true, trackDecoration, afterTracks, gainLineDisabled, automationRange }: {
+  cut = false, overview = false, center = false, trackHeight = 72, indicator = null, detail = null, onView, label, hiddenTracks, drawClip, onClipContext, onCopyClips, onTrackSelect, selectedTracks, audioOnlyDrop, gainLine = true, trackDecoration, afterTracks, gainLineDisabled, automationRange, viewport, scrolling }: {
   timeline: TimelineModel | null; media: readonly Media[]; bridge: Pick<EngineBridge, 'call' | 'onEvent'>; session: number;
   revision: number; frame: number; playing: boolean; onSeek: (frame: number, scrubbing: boolean) => void;
   source?: EditContext['source']; focus?: Monitor; onSpeed?: (clips: string[]) => void; onSelection?: (clips: string[]) => void;
@@ -57,6 +60,10 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   detail?: { from: number; to: number } | null;
   /** Told of the view as it scrolls or zooms. */
   onView?: (view: TimelineView) => void;
+  /** Optional page-owned view state; Edit and Cut keep their existing local state. */
+  viewport?: { value: TimelineViewport; update: Dispatch<SetStateAction<TimelineViewport>> };
+  /** Fairlight's explicit scrolling mode; absent means the existing Follow/center controls. */
+  scrolling?: TimelineScrolling;
   /** The name of the region, where a page shows more than one view of a timeline. */
   label?: string;
   /** View filtering only; editing still sees the complete, accepted timeline. */
@@ -81,8 +88,20 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   useEffect(() => { audioClipboard.current.keys = []; }, [session]);
   const scroll = useRef<HTMLDivElement>(null);
   const draw = useRef<number | null>(null);
-  const [view, setView] = useState({ scale: 4, left: 0, width: 800 });
-  const [heights, setHeights] = useState<Record<string, number>>({});
+  const [localViewport, setLocalViewport] = useState<TimelineViewport>({ scale: 4, left: 0, top: 0, heights: {} });
+  const position = viewport?.value ?? localViewport;
+  const setPosition = viewport?.update ?? setLocalViewport;
+  const controlled = viewport !== undefined;
+  const [width, setWidth] = useState(800);
+  const measuredWidth = useRef(width); measuredWidth.current = width;
+  const view = useMemo(() => ({ scale: position.scale, left: position.left, width }), [position.scale, position.left, width]);
+  const setView = useCallback((update: SetStateAction<TimelineView>) => setPosition(old => {
+    const next = typeof update === 'function' ? update({ scale: old.scale, left: old.left, width: measuredWidth.current }) : update;
+    return old.scale === next.scale && old.left === next.left ? old : { ...old, scale: next.scale, left: next.left };
+  }), [setPosition]);
+  const heights = position.heights;
+  const setHeights = useCallback((update: SetStateAction<Record<string, number>>) => setPosition(old => ({ ...old,
+    heights: typeof update === 'function' ? update(old.heights) : update })), [setPosition]);
   const [follow, setFollow] = useState(true);
   // The menu of a right-click, where one is open.
   const [menu, setMenu] = useState<TrackMenu | null>(null);
@@ -112,18 +131,23 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
     if (!element) return;
     const measure = () => {
       const width = Math.max(1, element.clientWidth - HEADER_WIDTH);
-      setView(old => old.width === width && old.left === element.scrollLeft ? old : { ...old, width, left: element.scrollLeft });
+      setWidth(width);
+      if (!controlled) setView(old => old.left === element.scrollLeft ? old : { ...old, left: element.scrollLeft });
     };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(element);
     return () => { observer.disconnect(); if (draw.current !== null) cancelAnimationFrame(draw.current); draw.current = null; };
-  }, [timeline?.id]);
-  useLayoutEffect(() => { if (scroll.current && scroll.current.scrollLeft !== view.left) scroll.current.scrollLeft = view.left; }, [view.left, view.scale]);
+  }, [timeline?.id, controlled, setView]);
+  useLayoutEffect(() => {
+    if (!scroll.current) return;
+    if (scroll.current.scrollLeft !== view.left) scroll.current.scrollLeft = view.left;
+    if (controlled && scroll.current.scrollTop !== position.top) scroll.current.scrollTop = position.top;
+  }, [view.left, view.scale, position.top, controlled]);
   useEffect(() => {
     scrub.cancel(); drag.current = null; setHeld(null);
-    setView(old => ({ ...old, left: 0 }));
-  }, [timeline?.id, session, scrub]);
+    if (!controlled) setView(old => ({ ...old, left: 0 }));
+  }, [timeline?.id, session, scrub, controlled, setView]);
   useEffect(() => {
     if (held && !held.dragging && (frame === held.frame || playing)) setHeld(null);
   }, [frame, playing, held]);
@@ -133,12 +157,19 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
     return () => clearTimeout(timer);
   }, [held]);
   useEffect(() => {
-    if (!follow || !playing || drag.current) return;
+    if (scrolling !== undefined || !follow || !playing || drag.current) return;
     setView(old => {
       const x = frame * old.scale;
       return x >= old.left && x <= old.left + old.width * 0.9 ? old : { ...old, left: Math.max(0, x - old.width * 0.15) };
     });
-  }, [frame, playing, follow]);
+  }, [frame, playing, follow, scrolling, setView]);
+  useEffect(() => {
+    if (scrolling !== 'page' || (!playing && !held?.dragging)) return;
+    setView(old => {
+      const x = shown * old.scale;
+      return x >= old.left && x < old.left + old.width ? old : { ...old, left: Math.max(0, Math.floor(x / old.width) * old.width) };
+    });
+  }, [shown, playing, held?.dragging, scrolling, setView]);
 
   /**
    * Zoom by `factor`, centred on the playhead as DaVinci Resolve zooms (Reference Manual 20, p. 711):
@@ -152,7 +183,7 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
     }
     const scale = zoomAt(old.scale, old.left, 0, factor).scale;
     return { ...old, scale, left: Math.max(0, Math.round(now.current.frame * scale - old.width / 2)) };
-  }), []);
+  }), [setView]);
   // Fitting reads the end when it is asked for, so that the bar is not drawn again as the timeline changes.
   const ends = useRef(end);
   ends.current = end;
@@ -171,7 +202,7 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
     const scale = fitZoom(ends.current, old.width);
     unfit.current = { fitted: scale, scale: old.scale };
     return { ...old, scale, left: 0 };
-  }), []);
+  }), [setView]);
   // The whole timeline is always shown in an overview, as it grows and as the view is made wider.
   useEffect(() => {
     if (!overview) return;
@@ -180,9 +211,9 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   // The playhead in the middle of a view that keeps it there, unless the playhead is being dragged.
   const dragging = held?.dragging === true;
   useEffect(() => {
-    if (!center || dragging) return;
+    if (!(center || scrolling === 'fixed') || dragging) return;
     setView(old => { const left = Math.max(0, Math.round(shown * old.scale - old.width / 2)); return old.left === left ? old : { ...old, left }; });
-  }, [center, dragging, shown, view.scale, view.width]);
+  }, [center, scrolling, dragging, shown, view.scale, view.width, setView]);
   useEffect(() => { onView?.(view); }, [view, onView]);
   const editing = useEditing({ timeline, media, bridge, session, revision, frame: shown, focus, source, root, scroll, view, onSeek, fit, zoom, onSpeed, onSelection, onTransition, onCue, onCopyClips, cut, audioOnlyDrop });
   useImperativeHandle(ref, () => ({ keyDown: editing.keyDown, perform: editing.perform, canPerform: editing.canPerform, clearTransition: editing.clearTransition, marks: () => editing.marks }));
@@ -220,15 +251,20 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
     };
     element.addEventListener('wheel', wheel, { passive: false });
     return () => element.removeEventListener('wheel', wheel);
-  }, [timeline?.id, zoom]);
+  }, [timeline?.id, zoom, setHeights, setView]);
   const onScroll = () => {
+    if (controlled && scroll.current) {
+      const { scrollLeft: left, scrollTop: top } = scroll.current;
+      setPosition(old => old.left === left && old.top === top ? old : { ...old, left, top });
+      return;
+    }
     if (draw.current !== null) return;
     draw.current = requestAnimationFrame(() => {
       draw.current = null;
       if (scroll.current) { const left = scroll.current.scrollLeft; setView(old => old.left === left ? old : { ...old, left }); }
     });
   };
-  const onHeight = useCallback((id: string, height: number) => setHeights(old => ({ ...old, [id]: height })), []);
+  const onHeight = useCallback((id: string, height: number) => setHeights(old => ({ ...old, [id]: height })), [setHeights]);
   // The frame under the pointer; the playhead is held to the last frame, but a subtitle may be added past it.
   const under = (event: { clientX: number }) => frameAt(event.clientX - (scroll.current?.getBoundingClientRect().left ?? 0) - HEADER_WIDTH, view.scale, scroll.current?.scrollLeft ?? view.left);
   const at = (event: { clientX: number }) => Math.min(last, under(event));
@@ -285,7 +321,7 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
     onPointerMove={event => { if (drag.current) { const frame = at(event); drag.current.frame = frame; setHeld({ frame, dragging: true }); scrub.drag(frame); } else editing.pointerMove(event); }}
     onPointerUp={event => { release(event); editing.pointerUp(event); }} onPointerCancel={event => { release(event, true); editing.cancel(); }} onLostPointerCapture={editing.cancel}>
     {!overview && <Toolbar name={timeline?.name ?? labels.title} tool={editing.tool} snapping={editing.snapping} linked={editing.linked} follow={follow}
-      onTool={editing.chooseTool} onSnapping={editing.setSnapping} onLinked={editing.setLinked} onZoom={zoom} onFit={fit} onFollow={setFollow} />}
+      onTool={editing.chooseTool} onSnapping={editing.setSnapping} onLinked={editing.setLinked} onZoom={zoom} onFit={fit} onFollow={setFollow} hideFollow={scrolling !== undefined} />}
     {menu && <TimelineMenu menu={menu} onClose={closeMenu} />}
     {editing.problem && <div className="timeline-problem" role="alert"><span>{editing.problem}</span><button type="button" className="icon-btn" aria-label={words.label.close} onClick={() => editing.setProblem(null)}><X size={14} /></button></div>}
     {!timeline ? <p className="caption timeline-empty">{words.hint.studio.timeline.empty}</p> : <div ref={scroll} className="timeline-scroll" onScroll={onScroll}>

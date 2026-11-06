@@ -118,6 +118,25 @@ export function parameterMenu(
 }
 
 /**
+ * The VCAs whose fader lanes a track's Fader lane shows, read only (p. 3909): those it is
+ * assigned to, and the VCAs those are assigned to in turn, each once (§11.6, nested VCAs).
+ */
+export function vcaAncestors(timeline: Timeline, of: LanesOf): string[] {
+  if (!('track' in of))
+    return [];
+  const track = timeline.tracks.find(row => row.kind === 'audio' && row.id === of.track) as { strip?: { vcas?: string[] } } | undefined;
+  const seen: string[] = [], next = [...(track?.strip?.vcas ?? [])];
+  while (next.length) {
+    const id = next.shift()!;
+    if (seen.includes(id))
+      continue;
+    seen.push(id);
+    next.push(...(timeline.vcas?.find(vca => vca.id === id)?.vcas ?? []));
+  }
+  return seen;
+}
+
+/**
  * The new curve of a lane while it is written (p. 3907, 3910): red from where the control
  * began to be written to the playhead, at the values heard; blue under Preview. It follows the
  * playhead, so it is drawn again as the playhead moves, and the rest of the lane is not.
@@ -658,10 +677,11 @@ export function AutomationLane(props: Props) {
         }}
       />)}
 
-      {path === 'fader_db' && 'track' in of && (timeline.tracks.find(tr => 'track' in of && tr.id === of.track && tr.kind === 'audio') as import('../engine').ClipTrack | undefined)?.strip?.vcas?.map(id => {
+      {path === 'fader_db' && vcaAncestors(timeline, of).map(id => {
         const v = timeline.vcas?.find(v => v.id === id);
         return v?.lanes?.fader_db && <polyline
           key={id}
+          className="automation-vca-line"
           points={poly(v.lanes.fader_db)}
           stroke="#daa9ff"
           fill="none"

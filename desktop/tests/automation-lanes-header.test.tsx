@@ -7,7 +7,7 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { AutomationTouchProvider, useAutomationTouch } from '../src/studio/fairlight/AutomationTouch';
-import { AutomationLane, parameterMenu } from '../src/studio/fairlight/AutomationLanes';
+import { AutomationLane, parameterMenu, vcaAncestors } from '../src/studio/fairlight/AutomationLanes';
 import { defaultRecord, nudgeSamples } from '../src/studio/fairlight/automation';
 import { defaultDynamics, defaultEq } from '../src/studio/audio/processorModel';
 import { AudioPlayhead } from '../src/studio/timeline/AudioOverlay';
@@ -178,3 +178,17 @@ it('draws the new curve red from where it began to be written to the playhead', 
   expect(trail.getAttribute('points')!.split(' ').length).toBeGreaterThanOrEqual(3);
 });
 
+
+it('overlays the fader lanes of the VCAs of a track and of their VCAs, each once', async () => {
+  const lane = { points: [point(0, -6)] };
+  const t = { ...song(), vcas: [
+    { id: 'V1', name: 'VCA 1', vcas: ['V2'], lanes: { fader_db: lane } },
+    { id: 'V2', name: 'VCA 2', vcas: ['V1'], lanes: { fader_db: lane } },
+    { id: 'V3', name: 'VCA 3', lanes: { fader_db: lane } },
+  ] } as Timeline;
+  (t.tracks[0] as unknown as { strip: { vcas: string[] } }).strip.vcas = ['V1'];
+  expect(vcaAncestors(t, { track: 'a1' })).toEqual(['V1', 'V2']);
+  lanes(t, [{ of: { track: 'a1' }, path: 'fader_db', lanes: {} }]);
+  await settle();
+  expect(document.querySelectorAll('.automation-vca-line')).toHaveLength(2);
+});

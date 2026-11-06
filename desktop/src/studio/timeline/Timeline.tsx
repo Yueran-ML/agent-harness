@@ -12,6 +12,7 @@ import { Scrub } from './scrub';
 import { AddSubtitleTrack, pageLanguage, TimelineMenu, type TrackMenu } from './SubtitleTrack';
 import { Toolbar } from './Toolbar';
 import { TrackRow, type TrackClipDrawing } from './TrackRow';
+import type { HeightScope } from './TrackHeader';
 import { ClipView } from './ClipView';
 import { Waveforms } from './waveforms';
 import { useEditing } from './useEditing';
@@ -20,6 +21,7 @@ import type { Marks } from './snap';
 import type { AudioClipboard } from './VolumeLine';
 import { refusalText } from '../inspector/refusal';
 import { CoveringMenu } from '../color/CoveringMenu';
+import type { Menu, MenuItem } from '../color/ColorMenu';
 import type { ChannelContext } from '../inspector/ChannelSourceMenu';
 import { AudioPlayhead, type AudioOverlayContext } from './AudioOverlay';
 import './timeline.css';
@@ -42,7 +44,8 @@ export interface TimelineView { scale: number; left: number; width: number }
 export interface TimelineViewport { scale: number; left: number; top: number; heights: Record<string, number> }
 export type TimelineScrolling = 'fixed' | 'page' | 'none';
 export function Timeline({ timeline, media, bridge, session, revision, frame, playing, onSeek, source = null, focus = 'timeline', onSpeed, onSelection, onTransition, onCue, ref,
-  cut = false, overview = false, center = false, trackHeight = 72, indicator = null, detail = null, onView, label, hiddenTracks, drawClip, onClipContext, onCopyClips, onTrackSelect, selectedTracks, audioOnlyDrop, gainLine = true, trackDecoration, afterTracks, gainLineDisabled, automationRange, viewport, scrolling, trackMenuItems }: {
+  cut = false, overview = false, center = false, trackHeight = 72, indicator = null, detail = null, onView, label, hiddenTracks, drawClip, onClipContext, onCopyClips, onTrackSelect, selectedTracks, audioOnlyDrop, gainLine = true, trackDecoration, afterTracks, gainLineDisabled, automationRange, viewport, scrolling, trackMenuItems,
+  headerDetail, renameOnClick = false, lockedHeights, groupResize = false, onMarks }: {
   timeline: TimelineModel | null; media: readonly Media[]; bridge: Pick<EngineBridge, 'call' | 'onEvent'>; session: number;
   revision: number; frame: number; playing: boolean; onSeek: (frame: number, scrubbing: boolean) => void;
   source?: EditContext['source']; focus?: Monitor; onSpeed?: (clips: string[]) => void; onSelection?: (clips: string[]) => void;
@@ -77,7 +80,21 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   drawClip?: (props: TrackClipDrawing) => ReactNode;
   onClipContext?: (clip: string, x: number, y: number, channel: ChannelContext) => void;
   onCopyClips?: (clips: readonly string[]) => boolean;
-  trackMenuItems?: (track: string) => TrackMenu['items'];
+  /**
+   * A page's own items of a track header's right-click menu (Fairlight: Change Track Color, Lock
+   * Track Height To, Create Group); given, the menu opens over the viewer and takes submenus.
+   */
+  trackMenuItems?: (track: string) => MenuItem[];
+  /** What a page shows in each track header beside the name; made once per track, not per frame. */
+  headerDetail?: (track: import('../engine').Track) => ReactNode;
+  /** A single click on a header's name writes it (Fairlight). */
+  renameOnClick?: boolean;
+  /** Tracks whose height is locked: neither the wheel nor a drag of several tracks changes them. */
+  lockedHeights?: readonly string[];
+  /** Alt+drag of a header's edge sizes the tracks chosen, Ctrl+Alt+drag all of them (Fairlight). */
+  groupResize?: boolean;
+  /** Told of the In and Out points as they change. */
+  onMarks?: (marks: Marks) => void;
   onTrackSelect?: (track: string) => void;
   /** View-only selection shared with the mixer; it does not change edit destination tracks. */
   selectedTracks?: readonly string[];
@@ -112,11 +129,13 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   const [follow, setFollow] = useState(true);
   // The menu of a right-click, where one is open.
   const [menu, setMenu] = useState<(TrackMenu & { clipboard?: boolean }) | null>(null);
-  const closeMenu = useCallback(() => setMenu(null), []);
+  // The menu of a track header with a page's own items, where one is open.
+  const [headerMenu, setHeaderMenu] = useState<Menu | null>(null);
+  const closeMenu = useCallback(() => { setMenu(null); setHeaderMenu(null); }, []);
   useEffect(closeMenu, [session, timeline?.id, closeMenu]);
   const [held, setHeld] = useState<{ frame: number; dragging: boolean } | null>(null);
   const drag = useRef<{ frame: number } | null>(null);
-  const now = useRef({ view, onSeek, overview, frame, heights, trackHeight });
+  const now = useRef({ view, onSeek, overview, frame, heights, trackHeight, lockedHeights, selectedTracks });
   const scrub = useMemo(() => new Scrub((to, scrubbing) => now.current.onSeek(to, scrubbing)), []);
   const waves = useMemo(() => new Waveforms(bridge, session), [bridge, session]);
   useEffect(() => { waves.connect(); return () => waves.disconnect(); }, [waves]);
@@ -127,12 +146,13 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   // The frame under the playhead as it is shown: where it is dragged or was let go, until the
   // transport tells it. The edits, the marks and the zoom take it, as DaVinci Resolve takes the frame shown.
   const shown = held?.frame ?? frame;
-  now.current = { view, onSeek, overview, frame: shown, heights, trackHeight };
+  now.current = { view, onSeek, overview, frame: shown, heights, trackHeight, lockedHeights, selectedTracks };
   const tracks = useMemo(() => timeline ? [
     ...timeline.tracks.filter(track => track.kind === 'subtitle').reverse(),
     ...timeline.tracks.filter(track => track.kind === 'video').reverse(),
     ...timeline.tracks.filter(track => track.kind === 'audio'),
   ].filter(track => !hiddenTracks?.includes(track.id)) : [], [timeline, hiddenTracks]);
+  const tracksNow = useRef(tracks); tracksNow.current = tracks;
 
   useLayoutEffect(() => {
     const element = scroll.current;
@@ -256,12 +276,13 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
         event.preventDefault();
         const pointed = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-track]')?.dataset.kind : undefined;
         const sound = pointed === 'audio';
-        const { heights: old, trackHeight: base } = now.current;
+        const { heights: old, trackHeight: base, lockedHeights: locked } = now.current;
         const step = by < 0 ? 8 : -8;
         const changed: Record<string, number> = {};
         for (const each of element.querySelectorAll<HTMLElement>('[data-track]')) {
           if ((each.dataset.kind === 'audio') !== sound) continue;
           const id = each.dataset.track!;
+          if (locked?.includes(id)) continue;
           changed[id] = Math.max(40, Math.min(240, (old[id] ?? base) + step));
         }
         setHeights(was => ({ ...was, ...changed }));
@@ -282,7 +303,15 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
       if (scroll.current) { const left = scroll.current.scrollLeft; setView(old => old.left === left ? old : { ...old, left }); }
     });
   };
-  const onHeight = useCallback((id: string, height: number) => setHeights(old => ({ ...old, [id]: height })), [setHeights]);
+  const onHeight = useCallback((id: string, height: number, scope: HeightScope = 'one') => {
+    const { lockedHeights: locked, selectedTracks: chosen } = now.current;
+    if (locked?.includes(id)) return;
+    const wider = !groupResize || scope === 'one' ? []
+      : scope === 'all' ? tracksNow.current.map(track => track.id) : chosen ?? [];
+    const ids = [id, ...wider.filter(each => each !== id && !locked?.includes(each))];
+    setHeights(old => ({ ...old, ...Object.fromEntries(ids.map(each => [each, height])) }));
+  }, [setHeights, groupResize]);
+  useEffect(() => { onMarks?.(editing.marks); }, [editing.marks, onMarks]);
   // The frame under the pointer; the playhead is held to the last frame, but a subtitle may be added past it.
   const under = (event: { clientX: number }) => frameAt(event.clientX - (scroll.current?.getBoundingClientRect().left ?? 0) - HEADER_WIDTH, view.scale, scroll.current?.scrollLeft ?? view.left);
   const at = (event: { clientX: number }) => Math.min(last, under(event));
@@ -316,6 +345,8 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   const decorations = useMemo(() => new Map(tracks.map(track => [track.id, trackDecoration?.(track, {
     scale: view.scale, from, to, height: heights[track.id] ?? trackHeight, snapping: editing.snapping,
   })])), [tracks, trackDecoration, view.scale, from, to, heights, trackHeight, editing.snapping]);
+  // A page's header details, made once per track as the decorations are.
+  const details = useMemo(() => new Map(tracks.map(track => [track.id, headerDetail?.(track)])), [tracks, headerDetail]);
   // The clips a paste would put down, drawn again only when they or the view change.
   const ghosts = editing.clipboard.ghosts;
   const ghostViews = useMemo(() => timeline && ghosts.map(({ track, clip }) => {
@@ -358,8 +389,15 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
       const track = !overview && timeline && event.target instanceof Element ? event.target.closest<HTMLElement>('[data-track]') : null;
       if (!track || !(event.target instanceof Element)) return;
       const clicked = under(event);
-      const items: TrackMenu['items'] = event.target.closest('.timeline-track-header')
-        ? [{ id: 'add-subtitle-track', label: labels.addSubtitleTrack, disabled: editing.pending, run: () => editing.addSubtitleTrack(pageLanguage()) }, ...(trackMenuItems?.(track.dataset.track!) ?? [])]
+      const header = event.target.closest('.timeline-track-header') !== null;
+      const addTrack = { id: 'add-subtitle-track', label: labels.addSubtitleTrack, disabled: editing.pending, run: () => editing.addSubtitleTrack(pageLanguage()) };
+      const pageItems = header ? trackMenuItems?.(track.dataset.track!) ?? [] : [];
+      if (pageItems.length > 0) {
+        event.preventDefault();
+        setHeaderMenu({ x: event.clientX, y: event.clientY, label: labels.trackMenu, items: [addTrack, ...pageItems] });
+        return;
+      }
+      const items: TrackMenu['items'] = header ? [addTrack]
         : track.dataset.kind === 'subtitle' ? [{ id: 'add-subtitle', label: labels.addCue, disabled: track.dataset.locked === 'true' || editing.pending, run: () => editing.addCue(track.dataset.track!, clicked) }] : editing.clipboard.items(clip);
       if (items.length === 0) return;
       event.preventDefault();
@@ -374,6 +412,7 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
     onPointerUp={event => { release(event); editing.pointerUp(event); }} onPointerCancel={event => { release(event, true); editing.cancel(); }} onLostPointerCapture={editing.cancel}>
     {!overview && <Toolbar name={timeline?.name ?? labels.title} tool={editing.tool} snapping={editing.snapping} linked={editing.linked} follow={follow}
       onTool={editing.chooseTool} onSnapping={editing.setSnapping} onLinked={editing.setLinked} onZoom={zoom} onFit={fit} onFollow={setFollow} onEditMenu={openEditMenu} hideFollow={scrolling !== undefined} />}
+    {headerMenu && <CoveringMenu menu={headerMenu} onClose={closeMenu} />}
     {menu && (menu.clipboard ? <CoveringMenu menu={{ ...menu, label: words.label.studio.page.edit }} onClose={closeMenu} /> : <TimelineMenu menu={menu} onClose={closeMenu} />)}
     {editing.problem && <div className="timeline-problem" role="alert"><span>{editing.problem}</span><button type="button" className="icon-btn" aria-label={words.label.close} onClick={() => editing.setProblem(null)}><X size={14} /></button></div>}
     {!timeline ? <p className="caption timeline-empty">{words.hint.studio.timeline.empty}</p> : <div ref={scroll} className="timeline-scroll" onScroll={onScroll}>
@@ -391,7 +430,8 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
           selected={editing.selected} mixerSelected={selectedTracks?.includes(track.id)} targeted={editing.targets.video_track === track.id || editing.targets.audio_track === track.id} onTarget={editing.target}
           chosen={editing.transition !== null && track.kind !== 'subtitle' && track.transitions.some(each => each.id === editing.transition) ? editing.transition : null}
           chosenCue={editing.cue !== null && track.kind === 'subtitle' && track.cues.some(each => each.id === editing.cue) ? editing.cue : null}
-          shownSubtitles={track.kind === 'subtitle' ? shownSubtitles : null} />)}
+          shownSubtitles={track.kind === 'subtitle' ? shownSubtitles : null}
+          headerDetail={details.get(track.id)} renameOnClick={renameOnClick} heightLocked={lockedHeights?.includes(track.id)} />)}
           {afterRows}</AudioPlayhead.Provider>
         {ghostViews}
         {editing.preview?.preview.map(item => { const row = rows.get(item.track); return row && <div key={item.id} className="timeline-preview" data-preview={item.id} data-clamped={editing.preview!.clamped}

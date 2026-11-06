@@ -223,6 +223,13 @@ const entries = {
   'Available tracks': ['可选轨道', '使用可能なトラック'], 'Group members': ['组内轨道', 'グループのトラック'], 'Add members': ['加入轨道', 'トラックを追加'],
   'Remove members': ['移出轨道', 'トラックを除外'], 'Set as Default': ['设为默认', 'デフォルトに設定'],
   'Save': ['保存', '保存'], 'Automation': ['自动化', 'オートメーション'],
+  'Change Track Color': ['更改轨道颜色', 'トラックカラーを変更'], 'Lock Track Height To': ['锁定轨道高度为', 'トラックの高さを固定'],
+  'Micro': ['微型', 'マイクロ'], 'Mini': ['小型', 'ミニ'], 'Medium size': ['中型', 'ミディアム'], 'Large': ['大型', 'ラージ'],
+  'Extra Large': ['特大', 'エクストララージ'], 'Custom': ['自定义', 'カスタム'], 'Track meter': ['轨道电平表', 'トラックメーター'],
+  'Full Waveforms': ['完整波形', 'フル波形'], 'Waveform Borders': ['波形边框', '波形の境界線'],
+  'Jump to': ['跳转到', 'ジャンプ先'], 'Fade': ['淡变', 'フェード'],
+  'Track Waveform Zoom': ['轨道波形缩放', 'トラック波形ズーム'], 'Zoom Increase Height': ['增大波形高度', '波形の高さを拡大'],
+  'Zoom Decrease Height': ['减小波形高度', '波形の高さを縮小'],
 } as const;
 export type FairlightText = keyof typeof entries;
 const english: Partial<Record<FairlightText, string>> = {
@@ -232,6 +239,7 @@ const english: Partial<Record<FairlightText, string>> = {
   narrow: 'Narrow Band', wide: 'Wide Band', all_high: 'All High Frequency',
   slow: 'Slow', medium: 'Medium', fast: 'Fast', auto_speech: 'Auto Speech', manual: 'Manual', voice: 'Voice',
   'Move track up': 'Move {name} up', 'Move track down': 'Move {name} down',
+  'Medium size': 'Medium',
 };
 const catalogue = (language: 'en' | 'zh' | 'ja'): Record<FairlightText, string> => Object.fromEntries(Object.entries(entries).map(([key, value]) => [key,
   language === 'en' ? english[key as FairlightText] ?? key : value[language === 'zh' ? 0 : 1]])) as Record<FairlightText, string>;

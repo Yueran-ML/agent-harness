@@ -68,3 +68,16 @@
 .fairlight-cinema { position: fixed; z-index: 80; inset: 0; display: flex; flex-direction: column; background: #111; }
 .fairlight-cinema .monitor { flex: 1; min-height: 0; }
 @media (max-width: 1100px) { .fairlight-left { max-width: 35vw; } .fairlight-inspector { max-width: 28vw; } .fairlight-toolbar { font-size: 11px; } }
+/* Track headers: number in the track's colour, format, and the track's own meter (p. 3669). */
+.fairlight-timeline .timeline-track-header { overflow: hidden; }
+.fairlight-header-detail { display: flex; align-items: center; gap: 4px; height: 16px; border-left: 3px solid; padding-left: 3px; font-size: 10px; }
+.fairlight-track-number { font-weight: 600; font-variant-numeric: tabular-nums; }
+.fairlight-track-format { opacity: .75; white-space: nowrap; }
+.fairlight-header-meter { display: flex; margin-left: auto; width: 22px; height: 14px; }
+.fairlight-header-meter .audio-meter { gap: 1px; }
+.fairlight-timeline .timeline-track[data-mixer-selected] .timeline-track-header { background: #304b4e; }
+.fairlight-timeline [data-height-locked] .timeline-track-resize { cursor: default; }
+/* View Options: Full Waveforms hides the name bar; Waveform Borders outlines the waveform (p. 3677). */
+.fairlight-timeline[data-full-waveforms] .timeline-clip-name { display: none; }
+.fairlight-timeline[data-full-waveforms] .fairlight-channel-lanes { top: 0; }
+.fairlight-timeline[data-waveform-borders] .timeline-waveform { filter: drop-shadow(0 0 .6px #e8fff4) drop-shadow(0 0 .6px #0c2219); }

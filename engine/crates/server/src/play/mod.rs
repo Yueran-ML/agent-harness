@@ -292,10 +292,8 @@ impl Transport {
                     })?;
                 self.source
                     .begin_load(
-                        &media,
-                        PathBuf::from(&found.path),
+                        found,
                         crate::proxy::usable(found).map(|proxy| PathBuf::from(&proxy.path)),
-                        found.facts.clone(),
                         project.timelines.first().map(|timeline| timeline.rate),
                     )
                     .map(Loading::Source)

@@ -9,13 +9,9 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use columbina_audio::feed::{ClipFeed, ClipSource, FeedError};
-#[cfg(test)]
 use columbina_audio::graph::{route, Graph, Options, Purpose};
-#[cfg(test)]
 use columbina_audio::node::Layout as Channels;
-#[cfg(test)]
 use columbina_audio::stream::Resampler;
-#[cfg(test)]
 use columbina_media::AudioFormat;
 use columbina_model::{resolve, Project};
 use serde_json::json;
@@ -23,11 +19,9 @@ use serde_json::json;
 use crate::log::log;
 use reader::{Layout, Reader};
 
-#[cfg(test)]
 type Stereo = [f32; 2];
 
 /// The most samples that the graph of a mixer processes at once.
-#[cfg(test)]
 const MAX_BLOCK: usize = 4096;
 
 /// The readers of the clips of a graph, opened as the graph first asks for each: the feed of a
@@ -263,9 +257,8 @@ impl ClipFeed for Feed {
     }
 }
 
-/// The mix of the monitored bus block by block, for the tests of the graph with real media: the
-/// export (T6) and playback (T5) run the graph themselves.
-#[cfg(test)]
+/// The mix of the monitored bus block by block, used by configured source playback and
+/// tests with real media. Timeline playback and export run their graphs themselves.
 pub struct Mixer {
     project: Arc<Project>,
     timeline: usize,
@@ -276,7 +269,6 @@ pub struct Mixer {
     next: Option<i64>,
 }
 
-#[cfg(test)]
 impl Mixer {
     /// The mixer of timeline `timeline` of `project`, for `purpose`: playback hears the Listen
     /// of a sidechain, an export never does.
@@ -373,7 +365,12 @@ impl Mixer {
     /// 20 ms at a time, until the end of the timeline (an export of T4b, until T6).
     pub fn source(self, format: AudioFormat, from: i64) -> Box<dyn crate::audio::Source> {
         let timeline = &self.project.timelines[self.timeline];
-        let end = end_of(timeline);
+        let remaining =
+            (i128::from(end_of(timeline)) - i128::from(from)).max(0) * i128::from(format.rate);
+        let remaining = usize::try_from(
+            (remaining + i128::from(timeline.sample_rate) - 1) / i128::from(timeline.sample_rate),
+        )
+        .unwrap_or(usize::MAX);
         let mut resampler = Resampler::new(
             timeline.sample_rate,
             format.rate,
@@ -385,7 +382,7 @@ impl Mixer {
             next: resampler.first_input(),
             mixer: self,
             resampler,
-            end,
+            remaining,
             frames: usize::try_from(format.rate / 50).unwrap_or(1).max(1),
         })
     }
@@ -406,29 +403,30 @@ pub(crate) fn end_of(timeline: &columbina_model::Timeline) -> i64 {
 /// resampler of T5 (`columbina_audio::stream`), which keeps the samples of the mix that its
 /// filter reaches back to: the graph runs through each sample once, in order (the plan's check of
 /// the code, 1), and the sound for the device is clipped there, and only there.
-#[cfg(test)]
 struct OutputSource {
     mixer: Mixer,
     resampler: Resampler,
     /// The sample of the timeline mixed next.
     next: i64,
-    end: i64,
+    /// Output-device frames left, not timeline samples.
+    remaining: usize,
     /// The frames of each run.
     frames: usize,
 }
 
-#[cfg(test)]
 impl crate::audio::Source for OutputSource {
     fn next(&mut self) -> Result<Option<Vec<f32>>, String> {
-        if self.resampler.next_output() >= self.end {
+        if self.remaining == 0 {
             return Ok(None);
         }
         let channels = self.resampler.channels();
-        let mut output = vec![0.0; self.frames * channels];
+        let frames = self.frames.min(self.remaining);
+        let mut output = vec![0.0; frames * channels];
         let mut made = 0;
         loop {
             made += self.resampler.pull(&mut output[made * channels..]);
-            if made == self.frames {
+            if made == frames {
+                self.remaining -= frames;
                 return Ok(Some(output));
             }
             let count = self.resampler.room().clamp(1, MAX_BLOCK);

@@ -87,6 +87,7 @@
 //! the frame shown stays.
 
 pub(crate) mod clock;
+mod source_audio;
 
 #[cfg(test)]
 use crate::test_media;
@@ -319,6 +320,7 @@ enum Inbox {
 enum Command {
     Load {
         media: String,
+        sound_media: Option<Arc<columbina_model::Media>>,
         path: PathBuf,
         /// Its proxy, if it has one that may be used.
         proxy: Option<PathBuf>,
@@ -332,6 +334,9 @@ enum Command {
     /// Unload the media, if it is the one loaded.
     Unload {
         media: String,
+    },
+    AudioConfig {
+        media: Arc<columbina_model::Media>,
     },
     Play {
         speed: i32,
@@ -626,23 +631,22 @@ impl Transport {
     /// The transport has stopped.
     pub fn begin_load(
         &self,
-        media: &str,
-        path: PathBuf,
+        media: &columbina_model::Media,
         proxy: Option<PathBuf>,
-        facts: Facts,
         grid: Option<Rate>,
     ) -> Result<Loading, Fault> {
         let (reply, replied) = oneshot::channel();
         {
             let mut shared = lock(&self.shared);
-            shared.loading.push(media.to_owned());
-            shared.proxy_sent = Some((media.to_owned(), proxy.clone()));
+            shared.loading.push(media.id.clone());
+            shared.proxy_sent = Some((media.id.clone(), proxy.clone()));
         }
         let sent = self.send(Command::Load {
-            media: media.to_owned(),
-            path,
+            media: media.id.clone(),
+            sound_media: media.audio_config.as_ref().map(|_| Arc::new(media.clone())),
+            path: PathBuf::from(&media.path),
             proxy,
-            facts: Box::new(facts),
+            facts: Box::new(media.facts.clone()),
             grid,
             reply,
         });
@@ -651,7 +655,7 @@ impl Transport {
             if let Some(index) = shared
                 .loading
                 .iter()
-                .position(|loading| **loading == *media)
+                .position(|loading| *loading == media.id)
             {
                 shared.loading.remove(index);
             }
@@ -763,6 +767,20 @@ impl Transport {
         };
         for media in gone {
             let _ = self.send(Command::Unload { media });
+        }
+        let audio: Vec<_> = {
+            let shared = lock(&self.shared);
+            shared
+                .status
+                .media
+                .iter()
+                .chain(&shared.loading)
+                .filter_map(|id| project.media.iter().find(|media| media.id == *id))
+                .map(|media| Arc::new(media.clone()))
+                .collect()
+        };
+        for media in audio {
+            let _ = self.send(Command::AudioConfig { media });
         }
         // A proxy made, made again or taken away while its media is loaded.
         let changed = {
@@ -1176,6 +1194,7 @@ impl Video {
 /// The media loaded, and what the transport does with it.
 struct Loaded {
     media: String,
+    sound_media: Option<Arc<columbina_model::Media>>,
     /// The file whose sound is played: the media itself.
     sound_path: PathBuf,
     /// The proxy of the media, if it has one that may be used.
@@ -1470,6 +1489,7 @@ impl Worker {
         match command {
             Command::Load {
                 media,
+                sound_media,
                 path,
                 proxy,
                 facts,
@@ -1482,6 +1502,9 @@ impl Worker {
                     view.set_content(crate::managed::content_of_media(&facts));
                 }
                 let opened = self.open(media.clone(), path, proxy, &facts, grid);
+                if let Some(loaded) = &mut self.loaded {
+                    loaded.sound_media = sound_media;
+                }
                 if opened.is_err() {
                     self.world.clear();
                 }
@@ -1501,6 +1524,7 @@ impl Worker {
                     self.tell(true);
                 }
             }
+            Command::AudioConfig { media } => self.audio_config(media),
             Command::Play { speed } => self.play(speed),
             Command::Pause => {
                 self.pause();
@@ -1559,6 +1583,31 @@ impl Worker {
             self.tell(true);
         }
         self.recover();
+    }
+
+    /// Apply pool audio settings to the loaded source, keeping ordinary metadata changes silent.
+    fn audio_config(&mut self, media: Arc<columbina_model::Media>) {
+        let Some(loaded) = &self.loaded else {
+            return;
+        };
+        if loaded.media != media.id {
+            return;
+        }
+        let configured = media.audio_config.is_some().then_some(media);
+        if source_audio::same(loaded.sound_media.as_deref(), configured.as_deref()) {
+            return;
+        }
+        let speed = match &loaded.mode {
+            Mode::Playing(playing) => Some(playing.clock.speed()),
+            _ => None,
+        };
+        if speed.is_some() {
+            self.pause();
+        }
+        self.loaded.as_mut().expect("checked above").sound_media = configured;
+        if let Some(speed) = speed {
+            self.play(speed);
+        }
     }
 
     /// Let go of a proxy that failed to decode: the picture is read from the media itself from
@@ -1737,6 +1786,7 @@ impl Worker {
         }
         let mut loaded = Loaded {
             media,
+            sound_media: None,
             sound_path: path,
             proxy,
             facts_video: facts.video.clone(),
@@ -1787,6 +1837,7 @@ impl Worker {
                         && loaded.has_sound
                         && start_sound(
                             &mut self.sound,
+                            loaded.sound_media.as_deref(),
                             &loaded.sound_path,
                             loaded.start,
                             place,
@@ -1852,6 +1903,7 @@ impl Worker {
             && loaded.has_sound
             && start_sound(
                 &mut self.sound,
+                loaded.sound_media.as_deref(),
                 &loaded.sound_path,
                 loaded.start,
                 place,
@@ -2392,6 +2444,7 @@ fn open_picture(
 /// opened anew if it failed or the default device changed. Whether it plays.
 fn start_sound(
     slot: &mut SoundSlot,
+    media_layout: Option<&columbina_model::Media>,
     path: &std::path::Path,
     start: Time,
     place: i128,
@@ -2402,7 +2455,11 @@ fn start_sound(
     };
     let media = Clock::at(place, 1, rate, 0).media_nanos(0);
     let from = clock::sample_at(start, media, output.format().rate);
-    match output.start(audio::file(path, output.format(), from)) {
+    let source = media_layout.map_or_else(
+        || audio::file(path, output.format(), from),
+        |media| source_audio::source(media, rate, place, output.format()),
+    );
+    match output.start(source) {
         Ok(()) => true,
         Err(message) => {
             log("sound_failed", &json!({ "message": message }));
@@ -2658,6 +2715,7 @@ mod tests {
                 },
                 loaded: Some(Loaded {
                     media: "m1".into(),
+                    sound_media: None,
                     sound_path: made.path.clone(),
                     proxy: None,
                     facts_video: None,
@@ -2849,6 +2907,7 @@ mod tests {
                 Command::Unload { media } => format!("unload {media}"),
                 Command::Redraw => "redraw".into(),
                 Command::Load { media, .. } => format!("load {media}"),
+                Command::AudioConfig { media } => format!("audio config {}", media.id),
                 Command::Source { media, .. } => format!("source {media}"),
                 Command::Proxies { on } => format!("proxies {on}"),
             })

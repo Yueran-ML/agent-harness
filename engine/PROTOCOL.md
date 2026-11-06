@@ -4073,6 +4073,14 @@ are ours (marked *ours*), to be checked against Resolve.
 
 ### Media's `audio_config`
 
+At normal speed the source monitor plays the configured active channels, including source
+selection, mix-to-mono, mute and channel level, through the same routing and mixing graph as
+timeline clips. A configuration change also updates an already loaded source; while playing,
+its audio restarts from the current playhead and playback continues. Renaming or changing source
+marks does not restart it. Clearing the configuration restores the original single-file decoder.
+An empty configuration is silent. This does not change existing timeline instances, add source
+audio scrubbing, or enable sound at source playback speeds other than 1.
+
 An optional array of source audio tracks, each `{name, format, order?, channels}`.
 `format` is `mono`, `stereo`, `5.1` or `adaptive`; `order` defaults to `smpte`
 (`film` is allowed only for 5.1). `channels` contains 1–24 clip channel maps,

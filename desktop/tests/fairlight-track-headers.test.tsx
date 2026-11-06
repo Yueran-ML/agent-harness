@@ -190,12 +190,3 @@ it('marks the playhead on the scroll bar while it is off the view, and brings it
   expect(screen.queryByRole('img', { name: 'Playhead out of view' })).toBeNull();
 });
 
-it('chooses the clips at the playhead of the tracks chosen by their headers, as Pointer mode does', () => {
-  render(<Page bridge={engine()} frame={20} />);
-  const chosenClips = () => [...document.querySelectorAll<HTMLElement>('[data-clip][aria-selected="true"]')].map(each => each.dataset.clip);
-  press(header('A2')); expect(chosenClips()).toEqual(['c1']);
-  press(header('A3'), { ctrlKey: true }); expect(chosenClips()).toEqual(['c1', 'c2']);
-  // A track whose clip starts after the playhead has none chosen.
-  press(header('A4')); expect(chosenClips()).toEqual([]);
-  timelineKey({ key: 'ArrowUp', ctrlKey: true, altKey: true }); expect(chosenClips()).toEqual(['c2']);
-});

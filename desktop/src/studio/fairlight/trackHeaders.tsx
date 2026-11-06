@@ -98,14 +98,12 @@ const onControl = (target: EventTarget) => target instanceof Element
  * track's background chooses it; Ctrl+click adds or takes away one; Shift+click chooses those
  * between; a drag down the headers chooses the tracks it passes. The order is the order shown.
  */
-export function useTrackChoice({ selected, onTracks, onTrack, onChosen }: {
+export function useTrackChoice({ selected, onTracks, onTrack }: {
   selected: readonly string[]; onTracks?: (ids: string[]) => void; onTrack?: (id: string) => void;
-  /** Told of the tracks a header gesture or Ctrl+Alt+Up/Down chose, for Pointer mode to choose their clips. */
-  onChosen?: (ids: string[]) => void;
 }) {
-  const now = useRef({ selected, onTracks, onTrack, onChosen });
-  now.current = { selected, onTracks, onTrack, onChosen };
-  const choose = (ids: string[]) => { now.current.onTracks?.(ids); now.current.onChosen?.(ids); };
+  const now = useRef({ selected, onTracks, onTrack });
+  now.current = { selected, onTracks, onTrack };
+  const choose = (ids: string[]) => { now.current.onTracks?.(ids); };
   // The track a Shift+click goes from, a sweep in progress, and a press the timeline should not take again.
   const anchor = useRef<string | null>(null);
   const sweep = useRef<string | null>(null);
@@ -132,11 +130,7 @@ export function useTrackChoice({ selected, onTracks, onTrack, onChosen }: {
       choose(between(event.target, anchor.current, id));
     } else {
       anchor.current = id;
-      if (event.target.closest('.timeline-track-header')) {
-        sweep.current = id;
-        // The timeline itself tells the page of the track; its clips at the playhead are chosen here.
-        now.current.onChosen?.([id]);
-      }
+      if (event.target.closest('.timeline-track-header')) sweep.current = id;
     }
   }, []);
   const pointerOver = useCallback((event: ReactPointerEvent) => {

@@ -42,18 +42,7 @@ export function FairlightTimeline({ view, update, meters, onTracksSelect, ...pro
     const chosen=active.current&&view.lanePaths[active.current]?active.current:(props.selectedTracks??[]).map(id=>`track:${id}`).find(id=>view.lanePaths[id])??Object.keys(view.lanePaths).find(id=>view.lanePaths[id]);
     return chosen?commands.current.get(chosen)?.(key)??false:false;
   };
-  /**
-   * Pointer mode (Reference Manual 20, p. 3675): tracks chosen by their headers have their clips at
-   * the playhead chosen, unless on a locked track; other tools leave the clips as they are.
-   */
-  const chooseClipsOf = (ids: string[]) => {
-    const timeline = props.timeline, at = props.frame;
-    if (!timeline || section.current?.querySelector('.timeline')?.getAttribute('data-tool') !== 'select') return;
-    handle.current?.selectClips(timeline.tracks.filter(track => ids.includes(track.id) && track.kind !== 'subtitle' && !track.locked)
-      .flatMap(track => track.kind === 'subtitle' ? [] : track.clips.filter(clip => clip.start <= at && at < clip.start + clip.length).map(clip => clip.id)));
-  };
-  const choice = useTrackChoice({ selected: props.selectedTracks ?? [], onTracks: onTracksSelect, onTrack: props.onTrackSelect,
-    onChosen: ids => chooseClipsOf(ids) });
+  const choice = useTrackChoice({ selected: props.selectedTracks ?? [], onTracks: onTracksSelect, onTrack: props.onTrackSelect });
   const headerDetail = useCallback((track: Track) => <HeaderDetail track={track} meters={meters} />, [meters]);
   const lockedHeights = useMemo(() => Object.keys(view.heightLocks), [view.heightLocks]);
   const section = useRef<HTMLElement>(null);
@@ -139,8 +128,7 @@ export function FairlightTimeline({ view, update, meters, onTracksSelect, ...pro
   }, [props.playing]);
   const handle = useRef<TimelineHandle>(null);
   useImperativeHandle(props.ref, () => ({ keyDown: key => pageKey(key) || (handle.current?.keyDown(key) ?? false), perform: action => handle.current?.perform(action) ?? false,
-    canPerform: action => handle.current?.canPerform(action) ?? false, clearTransition: () => handle.current?.clearTransition(), marks: () => handle.current?.marks() ?? {in:null,out:null}, clipboardItems: clip => handle.current?.clipboardItems(clip) ?? [],
-    selectClips: clips => handle.current?.selectClips(clips) }));
+    canPerform: action => handle.current?.canPerform(action) ?? false, clearTransition: () => handle.current?.clearTransition(), marks: () => handle.current?.marks() ?? {in:null,out:null}, clipboardItems: clip => handle.current?.clipboardItems(clip) ?? [] }));
   const edit = (ops:Change[]) => { void callEngine(props.bridge,'transaction.apply',{revision:props.revision,ops},{expectedSession:props.session}).catch(error=>setProblem(failure(error))); };
   /**
    * Razor (Reference Manual 20, p. 3675): a command, not a tool, that cuts every unlocked track that

@@ -7,7 +7,7 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { AudioAutomationAdapter } from '../src/studio/audio/automationAdapter';
-import type { Timeline, Track } from '../src/studio/engine';
+import type { ClipTrack, Timeline, Track } from '../src/studio/engine';
 import { IndexTracks } from '../src/studio/fairlight/IndexTracks';
 import { Inspector } from '../src/studio/fairlight/Inspector';
 import { VcaStrip } from '../src/studio/fairlight/VcaStrip';
@@ -57,7 +57,7 @@ it('takes the other solos off when a VCA is soloed under Exclusive Solo, and onl
 
 it('moves the group from the Inspector fader, keeps off a playing lane, and writes the lane while recording', () => {
   const edit = vi.fn(), bridge = { call: vi.fn(async () => ({ ok: true as const, result: {} })), onEvent: () => () => {} };
-  const strip = (fader_db: number) => ({ strip: { fader_db } as NonNullable<Track['strip']> });
+  const strip = (fader_db: number) => ({ strip: { fader_db } as NonNullable<ClipTrack['strip']> });
   const commit = (value: string) => {
     const box = document.querySelector<HTMLInputElement>('[data-field="track-fader"] input.inspector-number')!;
     fireEvent.change(box, { target: { value } }); fireEvent.keyDown(box, { key: 'Enter' });
@@ -69,7 +69,7 @@ it('moves the group from the Inspector fader, keeps off a playing lane, and writ
   expect(edit.mock.lastCall![0].at(-1)).toEqual({ edit: 'set_track_audio', timeline: 't1', track: 'a1',
     patch: { strip: { fader_db: -3 } }, follow_groups: true });
   // A lane that plays: the fader shows it and is not written under it.
-  const lanes = { fader_db: { points: [{ at: { ticks: 0, scale: 48000 }, value: -12 }] } } as Track['lanes'];
+  const lanes = { fader_db: { points: [{ at: { ticks: 0, scale: 48000 }, value: -12 }] } } as ClipTrack['lanes'];
   const automated = song({}, { ...strip(-6), lanes });
   view.rerender(<Inspector bridge={bridge} session={1} revision={8} timeline={automated} media={[media]} clips={[]} track="a1" onEdit={edit} />);
   expect(document.querySelector<HTMLInputElement>('[data-field="track-fader"] input.inspector-number')!.disabled).toBe(true);

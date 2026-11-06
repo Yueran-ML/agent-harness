@@ -64,7 +64,7 @@ it('keeps Index audio drag and arrows in project history while bus order and Und
   function Host(){const [t,setT]=useState(initial),[layout,setLayout]=useState(defaultMixerLayout());
     return <><button onClick={()=>setT(initial)}>Undo fixture</button><IndexTracks timeline={t} layout={layout} hidden={[]} onHidden={()=>{}} onSelect={()=>{}}
       onReorder={(keys,before)=>setLayout({...layout,order:moveMixerItems(mixerOrder(t,layout),keys,before)})}
-      onEdit={ops=>{edits.push(ops);setT(old=>{const tracks=[...old.tracks];for(const op of ops)if(op.op==='move_track'){const at=tracks.findIndex(t=>t.id===op.id);tracks.splice(op.index,0,tracks.splice(at,1)[0]);}return {...old,tracks};});}}/>
+      onEdit={ops=>{edits.push(ops);setT(old=>{const tracks=[...old.tracks];for(const op of ops)if('op' in op&&op.op==='move_track'){const at=tracks.findIndex(t=>t.id===op.id);tracks.splice(op.index,0,tracks.splice(at,1)[0]);}return {...old,tracks};});}}/>
       <output data-testid="project-order">{t.tracks.map(t=>t.id).join(',')}</output></>;
   }
   const view=render(<Host/>);const data:Record<string,string>={};const dataTransfer={types:['application/x-columbina-mixer-order'],setData:(k:string,v:string)=>{data[k]=v;},getData:(k:string)=>data[k]??''};

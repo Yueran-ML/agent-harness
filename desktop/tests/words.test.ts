@@ -162,7 +162,7 @@ type Said = { path: string; text: string };
 
 // What is written in every language as it is: the names of the platforms, and the names of the
 // fields of an app or a bot, as their consoles write them.
-const NAMES = new Set(['Feishu', 'Lark', 'WeCom', 'QQ', 'App ID', 'App Secret', 'Bot ID', 'Secret', 'AppID', 'AppSecret']);
+const NAMES = new Set(['Feishu', 'Lark', 'WeCom', 'QQ', 'App ID', 'App Secret', 'Bot ID', 'Secret', 'AppID', 'AppSecret', 'Fairlight']);
 // What is written with the units of an editor, as editors write them in every language: 29.97 fps, 10 bit.
 const UNITS = new Set(['label.studio.fps', 'label.studio.bits']);
 // What the Chinese one keeps in English, as the terms of the trade are said there: a label that is
@@ -271,7 +271,9 @@ describe('the catalogues', () => {
     // In the row of a call, `what` is a few words. The name of an action is the
     // face of a button, and so is a label. A duration and the time that a turn took
     // are parts of a line.
-    const isSentence = (path: string) => path.endsWith('.why') || !(
+    // Fairlight shares labels and hints in one catalogue; its sentence keys are full English sentences.
+    const isSentence = (path: string) => path.endsWith('.why')
+      || (path.startsWith('label.studio.fairlightPage.') && path.endsWith('.')) || !(
       path.startsWith('tool.') || path.startsWith('actions.') || path.startsWith('label.')
       || path === 'duration' || path === 'turn.took'
     );

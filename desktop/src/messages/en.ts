@@ -1709,7 +1709,7 @@ export const en = {
         },
       },
       migration: {
-        duck: "This old project lowered music while someone spoke. Add that back?",
+        duck: "This old project lowered music while someone spoke. Choose whether to restore that behavior.",
         duckFailed: "Ducking was not completed. You can try again.",
         /** `names` are those of the first few of `count`; the rest are counted. */
         done: (names: readonly string[], count: number) => (count === 1

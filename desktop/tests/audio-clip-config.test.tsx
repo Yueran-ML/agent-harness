@@ -44,7 +44,8 @@ function setup(fairlight = false, clips = [clip('sound')], locked = false) {
 it.each([false, true])('opens the shared four-band clip EQ in the inspector (Fairlight=%s)', async fairlight => {
   const s = setup(fairlight); fireEvent.click(screen.getByRole('button', { name: 'Equalizer' })); await settle();
   const eq = screen.getByRole('region', { name: 'EQ' });
-  expect(within(eq).getAllByRole('group')).toHaveLength(4);
+  expect(within(eq).getAllByRole('group', { name: /^Band [1-4]$/ })).toHaveLength(4);
+  expect(within(eq).getByRole('combobox', { name: 'Preset' })).toBeTruthy();
   expect(s.requests[0]).toMatchObject({ method: 'audio.eq_response', params: { timeline: 't1', target: { clip: 'sound' } }, context: { expectedSession: 1 } });
   fireEvent.click(within(eq).getByRole('checkbox', { name: 'Enable' })); await settle();
   expect(s.model()[0].eq).toEqual({ ...defaultEq(true), on: true });

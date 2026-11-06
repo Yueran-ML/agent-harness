@@ -1493,7 +1493,7 @@ export const zhCN: Messages = {
         },
       },
       migration: {
-        duck: "旧工程里有说话时压低音乐，要补上吗？",
+        duck: "旧工程设置了说话时压低音乐，请选择是否恢复。",
         duckFailed: "未能完成，可重试。",
         done: (names: readonly string[], count: number) => `已把 ${count} 个旧工程转成时间线：${names.join('、')}${count > names.length ? `，以及另外 ${count - names.length} 个` : ''}。旧文件原样保留。`,
         failed: (count: number) => `有 ${count} 个旧工程没能迁移，它们的文件没有改动。`,

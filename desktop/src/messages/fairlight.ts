@@ -50,7 +50,7 @@ const entries = {
   "return": ["返回", "リターン"],
   "fader": ["推子", "フェーダー"],
   "pan": ["声像", "パン"],
-  "eq": ["均衡器", "EQ"],
+  "eq": ["均衡器", "イコライザー"],
   "comp": ["压缩器", "コンプレッサー"],
   "gate": ["门限/扩展", "ゲート"],
   "lim": ["限幅器", "リミッター"],
@@ -86,7 +86,7 @@ const entries = {
   'Add Bus': ['添加总线', 'バスを追加'], 'Duplicate': ['复制一份', '複製'], 'Remove': ['移除', '削除'], 'Used': ['已用', '使用済み'],
   'In use': ['正在使用，请先解除引用', '使用中です。先に参照を解除してください'],
   'The project changed. Reopen this window before saving.': ['工程已更改，请重新打开此窗口后再保存。', 'プロジェクトが変更されました。保存前にこのウィンドウを開き直してください。'],
-  'OK': ['确定', 'OK'], 'Cancel': ['取消', 'キャンセル'],
+  'OK': ['确定', '確定'], 'Cancel': ['取消', 'キャンセル'],
   'Add output': ['添加输出', '出力を追加'], 'Add send': ['添加发送', 'センドを追加'],
   'Add another bus before creating a send.': ['请先添加另一条总线，再创建发送。', 'センドを作成する前に別のバスを追加してください。'],
   'Maximum six routing levels': ['路由最多六层', 'ルーティングは最大 6 階層'], 'Maximum ten routes': ['最多十条路由', 'ルートは最大 10 本'],
@@ -115,8 +115,8 @@ const entries = {
   'Enable': ['启用', '有効'], 'Copy': ['复制', 'コピー'], 'Paste': ['粘贴', '貼り付け'],
   'EQ band': ['EQ 频段', 'EQ バンド'],
   'value': ['数值', '値'],
-  'Static model curve': ['模型静态设置曲线；不表示播放中的自动化或瞬态读数。', 'モデルの静的設定カーブ。再生オートメーションや瞬時値ではありません。'],
-  'Locked or automated': ['已锁定或由自动化控制；参数只读。', 'ロック中またはオートメーション制御中のため読み取り専用です。'],
+  'Static model curve': ['静态设置曲线（不含播放自动化或瞬态读数）', '静的設定カーブ（再生オートメーションや瞬時値を含まない）'],
+  'Locked or automated': ['已锁定或由自动化控制，参数只读', 'ロック中またはオートメーション制御中のため読み取り専用'],
   'EQ response': ['EQ 响应', 'EQ レスポンス'], 'Dynamics curve': ['动态曲线', 'ダイナミクスカーブ'],
   'Band': ['频段', 'バンド'], 'Type': ['类型', 'タイプ'], 'Range': ['范围', 'レンジ'], 'Frequency': ['频率', '周波数'], 'Slope': ['斜率', 'スロープ'],
   'Bell': ['钟形', 'ベル'], 'Notch': ['陷波', 'ノッチ'], 'High Pass': ['高通', 'ハイパス'], 'Low Pass': ['低通', 'ローパス'], 'Low Shelf': ['低架', 'ローシェルフ'], 'High Shelf': ['高架', 'ハイシェルフ'], 'Output Gain': ['输出增益', '出力ゲイン'],
@@ -127,7 +127,7 @@ const entries = {
   'Mixer channels': ['调音台条带', 'ミキサーチャンネル'], 'Buses': ['总线', 'バス'],
   'Input': ['输入', '入力'], 'Track FX': ['轨道效果', 'トラック FX'], 'Effects In': ['插入效果启用', 'エフェクト有効'],
   'Sends': ['发送', 'センド'], 'Outputs': ['输出', '出力'], 'Fader value': ['推子数值', 'フェーダー値'],
-  'Solo Safe': ['独奏安全', 'ソロセーフ'], 'Exclusive Solo': ['排他独奏', '排他的ソロ'],
+  'Solo Safe': ['独听保护', 'ソロセーフ'], 'Exclusive Solo': ['独占独听', '排他的ソロ'],
   'Automation controls playback': ['自动化控制播放', 'オートメーションが再生を制御'], 'Base value': ['基础值', '基本値'],
   'Automation controls playback. Static settings do not replace the lane.': ['自动化控制播放，静态设置不会替换车道。', 'オートメーションが再生を制御します。静的設定はレーンを置き換えません。'],
   'No monitored bus': ['未选择监听总线', 'モニターバス未選択'],
@@ -182,11 +182,19 @@ const entries = {
   'Input spectrum': ['输入频谱', '入力スペクトル'], 'Noise estimate': ['估计噪声', '推定ノイズ'],
   'Track meters width': ['轨道表宽度', 'トラックメーター幅'], 'Bus meters width': ['总线表宽度', 'バスメーター幅'],
   'Loudness width': ['响度表宽度', 'ラウドネスメーター幅'], 'Viewer width': ['检视器宽度', 'ビューア幅'],
-  'Momentary sum': ['瞬时响度和值', '瞬時ラウドネス合計'], 'Momentary maximum': ['最大瞬时响度', '最大瞬時ラウドネス'], 'Loudness ruler': ['响度刻度', 'ラウドネス目盛'],
+  'Momentary sum': ['瞬时响度', '瞬時ラウドネス'], 'Momentary maximum': ['最大瞬时响度', '最大瞬時ラウドネス'], 'Loudness ruler': ['响度刻度', 'ラウドネス目盛'],
 } as const;
 export type FairlightText = keyof typeof entries;
+const english: Partial<Record<FairlightText, string>> = {
+  write: 'Write', trim: 'Trim', off: 'Off', latch: 'Latch', snap: 'Snap', snap_latch: 'Snap Latch',
+  event: 'To Next Event', hold: 'Hold', return: 'Return', fader: 'Fader', pan: 'Pan', eq: 'EQ',
+  comp: 'Compressor', gate: 'Expander / Gate', lim: 'Limiter', sends: 'Sends', plugins: 'Plugins', misc: 'Miscellaneous',
+  narrow: 'Narrow Band', wide: 'Wide Band', all_high: 'All High Frequency',
+  slow: 'Slow', medium: 'Medium', fast: 'Fast', auto_speech: 'Auto Speech', manual: 'Manual', voice: 'Voice',
+  'Move track up': 'Move {name} up', 'Move track down': 'Move {name} down',
+};
 const catalogue = (language: 'en' | 'zh' | 'ja'): Record<FairlightText, string> => Object.fromEntries(Object.entries(entries).map(([key, value]) => [key,
-  language === 'en' ? key === 'Move track up' ? 'Move {name} up' : key === 'Move track down' ? 'Move {name} down' : key : value[language === 'zh' ? 0 : 1]])) as Record<FairlightText, string>;
+  language === 'en' ? english[key as FairlightText] ?? key : value[language === 'zh' ? 0 : 1]])) as Record<FairlightText, string>;
 export const fairlightEn = catalogue('en');
 export const fairlightZh = catalogue('zh');
 export const fairlightJa = catalogue('ja');

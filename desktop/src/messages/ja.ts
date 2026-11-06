@@ -1572,7 +1572,7 @@ export const ja: Messages = {
         },
       },
       migration: {
-        duck: "この旧プロジェクトでは会話中に音楽を下げていました。復元しますか？",
+        duck: "この旧プロジェクトでは会話中に音楽を下げていました。この動作を復元するか選択してください。",
         duckFailed: "完了できませんでした。再試行できます。",
         done: (names: readonly string[], count: number) => `古いプロジェクト ${count} 件（${names.join('、')}${count > names.length ? ` ほか ${count - names.length} 件` : ''}）をタイムラインに変換しました。元のファイルはそのまま残しています。`,
         failed: (count: number) => `古いプロジェクト ${count} 件を移行できませんでした。それらのファイルは変更していません。`,

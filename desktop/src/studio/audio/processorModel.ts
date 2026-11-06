@@ -61,18 +61,22 @@ export function processorChanges(timeline: string, strips: MixerStrip[], path: s
   return strips.filter(s => processorWritable(s, path)).map(s => stripChange(timeline, s, { strip: { [path]: value } }));
 }
 /** Dependencies point from a source to its consumer, including inactive stored routing, as model validation does. */
-export function sidechainSources(timeline: Timeline, target: SourceRef) {
-  const strips = mixerStrips(timeline), key = targetKey(target), edges = new Map<string, Set<string>>();
+export function routingEdges(timeline: Timeline, replacingCompressor?: string) {
+  const strips = mixerStrips(timeline), edges = new Map<string, Set<string>>();
   const edge = (a: string, b: string) => { if (!edges.has(a)) edges.set(a, new Set()); edges.get(a)!.add(b); };
   for (const owner of strips) {
     const strip = owner.strip;
-    const outputs = strip?.outputs ?? (owner.kind === 'track' && timeline.buses?.some(b => b.id === 'B1') ? [{ bus: 'B1' }] : []);
+    const outputs = strip?.outputs ?? (!strip && owner.kind === 'track' && timeline.buses?.some(b => b.id === 'B1') ? [{ bus: 'B1' }] : []);
     for (const output of [...outputs, ...(strip?.sends ?? [])]) edge(owner.key, `bus:${output.bus}`);
     const sources = [...(strip?.track_fx?.sources ?? []), ...strip?.inserts?.flatMap(i => i.effect.kind === 'limiter' && i.effect.sidechain.source ? [i.effect.sidechain.source] : []) ?? []];
     // Replacing this owner's compressor source removes its old dependency.
-    if (owner.key !== key && strip?.dynamics?.compressor.sidechain.source) sources.push(strip.dynamics.compressor.sidechain.source);
+    if (owner.key !== replacingCompressor && strip?.dynamics?.compressor.sidechain.source) sources.push(strip.dynamics.compressor.sidechain.source);
     for (const source of sources) edge(targetKey(source), owner.key);
   }
+  return edges;
+}
+export function sidechainSources(timeline: Timeline, target: SourceRef) {
+  const strips = mixerStrips(timeline), key = targetKey(target), edges = routingEdges(timeline, key);
   const downstream = new Set<string>();
   const visit = (node: string) => { if (downstream.has(node)) return; downstream.add(node); for (const child of edges.get(node) ?? []) visit(child); };
   visit(key);

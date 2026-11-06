@@ -91,6 +91,8 @@ export function useAudioGesture(context: Context) {
   };
   return {
     start, cancel,
+    /** Includes an ending transaction waiting for its reply, for history-command ordering. */
+    busy: () => Boolean(owner.current && !owner.current.failed),
     active: () => Boolean(owner.current && !owner.current.failed && !owner.current.ending),
     preview: (ops: Change[]) => { const g = owner.current; if (g && !g.failed && !g.ending) { g.next = ops; pump(g); } },
     end: () => { const g = owner.current; if (!g || g.failed) return; clearIdle(g); if (!g.sent) { owner.current = null; return; } g.next ??= g.last; g.ending = true; pump(g); },

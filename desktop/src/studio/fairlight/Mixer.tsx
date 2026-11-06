@@ -13,6 +13,9 @@ import { editKey } from '../timeline/editKeys';
 import { processorChanges, targetOf, type ProcessorModule } from '../audio/processorModel';
 import { ProcessorWindow } from './ProcessorWindow';
 import '../audio/processors.css';
+import { BusFormat } from './BusFormat';
+import { BusAssign } from './BusAssign';
+import './routing.css';
 
 /** Keep text/local edits here; ordinary transport and global history keep their existing route. */
 export function isolateMixerKeys(event: KeyboardEvent<HTMLElement>) {
@@ -28,6 +31,7 @@ export interface MixerProps {
 export function Mixer({ bridge, session, revision, timeline, frame, meters, selected, onSelect, compact = false }: MixerProps) {
   const t = useFairlightText(); const [problem, setProblem] = useState<string | null>(null);
   const [processors, setProcessors] = useState<{ key: string; module: ProcessorModule }[]>([]);
+  const [routing, setRouting] = useState<'format' | 'assign' | null>(null);
   const strips = mixerStrips(timeline), plan = useRef<FaderPlan | null>(null);
   const [preview, setPreview] = useState<Record<string, number>>({});
   const gesture = useAudioGesture({ bridge, session, revision, identity: `${timeline.id}/mixer`, locked: false, onFailure: error => setProblem(error instanceof Error ? error.message : String(error)) });
@@ -60,7 +64,7 @@ export function Mixer({ bridge, session, revision, timeline, frame, meters, sele
     window.addEventListener('pointerup', finish); window.addEventListener('pointercancel', abandon); window.addEventListener('blur', abandon);
     return () => { abandon(); window.removeEventListener('pointerup', finish); window.removeEventListener('pointercancel', abandon); window.removeEventListener('blur', abandon); };
   }, [session, timeline.id]);
-  useEffect(() => { sweep.current = null; plan.current = null; setPreview({}); setProcessors([]); }, [session, timeline.id]);
+  useEffect(() => { sweep.current = null; plan.current = null; setPreview({}); setProcessors([]); setRouting(null); }, [session, timeline.id]);
   const start = (strip: MixerStrip, modifiers: Modifiers) => {
     const captured = faderPlan(timeline, strip.key, selected, modifiers);
     if (!captured.members.length || !gesture.start(captured.restore)) return false;
@@ -116,11 +120,14 @@ export function Mixer({ bridge, session, revision, timeline, frame, meters, sele
   return <section className="audio-mixer" data-compact={compact || undefined} aria-label={t('Mixer channels')} onKeyDown={event => {
     isolateMixerKeys(event); if (!keyOf(event).composing && event.key === 'Escape') { event.preventDefault(); cancel(); }
   }}>
-    <header className="mixer-toolbar"><label><input type="checkbox" checked={timeline.audio?.exclusive_solo ?? false}
+    <header className="mixer-toolbar"><button type="button" onClick={() => setRouting('format')}>{t('Bus Format')}</button><button type="button" onClick={() => setRouting('assign')}>{t('Bus Assign')}</button>
+      <label><input type="checkbox" checked={timeline.audio?.exclusive_solo ?? false}
       onChange={event => gesture.commit([{ op: 'set_timeline_audio', timeline: timeline.id, patch: { exclusive_solo: event.target.checked } }])} />{t('Exclusive Solo')}</label></header>
     {problem && <p role="alert">{problem}<button type="button" onClick={() => setProblem(null)}>{t('Dismiss')}</button></p>}
     <div className="mixer-regions"><div className="mixer-region mixer-tracks" aria-label={t('Tracks')}>{strips.filter(s => s.kind === 'track').map(draw)}</div>
       <div className="mixer-region mixer-buses" aria-label={t('Buses')}>{strips.filter(s => s.kind === 'bus').map(draw)}</div></div>
+    {routing === 'format' && <BusFormat bridge={bridge} session={session} revision={revision} timeline={timeline} onClose={() => setRouting(null)} />}
+    {routing === 'assign' && <BusAssign bridge={bridge} session={session} revision={revision} timeline={timeline} onClose={() => setRouting(null)} />}
     {processors.map((p, order) => {
       const owner = strips.find(s => s.key === p.key); if (!owner) return null;
       return <ProcessorWindow key={`${p.key}/${p.module}`} context={{ bridge, session, revision, timeline, target: targetOf(owner), selected, seconds: frame * timeline.rate.den / timeline.rate.num }} module={p.module} name={owner.name} compact={compact} order={order}

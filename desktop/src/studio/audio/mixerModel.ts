@@ -17,7 +17,7 @@ export function mixerStrips(timeline: Timeline): MixerStrip[] {
     const format = track?.format ?? (kind === 'bus' ? (owner as Bus).format : 'stereo');
     const channels = format === 'mono' ? 1 : format === 'stereo' ? 2 : format === 'adaptive' ? track?.channels ?? 2 : format.split('.').reduce((sum, n) => sum + Number(n), 0);
     // RawTrack -> place_outputs resolves only B1, never an arbitrary first bus.
-    const outputs = sound.strip?.outputs ?? (kind === 'track' && buses.some(b => b.id === 'B1') ? [{ bus: 'B1', on: true }] : []);
+    const outputs = sound.strip?.outputs ?? (!sound.strip && kind === 'track' && buses.some(b => b.id === 'B1') ? [{ bus: 'B1', on: true }] : []);
     return { key: `${kind}:${owner.id}`, id: owner.id, kind, name: owner.name, color: owner.color ?? '#5aa0e0ff', number, channels,
       db: sound.strip?.fader_db ?? 0, mute: sound.mute ?? false, solo: sound.solo ?? false, safe: sound.solo_safe ?? false,
       enabled: track?.enabled ?? true, locked: track?.locked ?? false, strip: sound.strip, lanes: sound.lanes, arm: sound.automation_arm,

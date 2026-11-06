@@ -10,6 +10,7 @@ import type { ProcessorProps } from '../audio/useProcessor';
 import { defaultDynamics, defaultEq, ORDERINGS, processorWritable, type ProcessorModule } from '../audio/processorModel';
 import { ProcessorThumbnail } from '../audio/ProcessorThumbnail';
 import { PathSettings } from './PathSettings';
+import { RouteButtons } from './RouteButtons';
 
 export function ChannelStrip({ strip, seconds, value, selected, meters, shadow, onSelect, onRename, onStart, onChange, onEnd, onCancel, onCommit, isActive, onToggle, onSweep, onEnter, processorContext, onProcessor, onStripSetting, compact = false }: {
   strip: MixerStrip; seconds: number; value?: number; selected: boolean; meters?: MeterChannel[]; shadow: boolean;
@@ -47,7 +48,7 @@ export function ChannelStrip({ strip, seconds, value, selected, meters, shadow, 
         context={processorContext} showCurve={Boolean(model?.eq)} onToggle={modifiers => onStripSetting('eq', { on: !model?.eq?.on }, modifiers)} onOpen={() => onProcessor('eq')} /></dd></div>
       <div><dt>{t('Sends')}</dt><dd>{model?.sends?.length ?? 0}</dd></div>
       <div><dt>{t('Pan')}</dt><dd>{Math.round((model?.pan?.x ?? 0) * 100)}</dd></div>
-      <div><dt>{t('Outputs')}</dt><dd title={strip.outputs.join(', ')}>{strip.outputs.join(', ') || '—'}</dd></div>
+      <div><dt>{t('Outputs')}</dt><dd><RouteButtons context={processorContext} strip={strip} field="outputs" onOpen={() => {}} /></dd></div>
       <div><dt>VCA</dt><dd>{model?.vcas?.join(', ') || '—'}</dd></div>
     </dl>
     {pathOpen && createPortal(<PathSettings context={processorContext} stripKey={strip.key} anchor={pathOpen} onClose={() => setPathOpen(null)} />, document.body)}

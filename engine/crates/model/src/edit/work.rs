@@ -254,6 +254,21 @@ impl<'a> Work<'a> {
         self.follow.hold(track);
     }
 
+    /// Ripple the lanes of `track` for what starts from frame `from` on and before frame `until`,
+    /// but for `skip`, moving by `by` frames, leaving them from frame `resume` on as they are
+    /// (see [`Follow::ripple_before`]).
+    pub fn ripple_lanes_before(
+        &mut self,
+        track: &str,
+        (from, by): (i64, i64),
+        (until, resume): (i64, i64),
+        skip: &HashSet<Id>,
+    ) {
+        let timeline = timeline_in(self.project, &self.timeline);
+        self.follow
+            .ripple_before(timeline, track, (from, by), (until, resume), skip);
+    }
+
     /// Whether `clip` would show what is in its media, with `before` and `after` frames more
     /// beyond its ends.
     pub fn fits(&self, clip: &Clip, before: i64, after: i64) -> bool {

@@ -99,3 +99,14 @@ it('isolates sessions and shares one default-stream request for automatic stereo
   expect(bridge.off).toHaveBeenCalledTimes(1);
   expect(bridge.listeners.size).toBe(1);
 });
+
+
+it('draws retained automatic outputs from the original conversion alongside native choices', async () => {
+  const bridge = wire(), value = mapped();
+  value.channels = [{ source: [], remix: { channels: 6, channel: 4 }, level_db: -6 }, { source: { stream: 3, channel: 0 } }];
+  const view = render(<FileWaveforms bridge={bridge} session={1} clip={value} track={track} media={source} timeline={timeline([])} selected={[]} onSelect={() => {}} />);
+  await settle();
+  expect(bridge.call.mock.calls.map(call => call[1])).toEqual([{ media: media.id, remix: 6 }, { media: media.id, stream: 3 }]);
+  expect(view.container.querySelectorAll('svg')).toHaveLength(2);
+  expect(channelWaveform(value, track, source, 0)).toMatchObject({ remix: 6, channel: 4, mix: undefined, silent: false, gain: 10 ** (-6 / 20) });
+});

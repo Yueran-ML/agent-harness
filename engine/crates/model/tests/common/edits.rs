@@ -1305,6 +1305,7 @@ pub fn check(project: &Project) {
 /// way round, or both the mean of the two.
 fn channels_of(n: i64) -> Vec<ChannelMap> {
     let pick = |channels: &[u32]| ChannelMap {
+        remix: None,
         source: ChannelSources(
             channels
                 .iter()

@@ -341,6 +341,7 @@ fn set_sound_of_clip(project: &Project, timeline: &str, clip: &str, n: [usize; 3
     eq.on = a.is_multiple_of(2);
     eq.bands[a % 4].gain_db = [3.0, -30.0][c % 2];
     let channel = |k: u32| ChannelMap {
+        remix: None,
         source: ChannelSources(vec![ChannelSource {
             stream: 0,
             channel: k,

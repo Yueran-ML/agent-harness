@@ -453,6 +453,7 @@ fn a_track_of_film_order_is_read_into_smpte() {
     track.clips[0].channels = Some(
         (0..6)
             .map(|channel| ChannelMap {
+                remix: None,
                 source: ChannelSources(vec![ChannelSource { stream: 0, channel }]),
                 enabled: true,
                 mute: false,

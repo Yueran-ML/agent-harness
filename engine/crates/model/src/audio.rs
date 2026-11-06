@@ -648,6 +648,9 @@ pub struct ChannelMap {
     /// The channels of the media that it plays.
     #[serde(default)]
     pub source: ChannelSources,
+    /// One output of the best stream's automatic conversion. Exclusive with native sources.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remix: Option<RemixSource>,
     /// Whether it is on.
     #[serde(default = "yes")]
     pub enabled: bool,
@@ -657,6 +660,17 @@ pub struct ChannelMap {
     /// Its level in decibels, at most 24; -100 or below is -∞.
     #[serde(default)]
     pub level_db: f64,
+}
+
+/// Keep one automatic output while other lanes select sources or change their own levels.
+/// The order is libav's default layout (SMPTE for 5.1), independent of the destination order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemixSource {
+    /// How many channels the automatic conversion produces, from 1 to 24.
+    pub channels: u16,
+    /// Which converted channel to use, from zero.
+    pub channel: u16,
 }
 
 /// The pitch of a clip (p. 3826), apart from its speed.
@@ -1274,6 +1288,13 @@ pub fn check_clip(clip: &Clip, rate: Rate) -> Result<(), OpError> {
 /// A non-finite level or one above 24 dB.
 pub fn check_channel_maps(maps: &[ChannelMap]) -> Result<(), OpError> {
     for map in maps {
+        if map.remix.is_some_and(|remix| {
+            !map.source.0.is_empty()
+                || !(1..=u16::from(MOST_CHANNELS)).contains(&remix.channels)
+                || remix.channel >= remix.channels
+        }) {
+            return Err(out("channels"));
+        }
         if !(map.level_db.is_finite() && map.level_db <= 24.0) {
             return Err(out("channels"));
         }

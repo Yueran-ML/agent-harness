@@ -95,6 +95,7 @@ fn sound_track() -> Op {
     clip.channels = Some(
         (0..6)
             .map(|channel| ChannelMap {
+                remix: None,
                 // L and R from stream 1, C their mean, and the rest silent.
                 source: ChannelSources(match channel {
                     0 | 1 => vec![ChannelSource { stream: 1, channel }],

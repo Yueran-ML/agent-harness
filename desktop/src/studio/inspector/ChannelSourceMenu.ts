@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import type { EngineBridge } from '../../bridge';
 import type { MenuItem } from '../color/ColorMenu';
-import { callEngine, type ChannelSource, type Media, type Timeline } from '../engine';
+import { callEngine, type ChannelMap, type ChannelSource, type Media, type Timeline } from '../engine';
 import { useFairlightText } from '../fairlight/words';
-import { channelSources } from '../media/audioLayout';
+import { automaticChannels, channelSources } from '../media/audioLayout';
 import { clipLocations } from '../timeline/selection';
 
 export interface ChannelContext { channel?: number; sourcesOnly?: boolean }
@@ -27,20 +27,20 @@ export function useChannelSourceMenu(props: {
     const { clip, track } = located;
     const sourceId = clip.source.kind === 'media' ? clip.source.media : '';
     const media = captured.media.find(item => item.id === sourceId);
-    if (clip.channels == null) return [{ id: 'automatic-channel-source',
-      label: t('Automatic mix: configure channel sources in File first.'), disabled: true }];
+    const automatic = automaticChannels(track), maps = clip.channels ?? automatic;
     if (!media?.facts.audio?.streams?.length) return [{ id: 'missing-channel-sources', label: t('Audio stream information is unavailable.'), disabled: true }];
-    const change = async (index: number, source: ChannelSource | null) => {
+    const change = async (index: number, source: ChannelSource | null, remix?: ChannelMap['remix']) => {
       if (busy.current || !live.current) return;
       const current = now.current;
       if (current.session !== captured.session || current.timeline?.id !== captured.timeline?.id || current.revision !== captured.revision) {
         setProblem(t('The clip changed. Reopen the channel source menu.')); return;
       }
       const latest = current.timeline && clipLocations(current.timeline).get(context.clip);
-      if (!latest || latest.track.locked || latest.clip.channels == null || !latest.clip.channels[index]) return;
-      const previous = latest.clip.channels[index].source;
-      if (JSON.stringify(channelSources(previous)) === JSON.stringify(source ? [source] : [])) return;
-      const channels = latest.clip.channels.map((channel, at) => at === index ? { ...channel, source } : channel);
+      if (!latest || latest.track.locked) return;
+      const before = latest.clip.channels ?? automaticChannels(latest.track), previous = before[index];
+      if (!previous) return;
+      if (JSON.stringify([channelSources(previous.source), previous.remix ?? null]) === JSON.stringify([source ? [source] : [], remix ?? null])) return;
+      const channels = before.map((channel, at) => at === index ? { ...channel, source, remix } : channel);
       busy.current = true; setPending(true); setProblem(null);
       try {
         await callEngine(current.bridge, 'transaction.apply', { revision: captured.revision,
@@ -51,20 +51,22 @@ export function useChannelSourceMenu(props: {
       } finally { busy.current = false; if (live.current) setPending(false); }
     };
     const choices = (index: number): MenuItem[] => {
-      const map = clip.channels?.[index];
+      const map = maps[index];
       if (!map) return [];
       const selected = channelSources(map.source);
       const disabled = track.locked || pending;
-      return [{ id: `channel-${index}-none`, label: t('None'), checked: selected.length === 0, disabled, run: () => void change(index, null) },
+      return [{ id: `channel-${index}-none`, label: t('None'), checked: selected.length === 0 && !map.remix, disabled, run: () => void change(index, null) },
         ...media.facts.audio!.streams!.flatMap(stream => Array.from({ length: stream.channels }, (_, channel) => ({
           id: `channel-${index}-source-${stream.index}-${channel}`,
           label: `${t('Stream')} ${stream.index} · ${t('Channel')} ${channel + 1}`,
           checked: selected.length === 1 && selected[0].stream === stream.index && selected[0].channel === channel,
           disabled, run: () => void change(index, { stream: stream.index, channel }),
-        })))];
+        }))), { id: `channel-${index}-automatic`, label: t('Automatic mix'),
+          checked: JSON.stringify(map.remix) === JSON.stringify(automatic[index]?.remix), disabled,
+          run: () => void change(index, null, automatic[index]?.remix) }];
     };
     if (context.channel !== undefined) return choices(context.channel);
-    return [{ id: 'audio-channel', label: t('Audio Channel'), items: clip.channels.map((_, index) => ({
+    return [{ id: 'audio-channel', label: t('Audio Channel'), items: maps.map((_, index) => ({
       id: `audio-channel-${index}`, label: `${t('Channel')} ${index + 1}`, items: choices(index),
     })) }];
   };

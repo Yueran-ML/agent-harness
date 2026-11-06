@@ -100,13 +100,13 @@ it('refuses old revisions, sessions and removed controls without overwriting cur
   expect(s.bridge.call).not.toHaveBeenCalled();
 });
 
-it('does not rewrite an unchanged source or implicitly convert an automatic layout', async () => {
+it('does not rewrite unchanged sources, including automatic outputs, or locked clips', async () => {
   const s = hook();
   act(() => s.choices().find(item => item.checked)?.run?.()); await settle();
   expect(s.bridge.call).not.toHaveBeenCalled();
   const automatic = s.value().items({ clip: 'other', x: 0, y: 0, channel: 0 });
-  expect(automatic).toHaveLength(1); expect(automatic[0].disabled).toBe(true);
-  expect(automatic[0].run).toBeUndefined();
+  act(() => automatic.find(item => item.checked)?.run?.()); await settle();
+  expect(s.bridge.call).not.toHaveBeenCalled();
   const locked = structuredClone(s.selected); locked.tracks.at(-1)!.locked = true;
   s.view.rerender(<s.Host timeline={locked} />);
   expect(s.choices().every(item => item.disabled)).toBe(true);
@@ -144,4 +144,27 @@ it('places nested source menus outside scrolling parents and flips them at viewp
   fireEvent.click(screen.getByRole('menuitem', { name: 'Channel 1' }));
   fireEvent.click(screen.getByRole('menuitem', { name: 'Source' }));
   expect(run).toHaveBeenCalledOnce(); expect(close).toHaveBeenCalledOnce();
+});
+
+
+it('changes one automatic output without replacing the other output with native full gain', async () => {
+  const s = hook();
+  act(() => s.value().items({ clip: 'other', x: 0, y: 0, channel: 1 }).find(item => item.label === 'Stream 5 · Channel 1')?.run?.()); await settle();
+  expect(s.bridge.call).toHaveBeenCalledExactlyOnceWith('transaction.apply', { revision: 7, ops: [{ op: 'set_clip', timeline: 't1', id: 'other', channels: [
+    { source: null, remix: { channels: 2, channel: 0 }, enabled: true, mute: false, level_db: 0 },
+    { source: { stream: 5, channel: 0 }, enabled: true, mute: false, level_db: 0 },
+  ] }] }, { expectedSession: 1 });
+});
+
+it('keeps Film output order when choosing one source and restores automatic sources without clearing trim or mute', async () => {
+  const s = hook(), film = structuredClone(s.selected), track = film.tracks.at(-1)!;
+  if (track.kind !== 'audio') throw new Error('audio track required');
+  track.format = '5.1'; track.order = 'film';
+  s.view.rerender(<s.Host timeline={film} />);
+  act(() => s.value().items({ clip: 'other', x: 0, y: 0, channel: 0 })[0].run?.()); await settle();
+  const params = s.bridge.call.mock.calls[0][1] as any;
+  expect(params.ops[0].channels.map((map: any) => map.remix?.channel ?? null)).toEqual([null, 2, 1, 4, 5, 3]);
+  act(() => s.choices().find(item => item.label === 'Automatic mix')?.run?.()); await settle();
+  const restore = s.bridge.call.mock.calls[1][1] as any;
+  expect(restore.ops[0].channels[0]).toEqual({ source: null, remix: { channels: 6, channel: 0 }, level_db: -6, enabled: true, mute: true });
 });

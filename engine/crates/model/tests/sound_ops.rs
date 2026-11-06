@@ -690,6 +690,7 @@ fn set_clip_sets_the_sound_of_schema_4_of_a_clip() {
     eq.on = true;
     eq.bands[1].gain_db = 4.0;
     let channel = ChannelMap {
+        remix: None,
         source: columbina_model::ChannelSources::default(),
         enabled: true,
         mute: false,

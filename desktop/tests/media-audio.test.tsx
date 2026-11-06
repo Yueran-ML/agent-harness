@@ -182,3 +182,23 @@ it('a reply from a closed dialog cannot close a replacement dialog', async () =>
   expect(close).not.toHaveBeenCalled();
   expect(screen.getByRole('dialog', { name: 'Clip Attributes' })).toBeTruthy();
 });
+
+
+it('retains automatic outputs across attribute edits and clears conversion when a native source is chosen', async () => {
+  const item = source('m1', 7, 2);
+  item.audio_config = [{ name: 'Converted', format: 'stereo', channels: [
+    { source: null, remix: { channels: 6, channel: 4 }, level_db: -3 },
+    { source: null, remix: { channels: 6, channel: 5 } },
+  ] }];
+  const s = dialog([item]);
+  expect((screen.getByRole('combobox', { name: 'Track 1 Channel 1 Source' }) as HTMLSelectElement).value).toBe('remix:6:4');
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Track 1 Channel 1 Mute' }));
+  fireEvent.change(screen.getByRole('combobox', { name: 'Track 1 Channel 2 Source' }), { target: { value: '7:0' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Apply' })); await settle();
+  const op = s.apply.mock.calls[0][0][0];
+  if (op.op !== 'set_media_audio') throw new Error('audio edit required');
+  expect(op.config?.[0].channels).toEqual([
+    { source: null, remix: { channels: 6, channel: 4 }, level_db: -3, mute: true },
+    { source: { stream: 7, channel: 0 } },
+  ]);
+});

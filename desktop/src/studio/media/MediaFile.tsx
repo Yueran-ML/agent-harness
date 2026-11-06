@@ -56,26 +56,37 @@ export function MediaFile({ media, bridge, session, onApply }: {
   const level = common(selectedRows, channel => channel.level_db ?? 0);
   const mono = layouts.at(-1)!.every(row => row.format === 'mono');
   const sources = audioSources(last);
+  // RM20 p.3834: the composite shows every original file channel, independently of
+  // the configured clip outputs. Reuse their cached envelopes without summing PCM.
+  const waveform = (channel: ChannelMap, key?: number) => {
+    const drawing = mappedWaveform(channel, last);
+    return width > 0 && !drawing.silent ? <Waveform key={key} cache={waves} media={last.id} clip={clip} rate={rate}
+      from={0} to={clip.length} scale={width / Math.max(1, clip.length)}
+      channel={drawing.channel} stream={drawing.stream} mix={drawing.mix} remix={drawing.remix} gain={drawing.gain} /> : null;
+  };
+  const compositeLabel = media.length > 1 ? t('Multiple Clips') : t('Composite waveform');
   return <section className="media-file" aria-label={t('File')}>
     <h3>{media.length > 1 ? t('Multiple Clips') : last.name}</h3>
     {!compatible && <p role="status">{t('Select clips with the same channel count to configure them together.')}</p>}
     {!available && <p role="status">{t('Audio stream information is unavailable.')}</p>}
     {failed && <p role="alert">{t('Could not update audio channels. Try again.')}</p>}
     <div ref={box} className="file-waveforms" role="group" aria-label={t('Channels')}>
+      <div className="media-file-composite file-channel-waveform" role="img" aria-label={compositeLabel}>
+        <span className="file-channel-name">{compositeLabel}</span>
+        {sources.map((source, index) => waveform({ source }, index))}
+      </div>
       {shown.map((channel, index) => {
-        const label = `${t('Channel')} ${index + 1}`, drawing = mappedWaveform(channel, last);
+        const label = `${t('Channel')} ${index + 1}`;
         const all = layouts.map(layout => layout.flatMap(row => row.channels)[index]);
         const sourceIndex = sources.findIndex(source => !Array.isArray(channel.source)
           && source.stream === channel.source?.stream && source.channel === channel.source?.channel);
-        const selectedSource = channel.source == null ? 'none' : sourceIndex >= 0 ? String(sourceIndex) : 'custom';
+        const selectedSource = channel.remix ? 'custom' : channel.source == null ? 'none' : sourceIndex >= 0 ? String(sourceIndex) : 'custom';
         return <div key={index} className="media-file-channel">
           <button type="button" className="file-channel-waveform" aria-label={label} aria-pressed={selected.includes(index)}
             onClick={event => setSelected(old => !(event.ctrlKey || event.metaKey || event.shiftKey) ? [index]
               : old.includes(index) ? old.filter(item => item !== index) : [...old, index])}>
             <span className="file-channel-name">{label}</span>
-            {width > 0 && !drawing.silent && <Waveform cache={waves} media={last.id} clip={clip} rate={rate}
-              from={0} to={clip.length} scale={width / Math.max(1, clip.length)}
-              channel={drawing.channel} stream={drawing.stream} mix={drawing.mix} gain={drawing.gain} />}
+            {waveform(channel)}
           </button>
           <fieldset disabled={disabled} className="media-file-controls">
             <label><input type="checkbox" aria-label={`${label} ${t('Active')}`} checked={channel.enabled !== false}
@@ -87,7 +98,7 @@ export function MediaFile({ media, bridge, session, onApply }: {
             {mono && <label>{t('Source')}<select aria-label={`${label} ${t('Source')}`} value={selectedSource}
               onChange={event => {
                 const value = event.target.value;
-                void save((row, at, item) => at !== index ? row : { ...row, source: value === 'none' ? null : audioSources(item)[Number(value)] });
+                void save((row, at, item) => at !== index ? row : { ...row, remix: undefined, source: value === 'none' ? null : audioSources(item)[Number(value)] });
               }}>
               <option value="none">{t('None')}</option>
               {selectedSource === 'custom' && <option value="custom" disabled>{t('Custom mapping')}</option>}

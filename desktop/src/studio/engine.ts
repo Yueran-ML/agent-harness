@@ -222,7 +222,7 @@ export function fixedOf(param: AudioParam): number | null {
 export interface AudioFade { length: Time; curve?: number; skew?: number }
 export interface ChannelSource { stream: number; channel: number }
 /** What a channel of a track plays: null for silence, one channel, or several whose mean it plays. */
-export interface ChannelMap { source?: ChannelSource | ChannelSource[] | null; enabled?: boolean; mute?: boolean; level_db?: number }
+export interface ChannelMap { source?: ChannelSource | ChannelSource[] | null; remix?: { channels: number; channel: number } | null; enabled?: boolean; mute?: boolean; level_db?: number }
 export interface ClipPitch { semitones: number; cents: number }
 export type TrackFormat = 'mono' | 'stereo' | '5.1' | 'adaptive';
 export interface MediaAudioTrack {

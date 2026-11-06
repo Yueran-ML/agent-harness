@@ -189,6 +189,7 @@ fn routing_and_strips_that_cannot_be_played_are_refused_with_their_reasons() {
     assert_eq!(reason(&error), "channel_count");
     let error = refused(|value| {
         let map = ChannelMap {
+            remix: None,
             source: columbina_model::ChannelSources::default(),
             enabled: true,
             mute: false,

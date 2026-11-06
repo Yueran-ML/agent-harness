@@ -467,6 +467,43 @@ mod tests {
     }
 
     #[test]
+    fn retained_automatic_channels_preserve_preview_and_export_in_film_order() {
+        use columbina_model::{ChannelOrder, TrackFormat};
+        let mut automatic = real_project(crate::test_media::Sample::SixSines)
+            .expect("the local six-channel PCM fixture must be available");
+        let track = &mut automatic.timelines[0].tracks[0];
+        track.audio.format = TrackFormat::FiveOne;
+        track.audio.channels = 6;
+        track.audio.order = ChannelOrder::Film;
+        track.clips[0].channels = None;
+        let mut retained = automatic.clone();
+        retained.timelines[0].tracks[0].clips[0].channels = Some(
+            [0, 2, 1, 4, 5, 3]
+                .into_iter()
+                .map(|channel| {
+                    serde_json::from_value(serde_json::json!({
+                        "remix": {"channels": 6, "channel": channel}
+                    }))
+                    .unwrap()
+                })
+                .collect(),
+        );
+        for purpose in [Purpose::Preview, Purpose::Export] {
+            let mut before = Mixer::new(Arc::new(automatic.clone()), 0, purpose);
+            let mut after = Mixer::new(Arc::new(retained.clone()), 0, purpose);
+            for from in [0, 960, 12000, 60000, 2000, 0] {
+                let expected = before.block(from, 960).unwrap();
+                assert!(expected.iter().flatten().any(|sample| sample.abs() > 0.001));
+                assert_eq!(
+                    after.block(from, 960).unwrap(),
+                    expected,
+                    "{purpose:?} at {from}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn real_pcm_reads_keep_sample_positions_across_windows_and_reverse_jumps() {
         let Some(project) = real_project(crate::test_media::Sample::Wav) else {
             return;

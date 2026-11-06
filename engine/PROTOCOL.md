@@ -718,11 +718,18 @@ are at most +10; −100 or below is −∞.
   one that cannot work on the channels of the track, a Stereo Width on a mono track, is
   skipped), `pitch_correction` (false), `pitch` (`{semitones: −12…12 whole, cents: −100…100}`)
   and `channels`: `null` (the media's channels mixed to the track's as libav mixes them) or one
-  `{source, enabled, mute, level_db}` per channel of its track (p. 3833); `source` is `null`
+  `{source, remix?, enabled, mute, level_db}` per channel of its track (p. 3833); `source` is `null`
   (silence), `{stream, channel}` (a stream as libav/ffprobe number all streams of the file, and a
   channel of it in its own order) or a list of them, whose mean is played (a stereo pair made
-  mono is `0.5·(L+R)`); a stream or channel that the media has not plays silence; `level_db` is at
-  most 24. A blade leaves no fade of sound at its cut (the first half has no `audio_fade_out`, the
+  mono is `0.5·(L+R)`); a stream or channel that the media has not plays silence.
+  Optional `remix: {channels, channel}` instead selects one output of the best audio stream's
+  libav conversion: `channels` is 1–24 and `channel` is zero-based and less than that count.
+  Its index uses libav's default order (SMPTE for 5.1), independently of the destination's
+  order. A non-null `remix` requires `source` to be null, absent or empty; otherwise the map is
+  refused. The conversion count is retained when another lane changes its source or level,
+  so the unchanged lanes keep their original mixing gains. `enabled`, `mute` and `level_db`
+  apply after conversion. Absent/null `remix` retains the original native-source semantics;
+  absent values are omitted when saved. `level_db` is at most 24. A blade leaves no fade of sound at its cut (the first half has no `audio_fade_out`, the
   second no `audio_fade_in`); a blade or a trim shortens a fade of sound that the clip no longer
   holds, the one at the edge that moves first, exactly where a scale of 32 bits holds the new
   length and otherwise rounded down in its own scale.
@@ -4101,7 +4108,7 @@ audio scrubbing, or enable sound at source playback speeds other than 1.
 An optional array of source audio tracks, each `{name, format, order?, channels}`.
 `format` is `mono`, `stereo`, `5.1` or `adaptive`; `order` defaults to `smpte`
 (`film` is allowed only for 5.1). `channels` contains 1–24 clip channel maps,
-with the same source, enabled, mute and level semantics as timeline clips. Fixed
+with the same source, optional remix, enabled, mute and level semantics as timeline clips. Fixed
 formats require 1, 2 or 6 maps respectively. Names have at most 100 characters.
 The media must have audio. Invalid layouts return `out_of_range`.
 `set_media_audio` requires `config`; `null` restores the original layout and

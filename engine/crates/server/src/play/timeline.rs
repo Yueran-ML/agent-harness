@@ -2927,6 +2927,7 @@ mod tests {
         let mut mapped = before.clone();
         mapped.timelines[0].tracks[1].clips[0].channels = Some(vec![
             columbina_model::ChannelMap {
+                remix: None,
                 source: columbina_model::ChannelSources(vec![]),
                 enabled: true,
                 mute: false,

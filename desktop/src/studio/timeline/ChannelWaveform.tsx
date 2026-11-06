@@ -5,14 +5,14 @@ import type { Waveforms } from './waveforms';
 /** Explicit source maps are shared by pool channels and timeline instances. */
 export function mappedWaveform(map: ChannelMap | undefined, media: Media | undefined) {
   const source = map?.source;
-  const channel = Array.isArray(source) ? 0 : source?.channel ?? 0;
+  const channel = map?.remix?.channel ?? (Array.isArray(source) ? 0 : source?.channel ?? 0);
   const stream = source && !Array.isArray(source) ? source.stream : undefined;
   const available = media?.facts.audio?.streams?.find(each => each.index === stream)?.channels;
   const level = map?.level_db ?? 0;
-  return { channel, stream, mix: Array.isArray(source) ? source : undefined, remix: undefined,
+  return { channel, stream, mix: !map?.remix && Array.isArray(source) ? source : undefined, remix: map?.remix?.channels,
     gain: 10 ** ((Number.isFinite(level) ? level : 0) / 20),
-    silent: !map || map.mute === true || map.enabled === false || source == null
-      || Array.isArray(source) && source.length === 0 || available !== undefined && channel >= available };
+    silent: !map || map.mute === true || map.enabled === false || !map.remix && (source == null
+      || Array.isArray(source) && source.length === 0) || available !== undefined && channel >= available };
 }
 
 /** The same source/channel interpretation in the timeline and the File inspector. */

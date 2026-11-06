@@ -1,4 +1,4 @@
-import type { AudioStream, ChannelMap, ChannelSource, Media, MediaAudioTrack, TrackFormat } from '../engine';
+import type { AudioStream, ChannelMap, ChannelSource, Media, MediaAudioTrack, Track, TrackFormat } from '../engine';
 
 export const audioSources = (media: Media): ChannelSource[] =>
   (media.facts.audio?.streams ?? []).flatMap(stream =>
@@ -6,6 +6,26 @@ export const audioSources = (media: Media): ChannelSource[] =>
 
 export const channelSources = (source: ChannelMap['source']): ChannelSource[] =>
   source ? Array.isArray(source) ? source : [source] : [];
+
+/** Retain every automatic output exactly, including the display order of a Film track. */
+export function automaticChannels(track: Track): ChannelMap[] {
+  if (track.kind !== 'audio') return [];
+  const count = formatChannels(track.format ?? 'stereo', track.channels ?? 1);
+  return Array.from({ length: count }, (_, index) => ({ source: null, enabled: true, mute: false, level_db: 0,
+    remix: { channels: count, channel: track.format === '5.1' && track.order === 'film' ? [0, 2, 1, 4, 5, 3][index] : index },
+  }));
+}
+
+export const channelKey = (map: ChannelMap, streams: readonly AudioStream[]) =>
+  map.remix ? `remix:${map.remix.channels}:${map.remix.channel}` : sourceKey(map.source, streams);
+
+export function channelChoice(value: string, streams: readonly AudioStream[]): Partial<ChannelMap> {
+  if (value.startsWith('remix:')) {
+    const [, channels, channel] = value.split(':').map(Number);
+    return { source: null, remix: { channels, channel } };
+  }
+  return { source: sourceChoice(value, streams), remix: undefined };
+}
 
 export function sourceKey(source: ChannelMap['source'], streams: readonly AudioStream[]): string {
   if (!source || Array.isArray(source) && source.length === 0) return 'none';

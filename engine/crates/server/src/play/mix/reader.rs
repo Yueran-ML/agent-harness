@@ -4,11 +4,14 @@
 //! it is (RM20 pp. 3833-3836). It retains a quarter second on each side for sequential forward
 //! and backward blocks, not the whole recording.
 
+#[cfg(test)]
+mod remix_tests;
+
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use columbina_media::{AudioDecoder, AudioFormat, AudioStreams, MediaError, Samples};
-use columbina_model::{ChannelSource, Clip, Media};
+use columbina_model::{ChannelSource, Clip, Media, RemixSource, Time};
 
 /// How the channels of a clip are made from its media: the `channels` of a clip of the model.
 #[derive(Clone, Debug, PartialEq)]
@@ -32,7 +35,9 @@ impl Layout {
                 maps.iter()
                     .map(|map| {
                         let sources = map.source.0.iter().copied().map(Pick::of).collect();
-                        Lane::mean(sources, map.enabled, map.mute, map.level_db)
+                        let mut lane = Lane::mean(sources, map.enabled, map.mute, map.level_db);
+                        lane.remix = map.remix;
+                        lane
                     })
                     .collect(),
             ),
@@ -75,6 +80,7 @@ impl Pick {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Lane {
     pub sources: Vec<Pick>,
+    pub remix: Option<RemixSource>,
     /// Linear: 0 where the channel is disabled or muted.
     pub gain: f32,
 }
@@ -100,15 +106,23 @@ impl Lane {
             let gain = 10.0_f64.powf(level_db / 20.0) as f32;
             gain
         };
-        Self { sources, gain }
+        Self {
+            sources,
+            remix: None,
+            gain,
+        }
     }
 }
 
 /// Where the samples come from: the best stream of sound, mixed by swresample (auto), or the
-/// streams that a mapping picks from, each unmixed, from one reading of the file.
+/// native streams from one reading of the file, plus one decoder per distinct automatic
+/// output layout. Every lane using that layout shares its decoder and bounded PCM window.
 enum Source {
     Mixed(AudioDecoder),
-    Streams(AudioStreams),
+    Mapped {
+        streams: AudioStreams,
+        remixes: Vec<(u16, AudioDecoder)>,
+    },
 }
 
 impl Source {
@@ -126,7 +140,21 @@ impl Source {
                     .iter()
                     .flat_map(|lane| lane.sources.iter().map(|pick| pick.stream))
                     .collect();
-                Self::Streams(AudioStreams::open_unmixed(path, &indices, Some(rate))?)
+                let streams = AudioStreams::open_unmixed(path, &indices, Some(rate))?;
+                let mut counts: Vec<_> = lanes
+                    .iter()
+                    .filter_map(|lane| lane.remix.map(|source| source.channels))
+                    .collect();
+                counts.sort_unstable();
+                counts.dedup();
+                let remixes = counts
+                    .into_iter()
+                    .map(|channels| {
+                        AudioDecoder::open(path, Some(AudioFormat { rate, channels }))
+                            .map(|decoder| (channels, decoder))
+                    })
+                    .collect::<Result<_, _>>()?;
+                Self::Mapped { streams, remixes }
             }
         })
     }
@@ -135,7 +163,7 @@ impl Source {
     fn len(&self) -> usize {
         match self {
             Self::Mixed(_) => 1,
-            Self::Streams(streams) => streams.len(),
+            Self::Mapped { streams, remixes } => streams.len() + remixes.len(),
         }
     }
 
@@ -143,22 +171,68 @@ impl Source {
     fn channels(&self, place: usize) -> usize {
         usize::from(match self {
             Self::Mixed(decoder) => decoder.format().channels,
-            Self::Streams(streams) => streams.format(place).channels,
+            Self::Mapped { streams, remixes } => {
+                if place < streams.len() {
+                    streams.format(place).channels
+                } else {
+                    remixes[place - streams.len()].1.format().channels
+                }
+            }
         })
     }
 
     fn seek(&mut self, sample: i64) -> Result<(), MediaError> {
         match self {
             Self::Mixed(decoder) => decoder.seek(sample),
-            Self::Streams(streams) => streams.seek(sample),
+            Self::Mapped { streams, remixes } => {
+                streams.seek(sample)?;
+                for (_, decoder) in remixes {
+                    decoder.seek(sample)?;
+                }
+                Ok(())
+            }
         }
     }
 
     fn next(&mut self, place: usize) -> Result<Option<Samples>, MediaError> {
         match self {
             Self::Mixed(decoder) => decoder.next(),
-            Self::Streams(streams) => streams.next(place),
+            Self::Mapped { streams, remixes } => {
+                if place < streams.len() {
+                    streams.next(place)
+                } else {
+                    remixes[place - streams.len()].1.next()
+                }
+            }
         }
+    }
+
+    fn start(&self) -> Time {
+        match self {
+            Self::Mixed(decoder) => decoder.start(),
+            Self::Mapped { streams, .. } => streams.start(),
+        }
+    }
+
+    fn picks(&self, lane: &Lane) -> Vec<Option<(usize, usize)>> {
+        let Self::Mapped { streams, remixes } = self else {
+            return vec![];
+        };
+        if let Some(source) = lane.remix {
+            return vec![remixes
+                .iter()
+                .position(|(count, _)| *count == source.channels)
+                .filter(|_| source.channel < source.channels)
+                .map(|place| (streams.len() + place, usize::from(source.channel)))];
+        }
+        lane.sources
+            .iter()
+            .map(|pick| {
+                let place = streams.place(pick.stream)?;
+                let channel = usize::from(pick.channel);
+                (channel < usize::from(streams.format(place).channels)).then_some((place, channel))
+            })
+            .collect()
     }
 }
 
@@ -246,30 +320,14 @@ impl Reader {
             Layout::Auto(channels) => usize::from(*channels),
             Layout::Mapped(lanes) => lanes.len(),
         };
-        let picks = match (layout, &source) {
-            (Layout::Mapped(lanes), Source::Streams(streams)) => lanes
-                .iter()
-                .map(|lane| {
-                    lane.sources
-                        .iter()
-                        .map(|pick| {
-                            let place = streams.place(pick.stream)?;
-                            let channel = usize::from(pick.channel);
-                            (channel < usize::from(streams.format(place).channels))
-                                .then_some((place, channel))
-                        })
-                        .collect()
-                })
-                .collect(),
-            _ => Vec::new(),
+        let picks = match layout {
+            Layout::Mapped(lanes) => lanes.iter().map(|lane| source.picks(lane)).collect(),
+            Layout::Auto(_) => Vec::new(),
         };
         let origin = if media.facts.video.is_some() {
             columbina_media::video_start(path).map_err(cannot)?
         } else {
-            match &source {
-                Source::Mixed(decoder) => decoder.start(),
-                Source::Streams(streams) => streams.start(),
-            }
+            source.start()
         };
         let sample = |ticks, scale| {
             i64::try_from(i128::from(ticks) * i128::from(rate) / i128::from(scale))
@@ -389,11 +447,11 @@ impl Reader {
         }
         let offset = usize::try_from(from - start).expect("inside window");
         for (lane, (spec, picks)) in lanes.iter().zip(&self.picks).enumerate() {
-            if spec.sources.is_empty() || spec.gain <= 0.0 {
+            if picks.is_empty() || spec.gain <= 0.0 {
                 continue;
             }
             #[allow(clippy::cast_precision_loss, reason = "a lane picks a few channels")]
-            let gain = spec.gain / spec.sources.len() as f32;
+            let gain = spec.gain / picks.len() as f32;
             for frame in 0..frames {
                 let mut sum = 0.0;
                 for &(place, channel) in picks.iter().flatten() {
@@ -699,6 +757,7 @@ mod tests {
 
     fn channel(picks: &[(u32, u32)]) -> columbina_model::ChannelMap {
         columbina_model::ChannelMap {
+            remix: None,
             source: columbina_model::ChannelSources(
                 picks
                     .iter()

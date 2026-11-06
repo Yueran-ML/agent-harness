@@ -1,7 +1,7 @@
 /** Shared Fairlight catalogue; protocol IDs and media/track names are never translated. */
 const entries = {
+  'Composite waveform': ['合成波形', '合成波形'],
   'Audio Channel': ['音频声道', 'オーディオチャンネル'],
-  'Automatic mix: configure channel sources in File first.': ['自动混音：请先在“文件”中配置声道来源。', '自動ミックス：「ファイル」でチャンネルソースを設定してください。'],
   'The clip changed. Reopen the channel source menu.': ['片段已更改，请重新打开声道来源菜单。', 'クリップが変更されました。チャンネルソースメニューを開き直してください。'],
   'Could not change channel source.': ['无法更改声道来源。', 'チャンネルソースを変更できませんでした。'],
   'Could not update audio channels. Try again.': ['无法更新音频声道，请重试。', 'オーディオチャンネルを更新できませんでした。もう一度お試しください。'],

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Sheet } from '../../app/Sheet';
 import type { Media, MediaAudioTrack, Op, TrackFormat } from '../engine';
 import { useFairlightText } from '../fairlight/words';
-import { audioSources, formatChannels, mapLayout, sourceChoice, sourceKey, sourceLayout, sourceTrack } from './audioLayout';
+import { audioSources, channelChoice, channelKey, formatChannels, mapLayout, sourceLayout, sourceTrack } from './audioLayout';
 
 export function AudioFormats({ disabled = false }: { disabled?: boolean }) {
   const t = useFairlightText();
@@ -81,7 +81,7 @@ export function AudioAttributes({ media, onApply, onClose }: {
         <button type="button" aria-label={`${t('Remove track')} ${index + 1}`} onClick={() => setRows(old => old.filter((_, i) => i !== index))}>{t('Remove track')}</button>
         {row.channels.map((channel, at) => {
           const label = `${t('Track')} ${index + 1} ${t('Channel')} ${at + 1}`;
-          const selected = sourceKey(channel.source, streams);
+          const selected = channelKey(channel, streams);
           const patch = (change: Partial<typeof channel>) => update(index, { channels: row.channels.map((item, i) => i === at ? { ...item, ...change } : item) });
           const isolate = (field: 'enabled' | 'mute') => setRows(old => old.map((track, trackIndex) => ({ ...track,
             channels: track.channels.map((item, channelIndex) => ({ ...item,
@@ -89,8 +89,9 @@ export function AudioAttributes({ media, onApply, onClose }: {
             })),
           })));
           return <div key={at}>
-            <label>{label}<select aria-label={`${label} ${t('Source')}`} value={selected} onChange={event => patch({ source: sourceChoice(event.target.value, streams) })}>
+            <label>{label}<select aria-label={`${label} ${t('Source')}`} value={selected} onChange={event => patch(channelChoice(event.target.value, streams))}>
               <option value="none">{t('None')}</option>
+              {channel.remix && <option value={selected}>{t('Automatic mix')} {channel.remix.channels} · {t('Channel')} {channel.remix.channel + 1}</option>}
               {selected.startsWith('custom:') && <option value={selected}>{t('Custom mapping')}</option>}
               {streams.flatMap(stream => [
                 ...Array.from({ length: stream.channels }, (_, c) => <option key={`${stream.index}:${c}`} value={`${stream.index}:${c}`}>{t('Stream')} {stream.index} · {t('Channel')} {c + 1}</option>),

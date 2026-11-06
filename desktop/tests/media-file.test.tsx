@@ -52,9 +52,10 @@ function setup(items = [source()]) {
 it('draws the last selected source with shared native peaks and releases its subscription', async () => {
   const s = setup([source('m1', 1), source('m2', 3)]); await settle();
   expect(s.bridge.call).toHaveBeenCalledExactlyOnceWith('media.waveform', { media: 'm2', stream: 3 }, { expectedSession: 1 });
-  expect(s.container.querySelectorAll('svg')).toHaveLength(2);
+  expect(s.container.querySelectorAll('svg')).toHaveLength(4);
+  expect(screen.getByRole('img', { name: 'Multiple Clips' }).querySelectorAll('svg')).toHaveLength(2);
   expect(screen.getByRole('heading', { name: 'Multiple Clips' })).toBeTruthy();
-  expect(s.container.querySelectorAll('path')[1].getAttribute('transform')).toContain(`scale(1,${10 ** (-3 / 20)})`);
+  expect(screen.getByRole('button', { name: 'Channel 2' }).querySelector('path')!.getAttribute('transform')).toContain(`scale(1,${10 ** (-3 / 20)})`);
   s.unmount(); expect(s.off).toHaveBeenCalledOnce();
 });
 
@@ -135,4 +136,63 @@ it('blocks repeated pending edits and does not submit old controls after unmount
   expect(apply).toHaveBeenCalledTimes(1);
   view.unmount(); finish(true); await settle();
   fireEvent.click(control); expect(apply).toHaveBeenCalledTimes(1);
+});
+
+
+it('uses retained conversion peaks and removes conversion only from a channel whose source is replaced', async () => {
+  const item = source();
+  item.audio_config![0].channels[0] = { source: null, remix: { channels: 2, channel: 0 }, level_db: -6 };
+  const s = setup([item]); await settle();
+  expect(s.bridge.call.mock.calls.map(call => call[1])).toEqual([{ media: 'm1', stream: 1 }, { media: 'm1', remix: 2 }]);
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Channel 1 Mute' })); await settle();
+  expect(s.current()[0].audio_config![0].channels[0].remix).toEqual({ channels: 2, channel: 0 });
+  fireEvent.change(screen.getByRole('combobox', { name: 'Channel 1 Source' }), { target: { value: '1' } }); await settle();
+  expect(s.current()[0].audio_config![0].channels[0]).toEqual({ source: { stream: 1, channel: 1 }, level_db: -6, mute: true });
+  expect(s.current()[0].audio_config![1]).toEqual(item.audio_config![1]);
+});
+
+
+it('overlays opposite-phase channel envelopes without cancelling them or requesting another mix', async () => {
+  const item = source(), apply = vi.fn(async () => true);
+  const call = vi.fn<EngineBridge['call']>(async () => ({ ok: true, result: { rate: 100, channels: 2,
+    // Opposite envelopes (+16..+96 and -96..-16) must remain independently visible.
+    peaks: btoa(String.fromCharCode(...Array.from({ length: 1600 }, (_, i) => [16, 96, 160, 240][i % 4]))),
+  } }));
+  item.audio_config![1].channels[0].level_db = 0;
+  const off = vi.fn();
+  const view = render(<MediaFile media={[item]} bridge={{ call, onEvent: () => off }} session={3} onApply={apply} />);
+  await settle();
+  const composite = screen.getByRole('img', { name: 'Composite waveform' });
+  expect(composite.parentElement?.firstElementChild).toBe(composite);
+  const envelopes = [...composite.querySelectorAll('path')];
+  expect(envelopes).toHaveLength(2);
+  expect(envelopes[0].getAttribute('d')).not.toBe(envelopes[1].getAttribute('d'));
+  for (let index = 0; index < 2; index++) {
+    const individual = screen.getByRole('button', { name: `Channel ${index + 1}` }).querySelector('path')!;
+    expect(envelopes[index].getAttribute('d')).toBe(individual.getAttribute('d'));
+    expect(envelopes[index].getAttribute('transform')).toBe(individual.getAttribute('transform'));
+    expect(envelopes[index].getAttribute('d')).toMatch(/M[\d.]+,[\d.]+V[\d.]+/);
+  }
+  expect(call).toHaveBeenCalledExactlyOnceWith('media.waveform', { media: item.id, stream: 1 }, { expectedSession: 3 });
+  expect(apply).not.toHaveBeenCalled();
+  view.unmount(); expect(off).toHaveBeenCalledOnce();
+});
+
+
+it('keeps every original file channel in the composite when configured outputs are disabled, muted or removed', async () => {
+  const item = source();
+  item.audio_config![0].channels[0] = { source: { stream: 1, channel: 1 }, enabled: false };
+  item.audio_config![1].channels[0].mute = true;
+  const s = setup([item]); await settle();
+  const composite = screen.getByRole('img', { name: 'Composite waveform' });
+  expect(composite.querySelectorAll('path')).toHaveLength(2);
+  expect(screen.getByRole('button', { name: 'Channel 1' }).querySelector('path')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Channel 2' }).querySelector('path')).toBeNull();
+  expect(s.bridge.call).toHaveBeenCalledExactlyOnceWith('media.waveform', { media: item.id, stream: 1 }, { expectedSession: 1 });
+  expect(s.apply).not.toHaveBeenCalled();
+  s.unmount();
+  const noOutputs = setup([{ ...item, audio_config: [] }]); await settle();
+  expect(screen.getByRole('img', { name: 'Composite waveform' }).querySelectorAll('path')).toHaveLength(2);
+  expect(screen.queryByRole('button', { name: 'Channel 1' })).toBeNull();
+  expect(noOutputs.apply).not.toHaveBeenCalled();
 });

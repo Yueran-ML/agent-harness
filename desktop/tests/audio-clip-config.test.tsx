@@ -191,3 +191,33 @@ it.each([false, true])('shows the last selected clip rather than the last clip o
   ]);
   expect(s.writes()).toHaveLength(0);
 });
+
+
+it.each([false, true])('edits automatic channel levels while preserving the conversion of all outputs (Fairlight=%s)', async fairlight => {
+  const s = setup(fairlight);
+  fireEvent.click(screen.getByRole('tab', { name: 'File' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Channel 2' }));
+  fireEvent.change(screen.getByRole('spinbutton', { name: 'Selected channel level' }), { target: { value: '-6' } });
+  expect(s.writes()).toHaveLength(0);
+  fireEvent.click(screen.getByRole('button', { name: 'Apply channel mapping' })); await settle();
+  expect(s.model()[0].channels).toEqual([
+    { source: null, remix: { channels: 2, channel: 0 }, enabled: true, mute: false, level_db: 0 },
+    { source: null, remix: { channels: 2, channel: 1 }, enabled: true, mute: false, level_db: -6 },
+  ]);
+  fireEvent.change(screen.getByRole('combobox', { name: 'Channel 2 Source' }), { target: { value: '3:0' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Apply channel mapping' })); await settle();
+  expect(s.model()[0].channels?.[1]).toEqual({ source: { stream: 3, channel: 0 }, enabled: true, mute: false, level_db: -6 });
+  expect(s.model()[0].channels?.[0].remix).toEqual({ channels: 2, channel: 0 });
+});
+
+it('keeps each source when changing channel level in a selection of automatic and explicit clips', async () => {
+  const s = setup(false, [clip('a'), clip('b', 100, 100, { channels: [{ source: { stream: 1, channel: 1 }, mute: true }, { source: null }] })]);
+  fireEvent.click(screen.getByRole('tab', { name: 'File' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Channel 1' }));
+  fireEvent.change(screen.getByRole('spinbutton', { name: 'Selected channel level' }), { target: { value: '-4' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Apply channel mapping' })); await settle();
+  expect(s.model()[0].channels?.map(map => map.remix)).toEqual([{ channels: 2, channel: 0 }, { channels: 2, channel: 1 }]);
+  expect(s.model()[1].channels?.[0]).toEqual({ source: { stream: 1, channel: 1 }, enabled: true, mute: true, level_db: -4 });
+  expect(s.model()[1].channels?.[1].source).toBeNull();
+  expect(s.writes()).toHaveLength(1);
+});

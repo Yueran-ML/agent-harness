@@ -20,6 +20,7 @@ async def test_real_cli_duck_consent_keeps_receipts_and_one_undo(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     program = real_engine()
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("COLUMBINA_ENGINE", program)
     monkeypatch.setenv("COLUMBINA_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("COLUMBINA_AGENTS_HOME", str(tmp_path / "agents"))

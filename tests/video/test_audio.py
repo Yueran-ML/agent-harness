@@ -25,6 +25,22 @@ from support.studio_tools import desk_of, result
 
 pytestmark = pytest.mark.usefixtures("studio_here")
 
+
+async def test_duck_tool_registration_and_no_transcript_hint(
+    studio: tuple[Desk, Fake], ctx: Context
+) -> None:
+    desk, fake = studio
+    clip = fake.project["timelines"][0]["tracks"][0]["clips"][0]
+    clip.update(start=0, length=100)
+    clip["source"]["in"] = {"ticks": 0, "scale": 48000}
+    tool = ctx.use(TOOLS).registry["video_duck"]
+    assert tool.timeout_seconds == 6 * 60 * 60
+    assert tool.effect == "write"
+    said = result(await desk.call("video_duck", music=["A2"]))
+    assert said["status"] == "needs_dialogue"
+    assert "video_transcribe" in said["notice"]
+
+
 # Deliberately not the real table: numeric defaults belong to the engine alone.
 STANDARD = {
     "id": "bilibili",

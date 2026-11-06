@@ -210,6 +210,7 @@ def _studio_file(access: Access) -> bool:
         "video_edit",
         "video_render",
         "video_loudness",
+        "video_duck",
         "video_undo",
         "video_info",
         "video_grade_info",

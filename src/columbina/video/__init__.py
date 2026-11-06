@@ -23,7 +23,7 @@ from columbina.agent import RUNTIME_FACTS, Facts
 from columbina.fs import FS, Access, Fs
 from columbina.kernel import Context, EmitEvent, ServiceKey
 from columbina.tools import TOOLS, Tool, ToolFailure, ToolRun
-from columbina.video import audio, grading
+from columbina.video import audio, duck, grading
 from columbina.video.editing import Editor, chosen_subtitles, receipt, safe_name, sidecars
 from columbina.video.engine import (
     Engine,
@@ -354,6 +354,22 @@ class _Loudness(_Timeline):
             "measuring a candidate with a limiter if needed before one final transaction."
         ),
     )
+
+
+class _Duck(_Timeline):
+    music: list[str] = Field(
+        min_length=1,
+        max_length=255,
+        description="Background music/effects track ids, excluding dialogue.",
+    )
+    dialogue: str | None = Field(
+        default=None,
+        description=(
+            "Dialogue track; omitted selects the uniquely highest word density "
+            "from existing transcripts."
+        ),
+    )
+    mode: Literal["ducker"] = "ducker"
 
 
 class _Target(BaseModel):
@@ -746,6 +762,14 @@ def tools_of(videos: Videos) -> list[Tool[Any, str]]:
             batch = _media_checked(args.edits, videos, run, tool) if isinstance(args, _Edit) else []
             editor = await videos.editor(run, tool, args.project)
             async with editor.lock:
+                if isinstance(args, _Duck):
+                    return receipt(
+                        await duck.Duck(
+                            editor.engine,
+                            editor.directory,
+                            lambda path: videos.checked(run, tool, path, "read"),
+                        ).run(music=args.music, dialogue=args.dialogue, timeline=args.timeline)
+                    )
                 if isinstance(args, _Loudness):
                     return receipt(
                         await audio.Loudness(
@@ -947,6 +971,17 @@ def tools_of(videos: Videos) -> list[Tool[Any, str]]:
             ),
         ),
         tool("video_edit", _Edit, _EDIT),
+        tool(
+            "video_duck",
+            _Duck,
+            "Duck specified background tracks with Track FX Ducker, using an explicit dialogue "
+            "track or the highest existing transcript word density. Defaults: 12 dB duck, "
+            "600 ms recovery. Measure candidates with DSP history; check each background "
+            "track against dialogue and quiet baseline, adjust by 3 dB at most twice, then "
+            "apply once. Inspect met and verification_complete; absent/short words cannot "
+            "prove the target. No transcription or dialogue guessing is performed.",
+            long=True,
+        ),
         tool(
             "video_loudness",
             _Loudness,

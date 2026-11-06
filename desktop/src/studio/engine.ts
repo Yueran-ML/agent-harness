@@ -1144,6 +1144,7 @@ export interface PageMethods {
   'automation.record': AutomationRecording;
   'automation.touch': Record<string, never>;
   'automation.punch': { lanes: number };
+  'automation.punch_out': { lanes: number };
   'automation.all_read': { read: boolean };
   'automation.join': { lanes: number; at: Time | null };
   'automation.fill': { lanes: number };

@@ -94,6 +94,9 @@ struct Param {
     open: Option<Run>,
     /// Whether the control is held now.
     held: bool,
+    /// Put into Write by a Punch In (p. 3913) and not moved since: written only where it changes
+    /// something (a lane of it is there, and it is not a Trim's offset of nothing).
+    punched: bool,
 }
 
 impl Param {
@@ -112,6 +115,7 @@ impl Param {
         touching: bool,
         (spacing, ramp, glide): (i64, i64, i64),
     ) {
+        self.punched = false;
         let after_release = !self.held;
         match &mut self.open {
             None if touching => {
@@ -186,6 +190,10 @@ pub(crate) struct Recorder {
     /// The last value of each setting touched under Preview (but a fader's under Trim): what
     /// Fill Range and Glide Range write (p. 3908).
     previewed: Vec<(String, Owner, String, f64)>,
+    /// Punch In without Preview (p. 3913): of a timeline, the settings put into Write, to be
+    /// written from where the pass under way is (or where the next begins) at their values
+    /// there, as Latch writes, to its stop; once.
+    writing: Option<(String, Vec<(Owner, String)>)>,
 }
 
 /// Where a pass stopped, on which timeline, and the last value of each setting that it was
@@ -209,6 +217,7 @@ impl Default for Recorder {
             stopped: None,
             join: None,
             previewed: Vec::new(),
+            writing: None,
         }
     }
 }
@@ -325,6 +334,7 @@ impl Recorder {
             self.pending_of = None;
             self.previewed.clear();
             self.join = None;
+            self.writing = None;
         }
     }
 
@@ -570,6 +580,7 @@ impl Recorder {
                 runs: Vec::new(),
                 open: None,
                 held: false,
+                punched: false,
             });
             pass.params.last_mut().expect("pushed")
         };
@@ -637,6 +648,13 @@ impl Recorder {
             values: Vec::new(),
         };
         for mut param in pass.params.into_iter().filter(|param| param.written) {
+            // Put into Write by a Punch In and never moved: its value where it was punched in,
+            // which changes nothing of a setting with no lane, nor as a Trim's offset of 0 dB.
+            let has_lane =
+                lanes_of(t, &param.owner).is_some_and(|lanes| lanes.contains_key(&param.path));
+            if param.punched && (param.trim || !has_lane) {
+                continue;
+            }
             if let Some(last) = param
                 .open
                 .as_ref()
@@ -727,14 +745,209 @@ impl Recorder {
 
     /// Punch In under Preview (p. 3908) of timeline `timeline`: what the passes kept of it, as the
     /// edit that writes it; none where nothing of it is kept.
+    #[cfg(test)]
     pub(crate) fn punch(&mut self, timeline: &str) -> Option<Edit> {
+        self.punch_of(timeline, None)
+    }
+
+    /// [`Recorder::punch`] of the tracks, buses and VCAs `of` alone, where they are named: what
+    /// was kept of the others stays kept, to be punched in later.
+    pub(crate) fn punch_of(&mut self, timeline: &str, of: Option<&[Owner]>) -> Option<Edit> {
         self.read = false;
         if self.pending_of.as_deref() != Some(timeline) {
             return None;
         }
-        let timeline = self.pending_of.take()?;
-        let lanes = std::mem::take(&mut self.pending);
+        let named =
+            |lane: &RecordedLane| of.is_none_or(|of| of.contains(&owner_of_lanes(&lane.of)));
+        let (lanes, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending)
+            .into_iter()
+            .partition(|lane| named(lane));
+        let timeline = if kept.is_empty() {
+            self.pending_of.take()?
+        } else {
+            self.pending = kept;
+            timeline.to_owned()
+        };
         (!lanes.is_empty()).then_some(Edit::RecordPass { timeline, lanes })
+    }
+
+    /// Punch In without Preview (p. 3913) of the tracks, buses and VCAs `of` of timeline
+    /// `timeline` of `project`: every setting of each of them that a lane may be of, of a
+    /// category that is on, put into Write: from where the pass under way is (at once, at the
+    /// next [`Recorder::write_on`]) or where the next begins, it is written at its value there as
+    /// Latch writes, whatever the Touch and the Automation Arm, to the stop, once. An owner that
+    /// is not there, Safe or Off, or a track that is locked, is passed over. How many settings.
+    pub(crate) fn punch_in(&mut self, project: &Project, timeline: usize, of: &[Owner]) -> usize {
+        self.read = false;
+        if !self.on {
+            return 0;
+        }
+        let t = &project.timelines[timeline];
+        let categories = t.audio.record.categories;
+        let mut settings: Vec<(Owner, String)> = Vec::new();
+        for owner in of {
+            let locked = match owner {
+                Owner::Track(id) => t.tracks.iter().any(|track| track.id == *id && track.locked),
+                Owner::Bus(_) | Owner::Vca(_) => false,
+            };
+            let Some((model, _, arm)) = model_owner(t, owner).filter(|_| !locked) else {
+                continue;
+            };
+            if !arm.records() {
+                continue;
+            }
+            for path in columbina_model::audio::automation::paths(model) {
+                let new = !settings.iter().any(|(o, p)| o == owner && *p == path);
+                if categories.covers(&path) && new {
+                    settings.push((owner.clone(), path));
+                }
+            }
+        }
+        let count = settings.len();
+        match &mut self.writing {
+            Some((of_timeline, kept)) if *of_timeline == t.id => {
+                kept.retain(|setting| !settings.contains(setting));
+                kept.extend(settings);
+            }
+            _ => self.writing = Some((t.id.clone(), settings)),
+        }
+        count
+    }
+
+    /// The pass under way at sample `at` heard, of timeline `timeline` of `project`: what a
+    /// Punch In put into Write starts to be written there, each setting touched at its value
+    /// there (its lane's, where it plays one, or as it is set; a fader under Trim by 0 dB) and
+    /// let go of as Latch lets go, so that it is written on to the stop; a setting being written
+    /// already is left as it is. What is heard.
+    pub(crate) fn write_on(&mut self, project: &Project, timeline: usize, at: i64) -> Vec<Heard> {
+        let t = &project.timelines[timeline];
+        let due = match (&self.writing, &self.pass) {
+            (Some((of, _)), Some(pass)) => *of == t.id && pass.timeline == t.id,
+            _ => false,
+        };
+        if !due || self.read {
+            return Vec::new();
+        }
+        let Some((_, settings)) = self.writing.take() else {
+            return Vec::new();
+        };
+        let mut heard = Vec::new();
+        for (owner, path) in &settings {
+            let Some(pass) = self.pass.as_ref() else {
+                break;
+            };
+            let writing = pass
+                .params
+                .iter()
+                .any(|param| param.owner == *owner && param.path == *path && param.open.is_some());
+            let Some((model, _, arm)) = model_owner(t, owner) else {
+                continue;
+            };
+            if writing {
+                continue;
+            }
+            let view = view(model);
+            let Some(fixed) = fixed_value(&view, path) else {
+                continue;
+            };
+            let trim = pass.settings.mode == RecordMode::Trim && path == "fader_db";
+            let lane = lanes_of(t, owner)
+                .and_then(|lanes| lanes.get(path))
+                .filter(|_| arm.plays());
+            let value = match lane {
+                _ if trim => 0.0,
+                Some(lane) => lane.value_at(Time {
+                    ticks: at,
+                    scale: t.sample_rate,
+                }),
+                None => fixed,
+            };
+            heard.extend(self.touch_one(
+                project,
+                timeline,
+                (true, Some(at)),
+                (owner, path),
+                value,
+                true,
+            ));
+            let Some(pass) = self.pass.as_mut() else {
+                break;
+            };
+            let punched_out = pass.punched_out;
+            let categories = pass.settings.categories;
+            if let Some(param) = pass
+                .params
+                .iter_mut()
+                .find(|param| param.owner == *owner && param.path == *path)
+            {
+                // Written whatever the Touch and the Arm, as Latch writes.
+                param.written = categories.covers(path) && arm.records() && !punched_out;
+                param.snap = false;
+                param.held = false;
+                param.punched = true;
+            }
+        }
+        heard
+    }
+
+    /// Punch Out (p. 3913) of the tracks, buses and VCAs `of` (every one where none are named)
+    /// of timeline `timeline`, at sample `at` heard where it plays at speed 1: each of their
+    /// settings goes back to Read. What is written of them stops there, as at the end of the
+    /// Active Range, and each is let go of (what is touched of it next is written again as the
+    /// Touch says); what a Punch In put into Write and has not yet started to write is dropped;
+    /// and what Preview held or kept of them is let go of unwritten. The settings so given back.
+    pub(crate) fn punch_out(
+        &mut self,
+        timeline: &str,
+        at: Option<i64>,
+        of: Option<&[Owner]>,
+    ) -> Vec<(Owner, String)> {
+        let named = |owner: &Owner| of.is_none_or(|of| of.contains(owner));
+        let mut out: Vec<(Owner, String)> = Vec::new();
+        let mut note = |owner: &Owner, path: &str| {
+            if !out.iter().any(|(o, p)| o == owner && p == path) {
+                out.push((owner.clone(), path.to_owned()));
+            }
+        };
+        if let Some((of_timeline, settings)) = &mut self.writing {
+            if of_timeline == timeline {
+                settings.retain(|(owner, _)| !named(owner));
+            }
+        }
+        if let Some(pass) = self.pass.as_mut().filter(|pass| pass.timeline == timeline) {
+            for param in pass.params.iter_mut().filter(|param| named(&param.owner)) {
+                if let Some(mut run) = param.open.take() {
+                    run.to = run.to.max(at.unwrap_or(run.to));
+                    run.then = RunEnd::Cut;
+                    param.runs.push(run);
+                    note(&param.owner, &param.path);
+                }
+                // Let go: what is touched next starts to be written again, as the Touch says.
+                param.held = false;
+                param.punched = false;
+            }
+        }
+        if self.pending_of.as_deref() == Some(timeline) {
+            for lane in &self.pending {
+                let owner = owner_of_lanes(&lane.of);
+                if named(&owner) {
+                    note(&owner, &lane.path);
+                }
+            }
+            self.pending
+                .retain(|lane| !named(&owner_of_lanes(&lane.of)));
+            if self.pending.is_empty() {
+                self.pending_of = None;
+            }
+        }
+        for (of_timeline, owner, path, _) in &self.previewed {
+            if of_timeline == timeline && named(owner) {
+                note(owner, path);
+            }
+        }
+        self.previewed
+            .retain(|(of_timeline, owner, _, _)| !(of_timeline == timeline && named(owner)));
+        out
     }
 
     /// What a Punch In of timeline `timeline` could not write, kept again to be punched in, before
@@ -928,6 +1141,15 @@ fn lanes_of_owner(owner: &Owner) -> LanesOf {
     }
 }
 
+/// The owner of the lanes that `of` names.
+pub(crate) fn owner_of_lanes(of: &LanesOf) -> Owner {
+    match of {
+        LanesOf::Track(id) => Owner::Track(id.clone()),
+        LanesOf::Bus(id) => Owner::Bus(id.clone()),
+        LanesOf::Vca(id) => Owner::Vca(id.clone()),
+    }
+}
+
 /// A time of the timeline as a sample at `rate`, on the nearest.
 fn sample_of(time: Time, rate: u32) -> i64 {
     columbina_model::audio::automation::ticks_in(time, rate).unwrap_or(i64::MAX)
@@ -1039,9 +1261,16 @@ pub(crate) enum Order {
         timeline: String,
         lanes: Vec<RecordedLane>,
     },
-    /// `automation.punch`.
+    /// `automation.punch`, of the tracks, buses and VCAs named, if any are.
     Punch {
         timeline: String,
+        of: Option<Vec<Owner>>,
+        reply: oneshot::Sender<Result<Value, Fault>>,
+    },
+    /// `automation.punch_out`, of the tracks, buses and VCAs named, if any are.
+    PunchOut {
+        timeline: String,
+        of: Option<Vec<Owner>>,
         reply: oneshot::Sender<Result<Value, Fault>>,
     },
     /// `automation.all_read`.
@@ -1093,11 +1322,20 @@ struct TouchParams {
     touching: bool,
 }
 
-/// The params of `automation.punch`.
+/// The params of `automation.all_read` and `automation.join`.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PunchParams {
     timeline: String,
+}
+
+/// The params of `automation.punch` and `automation.punch_out`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PunchOwnersParams {
+    timeline: String,
+    #[serde(default)]
+    of: Option<Vec<LanesOf>>,
 }
 
 /// The params of `automation.fill`.
@@ -1136,6 +1374,34 @@ fn read_playback(params: Option<&RawValue>, by: Kind) -> Result<(Order, Option<A
         },
         Some(answer),
     ))
+}
+
+/// `automation.punch` or `automation.punch_out` (`method`), of the tracks, buses and VCAs named.
+fn read_punch(method: &str, params: Option<&RawValue>) -> Result<(Order, Option<Answer>), Fault> {
+    let asked: PunchOwnersParams = rpc::params(
+        method,
+        r#"{"timeline": "t1", "of"?: [{"track": "A1"}]}"#,
+        params,
+    )?;
+    let (reply, answer) = oneshot::channel();
+    let timeline = asked.timeline;
+    let of = asked
+        .of
+        .map(|of| of.iter().map(owner_of_lanes).collect::<Vec<_>>());
+    let order = if method == "automation.punch" {
+        Order::Punch {
+            timeline,
+            of,
+            reply,
+        }
+    } else {
+        Order::PunchOut {
+            timeline,
+            of,
+            reply,
+        }
+    };
+    Ok((order, Some(answer)))
 }
 
 /// An order of `method` (`automation.record`, `automation.touch`, `automation.punch`) of a client
@@ -1235,14 +1501,14 @@ pub(crate) fn read(
                 Some(answer),
             ))
         }
+        "automation.punch" | "automation.punch_out" => read_punch(method, params),
         _ => {
             let asked: PunchParams = rpc::params(method, r#"{"timeline": "t1"}"#, params)?;
             let (reply, answer) = oneshot::channel();
             let timeline = asked.timeline;
             let order = match method {
-                "automation.all_read" => Order::AllRead { timeline, reply },
                 "automation.join" => Order::Join { timeline, reply },
-                _ => Order::Punch { timeline, reply },
+                _ => Order::AllRead { timeline, reply },
             };
             Ok((order, Some(answer)))
         }
@@ -1485,6 +1751,9 @@ impl Automation {
         for heard in self.recorder.joined(project, timeline, at) {
             Self::hear(heard, playback);
         }
+        for heard in self.recorder.write_on(project, timeline, at) {
+            Self::hear(heard, playback);
+        }
     }
 
     /// What a touch does to the sound, done.
@@ -1554,11 +1823,71 @@ impl Automation {
         written.len()
     }
 
-    /// Punch In (`automation.punch`) of timeline `timeline`: what Preview kept of it, written,
-    /// and what is held of what it writes let go of over 10 ms, as its lanes take their place
-    /// (`rate` the timeline's); how many lanes.
-    pub(crate) fn punch(&mut self, timeline: &str, rate: u32, playback: &mut Playback) -> usize {
-        let punched = self.recorder.punch(timeline);
+    /// Punch In (`automation.punch`, p. 3913) of timeline `timeline` of `project`, of the
+    /// tracks, buses and VCAs `of` where they are named, the timeline playing at sample `at`
+    /// heard where it plays at speed 1. Under Preview, what Preview kept (of those named), as
+    /// [`Automation::punch_kept`]; without it, the settings of those named put into Write
+    /// ([`Recorder::punch_in`]), written from here where a pass is under way. How many lanes.
+    pub(crate) fn punch(
+        &mut self,
+        (project, timeline): (&Project, usize),
+        of: Option<&[Owner]>,
+        at: Option<i64>,
+        playback: &mut Playback,
+    ) -> usize {
+        let t = &project.timelines[timeline];
+        if t.audio.record.preview {
+            return self.punch_kept(&t.id, of, t.sample_rate, playback);
+        }
+        let Some(of) = of else {
+            // Nothing kept without Preview; what was kept before it was turned off is written.
+            return self.punch_kept(&t.id, None, t.sample_rate, playback);
+        };
+        let count = self.recorder.punch_in(project, timeline, of);
+        if let Some(at) = at.filter(|_| self.recorder.recording()) {
+            for heard in self.recorder.write_on(project, timeline, at) {
+                Self::hear(heard, playback);
+            }
+        }
+        count
+    }
+
+    /// Punch Out (`automation.punch_out`, p. 3913) of timeline `timeline` of `project`, of the
+    /// tracks, buses and VCAs `of` (every one where none are named), at sample `at` heard where
+    /// it plays at speed 1: their settings back to Read ([`Recorder::punch_out`]), and what is
+    /// held of them let go of over 10 ms. How many settings went back to Read.
+    pub(crate) fn punch_out(
+        &mut self,
+        (project, timeline): (&Project, usize),
+        of: Option<&[Owner]>,
+        at: Option<i64>,
+        playback: &mut Playback,
+    ) -> usize {
+        let t = &project.timelines[timeline];
+        let mut out = self.recorder.punch_out(&t.id, at, of);
+        let named = |owner: &Owner| of.is_none_or(|of| of.contains(owner));
+        for (owner, path) in playback.held_of(&named) {
+            if !out.iter().any(|(o, p)| *o == owner && *p == path) {
+                out.push((owner, path));
+            }
+        }
+        for (owner, path) in &out {
+            playback.let_go(owner, path, Self::ramp(t.sample_rate));
+        }
+        out.len()
+    }
+
+    /// Punch In under Preview of timeline `timeline`: what Preview kept of it (of the owners
+    /// `of`, where named), written, and what is held of what it writes let go of over 10 ms, as
+    /// its lanes take their place (`rate` the timeline's); how many lanes.
+    fn punch_kept(
+        &mut self,
+        timeline: &str,
+        of: Option<&[Owner]>,
+        rate: u32,
+        playback: &mut Playback,
+    ) -> usize {
+        let punched = self.recorder.punch_of(timeline, of);
         let written: Vec<(Owner, String)> = match &punched {
             Some(Edit::RecordPass { lanes, .. }) => lanes
                 .iter()

@@ -878,3 +878,176 @@ fn all_read_is_in_the_state_of_recording() {
     automation.recorder.set(true, 0.25);
     assert_eq!(automation.state()["read"], false);
 }
+
+// T23: Punch In and Punch Out of the tracks chosen (p. 3913).
+
+/// The names of the lanes of A1 in `project`.
+fn lanes_of_a1(project: &Project) -> Vec<String> {
+    project.timelines[0]
+        .tracks
+        .iter()
+        .find(|track| track.id == "A1")
+        .unwrap()
+        .audio
+        .lanes
+        .keys()
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn a_punch_in_of_a_track_writes_its_settings_from_there_at_their_values_there() {
+    // A fader lane from −10 dB at 0 s to 0 dB at 4 s; Touch Off and A1 not armed: no touch of
+    // it would be written, but a Punch In puts it into Write.
+    let project = project(
+        &[(0.0, -10.0), (4.0, 0.0)],
+        Touch::Off,
+        RecordMode::Write,
+        OnStop::Hold,
+    );
+    let mut recorder = recording(&project);
+    let settings = recorder.punch_in(&project, 0, &[a1()]);
+    assert!(
+        settings > 1,
+        "every setting of A1 of a category that is on: {settings}"
+    );
+    let heard = recorder.write_on(&project, 0, s(1.0));
+    assert!(
+        heard.iter().any(|heard| matches!(heard,
+            Heard::Hold { path, live: Live::Hold(v), .. } if path == "fader_db" && (*v + 7.5).abs() < 1e-4)),
+        "held at the lane's value there: {heard:?}"
+    );
+    assert!(recorder.write_on(&project, 0, s(1.5)).is_empty(), "once");
+    let after = written(&project, recorder.end(&project, s(3.0)).expect("the fader"));
+    for (seconds, want) in [(0.5, -8.75), (1.5, -7.5), (2.9, -7.5), (3.5, -7.5)] {
+        let got = at(&after, "fader_db", seconds);
+        assert!((got - want).abs() < 1e-3, "{seconds} s: {got}, not {want}");
+    }
+    // A setting with no lane, put into Write and never moved, changes nothing: no lane of it.
+    assert_eq!(lanes_of_a1(&after), ["fader_db"]);
+}
+
+#[test]
+fn a_punch_in_is_written_from_where_the_next_pass_begins_and_moved_settings_are_written() {
+    let project = project(&[], Touch::Off, RecordMode::Write, OnStop::Hold);
+    let mut recorder = Recorder::default();
+    recorder.set(true, 0.25);
+    // Stopped: put into Write, written where the next pass is.
+    assert!(recorder.punch_in(&project, 0, &[a1()]) > 0);
+    assert!(recorder.write_on(&project, 0, s(0.5)).is_empty(), "no pass");
+    recorder.begin(&project, 0, s(1.0));
+    assert_ne!(recorder.write_on(&project, 0, s(1.0)), Vec::<Heard>::new());
+    // The mute moved (written on as Latch writes, whatever the Touch).
+    touch(&mut recorder, &project, 2.0, "mute", 1.0, true);
+    touch(&mut recorder, &project, 2.1, "mute", 1.0, false);
+    let after = written(&project, recorder.end(&project, s(3.0)).expect("the mute"));
+    assert_eq!(lanes_of_a1(&after), ["mute"]);
+    assert_eq!(at(&after, "mute", 2.5), 1.0);
+    // Write is entered again after each stop.
+    recorder.begin(&project, 0, s(0.0));
+    assert_eq!(recorder.write_on(&project, 0, s(0.1)), Vec::<Heard>::new());
+}
+
+#[test]
+fn a_punch_in_passes_over_a_safe_owner_and_a_trim_of_nothing_changes_nothing() {
+    let mut safe = project(&[(0.0, -10.0)], Touch::Off, RecordMode::Write, OnStop::Hold);
+    safe.timelines[0]
+        .tracks
+        .iter_mut()
+        .find(|t| t.id == "A1")
+        .unwrap()
+        .audio
+        .automation_arm = columbina_model::AutomationArm::Safe;
+    let mut recorder = recording(&safe);
+    assert_eq!(recorder.punch_in(&safe, 0, &[a1()]), 0);
+    // Under Trim, the fader is moved by 0 dB: nothing is written.
+    let trim = project(&[(0.0, -10.0)], Touch::Off, RecordMode::Trim, OnStop::Hold);
+    let mut recorder = recording(&trim);
+    recorder.punch_in(&trim, 0, &[a1()]);
+    recorder.write_on(&trim, 0, s(1.0));
+    assert_eq!(recorder.end(&trim, s(2.0)), None);
+    // Recording off, nothing is put into Write.
+    let mut off = Recorder::default();
+    assert_eq!(off.punch_in(&trim, 0, &[a1()]), 0);
+}
+
+#[test]
+fn a_punch_out_stops_what_is_written_of_the_track_chosen_there() {
+    let project = project(
+        &[(0.0, -10.0)],
+        Touch::Latch,
+        RecordMode::Write,
+        OnStop::Hold,
+    );
+    let mut recorder = recording(&project);
+    touch(&mut recorder, &project, 1.0, "fader_db", -6.0, true);
+    // Another track's Punch Out leaves A1 writing.
+    let other = Owner::Track("A2".into());
+    let none: Vec<(Owner, String)> = Vec::new();
+    assert_eq!(recorder.punch_out("t1", Some(s(1.5)), Some(&[other])), none);
+    let out = recorder.punch_out("t1", Some(s(2.0)), Some(&[a1()]));
+    assert_eq!(out, [(a1(), "fader_db".to_owned())]);
+    // Let go there (a client sends no release): touched again, written again.
+    touch(&mut recorder, &project, 3.0, "fader_db", -1.0, true);
+    let after = written(&project, recorder.end(&project, s(4.0)).expect("both runs"));
+    for (seconds, want) in [
+        (1.5, -6.0),
+        (1.999, -6.0),
+        (2.5, -10.0),
+        (2.9, -10.0),
+        (3.5, -1.0),
+    ] {
+        let got = at(&after, "fader_db", seconds);
+        assert!((got - want).abs() < 1e-3, "{seconds} s: {got}, not {want}");
+    }
+}
+
+#[test]
+fn a_punch_out_under_preview_lets_go_of_what_preview_kept_and_held() {
+    let mut project = project(
+        &[(0.0, -10.0)],
+        Touch::Latch,
+        RecordMode::Write,
+        OnStop::Hold,
+    );
+    project.timelines[0].audio.record.preview = true;
+    let mut recorder = recording(&project);
+    touch(&mut recorder, &project, 1.0, "fader_db", -6.0, true);
+    assert_eq!(recorder.end(&project, s(2.0)), None);
+    recorder.touch(&project, 0, (false, None), (&a1(), "mute"), 1.0, true);
+    assert_eq!(recorder.pending(), 1);
+    let mut out = recorder.punch_out("t1", None, None);
+    out.sort_by(|a, b| a.1.cmp(&b.1));
+    assert_eq!(
+        out,
+        [(a1(), "fader_db".to_owned()), (a1(), "mute".to_owned())]
+    );
+    assert_eq!(recorder.pending(), 0);
+    assert_eq!(recorder.punch("t1"), None, "nothing kept to punch in");
+}
+
+#[test]
+fn a_punch_in_under_preview_of_the_tracks_named_keeps_what_was_kept_of_the_others() {
+    let mut project = project(&[], Touch::Latch, RecordMode::Write, OnStop::Hold);
+    project.timelines[0].audio.record.preview = true;
+    let b1 = Owner::Bus("B1".into());
+    let mut recorder = recording(&project);
+    touch(&mut recorder, &project, 1.0, "fader_db", -6.0, true);
+    recorder.touch(
+        &project,
+        0,
+        (true, Some(s(1.0))),
+        (&b1, "fader_db"),
+        -3.0,
+        true,
+    );
+    assert_eq!(recorder.end(&project, s(2.0)), None);
+    assert_eq!(recorder.pending(), 2);
+    let Some(Edit::RecordPass { lanes, .. }) = recorder.punch_of("t1", Some(&[b1])) else {
+        panic!("the bus");
+    };
+    assert_eq!(lanes.len(), 1);
+    assert_eq!(lanes[0].of, columbina_model::LanesOf::Bus("B1".into()));
+    assert_eq!(recorder.pending(), 1, "A1 still kept");
+    assert!(recorder.punch("t1").is_some());
+}

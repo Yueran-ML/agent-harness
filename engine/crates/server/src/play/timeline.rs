@@ -1368,11 +1368,42 @@ impl Worker {
                     &mut self.playback,
                 );
             }
-            Order::Punch { timeline, reply } => {
+            Order::Punch {
+                timeline,
+                of,
+                reply,
+            } => {
                 let result = if loaded(self, &timeline) {
                     let project = Arc::clone(self.project.as_ref().expect("loaded"));
-                    let rate = project.timelines[self.timeline.unwrap_or(0)].sample_rate;
-                    let lanes = self.automation.punch(&timeline, rate, &mut self.playback);
+                    let index = self.timeline.unwrap_or(0);
+                    let at = self.heard_sample();
+                    let lanes = self.automation.punch(
+                        (&project, index),
+                        of.as_deref(),
+                        at,
+                        &mut self.playback,
+                    );
+                    Ok(json!({ "lanes": lanes }))
+                } else {
+                    Err(not_loaded())
+                };
+                let _ = reply.send(result);
+            }
+            Order::PunchOut {
+                timeline,
+                of,
+                reply,
+            } => {
+                let result = if loaded(self, &timeline) {
+                    let project = Arc::clone(self.project.as_ref().expect("loaded"));
+                    let index = self.timeline.unwrap_or(0);
+                    let at = self.heard_sample();
+                    let lanes = self.automation.punch_out(
+                        (&project, index),
+                        of.as_deref(),
+                        at,
+                        &mut self.playback,
+                    );
                     Ok(json!({ "lanes": lanes }))
                 } else {
                     Err(not_loaded())

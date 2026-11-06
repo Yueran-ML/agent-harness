@@ -1635,6 +1635,7 @@ async fn dispatch(
         | "automation.record"
         | "automation.touch"
         | "automation.punch"
+        | "automation.punch_out"
         | "automation.all_read"
         | "automation.join"
         | "automation.fill" => {

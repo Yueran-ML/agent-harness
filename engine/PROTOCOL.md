@@ -4908,7 +4908,8 @@ recapture does not replace a prior usable profile. It is not a project or preset
 it never reads the source of
 the capture. Version must be 1, basis `integrated`/`mean`, and level_db finite and non-null
 (`no_level` otherwise); unknown fields and versions are rejected. It has no Normalize target
-range restriction. Revision is required even for dry-run, checked before the job, and again
+range restriction. Revision is required even for dry-run (without it, `-32602` with
+`reason: "revision_required"` before a job starts), checked before the job, and again
 at commit for apply=true. Done includes `profile` instead of `reference`, with the same clips,
 applied and refused fields as the legacy branch. Its gains use the unrounded profile minus
 each target's C-C7 level, preserving nulls for silence, clamping and one-transaction Undo.

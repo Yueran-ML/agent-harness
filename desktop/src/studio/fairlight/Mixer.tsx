@@ -5,7 +5,7 @@ import { callEngine, type Timeline } from '../engine';
 import type { MeterSource } from './audioReadings';
 import type { Change } from '../timeline/commands';
 import { useAudioGesture } from '../timeline/useAudioGesture';
-import { faderChanges, faderPlan, groupMembers, mixerStrips, operationTargets, stripChange, type FaderPlan, type MixerStrip, type Modifiers } from '../audio/mixerModel';
+import { faderChanges, faderPlan, mixerStrips, operationTargets, stripChange, switchChanges, type FaderPlan, type MixerStrip, type Modifiers } from '../audio/mixerModel';
 import { mixerTrackMoves } from './IndexTracks';
 import { ChannelStrip } from './ChannelStrip';
 import { useFairlightText } from './words';
@@ -67,16 +67,9 @@ export function Mixer({ bridge, session, revision, timeline, frame, meters, sele
   const cancel = () => { sweep.current = null; plan.current = null; gesture.cancel(); setPreview({}); };
   const switchOps = (keys: string[], field: 'mute' | 'solo' | 'solo_safe', value: boolean, modifiers: Modifiers): Change[] => {
     const state = latest.current;
-    const seeds = keys.flatMap(key => state.strips.filter(s => s.key === key && !s.locked));
-    if (field === 'solo') {
-      // A solo seed and its directly linked group form one exclusive-solo edit. Expanding its
-      // followers into separate edits would make each clear the previous member. Preserve the
-      // actual sweep order, so the last requested solo/group wins under Exclusive Solo.
-      return seeds.map(s => stripChange(state.timeline.id, s, { solo: value }, !(modifiers.ctrlKey && modifiers.shiftKey)));
-    }
-    const members = field === 'solo_safe' ? seeds : groupMembers(state.timeline, state.strips, seeds, field, Boolean(modifiers.ctrlKey && modifiers.shiftKey));
-    // Each member once. Exclusive Solo remains the server's set_* edit policy.
-    return members.filter(s => !s.locked).map(s => stripChange(state.timeline.id, s, { [field]: value }));
+    const seeds = keys.flatMap(key => state.strips.filter(s => s.key === key));
+    // Preserve the actual sweep order, so the last requested solo/group wins under Exclusive Solo.
+    return switchChanges(state.timeline, state.strips, seeds, field, value, Boolean(modifiers.ctrlKey && modifiers.shiftKey));
   };
   useEffect(() => {
     const abandon = () => { sweep.current = null; };

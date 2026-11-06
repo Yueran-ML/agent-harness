@@ -54,6 +54,36 @@ export function groupMembers(timeline: Timeline, strips: MixerStrip[], seeds: Mi
   }
   return strips.filter(s => ids.has(s.key) && !s.locked);
 }
+/**
+ * The edits of a Solo, Mute or Solo Safe switch, wherever it is pressed (mixer strip, Index):
+ * a solo seed and its directly linked group form one `set_track_audio` edit with `follow_groups`
+ * (one edit per seed, in the order asked, so the last wins under Exclusive Solo, which the
+ * server applies to these edits); a mute is set on each group member once. Ctrl+Shift is the
+ * group clutch.
+ */
+export function switchChanges(timeline: Timeline, strips: MixerStrip[], seeds: MixerStrip[],
+  field: 'mute' | 'solo' | 'solo_safe', value: boolean, clutch: boolean): Change[] {
+  const unlocked = seeds.filter(s => !s.locked);
+  if (field === 'solo') return unlocked.map(s => stripChange(timeline.id, s, { solo: value }, !clutch));
+  const members = field === 'solo_safe' ? unlocked : groupMembers(timeline, strips, unlocked, field, clutch);
+  return members.filter(s => !s.locked).map(s => stripChange(timeline.id, s, { [field]: value }));
+}
+/**
+ * The solo of a VCA. Its `set_vca` is an operation, which Exclusive Solo does not reach on the
+ * server, so the other solos (tracks that are not locked, buses and VCAs) are taken off here in
+ * the same transaction, as a soloed track or bus takes them off.
+ */
+export function vcaSoloChanges(timeline: Timeline, vca: string, value: boolean): Change[] {
+  const own: Change = { op: 'set_vca', timeline: timeline.id, id: vca, patch: { solo: value } };
+  if (!value || !timeline.audio?.exclusive_solo) return [own];
+  const tracks = timeline.tracks.flatMap(track => track.kind === 'audio' && track.solo && !track.locked
+    ? [{ op: 'set_track_audio', timeline: timeline.id, track: track.id, patch: { solo: false } } as Change] : []);
+  const buses = (timeline.buses ?? []).flatMap(bus => bus.solo
+    ? [{ op: 'set_bus', timeline: timeline.id, id: bus.id, patch: { solo: false } } as Change] : []);
+  const vcas = (timeline.vcas ?? []).flatMap(each => each.id !== vca && each.solo
+    ? [{ op: 'set_vca', timeline: timeline.id, id: each.id, patch: { solo: false } } as Change] : []);
+  return [...tracks, ...buses, ...vcas, own];
+}
 export function operationTargets(strips: MixerStrip[], key: string, selected: readonly string[], modifiers: Modifiers): MixerStrip[] {
   return strips.filter(s => !s.locked && (modifiers.altKey ? modifiers.ctrlKey || selected.includes(s.key) || s.key === key : s.key === key));
 }

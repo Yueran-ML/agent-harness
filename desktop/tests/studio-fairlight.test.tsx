@@ -296,7 +296,8 @@ it('commits an Index control sweep once, including the start and repeated crossi
   const first = screen.getByRole('button', { name: 'mute Audio 1' });
   const second = screen.getByRole('button', { name: 'mute Audio 2' });
   const third = screen.getByRole('button', { name: 'mute Audio 3' });
-  const mute = (track: string) => ({ op: 'set_track_audio', timeline: 't1', track, patch: { mute: true } });
+  // The mixer's switch edits: one per member, as a mixer strip's mute writes them.
+  const mute = (track: string) => ({ edit: 'set_track_audio', timeline: 't1', track, patch: { mute: true }, follow_groups: false });
   fireEvent.pointerDown(first, { button: 0, buttons: 1 });
   fireEvent.pointerEnter(second, { buttons: 1 });
   fireEvent.pointerEnter(first, { buttons: 1 });

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Vca, Timeline } from '../engine';
 import { Fader } from '../audio/Fader';
-import { formatDb } from '../audio/mixerModel';
+import { formatDb, vcaSoloChanges } from '../audio/mixerModel';
 import { laneValue } from './automation';
 import { useAudioGesture } from '../timeline/useAudioGesture';
 import type { Change } from '../timeline/commands';
@@ -48,7 +48,7 @@ export function VcaStrip({context,vca,seconds,selected,onSelect}:{context:Routin
   return <article className="mixer-strip" data-mixer-strip={`vca:${vca.id}`} data-selected={selected||undefined} aria-label={vca.name}>
     <div className="mixer-strip-color">{vca.id}</div><VcaAssignment context={context} of={{vca:vca.id}}/>
     {renaming?<NameField name={vca.name} onCancel={()=>setRenaming(false)} onCommit={async name=>{gesture.commit([op({name})]);setRenaming(false);return true;}}/>:<button className="mixer-name" onClick={onSelect} onDoubleClick={()=>setRenaming(true)}>{vca.name}</button>}
-    <div className="mixer-switches"><button type="button" aria-label={`${t('solo')} ${vca.name}`} aria-pressed={vca.solo??false} onClick={()=>gesture.commit([op({solo:!vca.solo})])}>S</button>
+    <div className="mixer-switches"><button type="button" aria-label={`${t('solo')} ${vca.name}`} aria-pressed={vca.solo??false} onClick={()=>gesture.commit(vcaSoloChanges(context.timeline,vca.id,!vca.solo))}>S</button>
       <button type="button" aria-label={`${t('mute')} ${vca.name}`} aria-pressed={muted} disabled={!recording&&Boolean(vca.lanes?.mute)&&vca.automation_arm!=='off'&&control?.enabled!==false} onClick={()=>recording?control?.instant(muteTarget,Number(!muted)):gesture.commit([op({mute:!muted})])}>M</button></div>
     {control?.enabled&&<><button type="button" aria-pressed={vca.automation_arm===true} onClick={()=>gesture.commit([op({automation_arm:vca.automation_arm!==true})])}>{t('Arm')}</button><button type="button" onClick={()=>control.show(target)}>{t('Show automation in timeline')}</button></>}
     <Fader label={`${t('Fader')} ${vca.name}`} value={gesture.active()?preview??value:value} displayOffset={trim?0:offset} hasLane={Boolean(vca.lanes?.fader_db)} readOnly={Boolean(lane)&&!recording}

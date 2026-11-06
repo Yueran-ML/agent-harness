@@ -3,6 +3,9 @@ import { useEffect, useRef, useState } from 'react';
 import type { Op, Timeline, Track } from '../engine';
 import { NameField } from '../media/NameField';
 import { MIXER_DIVIDER, mixerOrder, moveMixerItems, type MixerLayout } from '../audio/mixerLayout';
+import { mixerStrips, switchChanges } from '../audio/mixerModel';
+import type { Change } from '../timeline/commands';
+import { useAutomationTouch } from './AutomationTouch';
 
 export const TRACK_COLORS = ['#7f7f7fff', '#c65c5cff', '#dc8a54ff', '#d5b758ff', '#a4bd5bff', '#66ad74ff', '#56a69aff', '#57b7c7ff',
   '#5aa0e0ff', '#687cceff', '#8f70c4ff', '#b275c0ff', '#c36d9bff', '#a98268ff', '#b8b8b8ff', '#e5e5e5ff'];
@@ -32,7 +35,7 @@ export function mixerTrackMoves(timeline: Timeline, order: string[], keys: strin
   return moveTracks(timeline, ids, wanted[last + 1] ?? null);
 }
 export function IndexTracks({ timeline, hidden, onHidden, onSelect, onEdit, selection, onSelection, layout, onReorder, automation = false }: {
-  timeline: Timeline; hidden: readonly string[]; onHidden: (ids: string[]) => void; onSelect: (id: string) => void; onEdit: (ops: Op[]) => void;
+  timeline: Timeline; hidden: readonly string[]; onHidden: (ids: string[]) => void; onSelect: (id: string) => void; onEdit: (ops: Change[]) => void;
   automation?: boolean;
   selection?: readonly string[]; onSelection?: (ids: string[]) => void;
   layout?: MixerLayout; onReorder?: (keys: string[], before: string) => void;
@@ -51,14 +54,24 @@ export function IndexTracks({ timeline, hidden, onHidden, onSelect, onEdit, sele
     event.preventDefault(); onEdit(moveTracks(timeline, dragged.current, key.slice(6))); dragged.current = [];
   };
   const sweep = useRef<{ field: 'mute' | 'solo' | 'locked'; value: boolean; ids: Set<string> } | null>(null);
-  const submit = useRef(onEdit); submit.current = onEdit;
+  const touch = useAutomationTouch();
+  // Solo and Mute here are the mixer's switches: the same edits (Exclusive Solo, Track Groups),
+  // and while automation is written, a mute is written to the lane as the mixer's is.
+  const switches = (ids: string[], field: 'mute' | 'solo', value: boolean) => {
+    const recording = Boolean(touch?.enabled && touch.recording);
+    if (recording && field === 'mute') { ids.forEach(id => touch!.instant({ of: { track: id }, path: 'mute' }, Number(value))); return; }
+    const strips = mixerStrips(timeline);
+    const seeds = ids.flatMap(id => strips.filter(strip => strip.kind === 'track' && strip.id === id));
+    onEdit(switchChanges(timeline, strips, seeds, field, value, false));
+  };
+  const submit = useRef({ onEdit, switches }); submit.current = { onEdit, switches };
   useEffect(() => {
     const cancel = () => { sweep.current = null; };
     const finish = () => {
       const active = sweep.current; cancel();
-      if (active) submit.current([...active.ids].map(id => active.field === 'locked'
-        ? { op: 'set_track', timeline: timeline.id, id, locked: active.value }
-        : { op: 'set_track_audio', timeline: timeline.id, track: id, patch: { [active.field]: active.value } }));
+      if (!active) return;
+      if (active.field === 'locked') submit.current.onEdit([...active.ids].map(id => ({ op: 'set_track', timeline: timeline.id, id, locked: active.value })));
+      else submit.current.switches([...active.ids], active.field, active.value);
     };
     const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') cancel(); };
     // A sweep can finish outside the starting button; publish only the complete gesture.
@@ -75,7 +88,7 @@ export function IndexTracks({ timeline, hidden, onHidden, onSelect, onEdit, sele
   const toggle = (track: Track, field: 'mute' | 'solo' | 'locked' | 'visible', value: boolean) => {
     if (field === 'visible') onHidden(value ? hidden.filter(id => id !== track.id) : [...hidden, track.id]);
     else if (field === 'locked') onEdit([{ op: 'set_track', timeline: timeline.id, id: track.id, locked: value }]);
-    else patch(track, { [field]: value });
+    else switches([track.id], field, value);
   };
   return <section className="fairlight-index" aria-label={t('Index Tracks')}><h2>{t('Tracks')}</h2><table><thead><tr>
     {(['Color', 'Visible', '#', 'Name', 'Controls', 'Format', 'ADC', 'Order'] as const).map(label => <th key={label}>{label === '#' || label === 'ADC' ? label : t(label)}</th>)}<th>VCA</th>

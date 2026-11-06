@@ -18,7 +18,7 @@ export function useVcaGain(timeline: Timeline, ids: readonly string[], seconds: 
   while(next.length){const id=next.pop()!;if(seen.has(id))continue;seen.add(id);const vca=timeline.vcas?.find(v=>v.id===id);if(!vca)continue;
     const base=laneValue(control?.enabled!==false&&vca.automation_arm!=='off'?vca.lanes?.fader_db:undefined,seconds,vca.fader_db??0);
     const target={of:{vca:id},path:'fader_db'};
-    const heldTrim=Boolean(control?.trim&&control.status(target));
+    const held=control?.status(target), heldTrim=Boolean(control?.trim&&(held==='write'||held==='preview'));
     const value=control?.reading(target,heldTrim?0:base)??base;
     // Recorder Trim values are offsets; VCA's baseline is still audible underneath.
     // graph::automation::Held::apply: Trim cannot lift silence, and stops at +10 dB.

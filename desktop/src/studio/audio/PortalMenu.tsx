@@ -1,4 +1,6 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject, type SyntheticEvent } from 'react';
+import {
+  useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject, type SyntheticEvent,
+} from 'react';
 import { createPortal } from 'react-dom';
 import { useOverlay } from '../../app/overlay';
 import '../fairlight/routing.css';
@@ -9,6 +11,9 @@ export type MenuAnchor = RefObject<HTMLElement | null> | { x: number; y: number 
 const MARGIN = 4;
 const items = (box: HTMLElement) => [...box.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
 const stop = (event: SyntheticEvent) => event.stopPropagation();
+/** Nothing has the focus, or what had it is in the menu that is going away. */
+const lost = (focus: Element | null, popup: HTMLElement) =>
+  focus === null || focus === document.body || popup.contains(focus);
 
 /**
  * A small menu of the mixer, laid over the window so that a strip that scrolls or clips its
@@ -24,8 +29,10 @@ export function PortalMenu({ anchor, label, onClose, children, className = 'rout
   const [position, setPosition] = useState({ left: MARGIN, top: MARGIN });
   const now = useRef({ anchor, onClose });
   now.current = { anchor, onClose };
-  const [opener] = useState(() => document.activeElement instanceof HTMLElement && document.activeElement !== document.body
-    ? document.activeElement : null);
+  const [opener] = useState(() => {
+    const focus = document.activeElement;
+    return focus instanceof HTMLElement && focus !== document.body ? focus : null;
+  });
   useOverlay(true);
   useLayoutEffect(() => {
     const popup = menu.current;
@@ -46,11 +53,9 @@ export function PortalMenu({ anchor, label, onClose, children, className = 'rout
       window.removeEventListener('resize', place);
       window.removeEventListener('scroll', place, true);
       const at = now.current.anchor, button = 'current' in at ? at.current : opener;
-      const focus = document.activeElement;
-      if (!(focus === null || focus === document.body || popup.contains(focus))) return;
+      if (!lost(document.activeElement, popup)) return;
       const restore = () => {
-        const now = document.activeElement;
-        if (button?.isConnected && (now === null || now === document.body || popup.contains(now))) button.focus({ preventScroll: true });
+        if (button?.isConnected && lost(document.activeElement, popup)) button.focus({ preventScroll: true });
       };
       // An anchor disabled while the choice was sent is enabled again by the commit that puts
       // the menu away, after this: it takes the focus once that commit is done.
@@ -69,13 +74,14 @@ export function PortalMenu({ anchor, label, onClose, children, className = 'rout
   }, []);
   return createPortal(<div ref={menu} className={className} data-studio-portal="" role="menu" aria-label={label}
     style={{ ...position, maxHeight: 'min(250px, calc(100vh - 8px))', maxWidth: 'calc(100vw - 8px)' }}
-    onPointerDown={stop} onMouseDown={stop} onClick={stop} onDoubleClick={stop} onContextMenu={event => { event.preventDefault(); stop(event); }}
+    onPointerDown={stop} onMouseDown={stop} onClick={stop} onDoubleClick={stop}
+    onContextMenu={event => { event.preventDefault(); stop(event); }}
     onKeyDown={event => {
       if (event.nativeEvent.isComposing) return;
       const buttons = items(menu.current!), at = buttons.indexOf(document.activeElement as HTMLButtonElement);
       if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
-        const step = event.key === 'ArrowDown' ? 1 : -1;
-        const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (at + step + buttons.length) % buttons.length;
+        const step = event.key === 'ArrowDown' ? 1 : -1, last = buttons.length - 1;
+        const next = event.key === 'Home' ? 0 : event.key === 'End' ? last : (at + step + buttons.length) % buttons.length;
         buttons[next]?.focus();
       } else if (event.key === 'Escape') now.current.onClose();
       else if (['Enter', ' '].includes(event.key) && at >= 0) {

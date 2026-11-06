@@ -1,13 +1,17 @@
 import { useState } from 'react';
 import { Mixer, isolateMixerKeys, type MixerProps } from '../fairlight/Mixer';
-import { sameChannels, stripChannels, useAudioReadings, useMeterReading, type MeterSource } from '../fairlight/audioReadings';
+import {
+  sameChannels, stripChannels, useAudioReadings, useMeterReading, type MeterSource,
+} from '../fairlight/audioReadings';
 import { useFairlightText } from '../fairlight/words';
 import { mixerStrips } from './mixerModel';
 import { Meter } from './Meter';
 import type { EngineBridge } from '../../bridge';
 
 /** The monitored bus's meter, drawn again at each of its own readings and not with the panel. */
-function MonitorMeter({ source, bus, label, channels }: { source: MeterSource; bus: string; label: string; channels: number }) {
+function MonitorMeter({ source, bus, label, channels }: {
+  source: MeterSource; bus: string; label: string; channels: number;
+}) {
   const values = useMeterReading(source, meters => stripChannels(meters, { bus }, false), sameChannels);
   return <Meter label={label} channels={channels} values={values} />;
 }

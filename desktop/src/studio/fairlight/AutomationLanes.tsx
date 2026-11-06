@@ -301,7 +301,9 @@ export function AutomationLane(props: Props) {
         const step = Math.round(timeline.sample_rate * timeline.rate.den / timeline.rate.num);
         const by = step * (char === ',' ? -1 : 1) * (key.shift ? 5 : 1);
         if (chosen.length) {
-          run({ edit: 'lane_points', action: 'move', at: chosen.map(p => p.at), by: { ticks: by, scale: timeline.sample_rate } });
+          run({
+            edit: 'lane_points', action: 'move', at: chosen.map(p => p.at), by: { ticks: by, scale: timeline.sample_rate },
+          });
           setSelectedAt(old => old.map(at => at + by));
         }
         return true;

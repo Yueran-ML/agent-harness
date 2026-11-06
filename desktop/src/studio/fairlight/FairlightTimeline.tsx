@@ -49,18 +49,21 @@ export function FairlightTimeline({ view, update, ...props }: ComponentProps<typ
   const marks = useCallback(() => handle.current?.marks() ?? { in: null, out: null }, []);
   const { bridge, session, revision, timeline } = props;
   const { automation, lanePaths, pencil, hidden: hiddenOwners } = view;
-  const trackDecoration = useCallback((track: Track, g: LaneGeometry) => automation && track.kind === 'audio' && timeline ? <AutomationLane
+  const trackDecoration = useCallback((track: Track, g: LaneGeometry) => automation && track.kind === 'audio' && timeline
+  ? <AutomationLane
     register={register}
     onActive={() => { active.current = `track:${track.id}`; latest.current.onTrackSelect?.(track.id); }}
     {...g} bridge={bridge} session={session} revision={revision}
     timeline={timeline} of={{ track: track.id }} lanes={track.lanes}
     locked={track.locked} arm={track.automation_arm} name={track.name} marks={marks}
     path={lanePaths[`track:${track.id}`] ?? ''} pencil={pencil}
-    onPath={path => latest.current.choose(`track:${track.id}`, path)} onEdit={ops => latest.current.edit(ops)} /> : null,
+    onPath={path => latest.current.choose(`track:${track.id}`, path)}
+    onEdit={ops => latest.current.edit(ops)} /> : null,
   [automation, timeline, bridge, session, revision, lanePaths, pencil, register, marks]);
   const afterTracks = useCallback((g: Omit<LaneGeometry, 'height'>) => automation && timeline
     ? timeline.buses?.filter(bus => !hiddenOwners.includes(`bus:${bus.id}`)).map(bus =>
-      <div key={bus.id} className="timeline-track automation-bus" style={{ height: 128 }}><span>{bus.name}</span><AutomationLane
+      <div key={bus.id} className="timeline-track automation-bus" style={{ height: 128 }}><span>{bus.name}</span>
+        <AutomationLane
         register={register} onActive={() => { active.current = `bus:${bus.id}`; }} {...g}
         height={128} bridge={bridge} session={session} revision={revision}
         timeline={timeline} of={{ bus: bus.id }} lanes={bus.lanes} arm={bus.automation_arm}

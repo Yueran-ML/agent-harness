@@ -179,7 +179,8 @@ export function AutomationTouchProvider({ bridge, session, timeline, revision = 
   useEffect(() => {
     const writable = (target: AutomationTarget) => {
       const of = target.of;
-      const owner = 'track' in of ? timeline.tracks.find(track => track.kind === 'audio' && track.id === of.track && !track.locked)
+      const owner = 'track' in of
+        ? timeline.tracks.find(track => track.kind === 'audio' && track.id === of.track && !track.locked)
         : 'bus' in of ? timeline.buses?.find(bus => bus.id === of.bus) : timeline.vcas?.find(vca => vca.id === of.vca);
       const arm = owner && 'automation_arm' in owner ? owner.automation_arm : undefined;
       return Boolean(owner) && arm !== 'safe' && arm !== 'off';

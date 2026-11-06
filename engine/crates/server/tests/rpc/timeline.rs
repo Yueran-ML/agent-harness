@@ -1679,14 +1679,11 @@ async fn automation_playback_and_parameters_are_session_only_and_model_derived()
             .await["on"],
         false
     );
-    assert_eq!(
-        client
-            .result("transport.state", Some(json!({"monitor":"timeline"})))
-            .await["recording"]
-            .as_bool()
-            .unwrap_or(false),
-        false
-    );
+    assert!(!client
+        .result("transport.state", Some(json!({"monitor":"timeline"})))
+        .await["recording"]
+        .as_bool()
+        .unwrap_or(false));
     client
         .error(
             "automation.record",
@@ -1707,13 +1704,10 @@ async fn automation_playback_and_parameters_are_session_only_and_model_derived()
         )
         .await;
     load(&mut client, &names).await;
-    assert_eq!(
-        client
-            .result("transport.state", Some(json!({"monitor":"timeline"})))
-            .await["recording"]
-            .as_bool()
-            .unwrap_or(false),
-        false
-    );
+    assert!(!client
+        .result("transport.state", Some(json!({"monitor":"timeline"})))
+        .await["recording"]
+        .as_bool()
+        .unwrap_or(false));
     assert_eq!(before, project(&mut client).await);
 }

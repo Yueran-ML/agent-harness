@@ -431,8 +431,7 @@ fn check_revision(work: &Work, actual: u64) -> Result<(), Fault> {
     let expected = match work {
         Work::NoiseLearn(work) => Some(work.revision),
         Work::Capture { revision, .. } => Some(*revision),
-        Work::Analyze { revision, .. } => *revision,
-        Work::Match { revision, .. } => *revision,
+        Work::Analyze { revision, .. } | Work::Match { revision, .. } => *revision,
         Work::Normalize { apply, .. } => apply.as_ref().and_then(|Apply(revision)| *revision),
     };
     if let Some(expected) = expected.filter(|expected| *expected != actual) {
@@ -517,6 +516,35 @@ fn prepare_snapshot(
     Ok((project, work))
 }
 
+/// A sum measures distinct, enabled audio tracks before their bus routing.
+fn check_sum(timeline: &Timeline, ids: &[String]) -> Result<(), Fault> {
+    if !(1..MOST_TARGETS).contains(&ids.len()) {
+        return Err(refused(
+            "a sum takes 1 to 255 tracks",
+            json!({"reason":"out_of_range","what":"sum"}),
+        ));
+    }
+    for (index, id) in ids.iter().enumerate() {
+        if ids[..index].contains(id) {
+            return Err(refused(
+                "a sum names a track twice",
+                json!({"reason":"twice","track":id}),
+            ));
+        }
+        if !timeline
+            .tracks
+            .iter()
+            .any(|track| track.id == *id && track.kind == TrackKind::Audio && track.enabled)
+        {
+            return Err(refused(
+                "a sum requires enabled audio tracks",
+                json!({"reason":"missing","track":id}),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// `audio.analyze` checked.
 fn analyze_work(method: &str, params: Option<&RawValue>, project: &Project) -> Result<Work, Fault> {
     let request: Analyze = rpc::params(
@@ -568,30 +596,7 @@ fn analyze_work(method: &str, params: Option<&RawValue>, project: &Project) -> R
                     ));
                 }
             }
-            Target::Sum(ids) => {
-                if !(1..MOST_TARGETS).contains(&ids.len()) {
-                    return Err(refused(
-                        "a sum takes 1 to 255 tracks",
-                        json!({"reason":"out_of_range","what":"sum"}),
-                    ));
-                }
-                for (index, id) in ids.iter().enumerate() {
-                    if ids[..index].contains(id) {
-                        return Err(refused(
-                            "a sum names a track twice",
-                            json!({"reason":"twice","track":id}),
-                        ));
-                    }
-                    if !timeline.tracks.iter().any(|track| {
-                        track.id == *id && track.kind == TrackKind::Audio && track.enabled
-                    }) {
-                        return Err(refused(
-                            "a sum requires enabled audio tracks",
-                            json!({"reason":"missing","track":id}),
-                        ));
-                    }
-                }
-            }
+            Target::Sum(ids) => check_sum(timeline, ids)?,
         }
     }
     let range = match request.range {
@@ -1078,7 +1083,7 @@ fn run(
     stop: &AtomicBool,
 ) -> Value {
     let ended = match work {
-        Work::NoiseLearn(work) => noise_learn::run(teller, kind, project, work, stop),
+        Work::NoiseLearn(work) => noise_learn::run(teller, kind, project, &work, stop),
         Work::Capture {
             timeline,
             clip,
@@ -1439,7 +1444,7 @@ fn captured(
 ) -> Result<Option<Value>, String> {
     let t = &project.timelines[timeline];
     let mut told = progress(teller, stop, t.sample_rate, frames(&clip_range(t, clip)));
-    let Some(analyses) = clips_measured(
+    let Some(readings) = clips_measured(
         project,
         timeline,
         &[clip.to_owned()],
@@ -1449,7 +1454,7 @@ fn captured(
     else {
         return Ok(None);
     };
-    let analysis = &analyses[0];
+    let analysis = &readings[0];
     let level_db = level_match_level(analysis);
     let basis = level_db.map(|_| {
         if analysis.integrated.is_some() {
@@ -1515,7 +1520,7 @@ fn matched(
     });
     match reference {
         MatchReference::Clip(clip) => {
-            done["reference"] = json!({"clip":clip,"measured":level.map_or(Value::Null, decibels)})
+            done["reference"] = json!({"clip":clip,"measured":level.map_or(Value::Null, decibels)});
         }
         MatchReference::Profile(profile) => done["profile"] = json!(profile),
     }
@@ -1538,7 +1543,7 @@ mod tests {
             check_revision(&work, 8).unwrap_err().data.unwrap()["reason"],
             "stale_revision"
         );
-        let profile = json!({"version":1,"level_db":-82.123456789,"basis":"mean"});
+        let profile = json!({"version":1,"level_db":-82.123_456_789,"basis":"mean"});
         let matching = json!({"timeline":"t1","clips":["c2"],"profile":profile,"revision":7});
         let work = prepare("audio.level_match", Some(&raw(matching.clone())), &project).unwrap();
         check_revision(&work, 7).unwrap();

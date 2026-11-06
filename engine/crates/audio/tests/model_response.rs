@@ -45,8 +45,10 @@ fn model_dynamics_curve_reuses_mix_makeup_gate_and_bypass() {
         vec![-56.0, -36.0, -16.0, 4.0]
     );
     model.compressor.mix = 0.0;
-    let mut settings = dynamics::Settings::default();
-    settings.on = true;
+    let mut settings = dynamics::Settings {
+        on: true,
+        ..dynamics::Settings::default()
+    };
     settings.compressor.on = true;
     settings.makeup_db = 4.0;
     assert_eq!(

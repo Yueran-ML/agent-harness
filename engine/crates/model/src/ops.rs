@@ -2657,6 +2657,7 @@ fn set_timeline(project: &mut Project, id: &str, set: TimelineSettings) -> Resul
 /// The settings of a track that a [`Op::SetTrack`] sets.
 struct TrackSettings {
     name: Option<String>,
+    #[allow(clippy::option_option, reason = "left out and null are told apart")]
     color: Option<Option<crate::project::Rgba>>,
     enabled: Option<bool>,
     locked: Option<bool>,

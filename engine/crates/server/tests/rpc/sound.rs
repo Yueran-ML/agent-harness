@@ -759,6 +759,10 @@ async fn the_meters_of_a_timeline_that_plays_read_its_levels_and_its_loudness() 
         .await;
 }
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one captured profile is followed through edits, deletion, timeline switch and undo"
+)]
 async fn captured_level_profile_survives_edits_deletion_and_timeline_switch_with_one_undo() {
     let dir = super::project_dir();
     let sounds = tempfile::tempdir().unwrap();

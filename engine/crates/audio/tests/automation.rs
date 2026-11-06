@@ -606,7 +606,7 @@ fn session_playback_bypasses_every_owner_without_changing_project_or_export() {
     assert!(bypassed.iter().all(|v| (*v - 0.5).abs() < 0.0001));
     assert!(exported
         .iter()
-        .all(|v| (*v - 0.5 * gain_of(-18.0) as f32).abs() < 0.0001));
+        .all(|v| (f64::from(*v) - 0.5 * gain_of(-18.0)).abs() < 0.0001));
     assert_eq!(before, serde_json::to_value(&project).unwrap());
     assert_eq!(exported, heard(&project, 64, 0.5));
 }

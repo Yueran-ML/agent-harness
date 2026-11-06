@@ -483,7 +483,11 @@ fn thinning_does_not_stretch_the_first_recorded_segment_after_the_entry_ramp() {
         (36, [-6.48, -9.54, -12.47], 74),
         (
             5585,
-            [-23.98281613536591, -7.304378735987619, 9.527919654749956],
+            [
+                -23.982_816_135_365_91,
+                -7.304_378_735_987_619,
+                9.527_919_654_749_956,
+            ],
             5624,
         ),
     ] {
@@ -502,9 +506,13 @@ fn thinning_does_not_stretch_the_first_recorded_segment_after_the_entry_ramp() {
                     vec![run(&points, start + 50, "return", Some(0))],
                 ),
             );
-            let share = (sample - start - 20) as f64 / 20.0;
+            let share = f64::from(i32::try_from(sample - start - 20).unwrap()) / 20.0;
             let want = values[1] + (values[2] - values[1]) * share;
-            let got = at(&mut project, "fader_db", sample as f64);
+            let got = at(
+                &mut project,
+                "fader_db",
+                f64::from(i32::try_from(sample).unwrap()),
+            );
             assert!(
                 (got - want).abs() <= 0.1 + 1e-9,
                 "trim={trim}, {sample} ms: {got}, not {want}"

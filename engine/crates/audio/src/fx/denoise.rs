@@ -1297,6 +1297,49 @@ fn gain(q: f64, mask: f64, floor: f64, depth: f64) -> f32 {
     (1.0 - depth * (1.0 - g)) as f32
 }
 
+/// Accumulate one channel into the 128-band signal/noise display, then convert to dB.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    reason = "at most 9 bins times 24 channels, and window power 1024, are exact in f32"
+)]
+fn show_spectrum(
+    channel: usize,
+    tracks: &[Track],
+    learned: Option<&[f32]>,
+    power: &[f32],
+    shown: &mut [f32; 258],
+) {
+    for band in 0..128 {
+        let low = band * BINS / 128;
+        let high = (band + 1) * BINS / 128;
+        let mut signal = 0.0_f32;
+        let mut noise = 0.0_f32;
+        for k in low..high {
+            signal += power[k];
+            noise += if learned.is_some() || tracks[channel].started {
+                learned
+                    .map_or(tracks[channel].noise[k], |profile| profile[k])
+                    .exp()
+            } else {
+                0.0
+            };
+        }
+        let scale = ((high - low) * tracks.len()) as f32;
+        if channel == 0 {
+            shown[band] = 0.0;
+            shown[128 + band] = 0.0;
+        }
+        shown[band] += signal / scale;
+        shown[128 + band] += noise / scale;
+    }
+    if channel + 1 == tracks.len() {
+        for value in &mut shown[..256] {
+            *value = 10.0 * (*value / WINDOW_POWER as f32).max(1e-20).log10();
+        }
+    }
+}
+
 impl Node for Spectral {
     fn prepare(&mut self, spec: &Spec) -> Result<(), Unsupported> {
         if spec.layout == Layout::Empty
@@ -1369,35 +1412,7 @@ impl Node for Spectral {
                     smoothed,
                 );
                 if frame.complete {
-                    for band in 0..128 {
-                        let low = band * BINS / 128;
-                        let high = (band + 1) * BINS / 128;
-                        let mut signal = 0.0_f32;
-                        let mut noise = 0.0_f32;
-                        for k in low..high {
-                            signal += power[k];
-                            noise += if learned.is_some() || tracks[frame.channel].started {
-                                learned
-                                    .as_ref()
-                                    .map_or(tracks[frame.channel].noise[k], |profile| profile[k])
-                                    .exp()
-                            } else {
-                                0.0
-                            };
-                        }
-                        let scale = ((high - low) * tracks.len()) as f32;
-                        if frame.channel == 0 {
-                            shown[band] = 0.0;
-                            shown[128 + band] = 0.0;
-                        }
-                        shown[band] += signal / scale;
-                        shown[128 + band] += noise / scale;
-                    }
-                    if frame.channel + 1 == tracks.len() {
-                        for value in &mut shown[..256] {
-                            *value = 10.0 * (*value / WINDOW_POWER as f32).max(1e-20).log10();
-                        }
-                    }
+                    show_spectrum(frame.channel, tracks, learned.as_deref(), power, shown);
                 }
             });
         });

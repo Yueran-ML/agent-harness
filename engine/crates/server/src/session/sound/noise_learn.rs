@@ -1,7 +1,21 @@
 //! Offline prefix render: the measured signal is the input of the selected NR insert.
-use super::*;
+use std::ops::Range;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+use columbina_audio::analysis::{alone, run_strips};
+use columbina_audio::graph::{Graph, Options, Owner, Point, Purpose};
 use columbina_model::audio::fx::{Effect, NoiseMode};
-use columbina_model::{AudioParam, Insert, Lanes, Stage, Strip};
+use columbina_model::{AudioParam, Insert, Lanes, Project, Stage, Strip, Timeline, TrackKind};
+use serde::Deserialize;
+use serde_json::{json, value::RawValue, Value};
+
+use super::{
+    clip_of, frames, progress, refused, sample_at, timeline_of, Frames, Kind, Target, Teller,
+    MAX_BLOCK,
+};
+use crate::play::mix::Feed;
+use crate::rpc::{self, Fault};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -167,13 +181,13 @@ pub(super) fn run(
     teller: &Teller,
     kind: Kind,
     original: &Arc<Project>,
-    work: Work,
+    work: &Work,
     stop: &AtomicBool,
 ) -> Result<Option<Value>, String> {
     if stop.load(Ordering::Acquire) {
         return Ok(None);
     }
-    let (project, owner) = prefix(original, &work)?;
+    let (project, owner) = prefix(original, work)?;
     let mut graph = Graph::build(
         &project,
         work.timeline,
@@ -192,6 +206,8 @@ pub(super) fn run(
         frames(&work.range),
     );
     let mut pcm: Vec<Vec<f32>> = Vec::new();
+    let samples = usize::try_from(work.range.end - work.range.start)
+        .map_err(|_| "the learn range does not fit in memory")?;
     let completed = run_strips(
         &mut graph,
         &mut feed,
@@ -201,7 +217,7 @@ pub(super) fn run(
             if pcm.is_empty() {
                 pcm = channels
                     .iter()
-                    .map(|_| Vec::with_capacity((work.range.end - work.range.start) as usize))
+                    .map(|_| Vec::with_capacity(samples))
                     .collect();
             }
             for (dst, src) in pcm.iter_mut().zip(channels) {
@@ -246,6 +262,7 @@ pub(super) fn run(
 
 #[cfg(test)]
 mod tests {
+    use super::super::check_revision;
     use super::*;
     use columbina_model::audio::fx::{GainFx, NoiseReductionFx};
     fn chain() -> Vec<Insert> {
@@ -288,6 +305,11 @@ mod tests {
             },
         )
     }
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_wrap,
+        reason = "the fixture renders samples 4800 to 9600, exact in f32 and within i64"
+    )]
     fn measured(p: &Project, w: &Work) -> Vec<f32> {
         let (p, owner) = prefix(p, w).unwrap();
         let mut graph = Graph::build(&p, 0, Options::new(1024, Purpose::Analysis)).unwrap();
@@ -351,16 +373,16 @@ mod tests {
     }
     #[test]
     fn clip_and_bus_prefix_keep_prior_fx_and_exclude_later_stages() {
-        let (mut p, mut w) = settings();
-        let t = p.timelines[0]
+        let (mut project, mut work) = settings();
+        let track = project.timelines[0]
             .tracks
             .iter_mut()
             .find(|t| t.kind == TrackKind::Audio)
             .unwrap();
-        t.clips[0].effects = chain();
-        t.clips[0].gain_db = AudioParam::Fixed(-30.0);
-        w.target = Target::Clip(t.clips[0].id.clone());
-        let (clip, _) = prefix(&p, &w).unwrap();
+        track.clips[0].effects = chain();
+        track.clips[0].gain_db = AudioParam::Fixed(-30.0);
+        work.target = Target::Clip(track.clips[0].id.clone());
+        let (clip, _) = prefix(&project, &work).unwrap();
         let c = clip.timelines[0]
             .tracks
             .iter()
@@ -368,19 +390,19 @@ mod tests {
             .unwrap();
         assert_eq!(c.clips[0].effects.len(), 1);
         assert_eq!(c.clips[0].gain_db, AudioParam::Fixed(0.0));
-        assert!(c.audio.strip.inserts.is_empty());
-        let b = &mut p.timelines[0].buses[0];
+        assert_eq!(c.audio.strip.inserts, [] as [Insert; 0]);
+        let b = &mut project.timelines[0].buses[0];
         b.strip.inserts = chain();
         b.strip.order = vec![Stage::Eq, Stage::Fx, Stage::Dynamics];
         b.strip.eq.on = true;
         b.strip.dynamics.on = true;
-        w.target = Target::Bus(b.id.clone());
-        let (bus, _) = prefix(&p, &w).unwrap();
+        work.target = Target::Bus(b.id.clone());
+        let (bus, _) = prefix(&project, &work).unwrap();
         let b = &bus.timelines[0].buses[0];
         assert!(b.strip.eq.on);
         assert!(!b.strip.dynamics.on);
         assert_eq!(b.strip.inserts.len(), 1);
-        assert!(measured(&p, &w).iter().any(|x| *x > 0.0));
+        assert!(measured(&project, &work).iter().any(|x| *x > 0.0));
     }
     #[test]
     fn learn_requires_current_revision_valid_nr_and_bounded_range() {

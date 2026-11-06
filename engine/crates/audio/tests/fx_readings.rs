@@ -30,8 +30,8 @@ fn nr_reads_signal_power_and_real_noise_estimate_and_clears_on_reset() {
     let read = node.spectrum();
     let spec = Spec::new(48000, 4096, Layout::Stereo);
     node.prepare(&spec).unwrap();
-    let tone: Vec<f32> = (0..48000)
-        .map(|i| (std::f32::consts::TAU * 1000.0 * i as f32 / 48000.0).sin() * 0.2)
+    let tone: Vec<f32> = (0_u16..48000)
+        .map(|i| (std::f32::consts::TAU * 1000.0 * f32::from(i) / 48000.0).sin() * 0.2)
         .collect();
     render(
         &mut node,

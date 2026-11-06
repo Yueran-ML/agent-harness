@@ -754,16 +754,17 @@ fn pasted_points_ramp_inside_both_edges_without_moving_interior_keys() {
                 json!({"points": points}),
             ),
         );
-        let ramp = 10.min(duration / 2);
-        let inner = -6.0 - 12.0 * ramp as f64 / duration as f64;
+        let ramp = f64::from(i32::try_from(10.min(duration / 2)).unwrap());
+        let span = f64::from(i32::try_from(duration).unwrap());
+        let inner = -6.0 - 12.0 * ramp / span;
         for (t, want) in [
             (999.0, 0.0),
             (1000.0, 0.0),
-            (1000.0 + ramp as f64 / 2.0, inner / 2.0),
-            (1000.0 + ramp as f64, inner),
-            (1000.0 + duration as f64 / 2.0, -12.0),
-            (1000.0 + duration as f64 - ramp as f64 / 2.0, inner / 2.0),
-            (1000.0 + duration as f64, 0.0),
+            (1000.0 + ramp / 2.0, inner / 2.0),
+            (1000.0 + ramp, inner),
+            (1000.0 + span / 2.0, -12.0),
+            (1000.0 + span - ramp / 2.0, inner / 2.0),
+            (1000.0 + span, 0.0),
         ] {
             let got = value(&project, "A1", "fader_db", t);
             assert!(
@@ -771,11 +772,13 @@ fn pasted_points_ramp_inside_both_edges_without_moving_interior_keys() {
                 "duration={duration}, {t} ms: {got}, not {want}"
             );
         }
-        assert!(lane_of(&project, "A1", "fader_db")
+        let pasted = lane_of(&project, "A1", "fader_db")
             .unwrap()
             .points
             .iter()
-            .any(|p| p.at == at(1000 + duration / 2) && p.value == -12.0));
+            .find(|p| p.at == at(1000 + duration / 2))
+            .unwrap();
+        assert_eq!(pasted.value, -12.0);
     }
 }
 

@@ -525,10 +525,12 @@ fn paste_preserves_source_keys_in_the_destination_lanes_timebase() {
     );
     let lane = &track(&mut project, "A1").audio.lanes["fader_db"];
     assert!(lane.points.iter().all(|p| p.at.scale == 96000));
-    assert!(lane
+    let pasted = lane
         .points
         .iter()
-        .any(|p| p.at.ticks == 96000 + key.ticks && p.value == -12.0));
+        .find(|p| p.at.ticks == 96000 + key.ticks)
+        .unwrap();
+    assert_eq!(pasted.value, -12.0);
     assert!(near(
         lane.value_at(Time {
             ticks: 96480,

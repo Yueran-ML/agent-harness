@@ -940,6 +940,7 @@ async fn automation_parameters(engine: &Engine, params: Option<&RawValue>) -> Re
         let kind = a::kind_of(&view, &path)?;
         let (min, max) = a::range_of(owner, &path, value);
         // Legal negative levels are unbounded; the UI shares the mixer's silence stop.
+        #[allow(clippy::float_cmp, reason = "exact sentinel supplied by the parameter schema")]
         let display_min = if min == -f64::MAX { f64::from(columbina_audio::constants::SILENCE_DB) } else { min };
         Some(json!({ "path": path, "kind": kind, "scale": LaneScale::of_path(&path), "value": value, "min": min, "max": max, "display_min": display_min, "display_max": max }))
     }).collect();

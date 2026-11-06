@@ -3,6 +3,10 @@ use serde_json::json;
 use std::time::{Duration, Instant};
 
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one real engine follows a preset through noise learning, undo and live readings"
+)]
 async fn presets_learn_and_live_fx_readings_use_real_engine() {
     let dir = super::project_dir();
     let library = tempfile::tempdir().unwrap();

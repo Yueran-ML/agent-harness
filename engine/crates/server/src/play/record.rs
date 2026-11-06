@@ -1114,6 +1114,30 @@ struct FillParams {
 /// An answer to come from the thread of the timeline monitor.
 pub(crate) type Answer = oneshot::Receiver<Result<Value, Fault>>;
 
+fn read_playback(params: Option<&RawValue>, by: Kind) -> Result<(Order, Option<Answer>), Fault> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Asked {
+        timeline: String,
+        on: bool,
+    }
+    let asked: Asked = rpc::params(
+        "automation.playback",
+        r#"{"timeline":"t1","on":true}"#,
+        params,
+    )?;
+    let (reply, answer) = oneshot::channel();
+    Ok((
+        Order::Playback {
+            timeline: asked.timeline,
+            on: asked.on,
+            by,
+            reply,
+        },
+        Some(answer),
+    ))
+}
+
 /// An order of `method` (`automation.record`, `automation.touch`, `automation.punch`) of a client
 /// of kind `by`, and where its answer comes (none for a touch, which is answered at once).
 ///
@@ -1127,25 +1151,7 @@ pub(crate) fn read(
     by: Kind,
 ) -> Result<(Order, Option<Answer>), Fault> {
     match method {
-        "automation.playback" => {
-            #[derive(Deserialize)]
-            #[serde(deny_unknown_fields)]
-            struct Asked {
-                timeline: String,
-                on: bool,
-            }
-            let asked: Asked = rpc::params(method, r#"{"timeline":"t1","on":true}"#, params)?;
-            let (reply, answer) = oneshot::channel();
-            Ok((
-                Order::Playback {
-                    timeline: asked.timeline,
-                    on: asked.on,
-                    by,
-                    reply,
-                },
-                Some(answer),
-            ))
-        }
+        "automation.playback" => read_playback(params, by),
         "automation.record" => {
             let asked: RecordParams = rpc::params(
                 method,

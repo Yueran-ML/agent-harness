@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use columbina_model::audio::fx::{Dynamics, Effect, Equalizer};
+use columbina_model::audio::fx::{Dynamics, Effect, Equalizer, Sidechain};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use serde_json::{json, Value};
@@ -46,12 +46,12 @@ fn checked_payload(mut payload: Payload) -> Result<Payload, Fault> {
         Payload::Eq(eq) => eq.check(true),
         Payload::ClipEq(eq) => eq.check(false),
         Payload::Dynamics(dynamics) => {
-            dynamics.compressor.sidechain = Default::default();
+            dynamics.compressor.sidechain = Sidechain::default();
             dynamics.check()
         }
         Payload::Effect(effect) => {
             if let Effect::Limiter(limiter) = effect {
-                limiter.sidechain = Default::default();
+                limiter.sidechain = Sidechain::default();
             }
             effect.check()
         }
@@ -289,6 +289,15 @@ pub fn list(root: &Path) -> Result<Vec<Preset>, Fault> {
     with(root, |opened| Ok(opened.library.presets.clone()))
 }
 
+/// Delete a user preset without changing project history.
+pub fn delete(root: &Path, id: &str) -> Result<(), Fault> {
+    with(root, |opened| {
+        let at = opened.at(id)?;
+        opened.library.presets.remove(at);
+        opened.save()
+    })
+}
+
 /// The preset `id`.
 #[cfg(test)]
 pub fn get(root: &Path, id: &str) -> Result<Preset, Fault> {
@@ -488,13 +497,4 @@ mod tests {
         assert_eq!(list(root.path()).unwrap().len(), 1);
         assert!(!root.path().join(".lock").exists());
     }
-}
-
-/// Delete a user preset without changing project history.
-pub fn delete(root: &Path, id: &str) -> Result<(), Fault> {
-    with(root, |opened| {
-        let at = opened.at(id)?;
-        opened.library.presets.remove(at);
-        opened.save()
-    })
 }

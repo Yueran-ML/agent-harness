@@ -235,22 +235,26 @@ mod tests {
         );
         project
     }
-    fn request(project: &Project, method: &str, params: Value) -> Result<Value, crate::rpc::Fault> {
-        let raw = serde_json::value::to_raw_value(&params).unwrap();
+    fn request(
+        project: &Project,
+        method: &str,
+        params: &Value,
+    ) -> Result<Value, crate::rpc::Fault> {
+        let raw = serde_json::value::to_raw_value(params).unwrap();
         compute(project, 37, method, Some(&raw))
     }
     #[test]
     fn curves_read_the_requested_owner_and_revision_without_history_writes() {
         let history = History::new(project());
         let before = history.project().clone();
-        let result = request(history.project(), "audio.eq_response", json!({"timeline":"t1", "target":{"track":"curve-audio"}, "frequencies":[20,1000,20000]})).unwrap();
+        let result = request(history.project(), "audio.eq_response", &json!({"timeline":"t1", "target":{"track":"curve-audio"}, "frequencies":[20,1000,20000]})).unwrap();
         assert_eq!(result["revision"], 37);
         assert_eq!(result["sample_rate"], before.timelines[0].sample_rate);
         assert_eq!(result["gain_db"], json!([0.0, 0.0, 0.0]));
         let result = request(
             history.project(),
             "audio.dynamics_curve",
-            json!({"timeline":"t1", "target":{"bus":"B1"}, "inputs_db":[-60,-20,0]}),
+            &json!({"timeline":"t1", "target":{"bus":"B1"}, "inputs_db":[-60,-20,0]}),
         )
         .unwrap();
         assert_eq!(result["outputs_db"], json!([-60.0, -20.0, 0.0]));
@@ -270,7 +274,7 @@ mod tests {
             assert!(request(
                 &project,
                 "audio.eq_response",
-                json!({"timeline":"t1", "target":target, "frequencies":[1000]})
+                &json!({"timeline":"t1", "target":target, "frequencies":[1000]})
             )
             .is_err());
         }
@@ -281,7 +285,7 @@ mod tests {
             json!([null]),
             json!(vec![1000; 513]),
         ] {
-            assert!(request(&project, "audio.eq_response", json!({"timeline":"t1", "target":{"track":"curve-audio"}, "frequencies":frequencies})).is_err());
+            assert!(request(&project, "audio.eq_response", &json!({"timeline":"t1", "target":{"track":"curve-audio"}, "frequencies":frequencies})).is_err());
         }
         for inputs in [
             json!([]),
@@ -293,26 +297,26 @@ mod tests {
             assert!(request(
                 &project,
                 "audio.dynamics_curve",
-                json!({"timeline":"t1", "target":{"track":"curve-audio"}, "inputs_db":inputs})
+                &json!({"timeline":"t1", "target":{"track":"curve-audio"}, "inputs_db":inputs})
             )
             .is_err());
         }
         assert!(request(
             &project,
             "audio.dynamics_curve",
-            json!({"timeline":"t1", "target":{"clip":"c1"}, "inputs_db":[0]})
+            &json!({"timeline":"t1", "target":{"clip":"c1"}, "inputs_db":[0]})
         )
         .is_err());
         assert!(request(
             &project,
             "audio.eq_response",
-            json!({"timeline":"t1", "target":{"track":"curve-audio"}, "frequencies":[1000],"at":0})
+            &json!({"timeline":"t1", "target":{"track":"curve-audio"}, "frequencies":[1000],"at":0})
         )
         .is_err());
         assert!(request(
             &project,
             "audio.eq_response",
-            json!({"timeline":"missing", "target":{"track":"curve-audio"}, "frequencies":[1000]})
+            &json!({"timeline":"missing", "target":{"track":"curve-audio"}, "frequencies":[1000]})
         )
         .is_err());
     }
@@ -325,7 +329,7 @@ mod tests {
         assert!(request(
             &project,
             "audio.eq_response",
-            json!({"timeline":"t1", "target":{"track":"curve-audio"}, "frequencies":[16000]})
+            &json!({"timeline":"t1", "target":{"track":"curve-audio"}, "frequencies":[16000]})
         )
         .is_err());
         let clip = project.timelines[0].tracks[0].clips[0].clone();
@@ -339,7 +343,7 @@ mod tests {
         assert!(request(
             &project,
             "audio.eq_response",
-            json!({"timeline":"t1", "target":{"clip":id}, "frequencies":[20,1000,14400]})
+            &json!({"timeline":"t1", "target":{"clip":id}, "frequencies":[20,1000,14400]})
         )
         .is_ok());
     }

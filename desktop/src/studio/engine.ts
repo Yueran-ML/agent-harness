@@ -950,6 +950,11 @@ export type LoudnessVerdict = 'low' | 'within' | 'high';
  * peaks cleared alone (a click on TP, p. 3983; phase 3 T20b).
  */
 export type LoudnessAction = 'start' | 'pause' | 'reset' | 'reset_peak';
+/**
+ * The monitor of Fairlight's transport (`audio.monitor`, p. 3668; phase 3 T20b): what every output
+ * plays at, never a render. `level` is in dB from −∞ (`null`) to 0; DIM takes 20 dB more off it.
+ */
+export interface MonitorOutput { mute: boolean; level: number | null; dim: boolean }
 /** The loudness meter of the bus monitored (`audio.loudness`): LUFS, LU, dBTP, dBFS; `null` before there is one. */
 export interface LoudnessReading {
   running: boolean;
@@ -1110,6 +1115,7 @@ export interface PageMethods {
   'audio.eq_response': { revision: number; sample_rate: number; frequencies: number[]; gain_db: number[] };
   'audio.dynamics_curve': { revision: number; inputs_db: number[]; outputs_db: number[] };
   'audio.loudness': LoudnessReading;
+  'audio.monitor': MonitorOutput;
   'audio.analyze': { job: string };
   'audio.normalize': { job: string };
   'audio.level_match': { job: string };

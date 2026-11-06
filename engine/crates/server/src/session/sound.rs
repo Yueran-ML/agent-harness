@@ -127,6 +127,22 @@ fn read() -> Action {
     Action::Read
 }
 
+/// `audio.monitor`: what of the monitor is changed; what is left out stays. `level` is in dB, from
+/// −∞ (`null`) to 0 (C-M2).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MonitorChange {
+    mute: Option<bool>,
+    #[serde(default, deserialize_with = "level")]
+    level: Option<Option<f64>>,
+    dim: Option<bool>,
+}
+
+/// A level given, `null` (−∞) among them, apart from one left out.
+fn level<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<Option<f64>>, D::Error> {
+    Option::<f64>::deserialize(deserializer).map(Some)
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Analyze {
@@ -324,6 +340,33 @@ pub(super) async fn call(
                     )
                     .with_data(json!({"reason": "not_metered", "timeline": request.timeline}))
                 })?
+        }
+        "audio.monitor" => {
+            let change: MonitorChange = rpc::params(
+                method,
+                r#"{"mute"?: false, "level"?: -6 | null, "dim"?: false}"#,
+                params,
+            )?;
+            if let Some(Some(level)) = change.level {
+                if !(level <= 0.0) {
+                    return Err(Fault::params(
+                        "the level of the monitor is in dB from -inf (null) to 0",
+                    )
+                    .with_data(json!({"reason": "level"}))
+                    .into());
+                }
+            }
+            json!(crate::audio::monitor(|monitor| {
+                if let Some(mute) = change.mute {
+                    monitor.mute = mute;
+                }
+                if let Some(level) = change.level {
+                    monitor.level = level;
+                }
+                if let Some(dim) = change.dim {
+                    monitor.dim = dim;
+                }
+            }))
         }
         "audio.cancel" => {
             let request: Cancel = rpc::params(method, r#"{"job": "audio-1"}"#, params)?;

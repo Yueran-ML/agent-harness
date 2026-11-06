@@ -90,3 +90,8 @@
 /* The playhead off the view: an orange mark on the scroll bar where it is (p. 3670). */
 .fairlight-timeline { position: relative; }
 .fairlight-playhead-tick { position: absolute; bottom: 0; width: 2px; height: 10px; background: #e8892b; z-index: 6; pointer-events: none; }
+/* The monitor controls of the transport: red while muted, the slider yellow while DIM is on (p. 3668). */
+.fairlight-monitor-controls { display: flex; align-items: center; gap: 5px; }
+.fairlight-monitor-controls [data-muted] { color: #e5534b; border-color: #e5534b; }
+.fairlight-monitor-controls input[type=range] { width: 90px; accent-color: #69b8b5; }
+.fairlight-monitor-controls input[data-dim] { accent-color: #e2c758; }

@@ -1567,6 +1567,7 @@ async fn dispatch(
         | "audio.meters"
         | "audio.fx_meters"
         | "audio.loudness"
+        | "audio.monitor"
         | "audio.analyze"
         | "audio.normalize"
         | "audio.level_match"

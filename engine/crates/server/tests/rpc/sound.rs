@@ -910,3 +910,28 @@ async fn captured_level_profile_survives_edits_deletion_and_timeline_switch_with
     let error = client.error("audio.level_match", Some(json!({"timeline":"other","profile":profile,"clips":["matched_one"],"apply":true,"revision":revision}))).await;
     assert_eq!(error["data"]["reason"], "stale_revision");
 }
+
+/// The monitor of Fairlight's transport (Reference Manual 20, p. 3668): its mute, level and DIM
+/// are the engine's, read and changed by `audio.monitor`, never the project's.
+#[tokio::test]
+async fn the_monitor_keeps_what_is_left_out_and_refuses_a_level_over_0() {
+    let dir = super::project_dir();
+    let engine = super::engine(dir.path(), &["--sound", "null"]).await;
+    let mut client = engine.client("desktop").await;
+    let first = client.result("audio.monitor", Some(json!({}))).await;
+    assert_eq!(first, json!({"mute": false, "level": 0.0, "dim": false}));
+    let revision = project(&mut client).await["revision"].clone();
+    let dimmed = client
+        .result("audio.monitor", Some(json!({"level": -12, "dim": true})))
+        .await;
+    assert_eq!(dimmed, json!({"mute": false, "level": -12.0, "dim": true}));
+    let muted = client.result("audio.monitor", Some(json!({"mute": true}))).await;
+    assert_eq!(muted, json!({"mute": true, "level": -12.0, "dim": true}));
+    let silent = client.result("audio.monitor", Some(json!({"level": null}))).await;
+    assert_eq!(silent["level"], Value::Null);
+    let refused = client.error("audio.monitor", Some(json!({"level": 3}))).await;
+    assert_eq!(refused["code"], -32602, "{refused}");
+    assert_eq!(refused["data"]["reason"], "level", "{refused}");
+    // Not of the project: nothing to undo.
+    assert_eq!(project(&mut client).await["revision"], revision);
+}

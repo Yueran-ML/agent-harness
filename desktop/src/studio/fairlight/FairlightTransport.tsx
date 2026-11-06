@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowRightToLine, FastForward, Play, Repeat, Rewind, Square } from 'lucide-react';
+import { ArrowRightToLine, FastForward, Play, Repeat, Rewind, Square, Volume2, VolumeX } from 'lucide-react';
 import type { EngineBridge } from '../../bridge';
 import { keyOf } from '../../app/keys';
-import { callEngine } from '../engine';
+import { callEngine, type MonitorOutput } from '../engine';
 import { editingAllowed, FASTEST, inStudio } from '../keys';
 import type { MonitorControls } from '../useMonitor';
 import { enteredFrame, nominalFps, outFrame, timecode } from '../timecode';
@@ -18,6 +18,54 @@ export const SHUTTLE_EVERY_MS = 1000 / 15;
 export function nextShuttle(speed: number, direction: 1 | -1): number {
   const now = Math.sign(speed) === direction ? Math.abs(speed) : 0;
   return direction * (SHUTTLE_SPEEDS.find(each => each > now) ?? SHUTTLE_SPEEDS[SHUTTLE_SPEEDS.length - 1]);
+}
+
+/** The lowest level of the monitor's slider, which stands for −∞ (C-M2: −∞ to 0 dB). */
+export const MONITOR_FLOOR_DB = -60;
+
+/**
+ * The monitor controls at the right of the transport (Reference Manual 20, p. 3668): the speaker
+ * mutes what is heard (red while it does), the slider sets its level and says it in dB while it
+ * moves, and DIM takes 20 dB off it while it is on (the slider yellow). They change what every
+ * output of the engine plays, never a render, the project or its undo.
+ */
+function MonitorLevel({ bridge, session, onFailure }: {
+  bridge: Pick<EngineBridge, 'call'>; session: number; onFailure: (error: unknown) => void;
+}) {
+  const t = useFairlightText();
+  const [monitor, setMonitor] = useState<MonitorOutput | null>(null);
+  const [moving, setMoving] = useState(false);
+  const now = useRef({ onFailure, live: true });
+  now.current.onFailure = onFailure;
+  const send = useCallback((change: Partial<MonitorOutput>) => {
+    void callEngine(bridge, 'audio.monitor', change, { expectedSession: session })
+      .then(next => { if (now.current.live) setMonitor(next); })
+      .catch(error => now.current.onFailure(error));
+  }, [bridge, session]);
+  useEffect(() => {
+    now.current.live = true;
+    send({});
+    return () => { now.current.live = false; };
+  }, [send]);
+  const level = monitor?.level ?? null;
+  const said = `${level === null ? '−∞' : level.toFixed(1)} dB`;
+  return <div className="fairlight-monitor-controls">
+    <button type="button" className="icon-btn" disabled={!monitor} aria-label={t('Monitor mute')} title={t('Monitor mute')}
+      aria-pressed={monitor?.mute ?? false} data-muted={monitor?.mute || undefined} onClick={() => monitor && send({ mute: !monitor.mute })}>
+      {monitor?.mute ? <VolumeX size={15} /> : <Volume2 size={15} />}</button>
+    <input type="range" aria-label={t('Monitor level')} title={said} aria-valuetext={said} disabled={!monitor}
+      min={MONITOR_FLOOR_DB} max={0} step={0.5} value={level ?? MONITOR_FLOOR_DB} data-dim={monitor?.dim || undefined}
+      onPointerDown={() => setMoving(true)} onPointerUp={() => setMoving(false)} onBlur={() => setMoving(false)}
+      onChange={event => {
+        const value = Number(event.target.value);
+        const next = value <= MONITOR_FLOOR_DB ? null : value;
+        setMonitor(old => old && { ...old, level: next });
+        send({ level: next });
+      }} />
+    {moving && <output className="mono" aria-label={t('Monitor level')}>{said}</output>}
+    <button type="button" disabled={!monitor} aria-pressed={monitor?.dim ?? false} title="DIM"
+      onClick={() => monitor && send({ dim: !monitor.dim })}>DIM</button>
+  </div>;
 }
 
 /**
@@ -148,5 +196,6 @@ export function FairlightTransport({ bridge, session, monitor, marks, onMark, on
         aria-pressed={state?.range !== undefined} onClick={playRange}><ArrowRightToLine size={15} /></button>
       {shownSpeed !== null && <span className="fairlight-shuttle mono" data-test="shuttle">{`${shownSpeed < 0 ? '−' : ''}${Math.abs(shownSpeed)}×`}</span>}
     </div>
+    <MonitorLevel bridge={bridge} session={session} onFailure={onFailure} />
   </section>;
 }

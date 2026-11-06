@@ -138,3 +138,25 @@ it('cuts with Razor every unlocked track that a clip crosses at the playhead, in
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Razor' })); });
   expect(calls(bridge, 'transaction.apply')).toEqual([{ revision: 6, ops: [{ edit: 'blade', timeline: 't1', at: 50, tracks: ['A1', 'V1'], linked: false }] }]);
 });
+
+it('mutes, sets the level of and dims the monitor through audio.monitor, the floor of the slider being −∞', async () => {
+  let monitor = { mute: false, level: 0 as number | null, dim: false };
+  const bridge = { onEvent: () => () => {}, call: vi.fn<EngineBridge['call']>(async (method: string, params?: Record<string, unknown>) => {
+    if (method === 'audio.monitor') monitor = { ...monitor, ...params };
+    return { ok: true as const, result: method === 'audio.monitor' ? { ...monitor } : {} };
+  }) };
+  render(<FairlightTransport bridge={bridge} session={2} monitor={controls()} marks={{ in: null, out: null }} onMark={() => {}} onFailure={() => {}} />);
+  await settle();
+  expect(calls(bridge as never, 'audio.monitor')).toEqual([{}]);
+  fireEvent.click(screen.getByRole('button', { name: 'Monitor mute' })); await settle();
+  expect(screen.getByRole('button', { name: 'Monitor mute' }).getAttribute('aria-pressed')).toBe('true');
+  const slider = screen.getByRole('slider', { name: 'Monitor level' });
+  fireEvent.pointerDown(slider);
+  fireEvent.change(slider, { target: { value: '-12' } }); await settle();
+  expect(screen.getByRole('status', { name: 'Monitor level' }).textContent).toBe('-12.0 dB');
+  fireEvent.change(slider, { target: { value: '-60' } }); await settle();
+  fireEvent.click(screen.getByRole('button', { name: 'DIM' })); await settle();
+  expect(calls(bridge as never, 'audio.monitor').slice(1)).toEqual([{ mute: true }, { level: -12 }, { level: null }, { dim: true }]);
+  expect(slider.getAttribute('data-dim')).toBe('true');
+  expect(slider.getAttribute('aria-valuetext')).toBe('−∞ dB');
+});

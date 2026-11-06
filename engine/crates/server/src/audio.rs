@@ -37,8 +37,8 @@
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -344,6 +344,7 @@ impl Output {
             mute,
             None,
         );
+        let player = player.monitored(Arc::clone(monitor_gain()));
         let stream = match supported.sample_format() {
             SampleFormat::F32 => build::<f32>(&device, config, player, &shared, epoch),
             SampleFormat::F64 => build::<f64>(&device, config, player, &shared, epoch),
@@ -404,6 +405,7 @@ impl Output {
             false,
             producer,
         );
+        let player = player.monitored(Arc::clone(monitor_gain()));
         let playing = Arc::new(AtomicBool::new(false));
         let quit = Arc::new(AtomicBool::new(false));
         let thread = if *kind == Kind::Stall {
@@ -696,6 +698,49 @@ impl Drop for Output {
     }
 }
 
+/// The gain of what every output of the engine plays: the monitor's level, mute and DIM
+/// (Fairlight's transport, Reference Manual 20, p. 3668), as `f32` bits from 0 to 1. It is heard
+/// alone: a render never reads it.
+pub fn monitor_gain() -> &'static Arc<AtomicU32> {
+    static GAIN: OnceLock<Arc<AtomicU32>> = OnceLock::new();
+    GAIN.get_or_init(|| Arc::new(AtomicU32::new(1.0_f32.to_bits())))
+}
+
+/// The monitor as `audio.monitor` sets it: muted, its level in dB (`None` for −∞, C-M2: −∞ to
+/// 0 dB, 0 at first) and DIM (C-M1: the level less 20 dB while it is on). Not of the project and
+/// not undone: it is how the user listens.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
+pub struct Monitor {
+    pub mute: bool,
+    pub level: Option<f64>,
+    pub dim: bool,
+}
+
+impl Monitor {
+    /// The gain that the outputs play at.
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation, reason = "a gain from 0 to 1")]
+    pub fn gain(self) -> f32 {
+        match (self.mute, self.level) {
+            (true, _) | (_, None) => 0.0,
+            (false, Some(level)) => {
+                let dim = if self.dim { f64::from(columbina_audio::constants::DIM_DB) } else { 0.0 };
+                10.0_f64.powf((level + dim) / 20.0) as f32
+            }
+        }
+    }
+}
+
+static MONITOR: Mutex<Monitor> = Mutex::new(Monitor { mute: false, level: Some(0.0), dim: false });
+
+/// The monitor after `change`, which every output then plays at.
+pub fn monitor(change: impl FnOnce(&mut Monitor)) -> Monitor {
+    let mut monitor = MONITOR.lock().unwrap_or_else(PoisonError::into_inner);
+    change(&mut monitor);
+    monitor_gain().store(monitor.gain().to_bits(), Ordering::Relaxed);
+    *monitor
+}
+
 /// Make a stream of the device that plays samples of `T`, given by `player`.
 fn build<T>(
     device: &cpal::Device,
@@ -923,6 +968,16 @@ fn feed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_monitor_plays_at_its_level_less_20_db_for_dim_and_nothing_muted() {
+        let at = |mute, level, dim| Monitor { mute, level, dim }.gain();
+        assert!((at(false, Some(0.0), false) - 1.0).abs() < 1e-6);
+        assert!((at(false, Some(-6.0), false) - 0.501_187).abs() < 1e-6);
+        assert!((at(false, Some(0.0), true) - 0.1).abs() < 1e-6, "C-M1: 20 dB less");
+        assert_eq!(at(true, Some(0.0), false), 0.0);
+        assert_eq!(at(false, None, false), 0.0);
+    }
 
     #[test]
     fn the_kinds_of_output_are_read_as_sound_names_them() {

@@ -236,6 +236,7 @@ const entries = {
   'Stop': ['停止', '停止'], 'Play': ['播放', '再生'], 'Loop': ['循环', 'ループ'], 'Play In to Out': ['播放入点到出点', 'インからアウトまで再生'],
   'Reset true peak': ['清零真峰值', 'トゥルーピークをリセット'],
   'Razor': ['剃刀', 'レイザー'], 'Favorites': ['收藏', 'お気に入り'],
+  'Monitor mute': ['监听静音', 'モニターミュート'], 'Monitor level': ['监听音量', 'モニターレベル'],
   'Track heights': ['轨道高度', 'トラックの高さ'], 'Playhead out of view': ['播放头不在视图内', '再生ヘッドは表示範囲外'],
 } as const;
 export type FairlightText = keyof typeof entries;

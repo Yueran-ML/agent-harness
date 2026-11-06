@@ -18,6 +18,7 @@ import type { EditAction, EditContext } from './editKeys';
 import type { Marks } from './snap';
 import type { AudioClipboard } from './VolumeLine';
 import { refusalText } from '../inspector/refusal';
+import { AudioPlayhead, type AudioOverlayContext } from './AudioOverlay';
 import './timeline.css';
 
 /** A view of the accepted engine project. Scrolling, zoom and track height do not add undo steps. */
@@ -216,6 +217,11 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   }, [center, scrolling, dragging, shown, view.scale, view.width, setView]);
   useEffect(() => { onView?.(view); }, [view, onView]);
   const editing = useEditing({ timeline, media, bridge, session, revision, frame: shown, focus, source, root, scroll, view, onSeek, fit, zoom, onSpeed, onSelection, onTransition, onCue, onCopyClips, cut, audioOnlyDrop });
+  const audioFailure = useCallback((error: unknown) => editing.setProblem(refusalText(error, words.hint.studio)), [editing.setProblem, words.hint.studio]);
+  const audioContext = useMemo<AudioOverlayContext | undefined>(() => timeline ? {
+    bridge, timeline: timeline.id, revision, session, sampleRate: timeline.sample_rate,
+    snapping: editing.snapping, marks: editing.marks, clipboard: audioClipboard.current, gainLine, onSeek, onFailure: audioFailure,
+  } : undefined, [bridge, timeline?.id, timeline?.sample_rate, revision, session, editing.snapping, editing.marks, gainLine, onSeek, audioFailure]);
   useImperativeHandle(ref, () => ({ keyDown: editing.keyDown, perform: editing.perform, canPerform: editing.canPerform, clearTransition: editing.clearTransition, marks: () => editing.marks }));
   useEffect(() => {
     const element = scroll.current;
@@ -333,15 +339,13 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
           {editing.marks.out !== null && <span className="timeline-mark" data-edge="out" style={{ left: HEADER_WIDTH + editing.marks.out * view.scale }} />}
           {editing.marks.in !== null && editing.marks.out !== null && <span className="timeline-mark-range" style={{ left: HEADER_WIDTH + editing.marks.in * view.scale, width: (editing.marks.out - editing.marks.in) * view.scale }} />}
           <div className="timeline-ruler-corner">{!overview && <AddSubtitleTrack onAdd={editing.addSubtitleTrack} disabled={editing.pending} />}</div></div>
-        {tracks.map(track => <TrackRow key={track.id} timeline={timeline.id} track={track} media={byId} rate={timeline.rate} scale={view.scale}
+        <AudioPlayhead.Provider value={shown}>{tracks.map(track => <TrackRow key={track.id} timeline={timeline.id} track={track} media={byId} rate={timeline.rate} scale={view.scale}
           from={from} to={to} height={heights[track.id] ?? trackHeight} waves={waves} decoration={trackDecoration?.(track, { scale: view.scale, from, to, height: heights[track.id] ?? trackHeight, snapping: editing.snapping })} onEdit={editing.edit} onHeight={onHeight} drawClip={drawClip}
-          audioOverlay={!cut && !overview && !gainLineDisabled?.(track.id) ? { bridge, timeline: timeline.id, revision, session, frame: shown, sampleRate: timeline.sample_rate,
-            snapping: editing.snapping, marks: editing.marks, clipboard: audioClipboard.current, gainLine, onSeek,
-            onFailure: error => editing.setProblem(refusalText(error, words.hint.studio)) } : undefined}
+          audioOverlay={track.kind === 'audio' && !cut && !overview && !gainLineDisabled?.(track.id) ? audioContext : undefined}
           selected={editing.selected} mixerSelected={selectedTracks?.includes(track.id)} targeted={editing.targets.video_track === track.id || editing.targets.audio_track === track.id} onTarget={editing.target}
           chosen={editing.transition !== null && track.kind !== 'subtitle' && track.transitions.some(each => each.id === editing.transition) ? editing.transition : null}
           chosenCue={editing.cue !== null && track.kind === 'subtitle' && track.cues.some(each => each.id === editing.cue) ? editing.cue : null}
-          shownSubtitles={track.kind === 'subtitle' ? shownSubtitles : null} />)}
+          shownSubtitles={track.kind === 'subtitle' ? shownSubtitles : null} />)}</AudioPlayhead.Provider>
         {afterTracks?.({ scale: view.scale, from, to, snapping: editing.snapping })}
         {editing.preview?.preview.map(item => { const row = rows.get(item.track); return row && <div key={item.id} className="timeline-preview" data-preview={item.id} data-clamped={editing.preview!.clamped}
           style={{ left: HEADER_WIDTH + item.start * view.scale, width: item.length * view.scale, top: row.top + 4, height: row.height - 8 }} />; })}

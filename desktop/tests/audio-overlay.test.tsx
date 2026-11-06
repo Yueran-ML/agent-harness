@@ -321,8 +321,9 @@ it('lets the engine reject fade conflicts and prevents gestures on known transit
   const { call, props, rerender } = mount();
   const track = props.timeline.tracks[0];
   if (track.kind === 'subtitle') throw new Error('fixture');
-  track.transitions = [{ id: 'transition', left: 'other', right: 'a1c', kind: 'crossfade', length: 8, align: 'center' }];
-  rerender(<Timeline {...props} />);
+  // Engine snapshots replace edited tracks; do not mutate the previous memoized row in place.
+  const timeline = { ...props.timeline, tracks: [{ ...track, transitions: [{ id: 'transition', left: 'other', right: 'a1c', kind: 'crossfade' as const, length: 8, align: 'center' as const }] }, ...props.timeline.tracks.slice(1)] };
+  rerender(<Timeline {...props} timeline={timeline} revision={18} />);
   const handle = screen.getByTestId('fade-in-a1c');
   fireEvent.pointerDown(handle, pointer(0, 4)); fireEvent.pointerMove(handle, pointer(6, 4)); fireEvent.pointerUp(handle, pointer(6, 4)); await settle();
   expect(updates(call)).toHaveLength(0);

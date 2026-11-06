@@ -10,6 +10,9 @@ from typing import Any, Literal
 from columbina.video.editing import _timeline  # pyright: ignore[reportPrivateUsage]
 from columbina.video.engine import Engine, EngineError
 
+LOUDNESS_TOLERANCE = 0.3
+PEAK_TOLERANCE = 0.2
+
 
 def _invalid(message: str, reason: str = "invalid") -> EngineError:
     return EngineError(message, code=-32602, data={"reason": reason})
@@ -175,7 +178,12 @@ async def apply_mix(
         else wanted - (max(usable) if mode == "relative" else row["integrated"])
         for row in readings
     ]
+    # The same tolerances define both success and whether another pass is needed.
+    # Otherwise an already accepted result would still add history on every call.
+    if target == "main" and usable and abs(deltas[0]) <= LOUDNESS_TOLERANCE:
+        deltas[0] = 0.0
     limiter: dict[str, Any] | None = None
+    limiter_slot: int | None = None
     clamped: list[bool] = []
     adjustments = 0
 
@@ -192,46 +200,62 @@ async def apply_mix(
                 ceiling = peak_limit - max(values) - _vca_maximum(selected, owner)
                 limiter["effect"]["ceiling_db"] = min(0.0, max(-24.0, ceiling))
                 clamped[-1] |= limiter["effect"]["ceiling_db"] != ceiling
-                ops.append(
-                    {
-                        "op": "add_insert",
-                        "timeline": selected["id"],
-                        "of": of,
-                        "insert": copy.deepcopy(limiter),
-                    }
-                )
+                if limiter_slot is None or limiter != owner["strip"]["inserts"][limiter_slot]:
+                    ops.append(
+                        {
+                            "op": "add_insert" if limiter_slot is None else "set_insert",
+                            "timeline": selected["id"],
+                            "of": of,
+                            **({"slot": limiter_slot} if limiter_slot is not None else {}),
+                            "insert": copy.deepcopy(limiter),
+                        }
+                    )
         return ops
 
     ops = proposal()
     after = await measure(ops) if ops else before
     if target == "main" and usable:
         peak = after["results"][0].get("true_peak")
-        if peak_limit is not None and peak is not None and peak > peak_limit:
+        if peak_limit is not None and peak is not None and peak > peak_limit + PEAK_TOLERANCE:
             strip = owners[0].get("strip", {})
             inserts = strip.get("inserts", [])
-            if len(inserts) >= 6:
-                raise _invalid(
-                    "main already has six inserts; free a slot before loudness optimization",
-                    "too_many_inserts",
-                )
             if strip.get("inserts_on") is False:
                 raise _invalid(
                     "enable Effects In on the main bus before adding its limiter; "
                     "existing bypassed effects are left unchanged"
                 )
-            n = 1
-            existing = {insert["id"] for insert in inserts}
-            while f"fx{n}" in existing:
-                n += 1
-            limiter = {
-                "id": f"fx{n}",
-                "on": True,
-                "effect": {"kind": "limiter", "ceiling_db": peak_limit},
-            }
+            active = [(slot, item) for slot, item in enumerate(inserts) if item.get("on", True)]
+            if active and active[-1][1].get("effect", {}).get("kind") == "limiter":
+                limiter_slot, existing_limiter = active[-1]
+                if owners[0].get("automation_arm") != "off" and any(
+                    path.startswith(f"insert.{existing_limiter['id']}.") and lane.get("points")
+                    for path, lane in owners[0].get("lanes", {}).items()
+                ):
+                    raise _invalid(
+                        "the main output limiter has automation; adjust its lane or set "
+                        "automation Off before optimizing its static ceiling",
+                        "automated_limiter",
+                    )
+                limiter = copy.deepcopy(existing_limiter)
+            else:
+                if len(inserts) >= 6:
+                    raise _invalid(
+                        "main already has six inserts; free a slot before loudness optimization",
+                        "too_many_inserts",
+                    )
+                n = 1
+                existing = {insert["id"] for insert in inserts}
+                while f"fx{n}" in existing:
+                    n += 1
+                limiter = {
+                    "id": f"fx{n}",
+                    "on": True,
+                    "effect": {"kind": "limiter", "ceiling_db": peak_limit},
+                }
             ops = proposal()
-            after = await measure(ops)
+            after = await measure(ops) if ops else before
         current = after["results"][0].get("integrated")
-        if usable and current is not None and abs(current - wanted) > 0.3:
+        if usable and current is not None and abs(current - wanted) > LOUDNESS_TOLERANCE:
             correction = wanted - current
             current_peak = after["results"][0].get("true_peak")
             if limiter is None and current_peak is not None and peak_limit is not None:
@@ -240,7 +264,7 @@ async def apply_mix(
                 deltas[0] += correction
                 adjustments = 1
                 ops = proposal()
-                after = await measure(ops)
+                after = await measure(ops) if ops else before
     results: list[dict[str, Any]] = []
     for of, old, delta, limited in zip(targets, readings, deltas, clamped, strict=True):
         row = next((row for row in after.get("results", []) if row.get("target") == of), None)
@@ -252,8 +276,8 @@ async def apply_mix(
             expected -= max(usable) - old["integrated"]
         met = (
             integrated is not None
-            and abs(integrated - expected) <= 0.3
-            and (peak_limit is None or (peak is not None and peak <= peak_limit + 0.2))
+            and abs(integrated - expected) <= LOUDNESS_TOLERANCE
+            and (peak_limit is None or (peak is not None and peak <= peak_limit + PEAK_TOLERANCE))
         )
         results.append(
             {

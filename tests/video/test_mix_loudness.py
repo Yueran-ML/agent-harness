@@ -141,6 +141,84 @@ async def test_main_reports_unmet_target_after_one_gain_correction() -> None:
     wire.apply.assert_awaited_once()
 
 
+async def test_main_already_within_reported_tolerance_adds_no_history_or_limiter() -> None:
+    project = mix()
+    project["timelines"][0]["buses"][0]["strip"]["inserts"] = [
+        {"id": "fx1", "on": True, "effect": {"kind": "limiter", "ceiling_db": -3}}
+    ]
+    wire = engine(project, [measured({"bus": "MAIN"}, -14.1, -0.9)])
+    result = await Loudness(wire, Path).run(action="apply", target="main")
+    assert result["status"] == "unchanged"
+    assert result["met"] is True
+    assert result["ops"] == []
+    wire.apply.assert_not_awaited()
+    wire.analyze_sound.assert_awaited_once()
+
+
+async def test_main_reuses_the_last_active_limiter_in_a_full_chain() -> None:
+    project = mix()
+    inserts = [
+        {"id": f"fx{i}", "on": True, "effect": {"kind": "gain", "gain_db": 0}} for i in range(5)
+    ]
+    inserts.append(
+        {
+            "id": "limit",
+            "on": True,
+            "effect": {"kind": "limiter", "ceiling_db": -1, "input_gain_db": 0, "release_ms": 250},
+        }
+    )
+    project["timelines"][0]["buses"][0]["strip"]["inserts"] = inserts
+    original = copy.deepcopy(project)
+    wire = engine(
+        project,
+        [
+            measured({"bus": "MAIN"}, -20, -4),
+            measured({"bus": "MAIN"}, -14, 2),
+            measured({"bus": "MAIN"}, -14.1, -1.1),
+        ],
+    )
+    result = await Loudness(wire, Path).run(action="apply", target="main")
+    assert result["met"] is True
+    changed = result["ops"][-1]
+    assert changed == {
+        "op": "set_insert",
+        "timeline": "t1",
+        "of": {"bus": "MAIN"},
+        "slot": 5,
+        "insert": {**inserts[-1], "effect": {**inserts[-1]["effect"], "ceiling_db": -9}},
+    }
+    assert all(op["op"] != "add_insert" for op in result["ops"])
+    assert project == original
+    wire.apply.assert_awaited_once()
+
+
+async def test_main_does_not_stack_a_limiter_to_override_its_automation() -> None:
+    project = mix()
+    bus = project["timelines"][0]["buses"][0]
+    bus["strip"]["inserts"] = [
+        {"id": "fx1", "on": True, "effect": {"kind": "limiter", "ceiling_db": -1}}
+    ]
+    bus["lanes"] = {"insert.fx1.ceiling_db": {"points": [{"value": -1}]}}
+    wire = engine(project, [measured({"bus": "MAIN"}, -20, -4), measured({"bus": "MAIN"}, -14, 2)])
+    with pytest.raises(EngineError, match="automation"):
+        await Loudness(wire, Path).run(action="apply", target="main")
+    wire.apply.assert_not_awaited()
+
+
+async def test_main_reports_unmet_peak_without_sending_an_empty_candidate() -> None:
+    project = mix()
+    project["timelines"][0]["buses"][0]["strip"]["inserts"] = [
+        {"id": "fx1", "on": True, "effect": {"kind": "limiter", "ceiling_db": -3}}
+    ]
+    wire = engine(project, [measured({"bus": "MAIN"}, -14, -0.5)])
+    result = await Loudness(wire, Path).run(action="apply", target="main")
+    assert result["status"] == "unchanged"
+    assert result["met"] is False
+    assert result["ops"] == []
+    wire.analyze_sound.assert_awaited_once()
+    wire.apply.assert_not_awaited()
+
+
 async def test_silence_and_full_insert_chain_do_not_mutate_the_live_project() -> None:
     wire = engine(mix(), [measured({"bus": "MAIN"}, None, None)])
     result = await Loudness(wire, Path).run(action="apply", target="main")

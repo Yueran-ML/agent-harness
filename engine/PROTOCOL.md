@@ -240,6 +240,9 @@ Before `hello`, every other request is refused with `-32600`.
 | `audio.loudness` | `{"timeline": "t1", "action"?: "start" \| "pause" \| "reset"}` | the loudness meter after the action: `{"running", "standard", "target", "momentary", ...}` |
 | `audio.standards` | none | `{"standards": [{"id", "name", "target", "tolerance", "true_peak", "measure", "dialogue", "resolve", "official", "verified", "source"}, ...]}` |
 | `audio.eq_response` | `{"timeline":"t1", "target":{"track":"A1"}, "frequencies":[20,1000,20000]}`; target is exactly one of `track`, `bus`, `clip` | `{"revision", "sample_rate", "frequencies", "gain_db"}`; static EQ response (see Static processor curves) |
+| `audio.soft_clip_curve` | `{timeline, target, slot, inputs}`; target is exactly one of `track`, `bus`, `clip`; 1–512 finite inputs in [-2,2] | `{revision, inputs, outputs}`; see FX readers and noise learning |
+| `audio.fx_meters` | `{timeline}` | `{timeline, playing, generation, sequence, sample_rate, readings}`; see FX readers and noise learning |
+| `audio.noise_learn` | `{timeline, target, slot, range:{from,to}, revision}`; target is exactly one of `track`, `bus`, `clip` | `{job}`, then `audio.analysis`; see FX readers and noise learning |
 | `audio.dynamics_curve` | `{"timeline":"t1", "target":{"track":"A1"}, "inputs_db":[-60,-20,0]}`; target is exactly one of `track`, `bus` | `{"revision", "inputs_db", "outputs_db"}`; static Dynamics curve (see Static processor curves) |
 | `audio.analyze` | `{"timeline": "t1", "targets": [{"clip": "c1"} \| {"track": "A1"} \| {"bus": "B1"} \| {"sum": ["A2", "A3"]}, ...], "range"?: {"from": 0, "to": 250}, "standard"?: "ebu-r128", "revision"?: n, "candidate"?: [...]}` | `{"job": "audio-1"}` at once, then `audio.analysis` |
 | `audio.normalize` | `{"timeline": "t1", "clips": ["c1", ...], "level"?: "sample_peak" \| "true_peak" \| "<standard>", "target"?: -9, "mode"?: "relative" \| "independent", "apply"?: false, "revision"?: n}` | `{"job": "audio-2"}` at once, then `audio.analysis` with the gains (Normalize Audio Levels) |
@@ -285,6 +288,10 @@ Before `hello`, every other request is refused with `-32600`.
 | `viewer.lut` | `{"on": true \| false, "monitor"?: "timeline"}` | `{"monitor": "timeline", "on"}` (see Live Preview and the Color Viewer LUT) |
 | `timeline.thumbnail` | `{"timeline": "t1", "frame": 0, "clip"?: "c1", "height"?: 90}` | `{"width": 160, "height": 90, "png": "<base64>", "frame"}` (see Thumbnails of the Color page) |
 | `window_presets.list` | none, or `{}` | `{"presets": [{"id": "wp1", "name": "Face", "windows": [window, ...]}, ...]}` (see Window presets) |
+| `audio_presets.list` | none, or `{}` | `{presets:[{id,name,payload}, ...]}`; see Audio user presets |
+| `audio_presets.save` | `{name,payload}` | `{id,name,payload}`; see Audio user presets |
+| `audio_presets.update` | `{preset,payload}` | `{id,name,payload}`; see Audio user presets |
+| `audio_presets.delete` | `{preset}` | `{deleted:id}`; see Audio user presets |
 | `window_presets.save` | `{"name": "Face", "grade": target, "node": "n4", "frame": 120}` | the preset `{"id", "name", "windows"}` (Save as New Preset) |
 | `window_presets.update` | `{"preset": "wp1", "grade": target, "node": "n4", "frame": 120}` | the preset (Update Preset) |
 | `window_presets.delete` | `{"preset": "wp1"}` | `{"deleted": "wp1"}` (Delete Preset) |
@@ -4221,6 +4228,7 @@ real ids. For example:
 | `scopes.frame` | `{"scope_id": "scope-1", "view": "timeline", "frame": n, "width": w, "height": h, "rgba": "<base64>"}`: a picture of a scope, to the connection that subscribed it only (see Scopes) |
 | `gallery.changed` | `{}`: the Gallery was changed; call `gallery.list` again (see The Gallery) |
 | `window_presets.changed` | `{}`: the window presets were changed; call `window_presets.list` again (see Window presets) |
+| `audio_presets.changed` | `{}`: the audio presets were changed; call `audio_presets.list` again (see Audio user presets) |
 | `view.pointer` | `{"monitor", "kind": "down" \| "move" \| "wheel" \| "up" \| "cancel", "button", "buttons", "delta", "clicks", "middle_moved", "x", "y", "inside", "window": {"x", "y"}, "shift", "ctrl", "alt"}`: what the pointer did on a view that takes it, to the connection that asked only (see Samples and the pointer) |
 | `window.state` | `{binding,capture,sequence,phase,reason,selected,event,revision,keys,selected_points}`: owner-only arming, armed, refused and ended states (see Circular and Gradient Window controls) |
 | `window.unbound` | `{binding,sequence,revision,reason:"project_changed"}`: original-owner-only retirement when a project change invalidates the binding, even without capture |

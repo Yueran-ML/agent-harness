@@ -110,9 +110,13 @@ def test_the_client_calls_methods_and_reads_notifications_of_the_protocol() -> N
     called = _called_by_the_client()
     assert {"project.get", "render.start", "render.cancel", "still.grab"} <= called
     assert called - METHODS == set()
-    # What it is told, not what it asked (`asked.method == "project.get"`).
-    read = _names_in(inspect.getsource(client), r'(?<![.\w])method == "([a-z_.]+)"')
+    # Only the notification dispatcher receives a bare `method`. The same name in
+    # analyze_sound is a requested operation, not an incoming notification.
+    dispatcher = inspect.getsource(client.Engine._told)  # pyright: ignore[reportPrivateUsage]
+    read = _names_in(dispatcher, r'(?<![.\w])method == "([a-z_.]+)"')
+    read |= _names_in(inspect.getsource(client), r'told\.method (?:==|!=) "([a-z_.]+)"')
     assert {"engine.yielding", "project.changed"} <= read
+    assert {"audio.analysis", "render.progress"} <= read
     assert read - NOTIFICATIONS == set()
     assert {"render.progress"} <= _names_in(inspect.getsource(client), r'"(render\.progress)"')
 

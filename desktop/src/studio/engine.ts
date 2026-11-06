@@ -1147,6 +1147,7 @@ export interface EngineNotifications {
   'scopes.frame': ScopeFrame;
   'gallery.changed': Record<string, never>;
   'window_presets.changed': Record<string, never>;
+  'audio_presets.changed': Record<string, never>;
   'view.pointer': ViewPointer;
   'window.state': WindowState;
   'window.unbound': WindowUnbound;

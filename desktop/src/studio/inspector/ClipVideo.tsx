@@ -8,7 +8,7 @@ import type { Commit } from './useCommit';
  * The fades of clips, in frames: each at most what the clip has beside its other fade. An edge with
  * a transition takes no fade, so the field is off where any of the clips has one there.
  */
-export function Fades({ clips, timeline, commit }: { clips: readonly Clip[]; timeline: Timeline; commit: Commit }) {
+export function Fades({ clips, timeline, commit, fineModifiers = false }: { clips: readonly Clip[]; timeline: Timeline; commit: Commit; fineModifiers?: boolean }) {
   const words = useWords();
   const labels = words.label.studio.inspector;
   const ids = clips.map(clip => clip.id);
@@ -22,7 +22,7 @@ export function Fades({ clips, timeline, commit }: { clips: readonly Clip[]; tim
       const off = blocked(edge);
       return <NumberField key={edge} name={key} label={edge === 'in' ? labels.fadeIn : labels.fadeOut} value={common(clips, clip => clip[key])}
         fallback={0} min={0} max={longest} digits={0} scrub={0.5} slider={{ min: 0, max: Math.max(1, longest), step: 1 }}
-        disabled={off} title={off ? words.hint.studio.inspector.fadeAtTransition : undefined}
+        disabled={off} fineModifiers={fineModifiers} title={off ? words.hint.studio.inspector.fadeAtTransition : undefined}
         onCommit={value => void commit(setClips(ids, clip => ({ [key]: Math.max(0, Math.min(value, clip.length - clip[other])) })))} />;
     })}
   </>;

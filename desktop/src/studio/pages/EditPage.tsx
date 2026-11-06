@@ -94,7 +94,7 @@ export function EditPage({
   const [chosenClips, setChosenClips] = useState<string[]>([]);
   const [audioContext, setAudioContext] = useState<{ clip: string; x: number; y: number } | null>(null);
   const normalize = useNormalizeAudio({ bridge, session, revision, timeline: selected, selection: chosenClips, commands: () => timeline.current });
-  useEffect(() => { setAudioContext(null); setChosenClips([]); }, [session, selected?.id]);
+  useEffect(() => { setAudioContext(null); setChosenClips([]); setSpeedClips(null); }, [session, selected?.id]);
   const [chosenCue, setChosenCue] = useState<string | null>(null);
   // A subtitle added or double-clicked is to be written in: the inspector opens on it, as DaVinci Resolve's does.
   const onCue = useCallback((cue: string | null, open: boolean) => { setChosenCue(cue); if (cue !== null && open) setInspectorOpen(true); }, []);
@@ -216,7 +216,7 @@ export function EditPage({
     {inspectorOpen && <aside className="edit-inspector" aria-label={labels.editPage.inspector} data-test="inspector-slot">
       <h2 className="overline">{labels.editPage.inspector}</h2>
       <Inspector bridge={bridge} session={session} revision={revision} timeline={selected} media={media} clips={chosenClips} transition={chosenTransition}
-        cue={chosenCue} onSpeed={setSpeedClips} />
+        cue={chosenCue} onSpeed={setSpeedClips} frame={timelineState === null ? 0 : timelineMonitor.frame ?? 0} onSeek={timelineMonitor.seek} />
     </aside>}
     <div className="edit-timeline" onPointerDownCapture={() => onFocus('timeline')} onFocusCapture={() => onFocus('timeline')}>
       <div className="edit-audio-bottom">

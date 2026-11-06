@@ -8,6 +8,8 @@ import { clipLocations } from '../timeline/selection';
 import { timecode } from '../timecode';
 import { common } from './common';
 import { useCommit } from './useCommit';
+import { useFairlightText } from '../fairlight/words';
+import { setClips } from './common';
 
 /** The speeds that the engine takes, in percent: from 1/100 to 100 times. */
 export const SLOWEST = 1;
@@ -54,27 +56,43 @@ export function SpeedDialog({ clips: ids, timeline, bridge, session, revision, o
   clips: readonly string[]; timeline: Timeline; bridge: Pick<EngineBridge, 'call'>; session: number; revision: number; onClose: () => void;
 }) {
   const words = useWords();
+  const t = useFairlightText();
   const labels = words.label.studio.speed;
   const hints = words.hint.studio.inspector;
   const locations = clipLocations(timeline);
-  const clips = ids.map(id => locations.get(id)?.clip).filter((clip): clip is Clip => clip?.source.kind === 'media');
+  const clips = ids.flatMap(id => { const found = locations.get(id); return found && !found.track.locked && found.clip.source.kind === 'media' ? [found.clip] : []; });
   const was = common(clips, clip => percentOf(clip.speed));
   const wasReverse = common(clips, clip => clip.reverse);
   const [percent, setPercent] = useState(was === null ? '' : String(was));
   const [reverse, setReverse] = useState<boolean | null>(wasReverse);
   const [ripple, setRipple] = useState(true);
+  const [speedChanged, setSpeedChanged] = useState(false);
+  const [reverseChanged, setReverseChanged] = useState(false);
+  const [correction, setCorrection] = useState(common(clips, clip => clip.pitch_correction ?? false));
+  const [correctionChanged, setCorrectionChanged] = useState(false);
+  const correctionBox = useRef<HTMLInputElement>(null);
   const box = useRef<HTMLInputElement>(null);
   const { commit, refusal, pending } = useCommit({ bridge, revision, session, timeline });
   useEffect(() => { if (box.current) box.current.indeterminate = reverse === null; }, [reverse]);
+  useEffect(() => { if (correctionBox.current) correctionBox.current.indeterminate = correction === null; }, [correction]);
   const value = Number(percent.trim().replace(',', '.'));
-  const valid = percent.trim() !== '' && Number.isFinite(value) && value >= SLOWEST && value <= FASTEST;
+  const validPercent = percent.trim() !== '' && Number.isFinite(value) && value >= SLOWEST && value <= FASTEST;
+  const valid = !speedChanged || validPercent;
   const first = clips[0];
-  const length = valid && first ? Math.max(1, Math.round(first.length * (first.speed.num / first.speed.den) / (value / 100))) : null;
+  const length = validPercent && first ? Math.max(1, Math.round(first.length * (first.speed.num / first.speed.den) / (value / 100))) : null;
+  const warning = clips.some(clip => (correctionChanged ? correction : clip.pitch_correction) && (() => {
+    const percent = speedChanged && validPercent ? value : percentOf(clip.speed); return percent < 50 || percent > 200;
+  })());
   const submit = async (event?: FormEvent) => {
     event?.preventDefault();
     if (!valid || clips.length === 0 || pending) return;
-    const speed = speedOf(value);
-    const sent = await commit(now => speedEdits(now, ids, speed, reverse ?? undefined, ripple));
+    const sent = await commit(now => {
+      const open = clips.map(clip => clip.id).filter(id => !clipLocations(now).get(id)?.track.locked);
+      const speedOps = speedChanged ? speedEdits(now, open, speedOf(value), reverseChanged ? reverse ?? undefined : undefined, ripple)
+        : reverseChanged ? open.flatMap(id => { const clip = clipLocations(now).get(id)?.clip; return clip ? speedEdits(now, [id], clip.speed, reverse ?? undefined, ripple) : []; }) : [];
+      const correctionOps = correctionChanged && correction !== null ? setClips(open, () => ({ pitch_correction: correction }))(now) ?? [] : [];
+      return [...speedOps, ...correctionOps];
+    });
     if (sent) onClose();
   };
   return <Sheet title={labels.title} onClose={onClose} foot={<>
@@ -87,13 +105,15 @@ export function SpeedDialog({ clips: ids, timeline, bridge, session, revision, o
         <span className="speed-percent">
           <input id="speed-percent" className="field" type="text" inputMode="decimal" autoComplete="off" spellCheck={false} data-first
             value={percent} placeholder={was === null ? '—' : undefined} aria-invalid={percent.trim() !== '' && !valid}
-            onChange={event => setPercent(event.target.value)} />
+            onChange={event => { setPercent(event.target.value); setSpeedChanged(true); }} />
           <span aria-hidden="true">%</span>
         </span>
         {percent.trim() !== '' && !valid && <p className="caption" role="alert">{hints.speedRange}</p>}
         {length !== null && clips.length === 1 && <p className="mono caption" data-test="speed-duration">{labels.duration} {timecode(length, timeline.rate)}</p>}
-        <label className="speed-check"><input ref={box} type="checkbox" checked={reverse === true} onChange={event => setReverse(event.target.checked)} />{labels.reverse}</label>
+        <label className="speed-check"><input ref={box} type="checkbox" checked={reverse === true} onChange={event => { setReverse(event.target.checked); setReverseChanged(true); }} />{labels.reverse}</label>
         <label className="speed-check"><input type="checkbox" checked={ripple} onChange={event => setRipple(event.target.checked)} />{labels.ripple}</label>
+        <label className="speed-check"><input ref={correctionBox} type="checkbox" checked={correction === true} onChange={event => { setCorrection(event.target.checked); setCorrectionChanged(true); }} />{t('Pitch Correction')}</label>
+        {warning && <p className="caption" role="status">{t('Pitch correction works best at speeds from 50% to 200%.')}</p>}
       </>}
       {refusal && <p className="speed-problem" role="alert">{refusal.text}</p>}
     </form>

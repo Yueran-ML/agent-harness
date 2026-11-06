@@ -393,7 +393,8 @@ describe('the Edit page', () => {
     fireEvent.change(within(dialog).getByLabelText('Speed'), { target: { value: '200' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Change' }));
     await settle();
-    expect(calls(bridge, 'transaction.apply')).toEqual([{ revision: 0, ops: [{ edit: 'set_speed', timeline: 't1', clip: 'c1', speed: { num: 2, den: 1 }, reverse: false, ripple: true, linked: false }] }]);
+    // Untouched reverse stays the current model value rather than replaying the dialog's snapshot.
+    expect(calls(bridge, 'transaction.apply')).toEqual([{ revision: 0, ops: [{ edit: 'set_speed', timeline: 't1', clip: 'c1', speed: { num: 2, den: 1 }, ripple: true, linked: false }] }]);
     expect(screen.queryByRole('dialog', { name: 'Change clip speed' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Effects library' }));
     expect(screen.getByRole('region', { name: 'Effects library' })).toBeDefined();

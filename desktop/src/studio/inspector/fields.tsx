@@ -6,7 +6,8 @@ import { createContext, useContext, useEffect, useId, useRef, useState, type Key
  * back what was there. A number box dragged sideways is a virtual slider, as DaVinci Resolve's
  * (Reference Manual 20, p. 67), and so is its label; pressed without dragging, the box is written
  * in. A label double-clicked puts the default back (p. 68). A field of several clips that differ
- * shows a dash, and sets them all alike.
+ * shows a dash. Audio can opt into live, cancellable gestures and relative multi-selection;
+ * other callers keep the original commit-on-release behavior.
  */
 
 /** Whether the fields are off: the clips they set are on locked tracks, which cannot be changed (Reference Manual 20, p. 762). */
@@ -70,6 +71,18 @@ export interface NumberFieldProps extends NumberShape {
   unit?: string;
   disabled?: boolean;
   title?: string;
+  /** Audio fields opt into real previews; other fields still commit once on release. */
+  gesture?: {
+    /** Preserve the mixed marker while each member moves by its own relative amount. */
+    relative?: boolean;
+    start: () => boolean;
+    preview: (value: number, delta: number | null) => void;
+    end: () => void;
+    cancel: () => void;
+    active: () => boolean;
+  };
+  fineModifiers?: boolean;
+  onReset?: () => void;
   onCommit: (value: number) => void;
 }
 
@@ -84,6 +97,7 @@ export function NumberField(props: NumberFieldProps) {
   const liveRef = useRef<number | null>(null);
   const scrub = useRef<{ x: number; start: number; pointer: number; moved: boolean } | null>(null);
   const sliding = useRef<'idle' | 'cancelled'>('idle');
+  const previewing = useRef(false);
   const slider = useRef<HTMLInputElement>(null);
   const now = useRef(props);
   now.current = props;
@@ -99,7 +113,28 @@ export function NumberField(props: NumberFieldProps) {
     holdRef.current(next);
     field.onCommit(next);
   };
-  const revert = () => { scrub.current = null; setScrubbing(false); show(null); setDraft(null); };
+  const revert = () => {
+    if (previewing.current) { now.current.gesture?.cancel(); sliding.current = 'cancelled'; }
+    previewing.current = false; scrub.current = null; setScrubbing(false); show(null); setDraft(null);
+  };
+  const beginPreview = () => {
+    if (!now.current.gesture) return true;
+    if (!previewing.current) previewing.current = now.current.gesture.start();
+    return previewing.current && now.current.gesture.active();
+  };
+  const finishPreview = () => {
+    if (!previewing.current) return false;
+    now.current.gesture?.end(); previewing.current = false; show(null); setDraft(null); return true;
+  };
+  useEffect(() => {
+    if (previewing.current && !props.gesture?.active()) revert();
+  });
+  useEffect(() => {
+    if (!props.gesture) return undefined;
+    const blur = () => revert();
+    window.addEventListener('blur', blur);
+    return () => { window.removeEventListener('blur', blur); if (previewing.current) now.current.gesture?.cancel(); };
+  }, [Boolean(props.gesture)]);
 
   // Escape while the label is being dragged puts the value back.
   useEffect(() => {
@@ -119,15 +154,16 @@ export function NumberField(props: NumberFieldProps) {
     if (!element) return undefined;
     const changed = () => {
       if (sliding.current === 'cancelled') { sliding.current = 'idle'; show(null); return; }
-      send(Number(element.value));
+      if (!finishPreview()) send(Number(element.value));
     };
     element.addEventListener('change', changed);
     return () => element.removeEventListener('change', changed);
   }, [hasSlider]);
 
-  const shown = live ?? held?.value ?? props.value;
+  const shown = props.gesture?.relative && scrub.current?.moved && props.value === null ? null : live ?? held?.value ?? props.value;
   const text = draft ?? (shown === null ? '' : shown.toFixed(props.digits));
   const fieldKey = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.nativeEvent.isComposing) return;
     if (event.key === 'Enter') {
       event.preventDefault();
       if (draft !== null) send(parse(draft));
@@ -138,6 +174,7 @@ export function NumberField(props: NumberFieldProps) {
   };
   const labelDown = (event: PointerEvent<HTMLElement>) => {
     if (disabled || event.button !== 0) return;
+    if (!beginPreview()) return;
     scrub.current = { x: event.clientX, start: props.value ?? props.fallback, pointer: event.pointerId, moved: false };
     event.currentTarget.setPointerCapture?.(event.pointerId);
   };
@@ -159,20 +196,25 @@ export function NumberField(props: NumberFieldProps) {
     if (!drag || drag.pointer !== event.pointerId) return;
     const by = event.clientX - drag.x;
     if (!drag.moved && Math.abs(by) < 3) return;
+    if (!beginPreview()) { revert(); return; }
     if (!drag.moved) { drag.moved = true; setScrubbing(true); }
-    show(shape(drag.start + by * props.scrub * (event.shiftKey ? 10 : 1), props));
+    const delta = by * props.scrub * (props.fineModifiers ? (event.shiftKey || event.altKey ? .1 : 1) : (event.shiftKey ? 10 : 1));
+    const value = shape(drag.start + delta, props);
+    show(value);
+    props.gesture?.preview(value, delta);
   };
   const labelUp = (event: PointerEvent<HTMLElement>) => {
     const drag = scrub.current;
     if (!drag || drag.pointer !== event.pointerId) return;
     scrub.current = null; setScrubbing(false);
     if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-    if (drag.moved) { event.preventDefault(); send(liveRef.current); }
+    if (drag.moved) { event.preventDefault(); if (!finishPreview()) send(liveRef.current); }
+    else finishPreview();
   };
   return <div className="inspector-row" data-field={props.name} data-mixed={props.value === null || undefined} title={props.title}>
     <label htmlFor={id} className="inspector-label" data-disabled={disabled || undefined}
       onPointerDown={labelDown} onPointerMove={labelMove} onPointerUp={labelUp} onPointerCancel={revert}
-      onDoubleClick={event => { event.preventDefault(); if (!disabled) send(props.fallback); }}>{props.label}</label>
+      onDoubleClick={event => { event.preventDefault(); if (!disabled) { if (props.onReset) props.onReset(); else send(props.fallback); } }}>{props.label}</label>
     <span className="inspector-value">
       <input id={id} className="field inspector-number" type="text" inputMode="decimal" autoComplete="off" spellCheck={false}
         value={text} placeholder={shown === null ? MIXED : undefined} disabled={disabled}
@@ -184,9 +226,12 @@ export function NumberField(props: NumberFieldProps) {
     {props.slider && <input ref={slider} className="inspector-slider" type="range" aria-label={props.label} disabled={disabled}
       min={props.slider.min} max={props.slider.max} step={props.slider.step} value={shown ?? props.fallback}
       onPointerDown={() => { sliding.current = 'idle'; }}
+      onPointerCancel={() => { sliding.current = 'cancelled'; revert(); }}
       onChange={event => {
         if (event.nativeEvent.type === 'change' || sliding.current === 'cancelled') return;
-        show(Number(event.target.value));
+        if (!beginPreview()) { sliding.current = 'cancelled'; revert(); return; }
+        const value = Number(event.target.value);
+        show(value); props.gesture?.preview(value, null);
       }}
       onKeyDown={event => {
         if (event.key === 'Escape' && live !== null) {

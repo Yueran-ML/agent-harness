@@ -207,6 +207,21 @@ const playhead = (region: HTMLElement) => region.querySelector<HTMLElement>('.ti
 const lastShow = (bridge: { viewShow: ReturnType<typeof vi.fn> }, monitor: string) => bridge.viewShow.mock.calls.filter(([, name]) => name === monitor).at(-1)?.[0];
 
 describe('the Cut page', () => {
+  it('shares the audio inspector and pitch-correction speed dialog with Edit', async () => {
+    const { bridge } = await mount();
+    fireEvent.click(screen.getByRole('button', { name: 'Inspector' }));
+    const sound = detail().querySelector<HTMLElement>('[data-clip="ca"]')!;
+    fireEvent.pointerDown(sound, { button: 0, clientX: 310, clientY: 160 });
+    fireEvent.pointerUp(sound, { button: 0, clientX: 310, clientY: 160 }); await settle();
+    const volume = document.querySelector<HTMLInputElement>('[data-field="volume"] input.inspector-number');
+    expect(volume).not.toBeNull();
+    fireEvent.change(volume!, { target: { value: '-7' } }); fireEvent.keyDown(volume!, { key: 'Enter' }); await settle();
+    expect(sent(bridge).at(-1)?.ops).toEqual([{ op: 'set_clip', timeline: 't1', id: 'ca', gain_db: -7 }]);
+    fireEvent.click(document.querySelector<HTMLElement>('[data-test="open-speed"]')!);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Pitch Correction' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Change' })); await settle();
+    expect(sent(bridge).at(-1)?.ops).toEqual([{ op: 'set_clip', timeline: 't1', id: 'ca', pitch_correction: true }]);
+  });
   it('has the pool in its thumbnail view, one viewer, the edit buttons beneath it and two timelines', async () => {
     const { bridge } = await mount();
     const pool = screen.getByRole('region', { name: 'Media pool' });

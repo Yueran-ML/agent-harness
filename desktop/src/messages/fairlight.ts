@@ -1,5 +1,9 @@
 /** Shared Fairlight catalogue; protocol IDs and media/track names are never translated. */
 const entries = {
+  'Previous keyframe': ['上一个关键帧', '前のキーフレーム'], 'Next keyframe': ['下一个关键帧', '次のキーフレーム'],
+  'Add keyframe': ['添加关键帧', 'キーフレームを追加'], 'Remove keyframe': ['删除关键帧', 'キーフレームを削除'],
+  'Semitones': ['半音', '半音'], 'Cents': ['音分', 'セント'], 'Pitch Correction': ['音调校正', 'ピッチ補正'],
+  'Pitch correction works best at speeds from 50% to 200%.': ['音调校正在 50%–200% 速度范围内效果最佳。', 'ピッチ補正は速度 50%～200% で最適に動作します。'],
   'Increase Audio Level 1 dB': ['提高音频电平 1 dB', 'オーディオレベルを 1 dB 上げる'],
   'Decrease Audio Level 1 dB': ['降低音频电平 1 dB', 'オーディオレベルを 1 dB 下げる'],
   'Increase Audio Level 3 dB': ['提高音频电平 3 dB', 'オーディオレベルを 3 dB 上げる'],

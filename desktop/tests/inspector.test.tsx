@@ -249,10 +249,13 @@ describe('the clips chosen', () => {
     const { call } = mount({ clips: ['a1'] });
     fireEvent.input(slider('volume'), { target: { value: '-12' } });
     fireEvent.change(slider('volume'), { target: { value: '-12' } });
+    await settle();
     type(box('pan'), '-40');
     type(box('volume'), '60');
     await settle();
     expect(applied(call).map(each => (each as { ops: unknown[] }).ops[0])).toEqual([
+      { op: 'set_clip', timeline: 't1', id: 'a1', gain_db: -12 },
+      // Preview and end carry the same absolute value in one wire gesture / undo step.
       { op: 'set_clip', timeline: 't1', id: 'a1', gain_db: -12 },
       { op: 'set_clip', timeline: 't1', id: 'a1', pan: -0.4 },
       { op: 'set_clip', timeline: 't1', id: 'a1', gain_db: 24 },

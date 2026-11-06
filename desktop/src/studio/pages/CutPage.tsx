@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { PanelLeft, Upload } from 'lucide-react';
+import { PanelLeft, PanelRight, Upload } from 'lucide-react';
 import { keyOf } from '../../app/keys';
 import { useWords } from '../../app/locale';
 import type { EngineBridge } from '../../bridge';
@@ -16,6 +16,8 @@ import type { MonitorControls } from '../useMonitor';
 import type { ViewerNotice } from '../Viewer';
 import { useTimelineLoad } from './useTimelineLoad';
 import type { Marks } from '../timeline/snap';
+import { Inspector } from '../inspector/Inspector';
+import { SpeedDialog } from '../inspector/SpeedDialog';
 
 const NO_BINS: readonly Bin[] = [];
 /** Narrower than this, the Cut page has its buttons without their names, and its pool narrower. */
@@ -79,6 +81,12 @@ export function CutPage({
   const page = useRef<HTMLDivElement>(null);
   const detail = useRef<TimelineHandle>(null);
   const [poolOpen, setPoolOpen] = useState(true);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [chosenClips, setChosenClips] = useState<string[]>([]);
+  const [chosenTransition, setChosenTransition] = useState<string | null>(null);
+  const [chosenCue, setChosenCue] = useState<string | null>(null);
+  const [speedClips, setSpeedClips] = useState<string[] | null>(null);
+  useEffect(() => { setChosenClips([]); setChosenTransition(null); setChosenCue(null); setSpeedClips(null); }, [session, selected?.id]);
   const [narrow, setNarrow] = useState(false);
   // Whether the source monitor shows the tape, kept while the viewer shows the timeline, to go back to.
   const [tape, setTape] = useState(false);
@@ -167,7 +175,7 @@ export function CutPage({
       data-test={`viewer-${each}`}>{labels[each]}</button>)}
   </div>;
   const pane = (controls: MonitorControls, name: string | undefined, hint: string) => <MonitorPane controls={controls} bridge={bridge} native={native}
-    active notice={noticeOf(controls.monitor)} onRetry={onRetry} hidden={focus !== controls.monitor} focused={focus === controls.monitor}
+    active notice={noticeOf(controls.monitor)} onRetry={onRetry} hidden={focus !== controls.monitor || speedClips !== null} focused={focus === controls.monitor}
     onFocus={onFocus} name={name} hint={hint} switcher={switcher}
     tools={controls.monitor === 'timeline' ? <BypassButton className="monitor-bypass" bypass={bypassColor.bypass} disabled={!bypassLoaded}
       label={words.label.studio.colorPage.bypass} onToggle={bypassColor.toggleBypass} /> : undefined} />;
@@ -176,9 +184,10 @@ export function CutPage({
   const common = {
     timeline: selected, media, bridge, session, revision, frame, playing: timelineState?.playing ?? false, onSeek: timelineMonitor.seek,
     source: sourceContext, focus, cut: true,
+    onSelection: setChosenClips, onTransition: setChosenTransition, onCue: setChosenCue, onSpeed: setSpeedClips,
   };
 
-  return <div ref={page} className="studio-body cut-page" data-narrow={narrow || undefined} data-pool={poolOpen || undefined} data-mode={mode} data-test="cut-page">
+  return <div ref={page} className="studio-body cut-page" data-narrow={narrow || undefined} data-pool={poolOpen || undefined} data-inspector={inspectorOpen || undefined} data-mode={mode} data-test="cut-page">
     <div className="cut-bar">
       <button type="button" className="icon-btn" aria-label={words.label.studio.pool} title={words.label.studio.pool} aria-pressed={poolOpen}
         onClick={() => setPoolOpen(open => !open)} data-test="toggle-pool"><PanelLeft size={15} /></button>
@@ -189,6 +198,8 @@ export function CutPage({
       </select>
       {timelines.length === 0 && <span className="caption" data-test="cut-no-timeline">{words.hint.studio.cutPage.noTimeline}</span>}
       <span className="edit-bar-gap" />
+      <button type="button" className="icon-btn" aria-label={words.label.studio.editPage.inspector} aria-pressed={inspectorOpen}
+        onClick={() => setInspectorOpen(open => !open)} data-test="toggle-inspector"><PanelRight size={15} /></button>
       {onExport && <button type="button" className="icon-btn" aria-label={words.label.studio.render.quickExport}
         title={words.label.studio.render.quickExport} disabled={selected === null} onClick={exportNow} data-test="quick-export">
         <Upload size={15} />
@@ -205,5 +216,12 @@ export function CutPage({
       <Timeline {...common} overview trackHeight={OVERVIEW_TRACK_PX} detail={shown} label={labels.overview} />
       <Timeline {...common} ref={detail} center indicator={indicator} onView={setView} label={labels.detail} />
     </div>
+    {inspectorOpen && <aside className="edit-inspector cut-inspector" aria-label={words.label.studio.editPage.inspector}>
+      <h2 className="overline">{words.label.studio.editPage.inspector}</h2>
+      <Inspector bridge={bridge} session={session} revision={revision} timeline={selected} media={media} clips={chosenClips}
+        transition={chosenTransition} cue={chosenCue} onSpeed={setSpeedClips} frame={frame} onSeek={timelineMonitor.seek} />
+    </aside>}
+    {speedClips !== null && selected && <SpeedDialog key={JSON.stringify([session, selected.id, speedClips])} clips={speedClips} timeline={selected}
+      bridge={bridge} session={session} revision={revision} onClose={() => setSpeedClips(null)} />}
   </div>;
 }

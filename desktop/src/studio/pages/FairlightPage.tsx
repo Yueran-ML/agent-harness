@@ -125,7 +125,8 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
             timeline={selected} frame={state ? timelineMonitor.frame ?? 0 : 0} meters={audio.meters} selected={stripSelection} onSelect={chooseStrips} />)}</section></>}
       </div>
       {view.inspector && selected && <><Separator label={t('Inspector width')} vertical direction={-1} value={view.rightWidth} min={240} max={600} onChange={rightWidth => update({ rightWidth })} />
-        <Inspector bridge={bridge} session={session} revision={revision} timeline={selected} media={media} clips={clips} track={track} transition={transition} onEdit={ops => void edit(ops)} /></>}
+        <Inspector bridge={bridge} session={session} revision={revision} timeline={selected} media={media} clips={clips} track={track} transition={transition} onEdit={ops => void edit(ops)}
+          frame={state ? timelineMonitor.frame ?? 0 : 0} onSeek={timelineMonitor.seek} onSpeed={setSpeed} /></>}
     </main>
     <footer className="fairlight-footer"><button type="button" aria-pressed={view.viewer} onClick={() => update({ viewer: !view.viewer })}>{t('Viewer')}</button>
       {normalize.menu}

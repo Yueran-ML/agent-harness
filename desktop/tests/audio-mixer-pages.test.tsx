@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { FairlightPage } from '../src/studio/pages/FairlightPage';
 import { EditPage } from '../src/studio/pages/EditPage';
+import { CutPage } from '../src/studio/pages/CutPage';
 import { defaultFairlightView } from '../src/studio/fairlight/viewState';
 import { likeABrowser } from './mounted';
 import { clip, media, timeline } from './timeline-fixture';
@@ -34,6 +35,32 @@ it('mounts usable Fairlight strips and polls while either Mixer or Monitoring is
   fireEvent.click(screen.getByRole('button', { name: 'Mixer' })); await settle(); const stopped = call.mock.calls.length;
   await act(async () => vi.advanceTimersByTimeAsync(150)); expect(call.mock.calls.length).toBe(stopped);
   view.unmount();
+});
+
+it.each(['edit', 'cut', 'fairlight'])('uses the actual displayed frame for the %s audio inspector and seeks through the same monitor', async page => {
+  const { props, monitor } = setup();
+  const track = props.selected.tracks[0];
+  if (track.kind !== 'subtitle') track.clips[0] = { ...track.clips[0], gain_db: { keys: [
+    { at: { ticks: 0, scale: 48000 }, value: -12, interp: 'linear' },
+    { at: { ticks: 48000, scale: 48000 }, value: 0, interp: 'linear' },
+  ] } };
+  monitor.frame = 12.5;
+  if (monitor.state) monitor.state = { ...monitor.state, frame: 90, shown: 10 };
+  const extra = { source: { ...monitor, monitor: 'source' as const }, sourceMedia: null, focus: 'timeline' as const, onFocus: vi.fn() };
+  const element = (session = 1) => page === 'fairlight' ? <FairlightPage {...props} session={session} /> : page === 'cut' ? <CutPage {...props} {...extra} bin={null} session={session} /> : <EditPage {...props} {...extra} session={session} />;
+  const view = render(element());
+  await settle();
+  if (page !== 'fairlight') fireEvent.click(screen.getByRole('button', { name: 'Inspector' }));
+  const sound = document.querySelectorAll<HTMLElement>('[data-clip="sound"]');
+  fireEvent.pointerDown(sound[sound.length - 1], { button: 0, clientX: 310, clientY: 160 });
+  fireEvent.pointerUp(sound[sound.length - 1], { button: 0, clientX: 310, clientY: 160 }); await settle();
+  expect(document.querySelector<HTMLInputElement>('[data-field="volume"] input.inspector-number')!.value).toBe('-6.0');
+  fireEvent.click(screen.getByRole('button', { name: 'Volume: Next keyframe' }));
+  expect(monitor.seek).toHaveBeenCalledWith(25, false);
+  fireEvent.click(screen.getByRole('button', { name: 'Change clip speed' }));
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Pitch Correction' }));
+  view.rerender(element(2)); await settle();
+  expect(screen.queryByRole('dialog')).toBeNull();
 });
 it('shares Edit track selection and meters the exact monitored output, never the first bus fallback', async () => {
   const { props, call, monitor } = setup();

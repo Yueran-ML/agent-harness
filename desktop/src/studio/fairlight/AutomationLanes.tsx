@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type PointerEvent, type KeyboardEvent } from 'react';
 import type { EngineBridge } from '../../bridge';
-import { callEngine, type AutomationParameter, type AutomationArm, type Lane, type Lanes, type LanesOf, type Timeline } from '../engine';
+import { callEngine, type AutomationArm, type Lane, type Lanes, type LanesOf, type Timeline } from '../engine';
+import { useAutomationParameters } from '../audio/useAutomationParameters';
 import type { Change } from '../timeline/commands';
 import { useAudioGesture } from '../timeline/useAudioGesture';
 import { HEADER_WIDTH } from '../timeline/geometry';
@@ -19,12 +20,12 @@ interface Props {
 export function AutomationLane(props:Props) {
  const {bridge,session,revision,timeline,of,lanes,locked,arm,scale,from,to,height,frame,snapping,marks,path,pencil,onPath,onEdit,name}=props;
  const t=useFairlightText(), touch=useAutomationTouch(), key=ownerKey(of);
- const [parameters,setParameters]=useState<AutomationParameter[]>([]), [problem,setProblem]=useState<string|null>(null);
+ const { parameters, problem: parameterProblem } = useAutomationParameters(props, of);
+ const [problem,setProblem]=useState<string|null>(null);
  const [selected,setSelected]=useState<number[]>([]), [range,setRange]=useState<[number,number]|null>(null), [preview,setPreview]=useState<Lane|null>(null), [clear,setClear]=useState(false), [pointMenu,setPointMenu]=useState<number|null>(null), [hint,setHint]=useState<string|null>(null), [temporaryPencil,setTemporaryPencil]=useState(false);
  const svg=useRef<SVGSVGElement>(null), clip=useRef<Lane['points']>([]);
  const drag=useRef<{kind:'point'|'range'|'line'|'pencil'; sample:number;y:number; points:number[]; lane?:Lane; delta:number; by:number; pencil?:Pencil; axis?:'x'|'y'}|null>(null);
  const gesture=useAudioGesture({bridge,session,revision,identity:`${timeline.id}/${key}/${path}`,locked:Boolean(locked),onFailure:e=>setProblem(String(e))});
- useEffect(()=>{let live=true;setParameters([]);void callEngine(bridge,'automation.parameters',{timeline:timeline.id,of},{expectedSession:session}).then(r=>{if(live&&r.revision===revision)setParameters(r.parameters);}).catch(e=>{if(live)setProblem(String(e));});return()=>{live=false;};},[bridge,session,timeline.id,key,revision]);
  useEffect(()=>{drag.current=null;setPreview(null);setSelected([]);setRange(null);},[session,timeline.id,key,path,revision]);
  const parameter=parameters.find(p=>p.path===path), lane=lanes?.[path], drawn=preview??lane;
  const top=22,bottom=height-8,h=bottom-top;
@@ -123,6 +124,6 @@ export function AutomationLane(props:Props) {
    {live&&<line x1={0} x2="100%" y1={y(live.value)} y2={y(live.value)} stroke={touch?.preview?'#69baff':'#f66'} pointerEvents="none"/>}
   </svg>}
   {hint&&<output className="automation-drag-value">{hint}</output>}
-  {problem&&<span role="alert" className="automation-problem">{problem}</span>}
+  {(problem||parameterProblem)&&<span role="alert" className="automation-problem">{problem||parameterProblem}</span>}
  </div>;
 }

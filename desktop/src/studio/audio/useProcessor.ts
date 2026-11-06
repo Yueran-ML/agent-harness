@@ -1,5 +1,5 @@
 import { useAutomationTouch } from '../fairlight/AutomationTouch';
-import { callEngine, type AutomationParameter } from '../engine';
+import { useAutomationParameters } from './useAutomationParameters';
 import { useEffect, useRef, useState } from 'react';
 import type { EngineBridge } from '../../bridge';
 import type { Dynamics, Equalizer, Timeline } from '../engine';
@@ -26,8 +26,8 @@ export function useProcessor<M extends ProcessorModule>(props: ProcessorProps, m
   const [problem, setProblem] = useState<string | null>(null), [preview, setPreview] = useState<Settings | null>(null);
   const gesture = useAudioGesture({ bridge, session, revision, identity, locked: disabled, onFailure: error => setProblem(error instanceof Error ? error.message : String(error)) });
   const snapshot = useRef(model), touched=useRef<string[]>([]);
-  const [parameters,setParameters]=useState<AutomationParameter[]>([]);
-  useEffect(()=>{setParameters([]);if('clip' in target||!automation?.enabled)return;let live=true;void callEngine(bridge,'automation.parameters',{timeline:timeline.id,of:target},{expectedSession:session}).then(r=>{if(live&&r.revision===revision)setParameters(r.parameters);}).catch(e=>{if(live)setProblem(String(e));});return()=>{live=false;};},[bridge,session,revision,identity,automation?.enabled]);
+  const { parameters, problem: parameterProblem } = useAutomationParameters(props,
+    'clip' in target ? null : target, Boolean(automation?.enabled));
   const read=(settings:Settings,path:string):number=>{const parts=path.slice(module.length+1).split('.');if(module==='eq'&&/^\d+$/.test(parts[0]))parts.unshift('bands');let value:any=settings;for(const p of parts)value=value?.[p];return typeof value==='boolean'?Number(value):Number(value);};
   const playback=()=>{
     const value=automation?.enabled===false?model:processorPlayback(model,strip,module,props.seconds??0);
@@ -58,7 +58,7 @@ export function useProcessor<M extends ProcessorModule>(props: ProcessorProps, m
     if(recording){const paths=changed(value);if(paths.length)automation!.instantBatch(values(value,paths));return;}
     gesture.commit(changes(value,modifiers));
   };
-  return { value: recording&&ownsTouch()?preview??playback():gesture.active()?preview??model:playback(), model, disabled, recording, problem,
+  return { value: recording&&ownsTouch()?preview??playback():gesture.active()?preview??model:playback(), model, disabled, recording, problem: problem ?? parameterProblem,
     gesture:{...gesture,active:()=>recording?ownsTouch():gesture.active()},
     start,snapshot:()=>snapshot.current,
     change:(value:Settings)=>{if(recording){if(!ownsTouch())return;setPreview(value);automation!.changeBatch(values(value,touched.current));}else if(gesture.active()){setPreview(value);gesture.preview(changes(value));}},

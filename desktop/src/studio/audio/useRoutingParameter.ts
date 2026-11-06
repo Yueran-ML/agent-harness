@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { callEngine, type AutomationParameter, type Pan } from '../engine';
+import type { Pan } from '../engine';
+import { useAutomationParameters } from './useAutomationParameters';
 import { useAutomationTouch } from '../fairlight/AutomationTouch';
 import { laneValue } from '../fairlight/automation';
 import { mixerStrips, stripChange } from './mixerModel';
@@ -18,19 +19,12 @@ export function useRoutingParameter(context: ProcessorProps, stripKey: string, b
   const identity = `${context.timeline.id}/${stripKey}/${bus === undefined ? 'pan' : `send.${bus}`}`;
   const prefix = bus === undefined ? 'pan.' : `send.${bus}.`;
   const path = (field: string) => prefix + field;
-  const [problem, setProblem] = useState(''), [parameters, setParameters] = useState<AutomationParameter[]>([]);
+  const [problem, setProblem] = useState('');
+  const { parameters, problem: parameterProblem } = useAutomationParameters(context, of, Boolean(automation?.enabled));
   const [preview, setPreview] = useState<Values>({});
   const touched = useRef<string[]>([]), snapshot = useRef<Values>({});
   const owner = useRef<object | undefined>(undefined);
   const gesture = useAudioGesture({ ...context, identity, locked: strip.locked || bus !== undefined && !send, onFailure: error => setProblem(String(error)) });
-  useEffect(() => {
-    setParameters([]); if (!automation?.enabled) return;
-    let live = true;
-    void callEngine(context.bridge, 'automation.parameters', { timeline: context.timeline.id, of }, { expectedSession: context.session })
-      .then(result => { if (live && result.revision === context.revision) setParameters(result.parameters); })
-      .catch(error => { if (live) setProblem(String(error)); });
-    return () => { live = false; };
-  }, [context.bridge, context.session, context.revision, identity, automation?.enabled]);
   const parameter = (field: string) => parameters.find(item => item.path === path(field));
   const base = (field: string): number => {
     if (bus === undefined) return Number(({ ...defaultPan(), ...strip.strip?.pan })[field as keyof Pan]);
@@ -69,7 +63,7 @@ export function useRoutingParameter(context: ProcessorProps, stripKey: string, b
   const latest = useRef({ end }); latest.current = { end };
   useEffect(() => () => latest.current.end(undefined, true), [identity, context.session]);
   useEffect(() => { if (!gesture.active()) setPreview({}); }, [context.revision, identity]);
-  return { strip, send, recording, problem, parameter, path, reading, writable, active: owns, start,
+  return { strip, send, recording, problem: problem || parameterProblem, parameter, path, reading, writable, active: owns, start,
     snapshot: () => snapshot.current,
     change: (values: Values, source?: object) => {
       const fields = Object.keys(values); if (!fields.length || !owns(fields, source) || fields.some(field => !touched.current.includes(field))) return;

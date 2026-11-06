@@ -83,6 +83,8 @@ enum Target {
     Clip(String),
     Track(String),
     Bus(String),
+    /// The actual stereo sum of these post-strip tracks, including their panners.
+    Sum(Vec<String>),
 }
 
 impl Target {
@@ -91,6 +93,7 @@ impl Target {
             Target::Clip(id) => json!({"clip": id}),
             Target::Track(id) => json!({"track": id}),
             Target::Bus(id) => json!({"bus": id}),
+            Target::Sum(ids) => json!({"sum": ids}),
         }
     }
 }
@@ -462,7 +465,7 @@ fn prepare_snapshot(
 fn analyze_work(method: &str, params: Option<&RawValue>, project: &Project) -> Result<Work, Fault> {
     let request: Analyze = rpc::params(
         method,
-        r#"{"timeline": "t1", "targets": [{"clip": "c1"} | {"track": "A1"} | {"bus": "B1"}], "range"?: {"from": 0, "to": 250}, "standard"?: "ebu-r128", "revision"?: 0}"#,
+        r#"{"timeline": "t1", "targets": [{"clip": "c1"} | {"track": "A1"} | {"bus": "B1"} | {"sum": ["A2", "A3"]}], "range"?: {"from": 0, "to": 250}, "standard"?: "ebu-r128", "revision"?: 0, "candidate"?: [...]}"#,
         params,
     )?;
     let (at, timeline) = timeline_of(project, &request.timeline)?;
@@ -507,6 +510,30 @@ fn analyze_work(method: &str, params: Option<&RawValue>, project: &Project) -> R
                         format!("there is no bus {bus}"),
                         json!({"reason": "missing", "what": "bus", "id": bus}),
                     ));
+                }
+            }
+            Target::Sum(ids) => {
+                if !(1..MOST_TARGETS).contains(&ids.len()) {
+                    return Err(refused(
+                        "a sum takes 1 to 255 tracks",
+                        json!({"reason":"out_of_range","what":"sum"}),
+                    ));
+                }
+                for (index, id) in ids.iter().enumerate() {
+                    if ids[..index].contains(id) {
+                        return Err(refused(
+                            "a sum names a track twice",
+                            json!({"reason":"twice","track":id}),
+                        ));
+                    }
+                    if !timeline.tracks.iter().any(|track| {
+                        track.id == *id && track.kind == TrackKind::Audio && track.enabled
+                    }) {
+                        return Err(refused(
+                            "a sum requires enabled audio tracks",
+                            json!({"reason":"missing","track":id}),
+                        ));
+                    }
                 }
             }
         }
@@ -765,6 +792,36 @@ struct Pass {
     range: Range<i64>,
 }
 
+/// An analysis-only destination: existing routes, sidechains and strip settings stay intact.
+/// This is not a model operation, so a full 64-bus/10-output project still has room to measure.
+/// The extra sink cannot add reachability between existing strips under Solo.
+fn sum_snapshot(project: &Project, timeline: usize, tracks: &[String]) -> (Project, String) {
+    let mut private = project.clone();
+    let t = &mut private.timelines[timeline];
+    let mut n = 1;
+    let id = loop {
+        let id = format!("analysis-sum-{n}");
+        if !t.buses.iter().any(|bus| bus.id == id) && !t.tracks.iter().any(|track| track.id == id) {
+            break id;
+        }
+        n += 1;
+    };
+    // Solo-safe keeps this meter open even when an original bus is soloed. As a sink,
+    // its safe flag cannot make any original strip audible.
+    let bus = serde_json::from_value(json!({"id":id,"name":"Analysis sum","color":"#000000ff","format":"stereo","solo_safe":true}))
+        .expect("a neutral analysis bus");
+    t.buses.push(bus);
+    for track in &mut t.tracks {
+        if tracks.contains(&track.id) {
+            track.audio.strip.outputs.push(columbina_model::Output {
+                bus: id.clone(),
+                on: true,
+            });
+        }
+    }
+    (private, id)
+}
+
 impl Pass {
     /// The measure of clip `clip` (see the module).
     fn clip(project: &Project, timeline: usize, clip: &str) -> Result<Pass, String> {
@@ -1015,13 +1072,14 @@ fn analyze(
         .filter_map(|(at, what)| match what {
             Target::Track(id) => Some((at, Owner::Track(id.clone()))),
             Target::Bus(id) => Some((at, Owner::Bus(id.clone()))),
-            Target::Clip(_) => None,
+            Target::Clip(_) | Target::Sum(_) => None,
         })
         .collect();
     let clips: u64 = targets
         .iter()
         .map(|what| match what {
             Target::Clip(clip) => frames(&limited_clip_range(t, clip, &range)),
+            Target::Sum(_) => frames(&range),
             _ => 0,
         })
         .sum();
@@ -1043,6 +1101,24 @@ fn analyze(
         }
     }
     for (at, what) in targets.iter().enumerate() {
+        if let Target::Sum(ids) = what {
+            if stop.load(Ordering::Acquire) {
+                return Ok(None);
+            }
+            let (private, bus) = sum_snapshot(project, timeline, ids);
+            let pass = Pass::strips(
+                &Arc::new(private),
+                timeline,
+                &[Owner::Bus(bus)],
+                range.clone(),
+            )?;
+            let analyzers = pass.analyzers(true);
+            let Some(mut analyses) = pass.run(timeline, analyzers, None, &mut told)? else {
+                return Ok(None);
+            };
+            found_of[at] = analyses.pop();
+            continue;
+        }
         let Target::Clip(clip) = what else { continue };
         if stop.load(Ordering::Acquire) {
             return Ok(None);
@@ -1296,6 +1372,161 @@ fn matched(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancellation_between_passes_skips_the_next_graph_construction() {
+        let teller = Teller {
+            state: Arc::new(Mutex::new(super::super::tests::state())),
+            limits: Limits {
+                messages: 16,
+                bytes: 65536,
+            },
+            job: "test-between-passes".into(),
+        };
+        let stop = AtomicBool::new(false);
+        let mut empty = Project::sample();
+        for track in &mut empty.timelines[0].tracks {
+            track.clips.clear();
+        }
+        let empty = Arc::new(empty);
+        let mut told = progress(&teller, &stop, 48000, 8192);
+        let first = Pass::strips(&empty, 0, &[Owner::Track("A1".into())], 0..4096).unwrap();
+        let meters = first.analyzers(false);
+        assert!(first.run(0, meters, None, &mut told).unwrap().is_some());
+        assert_eq!(told.done, 4096);
+        // A deliberately poisoned next snapshot is a construction sentinel: if the
+        // pre-pass stop check moves below Graph::build, this would fail instead of cancel.
+        let mut next = Project::sample();
+        next.timelines[0].sample_rate = 0;
+        assert!(Pass::clip(&next, 0, "c2").is_err());
+        let next = Arc::new(next);
+        stop.store(true, Ordering::Release);
+        assert!(
+            clips_measured(&next, 0, &["c2".into()], (false, None), &mut told)
+                .unwrap()
+                .is_none()
+        );
+        for target in [
+            Target::Clip("c2".into()),
+            Target::Track("A1".into()),
+            Target::Sum(vec!["A1".into(), "A2".into()]),
+        ] {
+            assert!(analyze(
+                &teller,
+                &next,
+                (0, &[target], Some(0..4096)),
+                (&standards::STANDARDS[0], -23.0),
+                &stop
+            )
+            .unwrap()
+            .is_none());
+        }
+        // This tests the boundary between passes, not interruption inside Graph::build.
+        assert_eq!(told.done, 4096);
+    }
+
+    #[test]
+    fn sum_requires_distinct_enabled_audio_tracks() {
+        let mut project = Project::sample();
+        project.timelines[0]
+            .tracks
+            .push(columbina_model::Track::new("A2", TrackKind::Audio));
+        for (ids, reason) in [
+            (json!([]), "out_of_range"),
+            (json!(["A1", "A1"]), "twice"),
+            (json!(["A1", "V1"]), "missing"),
+            (json!(["A1", "absent"]), "missing"),
+        ] {
+            let raw =
+                RawValue::from_string(json!({"timeline":"t1","targets":[{"sum":ids}]}).to_string())
+                    .unwrap();
+            let fault = prepare("audio.analyze", Some(&raw), &project)
+                .err()
+                .unwrap();
+            assert_eq!(fault.data.unwrap()["reason"], reason);
+        }
+        let raw = RawValue::from_string(
+            json!({"timeline":"t1","targets":[{"sum":["A1","A2"]}]}).to_string(),
+        )
+        .unwrap();
+        prepare("audio.analyze", Some(&raw), &project).unwrap();
+        let single =
+            RawValue::from_string(json!({"timeline":"t1","targets":[{"sum":["A1"]}]}).to_string())
+                .unwrap();
+        prepare("audio.analyze", Some(&single), &project).unwrap();
+        project.timelines[0].tracks[2].enabled = false;
+        assert_eq!(
+            prepare("audio.analyze", Some(&raw), &project)
+                .err()
+                .unwrap()
+                .data
+                .unwrap()["reason"],
+            "missing"
+        );
+    }
+
+    #[test]
+    fn sum_private_sink_preserves_full_routes_sidechains_and_all_original_solo_states() {
+        use columbina_audio::graph::audible;
+        let mut project = Project::sample();
+        let t = &mut project.timelines[0];
+        t.tracks
+            .push(columbina_model::Track::new("A2", TrackKind::Audio));
+        // A full valid public routing configuration. The private meter is allowed to exceed
+        // these UI/model limits, without asking the user to remove their normal buses/routes.
+        while t.buses.len() < 64 {
+            let id = format!("B{}", t.buses.len() + 1);
+            t.buses.push(
+                serde_json::from_value(
+                    json!({"id":id,"name":"Bus","color":"#000000ff","format":"stereo"}),
+                )
+                .unwrap(),
+            );
+        }
+        for track in t
+            .tracks
+            .iter_mut()
+            .filter(|track| track.kind == TrackKind::Audio)
+        {
+            track.audio.strip.outputs = t.buses[..10]
+                .iter()
+                .map(|bus| columbina_model::Output {
+                    bus: bus.id.clone(),
+                    on: true,
+                })
+                .collect();
+        }
+        t.tracks[2].audio.strip.track_fx =
+            serde_json::from_value(json!({"on":true,"sources":[{"track":"A1"}]})).unwrap();
+        project.validate().unwrap();
+        for solo in 0..3 {
+            project.timelines[0].tracks[1].audio.solo = solo == 1;
+            project.timelines[0].buses[0].solo = solo == 2;
+            let original = project.clone();
+            let heard = audible(&original.timelines[0]);
+            let (mut private, id) = sum_snapshot(&project, 0, &["A1".into(), "A2".into()]);
+            assert_eq!(project, original);
+            assert_eq!(private.timelines[0].buses.len(), 65);
+            let trial_heard = audible(&private.timelines[0]);
+            assert_eq!(&trial_heard[..heard.len()], &heard);
+            assert_eq!(trial_heard.last(), Some(&(Owner::Bus(id.clone()), true)));
+            let graph =
+                Graph::build(&private, 0, Options::new(MAX_BLOCK, Purpose::Analysis)).unwrap();
+            assert!(graph.strip_of(&Owner::Bus(id.clone())).is_some());
+            // Removing only the private additions recovers the exact original snapshot,
+            // including every sidechain, output, monitor choice, clip and automation lane.
+            private.timelines[0].buses.pop();
+            for track in private.timelines[0]
+                .tracks
+                .iter_mut()
+                .filter(|track| track.kind == TrackKind::Audio)
+            {
+                assert_eq!(track.audio.strip.outputs.len(), 11);
+                assert_eq!(track.audio.strip.outputs.pop().unwrap().bus, id);
+            }
+            assert_eq!(private, original);
+        }
+    }
 
     #[test]
     fn clip_analysis_limits_its_samples_to_the_requested_timeline_interval() {

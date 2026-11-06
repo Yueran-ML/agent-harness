@@ -818,6 +818,27 @@ async def test_an_analysis_given_up_before_it_is_named_is_cancelled(tmp_path: Pa
         assert "audio.cancel" in fake.asked
 
 
+async def test_sum_candidate_analysis_round_trips_without_caching_or_applying(
+    tmp_path: Path,
+) -> None:
+    async with served(tmp_path / "film") as fake:
+        connected = await attached(tmp_path / "film")
+        target = {"sum": ["A1"]}
+        fake.sound_found = {"candidate": True, "results": [{"target": target, "integrated": -27.0}]}
+        params = {
+            "timeline": "t1",
+            "targets": [target],
+            "revision": 0,
+            "candidate": [{"op": "set_clip", "timeline": "t1", "id": "c1", "gain_db": -12}],
+        }
+        found = await connected.analyze_sound("audio.analyze", params, session=connected.session)
+        assert found["results"][0]["target"] == target
+        assert found["candidate"] is True
+        assert fake.sounds[-1][1] == params
+        assert "transaction.apply" not in fake.asked
+        await connected.aclose()
+
+
 async def test_a_render_that_is_refused_is_followed_no_further(tmp_path: Path) -> None:
     async with served(tmp_path / "film") as fake:
         connected = await attached(tmp_path / "film")

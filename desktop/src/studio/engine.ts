@@ -961,8 +961,8 @@ export interface Meters {
   loudness: LoudnessReading;
   lost: number;
 }
-/** What an analysis measures: a clip before its Volume, a track or a bus after its fader. */
-export type AnalysisTarget = { clip: string } | { track: string } | { bus: string };
+/** Clip after Volume; track/bus after fader; stereo sum of 1..255 tracks after strips and pan. */
+export type AnalysisTarget = { clip: string } | { track: string } | { bus: string } | { sum: string[] };
 /** A row of `audio.standards`, read from the engine's source table. */
 export interface AudioStandard {
   id: string;
@@ -980,10 +980,11 @@ export interface AudioStandard {
 /** `revision` binds the snapshot before a job is started; omitted for older clients. */
 export interface AudioAnalyzeParams {
   timeline: string;
-  targets: ({ clip: string } | { track: string } | { bus: string })[];
+  targets: AnalysisTarget[];
   range?: { from: number; to: number };
   standard?: string;
   revision?: number;
+  candidate?: import('./timeline/commands').Change[];
 }
 
 /** What `audio.analyze` found of a target. */

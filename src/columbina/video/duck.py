@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from columbina.video import words
+from columbina.video.duck_keys import UnsupportedCurveError, gain_keys
 from columbina.video.editing import _timeline  # pyright: ignore[reportPrivateUsage]
 from columbina.video.edits import Rate
 from columbina.video.engine import Engine, EngineError
@@ -63,11 +64,11 @@ def speech(
 
 
 def quiet_ranges(
-    intervals: Sequence[tuple[int, int]], end: int, rate: Rate
+    intervals: Sequence[tuple[int, int]], end: int, rate: Rate, *, hold_ms: int = 150
 ) -> list[tuple[int, int]]:
-    """Exclude the 15 ms lookahead and the default 150 ms hold + 600 ms recovery."""
+    """Exclude 15 ms lookahead, 600 ms recovery and the selected mode's hold."""
     before = math.ceil(0.015 * rate.num / rate.den)
-    after = math.ceil(0.750 * rate.num / rate.den)
+    after = math.ceil((0.600 + hold_ms / 1000) * rate.num / rate.den)
     covered = merged([(max(0, a - before), min(end, b + after)) for a, b in intervals])
     result: list[tuple[int, int]] = []
     at = 0
@@ -81,7 +82,7 @@ def quiet_ranges(
 
 
 class Duck:
-    """Set Track FX Ducker; keep all unrelated strip settings and existing automation."""
+    """Measure Ducker or source Volume envelopes, preserving unrelated settings."""
 
     def __init__(self, engine: Engine, directory: Path, check: Callable[[str], Path]) -> None:
         self.engine = engine
@@ -94,8 +95,11 @@ class Duck:
         music: Sequence[str],
         dialogue: str | None = None,
         timeline: str | None = None,
+        mode: str = "ducker",
     ) -> dict[str, Any]:
-        """Measure bounded Ducker proposals and commit the last one exactly once."""
+        """Measure bounded duck proposals and commit the last one exactly once."""
+        if mode not in ("ducker", "keyframes"):
+            raise invalid("mode must be 'ducker' or 'keyframes'")
         revision, project = await self.engine.project()
         session = self.engine.session
         selected = _timeline(project, timeline)
@@ -127,9 +131,13 @@ class Duck:
             raise invalid("Unlock the selected background tracks before ducking.", "locked")
         for id in ids:
             owner = tracks[id]
-            if owner.get("automation_arm") != "off" and any(
-                path.startswith("track_fx.") and lane.get("points")
-                for path, lane in owner.get("lanes", {}).items()
+            if (
+                mode == "ducker"
+                and owner.get("automation_arm") != "off"
+                and any(
+                    path.startswith("track_fx.") and lane.get("points")
+                    for path, lane in owner.get("lanes", {}).items()
+                )
             ):
                 raise invalid(
                     f"Track {id} has Ducker automation; turn its automation Off or edit that "
@@ -146,6 +154,12 @@ class Duck:
             if item["id"] in used:
                 self.check(item["path"])
         intervals = scores[dialogue][1]
+        if mode == "keyframes" and not intervals:
+            return {
+                "status": "needs_transcript",
+                "timeline": selected["id"],
+                "notice": "Run video_transcribe on the dialogue before keyframe ducking.",
+            }
         end = max(
             (
                 clip["start"] + clip["length"]
@@ -154,8 +168,18 @@ class Duck:
             ),
             default=0,
         )
-        quiet = quiet_ranges(intervals, end, rate) if intervals else []
-        targets = [{"track": dialogue}, *({"track": id} for id in ids)]
+        quiet = (
+            quiet_ranges(intervals, end, rate, hold_ms=150 if mode == "ducker" else 0)
+            if intervals
+            else []
+        )
+        # Dialogue and every background use the same stereo post-pan measurement point.
+        # Track targets retain their protocol meaning (pre-pan) for other clients.
+        targets: list[dict[str, Any]] = [{"sum": [dialogue]}, *({"sum": [id]} for id in ids)]
+        check_targets: list[dict[str, Any]] = [{"track": id} for id in ids]
+        if len(ids) > 1:
+            targets.append({"sum": ids})
+            check_targets.append({"sum": ids})
         params: dict[str, Any] = {
             "timeline": selected["id"],
             "revision": revision,
@@ -170,19 +194,50 @@ class Duck:
                 request["range"] = {"from": frames[0], "to": frames[1]}
             if ops is not None:
                 request["candidate"] = ops
-            result = await self.engine.analyze_sound("audio.analyze", request, session=session)
+            found: list[dict[str, Any]] = []
+            # 255 backgrounds plus dialogue plus sum exceed one job's 256-target limit.
+            # Every chunk remains bound to the same project revision and session.
+            for start in range(0, len(targets), 256):
+                result = await self.engine.analyze_sound(
+                    "audio.analyze",
+                    {**request, "targets": targets[start : start + 256]},
+                    session=session,
+                )
+                found.extend(result["results"])
             rows = [
-                next((row for row in result["results"] if row["target"] == target), None)
-                for target in targets
+                next((row for row in found if row["target"] == target), None) for target in targets
             ]
             if any(row is None for row in rows):
-                raise invalid("Analysis did not return every requested track.", "analysis")
+                raise invalid("Analysis did not return every requested target.", "analysis")
             return [row for row in rows if row is not None]
 
-        baseline = [await measure(frames, None) for frames in quiet]
         amounts = dict.fromkeys(ids, 12.0)
 
         def proposal() -> list[dict[str, Any]]:
+            if mode == "keyframes":
+                ops: list[dict[str, Any]] = []
+                for id, amount in amounts.items():
+                    for clip in tracks[id].get("clips", []):
+                        try:
+                            gain = gain_keys(
+                                clip,
+                                intervals,
+                                selected["rate"],
+                                selected.get("sample_rate", 48000),
+                                amount,
+                            )
+                        except UnsupportedCurveError as error:
+                            raise invalid(str(error), "unsupported_curve") from error
+                        if gain is not None:
+                            ops.append(
+                                {
+                                    "op": "set_clip",
+                                    "timeline": selected["id"],
+                                    "id": clip["id"],
+                                    "gain_db": gain,
+                                }
+                            )
+                return ops
             return [
                 {
                     "op": "set_track_audio",
@@ -205,6 +260,15 @@ class Duck:
                 for id, amount in amounts.items()
             ]
 
+        ops = proposal()
+        if not ops:
+            return {
+                "status": "no_change",
+                "timeline": selected["id"],
+                "mode": mode,
+                "notice": "No enabled background media clip overlaps the duck envelope.",
+            }
+        baseline = [await measure(frames, None) for frames in quiet]
         checks: list[dict[str, Any]] = []
         adjustments = 0
         while True:
@@ -215,7 +279,7 @@ class Duck:
             for frames in intervals:
                 measured = await measure(frames, ops)
                 voice = measured[0].get("integrated")
-                for id, row in zip(ids, measured[1:], strict=True):
+                for target, row in zip(check_targets, measured[1:], strict=True):
                     background = row.get("integrated")
                     margin = (
                         voice - background if voice is not None and background is not None else None
@@ -224,17 +288,17 @@ class Duck:
                     checks.append(
                         {
                             "kind": "speech",
-                            "track": id,
+                            **target,
                             "range": list(frames),
                             "margin_lu": margin,
                             "met": met,
                         }
                     )
-                    if met is False:
-                        increase.add(id)
+                    if met is False and (len(ids) == 1 or "sum" in target):
+                        increase.update(ids if "sum" in target else [target["track"]])
             for frames, old in zip(quiet, baseline, strict=True):
                 measured = await measure(frames, ops)
-                for id, before, after in zip(ids, old[1:], measured[1:], strict=True):
+                for target, before, after in zip(check_targets, old[1:], measured[1:], strict=True):
                     a, b = before.get("integrated"), after.get("integrated")
                     metric = "integrated"
                     if a is None or b is None:
@@ -246,15 +310,20 @@ class Duck:
                     checks.append(
                         {
                             "kind": "quiet",
-                            "track": id,
+                            **target,
                             "range": list(frames),
                             "delta_db": delta,
                             "metric": metric,
                             "met": met,
                         }
                     )
-                    if met is False and delta is not None and delta < -1:
-                        decrease.add(id)
+                    if (
+                        met is False
+                        and delta is not None
+                        and delta < -1
+                        and (len(ids) == 1 or "sum" in target)
+                    ):
+                        decrease.update(ids if "sum" in target else [target["track"]])
             if not intervals:
                 # An explicitly chosen source may lack words. Validate/process the candidate,
                 # but never infer speaking intervals or claim the 10 LU test passed.
@@ -268,32 +337,38 @@ class Duck:
                     amounts[id] = max(0, amounts[id] - 3)
             adjustments += 1
         applied = await self.engine.apply(ops, revision=revision, session=session)
-        per_track_complete = bool(intervals and quiet and checks) and all(
-            row["met"] is not None for row in checks
+        track_checks = [row for row in checks if "track" in row]
+        overall_checks = [row for row in checks if "sum" in row] if len(ids) > 1 else track_checks
+        per_track_complete = bool(intervals and quiet and track_checks) and all(
+            row["met"] is not None for row in track_checks
         )
-        # Individually quiet stems need not make a quiet sum (especially correlated copies).
-        # Until their actual sum is measured, multi-track ducking is not globally verified.
-        complete = per_track_complete and len(ids) == 1
+        complete = bool(intervals and quiet and overall_checks) and all(
+            row["met"] is not None for row in overall_checks
+        )
         return {
             "status": "applied",
             "timeline": selected["id"],
             "dialogue": dialogue,
             "music": ids,
-            "mode": "ducker",
+            "mode": mode,
             "amount_db": amounts,
             "adjustments": adjustments,
             "checks": checks,
             "met": False
-            if any(row["met"] is False for row in checks)
+            if any(row["met"] is False for row in overall_checks)
             else (True if complete else None),
             "verification_complete": complete,
             "per_track_met": (
-                all(row["met"] is True for row in checks) if per_track_complete else None
+                all(row["met"] is True for row in track_checks) if per_track_complete else None
             ),
             "measurement_phase": "candidate_before_apply",
+            "measurement_point": "stereo_post_pan",
             "ops": ops,
             "applied": asdict(applied),
-            "notice": "Margins are checked for each background track. Multiple backgrounds "
-            "have not been verified as a combined mix. Quiet intervals exclude lookahead, "
-            "hold and recovery. Null means the overall target could not be verified.",
+            "notice": "Dialogue and backgrounds are measured at the same stereo post-strip, "
+            "post-pan point. Multiple backgrounds are verified by their actual PCM sum; "
+            "per-track results remain diagnostic. Quiet intervals exclude "
+            "lookahead and recovery (plus hold in Ducker mode). Null means the overall target "
+            "could not be verified. Keyframe envelopes hold across overlapping "
+            "recovery/lookahead windows.",
         }

@@ -369,7 +369,7 @@ class _Duck(_Timeline):
             "from existing transcripts."
         ),
     )
-    mode: Literal["ducker"] = "ducker"
+    mode: Literal["ducker", "keyframes"] = "ducker"
 
 
 class _Target(BaseModel):
@@ -768,7 +768,12 @@ def tools_of(videos: Videos) -> list[Tool[Any, str]]:
                             editor.engine,
                             editor.directory,
                             lambda path: videos.checked(run, tool, path, "read"),
-                        ).run(music=args.music, dialogue=args.dialogue, timeline=args.timeline)
+                        ).run(
+                            music=args.music,
+                            dialogue=args.dialogue,
+                            timeline=args.timeline,
+                            mode=args.mode,
+                        )
                     )
                 if isinstance(args, _Loudness):
                     return receipt(
@@ -974,10 +979,13 @@ def tools_of(videos: Videos) -> list[Tool[Any, str]]:
         tool(
             "video_duck",
             _Duck,
-            "Duck specified background tracks with Track FX Ducker, using an explicit dialogue "
+            "Duck specified background tracks with Track FX Ducker (default) or source-time "
+            "Volume keyframes, using an explicit dialogue "
             "track or the highest existing transcript word density. Defaults: 12 dB duck, "
-            "600 ms recovery. Measure candidates with DSP history; check each background "
-            "track against dialogue and quiet baseline, adjust by 3 dB at most twice, then "
+            "15 ms lookahead and 600 ms recovery. Keyframes require transcript words and "
+            "preserve existing static/linear Volume; affected easing requires Ducker mode. "
+            "Measure candidates with DSP history; check actual stereo background PCM sum "
+            "against dialogue and quiet baseline, adjust by 3 dB at most twice, then "
             "apply once. Inspect met and verification_complete; absent/short words cannot "
             "prove the target. No transcription or dialogue guessing is performed.",
             long=True,

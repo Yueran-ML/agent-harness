@@ -1759,7 +1759,8 @@ class Engine:
         is asked for. A caller that gives up has the job cancelled.
 
         Args:
-            method: Which analysis: the loudness and peaks of clips, tracks or buses
+            method: Which analysis: the loudness and peaks of clips, tracks, buses or actual
+                stereo PCM track sums (one or more tracks, e.g. ``targets: [{"sum": ["A1"]}]``)
                 (``audio.analyze``), the gains of Normalize Audio Levels (``audio.normalize``), or
                 of Level Matcher (``audio.level_match``).
             params: Its params, as the protocol says (``timeline``, ``targets``, ``clips``,

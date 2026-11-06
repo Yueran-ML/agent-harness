@@ -70,8 +70,8 @@ def setup(tmp_path: Path, *, words: bool = True, margin: float = 12) -> AsyncMoc
     async def measure(_method: str, params: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
         return {
             "results": [
-                {"target": {"track": "A1"}, "integrated": -18, "sample_peak": -12},
-                {"target": {"track": "A2"}, "integrated": -18 - margin, "sample_peak": -20},
+                {"target": {"sum": ["A1"]}, "integrated": -18, "sample_peak": -12},
+                {"target": {"sum": ["A2"]}, "integrated": -18 - margin, "sample_peak": -20},
             ]
         }
 
@@ -182,7 +182,7 @@ def test_word_mapping_uses_source_trim_speed_and_reverse() -> None:
     assert quiet_ranges([(50, 100)], 200, Rate(num=25, den=1)) == [(0, 49), (119, 200)]
 
 
-async def test_two_backgrounds_each_twelve_lu_lower_do_not_prove_their_sum(tmp_path: Path) -> None:
+async def test_two_backgrounds_each_twelve_lu_lower_are_judged_by_real_sum(tmp_path: Path) -> None:
     wire = setup(tmp_path)
     tracks = wire.project.return_value[1]["timelines"][0]["tracks"]
     tracks.append({**copy.deepcopy(tracks[1]), "id": "A3"})
@@ -192,7 +192,11 @@ async def test_two_backgrounds_each_twelve_lu_lower_do_not_prove_their_sum(tmp_p
             "results": [
                 {
                     "target": target,
-                    "integrated": -18 if target == {"track": "A1"} else -30,
+                    "integrated": -18
+                    if target == {"sum": ["A1"]}
+                    else -24
+                    if len(target["sum"]) > 1
+                    else -30,
                     "sample_peak": -12,
                 }
                 for target in params["targets"]
@@ -202,7 +206,131 @@ async def test_two_backgrounds_each_twelve_lu_lower_do_not_prove_their_sum(tmp_p
     wire.analyze_sound.side_effect = measure
     result = await Duck(wire, tmp_path, Path).run(music=["A2", "A3"])
     assert result["per_track_met"] is True
+    assert result["met"] is False
+    assert result["verification_complete"] is True
+    assert result["adjustments"] == 2
+    assert result["amount_db"] == {"A2": 18, "A3": 18}
+    assert (
+        next(row for row in result["checks"] if row["kind"] == "speech" and "sum" in row)[
+            "margin_lu"
+        ]
+        == 6
+    )
+    wire.apply.assert_awaited_once()
+
+
+async def test_keyframes_keep_existing_keys_and_track_fx_with_one_transaction(
+    tmp_path: Path,
+) -> None:
+    wire = setup(tmp_path)
+    track = wire.project.return_value[1]["timelines"][0]["tracks"][1]
+    track["lanes"] = {"track_fx.amount_db": {"points": [{"value": 3}]}}
+    track["clips"][0]["gain_db"] = {
+        "keys": [
+            {"at": {"ticks": 0, "scale": 25}, "value": -2, "interp": "linear"},
+            {"at": {"ticks": 200, "scale": 25}, "value": 2, "interp": "linear"},
+        ]
+    }
+    original = copy.deepcopy(wire.project.return_value)
+    result = await Duck(wire, tmp_path, Path).run(music=["A2"], mode="keyframes")
+    assert result["met"] is True
+    assert result["mode"] == "keyframes"
+    ops = result["ops"]
+    assert len(ops) == 1
+    assert ops[0]["op"] == "set_clip"
+    assert set(ops[0]) == {"op", "timeline", "id", "gain_db"}
+    keys = ops[0]["gain_db"]["keys"]
+    assert keys[0] == track["clips"][0]["gain_db"]["keys"][0]
+    assert keys[-1] == track["clips"][0]["gain_db"]["keys"][-1]
+    wire.apply.assert_awaited_once_with(ops, revision=7, session=3)
+    assert wire.project.return_value == original
+
+
+async def test_keyframes_need_words_and_refuse_affected_easing_before_analysis(
+    tmp_path: Path,
+) -> None:
+    wire = setup(tmp_path, words=False)
+    result = await Duck(wire, tmp_path, Path).run(music=["A2"], dialogue="A1", mode="keyframes")
+    assert result["status"] == "needs_transcript"
+    keep_words(tmp_path, Words.of(transcript()))
+    clip = wire.project.return_value[1]["timelines"][0]["tracks"][1]["clips"][0]
+    clip["gain_db"] = {
+        "keys": [
+            {"at": {"ticks": 0, "scale": 1}, "value": 0, "interp": "ease_out"},
+            {"at": {"ticks": 8, "scale": 1}, "value": 3, "interp": "linear"},
+        ]
+    }
+    with pytest.raises(EngineError, match="mode='ducker'"):
+        await Duck(wire, tmp_path, Path).run(music=["A2"], mode="keyframes")
+    wire.analyze_sound.assert_not_awaited()
+    wire.apply.assert_not_awaited()
+
+
+async def test_maximum_backgrounds_split_analysis_jobs_but_apply_once(tmp_path: Path) -> None:
+    wire = setup(tmp_path)
+    tracks = wire.project.return_value[1]["timelines"][0]["tracks"]
+    original = tracks[1]
+    for number in range(3, 257):
+        tracks.append({**copy.deepcopy(original), "id": f"A{number}"})
+    ids = [track["id"] for track in tracks[1:]]
+
+    async def measure(_method: str, params: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
+        assert len(params["targets"]) <= 256
+        return {
+            "results": [
+                {"target": target, "integrated": -18 if target == {"sum": ["A1"]} else -30}
+                for target in params["targets"]
+            ]
+        }
+
+    wire.analyze_sound.side_effect = measure
+    result = await Duck(wire, tmp_path, Path).run(music=ids)
+    assert result["met"] is True
+    assert any(
+        call.args[1]["targets"] == [{"sum": ids}] for call in wire.analyze_sound.call_args_list
+    )
+    assert len(result["ops"]) == 255
+    wire.apply.assert_awaited_once()
+
+
+@pytest.mark.parametrize("mode", ["ducker", "keyframes"])
+@pytest.mark.parametrize("background_count", [1, 2])
+async def test_post_pan_silent_dialogue_never_passes_even_with_loud_pre_pan_signal(
+    tmp_path: Path, mode: str, background_count: int
+) -> None:
+    wire = setup(tmp_path)
+    tracks = wire.project.return_value[1]["timelines"][0]["tracks"]
+    if background_count == 2:
+        tracks.append({**copy.deepcopy(tracks[1]), "id": "A3"})
+        tracks[-1]["clips"][0]["id"] = "cA3"
+
+    async def measure(_method: str, params: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
+        return {
+            "results": [
+                {
+                    "target": target,
+                    "integrated": None
+                    if target == {"sum": ["A1"]}
+                    else -18
+                    if target == {"track": "A1"}
+                    else -36,
+                    "sample_peak": None if target == {"sum": ["A1"]} else -12,
+                }
+                for target in params["targets"]
+            ]
+        }
+
+    wire.analyze_sound.side_effect = measure
+    result = await Duck(wire, tmp_path, Path).run(
+        music=[track["id"] for track in tracks[1:]], mode=mode
+    )
     assert result["met"] is None
     assert result["verification_complete"] is False
-    assert "combined mix" in result["notice"]
+    assert result["measurement_point"] == "stereo_post_pan"
+    assert all(row["margin_lu"] is None for row in result["checks"] if row["kind"] == "speech")
+    assert all(
+        "sum" in target
+        for call in wire.analyze_sound.call_args_list
+        for target in call.args[1]["targets"]
+    )
     wire.apply.assert_awaited_once()

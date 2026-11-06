@@ -646,7 +646,7 @@ class Fake:
         return {}
 
     def _sound(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
-        """Start an analysis of sound: told running, then how it ended, a moment later."""
+        """Echo analysis requests, including sum targets/candidates; never emulate their DSP."""
         self.sounds.append((method, copy.deepcopy(params)))
         job = f"audio-{len(self.sounds)}"
         self.jobs[job] = "running"

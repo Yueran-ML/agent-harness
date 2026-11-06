@@ -241,7 +241,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `audio.standards` | none | `{"standards": [{"id", "name", "target", "tolerance", "true_peak", "measure", "dialogue", "resolve", "official", "verified", "source"}, ...]}` |
 | `audio.eq_response` | `{"timeline":"t1", "target":{"track":"A1"}, "frequencies":[20,1000,20000]}`; target is exactly one of `track`, `bus`, `clip` | `{"revision", "sample_rate", "frequencies", "gain_db"}`; static EQ response (see Static processor curves) |
 | `audio.dynamics_curve` | `{"timeline":"t1", "target":{"track":"A1"}, "inputs_db":[-60,-20,0]}`; target is exactly one of `track`, `bus` | `{"revision", "inputs_db", "outputs_db"}`; static Dynamics curve (see Static processor curves) |
-| `audio.analyze` | `{"timeline": "t1", "targets": [{"clip": "c1"} \| {"track": "A1"} \| {"bus": "B1"}, ...], "range"?: {"from": 0, "to": 250}, "standard"?: "ebu-r128", "revision"?: n}` | `{"job": "audio-1"}` at once, then `audio.analysis` |
+| `audio.analyze` | `{"timeline": "t1", "targets": [{"clip": "c1"} \| {"track": "A1"} \| {"bus": "B1"} \| {"sum": ["A2", "A3"]}, ...], "range"?: {"from": 0, "to": 250}, "standard"?: "ebu-r128", "revision"?: n, "candidate"?: [...]}` | `{"job": "audio-1"}` at once, then `audio.analysis` |
 | `audio.normalize` | `{"timeline": "t1", "clips": ["c1", ...], "level"?: "sample_peak" \| "true_peak" \| "<standard>", "target"?: -9, "mode"?: "relative" \| "independent", "apply"?: false, "revision"?: n}` | `{"job": "audio-2"}` at once, then `audio.analysis` with the gains (Normalize Audio Levels) |
 | `audio.level_match` | `{"timeline": "t1", "reference": "c1", "clips": ["c2", ...], "apply"?: false, "revision"?: n}` | `{"job": "audio-3"}` at once, then `audio.analysis` with the gains (Level Matcher) |
 | `audio.cancel` | `{"job": "audio-1"}` | `{}`; the job ends `cancelled` |
@@ -4718,8 +4718,9 @@ What is measured is what an export would carry (a Listen never):
   by, and a clip normalized again is moved by nothing (a gain under 0.001 dB is not applied).
 
 `audio.analyze {timeline, targets, range?, standard?, revision?, candidate?}`: `targets` from 1 to 256, each
-`{"clip"}`, `{"track"}` (a track of sound that is on) or `{"bus"}`, each once (the tracks and buses are measured
-in one run of the mix, each clip in a run of its own); `standard` an id of the table,
+`{"clip"}`, `{"track"}` (a track of sound that is on), `{"bus"}` or `{"sum": [track, ...]}`,
+each once (the tracks and buses are measured in one run of the mix, each clip and sum in a run
+of its own); `standard` an id of the table,
 the timeline's by default. Done: `{job, state: "done", method: "audio.analyze", standard, level,
 results: [{target, integrated, range, momentary_max, short_term_max, true_peak, sample_peak,
 seconds, verdict}, ...]}` in the order of `targets`, `level` the target of the standard. Of the
@@ -4728,6 +4729,33 @@ of the exported file (within 0.1 LU and 0.2 dB).
 When `revision` is supplied, it is checked under the snapshot lock before a job is started;
 a mismatch returns `-32001`, `data.reason: "stale_revision"`, with `expected` and `actual`,
 without a job or history change. Omitting it retains the existing unbound behavior.
+
+A `sum` names 1 to 255 distinct enabled audio tracks. It measures their actual aligned PCM
+sum in stereo, after their strips, mute/solo, faders and panners, before any original downstream
+bus processing; it does not add their loudness numbers or energies. Each track contributes
+once irrespective of how many original outputs or sends it has. A private graph snapshot
+adds a neutral stereo, solo-safe sink and one output per named track. Original outputs,
+sidechains and the audibility of original strips are unchanged. This private sink also works
+when the project already uses all 64 buses or a track's 10 outputs; it is not a public model
+edit and is never saved, returned as an operation, or added to history. The result echoes the
+ordered `sum` target. Invalid length gives `out_of_range`, duplicate tracks `twice`, and
+missing, disabled or non-audio tracks `missing`. The same revision and candidate rules apply.
+
+`video_duck` measures dialogue and each background through single-member sums at the same
+stereo post-pan point, and uses the actual combined sum for the overall verdict with multiple
+background tracks. Its per-track checks also use that stereo post-pan point; the result states
+`measurement_point: "stereo_post_pan"`. The original `track` target retains its pre-pan
+after-fader contract. A dialogue rendered silent by Pan yields null, never a passing margin.
+It measures up to two 3 dB corrections before
+one final transaction. Its `keyframes` mode requires transcript words and adds a piecewise
+linear dB envelope to clip Volume in media-source time (including trim, speed and reverse):
+15 ms advance, full attenuation during speech, 600 ms recovery, holding across overlapping
+recovery/advance windows. Existing key times remain; unaffected curves remain unchanged.
+An outward easing flag at the original first/last key, previously unused by endpoint hold,
+becomes linear only when new keys extend that held region; this preserves the original curve.
+An affected eased segment, or a breakpoint not exactly representable by model Time, is
+refused with a suggestion to use `ducker`. The -96 dB floor is represented with exact linear
+crossing keys when possible. No keyframe edit replaces Track FX or its automation.
 
 `candidate`, when present, is a nonempty list of operations/edits using the same transaction
 format and local names as `transaction.apply`. It requires `revision` (`revision_required`

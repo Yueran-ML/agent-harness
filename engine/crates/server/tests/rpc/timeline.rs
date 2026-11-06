@@ -454,6 +454,81 @@ async fn timeline_scrubbing_settles_on_the_exact_frame() {
     );
 }
 
+/// Play In to Out and Loop (Fairlight, Reference Manual 20, pp. 3744–3745): a range plays from
+/// its first frame and stops at its last; with Loop on it goes round to its first.
+#[tokio::test]
+async fn timeline_plays_a_range_to_its_end_and_round_again_where_it_loops() {
+    if columbina_compose::gpu_for_tests().is_none() {
+        return;
+    }
+    let dir = project_dir();
+    let Some((_engine, mut client)) = transport_engine_with(
+        dir.path(),
+        &[support::Sample::Fhd],
+        &["--sound", "null", "--test-hooks"],
+    )
+    .await
+    else {
+        return;
+    };
+    let got = project(&mut client).await;
+    let mut video = clip("$one", "m1", 0, 100);
+    video["source"]["in"]["scale"] =
+        got["project"]["media"][0]["facts"]["duration"]["scale"].clone();
+    let names = add_timeline(&mut client, vec![video], vec![]).await;
+    load(&mut client, &names).await;
+    for (params, reason) in [
+        (json!({"monitor":"source", "from":0, "to":5}), "monitor"),
+        (json!({"monitor":"timeline", "from":5, "to":5}), "range"),
+        (json!({"monitor":"timeline", "from":-1, "to":5}), "range"),
+    ] {
+        let refused = client.error("transport.play_range", Some(params)).await;
+        assert_eq!(refused["code"], -32602, "{refused}");
+        assert_eq!(refused["data"]["reason"], reason, "{refused}");
+    }
+    let refused = client
+        .error("transport.loop", Some(json!({"monitor":"source", "on":true})))
+        .await;
+    assert_eq!(refused["data"]["reason"], "monitor", "{refused}");
+    client.take_notifications();
+    action(&mut client, "transport.play_range", json!({"from":10, "to":16})).await;
+    client
+        .until_state("the range plays", |s| {
+            s["monitor"] == "timeline" && s["playing"] == true && s["range"] == json!({"from":10, "to":16})
+        })
+        .await;
+    let (stopped, _) = client
+        .until_state("stopped at its end", |s| {
+            s["monitor"] == "timeline" && s["playing"] == false
+        })
+        .await;
+    assert_eq!(stopped["frame"], 16, "{stopped}");
+    assert!(stopped.get("range").is_none(), "{stopped}");
+    action(&mut client, "transport.loop", json!({"on":true})).await;
+    client
+        .until_state("loop on", |s| s["monitor"] == "timeline" && s["loop"] == true)
+        .await;
+    action(&mut client, "transport.play_range", json!({"from":10, "to":16})).await;
+    client
+        .until_state("near its end", |s| {
+            s["monitor"] == "timeline" && s["playing"] == true && s["frame"].as_i64() >= Some(14)
+        })
+        .await;
+    let (round, _) = client
+        .until_state("round to its start", |s| {
+            s["monitor"] == "timeline" && s["frame"].as_i64() <= Some(11)
+        })
+        .await;
+    assert_eq!(round["playing"], true, "{round}");
+    assert_eq!(round["range"], json!({"from":10, "to":16}), "{round}");
+    action(&mut client, "transport.pause", json!({})).await;
+    let (paused, _) = client
+        .until_state("paused", |s| s["monitor"] == "timeline" && s["playing"] == false)
+        .await;
+    assert!(paused.get("range").is_none(), "{paused}");
+    assert_eq!(paused["loop"], true, "{paused}");
+}
+
 #[tokio::test]
 async fn timeline_rebuilds_a_broken_shared_proxy_instead_of_reusing_its_twin() {
     if columbina_compose::gpu_for_tests().is_none() {

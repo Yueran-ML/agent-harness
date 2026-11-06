@@ -766,6 +766,10 @@ export interface TimelineTransportState extends TransportBase {
   all_read?: boolean;
   /** Whether dragging the playhead plays its sound (`transport.scrub_audio`, Timeline › Audio Scrubbing, p. 731; phase 3 T18); true where an older engine leaves it out. */
   scrub_audio?: boolean;
+  /** Whether playing goes round (`transport.loop`, Loop, Ctrl+/, p. 3744; phase 3 T20b); left out while it does not. */
+  loop?: boolean;
+  /** The frames that Play In to Out plays (`transport.play_range`, Alt+/, p. 3745), while it plays them. */
+  range?: { from: number; to: number };
 }
 export type TransportState = SourceTransportState | TimelineTransportState;
 /** A LUT that a grade of the timeline names and the engine could not read (PROTOCOL.md, "Grades in the picture"). */
@@ -941,6 +945,16 @@ export type MeterOwner = { track: string } | { bus: string };
 export interface StripMeters { owner: MeterOwner; pre: MeterChannel[]; post: MeterChannel[] }
 /** Where the integrated loudness stands against the standard: blue, yellow, red (p. 3984). */
 export type LoudnessVerdict = 'low' | 'within' | 'high';
+/**
+ * What `audio.loudness` is asked to do: Start, Pause, Reset, or `reset_peak`, the true and sample
+ * peaks cleared alone (a click on TP, p. 3983; phase 3 T20b).
+ */
+export type LoudnessAction = 'start' | 'pause' | 'reset' | 'reset_peak';
+/**
+ * The monitor of Fairlight's transport (`audio.monitor`, p. 3668; phase 3 T20b): what every output
+ * plays at, never a render. `level` is in dB from −∞ (`null`) to 0; DIM takes 20 dB more off it.
+ */
+export interface MonitorOutput { mute: boolean; level: number | null; dim: boolean }
 /** The loudness meter of the bus monitored (`audio.loudness`): LUFS, LU, dBTP, dBFS; `null` before there is one. */
 export interface LoudnessReading {
   running: boolean;
@@ -1076,6 +1090,8 @@ export interface PageMethods {
   'transport.state': TransportState;
   'transport.proxies': Record<string, never>;
   'transport.scrub_audio': Record<string, never>;
+  'transport.loop': Record<string, never>;
+  'transport.play_range': Record<string, never>;
   'view.place': Record<string, never>;
   'view.show': Record<string, never>;
   'scopes.statistics': ScopeStatistics;
@@ -1099,6 +1115,7 @@ export interface PageMethods {
   'audio.eq_response': { revision: number; sample_rate: number; frequencies: number[]; gain_db: number[] };
   'audio.dynamics_curve': { revision: number; inputs_db: number[]; outputs_db: number[] };
   'audio.loudness': LoudnessReading;
+  'audio.monitor': MonitorOutput;
   'audio.analyze': { job: string };
   'audio.normalize': { job: string };
   'audio.level_match': { job: string };

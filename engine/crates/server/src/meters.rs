@@ -176,6 +176,7 @@ impl Meters {
             (Action::Start, true) => board.start(),
             (Action::Pause, true) => board.pause(),
             (Action::Reset, true) => board.reset(),
+            (Action::ResetPeak, true) => board.reset_peaks(),
         }
         Some(loudness(board, ours, audio))
     }
@@ -191,6 +192,8 @@ pub(crate) enum Action {
     Pause,
     /// Reset.
     Reset,
+    /// The true and sample peaks alone cleared (a click on TP, p. 3983).
+    ResetPeak,
     /// Nothing: what it reads.
     Read,
 }
@@ -398,9 +401,16 @@ mod tests {
         let other = meters.control("t2", &audio, Action::Read).unwrap();
         assert_eq!(other["running"], true);
         assert!(meters.control("t2", &audio, Action::Reset).is_none());
+        assert!(meters.control("t2", &audio, Action::ResetPeak).is_none());
         assert_eq!(meters.shown("t2", &audio, false)["strips"], json!([]));
         let shown = meters.shown("t1", &audio, false);
         assert_eq!(shown["loudness"]["running"], false);
+        // A click on TP clears the peaks of t1 and leaves it paused.
+        let cleared = meters.control("t1", &audio, Action::ResetPeak).unwrap();
+        assert_eq!(cleared["running"], false);
+        assert_eq!(cleared["true_peak"], Value::Null);
+        let action: Action = serde_json::from_value(json!("reset_peak")).unwrap();
+        assert_eq!(action, Action::ResetPeak);
     }
 
     #[test]

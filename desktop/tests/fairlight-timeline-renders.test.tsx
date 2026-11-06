@@ -70,3 +70,17 @@ it('draws no row and no automation lane again as the playhead moves, and a lane 
     edit: 'clear_lanes', then: 'hold', at: { ticks: 30 / 25 * 48000, scale: 48000 },
   });
 });
+
+it('draws no row again as the playhead moves while the headers show meters and a choice of tracks', async () => {
+  const bridge = engine(), update = vi.fn(), onSeek = vi.fn();
+  const listeners = new Set<() => void>();
+  const meters = { subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; }, current: () => null };
+  const tree = (frame: number) => <FairlightTimeline view={{ ...view, automation: false }} update={update} bridge={bridge}
+    session={1} timeline={song} media={pool} revision={3} frame={frame} playing onSeek={onSeek} meters={meters}
+    selectedTracks={['a1', 'a2']} onTracksSelect={() => {}} />;
+  const mounted = render(tree(0)); await settle();
+  expect(screen.getAllByRole('meter', { name: /^Track meter Audio/ }).length).toBeGreaterThan(0);
+  drawn.rows = 0;
+  for (let frame = 1; frame <= 30; frame++) { mounted.rerender(tree(frame)); listeners.forEach(listener => listener()); }
+  expect(drawn.rows).toBe(0);
+});

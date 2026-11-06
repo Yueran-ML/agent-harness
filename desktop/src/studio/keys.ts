@@ -3,7 +3,8 @@
  *
  * - Space plays forward, or stops.
  * - L plays forward, and faster at each press (1×, 2×, 4×, 8×); J plays backward the same way;
- *   K stops. With K held, L and J go a frame forward and back.
+ *   K stops. With K held, L and J go a frame forward and back. Shift+L and Shift+J play at the
+ *   fastest speed at once (Fast Forward and Fast Reverse, Reference Manual 20, p. 3745).
  * - ← and → go a frame back and forward; with Shift, a second.
  * - Home and End go to the first frame and the last.
  *
@@ -69,10 +70,10 @@ export function commandOf(pressed: Pressed, context: KeyContext, held = false): 
       return { method: 'transport.pause' };
     case 'l':
       return held ? { method: 'transport.step', params: { frames: 1 } }
-        : { method: 'transport.play', params: { speed: faster(context, true) } };
+        : { method: 'transport.play', params: { speed: pressed.shiftKey ? FASTEST : faster(context, true) } };
     case 'j':
       return held ? { method: 'transport.step', params: { frames: -1 } }
-        : { method: 'transport.play', params: { speed: faster(context, false) } };
+        : { method: 'transport.play', params: { speed: pressed.shiftKey ? -FASTEST : faster(context, false) } };
     case 'ArrowLeft':
     case 'ArrowRight': {
       const by = pressed.shiftKey ? Math.max(1, context.fps) : 1;

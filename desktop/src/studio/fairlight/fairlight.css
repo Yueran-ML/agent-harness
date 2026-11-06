@@ -68,3 +68,30 @@
 .fairlight-cinema { position: fixed; z-index: 80; inset: 0; display: flex; flex-direction: column; background: #111; }
 .fairlight-cinema .monitor { flex: 1; min-height: 0; }
 @media (max-width: 1100px) { .fairlight-left { max-width: 35vw; } .fairlight-inspector { max-width: 28vw; } .fairlight-toolbar { font-size: 11px; } }
+/* Track headers: number in the track's colour, format, and the track's own meter (p. 3669). */
+.fairlight-timeline .timeline-track-header { overflow: hidden; }
+.fairlight-header-detail { display: flex; align-items: center; gap: 4px; height: 16px; border-left: 3px solid; padding-left: 3px; font-size: 10px; }
+.fairlight-track-number { font-weight: 600; font-variant-numeric: tabular-nums; }
+.fairlight-track-format { opacity: .75; white-space: nowrap; }
+.fairlight-header-meter { display: flex; margin-left: auto; width: 22px; height: 14px; }
+.fairlight-header-meter .audio-meter { gap: 1px; }
+.fairlight-timeline .timeline-track[data-mixer-selected] .timeline-track-header { background: #304b4e; }
+.fairlight-timeline [data-height-locked] .timeline-track-resize { cursor: default; }
+/* View Options: Full Waveforms hides the name bar; Waveform Borders outlines the waveform (p. 3677). */
+.fairlight-timeline[data-full-waveforms] .timeline-clip-name { display: none; }
+.fairlight-timeline[data-full-waveforms] .fairlight-channel-lanes { top: 0; }
+.fairlight-timeline[data-waveform-borders] .timeline-waveform { filter: drop-shadow(0 0 .6px #e8fff4) drop-shadow(0 0 .6px #0c2219); }
+/* The transport above the timeline: timecode, Range In and Out, and the transport buttons (p. 3667). */
+.fairlight-transport { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 6px; flex-wrap: wrap; border-bottom: 1px solid var(--border, #40454e); font-size: 11px; }
+.fairlight-timecodes, .fairlight-transport-buttons { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.fairlight-big-timecode { font-size: 18px; min-width: 9.5em; text-align: left; font-variant-numeric: tabular-nums; }
+.fairlight-timecodes output { font-variant-numeric: tabular-nums; opacity: .85; }
+.fairlight-shuttle { min-width: 3.5em; color: #e2c758; }
+/* The playhead off the view: an orange mark on the scroll bar where it is (p. 3670). */
+.fairlight-timeline { position: relative; }
+.fairlight-playhead-tick { position: absolute; bottom: 0; width: 2px; height: 10px; background: #e8892b; z-index: 6; pointer-events: none; }
+/* The monitor controls of the transport: red while muted, the slider yellow while DIM is on (p. 3668). */
+.fairlight-monitor-controls { display: flex; align-items: center; gap: 5px; }
+.fairlight-monitor-controls [data-muted] { color: #e5534b; border-color: #e5534b; }
+.fairlight-monitor-controls input[type=range] { width: 90px; accent-color: #69b8b5; }
+.fairlight-monitor-controls input[data-dim] { accent-color: #e2c758; }

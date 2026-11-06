@@ -4,7 +4,7 @@ import type { Clip, Media, Op, Rate, Track } from '../engine';
 import { ClipView } from './ClipView';
 import { spanStyle, transitionSpan, visible } from './geometry';
 import { SubtitleCues } from './SubtitleTrack';
-import { TrackHeader } from './TrackHeader';
+import { TrackHeader, type HeightScope } from './TrackHeader';
 import type { Waveforms } from './waveforms';
 import { AudioOverlay, type AudioOverlayContext } from './AudioOverlay';
 export interface TrackClipDrawing { clip: Clip; track: Track; media?: Media; rate: Rate; scale: number; from: number; to: number; waves: Waveforms }
@@ -14,9 +14,10 @@ export interface TrackClipDrawing { clip: Clip; track: Track; media?: Media; rat
  * whole steps as the timeline scrolls (see `scrollWindow`), so a row is drawn again only where the
  * scroll crosses a step, or what it shows changes; not as the playhead moves.
  */
-export const TrackRow = memo(function TrackRow({ timeline, track, media, rate, scale, from, to, height, waves, onEdit, onHeight, selected, mixerSelected, targeted, onTarget, chosen = null, chosenCue = null, shownSubtitles = null, drawClip, audioOverlay, decoration }: {
+export const TrackRow = memo(function TrackRow({ timeline, track, media, rate, scale, from, to, height, waves, onEdit, onHeight, selected, mixerSelected, targeted, onTarget, chosen = null, chosenCue = null, shownSubtitles = null, drawClip, audioOverlay, decoration,
+  headerDetail, renameOnClick, heightLocked }: {
   timeline: string; track: Track; media: ReadonlyMap<string, Media>; rate: Rate; scale: number; from: number; to: number;
-  height: number; waves: Waveforms; onEdit: (ops: Op[]) => Promise<boolean>; onHeight: (id: string, height: number) => void;
+  height: number; waves: Waveforms; onEdit: (ops: Op[]) => Promise<boolean>; onHeight: (id: string, height: number, scope?: HeightScope) => void;
   selected: ReadonlySet<string>; targeted: boolean; onTarget: (id: string) => void;
   mixerSelected?: boolean;
   /** The transition chosen, where it is on this track. */
@@ -28,6 +29,10 @@ export const TrackRow = memo(function TrackRow({ timeline, track, media, rate, s
   drawClip?: (props: TrackClipDrawing) => ReactNode;
   audioOverlay?: AudioOverlayContext;
   decoration?: ReactNode;
+  /** What the page shows in the header beside the name (see `TrackHeader`). */
+  headerDetail?: ReactNode;
+  renameOnClick?: boolean;
+  heightLocked?: boolean;
 }) {
   const all = useWords();
   const words = all.label.studio.timeline;
@@ -38,7 +43,7 @@ export const TrackRow = memo(function TrackRow({ timeline, track, media, rate, s
   }, [track]);
   return <div className="timeline-track" data-track={track.id} data-kind={track.kind} data-mixer-selected={mixerSelected || undefined} data-enabled={track.enabled} data-locked={track.locked} style={{ height, boxShadow: track.color ? `inset 3px 0 ${track.color}` : undefined }}>
     <TrackHeader timeline={timeline} track={track} height={height} onEdit={onEdit} onHeight={onHeight} targeted={targeted} onTarget={onTarget}
-      shownSubtitles={shownSubtitles} />
+      shownSubtitles={shownSubtitles} detail={headerDetail} renameOnClick={renameOnClick} heightLocked={heightLocked} />
     <div className="timeline-lane" role="listbox" aria-label={track.name} title={track.kind === 'subtitle' && !track.locked ? all.hint.studio.inspector.addCue : undefined} aria-multiselectable={track.kind === 'subtitle' ? undefined : true}>
       {track.kind === 'subtitle' ? <SubtitleCues track={track} from={from} to={to} chosen={chosenCue} />
         // A clip of video is given its own span, which does not change as the window moves; one of

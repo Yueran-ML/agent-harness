@@ -30,6 +30,8 @@ import { EffectsLibrary, AUDIO_EFFECT_DRAG, AUDIO_EFFECTS } from '../fairlight/E
 import { LevelMatcher, type CapturedProfile, type LevelMatcherHandle } from '../fairlight/LevelMatcher';
 import { useAudioReadings } from '../fairlight/audioReadings';
 import { useFairlightView } from '../fairlight/viewState';
+import { FairlightTransport } from '../fairlight/FairlightTransport';
+import type { Marks } from '../timeline/snap';
 import { Mixer } from '../fairlight/Mixer';
 import { analysisStandardId } from '../audio/mixerModel';
 import { mixerOrder, moveMixerItems, useMixerLayout } from '../audio/mixerLayout';
@@ -59,6 +61,8 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
   const [matching, setMatching] = useState(false);
   const [clips, setClips] = useState<string[]>([]); const [track, setTrack] = useState<string | null>(null);
   const [transition, setTransition] = useState<string | null>(null);
+  // The In and Out of the timeline, which Range In and Range Out set and show.
+  const [marks, setMarks] = useState<Marks>({ in: null, out: null });
   const normalize = useNormalizeAudio({ bridge, session, revision, timeline: selected, selection: clips, commands: () => timeline.current });
   const attributes = useClipAttributes({ bridge, session, revision, timeline: selected, selection: clips });
   const channelSources = useChannelSourceMenu({ bridge, session, revision, timeline: selected, media });
@@ -111,6 +115,22 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
     });
   },[bridge,session,selected?.id]);
   const showAutomation=(target:AutomationTarget)=>{const key=ownerKey(target.of);update({automation:true,lanePaths:{...view.lanePaths,[key]:target.path},lastLanePaths:{...view.lastLanePaths,[key]:target.path}});};
+  /**
+   * Track Waveform Zoom of a clip's right-click menu (Reference Manual 20, p. 3671): the waveform of
+   * its track, or of the tracks chosen where its track is one, made higher, lower or as it was.
+   */
+  const trackWaveformMenu = (clip: string) => {
+    const owner = selected?.tracks.find(each => each.kind !== 'subtitle' && each.clips.some(item => item.id === clip))?.id;
+    const chosen = stripSelection.filter(key => key.startsWith('track:')).map(key => key.slice(6));
+    const targets = owner === undefined ? [] : chosen.includes(owner) ? chosen : [owner];
+    const zoom = (factor: number | null) => update(old => ({ trackWaveform: { ...old.trackWaveform, ...Object.fromEntries(targets.map(id =>
+      [id, factor === null ? 1 : Math.max(1, Math.min(16, (old.trackWaveform[id] ?? 1) * factor))])) } }));
+    return { id: 'track-waveform-zoom', label: t('Track Waveform Zoom'), disabled: !targets.length, items: [
+      { id: 'waveform-increase', label: t('Zoom Increase Height'), run: () => zoom(1.25) },
+      { id: 'waveform-decrease', label: t('Zoom Decrease Height'), run: () => zoom(0.8) },
+      { id: 'waveform-reset', label: t('Reset'), run: () => zoom(null) },
+    ] };
+  };
   const soundClips = clips.filter(id => selected?.tracks.some(track => track.kind === 'audio' && track.clips.some(clip => clip.id === id)));
   const viewer = <MonitorPane bridge={bridge} native={native} active={cinema || (view.viewer && view.meters)} controls={timelineMonitor} notice={noticeOf('timeline')} onRetry={onRetry} />;
   const showLeft = view.pool || view.index || view.effects || view.groups;
@@ -143,9 +163,11 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
           if (!clip && (targetTrack.strip?.inserts.length ?? 0) >= 6) return;
           void edit(targets.map(of => ({ op: 'add_insert', timeline: selected.id, of, insert: { on: true, effect: { kind: effect } } })));
         }}>
-        <FairlightTimeline ref={timeline} timeline={selected} bridge={bridge} session={session} revision={revision} media={media}
+        {selected && <FairlightTransport bridge={bridge} session={session} monitor={timelineMonitor} marks={marks}
+          onMark={edge => { timeline.current?.perform({ kind: 'mark', edge }); }} onFailure={error => setProblem(failure(error))} />}
+        <FairlightTimeline ref={timeline} onMarks={setMarks} timeline={selected} bridge={bridge} session={session} revision={revision} media={media}
           frame={state ? timelineMonitor.frame ?? 0 : 0} playing={state?.playing ?? false} onSeek={timelineMonitor.seek}
-          onSelection={setClips} onTransition={setTransition} onTrackSelect={chooseTrack} selectedTracks={stripSelection.filter(key => key.startsWith('track:')).map(key => key.slice(6))} onSpeed={setSpeed} view={view} update={update}
+          onSelection={setClips} onTransition={setTransition} onTrackSelect={chooseTrack} onTracksSelect={ids => chooseStrips(ids.map(id => `track:${id}`))} meters={audio.readings} selectedTracks={stripSelection.filter(key => key.startsWith('track:')).map(key => key.slice(6))} onSpeed={setSpeed} view={view} update={update}
           onCopyClips={attributes.copy} onClipContext={(id, x, y, channel) => { if (selected?.tracks.some(track => track.kind === 'audio' && track.clips.some(clip => clip.id === id))) setContext({ clip: id, x, y, ...channel }); }} />
         {view.mixer && <><Separator label={t('Mixer height')} direction={-1} value={view.mixerHeight} min={180} max={500} onChange={mixerHeight => update({ mixerHeight })} />
           <section className="fairlight-mixer-slot" aria-label={t('Mixer')} style={{ height: view.mixerHeight }}>{mixer ?? (selected && <Mixer bridge={bridge} session={session} revision={revision}
@@ -167,6 +189,7 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
       { id: 'capture-level', label: t('Capture Level Profile'), disabled: matching, run: () => matcher.current?.capture(context.clip) },
       { id: 'apply-level', label: t('Apply Level Profile'), disabled: !profile || matching,
         run: () => matcher.current?.apply(soundClips.includes(context.clip) ? soundClips : [context.clip]) },
+      trackWaveformMenu(context.clip),
     ]), ...channelSources.items(context), ...(context.sourcesOnly ? [] : [{ id: 'close', label: t('Close') }]),
     ] }} />}
     {channelSources.problem && <div role="alert">{channelSources.problem}<button type="button" onClick={channelSources.clear}>{t('Close')}</button></div>}

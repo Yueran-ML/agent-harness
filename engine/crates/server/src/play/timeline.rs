@@ -51,6 +51,13 @@ const SCRUB_IDLE: Duration = Duration::from_secs(1);
 /// review): the sound ahead of the device, its latency, and the fade.
 const SCRUB_FADE_OUT: Duration = Duration::from_millis(100);
 
+/// The frames that Play In to Out plays, from the first to the last (`transport.play_range`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct PlayRange {
+    pub from: i64,
+    pub to: i64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -113,6 +120,14 @@ pub struct Status {
     /// is touched is heard and not written; left out where it is not.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub all_read: bool,
+    /// Whether playing goes round at the end, or the end of the range played (`transport.loop`,
+    /// Loop, p. 3744); left out where it does not.
+    #[serde(rename = "loop", skip_serializing_if = "std::ops::Not::not")]
+    pub looping: bool,
+    /// The range that Play In to Out plays while it plays (`transport.play_range`, p. 3745);
+    /// left out otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range: Option<PlayRange>,
 }
 
 impl Default for Status {
@@ -142,6 +157,8 @@ impl Default for Status {
             recording: false,
             automation_playback: true,
             all_read: false,
+            looping: false,
+            range: None,
         }
     }
 }
@@ -1066,6 +1083,7 @@ impl Worker {
         self.status = Status {
             proxies: self.status.proxies,
             scrub_audio: self.status.scrub_audio,
+            looping: self.status.looping,
             ..Status::default()
         };
         let instance = {
@@ -1662,7 +1680,29 @@ impl Worker {
     fn action(&mut self, action: Action) {
         let frame = self.status.frame.unwrap_or(0);
         let last = self.status.last.unwrap_or(0);
+        // Any other way of moving the playhead ends Play In to Out.
+        if matches!(
+            action,
+            Action::Play { .. } | Action::Pause | Action::Seek { .. } | Action::Step { .. }
+        ) {
+            self.status.range = None;
+        }
         match action {
+            Action::Loop { on } => self.status.looping = on,
+            Action::PlayRange { from, to } => {
+                let from = clock::clamped(from, last);
+                let to = clock::clamped(to, last);
+                if to <= from {
+                    self.tell(true);
+                    return;
+                }
+                self.action(Action::Seek {
+                    frame: from,
+                    scrubbing: false,
+                });
+                self.action(Action::Play { speed: 1 });
+                self.status.range = Some(PlayRange { from, to });
+            }
             Action::Play { speed } => {
                 if self.status.playing && self.status.speed == speed {
                     self.tell(true);
@@ -1780,20 +1820,29 @@ impl Worker {
         }
         if let Some(clock) = self.clock_due() {
             let target = clock.frame(self.clock_now());
-            let frame = clock::clamped(target, self.status.last.unwrap_or(0));
+            let last = self.status.last.unwrap_or(0);
+            // Playing stops, or goes round, at the ends of the timeline or of the range played.
+            let (start, end) = self.status.range.map_or((0, last), |range| {
+                (range.from.min(last), range.to.min(last))
+            });
+            let frame = clock::clamped(target, last).clamp(start, end.max(start));
             if self.status.frame != Some(frame) {
                 self.status.frame = Some(frame);
                 // Drawing asks the track readers for what follows this frame.
                 let _ = self.draw(false, false);
                 self.tell(false);
             }
-            if (clock.speed() > 0 && target >= self.status.last.unwrap_or(0))
-                || (clock.speed() < 0 && target <= 0)
-            {
-                self.pause();
-                // The endpoint is exact even if read-ahead was late on the last tick.
-                let _ = self.draw(true, false);
-                self.tell(true);
+            let forward = clock.speed() > 0;
+            if (forward && target >= end) || (!forward && target <= start) {
+                if self.status.looping && end > start {
+                    self.go_round(if forward { start } else { end }, clock);
+                } else {
+                    self.pause();
+                    self.status.range = None;
+                    // The endpoint is exact even if read-ahead was late on the last tick.
+                    let _ = self.draw(true, false);
+                    self.tell(true);
+                }
             }
         } else if self.settle.is_some_and(|at| Instant::now() >= at) {
             self.settle = None;
@@ -1808,6 +1857,27 @@ impl Worker {
             // The pipelines of the grades of the frame shown are made: it is drawn again.
             let _ = self.draw(true, false);
         }
+    }
+
+    /// Loop: playing goes on from `frame`, the other end of what it plays, at the same speed;
+    /// the range played stays.
+    fn go_round(&mut self, frame: i64, clock: Clock) {
+        let range = self.status.range;
+        self.pause();
+        self.status.frame = Some(frame);
+        let _ = self.draw(true, false);
+        self.prime(frame.saturating_add(i64::from(clock.speed().signum())));
+        self.clock = Some(Clock::starting(
+            frame,
+            clock.speed(),
+            clock.rate(),
+            self.now(),
+        ));
+        self.fine = Some(crate::timer::Fine::new());
+        self.status.playing = true;
+        self.restart_sound();
+        self.status.range = range;
+        self.tell(true);
     }
 
     fn request(&self, frame: i64, scrubbing: bool) {
@@ -3038,6 +3108,71 @@ mod tests {
             worker.clock_due();
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    /// The clock of the system drives the picture, and it began `seconds` ago at `frame`.
+    fn played_for(worker: &mut Worker, frame: i64, seconds: i128) {
+        worker.playback.stop();
+        worker.sound.stop();
+        worker.status.sound = Sound::Off;
+        let rate = worker.clock.expect("playing").rate();
+        worker.clock = Some(Clock::starting(
+            frame,
+            1,
+            rate,
+            worker.now() - seconds * clock::NANOS,
+        ));
+    }
+
+    #[test]
+    fn play_in_to_out_stops_at_the_out_point_and_loop_goes_round_to_the_in_point() {
+        let mut worker = worker();
+        worker.status.timeline = Some("t1".into());
+        worker.replace(0, Arc::new(Project::sample()));
+        // No picture is waited for: the test is of the playhead alone.
+        worker.readers.clear();
+        assert!(worker.status.last.unwrap() > 20);
+        worker.action(Action::PlayRange { from: 10, to: 20 });
+        assert!(worker.status.playing);
+        assert_eq!(worker.status.frame, Some(10));
+        assert_eq!(worker.status.range, Some(PlayRange { from: 10, to: 20 }));
+        // A second later the clock is past the Out point: playing stops there, exactly.
+        played_for(&mut worker, 10, 1);
+        worker.tick();
+        assert!(!worker.status.playing);
+        assert_eq!(worker.status.frame, Some(20));
+        assert_eq!(worker.status.range, None);
+        // With Loop on it goes back to the In point and plays on, the range kept.
+        worker.action(Action::Loop { on: true });
+        worker.action(Action::PlayRange { from: 10, to: 20 });
+        played_for(&mut worker, 10, 1);
+        worker.tick();
+        assert!(worker.status.playing);
+        assert_eq!(worker.status.frame, Some(10));
+        assert_eq!(worker.status.range, Some(PlayRange { from: 10, to: 20 }));
+        // Pausing ends the range; Loop stays on, as the state tells it.
+        worker.action(Action::Pause);
+        assert_eq!(worker.status.range, None);
+        let told = serde_json::to_value(&worker.status).unwrap();
+        assert_eq!(told["loop"], true);
+        assert!(told.get("range").is_none());
+        // Without a range, Loop goes round at the end of the timeline.
+        let last = worker.status.last.unwrap();
+        worker.action(Action::Seek {
+            frame: last - 2,
+            scrubbing: false,
+        });
+        worker.action(Action::Play { speed: 1 });
+        played_for(&mut worker, last - 2, 1);
+        worker.tick();
+        assert!(worker.status.playing);
+        assert_eq!(worker.status.frame, Some(0));
+        // A range that ends where it begins plays nothing.
+        worker.action(Action::Pause);
+        worker.action(Action::PlayRange { from: 5, to: 5 });
+        assert!(!worker.status.playing);
+        worker.action(Action::Loop { on: false });
+        assert!(serde_json::to_value(&worker.status).unwrap().get("loop").is_none());
     }
 
     #[test]

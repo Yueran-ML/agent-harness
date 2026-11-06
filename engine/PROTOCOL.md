@@ -242,7 +242,8 @@ Before `hello`, every other request is refused with `-32600`.
 | `render.start` | `{"timeline":"t1", "path":"<file>", "codec":"h264", "quality":"high", "range"?:{"from":0,"to":250}, "subtitle_tracks"?:["S1"], "replace"?:false, "revision"?:n, "audio"?:{"bus"?, "rate"?, "codec"?, "bitrate"?, "normalize"?}}`, or with `"video":null` and no `codec` or `quality` for the sound alone | `{"job": "render-1"}` (see Rendering a timeline, and The sound of an export) |
 | `render.cancel` | `{"job": "render-1"}` | `{}` |
 | `audio.meters` | `{"timeline": "t1", "reset"?: false}` | what the meters of the timeline show now: `{"timeline", "playing", "rate": 30, "scale", "strips": [...], "control_room", "loudness": {...}, "lost"}` (see Meters, loudness and the analysis of sound) |
-| `audio.loudness` | `{"timeline": "t1", "action"?: "start" \| "pause" \| "reset"}` | the loudness meter after the action: `{"running", "standard", "target", "momentary", ...}` |
+| `audio.loudness` | `{"timeline": "t1", "action"?: "start" \| "pause" \| "reset" \| "reset_peak"}` | the loudness meter after the action: `{"running", "standard", "target", "momentary", ...}` |
+| `audio.monitor` | `{"mute"?: bool, "level"?: dB \| null, "dim"?: bool}` (phase 3, T20b) | the monitor after the change: `{"mute", "level", "dim"}` (see Meters, loudness and the analysis of sound) |
 | `audio.standards` | none | `{"standards": [{"id", "name", "target", "tolerance", "true_peak", "measure", "dialogue", "resolve", "official", "verified", "source"}, ...]}` |
 | `audio.eq_response` | `{"timeline":"t1", "target":{"track":"A1"}, "frequencies":[20,1000,20000]}`; target is exactly one of `track`, `bus`, `clip` | `{"revision", "sample_rate", "frequencies", "gain_db"}`; static EQ response (see Static processor curves) |
 | `audio.soft_clip_curve` | `{timeline, target, slot, inputs}`; target is exactly one of `track`, `bus`, `clip`; 1–512 finite inputs in [-2,2] | `{revision, inputs, outputs}`; see FX readers and noise learning |
@@ -1676,6 +1677,8 @@ playing, including stopping its sound, before starting the requested monitor.
 | `transport.state` | `{"monitor":m}` | the state |
 | `transport.proxies` | `{"monitor":m, "on":true \| false}` | `{}` |
 | `transport.scrub_audio` | `{"monitor":"timeline", "on":true \| false}` (phase 3, T18) | `{}` |
+| `transport.loop` | `{"monitor":"timeline", "on":true \| false}` (phase 3, T20b) | `{}` |
+| `transport.play_range` | `{"monitor":"timeline", "from":n, "to":n}`: `from` 0 or more, `to` after it (phase 3, T20b) | `{}` |
 
 Here `m` is `"source"` or `"timeline"`. Missing, null or unknown monitors, unknown parameters,
 and fields for the wrong monitor are refused with `-32602`.
@@ -1731,6 +1734,19 @@ notification `transport.state`):
   when another timeline is loaded. `transport.scrub_audio` is of the timeline monitor only: with
   `"monitor":"source"` it is refused with `-32602 {reason:"monitor"}` (the source monitor plays
   no sound while its playhead is dragged).
+- `loop` (phase 3, T20b): whether playing goes round (Fairlight's Loop, Ctrl+/, p. 3744), as
+  `transport.loop` sets it; left out where it does not. Forward, playing that reaches the last
+  frame (or the end of the range played) goes on from frame 0 (or the start of the range) at the
+  same speed; backward, from the end to the start. The sound starts again there. It is kept when
+  another timeline is loaded.
+- `range` (phase 3, T20b): `{"from":n, "to":n}`, the frames that `transport.play_range` plays
+  (Play In to Out, Alt+/, p. 3745), while it plays them; left out otherwise. `transport.play_range`
+  seeks to `from` and plays forward at speed 1; the playhead stays within the range, and playing
+  stops at `to` exactly, or goes round to `from` where `loop` is on. Both ends are clamped to the
+  timeline; a range that is then empty plays nothing. `transport.play`, `.pause`, `.seek` and
+  `.step` end the range. `transport.loop` and `transport.play_range` are of the timeline monitor
+  only: with `"monitor":"source"` they are refused with `-32602 {reason:"monitor"}`, and a range
+  that begins before 0 or does not end after it begins with `-32602 {reason:"range"}`.
 
 - Timeline positions use the timeline's frame rate; `last` is `max(duration - 1, 0)`.
   An empty timeline shows black at frame 0. Removing the loaded timeline unloads it and clears
@@ -4429,7 +4445,7 @@ commits to it; and any client may send transactions. So:
 | `-32700` | the line is not JSON (id `null`) | |
 | `-32600` | not a request object, `jsonrpc` is not `"2.0"`, no `method`, a bad `id` (answered with id `null`), a request before `hello`, a second `hello`, a `hello` of another protocol, a line over 16 MiB, `view.*` or `engine.yield` from a client that is not the desktop | `{"reason": "protocol", "supported": [2]}` for a `hello` of another protocol |
 | `-32601` | no such method; `view.*` (but `view.sample` of a frame drawn off screen), `transport.*` and `scopes.*` (but `scopes.statistics` of a frame drawn off screen) in a `--headless` engine; `media.make_proxy` in an engine that makes no proxies; `engine.yield` in an engine that is not headless | |
-| `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name`; a speed of `transport.play` out of −8…8 or 0; `transport.scrub_audio` of the source monitor (`{"reason": "monitor"}`); `transport.load` of media or a timeline not in the project; `timeline.duration` of a timeline not there; `media.import` or `media.inspect` with no paths or a relative path; `media.thumbnail`, `media.waveform` or `media.make_proxy` of media not there; `media.waveform` of a `stream` that is not a stream of sound of the media, or of a `mix` naming a source channel that the media does not have; `media.thumbnail` of a frame outside the media, a height outside 1…270 or a width over 16384; a bad parent or rectangle of `view.*`; `render.start` with a bad path, codec, quality, timeline, range (an empty timeline has none, so it cannot be exported), `subtitle_tracks` or `audio` (see The sound of an export), and `render.cancel` of a job that is not there; `scopes.*` with bad settings, a scope that is not the connection's, too many scopes or bins out of range; `luts.list` with a `folder` outside the roots; `grade.export_lut` of a size, path, grade or node that it does not take; `transaction.apply` with a `gesture` id that is empty or longer than 64 characters; `view.sample` off the frame or of an even size, and `view.sample` or `scopes.statistics` naming a node that cannot be drawn | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above; `{"reason": "speed"}`; `{"index": i, "path": "...", "reason": "relative"}`; `{"reason": "parent"}` or `{"reason": "rect"}` (`view.*`); `{"reason": "missing", "media": "..."}` or `{"reason": "missing", "timeline": "..."}` (`render.start` too); `{"reason": "stream", "stream": n}` (`media.waveform`, also of a `mix`); `{"reason": "channel", "stream": n, "channel": c}` (a `mix` of `media.waveform`); `{"reason": "out_of_range", "frame": n}`; `{"reason": "subtitle_track", "track": "..."}` for a `subtitle_tracks` entry that is not a subtitle track of the timeline, or is named twice; `{"reason": "bus" \| "rate" \| "audio_codec" \| "bitrate" \| "standard" \| "target", ...}` (the `audio` of `render.start`); `{"reason": "settings" \| "missing" \| "too_many" \| "bins", ...}` (`scopes.*`, see Scopes); `{"reason": "outside_roots", "folder": "..."}` (`luts.list`); `{"reason": "size" \| "path" \| "missing" \| "not_a_corrector" \| "cannot_bake", ...}` (`grade.export_lut`, see Generate LUT); `{"reason": "gesture"}`; `{"reason": "outside" \| "size" \| "monitor" \| "node" \| "grade" \| "timeline" \| "clip"}` (see Samples and the pointer) |
+| `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name`; a speed of `transport.play` out of −8…8 or 0; `transport.scrub_audio`, `transport.loop` or `transport.play_range` of the source monitor (`{"reason": "monitor"}`); a range of `transport.play_range` that begins before 0 or does not end after it begins (`{"reason": "range"}`); a `level` of `audio.monitor` over 0 dB (`{"reason": "level"}`); `transport.load` of media or a timeline not in the project; `timeline.duration` of a timeline not there; `media.import` or `media.inspect` with no paths or a relative path; `media.thumbnail`, `media.waveform` or `media.make_proxy` of media not there; `media.waveform` of a `stream` that is not a stream of sound of the media, or of a `mix` naming a source channel that the media does not have; `media.thumbnail` of a frame outside the media, a height outside 1…270 or a width over 16384; a bad parent or rectangle of `view.*`; `render.start` with a bad path, codec, quality, timeline, range (an empty timeline has none, so it cannot be exported), `subtitle_tracks` or `audio` (see The sound of an export), and `render.cancel` of a job that is not there; `scopes.*` with bad settings, a scope that is not the connection's, too many scopes or bins out of range; `luts.list` with a `folder` outside the roots; `grade.export_lut` of a size, path, grade or node that it does not take; `transaction.apply` with a `gesture` id that is empty or longer than 64 characters; `view.sample` off the frame or of an even size, and `view.sample` or `scopes.statistics` naming a node that cannot be drawn | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above; `{"reason": "speed"}`; `{"index": i, "path": "...", "reason": "relative"}`; `{"reason": "parent"}` or `{"reason": "rect"}` (`view.*`); `{"reason": "missing", "media": "..."}` or `{"reason": "missing", "timeline": "..."}` (`render.start` too); `{"reason": "stream", "stream": n}` (`media.waveform`, also of a `mix`); `{"reason": "channel", "stream": n, "channel": c}` (a `mix` of `media.waveform`); `{"reason": "out_of_range", "frame": n}`; `{"reason": "subtitle_track", "track": "..."}` for a `subtitle_tracks` entry that is not a subtitle track of the timeline, or is named twice; `{"reason": "bus" \| "rate" \| "audio_codec" \| "bitrate" \| "standard" \| "target", ...}` (the `audio` of `render.start`); `{"reason": "settings" \| "missing" \| "too_many" \| "bins", ...}` (`scopes.*`, see Scopes); `{"reason": "outside_roots", "folder": "..."}` (`luts.list`); `{"reason": "size" \| "path" \| "missing" \| "not_a_corrector" \| "cannot_bake", ...}` (`grade.export_lut`, see Generate LUT); `{"reason": "gesture"}`; `{"reason": "outside" \| "size" \| "monitor" \| "node" \| "grade" \| "timeline" \| "clip"}` (see Samples and the pointer) |
 | `-32001` | a transaction, undo or redo was refused; the project is exactly as it was; or `render.start` was refused before anything was written or taken away (with `{"reason":"stopping"}` while the engine is stopping; with no `data` when the export could not be started) | the refusal, below |
 | `-32002` | `media.import` or `media.inspect`: a file cannot be read; nothing was added. `transport.load`, `media.thumbnail`, `media.waveform`: the file of the media cannot be opened or decoded. The analysis of the engine stopped (no `data`) | `{"path": "<as sent>", "reason": "...", "message": "..."}`, below |
 | `-32003` | `view.*`: the view cannot be made, there is none, or its window is gone | `{"reason": "..."}`, see The view |
@@ -4812,8 +4828,17 @@ buses go of their peaks (a click on the meters: the only end of Infinite hold).
 - `lost`: cells written over before they were read since the engine started (0 unless the engine
   was held up for a third of a second).
 
+`audio.monitor {mute?, level?, dim?}` (phase 3, T20b) is the monitor of Fairlight's transport
+(p. 3668): what every output of the engine plays at, never a render, the project or its undo.
+`level` is in dB from −∞ (`null`) to 0 (C-M2; 0 at first), `dim` takes 20 dB more off it while it
+is on (C-M1), and `mute` silences it; the gain moves to a new value over 10 ms. What is left out
+stays; without params it only reads. A level over 0 is `-32602 {reason:"level"}`. It answers the
+monitor after the change, `{"mute": false, "level": 0, "dim": false}` at first.
+
 `audio.loudness {timeline, action?}`: `start` (or resume), `pause` (what plays is not heard, what
-was measured is kept), `reset` (nothing measured); without `action`, only what it reads. Only
+was measured is kept), `reset` (nothing measured), `reset_peak` (phase 3, T20b: the true and sample
+peaks start again, all else measured kept, as a click on the TP readout does, p. 3983); without
+`action`, only what it reads. Only
 playing switches the meters to a timeline: for another timeline than the one that played last,
 a read is of nothing measured, and an action is `-32001` with `{"reason": "not_metered",
 "timeline"}`. With Lock

@@ -9,7 +9,7 @@
 //! 20 ms, so that sound in it would be counted as heard that much too early (as phases 1 and 2
 //! did, `server/src/audio.rs`).
 
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use crate::rt::{
@@ -156,6 +156,39 @@ pub struct Player {
     capture: Option<Capture>,
     /// The frames captured so far, and whether a session was captured yet.
     captured: (u64, bool),
+    /// The gain of what is heard, as `f32` bits (the monitor's level, mute and DIM), where one
+    /// is given ([`Player::monitored`]), and the gain applied to the last frame.
+    monitor: Option<Arc<AtomicU32>>,
+    level: f32,
+}
+
+/// How long the gain of the monitor takes to go from silence to full, or back: 10 ms, so that a
+/// change of the level, mute or DIM is heard without a click.
+pub const MONITOR_RAMP_SECONDS: f32 = 0.010;
+
+/// The frames of `samples` (of `channels` channels at `rate`) at the monitor's gain `gain`,
+/// `level` the gain of the frame before, moved towards it frame by frame.
+fn monitor_gain(gain: Option<&AtomicU32>, level: &mut f32, (rate, channels): (u32, usize), samples: &mut [f32]) {
+    let Some(gain) = gain else {
+        return;
+    };
+    let target = f32::from_bits(gain.load(Ordering::Relaxed));
+    #[allow(clippy::float_cmp, reason = "exactly unity: the sound is given as it is")]
+    if target == 1.0 && *level == 1.0 {
+        return;
+    }
+    #[allow(clippy::cast_precision_loss, reason = "a rate of samples")]
+    let step = 1.0 / (rate as f32 * MONITOR_RAMP_SECONDS).max(1.0);
+    for frame in samples.chunks_exact_mut(channels) {
+        *level = if *level < target {
+            (*level + step).min(target)
+        } else {
+            (*level - step).max(target)
+        };
+        for sample in frame {
+            *sample *= *level;
+        }
+    }
 }
 
 impl std::fmt::Debug for Player {
@@ -221,6 +254,8 @@ pub fn player(
             scratch: scratch.into_boxed_slice(),
             capture,
             captured: (0, false),
+            monitor: None,
+            level: 1.0,
         },
         Control {
             orders,
@@ -232,6 +267,16 @@ pub fn player(
 }
 
 impl Player {
+    /// What it gives is heard at the gain held in `gain` (its `f32` bits, from 0 to 1): the
+    /// monitor's level, mute and DIM, which never reach a render. The gain moves to a new value
+    /// over [`MONITOR_RAMP_SECONDS`] at most; at 1, the sound is given as it is.
+    #[must_use]
+    pub fn monitored(mut self, gain: Arc<AtomicU32>) -> Self {
+        self.level = f32::from_bits(gain.load(Ordering::Relaxed));
+        self.monitor = Some(gain);
+        self
+    }
+
     /// Sends `feeding` back to be dropped, or keeps it to send at the next run (no order is
     /// taken until it is sent, so that there is never more than one).
     fn give_back(&mut self, feeding: Feeding) {
@@ -311,6 +356,12 @@ impl Player {
         while done < wanted {
             let count = (wanted - done).min(piece);
             let got = feeding.ring.pop(&mut self.scratch[..count * channels]);
+            monitor_gain(
+                self.monitor.as_deref(),
+                &mut self.level,
+                (self.rate, channels),
+                &mut self.scratch[..got * channels],
+            );
             let samples = &self.scratch[..got * channels];
             for (slot, &sample) in data[done * channels..(done + got) * channels]
                 .iter_mut()
@@ -351,5 +402,39 @@ impl Player {
             run,
             fed: self.fed,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rt::samples;
+
+    #[test]
+    fn the_monitor_gain_ramps_to_its_value_and_leaves_unity_as_it_is() {
+        // At 1000 frames a second the ramp of 10 ms is 0.1 a frame.
+        let gain = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
+        let (player, mut control) = player((1, 1000), false, false, None);
+        let mut player = player.monitored(Arc::clone(&gain));
+        let (mut producer, consumer) = samples(64, 1);
+        assert_eq!(producer.push(&[0.5; 16]), 16);
+        control.orders.push(Order::Play(Feeding { generation: 1, ring: consumer })).unwrap();
+        let mut heard = [0.0_f32; 4];
+        player.fill(&mut heard, (0, 0), 0.0, |sample| sample);
+        assert_eq!(heard, [0.5; 4], "at unity the sound is given as it is");
+        gain.store(0.5_f32.to_bits(), Ordering::Relaxed);
+        let mut heard = [0.0_f32; 8];
+        player.fill(&mut heard, (0, 0), 0.0, |sample| sample);
+        let expected = [0.9_f32, 0.8, 0.7, 0.6, 0.5, 0.5, 0.5, 0.5].map(|gain| gain * 0.5);
+        for (heard, expected) in heard.iter().zip(expected) {
+            assert!((heard - expected).abs() < 1e-6, "{heard} {expected}");
+        }
+        // Muted: down towards silence, 0.1 a frame.
+        gain.store(0.0_f32.to_bits(), Ordering::Relaxed);
+        let mut heard = [1.0_f32; 4];
+        player.fill(&mut heard, (0, 0), 0.0, |sample| sample);
+        for (heard, expected) in heard.iter().zip([0.4_f32, 0.3, 0.2, 0.1].map(|gain| gain * 0.5)) {
+            assert!((heard - expected).abs() < 1e-6, "{heard} {expected}");
+        }
     }
 }

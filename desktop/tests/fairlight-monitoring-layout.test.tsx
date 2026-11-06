@@ -69,3 +69,10 @@ it('makes the meter context options operate the same view state as the existing 
   expect(screen.getByRole('region',{name:'Monitoring'}).dataset.rows).toBe('2');
   expect(patch).not.toHaveBeenCalled();
 });
+it('clears the true peak alone with a click on the Control Room TP readout',()=>{
+  render(<Monitoring timeline={timeline()} meters={meters} onAction={action} onResetPeaks={()=>{}} onPatch={patch}/>);
+  const peak=screen.getByRole('button',{name:'Reset true peak'});
+  expect(peak.textContent).toBe('-1.0 dBTP');
+  fireEvent.click(peak);
+  expect(action.mock.calls).toEqual([['reset_peak']]);
+});

@@ -249,3 +249,11 @@ it('writes only the settings that a pasted insert setting changes', () => {
   expect(changedFields({ kind: 'gain', gain_db: 0, invert: false, band: { q: 1, on: true } },
     { kind: 'gain', gain_db: 3, invert: false, band: { q: 2, on: false } })).toEqual([['gain_db', 3], ['band.q', 2], ['band.on', 0]]);
 });
+
+it('shows nothing in Write where the engine put nothing into Write', async () => {
+  const call = vi.fn(async (method: string): Promise<EngineAnswer> => ({ ok: true, result: method === 'automation.punch' ? { lanes: 0 } : {} }));
+  toolbar(song(), ['track:a1'], { call });
+  fireEvent.click(screen.getByText('Punch In'));
+  await settle();
+  expect(screen.getByLabelText('owner state').textContent).toBe('none');
+});

@@ -64,12 +64,11 @@ export function AutomationToolbar({ bridge, session, timeline, view, update, rec
   ) => {
     setBusy(true);
     try {
-      await callEngine(bridge, method, { timeline: timeline.id, ...args }, { expectedSession: session });
-      return true;
+      return await callEngine(bridge, method, { timeline: timeline.id, ...args }, { expectedSession: session });
     }
     catch (e) {
       onFailure(e);
-      return false;
+      return null;
     }
     finally {
       setBusy(false);
@@ -87,7 +86,9 @@ export function AutomationToolbar({ bridge, session, timeline, view, update, rec
       return;
     }
     const of = selected.map(ownerOf);
-    if (await run('automation.punch', { of }))
+    // Shown in Write only where the engine put settings of them into Write.
+    const punched = await run('automation.punch', { of });
+    if (punched && 'lanes' in punched && punched.lanes > 0)
       touch?.punchIn(of);
   };
   // Punch Out (p. 3913): under Preview, every setting in Write, Trim or Preview goes back to Read;

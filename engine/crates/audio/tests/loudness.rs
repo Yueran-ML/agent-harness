@@ -351,6 +351,35 @@ fn the_absolute_gate_leaves_out_what_is_under_minus_70() {
 }
 
 #[test]
+fn a_reset_of_the_peaks_clears_the_true_and_sample_peaks_and_keeps_the_loudness() {
+    // A click on TP (Reference Manual 20, p. 3983): the peaks start again, what was measured stays.
+    let mut loudness = Loudness::new();
+    for n in 1..=500 {
+        loudness.push(Cell {
+            energy: f64::from(n),
+            true_peak: if n == 100 { 0.9 } else { 0.1 },
+            sample_peak: if n == 100 { 0.8 } else { 0.1 },
+        });
+    }
+    let before = loudness.reading();
+    loudness.reset_peaks();
+    let after = loudness.reading();
+    assert!(after.true_peak < before.true_peak && after.sample_peak < before.sample_peak);
+    assert_eq!(
+        (after.momentary, after.short_term, after.integrated, after.range, after.seconds),
+        (before.momentary, before.short_term, before.integrated, before.range, before.seconds)
+    );
+    loudness.push(Cell {
+        energy: 1.0,
+        true_peak: 0.25,
+        sample_peak: 0.2,
+    });
+    let again = loudness.reading();
+    assert_eq!(again.true_peak, 20.0 * f64::from(0.25_f32).log10());
+    assert_eq!(again.sample_peak, 20.0 * f64::from(0.2_f32).log10());
+}
+
+#[test]
 fn the_windows_are_the_means_of_their_cells() {
     // Cells of energy 1, 2, 3, …: each window is the exact mean of its last cells.
     let mut loudness = Loudness::new();

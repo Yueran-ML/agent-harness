@@ -230,6 +230,7 @@ const entries = {
   'Jump to': ['跳转到', 'ジャンプ先'], 'Fade': ['淡变', 'フェード'],
   'Track Waveform Zoom': ['轨道波形缩放', 'トラック波形ズーム'], 'Zoom Increase Height': ['增大波形高度', '波形の高さを拡大'],
   'Zoom Decrease Height': ['减小波形高度', '波形の高さを縮小'],
+  'Reset true peak': ['清零真峰值', 'トゥルーピークをリセット'],
 } as const;
 export type FairlightText = keyof typeof entries;
 const english: Partial<Record<FairlightText, string>> = {

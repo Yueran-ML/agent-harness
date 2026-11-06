@@ -274,6 +274,11 @@ impl Board {
         self.loudness.reset();
     }
 
+    /// The true and sample peaks of the loudness cleared, what it measured kept (a click on TP).
+    pub fn reset_peaks(&mut self) {
+        self.loudness.reset_peaks();
+    }
+
     /// The meters of the tracks and buses back to silence, their peaks let go of (a click on the
     /// meters; the only end of Infinite hold).
     pub fn reset_meters(&mut self) {

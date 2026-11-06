@@ -625,6 +625,13 @@ impl Loudness {
         self.sample_peak = 0.0;
     }
 
+    /// The true and sample peaks back to nothing heard, all else measured kept (a click on the
+    /// true peak readout, p. 3983). Does not allocate.
+    pub fn reset_peaks(&mut self) {
+        self.true_peak = 0.0;
+        self.sample_peak = 0.0;
+    }
+
     /// The mean energy of the last `cells` cells, silence before the first.
     #[allow(clippy::cast_precision_loss, reason = "a few hundred cells")]
     fn window(&self, cells: usize) -> f64 {

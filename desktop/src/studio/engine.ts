@@ -945,6 +945,11 @@ export type MeterOwner = { track: string } | { bus: string };
 export interface StripMeters { owner: MeterOwner; pre: MeterChannel[]; post: MeterChannel[] }
 /** Where the integrated loudness stands against the standard: blue, yellow, red (p. 3984). */
 export type LoudnessVerdict = 'low' | 'within' | 'high';
+/**
+ * What `audio.loudness` is asked to do: Start, Pause, Reset, or `reset_peak`, the true and sample
+ * peaks cleared alone (a click on TP, p. 3983; phase 3 T20b).
+ */
+export type LoudnessAction = 'start' | 'pause' | 'reset' | 'reset_peak';
 /** The loudness meter of the bus monitored (`audio.loudness`): LUFS, LU, dBTP, dBFS; `null` before there is one. */
 export interface LoudnessReading {
   running: boolean;

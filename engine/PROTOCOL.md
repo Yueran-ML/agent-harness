@@ -242,7 +242,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `render.start` | `{"timeline":"t1", "path":"<file>", "codec":"h264", "quality":"high", "range"?:{"from":0,"to":250}, "subtitle_tracks"?:["S1"], "replace"?:false, "revision"?:n, "audio"?:{"bus"?, "rate"?, "codec"?, "bitrate"?, "normalize"?}}`, or with `"video":null` and no `codec` or `quality` for the sound alone | `{"job": "render-1"}` (see Rendering a timeline, and The sound of an export) |
 | `render.cancel` | `{"job": "render-1"}` | `{}` |
 | `audio.meters` | `{"timeline": "t1", "reset"?: false}` | what the meters of the timeline show now: `{"timeline", "playing", "rate": 30, "scale", "strips": [...], "control_room", "loudness": {...}, "lost"}` (see Meters, loudness and the analysis of sound) |
-| `audio.loudness` | `{"timeline": "t1", "action"?: "start" \| "pause" \| "reset"}` | the loudness meter after the action: `{"running", "standard", "target", "momentary", ...}` |
+| `audio.loudness` | `{"timeline": "t1", "action"?: "start" \| "pause" \| "reset" \| "reset_peak"}` | the loudness meter after the action: `{"running", "standard", "target", "momentary", ...}` |
 | `audio.standards` | none | `{"standards": [{"id", "name", "target", "tolerance", "true_peak", "measure", "dialogue", "resolve", "official", "verified", "source"}, ...]}` |
 | `audio.eq_response` | `{"timeline":"t1", "target":{"track":"A1"}, "frequencies":[20,1000,20000]}`; target is exactly one of `track`, `bus`, `clip` | `{"revision", "sample_rate", "frequencies", "gain_db"}`; static EQ response (see Static processor curves) |
 | `audio.soft_clip_curve` | `{timeline, target, slot, inputs}`; target is exactly one of `track`, `bus`, `clip`; 1–512 finite inputs in [-2,2] | `{revision, inputs, outputs}`; see FX readers and noise learning |
@@ -4804,7 +4804,9 @@ buses go of their peaks (a click on the meters: the only end of Infinite hold).
   was held up for a third of a second).
 
 `audio.loudness {timeline, action?}`: `start` (or resume), `pause` (what plays is not heard, what
-was measured is kept), `reset` (nothing measured); without `action`, only what it reads. Only
+was measured is kept), `reset` (nothing measured), `reset_peak` (phase 3, T20b: the true and sample
+peaks start again, all else measured kept, as a click on the TP readout does, p. 3983); without
+`action`, only what it reads. Only
 playing switches the meters to a timeline: for another timeline than the one that played last,
 a read is of nothing measured, and an action is `-32001` with `{"reason": "not_metered",
 "timeline"}`. With Lock

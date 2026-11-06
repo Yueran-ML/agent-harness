@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useFailureText } from './words';
 import type { EngineBridge } from '../../bridge';
-import { callEngine, EngineError, type AudioAnalysis, type LoudnessReading, type MeterChannel, type Meters } from '../engine';
+import { callEngine, EngineError, type AudioAnalysis, type LoudnessAction, type LoudnessReading, type MeterChannel, type Meters } from '../engine';
 
 type Bridge = Pick<EngineBridge, 'call' | 'onEvent'>;
 interface JobOwner { live: boolean; waiting: boolean; running: boolean; cancelled: boolean; job: string | null; early: Map<string, AudioAnalysis> }
@@ -162,7 +162,7 @@ export function useAudioReadings(bridge: Bridge, session: number, timeline: stri
     document.addEventListener('visibilitychange', visibility); void read();
     return () => { current.live = false; clearTimeout(timer); document.removeEventListener('visibilitychange', visibility); };
   }, [bridge, session, timeline, visible]);
-  const action = async (which: 'start' | 'pause' | 'reset') => {
+  const action = async (which: LoudnessAction) => {
     const current = lifecycle.current;
     if (!timeline || !current.live) return;
     const sequence = ++current.action;

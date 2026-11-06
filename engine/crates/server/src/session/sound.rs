@@ -308,7 +308,7 @@ pub(super) async fn call(
         "audio.loudness" => {
             let request: Loudness = rpc::params(
                 method,
-                r#"{"timeline": "t1", "action"?: "start" | "pause" | "reset"}"#,
+                r#"{"timeline": "t1", "action"?: "start" | "pause" | "reset" | "reset_peak"}"#,
                 params,
             )?;
             let audio = settings(engine, &request.timeline).await?;

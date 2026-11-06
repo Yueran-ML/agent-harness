@@ -1,6 +1,6 @@
 import { useFairlightText } from './words';
 import { Fragment, useState, type ReactNode } from 'react';
-import type { LoudnessReading, LoudnessStandard, MeterChannel, Timeline } from '../engine';
+import type { LoudnessAction, LoudnessReading, LoudnessStandard, MeterChannel, Timeline } from '../engine';
 import { sameChannel, sameChannels, stripChannels, useMeterReading, type MeterSource } from './audioReadings';
 import type { FairlightText } from '../../messages/fairlight';
 import { Meter as AudioMeter } from '../audio/Meter';
@@ -37,8 +37,10 @@ function ControlRoomMeter({ source, label }: { source: MeterSource; label: strin
 const sameLoudness = (a: LoudnessReading | undefined, b: LoudnessReading | undefined) => a === b
   || Boolean(a && b && (Object.keys(b) as (keyof LoudnessReading)[]).every(key => a[key] === b[key]));
 const useLoudness = (source: MeterSource) => useMeterReading(source, meters => meters?.loudness, sameLoudness);
-function TruePeak({ source }: { source: MeterSource }) {
-  return <span>{reading(useLoudness(source)?.true_peak, 'dBTP')}</span>;
+/** The true peak of the Control Room; a click on it clears the peak alone, the loudness kept (p. 3983). */
+function TruePeak({ source, label, onReset }: { source: MeterSource; label: string; onReset: () => void }) {
+  return <button type="button" className="fairlight-true-peak" title={label} aria-label={label} onClick={onReset}>
+    {reading(useLoudness(source)?.true_peak, 'dBTP')}</button>;
 }
 /** The loudness figures, which change at every reading while the transport plays. */
 function LoudnessReadout({ source, value, bar, top, target, relative, t }: {
@@ -68,7 +70,7 @@ function LoudnessReadout({ source, value, bar, top, target, relative, t }: {
 const SEPARATOR = '\u0000';
 const stripKey = (owner: Owner) => 'track' in owner ? `track:${owner.track}` : `bus:${owner.bus}`;
 export function Monitoring({ timeline, meters, onAction, onResetPeaks, onPatch, viewer, layout, view, onView }: {
-  timeline: Timeline; meters: MeterSource; onAction: (action: 'start' | 'pause' | 'reset') => void;
+  timeline: Timeline; meters: MeterSource; onAction: (action: LoudnessAction) => void;
   onResetPeaks: () => void; onPatch: (patch: Record<string, unknown>) => void; viewer?: ReactNode;
   layout?: MixerLayout;
   view?: MonitoringView; onView?: (view: MonitoringView) => void;
@@ -118,7 +120,7 @@ export function Monitoring({ timeline, meters, onAction, onResetPeaks, onPatch, 
     </div><Separator vertical label={t(kind==='track'?'Track meters width':'Bus meters width')} value={kind==='track'?shown.tracksWidth:shown.busesWidth} min={60} max={1000} onChange={value=>update(kind==='track'?{tracksWidth:value}:{busesWidth:value})}/></Fragment>)}
     <section className="fairlight-control-room" aria-label={t('Control Room')}><strong>{t('Control Room')}</strong>
       <ControlRoomMeter source={meters} label={t('Control Room')} />
-      <TruePeak source={meters} />
+      <TruePeak source={meters} label={t('Reset true peak')} onReset={() => onAction('reset_peak')} />
       <label>{t('Monitor bus')}<select aria-label={t('Monitor bus')} value={timeline.audio?.monitor === null ? '' : timeline.audio?.monitor ?? (timeline.buses?.some(bus => bus.id === 'B1') ? 'B1' : '')}
         onChange={event => onPatch({ monitor: event.target.value || null })}>
         <option value="">{t('None')}</option>{[true, false].map(main => <optgroup key={String(main)} label={t(main ? 'Main outputs' : 'Other buses')}>

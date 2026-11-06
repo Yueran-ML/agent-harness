@@ -19,11 +19,11 @@ transfer, reads it in as media, and draws it through the engine's input transfor
 """
 
 import json
-import os
+from pathlib import Path
 
-import PyOpenColorIO as ocio
+import PyOpenColorIO
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = Path(__file__).resolve().parent
 
 LINEAR = "Linear Rec.2020"
 TIMELINE = "DaVinci Intermediate WideGamut"
@@ -41,17 +41,29 @@ SPACES = [
 ]
 
 PATCHES = [
-    [0.0, 0.0, 0.0], [0.002, 0.002, 0.002], [0.01, 0.01, 0.01], [0.05, 0.05, 0.05],
-    [0.18, 0.18, 0.18], [0.5, 0.5, 0.5], [1.0, 1.0, 1.0], [2.0, 2.0, 2.0], [0.3, 0.12, 0.05],
-    [0.05, 0.2, 0.08], [0.04, 0.06, 0.5], [0.8, 0.6, 0.1], [1.5, 0.3, 0.2],
+    [0.0, 0.0, 0.0],
+    [0.002, 0.002, 0.002],
+    [0.01, 0.01, 0.01],
+    [0.05, 0.05, 0.05],
+    [0.18, 0.18, 0.18],
+    [0.5, 0.5, 0.5],
+    [1.0, 1.0, 1.0],
+    [2.0, 2.0, 2.0],
+    [0.3, 0.12, 0.05],
+    [0.05, 0.2, 0.08],
+    [0.04, 0.06, 0.5],
+    [0.8, 0.6, 0.1],
+    [1.5, 0.3, 0.2],
 ]
 
 
 def apply(cpu, colours):
+    """Apply the configured CPU transform to each RGB sample."""
     return [list(cpu.applyRGB([float(v) for v in c])) for c in colours]
 
 
 def ycbcr(rgb):
+    """Encode RGB as limited-range 10-bit BT.2020 code values."""
     r, g, b = rgb
     y = KR * r + (1 - KR - KB) * g + KB * b
     cb = (b - y) / (2 * (1 - KB))
@@ -61,6 +73,7 @@ def ycbcr(rgb):
 
 
 def decoded(codes):
+    """Decode limited-range BT.2020 code values without clipping RGB."""
     y = (codes[0] - 64) / 876
     cb = (codes[1] - 512) / 896
     cr = (codes[2] - 512) / 896
@@ -72,7 +85,8 @@ def decoded(codes):
 
 
 def main():
-    config = ocio.Config.CreateFromFile("ocio://studio-config-latest")
+    """Write the fixed colour reference samples beside this generator."""
+    config = PyOpenColorIO.Config.CreateFromFile("ocio://studio-config-latest")
     spaces = []
     for name, space, transfer, most in SPACES:
         patches = [c for c in PATCHES if max(c) <= most]
@@ -80,21 +94,23 @@ def main():
         into = config.getProcessor(space, TIMELINE).getDefaultCPUProcessor()
         ideal = config.getProcessor(LINEAR, TIMELINE).getDefaultCPUProcessor()
         codes = [ycbcr(rgb) for rgb in apply(encode, patches)]
-        spaces.append({
-            "name": name,
-            "ocio": space,
-            "transfer": transfer,
-            "linear": patches,
-            "codes": codes,
-            "expected": apply(into, [decoded(c) for c in codes]),
-            "ideal": apply(ideal, patches),
-        })
+        spaces.append(
+            {
+                "name": name,
+                "ocio": space,
+                "transfer": transfer,
+                "linear": patches,
+                "codes": codes,
+                "expected": apply(into, [decoded(c) for c in codes]),
+                "ideal": apply(ideal, patches),
+            }
+        )
     reference = {
-        "ocio": ocio.__version__,
+        "ocio": PyOpenColorIO.__version__,
         "timeline": TIMELINE,
         "spaces": spaces,
     }
-    with open(os.path.join(HERE, "reference.json"), "w", encoding="utf-8", newline="\n") as out:
+    with (HERE / "reference.json").open("w", encoding="utf-8", newline="\n") as out:
         json.dump(reference, out, indent=1)
         out.write("\n")
 

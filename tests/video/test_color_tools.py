@@ -422,7 +422,12 @@ def test_preserving_nodes_is_told_to_leave_out_the_first_nodes_of_the_copied_gra
     (copy_tool,) = [
         tool for tool in tools_of(Videos(Config(), None)) if tool.name == "video_grade_copy"
     ]
-    told = copy_tool.schema.parameters["properties"]["preserve_nodes"]["description"]
+    properties = copy_tool.schema.parameters["properties"]
+    assert isinstance(properties, dict)
+    preserve = properties["preserve_nodes"]
+    assert isinstance(preserve, dict)
+    told = preserve["description"]
+    assert isinstance(told, str)
     assert "in place of from's first N" in told
     assert "not copied" in told
 

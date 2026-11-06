@@ -118,9 +118,7 @@ async def test_real_cli_duck_consent_keeps_receipts_and_one_undo(
         assert (await engine.project())[1]["timelines"] == before["timelines"]
         # Explicit Undo does not reset the user's once-only answer.
         assert await pending(tmp_path, engine) == []
-        print(
-            "Real CLI consent: one transaction, A1/A2, durable receipts, repeat no-op, one Undo."
-        )
+        print("Real CLI consent: one transaction, A1/A2, durable receipts, repeat no-op, one Undo.")
 
     for _ in range(100):
         if not (directory / "engine.lock").exists():

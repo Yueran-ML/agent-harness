@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -19,7 +20,12 @@ def fixture(workspace: Path) -> tuple[AsyncMock, Path, Path]:
     old.mkdir()
     (old / "project.json").write_text('{"version":1,"canvas":{},"assets":[]}', encoding="utf-8")
     (old / "timeline.json").write_text("{}", encoding="utf-8")
-    value = {"timeline": "t1", "at": "old", "media": {}, "dropped": ["duck: omitted"]}
+    value: dict[str, Any] = {
+        "timeline": "t1",
+        "at": "old",
+        "media": {},
+        "dropped": ["duck: omitted"],
+    }
     marker = old / "migrated.json"
     marker.write_text(json.dumps(value), encoding="utf-8")
     receipt = receipts / "t1.json"
@@ -53,8 +59,8 @@ def fixture(workspace: Path) -> tuple[AsyncMock, Path, Path]:
     engine.apply.return_value = Applied(8, [], 1)
     engine.analyze_sound.return_value = {
         "results": [
-            {"target": {"track": f"r{i}"}, "integrated": -18, "sample_peak": -10}
-            for i in range(1, 4)
+            {"target": {"sum": tracks}, "integrated": -18, "sample_peak": -10}
+            for tracks in (["r1"], ["r2"], ["r3"], ["r2", "r3"])
         ]
     }
     return engine, marker, receipt

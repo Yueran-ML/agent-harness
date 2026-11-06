@@ -4,7 +4,7 @@ import asyncio
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from columbina.session import lock
 from columbina.video.duck import Duck
@@ -21,7 +21,7 @@ def _read(path: Path) -> dict[str, Any] | None:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    return value if isinstance(value, dict) else None
+    return cast("dict[str, Any]", value) if isinstance(value, dict) else None
 
 
 def _receipts(workspace: Path, studio: Path) -> dict[str, list[tuple[Path, dict[str, Any]]]]:
@@ -49,7 +49,7 @@ def _receipts(workspace: Path, studio: Path) -> dict[str, list[tuple[Path, dict[
 def _has_duck(value: dict[str, Any]) -> bool:
     lines = value.get("dropped")
     return isinstance(lines, list) and any(
-        isinstance(line, str) and line.startswith("duck:") for line in lines
+        isinstance(line, str) and line.startswith("duck:") for line in cast("list[Any]", lines)
     )
 
 
@@ -58,7 +58,7 @@ async def pending(workspace: Path, engine: Engine) -> list[dict[str, Any]]:
     _, project = await engine.project()
     existing = {timeline["id"] for timeline in project["timelines"]}
     receipts = await asyncio.to_thread(_receipts, workspace, engine.directory)
-    reports = []
+    reports: list[dict[str, Any]] = []
     for timeline, copies in receipts.items():
         if timeline not in existing or any(
             value.get("duck_prompted") is True for _, value in copies
@@ -80,7 +80,7 @@ def _mark(studio: Path, timeline: str, copies: list[tuple[Path, dict[str, Any]]]
     if companion.resolve() != companion.absolute():
         raise ProjectError("The duck receipt must remain inside the Studio project.")
     written(companion, json.dumps(value, ensure_ascii=False, indent=2) + "\n")
-    warnings = []
+    warnings: list[str] = []
     for path, old in copies:
         try:
             written(

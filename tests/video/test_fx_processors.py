@@ -12,10 +12,11 @@ async def test_fx_readers_presets_and_input_noise_job(tmp_path: Path) -> None:
         client = await Engine.attach(tmp_path / "film", program=str(fake_engine.__file__))
         fake.results["audio.fx_meters"] = {"playing": False, "readings": []}
         fake.results["audio.soft_clip_curve"] = {"revision": 7, "inputs": [0], "outputs": [0]}
+        payload = {"kind": "effect", "settings": {"kind": "gain", "gain_db": -3}}
         preset = {
             "id": "ap1",
             "name": "Gain",
-            "payload": {"kind": "effect", "settings": {"kind": "gain", "gain_db": -3}},
+            "payload": payload,
         }
         fake.results.update(
             {
@@ -28,8 +29,8 @@ async def test_fx_readers_presets_and_input_noise_job(tmp_path: Path) -> None:
         assert await client.fx_meters("t1") == {"playing": False, "readings": []}
         assert (await client.soft_clip_curve("t1", {"track": "a"}, 2, [0]))["revision"] == 7
         assert await client.audio_presets() == [preset]
-        assert await client.save_audio_preset("Gain", preset["payload"]) == preset
-        assert await client.update_audio_preset("ap1", preset["payload"]) == preset
+        assert await client.save_audio_preset("Gain", payload) == preset
+        assert await client.update_audio_preset("ap1", payload) == preset
         assert await client.delete_audio_preset("ap1") == {"deleted": "ap1"}
         fake.sound_found = {"profile": [0.1], "result": {"applied": {"revision": 8}}}
         learned = await client.noise_learn("t1", {"track": "a"}, 1, (0, 25), revision=7)

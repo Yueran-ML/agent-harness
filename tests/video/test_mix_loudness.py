@@ -157,7 +157,7 @@ async def test_main_already_within_reported_tolerance_adds_no_history_or_limiter
 
 async def test_main_reuses_the_last_active_limiter_in_a_full_chain() -> None:
     project = mix()
-    inserts = [
+    inserts: list[dict[str, Any]] = [
         {"id": f"fx{i}", "on": True, "effect": {"kind": "gain", "gain_db": 0}} for i in range(5)
     ]
     inserts.append(

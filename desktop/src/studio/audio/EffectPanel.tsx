@@ -97,7 +97,7 @@ export function EffectPanel({ index, expanded = true, onExpand, onMove, onDelete
         </button>
         <button
           type="button"
-          disabled={!editor.writable() || clipboard?.kind !== effect.kind}
+          disabled={!(editor.writable() || editor.pastesWritten) || clipboard?.kind !== effect.kind}
           onClick={event => {
             if (clipboard)
               editor.replace(structuredClone(clipboard), event);
@@ -118,7 +118,7 @@ export function EffectPanel({ index, expanded = true, onExpand, onMove, onDelete
         context={props}
         identity={`insert/${insert.id || index}/${effect.kind}`}
         value={{ kind: 'effect', settings: effect }}
-        disabled={!editor.writable()}
+        disabled={!(editor.writable() || editor.pastesWritten)}
         apply={(payload, modifiers) => {
           if (payload.kind === 'effect')
             editor.replace(payload.settings, modifiers);

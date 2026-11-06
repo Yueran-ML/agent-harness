@@ -58,7 +58,24 @@ export function FairlightTimeline({ view, update, ...props }: ComponentProps<typ
     <Timeline {...props} ref={handle} viewport={{ value: view.timelineViewport, update: updateViewport }} scrolling={view.scrolling}
       automationRange={activeRange&&activeRange.on&&props.timeline?{from:activeRange.start.ticks/activeRange.start.scale*props.timeline.rate.num/props.timeline.rate.den,to:activeRange.end.ticks/activeRange.end.scale*props.timeline.rate.num/props.timeline.rate.den}:null}
       gainLineDisabled={id => Boolean(view.automation && view.lanePaths[`track:${id}`])}
-      trackDecoration={(track,g) => view.automation && track.kind==='audio' ? <AutomationLane register={register} onActive={()=>{active.current=`track:${track.id}`;props.onTrackSelect?.(track.id);}} {...g} bridge={props.bridge} session={props.session} revision={props.revision} timeline={props.timeline!} of={{track:track.id}} lanes={track.lanes} locked={track.locked} arm={track.automation_arm} name={track.name} frame={props.frame} marks={()=>handle.current?.marks()??{in:null,out:null}} path={view.lanePaths[`track:${track.id}`]??''} pencil={view.pencil} onPath={path=>choose(`track:${track.id}`,path)} onEdit={edit}/> : null}
-      afterTracks={g => view.automation && props.timeline?.buses?.filter(bus=>!view.hidden.includes(`bus:${bus.id}`)).map(bus=><div key={bus.id} className="timeline-track automation-bus" style={{height:128}}><span>{bus.name}</span><AutomationLane register={register} onActive={()=>{active.current=`bus:${bus.id}`;}} {...g} height={128} bridge={props.bridge} session={props.session} revision={props.revision} timeline={props.timeline!} of={{bus:bus.id}} lanes={bus.lanes} arm={bus.automation_arm} name={bus.name} frame={props.frame} marks={()=>handle.current?.marks()??{in:null,out:null}} path={view.lanePaths[`bus:${bus.id}`]??''} pencil={view.pencil} onPath={path=>choose(`bus:${bus.id}`,path)} onEdit={edit}/></div>)} hiddenTracks={hidden} drawClip={draw} gainLine={view.gainLine} trackHeight={128} audioOnlyDrop={!view.video} label={t('Fairlight timeline')} />
+      trackDecoration={(track, g) => view.automation && track.kind === 'audio' ? <AutomationLane
+        register={register}
+        onActive={() => { active.current = `track:${track.id}`; props.onTrackSelect?.(track.id); }}
+        {...g} bridge={props.bridge} session={props.session} revision={props.revision}
+        timeline={props.timeline!} of={{ track: track.id }} lanes={track.lanes}
+        locked={track.locked} arm={track.automation_arm} name={track.name} frame={props.frame}
+        marks={() => handle.current?.marks() ?? { in: null, out: null }}
+        path={view.lanePaths[`track:${track.id}`] ?? ''} pencil={view.pencil}
+        onPath={path => choose(`track:${track.id}`, path)} onEdit={edit} /> : null}
+      afterTracks={g => view.automation && props.timeline?.buses?.filter(bus => !view.hidden.includes(`bus:${bus.id}`)).map(bus =>
+        <div key={bus.id} className="timeline-track automation-bus" style={{ height: 128 }}><span>{bus.name}</span><AutomationLane
+          register={register} onActive={() => { active.current = `bus:${bus.id}`; }} {...g}
+          height={128} bridge={props.bridge} session={props.session} revision={props.revision}
+          timeline={props.timeline!} of={{ bus: bus.id }} lanes={bus.lanes} arm={bus.automation_arm}
+          name={bus.name} frame={props.frame} marks={() => handle.current?.marks() ?? { in: null, out: null }}
+          path={view.lanePaths[`bus:${bus.id}`] ?? ''} pencil={view.pencil}
+          onPath={path => choose(`bus:${bus.id}`, path)} onEdit={edit} /></div>)}
+      hiddenTracks={hidden} drawClip={draw} gainLine={view.gainLine} trackHeight={128}
+      audioOnlyDrop={!view.video} label={t('Fairlight timeline')} />
   </section>;
 }

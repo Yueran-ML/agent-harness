@@ -203,3 +203,12 @@ it('track header adds Create Group without swallowing the existing menu, and str
   fireEvent.contextMenu(screen.getByRole('button', { name: 'Own fader menu' })); expect(controlMenu).toHaveBeenCalledOnce(); expect(screen.queryByRole('menu')).toBeNull();
   fireEvent.contextMenu(screen.getByText('Strip A1')); expect(screen.getByRole('menuitem', { name: 'Create Group' })).toBeTruthy();
 });
+it('selects the members of an enabled group by its box without writing anything', async () => {
+  const { ui, select, call, song } = setup();
+  // A group whose `active` is left out is enabled (the engine's default).
+  const enabled = { ...song.track_groups![0] }; delete enabled.active;
+  render(ui({ selected: [], timeline: { ...song, track_groups: [enabled] } }));
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Selected Voices' })); await settle();
+  expect(select).toHaveBeenLastCalledWith(['A1', 'A2']);
+  expect(call).not.toHaveBeenCalled();
+});

@@ -369,7 +369,10 @@ export function TrackGroups() {
           onClick={shift => {
             const active = !(count === members.length && group.active !== false);
             select(active ? [...new Set([...(shift ? selected : []), ...members])] : selected.filter(id => !members.includes(id)));
-            if (group.active !== active || !group.id)
+            // As DaVinci Resolve's Selected box (Reference Manual, pp. 3918, 3920), checking it also
+            // enables the group and clearing it disables it. That is an edit (and a step of undo)
+            // only where the group's state changes; a box that only selects writes nothing.
+            if ((group.active !== false) !== active)
               void edit([groupPatch(timeline, group, { active })]);
           }}
         />

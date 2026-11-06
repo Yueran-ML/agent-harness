@@ -159,7 +159,7 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
       {selected && <LevelMatcher ref={matcher} key={`${session}/${selected.id}`} bridge={bridge} session={session} timeline={selected} revision={revision} clips={soundClips} profile={profile} onCapture={onCapture} onPending={setMatching} />}
     </footer>
     {context && <CoveringMenu onClose={() => setContext(null)} menu={{ ...context, label: t('Audio clip'), items: [
-      ...attributes.items(context.clip),
+      ...(timeline.current?.clipboardItems(context.clip) ?? []), ...attributes.items(context.clip),
       normalize.item(context.clip),
       { id: 'analyze-audio', label: t('Analyze Audio Level'), run: () => setAnalysisClips(soundClips.includes(context.clip) ? soundClips : [context.clip]) },
       { id: 'capture-level', label: t('Capture Level Profile'), disabled: matching, run: () => matcher.current?.capture(context.clip) },

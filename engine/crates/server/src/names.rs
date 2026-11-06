@@ -436,6 +436,8 @@ fn visit_edit<E>(
         | Edit::Move { timeline, .. }
         | Edit::InsertMove { timeline, .. }
         | Edit::PlaceCopies { timeline, .. }
+        | Edit::PasteClips { timeline, .. }
+        | Edit::CutClips { timeline, .. }
         | Edit::Trim { timeline, .. }
         | Edit::Roll { timeline, .. }
         | Edit::Slip { timeline, .. }
@@ -525,6 +527,7 @@ fn visit_edit<E>(
             }
         }
         Edit::Lift { clips, .. }
+        | Edit::CutClips { clips, .. }
         | Edit::RippleDelete { clips, .. }
         | Edit::InsertMove { clips, .. }
         | Edit::NudgeClipGain { clips, .. }
@@ -548,6 +551,11 @@ fn visit_edit<E>(
             for copy in copies {
                 f(&mut copy.clip, Role::Names)?;
                 f(&mut copy.track, Role::NamesTrack(of.clone()))?;
+            }
+        }
+        Edit::PasteClips { tracks, .. } => {
+            for track in tracks.values_mut() {
+                f(track, Role::NamesTrack(of.clone()))?;
             }
         }
         Edit::RippleDeleteRange { tracks, .. } | Edit::Blade { tracks, .. } => {

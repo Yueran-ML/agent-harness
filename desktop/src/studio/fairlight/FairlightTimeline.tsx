@@ -29,7 +29,7 @@ export function FairlightTimeline({ view, update, ...props }: ComponentProps<typ
   };
   const handle = useRef<TimelineHandle>(null);
   useImperativeHandle(props.ref, () => ({ keyDown: key => automationKey(key) || (handle.current?.keyDown(key) ?? false), perform: action => handle.current?.perform(action) ?? false,
-    canPerform: action => handle.current?.canPerform(action) ?? false, clearTransition: () => handle.current?.clearTransition(), marks: () => handle.current?.marks() ?? {in:null,out:null} }));
+    canPerform: action => handle.current?.canPerform(action) ?? false, clearTransition: () => handle.current?.clearTransition(), marks: () => handle.current?.marks() ?? {in:null,out:null}, clipboardItems: clip => handle.current?.clipboardItems(clip) ?? [] }));
   const edit = (ops:Change[]) => { void callEngine(props.bridge,'transaction.apply',{revision:props.revision,ops},{expectedSession:props.session}).catch(error=>setProblem(String(error))); };
   const choose = (key:string,path:string) => update({lanePaths:{...view.lanePaths,[key]:path},lastLanePaths:path?{...view.lastLanePaths,[key]:path}:view.lastLanePaths});
   const toggle = () => {

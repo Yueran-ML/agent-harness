@@ -40,6 +40,7 @@
 
 mod audio;
 mod automation;
+mod clipboard;
 mod cut;
 mod follow;
 mod grade;
@@ -63,6 +64,8 @@ pub use automation::{
     arm_of, copy_lanes, group_control, grouped_with, CopiedLane, FilledLane, NewPoint, PointAction,
     RangeAction, RecordedLane, RecordedRun, RunEnd, Then,
 };
+pub use clipboard::{copy_clips, ClipClipboard, CopiedClip, CopiedTransition};
+pub use follow::Piece as ClipLane;
 pub use grade::Given;
 use work::Work;
 
@@ -366,6 +369,37 @@ pub enum Edit {
         /// Copy the source spans on active Editing group peers, when staying on the same tracks.
         #[serde(default, skip_serializing_if = "is_false")]
         grouped: bool,
+    },
+    /// Lift whole clips or selected spans, leaving the surrounding material and time in place.
+    CutClips {
+        /// The timeline.
+        timeline: Id,
+        /// The selected source clips.
+        clips: Vec<Id>,
+        /// First frame of the copied range, if it is not the whole clips.
+        #[serde(default)]
+        from: Option<i64>,
+        /// End-exclusive last frame; given together with `from`.
+        #[serde(default)]
+        to: Option<i64>,
+        /// Include unlocked clips linked to the selection.
+        #[serde(default = "yes")]
+        linked: bool,
+        /// Include the selected spans on direct active Editing-group peers.
+        #[serde(default)]
+        grouped: bool,
+    },
+    /// Paste independent clip snapshots at the playhead, overwriting their destinations.
+    PasteClips {
+        /// The destination timeline.
+        timeline: Id,
+        /// The clips and automation as they were when copied.
+        clipboard: ClipClipboard,
+        /// The frame aligned with the playhead used when copying.
+        at: i64,
+        /// Destination track for each source track; omitted entries keep the original id.
+        #[serde(default)]
+        tracks: std::collections::BTreeMap<Id, Id>,
     },
     /// Move an edge of a clip by `delta` frames, later if it is above 0. Without `ripple`, the
     /// clip's start or end moves and nothing else does; with it, the clip's start stays where
@@ -1505,6 +1539,20 @@ pub(crate) fn run(project: &mut Project, edit: Edit) -> Result<Expansion, EditEr
         Edit::PlaceCopies {
             copies, grouped, ..
         } => cut::place_copies(&mut work, &copies, grouped),
+        Edit::CutClips {
+            clips,
+            from,
+            to,
+            linked,
+            grouped,
+            ..
+        } => clipboard::cut(&mut work, &clips, (from, to), linked, grouped),
+        Edit::PasteClips {
+            clipboard,
+            at,
+            tracks,
+            ..
+        } => clipboard::paste(&mut work, &clipboard, at, &tracks),
         Edit::Trim {
             clip,
             edge,
@@ -1771,6 +1819,8 @@ pub fn timeline_of(edit: &Edit) -> Option<&Id> {
         | Edit::Move { timeline, .. }
         | Edit::InsertMove { timeline, .. }
         | Edit::PlaceCopies { timeline, .. }
+        | Edit::PasteClips { timeline, .. }
+        | Edit::CutClips { timeline, .. }
         | Edit::Trim { timeline, .. }
         | Edit::Roll { timeline, .. }
         | Edit::Slip { timeline, .. }

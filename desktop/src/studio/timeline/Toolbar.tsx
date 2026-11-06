@@ -8,15 +8,18 @@ import type { Tool } from './interact';
  * the playhead. It is drawn again only when one of these changes, not as the timeline scrolls or
  * plays: every call it is given stays the same.
  */
-export const Toolbar = memo(function Toolbar({ name, tool, snapping, linked, follow, onTool, onSnapping, onLinked, onZoom, onFit, onFollow, hideFollow = false }: {
+export const Toolbar = memo(function Toolbar({ name, tool, snapping, linked, follow, onTool, onSnapping, onLinked, onZoom, onFit, onFollow, onEditMenu, hideFollow = false }: {
   name: string; tool: Tool; snapping: boolean; linked: boolean; follow: boolean;
   onTool: (tool: Tool) => void; onSnapping: Dispatch<SetStateAction<boolean>>; onLinked: Dispatch<SetStateAction<boolean>>;
   onZoom: (factor: number) => void; onFit: () => void; onFollow: Dispatch<SetStateAction<boolean>>;
   hideFollow?: boolean;
+  onEditMenu?: (anchor: HTMLElement) => void;
 }) {
-  const labels = useWords().label.studio.timeline;
+  const words = useWords();
+  const labels = words.label.studio.timeline;
   return <header className="timeline-toolbar">
     <strong>{name}</strong>
+    {onEditMenu && <button type="button" aria-haspopup="menu" onClick={event => onEditMenu(event.currentTarget)}>{words.label.studio.page.edit}</button>}
     {([['select', 'A', MousePointer2], ['trim', 'T', UnfoldHorizontal], ['blade', 'B', Scissors]] as const).map(([each, key, Icon]) => <button key={each} type="button" className="icon-btn"
       aria-label={labels[each]} title={`${labels[each]} (${key})`} aria-pressed={tool === each} onClick={() => onTool(each)}><Icon size={14} /></button>)}
     <button type="button" className="icon-btn" aria-label={labels.snap} title={`${labels.snap} (N)`} aria-pressed={snapping} onClick={() => onSnapping(value => !value)}><Magnet size={14} /></button>

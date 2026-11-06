@@ -1,4 +1,5 @@
 import type { Alignment, CrossfadeLevel, Cue, Insert, InsertsOf, KeyInterp, LanePoint, LanesOf, Op, Speed, Time, TitleStyle, TrackKind, TransitionKind } from '../engine';
+import type { ClipClipboard } from './clipboard';
 
 /** Input commands, not project operations: the engine expands them into the accepted `done` list. */
 export type Material =
@@ -7,6 +8,8 @@ export type Material =
   | { kind: 'color'; color: string; length: number };
 export interface Targets { video_track?: string | null; audio_track?: string | null }
 export type Edit = { timeline: string } & (
+  | { edit: 'cut_clips'; clips: string[]; from?: number; to?: number; linked: boolean; grouped: boolean }
+  | { edit: 'paste_clips'; clipboard: ClipClipboard; at: number; tracks: Record<string, string> }
   | ({ edit: 'insert' | 'overwrite' | 'replace' | 'smart_insert' | 'ripple_overwrite'; source: Material; at: number } & Targets)
   | ({ edit: 'append'; source: Material } & Targets)
   | { edit: 'place_on_top'; source: Material; at: number }

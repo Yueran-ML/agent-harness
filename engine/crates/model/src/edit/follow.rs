@@ -58,8 +58,9 @@ pub(super) struct Follow {
 
 /// What a lane was over a clip: its value at the clip's start, the points within it and the value
 /// that came to its end, in ticks of the lane.
-#[derive(Clone)]
-struct Piece {
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Piece {
     path: String,
     shape: Shape,
     scale: u32,
@@ -70,6 +71,36 @@ struct Piece {
     last: f64,
     /// The value at its last tick, where the clip has one before its end.
     near_end: Option<f64>,
+}
+
+impl Piece {
+    pub(super) fn check_snapshot(&self) -> Result<(), crate::ops::OpError> {
+        let bad = || crate::ops::OpError::OutOfRange {
+            what: "clipboard_lane",
+        };
+        if self.scale == 0
+            || self.from < 0
+            || self.to <= self.from
+            || !self.first.is_finite()
+            || !self.last.is_finite()
+            || self.near_end.is_some_and(|value| !value.is_finite())
+        {
+            return Err(bad());
+        }
+        let mut previous = self.from;
+        for point in &self.inner {
+            if point.at.scale != self.scale
+                || point.at.ticks <= self.from
+                || point.at.ticks >= self.to
+                || point.at.ticks < previous
+                || !point.value.is_finite()
+            {
+                return Err(bad());
+            }
+            previous = point.at.ticks;
+        }
+        Ok(())
+    }
 }
 
 /// The tick of `scale` that frame `frame` of `rate` starts on.
@@ -185,6 +216,21 @@ fn pins(points: &[LanePoint], shape: Shape, boundaries: &[i64]) -> Vec<i64> {
 }
 
 impl Follow {
+    pub fn capture(timeline: &Timeline, track: &str, clip: &Clip) -> Vec<Piece> {
+        let mut follow = Self::new(timeline);
+        if follow.on {
+            follow.pieces(timeline, track, clip, false)
+        } else {
+            vec![]
+        }
+    }
+
+    pub fn keep_snapshot(&mut self, key: &str, pieces: &[Piece]) {
+        if self.on {
+            self.copied.insert(key.into(), pieces.to_vec());
+        }
+    }
+
     pub fn new(timeline: &Timeline) -> Self {
         Self {
             on: timeline.audio.follows_edit,
@@ -312,7 +358,7 @@ impl Follow {
                     i128::from(piece.scale),
                 );
                 let near = (2 * num + den).div_euclid(2 * den);
-                start + i64::try_from(near).unwrap_or(i64::MAX - start)
+                i64::try_from(i128::from(start) + near).unwrap_or(i64::MAX)
             };
             let mut new: Vec<LanePoint> = [point(start, scale, piece.first)]
                 .into_iter()

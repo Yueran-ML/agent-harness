@@ -1,6 +1,6 @@
 //! Check integer inputs before an edit does arithmetic with them.
 
-use super::{Edit, Material};
+use super::{CueItem, Edit, Material};
 use crate::ops::{within, OpError};
 
 pub(super) fn check(edit: &Edit) -> Result<(), OpError> {
@@ -37,19 +37,21 @@ pub(super) fn check(edit: &Edit) -> Result<(), OpError> {
             optional("start", *start)?;
             optional("length", *length)
         }
-        Edit::CuesFrom { items, .. } => {
-            for cue in items {
-                within("start", i128::from(cue.start))?;
-                within("length", i128::from(cue.length))?;
-            }
-            Ok(())
-        }
+        Edit::CuesFrom { items, .. } => cues(items),
         Edit::FadeToPlayhead { at, .. } => within("at", i128::from(*at)),
         Edit::PlaceCopies { copies, .. } => {
             for copy in copies {
                 within("start", i128::from(copy.start))?;
             }
             Ok(())
+        }
+        Edit::PasteClips { clipboard, at, .. } => {
+            within("at", i128::from(*at))?;
+            clipboard.check()
+        }
+        Edit::CutClips { from, to, .. } => {
+            optional("from", *from)?;
+            optional("to", *to)
         }
         Edit::ClipGainKeys { at, to, .. } => {
             within("at", i128::from(at.ticks))?;
@@ -116,6 +118,14 @@ fn material(source: &Material) -> Result<(), OpError> {
             optional("length", *length)
         }
     }
+}
+
+fn cues(items: &[CueItem]) -> Result<(), OpError> {
+    for cue in items {
+        within("start", i128::from(cue.start))?;
+        within("length", i128::from(cue.length))?;
+    }
+    Ok(())
 }
 
 fn optional(what: &'static str, value: Option<i64>) -> Result<(), OpError> {

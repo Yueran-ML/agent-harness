@@ -488,7 +488,8 @@ pub fn defaults_like(strip: &Strip) -> Strip {
 
 /// What the points of a lane are joined by: its kind (a switch holds) and the scale that a
 /// continuous lane goes straight on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Shape {
     /// Its kind.
     pub kind: LaneKind,

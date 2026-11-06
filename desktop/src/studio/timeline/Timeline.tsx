@@ -12,12 +12,14 @@ import { Scrub } from './scrub';
 import { AddSubtitleTrack, pageLanguage, TimelineMenu, type TrackMenu } from './SubtitleTrack';
 import { Toolbar } from './Toolbar';
 import { TrackRow, type TrackClipDrawing } from './TrackRow';
+import { ClipView } from './ClipView';
 import { Waveforms } from './waveforms';
 import { useEditing } from './useEditing';
 import type { EditAction, EditContext } from './editKeys';
 import type { Marks } from './snap';
 import type { AudioClipboard } from './VolumeLine';
 import { refusalText } from '../inspector/refusal';
+import { CoveringMenu } from '../color/CoveringMenu';
 import { AudioPlayhead, type AudioOverlayContext } from './AudioOverlay';
 import './timeline.css';
 
@@ -30,6 +32,8 @@ export interface TimelineHandle {
   clearTransition: () => void;
   /** The In and Out points of the timeline, which exist only on the page: an export may be of the part between them. */
   marks: () => Marks;
+  /** Clip commands shared with the page-owned context menu. */
+  clipboardItems: (clip?: string) => TrackMenu['items'];
 }
 /** What of a timeline a view shows: the pixels of a frame, how far it is scrolled, and how wide it is. */
 export interface TimelineView { scale: number; left: number; width: number }
@@ -106,8 +110,9 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
     heights: typeof update === 'function' ? update(old.heights) : update })), [setPosition]);
   const [follow, setFollow] = useState(true);
   // The menu of a right-click, where one is open.
-  const [menu, setMenu] = useState<TrackMenu | null>(null);
+  const [menu, setMenu] = useState<(TrackMenu & { clipboard?: boolean }) | null>(null);
   const closeMenu = useCallback(() => setMenu(null), []);
+  useEffect(closeMenu, [session, timeline?.id, closeMenu]);
   const [held, setHeld] = useState<{ frame: number; dragging: boolean } | null>(null);
   const drag = useRef<{ frame: number } | null>(null);
   const now = useRef({ view, onSeek, overview, frame, heights, trackHeight });
@@ -218,12 +223,17 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   }, [center, scrolling, dragging, shown, view.scale, view.width, setView]);
   useEffect(() => { onView?.(view); }, [view, onView]);
   const editing = useEditing({ timeline, media, bridge, session, revision, frame: shown, focus, source, root, scroll, view, onSeek, fit, zoom, onSpeed, onSelection, onTransition, onCue, onCopyClips, cut, audioOnlyDrop });
+  const clipboardMenu = useRef(editing.clipboard.items); clipboardMenu.current = editing.clipboard.items;
+  const openEditMenu = useCallback((anchor: HTMLElement) => {
+    const button = anchor.getBoundingClientRect();
+    setMenu({ x: button.left, y: button.bottom, items: clipboardMenu.current(), clipboard: true });
+  }, []);
   const audioFailure = useCallback((error: unknown) => editing.setProblem(refusalText(error, words.hint.studio)), [editing.setProblem, words.hint.studio]);
   const audioContext = useMemo<AudioOverlayContext | undefined>(() => timeline ? {
     bridge, timeline: timeline.id, revision, session, sampleRate: timeline.sample_rate,
     snapping: editing.snapping, marks: editing.marks, clipboard: audioClipboard.current, gainLine, onSeek, onFailure: audioFailure,
   } : undefined, [bridge, timeline?.id, timeline?.sample_rate, revision, session, editing.snapping, editing.marks, gainLine, onSeek, audioFailure]);
-  useImperativeHandle(ref, () => ({ keyDown: editing.keyDown, perform: editing.perform, canPerform: editing.canPerform, clearTransition: editing.clearTransition, marks: () => editing.marks }));
+  useImperativeHandle(ref, () => ({ keyDown: editing.keyDown, perform: editing.perform, canPerform: editing.canPerform, clearTransition: editing.clearTransition, marks: () => editing.marks, clipboardItems: editing.clipboard.items }));
   useEffect(() => {
     const element = scroll.current;
     if (!element) return;
@@ -311,7 +321,9 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
     onDragOver={editing.dragOver} onDrop={editing.drop} onDragLeave={editing.dragLeave} onDoubleClick={editing.doubleClick}
     onContextMenu={event => {
       const clip = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-clip]')?.dataset.clip : undefined;
-      if (clip && onClipContext) { event.preventDefault(); onClipContext(clip, event.clientX, event.clientY); return; }
+      if (clip && onClipContext && event.target instanceof Element && event.target.closest<HTMLElement>('[data-track]')?.dataset.kind === 'audio') {
+        event.preventDefault(); onClipContext(clip, event.clientX, event.clientY); return;
+      }
       // As DaVinci Resolve: a track header offers Add Subtitle Track, a track of subtitles Add Subtitle (Reference Manual 20, pp. 1088–1089).
       // Resolve adds the subtitle at the playhead; here it goes where the track was clicked, as the author chose.
       const track = !overview && timeline && event.target instanceof Element ? event.target.closest<HTMLElement>('[data-track]') : null;
@@ -319,17 +331,21 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
       const clicked = under(event);
       const items: TrackMenu['items'] = event.target.closest('.timeline-track-header')
         ? [{ id: 'add-subtitle-track', label: labels.addSubtitleTrack, disabled: editing.pending, run: () => editing.addSubtitleTrack(pageLanguage()) }, ...(trackMenuItems?.(track.dataset.track!) ?? [])]
-        : track.dataset.kind === 'subtitle' ? [{ id: 'add-subtitle', label: labels.addCue, disabled: track.dataset.locked === 'true' || editing.pending, run: () => editing.addCue(track.dataset.track!, clicked) }] : [];
+        : track.dataset.kind === 'subtitle' ? [{ id: 'add-subtitle', label: labels.addCue, disabled: track.dataset.locked === 'true' || editing.pending, run: () => editing.addCue(track.dataset.track!, clicked) }] : editing.clipboard.items(clip);
       if (items.length === 0) return;
       event.preventDefault();
+      if (track.dataset.kind !== 'subtitle' && !event.target.closest('.timeline-track-header')) {
+        setMenu({ x: event.clientX, y: event.clientY, items, clipboard: true });
+        return;
+      }
       const box = root.current!.getBoundingClientRect();
       setMenu({ x: event.clientX - box.left, y: event.clientY - box.top, items });
     }}
     onPointerMove={event => { if (drag.current) { const frame = at(event); drag.current.frame = frame; setHeld({ frame, dragging: true }); scrub.drag(frame); } else editing.pointerMove(event); }}
     onPointerUp={event => { release(event); editing.pointerUp(event); }} onPointerCancel={event => { release(event, true); editing.cancel(); }} onLostPointerCapture={editing.cancel}>
     {!overview && <Toolbar name={timeline?.name ?? labels.title} tool={editing.tool} snapping={editing.snapping} linked={editing.linked} follow={follow}
-      onTool={editing.chooseTool} onSnapping={editing.setSnapping} onLinked={editing.setLinked} onZoom={zoom} onFit={fit} onFollow={setFollow} hideFollow={scrolling !== undefined} />}
-    {menu && <TimelineMenu menu={menu} onClose={closeMenu} />}
+      onTool={editing.chooseTool} onSnapping={editing.setSnapping} onLinked={editing.setLinked} onZoom={zoom} onFit={fit} onFollow={setFollow} onEditMenu={openEditMenu} hideFollow={scrolling !== undefined} />}
+    {menu && (menu.clipboard ? <CoveringMenu menu={{ ...menu, label: words.label.studio.page.edit }} onClose={closeMenu} /> : <TimelineMenu menu={menu} onClose={closeMenu} />)}
     {editing.problem && <div className="timeline-problem" role="alert"><span>{editing.problem}</span><button type="button" className="icon-btn" aria-label={words.label.close} onClick={() => editing.setProblem(null)}><X size={14} /></button></div>}
     {!timeline ? <p className="caption timeline-empty">{words.hint.studio.timeline.empty}</p> : <div ref={scroll} className="timeline-scroll" onScroll={onScroll}>
       <div className="timeline-content" style={{ width: total, minHeight: RULER_HEIGHT + tracks.reduce((sum, track) => sum + (heights[track.id] ?? trackHeight), 0), '--scale': view.scale } as CSSProperties}>
@@ -348,6 +364,16 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
           chosenCue={editing.cue !== null && track.kind === 'subtitle' && track.cues.some(each => each.id === editing.cue) ? editing.cue : null}
           shownSubtitles={track.kind === 'subtitle' ? shownSubtitles : null} />)}</AudioPlayhead.Provider>
         {afterTracks?.({ scale: view.scale, from, to, snapping: editing.snapping })}
+        {editing.clipboard.ghosts.map(({ track, clip }) => {
+          const row = rows.get(track.id);
+          const source = clip.source.kind === 'media' ? byId.get(clip.source.media) : undefined;
+          return row && track.kind !== 'subtitle' && <div key={clip.id} data-clipboard-ghost={track.id} aria-hidden="true"
+            style={{ position: 'absolute', pointerEvents: 'none', opacity: .45, left: HEADER_WIDTH, right: 0, top: row.top, height: row.height }}>
+            <ClipView clip={clip} kind={track.kind} media={source} rate={timeline.rate} scale={view.scale} from={from} to={to} waves={waves}>
+              {drawClip?.({ clip, track, media: source, rate: timeline.rate, scale: view.scale, from, to, waves })}
+            </ClipView>
+          </div>;
+        })}
         {editing.preview?.preview.map(item => { const row = rows.get(item.track); return row && <div key={item.id} className="timeline-preview" data-preview={item.id} data-clamped={editing.preview!.clamped}
           style={{ left: HEADER_WIDTH + item.start * view.scale, width: item.length * view.scale, top: row.top + 4, height: row.height - 8 }} />; })}
         {editing.preview?.covered.map(item => { const row = rows.get(item.track); return row && <div key={`covered-${item.id}`} className="timeline-covered" data-covered={item.id}

@@ -7,7 +7,6 @@ use std::collections::{HashMap, HashSet};
 
 use super::follow::Follow;
 use super::{Created, EditError, Expansion};
-use crate::audio::GroupControl;
 use crate::ops::{apply_done, in_source, Op, OpError, LARGEST};
 use crate::project::{Clip, Cue, Id, Project, Source, Timeline, Track, TrackKind, Transition};
 use crate::span::ticks_of_scaled;
@@ -161,26 +160,7 @@ impl<'a> Work<'a> {
     /// The other tracks that an edit of `track` takes along: those, not locked, of the active
     /// groups of tracks that link Editing and that it is in (Ch. 179, p. 3917).
     pub fn edited_with(&self, track: &str) -> Vec<Id> {
-        let timeline = self.timeline();
-        if timeline.audio.groups_bypassed {
-            return vec![];
-        }
-        let mut along: Vec<Id> = vec![];
-        let groups = timeline.track_groups.iter().filter(|g| {
-            g.active && g.linked.contains(&GroupControl::Editing) && g.contains(timeline, track)
-        });
-        for group in groups {
-            for member in timeline
-                .tracks
-                .iter()
-                .filter(|r| !r.locked && group.contains(timeline, &r.id))
-            {
-                if member.id != track && !along.contains(&member.id) {
-                    along.push(member.id.clone());
-                }
-            }
-        }
-        along
+        super::clipboard::editing_peers(self.timeline(), track)
     }
 
     /// `tracks`, each once, with the tracks that an edit of each takes along.
@@ -235,6 +215,10 @@ impl<'a> Work<'a> {
     pub fn keep_lanes(&mut self, track: &str, clip: &Clip) {
         self.follow
             .keep(timeline_in(self.project, &self.timeline), track, clip);
+    }
+
+    pub fn keep_snapshot_lanes(&mut self, key: &str, pieces: &[super::follow::Piece]) {
+        self.follow.keep_snapshot(key, pieces);
     }
 
     /// Put a copy of the clip `source` on a track, with a copy of the lanes over `source` (see

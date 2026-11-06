@@ -42,7 +42,7 @@ export function useClipAttributes({ bridge, session, revision, timeline, selecti
     const clips = normalizeTargets(timeline, selection, context);
     const open = (from?: string) => { if (timeline && clips.length) setOpened({ session, timeline: timeline.id, revision, clips, from }); };
     return [
-      { id: 'copy-attributes', label: t('Copy Attributes'), keys: 'Ctrl+C', disabled: requested.filter(id => sounds.has(id)).length !== 1, run: () => { copy(requested); } },
+      { id: 'copy-attributes', label: t('Copy Attributes'), disabled: requested.filter(id => sounds.has(id)).length !== 1, run: () => { copy(requested); } },
       { id: 'paste-attributes', label: t('Paste Attributes'), disabled: !validSource || !clips.length, run: () => { if (validSource) open(validSource); } },
       { id: 'remove-attributes', label: t('Remove Attributes'), disabled: !clips.length, run: () => open() },
     ];

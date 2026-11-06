@@ -4532,7 +4532,7 @@ describe('the engine of the studio', () => {
       'audio_presets.list', 'audio_presets.save', 'audio_presets.update', 'audio_presets.delete',
       // The recording of automation (T16), and the rest of it (T16b).
       'automation.record', 'automation.touch', 'automation.punch',
-      'automation.all_read', 'automation.join', 'automation.fill', 'automation.copy',
+      'automation.all_read', 'automation.join', 'automation.fill', 'automation.copy', 'clips.copy',
     ];
     for (const method of allowed) {
       const params = method === 'transaction.apply' ? { ops: [{ op: 'remove_clip', timeline: 't1', id: 'c1' }] } : { frame: 3, monitor: 'source' };

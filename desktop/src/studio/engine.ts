@@ -1045,6 +1045,7 @@ export interface MigrationReport {
 
 /** The methods of the engine that the page may call, and what each answers. */
 export interface PageMethods {
+  'clips.copy': { revision: number; clipboard: import('./timeline/clipboard').ClipClipboard };
   'project.get': ProjectGot;
   'transaction.apply': Applied;
   'history.undo': Stepped;

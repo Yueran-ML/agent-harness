@@ -46,6 +46,7 @@ use crate::scopes::{Scopes, Shown, StatisticsRequest};
 use crate::transport;
 use crate::view::{Monitor, Viewer};
 
+mod clipboard;
 mod facts;
 mod sound;
 mod sound_curves;
@@ -1624,6 +1625,13 @@ async fn dispatch(
         }
         "automation.parameters" => {
             let result = automation_parameters(engine, params).await?;
+            Ok(match connection.queue(rpc::result_line(id, &result)) {
+                Ok(()) => Reply::Queued,
+                Err(refused) => Reply::Refused(refused),
+            })
+        }
+        "clips.copy" => {
+            let result = clipboard::copy(engine, params).await?;
             Ok(match connection.queue(rpc::result_line(id, &result)) {
                 Ok(()) => Reply::Queued,
                 Err(refused) => Reply::Refused(refused),

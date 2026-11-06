@@ -249,7 +249,7 @@ export function EditPage({
     </div>
     {speedClips !== null && selected !== null && <SpeedDialog clips={speedClips} timeline={selected} bridge={bridge} session={session} revision={revision}
       onClose={() => setSpeedClips(null)} />}
-    {audioContext && <CoveringMenu menu={{ ...audioContext, label: audioText('Audio clip'), items: [...attributes.items(audioContext.clip), normalize.item(audioContext.clip)] }} onClose={() => setAudioContext(null)} />}
+    {audioContext && <CoveringMenu menu={{ ...audioContext, label: audioText('Audio clip'), items: [...(timeline.current?.clipboardItems(audioContext.clip) ?? []), ...attributes.items(audioContext.clip), normalize.item(audioContext.clip)] }} onClose={() => setAudioContext(null)} />}
     {normalize.dialog}
     {attributes.dialog}
     {creating && <NewTimeline media={media} names={timelines.map(each => each.name)} onCreate={create} onClose={() => setCreating(false)} />}

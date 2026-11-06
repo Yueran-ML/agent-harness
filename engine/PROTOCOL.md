@@ -262,6 +262,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `automation.all_read` | `{"timeline": "t1"}` | `{"read": bool}` (All Read, T16b; see Recording automation) |
 | `automation.join` | `{"timeline": "t1"}` | `{"lanes": n, "at": time \| null}` (Join Mix, T16b; see Recording automation) |
 | `automation.fill` | `{"timeline": "t1", "from": time, "to": time, "glide"?: false}` | `{"lanes": n}` (Fill Range, Glide Range, T16b; see Recording automation) |
+| `clips.copy` | `timeline`, `revision`, `clips: [id]`, `at`, `from?`, `to?`, `linked?` (true), `grouped?` (false) | `{revision, clipboard}`; read-only clip snapshot, see Clip clipboard below. |
 | `automation.copy` | `{"timeline": "t1", "of": [{"track" \| "bus" \| "vca": id}], "from"?: time, "to"?: time, "at"?: time}` | `{"lanes": [{of, path, points?, value?}]}` (Copy of automation, T16b; see Recording automation) |
 | `scopes.subscribe` | `{"view": "timeline" \| "source", "settings": {"kind": "waveform", ...}}` | `{"scope_id": "scope-1", "size": {"width": 512, "height": 256}, "graticule": {...}, "settings": {...}}`, then `scopes.frame` (see Scopes) |
 | `scopes.set` | `{"scope_id": "scope-1", "settings": {...}}` | as `scopes.subscribe` |
@@ -2120,6 +2121,8 @@ id targets that track. Both picture and sound placed together get a new link gro
 | `blade` | `at`, `tracks?`, `linked?`, `grouped?` | Split crossing clips; original ids stay with first halves, second halves get new ids and link groups. |
 | `move` | `clips`, `delta`, `to_track?`, `overwrite?`, `linked?`, `grouped?` | Move clips; default refuses occupied destinations, `overwrite:true` clears them. With `to_track`, every clip that moves, the linked ones too, goes as many tracks up or down among the tracks of its own kind as `to_track` is from the track of the first clip (see below). |
 | `insert_move` | `clips`, `at`, `linked?`, `grouped?` | Lift and close original ranges, then insert at the original timeline coordinate. Noncontiguous selections pack their occupied interval union, not the gaps between it. Subtitles on unlocked tracks within a moved range go with it, keeping their ids and their place on the clips; one across an end of a range is cut there, and only its part inside goes along. |
+| `cut_clips` | `clips`, `from?`, `to?`, `linked?`, `grouped?` | Lift whole selected clips or their intersection with `[from,to)`, without rippling; both bounds or neither. Group peers lose only the selected spans. One transaction and undo step. |
+| `paste_clips` | `clipboard`, `at`, `tracks?` | Place the independent snapshots at the captured playhead offset, overwrite their destination spans, and copy automation with the current Follows Edit setting. `tracks` maps source track ids to destination ids; unmapped entries keep their ids. |
 | `place_copies` | `copies: [{clip, track, start}]`, `grouped?` | Put a copy of each clip on `track` from frame `start` (a track of its kind, not locked: `wrong_kind`, `locked`), as an Alt-drag duplicate (p. 811) or a paste does: what is there is cleared as an overwrite clears it, after every copy is made of its clip as it was; each copy has all the settings of its clip but its id and transitions, copies of two or more clips of one link group are linked in a new group, and with Automation Follows Edit each takes a copy of the lanes over its clip (see below). |
 | `trim` | `clip`, `edge:in\|out`, `delta`, `ripple?`, `linked?` | Move one edge; ripple defaults false. |
 | `roll` | `left`, `right`, `delta`, `linked?` | Move a shared cut, keeping outer endpoints. |
@@ -2189,6 +2192,33 @@ Explicit copies are not duplicated by group expansion; copies across tracks stay
 Trims, rolls, slips, slides, changes of speed and the other placing edits are not taken along:
 the manual names jumping to cuts as what follows each track's own boundaries; the rest is our
 choice.
+
+**Clip clipboard.** `clips.copy` checks `revision` and returns a self-contained project-local
+snapshot without changing history:
+`{rate, at, clips: [{track, index, kind, clip, lanes}], transitions: [{left, right, transition}]}`.
+Each transition names its two entries by index in `clips`; it is captured only when both
+adjacent sides are copied. Paste allocates fresh ids, retains transition kind, alignment and
+crossfade levels, and converts its duration to the destination rate. Short range copies use
+the existing trim fitting rule: a transition is shortened to fit, or omitted if no frames fit,
+with the ordinary clamp warning. A capture of only one side does not copy that transition.
+`index` is the source track's zero-based position among tracks of its kind. `clip` includes
+all its settings and the source mapping after slicing; `lanes` is the model's captured
+Follows Edit data and must be retained unchanged. `from` and `to` are timeline frames,
+end exclusive, and must be supplied together (`range` otherwise). `at` is the original
+playhead alignment anchor, not necessarily the beginning of the selection. Linked clips and
+direct active Editing-group peers are captured at copy time; group bypass is honored.
+
+`paste_clips` does not read the original clips or lanes, so cutting/deleting/changing them
+cannot change the clipboard. Media and other project references must still exist. Paste is
+not supported between different projects; clients clear their clipboard on engine session
+change. At a different timeline rate, offsets, durations and legacy frame fades are rounded
+to destination frames, with a minimum clip length of one frame; source-time settings and
+sample-time fades retain their times. Tracks must exist, be unlocked and have the matching
+kind. Linked captures get a new link group; the original link ids are not reused. Any refusal
+rolls back all destination clearing, insertions and automation. Invalid snapshot bounds or
+lane data return `out_of_range`; negative destinations return `out_of_timeline`. Clients cut
+by copying at a revision and then submitting `cut_clips` at that same revision, replacing
+their clipboard only once the cut succeeds. This uses the ordinary transaction/history path.
 
 **Automation Follows Edit** (pp. 3910–3911; while the timeline's `audio.follows_edit` is true,
 as it is for a new one; `set_timeline_audio` sets it). The lanes of a track of sound go with

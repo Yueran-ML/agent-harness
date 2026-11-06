@@ -15,6 +15,7 @@ import { dropMedia, dropMode } from './drop';
 import { droppedEffect, effectOfTypes } from '../effects/drag';
 import { effectTarget, effectTransaction } from '../effects/drop';
 import { refusalText } from '../inspector/refusal';
+import { useClipClipboard } from './useClipClipboard';
 
 interface Options {
   timeline: Timeline | null; revision: number; session: number; media: readonly Media[];
@@ -142,7 +143,7 @@ export function useEditing(options: Options) {
    * may give, for a refusal, another transaction to send in its place, as one step of the user.
    */
   const run = useCallback(async (method: 'transaction.apply' | 'history.undo' | 'history.redo', transaction?: Transaction, then?: (applied: unknown) => void,
-    retry?: (refusal: unknown, sent: Transaction) => Transaction | null): Promise<boolean> => {
+    retry?: (refusal: unknown, sent: Transaction) => Transaction | null, expectedSession?: number): Promise<boolean> => {
     if (busy.current) {
       // Ctrl+Z pressed again while an edit is applied: it is not lost, but done after it.
       if (method !== 'transaction.apply') queued.current.push(method);
@@ -157,7 +158,8 @@ export function useEditing(options: Options) {
     try {
       for (;;) {
         try {
-          const applied = await callEngine(context.bridge, method, sent ? { ...sent } : undefined); done = true;
+          const applied = await callEngine(context.bridge, method, sent ? { ...sent } : undefined,
+            expectedSession === undefined ? undefined : { expectedSession }); done = true;
           if (then && live.current && context.session === now.current.session) then(applied);
           break;
         } catch (error) {
@@ -178,6 +180,10 @@ export function useEditing(options: Options) {
     return done;
   }, []);
   const apply = useCallback((transaction: Transaction) => run('transaction.apply', transaction), [run]);
+  const applyClipboard = useCallback((transaction: Transaction) => run('transaction.apply', transaction, undefined, undefined, now.current.session), [run]);
+  const clipboard = useClipClipboard({ bridge: options.bridge, session: options.session, revision: options.revision,
+    timeline: options.timeline, frame: options.frame, selected: selection.ids, linked, marks, targets, pending,
+    apply: applyClipboard, copied: options.onCopyClips, problem: error => setProblem(refusalText(error, now.current.studioWords)) });
   const edit = useCallback((ops: Op[]) => apply({ revision: now.current.revision, ops }), [apply]);
   const target = useCallback((id: string) => {
     const track = now.current.timeline?.tracks.find(track => track.id === id);
@@ -231,9 +237,7 @@ export function useEditing(options: Options) {
   };
   const keyDown = (key: Key): boolean => {
     if (overlayOpen() || document.querySelector('dialog[open]')) return false;
-    if ((key.ctrl || key.meta) && !key.alt && !key.shift && !key.composing && !key.repeat && key.key.toLowerCase() === 'c') {
-      return now.current.focus === 'timeline' ? now.current.onCopyClips?.(now.current.selection.ids) ?? false : false;
-    }
+    if (now.current.focus === 'timeline' && (key.key !== 'Escape' || (!active.current && !cueDrag.current)) && clipboard.keyDown(key)) return true;
     const action = editKey(key);
     if (!action) return false;
     return perform(action);
@@ -524,6 +528,6 @@ export function useEditing(options: Options) {
   const dragLeave = (event: DragEvent) => {
     if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) { setDropAt(null); setEffectDrop(null); }
   };
-  return { tool, chooseTool, snapping, setSnapping, linked, setLinked, selected, transition, targets, target, marks, preview, dropAt, effectDrop, cue, cuePreview, chooseCue, addSubtitleTrack, addCue, doubleClick, problem, setProblem, pending,
+  return { tool, chooseTool, snapping, setSnapping, linked, setLinked, selected, transition, targets, target, marks, preview, dropAt, effectDrop, cue, cuePreview, chooseCue, addSubtitleTrack, addCue, doubleClick, problem, setProblem, pending: pending || clipboard.reading, clipboard,
     edit, apply, keyDown, perform, canPerform, clearTransition, pointerDown, pointerMove, pointerUp, cancel, dragOver, drop, dragLeave };
 }

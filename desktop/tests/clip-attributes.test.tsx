@@ -24,7 +24,10 @@ function setup(page: 'Edit' | 'Fairlight' = 'Edit') {
   selected.tracks.push(...['source', 'one', 'two', 'locked'].map(id => ({ id: `a-${id}`, name: id, kind: 'audio' as const, enabled: true, locked: id === 'locked', clips: [clip(id)], transitions: [] })));
   const monitor = { monitor: 'timeline', state: { monitor: 'timeline', timeline: 't1', frame: 0, shown: 0, playing: false, speed: 1, last: 99, exact: true, sound: 'off', source: null, proxies: true, late: 0 },
     rate: { num: 25, den: 1 }, frame: 0, last: 99, loaded: true, held: false, context: () => ({ playing: false, speed: 1, fps: 25, last: 99 }), run: vi.fn(), seek: vi.fn(), drag: vi.fn(), proxies: vi.fn() } as MonitorControls;
-  const call = vi.fn<EngineBridge['call']>(async method => ({ ok: true, result: method === 'transport.load' ? monitor.state : method === 'audio.meters' ? { timeline: 't1', strips: [], loudness: {}, lost: 0 } : { revision: 8, done: [] } }));
+  const call = vi.fn<EngineBridge['call']>(async (method, params) => ({ ok: true, result: method === 'clips.copy'
+    ? { revision: 7, clipboard: { rate: selected.rate, at: params?.at, transitions: [], clips: selected.tracks.flatMap(track => track.kind === 'subtitle' ? []
+      : track.clips.filter(clip => (params?.clips as string[]).includes(clip.id)).map(clip => ({ track: track.id, index: 0, kind: track.kind, clip, lanes: [] }))) } }
+    : method === 'transport.load' ? monitor.state : method === 'audio.meters' ? { timeline: 't1', strips: [], loudness: {}, lost: 0 } : { revision: 8, done: [] } }));
   const bridge = { call, onEvent: () => () => {}, viewRect: vi.fn(async () => {}), viewShow: vi.fn(async () => {}) };
   const props = { bridge, native: false, session: 1, revision: 7, pool: <div>Pool</div>, media: [media], timelines: [selected], selected, onSelect: vi.fn(), timelineMonitor: monitor, noticeOf: () => null, onRetry: vi.fn(), onProblem: vi.fn() };
   const draw = (next = page) => <div data-test="studio">{next === 'Edit' ? <EditPage {...props} source={{ ...monitor, monitor: 'source' }} sourceMedia={null} focus="timeline" onFocus={vi.fn()} /> : <FairlightPage {...props} />}</div>;
@@ -53,7 +56,7 @@ it.each(['Edit', 'Fairlight'] as const)('%s removes only Volume via the model co
   expect(app.writes()).toEqual([['transaction.apply', { revision: 7, ops: [{ edit: 'remove_attributes', timeline: 't1', clips: ['one'], items: ['volume'] }] }, { expectedSession: 1 }]]);
 });
 it('keeps a copied source across Edit/Fairlight and does not replace it when VolumeLine handles Ctrl+C', async () => {
-  const app = setup(); await settle(); select(['source']); fireEvent.keyDown(document.querySelector('.timeline')!, { key: 'c', ctrlKey: true });
+  const app = setup(); await settle(); select(['source']); fireEvent.keyDown(document.querySelector('.timeline')!, { key: 'c', ctrlKey: true }); await settle();
   app.view.rerender(app.draw('Fairlight')); await settle(); select(['one']);
   fireEvent.keyDown(screen.getByTestId('volume-line-one'), { key: 'c', ctrlKey: true });
   app.command('two', 'Paste Attributes'); fireEvent.click(screen.getByRole('button', { name: 'Apply' })); await settle();

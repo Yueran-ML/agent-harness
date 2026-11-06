@@ -30,6 +30,9 @@ mod grades;
 #[path = "rpc/scopes.rs"]
 mod scopes;
 
+#[path = "rpc/clipboard.rs"]
+mod clipboard;
+
 #[path = "rpc/luts.rs"]
 mod luts;
 

@@ -190,7 +190,7 @@ const PAGE_METHODS = new Set([
   // Join Mix, Fill/Glide Range and Copy of automation (T16b) name a timeline and its owners alone.
   'automation.playback', 'automation.parameters',
   'automation.record', 'automation.touch', 'automation.punch',
-  'automation.all_read', 'automation.join', 'automation.fill', 'automation.copy',
+  'automation.all_read', 'automation.join', 'automation.fill', 'automation.copy', 'clips.copy',
 ]);
 /** The points on an edge of the cubes that Generate LUT makes (Reference Manual 20, p. 3413). */
 const LUT_SIZES = [17, 33, 65];

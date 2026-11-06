@@ -1,5 +1,9 @@
 /** Shared Fairlight catalogue; protocol IDs and media/track names are never translated. */
 const entries = {
+  'Cut': ['剪切', 'カット'],
+  'Cut Head': ['剪切前半段', '前半をカット'], 'Cut Tail': ['剪切后半段', '後半をカット'],
+  'Copy Head': ['复制前半段', '前半をコピー'], 'Copy Tail': ['复制后半段', '後半をコピー'],
+  'The destination has too few tracks.': ['目标时间线的轨道不足，请先添加所需轨道。', '貼り付け先のトラックが足りません。必要なトラックを追加してください。'],
   'Q': ['Q 值', 'Q 値'],
   'No VCA': ['无 VCA', 'VCA なし'], 'Assign VCA': ['分配 VCA', 'VCA を割り当て'],
   'Timeline Scrolling': ['时间线滚动', 'タイムラインのスクロール'], 'Fixed Playhead': ['固定播放头', '再生ヘッドを固定'],

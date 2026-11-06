@@ -145,7 +145,7 @@ it('changing a standard format retains the surviving source, mute and trim', () 
 
 it('opens from the pool, guards session changes, and applies standard formats to the selected media', async () => {
   const call = vi.fn().mockResolvedValue({ ok: true, result: {} });
-  const props = { media: [source()], bins: [], timelines: [], proxies: {}, loaded: null, bridge: { call }, session: 11,
+  const props = { media: [source()], bins: [], timelines: [], proxies: {}, loaded: null, bridge: { call, onEvent: () => () => {} }, session: 11,
     onImport: vi.fn(), onLoad: vi.fn(), onMakeAgain: vi.fn() };
   const view = render(<MediaPool {...props} />);
   fireEvent.click(document.querySelector('[data-media="m1"]')!);

@@ -3,13 +3,15 @@ import { useWords } from '../../app/locale';
 import type { ChannelSource, Clip, Rate } from '../engine';
 import type { PeakData, Waveforms } from './waveforms';
 
+export type WaveClip = Pick<Clip, 'start' | 'length' | 'source' | 'speed' | 'reverse'>;
+
 /** How wide a tile of a waveform is, in CSS pixels. */
 export const TILE = 512;
 
 /** A number of pixels as a path writes it, to a tenth. */
 const tenth = (value: number) => Math.round(value * 10) / 10;
 
-function paths(data: PeakData, clip: Clip, rate: Rate, from: number, to: number, width: number): string[] {
+function paths(data: PeakData, clip: WaveClip, rate: Rate, from: number, to: number, width: number): string[] {
   const columns = Math.max(1, Math.ceil(width / 2));
   const shapes = Array.from({ length: data.channels }, () => '');
   const half = 30 / data.channels;
@@ -47,7 +49,7 @@ const numberOf = (thing: object) => {
 const KEPT = 512;
 /** The shapes of tiles drawn, the last drawn last: a zoom back, or a scroll back, finds them here. */
 const kept = new Map<string, string[]>();
-function tileShapes(data: PeakData, clip: Clip, rate: Rate, scale: number, index: number, width: number): string[] {
+function tileShapes(data: PeakData, clip: WaveClip, rate: Rate, scale: number, index: number, width: number): string[] {
   const key = `${numberOf(data)}:${numberOf(clip)}:${rate.num}/${rate.den}:${scale}:${index}`;
   let shapes = kept.get(key);
   if (shapes) kept.delete(key);
@@ -66,7 +68,7 @@ function tileShapes(data: PeakData, clip: Clip, rate: Rate, scale: number, index
  * moves past it, and is found again at a zoom that it was drawn at before.
  */
 const WaveTile = memo(function WaveTile({ data, media, clip, rate, scale, index, channel, gain = 1 }: {
-  data: PeakData; media: string; clip: Clip; rate: Rate; scale: number; index: number;
+  data: PeakData; media: string; clip: WaveClip; rate: Rate; scale: number; index: number;
   channel?: number; gain?: number;
 }) {
   const left = index * TILE;
@@ -91,7 +93,7 @@ const NOTHING = { from: 0, to: 0, scale: 1 };
  * then the tiles drawn before stay, stretched to the new zoom, so that neither waits for them.
  */
 export const Waveform = memo(function Waveform({ cache, media, clip, rate, from, to, scale, channel, gain, stream, mix, remix }: {
-  cache: Waveforms; media: string; clip: Clip; rate: Rate; from: number; to: number; scale: number;
+  cache: Waveforms; media: string; clip: WaveClip; rate: Rate; from: number; to: number; scale: number;
   channel?: number; gain?: number; stream?: number; mix?: readonly ChannelSource[]; remix?: number;
 }) {
   const words = useWords().label.studio.timeline;

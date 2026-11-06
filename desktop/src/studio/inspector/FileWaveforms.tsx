@@ -6,12 +6,8 @@ import { channelNames } from '../fairlight/ChannelLanes';
 import { ChannelWaveform } from '../timeline/ChannelWaveform';
 import { Waveforms } from '../timeline/waveforms';
 
-/** Per-channel source views; timeline instances deliberately have no composite lane. */
-export function FileWaveforms({ bridge, session, clip, track, media, timeline, selected, onSelect }: {
-  bridge: Pick<EngineBridge, 'call' | 'onEvent'>; session: number; clip: Clip; track: Track;
-  media?: Media; timeline: Timeline; selected: readonly number[]; onSelect: (index: number, extend: boolean) => void;
-}) {
-  const t = useFairlightText(), box = useRef<HTMLDivElement>(null);
+export function useFileWaveforms(bridge: Pick<EngineBridge, 'call' | 'onEvent'>, session: number) {
+  const box = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
   const waves = useMemo(() => new Waveforms(bridge, session), [bridge, session]);
   useEffect(() => { waves.connect(); return () => waves.disconnect(); }, [waves]);
@@ -24,6 +20,15 @@ export function FileWaveforms({ bridge, session, clip, track, media, timeline, s
     observer?.observe(element);
     return () => observer?.disconnect();
   }, []);
+  return { box, width, waves };
+}
+
+/** Per-channel source views; timeline instances deliberately have no composite lane. */
+export function FileWaveforms({ bridge, session, clip, track, media, timeline, selected, onSelect }: {
+  bridge: Pick<EngineBridge, 'call' | 'onEvent'>; session: number; clip: Clip; track: Track;
+  media?: Media; timeline: Timeline; selected: readonly number[]; onSelect: (index: number, extend: boolean) => void;
+}) {
+  const t = useFairlightText(), { box, width, waves } = useFileWaveforms(bridge, session);
   return <div ref={box} className="file-waveforms" role="group" aria-label={t('Channels')}>
     {channelNames(track).map((name, index) => <button key={index} type="button" className="file-channel-waveform"
       aria-label={`${t('Channel')} ${index + 1}`} aria-pressed={selected.includes(index)}

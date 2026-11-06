@@ -13,6 +13,7 @@ import { Bins } from './media/Bins';
 import { Clips } from './media/Clips';
 import { Details } from './media/Details';
 import { AudioAttributes, AudioFormats } from './media/AudioAttributes';
+import { MediaFile } from './media/MediaFile';
 import { audioSources, standardLayout } from './media/audioLayout';
 import type { TrackFormat } from './engine';
 import { EMPTY_SELECTION, type Selection } from './media/selection';
@@ -22,7 +23,7 @@ export { factsOf, proxyStanding } from './media/facts';
 /** Media IDs and metadata are edited through one engine transaction; the original files stay where they are. */
 export const MediaPool = memo(function MediaPool({ media, bins, timelines, proxies, loaded, bridge, session, onImport, onLoad, onMakeAgain, initialGrid = false, onBin, follow = null, color, audioFilters = false }: {
   media: readonly Media[] | null; bins: readonly Bin[]; timelines: readonly { rate: Rate }[];
-  proxies: Readonly<Record<string, ProxyEvent>>; loaded: string | null; bridge: Pick<EngineBridge, 'call'>; session: number;
+  proxies: Readonly<Record<string, ProxyEvent>>; loaded: string | null; bridge: Pick<EngineBridge, 'call' | 'onEvent'>; session: number;
   onImport: (bin: string | null) => void; onLoad: (id: string) => void; onMakeAgain: (id: string) => void;
   /** Whether it opens in the thumbnail view, as the Cut page's pool does. */
   initialGrid?: boolean;
@@ -151,6 +152,8 @@ export const MediaPool = memo(function MediaPool({ media, bins, timelines, proxi
       }}><AudioFormats disabled={!selectedAudio.every(item => audioSources(item).length > 0)} /><option value="custom">{t('Custom mapping')}</option></select></label>
       {!selectedAudio.every(item => audioSources(item).length > 0) && <p role="status">{t('Audio stream information is unavailable.')}</p>}
       <button type="button" onClick={() => openAudio(chosen)}>{t('Clip Attributes')}</button>
+      <MediaFile key={JSON.stringify([session, selectedAudio.map(item => item.id)])} media={selectedAudio}
+        bridge={bridge} session={session} onApply={edit} />
     </section>}
     {audioOpened && audioOpened.session === session && openedMedia.length > 0 && openedMedia.length === audioOpened.ids.length &&
       <AudioAttributes media={openedMedia} onApply={edit} onClose={() => setAudioOpened(null)} />}

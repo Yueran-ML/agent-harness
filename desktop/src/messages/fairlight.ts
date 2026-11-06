@@ -1,5 +1,6 @@
 /** Shared Fairlight catalogue; protocol IDs and media/track names are never translated. */
 const entries = {
+  'Could not update audio channels. Try again.': ['无法更新音频声道，请重试。', 'オーディオチャンネルを更新できませんでした。もう一度お試しください。'],
   'Clip Attributes': ['片段属性', 'クリップ属性'],
   'The audio configuration was not saved. Your draft is kept; try applying again.': ['音频配置未保存。草稿已保留，请重试应用。', 'オーディオ設定を保存できませんでした。編集内容は保持されています。もう一度適用してください。'],
   'Add tracks': ['添加轨道', 'トラックを追加'],

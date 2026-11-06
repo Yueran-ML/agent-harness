@@ -1,23 +1,28 @@
-import type { Clip, Media, Rate, Track } from '../engine';
+import type { ChannelMap, Clip, Media, Rate, Track } from '../engine';
 import { Waveform } from './Waveform';
 import type { Waveforms } from './waveforms';
 
+/** Explicit source maps are shared by pool channels and timeline instances. */
+export function mappedWaveform(map: ChannelMap | undefined, media: Media | undefined) {
+  const source = map?.source;
+  const channel = Array.isArray(source) ? 0 : source?.channel ?? 0;
+  const stream = source && !Array.isArray(source) ? source.stream : undefined;
+  const available = media?.facts.audio?.streams?.find(each => each.index === stream)?.channels;
+  const level = map?.level_db ?? 0;
+  return { channel, stream, mix: Array.isArray(source) ? source : undefined, remix: undefined,
+    gain: 10 ** ((Number.isFinite(level) ? level : 0) / 20),
+    silent: !map || map.mute === true || map.enabled === false || source == null
+      || Array.isArray(source) && source.length === 0 || available !== undefined && channel >= available };
+}
+
 /** The same source/channel interpretation in the timeline and the File inspector. */
 export function channelWaveform(clip: Clip, track: Track, media: Media | undefined, index: number) {
-  const map = clip.channels?.[index], source = map?.source;
-  const automatic = clip.channels == null;
+  if (clip.channels != null) return mappedWaveform(clip.channels[index], media);
   const count = track.kind !== 'audio' ? 0 : track.format === 'mono' ? 1 : track.format === '5.1' ? 6 : track.format === 'adaptive' ? track.channels ?? 1 : 2;
-  const remix = automatic && media?.facts.audio?.channels !== count ? count : undefined;
+  const remix = media?.facts.audio?.channels !== count ? count : undefined;
   // Automatic playback supplies SMPTE; only the displayed Film lane order changes.
   const automaticChannel = track.kind === 'audio' && track.format === '5.1' && track.order === 'film' ? [0, 2, 1, 4, 5, 3][index] : index;
-  const channel = Array.isArray(source) ? 0 : source ? source.channel : automatic ? automaticChannel : index;
-  const stream = source && !Array.isArray(source) ? source.stream : undefined;
-  const available = stream === undefined ? media?.facts.audio?.channels : media?.facts.audio?.streams?.find(each => each.index === stream)?.channels;
-  const silent = map?.mute || map?.enabled === false || source === null || Array.isArray(source) && source.length === 0 || !automatic && !map;
-  // An incomplete numeric draft has no level to preview yet.
-  const level = map?.level_db ?? 0;
-  return { channel, stream, mix: Array.isArray(source) ? source : undefined, remix, gain: 10 ** ((Number.isFinite(level) ? level : 0) / 20),
-    silent: !!silent || !automatic && available !== undefined && channel >= available };
+  return { channel: automaticChannel, stream: undefined, mix: undefined, remix, gain: 1, silent: false };
 }
 
 export function ChannelWaveform({ clip, track, media, index, rate, from, to, scale, waves, gain = 1 }: {

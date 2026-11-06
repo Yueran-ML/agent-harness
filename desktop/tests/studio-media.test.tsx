@@ -24,7 +24,7 @@ function pool(items = [media('m1'), media('m2'), media('m3')], bins: Bin[] = [])
       return { ok: true, result: { revision: 1, next_id: 11, done, names: {}, clamped: [] } };
     });
     return <MediaPool media={project.media} bins={project.bins} timelines={project.timelines} proxies={{}} loaded={null}
-      bridge={{ call }} session={1} onImport={importing} onLoad={load} onMakeAgain={() => {}} />;
+      bridge={{ call, onEvent: () => () => {} }} session={1} onImport={importing} onLoad={load} onMakeAgain={() => {}} />;
   }
   render(<Harness />);
   return { call, load, importing };

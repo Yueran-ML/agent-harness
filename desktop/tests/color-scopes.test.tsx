@@ -234,8 +234,12 @@ describe('the scopes of the Color page', () => {
     render(<Page bridge={engine.bridge} />);
     await settle();
     fireEvent.click(screen.getByRole('button', { name: 'Video scope options' }));
-    fireEvent.click(document.querySelector('[data-test="menu-waveform-scale"]')!);
-    expect([...document.querySelectorAll('[role="menu"] [role="menu"] [role="menuitem"]')].map(each => each.getAttribute('aria-label')))
+    const scale = document.querySelector('[data-test="menu-waveform-scale"]')!;
+    fireEvent.click(scale);
+    // The submenu lies in the menu layer, not inside its item, so that no scrolling parent cuts it off.
+    const submenu = document.getElementById(scale.getAttribute('aria-controls')!)!;
+    expect(submenu.getAttribute('role')).toBe('menu');
+    expect([...submenu.querySelectorAll('[role="menuitem"]')].map(each => each.getAttribute('aria-label')))
       .toEqual(['10-bit', 'Percentage', 'HDR (ST.2084/HLG)']);
     fireEvent.click(document.querySelector('[data-test="menu-scale-percent"]')!);
     await settle();

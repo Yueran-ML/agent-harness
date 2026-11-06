@@ -4,7 +4,7 @@ import math
 from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from columbina.video import words
 from columbina.video.duck_keys import UnsupportedCurveError, gain_keys
@@ -106,7 +106,7 @@ class Duck:
         timeline: str | None = None,
         mode: str = "ducker",
     ) -> dict[str, Any]:
-        """Measure bounded duck proposals and commit the last one exactly once."""
+        """Measure bounded duck proposals and commit the best-scoring one exactly once."""
         if mode not in ("ducker", "keyframes"):
             raise invalid("mode must be 'ducker' or 'keyframes'")
         revision, project = await self.engine.project()
@@ -278,8 +278,32 @@ class Duck:
                 "notice": "No enabled background media clip overlaps the duck envelope.",
             }
         baseline = [await measure(frames, None) for frames in quiet]
+
+        def overall(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            """Rows that decide met: the real PCM sum for several backgrounds, else the track."""
+            if len(ids) > 1:
+                return [row for row in rows if "sum" in row]
+            return [row for row in rows if "track" in row]
+
+        def score(rows: list[dict[str, Any]]) -> tuple[int, float]:
+            """Lower is better: failed overall checks, then their total shortfall in dB/LU.
+
+            A speech check falls short by 10 - margin; a quiet check by |delta| - 1. A
+            silence change has no finite size and counts only as a failure.
+            """
+            failed = [row for row in overall(rows) if row["met"] is False]
+            shortfall = 0.0
+            for row in failed:
+                if row["kind"] == "speech" and row["margin_lu"] is not None:
+                    shortfall += max(0.0, 10 - row["margin_lu"])
+                elif row["kind"] == "quiet" and row["delta_db"] is not None:
+                    shortfall += max(0.0, abs(row["delta_db"]) - 1)
+            return len(failed), shortfall
+
         checks: list[dict[str, Any]] = []
         adjustments = 0
+        tried: list[dict[str, Any]] = []
+        best: dict[str, Any] | None = None
         while True:
             ops = proposal()
             checks = []
@@ -355,6 +379,16 @@ class Duck:
                 # An explicitly chosen source may lack words. Validate/process the candidate,
                 # but never infer speaking intervals or claim the 10 LU test passed.
                 await measure(None, ops)
+            candidate = {
+                "amount_db": dict(amounts),
+                "score": score(checks),
+                "ops": ops,
+                "checks": checks,
+            }
+            tried.append(candidate)
+            # Ties keep the earlier, smaller adjustment.
+            if best is None or candidate["score"] < best["score"]:
+                best = candidate
             if adjustments == 2 or not (increase or decrease):
                 break
             for id in ids:
@@ -362,10 +396,34 @@ class Duck:
                     amounts[id] = min(30, amounts[id] + 3)
                 elif id in decrease:
                     amounts[id] = max(0, amounts[id] - 3)
+            if any(row["amount_db"] == amounts for row in tried):
+                # Up then down (or a bound) returns to a measured candidate: nothing new to learn.
+                break
             adjustments += 1
-        applied = await self.engine.apply(ops, revision=revision, session=session)
+        assert best is not None
+        ops, checks, amounts = best["ops"], best["checks"], best["amount_db"]
+        clips = {clip["id"]: clip for track in tracks.values() for clip in track.get("clips", [])}
+
+        def unchanged(op: dict[str, Any]) -> bool:
+            """Whether the merge-patch or Volume replacement leaves the project as it is."""
+            if op["op"] == "set_track_audio":
+                current = tracks[op["track"]].get("strip", {}).get("track_fx")
+                if not isinstance(current, dict):
+                    return False
+                fx = cast(dict[str, Any], current)
+                wanted: dict[str, Any] = op["patch"]["strip"]["track_fx"]
+                return all(fx.get(key) == value for key, value in wanted.items())
+            if op["op"] == "set_clip":
+                return clips[op["id"]].get("gain_db", 0.0) == op["gain_db"]
+            return False
+
+        # A repeat with the same parameters must not add an empty step to undo history.
+        changed = not all(unchanged(op) for op in ops)
+        applied = (
+            await self.engine.apply(ops, revision=revision, session=session) if changed else None
+        )
         track_checks = [row for row in checks if "track" in row]
-        overall_checks = [row for row in checks if "sum" in row] if len(ids) > 1 else track_checks
+        overall_checks = overall(checks)
         per_track_complete = bool(intervals and quiet and track_checks) and all(
             row["met"] is not None for row in track_checks
         )
@@ -373,13 +431,22 @@ class Duck:
             row["met"] is not None for row in overall_checks
         )
         return {
-            "status": "applied",
+            "status": "applied" if changed else "unchanged",
+            "changed": changed,
             "timeline": selected["id"],
             "dialogue": dialogue,
             "music": ids,
             "mode": mode,
             "amount_db": amounts,
             "adjustments": adjustments,
+            "candidates": [
+                {
+                    "amount_db": row["amount_db"],
+                    "failed": row["score"][0],
+                    "shortfall_db": row["score"][1],
+                }
+                for row in tried
+            ],
             "checks": checks,
             "met": False
             if any(row["met"] is False for row in overall_checks)
@@ -391,7 +458,7 @@ class Duck:
             "measurement_phase": "candidate_before_apply",
             "measurement_point": "stereo_post_pan",
             "ops": ops,
-            "applied": asdict(applied),
+            "applied": asdict(applied) if applied is not None else None,
             "notice": "Dialogue and backgrounds are measured at the same stereo post-strip, "
             "post-pan point. Multiple backgrounds are verified by their actual PCM sum; "
             "per-track results remain diagnostic. Quiet intervals exclude "

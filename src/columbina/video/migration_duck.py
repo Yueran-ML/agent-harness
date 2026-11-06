@@ -129,7 +129,7 @@ async def answer(workspace: Path, engine: Engine, timeline: str, accept: bool) -
                 dialogue=dialogue[0]["id"],
                 music=[track["id"] for track in music],
             )
-            if result.get("status") != "applied":
+            if result.get("status") not in ("applied", "unchanged"):
                 raise ProjectError(str(result.get("notice", "Ducking was not applied; try again.")))
         warnings = await asyncio.to_thread(_mark, engine.directory, timeline, copies)
         return {**result, "timeline": timeline, "duck_prompted": True, "warnings": warnings}

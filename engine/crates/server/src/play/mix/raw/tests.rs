@@ -169,3 +169,16 @@ fn automatic_outputs_and_nonzero_media_origins_keep_existing_samples() {
         }
     }
 }
+
+#[test]
+fn an_unvalidated_oversized_layout_is_refused_instead_of_panicking() {
+    let media = Project::sample().media.remove(0);
+    for count in [25, 256, 300] {
+        let rows: Vec<MediaAudioTrack> = serde_json::from_value(json!([{
+            "name": "Wide", "format": "adaptive",
+            "channels": vec![json!({"source": {"stream": 0, "channel": 0}}); count]
+        }]))
+        .unwrap();
+        assert!(project(&media, RATE, 50, &rows, None).is_err(), "{count}");
+    }
+}

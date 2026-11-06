@@ -36,6 +36,8 @@ finite inputs in [-2,2]. This is a model-static curve, not a live waveform.
 starts a job, returning `{job}`. Range is in timeline frames, end exclusive, within
 the timeline (and within the clip for clip targets), at least 2048 samples and at
 most 30 seconds. The storage bound is explicit for multichannel offline PCM.
+If the target or slot has no Noise Reduction insert, the request returns `-32602`
+with `reason: "missing_insert"` before starting a job. A sum cannot own an insert.
 The shared `audio.analysis` channel reports running/progress, cancelled, failed, or
 done `{job,state:"done",method:"audio.noise_learn",target,slot,profile,result}`.
 `audio.cancel {job}` cancels it. The profile contains 1025 linear-power bins.
@@ -69,6 +71,9 @@ profile, are kept. Names are trimmed, unique, and 1–100 characters without con
 The independent library is `%COLUMBINA_AUDIO_PRESETS%`, else
 `%COLUMBINA_HOME%/audio_presets` (the usual user-home fallback applies). It uses the
 same atomic file-replacement and inter-engine directory-lock pattern as Window Presets.
+Library filesystem, index-format and lock failures return `-32002` with
+`reason: "audio_presets"`, `path` and `message`. A missing preset id instead returns
+`-32602` with `reason: "missing"`.
 
 
 `columbina-engine` is the only program that writes a project. The desktop app and the agent
@@ -4804,7 +4809,9 @@ across timeline changes, but clears them for a new engine session; cancelled/fai
 recapture does not replace a prior usable profile. It is not a project or preset setting.
 
 `audio.level_match {timeline, profile, clips, apply?, revision}` accepts that profile instead of
-`reference` (exactly one). This branch measures only the targets; it never reads the source of
+`reference` (exactly one); providing both or neither returns `-32602` with
+`reason: "reference_required"` before starting a job. This branch measures only the targets;
+it never reads the source of
 the capture. Version must be 1, basis `integrated`/`mean`, and level_db finite and non-null
 (`no_level` otherwise); unknown fields and versions are rejected. It has no Normalize target
 range restriction. Revision is required even for dry-run, checked before the job, and again

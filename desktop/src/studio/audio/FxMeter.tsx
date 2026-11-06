@@ -42,7 +42,7 @@ export function FxMeter({ context, kind, insert, slot, voice = false, drawBall =
         <polyline points={curve(history.map(r => (r.input_db ?? -200) + (r.reduction_db ?? 0)))} className="fx-noise" />
       </svg>}
       {kind === 'noise_reduction' && reading.input_spectrum_db && <>
-        <small>{t('Input spectrum')} / {t('Noise estimate')} · 0–{Math.round((data?.sample_rate ?? 0) / 2)} Hz · dB power</small>
+        <small>{t('Input spectrum')} / {t('Noise estimate')} · 0–{Math.round((data?.sample_rate ?? 0) / 2)} Hz · {t('dB power')}</small>
         <svg viewBox="0 0 300 100" aria-label={t('Noise spectrum')}>
           <polyline className="fx-input" points={curve(reading.input_spectrum_db)} />
           <polyline className="fx-noise" points={curve(reading.noise_spectrum_db ?? [])} />

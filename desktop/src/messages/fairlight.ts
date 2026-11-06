@@ -183,6 +183,7 @@ const entries = {
   'Output': ['输出', '出力'],
   'Soft Clipper curve': ['柔和限幅器静态曲线', 'ソフトクリッパー静的カーブ'], 'Target frequencies': ['目标频率（Hz）', '対象周波数（Hz）'],
   'Input spectrum': ['输入频谱', '入力スペクトル'], 'Noise estimate': ['估计噪声', '推定ノイズ'],
+  'dB power': ['功率（dB）', 'パワー（dB）'],
   'Track meters width': ['轨道表宽度', 'トラックメーター幅'], 'Bus meters width': ['总线表宽度', 'バスメーター幅'],
   'Loudness width': ['响度表宽度', 'ラウドネスメーター幅'], 'Viewer width': ['检视器宽度', 'ビューア幅'],
   'Momentary sum': ['瞬时响度', '瞬時ラウドネス'], 'Momentary maximum': ['最大瞬时响度', '最大瞬時ラウドネス'], 'Loudness ruler': ['响度刻度', 'ラウドネス目盛'],

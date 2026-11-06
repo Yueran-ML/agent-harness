@@ -8,7 +8,7 @@ import { useAudioGesture } from '../timeline/useAudioGesture';
 import { faderChanges, faderPlan, mixerStrips, operationTargets, stripChange, switchChanges, type FaderPlan, type MixerStrip, type Modifiers } from '../audio/mixerModel';
 import { mixerTrackMoves } from './IndexTracks';
 import { ChannelStrip } from './ChannelStrip';
-import { useFairlightText } from './words';
+import { useFailureText, useFairlightText } from './words';
 import './mixer.css';
 import { keyOf } from '../../app/keys';
 import { writing } from '../keys';
@@ -40,6 +40,7 @@ export function Mixer({ bridge, session, revision, timeline, frame, meters, sele
   const automation=useAutomationTouch();
   const [routing, setRouting] = useState<'format' | 'assign' | null>(null);
   const t = useFairlightText(); const [problem, setProblem] = useState<string | null>(null);
+  const failure = useFailureText();
   const [processors, setProcessors] = useState<{ key: string; module: ProcessorModule }[]>([]);
   const box = useRef<{ x:number; y:number; selected:readonly string[] } | null>(null);
   const [boxRect, setBoxRect] = useState<{left:number;top:number;width:number;height:number}|null>(null);
@@ -54,7 +55,7 @@ export function Mixer({ bridge, session, revision, timeline, frame, meters, sele
     setLayout({ order: moveMixerItems(order, keys, before) });
   };
   const [preview, setPreview] = useState<Record<string, number>>({});
-  const gesture = useAudioGesture({ bridge, session, revision, identity: `${timeline.id}/mixer`, locked: false, onFailure: error => setProblem(error instanceof Error ? error.message : String(error)) });
+  const gesture = useAudioGesture({ bridge, session, revision, identity: `${timeline.id}/mixer`, locked: false, onFailure: error => setProblem(failure(error)) });
   const latest = useRef({ timeline, strips, gesture, selected, revision, session }); latest.current = { timeline, strips, gesture, selected, revision, session };
   const anchor = useRef<string | null>(selected[0] ?? null);
   const localSelection = useRef<readonly string[] | null>(null);
@@ -123,7 +124,7 @@ export function Mixer({ bridge, session, revision, timeline, frame, meters, sele
           });
         }));
         automation.instantBatch(groups.flat());
-      }catch(error){setProblem(String(error));}
+      }catch(error){setProblem(failure(error));}
       return;
     }
     gesture.commit(processorChanges(timeline.id,targets.map(s=>automation?.enabled===false?{...s,arm:'off' as const}:s),path,value));
@@ -139,7 +140,7 @@ export function Mixer({ bridge, session, revision, timeline, frame, meters, sele
       isActive={gesture.active} onSelect={modifiers => select(strip, modifiers)} onRename={async name => {
         try { await callEngine(bridge, 'transaction.apply', { revision, ops: [strip.kind === 'track' ? { op: 'set_track', timeline: timeline.id, id: strip.id, name }
           : { edit: 'set_bus', timeline: timeline.id, id: strip.id, patch: { name } }] }, { expectedSession: session }); return true; }
-        catch (error) { setProblem(error instanceof Error ? error.message : String(error)); return false; }
+        catch (error) { setProblem(failure(error)); return false; }
       }} onStart={modifiers => start(strip, modifiers)} onChange={change} onEnd={() => { plan.current = null; gesture.end(); setPreview({}); }} onCancel={cancel}
       onCommit={(value, modifiers = {}) => { const p = faderPlan(timeline, strip.key, selected, modifiers, automation?.enabled??true); gesture.commit(faderChanges(timeline.id, p, value - Math.max(-100, strip.db))); }}
       onToggle={(field, modifiers) => single(strip, field, modifiers)}

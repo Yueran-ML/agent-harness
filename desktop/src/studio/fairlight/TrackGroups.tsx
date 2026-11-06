@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useRef, useState, type ReactNode 
 import { Sheet } from '../../app/Sheet';
 import { callEngine, type GroupControl, type Op, type Timeline, type TrackGroup } from '../engine';
 import type { RoutingContext } from './BusFormat';
-import { useFairlightText } from './words';
+import { useFailureText, useFairlightText } from './words';
 import { GROUP_CONTROLS, GROUP_DEFAULTS_KEY, allGroup, groupDefaults, groupKey, groupPatch, groupTracks } from './groupModel';
 import { NameField } from '../media/NameField';
 import { TRACK_COLORS } from './IndexTracks';
@@ -23,6 +23,7 @@ export function TrackGroupsProvider({ timeline, bridge, session, revision, selec
   children: ReactNode;
 }) {
   const t = useFairlightText(), [draft, setDraft] = useState<TrackGroup | null>(null), [problem, setProblem] = useState('');
+  const failure = useFailureText();
   const [menu, setMenu] = useState<{
     x: number;
     y: number;
@@ -42,7 +43,7 @@ export function TrackGroupsProvider({ timeline, bridge, session, revision, selec
     }
     catch (error) {
       if (live.current)
-        setProblem(error instanceof Error ? error.message : String(error));
+        setProblem(failure(error));
       return false;
     }
   };
@@ -104,6 +105,7 @@ function GroupDialog({ initial, context, onClose }: {
   onClose: () => void;
 }) {
   const t = useFairlightText(), origin = useRef(context), current = useRef(context);
+  const failure = useFailureText();
   current.current = context;
   const [value, setValue] = useState(initial), [add, setAdd] = useState<string[]>([]), [remove, setRemove] = useState<string[]>([]);
   const [problem, setProblem] = useState(''), [saving, setSaving] = useState(false);
@@ -124,7 +126,7 @@ function GroupDialog({ initial, context, onClose }: {
         onClose();
     }
     catch (error) {
-      setProblem(error instanceof Error ? error.message : String(error));
+      setProblem(failure(error));
       setSaving(false);
     }
   };
@@ -145,7 +147,7 @@ function GroupDialog({ initial, context, onClose }: {
             localStorage.setItem(GROUP_DEFAULTS_KEY, JSON.stringify(value.linked ?? GROUP_CONTROLS));
           }
           catch (error) {
-            setProblem(String(error));
+            setProblem(failure(error));
           }
         }}
       >
@@ -435,7 +437,7 @@ export function GroupLabel({ track }: {
   return <div className="track-group-label">
     <button
       type="button"
-      aria-label={`${t('Groups')} ${track}`}
+      aria-label={`${t('Groups')} ${timeline.tracks.find(each => each.id === track)?.name ?? track}`}
       aria-expanded={Boolean(menu)}
       onClick={event => {
         const box = event.currentTarget.getBoundingClientRect();

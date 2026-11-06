@@ -11,7 +11,7 @@ import { editingAllowed } from '../keys';
 import { keyOf, type Key } from '../../app/keys';
 import { categories, categoryOfPath, laneValue, ownerKey, Pencil, pixelAtSample, positionValue, sampleAtPixel, sampleTime, tickOf, valuePosition } from './automation';
 import { useAutomationTouch, sameTarget } from './AutomationTouch';
-import { useFairlightText } from './words';
+import { useFailureText, useFairlightText } from './words';
 import { parameterLabel } from './parameterLabel';
 import { PortalMenu } from '../audio/PortalMenu';
 interface Props {
@@ -50,6 +50,7 @@ export function AutomationLane(props: Props) {
   const { bridge, session, revision, timeline, of, lanes, locked, arm, scale, from, to, height, snapping, marks, path, pencil, onPath, onEdit, name } = props;
   const playhead = useRef(0);
   const t = useFairlightText(), touch = useAutomationTouch(), key = ownerKey(of);
+  const failure = useFailureText();
   const { parameters, problem: parameterProblem } = useAutomationParameters(props, of);
   const [problem, setProblem] = useState<string | null>(null);
   const [selectedAt, setSelectedAt] = useState<number[]>([]), [range, setRange] = useState<[
@@ -69,7 +70,7 @@ export function AutomationLane(props: Props) {
     axis?: 'x' | 'y';
   } | null>(null);
   const gesture = useAudioGesture({
-    bridge, session, revision, identity: `${timeline.id}/${key}/${path}`, locked: Boolean(locked), onFailure: e => setProblem(String(e))
+    bridge, session, revision, identity: `${timeline.id}/${key}/${path}`, locked: Boolean(locked), onFailure: e => setProblem(failure(e))
   });
   useEffect(() => {
     setSelectedAt([]);

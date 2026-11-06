@@ -1,14 +1,14 @@
 import { AutomationToolbar } from '../fairlight/AutomationToolbar';
 import { AutomationTouchProvider } from '../fairlight/AutomationTouch';
 import { ownerKey, type AutomationTarget } from '../fairlight/automation';
-import { useFairlightText } from '../fairlight/words';
+import { useFailureText, useFairlightText } from '../fairlight/words';
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import type { EngineBridge } from '../../bridge';
 import { keyOf } from '../../app/keys';
 import { Sheet } from '../../app/Sheet';
 import { Separator } from '../fairlight/Separator';
 import { CoveringMenu } from '../color/CoveringMenu';
-import { callEngine, type CapturedLevel, type Media, type Op, type Timeline as TimelineModel } from '../engine';
+import { callEngine, type Media, type Op, type Timeline as TimelineModel } from '../engine';
 import { TrackGroups, TrackGroupsProvider } from '../fairlight/TrackGroups';
 import { editingAllowed, inStudio, useStudioKeys } from '../keys';
 import { MonitorPane } from '../MonitorPane';
@@ -27,7 +27,7 @@ import { FairlightTimeline } from '../fairlight/FairlightTimeline';
 import { IndexTracks } from '../fairlight/IndexTracks';
 import { Inspector } from '../fairlight/Inspector';
 import { EffectsLibrary, AUDIO_EFFECT_DRAG, AUDIO_EFFECTS } from '../fairlight/EffectsLibrary';
-import { LevelMatcher, type LevelMatcherHandle } from '../fairlight/LevelMatcher';
+import { LevelMatcher, type CapturedProfile, type LevelMatcherHandle } from '../fairlight/LevelMatcher';
 import { useAudioReadings } from '../fairlight/audioReadings';
 import { useFairlightView } from '../fairlight/viewState';
 import { Mixer } from '../fairlight/Mixer';
@@ -46,12 +46,12 @@ interface Props {
 /** A new session/timeline owns new async jobs and selection, while its view state survives page switches. */
 export function FairlightPage(props: Props) { return <FairlightProfiles key={props.session} {...props} />; }
 function FairlightProfiles(props: Props) {
-  const [profile, setProfile] = useState<CapturedLevel | null>(null);
+  const [profile, setProfile] = useState<CapturedProfile | null>(null);
   return <FairlightSession key={props.selected?.id ?? ''} {...props} profile={profile} onCapture={setProfile} />;
 }
-interface ProfileProps { profile: CapturedLevel | null; onCapture: (value: CapturedLevel) => void }
+interface ProfileProps { profile: CapturedProfile | null; onCapture: (value: CapturedProfile) => void }
 function FairlightSession({ bridge, native, session, revision, pool, media, timelines, selected, onSelect, timelineMonitor, noticeOf, onRetry, onProblem, mixer, groups, profile, onCapture }: Props & ProfileProps) {
-  const t = useFairlightText();
+  const t = useFairlightText(), failure = useFailureText();
   const [view, update, reset] = useFairlightView(bridge, session, selected?.id ?? '');
   const [mixerLayout, setMixerLayout] = useMixerLayout(bridge, session, selected?.id ?? '');
   const timeline = useRef<TimelineHandle>(null);
@@ -76,7 +76,7 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
   const edit = useCallback(async (ops: Op[] | Record<string, unknown>[]) => {
     if (!ops.length || !live.current) return;
     try { await callEngine(bridge, 'transaction.apply', { revision: now.current.revision, ops }, { expectedSession: session }); }
-    catch (error) { if (live.current) setProblem(error instanceof Error ? error.message : String(error)); }
+    catch (error) { if (live.current) setProblem(failure(error)); }
   }, [bridge, session]);
   const playing = useTimelineLoad(bridge, selected, timelineMonitor, session, failure => now.current.onProblem(t('Could not load the Fairlight timeline.'), failure));
   const state = selected && playing === selected.id && timelineMonitor.state?.monitor === 'timeline' ? timelineMonitor.state : null;
@@ -101,7 +101,7 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
   useEffect(() => {
     if (!selected || playing !== selected.id) return;
     let live = true;
-    playbackQueue.current = playbackQueue.current.then(async()=>{try { await callEngine(bridge,'automation.playback',{timeline:selected.id,on:view.automation},{expectedSession:session}); } catch(e){if(live){setProblem(String(e));update({automation:state?.automation_playback??true});}}});
+    playbackQueue.current = playbackQueue.current.then(async()=>{try { await callEngine(bridge,'automation.playback',{timeline:selected.id,on:view.automation},{expectedSession:session}); } catch(e){if(live){setProblem(failure(e));update({automation:state?.automation_playback??true});}}});
     return ()=>{live=false;};
   },[bridge,session,selected?.id,playing,view.automation]);
   useEffect(()=>()=>{
@@ -116,7 +116,7 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
   const showLeft = view.pool || view.index || view.effects || view.groups;
   const content = <div className="studio-body fairlight-page" data-test="fairlight-page" style={{ '--fairlight-left': `${showLeft ? view.leftWidth : 0}px`, '--fairlight-right': `${view.inspector ? view.rightWidth : 0}px` } as CSSProperties}>
     <Toolbar view={view} update={update} reset={reset} timelines={timelines} selected={selected?.id ?? null} onSelect={onSelect} />
-    {selected && <AutomationToolbar bridge={bridge} session={session} timeline={selected} view={view} update={update} recording={state?.recording??false} selected={stripSelection} frame={state?timelineMonitor.frame??0:0} onEdit={ops=>void edit(ops as Record<string,unknown>[])} onFailure={e=>setProblem(String(e))} onToggle={()=>update({automation:!view.automation})} marks={()=>timeline.current?.marks()??{in:null,out:null}}/>}
+    {selected && <AutomationToolbar bridge={bridge} session={session} timeline={selected} view={view} update={update} recording={state?.recording??false} selected={stripSelection} frame={state?timelineMonitor.frame??0:0} onEdit={ops=>void edit(ops as Record<string,unknown>[])} onFailure={e=>setProblem(failure(e))} onToggle={()=>update({automation:!view.automation})} marks={()=>timeline.current?.marks()??{in:null,out:null}}/>}
     {(problem || audio.problem) && <p role="alert">{problem ?? audio.problem}<button type="button" onClick={() => setProblem(null)}>{t('Dismiss')}</button></p>}
     {view.meters && selected && <div className="fairlight-monitoring-wrap" style={{ height: view.monitoringHeight }}>
       <Monitoring timeline={selected} meters={audio.readings} layout={mixerLayout} view={view.monitoring} onView={monitoring=>update({monitoring})} onAction={action => void audio.action(action)} onResetPeaks={() => void audio.resetPeaks()}
@@ -158,7 +158,7 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
     <footer className="fairlight-footer"><button type="button" aria-pressed={view.viewer} onClick={() => update({ viewer: !view.viewer })}>{t('Viewer')}</button>
       {normalize.menu}
       <button type="button" onClick={() => setCinema(old => !old)}>{t('Cinema viewer')}</button>
-      {selected && <LevelMatcher ref={matcher} key={`${session}/${selected.id}`} bridge={bridge} session={session} timeline={selected} revision={revision} clips={soundClips} profile={profile} onCapture={onCapture} onPending={setMatching} />}
+      {selected && <LevelMatcher ref={matcher} key={`${session}/${selected.id}`} bridge={bridge} session={session} timeline={selected} media={media} revision={revision} clips={soundClips} profile={profile} onCapture={onCapture} onPending={setMatching} />}
     </footer>
     {context && <CoveringMenu onClose={() => setContext(null)} menu={{ ...context, label: t('Audio clip'), items: [...(context.sourcesOnly ? [] : [
       ...(timeline.current?.clipboardItems(context.clip) ?? []), ...attributes.items(context.clip),
@@ -188,5 +188,5 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
     {cinema && <div className="fairlight-cinema">{viewer}<button type="button" onClick={() => setCinema(false)}>{t('Exit cinema')}</button></div>}
     {speed && selected && <SpeedDialog bridge={bridge} session={session} revision={revision} timeline={selected} clips={speed} onClose={() => setSpeed(null)} />}
   </div>;
-  return selected ? <TrackGroupsProvider bridge={bridge} session={session} revision={revision} timeline={selected} selected={stripSelection.filter(key=>key.startsWith('track:')).map(key=>key.slice(6))} select={ids=>chooseStrips(ids.map(id=>`track:${id}`))}><AutomationTouchProvider bridge={bridge} session={session} revision={revision} timeline={selected} enabled={view.automation} recording={state?.recording??false} playing={state?.playing??false} read={state?.all_read??false} show={showAutomation} onFailure={e=>setProblem(String(e))}>{content}</AutomationTouchProvider></TrackGroupsProvider> : content;
+  return selected ? <TrackGroupsProvider bridge={bridge} session={session} revision={revision} timeline={selected} selected={stripSelection.filter(key=>key.startsWith('track:')).map(key=>key.slice(6))} select={ids=>chooseStrips(ids.map(id=>`track:${id}`))}><AutomationTouchProvider bridge={bridge} session={session} revision={revision} timeline={selected} enabled={view.automation} recording={state?.recording??false} playing={state?.playing??false} read={state?.all_read??false} show={showAutomation} onFailure={e=>setProblem(failure(e))}>{content}</AutomationTouchProvider></TrackGroupsProvider> : content;
 }

@@ -2,7 +2,7 @@ import { useEffectAutomation } from './useEffectAutomation';
 import { FxMeter } from './FxMeter';
 import { useEffect, useRef, useState } from 'react';
 import type { Ducker } from '../engine';
-import { useFairlightText } from '../fairlight/words';
+import { useFailureText, useFairlightText } from '../fairlight/words';
 import type { FairlightText } from '../../messages/fairlight';
 import { useAudioGesture } from '../timeline/useAudioGesture';
 import { mixerStrips, stripChange, laneValue } from './mixerModel';
@@ -12,6 +12,7 @@ import type { ProcessorProps } from './useProcessor';
 import { Knob } from './Knob';
 export function DuckerPanel(props: ProcessorProps) {
   const t = useFairlightText(), text = (key: string) => t(key as FairlightText);
+  const failure = useFailureText();
   const { timeline, target } = props, strip = mixerStrips(timeline).find(s => s.key === targetKey(target));
   const control = useEffectAutomation(props), { automation, recording } = control;
   const model = strip?.strip?.track_fx ?? defaultDucker();
@@ -19,7 +20,7 @@ export function DuckerPanel(props: ProcessorProps) {
   const [problem, setProblem] = useState<string | null>(null), [preview, setPreview] = useState<Ducker | null>(null);
   const captured = useRef(model), touching = useRef<string | null>(null);
   const gesture = useAudioGesture({
-    ...props, identity: `${timeline.id}/${targetKey(target)}/ducker`, locked: disabled, onFailure: error => setProblem(String(error))
+    ...props, identity: `${timeline.id}/${targetKey(target)}/ducker`, locked: disabled, onFailure: error => setProblem(failure(error))
   });
   const path = (field: string) => `track_fx.${field}`;
   const touchActive = () => Boolean(touching.current && 'track' in target && automation?.active({ of: target, path: touching.current }));

@@ -1,3 +1,4 @@
+import { useFailureText } from '../fairlight/words';
 import { useAutomationTouch } from '../fairlight/AutomationTouch';
 import { useAutomationParameters } from './useAutomationParameters';
 import { useEffect, useRef, useState } from 'react';
@@ -16,6 +17,7 @@ export interface ProcessorProps {
 export function useProcessor<M extends ProcessorModule>(props: ProcessorProps, module: M) {
   type Settings = M extends 'eq' ? Equalizer : Dynamics;
   const { bridge, session, revision, timeline, target, selected = [] } = props;
+  const failure = useFailureText();
   const automation=useAutomationTouch(), recording=Boolean(automation?.enabled&&automation.recording&&! ('clip' in target));
   const identity = `${timeline.id}/${targetKey(target)}/${module}`;
   const strips = mixerStrips(timeline), strip = strips.find(s => s.key === targetKey(target));
@@ -24,7 +26,7 @@ export function useProcessor<M extends ProcessorModule>(props: ProcessorProps, m
   const model = (module === 'eq' ? clip?.eq ?? strip?.strip?.eq ?? defaultEq('clip' in target) : strip?.strip?.dynamics ?? defaultDynamics()) as Settings;
   const disabled = 'clip' in target ? !clip || Boolean(clipOwner?.locked) : !strip || strip.locked || (!recording && automation?.enabled!==false && !processorWritable(strip, module));
   const [problem, setProblem] = useState<string | null>(null), [preview, setPreview] = useState<Settings | null>(null);
-  const gesture = useAudioGesture({ bridge, session, revision, identity, locked: disabled, onFailure: error => setProblem(error instanceof Error ? error.message : String(error)) });
+  const gesture = useAudioGesture({ bridge, session, revision, identity, locked: disabled, onFailure: error => setProblem(failure(error)) });
   const snapshot = useRef(model), touched=useRef<string[]>([]);
   const { parameters, problem: parameterProblem } = useAutomationParameters(props,
     'clip' in target ? null : target, Boolean(automation?.enabled));

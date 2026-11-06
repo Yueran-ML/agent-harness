@@ -7,11 +7,12 @@ import type { ProcessorProps } from '../audio/useProcessor';
 import { processorChanges, processorWritable } from '../audio/processorModel';
 import { mixerStrips } from '../audio/mixerModel';
 import { useAudioGesture } from '../timeline/useAudioGesture';
-import { useFairlightText } from './words';
+import { useFailureText, useFairlightText } from './words';
 
 export function PathSettings({ context, stripKey, anchor, onClose }: { context: ProcessorProps; stripKey: string; anchor: { x: number; y: number }; onClose: () => void }) {
   useOverlay();
   const t = useFairlightText(), strip = mixerStrips(context.timeline).find(s => s.key === stripKey)!;
+  const failure = useFailureText();
   const [problem, setProblem] = useState(''), [preview, setPreview] = useState<number | null>(null);
   const automation=useAutomationTouch(), recording=Boolean(automation?.enabled&&automation.recording), of=ownerOf(stripKey), target={of,path:'trim_db'};
   const baseTrim=strip.strip?.trim_db??0;
@@ -23,7 +24,7 @@ export function PathSettings({ context, stripKey, anchor, onClose }: { context: 
   };
   const writable=(path:string)=>!strip.locked&&(recording||automation?.enabled===false||processorWritable(strip,path));
   const gesture = useAudioGesture({ ...context, identity: `${context.timeline.id}/${stripKey}/path`, locked: strip.locked,
-    onFailure: error => setProblem(error instanceof Error ? error.message : String(error)) });
+    onFailure: error => setProblem(failure(error)) });
   const changes = (path: string, value: unknown) => processorChanges(context.timeline.id, [automation?.enabled===false?{...strip,arm:'off'}:strip], path, value);
   return <section data-audio-owner={stripKey} className="path-settings" style={{ left: anchor.x, top: anchor.y }} aria-label={t('Path Settings')} onKeyDown={event => { if (event.key === 'Escape') { gesture.cancel(); setPreview(null); event.stopPropagation(); } }}>
     <header>{strip.name} · {t('Path Settings')}<button type="button" aria-label={t('Close processor')} onClick={onClose}>×</button></header>

@@ -6,7 +6,7 @@ import { targetOf } from '../audio/processorModel';
 import { vcaChoices } from '../audio/routingModel';
 import type { Change } from '../timeline/commands';
 import type { RoutingContext } from './BusFormat';
-import { useFairlightText } from './words';
+import { useFailureText, useFairlightText } from './words';
 import './routing.css';
 
 export function vcaAssignments(timeline: Timeline, owners: LanesOf[], vca: Vca | null, action: 'add' | 'remove' = 'add'): Change[] {
@@ -31,6 +31,7 @@ export function vcaAssignments(timeline: Timeline, owners: LanesOf[], vca: Vca |
 
 export function VcaAssignment({ context, of, selected = [] }: { context: RoutingContext; of: LanesOf; selected?: readonly string[] }) {
   const t = useFairlightText(), [open,setOpen] = useState(false), [problem,setProblem] = useState(''), [pending,setPending] = useState(false);
+  const failure = useFailureText();
   const trigger = useRef<HTMLButtonElement>(null);
   useEffect(() => setOpen(false), [context.session, context.timeline.id]);
   const { timeline, bridge, session, revision } = context;
@@ -47,7 +48,7 @@ export function VcaAssignment({ context, of, selected = [] }: { context: Routing
     const ops=vcaAssignments(timeline,targets,vca,action); if(!ops.length)return;
     setPending(true);setProblem('');
     try { await callEngine(bridge,'transaction.apply',{revision,ops},{expectedSession:session});setOpen(false); }
-    catch(error) { setProblem(String(error)); } finally { setPending(false); }
+    catch(error) { setProblem(failure(error)); } finally { setPending(false); }
   };
   return <span className="vca-assignment"><button ref={trigger} type="button" disabled={strip?.locked || pending} aria-haspopup="menu" aria-expanded={open} aria-label={`VCA ${name ?? ''}`} onClick={()=>setOpen(!open)} onContextMenu={event=>{event.preventDefault();event.currentTarget.focus();setOpen(true);}}
     onKeyDown={event => { if (!event.nativeEvent.isComposing && ['ArrowDown', 'Enter', ' '].includes(event.key)) { event.preventDefault(); event.stopPropagation(); setOpen(true); } }}>

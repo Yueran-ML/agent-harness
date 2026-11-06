@@ -466,14 +466,14 @@ it('retains a measured profile across timelines and source deletion, but isolate
   expect(bridge.call).toHaveBeenCalledWith('audio.level_profile', { timeline: 't1', clip: 'sound1', revision: 7 }, { expectedSession: 1 });
   captured(bridge); await settle();
   view.rerender(<FairlightPage {...props} session={1} selected={second} revision={8} />); await settle();
-  expect(screen.getByText(/t1 \/ sound1/)).toBeTruthy();
+  expect(screen.getByText(/Main \/ Interview/)).toBeTruthy();
   fireEvent.contextMenu(document.querySelector('[data-clip="sound2"]')!, { clientX: 100, clientY: 100 });
   expect((screen.getByRole('menuitem', { name: 'Apply Level Profile' }) as HTMLButtonElement).disabled).not.toBe(true);
   fireEvent.click(screen.getByRole('menuitem', { name: 'Apply Level Profile' })); await settle();
   expect(bridge.call).toHaveBeenCalledWith('audio.level_match', { timeline: 't2', profile: capturedProfile.profile, clips: ['sound2'], apply: true, revision: 8 }, { expectedSession: 1 });
   view.rerender(<FairlightPage {...props} session={2} selected={second} />); await settle();
   bridge.tell({ job: 'audio-1', state: 'done', method: 'audio.level_profile', ...capturedProfile }, 1); await settle();
-  expect(screen.queryByText(/t1 \/ sound1/)).toBeNull();
+  expect(screen.queryByText(/Main \/ Interview/)).toBeNull();
   fireEvent.contextMenu(document.querySelector('[data-clip="sound2"]')!, { clientX: 100, clientY: 100 });
   expect((screen.getByRole('menuitem', { name: 'Apply Level Profile' }) as HTMLButtonElement).disabled).toBe(true);
 });
@@ -502,7 +502,7 @@ it('does not accept a pending capture after switching timelines, and displays th
   fireEvent.click(screen.getByRole('menuitem', { name: 'Capture Level Profile' })); await settle();
   view.rerender(<FairlightPage {...props} selected={second} />); await settle();
   expect(bridge.call).toHaveBeenCalledWith('audio.cancel', { job: 'audio-1' }, { expectedSession: 1 });
-  captured(bridge); await settle(); expect(screen.queryByText(/t1 \/ sound1/)).toBeNull();
+  captured(bridge); await settle(); expect(screen.queryByText(/Main \/ Interview/)).toBeNull();
   fireEvent.contextMenu(document.querySelector('[data-clip="sound1"]')!, { clientX: 100, clientY: 100 });
   fireEvent.click(screen.getByRole('menuitem', { name: 'Capture Level Profile' })); await settle();
   bridge.tell({ job: 'audio-1', state: 'done', method: 'audio.level_profile', ...capturedProfile, source: { timeline: 't2', clip: 'sound1', revision: 7 }, profile: { version: 1, level_db: -24.123, basis: 'mean' } }); await settle();

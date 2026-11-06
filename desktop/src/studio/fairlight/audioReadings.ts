@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useFailureText } from './words';
 import type { EngineBridge } from '../../bridge';
 import { callEngine, EngineError, type AudioAnalysis, type LoudnessReading, type MeterChannel, type Meters } from '../engine';
 
@@ -68,6 +69,7 @@ export function stripChannels(meters: Meters | null, owner: { track: string } | 
 /** Analysis events are broadcast; only the job acknowledged to this page belongs to it. */
 export function useAudioAnalysis(bridge: Bridge, session: number, timeline: string | null, identity = timeline) {
   const [analysis, setAnalysis] = useState<AudioAnalysis | null>(null);
+  const failure = useFailureText();
   const [problem, setProblem] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const owner = useRef<JobOwner>({ live: false, waiting: false, running: false, cancelled: false, job: null, early: new Map() });
@@ -76,7 +78,7 @@ export function useAudioAnalysis(bridge: Bridge, session: number, timeline: stri
     if (error instanceof EngineError && (error.data as { reason?: string } | undefined)?.reason === 'missing') return;
     if (current?.live && current.running && current.job === job) {
       current.cancelled = false;
-      setProblem(error instanceof Error ? error.message : String(error));
+      setProblem(failure(error));
     }
   });
   useEffect(() => {
@@ -106,7 +108,7 @@ export function useAudioAnalysis(bridge: Bridge, session: number, timeline: stri
       if (current.cancelled && current.running) cancelJob(job, current);
     } catch (error) {
       current.running = false;
-      if (current.live) { setProblem(error instanceof Error ? error.message : String(error)); setPending(false); }
+      if (current.live) { setProblem(failure(error)); setPending(false); }
     } finally { current.waiting = false; current.early.clear(); }
   }, [bridge, timeline, session]);
   const cancel = () => {
@@ -124,6 +126,7 @@ export function useAudioReadings(bridge: Bridge, session: number, timeline: stri
   // Readings change up to 30 times a second while playing: they are published to the meters that
   // subscribe to them, and the page that owns them is not drawn again for each.
   const readings = useMemo(meterStore, []);
+  const failure = useFailureText();
   const publish = (next: Meters) => {
     if (sameMeters(readings.current(), next)) return false;
     readings.set(next);
@@ -149,7 +152,7 @@ export function useAudioReadings(bridge: Bridge, session: number, timeline: stri
           delay = next.playing || changed ? 34 : 100;
           setProblem(null);
         }
-      } catch (error) { if (current.live) setProblem(error instanceof Error ? error.message : String(error)); }
+      } catch (error) { if (current.live) setProblem(failure(error)); }
       finally {
         polling = false;
         if (current.live && visible && !document.hidden) timer = setTimeout(() => void read(), delay);
@@ -167,7 +170,7 @@ export function useAudioReadings(bridge: Bridge, session: number, timeline: stri
       const loudness: LoudnessReading = await callEngine(bridge, 'audio.loudness', { timeline, action: which }, { expectedSession: session });
       const latest = readings.current();
       if (current.live && sequence === current.action && latest) publish({ ...latest, loudness });
-    } catch (error) { if (current.live) setProblem(error instanceof Error ? error.message : String(error)); }
+    } catch (error) { if (current.live) setProblem(failure(error)); }
   };
   const resetPeaks = async () => {
     const current = lifecycle.current;
@@ -176,7 +179,7 @@ export function useAudioReadings(bridge: Bridge, session: number, timeline: stri
     try {
       const next = await callEngine(bridge, 'audio.meters', { timeline, reset: true }, { expectedSession: session });
       if (current.live && sequence === current.action && next.timeline === timeline) publish(next);
-    } catch (error) { if (current.live) setProblem(error instanceof Error ? error.message : String(error)); }
+    } catch (error) { if (current.live) setProblem(failure(error)); }
   };
   return { readings, problem: problem ?? jobs.problem, analysis: jobs.analysis, pending: jobs.pending, action, resetPeaks,
     cancel: jobs.cancel, analyze: (clips: string[], standard: string) => jobs.start('audio.analyze', { targets: clips.map(clip => ({ clip })), standard }) };

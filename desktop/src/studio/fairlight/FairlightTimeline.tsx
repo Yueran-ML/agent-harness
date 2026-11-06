@@ -1,6 +1,6 @@
 import { keyOf, type Key } from '../../app/keys';
 import { editingAllowed } from '../keys';
-import { useFairlightText } from './words';
+import { useFailureText, useFairlightText } from './words';
 import { useTrackGroups } from './TrackGroups';
 import { useCallback, useMemo, useRef, useImperativeHandle, useState, type ComponentProps, type SetStateAction } from 'react';
 import { Timeline, type TimelineHandle, type TimelineViewport, type TimelineScrolling } from '../timeline/Timeline';
@@ -17,6 +17,7 @@ export function FairlightTimeline({ view, update, ...props }: ComponentProps<typ
   view: FairlightView; update: FairlightViewUpdate;
 }) {
   const t = useFairlightText(), groups = useTrackGroups();
+  const failure = useFailureText();
   const updateViewport = useCallback((change: SetStateAction<TimelineViewport>) => update(old => ({
     timelineViewport: typeof change === 'function' ? change(old.timelineViewport) : change,
   })), [update]);
@@ -35,7 +36,7 @@ export function FairlightTimeline({ view, update, ...props }: ComponentProps<typ
   const handle = useRef<TimelineHandle>(null);
   useImperativeHandle(props.ref, () => ({ keyDown: key => automationKey(key) || (handle.current?.keyDown(key) ?? false), perform: action => handle.current?.perform(action) ?? false,
     canPerform: action => handle.current?.canPerform(action) ?? false, clearTransition: () => handle.current?.clearTransition(), marks: () => handle.current?.marks() ?? {in:null,out:null}, clipboardItems: clip => handle.current?.clipboardItems(clip) ?? [] }));
-  const edit = (ops:Change[]) => { void callEngine(props.bridge,'transaction.apply',{revision:props.revision,ops},{expectedSession:props.session}).catch(error=>setProblem(String(error))); };
+  const edit = (ops:Change[]) => { void callEngine(props.bridge,'transaction.apply',{revision:props.revision,ops},{expectedSession:props.session}).catch(error=>setProblem(failure(error))); };
   const choose = (key:string,path:string) => update({lanePaths:{...view.lanePaths,[key]:path},lastLanePaths:path?{...view.lastLanePaths,[key]:path}:view.lastLanePaths});
   const toggle = () => {
     const keys=props.selectedTracks?.length?props.selectedTracks:props.timeline?.tracks.filter(t=>t.kind==='audio').map(t=>t.id)??[];

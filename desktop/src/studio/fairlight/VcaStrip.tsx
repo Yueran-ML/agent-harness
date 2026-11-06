@@ -9,7 +9,7 @@ import type { RoutingContext } from './BusFormat';
 import { useAutomationTouch } from './AutomationTouch';
 import { VcaAssignment } from './VcaAssignment';
 import { NameField } from '../media/NameField';
-import { useFairlightText } from './words';
+import { useFailureText, useFairlightText } from './words';
 import { clamp, FADER_GAIN } from '../audio/taper';
 
 /** The same deduplicated ancestor traversal as graph/build::chain, including live recorder values. */
@@ -31,14 +31,14 @@ export function useVcaGain(timeline: Timeline, ids: readonly string[], seconds: 
 }
 
 export function VcaStrip({context,vca,seconds,selected,onSelect}:{context:RoutingContext;vca:Vca;seconds:number;selected:boolean;onSelect:()=>void}) {
-  const t=useFairlightText(), control=useAutomationTouch(), [renaming,setRenaming]=useState(false), [problem,setProblem]=useState(''), [preview,setPreview]=useState<number|null>(null);
+  const t=useFairlightText(), failure=useFailureText(), control=useAutomationTouch(), [renaming,setRenaming]=useState(false), [problem,setProblem]=useState(''), [preview,setPreview]=useState<number|null>(null);
   const target={of:{vca:vca.id},path:'fader_db'}, recording=Boolean(control?.enabled&&control.recording);
   const lane=control?.enabled!==false&&vca.automation_arm!=='off'?vca.lanes?.fader_db:undefined;
   const base=laneValue(lane,seconds,vca.fader_db??0), trim=Boolean(recording&&control?.trim&&vca.automation_arm!=='safe'&&vca.automation_arm!=='off'&&(vca.automation_arm===true||context.timeline.audio?.record?.touch!=='off'));
   const value=control?.reading(target,trim?0:base)??base;
   const offset=useVcaGain(context.timeline,vca.vcas??[],seconds);
   const op=(patch:Record<string,unknown>):Change=>({op:'set_vca',timeline:context.timeline.id,id:vca.id,patch});
-  const gesture=useAudioGesture({...context,identity:`${context.timeline.id}/vca/${vca.id}`,locked:false,onFailure:e=>setProblem(String(e))});
+  const gesture=useAudioGesture({...context,identity:`${context.timeline.id}/vca/${vca.id}`,locked:false,onFailure:e=>setProblem(failure(e))});
   const end=()=>{if(recording){if(control?.active(target))control.end();}else gesture.end();setPreview(null);};
   const cancel=()=>{if(control?.active(target))control.end();gesture.cancel();setPreview(null);};
   const latest=useRef(cancel);latest.current=cancel;useEffect(()=>()=>latest.current(),[context.session,context.timeline.id,vca.id]);

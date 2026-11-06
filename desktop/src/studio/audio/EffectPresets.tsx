@@ -5,7 +5,7 @@ import type { ProcessorProps } from './useProcessor';
 import { cleanAudioPreset, factoryAudioPresets, presetKind } from './audioPresets';
 import { ABCompare } from './ABCompare';
 import { targetKey } from './processorModel';
-import { useFairlightText } from '../fairlight/words';
+import { useFailureText, useFairlightText } from '../fairlight/words';
 import type { FairlightText } from '../../messages/fairlight';
 export function EffectPresets({ context, identity, value, disabled, apply }: {
   context: ProcessorProps;
@@ -15,6 +15,7 @@ export function EffectPresets({ context, identity, value, disabled, apply }: {
   apply: (payload: AudioPresetPayload, modifiers?: Modifiers) => void;
 }) {
   const t = useFairlightText(), [users, setUsers] = useState<AudioPreset[]>([]), [selected, setSelected] = useState('factory:0'), [name, setName] = useState(''), [naming, setNaming] = useState(false), [problem, setProblem] = useState<string | null>(null), [busy, setBusy] = useState(false);
+  const failure = useFailureText();
   const scope = `${context.session}/${context.timeline.id}/${targetKey(context.target)}/${identity}`;
   const alive = useRef(true), generation = useRef(0);
   useEffect(() => {
@@ -39,7 +40,7 @@ export function EffectPresets({ context, identity, value, disabled, apply }: {
     }
     catch (error) {
       if (alive.current && generation.current === turn)
-        setProblem(String(error));
+        setProblem(failure(error));
     }
   };
   const latestLoad = useRef(load);
@@ -73,7 +74,7 @@ export function EffectPresets({ context, identity, value, disabled, apply }: {
     }
     catch (error) {
       if (alive.current && generation.current === turn)
-        setProblem(String(error));
+        setProblem(failure(error));
     }
     finally {
       if (alive.current && generation.current === turn)
@@ -136,7 +137,7 @@ export function EffectPresets({ context, identity, value, disabled, apply }: {
         }
         catch (error) {
           if (alive.current && generation.current === turn)
-            setProblem(String(error));
+            setProblem(failure(error));
         }
         finally {
           if (alive.current && generation.current === turn)

@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState, type PointerEvent, type KeyboardEvent } from 'react';
+import { useContext, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type RefObject } from 'react';
 import type { EngineBridge } from '../../bridge';
 import { callEngine, type AutomationArm, type Lane, type Lanes, type LanesOf, type Timeline } from '../engine';
 import { useAutomationParameters } from '../audio/useAutomationParameters';
 import type { Change } from '../timeline/commands';
 import { useAudioGesture } from '../timeline/useAudioGesture';
 import { HEADER_WIDTH } from '../timeline/geometry';
+import { AudioPlayhead } from '../timeline/AudioOverlay';
 import { snap, snapCandidates, type Marks } from '../timeline/snap';
 import { editingAllowed } from '../keys';
 import { keyOf, type Key } from '../../app/keys';
@@ -25,7 +26,6 @@ interface Props {
   from: number;
   to: number;
   height: number;
-  frame: number;
   snapping: boolean;
   marks: () => Marks;
   path: string;
@@ -36,8 +36,18 @@ interface Props {
   onEdit: (ops: Change[]) => void;
   name: string;
 }
+/**
+ * The lane needs the playhead only when it is used (snapping, paste, clear), so the playhead is
+ * kept in a ref by this empty leaf: it is the only part drawn again as the playhead moves.
+ */
+function FollowPlayhead({ into }: { into: RefObject<number> }) {
+  const frame = useContext(AudioPlayhead);
+  useLayoutEffect(() => { into.current = frame; }, [into, frame]);
+  return null;
+}
 export function AutomationLane(props: Props) {
-  const { bridge, session, revision, timeline, of, lanes, locked, arm, scale, from, to, height, frame, snapping, marks, path, pencil, onPath, onEdit, name } = props;
+  const { bridge, session, revision, timeline, of, lanes, locked, arm, scale, from, to, height, snapping, marks, path, pencil, onPath, onEdit, name } = props;
+  const playhead = useRef(0);
   const t = useFairlightText(), touch = useAutomationTouch(), key = ownerKey(of);
   const { parameters, problem: parameterProblem } = useAutomationParameters(props, of);
   const [problem, setProblem] = useState<string | null>(null);
@@ -76,7 +86,7 @@ export function AutomationLane(props: Props) {
     const px = event.clientX - (svg.current?.getBoundingClientRect().left ?? 0) + from * scale;
     let frame = px / scale;
     if (snapping) {
-      const near = snap(0, [frame], snapCandidates(timeline, [], props.frame, marks()), scale);
+      const near = snap(0, [frame], snapCandidates(timeline, [], playhead.current, marks()), scale);
       frame = near.point ?? Math.round(frame);
     }
     return sampleAtPixel(frame * scale, scale, timeline);
@@ -261,7 +271,7 @@ export function AutomationLane(props: Props) {
       if (command && char === 'v') {
         if (!clip.current.length)
           return true;
-        const at = range?.[0] ?? Math.round(frame * timeline.rate.den / timeline.rate.num * timeline.sample_rate);
+        const at = range?.[0] ?? Math.round(playhead.current * timeline.rate.den / timeline.rate.num * timeline.sample_rate);
         const pasted = clip.current.map(p => ({ ...p, at: sampleTime(p.at.ticks + at, timeline.sample_rate) }));
         if (pasted.length === 1)
           run({ edit: 'lane_points', action: 'add', points: pasted });
@@ -318,6 +328,7 @@ export function AutomationLane(props: Props) {
     onPointerDownCapture={props.onActive}
     onFocusCapture={props.onActive}
   >
+    <FollowPlayhead into={playhead} />
 
     <div
       className="automation-lane-header"
@@ -366,7 +377,7 @@ export function AutomationLane(props: Props) {
           key={then}
           onClick={() => {
             onEdit([{
-              edit: 'clear_lanes', timeline: timeline.id, of, then, at: sampleTime(frame * timeline.rate.den / timeline.rate.num * timeline.sample_rate, timeline.sample_rate)
+              edit: 'clear_lanes', timeline: timeline.id, of, then, at: sampleTime(playhead.current * timeline.rate.den / timeline.rate.num * timeline.sample_rate, timeline.sample_rate)
             }]);
             setClear(false);
           }}

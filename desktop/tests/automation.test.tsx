@@ -90,7 +90,7 @@ it('coalesces delayed touch sends and always releases the latest value, includin
 });
 it('lane keyboard cut cannot escape into clip edits',async()=>{
  const t=timeline([]), call=vi.fn(async(method:string):Promise<EngineAnswer>=>({ok:true,result:method==='automation.parameters'?{revision:7,of:{track:'a1'},parameters:[{path:'fader_db',kind:'continuous',scale:'linear',value:0,min:-100,max:10}]}:{revision:8,done:[]}}));
- const bubbled=vi.fn();render(<div onKeyDown={bubbled}><AutomationLane bridge={{call} as never} session={1} revision={7} timeline={t} of={{track:'a1'}} lanes={{fader_db:{points:[{at:{ticks:0,scale:48000},value:-10},{at:{ticks:48000,scale:48000},value:0}]}}} scale={4} from={0} to={100} height={128} frame={0} snapping={false} marks={()=>({in:null,out:null})} path="fader_db" pencil={false} onPath={()=>{}} onEdit={()=>{}} name="Voice"/></div>);await settle();
+ const bubbled=vi.fn();render(<div onKeyDown={bubbled}><AutomationLane bridge={{call} as never} session={1} revision={7} timeline={t} of={{track:'a1'}} lanes={{fader_db:{points:[{at:{ticks:0,scale:48000},value:-10},{at:{ticks:48000,scale:48000},value:0}]}}} scale={4} from={0} to={100} height={128} snapping={false} marks={()=>({in:null,out:null})} path="fader_db" pencil={false} onPath={()=>{}} onEdit={()=>{}} name="Voice"/></div>);await settle();
  expect((screen.getByRole('option',{name:'Fader'}) as HTMLOptionElement).value).toBe('fader_db');
  const svg=screen.getByLabelText('Voice Fader');fireEvent.keyDown(svg,{key:'a',ctrlKey:true});fireEvent.keyDown(svg,{key:'x',ctrlKey:true});await settle();
  expect(bubbled).not.toHaveBeenCalled();expect(call.mock.calls.filter(c=>c[0]==='transaction.apply')).toHaveLength(1);
@@ -178,7 +178,7 @@ it('toolbar keeps Active Range marks separate, remaps copied automation to the s
 it('Pencil captures the full lane and delegates sampled points to lane_draw; shifted nudge uses the physical comma key',async()=>{
  let revision=7;
  const t=timeline([]),call=vi.fn(async(method:string):Promise<EngineAnswer>=>({ok:true,result:method==='automation.parameters'?{revision,of:{track:'a1'},parameters:[{path:'fader_db',kind:'continuous',scale:'linear',value:0,min:-100,max:10}]}:{revision:revision+1,done:[]}}));
- const props={bridge:{call} as never,session:1,revision:7,timeline:t,of:{track:'a1'},lanes:{fader_db:{points:[{at:{ticks:48000,scale:48000},value:0}]}},scale:4,from:0,to:100,height:128,frame:0,snapping:false,marks:()=>({in:null,out:null}),path:'fader_db',pencil:true,onPath:()=>{},onEdit:()=>{},name:'Voice'};
+ const props={bridge:{call} as never,session:1,revision:7,timeline:t,of:{track:'a1'},lanes:{fader_db:{points:[{at:{ticks:48000,scale:48000},value:0}]}},scale:4,from:0,to:100,height:128,snapping:false,marks:()=>({in:null,out:null}),path:'fader_db',pencil:true,onPath:()=>{},onEdit:()=>{},name:'Voice'};
  const s=render(<AutomationLane {...props}/>);await settle();
  const svg=screen.getByLabelText('Voice Fader'),area=s.container.querySelector('svg rect')!;expect(area.getAttribute('height')).toBe('128');
  fireEvent.pointerDown(area,{button:0,clientX:0,clientY:110});fireEvent.pointerMove(svg,{clientX:40,clientY:100});fireEvent.pointerUp(svg,{clientX:80,clientY:90});await settle();

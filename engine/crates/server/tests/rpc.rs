@@ -33,6 +33,9 @@ mod scopes;
 #[path = "rpc/clipboard.rs"]
 mod clipboard;
 
+#[path = "rpc/media_audio.rs"]
+mod media_audio;
+
 #[path = "rpc/luts.rs"]
 mod luts;
 

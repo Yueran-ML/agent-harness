@@ -96,6 +96,8 @@ export interface Media {
    * client builds may leave it out, and is read as none set (`keptOverride`).
    */
   color_override?: ColorOverride;
+  /** Source audio tracks copied into new timeline instances; absent uses the original layout. */
+  audio_config?: MediaAudioTrack[];
 }
 
 export type TrackKind = 'video' | 'audio' | 'subtitle';
@@ -223,6 +225,12 @@ export interface ChannelSource { stream: number; channel: number }
 export interface ChannelMap { source?: ChannelSource | ChannelSource[] | null; enabled?: boolean; mute?: boolean; level_db?: number }
 export interface ClipPitch { semitones: number; cents: number }
 export type TrackFormat = 'mono' | 'stereo' | '5.1' | 'adaptive';
+export interface MediaAudioTrack {
+  name: string;
+  format: TrackFormat;
+  order?: 'smpte' | 'film';
+  channels: ChannelMap[];
+}
 export type BusFormat = 'mono' | 'stereo' | '3.0' | '4.0' | '5.0' | '5.1' | '7.0' | '7.1';
 export type EqKind = 'low_shelf' | 'bell' | 'high_shelf' | 'high_pass' | 'low_pass' | 'notch';
 export type EqRange = 'low' | 'medium_low' | 'medium_high' | 'high';
@@ -672,6 +680,7 @@ export type Op =
   | { op: 'set_color_settings'; settings: Record<string, unknown> }
   /** `input` left out keeps it; null sets it back to the project's default. */
   | { op: 'set_media_color'; id: string; input?: string | null; levels?: DataLevels | null; lut?: LutPair; inverse_drt?: boolean }
+  | { op: 'set_media_audio'; id: string; config: MediaAudioTrack[] | null }
   // The sound of schema 4 (PROTOCOL.md, "Operations of sound"). A `patch` is merged as `set_node`
   // merges `params`; `done` and the inverse carry the values as the engine writes them.
   /** A patch of `format`, `channels`, `order`, `mute`, `solo`, `solo_safe`, `adc`, `automation_arm`, `strip` of a track of sound. */
@@ -1970,6 +1979,13 @@ export function applyOp(project: Project, op: Op): Project {
     case 'set_group': return inGroup(project, op.id, group => patched(group, op, ['name']));
     case 'set_clip_group': return inTimeline(project, op.timeline, timeline => inClip(timeline, op.clip, clip => ({ ...clip, group: op.group ?? null })));
     case 'set_color_settings': return { ...project, color: mergePatch(keptColor(project), op.settings) as ColorSettings };
+    case 'set_media_audio': {
+      const at = placeOf(project.media, op.id, 'media');
+      const media = { ...project.media[at] };
+      if (op.config === null) delete media.audio_config;
+      else media.audio_config = structuredClone(op.config);
+      return { ...project, media: replaced(project.media, at, media) };
+    }
     case 'set_media_color': {
       const at = placeOf(project.media, op.id, 'media');
       const media = project.media[at];

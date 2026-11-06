@@ -59,7 +59,7 @@ describe('the media pool used for editing', () => {
     expect(call).not.toHaveBeenCalled();
     fireEvent.keyDown(field, { key: 'Enter' });
     await settle();
-    expect(call).toHaveBeenCalledWith('transaction.apply', { ops: [{ op: 'set_media', id: 'm1', name: '海边采访' }] });
+    expect(call).toHaveBeenCalledWith('transaction.apply', { ops: [{ op: 'set_media', id: 'm1', name: '海边采访' }] }, { expectedSession: 1 });
     expect(row('m1').textContent).toContain('海边采访');
     expect(row('m1').title).toBe('C:/media/m1.mov');
   });
@@ -75,7 +75,7 @@ describe('the media pool used for editing', () => {
     expect(selected()).toEqual(['m1', 'm2']);
     fireEvent.keyDown(row('m2'), { key: 'Delete' });
     await settle();
-    expect(call).toHaveBeenLastCalledWith('transaction.apply', { ops: [{ op: 'remove_media', id: 'm1' }, { op: 'remove_media', id: 'm2' }] });
+    expect(call).toHaveBeenLastCalledWith('transaction.apply', { ops: [{ op: 'remove_media', id: 'm1' }, { op: 'remove_media', id: 'm2' }] }, { expectedSession: 1 });
     expect(row('m1')).toBeNull();
     expect(row('m3')).not.toBeNull();
   });
@@ -88,7 +88,7 @@ describe('the media pool used for editing', () => {
     fireEvent.change(field, { target: { value: 'Interviews' } });
     fireEvent.keyDown(field, { key: 'Enter' });
     await settle();
-    expect(call).toHaveBeenCalledWith('transaction.apply', { ops: [{ op: 'add_bin', bin: { id: '', name: 'Interviews', parent: 'b1' } }] });
+    expect(call).toHaveBeenCalledWith('transaction.apply', { ops: [{ op: 'add_bin', bin: { id: '', name: 'Interviews', parent: 'b1' } }] }, { expectedSession: 1 });
     fireEvent.click(bin('b10'));
     fireEvent.click(screen.getByRole('button', { name: 'Import' }));
     expect(importing).toHaveBeenCalledWith('b10');
@@ -110,7 +110,7 @@ describe('the media pool used for editing', () => {
     expect(JSON.parse(values.get(MEDIA_DRAG)!)).toEqual({ session: 1, media: ['m1', 'm2'] });
     fireEvent.drop(bin('b1'), { dataTransfer });
     await settle();
-    expect(call).toHaveBeenCalledWith('transaction.apply', { ops: [{ op: 'set_media', id: 'm1', bin: 'b1' }, { op: 'set_media', id: 'm2', bin: 'b1' }] });
+    expect(call).toHaveBeenCalledWith('transaction.apply', { ops: [{ op: 'set_media', id: 'm1', bin: 'b1' }, { op: 'set_media', id: 'm2', bin: 'b1' }] }, { expectedSession: 1 });
     call.mockClear();
     values.set(MEDIA_DRAG, JSON.stringify({ session: 2, media: ['m3'] }));
     fireEvent.drop(bin('b1'), { dataTransfer });
@@ -125,11 +125,11 @@ describe('the media pool used for editing', () => {
     fireEvent.change(field, { target: { value: 'Selects' } });
     fireEvent.keyDown(field, { key: 'Enter' });
     await settle();
-    expect(call).toHaveBeenLastCalledWith('transaction.apply', { ops: [{ op: 'set_bin', id: 'b1', name: 'Selects' }] });
+    expect(call).toHaveBeenLastCalledWith('transaction.apply', { ops: [{ op: 'set_bin', id: 'b1', name: 'Selects' }] }, { expectedSession: 1 });
     expect(bin('b1').textContent).toContain('Selects');
     fireEvent.keyDown(bin('b1'), { key: 'Delete' });
     await settle();
-    expect(call).toHaveBeenLastCalledWith('transaction.apply', { ops: [{ op: 'remove_bin', id: 'b1' }] });
+    expect(call).toHaveBeenLastCalledWith('transaction.apply', { ops: [{ op: 'remove_bin', id: 'b1' }] }, { expectedSession: 1 });
     expect(bin('b1')).toBeNull();
     expect(bin('').getAttribute('aria-selected')).toBe('true');
     expect(row('m1')).not.toBeNull();

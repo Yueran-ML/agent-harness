@@ -889,6 +889,7 @@ fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> 
             f(&mut media.id, Role::Gives(Place::Media))
         }
         Op::RemoveMedia { id }
+        | Op::SetMediaAudio { id, .. }
         | Op::SetMediaColor { id, .. }
         | Op::SetMediaStreams { id, .. }
         | Op::RemoveTimeline { id }

@@ -1,24 +1,18 @@
 import { useContext, useEffect, useState } from 'react';
-import type { AudioStream, ChannelMap, ChannelSource, Clip, Media, Timeline } from '../engine';
+import type { AudioStream, ChannelMap, Clip, Media, Timeline } from '../engine';
+import { channelSources as sources, sourceKey as keyOf, sourceChoice } from '../media/audioLayout';
 import { useFairlightText } from '../fairlight/words';
 import { clipLocations } from '../timeline/selection';
 import { common, setClips } from './common';
 import { FieldsLocked } from './fields';
 import type { Commit } from './useCommit';
 
-const sources = (source: ChannelMap['source']): ChannelSource[] => source ? Array.isArray(source) ? source : [source] : [];
 const streamOf = (clip: Clip, media: readonly Media[]) => clip.source.kind === 'media' ? media.find(item => item.id === (clip.source as { media: string }).media) : undefined;
 const countOf = (timeline: Timeline, id: string) => {
   const track = clipLocations(timeline).get(id)?.track;
   return track?.kind === 'audio' ? track.format === 'mono' ? 1 : track.format === '5.1' ? 6 : track.format === 'adaptive' ? track.channels ?? 1 : 2 : 0;
 };
 const empty = (): ChannelMap => ({ source: null, enabled: true, mute: false, level_db: 0 });
-const keyOf = (source: ChannelMap['source'], streams: AudioStream[]) => {
-  if (!source) return 'none';
-  if (!Array.isArray(source)) return `${source.stream}:${source.channel}`;
-  const whole = streams.find(stream => source.length === stream.channels && source.every((item, i) => item.stream === stream.index && item.channel === i));
-  return whole ? `mix:${whole.index}` : `custom:${JSON.stringify(source)}`;
-};
 
 /** Timeline output channels. Custom mapping is explicit; null remains the engine's automatic mix. */
 export function AudioConfig({ clips, timeline, media, commit }: {
@@ -53,12 +47,7 @@ export function AudioConfig({ clips, timeline, media, commit }: {
     setPending(false);
     if (sent && automatic) { setCustom(false); setDraft(Object.fromEntries(clips.map(clip => [clip.id, Array.from({ length: countOf(timeline, clip.id) }, empty)]))); }
   };
-  const sourceValue = (value: string): ChannelMap['source'] => {
-    if (value === 'none') return null;
-    const [stream, channel] = value.split(':');
-    return stream === 'mix' ? Array.from({ length: streams.find(item => item.index === Number(channel))?.channels ?? 0 }, (_, i) => ({ stream: Number(channel), channel: i }))
-      : { stream: Number(stream), channel: Number(channel) };
-  };
+  const sourceValue = (value: string): ChannelMap['source'] => sourceChoice(value, streams);
   const streamName = (stream: AudioStream) => `${t('Stream')} ${stream.index}`;
   return <section className="audio-config" aria-label={t('Audio Configuration')}>
     <h3>{t('Audio Configuration')}</h3>

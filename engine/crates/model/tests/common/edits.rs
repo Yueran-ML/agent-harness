@@ -77,6 +77,7 @@ fn media() -> Vec<Media> {
         mark_in: None,
         mark_out: None,
         color_override: columbina_model::ColorOverride::default(),
+        audio_config: None,
     };
     vec![
         make("m1", 20 * 15360, 15360, true, true),

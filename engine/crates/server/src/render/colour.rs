@@ -49,6 +49,7 @@ fn media_of(path: &Path) -> Media {
         mark_in: None,
         mark_out: None,
         color_override: ColorOverride::default(),
+        audio_config: None,
     }
 }
 

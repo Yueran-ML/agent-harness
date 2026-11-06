@@ -521,6 +521,7 @@ pub(super) mod tests {
             mark_in: None,
             mark_out: None,
             color_override: columbina_model::ColorOverride::default(),
+            audio_config: None,
         })
     }
 

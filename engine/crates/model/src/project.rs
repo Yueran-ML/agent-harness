@@ -125,7 +125,7 @@ impl TryFrom<RawProject> for Project {
 
 /// Read a field that may be `null` but may not be left out, as serde would read an `Option`
 /// that is left out as none.
-fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
+pub(crate) fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
     deserializer: D,
 ) -> Result<Option<T>, D::Error> {
     Option::<T>::deserialize(deserializer)
@@ -146,7 +146,7 @@ pub struct Bin {
 }
 
 /// A file that the project is cut from. It is listed by its path and never copied.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Media {
     /// What the clips name it by.
@@ -182,6 +182,10 @@ pub struct Media {
     /// none set.
     #[serde(default)]
     pub color_override: ColorOverride,
+    /// The media-pool audio tracks and their channel maps, copied on placement. None keeps
+    /// the original automatic layout; an empty list leaves all sound out of an edit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_config: Option<Vec<crate::media_audio::MediaAudioTrack>>,
 }
 
 /// A copy of the picture of media whose every frame is a key frame, smaller where the picture is
@@ -1091,6 +1095,7 @@ impl Project {
                 mark_in: None,
                 mark_out: None,
                 color_override: ColorOverride::default(),
+                audio_config: None,
             }],
             timelines: vec![timeline],
             groups: vec![],

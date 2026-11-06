@@ -23,6 +23,7 @@ struct Made {
     length: i64,
     video: bool,
     audio: bool,
+    audio_config: Option<Vec<crate::media_audio::MediaAudioTrack>>,
 }
 
 fn made(work: &Work, material: &Material) -> Result<Made, EditError> {
@@ -35,6 +36,7 @@ fn made(work: &Work, material: &Material) -> Result<Made, EditError> {
             length,
             video: true,
             audio: false,
+            audio_config: None,
         })
     };
     let (media_id, from, to, length) = match material {
@@ -115,6 +117,12 @@ fn made(work: &Work, material: &Material) -> Result<Made, EditError> {
         length,
         video: media.facts.video.is_some(),
         audio: media.facts.audio.is_some(),
+        audio_config: media.audio_config.as_ref().map(|tracks| {
+            tracks
+                .iter()
+                .filter_map(crate::media_audio::MediaAudioTrack::active)
+                .collect()
+        }),
     })
 }
 
@@ -148,7 +156,12 @@ pub(super) fn longest(work: &Work, probe: &Clip) -> i64 {
 
 /// The tracks that a source goes on: its picture on a track of picture and its sound on one of
 /// sound, as `targets` gives them.
-fn tracks_for(work: &Work, made: &Made, targets: &Targets) -> Result<Vec<Id>, EditError> {
+fn tracks_for(
+    work: &mut Work,
+    made: &Made,
+    targets: &Targets,
+    configured: bool,
+) -> Result<Vec<Id>, EditError> {
     let mut tracks = vec![];
     let kinds = [
         (TrackKind::Video, made.video, &targets[0]),
@@ -157,6 +170,32 @@ fn tracks_for(work: &Work, made: &Made, targets: &Targets) -> Result<Vec<Id>, Ed
     for (kind, has, given) in kinds {
         if !has {
             continue;
+        }
+        if kind == TrackKind::Audio && configured {
+            if let Some(config) = &made.audio_config {
+                let from = match given {
+                    Some(None) => continue,
+                    Some(Some(id)) => {
+                        let track = work.open(id)?;
+                        if track.kind != TrackKind::Audio {
+                            return Err(OpError::WrongKind {
+                                track: id.clone(),
+                                kind: track.kind,
+                            }
+                            .into());
+                        }
+                        work.timeline()
+                            .tracks
+                            .iter()
+                            .filter(|track| track.kind == TrackKind::Audio)
+                            .position(|track| track.id == *id)
+                            .expect("the open audio track is present")
+                    }
+                    None => 0,
+                };
+                tracks.extend(super::source_tracks::configured(work, config, from)?);
+                continue;
+            }
         }
         let id = match given {
             Some(None) => continue,
@@ -189,8 +228,15 @@ fn tracks_for(work: &Work, made: &Made, targets: &Targets) -> Result<Vec<Id>, Ed
 /// Put the clips of a source on `tracks` at `at`, linked if there are two.
 fn put(work: &mut Work, tracks: &[Id], made: &Made, at: i64) -> Result<(), EditError> {
     let mut group = (tracks.len() > 1).then(String::new);
+    let mut audio_index = 0;
     for track in tracks {
         let mut clip = Clip::new("", made.source.clone(), at, made.length);
+        if work.track(track)?.kind == TrackKind::Audio {
+            if let Some(config) = &made.audio_config {
+                clip.channels = Some(config[audio_index].channels.clone());
+                audio_index += 1;
+            }
+        }
         clip.link = group.take();
         let inserted = work.insert(track, clip)?;
         group.clone_from(&inserted.link);
@@ -217,7 +263,7 @@ pub(super) fn insert(
     targets: &Targets,
 ) -> Result<(), EditError> {
     let made = made(work, material)?;
-    let tracks = tracks_for(work, &made, targets)?;
+    let tracks = tracks_for(work, &made, targets, true)?;
     work.make_room(at, made.length)?;
     put(work, &tracks, &made, at)
 }
@@ -229,7 +275,7 @@ pub(super) fn overwrite(
     targets: &Targets,
 ) -> Result<(), EditError> {
     let made = made(work, material)?;
-    let tracks = tracks_for(work, &made, targets)?;
+    let tracks = tracks_for(work, &made, targets, true)?;
     not_before_start(at)?;
     work.clear_clips(&tracks, at, at + made.length)?;
     put(work, &tracks, &made, at)
@@ -242,7 +288,9 @@ pub(super) fn replace(
     targets: &Targets,
 ) -> Result<(), EditError> {
     let made = made(work, material)?;
-    let tracks = tracks_for(work, &made, targets)?;
+    // Replace retains the destination instances' settings and track layout. The source-pool
+    // layout is used by placement edits, not to rewrite existing instances' channel maps.
+    let tracks = tracks_for(work, &made, targets, false)?;
     let rate = work.rate();
     let mut replaced = false;
     for track in &tracks {
@@ -323,6 +371,26 @@ pub(super) fn place_on_top(work: &mut Work, material: &Material, at: i64) -> Res
         (TrackKind::Audio, made.audio),
     ] {
         if has {
+            if kind == TrackKind::Audio {
+                if let Some(config) = &made.audio_config {
+                    let from = work
+                        .timeline()
+                        .tracks
+                        .iter()
+                        .filter(|track| track.kind == TrackKind::Audio)
+                        .collect::<Vec<_>>()
+                        .iter()
+                        .rposition(|track| {
+                            track
+                                .clips
+                                .iter()
+                                .any(|clip| clip.start < at + made.length && at < clip.end())
+                        })
+                        .map_or(0, |index| index + 1);
+                    tracks.extend(super::source_tracks::configured(work, config, from)?);
+                    continue;
+                }
+            }
             tracks.push(top(work, kind, at, at + made.length)?);
         }
     }
@@ -354,7 +422,7 @@ pub(super) fn append(
     targets: &Targets,
 ) -> Result<(), EditError> {
     let made = made(work, material)?;
-    let tracks = tracks_for(work, &made, targets)?;
+    let tracks = tracks_for(work, &made, targets, true)?;
     let mut at = 0;
     for track in &tracks {
         let end = work.track(track)?.clips.iter().map(Clip::end).max();
@@ -394,7 +462,7 @@ pub(super) fn ripple_overwrite(
     targets: &Targets,
 ) -> Result<(), EditError> {
     let made = made(work, material)?;
-    let tracks = tracks_for(work, &made, targets)?;
+    let tracks = tracks_for(work, &made, targets, false)?;
     let mut found = None;
     for track in &tracks {
         let clips = &work.track(track)?.clips;
@@ -411,10 +479,17 @@ pub(super) fn ripple_overwrite(
             frame: at,
         });
     };
-    work.clear_clips(&tracks, start, end)?;
+    let placed = tracks_for(work, &made, targets, true)?;
+    let mut cleared = tracks;
+    for track in &placed {
+        if !cleared.contains(track) {
+            cleared.push(track.clone());
+        }
+    }
+    work.clear_clips(&cleared, start, end)?;
     let all = work.all_unlocked();
     work.shift(&all, end, made.length - (end - start), &HashSet::new())?;
-    put(work, &tracks, &made, start)
+    put(work, &placed, &made, start)
 }
 
 #[cfg(test)]

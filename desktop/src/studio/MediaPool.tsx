@@ -12,6 +12,9 @@ import { useFavoriteLuts, useListedLuts } from './color/useLuts';
 import { Bins } from './media/Bins';
 import { Clips } from './media/Clips';
 import { Details } from './media/Details';
+import { AudioAttributes, AudioFormats } from './media/AudioAttributes';
+import { audioSources, standardLayout } from './media/audioLayout';
+import type { TrackFormat } from './engine';
 import { EMPTY_SELECTION, type Selection } from './media/selection';
 import { Thumbnails } from './media/Thumbnails';
 export { factsOf, proxyStanding } from './media/facts';
@@ -42,7 +45,11 @@ export const MediaPool = memo(function MediaPool({ media, bins, timelines, proxi
   const [problem, setProblem] = useState<{ said: string; detail: string } | null>(null);
   // The right-click menu: where, and of which media; its items are made as it is drawn, so the LUTs listed meanwhile show.
   const [menuOf, setMenu] = useState<{ x: number; y: number; of: Media[] } | null>(null);
-  const pending = useRef(false);
+  const pending = useRef<{ session: number } | null>(null);
+  const currentSession = useRef(session);
+  currentSession.current = session;
+  const [audioOpened, setAudioOpened] = useState<{ session: number; ids: string[] } | null>(null);
+  useEffect(() => { setAudioOpened(null); setMenu(null); setProblem(null); }, [session]);
   const selectedBin = bins.some(each => each.id === bin) ? bin : null;
   useEffect(() => { onBin?.(selectedBin); }, [selectedBin, onBin]);
   useEffect(() => { if (follow !== null) setSelection({ ids: [follow], focus: follow, anchor: follow }); }, [follow]);
@@ -53,22 +60,23 @@ export const MediaPool = memo(function MediaPool({ media, bins, timelines, proxi
   const failed = chosen.find(each => proxies[each.id]?.state === 'failed');
   const thumbnails = useMemo(() => new Thumbnails(bridge), [bridge, session]);
   const edit = useCallback(async (ops: Op[]): Promise<boolean> => {
-    if (ops.length === 0 || pending.current) return false;
-    pending.current = true;
+    if (ops.length === 0 || pending.current?.session === session || currentSession.current !== session) return false;
+    const request = { session };
+    pending.current = request;
     setProblem(null);
     try {
-      await callEngine(bridge, 'transaction.apply', { ops });
-      return true;
+      await callEngine(bridge, 'transaction.apply', { ops }, { expectedSession: session });
+      return currentSession.current === session;
     } catch (error) {
       const reason = error instanceof EngineError ? (error.data as { reason?: string } | null)?.reason : null;
       const said = reason === 'not_empty' ? words.hint.studio.binUsed
         : reason === 'in_use' ? words.hint.studio.mediaUsed
           : MEDIA_COLOR_REASONS.find(each => each === reason) ? words.hint.studio.edit[reason as typeof MEDIA_COLOR_REASONS[number]]
             : words.hint.studio.mediaEditFailed;
-      setProblem({ said, detail: error instanceof Error ? error.message : String(error) });
+      if (currentSession.current === session) setProblem({ said, detail: error instanceof Error ? error.message : String(error) });
       return false;
-    } finally { pending.current = false; }
-  }, [bridge, words]);
+    } finally { if (pending.current === request) pending.current = null; }
+  }, [bridge, words, session]);
   const selectBin = (id: string | null) => { setBin(id); setSelection(EMPTY_SELECTION); };
   const move = (ids: string[], target: string | null) => {
     const moving = (media ?? []).filter(each => ids.includes(each.id) && each.bin !== target);
@@ -90,9 +98,19 @@ export const MediaPool = memo(function MediaPool({ media, bins, timelines, proxi
     setMenu({ x: event.clientX, y: event.clientY, of });
   };
   const closeMenu = useCallback(() => setMenu(null), []);
+  const audioTargets = (items: readonly Media[]) => {
+    const audio = items.filter(item => item.facts.audio !== null && item.facts.audio !== undefined);
+    return [...audio.filter(item => item.id !== details?.id), ...audio.filter(item => item.id === details?.id)];
+  };
+  const openAudio = (items: readonly Media[]) => setAudioOpened({ session, ids: audioTargets(items).map(item => item.id) });
+  const openedMedia = audioOpened?.ids.map(id => media?.find(item => item.id === id)).filter((item): item is Media => !!item) ?? [];
+  const selectedAudio = audioTargets(chosen);
+  const fileFormat = details?.audio_config?.length === 1 ? details.audio_config[0].format
+    : details?.audio_config ? 'custom' : details?.facts.audio?.channels === 1 ? 'mono' : details?.facts.audio?.channels === 2 ? 'stereo' : details?.facts.audio?.channels === 6 ? '5.1' : 'adaptive';
   const menu: Menu | null = menuOf === null ? null : {
-    x: menuOf.x, y: menuOf.y, label: labels.menu, items: mediaColorItems(menuOf.of, keptColor({ color }), labels, ops => void edit(ops),
+    x: menuOf.x, y: menuOf.y, label: labels.menu, items: [...mediaColorItems(menuOf.of, keptColor({ color }), labels, ops => void edit(ops),
       { library: listedLuts.library, favorites: favoriteLuts, words: words.label.studio.colorPage.lutPanel }),
+      { id: 'clip-attributes', label: t('Clip Attributes'), disabled: !audioTargets(menuOf.of).length, run: () => openAudio(menuOf.of) }],
   };
   return <section className="pool" aria-label={words.label.studio.pool} data-test="pool">
     <header className="pool-head">
@@ -123,6 +141,19 @@ export const MediaPool = memo(function MediaPool({ media, bins, timelines, proxi
       {failed && <button type="button" className="btn btn-quiet" onClick={() => onMakeAgain(failed.id)} data-test="make-proxy-again"><RotateCw size={14} aria-hidden="true" />{words.label.studio.makeProxyAgain}</button>}
     </footer>}
     {details && <Details media={details} told={proxies[details.id]} timelines={timelines} onMakeAgain={() => onMakeAgain(details.id)} />}
+    {details?.facts.audio && <section className="audio-config" aria-label={t('Audio Configuration')}>
+      <label>{t('Format')}<select aria-label={t('Format')} value={fileFormat} onChange={event => {
+        if (event.target.value === 'custom') openAudio(chosen);
+        else if (selectedAudio.every(item => audioSources(item).length > 0)) void edit(selectedAudio.map(item => ({
+          op: 'set_media_audio', id: item.id,
+          config: standardLayout(item, event.target.value as TrackFormat),
+        })));
+      }}><AudioFormats disabled={!selectedAudio.every(item => audioSources(item).length > 0)} /><option value="custom">{t('Custom mapping')}</option></select></label>
+      {!selectedAudio.every(item => audioSources(item).length > 0) && <p role="status">{t('Audio stream information is unavailable.')}</p>}
+      <button type="button" onClick={() => openAudio(chosen)}>{t('Clip Attributes')}</button>
+    </section>}
+    {audioOpened && audioOpened.session === session && openedMedia.length > 0 && openedMedia.length === audioOpened.ids.length &&
+      <AudioAttributes media={openedMedia} onApply={edit} onClose={() => setAudioOpened(null)} />}
     {menu && <CoveringMenu menu={menu} onClose={closeMenu} />}
   </section>;
 });

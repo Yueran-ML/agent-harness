@@ -10,6 +10,7 @@ pub mod edit;
 pub mod grade;
 pub mod history;
 pub mod keyframes;
+pub mod media_audio;
 pub mod ops;
 pub mod project;
 pub mod resolve;
@@ -39,6 +40,7 @@ pub use grade::{
     Qualifier, QualifierMode, ShotMatch, Target,
 };
 pub use history::{Applied, Changed, History, Step, TransactionError, HISTORY_MOST};
+pub use media_audio::MediaAudioTrack;
 pub use ops::{apply, apply_done, InsertsOf, Invalid, LanesOf, Op, OpError, LARGEST};
 pub use project::{
     Alignment, AudioFacts, AudioStream, Bin, Clip, Cue, Facts, Id, Identity, Media, Project, Proxy,

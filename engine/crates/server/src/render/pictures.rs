@@ -38,6 +38,7 @@ fn media_of(path: &Path) -> Media {
         mark_in: None,
         mark_out: None,
         color_override: columbina_model::ColorOverride::default(),
+        audio_config: None,
     }
 }
 

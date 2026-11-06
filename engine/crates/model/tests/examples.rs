@@ -569,6 +569,16 @@ fn examples() -> Vec<(&'static str, Vec<Op>, Op)> {
             },
         ),
         (
+            "set_media_audio",
+            vec![],
+            serde_json::from_value(serde_json::json!({
+                "op": "set_media_audio", "id": "m1", "config": [
+                    {"name":"Left", "format":"mono", "channels":[{"source":{"stream":1,"channel":0}}]},
+                    {"name":"Right", "format":"mono", "channels":[{"source":{"stream":1,"channel":1},"mute":true,"level_db":-3}]}
+                ]
+            })).unwrap(),
+        ),
+        (
             "set_media_color",
             vec![],
             Op::SetMediaColor {
@@ -1492,6 +1502,7 @@ fn the_examples_of_the_operations_are_as_the_engine_applies_them() {
         "set_clip_group",
         "set_color_settings",
         "set_media_color",
+        "set_media_audio",
         "set_track_audio",
         "add_bus",
         "remove_bus",

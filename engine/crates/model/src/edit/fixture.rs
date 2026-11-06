@@ -64,6 +64,7 @@ fn media(id: &str, frames: i64, video: bool) -> Media {
         mark_in: None,
         mark_out: None,
         color_override: crate::color_management::ColorOverride::default(),
+        audio_config: None,
     }
 }
 

@@ -670,6 +670,14 @@ pub enum Op {
         /// The settings that change, as an object of the fields of `color` that change.
         settings: serde_json::Value,
     },
+    /// Replace a media-pool audio layout, without changing its existing timeline clips.
+    SetMediaAudio {
+        /// The media.
+        id: Id,
+        /// All configured source tracks, or null for the original automatic layout.
+        #[serde(deserialize_with = "crate::project::present")]
+        config: Option<Vec<crate::media_audio::MediaAudioTrack>>,
+    },
     /// Set the colour of media by hand: its input colour space, its data levels, the LUTs of
     /// the source clip and its Inverse DRT for SDR to HDR Conversion.
     SetMediaColor {
@@ -1876,6 +1884,7 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
             group,
         } => grade::set_clip_group(project, &timeline, &clip, group),
         Op::SetColorSettings { settings } => color::set_color_settings(project, &settings),
+        Op::SetMediaAudio { id, config } => crate::media_audio::set(project, &id, config),
         Op::SetMediaColor {
             id,
             input,
@@ -3859,6 +3868,7 @@ fn check_media(project: &Project, media: &Media) -> Result<(), OpError> {
         bin_at(project, bin)?;
     }
     check_marks(media)?;
+    crate::media_audio::check(media)?;
     crate::color_management::check_override(media)
 }
 

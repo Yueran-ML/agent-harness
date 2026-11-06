@@ -4071,6 +4071,28 @@ are ours (marked *ours*), to be checked against Resolve.
 - Not modelled: Dolby Vision, HDR10+, HDR Vivid, HDR mastering, Broadcast Safe, ACES AMF, the
   Video Monitor and Scopes LUTs, Display HDR On Viewers (a preference of the viewer, T12).
 
+### Media's `audio_config`
+
+An optional array of source audio tracks, each `{name, format, order?, channels}`.
+`format` is `mono`, `stereo`, `5.1` or `adaptive`; `order` defaults to `smpte`
+(`film` is allowed only for 5.1). `channels` contains 1–24 clip channel maps,
+with the same source, enabled, mute and level semantics as timeline clips. Fixed
+formats require 1, 2 or 6 maps respectively. Names have at most 100 characters.
+The media must have audio. Invalid layouts return `out_of_range`.
+`set_media_audio` requires `config`; `null` restores the original layout and
+removes the stored field. An empty array deliberately places no sound.
+
+Insert, overwrite, append, smart insert, place on top and ripple overwrite copy
+the active source tracks into independent, linked clips. Disabled channels are
+omitted; muted channels and their levels remain. Reduced layouts become mono
+(one active channel), stereo (two), or adaptive (more). From the requested audio
+track onward, matching unlocked formats are reused; missing formats get new tracks.
+Existing track formats are never changed. An explicitly locked target is refused.
+Place on top starts after the highest occupied audio track. Replace preserves
+existing instance settings and track layout, including channel maps.
+Changing the pool configuration leaves existing clips unchanged. Placement,
+including any created tracks, is one ordinary undo step.
+
 ### Media's `color_override`
 
 `{"input": null, "levels": "auto", "lut": {"1d": null, "3d": null}, "inverse_drt": true}`:
@@ -4099,6 +4121,7 @@ are ours (marked *ours*), to be checked against Resolve.
 |---|---|---|
 | `set_color_settings` | `settings`: a patch of `color` | `set_color_settings` with the values as they were |
 | `set_media_color` | `id`, `input?` (a space, `bypass`, or `null`), `levels?`, `lut?` (`{"1d", "3d"}`, both, each a name or `null`), `inverse_drt?` | `set_media_color` with the given fields as they were |
+| `set_media_audio` | `id`, `config` (an array of source audio tracks, or `null` to reset) | `set_media_audio` with the previous configuration |
 
 - `settings` is merged as `set_node` merges `params`: each object in it (a LUT pair, a rolloff)
   is put into the object of that name, and any other value takes the place of the one there,

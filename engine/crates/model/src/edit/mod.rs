@@ -47,6 +47,7 @@ mod grade;
 mod input;
 mod misc;
 mod place;
+mod source_tracks;
 mod trim;
 mod work;
 

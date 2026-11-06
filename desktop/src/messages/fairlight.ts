@@ -1,5 +1,15 @@
 /** Shared Fairlight catalogue; protocol IDs and media/track names are never translated. */
 const entries = {
+  'Clip Attributes': ['片段属性', 'クリップ属性'],
+  'The audio configuration was not saved. Your draft is kept; try applying again.': ['音频配置未保存。草稿已保留，请重试应用。', 'オーディオ設定を保存できませんでした。編集内容は保持されています。もう一度適用してください。'],
+  'Add tracks': ['添加轨道', 'トラックを追加'],
+  'New track format': ['新轨道格式', '新規トラック形式'],
+  'New track channels': ['新轨道声道数', '新規トラックのチャンネル数'],
+  'Track name': ['轨道名称', 'トラック名'],
+  'Remove track': ['移除轨道', 'トラックを削除'],
+  'These settings affect future edits. Existing timeline clips keep their settings.': ['这些设置用于后续插入，时间线上已有片段保持原设置。', 'この設定は今後の編集に適用されます。既存のタイムラインクリップの設定は変わりません。'],
+  'The media changed. Reopen Clip Attributes.': ['素材已更改，请重新打开片段属性。', 'メディアが変更されました。クリップ属性を開き直してください。'],
+  'Some clips lack the selected source channels. Select compatible clips or choose another source.': ['部分片段没有所选源声道。请选择声道兼容的片段，或改选来源。', '選択したソースチャンネルがないクリップがあります。対応するクリップを選ぶか、ソースを変更してください。'],
   'Cut': ['剪切', 'カット'],
   'Cut Head': ['剪切前半段', '前半をカット'], 'Cut Tail': ['剪切后半段', '後半をカット'],
   'Copy Head': ['复制前半段', '前半をコピー'], 'Copy Tail': ['复制后半段', '後半をコピー'],

@@ -351,6 +351,7 @@ fn media_of(old: Media1) -> Media {
         mark_in: None,
         mark_out: None,
         color_override: ColorOverride::default(),
+        audio_config: None,
     }
 }
 

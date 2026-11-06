@@ -1265,7 +1265,15 @@ pub fn check_clip(clip: &Clip, rate: Rate) -> Result<(), OpError> {
     if !(-12..=12).contains(&clip.pitch.semitones) || !within(clip.pitch.cents, -100.0, 100.0) {
         return Err(out("pitch"));
     }
-    for map in clip.channels.iter().flatten() {
+    check_channel_maps(clip.channels.as_deref().unwrap_or_default())
+}
+
+/// Validate per-channel levels, shared by timeline clips and media-pool layouts.
+///
+/// # Errors
+/// A non-finite level or one above 24 dB.
+pub fn check_channel_maps(maps: &[ChannelMap]) -> Result<(), OpError> {
+    for map in maps {
         if !(map.level_db.is_finite() && map.level_db <= 24.0) {
             return Err(out("channels"));
         }

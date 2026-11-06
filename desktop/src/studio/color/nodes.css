@@ -137,6 +137,8 @@
   flex-direction: column;
   min-width: 190px;
   max-height: 80vh;
+  max-width: 100vw;
+  overflow: auto;
   padding: 4px;
   border: 1px solid var(--line);
   border-radius: var(--r1, 6px);
@@ -183,8 +185,4 @@
   margin-left: var(--s3);
   color: var(--moon-3);
   font-size: 11px;
-}
-
-.color-menu .color-menu {
-  overflow-y: auto;
 }

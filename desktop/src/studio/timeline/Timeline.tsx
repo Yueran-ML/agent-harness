@@ -20,6 +20,7 @@ import type { Marks } from './snap';
 import type { AudioClipboard } from './VolumeLine';
 import { refusalText } from '../inspector/refusal';
 import { CoveringMenu } from '../color/CoveringMenu';
+import type { ChannelContext } from '../inspector/ChannelSourceMenu';
 import { AudioPlayhead, type AudioOverlayContext } from './AudioOverlay';
 import './timeline.css';
 
@@ -74,7 +75,7 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   /** View filtering only; editing still sees the complete, accepted timeline. */
   hiddenTracks?: readonly string[];
   drawClip?: (props: TrackClipDrawing) => ReactNode;
-  onClipContext?: (clip: string, x: number, y: number) => void;
+  onClipContext?: (clip: string, x: number, y: number, channel: ChannelContext) => void;
   onCopyClips?: (clips: readonly string[]) => boolean;
   trackMenuItems?: (track: string) => TrackMenu['items'];
   onTrackSelect?: (track: string) => void;
@@ -322,7 +323,10 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
     onContextMenu={event => {
       const clip = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-clip]')?.dataset.clip : undefined;
       if (clip && onClipContext && event.target instanceof Element && event.target.closest<HTMLElement>('[data-track]')?.dataset.kind === 'audio') {
-        event.preventDefault(); onClipContext(clip, event.clientX, event.clientY); return;
+        const lane = event.target.closest<HTMLElement>('[data-channel]')?.dataset.channel;
+        event.preventDefault(); onClipContext(clip, event.clientX, event.clientY, {
+          ...(lane === undefined ? {} : { channel: Number(lane) }), sourcesOnly: event.ctrlKey || event.metaKey,
+        }); return;
       }
       // As DaVinci Resolve: a track header offers Add Subtitle Track, a track of subtitles Add Subtitle (Reference Manual 20, pp. 1088–1089).
       // Resolve adds the subtitle at the playhead; here it goes where the track was clicked, as the author chose.

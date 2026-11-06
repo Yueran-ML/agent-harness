@@ -17,6 +17,7 @@ import { Inspector } from '../inspector/Inspector';
 import { SpeedDialog } from '../inspector/SpeedDialog';
 import { useNormalizeAudio } from '../inspector/NormalizeDialog';
 import { useClipAttributes } from '../inspector/ClipAttributes';
+import { useChannelSourceMenu, type AudioClipContext } from '../inspector/ChannelSourceMenu';
 import { CoveringMenu } from '../color/CoveringMenu';
 import { Library } from '../effects/Library';
 import type { Marks } from '../timeline/snap';
@@ -93,9 +94,10 @@ export function EditPage({
   const [narrow, setNarrow] = useState(false);
   const [creating, setCreating] = useState(false);
   const [chosenClips, setChosenClips] = useState<string[]>([]);
-  const [audioContext, setAudioContext] = useState<{ clip: string; x: number; y: number } | null>(null);
+  const [audioContext, setAudioContext] = useState<AudioClipContext | null>(null);
   const normalize = useNormalizeAudio({ bridge, session, revision, timeline: selected, selection: chosenClips, commands: () => timeline.current });
   const attributes = useClipAttributes({ bridge, session, revision, timeline: selected, selection: chosenClips });
+  const channelSources = useChannelSourceMenu({ bridge, session, revision, timeline: selected, media });
   useEffect(() => { setAudioContext(null); setChosenClips([]); setSpeedClips(null); }, [session, selected?.id]);
   const [chosenCue, setChosenCue] = useState<string | null>(null);
   // A subtitle added or double-clicked is to be written in: the inspector opens on it, as DaVinci Resolve's does.
@@ -236,7 +238,7 @@ export function EditPage({
         focus={focus}
         onSelection={setChosenClips}
         onCopyClips={attributes.copy}
-        onClipContext={(id, x, y) => { if (selected?.tracks.some(track => track.kind === 'audio' && track.clips.some(clip => clip.id === id))) setAudioContext({ clip: id, x, y }); }}
+        onClipContext={(id, x, y, channel) => { if (selected?.tracks.some(track => track.kind === 'audio' && track.clips.some(clip => clip.id === id))) setAudioContext({ clip: id, x, y, ...channel }); }}
         onTrackSelect={id => setStripSelection([`track:${id}`])}
         selectedTracks={stripSelection.filter(key => key.startsWith('track:')).map(key => key.slice(6))}
         onTransition={setChosenTransition}
@@ -249,7 +251,11 @@ export function EditPage({
     </div>
     {speedClips !== null && selected !== null && <SpeedDialog clips={speedClips} timeline={selected} bridge={bridge} session={session} revision={revision}
       onClose={() => setSpeedClips(null)} />}
-    {audioContext && <CoveringMenu menu={{ ...audioContext, label: audioText('Audio clip'), items: [...(timeline.current?.clipboardItems(audioContext.clip) ?? []), ...attributes.items(audioContext.clip), normalize.item(audioContext.clip)] }} onClose={() => setAudioContext(null)} />}
+    {audioContext && <CoveringMenu menu={{ ...audioContext, label: audioText('Audio clip'), items: [
+      ...(audioContext.sourcesOnly ? [] : [...(timeline.current?.clipboardItems(audioContext.clip) ?? []), ...attributes.items(audioContext.clip), normalize.item(audioContext.clip)]),
+      ...channelSources.items(audioContext),
+    ] }} onClose={() => setAudioContext(null)} />}
+    {channelSources.problem && <div role="alert">{channelSources.problem}<button type="button" onClick={channelSources.clear}>{audioText('Close')}</button></div>}
     {normalize.dialog}
     {attributes.dialog}
     {creating && <NewTimeline media={media} names={timelines.map(each => each.name)} onCreate={create} onClose={() => setCreating(false)} />}

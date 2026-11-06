@@ -20,10 +20,24 @@ export interface Menu { x: number; y: number; label: string; items: MenuItem[] }
 
 const enabledItems = (box: HTMLElement | null) => [...(box?.querySelectorAll<HTMLElement>(':scope > .color-menu-entry > [role="menuitem"]:not([disabled])') ?? [])];
 
-function List({ items, label, onClose, onBack, style }: {
-  items: MenuItem[]; label: string; onClose: () => void; onBack?: () => void; style: CSSProperties;
+function List({ items, label, onClose, onBack, style, anchor }: {
+  items: MenuItem[]; label: string; onClose: () => void; onBack?: () => void; style: CSSProperties; anchor?: HTMLElement;
 }) {
   const box = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState<CSSProperties | null>(null);
+  useLayoutEffect(() => {
+    if (!anchor) return;
+    const place = () => {
+      const bounds = box.current?.getBoundingClientRect();
+      if (!bounds) return;
+      const at = anchor.getBoundingClientRect();
+      setPosition({ left: Math.max(0, Math.min(window.innerWidth - bounds.width,
+        at.right + bounds.width <= window.innerWidth ? at.right : at.left - bounds.width)),
+        top: Math.max(0, Math.min(at.top, window.innerHeight - bounds.height)) });
+    };
+    place(); window.addEventListener('resize', place);
+    return () => window.removeEventListener('resize', place);
+  }, [anchor, items]);
   const [open, setOpen] = useState<string | null>(null);
   useLayoutEffect(() => { enabledItems(box.current)[0]?.focus(); }, []);
   const key = (event: KeyboardEvent) => {
@@ -40,7 +54,9 @@ function List({ items, label, onClose, onBack, style }: {
     } else if (event.key === 'ArrowLeft' && onBack) { event.preventDefault(); event.stopPropagation(); onBack(); }
     else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); onClose(); }
   };
-  return <div ref={box} className="color-menu" role="menu" aria-label={label} style={style} onKeyDown={key}>
+  const layer = box.current?.closest('.color-menu-layer');
+  const opener = open ? enabledItems(box.current).find(button => button.dataset.item === open) : undefined;
+  return <div ref={box} className="color-menu" role="menu" aria-label={label} style={position ?? style} onKeyDown={key}>
     {items.map((item) => {
       const sub = item.items;
       return <div key={item.id} className="color-menu-entry" role="none" onPointerEnter={() => setOpen(sub ? item.id : null)}>
@@ -53,9 +69,9 @@ function List({ items, label, onClose, onBack, style }: {
           {item.keys && <span className="color-menu-keys">{item.keys}</span>}
           {sub && <ChevronRight size={12} aria-hidden="true" />}
         </button>
-        {sub && open === item.id && <List items={sub} label={item.label} onClose={onClose} onBack={() => {
+        {sub && open === item.id && layer && opener && createPortal(<List items={sub} label={item.label} anchor={opener} onClose={onClose} onBack={() => {
           setOpen(null); box.current?.querySelector<HTMLElement>(`[data-item="${item.id}"]`)?.focus();
-        }} style={{ left: '100%', top: -5 }} />}
+        }} style={{ left: 0, top: 0 }} />, layer)}
       </div>;
     })}
   </div>;

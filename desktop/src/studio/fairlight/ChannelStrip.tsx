@@ -14,6 +14,8 @@ import { defaultDynamics, defaultEq, ORDERINGS, processorWritable, type Processo
 import { ProcessorThumbnail } from '../audio/ProcessorThumbnail';
 import { PathSettings } from './PathSettings';
 import { RouteButtons } from './RouteButtons';
+import { PanControl } from '../audio/PanControl';
+import { SendWindow } from './SendWindow';
 
 export function ChannelStrip({ strip, seconds, value, selected, meters, shadow, onSelect, onRename, onStart, onChange, onEnd, onCancel, onCommit, isActive, onToggle, onSweep, onEnter, onArm, processorContext, onProcessor, onStripSetting, compact = false }: {
   strip: MixerStrip; seconds: number; value?: number; selected: boolean; meters?: MeterChannel[]; shadow: boolean;
@@ -33,6 +35,7 @@ export function ChannelStrip({ strip, seconds, value, selected, meters, shadow, 
   const automation=useAutomationTouch(); const of={ [strip.kind]:strip.id } as LanesOf; const target={of,path:'fader_db'};
   const recording=Boolean(automation?.enabled&&automation.recording), trim=Boolean(recording&&automation?.trim&&strip.arm!=='safe'&&strip.arm!=='off'&&(strip.arm===true||processorContext.timeline.audio?.record?.touch!=='off'));
   const [menu,setMenu]=useState<'arm'|'fader'|null>(null);
+  const [sendsOpen, setSendsOpen] = useState(false);
   const reading = faderReading(strip, seconds, automation?.enabled??true), model = strip.strip;
   const baseFader=trim?0:reading.automated?reading.value:value??reading.value;
   const faderValue=automation?.reading(target,baseFader)??baseFader;
@@ -58,12 +61,13 @@ export function ChannelStrip({ strip, seconds, value, selected, meters, shadow, 
       <div data-core><dt>EQ</dt><dd><ProcessorThumbnail name={strip.name} module="eq" openOnClick={compact} on={model?.eq?.on ?? false} disabled={strip.locked||(!recording&&automation?.enabled!==false&&!processorWritable(strip, 'eq'))}
         settings={model?.eq ?? defaultEq()} onPaste={(settings, modifiers) => onStripSetting('eq', settings, modifiers)}
         context={processorContext} showCurve={Boolean(model?.eq)} onToggle={modifiers => onStripSetting('eq', { on: !model?.eq?.on }, modifiers)} onOpen={() => onProcessor('eq')} /></dd></div>
-      <div><dt>{t('Sends')}</dt><dd>{model?.sends?.length ?? 0}</dd></div>
-      <div><dt>{t('Pan')}</dt><dd>{Math.round((model?.pan?.x ?? 0) * 100)}</dd></div>
+      <div><dt>{t('Sends')}</dt><dd><RouteButtons context={processorContext} strip={strip} field="sends" onOpen={() => setSendsOpen(true)} /></dd></div>
+      <div><dt>{t('Pan')}</dt><dd><PanControl context={processorContext} stripKey={strip.key} /></dd></div>
       <div><dt>{t('Outputs')}</dt><dd><RouteButtons context={processorContext} strip={strip} field="outputs" onOpen={() => {}} /></dd></div>
       <div><dt>VCA</dt><dd>{model?.vcas?.join(', ') || '—'}</dd></div>
     </dl>
     {pathOpen && createPortal(<PathSettings context={processorContext} stripKey={strip.key} anchor={pathOpen} onClose={() => setPathOpen(null)} />, document.body)}
+    {sendsOpen && <SendWindow context={processorContext} stripKey={strip.key} onClose={() => setSendsOpen(false)} />}
     {renaming ? <NameField name={strip.name} onCancel={() => setRenaming(false)} onCommit={onRename} />
       : <button type="button" className="mixer-name" onClick={event => onSelect(event)} onDoubleClick={() => { if (!strip.locked) setRenaming(true); }}>{strip.name}</button>}
     {automation?.enabled&&<div className="mixer-arm"><button disabled={strip.locked} aria-pressed={strip.arm===true} onClick={e=>onArm?.(strip.arm!==true,e)} onContextMenu={e=>{e.preventDefault();setMenu('arm');}}>{t('Arm')}</button>

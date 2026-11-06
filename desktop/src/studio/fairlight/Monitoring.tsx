@@ -52,9 +52,11 @@ export function Monitoring({ timeline, meters, onAction, onResetPeaks, onPatch, 
     <section className="fairlight-control-room" aria-label={t('Control Room')}><strong>{t('Control Room')}</strong>
       {meters?.control_room && <Meter channel={meters.control_room} label={t('Control Room')} />}
       <span>{reading(loudness?.true_peak, 'dBTP')}</span>
-      <label>{t('Monitor bus')}<select aria-label={t('Monitor bus')} value={timeline.audio?.monitor ?? timeline.buses?.[0]?.id ?? ''}
-        onChange={event => onPatch({ monitor: event.target.value })}>
-        {(timeline.buses ?? []).map(bus => <option key={bus.id} value={bus.id}>{bus.name}</option>)}</select></label><small>{t('Speakers: Auto')}</small>
+      <label>{t('Monitor bus')}<select aria-label={t('Monitor bus')} value={timeline.audio?.monitor === null ? '' : timeline.audio?.monitor ?? (timeline.buses?.some(bus => bus.id === 'B1') ? 'B1' : '')}
+        onChange={event => onPatch({ monitor: event.target.value || null })}>
+        <option value="">{t('None')}</option>{[true, false].map(main => <optgroup key={String(main)} label={t(main ? 'Main outputs' : 'Other buses')}>
+          {(timeline.buses ?? []).filter(bus => !(bus.strip?.outputs?.length) === main).map(bus => <option key={bus.id} value={bus.id}>{bus.name}</option>)}
+        </optgroup>)}</select></label><small>{t('Speakers: Auto')}</small>
     </section>
     <section className="fairlight-loudness" aria-label={t('Loudness')}>
       <label>{t('Standard')}<select aria-label={t('Loudness standard')} value={settings?.standard ?? 'ebu_r128'} onChange={event => change({ standard: event.target.value })}>

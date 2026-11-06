@@ -297,3 +297,51 @@ fn replacing_an_instance_keeps_its_mapping_and_an_empty_layout_inserts_only_vide
         .unwrap();
     assert_eq!(history.project().timelines[0].tracks[1], old_audio);
 }
+
+#[test]
+fn a_configured_ripple_overwrite_removes_the_replaced_range_from_the_default_track() {
+    // The clip found at `at` on the default tracks is the one replaced. Its sound on A1 goes
+    // with it even though the new sound is routed to the configured tracks: keeping it would
+    // leave the old sound under the new picture, and ripple timing must hold on every track.
+    let mut p = project();
+    for (track, id) in [(0, "c3"), (1, "c4")] {
+        let mut later = p.timelines[0].tracks[track].clips[0].clone();
+        later.id = id.into();
+        later.start = 100;
+        later.length = 50;
+        p.timelines[0].tracks[track].clips.push(later);
+    }
+    p.validate().unwrap();
+    let edit: Edit = serde_json::from_value(json!({"edit":"ripple_overwrite","timeline":"t1",
+        "source":{"kind":"media","media":"m1","from":{"ticks":0,"scale":15360},
+        "to":{"ticks":15360,"scale":15360}},"at":10}))
+    .unwrap();
+    let mut history = History::new(p);
+    history.edit(vec![edit], "test").unwrap();
+    let p = history.project();
+    let tracks = &p.timelines[0].tracks;
+    let spans = |id: &str| -> Vec<(String, i64, i64)> {
+        tracks
+            .iter()
+            .find(|t| t.id == id)
+            .unwrap()
+            .clips
+            .iter()
+            .map(|c| (c.id.clone(), c.start, c.start + c.length))
+            .collect()
+    };
+    let v1 = spans("V1");
+    assert_eq!(v1.len(), 2);
+    assert_eq!((v1[0].1, v1[0].2), (0, 25));
+    assert_eq!(v1[1], ("c3".to_owned(), 25, 75));
+    assert_eq!(spans("A1"), [("c4".to_owned(), 25, 75)]);
+    let mono: Vec<_> = tracks
+        .iter()
+        .filter(|t| t.kind == TrackKind::Audio && t.id != "A1")
+        .collect();
+    assert_eq!(mono.len(), 4);
+    assert!(mono
+        .iter()
+        .all(|t| t.clips.len() == 1 && (t.clips[0].start, t.clips[0].length) == (0, 25)));
+    p.clone().validate().unwrap();
+}

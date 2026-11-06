@@ -33,7 +33,12 @@ pub(crate) fn project(
         let Some(row) = row.active() else { continue };
         let mut track = Track::new(format!("A{index}"), TrackKind::Audio);
         track.audio.format = row.format;
-        track.audio.channels = u8::try_from(row.channels.len()).expect("validated channel count");
+        // The model validates pool layouts, but a transport worker must not trust that: a layout
+        // it cannot represent is refused here instead of panicking the feeder.
+        track.audio.channels = u8::try_from(row.channels.len())
+            .ok()
+            .filter(|count| *count <= columbina_model::audio::MOST_CHANNELS)
+            .ok_or("the file layout has more channels than a track can carry")?;
         track.audio.order = row.order;
         let mut clip = Clip::of_media(
             format!("source-{index}"),

@@ -10,7 +10,8 @@ use columbina_model::{Media, Project, Rate, Time};
 
 use crate::play::mix::Mixer;
 
-pub(super) fn project(media: &Media, rate: Rate) -> Project {
+/// The temporary timeline, or why the layout cannot be played.
+pub(super) fn project(media: &Media, rate: Rate) -> Result<Project, String> {
     let length = super::clock::last_frame(media.facts.duration, rate).saturating_add(1);
     crate::play::mix::raw::project(
         media,
@@ -19,7 +20,6 @@ pub(super) fn project(media: &Media, rate: Rate) -> Project {
         media.audio_config.as_deref().unwrap_or_default(),
         None,
     )
-    .expect("no solo channel to validate")
 }
 
 /// Renaming, source marks and proxy completion do not restart the sound.
@@ -42,15 +42,15 @@ pub(super) fn source(
     rate: Rate,
     place: i128,
     format: AudioFormat,
-) -> Box<dyn crate::audio::Source> {
-    let project = project(media, rate);
+) -> Result<Box<dyn crate::audio::Source>, String> {
+    let project = project(media, rate)?;
     let nanos = super::clock::Clock::at(place, 1, rate, 0).media_nanos(0);
     let from = super::clock::sample_at(
         Time { ticks: 0, scale: 1 },
         nanos,
         project.timelines[0].sample_rate,
     );
-    Mixer::new(Arc::new(project), 0, Purpose::Preview).source(format, from)
+    Ok(Mixer::new(Arc::new(project), 0, Purpose::Preview).source(format, from))
 }
 
 #[cfg(test)]
@@ -79,7 +79,7 @@ mod tests {
     fn read(media: &Media, format: AudioFormat, frame: i64) -> Vec<f32> {
         let rate = super::super::GRID;
         let place = super::super::clock::Clock::starting(frame, 1, rate, 0).place(0);
-        let mut source = source(media, rate, place, format);
+        let mut source = source(media, rate, place, format).unwrap();
         let mut output = Vec::new();
         while let Some(block) = source.next().unwrap() {
             assert!(
@@ -157,12 +157,29 @@ mod tests {
     }
 
     #[test]
+    fn an_unplayable_layout_is_an_error_for_the_feeder_not_a_panic() {
+        let mut media = Project::sample().media.remove(0);
+        media.audio_config = Some(
+            serde_json::from_value(json!([{
+                "name": "Wide", "format": "adaptive",
+                "channels": vec![json!({"source": {"stream": 0, "channel": 0}}); 256]
+            }]))
+            .unwrap(),
+        );
+        let format = AudioFormat {
+            rate: 48000,
+            channels: 2,
+        };
+        assert!(source(&media, super::super::GRID, 0, format).is_err());
+    }
+
+    #[test]
     fn projection_drops_inactive_channels_and_never_changes_the_media_or_project() {
         let mut media = configured();
         media.bin = Some("interviews".into());
         media.audio_config.as_mut().unwrap()[0].channels[0].enabled = false;
         let before = media.clone();
-        let projected = project(&media, super::super::GRID);
+        let projected = project(&media, super::super::GRID).unwrap();
         assert_eq!(media, before);
         assert_eq!(projected.timelines[0].tracks.len(), 1);
         assert_eq!(

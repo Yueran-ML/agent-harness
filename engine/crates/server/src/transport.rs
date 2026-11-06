@@ -2455,10 +2455,16 @@ fn start_sound(
     };
     let media = Clock::at(place, 1, rate, 0).media_nanos(0);
     let from = clock::sample_at(start, media, output.format().rate);
-    let source = media_layout.map_or_else(
-        || audio::file(path, output.format(), from),
-        |media| source_audio::source(media, rate, place, output.format()),
-    );
+    let source = match media_layout {
+        None => audio::file(path, output.format(), from),
+        Some(media) => match source_audio::source(media, rate, place, output.format()) {
+            Ok(source) => source,
+            Err(message) => {
+                log("sound_failed", &json!({ "message": message }));
+                return false;
+            }
+        },
+    };
     match output.start(source) {
         Ok(()) => true,
         Err(message) => {

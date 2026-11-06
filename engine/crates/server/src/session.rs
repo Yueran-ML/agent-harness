@@ -434,6 +434,7 @@ impl Engine {
 
     /// Forget a connection that has ended. A gesture that it was sending ends.
     pub async fn leave(&self, id: u64) {
+        self.transport.audition.cancel(Some(id));
         self.scopes.forget(id);
         // Retire the capture before native cleanup can wait behind another view operation.
         // The remaining sink cannot write through an ended capture while busy is held.
@@ -1552,6 +1553,13 @@ async fn dispatch(
         "window.bind" | "window.input" | "window.unbind" => {
             window::call(engine, connection, kind, id, method, params).await
         }
+        "audio.audition" => {
+            let result = audition_call(engine, connection.id, params).await?;
+            Ok(match connection.queue(rpc::result_line(id, &result)) {
+                Ok(()) => Reply::Queued,
+                Err(refused) => Reply::Refused(refused),
+            })
+        }
         "audio.eq_response" | "audio.dynamics_curve" | "audio.soft_clip_curve" => {
             sound_curves::call(engine, connection, id, method, params).await
         }
@@ -2242,6 +2250,8 @@ async fn transport_load(
     engine: &Engine,
     params: Option<&RawValue>,
 ) -> Result<serde_json::Value, Fault> {
+    let _turn = engine.transport.window_turn().await;
+    engine.transport.audition.stopped().await?;
     let loading = {
         let mut state = engine.state.lock().await;
         let loading = engine.transport.begin_load(
@@ -2254,6 +2264,60 @@ async fn transport_load(
         loading
     };
     loading.done().await
+}
+
+/// File audition is serialized with monitor playback, but never changes either loaded view.
+async fn audition_call(
+    engine: &Engine,
+    owner: u64,
+    params: Option<&RawValue>,
+) -> Result<Value, Fault> {
+    use crate::play::audition::Request;
+    let request = Request::read(params)?;
+    if matches!(request, Request::State {}) {
+        return Ok(engine.transport.audition.state());
+    }
+    let _turn = engine.transport.window_turn().await;
+    match request {
+        Request::State {} => unreachable!(),
+        Request::Stop { audition } => engine.transport.audition.stop(owner, audition).await,
+        Request::Play {
+            target,
+            at,
+            channel,
+            skim,
+        } => {
+            engine.transport.check("transport.play")?;
+            if skim && engine.transport.monitors_playing() {
+                // Hovering the File waveforms never interrupts a playing monitor.
+                return Ok(engine.transport.audition.state());
+            }
+            let (plan, revision) = {
+                let state = engine.state.lock().await;
+                (
+                    crate::play::audition::plan(
+                        state.history.project(),
+                        &target,
+                        at,
+                        channel,
+                        skim,
+                    )?,
+                    state.history.revision(),
+                )
+            };
+            engine.transport.pause_for_audition().await?;
+            let done = {
+                let state = engine.state.lock().await;
+                if state.history.revision() != revision {
+                    return Err(stale_revision(revision, state.history.revision()));
+                }
+                engine.transport.audition.begin(owner, plan)?
+            };
+            done.await
+                .map_err(|error| Fault::new(rpc::TRANSPORT_FAILED, error.to_string()))?;
+            Ok(engine.transport.audition.state())
+        }
+    }
 }
 
 /// The params of `hello`.

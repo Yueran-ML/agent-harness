@@ -36,6 +36,9 @@ mod clipboard;
 #[path = "rpc/media_audio.rs"]
 mod media_audio;
 
+#[path = "rpc/audition.rs"]
+mod audition;
+
 #[path = "rpc/mixed_waveforms.rs"]
 mod mixed_waveforms;
 

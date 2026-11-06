@@ -493,6 +493,15 @@ impl Output {
     /// # Errors
     /// The device cannot be started, or a thread cannot be started; then nothing plays.
     pub fn start(&mut self, source: Box<dyn Source>) -> Result<(), String> {
+        self.start_source(source, false)
+    }
+
+    /// Play a finite audition without feeding counted silence after its source ends.
+    pub(crate) fn start_finite(&mut self, source: Box<dyn Source>) -> Result<(), String> {
+        self.start_source(source, true)
+    }
+
+    fn start_source(&mut self, source: Box<dyn Source>, finite: bool) -> Result<(), String> {
         let producer = self.begin()?;
         let stop = Arc::new(AtomicBool::new(false));
         let thread = std::thread::Builder::new()
@@ -500,7 +509,7 @@ impl Output {
             .spawn({
                 let stop = Arc::clone(&stop);
                 let format = self.format;
-                move || feed(producer, &stop, source, format)
+                move || feed(producer, &stop, source, format, finite)
             })
             .map_err(|error| format!("the feeder of the sound cannot be started: {error}"));
         match thread {
@@ -860,7 +869,13 @@ impl Capture {
 
 /// Read a source into the ring of its session, ahead of the device, until it is stopped or the
 /// device lets the session go; after its end, or if it cannot be decoded, silence.
-fn feed(mut ring: SampleProducer, stop: &AtomicBool, source: Box<dyn Source>, format: AudioFormat) {
+fn feed(
+    mut ring: SampleProducer,
+    stop: &AtomicBool,
+    source: Box<dyn Source>,
+    format: AudioFormat,
+    finite: bool,
+) {
     let mut source = Some(source);
     let channels = usize::from(format.channels);
     #[allow(
@@ -881,6 +896,7 @@ fn feed(mut ring: SampleProducer, stop: &AtomicBool, source: Box<dyn Source>, fo
         if at >= pending.len() {
             pending = match source.as_mut().map(|source| source.next()) {
                 Some(Ok(Some(samples))) => samples,
+                Some(Ok(None)) | None if finite => break,
                 Some(Ok(None)) | None => silence.clone(),
                 Some(Err(error)) => {
                     log(
@@ -888,6 +904,9 @@ fn feed(mut ring: SampleProducer, stop: &AtomicBool, source: Box<dyn Source>, fo
                         &json!({ "message": format!("the sound cannot be decoded on: {error}") }),
                     );
                     source = None;
+                    if finite {
+                        break;
+                    }
                     silence.clone()
                 }
             };

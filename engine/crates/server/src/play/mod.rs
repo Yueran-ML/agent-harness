@@ -1,6 +1,7 @@
 //! Timeline playback: independent track readers, composition and the monitor transport.
 
 mod ahead;
+pub(crate) mod audition;
 pub(crate) mod mix;
 pub(crate) mod record;
 mod sound;
@@ -154,6 +155,7 @@ pub struct Transport {
     graphics: Arc<Graphics>,
     orders: Arc<tokio::sync::Mutex<()>>,
     test_hooks: bool,
+    pub(crate) audition: audition::Audition,
 }
 
 pub enum Loading {
@@ -225,6 +227,7 @@ impl Transport {
             ..setup.clone()
         };
         let test_hooks = setup.test_hooks;
+        let audition = audition::Audition::new(setup.sound.clone());
         let source = transport::Transport::new(
             headless,
             source_setup,
@@ -254,6 +257,7 @@ impl Transport {
             graphics,
             orders: Arc::default(),
             test_hooks,
+            audition,
         }
     }
 
@@ -323,6 +327,10 @@ impl Transport {
         let (monitor, params) = monitor_params(method, params)?;
         let action = action(method, &params)?;
         let playing = matches!(action, Some(Action::Play { .. }));
+        let audible = matches!(
+            action,
+            Some(Action::Play { .. } | Action::Seek { .. } | Action::Step { .. })
+        );
         let (result, target) = match monitor {
             Monitor::Source if matches!(action, Some(Action::ScrubAudio { .. })) => {
                 return Err(Fault::params(
@@ -359,11 +367,13 @@ impl Transport {
                 transport: self.clone(),
                 target,
                 playing,
+                audible,
             },
         ))
     }
 
     pub fn project_changed(&self, project: &Project, revision: u64) {
+        self.audition.project_changed(project);
         self.source.project_changed(project);
         if let Some(timeline) = &self.timeline {
             timeline.project_changed(revision, project);
@@ -386,10 +396,30 @@ impl Transport {
         }
     }
     pub fn stop(&self) {
+        self.audition.cancel(None);
         self.source.stop();
         if let Some(timeline) = &self.timeline {
             timeline.stop();
         }
+    }
+
+    /// Whether either monitor plays now, as its worker last told.
+    pub(crate) fn monitors_playing(&self) -> bool {
+        self.source.status().playing
+            || self
+                .timeline
+                .as_ref()
+                .is_some_and(|timeline| timeline.status()["playing"] == true)
+    }
+
+    /// Caller holds the orders turn. Both monitor workers acknowledge that output stopped.
+    pub(crate) async fn pause_for_audition(&self) -> Result<(), Fault> {
+        self.audition.stopped().await?;
+        self.source.pause_for_switch().await?;
+        if let Some(timeline) = &self.timeline {
+            timeline.pause().await?;
+        }
+        Ok(())
     }
 
     /// Tells the timeline monitor an order of the recording of automation (T16).
@@ -599,6 +629,7 @@ pub struct Order {
     transport: Transport,
     target: TargetOrder,
     playing: bool,
+    audible: bool,
 }
 
 impl Order {
@@ -606,6 +637,12 @@ impl Order {
     /// confirms its pause, including stopping its audio output.
     pub async fn send(self) {
         let _one = self.transport.orders.lock().await;
+        if self.audible {
+            if let Err(error) = self.transport.audition.stopped().await {
+                log("transport_error", &json!({"message":error.message}));
+                return;
+            }
+        }
         if self.playing {
             let paused = match &self.target {
                 TargetOrder::Source(_) => {

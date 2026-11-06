@@ -254,6 +254,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `audio.level_profile` | `{"timeline":"t1", "clip":"c1", "revision":n}` | `{"job":"audio-3"}` then `audio.analysis` with an immutable captured level; no edit |
 | `audio.level_match` | `{"timeline":"t1", "reference"?:"c1", "profile"?:{version:1,level_db,basis}, "clips":["c2",...], "apply"?:false, "revision"?:n}` (exactly one of reference/profile; profile requires revision) | `{"job": "audio-3"}` at once, then `audio.analysis` with the gains (Level Matcher) |
 | `audio.cancel` | `{"job": "audio-1"}` | `{}`; the job ends `cancelled` |
+| `audio.audition` | `{action:"play",target:{kind:"media",media} or {kind:"clip",timeline,clip},at:{ticks,scale},channel:null or index,skim?:false}`, `{action:"stop",audition:id}`, or `{action:"state"}` | `{audition:number or null,playing:boolean,position:Time or null,error:string or null}`; see File audition |
 | `transport.frame_digest` | `{"monitor": m}` | test hook only, with `--test-hooks` (see The transport); `-32601` otherwise |
 | `transport.*` | see The transport | |
 | `automation.record` | `{"timeline": "t1", "on": true, "glide_ms"?: 250}` | `{"on": true, "glide_ms": 250, "pending": 0, "read": false}` (see Recording automation) |
@@ -4970,3 +4971,38 @@ Params that cannot be are `-32602` with `data.reason`: `missing` (`timeline`; or
 The catalogue keeps legal model `min/max` separate from display bounds. Unbounded negative dB values display at the shared audio silence stop (`SILENCE_DB`), while their stored values are preserved.
 
 Timeline `transport.state` includes `automation_playback` (default true), reporting the acknowledged session preview playback setting. A request to enable recording while playback is disabled is refused.
+
+### File audition
+
+`audio.audition` plays only the File inspector's source channels and channel levels.
+A media target uses its media-pool configuration, or the original native stream channels.
+A clip target uses that instance's channel maps, or its track's automatic channel layout
+(including Film order). `channel:null` mixes all active, unmuted channels; an integer solos
+one flattened displayed lane, numbered from zero before inactive lanes are removed. Solo
+retains that lane's Active, Mute, level, source selection, remix and output routing.
+Clip gain, pan, pitch, EQ, fades, automation, track/bus processing and other clips are absent.
+The temporary mix does not change the project, undo history or either monitor's loaded item.
+
+`at` is source-relative time (`scale` must be positive). Playback runs forward at the original
+speed. It clamps to the whole media extent, or the displayed clip's source extent from its In
+to In plus timeline duration times clip speed, bounded by available media. Seeking to the end
+returns stopped state. `skim:true` plays at most 80 ms from the clamped time; while either
+monitor plays, a skim is ignored and returns the current state. Unknown targets,
+media without audio, empty channel layouts, invalid channels and malformed times are refused
+with `-32602`. Device/decode failures end playback and appear in the state's `error`.
+Invalid play requests leave current playback unchanged. A project revision change while
+waiting for the monitors to pause refuses the prepared play with `reason:"stale_revision"`.
+`position` is source-relative time at a 48000-tick scale.
+
+A play allocates a monotonically increasing audition ID. Stop affects only that ID belonging
+to the requesting connection; a stale or foreign stop is a no-op. State is a read-only snapshot
+and sends no notifications: clients poll while their own audition is active. A project change
+plans a continuous audition again from its heard position with the same ID, so channel edits
+are heard at once; a skim, or a target that no longer plans, stops. EOF, stop, failure, the
+owning connection's departure, monitor load or engine shutdown cancels playback. Audition waits for both monitors to acknowledge pause; normal playback, seeks and
+steps await audition output stopping before their command is sent. A headless engine refuses
+play with `-32601`; state and stop remain harmless.
+
+Decoding/mixing and device operations run off the RPC/UI threads, with a bounded command
+mailbox and bounded PCM feeder/cache. With `--sound capture=<path>`, audition captures use
+`<path>.audition`, then `<path>.audition.2`, `.3`, etc. independently of monitor capture files.

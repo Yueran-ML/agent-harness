@@ -91,7 +91,8 @@ it('coalesces delayed touch sends and always releases the latest value, includin
 it('lane keyboard cut cannot escape into clip edits',async()=>{
  const t=timeline([]), call=vi.fn(async(method:string):Promise<EngineAnswer>=>({ok:true,result:method==='automation.parameters'?{revision:7,of:{track:'a1'},parameters:[{path:'fader_db',kind:'continuous',scale:'linear',value:0,min:-100,max:10}]}:{revision:8,done:[]}}));
  const bubbled=vi.fn();render(<div onKeyDown={bubbled}><AutomationLane bridge={{call} as never} session={1} revision={7} timeline={t} of={{track:'a1'}} lanes={{fader_db:{points:[{at:{ticks:0,scale:48000},value:-10},{at:{ticks:48000,scale:48000},value:0}]}}} scale={4} from={0} to={100} height={128} frame={0} snapping={false} marks={()=>({in:null,out:null})} path="fader_db" pencil={false} onPath={()=>{}} onEdit={()=>{}} name="Voice"/></div>);await settle();
- const svg=screen.getByLabelText('Voice fader_db');fireEvent.keyDown(svg,{key:'a',ctrlKey:true});fireEvent.keyDown(svg,{key:'x',ctrlKey:true});await settle();
+ expect((screen.getByRole('option',{name:'Fader'}) as HTMLOptionElement).value).toBe('fader_db');
+ const svg=screen.getByLabelText('Voice Fader');fireEvent.keyDown(svg,{key:'a',ctrlKey:true});fireEvent.keyDown(svg,{key:'x',ctrlKey:true});await settle();
  expect(bubbled).not.toHaveBeenCalled();expect(call.mock.calls.filter(c=>c[0]==='transaction.apply')).toHaveLength(1);
  const ops=(call.mock.calls as any[]).find(c=>c[0]==='transaction.apply')[1].ops;
  expect(ops[0]).toMatchObject({edit:'lane_points',action:'remove',of:{track:'a1'},path:'fader_db'});
@@ -179,10 +180,10 @@ it('Pencil captures the full lane and delegates sampled points to lane_draw; shi
  const t=timeline([]),call=vi.fn(async(method:string):Promise<EngineAnswer>=>({ok:true,result:method==='automation.parameters'?{revision,of:{track:'a1'},parameters:[{path:'fader_db',kind:'continuous',scale:'linear',value:0,min:-100,max:10}]}:{revision:revision+1,done:[]}}));
  const props={bridge:{call} as never,session:1,revision:7,timeline:t,of:{track:'a1'},lanes:{fader_db:{points:[{at:{ticks:48000,scale:48000},value:0}]}},scale:4,from:0,to:100,height:128,frame:0,snapping:false,marks:()=>({in:null,out:null}),path:'fader_db',pencil:true,onPath:()=>{},onEdit:()=>{},name:'Voice'};
  const s=render(<AutomationLane {...props}/>);await settle();
- const svg=screen.getByLabelText('Voice fader_db'),area=s.container.querySelector('svg rect')!;expect(area.getAttribute('height')).toBe('128');
+ const svg=screen.getByLabelText('Voice Fader'),area=s.container.querySelector('svg rect')!;expect(area.getAttribute('height')).toBe('128');
  fireEvent.pointerDown(area,{button:0,clientX:0,clientY:110});fireEvent.pointerMove(svg,{clientX:40,clientY:100});fireEvent.pointerUp(svg,{clientX:80,clientY:90});await settle();
  const writes=()=>call.mock.calls.filter(c=>c[0]==='transaction.apply') as any[];
  expect(writes()[0][1].ops[0]).toMatchObject({edit:'lane_draw',of:{track:'a1'},path:'fader_db'});expect(writes()[0][1].ops[0].points.length).toBeGreaterThanOrEqual(2);
  revision=8;s.rerender(<AutomationLane {...props} revision={revision}/>);await settle();
- const next=screen.getByLabelText('Voice fader_db');fireEvent.keyDown(next,{key:'a',ctrlKey:true});fireEvent.keyDown(next,{key:'<',code:'Comma',shiftKey:true});await settle();expect(writes().at(-1)[1].ops[0].by.ticks).toBe(-Math.round(t.sample_rate*t.rate.den/t.rate.num)*5);
+ const next=screen.getByLabelText('Voice Fader');fireEvent.keyDown(next,{key:'a',ctrlKey:true});fireEvent.keyDown(next,{key:'<',code:'Comma',shiftKey:true});await settle();expect(writes().at(-1)[1].ops[0].by.ticks).toBe(-Math.round(t.sample_rate*t.rate.den/t.rate.num)*5);
 });

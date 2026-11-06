@@ -6,6 +6,8 @@ import type { Timeline } from '../src/studio/engine';
 import { defaultDynamics, defaultEq } from '../src/studio/audio/processorModel';
 import { useProcessorCurve } from '../src/studio/audio/useProcessorCurve';
 import { useAutomationParameters } from '../src/studio/audio/useAutomationParameters';
+import { EffectDiagram } from '../src/studio/audio/EffectDiagram';
+import { defaultEffect } from '../src/studio/audio/effectModel';
 import { timeline } from './timeline-fixture';
 
 afterEach(cleanup);
@@ -102,4 +104,19 @@ it('accepts a pending curve across an unrelated edit but discards it after setti
   await act(async () => { pending[2]({ ok: true, result: { revision: 6, inputs_db: [-20], outputs_db: [-15] } }); });
   await act(async () => { pending[1]({ ok: true, result: { revision: 4, inputs_db: [-20], outputs_db: [-20] } }); });
   expect(screen.getByTestId('panel').textContent).toBe('2/-15');
+});
+
+it('keeps the Soft Clipper curve on a rename and remeasures bypass changes', async () => {
+  let song = model(), revision = 4;
+  const effect = defaultEffect('soft_clipper');
+  (song.tracks[0] as any).strip.inserts = [{ id: 'fx', on: true, effect }];
+  const call = vi.fn(async (_method: string, params: any) => ({ ok: true as const,
+    result: { revision, inputs: params.inputs, outputs: params.inputs } }));
+  const bridge = { call } as Pick<EngineBridge, 'call'>;
+  const ui = () => <EffectDiagram context={{ bridge, session: 1, revision, timeline: song, target: { track: 'a' } }} slot={0} effect={effect}/>;
+  const view = render(ui()); await settle(); expect(call).toHaveBeenCalledTimes(1);
+  song = structuredClone(song); song.name = 'Renamed'; revision++;
+  view.rerender(ui()); await settle(); expect(call).toHaveBeenCalledTimes(1);
+  song = structuredClone(song); (song.tracks[0] as any).strip.inserts[0].on = false; revision++;
+  view.rerender(ui()); await settle(); expect(call).toHaveBeenCalledTimes(2);
 });

@@ -1,5 +1,6 @@
 /** Shared Fairlight catalogue; protocol IDs and media/track names are never translated. */
 const entries = {
+  'Q': ['Q 值', 'Q 値'],
   'No VCA': ['无 VCA', 'VCA なし'], 'Assign VCA': ['分配 VCA', 'VCA を割り当て'],
   'Timeline Scrolling': ['时间线滚动', 'タイムラインのスクロール'], 'Fixed Playhead': ['固定播放头', '再生ヘッドを固定'],
   'Page Scrolling': ['按页滚动', 'ページスクロール'], 'No Scrolling': ['不滚动', 'スクロールなし'],

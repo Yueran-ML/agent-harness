@@ -11,6 +11,7 @@ import { keyOf, type Key } from '../../app/keys';
 import { categories, categoryOfPath, laneValue, ownerKey, Pencil, pixelAtSample, positionValue, sampleAtPixel, sampleTime, tickOf, valuePosition } from './automation';
 import { useAutomationTouch, sameTarget } from './AutomationTouch';
 import { useFairlightText } from './words';
+import { parameterLabel } from './parameterLabel';
 interface Props {
  bridge: Pick<EngineBridge,'call'>; session:number; revision:number; timeline:Timeline; of:LanesOf; lanes?:Lanes; locked?:boolean; arm?:AutomationArm;
  scale:number; from:number; to:number; height:number; frame:number; snapping:boolean; marks:()=>Marks; path:string; pencil:boolean;
@@ -108,12 +109,12 @@ export function AutomationLane(props:Props) {
  const live=touch?.lives.find(v=>sameTarget(v.target,{of,path}))??null;
  return <div className="automation-decoration" onKeyDown={keys} onPointerDownCapture={props.onActive} onFocusCapture={props.onActive}>
   <div className="automation-lane-header" style={{width:HEADER_WIDTH,display:height<96?'none':undefined}} onPointerDown={e=>e.stopPropagation()} onContextMenu={e=>{e.preventDefault();e.stopPropagation();setClear(true);}}>
-   <select aria-label={`${t('Automation parameter')} ${name}`} value={path} onChange={e=>onPath(e.target.value)}><option value="">{t('None')}</option>{categories.map(category=><optgroup key={category} label={t(category)}>{parameters.filter(p=>categoryOfPath(p.path)===category).map(p=><option value={p.path} key={p.path}>{p.path}</option>)}</optgroup>)}</select>
+   <select aria-label={`${t('Automation parameter')} ${name}`} value={path} onChange={e=>onPath(e.target.value)}><option value="">{t('None')}</option>{categories.map(category=><optgroup key={category} label={t(category)}>{parameters.filter(p=>categoryOfPath(p.path)===category).map(p=><option value={p.path} key={p.path}>{parameterLabel(timeline,of,p.path,t)}</option>)}</optgroup>)}</select>
    <select aria-label={`${t('Arm')} ${name}`} disabled={locked} value={arm===true?'armed':arm===false||arm===undefined?'unarmed':arm} onChange={e=>{const v=e.target.value;const automation_arm=v==='armed'?true:v==='unarmed'?false:v;onEdit(['track' in of?{edit:'set_track_audio',timeline:timeline.id,track:of.track,patch:{automation_arm}}:'bus' in of?{op:'set_bus',timeline:timeline.id,id:of.bus,patch:{automation_arm}}:{op:'set_vca',timeline:timeline.id,id:of.vca,patch:{automation_arm}}]);}}>{([['unarmed','Unarmed'],['armed','Arm'],['safe','Safe'],['off','Bypass']] as const).map(([v,label])=><option key={v} value={v}>{t(label)}</option>)}</select>
    {clear&&<div role="dialog" aria-label={t('Clear Track Automation')}>{(['reset','hold'] as const).map(then=><button disabled={locked} key={then} onClick={()=>{onEdit([{edit:'clear_lanes',timeline:timeline.id,of,then,at:sampleTime(frame*timeline.rate.den/timeline.rate.num*timeline.sample_rate,timeline.sample_rate)}]);setClear(false);}}>{t(then==='reset'?'Reset':'Hold')}</button>)}<button onClick={()=>setClear(false)}>{t('Cancel')}</button></div>}
    {pointMenu!==null&&<div role="menu"><button onClick={()=>{const p=lane?.points[pointMenu];if(p&&!locked)run({edit:'lane_points',action:'remove',at:[p.at]});setPointMenu(null);}}>{t('Delete')}</button><button onClick={()=>setPointMenu(null)}>{t('Cancel')}</button></div>}
   </div>
-  {path&&parameter&&<svg ref={svg} tabIndex={0} aria-label={`${name} ${path}`} className="automation-lane" style={{left:HEADER_WIDTH+from*scale,width:(to-from)*scale,height}} onPointerMove={move} onPointerUp={finish} onPointerCancel={cancel} onLostPointerCapture={cancel}>
+  {path&&parameter&&<svg ref={svg} tabIndex={0} aria-label={`${name} ${parameterLabel(timeline,of,path,t)}`} className="automation-lane" style={{left:HEADER_WIDTH+from*scale,width:(to-from)*scale,height}} onPointerMove={move} onPointerUp={finish} onPointerCancel={cancel} onLostPointerCapture={cancel}>
    <rect x={0} y={0} width="100%" height={pencil||temporaryPencil?height:height/2} fill="transparent" pointerEvents="all" onPointerDown={e=>down(e,'range')}/>
    {range&&<rect x={x(range[0])} y={top} width={Math.max(1,x(range[1])-x(range[0]))} height={h} fill="#58b9ff22" pointerEvents="none"/>}
    {preview&&<polyline points={poly(lane)} fill="none" stroke="#777"/>}

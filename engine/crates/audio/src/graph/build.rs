@@ -941,7 +941,14 @@ impl Graph {
             sources.push(Source {
                 owner: Owner::Track(track.id.clone()),
                 strip: &audio.strip,
-                lanes: played(&audio.lanes, audio.automation_arm),
+                lanes: played(
+                    &audio.lanes,
+                    if options.automation {
+                        audio.automation_arm
+                    } else {
+                        AutomationArm::Off
+                    },
+                ),
                 layout: track_layout(audio.format, audio.channels),
                 mute: audio.mute,
                 solo: audio.solo,
@@ -954,7 +961,14 @@ impl Graph {
             sources.push(Source {
                 owner: Owner::Bus(bus.id.clone()),
                 strip: &bus.strip,
-                lanes: played(&bus.lanes, bus.automation_arm),
+                lanes: played(
+                    &bus.lanes,
+                    if options.automation {
+                        bus.automation_arm
+                    } else {
+                        AutomationArm::Off
+                    },
+                ),
                 layout: bus_layout(bus.format),
                 mute: bus.mute,
                 solo: bus.solo,
@@ -1664,7 +1678,16 @@ impl Graph {
             for term in &mut strip.vcas {
                 let vca = &t.vcas[term.vca];
                 for (path, slot) in [("fader_db", &mut term.fader), ("mute", &mut term.mute)] {
-                    if let Some(lane) = played(&vca.lanes, vca.automation_arm).get(path) {
+                    if let Some(lane) = played(
+                        &vca.lanes,
+                        if options.automation {
+                            vca.automation_arm
+                        } else {
+                            AutomationArm::Off
+                        },
+                    )
+                    .get(path)
+                    {
                         *slot = Some(strip.lanes.len());
                         let owner = Owner::Vca(vca.id.clone());
                         strip.lanes.push(LaneOf::new(lane, after, &owner, path));

@@ -750,6 +750,8 @@ export interface TimelineTransportState extends TransportBase {
   compared?: (number | null)[];
   /** True while automation is recorded as the timeline plays (`automation.record`). */
   recording?: boolean;
+  /** Session preview playback; defaults true outside Fairlight. */
+  automation_playback?: boolean;
   /** All Read is on while automation is recorded (`automation.all_read`, T16b); left out while it is not. */
   all_read?: boolean;
   /** Whether dragging the playhead plays its sound (`transport.scrub_audio`, Timeline › Audio Scrubbing, p. 731; phase 3 T18); true where an older engine leaves it out. */
@@ -1103,6 +1105,8 @@ export interface PageMethods {
   'viewer.preview': { monitor: 'timeline'; preview: LivePreview | null };
   'viewer.lut': { monitor: 'timeline'; on: boolean };
   // The recording of automation of the timeline monitor (PROTOCOL.md, "Recording automation").
+  'automation.playback': { on: boolean };
+  'automation.parameters': { revision: number; of: LanesOf; parameters: AutomationParameter[] };
   'automation.record': AutomationRecording;
   'automation.touch': Record<string, never>;
   'automation.punch': { lanes: number };
@@ -1145,6 +1149,7 @@ export type EngineNotification = keyof EngineNotifications;
  * ms (Snap's return and Return's), how many lanes Preview keeps to be punched in, and whether All
  * Read is on (T16b: touches heard, not written).
  */
+export interface AutomationParameter { path: string; kind: 'continuous' | 'switch'; scale: 'linear' | 'log'; value: number; min: number; max: number; display_min?: number; display_max?: number }
 export interface AutomationRecording { on: boolean; glide_ms: number; pending: number; read: boolean }
 /**
  * The notification `automation.written`: a pass of the recording of automation, or a Punch In,

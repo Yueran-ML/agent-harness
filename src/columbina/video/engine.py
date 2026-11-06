@@ -1144,6 +1144,14 @@ class Engine:
         said = self.hello.get("headless")
         return said if isinstance(said, bool) else None
 
+    async def automation_playback(self, timeline: str, on: bool) -> dict[str, Any]:
+        """Set session preview automation playback; leave project and exports unchanged."""
+        return await self._call("automation.playback", {"timeline": timeline, "on": on})
+
+    async def automation_parameters(self, timeline: str, of: Mapping[str, str]) -> dict[str, Any]:
+        """Read the model-derived automation parameter catalogue at its revision."""
+        return await self._call("automation.parameters", {"timeline": timeline, "of": dict(of)})
+
     async def project(self) -> tuple[int, dict[str, Any]]:
         """Return the project as it is now, and its revision."""
         said = await self._call("project.get")

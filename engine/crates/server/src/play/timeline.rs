@@ -107,6 +107,8 @@ pub struct Status {
     /// out where it is not.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub recording: bool,
+    /// Session-only preview playback of automation.
+    pub automation_playback: bool,
     /// Whether All Read is on while automation is recorded (`automation.all_read`, T16b): what
     /// is touched is heard and not written; left out where it is not.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -138,6 +140,7 @@ impl Default for Status {
             color_error: None,
             compared: None,
             recording: false,
+            automation_playback: true,
             all_read: false,
         }
     }
@@ -1048,6 +1051,7 @@ impl Worker {
         self.pause();
         // A timeline loaded or unloaded lets go of the recording of automation (T16's review).
         self.automation.reset(&mut self.playback);
+        self.playback.automation(true);
         self.status.all_read = false;
         self.settle = None;
         self.project = None;
@@ -1285,6 +1289,34 @@ impl Worker {
         };
         match order {
             Order::Hook(hook) => self.automation.set_hook(hook),
+            Order::Playback {
+                timeline,
+                on,
+                by,
+                reply,
+            } => {
+                let result = if loaded(self, &timeline) {
+                    if !on {
+                        let project = Arc::clone(self.project.as_ref().expect("loaded"));
+                        let index = self.timeline.unwrap_or(0);
+                        let at = self.heard_sample();
+                        self.automation.record(
+                            (false, None, by),
+                            (&project, index),
+                            at,
+                            &mut self.playback,
+                        );
+                        self.status.recording = false;
+                    }
+                    self.playback.automation(on);
+                    self.status.automation_playback = on;
+                    self.tell(true);
+                    Ok(json!({ "on": on }))
+                } else {
+                    Err(not_loaded())
+                };
+                let _ = reply.send(result);
+            }
             Order::Record {
                 timeline,
                 on,
@@ -1292,7 +1324,9 @@ impl Worker {
                 by,
                 reply,
             } => {
-                let result = if loaded(self, &timeline) {
+                let result = if on && !self.playback.automation_on() {
+                    Err(Fault::params("enable automation.playback before recording"))
+                } else if loaded(self, &timeline) {
                     let project = Arc::clone(self.project.as_ref().expect("loaded"));
                     let index = self.timeline.unwrap_or(0);
                     let at = self.heard_sample();

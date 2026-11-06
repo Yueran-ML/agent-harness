@@ -582,3 +582,31 @@ fn the_lanes_of_a_track_a_bus_or_a_vca_whose_arm_is_off_are_not_played_and_safe_
         assert!((at_one(&project) - want).abs() < 1e-6, "VCA {arm:?}");
     }
 }
+
+#[test]
+fn session_playback_bypasses_every_owner_without_changing_project_or_export() {
+    let mut project = routed();
+    let timeline = &mut project.timelines[0];
+    for lanes in [
+        &mut timeline.tracks[0].audio.lanes,
+        &mut timeline.buses[0].lanes,
+        &mut timeline.vcas[0].lanes,
+    ] {
+        lanes.insert(
+            "fader_db".into(),
+            lane(LaneKind::Continuous, 48_000, &[(0, -6.0)]),
+        );
+    }
+    let before = serde_json::to_value(&project).unwrap();
+    let exported = heard(&project, 64, 0.5);
+    let mut options = Options::new(4096, Purpose::Preview);
+    options.automation = false;
+    let mut graph = Graph::build(&project, 0, options).unwrap();
+    let bypassed = play(&mut graph, &mut feed(|_, _| 0.5), (0, 64), &mut || 64).swap_remove(0);
+    assert!(bypassed.iter().all(|v| (*v - 0.5).abs() < 0.0001));
+    assert!(exported
+        .iter()
+        .all(|v| (*v - 0.5 * gain_of(-18.0) as f32).abs() < 0.0001));
+    assert_eq!(before, serde_json::to_value(&project).unwrap());
+    assert_eq!(exported, heard(&project, 64, 0.5));
+}

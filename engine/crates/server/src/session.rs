@@ -885,6 +885,67 @@ async fn automation_call(
     }
 }
 
+/// Read-only parameter catalogue, derived from the exact model used by lane validation.
+async fn automation_parameters(engine: &Engine, params: Option<&RawValue>) -> Result<Value, Fault> {
+    use columbina_model::audio::{automation as a, param::LaneScale};
+    use columbina_model::{LanesOf, TrackKind};
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Asked {
+        timeline: String,
+        of: LanesOf,
+    }
+    let asked: Asked = rpc::params(
+        "automation.parameters",
+        r#"{"timeline":"t1","of":{"track":"A1"}}"#,
+        params,
+    )?;
+    let state = engine.state.lock().await;
+    let timeline = state
+        .history
+        .project()
+        .timelines
+        .iter()
+        .find(|t| t.id == asked.timeline)
+        .ok_or_else(|| Fault::params("timeline is missing"))?;
+    let owner = match &asked.of {
+        LanesOf::Track(id) => timeline
+            .tracks
+            .iter()
+            .find(|t| t.id == *id && t.kind == TrackKind::Audio)
+            .map(|t| a::Owner::Strip {
+                strip: &t.audio.strip,
+                mute: t.audio.mute,
+                bus: false,
+            }),
+        LanesOf::Bus(id) => timeline
+            .buses
+            .iter()
+            .find(|b| b.id == *id)
+            .map(|b| a::Owner::Strip {
+                strip: &b.strip,
+                mute: b.mute,
+                bus: true,
+            }),
+        LanesOf::Vca(id) => timeline
+            .vcas
+            .iter()
+            .find(|v| v.id == *id)
+            .map(a::Owner::Vca),
+    }
+    .ok_or_else(|| Fault::params("automation owner is missing"))?;
+    let view = a::view(owner);
+    let parameters: Vec<_> = a::paths(owner).into_iter().filter_map(|path| {
+        let value = a::fixed_value(&view, &path)?;
+        let kind = a::kind_of(&view, &path)?;
+        let (min, max) = a::range_of(owner, &path, value);
+        // Legal negative levels are unbounded; the UI shares the mixer's silence stop.
+        let display_min = if min == -f64::MAX { f64::from(columbina_audio::constants::SILENCE_DB) } else { min };
+        Some(json!({ "path": path, "kind": kind, "scale": LaneScale::of_path(&path), "value": value, "min": min, "max": max, "display_min": display_min, "display_max": max }))
+    }).collect();
+    Ok(json!({ "revision": state.history.revision(), "of": asked.of, "parameters": parameters }))
+}
+
 /// The params of `automation.copy`.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1538,13 +1599,21 @@ async fn dispatch(
                 Err(refused) => Reply::Refused(refused),
             })
         }
-        "automation.record"
+        "automation.playback"
+        | "automation.record"
         | "automation.touch"
         | "automation.punch"
         | "automation.all_read"
         | "automation.join"
         | "automation.fill" => {
             let result = automation_call(engine, kind, method, params).await?;
+            Ok(match connection.queue(rpc::result_line(id, &result)) {
+                Ok(()) => Reply::Queued,
+                Err(refused) => Reply::Refused(refused),
+            })
+        }
+        "automation.parameters" => {
+            let result = automation_parameters(engine, params).await?;
             Ok(match connection.queue(rpc::result_line(id, &result)) {
                 Ok(()) => Reply::Queued,
                 Err(refused) => Reply::Refused(refused),

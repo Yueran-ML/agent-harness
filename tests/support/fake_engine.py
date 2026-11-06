@@ -341,6 +341,17 @@ class Fake:
             said["headless"] = self.headless
         return said
 
+    def automation_playback(self, _asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        """Wire-only session flag. No fake DSP or project edits."""
+        self.looked.append(("automation.playback", copy.deepcopy(params)))
+        self.automation_playback_on = params["on"]
+        return {"on": params["on"]}
+
+    def automation_parameters(self, _asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        """Tests can inject a model catalogue through Fake.results; no second catalogue."""
+        self.looked.append(("automation.parameters", copy.deepcopy(params)))
+        return {"revision": self.revision, "of": copy.deepcopy(params["of"]), "parameters": []}
+
     def project_get(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
         return {
             "revision": self.revision,

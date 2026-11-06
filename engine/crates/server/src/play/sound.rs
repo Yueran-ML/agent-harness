@@ -46,7 +46,7 @@
 //!   is a graph swapped in, which takes the place of one that still sounds by a crossfade of its
 //!   fade, and grains asked for while one is built are taken together (only the last is built).
 
-use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -187,6 +187,7 @@ struct Built {
 
 /// What the thread that plays and the thread that builds share.
 struct Shared {
+    automation: AtomicBool,
     /// The session that plays: the epoch of the last start or stop.
     epoch: AtomicU64,
     /// The newest project of the session, which a graph to swap in is built from.
@@ -226,6 +227,7 @@ impl Threads {
         let mix = MixThread::spawn(Engine::new(taken, gone, Arc::clone(&counters)))
             .map_err(|error| format!("the thread of the mix cannot be started: {error}"))?;
         let shared = Arc::new(Shared {
+            automation: AtomicBool::new(true),
             epoch: AtomicU64::new(0),
             latest: Mutex::new(None),
             built: Mutex::new(None),
@@ -425,6 +427,7 @@ impl Builder {
         how: How,
     ) -> Result<(Box<Run>, Controls, i64), String> {
         let mut options = Options::new(MOST_BLOCK, Purpose::Preview);
+        options.automation = self.shared.automation.load(Ordering::Acquire);
         if let (How::Grain { .. }, Some(of)) = (how, project.timelines.get(timeline)) {
             // A grain is heard for a moment where it is: only the clips about it are made, their
             // effects and all (T4c's review).
@@ -768,6 +771,7 @@ pub(crate) enum Event {
     reason = "the states of a graph being built"
 )]
 struct Current {
+    force_rebuild: bool,
     base: Arc<Project>,
     timeline: usize,
     controls: Option<Controls>,
@@ -809,6 +813,7 @@ struct Held {
 
 /// The sound of a timeline monitor as it plays. See the module.
 pub(crate) struct Playback {
+    automation: bool,
     threads: Option<Threads>,
     opener: Opener,
     epoch: u64,
@@ -828,6 +833,7 @@ impl Playback {
     /// The same, the clips read through what `opener` opens.
     pub(crate) fn with_opener(opener: Opener) -> Self {
         Playback {
+            automation: true,
             threads: None,
             opener,
             epoch: 0,
@@ -840,8 +846,34 @@ impl Playback {
     fn threads(&mut self) -> Result<&Threads, String> {
         if self.threads.is_none() {
             self.threads = Some(Threads::spawn(self.opener)?);
+            self.threads
+                .as_ref()
+                .unwrap()
+                .shared
+                .automation
+                .store(self.automation, Ordering::Release);
         }
         Ok(self.threads.as_ref().expect("made above"))
+    }
+
+    pub(crate) fn automation_on(&self) -> bool {
+        self.automation
+    }
+
+    /// Session-only automation playback. Force a graph swap, never modify the project.
+    pub(crate) fn automation(&mut self, on: bool) {
+        if self.automation == on {
+            return;
+        }
+        self.automation = on;
+        if let Some(threads) = &self.threads {
+            threads.shared.automation.store(on, Ordering::Release);
+        }
+        if let Some(current) = &mut self.current {
+            current.force_rebuild = true;
+            let (project, timeline) = current.latest.clone();
+            self.changed(&project, timeline);
+        }
     }
 
     /// Plays timeline `timeline` of `project` from sample `from` at `speed` (T18) on `output`,
@@ -973,6 +1005,7 @@ impl Playback {
             })
             .map_err(|_| "the thread that builds the mix has ended".to_owned())?;
         self.current = Some(Current {
+            force_rebuild: false,
             base: Arc::clone(&project),
             timeline,
             controls: None,
@@ -1095,10 +1128,12 @@ impl Playback {
             // A grain of scrubbing plays what it was built of; the next is of the newest project.
             return Heard::Same;
         }
-        let sets = current
-            .controls
-            .as_ref()
-            .and_then(|controls| retune(was, now, controls));
+        let sets = (!current.force_rebuild).then_some(()).and_then(|()| {
+            current
+                .controls
+                .as_ref()
+                .and_then(|controls| retune(was, now, controls))
+        });
         let send = |sets: &[(columbina_audio::graph::Control, f32)]| {
             sets.iter()
                 .all(|&(control, value)| threads.send(Command::Set(control, value)))
@@ -1137,6 +1172,7 @@ impl Playback {
             }
         }
         current.pending = true;
+        current.force_rebuild = false;
         if threads
             .jobs
             .send(Job::Swap {

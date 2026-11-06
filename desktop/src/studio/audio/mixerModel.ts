@@ -37,9 +37,9 @@ export function laneValue(lane: Lane, seconds: number): number {
   const share = (at - from.at.ticks) / (to.at.ticks - from.at.ticks);
   return lane.scale === 'log' ? Math.exp(Math.log(from.value) + (Math.log(to.value) - Math.log(from.value)) * share) : from.value + (to.value - from.value) * share;
 }
-export function faderReading(strip: MixerStrip, seconds: number) {
+export function faderReading(strip: MixerStrip, seconds: number, playback = true) {
   const lane = strip.lanes?.fader_db, hasLane = Boolean(lane);
-  const automated = hasLane && strip.arm !== 'off';
+  const automated = playback && hasLane && strip.arm !== 'off';
   return { value: automated ? laneValue(lane!, seconds) : strip.db, automated, hasLane };
 }
 export function stripChange(timeline: string, strip: MixerStrip, patch: Record<string, unknown>, follow = false): Change {
@@ -58,12 +58,12 @@ export function operationTargets(strips: MixerStrip[], key: string, selected: re
   return strips.filter(s => !s.locked && (modifiers.altKey ? modifiers.ctrlKey || selected.includes(s.key) || s.key === key : s.key === key));
 }
 export interface FaderPlan { source: MixerStrip; members: MixerStrip[]; follow: boolean; restore: Change[] }
-export function faderPlan(timeline: Timeline, key: string, selected: readonly string[], modifiers: Modifiers): FaderPlan {
+export function faderPlan(timeline: Timeline, key: string, selected: readonly string[], modifiers: Modifiers, playback = true): FaderPlan {
   const strips = mixerStrips(timeline), source = strips.find(s => s.key === key)!;
-  const seeds = operationTargets(strips, key, selected, modifiers).filter(s => !faderReading(s, 0).automated);
+  const seeds = operationTargets(strips, key, selected, modifiers).filter(s => !faderReading(s, 0, playback).automated);
   const clutch = Boolean(modifiers.ctrlKey && modifiers.shiftKey);
   const linked = groupMembers(timeline, strips, seeds, 'fader', clutch);
-  const members = linked.filter(s => !faderReading(s, 0).automated);
+  const members = linked.filter(s => !faderReading(s, 0, playback).automated);
   // The engine's ordinary group follower edit has no lane-readonly filter. When a group
   // includes one of those strips, use the already deduplicated writable members explicitly.
   return { source, members, follow: members.some(s => s.key === source.key) && linked.length === members.length && !modifiers.altKey && !clutch && source.kind === 'track',

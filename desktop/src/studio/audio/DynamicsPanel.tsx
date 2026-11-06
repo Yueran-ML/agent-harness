@@ -17,7 +17,7 @@ export function DynamicsPanel(props: ProcessorProps) {
   const number = (section: Section, field: string, label: string, min: number, max: number, unit = '') => {
     const sectionName = t(section === 'expander' ? 'Expander' : section === 'compressor' ? 'Compressor' : 'Limiter');
     return <Knob key={field} path={`dynamics.${section}.${field}`} label={`${sectionName} ${label}`} value={(value[section] as unknown as Record<string, number>)[field]} min={min} max={max} unit={unit}
-      fallback={(defaults[section] as unknown as Record<string, number>)[field]} disabled={control.disabled || section === 'expander' && field === 'ratio' && value.expander.mode === 'gate'} onStart={control.start} isActive={control.gesture.active}
+      fallback={(defaults[section] as unknown as Record<string, number>)[field]} disabled={control.disabled || section === 'expander' && field === 'ratio' && value.expander.mode === 'gate'} onStart={()=>control.start(`dynamics.${section}.${field}`)} isActive={control.gesture.active}
       onChange={n => control.change(patch(section, { [field]: n }, control.snapshot()))} onEnd={control.end} onCancel={control.cancel} onCommit={n => control.commit(patch(section, { [field]: n }))} />;
   };
   return <section className="processor-panel dynamics-panel" aria-label={t('Dynamics')} data-audio-owner={targetKey(props.target)} onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); control.cancel(); } }}>
@@ -32,7 +32,7 @@ export function DynamicsPanel(props: ProcessorProps) {
     </svg>
     <div className="dynamics-modules">{(['expander', 'compressor', 'limiter'] as const).map(section => <fieldset key={section} disabled={control.disabled}>
       <legend>{t(section === 'expander' ? 'Expander / Gate' : section === 'compressor' ? 'Compressor' : 'Limiter')}</legend>
-      {section === 'expander' ? (['expander', 'gate'] as const).map(mode => <label key={mode}><input type="checkbox" aria-label={t(mode === 'gate' ? 'Gate' : 'Expander')} checked={value.expander.on && value.expander.mode === mode}
+      {section === 'expander' ? (['expander', 'gate'] as const).map(mode => <label key={mode}><input type="checkbox" disabled={control.recording&&value.expander.mode!==mode} aria-label={t(mode === 'gate' ? 'Gate' : 'Expander')} checked={value.expander.on && value.expander.mode === mode}
         onChange={event => control.commit(patch('expander', { on: event.target.checked, mode }))} />{t(mode === 'gate' ? 'Gate' : 'Expander')}</label>)
         : <label><input type="checkbox" checked={value[section].on} onChange={event => control.commit(patch(section, { on: event.target.checked }))} />{t('On')}</label>}
       {number(section, 'threshold_db', t('Threshold'), -50, 0, 'dB')}
@@ -44,12 +44,12 @@ export function DynamicsPanel(props: ProcessorProps) {
     <fieldset disabled={control.disabled}><legend>{t('Sidechain')}</legend>
       {(['on', 'listen'] as const).map(field => <label key={field}><input type="checkbox" aria-label={`${t('Sidechain')} ${t(field === 'on' ? 'On' : 'Listen')}`} checked={sc[field]}
         onChange={event => control.commit(patch('compressor', { sidechain: { ...sc, [field]: event.target.checked } }))} />{t(field === 'on' ? 'On' : 'Listen')}</label>)}
-      <label>{t('Source')}<select aria-label={t('Sidechain Source')} value={sc.source ? targetKey(sc.source) : ''} onChange={event => {
+      <label>{t('Source')}<select disabled={control.recording} aria-label={t('Sidechain Source')} value={sc.source ? targetKey(sc.source) : ''} onChange={event => {
         const source: SourceRef | null = sources.find(s => s.key === event.target.value)?.source ?? null;
         control.commit(patch('compressor', { sidechain: { ...sc, source } }));
       }}><option value="">{t('None')}</option>{sources.map(s => <option key={s.key} value={s.key} disabled={s.disabled}>{s.name}{s.disabled ? ` (${t('Routing cycle')})` : ''}</option>)}</select></label>
     </fieldset>
-    <Knob path="dynamics.makeup_db" label={t('Make Up')} value={value.makeup_db} min={-20} max={20} fallback={0} unit="dB" disabled={control.disabled} onStart={control.start} isActive={control.gesture.active}
+    <Knob path="dynamics.makeup_db" label={t('Make Up')} value={value.makeup_db} min={-20} max={20} fallback={0} unit="dB" disabled={control.disabled} onStart={()=>control.start('dynamics.makeup_db')} isActive={control.gesture.active}
       onChange={makeup_db => control.change({ ...control.snapshot(), makeup_db })} onEnd={control.end} onCancel={control.cancel} onCommit={makeup_db => control.commit({ ...value, makeup_db })} />
   </section>;
 }

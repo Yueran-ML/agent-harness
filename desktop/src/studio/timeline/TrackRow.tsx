@@ -14,7 +14,7 @@ export interface TrackClipDrawing { clip: Clip; track: Track; media?: Media; rat
  * whole steps as the timeline scrolls (see `scrollWindow`), so a row is drawn again only where the
  * scroll crosses a step, or what it shows changes; not as the playhead moves.
  */
-export const TrackRow = memo(function TrackRow({ timeline, track, media, rate, scale, from, to, height, waves, onEdit, onHeight, selected, mixerSelected, targeted, onTarget, chosen = null, chosenCue = null, shownSubtitles = null, drawClip, audioOverlay }: {
+export const TrackRow = memo(function TrackRow({ timeline, track, media, rate, scale, from, to, height, waves, onEdit, onHeight, selected, mixerSelected, targeted, onTarget, chosen = null, chosenCue = null, shownSubtitles = null, drawClip, audioOverlay, decoration }: {
   timeline: string; track: Track; media: ReadonlyMap<string, Media>; rate: Rate; scale: number; from: number; to: number;
   height: number; waves: Waveforms; onEdit: (ops: Op[]) => Promise<boolean>; onHeight: (id: string, height: number) => void;
   selected: ReadonlySet<string>; targeted: boolean; onTarget: (id: string) => void;
@@ -27,6 +27,7 @@ export const TrackRow = memo(function TrackRow({ timeline, track, media, rate, s
   shownSubtitles?: string | null;
   drawClip?: (props: TrackClipDrawing) => ReactNode;
   audioOverlay?: AudioOverlayContext;
+  decoration?: ReactNode;
 }) {
   const all = useWords();
   const words = all.label.studio.timeline;
@@ -52,5 +53,6 @@ export const TrackRow = memo(function TrackRow({ timeline, track, media, rate, s
         key={transition.id} className="timeline-transition" data-transition={transition.id} data-kind={transition.kind} data-selected={chosen === transition.id}
         style={spanStyle(start, length)} title={words[transition.kind]}><span>{words[transition.kind]}</span></div>)}
     </div>
+    {decoration}
   </div>;
 });

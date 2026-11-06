@@ -2,10 +2,12 @@ import { useState } from 'react';
 import type { EngineBridge } from '../../bridge';
 export interface FairlightView {
   pool: boolean; effects: boolean; index: boolean; groups: boolean; mixer: boolean; meters: boolean; inspector: boolean;
+  automationControls: boolean; pencil: boolean; lanePaths: Record<string,string>; lastLanePaths: Record<string,string>;
   video: boolean; automation: boolean; viewer: boolean; waveform: number; hidden: string[]; gainLine: boolean;
   leftWidth: number; rightWidth: number; monitoringHeight: number; mixerHeight: number;
 }
 export const defaultFairlightView = (): FairlightView => ({ pool: false, effects: false, index: false, groups: false, mixer: true, meters: true, inspector: true,
+  automationControls: false, pencil: false, lanePaths: {}, lastLanePaths: {},
   video: false, automation: false, viewer: true, waveform: 1, hidden: [], gainLine: true, leftWidth: 340, rightWidth: 280, monitoringHeight: 240, mixerHeight: 300 });
 // Per engine/session/timeline: returning from Edit retains this layout; a new project session does not.
 const views = new WeakMap<object, Map<string, FairlightView>>();

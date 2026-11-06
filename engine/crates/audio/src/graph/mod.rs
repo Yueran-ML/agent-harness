@@ -188,6 +188,8 @@ pub enum Purpose {
 /// How a graph is built.
 #[derive(Clone, Copy)]
 pub struct Options {
+    /// Session preview playback of automation; export and analysis keep the default, true.
+    pub automation: bool,
     /// The most samples of a block.
     pub max_block: usize,
     /// What it is for.
@@ -205,6 +207,7 @@ impl Options {
     #[must_use]
     pub fn new(max_block: usize, purpose: Purpose) -> Self {
         Options {
+            automation: true,
             max_block,
             purpose,
             maker: node_of,

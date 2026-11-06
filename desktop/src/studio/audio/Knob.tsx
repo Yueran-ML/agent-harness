@@ -1,3 +1,5 @@
+import { useAutomationTouch } from '../fairlight/AutomationTouch';
+import { ownerOf } from '../fairlight/automation';
 import { useEffect, useRef, useState } from 'react';
 import { clamp } from './taper';
 import { useFairlightText } from '../fairlight/words';
@@ -10,13 +12,15 @@ export interface KnobProps {
 }
 /** Numeric Alt/Shift is precision, never a batch-target modifier. One wheel burst is one gesture. */
 export function Knob(props: KnobProps) {
-  const t = useFairlightText();
+  const t = useFairlightText(), automation=useAutomationTouch(), [menu,setMenu]=useState(false);
   const { label, value, min, max, fallback, disabled, onStart, onChange, onEnd, onCancel, onCommit, step = .1 } = props;
   const now = useRef(props); now.current = props;
   const cap = useRef<HTMLSpanElement>(null), drag = useRef<{ y: number; value: number } | null>(null);
   const scrub = useRef<{ x: number; value: number } | null>(null);
   const wheel = useRef<{ value: number; timer: ReturnType<typeof setTimeout> } | null>(null);
   const [text, setText] = useState(String(value)), [editing, setEditing] = useState(false);
+  const owner=cap.current?.closest<HTMLElement>('[data-audio-owner]')?.dataset.audioOwner;
+  const status=owner&&props.path&&!owner.startsWith('clip:')?automation?.status({of:ownerOf(owner),path:props.path}):null;
   useEffect(() => { if (!editing) setText(String(Number(value.toFixed(3)))); }, [value, editing]);
   const cancel = () => { drag.current = null; scrub.current = null; if (wheel.current) clearTimeout(wheel.current.timer); wheel.current = null; now.current.onCancel(); setEditing(false); setText(String(now.current.value)); };
   useEffect(() => { window.addEventListener('blur', cancel); return () => { window.removeEventListener('blur', cancel); cancel(); }; }, []);
@@ -31,14 +35,15 @@ export function Knob(props: KnobProps) {
       const previous = wheel.current?.value ?? p.value;
       if (wheel.current) clearTimeout(wheel.current.timer);
       const next = clamp(previous + (event.deltaY < 0 ? 1 : -1) * (p.step ?? .1) * (event.altKey || event.shiftKey ? .1 : 1), p.min, p.max);
-      p.onChange(next); wheel.current = { value: next, timer: setTimeout(() => { wheel.current = null; now.current.onEnd(); }, 400) };
+      p.onChange(next); wheel.current = { value: next, timer: setTimeout(() => { wheel.current = null; now.current.onEnd(); }, 500) };
     };
     element.addEventListener('wheel', turn, { passive: false }); return () => element.removeEventListener('wheel', turn);
   }, []);
-  return <label className="audio-knob" data-audio-path={props.path} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); cancel(); } }}>
+  return <label className="audio-knob" data-audio-path={props.path} onContextMenu={event=>{const key=cap.current?.closest<HTMLElement>('[data-audio-owner]')?.dataset.audioOwner;if(automation&&props.path&&key&&!key.startsWith('clip:')){event.preventDefault();event.stopPropagation();setMenu(true);}}} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); cancel(); } }}>
+    {menu&&<span role="menu"><button type="button" onClick={()=>{const key=cap.current?.closest<HTMLElement>('[data-audio-owner]')?.dataset.audioOwner;if(key&&props.path)automation?.show({of:ownerOf(key),path:props.path});setMenu(false);}}>{t('Show automation in timeline')}</button><button type="button" onClick={()=>setMenu(false)}>{t('Cancel')}</button></span>}
     <span onDoubleClick={event => { event.preventDefault(); if (!disabled) onCommit(fallback); }}>{label}</span>
     <span ref={cap} role="slider" aria-label={label} aria-valuemin={min} aria-valuemax={max} aria-valuenow={value} aria-disabled={disabled || undefined} tabIndex={disabled ? -1 : 0}
-      className="audio-knob-cap" onPointerDown={event => {
+      className="audio-knob-cap" data-automation={status??undefined} onPointerDown={event => {
         if (event.button !== 0 || disabled) return; event.preventDefault(); event.stopPropagation();
         const burst = wheel.current, continuing = burst !== null && props.isActive?.() !== false;
         if (burst) clearTimeout(burst.timer); wheel.current = null;

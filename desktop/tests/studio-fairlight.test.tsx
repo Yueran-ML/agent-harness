@@ -120,7 +120,10 @@ it('mounts the full Fairlight page with channel lanes, shared editing, view-only
   fireEvent.click(screen.getByText('Index')); fireEvent.click(screen.getByLabelText('Visible Audio 2'));
   expect(document.querySelector('.timeline [data-track="a2"]')).toBeNull();
   fireEvent.keyDown(document.body, { key: 'l' }); expect(monitor.run).toHaveBeenCalledWith({ method: 'transport.play', params: { speed: 1 } });
+  fireEvent.keyDown(document.body, { key: 'F4' }); expect(document.querySelector('.fairlight-timeline')?.getAttribute('data-view')).toBe('clips');
+  fireEvent.click(screen.getByText('Toggle Automation')); await settle();
   fireEvent.keyDown(document.body, { key: 'F4' }); expect(document.querySelector('.fairlight-timeline')?.getAttribute('data-view')).toBe('automation');
+  expect(document.querySelector('[data-clip="sound1"] .audio-overlay')).toBeNull();
   fireEvent.keyDown(screen.getByRole('separator', { name: 'Monitoring height' }), { key: 'ArrowDown' });
   expect(bridge.call.mock.calls.some(([method]) => method === 'transaction.apply')).toBe(false);
   fireEvent.click(screen.getByText('Reset Fairlight Layout')); expect(screen.queryByText('Tracks')).toBeNull();

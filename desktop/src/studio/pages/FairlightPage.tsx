@@ -1,3 +1,6 @@
+import { AutomationToolbar } from '../fairlight/AutomationToolbar';
+import { AutomationTouchProvider } from '../fairlight/AutomationTouch';
+import { ownerKey, type AutomationTarget } from '../fairlight/automation';
 import { useFairlightText } from '../fairlight/words';
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import type { EngineBridge } from '../../bridge';
@@ -83,18 +86,36 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
     const down = (event: KeyboardEvent) => {
       if (event.defaultPrevented || !inStudio(event.target)) return;
       const key = keyOf(event); if (!editingAllowed(event.target, key)) return;
-      if (event.key === 'F4') { event.preventDefault(); update({ automation: !view.automation }); }
+      if (event.key === 'F4' && view.automation && selected) { event.preventDefault();
+        const keys=stripSelection.filter(k=>k.startsWith('track:'));const targets=keys.length?keys:selected.tracks.filter(t=>t.kind==='audio').map(t=>`track:${t.id}`);
+        update({lanePaths:{...view.lanePaths,...Object.fromEntries(targets.map(key=>[key,view.lanePaths[key]?'':view.lastLanePaths[key]??'fader_db']))}});
+      }
       else if (event.key === 'Escape') { setCinema(false); setContext(null); }
       else if ((!key.ctrl && !key.alt && !key.shift && !key.meta && event.key.toLowerCase() === 'p') || (key.ctrl && !key.alt && !key.shift && !key.meta && event.key.toLowerCase() === 'f')) { event.preventDefault(); setCinema(old => !old); }
       else if (!(event.target instanceof Element && event.target.closest('.timeline')) && timeline.current?.keyDown(key)) event.preventDefault();
     };
     window.addEventListener('keydown', down); return () => window.removeEventListener('keydown', down);
-  }, [view.automation, update]);
+  }, [view, update, selected, stripSelection]);
+  const playbackQueue = useRef(Promise.resolve());
+  useEffect(() => {
+    if (!selected || playing !== selected.id) return;
+    let live = true;
+    playbackQueue.current = playbackQueue.current.then(async()=>{try { await callEngine(bridge,'automation.playback',{timeline:selected.id,on:view.automation},{expectedSession:session}); } catch(e){if(live){setProblem(String(e));update({automation:state?.automation_playback??true});}}});
+    return ()=>{live=false;};
+  },[bridge,session,selected?.id,playing,view.automation]);
+  useEffect(()=>()=>{
+    if (!selected) return;
+    playbackQueue.current=playbackQueue.current.then(async()=>{
+      try { await callEngine(bridge,'automation.record',{timeline:selected.id,on:false},{expectedSession:session}); await callEngine(bridge,'automation.playback',{timeline:selected.id,on:true},{expectedSession:session}); } catch { /* A replaced engine session or unloaded timeline already resets recording and playback. */ }
+    });
+  },[bridge,session,selected?.id]);
+  const showAutomation=(target:AutomationTarget)=>{const key=ownerKey(target.of);update({automation:true,lanePaths:{...view.lanePaths,[key]:target.path},lastLanePaths:{...view.lastLanePaths,[key]:target.path}});};
   const soundClips = clips.filter(id => selected?.tracks.some(track => track.kind === 'audio' && track.clips.some(clip => clip.id === id)));
   const viewer = <MonitorPane bridge={bridge} native={native} active={cinema || (view.viewer && view.meters)} controls={timelineMonitor} notice={noticeOf('timeline')} onRetry={onRetry} />;
   const showLeft = view.pool || view.index || view.effects || view.groups;
-  return <div className="studio-body fairlight-page" data-test="fairlight-page" style={{ '--fairlight-left': `${showLeft ? view.leftWidth : 0}px`, '--fairlight-right': `${view.inspector ? view.rightWidth : 0}px` } as CSSProperties}>
+  const content = <div className="studio-body fairlight-page" data-test="fairlight-page" style={{ '--fairlight-left': `${showLeft ? view.leftWidth : 0}px`, '--fairlight-right': `${view.inspector ? view.rightWidth : 0}px` } as CSSProperties}>
     <Toolbar view={view} update={update} reset={reset} timelines={timelines} selected={selected?.id ?? null} onSelect={onSelect} />
+    {selected && <AutomationToolbar bridge={bridge} session={session} timeline={selected} view={view} update={update} recording={state?.recording??false} selected={stripSelection} frame={state?timelineMonitor.frame??0:0} onEdit={ops=>void edit(ops as Record<string,unknown>[])} onFailure={e=>setProblem(String(e))} onToggle={()=>update({automation:!view.automation})} marks={()=>timeline.current?.marks()??{in:null,out:null}}/>}
     {(problem || audio.problem) && <p role="alert">{problem ?? audio.problem}<button type="button" onClick={() => setProblem(null)}>{t('Dismiss')}</button></p>}
     {view.meters && selected && <div className="fairlight-monitoring-wrap" style={{ height: view.monitoringHeight }}>
       <Monitoring timeline={selected} meters={audio.meters} onAction={action => void audio.action(action)} onResetPeaks={() => void audio.resetPeaks()}
@@ -103,7 +124,7 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
     </div>}
     <main className="fairlight-workspace">
       {showLeft && <aside className="fairlight-left">{view.pool && pool}{view.effects && <EffectsLibrary />}
-        {view.index && selected && <IndexTracks timeline={selected} hidden={view.hidden} onHidden={hidden => update({ hidden })} onSelect={chooseTrack}
+        {view.index && selected && <IndexTracks automation={view.automation} timeline={selected} hidden={view.hidden} onHidden={hidden => update({ hidden })} onSelect={chooseTrack}
           selection={stripSelection.filter(key => key.startsWith('track:')).map(key => key.slice(6))} onSelection={ids => chooseStrips(ids.map(id => `track:${id}`))} onEdit={ops => void edit(ops)} />}
         {view.groups && (groups ?? <section aria-label={t('Groups')}><h2>{t('Groups')}</h2><p>{t('Group controls are not available yet.')}</p></section>)}
       </aside>}
@@ -162,4 +183,5 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
     {cinema && <div className="fairlight-cinema">{viewer}<button type="button" onClick={() => setCinema(false)}>{t('Exit cinema')}</button></div>}
     {speed && selected && <SpeedDialog bridge={bridge} session={session} revision={revision} timeline={selected} clips={speed} onClose={() => setSpeed(null)} />}
   </div>;
+  return selected ? <AutomationTouchProvider bridge={bridge} session={session} revision={revision} timeline={selected} enabled={view.automation} recording={state?.recording??false} playing={state?.playing??false} read={state?.all_read??false} show={showAutomation} onFailure={e=>setProblem(String(e))}>{content}</AutomationTouchProvider> : content;
 }

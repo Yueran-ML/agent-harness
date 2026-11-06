@@ -1008,6 +1008,13 @@ pub(crate) type Hook = Arc<dyn Fn(Commit) + Send + Sync>;
 
 /// What the thread of the timeline monitor is told of the recording of automation.
 pub(crate) enum Order {
+    /// Session-only preview playback, separate from recording and project Arm.
+    Playback {
+        timeline: String,
+        on: bool,
+        by: Kind,
+        reply: oneshot::Sender<Result<Value, Fault>>,
+    },
     /// What writes a pass.
     Hook(Hook),
     /// `automation.record`.
@@ -1120,6 +1127,25 @@ pub(crate) fn read(
     by: Kind,
 ) -> Result<(Order, Option<Answer>), Fault> {
     match method {
+        "automation.playback" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Asked {
+                timeline: String,
+                on: bool,
+            }
+            let asked: Asked = rpc::params(method, r#"{"timeline":"t1","on":true}"#, params)?;
+            let (reply, answer) = oneshot::channel();
+            Ok((
+                Order::Playback {
+                    timeline: asked.timeline,
+                    on: asked.on,
+                    by,
+                    reply,
+                },
+                Some(answer),
+            ))
+        }
         "automation.record" => {
             let asked: RecordParams = rpc::params(
                 method,

@@ -1631,3 +1631,89 @@ async fn fill_range_copy_all_read_and_join_mix_are_asked_for_over_the_protocol()
         .await;
     assert_eq!(joined, json!({"lanes": 0, "at": null}));
 }
+
+#[tokio::test]
+async fn automation_playback_and_parameters_are_session_only_and_model_derived() {
+    if columbina_compose::gpu_for_tests().is_none() {
+        return;
+    }
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--sound", "null", "--test-hooks"]).await;
+    let mut client = engine.client("desktop").await;
+    let names = add_timeline(&mut client, vec![], vec![]).await;
+    let timeline = names["$timeline"].clone();
+    let added = client.apply(json!([{"op":"add_track","timeline":timeline,"track":{
+        "id":"$audio","kind":"audio","name":"Voice","enabled":true,"locked":false,"clips":[],"transitions":[]},"index":null}])).await;
+    let owner = json!({"track":added["names"]["$audio"]});
+    load(&mut client, &names).await;
+    let before = project(&mut client).await;
+    let catalogue = client
+        .result(
+            "automation.parameters",
+            Some(json!({"timeline":timeline,"of":owner})),
+        )
+        .await;
+    assert_eq!(catalogue["revision"], before["revision"]);
+    assert_eq!(catalogue["of"], owner);
+    let params = catalogue["parameters"].as_array().unwrap();
+    let fader = params.iter().find(|p| p["path"] == "fader_db").unwrap();
+    assert_eq!(fader["kind"], "continuous");
+    assert_eq!(fader["scale"], "linear");
+    assert!(fader["min"].as_f64().unwrap() <= -96.0);
+    assert!(params
+        .iter()
+        .any(|p| p["path"] == "mute" && p["kind"] == "switch"));
+    assert!(!params.iter().any(|p| p["path"] == "solo"));
+    client
+        .result(
+            "automation.record",
+            Some(json!({"timeline":timeline,"on":true})),
+        )
+        .await;
+    assert_eq!(
+        client
+            .result(
+                "automation.playback",
+                Some(json!({"timeline":timeline,"on":false}))
+            )
+            .await["on"],
+        false
+    );
+    assert_eq!(
+        client
+            .result("transport.state", Some(json!({"monitor":"timeline"})))
+            .await["recording"]
+            .as_bool()
+            .unwrap_or(false),
+        false
+    );
+    client
+        .error(
+            "automation.record",
+            Some(json!({"timeline":timeline,"on":true})),
+        )
+        .await;
+    assert_eq!(before, project(&mut client).await);
+    client
+        .result(
+            "automation.playback",
+            Some(json!({"timeline":timeline,"on":true})),
+        )
+        .await;
+    client
+        .result(
+            "automation.record",
+            Some(json!({"timeline":timeline,"on":true})),
+        )
+        .await;
+    load(&mut client, &names).await;
+    assert_eq!(
+        client
+            .result("transport.state", Some(json!({"monitor":"timeline"})))
+            .await["recording"]
+            .as_bool()
+            .unwrap_or(false),
+        false
+    );
+    assert_eq!(before, project(&mut client).await);
+}

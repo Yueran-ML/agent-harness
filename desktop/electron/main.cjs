@@ -187,6 +187,7 @@ const PAGE_METHODS = new Set([
   // The recording of automation of the Fairlight page (T16): on and off, a control touched as the
   // timeline plays, and Punch In; they name a timeline and a setting of its mix alone. All Read,
   // Join Mix, Fill/Glide Range and Copy of automation (T16b) name a timeline and its owners alone.
+  'automation.playback', 'automation.parameters',
   'automation.record', 'automation.touch', 'automation.punch',
   'automation.all_read', 'automation.join', 'automation.fill', 'automation.copy',
 ]);

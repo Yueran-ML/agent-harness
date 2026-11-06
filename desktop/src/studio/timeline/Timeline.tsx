@@ -33,7 +33,7 @@ export interface TimelineHandle {
 /** What of a timeline a view shows: the pixels of a frame, how far it is scrolled, and how wide it is. */
 export interface TimelineView { scale: number; left: number; width: number }
 export function Timeline({ timeline, media, bridge, session, revision, frame, playing, onSeek, source = null, focus = 'timeline', onSpeed, onSelection, onTransition, onCue, ref,
-  cut = false, overview = false, center = false, trackHeight = 72, indicator = null, detail = null, onView, label, hiddenTracks, drawClip, onClipContext, onCopyClips, onTrackSelect, selectedTracks, audioOnlyDrop, gainLine = true }: {
+  cut = false, overview = false, center = false, trackHeight = 72, indicator = null, detail = null, onView, label, hiddenTracks, drawClip, onClipContext, onCopyClips, onTrackSelect, selectedTracks, audioOnlyDrop, gainLine = true, trackDecoration, afterTracks, gainLineDisabled, automationRange }: {
   timeline: TimelineModel | null; media: readonly Media[]; bridge: Pick<EngineBridge, 'call' | 'onEvent'>; session: number;
   revision: number; frame: number; playing: boolean; onSeek: (frame: number, scrubbing: boolean) => void;
   source?: EditContext['source']; focus?: Monitor; onSpeed?: (clips: string[]) => void; onSelection?: (clips: string[]) => void;
@@ -69,6 +69,10 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   selectedTracks?: readonly string[];
   audioOnlyDrop?: boolean;
   gainLine?: boolean;
+  gainLineDisabled?: (id: string) => boolean;
+  trackDecoration?: (track: import('../engine').Track, geometry: { scale: number; from: number; to: number; height: number; snapping: boolean }) => ReactNode;
+  afterTracks?: (geometry: { scale: number; from: number; to: number; snapping: boolean }) => ReactNode;
+  automationRange?: {from:number;to:number} | null;
 }) {
   const words = useWords();
   const labels = words.label.studio.timeline;
@@ -288,19 +292,21 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
       <div className="timeline-content" style={{ width: total, minHeight: RULER_HEIGHT + tracks.reduce((sum, track) => sum + (heights[track.id] ?? trackHeight), 0), '--scale': view.scale } as CSSProperties}>
         <div className="timeline-ruler-row"><Ruler rate={timeline.rate} scale={view.scale} from={from} to={to}
           frame={shown} last={last} onDown={down} onSeek={onSeek} />
+          {automationRange&&<span className="automation-active-range" style={{left:HEADER_WIDTH+automationRange.from*view.scale,width:(automationRange.to-automationRange.from)*view.scale}}/>}
           {editing.marks.in !== null && <span className="timeline-mark" data-edge="in" style={{ left: HEADER_WIDTH + editing.marks.in * view.scale }} />}
           {editing.marks.out !== null && <span className="timeline-mark" data-edge="out" style={{ left: HEADER_WIDTH + editing.marks.out * view.scale }} />}
           {editing.marks.in !== null && editing.marks.out !== null && <span className="timeline-mark-range" style={{ left: HEADER_WIDTH + editing.marks.in * view.scale, width: (editing.marks.out - editing.marks.in) * view.scale }} />}
           <div className="timeline-ruler-corner">{!overview && <AddSubtitleTrack onAdd={editing.addSubtitleTrack} disabled={editing.pending} />}</div></div>
         {tracks.map(track => <TrackRow key={track.id} timeline={timeline.id} track={track} media={byId} rate={timeline.rate} scale={view.scale}
-          from={from} to={to} height={heights[track.id] ?? trackHeight} waves={waves} onEdit={editing.edit} onHeight={onHeight} drawClip={drawClip}
-          audioOverlay={!cut && !overview ? { bridge, timeline: timeline.id, revision, session, frame: shown, sampleRate: timeline.sample_rate,
+          from={from} to={to} height={heights[track.id] ?? trackHeight} waves={waves} decoration={trackDecoration?.(track, { scale: view.scale, from, to, height: heights[track.id] ?? trackHeight, snapping: editing.snapping })} onEdit={editing.edit} onHeight={onHeight} drawClip={drawClip}
+          audioOverlay={!cut && !overview && !gainLineDisabled?.(track.id) ? { bridge, timeline: timeline.id, revision, session, frame: shown, sampleRate: timeline.sample_rate,
             snapping: editing.snapping, marks: editing.marks, clipboard: audioClipboard.current, gainLine, onSeek,
             onFailure: error => editing.setProblem(refusalText(error, words.hint.studio)) } : undefined}
           selected={editing.selected} mixerSelected={selectedTracks?.includes(track.id)} targeted={editing.targets.video_track === track.id || editing.targets.audio_track === track.id} onTarget={editing.target}
           chosen={editing.transition !== null && track.kind !== 'subtitle' && track.transitions.some(each => each.id === editing.transition) ? editing.transition : null}
           chosenCue={editing.cue !== null && track.kind === 'subtitle' && track.cues.some(each => each.id === editing.cue) ? editing.cue : null}
           shownSubtitles={track.kind === 'subtitle' ? shownSubtitles : null} />)}
+        {afterTracks?.({ scale: view.scale, from, to, snapping: editing.snapping })}
         {editing.preview?.preview.map(item => { const row = rows.get(item.track); return row && <div key={item.id} className="timeline-preview" data-preview={item.id} data-clamped={editing.preview!.clamped}
           style={{ left: HEADER_WIDTH + item.start * view.scale, width: item.length * view.scale, top: row.top + 4, height: row.height - 8 }} />; })}
         {editing.preview?.covered.map(item => { const row = rows.get(item.track); return row && <div key={`covered-${item.id}`} className="timeline-covered" data-covered={item.id}

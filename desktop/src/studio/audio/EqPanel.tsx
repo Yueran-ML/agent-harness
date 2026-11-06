@@ -23,39 +23,39 @@ export function EqPanel(props: ProcessorProps) {
       {[-20, 0, 20].map(db => <g key={db}><line x1="0" x2="500" y1={100 - db * 5} y2={100 - db * 5} className="processor-grid" /><text x="-5" y={104 - db * 5} textAnchor="end">{db}</text></g>)}
       {[20, 100, 1000, 10000, 20000].map(hz => <g key={hz}><line x1={frequencyPosition(hz) * 500} x2={frequencyPosition(hz) * 500} y1="0" y2="200" className="processor-grid" /><text x={frequencyPosition(hz) * 500} y="220" textAnchor="middle">{hz >= 1000 ? `${hz / 1000}k` : hz}</text></g>)}
       {curve && <polyline data-testid="eq-response" fill="none" className="processor-response" points={curve.x.map((hz, i) => `${frequencyPosition(hz) * 500},${100 - clamp(curve.y[i], -20, 20) * 5}`).join(' ')} />}
-      {eq.bands.map((band, index) => band.on && <EqHandle key={index} band={band} index={index} disabled={control.disabled} start={control.start} active={control.gesture.active}
+      {eq.bands.map((band, index) => band.on && <EqHandle key={index} band={band} index={index} disabled={control.disabled} recording={control.recording} start={paths=>control.start(paths??[`eq.${index}.freq`,...(eqHasGain(band.kind)?[`eq.${index}.gain_db`]:[])])} active={control.gesture.active}
         snapshot={control.snapshot} change={value => control.change(value)} update={(patch, base) => change(index, patch, base)} end={control.end} cancel={control.cancel} commit={value => control.commit(value)} current={eq} />)}
     </svg>
     <div className="eq-bands">{eq.bands.map((band, index) => {
       const number = index + 1, name = `${t('Band')} ${number}`, [min, max] = eqBounds(band, sampleRate), pass = band.kind === 'high_pass' || band.kind === 'low_pass';
       const knob = (field: 'freq' | 'gain_db' | 'q', label: string, low: number, high: number, step: number, disabled = false, unit = '') =>
         <Knob key={field} path={`eq.${index}.${field}`} label={`${name} ${label}`} value={band[field]} min={low} max={high} step={step} unit={unit} logarithmic={field === 'freq'} fallback={defaults.bands[index][field]}
-          disabled={control.disabled || disabled} onStart={control.start} isActive={control.gesture.active} onChange={value => control.change(change(index, { [field]: value }))}
+          disabled={control.disabled || disabled} onStart={()=>control.start(`eq.${index}.${field}`)} isActive={control.gesture.active} onChange={value => control.change(change(index, { [field]: value }))}
           onEnd={control.end} onCancel={control.cancel} onCommit={value => control.commit(change(index, { [field]: value }, eq))} />;
       return <fieldset key={index} disabled={control.disabled}><legend>{name}</legend>
         <label><input type="checkbox" checked={band.on} onChange={event => control.commit(change(index, { on: event.target.checked }, eq))} />{t('On')}</label>
-        <select aria-label={`${name} ${t('Type')}`} value={band.kind} onChange={event => control.commit(change(index, { kind: event.target.value as EqKind }, eq))}>
+        <select disabled={control.recording} aria-label={`${name} ${t('Type')}`} value={band.kind} onChange={event => control.commit(change(index, { kind: event.target.value as EqKind }, eq))}>
           {eqBandKinds(index, eq.bands.length).map(kind => <option key={kind} value={kind}>{t(kind === 'bell' ? 'Bell' : kind === 'notch' ? 'Notch' : kind === 'high_pass' ? 'High Pass' : kind === 'low_pass' ? 'Low Pass' : kind === 'low_shelf' ? 'Low Shelf' : 'High Shelf')}</option>)}
         </select>
-        {!clip && index > 0 && index < 5 && <select aria-label={`${name} ${t('Range')}`} value={band.range ?? 'low'} onChange={event => control.commit(change(index, { range: event.target.value as EqRange }, eq))}>
+        {!clip && index > 0 && index < 5 && <select disabled={control.recording} aria-label={`${name} ${t('Range')}`} value={band.range ?? 'low'} onChange={event => control.commit(change(index, { range: event.target.value as EqRange }, eq))}>
           {Object.keys(EQ_ZONES).map((zone, i) => <option key={zone} value={zone}>{['L', 'ML', 'MH', 'H'][i]}</option>)}
         </select>}
         {knob('freq', t('Frequency'), min, max, 1, false, 'Hz')}
         {knob('gain_db', t('Gain'), -20, 20, .1, !eqHasGain(band.kind), 'dB')}
         {knob('q', 'Q', .3, 10.3, .1, !eqHasQ(band.kind))}
-        {pass && !clip && <label>{t('Slope')}<select aria-label={`${name} ${t('Slope')}`} value={band.slope} onChange={event => control.commit(change(index, { slope: Number(event.target.value) as EqBand['slope'] }, eq))}>
+        {pass && !clip && <label>{t('Slope')}<select disabled={control.recording} aria-label={`${name} ${t('Slope')}`} value={band.slope} onChange={event => control.commit(change(index, { slope: Number(event.target.value) as EqBand['slope'] }, eq))}>
           {[6, 12, 18, 24].map(slope => <option key={slope} value={slope}>{slope} dB/oct</option>)}
         </select></label>}
         {pass && clip && <small>12 dB/oct</small>}
       </fieldset>;
     })}</div>
     <Knob path="eq.gain_db" label={t('Output Gain')} value={eq.gain_db} min={-20} max={20} fallback={0} unit="dB" disabled={control.disabled}
-      onStart={control.start} isActive={control.gesture.active} onChange={gain_db => control.change({ ...control.snapshot(), gain_db })} onEnd={control.end} onCancel={control.cancel}
+      onStart={()=>control.start('eq.gain_db')} isActive={control.gesture.active} onChange={gain_db => control.change({ ...control.snapshot(), gain_db })} onEnd={control.end} onCancel={control.cancel}
       onCommit={gain_db => control.commit({ ...eq, gain_db })} />
   </section>;
 }
 function EqHandle(props: {
-  band: EqBand; index: number; disabled: boolean; current: Equalizer; start: () => boolean; active: () => boolean;
+  band: EqBand; index: number; disabled: boolean; recording: boolean; current: Equalizer; start: (paths?:string[]) => boolean; active: () => boolean;
   snapshot: () => Equalizer; update: (patch: Partial<EqBand>, base: Equalizer) => Equalizer; change: (value: Equalizer) => void;
   end: () => void; cancel: () => void; commit: (value: Equalizer) => void;
 }) {
@@ -68,12 +68,12 @@ function EqHandle(props: {
     const wheel = (event: WheelEvent) => { const p = now.current; if (p.disabled || drag.current || !eqHasQ(p.band.kind) || !event.deltaY) return;
       event.preventDefault(); event.stopPropagation();
       if (burst.current && !p.active()) { clearTimeout(burst.current.timer); burst.current = null; }
-      if (!burst.current && !p.start()) return;
+      if (!burst.current && !p.start([`eq.${p.index}.q`])) return;
       node.focus({ preventScroll: true });
       const q = clamp((burst.current?.q ?? p.band.q) * (event.deltaY < 0 ? 1.1 : 1 / 1.1), .3, 10.3);
       if (burst.current) clearTimeout(burst.current.timer);
       p.change(p.update({ q }, p.snapshot()));
-      burst.current = { q, timer: setTimeout(() => { burst.current = null; now.current.end(); }, 400) };
+      burst.current = { q, timer: setTimeout(() => { burst.current = null; now.current.end(); }, 500) };
     };
     node.addEventListener('wheel', wheel, { passive: false });
     window.addEventListener('blur', cancel);
@@ -85,8 +85,9 @@ function EqHandle(props: {
       aria-disabled={disabled || undefined} tabIndex={disabled ? -1 : 0} cx={x} cy={y} r="8" className="eq-handle"
       onPointerDown={event => {
         if (disabled || event.button !== 0) return;
-        const wheel = burst.current, continuing = wheel !== null && props.active();
+        const wheel = burst.current, continuing = wheel !== null && props.active() && !props.recording;
         if (wheel) clearTimeout(wheel.timer); burst.current = null;
+        if(wheel&&props.recording)props.end();
         if (!continuing && !props.start()) return; event.preventDefault(); event.stopPropagation();
         event.currentTarget.focus({ preventScroll: true });
         const box = event.currentTarget.ownerSVGElement!.getBoundingClientRect();

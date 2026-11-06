@@ -1,3 +1,4 @@
+import { useAutomationTouch } from './AutomationTouch';
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import type { EngineBridge } from '../../bridge';
 import { callEngine, type Meters, type Timeline } from '../engine';
@@ -29,6 +30,7 @@ export interface MixerProps {
   selected: readonly string[]; onSelect: (keys: string[]) => void; compact?: boolean;
 }
 export function Mixer({ bridge, session, revision, timeline, frame, meters, selected, onSelect, compact = false }: MixerProps) {
+  const automation=useAutomationTouch();
   const t = useFairlightText(); const [problem, setProblem] = useState<string | null>(null);
   const [processors, setProcessors] = useState<{ key: string; module: ProcessorModule }[]>([]);
   const [routing, setRouting] = useState<'format' | 'assign' | null>(null);
@@ -66,7 +68,7 @@ export function Mixer({ bridge, session, revision, timeline, frame, meters, sele
   }, [session, timeline.id]);
   useEffect(() => { sweep.current = null; plan.current = null; setPreview({}); setProcessors([]); setRouting(null); }, [session, timeline.id]);
   const start = (strip: MixerStrip, modifiers: Modifiers) => {
-    const captured = faderPlan(timeline, strip.key, selected, modifiers);
+    const captured = faderPlan(timeline, strip.key, selected, modifiers, automation?.enabled??true);
     if (!captured.members.length || !gesture.start(captured.restore)) return false;
     plan.current = captured; return true;
   };
@@ -95,12 +97,32 @@ export function Mixer({ bridge, session, revision, timeline, frame, meters, sele
     if (!modifiers.altKey && field !== 'solo_safe') gesture.commit([stripChange(timeline.id, strip, { [field]: value }, !(modifiers.ctrlKey && modifiers.shiftKey))]);
     else gesture.commit(switchOps(keys, field, value, modifiers));
   };
+  const stripSetting=async(strip:MixerStrip,path:string,value:unknown,modifiers:Modifiers)=>{
+    const targets=operationTargets(strips,strip.key,selected,modifiers);
+    if(automation?.enabled&&automation.recording&&['eq','dynamics','inserts_on'].includes(path)){
+      try {
+        const groups=await Promise.all(targets.filter(s=>!s.locked).map(async s=>{
+          const of=targetOf(s), result=await callEngine(bridge,'automation.parameters',{timeline:timeline.id,of},{expectedSession:session});
+          if(result.revision!==latest.current.revision||session!==latest.current.session)return [];
+          return result.parameters.filter(p=>p.path===path||p.path.startsWith(`${path}.`)).flatMap(p=>{
+            const parts=p.path===path?[]:p.path.slice(path.length+1).split('.');
+            if(path==='eq'&&/^\d+$/.test(parts[0]??''))parts.unshift('bands');
+            let field:any=value;for(const part of parts)field=field?.[part];
+            return typeof field==='number'||typeof field==='boolean'?[{target:{of,path:p.path},value:Number(field)}]:[];
+          });
+        }));
+        automation.instantBatch(groups.flat());
+      }catch(error){setProblem(String(error));}
+      return;
+    }
+    gesture.commit(processorChanges(timeline.id,targets.map(s=>automation?.enabled===false?{...s,arm:'off' as const}:s),path,value));
+  };
   const draw = (strip: MixerStrip) => {
     const reading = meters?.strips.find(m => 'track' in m.owner ? strip.kind === 'track' && m.owner.track === strip.id : strip.kind === 'bus' && m.owner.bus === strip.id);
-    return <ChannelStrip key={strip.key} strip={strip} compact={compact} seconds={frame * timeline.rate.den / timeline.rate.num} selected={selected.includes(strip.key)}
+    return <ChannelStrip onArm={(arm,modifiers)=>{const targets=operationTargets(strips,strip.key,selected,modifiers);gesture.commit(targets.map(s=>stripChange(timeline.id,s,{automation_arm:arm})));}} key={strip.key} strip={strip} compact={compact} seconds={frame * timeline.rate.den / timeline.rate.num} selected={selected.includes(strip.key)}
       processorContext={{ bridge, session, revision, timeline, target: targetOf(strip), selected, seconds: frame * timeline.rate.den / timeline.rate.num }}
       onProcessor={module => setProcessors(old => [...(compact ? [] : old.filter(p => p.key !== strip.key || p.module !== module)), { key: strip.key, module }])}
-      onStripSetting={(path, value, modifiers) => gesture.commit(processorChanges(timeline.id, operationTargets(strips, strip.key, selected, modifiers), path, value))}
+      onStripSetting={(path, value, modifiers) => void stripSetting(strip,path,value,modifiers)}
       value={gesture.active() ? preview[strip.key] : undefined} meters={timeline.audio?.prefader_metering ? reading?.pre : reading?.post}
       shadow={Boolean(timeline.audio?.prefader_metering && strips.some(s => s.solo) && !strip.solo && !strip.safe)}
       isActive={gesture.active} onSelect={modifiers => select(strip, modifiers)} onRename={async name => {
@@ -108,7 +130,7 @@ export function Mixer({ bridge, session, revision, timeline, frame, meters, sele
           : { edit: 'set_bus', timeline: timeline.id, id: strip.id, patch: { name } }] }, { expectedSession: session }); return true; }
         catch (error) { setProblem(error instanceof Error ? error.message : String(error)); return false; }
       }} onStart={modifiers => start(strip, modifiers)} onChange={change} onEnd={() => { plan.current = null; gesture.end(); setPreview({}); }} onCancel={cancel}
-      onCommit={(value, modifiers = {}) => { const p = faderPlan(timeline, strip.key, selected, modifiers); gesture.commit(faderChanges(timeline.id, p, value - Math.max(-100, strip.db))); }}
+      onCommit={(value, modifiers = {}) => { const p = faderPlan(timeline, strip.key, selected, modifiers, automation?.enabled??true); gesture.commit(faderChanges(timeline.id, p, value - Math.max(-100, strip.db))); }}
       onToggle={(field, modifiers) => single(strip, field, modifiers)}
       onSweep={(field, event) => {
         if (event.button !== 0 || strip.locked) return;

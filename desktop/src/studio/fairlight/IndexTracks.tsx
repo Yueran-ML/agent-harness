@@ -20,8 +20,9 @@ export function moveTracks(timeline: Timeline, ids: string[], before: string): O
   });
   return ops;
 }
-export function IndexTracks({ timeline, hidden, onHidden, onSelect, onEdit, selection, onSelection }: {
+export function IndexTracks({ timeline, hidden, onHidden, onSelect, onEdit, selection, onSelection, automation = false }: {
   timeline: Timeline; hidden: readonly string[]; onHidden: (ids: string[]) => void; onSelect: (id: string) => void; onEdit: (ops: Op[]) => void;
+  automation?: boolean;
   selection?: readonly string[]; onSelection?: (ids: string[]) => void;
 }) {
   const t = useFairlightText();
@@ -85,5 +86,5 @@ export function IndexTracks({ timeline, hidden, onHidden, onSelect, onEdit, sele
     <td>{track.kind === 'audio' && <input type="checkbox" aria-label={`ADC ${track.name}`} checked={track.adc ?? true} onChange={event => patch(track, { adc: event.target.checked })} />}</td>
     <td><button type="button" aria-label={t('Move track up').replace('{name}', track.name)} disabled={index === 0} onClick={() => onEdit([{ op: 'move_track', timeline: timeline.id, id: track.id, index: index - 1 }])}>↑</button>
       <button type="button" aria-label={t('Move track down').replace('{name}', track.name)} disabled={index === timeline.tracks.length - 1} onClick={() => onEdit([{ op: 'move_track', timeline: timeline.id, id: track.id, index: index + 1 }])}>↓</button></td>
-  </tr>)}</tbody></table></section>;
+  </tr>)}</tbody></table>{automation&&<fieldset><legend>{t('Buses')}</legend>{timeline.buses?.map(bus=><label key={bus.id}><input type="checkbox" checked={!hidden.includes(`bus:${bus.id}`)} onChange={e=>onHidden(e.target.checked?hidden.filter(id=>id!==`bus:${bus.id}`):[...hidden,`bus:${bus.id}`])}/>{bus.name}</label>)}</fieldset>}</section>;
 }

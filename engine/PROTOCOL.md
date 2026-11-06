@@ -4713,3 +4713,18 @@ validation remain separate increments. No main limiter or ducking guarantee is m
 Params that cannot be are `-32602` with `data.reason`: `missing` (`timeline`; or `what`: `clip`,
 `track` or `bus`, and `id`), `disabled` (`track`), `standard` (`standard`), `twice` (`clip`, or `target`),
 `out_of_range` (`what`: `targets`, `clips`, `range` or `target`).
+
+### Session automation playback and parameter metadata
+
+| method | params | result |
+|---|---|---|
+| `automation.playback` | `timeline`, `on: bool` | `{on}` |
+| `automation.parameters` | `timeline`, `of: {track} or {bus} or {vca}` | `{revision, of, parameters: [{path, kind, scale, value, min, max, display_min, display_max}]}` |
+
+`automation.playback` changes only the loaded timeline monitor. Disabling ends recording and bypasses track, bus and VCA automation in preview graphs, including scrubbing. Static settings remain. Project, history, export and analysis are unchanged. Loading another timeline restores playback. Desktop leaves Fairlight with recording off and playback on; F4 only selects lane views and never changes this playback switch. Replies acknowledge the requested state; a running graph swaps with the existing asynchronous graph build/crossfade mechanism.
+
+`automation.parameters` is read-only and returns the model's paths, kinds, scales, static values and validated ranges at `revision`; it never changes history. Clients discard stale owner/revision replies. IDs and paths are opaque.
+
+The catalogue keeps legal model `min/max` separate from display bounds. Unbounded negative dB values display at the shared audio silence stop (`SILENCE_DB`), while their stored values are preserved.
+
+Timeline `transport.state` includes `automation_playback` (default true), reporting the acknowledged session preview playback setting. A request to enable recording while playback is disabled is refused.

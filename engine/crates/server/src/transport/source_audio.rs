@@ -6,49 +6,20 @@ use std::sync::Arc;
 
 use columbina_audio::graph::Purpose;
 use columbina_media::AudioFormat;
-use columbina_model::{Clip, Media, Project, Rate, Time, Timeline, Track, TrackKind};
+use columbina_model::{Media, Project, Rate, Time};
 
 use crate::play::mix::Mixer;
 
 pub(super) fn project(media: &Media, rate: Rate) -> Project {
-    let mut timeline = Timeline::new("source-audio", "", rate);
     let length = super::clock::last_frame(media.facts.duration, rate).saturating_add(1);
-    for (index, row) in media
-        .audio_config
-        .iter()
-        .flatten()
-        .filter_map(columbina_model::MediaAudioTrack::active)
-        .enumerate()
-    {
-        let mut track = Track::new(format!("A{index}"), TrackKind::Audio);
-        track.audio.format = row.format;
-        track.audio.channels = u8::try_from(row.channels.len()).expect("validated channel count");
-        track.audio.order = row.order;
-        let mut clip = Clip::of_media(
-            format!("source-{index}"),
-            media.id.clone(),
-            Time {
-                ticks: 0,
-                scale: media.facts.duration.scale,
-            },
-            0,
-            length,
-        );
-        clip.channels = Some(row.channels);
-        track.clips.push(clip);
-        timeline.tracks.push(track);
-    }
-    let mut media = media.clone();
-    media.bin = None;
-    Project {
-        schema: columbina_model::project::SCHEMA,
-        next_id: 1,
-        bins: vec![],
-        media: vec![media],
-        timelines: vec![timeline],
-        groups: vec![],
-        color: columbina_model::ColorSettings::default(),
-    }
+    crate::play::mix::raw::project(
+        media,
+        rate,
+        length,
+        media.audio_config.as_deref().unwrap_or_default(),
+        None,
+    )
+    .expect("no solo channel to validate")
 }
 
 /// Renaming, source marks and proxy completion do not restart the sound.

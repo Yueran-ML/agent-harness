@@ -13,6 +13,7 @@ import { categories, categoryOfPath, laneValue, ownerKey, Pencil, pixelAtSample,
 import { useAutomationTouch, sameTarget } from './AutomationTouch';
 import { useFairlightText } from './words';
 import { parameterLabel } from './parameterLabel';
+import { PortalMenu } from '../audio/PortalMenu';
 interface Props {
   bridge: Pick<EngineBridge, 'call'>;
   session: number;
@@ -54,7 +55,7 @@ export function AutomationLane(props: Props) {
   const [selectedAt, setSelectedAt] = useState<number[]>([]), [range, setRange] = useState<[
     number,
     number
-  ] | null>(null), [preview, setPreview] = useState<Lane | null>(null), [clear, setClear] = useState(false), [pointMenu, setPointMenu] = useState<number | null>(null), [hint, setHint] = useState<string | null>(null), [temporaryPencil, setTemporaryPencil] = useState(false);
+  ] | null>(null), [preview, setPreview] = useState<Lane | null>(null), [clear, setClear] = useState(false), [pointMenu, setPointMenu] = useState<{ index: number; x: number; y: number } | null>(null), [hint, setHint] = useState<string | null>(null), [temporaryPencil, setTemporaryPencil] = useState(false);
   const svg = useRef<SVGSVGElement>(null), clip = useRef<Lane['points']>([]);
   const drag = useRef<{
     kind: 'point' | 'range' | 'line' | 'pencil';
@@ -403,17 +404,18 @@ export function AutomationLane(props: Props) {
         <button onClick={() => setClear(false)}>{t('Cancel')}</button>
       </div>}
 
-      {pointMenu !== null && <div role="menu">
-        <button onClick={() => {
-          const p = lane?.points[pointMenu];
+      {pointMenu !== null && <PortalMenu anchor={pointMenu} label={`${name} ${parameterLabel(timeline, of, path, t)}`}
+        onClose={() => setPointMenu(null)}>
+        <button type="button" role="menuitem" onClick={() => {
+          const p = lane?.points[pointMenu.index];
           if (p && !locked)
             run({ edit: 'lane_points', action: 'remove', at: [p.at] });
           setPointMenu(null);
         }}>
           {t('Delete')}
         </button>
-        <button onClick={() => setPointMenu(null)}>{t('Cancel')}</button>
-      </div>}
+        <button type="button" role="menuitem" onClick={() => setPointMenu(null)}>{t('Cancel')}</button>
+      </PortalMenu>}
     </div>
 
     {path && parameter && <svg
@@ -478,7 +480,7 @@ export function AutomationLane(props: Props) {
           e.preventDefault();
           e.stopPropagation();
           if (!locked)
-            setPointMenu(i);
+            setPointMenu({ index: i, x: e.clientX, y: e.clientY });
         }}
       />)}
 

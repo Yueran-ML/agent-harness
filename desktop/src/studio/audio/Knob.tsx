@@ -2,6 +2,7 @@ import { useAutomationTouch } from '../fairlight/AutomationTouch';
 import { ownerOf } from '../fairlight/automation';
 import { useEffect, useRef, useState } from 'react';
 import { clamp } from './taper';
+import { PortalMenu } from './PortalMenu';
 import { useFairlightText } from '../fairlight/words';
 export interface KnobProps {
   /** Existing model automation path; the panel supplies the owner separately. */
@@ -24,7 +25,8 @@ export interface KnobProps {
 }
 /** Numeric Alt/Shift is precision, never a batch-target modifier. One wheel burst is one gesture. */
 export function Knob(props: KnobProps) {
-  const t = useFairlightText(), automation = useAutomationTouch(), [menu, setMenu] = useState(false);
+  const t = useFairlightText(), automation = useAutomationTouch();
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const { label, value, min, max, fallback, disabled, onStart, onChange, onEnd, onCancel, onCommit, step = .1 } = props;
   const now = useRef(props);
   now.current = props;
@@ -104,7 +106,7 @@ export function Knob(props: KnobProps) {
       if (automation && props.path && key && !key.startsWith('clip:')) {
         event.preventDefault();
         event.stopPropagation();
-        setMenu(true);
+        setMenu({ x: event.clientX, y: event.clientY });
       }
     }}
     onKeyDown={event => {
@@ -116,17 +118,17 @@ export function Knob(props: KnobProps) {
     }}
   >
 
-    {menu && <span role="menu">
-      <button type="button" onClick={() => {
+    {menu && <PortalMenu anchor={menu} label={label} onClose={() => setMenu(null)}>
+      <button type="button" role="menuitem" onClick={() => {
         const key = cap.current?.closest<HTMLElement>('[data-audio-owner]')?.dataset.audioOwner;
         if (key && props.path)
           automation?.show({ of: ownerOf(key), path: props.path });
-        setMenu(false);
+        setMenu(null);
       }}>
         {t('Show automation in timeline')}
       </button>
-      <button type="button" onClick={() => setMenu(false)}>{t('Cancel')}</button>
-    </span>}
+      <button type="button" role="menuitem" onClick={() => setMenu(null)}>{t('Cancel')}</button>
+    </PortalMenu>}
 
     <span onDoubleClick={event => {
       event.preventDefault();

@@ -21,6 +21,7 @@ import { useVcaGain } from './VcaStrip';
 import { GroupLabel } from './TrackGroups';
 
 import { InsertSlots } from './InsertSlots';
+import { PortalMenu } from '../audio/PortalMenu';
 import { DuckerPanel } from '../audio/DuckerPanel';
 import { StripCopy } from '../audio/StripCopy';
 
@@ -48,7 +49,7 @@ export function ChannelStrip({ strip, seconds, value, selected, meters, prefader
   const t = useFairlightText(); const [renaming, setRenaming] = useState(false), [pathOpen, setPathOpen] = useState<{ x: number; y: number } | null>(null);
   const automation=useAutomationTouch(); const of={ [strip.kind]:strip.id } as LanesOf; const target={of,path:'fader_db'};
   const recording=Boolean(automation?.enabled&&automation.recording), trim=Boolean(recording&&automation?.trim&&strip.arm!=='safe'&&strip.arm!=='off'&&(strip.arm===true||processorContext.timeline.audio?.record?.touch!=='off'));
-  const [menu,setMenu]=useState<'arm'|'fader'|null>(null);
+  const [menu, setMenu] = useState<{ kind: 'arm' | 'fader'; x: number; y: number } | null>(null);
   const [sendsOpen, setSendsOpen] = useState(false);
   const reading = faderReading(strip, seconds, automation?.enabled??true), model = strip.strip;
   const inheritedGain = useVcaGain(processorContext.timeline, model?.vcas ?? [], seconds);
@@ -90,16 +91,25 @@ export function ChannelStrip({ strip, seconds, value, selected, meters, prefader
     {duckerOpen && createPortal(<aside role="dialog" aria-label={`${t('Ducker')} ${strip.name}`} className="processor-window" style={{ left: 100, top: 100 }}><button type="button" aria-label={t('Close processor')} onClick={() => setDuckerOpen(false)}>×</button><DuckerPanel {...processorContext} /></aside>, document.body)}
     {renaming ? <NameField name={strip.name} onCancel={() => setRenaming(false)} onCommit={onRename} />
       : <button type="button" className="mixer-name" draggable onDragStart={event => event.dataTransfer.setData('application/x-columbina-mixer-order', JSON.stringify(selectedKeys.includes(strip.key) ? selectedKeys : [strip.key]))} onClick={event => onSelect(event)} onDoubleClick={() => { if (!strip.locked) setRenaming(true); }}>{strip.name}</button>}
-    {automation?.enabled&&<div className="mixer-arm"><button disabled={strip.locked} aria-pressed={strip.arm===true} onClick={e=>onArm?.(strip.arm!==true,e)} onContextMenu={e=>{e.preventDefault();setMenu('arm');}}>{t('Arm')}</button>
-      {menu==='arm'&&<div role="menu">{(['safe','off'] as const).map(arm=><button key={arm} onClick={e=>{onArm?.(arm,e);setMenu(null);}}>{t(arm==='safe'?'Safe':'Bypass')}</button>)}<button onClick={()=>setMenu(null)}>{t('Cancel')}</button></div>}</div>}
+    {automation?.enabled&&<div className="mixer-arm"><button disabled={strip.locked} aria-pressed={strip.arm===true} onClick={e=>onArm?.(strip.arm!==true,e)} onContextMenu={e=>{e.preventDefault();setMenu({ kind: 'arm', x: e.clientX, y: e.clientY });}}>{t('Arm')}</button>
+      {menu?.kind === 'arm' && <PortalMenu anchor={menu} label={`${t('Arm')} ${strip.name}`} onClose={() => setMenu(null)}>
+        {(['safe', 'off'] as const).map(arm => <button key={arm} type="button" role="menuitem"
+          onClick={e => { onArm?.(arm, e); setMenu(null); }}>{t(arm === 'safe' ? 'Safe' : 'Bypass')}</button>)}
+        <button type="button" role="menuitem" onClick={() => setMenu(null)}>{t('Cancel')}</button>
+      </PortalMenu>}</div>}
     <div className="mixer-switches">{(['solo', 'mute'] as const).map(field => <button key={field} type="button" disabled={strip.locked}
       aria-label={`${t(field)} ${strip.name}`} aria-pressed={field==='mute'?muted:strip[field]} data-safe={field === 'solo' && strip.safe || undefined}
       title={field === 'solo' ? `${t('Solo Safe')}: Ctrl+Shift` : t('mute')}
       onPointerDown={event => {if(field==='mute'&&recording){event.preventDefault();instantMute();}else onSweep(field === 'solo' && event.ctrlKey && event.shiftKey ? 'solo_safe' : field, event);}}
       onPointerEnter={event => {if(!recording)onEnter(field, event);}}
       onClick={event => { if(event.detail===0&&field==='mute'&&recording){instantMute();return;} if (event.detail === 0) onToggle(field === 'solo' && event.ctrlKey && event.shiftKey ? 'solo_safe' : field, event); }}>{field === 'solo' ? strip.safe ? 'S·' : 'S' : 'M'}</button>)}</div>
-    <div className="mixer-fader-meter" onContextMenu={event=>{if(automation){event.preventDefault();setMenu('fader');}}}>
-      {menu==='fader'&&<div role="menu"><button onClick={()=>{automation?.show(target);setMenu(null);}}>{t('Show automation in timeline')}</button><button onClick={()=>setMenu(null)}>{t('Cancel')}</button></div>}
+    <div className="mixer-fader-meter" onContextMenu={event => {
+      if (automation) { event.preventDefault(); setMenu({ kind: 'fader', x: event.clientX, y: event.clientY }); }
+    }}>
+      {menu?.kind === 'fader' && <PortalMenu anchor={menu} label={`${t('Fader')} ${strip.name}`} onClose={() => setMenu(null)}>
+        <button type="button" role="menuitem" onClick={() => { automation?.show(target); setMenu(null); }}>{t('Show automation in timeline')}</button>
+        <button type="button" role="menuitem" onClick={() => setMenu(null)}>{t('Cancel')}</button>
+      </PortalMenu>}
       <Fader label={`${t('Fader')} ${strip.name}`} valueLabel={`${t('Fader value')} ${strip.name}`} value={faderValue} displayOffset={trim ? 0 : inheritedGain}
         disabled={strip.locked} readOnly={reading.automated&&!recording} hasLane={reading.hasLane} onStart={m=>recording?automation!.start(target,faderValue):onStart(m)}
         onChange={v=>{if(recording)automation!.changeBatch([{target,value:v}]);else onChange(v);}}

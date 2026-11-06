@@ -332,3 +332,24 @@ async def test_track_fader_within_tolerance_is_idempotent(mode: str) -> None:
     assert all(row["gain_db"] == 0 for row in result["results"])
     wire.apply.assert_not_awaited()
     wire.analyze_sound.assert_awaited_once()
+
+
+async def test_track_fader_keeps_silent_lane_points_silent() -> None:
+    project = mix()
+    lane: dict[str, Any] = {
+        "kind": "continuous",
+        "scale": "linear",
+        "points": [
+            {"at": {"ticks": 0, "scale": 48000}, "value": -100},
+            {"at": {"ticks": 48000, "scale": 48000}, "value": -8},
+            {"at": {"ticks": 96000, "scale": 48000}, "value": -120},
+        ],
+    }
+    project["timelines"][0]["tracks"][0]["lanes"] = {"fader_db": lane}
+    wire = engine(
+        project, [measured({"track": "A1"}, -20, -12), measured({"track": "A1"}, -14, -6)]
+    )
+    result = await Loudness(wire, Path).run(action="apply", target="track_fader", ids=["A1"])
+    points = result["ops"][0]["lane"]["points"]
+    assert [point["value"] for point in points] == [-100, -2, -120]
+    assert result["results"][0]["clamped"] is False

@@ -36,6 +36,9 @@ mod clipboard;
 #[path = "rpc/media_audio.rs"]
 mod media_audio;
 
+#[path = "rpc/mixed_waveforms.rs"]
+mod mixed_waveforms;
+
 #[path = "rpc/luts.rs"]
 mod luts;
 

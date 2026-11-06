@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use columbina_media::{AudioDecoder, Converter, Hardware, MediaError, Rgba, VideoDecoder};
-use columbina_model::{Media, Time};
+use columbina_model::{ChannelSource, Media, Time};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::Semaphore;
@@ -25,6 +25,9 @@ const RATE: u32 = 100;
 // bounds allocations when a hand-written project gives a source an implausible duration.
 const MAX_PEAK_BYTES: usize = (rpc::MAX_LINE - 1024) / 4 * 3;
 const WAVE_MAGIC: &[u8] = b"CWAV1";
+
+#[cfg(test)]
+mod mix_tests;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -42,10 +45,13 @@ pub struct WaveformRequest {
     /// channels as the stream has them; none for the sound of the media, its best stream.
     #[serde(default)]
     pub stream: Option<usize>,
+    /// One output channel: the sample-wise mean of these native source channels.
+    #[serde(default)]
+    pub mix: Option<Vec<ChannelSource>>,
 }
 
 /// Told that the waveform of a media, or of one of its streams of sound, is done.
-pub type Notify = Box<dyn Fn(&Media, Option<usize>) + Send + Sync>;
+pub type Notify = Box<dyn Fn(&Media, Option<usize>, Option<&[ChannelSource]>) + Send + Sync>;
 
 pub struct Analysis(Arc<Shared>);
 
@@ -82,6 +88,7 @@ pub struct WaveJob {
     shared: Arc<Shared>,
     media: Media,
     stream: Option<usize>,
+    mix: Option<Vec<ChannelSource>>,
     key: String,
     /// The size of the waveform; none for a stream whose file could not be opened, which the
     /// job opens again, to make its waveform or to say why it cannot.
@@ -151,12 +158,32 @@ impl Analysis {
         &self,
         media: Media,
         stream: Option<usize>,
+        mix: Option<Vec<ChannelSource>>,
     ) -> Result<(Value, Option<WaveJob>), Fault> {
+        if mix
+            .as_ref()
+            .is_some_and(|sources| sources.is_empty() || stream.is_some())
+        {
+            return Err(Fault::params(
+                "mix must contain source channels and cannot be combined with stream",
+            ));
+        }
         let shared = Arc::clone(&self.0);
         tokio::task::spawn_blocking(move || {
-            let key = match stream {
-                None => format!("{}.bin", stem(&media)),
-                Some(stream) => format!("{}-s{stream}.bin", stem(&media)),
+            let key = match &mix {
+                Some(sources) => format!(
+                    "{}-mix-{}.bin",
+                    stem(&media),
+                    sources
+                        .iter()
+                        .map(|source| format!("{}.{}", source.stream, source.channel))
+                        .collect::<Vec<_>>()
+                        .join("-")
+                ),
+                None => match stream {
+                    None => format!("{}.bin", stem(&media)),
+                    Some(stream) => format!("{}-s{stream}.bin", stem(&media)),
+                },
             };
             let cache = cache_path(&shared.project, "waveforms", &key);
             let audio =
@@ -164,7 +191,10 @@ impl Analysis {
                     cannot_read(&media.path, "no_audio", "the media has no sound")
                 })?;
             let spec = match stream {
-                None => Some(WaveSpec::new(&media, audio.channels)?),
+                None => Some(WaveSpec::new(
+                    &media,
+                    if mix.is_some() { 1 } else { audio.channels },
+                )?),
                 Some(stream) => {
                     // The cache first, by the channels that its header says, so that the file
                     // is not opened for a waveform made before (nor needed: it may be offline).
@@ -197,6 +227,7 @@ impl Analysis {
                 shared,
                 media,
                 stream,
+                mix,
                 key,
                 spec,
             });
@@ -215,12 +246,15 @@ impl WaveJob {
             };
             let _ = tokio::task::spawn_blocking(move || {
                 let _permit = permit;
-                let result = make_wave(
-                    &self.media,
-                    self.stream,
-                    self.spec.as_ref(),
-                    &self.shared.stopped,
-                );
+                let result = match &self.mix {
+                    Some(sources) => make_mix(&self.media, sources, &self.shared.stopped),
+                    None => make_wave(
+                        &self.media,
+                        self.stream,
+                        self.spec.as_ref(),
+                        &self.shared.stopped,
+                    ),
+                };
                 let saved = result.as_ref().is_ok_and(|wave| {
                     cache_path(&self.shared.project, "waveforms", &self.key).is_some_and(|path| {
                         let mut bytes = Vec::with_capacity(WAVE_MAGIC.len() + 2 + wave.peaks.len());
@@ -244,7 +278,7 @@ impl WaveJob {
                 }
                 drop(jobs);
                 if !self.shared.stopped.load(Ordering::Acquire) {
-                    (self.shared.notify)(&self.media, self.stream);
+                    (self.shared.notify)(&self.media, self.stream, self.mix.as_deref());
                 }
             })
             .await;
@@ -535,6 +569,57 @@ fn make_wave(
         })
     };
     read(decoder).map_err(cannot)
+}
+
+/// Mix actual samples before reducing them: peaks cannot recover phase cancellation.
+/// The playback reader keeps bounded PCM windows and aligns all streams to the video origin.
+fn make_mix(media: &Media, sources: &[ChannelSource], stopped: &AtomicBool) -> Result<Wave, Fault> {
+    use crate::play::mix::reader::{Lane, Layout, Pick, Reader};
+    let cannot = |message: &str| cannot_read(&media.path, "decode", message);
+    let sounds = columbina_media::sounds(Path::new(&media.path))
+        .map_err(|error| cannot_read(&media.path, error.reason(), &error.to_string()))?;
+    let mut rate = 0;
+    let mut picks = Vec::with_capacity(sources.len());
+    for source in sources {
+        let sound = sounds
+            .streams
+            .iter()
+            .find(|sound| {
+                u32::try_from(sound.index) == Ok(source.stream)
+                    && source.channel < u32::from(sound.channels)
+            })
+            .ok_or_else(|| Fault::params("mix names a channel absent from the source"))?;
+        rate = rate.max(sound.rate);
+        picks.push(Pick {
+            stream: sound.index,
+            channel: u16::try_from(source.channel).expect("checked channel"),
+        });
+    }
+    if rate == 0 {
+        return Err(cannot("the mix has no sample rate"));
+    }
+    let spec = WaveSpec::new(media, 1)?;
+    let mut peaks = Peaks::new(&spec, rate);
+    let mut reader = Reader::new(
+        media,
+        rate,
+        &Layout::Mapped(vec![Lane::mean(picks, true, false, 0.0)]),
+    )
+    .map_err(|message| cannot(&message))?;
+    while peaks.next < peaks.frames {
+        if stopped.load(Ordering::Acquire) {
+            return Err(cannot("analysis cancelled"));
+        }
+        let from = i64::try_from(peaks.next).map_err(|_| cannot("mix exceeds sample time"))?;
+        let to = i64::try_from((peaks.next + 4096).min(peaks.frames))
+            .map_err(|_| cannot("mix exceeds sample time"))?;
+        let samples = reader.read(from..to).map_err(|message| cannot(&message))?;
+        peaks.add(i128::from(from), &samples);
+    }
+    Ok(Wave {
+        channels: 1,
+        peaks: peaks.finish(),
+    })
 }
 
 /// Reduce every native sample, without downsampling away narrow peaks. Missing samples are

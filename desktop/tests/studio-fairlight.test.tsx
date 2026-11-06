@@ -214,8 +214,9 @@ it('requests an explicit non-default stream and never draws an unrelated wavefor
   render(<ChannelLanes clip={sound} track={song().tracks[1]} media={{ ...media, facts: { ...media.facts, audio: { ...media.facts.audio!, streams: [{ index: 3, channels: 2, layout: 'stereo' }] } } }} rate={{ num: 25, den: 1 }} scale={4} from={0} to={100} waves={waves} gain={1} />);
   await settle();
   expect(bridge.call).toHaveBeenCalledWith('media.waveform', { media: 'm1', stream: 3 }, { expectedSession: 1 });
-  expect(bridge.call).toHaveBeenCalledTimes(1);
-  expect(screen.getByText('Mixed waveform unavailable')).toBeDefined();
+  expect(bridge.call).toHaveBeenCalledTimes(2);
+  expect(bridge.call).toHaveBeenCalledWith('media.waveform', { media: 'm1', mix: [{ stream: 1, channel: 0 }, { stream: 3, channel: 1 }] }, { expectedSession: 1 });
+  expect(screen.queryByText('Mixed waveform unavailable')).toBeNull();
   expect(document.querySelector('[data-channel="1"] svg')).toBeNull(); waves.disconnect();
 });
 

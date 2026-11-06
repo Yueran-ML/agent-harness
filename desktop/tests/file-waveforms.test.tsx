@@ -22,7 +22,7 @@ function wire() {
   const off = vi.fn();
   const onEvent: EngineBridge['onEvent'] = listener => { listeners.add(listener); return () => { listeners.delete(listener); off(); }; };
   const call = vi.fn<EngineBridge['call']>(async (_method, params: any) => {
-    const channels = params.stream === 3 ? 1 : 2;
+    const channels = params.mix || params.stream === 3 ? 1 : 2;
     return { ok: true, result: { rate: 10, channels, peaks: btoa(String.fromCharCode(...Array.from({ length: 50 * channels * 2 }, (_, i) => i % 2 ? 64 : 192))) } };
   });
   return { call, onEvent, listeners, off };
@@ -45,16 +45,21 @@ it('draws mapped native streams, shares their cache, scales channel trim and rel
   expect(bridge.off).toHaveBeenCalledOnce();
 });
 
-it('does not fetch silent, disabled or mixed channels or fabricate mixed peaks', async () => {
+it('fetches mixed PCM peaks separately and does not fetch silent or disabled channels', async () => {
   const bridge = wire();
   const value = mapped();
   value.channels![0].mute = true;
   value.channels![1].source = [{ stream: 1, channel: 0 }, { stream: 1, channel: 1 }];
   const view = render(<FileWaveforms bridge={bridge} session={1} clip={value} track={track} media={source} timeline={timeline([])} selected={[]} onSelect={() => {}} />);
   await settle();
-  expect(bridge.call).not.toHaveBeenCalled();
-  expect(screen.getByText('Mixed waveform unavailable')).toBeTruthy();
-  expect(view.container.querySelectorAll('svg')).toHaveLength(0);
+  expect(bridge.call).toHaveBeenCalledExactlyOnceWith('media.waveform', { media: media.id, mix: [{ stream: 1, channel: 0 }, { stream: 1, channel: 1 }] }, { expectedSession: 1 });
+  expect(screen.queryByText('Mixed waveform unavailable')).toBeNull();
+  expect(view.container.querySelectorAll('svg')).toHaveLength(1);
+  const quieter = { ...value, channels: value.channels!.map(channel => ({ ...channel, level_db: -12 })) };
+  view.rerender(<FileWaveforms bridge={bridge} session={1} clip={quieter} track={track} media={source} timeline={timeline([])} selected={[]} onSelect={() => {}} />);
+  await settle();
+  expect(bridge.call).toHaveBeenCalledTimes(1);
+  expect(view.container.querySelector('path')?.getAttribute('transform')).toContain(`scale(1,${10 ** (-12 / 20)})`);
   expect(channelWaveform({ ...value, channels: [{ source: null }, { source: { stream: 3, channel: 0 }, enabled: false }] }, track, source, 1).silent).toBe(true);
   expect(channelWaveform(clip('auto'), { ...track, format: 'mono' }, source, 0).unavailable).toBe('Remixed waveform unavailable');
 });

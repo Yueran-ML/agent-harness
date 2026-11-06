@@ -1161,7 +1161,7 @@ export interface EngineNotifications {
   'engine.yielding': { to: 'desktop' };
   'media.proxy': ProxyEvent;
   /** The waveform of media, or of one of its streams, is made: ask for it again. */
-  'media.waveform': { media: string; stream?: number };
+  'media.waveform': { media: string; stream?: number; mix?: ChannelSource[] };
   'render.progress': RenderProgress;
   'scopes.frame': ScopeFrame;
   'gallery.changed': Record<string, never>;

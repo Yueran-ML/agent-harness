@@ -2,7 +2,7 @@
 //! (plan T4b), built from the project and fed by the media readers of its clips ([`Feed`]). The
 //! mix stays in 32-bit floats to the device; only the copy for the device is clipped.
 
-mod reader;
+pub(crate) mod reader;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;

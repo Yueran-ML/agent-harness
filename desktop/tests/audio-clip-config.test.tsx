@@ -22,6 +22,7 @@ function setup(fairlight = false, clips = [clip('sound')], locked = false) {
   let publish: (value: { project: Project; revision: number }) => void;
   const bridge = { onEvent: vi.fn(() => () => {}), call: async (method: string, params: any, context: any) => {
     requests.push({ method, params, context });
+    if (method === 'media.waveform') return { ok: true, result: { pending: true } };
     if (method === 'audio.eq_response') return { ok: true, result: { revision, sample_rate: 48000, frequencies: params.frequencies, gain_db: params.frequencies.map(() => 0) } };
     if (method === 'transaction.apply') {
       before.push(project);
@@ -183,8 +184,10 @@ it.each([false, true])('shows the last selected clip rather than the last clip o
     clip('b', 100, 100, { channels: [{ source: null }, { source: null }] }),
   ]);
   fireEvent.click(screen.getByRole('tab', { name: 'File' })); await settle();
-  expect(screen.queryByText('Mixed waveform unavailable')).toBeNull();
+  expect(s.requests.filter(request => request.method === 'media.waveform')).toHaveLength(0);
   s.selection(['b', 'a']); await settle();
-  expect(screen.getByText('Mixed waveform unavailable')).toBeTruthy();
+  expect(s.requests.filter(request => request.method === 'media.waveform')).toMatchObject([
+    { params: { media: 'm1', mix: [{ stream: 1, channel: 0 }, { stream: 1, channel: 1 }] } },
+  ]);
   expect(s.writes()).toHaveLength(0);
 });

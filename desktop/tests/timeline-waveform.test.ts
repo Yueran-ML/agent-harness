@@ -79,4 +79,25 @@ describe('timeline audio waveforms', () => {
     expect(call).toHaveBeenCalledTimes(41);
     cache.disconnect();
   });
+
+  it('keys mixed requests and notifications by the exact sources without colliding with native peaks', async () => {
+    let notify!: (event: EngineEvent) => void;
+    const call = vi.fn().mockResolvedValue({ ok: true, result: { pending: true } });
+    const cache = new Waveforms({ call, onEvent: listener => { notify = listener; return () => {}; } } as Pick<EngineBridge, 'call' | 'onEvent'>, 1);
+    const a = [{ stream: 1, channel: 0 }, { stream: 3, channel: 0 }];
+    const b = [{ stream: 1, channel: 1 }, { stream: 3, channel: 0 }];
+    cache.connect();
+    cache.subscribe('m1', () => {});
+    cache.subscribe('m1', () => {}, undefined, a);
+    cache.subscribe('m1', () => {}, undefined, a.map(source => ({ ...source })));
+    cache.subscribe('m1', () => {}, undefined, b);
+    await settle();
+    expect(call).toHaveBeenCalledTimes(3);
+    notify({ kind: 'notification', session: 1, method: 'media.waveform', params: { media: 'm1', mix: b } });
+    await settle();
+    expect(call).toHaveBeenCalledTimes(4);
+    expect(call.mock.calls[3][1]).toEqual({ media: 'm1', mix: b });
+    expect(cache.get('m1', undefined, a)).not.toBe(cache.get('m1', undefined, b));
+    cache.disconnect();
+  });
 });

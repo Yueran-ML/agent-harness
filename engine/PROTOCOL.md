@@ -224,7 +224,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `media.inspect` | `{"paths": ["<file>", ...]}` | `{"media": [media, ...]}` (empty ids; no project change) |
 | `media.make_proxy` | `{"media": "m1"}` | `{}` (see Proxies) |
 | `media.thumbnail` | `{"media": "m1", "frame": 50, "height": 90}` (`frame` optional) | `{"width": 160, "height": 90, "png": "<base64>"}` |
-| `media.waveform` | `{"media": "m1", "stream"?: 1}` | `{"rate": 100, "channels": 2, "peaks": "<base64>"}`, or `{"pending": true}` |
+| `media.waveform` | `{"media": "m1", "stream"?: 1}`, or `{"media":"m1","mix":[{"stream":1,"channel":0},{"stream":1,"channel":1}]}` | `{"rate": 100, "channels": 2, "peaks": "<base64>"}`, or `{"pending": true}`; `mix` returns 1 channel |
 | `view.attach` | `{"monitor":"source" \| "timeline", "parent": "<handle>", "x": x, "y": y, "width": w, "height": h}` | `{"adapter": "<name>", "backend": "Dx12", "compiler": "dxc" \| "fxc" \| "auto" \| null}` |
 | `view.place` | `{"monitor":"source" \| "timeline", "x": x, "y": y, "width": w, "height": h}` | `{}` |
 | `view.viewport` | `{"monitor": m}` to query; `{"monitor": m, "mode": "fit"}` or `{"monitor": m, "mode": "scale", "scale": 1.0, "center": {"x": 0.5, "y": 0.5}}` to set | The requested setting: `{"monitor", "mode"}` or `{"monitor", "mode", "scale", "center"}` |
@@ -477,10 +477,19 @@ cannot be opened or decoded is `-32002`, with `path`, `reason` and `message` as 
   The cache of a stream's waveform is read first, by the channels that its header says, without
   opening the file; a file that cannot be opened and has no cache is answered as for the sound
   of the media: pending, then the notification, then the error.
+- **Mixed source channels.** `mix:[{"stream":1,"channel":0},{"stream":2,"channel":0}]`
+  requests one channel containing the sample-wise arithmetic mean of those native channels,
+  before peak extraction and quantization. It is mutually exclusive with `stream`; an empty
+  list or an absent source channel is refused with `-32602`. The decoder uses the highest
+  sample rate among the selected streams and the same origin alignment and bounded PCM reader
+  as playback. These peaks include phase cancellation; they are not a sum of channel peaks.
+  Channel level and mute are applied by the display separately, so adjusting level does not
+  require another analysis. The exact ordered source list distinguishes both the job and cache;
+  cache names append `-mix-<stream>.<channel>-...` to the existing media identity stem.
 - **Background work.** An uncached waveform returns `{"pending":true}` and runs on a separate
   single-worker queue, leaving the thumbnail queue available. Repeated requests for the same
   pending source share the job. Completion sends `media.waveform` with `{"media":"m1"}` (and
-  the `stream` asked for, if one was) to all clients that said hello, provided the same source is still in the project. Query again
+  the `stream` or `mix` asked for, if one was) to all clients that said hello, provided the same source is still in the project. Query again
   after this notification to receive the data or a decode error; the notification does not
   assert success. An error is consumed by the next query, and a further query can retry (for
   example after an offline file is restored). Shutdown cancels queued jobs and stops decoding
@@ -4299,7 +4308,7 @@ real ids. For example:
 | `transport.state` | the state of the transport (see The transport) |
 | `engine.yielding` | `{"to": "desktop"}`: the engine is about to end, to yield the project to the desktop's engine (see `engine.yield`) |
 | `media.proxy` | `{"media": "m1", "state": "queued" \| "running" \| "done" \| "failed", "progress": 0.5, "message"?: "..."}` (see Proxies) |
-| `media.waveform` | `{"media": "m1"}`, or `{"media": "m1", "stream": 1}` for the waveform of a stream (background analysis finished; query again for data or error) |
+| `media.waveform` | `{"media": "m1"}`, with the requested `stream` or exact `mix` array when present (background analysis finished; query again for data or error) |
 | `render.progress` | `{"job", "state": "running" \| "done" \| "failed" \| "cancelled", "frame", "frames", "fps", "path", "encoder"?, "message"?, "missing_luts"?, "measuring"?, "normalization"?}` (see Rendering a timeline, Grades in the picture, and The sound of an export) |
 | `scopes.frame` | `{"scope_id": "scope-1", "view": "timeline", "frame": n, "width": w, "height": h, "rgba": "<base64>"}`: a picture of a scope, to the connection that subscribed it only (see Scopes) |
 | `gallery.changed` | `{}`: the Gallery was changed; call `gallery.list` again (see The Gallery) |

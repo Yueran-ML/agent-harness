@@ -1,5 +1,5 @@
 import type { EngineBridge } from '../../bridge';
-import { callEngine, type Clip, type Rate } from '../engine';
+import { callEngine, type ChannelSource, type Clip, type Rate } from '../engine';
 
 /** Min/max pyramid: zoomed-out pixels retain peaks without scanning the whole source on every scroll. */
 export class PeakData {
@@ -64,8 +64,8 @@ export function sourceInterval(clip: Clip, rate: Rate, from: number, to: number)
 }
 
 export type WaveState = { state: 'loading' | 'pending' } | { state: 'ready'; data: PeakData } | { state: 'failed'; message: string };
-interface Entry { media: string; stream?: number; value: WaveState; listeners: Set<() => void>; running: boolean; again: boolean }
-const waveformKey = (media: string, stream?: number) => `${media}/${stream ?? 'default'}`;
+interface Entry { media: string; stream?: number; mix?: ChannelSource[]; value: WaveState; listeners: Set<() => void>; running: boolean; again: boolean }
+const waveformKey = (media: string, stream?: number, mix?: readonly ChannelSource[]) => JSON.stringify([media, stream ?? null, mix?.map(source => [source.stream, source.channel]) ?? null]);
 
 /** One cache per project session. Completion notifications can precede the pending response. */
 export class Waveforms {
@@ -79,8 +79,8 @@ export class Waveforms {
     this.active = true;
     this.off = this.bridge.onEvent(event => {
       if (event.kind !== 'notification' || event.session !== this.session || event.method !== 'media.waveform') return;
-      const { media: id, stream } = event.params as { media?: string; stream?: number };
-      const entry = id ? this.entries.get(waveformKey(id, stream)) : null;
+      const { media: id, stream, mix } = event.params as { media?: string; stream?: number; mix?: ChannelSource[] };
+      const entry = id ? this.entries.get(waveformKey(id, stream, mix)) : null;
       if (!id || !entry) return;
       if (entry.running) entry.again = true;
       else this.fetch(entry);
@@ -91,15 +91,15 @@ export class Waveforms {
     this.off?.(); this.off = null; this.active = false; this.epoch++;
     for (const entry of this.entries.values()) entry.running = false;
   }
-  private entry(id: string, stream?: number): Entry {
-    const key = waveformKey(id, stream);
+  private entry(id: string, stream?: number, mix?: readonly ChannelSource[]): Entry {
+    const key = waveformKey(id, stream, mix);
     let entry = this.entries.get(key);
-    if (!entry) { entry = { media: id, stream, value: { state: 'loading' }, listeners: new Set(), running: false, again: false }; this.entries.set(key, entry); }
+    if (!entry) { entry = { media: id, stream, ...(mix ? { mix: mix.map(source => ({ ...source })) } : {}), value: { state: 'loading' }, listeners: new Set(), running: false, again: false }; this.entries.set(key, entry); }
     return entry;
   }
-  get(id: string, stream?: number): WaveState { return this.entry(id, stream).value; }
-  subscribe(id: string, listener: () => void, stream?: number): () => void {
-    const entry = this.entry(id, stream);
+  get(id: string, stream?: number, mix?: readonly ChannelSource[]): WaveState { return this.entry(id, stream, mix).value; }
+  subscribe(id: string, listener: () => void, stream?: number, mix?: readonly ChannelSource[]): () => void {
+    const entry = this.entry(id, stream, mix);
     entry.listeners.add(listener);
     if (entry.value.state === 'loading' || entry.value.state === 'failed') this.fetch(entry);
     return () => {
@@ -123,7 +123,7 @@ export class Waveforms {
     entry.running = true;
     entry.again = false;
     const epoch = this.epoch;
-    void callEngine(this.bridge, 'media.waveform', { media: entry.media, ...(entry.stream === undefined ? {} : { stream: entry.stream }) }, { expectedSession: this.session }).then(answer => {
+    void callEngine(this.bridge, 'media.waveform', { media: entry.media, ...(entry.stream === undefined ? {} : { stream: entry.stream }), ...(entry.mix ? { mix: entry.mix } : {}) }, { expectedSession: this.session }).then(answer => {
       if (epoch !== this.epoch) return;
       entry.value = 'pending' in answer ? { state: 'pending' } : { state: 'ready', data: new PeakData(answer.rate, answer.channels, answer.peaks) };
     }).catch(error => {

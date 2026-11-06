@@ -295,8 +295,8 @@ impl Engine {
             Path::new(&project),
             Box::new({
                 let state = Arc::clone(&state);
-                move |media: &Media, stream: Option<usize>| {
-                    tell_waveform(&state, media, stream, limits);
+                move |media: &Media, stream: Option<usize>, mix| {
+                    tell_waveform(&state, media, stream, mix, limits);
                 }
             }),
         );
@@ -542,7 +542,13 @@ fn tell_proxy(state: &Mutex<State>, note: &Note, limits: Limits) {
 
 /// Analysis finishes on a blocking worker. A source removed or replaced meanwhile is not
 /// announced as ready for a different media snapshot.
-fn tell_waveform(state: &Mutex<State>, media: &Media, stream: Option<usize>, limits: Limits) {
+fn tell_waveform(
+    state: &Mutex<State>,
+    media: &Media,
+    stream: Option<usize>,
+    mix: Option<&[columbina_model::ChannelSource]>,
+    limits: Limits,
+) {
     let mut state = state.blocking_lock();
     if !state
         .history
@@ -553,10 +559,13 @@ fn tell_waveform(state: &Mutex<State>, media: &Media, stream: Option<usize>, lim
     {
         return;
     }
-    let params = match stream {
+    let mut params = match stream {
         None => json!({"media":media.id}),
         Some(stream) => json!({"media":media.id, "stream":stream}),
     };
+    if let Some(mix) = mix {
+        params["mix"] = json!(mix);
+    }
     state.broadcast(&rpc::notification_line("media.waveform", &params));
     let kicked = std::mem::take(&mut state.kicked);
     drop(state);
@@ -2180,13 +2189,13 @@ async fn media_analysis(
     method: &str,
     params: Option<&RawValue>,
 ) -> Result<Reply, Reply> {
-    let (media_id, thumbnail, stream) = if method == "media.thumbnail" {
+    let (media_id, thumbnail, stream, mix) = if method == "media.thumbnail" {
         let request: ThumbnailRequest =
             rpc::params(method, r#"{"media":"m1","height":90}"#, params)?;
-        (request.media.clone(), Some(request), None)
+        (request.media.clone(), Some(request), None, None)
     } else {
         let request: WaveformRequest = rpc::params(method, r#"{"media":"m1"}"#, params)?;
-        (request.media, None, request.stream)
+        (request.media, None, request.stream, request.mix)
     };
     let media = {
         let state = engine.state.lock().await;
@@ -2204,7 +2213,7 @@ async fn media_analysis(
     };
     let (result, job) = match thumbnail {
         Some(request) => (engine.analysis.thumbnail(media, request).await?, None),
-        None => engine.analysis.waveform(media, stream).await?,
+        None => engine.analysis.waveform(media, stream, mix).await?,
     };
     let reply = match connection.queue(rpc::result_line(id, &result)) {
         Ok(()) => Reply::Queued,

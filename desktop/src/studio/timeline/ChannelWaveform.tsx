@@ -10,15 +10,15 @@ export function channelWaveform(clip: Clip, track: Track, media: Media | undefin
   const count = track.kind !== 'audio' ? 0 : track.format === 'mono' ? 1 : track.format === '5.1' ? 6 : track.format === 'adaptive' ? track.channels ?? 1 : 2;
   const remixed = automatic && (media?.facts.audio?.channels !== count
     || track.kind === 'audio' && track.format === '5.1' && track.order === 'film');
-  const channel = source && !Array.isArray(source) ? source.channel : index;
+  const channel = Array.isArray(source) ? 0 : source ? source.channel : index;
   const stream = source && !Array.isArray(source) ? source.stream : undefined;
   const available = stream === undefined ? media?.facts.audio?.channels : media?.facts.audio?.streams?.find(each => each.index === stream)?.channels;
-  const silent = map?.mute || map?.enabled === false || source === null || !automatic && !map;
+  const silent = map?.mute || map?.enabled === false || source === null || Array.isArray(source) && source.length === 0 || !automatic && !map;
   // An incomplete numeric draft has no level to preview yet.
   const level = map?.level_db ?? 0;
-  return { channel, stream, gain: 10 ** ((Number.isFinite(level) ? level : 0) / 20),
+  return { channel, stream, mix: Array.isArray(source) ? source : undefined, gain: 10 ** ((Number.isFinite(level) ? level : 0) / 20),
     silent: !!silent || !automatic && available !== undefined && channel >= available,
-    unavailable: remixed ? 'Remixed waveform unavailable' as const : Array.isArray(source) ? 'Mixed waveform unavailable' as const : null };
+    unavailable: remixed ? 'Remixed waveform unavailable' as const : null };
 }
 
 export function ChannelWaveform({ clip, track, media, index, rate, from, to, scale, waves, gain = 1 }: {
@@ -30,5 +30,5 @@ export function ChannelWaveform({ clip, track, media, index, rate, from, to, sca
   if (drawing.unavailable) return <span className="timeline-wave-status">{t(drawing.unavailable)}</span>;
   return media && clip.source.kind === 'media' ? <Waveform cache={waves} media={media.id} clip={clip} rate={rate}
     scale={scale} from={Math.max(from, clip.start)} to={Math.min(to, clip.start + clip.length)}
-    channel={drawing.channel} gain={gain * drawing.gain} stream={drawing.stream} /> : null;
+    channel={drawing.channel} gain={gain * drawing.gain} stream={drawing.stream} mix={drawing.mix} /> : null;
 }

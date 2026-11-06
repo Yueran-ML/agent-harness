@@ -22,7 +22,7 @@
 .fairlight-control-room { display: flex; flex-direction: column; width: 125px; flex-shrink: 0; }
 .fairlight-control-room .fairlight-meter-well i { background: #bca85c; }
 .fairlight-control-room select { max-width: 125px; }
-.fairlight-loudness { min-width: 240px; max-width: 410px; resize: horizontal; overflow: auto; font-size: 11px; }
+.fairlight-loudness { min-width: 240px; overflow: auto; font-size: 11px; }
 .fairlight-loudness label { display: inline-block; margin: 3px; }
 .fairlight-loudness-values { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; padding: 5px; }
 .fairlight-loudness-values span { position: relative; background: #171c22; padding: 3px; }
@@ -31,7 +31,11 @@
 .fairlight-page [data-verdict=low] { color: #65a5d0; }
 .fairlight-page [data-verdict=within] { color: #e2c758; }
 .fairlight-page [data-verdict=high] { color: #e77c75; }
-.fairlight-small-viewer { min-width: 190px; width: 300px; resize: horizontal; overflow: auto; flex-shrink: 0; }
+.fairlight-small-viewer { min-width: 190px; width: 300px; overflow: auto; flex-shrink: 0; }
+.fairlight-loudness-sum { padding: 4px 5px; background: #171c22; }
+.fairlight-loudness-sum span { display: flex; justify-content: space-between; }
+.fairlight-loudness-sum i { display: block; height: 9px; background: #6098b3; }
+.fairlight-loudness-ruler { display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; margin: 2px 5px; }
 .fairlight-small-viewer .monitor { height: 100%; min-height: 0; }
 .fairlight-small-viewer .viewer { flex: 1; min-height: 40px; }
 .fairlight-workspace { display: flex; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }

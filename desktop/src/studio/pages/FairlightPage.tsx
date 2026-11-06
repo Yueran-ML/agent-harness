@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties, type Reac
 import type { EngineBridge } from '../../bridge';
 import { keyOf } from '../../app/keys';
 import { Sheet } from '../../app/Sheet';
+import { Separator } from '../fairlight/Separator';
 import { CoveringMenu } from '../color/CoveringMenu';
 import { callEngine, type Media, type Op, type Timeline as TimelineModel } from '../engine';
 import { editingAllowed, inStudio, useStudioKeys } from '../keys';
@@ -42,17 +43,6 @@ interface Props {
 }
 /** A new session/timeline owns new async jobs and selection, while its view state survives page switches. */
 export function FairlightPage(props: Props) { return <FairlightSession key={`${props.session}/${props.selected?.id ?? ''}`} {...props} />; }
-function Separator({ label, vertical = false, direction = 1, value, min, max, onChange }: {
-  label: string; vertical?: boolean; direction?: 1 | -1; value: number; min: number; max: number; onChange: (value: number) => void;
-}) {
-  const drag = useRef<{ at: number; value: number } | null>(null);
-  const set = (next: number) => onChange(Math.max(min, Math.min(max, next)));
-  return <div className="fairlight-separator" role="separator" tabIndex={0} aria-label={label} aria-orientation={vertical ? 'vertical' : 'horizontal'} aria-valuenow={value} aria-valuemin={min} aria-valuemax={max}
-    onPointerDown={event => { if (event.button) return; event.preventDefault(); event.currentTarget.setPointerCapture?.(event.pointerId); drag.current = { at: vertical ? event.clientX : event.clientY, value }; }}
-    onPointerMove={event => { if (drag.current) set(drag.current.value + direction * ((vertical ? event.clientX : event.clientY) - drag.current.at)); }}
-    onPointerUp={event => { drag.current = null; event.currentTarget.releasePointerCapture?.(event.pointerId); }} onPointerCancel={() => { drag.current = null; }}
-    onKeyDown={event => { if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) { event.preventDefault(); set(value + direction * (['ArrowLeft', 'ArrowUp'].includes(event.key) ? -16 : 16)); } }} />;
-}
 function FairlightSession({ bridge, native, session, revision, pool, media, timelines, selected, onSelect, timelineMonitor, noticeOf, onRetry, onProblem, mixer, groups }: Props) {
   const t = useFairlightText();
   const [view, update, reset] = useFairlightView(bridge, session, selected?.id ?? '');
@@ -120,7 +110,7 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
     {selected && <AutomationToolbar bridge={bridge} session={session} timeline={selected} view={view} update={update} recording={state?.recording??false} selected={stripSelection} frame={state?timelineMonitor.frame??0:0} onEdit={ops=>void edit(ops as Record<string,unknown>[])} onFailure={e=>setProblem(String(e))} onToggle={()=>update({automation:!view.automation})} marks={()=>timeline.current?.marks()??{in:null,out:null}}/>}
     {(problem || audio.problem) && <p role="alert">{problem ?? audio.problem}<button type="button" onClick={() => setProblem(null)}>{t('Dismiss')}</button></p>}
     {view.meters && selected && <div className="fairlight-monitoring-wrap" style={{ height: view.monitoringHeight }}>
-      <Monitoring timeline={selected} meters={audio.meters} layout={mixerLayout} onAction={action => void audio.action(action)} onResetPeaks={() => void audio.resetPeaks()}
+      <Monitoring timeline={selected} meters={audio.meters} layout={mixerLayout} view={view.monitoring} onView={monitoring=>update({monitoring})} onAction={action => void audio.action(action)} onResetPeaks={() => void audio.resetPeaks()}
         onPatch={patch => void edit([{ op: 'set_timeline_audio', timeline: selected.id, patch }])} viewer={view.viewer && !cinema ? viewer : undefined} />
       <Separator label={t('Monitoring height')} value={view.monitoringHeight} min={150} max={500} onChange={monitoringHeight => update({ monitoringHeight })} />
     </div>}

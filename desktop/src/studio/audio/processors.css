@@ -50,3 +50,7 @@
 .audio-effect-panel [data-automation-state="preview"] > input[type="checkbox"], .audio-ducker-panel [data-automation-state="preview"] > input[type="checkbox"] { accent-color: #69baff; }
 .insert-slots button[data-automation-state="write"] { color: #f66; }
 .insert-slots button[data-automation-state="preview"] { color: #69baff; }
+.insert-slots button[data-automation-state="read"] { color: #6ddd92; }
+.processor-thumbnail[data-automation-state="read"] { box-shadow: 0 0 0 1px #6ddd92; }
+.processor-thumbnail[data-automation-state="write"] { box-shadow: 0 0 0 1px #f66; }
+.processor-thumbnail[data-automation-state="preview"] { box-shadow: 0 0 0 1px #69baff; }

@@ -10,6 +10,8 @@ import { useProcessorCurve } from './useProcessorCurve';
 import { clamp } from './taper';
 import './processors.css';
 import { EffectPresets } from './EffectPresets';
+import { useAutomationTouch } from '../fairlight/AutomationTouch';
+import { useShowAutomation } from '../fairlight/ShowAutomationMenu';
 
 type Section = 'expander' | 'compressor' | 'limiter';
 export function DynamicsPanel(props: ProcessorProps) {
@@ -18,6 +20,10 @@ export function DynamicsPanel(props: ProcessorProps) {
   const value = control.value, defaults = defaultDynamics(), sc = value.compressor.sidechain;
   const patch = (section: Section, fields: Record<string, unknown>, base = value): Dynamics => ({ ...base, [section]: { ...base[section], ...fields } });
   const sources = 'clip' in props.target ? [] : sidechainSources(props.timeline, props.target);
+  const automation = useAutomationTouch(), showMenu = useShowAutomation();
+  // A switch of a track's or bus's Dynamics, whose automation shows on the timeline.
+  const owned = (path: string) => 'clip' in props.target ? null : { of: props.target, path };
+  const state = (path: string) => { const target = owned(path); return target ? automation?.status(target) ?? undefined : undefined; };
   const number = (section: Section, field: string, label: string, min: number, max: number, unit = '') => {
     const sectionName = t(section === 'expander' ? 'Expander' : section === 'compressor' ? 'Compressor' : 'Limiter');
     return <Knob key={field} path={`dynamics.${section}.${field}`} label={`${sectionName} ${label}`} value={(value[section] as unknown as Record<string, number>)[field]} min={min} max={max} unit={unit}
@@ -25,8 +31,11 @@ export function DynamicsPanel(props: ProcessorProps) {
       onChange={n => control.change(patch(section, { [field]: n }, control.snapshot()))} onEnd={control.end} onCancel={control.cancel} onCommit={n => control.commit(patch(section, { [field]: n }))} />;
   };
   return <section className="processor-panel dynamics-panel" aria-label={t('Dynamics')} data-audio-owner={targetKey(props.target)} onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); control.cancel(); } }}>
-    <ProcessorToolbar module="dynamics" value={value} disabled={control.disabled} reset={defaults} commit={control.commit} enable={control.enable} />
-    <EffectPresets context={props} identity="dynamics" value={{ kind: 'dynamics', settings: value }} disabled={control.disabled || Boolean(props.automation?.recording)} apply={payload => { if (payload.kind === 'dynamics') control.commit(payload.settings); }} />
+    <ProcessorToolbar module="dynamics" value={value} disabled={control.disabled} reset={defaults} commit={control.commit} enable={control.enable}
+      paste={control.paste} enableTarget={owned('dynamics.on')} />
+    {showMenu.menu}
+    <EffectPresets context={props} identity="dynamics" value={{ kind: 'dynamics', settings: value }} disabled={control.disabled}
+      apply={payload => { if (payload.kind === 'dynamics') control.paste(payload.settings); }} />
     <FxMeter context={props} kind="dynamics" drawBall={false} />
     <p className="processor-note">{t('Static model curve')}</p>
     {(control.problem || problem) && <p role="alert">{control.problem ?? problem}</p>}
@@ -39,9 +48,12 @@ export function DynamicsPanel(props: ProcessorProps) {
     </svg>
     <div className="dynamics-modules">{(['expander', 'compressor', 'limiter'] as const).map(section => <fieldset key={section} disabled={control.disabled}>
       <legend>{t(section === 'expander' ? 'Expander / Gate' : section === 'compressor' ? 'Compressor' : 'Limiter')}</legend>
-      {section === 'expander' ? (['expander', 'gate'] as const).map(mode => <label key={mode}><input type="checkbox" disabled={control.recording&&value.expander.mode!==mode} aria-label={t(mode === 'gate' ? 'Gate' : 'Expander')} checked={value.expander.on && value.expander.mode === mode}
+      {section === 'expander' ? (['expander', 'gate'] as const).map(mode => <label key={mode}
+        data-automation-state={state('dynamics.expander.on')} onContextMenu={showMenu.open(owned('dynamics.expander.on'))}><input type="checkbox" disabled={control.recording&&value.expander.mode!==mode} aria-label={t(mode === 'gate' ? 'Gate' : 'Expander')} checked={value.expander.on && value.expander.mode === mode}
         onChange={event => control.commit(patch('expander', { on: event.target.checked, mode }))} />{t(mode === 'gate' ? 'Gate' : 'Expander')}</label>)
-        : <label><input type="checkbox" checked={value[section].on} onChange={event => control.commit(patch(section, { on: event.target.checked }))} />{t('On')}</label>}
+        : <label data-automation-state={state(`dynamics.${section}.on`)} onContextMenu={showMenu.open(owned(`dynamics.${section}.on`))}>
+          <input type="checkbox" checked={value[section].on} onChange={event => control.commit(patch(section, { on: event.target.checked }))} />{t('On')}
+        </label>}
       {number(section, 'threshold_db', t('Threshold'), -50, 0, 'dB')}
       {section === 'expander' && number(section, 'range_db', t('Range'), 0, 60.2, 'dB')}
       {section !== 'limiter' && number(section, 'ratio', t('Ratio'), section === 'expander' ? 1.1 : 1, section === 'expander' ? 3 : 10)}

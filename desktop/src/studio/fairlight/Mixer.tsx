@@ -109,9 +109,11 @@ export function Mixer({ bridge, session, revision, timeline, frame, meters, sele
     if (!modifiers.altKey && field !== 'solo_safe') gesture.commit([stripChange(timeline.id, strip, { [field]: value }, !(modifiers.ctrlKey && modifiers.shiftKey))]);
     else gesture.commit(switchOps(keys, field, value, modifiers));
   };
-  const stripSetting=async(strip:MixerStrip,path:string,value:unknown,modifiers:Modifiers)=>{
+  const stripSetting=async(strip:MixerStrip,path:string,value:unknown,modifiers:Modifiers,pasted=false)=>{
     const targets=operationTargets(strips,strip.key,selected,modifiers);
-    if(automation?.enabled&&automation.recording&&['eq','dynamics','inserts_on'].includes(path)){
+    // A paste is written as automation only under Write on Preset or Clipboard Paste (p. 121).
+    const written=!pasted||automation?.writeOnPaste;
+    if(automation?.enabled&&automation.recording&&written&&['eq','dynamics','inserts_on'].includes(path)){
       try {
         const groups=await Promise.all(targets.filter(s=>!s.locked).map(async s=>{
           const of=targetOf(s), result=await callEngine(bridge,'automation.parameters',{timeline:timeline.id,of},{expectedSession:session});
@@ -134,7 +136,7 @@ export function Mixer({ bridge, session, revision, timeline, frame, meters, sele
       onReorder={reorder} selectedKeys={selected}
       processorContext={{ bridge, session, revision, timeline, target: targetOf(strip), selected, seconds: frame * timeline.rate.den / timeline.rate.num, automation }}
       onProcessor={module => setProcessors(old => [...(compact ? [] : old.filter(p => p.key !== strip.key || p.module !== module)), { key: strip.key, module }])}
-      onStripSetting={(path, value, modifiers) => void stripSetting(strip,path,value,modifiers)}
+      onStripSetting={(path, value, modifiers, pasted) => void stripSetting(strip,path,value,modifiers,pasted)}
       value={gesture.active() ? preview[strip.key] : undefined} meters={meters} prefader={Boolean(timeline.audio?.prefader_metering)}
       shadow={Boolean(timeline.audio?.prefader_metering && strips.some(s => s.solo) && !strip.solo && !strip.safe)}
       isActive={gesture.active} onSelect={modifiers => select(strip, modifiers)} onRename={async name => {

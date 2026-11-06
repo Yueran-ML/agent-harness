@@ -1,5 +1,6 @@
 import { useAutomationTouch } from './AutomationTouch';
-import type { AutomationArm, LanesOf } from '../engine';
+import { callEngine, type AutomationArm, type LanesOf } from '../engine';
+import { useShowAutomation } from './ShowAutomationMenu';
 import { laneValue } from './automation';
 import { useState, type PointerEvent } from 'react';
 import { createPortal } from 'react-dom';
@@ -8,7 +9,7 @@ import { NameField } from '../media/NameField';
 import { Fader } from '../audio/Fader';
 import { Meter } from '../audio/Meter';
 import { faderReading, formatDb, type MixerStrip, type Modifiers } from '../audio/mixerModel';
-import { useFairlightText } from './words';
+import { useFailureText, useFairlightText } from './words';
 import type { ProcessorProps } from '../audio/useProcessor';
 import { defaultDynamics, defaultEq, ORDERINGS, processorWritable, type ProcessorModule } from '../audio/processorModel';
 import { ProcessorThumbnail } from '../audio/ProcessorThumbnail';
@@ -46,7 +47,8 @@ export function ChannelStrip({ strip, seconds, value, selected, meters, prefader
   onArm?: (arm: AutomationArm, modifiers: Modifiers) => void;
   onEnter: (field: 'mute' | 'solo', event: PointerEvent<HTMLButtonElement>) => void;
   processorContext: ProcessorProps; onProcessor: (module: ProcessorModule) => void;
-  onStripSetting: (path: string, value: unknown, modifiers: Modifiers) => void;
+  /** `pasted`: a clipboard paste, which is written as automation only under Write on Paste. */
+  onStripSetting: (path: string, value: unknown, modifiers: Modifiers, pasted?: boolean) => void;
   compact?: boolean;
 }) {
   const t = useFairlightText(); const [renaming, setRenaming] = useState(false), [pathOpen, setPathOpen] = useState<{ x: number; y: number } | null>(null);
@@ -62,8 +64,30 @@ export function ChannelStrip({ strip, seconds, value, selected, meters, prefader
   const muted=(automation?.reading({of,path:'mute'},Number(baseMute),{kind:'switch',scale:'linear'})??Number(baseMute))>=.5;
   const instantMute=()=>automation?.instant({of,path:'mute'},muted?0:1);
   const [duckerOpen, setDuckerOpen] = useState(false);
+  const showMenu = useShowAutomation(), failure = useFailureText(), [autoProblem, setAutoProblem] = useState<string | null>(null);
+  // The strip's Auto button (p. 3908): every enabled parameter of the strip into Preview, each at
+  // the value it plays now.
+  const previewAll = async () => {
+    if (!automation)
+      return;
+    const { bridge, session, timeline } = processorContext;
+    try {
+      const result = await callEngine(bridge, 'automation.parameters', { timeline: timeline.id, of }, { expectedSession: session });
+      setAutoProblem(null);
+      automation.previewBatch(result.parameters.map(parameter => {
+        const path = parameter.path, lane = strip.arm !== 'off' ? strip.lanes?.[path] : undefined;
+        const baseline = automation.trim && path === 'fader_db' ? 0 : laneValue(lane, seconds, parameter.value);
+        return { target: { of, path }, value: automation.reading({ of, path }, baseline, parameter) };
+      }));
+    }
+    catch (error) {
+      setAutoProblem(failure(error));
+    }
+  };
+  const automationState = automation?.status(target);
   return <article className="mixer-strip" data-mixer-strip={strip.key} data-selected={selected || undefined} data-disabled={!strip.enabled || undefined}
-    data-recording={automation?.status(target)==='write'||undefined} data-preview={automation?.status(target)==='preview'||undefined} data-trim={trim||undefined} aria-label={strip.name} onClick={event => { if (event.target === event.currentTarget) onSelect(event); }}
+    data-recording={automationState==='write'||undefined} data-preview={automationState==='preview'||undefined}
+    data-automated={automationState==='read'||undefined} data-trim={trim||undefined} aria-label={strip.name} onClick={event => { if (event.target === event.currentTarget) onSelect(event); }}
     onDragOver={event => { if (event.dataTransfer.types.includes('application/x-columbina-mixer-order')) event.preventDefault(); }}
     onDrop={event => { const raw = event.dataTransfer.getData('application/x-columbina-mixer-order'); if (!raw) return; event.preventDefault(); try { const keys: unknown = JSON.parse(raw); if (Array.isArray(keys) && keys.every(k => typeof k === 'string')) onReorder?.(keys, strip.key); } catch { /* Ignore unrelated drags. */ } }}>
     <div className="mixer-strip-color" style={{ background: strip.color }}><StripCopy context={processorContext}>{strip.kind === 'track' ? 'A' : 'B'}{strip.number}</StripCopy></div>
@@ -78,10 +102,10 @@ export function ChannelStrip({ strip, seconds, value, selected, meters, prefader
       <div data-core data-section="effectsIn"><dt>{t('Effects In')}</dt><dd><button type="button" className="effects-in" aria-label={`${t('Effects In')} ${strip.name}`} aria-pressed={model?.inserts_on !== false}
         disabled={recording||strip.locked||(automation?.enabled!==false&&!processorWritable(strip, 'inserts_on'))} onClick={event => onStripSetting('inserts_on', model?.inserts_on === false, event)}>{t(model?.inserts_on === false ? 'Off' : 'On')}</button></dd></div>
       <div data-core data-section="dynamics"><dt>{t('Dynamics')}</dt><dd><ProcessorThumbnail name={strip.name} module="dynamics" openOnClick={compact} on={model?.dynamics?.on ?? false} disabled={strip.locked||(!recording&&automation?.enabled!==false&&!processorWritable(strip, 'dynamics'))}
-        settings={model?.dynamics ?? defaultDynamics()} onPaste={(settings, modifiers) => onStripSetting('dynamics', settings, modifiers)}
+        settings={model?.dynamics ?? defaultDynamics()} onPaste={(settings, modifiers) => onStripSetting('dynamics', settings, modifiers, true)}
         context={processorContext} showCurve={Boolean(model?.dynamics)} onToggle={modifiers => onStripSetting('dynamics', { on: !model?.dynamics?.on }, modifiers)} onOpen={() => onProcessor('dynamics')} /></dd></div>
       <div data-core data-section="eq"><dt>EQ</dt><dd><ProcessorThumbnail name={strip.name} module="eq" openOnClick={compact} on={model?.eq?.on ?? false} disabled={strip.locked||(!recording&&automation?.enabled!==false&&!processorWritable(strip, 'eq'))}
-        settings={model?.eq ?? defaultEq()} onPaste={(settings, modifiers) => onStripSetting('eq', settings, modifiers)}
+        settings={model?.eq ?? defaultEq()} onPaste={(settings, modifiers) => onStripSetting('eq', settings, modifiers, true)}
         context={processorContext} showCurve={Boolean(model?.eq)} onToggle={modifiers => onStripSetting('eq', { on: !model?.eq?.on }, modifiers)} onOpen={() => onProcessor('eq')} /></dd></div>
       <div data-section="sends"><dt>{t('Sends')}</dt><dd><RouteButtons context={processorContext} strip={strip} field="sends" onOpen={() => setSendsOpen(true)} /></dd></div>
       <div data-section="pan"><dt>{t('Pan')}</dt><dd><PanControl context={processorContext} stripKey={strip.key} /></dd></div>
@@ -94,7 +118,12 @@ export function ChannelStrip({ strip, seconds, value, selected, meters, prefader
     {duckerOpen && createPortal(<aside role="dialog" aria-label={`${t('Ducker')} ${strip.name}`} className="processor-window" style={{ left: 100, top: 100 }}><button type="button" aria-label={t('Close processor')} onClick={() => setDuckerOpen(false)}>×</button><DuckerPanel {...processorContext} /></aside>, document.body)}
     {renaming ? <NameField name={strip.name} onCancel={() => setRenaming(false)} onCommit={onRename} />
       : <button type="button" className="mixer-name" draggable onDragStart={event => event.dataTransfer.setData('application/x-columbina-mixer-order', JSON.stringify(selectedKeys.includes(strip.key) ? selectedKeys : [strip.key]))} onClick={event => onSelect(event)} onDoubleClick={() => { if (!strip.locked) setRenaming(true); }}>{strip.name}</button>}
-    {automation?.enabled&&<div className="mixer-arm"><button disabled={strip.locked} aria-pressed={strip.arm===true} onClick={e=>onArm?.(strip.arm!==true,e)} onContextMenu={e=>{e.preventDefault();setMenu({ kind: 'arm', x: e.clientX, y: e.clientY });}}>{t('Arm')}</button>
+    {automation?.enabled&&<div className="mixer-arm"><button disabled={strip.locked} aria-pressed={strip.arm===true}
+      data-writing={automation.writing(of) ?? undefined}
+      onClick={e=>onArm?.(strip.arm!==true,e)} onContextMenu={e=>{e.preventDefault();setMenu({ kind: 'arm', x: e.clientX, y: e.clientY });}}>{t('Arm')}</button>
+      <button type="button" aria-label={`${t('Auto')} ${strip.name}`} title={t('Put every enabled parameter of this strip into Preview')}
+        disabled={strip.locked || !recording || !automation.preview} onClick={() => void previewAll()}>{t('Auto')}</button>
+      {autoProblem && <small role="alert">{autoProblem}</small>}
       {menu?.kind === 'arm' && <PortalMenu anchor={menu} label={`${t('Arm')} ${strip.name}`}
         onClose={() => setMenu(null)}>
         {(['safe', 'off'] as const).map(arm => <button key={arm} type="button" role="menuitem"
@@ -103,10 +132,13 @@ export function ChannelStrip({ strip, seconds, value, selected, meters, prefader
       </PortalMenu>}</div>}
     <div className="mixer-switches">{(['solo', 'mute'] as const).map(field => <button key={field} type="button" disabled={strip.locked}
       aria-label={`${t(field)} ${strip.name}`} aria-pressed={field==='mute'?muted:strip[field]} data-safe={field === 'solo' && strip.safe || undefined}
+      data-automation-state={field === 'mute' ? automation?.status({ of, path: 'mute' }) ?? undefined : undefined}
+      onContextMenu={field === 'mute' ? showMenu.open({ of, path: 'mute' }) : undefined}
       title={field === 'solo' ? `${t('Solo Safe')}: Ctrl+Shift` : t('mute')}
       onPointerDown={event => {if(field==='mute'&&recording){event.preventDefault();instantMute();}else onSweep(field === 'solo' && event.ctrlKey && event.shiftKey ? 'solo_safe' : field, event);}}
       onPointerEnter={event => {if(!recording)onEnter(field, event);}}
-      onClick={event => { if(event.detail===0&&field==='mute'&&recording){instantMute();return;} if (event.detail === 0) onToggle(field === 'solo' && event.ctrlKey && event.shiftKey ? 'solo_safe' : field, event); }}>{field === 'solo' ? strip.safe ? 'S·' : 'S' : 'M'}</button>)}</div>
+      onClick={event => { if(event.detail===0&&field==='mute'&&recording){instantMute();return;} if (event.detail === 0) onToggle(field === 'solo' && event.ctrlKey && event.shiftKey ? 'solo_safe' : field, event); }}>{field === 'solo' ? strip.safe ? 'S·' : 'S' : 'M'}</button>)}
+      {showMenu.menu}</div>
     <div className="mixer-fader-meter" onContextMenu={event => {
       if (automation) { event.preventDefault(); setMenu({ kind: 'fader', x: event.clientX, y: event.clientY }); }
     }}>

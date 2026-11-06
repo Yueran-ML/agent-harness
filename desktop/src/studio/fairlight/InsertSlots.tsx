@@ -14,6 +14,7 @@ import { useFailureText, useFairlightText } from './words';
 import type { FairlightText } from '../../messages/fairlight';
 import { chainClipboard as sharedChain } from '../audio/audioClipboard';
 import { EffectWindow } from './EffectWindow';
+import { useShowAutomation } from './ShowAutomationMenu';
 import { clearAudioComparisons } from '../audio/ABCompare';
 export const INSERT_DRAG = 'application/x-columbina-audio-insert';
 const GROUPS: [
@@ -27,6 +28,7 @@ export function InsertSlots({ inline = false, ...props }: ProcessorProps & {
   const failure = useFailureText();
   const owner = effectOwner(props.timeline, props.target), [open, setOpen] = useState<string | null>(null), [collapsed, setCollapsed] = useState<string[]>([]), [problem, setProblem] = useState<string | null>(null);
   const control = useEffectAutomation(props), { automation, recording } = control;
+  const showMenu = useShowAutomation();
   const key = targetKey(props.target), chainClipboard = sharedChain.use();
   const [menuOpen, setMenuOpen] = useState(false);
   const gesture = useAudioGesture({
@@ -104,6 +106,8 @@ export function InsertSlots({ inline = false, ...props }: ProcessorProps & {
 
     {(problem || control.problem) && <p role="alert">{problem || control.problem}</p>}
 
+    {showMenu.menu}
+
     {!inline && owner.inserts.map((insert, index) => <div
       key={identity(index)}
       className="insert-slot"
@@ -123,6 +127,7 @@ export function InsertSlots({ inline = false, ...props }: ProcessorProps & {
         aria-label={`${t('Enable')} ${name(insert.effect.kind)}`}
         aria-pressed={switchValue(index)}
         data-automation-state={control.status(switchPath(index)) ?? undefined}
+        onContextMenu={showMenu.open('clip' in props.target ? null : { of: props.target, path: switchPath(index) })}
         disabled={!switchWritable(index)}
         onClick={() => toggle(index)}
       >●</button>

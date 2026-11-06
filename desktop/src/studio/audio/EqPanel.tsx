@@ -9,15 +9,24 @@ import { useProcessorCurve } from './useProcessorCurve';
 import { clamp } from './taper';
 import './processors.css';
 import { EffectPresets } from './EffectPresets';
+import { useAutomationTouch } from '../fairlight/AutomationTouch';
+import { useShowAutomation } from '../fairlight/ShowAutomationMenu';
 
 export function EqPanel(props: ProcessorProps) {
   const t = useFairlightText(), control = useProcessor(props, 'eq'), { curve, problem } = useProcessorCurve(props, 'eq');
   const eq = control.value, sampleRate = props.timeline.sample_rate, clip = 'clip' in props.target;
   const defaults = defaultEq(clip);
   const change = (index: number, patch: Partial<EqBand>, base = control.snapshot()) => changeBand(base, index, patch, sampleRate);
+  const automation = useAutomationTouch(), showMenu = useShowAutomation();
+  // A switch of a track's or bus's EQ, whose automation shows on the timeline (not a clip's).
+  const owned = (path: string) => 'clip' in props.target ? null : { of: props.target, path };
+  const state = (path: string) => { const target = owned(path); return target ? automation?.status(target) ?? undefined : undefined; };
   return <section className="processor-panel eq-panel" aria-label="EQ" data-audio-owner={targetKey(props.target)} onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); control.cancel(); } }}>
-    <ProcessorToolbar module="eq" value={eq} disabled={control.disabled} reset={defaults} commit={control.commit} enable={control.enable} />
-    <EffectPresets context={props} identity="eq" value={{ kind: clip ? 'clip_eq' : 'eq', settings: eq }} disabled={control.disabled || Boolean(props.automation?.recording)} apply={payload => { if (payload.kind === 'eq' || payload.kind === 'clip_eq') control.commit(payload.settings); }} />
+    <ProcessorToolbar module="eq" value={eq} disabled={control.disabled} reset={defaults} commit={control.commit} enable={control.enable}
+      paste={control.paste} enableTarget={owned('eq.on')} />
+    {showMenu.menu}
+    <EffectPresets context={props} identity="eq" value={{ kind: clip ? 'clip_eq' : 'eq', settings: eq }} disabled={control.disabled}
+      apply={payload => { if (payload.kind === 'eq' || payload.kind === 'clip_eq') control.paste(payload.settings); }} />
     <p className="processor-note">{t('Static model curve')}</p>
     {(control.problem || problem) && <p role="alert">{control.problem ?? problem}</p>}
     {control.disabled && <p>{t('Locked or automated')}</p>}
@@ -35,7 +44,9 @@ export function EqPanel(props: ProcessorProps) {
           disabled={control.disabled || disabled} onStart={()=>control.start(`eq.${index}.${field}`)} isActive={control.gesture.active} onChange={value => control.change(change(index, { [field]: value }))}
           onEnd={control.end} onCancel={control.cancel} onCommit={value => control.commit(change(index, { [field]: value }, eq))} />;
       return <fieldset key={index} disabled={control.disabled}><legend>{name}</legend>
-        <label><input type="checkbox" checked={band.on} onChange={event => control.commit(change(index, { on: event.target.checked }, eq))} />{t('On')}</label>
+        <label data-automation-state={state(`eq.${index}.on`)} onContextMenu={showMenu.open(owned(`eq.${index}.on`))}>
+          <input type="checkbox" checked={band.on} onChange={event => control.commit(change(index, { on: event.target.checked }, eq))} />{t('On')}
+        </label>
         <select disabled={control.recording} aria-label={`${name} ${t('Type')}`} value={band.kind} onChange={event => control.commit(change(index, { kind: event.target.value as EqKind }, eq))}>
           {eqBandKinds(index, eq.bands.length).map(kind => <option key={kind} value={kind}>{t(kind === 'bell' ? 'Bell' : kind === 'notch' ? 'Notch' : kind === 'high_pass' ? 'High Pass' : kind === 'low_pass' ? 'Low Pass' : kind === 'low_shelf' ? 'Low Shelf' : 'High Shelf')}</option>)}
         </select>

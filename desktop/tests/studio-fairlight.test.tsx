@@ -53,6 +53,26 @@ function Readings({ bridge, session = 1, visible = true }: { bridge: ReturnType<
   const audio = useAudioReadings(bridge, session, 't1', visible);
   return <><output data-testid="reading">{audio.meters?.strips[0]?.post[0].bar ?? 'none'}</output><button onClick={() => void audio.analyze(['sound1'], 'ebu_r128')}>Analyze</button><button onClick={audio.cancel}>Cancel</button><output data-testid="analysis">{audio.analysis?.state}</output></>;
 }
+it('does not rerender the owning page for identical stopped meters, but publishes peak resets', async () => {
+  const bridge = engine();
+  let next = { ...meters, playing: false, loudness: { ...loudness, running: false } };
+  bridge.call.mockImplementation(async () => ({ ok: true, result: structuredClone(next) }));
+  let renders = 0;
+  function Host() {
+    renders++;
+    const audio = useAudioReadings(bridge, 1, 't1', true);
+    return <button onClick={() => void audio.resetPeaks()}>{audio.meters?.strips[0].post[0].peak ?? 'none'}</button>;
+  }
+  render(<Host />); await settle();
+  await act(async () => vi.advanceTimersByTimeAsync(200));
+  const stopped = renders;
+  await act(async () => vi.advanceTimersByTimeAsync(500));
+  expect(renders).toBe(stopped);
+  next = { ...next, strips: [{ ...next.strips[0], post: [{ ...next.strips[0].post[0], peak: null, peak_position: null }] }] };
+  fireEvent.click(screen.getByRole('button')); await settle();
+  expect(screen.getByRole('button').textContent).toBe('none');
+  expect(renders).toBeGreaterThan(stopped);
+});
 it('polls only while visible, releases its listener and rejects a late session reply', async () => {
   const bridge = engine();
   const view = render(<Readings bridge={bridge} />); await settle();

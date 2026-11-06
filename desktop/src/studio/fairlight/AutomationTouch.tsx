@@ -67,7 +67,27 @@ export function AutomationTouchProvider({ bridge, session, timeline, revision=0,
   useEffect(() => { if (!enabled || !recording || (!playing&&!preview)) end(); }, [enabled,recording,playing,preview]);
   useEffect(()=>{end();},[revision,queues]);
   useEffect(()=>{if(!enabled||!recording||read||(!playing&&!preview)){held.current.clear();redraw(n=>n+1);}},[enabled,recording,playing,preview,read,revision,queues]);
-  useEffect(()=>{if(!enabled||!recording)return;const timer=setInterval(()=>{if(held.current.size)redraw(n=>n+1);},16);return()=>clearInterval(timer);},[enabled,recording]);
+  const touch = timeline.audio?.record?.touch;
+  useEffect(() => {
+    if (!enabled || !recording || preview || read || (touch !== 'snap' && touch !== 'snap_latch')) return;
+    const returning = (id: string, value: { released: number | null }) => value.released !== null
+      && (touch === 'snap' || id.endsWith('/fader_db'));
+    if (![...held.current].some(([id, value]) => returning(id, value))) return;
+    const timer = setInterval(() => {
+      const configured = Number(localStorage.getItem('fairlight.glide_ms') ?? 250);
+      const duration = Math.max(10, Number.isFinite(configured) ? configured : 250);
+      let changed = false, moving = false;
+      for (const [id, value] of held.current) {
+        if (!returning(id, value)) continue;
+        changed = true;
+        if (performance.now() - value.released! >= duration) held.current.delete(id);
+        else moving = true;
+      }
+      if (changed) redraw(n => n + 1);
+      if (!moving) clearInterval(timer);
+    }, 16);
+    return () => clearInterval(timer);
+  }, [enabled, recording, preview, read, touch, live, lives]);
   const eligible=(target:AutomationTarget,value:number)=>{
     const {timeline:t,enabled:on,recording:rec,playing:running}=now.current;
     if(!on||!rec||(!running&&!t.audio?.record?.preview)||!Number.isFinite(value)||t.audio?.record?.categories?.[categoryOfPath(target.path)]===false)return false;

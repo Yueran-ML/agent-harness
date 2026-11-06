@@ -148,6 +148,20 @@ it('holds Preview between stops and returns a released Trim fader to unity under
  s.rerender(<AutomationTouchProvider {...props} timeline={preview} playing={false}><Control/></AutomationTouchProvider>);await act(async()=>vi.advanceTimersByTimeAsync(500));expect(screen.getByRole('status').textContent).toBe('5.0');
  s.rerender(<AutomationTouchProvider {...props} timeline={preview} read><Control/></AutomationTouchProvider>);expect(screen.getByRole('status').textContent).toBe('0.0');
 });
+it.each([true, false])('does not continuously redraw held Preview/Latch values (preview=%s)', async preview => {
+ vi.useFakeTimers();
+ const t={...timeline([]),tracks:[{id:'a1',kind:'audio',name:'Voice',enabled:true,locked:false,clips:[],transitions:[],automation_arm:true}],audio:{record:{...defaultRecord(),touch:'latch',preview}}} as unknown as Timeline;
+ const call=vi.fn(async()=>({ok:true as const,result:{}})),target={of:{track:'a1'},path:'fader_db'};
+ let renders=0;
+ function Control(){renders++;const a=useAutomationTouch()!;return <><button onClick={()=>{a.start(target,0);a.change(5);a.end();}}>Hold</button><output>{a.reading(target,0)}</output></>;}
+ render(<AutomationTouchProvider bridge={{call}} session={1} timeline={t} enabled recording show={()=>{}} onFailure={e=>{throw e;}}><Control/></AutomationTouchProvider>);
+ fireEvent.click(screen.getByText('Hold'));await settle();
+ const held=renders;
+ await act(async()=>vi.advanceTimersByTimeAsync(500));
+ expect(screen.getByRole('status').textContent).toBe('5');
+ expect(renders).toBe(held);
+ expect(vi.getTimerCount()).toBe(0);
+});
 it('toolbar keeps Active Range marks separate, remaps copied automation to the selected destination, and dispatches Follows Edit',async()=>{
  const t={...timeline([]),audio:{record:defaultRecord()}} as Timeline;
  const call=vi.fn(async()=>({ok:true as const,result:{lanes:[{of:{track:'a1'},path:'fader_db',value:-12}]}}));const edit=vi.fn(),fail=vi.fn();

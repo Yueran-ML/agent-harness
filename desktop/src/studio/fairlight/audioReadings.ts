@@ -1,9 +1,23 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { EngineBridge } from '../../bridge';
-import { callEngine, EngineError, type AudioAnalysis, type LoudnessReading, type Meters } from '../engine';
+import { callEngine, EngineError, type AudioAnalysis, type LoudnessReading, type MeterChannel, type Meters } from '../engine';
 
 type Bridge = Pick<EngineBridge, 'call' | 'onEvent'>;
 interface JobOwner { live: boolean; waiting: boolean; running: boolean; cancelled: boolean; job: string | null; early: Map<string, AudioAnalysis> }
+const sameChannel = (a: MeterChannel | null, b: MeterChannel | null) => a === b || Boolean(a && b
+  && a.bar === b.bar && a.peak === b.peak && a.bar_position === b.bar_position && a.peak_position === b.peak_position);
+function sameMeters(a: Meters | null, b: Meters): boolean {
+  return a !== null && a.timeline === b.timeline && a.playing === b.playing && a.rate === b.rate
+    && a.scale === b.scale && a.lost === b.lost && sameChannel(a.control_room, b.control_room)
+    && (Object.keys(b.loudness) as (keyof LoudnessReading)[]).every(key => a.loudness[key] === b.loudness[key])
+    && a.strips.length === b.strips.length && a.strips.every((strip, index) => {
+      const next = b.strips[index];
+      const owner = 'track' in strip.owner ? 'track' in next.owner && strip.owner.track === next.owner.track
+        : 'bus' in next.owner && strip.owner.bus === next.owner.bus;
+      return owner && (['pre', 'post'] as const).every(point => strip[point].length === next[point].length
+        && strip[point].every((channel, i) => sameChannel(channel, next[point][i])));
+    });
+}
 /** Analysis events are broadcast; only the job acknowledged to this page belongs to it. */
 export function useAudioAnalysis(bridge: Bridge, session: number, timeline: string | null, identity = timeline) {
   const [analysis, setAnalysis] = useState<AudioAnalysis | null>(null);
@@ -61,6 +75,13 @@ export function useAudioAnalysis(bridge: Bridge, session: number, timeline: stri
 /** The protocol polls meters; no subscribe RPC exists. One in-flight read, at most 30Hz. */
 export function useAudioReadings(bridge: Bridge, session: number, timeline: string | null, visible: boolean) {
   const [meters, setMeters] = useState<Meters | null>(null);
+  const latestMeters = useRef<Meters | null>(null);
+  const publish = (next: Meters) => {
+    if (sameMeters(latestMeters.current, next)) return false;
+    latestMeters.current = next;
+    setMeters(next);
+    return true;
+  };
   const [problem, setProblem] = useState<string | null>(null);
   const lifecycle = useRef<{ live: boolean; action: number }>({ live: false, action: 0 });
   const jobs = useAudioAnalysis(bridge, session, timeline);
@@ -68,18 +89,23 @@ export function useAudioReadings(bridge: Bridge, session: number, timeline: stri
     const current = { live: true, action: 0 }; lifecycle.current = current;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let polling = false;
-    setMeters(null); setProblem(null);
+    latestMeters.current = null; setMeters(null); setProblem(null);
     const read = async () => {
       if (!current.live || !visible || !timeline || document.hidden || polling) return;
       polling = true;
       const action = current.action;
+      let delay = 100;
       try {
         const next = await callEngine(bridge, 'audio.meters', { timeline }, { expectedSession: session });
-        if (current.live && action === current.action && next.timeline === timeline) { setMeters(next); setProblem(null); }
+        if (current.live && action === current.action && next.timeline === timeline) {
+          const changed = publish(next);
+          delay = next.playing || changed ? 34 : 100;
+          setProblem(null);
+        }
       } catch (error) { if (current.live) setProblem(error instanceof Error ? error.message : String(error)); }
       finally {
         polling = false;
-        if (current.live && visible && !document.hidden) timer = setTimeout(() => void read(), 34);
+        if (current.live && visible && !document.hidden) timer = setTimeout(() => void read(), delay);
       }
     };
     const visibility = () => { clearTimeout(timer); if (!document.hidden) void read(); };
@@ -92,7 +118,7 @@ export function useAudioReadings(bridge: Bridge, session: number, timeline: stri
     const sequence = ++current.action;
     try {
       const loudness: LoudnessReading = await callEngine(bridge, 'audio.loudness', { timeline, action: which }, { expectedSession: session });
-      if (current.live && sequence === current.action) setMeters(old => old ? { ...old, loudness } : old);
+      if (current.live && sequence === current.action && latestMeters.current) publish({ ...latestMeters.current, loudness });
     } catch (error) { if (current.live) setProblem(error instanceof Error ? error.message : String(error)); }
   };
   const resetPeaks = async () => {
@@ -101,7 +127,7 @@ export function useAudioReadings(bridge: Bridge, session: number, timeline: stri
     const sequence = ++current.action;
     try {
       const next = await callEngine(bridge, 'audio.meters', { timeline, reset: true }, { expectedSession: session });
-      if (current.live && sequence === current.action && next.timeline === timeline) setMeters(next);
+      if (current.live && sequence === current.action && next.timeline === timeline) publish(next);
     } catch (error) { if (current.live) setProblem(error instanceof Error ? error.message : String(error)); }
   };
   return { meters, problem: problem ?? jobs.problem, analysis: jobs.analysis, pending: jobs.pending, action, resetPeaks,

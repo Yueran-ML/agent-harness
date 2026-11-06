@@ -236,7 +236,9 @@ class Changed:
         return said if isinstance(said, int) and not isinstance(said, bool) else None
 
 
-SoundAnalysis = Literal["audio.analyze", "audio.normalize", "audio.level_match"]
+SoundAnalysis = Literal[
+    "audio.analyze", "audio.normalize", "audio.level_match", "audio.noise_learn"
+]
 """An analysis of sound that the engine runs as a job (:meth:`Engine.analyze_sound`)."""
 
 RenderState = Literal["running", "done", "failed", "cancelled"]
@@ -1651,8 +1653,8 @@ class Engine:
     ) -> dict[str, Any]:
         """Read the current model-static EQ response, with its revision and sample rate.
 
-        Target names exactly one audio track, bus or clip. Frequencies contain 1–512 finite
-        values from 20 Hz to min(20 kHz, 0.45 × sample rate). This does not read automation
+        Target names exactly one audio track, bus or clip. Frequencies contain 1-512 finite
+        values from 20 Hz to min(20 kHz, 0.45 x sample rate). This does not read automation
         at the playhead and never changes project history.
         """
         return await self._call(
@@ -1665,13 +1667,70 @@ class Engine:
     ) -> dict[str, Any]:
         """Read the model-static Dynamics curve for a track or bus, with its revision.
 
-        Inputs contain 1–512 finite levels from −60 to 0 dBFS. Outputs include dry mix and
+        Inputs contain 1-512 finite levels from -60 to 0 dBFS. Outputs include dry mix and
         make-up; they are steady-state values, not instantaneous sidechain or meter readings.
         """
         return await self._call(
             "audio.dynamics_curve",
             {"timeline": timeline, "target": dict(target), "inputs_db": list(inputs_db)},
         )
+
+    async def fx_meters(self, timeline: str) -> dict[str, Any]:
+        """Read typed DSP meters of the current playing graph; stopped graphs return no readings."""
+        return await self._call("audio.fx_meters", {"timeline": timeline})
+
+    async def soft_clip_curve(
+        self, timeline: str, target: Mapping[str, str], slot: int, inputs: Sequence[float]
+    ) -> dict[str, Any]:
+        """Read the actual Soft Clipper transfer function, with its model revision."""
+        return await self._call(
+            "audio.soft_clip_curve",
+            {"timeline": timeline, "target": dict(target), "slot": slot, "inputs": list(inputs)},
+        )
+
+    async def noise_learn(
+        self,
+        timeline: str,
+        target: Mapping[str, str],
+        slot: int,
+        frames: tuple[int, int],
+        *,
+        revision: int,
+        session: int | None = None,
+    ) -> dict[str, Any]:
+        """Learn the NR insert's input over 2048 samples to 30 seconds and apply at this revision.
+
+        Uses the cancellable analysis job channel. A stale project leaves the profile unapplied.
+        """
+        return await self.analyze_sound(
+            "audio.noise_learn",
+            {
+                "timeline": timeline,
+                "target": dict(target),
+                "slot": slot,
+                "range": {"from": frames[0], "to": frames[1]},
+                "revision": revision,
+            },
+            session=session,
+        )
+
+    async def audio_presets(self) -> list[dict[str, Any]]:
+        """List the independent user audio preset library."""
+        return cast("list[dict[str, Any]]", (await self._call("audio_presets.list"))["presets"])
+
+    async def save_audio_preset(self, name: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Save validated audio parameters in the independent user library."""
+        return await self._call("audio_presets.save", {"name": name, "payload": dict(payload)})
+
+    async def update_audio_preset(self, preset: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Replace the parameters of a preset, preserving its processor kind."""
+        return await self._call(
+            "audio_presets.update", {"preset": preset, "payload": dict(payload)}
+        )
+
+    async def delete_audio_preset(self, preset: str) -> dict[str, Any]:
+        """Delete a user preset without changing project history."""
+        return await self._call("audio_presets.delete", {"preset": preset})
 
     def latest_sound(self, timeline: str, *, revision: int) -> dict[str, Any] | None:
         """Last successful analysis requested by this client, never an external desktop job.
@@ -1756,7 +1815,8 @@ class Engine:
                             self._sound_cache.get(timeline) if isinstance(timeline, str) else None
                         )
                         if (
-                            isinstance(timeline, str)
+                            method != "audio.noise_learn"
+                            and isinstance(timeline, str)
                             and requested.get("candidate") is None
                             and incoming_session == self._session
                             and wire is self._wire

@@ -177,8 +177,10 @@ impl AllPass {
 }
 
 /// Stereo Width, a [`Node`] of the latency of its all-passes.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct StereoWidth {
+    scope: crate::rt::SeqWriter<[f32; 130]>,
+    scope_reader: crate::rt::SeqReader<[f32; 130]>,
     rate: u32,
     on: bool,
     wet: Smoothed,
@@ -203,6 +205,7 @@ impl StereoWidth {
     /// A Stereo Width of `settings`, at once with no ramp.
     #[must_use]
     pub fn new(settings: &Settings) -> Self {
+        let (scope, scope_reader) = crate::rt::seqlock([0.0; 130]);
         let value = |param: Param| {
             param
                 .info()
@@ -210,6 +213,7 @@ impl StereoWidth {
                 .unwrap_or(param.info().default)
         };
         StereoWidth {
+            scope, scope_reader,
             rate: 0,
             on: settings.on,
             wet: Smoothed::new(f32::from(u8::from(settings.on)), Domain::Linear),
@@ -252,6 +256,9 @@ impl StereoWidth {
             self.sparkle.current(),
         )
     }
+    /// 64 evenly spaced output L/R samples and block input/output peak dBFS. Fixed-size, off-RT reader.
+    #[must_use]
+    pub fn scope(&self) -> crate::rt::SeqReader<[f32; 130]> { self.scope_reader.clone() }
 }
 
 impl Default for StereoWidth {
@@ -352,6 +359,14 @@ impl Node for StereoWidth {
             output[left][n] = mix(f64::from(l), wide_l, wet) as f32;
             output[right][n] = mix(f64::from(r), wide_r, wet) as f32;
         }
+        if ctx.frames > 0 {
+            let mut shown = [0.0_f32; 130];
+            for i in 0..64 { let at = i * (ctx.frames - 1) / 63; shown[2*i] = output[left][at]; shown[2*i+1] = output[right][at]; }
+            let level = |sound: &[f32]| sound[..ctx.frames].iter().fold(0.0_f32, |peak, x| peak.max(x.abs()));
+            shown[128] = 20.0 * level(input[left]).max(level(input[right])).max(1e-10).log10();
+            shown[129] = 20.0 * level(output[left]).max(level(output[right])).max(1e-10).log10();
+            self.scope.write(shown);
+        }
     }
 
     fn latency(&self) -> u32 {
@@ -374,6 +389,7 @@ impl Node for StereoWidth {
         self.high_past = ([0.0; 2], [0.0; 2]);
         self.lines.fill(0.0);
         self.at = 0;
+        self.scope.write([0.0; 130]);
     }
 
     fn set(&mut self, param: ParamId, value: f32) {

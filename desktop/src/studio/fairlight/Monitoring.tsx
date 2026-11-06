@@ -3,6 +3,7 @@ import { useState, type ReactNode } from 'react';
 import type { LoudnessStandard, MeterChannel, Meters, Timeline } from '../engine';
 import type { FairlightText } from '../../messages/fairlight';
 import { Meter as AudioMeter } from '../audio/Meter';
+import { defaultMixerLayout, mixerOrder, MIXER_DIVIDER, type MixerLayout } from '../audio/mixerLayout';
 
 export const STANDARDS: [LoudnessStandard, string][] = [
   ['bs1770_1', 'BS.1770-1'], ['bs1770_4', 'BS.1770-4'], ['atsc_a85', 'ATSC A/85'], ['ebu_r128', 'EBU R128'],
@@ -19,9 +20,10 @@ function Meter({ channel, label }: { channel: MeterChannel; label: string }) {
     <div className="fairlight-meter-well"><AudioMeter label={label} values={[channel]} /></div><small>{reading(channel.bar, 'dBFS')}</small>
   </div>;
 }
-export function Monitoring({ timeline, meters, onAction, onResetPeaks, onPatch, viewer }: {
+export function Monitoring({ timeline, meters, onAction, onResetPeaks, onPatch, viewer, layout }: {
   timeline: Timeline; meters: Meters | null; onAction: (action: 'start' | 'pause' | 'reset') => void;
   onResetPeaks: () => void; onPatch: (patch: Record<string, unknown>) => void; viewer?: ReactNode;
+  layout?: MixerLayout;
 }) {
   const t = useFairlightText();
   const [rows, setRows] = useState(1); const [wide, setWide] = useState(true);
@@ -31,7 +33,8 @@ export function Monitoring({ timeline, meters, onAction, onResetPeaks, onPatch, 
   const target = loudness?.target ?? settings?.target ?? -23;
   const value = (number: number | null | undefined) => reading(number == null ? null : relative ? number - target : number, relative ? 'LU' : 'LUFS');
   const change = (patch: Record<string, unknown>) => onPatch({ loudness: patch });
-  const strips = meters?.strips ?? [];
+  const order = mixerOrder(timeline, layout ?? defaultMixerLayout());
+  const strips = [...meters?.strips ?? []].sort((a, b) => order.indexOf('track' in a.owner ? `track:${a.owner.track}` : `bus:${a.owner.bus}`) - order.indexOf('track' in b.owner ? `track:${b.owner.track}` : `bus:${b.owner.bus}`));
   const bar = (number: number | null | undefined) => {
     const top = settings?.scale === 'ebu18' ? 18 : 9;
     return Math.max(0, Math.min(100, ((number ?? -Infinity) - target + top * 2) / (top * 3) * 100));
@@ -41,11 +44,11 @@ export function Monitoring({ timeline, meters, onAction, onResetPeaks, onPatch, 
       <button type="button" onClick={() => setWide(old => !old)}>{t(wide ? 'Narrow meters' : 'Wide meters')}</button></div>
     {(['track', 'bus'] as const).map(kind => <div key={kind} className="fairlight-strip-meters" aria-label={t(kind === 'track' ? 'Track meters' : 'Bus meters')}
       onDoubleClick={() => setRows(old => old === 1 ? 2 : 1)}>
-      {strips.filter(strip => kind in strip.owner).map(strip => {
+      {strips.filter(strip => { const key = 'track' in strip.owner ? `track:${strip.owner.track}` : `bus:${strip.owner.bus}`; return layout?.single ? kind === 'track' : (order.indexOf(key) < order.indexOf(MIXER_DIVIDER)) === (kind === 'track'); }).map(strip => {
         const id = 'track' in strip.owner ? strip.owner.track : strip.owner.bus;
-        const owner = kind === 'track' ? timeline.tracks.find(track => track.id === id) : timeline.buses?.find(bus => bus.id === id);
+        const owner = 'track' in strip.owner ? timeline.tracks.find(track => track.id === id) : timeline.buses?.find(bus => bus.id === id);
         return <button type="button" className="fairlight-strip-meter" key={id} onClick={onResetPeaks} title={t('Reset meter peaks')}>
-          <strong>{owner?.name ?? id}</strong><div className="fairlight-meter-channels">{(kind === 'track' && timeline.audio?.prefader_metering ? strip.pre : strip.post)
+          <strong>{owner?.name ?? id}</strong><div className="fairlight-meter-channels">{('track' in strip.owner && timeline.audio?.prefader_metering ? strip.pre : strip.post)
             .map((channel, index) => <Meter key={index} channel={channel} label={`${owner?.name ?? id} ${index + 1}`} />)}</div></button>;
       })}
     </div>)}

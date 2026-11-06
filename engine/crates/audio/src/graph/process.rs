@@ -74,6 +74,7 @@ impl Graph {
         }
         self.position = start.saturating_add(i64::try_from(frames).unwrap_or(0));
         self.frames = frames;
+        if self.metering && frames > 0 { self.fx_blocks = self.fx_blocks.wrapping_add(1); self.fx_state.write((true, self.fx_blocks)); }
         result
     }
 

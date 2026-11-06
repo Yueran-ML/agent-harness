@@ -1537,11 +1537,11 @@ async fn dispatch(
         "window.bind" | "window.input" | "window.unbind" => {
             window::call(engine, connection, kind, id, method, params).await
         }
-        "audio.eq_response" | "audio.dynamics_curve" => {
+        "audio.eq_response" | "audio.dynamics_curve" | "audio.soft_clip_curve" => {
             sound_curves::call(engine, connection, id, method, params).await
         }
-        "audio.standards" | "audio.meters" | "audio.loudness" | "audio.analyze"
-        | "audio.normalize" | "audio.level_match" | "audio.cancel" => {
+        "audio.standards" | "audio.meters" | "audio.fx_meters" | "audio.loudness" | "audio.analyze"
+        | "audio.normalize" | "audio.level_match" | "audio.noise_learn" | "audio.cancel" => {
             sound::call(engine, connection, kind, id, method, params).await
         }
         "track.start" | "track.stop" | "track.edit" => {
@@ -1552,6 +1552,9 @@ async fn dispatch(
         }
         _ if crate::window_presets::is_method(method) => {
             crate::window_presets::call(engine, connection, kind, id, method, params).await
+        }
+        _ if crate::audio_presets::is_method(method) => {
+            crate::audio_presets::call(engine, connection, id, method, params).await
         }
         "viewer.wipe" | "viewer.split" | "viewer.highlight" | "viewer.bypass"
         | "viewer.preview" | "viewer.lut" => {

@@ -46,6 +46,7 @@ mod clip;
 mod pdc;
 mod process;
 mod response;
+mod fx_readings;
 pub mod route;
 mod strip;
 mod taps;
@@ -61,6 +62,7 @@ pub use build::{
 pub use build_retune::{retune, without_clip_levels};
 pub use clip::{radius, resampled, Reach};
 pub use response::{dynamics_curve, eq_response};
+pub use fx_readings::{FxGraph, FxOwner, FxReader, FxTap};
 pub use taps::{Point, Taps};
 
 /// A clip of a graph as its controls find it: its track, its id, and whether its gain and its
@@ -343,6 +345,9 @@ pub struct Meter {
 
 /// The graph of the sound of a timeline. See the module.
 pub struct Graph {
+    fx_taps: Vec<FxTap>,
+    fx_state: crate::rt::SeqWriter<(bool, u64)>,
+    fx_blocks: u64,
     /// Which graph it is, so that a control of another graph does nothing to it.
     id: u64,
     rate: u32,

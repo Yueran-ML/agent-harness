@@ -77,6 +77,7 @@ fn sine(db: f64, n: i64) -> f32 {
 fn delays(effect: &Effect, context: &Context) -> Option<Made> {
     match effect {
         Effect::Gain(gain) => Some(Made {
+            reading: None,
             node: Box::new(Delay::new(gain.gain_db as usize)),
             param: |_| None,
             settle: 0,

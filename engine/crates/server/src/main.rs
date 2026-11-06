@@ -73,6 +73,8 @@ mod view;
 mod viewer_preview;
 mod window;
 mod window_presets;
+mod audio_presets;
+mod fx_meters;
 
 #[cfg(test)]
 mod protocol;

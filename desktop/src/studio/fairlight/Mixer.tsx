@@ -5,6 +5,7 @@ import { callEngine, type Meters, type Timeline } from '../engine';
 import type { Change } from '../timeline/commands';
 import { useAudioGesture } from '../timeline/useAudioGesture';
 import { faderChanges, faderPlan, groupMembers, mixerStrips, operationTargets, stripChange, type FaderPlan, type MixerStrip, type Modifiers } from '../audio/mixerModel';
+import { mixerTrackMoves } from './IndexTracks';
 import { ChannelStrip } from './ChannelStrip';
 import { useFairlightText } from './words';
 import './mixer.css';
@@ -18,6 +19,9 @@ import { BusFormat } from './BusFormat';
 import { BusAssign } from './BusAssign';
 import { VcaStrip } from './VcaStrip';
 import './routing.css';
+import type { AudioAutomationAdapter } from '../audio/automationAdapter';
+import { MIXER_DIVIDER, MIXER_SECTIONS, mixerOrder, moveMixerItems, resetBusOrder, useMixerLayout } from '../audio/mixerLayout';
+import type { FairlightText } from '../../messages/fairlight';
 
 /** Keep text/local edits here; ordinary transport and global history keep their existing route. */
 export function isolateMixerKeys(event: KeyboardEvent<HTMLElement>) {
@@ -27,15 +31,27 @@ export function isolateMixerKeys(event: KeyboardEvent<HTMLElement>) {
 }
 
 export interface MixerProps {
+  automation?: AudioAutomationAdapter | null;
   bridge: Pick<EngineBridge, 'call'>; session: number; revision: number; timeline: Timeline; frame: number; meters: Meters | null;
   selected: readonly string[]; onSelect: (keys: string[]) => void; compact?: boolean;
 }
 export function Mixer({ bridge, session, revision, timeline, frame, meters, selected, onSelect, compact = false }: MixerProps) {
   const automation=useAutomationTouch();
+  const [routing, setRouting] = useState<'format' | 'assign' | null>(null);
   const t = useFairlightText(); const [problem, setProblem] = useState<string | null>(null);
   const [processors, setProcessors] = useState<{ key: string; module: ProcessorModule }[]>([]);
-  const [routing, setRouting] = useState<'format' | 'assign' | null>(null);
-  const strips = mixerStrips(timeline), plan = useRef<FaderPlan | null>(null);
+  const box = useRef<{ x:number; y:number; selected:readonly string[] } | null>(null);
+  const [boxRect, setBoxRect] = useState<{left:number;top:number;width:number;height:number}|null>(null);
+  const [layout, setLayout] = useMixerLayout(bridge, session, timeline.id);
+  const order = mixerOrder(timeline, layout), unsorted = mixerStrips(timeline);
+  const strips = order.flatMap(key => unsorted.filter(strip => strip.key === key)), plan = useRef<FaderPlan | null>(null);
+  const [layoutOpen, setLayoutOpen] = useState(false);
+  const sectionLabels = ['Input', 'Track FX', 'Order', 'Effects', 'Effects In', 'Dynamics', 'EQ', 'Sends', 'Pan', 'Outputs', 'VCA'];
+  const reorder = (keys: string[], before: string) => {
+    const ops = mixerTrackMoves(timeline, order, keys, before);
+    if (ops.length) gesture.commit(ops);
+    setLayout({ order: moveMixerItems(order, keys, before) });
+  };
   const [preview, setPreview] = useState<Record<string, number>>({});
   const gesture = useAudioGesture({ bridge, session, revision, identity: `${timeline.id}/mixer`, locked: false, onFailure: error => setProblem(error instanceof Error ? error.message : String(error)) });
   const latest = useRef({ timeline, strips, gesture, selected, revision, session }); latest.current = { timeline, strips, gesture, selected, revision, session };
@@ -121,7 +137,8 @@ export function Mixer({ bridge, session, revision, timeline, frame, meters, sele
   const draw = (strip: MixerStrip) => {
     const reading = meters?.strips.find(m => 'track' in m.owner ? strip.kind === 'track' && m.owner.track === strip.id : strip.kind === 'bus' && m.owner.bus === strip.id);
     return <ChannelStrip onArm={(arm,modifiers)=>{const targets=operationTargets(strips,strip.key,selected,modifiers);gesture.commit(targets.map(s=>stripChange(timeline.id,s,{automation_arm:arm})));}} key={strip.key} strip={strip} compact={compact} seconds={frame * timeline.rate.den / timeline.rate.num} selected={selected.includes(strip.key)}
-      processorContext={{ bridge, session, revision, timeline, target: targetOf(strip), selected, seconds: frame * timeline.rate.den / timeline.rate.num }}
+      onReorder={reorder} selectedKeys={selected}
+      processorContext={{ bridge, session, revision, timeline, target: targetOf(strip), selected, seconds: frame * timeline.rate.den / timeline.rate.num, automation }}
       onProcessor={module => setProcessors(old => [...(compact ? [] : old.filter(p => p.key !== strip.key || p.module !== module)), { key: strip.key, module }])}
       onStripSetting={(path, value, modifiers) => void stripSetting(strip,path,value,modifiers)}
       value={gesture.active() ? preview[strip.key] : undefined} meters={timeline.audio?.prefader_metering ? reading?.pre : reading?.post}
@@ -140,21 +157,46 @@ export function Mixer({ bridge, session, revision, timeline, frame, meters, sele
           modifiers: { altKey: event.altKey, ctrlKey: event.ctrlKey, shiftKey: event.shiftKey } };
       }} onEnter={(field, event) => { if (event.buttons === 1 && sweep.current?.field === field && !strip.locked) sweep.current.keys.add(strip.key); }} />;
   };
-  return <section className="audio-mixer" data-compact={compact || undefined} aria-label={t('Mixer channels')} onKeyDown={event => {
+  const drawItem = (key: string) => {
+    const strip = strips.find(s => s.key === key);
+    if (strip) return draw(strip);
+    const vca = timeline.vcas?.find(v => `vca:${v.id}` === key);
+    if (!vca || !(strips.some(s => s.strip?.vcas?.includes(vca.id)) || timeline.vcas?.some(v => v.vcas?.includes(vca.id)))) return null;
+    return <VcaStrip key={key} context={{bridge,session,revision,timeline}} vca={vca} seconds={frame*timeline.rate.den/timeline.rate.num} selected={selected.includes(key)} onSelect={()=>onSelect([key])}/>;
+  };
+  return <section className="audio-mixer" data-compact={compact || undefined} data-small={layout.small || undefined} data-labels={layout.labels} data-hidden={layout.hidden.join(' ')} aria-label={t('Mixer channels')} onKeyDown={event => {
     isolateMixerKeys(event); if (!keyOf(event).composing && event.key === 'Escape') { event.preventDefault(); cancel(); }
   }}>
-    <header className="mixer-toolbar"><button type="button" onClick={() => setRouting('format')}>{t('Bus Format')}</button><button type="button" onClick={() => setRouting('assign')}>{t('Bus Assign')}</button>
-      <label><input type="checkbox" checked={timeline.audio?.exclusive_solo ?? false}
-      onChange={event => gesture.commit([{ op: 'set_timeline_audio', timeline: timeline.id, patch: { exclusive_solo: event.target.checked } }])} />{t('Exclusive Solo')}</label></header>
+    <header className="mixer-toolbar"><button type="button" onClick={() => setRouting('format')}>{t('Bus Format')}</button><button type="button" onClick={() => setRouting('assign')}>{t('Bus Assign')}</button><label><input type="checkbox" checked={timeline.audio?.exclusive_solo ?? false}
+      onChange={event => gesture.commit([{ op: 'set_timeline_audio', timeline: timeline.id, patch: { exclusive_solo: event.target.checked } }])} />{t('Exclusive Solo')}</label>
+      <button type="button" aria-label={t('Mixer options')} aria-expanded={layoutOpen} onClick={() => setLayoutOpen(old => !old)}>…</button>
+      {layoutOpen && <div className="mixer-layout-menu" role="menu" aria-label={t('Mixer options')}>
+        <button type="button" role="menuitemradio" aria-checked={!layout.small} onClick={() => setLayout({ small: false })}>{t('Full Track Mixer')}</button><button type="button" role="menuitemradio" aria-checked={layout.small} onClick={() => setLayout({ small: true })}>{t('Small Track Mixer')}</button>
+        <label><input type="checkbox" checked={layout.labels} onChange={event => setLayout({ labels: event.target.checked })} />{t('Show Labels')}</label>
+        <label><input type="checkbox" checked={layout.single} onChange={event => setLayout({ single: event.target.checked })} />{t('Single Mixer')}</label>
+        <button type="button" onClick={() => setLayout({ order: resetBusOrder(timeline, layout) })}>{t('Reset Bus Order')}</button>
+        <fieldset><legend>{t('Channel Strip Control Visibility')}</legend>{MIXER_SECTIONS.map((section, i) => <label key={section}><input type="checkbox" checked={!layout.hidden.includes(section)} onChange={event => setLayout({ hidden: event.target.checked ? layout.hidden.filter(s => s !== section) : [...layout.hidden, section] })} />{sectionLabels[i] === 'EQ' || sectionLabels[i] === 'VCA' ? sectionLabels[i] : t(sectionLabels[i] as FairlightText)}</label>)}</fieldset>
+        <label><input type="checkbox" checked={!layout.hidden.includes('trackfx')} onChange={event => setLayout({ hidden: event.target.checked ? layout.hidden.filter(s => s !== 'trackfx') : [...layout.hidden, 'trackfx'] })} />{t('Visible Track FX')}: {t('Ducker')}</label>
+      </div>}
+    </header>
     {problem && <p role="alert">{problem}<button type="button" onClick={() => setProblem(null)}>{t('Dismiss')}</button></p>}
-    <div className="mixer-regions"><div className="mixer-region mixer-tracks" aria-label={t('Tracks')}>{strips.filter(s => s.kind === 'track').map(draw)}</div>
-      <div className="mixer-region mixer-buses" aria-label={t('Buses')}>{strips.filter(s => s.kind === 'bus').map(draw)}
-        {(timeline.vcas??[]).filter(vca=>strips.some(s=>s.strip?.vcas?.includes(vca.id))||timeline.vcas?.some(v=>v.vcas?.includes(vca.id))).map(vca=><VcaStrip key={`vca:${vca.id}`} context={{bridge,session,revision,timeline}} vca={vca} seconds={frame*timeline.rate.den/timeline.rate.num} selected={selected.includes(`vca:${vca.id}`)} onSelect={()=>onSelect([`vca:${vca.id}`])}/>)}</div></div>
+    <div className="mixer-regions" onPointerDown={event => {
+      if (event.button !== 0 || !(event.target instanceof HTMLElement) || !event.target.matches('.mixer-region, .mixer-regions')) return;
+      event.preventDefault(); box.current = {x:event.clientX,y:event.clientY,selected:event.ctrlKey ? selected : []}; event.currentTarget.setPointerCapture?.(event.pointerId);
+    }} onPointerMove={event => {
+      const start=box.current; if (!start) return;
+      const rect={left:Math.min(start.x,event.clientX),top:Math.min(start.y,event.clientY),width:Math.abs(event.clientX-start.x),height:Math.abs(event.clientY-start.y)}; setBoxRect(rect);
+      const keys=[...event.currentTarget.querySelectorAll<HTMLElement>('[data-mixer-strip]')].filter(el=>{const r=el.getBoundingClientRect();return r.right>=rect.left && r.left<=rect.left+rect.width && r.bottom>=rect.top && r.top<=rect.top+rect.height;}).map(el=>el.dataset.mixerStrip!);
+      onSelect([...new Set([...start.selected,...keys])]);
+    }} onPointerUp={() => {box.current=null;setBoxRect(null);}} onPointerCancel={() => {box.current=null;setBoxRect(null);}}>{layout.single ? <div className="mixer-region">{order.map(drawItem)}</div> : <><div className="mixer-region mixer-tracks" aria-label={t('Tracks')}>{order.slice(0,order.indexOf(MIXER_DIVIDER)).map(drawItem)}</div>
+      <div role="separator" aria-label={t('Mixer divider')} className="mixer-divider" draggable onDragStart={event => event.dataTransfer.setData('application/x-columbina-mixer-order', JSON.stringify([MIXER_DIVIDER]))} />
+      <div className="mixer-region mixer-buses" aria-label={t('Buses')}>{order.slice(order.indexOf(MIXER_DIVIDER)+1).map(drawItem)}</div></>}</div>
+    {boxRect && <div className="mixer-selection-box" style={boxRect} />}
     {routing === 'format' && <BusFormat bridge={bridge} session={session} revision={revision} timeline={timeline} onClose={() => setRouting(null)} />}
     {routing === 'assign' && <BusAssign bridge={bridge} session={session} revision={revision} timeline={timeline} onClose={() => setRouting(null)} />}
     {processors.map((p, order) => {
       const owner = strips.find(s => s.key === p.key); if (!owner) return null;
-      return <ProcessorWindow key={`${p.key}/${p.module}`} context={{ bridge, session, revision, timeline, target: targetOf(owner), selected, seconds: frame * timeline.rate.den / timeline.rate.num }} module={p.module} name={owner.name} compact={compact} order={order}
+      return <ProcessorWindow key={`${p.key}/${p.module}`} context={{ bridge, session, revision, timeline, target: targetOf(owner), selected, seconds: frame * timeline.rate.den / timeline.rate.num, automation }} module={p.module} name={owner.name} compact={compact} order={order}
         onClose={() => setProcessors(old => old.filter(each => each.key !== p.key || each.module !== p.module))}
         onFront={() => setProcessors(old => old.at(-1) === p ? old : [...old.filter(each => each !== p), p])} />;
     })}

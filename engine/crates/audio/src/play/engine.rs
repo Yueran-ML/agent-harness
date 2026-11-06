@@ -428,6 +428,7 @@ impl Engine {
 
     /// Ends the session, letting go of its graphs.
     fn end_session(&mut self) {
+        self.each_graph(|graph| graph.set_metering(false));
         self.fade = None;
         if let Some((run, _)) = self.incoming.take() {
             self.retire(Retired::Run(run));

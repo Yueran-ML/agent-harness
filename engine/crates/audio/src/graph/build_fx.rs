@@ -45,6 +45,7 @@ fn slowest<S: Clone>(
 /// A made node: `node`, its parameters by path, its settling; it takes its insert's switch.
 fn made(node: Box<dyn Node>, param: fn(&str) -> Option<ParamId>, settle: u32) -> Made {
     Made {
+        reading: None,
         node,
         param,
         settle,
@@ -91,8 +92,10 @@ pub fn node_of(effect: &Effect, context: &Context) -> Option<Made> {
                 |s, v| s.release_ms = v,
                 |s| limiter::settle_for(s, rate),
             );
-            made(
-                Box::new(limiter::Limiter::new(&settings)),
+            let node = limiter::Limiter::new(&settings);
+            let reading = Some(super::FxReader::Limiter(node.meter()));
+            let mut result = made(
+                Box::new(node),
                 |path| {
                     limiter::Param::ALL
                         .iter()
@@ -100,7 +103,9 @@ pub fn node_of(effect: &Effect, context: &Context) -> Option<Made> {
                         .map(|p| p.id())
                 },
                 limiter::settle_for(&slow, rate),
-            )
+            );
+            result.reading = reading;
+            result
         }
         Effect::SoftClipper(fx) => {
             let settings = soft_clip::Settings {
@@ -127,8 +132,10 @@ pub fn node_of(effect: &Effect, context: &Context) -> Option<Made> {
                 diffusion: single(fx.diffusion),
                 sparkle: single(fx.sparkle),
             };
-            made(
-                Box::new(width::StereoWidth::new(&settings)),
+            let node = width::StereoWidth::new(&settings);
+            let reading = Some(super::FxReader::Width(node.scope()));
+            let mut result = made(
+                Box::new(node),
                 |path| {
                     width::Param::ALL
                         .iter()
@@ -136,7 +143,9 @@ pub fn node_of(effect: &Effect, context: &Context) -> Option<Made> {
                         .map(|p| p.id())
                 },
                 width::settle_for(&settings, rate),
-            )
+            );
+            result.reading = reading;
+            result
         }
         Effect::DeEsser(fx) => {
             let settings = deesser::Settings {
@@ -162,8 +171,10 @@ pub fn node_of(effect: &Effect, context: &Context) -> Option<Made> {
                 |s, v| s.frequency_hz = v,
                 |s| deesser::settle_for(s, rate),
             );
-            made(
-                Box::new(deesser::DeEsser::new(&settings)),
+            let node = deesser::DeEsser::new(&settings);
+            let reading = Some(super::FxReader::DeEsser(node.meter()));
+            let mut result = made(
+                Box::new(node),
                 |path| {
                     deesser::Param::ALL
                         .iter()
@@ -171,7 +182,9 @@ pub fn node_of(effect: &Effect, context: &Context) -> Option<Made> {
                         .map(|p| p.id())
                 },
                 deesser::settle_for(&slow, rate),
-            )
+            );
+            result.reading = reading;
+            result
         }
         Effect::DeHummer(fx) => {
             let settings = dehummer::Settings {
@@ -236,8 +249,10 @@ pub fn node_of(effect: &Effect, context: &Context) -> Option<Made> {
                 settle,
             );
             let slow = slowest(slow, lanes, "ratio", |s, v| s.ratio = v, settle);
-            made(
-                Box::new(denoise::NoiseReduction::new(&settings)),
+            let node = denoise::NoiseReduction::new(&settings);
+            let reading = node.spectrum().map(super::FxReader::Noise);
+            let mut result = made(
+                Box::new(node),
                 |path| {
                     denoise::Param::ALL
                         .iter()
@@ -245,7 +260,9 @@ pub fn node_of(effect: &Effect, context: &Context) -> Option<Made> {
                         .map(|p| p.id())
                 },
                 settle(&slow),
-            )
+            );
+            result.reading = reading;
+            result
         }
         Effect::Pitch(fx) => {
             #[allow(clippy::cast_precision_loss, reason = "whole semitones from -12 to 12")]

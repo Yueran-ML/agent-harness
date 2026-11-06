@@ -5650,3 +5650,6 @@ async fn view_display_says_what_each_view_shows_and_keeps_it_to_sdr() {
     assert_eq!(display["source"]["hdr_shown"], false, "{display}");
     assert_eq!(display["hdr"], false);
 }
+
+#[path = "rpc/fx_processors.rs"]
+mod fx_processors;

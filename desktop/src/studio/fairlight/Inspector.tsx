@@ -5,25 +5,32 @@ import type { Media, Op, Timeline } from '../engine';
 import { ClipAudio } from '../inspector/ClipAudio';
 import { FieldsLocked, NumberField } from '../inspector/fields';
 import { useCommit } from '../inspector/useCommit';
+import { InsertSlots } from './InsertSlots';
+import { DuckerPanel } from '../audio/DuckerPanel';
+import type { AudioAutomationAdapter } from '../audio/automationAdapter';
+import { useAutomationTouch } from './AutomationTouch';
+/** Track/clip selection is shared with the timeline. Detailed strip processors plug in with T21. */
 import { Inspector as EditInspector } from '../inspector/Inspector';
-import { AUDIO_EFFECTS } from './EffectsLibrary';
 import { useWords } from '../../app/locale';
 import { refusalOf } from '../inspector/refusal';
 import { AudioConfig } from '../inspector/AudioConfig';
 /** Track/clip selection is shared with the timeline. Detailed strip processors plug in with T21. */
-export function Inspector({ bridge, session, revision, timeline, media, clips, track: trackId, transition = null, onEdit, frame = 0, onSeek = () => {}, onSpeed }: {
+export function Inspector({ bridge, session, revision, timeline, media, clips, track: trackId, transition = null, onEdit, frame = 0, onSeek = () => {}, onSpeed, automation: adapter }: {
   bridge: Pick<EngineBridge, 'call'>; session: number; revision: number; timeline: Timeline; media: readonly Media[];
   clips: string[]; track: string | null; onEdit: (ops: Op[]) => void;
+  automation?: AudioAutomationAdapter | null;
   transition?: string | null;
   frame?: number; onSeek?: (frame: number, scrubbing: boolean) => void; onSpeed?: (clips: string[]) => void;
 }) {
   const t = useFairlightText();
+  const control = useAutomationTouch(), automation = control ?? adapter;
   const words = useWords();
   const { commit, refusal, setRefusal } = useCommit({ bridge, session, revision, timeline });
   const [mode, setMode] = useState<'clip' | 'track'>('clip');
   const [tab, setTab] = useState<'audio' | 'effects' | 'file'>('audio');
   useEffect(() => { if (clips.length) setMode('clip'); }, [clips]);
   useEffect(() => { if (trackId !== null && !clips.length && transition === null) setMode('track'); }, [trackId, clips, transition]);
+  const seconds = frame * timeline.rate.den / timeline.rate.num;
   const track = timeline.tracks.find(each => each.id === trackId);
   const locations = timeline.tracks.flatMap(each => each.kind !== 'audio' ? [] : each.clips.filter(clip => clips.includes(clip.id)).map(clip => ({ clip, locked: each.locked })));
   const unlocked = locations.filter(each => !each.locked);
@@ -49,8 +56,9 @@ export function Inspector({ bridge, session, revision, timeline, media, clips, t
       <NumberField name="track-fader" label={t('Fader')} value={track.strip?.fader_db ?? 0} fallback={0} unit="dB" min={-100} max={10} digits={1} scrub={.1} fineModifiers disabled={track.locked}
         onCommit={fader_db => onEdit([{ op: 'set_track_audio', timeline: timeline.id, track: track.id, patch: { strip: { fader_db } } }])} />
       <span>{track.format === '5.1' ? '5.1' : t(track.format === 'mono' ? 'Mono' : track.format === 'adaptive' ? 'Adaptive' : 'Stereo')}</span>
+      <DuckerPanel seconds={seconds} bridge={bridge} session={session} revision={revision} timeline={timeline} target={{ track: track.id }} automation={automation} />
     </>}
-    {tab === 'effects' && <ul>{(mode === 'track' && track?.kind === 'audio' ? track.strip?.inserts ?? [] : chosen.flatMap(clip => clip.effects ?? [])).map((insert, index) => <li key={index}>{t(AUDIO_EFFECTS.find(([id]) => id === insert.effect.kind)![1])} · {t(insert.on ? 'On' : 'Off')}</li>)}</ul>}
+    {tab === 'effects' && (mode === 'track' && track?.kind === 'audio' ? <InsertSlots seconds={seconds} bridge={bridge} session={session} revision={revision} timeline={timeline} target={{ track: track.id }} automation={automation} inline /> : chosen.map(clip => <div key={clip.id}><strong>{clip.id}</strong><InsertSlots seconds={seconds} bridge={bridge} session={session} revision={revision} timeline={timeline} target={{ clip: clip.id }} inline /></div>))}
     {tab === 'file' && chosen.some(clip => clip.source.kind === 'media') && <FieldsLocked.Provider value={locked}>
       <AudioConfig key={JSON.stringify([session, timeline.id, chosen.map(clip => clip.id)])} clips={chosen.filter(clip => clip.source.kind === 'media')} timeline={timeline} media={media} commit={commit} />
     </FieldsLocked.Provider>}

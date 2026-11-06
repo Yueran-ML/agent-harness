@@ -605,6 +605,27 @@ class Fake:
             raise RefusedError(-32000, f"no static curve fixture configured for {method}")
         return copy.deepcopy(self.results[method])
 
+    def audio_fx_meters(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        return self._processor_curve("audio.fx_meters", params)
+
+    def audio_soft_clip_curve(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        return self._processor_curve("audio.soft_clip_curve", params)
+
+    def audio_noise_learn(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        return self._sound("audio.noise_learn", params)
+
+    def audio_presets_list(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        return self._processor_curve("audio_presets.list", params)
+
+    def audio_presets_save(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        return self._processor_curve("audio_presets.save", params)
+
+    def audio_presets_update(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        return self._processor_curve("audio_presets.update", params)
+
+    def audio_presets_delete(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        return self._processor_curve("audio_presets.delete", params)
+
     def audio_analyze(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
         return self._sound("audio.analyze", params)
 

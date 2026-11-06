@@ -126,6 +126,7 @@ fn delays(effect: &Effect, _: &Context) -> Option<Made> {
         return None;
     };
     Some(Made {
+        reading: None,
         node: Box::new(columbina_audio::testing::Delay::new(64)),
         param: |_| None,
         settle: 0,
@@ -356,6 +357,7 @@ fn costly(effect: &Effect, _: &Context) -> Option<Made> {
         return None;
     };
     Some(Made {
+        reading: None,
         node: Box::new(Costly { cost: COST }),
         param: |_| None,
         settle: 0,

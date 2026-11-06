@@ -1001,7 +1001,10 @@ export interface AnalysisResult {
 /** The gain that Normalize Audio Levels or Level Matcher found for a clip; `null` for one left as it is. */
 export interface ClipGain { clip: string; gain_db: number | null; clamped: boolean; measured: number | null }
 /** What `audio.analysis` tells of a job of `audio.analyze`, `audio.normalize` or `audio.level_match`. */
+export interface FxReading { kind: 'dynamics' | 'ducker' | 'limiter' | 'de_esser' | 'noise_reduction' | 'stereo_width'; input_db?: number; output_db?: number; source_db?: number; reduction_db?: number; expander_db?: number; compressor_db?: number; limiter_db?: number; input_spectrum_db?: number[]; noise_spectrum_db?: number[]; scope?: number[] }
+export interface FxMeters { timeline: string; playing: boolean; generation: number | null; sequence?: number; sample_rate: number | null; readings: { owner: SourceRef | {clip: string}; insert: string | null; slot: number | null; reading: FxReading }[] }
 export type AudioAnalysis =
+  | { job: string; state: 'done'; method: 'audio.noise_learn'; target: SourceRef | {clip:string}; slot:number; profile: number[]; result: {applied: Applied | null; refused?: EngineFailure} }
   | { job: string; state: 'running'; done: number; total: number }
   | { job: string; state: 'done'; method: 'audio.analyze'; standard: string; level: number | null; results: AnalysisResult[]; candidate?: true }
   | {
@@ -1067,6 +1070,9 @@ export interface PageMethods {
   // The meters, the loudness and the analyses of sound (PROTOCOL.md, "Meters, loudness and the analysis of sound").
   'audio.standards': { standards: AudioStandard[] };
   'audio.meters': Meters;
+  'audio.fx_meters': FxMeters;
+  'audio.soft_clip_curve': { revision: number; inputs: number[]; outputs: number[] };
+  'audio.noise_learn': { job: string };
   'audio.eq_response': { revision: number; sample_rate: number; frequencies: number[]; gain_db: number[] };
   'audio.dynamics_curve': { revision: number; inputs_db: number[]; outputs_db: number[] };
   'audio.loudness': LoudnessReading;
@@ -1100,6 +1106,10 @@ export interface PageMethods {
   'window_presets.update': WindowPreset;
   'window_presets.delete': { deleted: string };
   'window_presets.apply': Applied;
+  'audio_presets.list': { presets: AudioPreset[] };
+  'audio_presets.save': AudioPreset;
+  'audio_presets.update': AudioPreset;
+  'audio_presets.delete': { deleted: string };
   // The LUT browser's thumbnails and Live Preview, and the Color Viewer LUT on the Color page alone (PROTOCOL.md, "Previews of LUTs").
   'luts.preview': { previews: LutPreview[] };
   'viewer.preview': { monitor: 'timeline'; preview: LivePreview | null };
@@ -1175,6 +1185,8 @@ export type AutomationTouch = { timeline: string; path: string; value: number; t
  * playhead, every parameter fixed, kept in this user's library apart from every project.
  */
 export interface WindowPreset { id: string; name: string; windows: PowerWindow[] }
+export type AudioPresetPayload = { kind: 'eq'; settings: Equalizer } | { kind: 'clip_eq'; settings: Equalizer } | { kind: 'dynamics'; settings: Dynamics } | { kind: 'effect'; settings: Effect };
+export interface AudioPreset { id: string; name: string; payload: AudioPresetPayload }
 
 /**
  * An album of the project's gallery, or of the PowerGrades that every project shares (p. 3266), or

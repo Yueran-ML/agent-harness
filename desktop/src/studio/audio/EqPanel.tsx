@@ -8,6 +8,7 @@ import { useProcessor, type ProcessorProps } from './useProcessor';
 import { useProcessorCurve } from './useProcessorCurve';
 import { clamp } from './taper';
 import './processors.css';
+import { EffectPresets } from './EffectPresets';
 
 export function EqPanel(props: ProcessorProps) {
   const t = useFairlightText(), control = useProcessor(props, 'eq'), { curve, problem } = useProcessorCurve(props, 'eq');
@@ -16,6 +17,7 @@ export function EqPanel(props: ProcessorProps) {
   const change = (index: number, patch: Partial<EqBand>, base = control.snapshot()) => changeBand(base, index, patch, sampleRate);
   return <section className="processor-panel eq-panel" aria-label="EQ" data-audio-owner={targetKey(props.target)} onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); control.cancel(); } }}>
     <ProcessorToolbar module="eq" value={eq} disabled={control.disabled} reset={defaults} commit={control.commit} enable={control.enable} />
+    <EffectPresets context={props} identity="eq" value={{ kind: clip ? 'clip_eq' : 'eq', settings: eq }} disabled={control.disabled || Boolean(props.automation?.recording)} apply={payload => { if (payload.kind === 'eq' || payload.kind === 'clip_eq') control.commit(payload.settings); }} />
     <p className="processor-note">{t('Static model curve')}</p>
     {(control.problem || problem) && <p role="alert">{control.problem ?? problem}</p>}
     {control.disabled && <p>{t('Locked or automated')}</p>}

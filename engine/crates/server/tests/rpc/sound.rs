@@ -19,7 +19,7 @@ const RATE: u32 = 48_000;
 
 /// A WAV of floats at 48 kHz, of `channels` channels and `frames` frames, sample `sample(n,
 /// channel)`.
-fn wav(path: &Path, channels: u16, frames: u32, sample: impl Fn(u32, u16) -> f64) {
+pub(super) fn wav(path: &Path, channels: u16, frames: u32, sample: impl Fn(u32, u16) -> f64) {
     let data = frames * u32::from(channels) * 4;
     let mut bytes = Vec::with_capacity(44 + data as usize);
     bytes.extend(b"RIFF");
@@ -120,7 +120,7 @@ async fn import(client: &mut Client, paths: &[&Path]) -> Vec<String> {
 
 /// Waits for the end of job `job` (as `audio.analysis` and `render.progress` tell it), and
 /// returns what it was told then; the jobs' progress told, in order.
-async fn ended(client: &mut Client, method: &str, job: &Value) -> (Value, Vec<Value>) {
+pub(super) async fn ended(client: &mut Client, method: &str, job: &Value) -> (Value, Vec<Value>) {
     let mut pending = client.take_notifications().into_iter();
     let mut running = Vec::new();
     loop {

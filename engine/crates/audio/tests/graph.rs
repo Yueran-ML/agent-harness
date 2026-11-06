@@ -669,6 +669,7 @@ fn delays(effect: &Effect, _: &Context) -> Option<Made> {
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let samples = gain.gain_db as usize;
             Some(Made {
+                reading: None,
                 node: Box::new(Delay::new(samples)),
                 param: |_| None,
                 settle: 0,
@@ -676,6 +677,7 @@ fn delays(effect: &Effect, _: &Context) -> Option<Made> {
             })
         }
         Effect::DeHummer(_) => Some(Made {
+            reading: None,
             node: Box::new(Stepper(0.0)),
             param: |path| (path == "amount").then_some(ParamId(0)),
             settle: 0,
@@ -803,6 +805,7 @@ fn an_insert_that_does_not_take_its_channels_is_left_out() {
         .push(delay_insert(1));
     let refusing = |_: &Effect, _: &Context| {
         Some(Made {
+            reading: None,
             node: Box::new(Refusing),
             param: |_| None,
             settle: 0,
@@ -882,6 +885,7 @@ fn the_controls_are_found_by_the_paths_of_their_lanes() {
     });
     let with_params = |effect: &Effect, context: &Context| {
         delays(effect, context).map(|made| Made {
+            reading: None,
             param: |path| (path == "gain_db").then_some(ParamId(7)),
             ..made
         })
@@ -1378,6 +1382,7 @@ fn an_insert_is_given_its_listen_only_in_a_preview() {
             return None;
         };
         Some(Made {
+            reading: None,
             node: Box::new(Delay::new(if fx.listen { 5 } else { 0 })),
             param: |_| None,
             settle: 0,

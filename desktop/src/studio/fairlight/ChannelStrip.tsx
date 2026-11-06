@@ -19,7 +19,12 @@ import { SendWindow } from './SendWindow';
 import { VcaAssignment } from './VcaAssignment';
 import { useVcaGain } from './VcaStrip';
 
-export function ChannelStrip({ strip, seconds, value, selected, meters, shadow, onSelect, onRename, onStart, onChange, onEnd, onCancel, onCommit, isActive, onToggle, onSweep, onEnter, onArm, processorContext, onProcessor, onStripSetting, compact = false }: {
+import { InsertSlots } from './InsertSlots';
+import { DuckerPanel } from '../audio/DuckerPanel';
+import { StripCopy } from '../audio/StripCopy';
+
+export function ChannelStrip({ strip, seconds, value, selected, meters, shadow, onSelect, onRename, onStart, onChange, onEnd, onCancel, onCommit, isActive, onToggle, onSweep, onEnter, onArm, processorContext, onProcessor, onStripSetting, onReorder, selectedKeys = [], compact = false }: {
+  onReorder?: (keys: string[], before: string) => void; selectedKeys?: readonly string[];
   strip: MixerStrip; seconds: number; value?: number; selected: boolean; meters?: MeterChannel[]; shadow: boolean;
   onSelect: (modifiers: Modifiers) => void; onRename: (name: string) => Promise<boolean>;
   onStart: (modifiers: Modifiers) => boolean; onChange: (value: number) => void; onEnd: () => void; onCancel: () => void;
@@ -45,34 +50,38 @@ export function ChannelStrip({ strip, seconds, value, selected, meters, shadow, 
   const baseMute=(automation?.enabled??true)&&strip.arm!=='off'?laneValue(strip.lanes?.mute,seconds,strip.mute?1:0)>=.5:strip.mute;
   const muted=(automation?.reading({of,path:'mute'},Number(baseMute),{kind:'switch',scale:'linear'})??Number(baseMute))>=.5;
   const instantMute=()=>automation?.instant({of,path:'mute'},muted?0:1);
+  const [duckerOpen, setDuckerOpen] = useState(false);
   return <article className="mixer-strip" data-mixer-strip={strip.key} data-selected={selected || undefined} data-disabled={!strip.enabled || undefined}
-    data-recording={automation?.status(target)==='write'||undefined} data-preview={automation?.status(target)==='preview'||undefined} data-trim={trim||undefined} aria-label={strip.name} onClick={event => { if (event.target === event.currentTarget) onSelect(event); }}>
-    <div className="mixer-strip-color" style={{ background: strip.color }}>{strip.kind === 'track' ? 'A' : 'B'}{strip.number}</div>
+    data-recording={automation?.status(target)==='write'||undefined} data-preview={automation?.status(target)==='preview'||undefined} data-trim={trim||undefined} aria-label={strip.name} onClick={event => { if (event.target === event.currentTarget) onSelect(event); }}
+    onDragOver={event => { if (event.dataTransfer.types.includes('application/x-columbina-mixer-order')) event.preventDefault(); }}
+    onDrop={event => { const raw = event.dataTransfer.getData('application/x-columbina-mixer-order'); if (!raw) return; event.preventDefault(); try { const keys: unknown = JSON.parse(raw); if (Array.isArray(keys) && keys.every(k => typeof k === 'string')) onReorder?.(keys, strip.key); } catch { /* Ignore unrelated drags. */ } }}>
+    <div className="mixer-strip-color" style={{ background: strip.color }}><StripCopy context={processorContext}>{strip.kind === 'track' ? 'A' : 'B'}{strip.number}</StripCopy></div>
     <dl className="mixer-summary">
-      <div data-core><dt>{t('Input')}</dt><dd><button type="button" aria-label={`${t('Path Settings')} ${strip.name}`} onClick={event => {
+      <div data-core data-section="input"><dt>{t('Input')}</dt><dd><button type="button" aria-label={`${t('Path Settings')} ${strip.name}`} onClick={event => {
         const rect = event.currentTarget.getBoundingClientRect(); setPathOpen(pathOpen ? null : { x: Math.max(8, Math.min(window.innerWidth - 220, rect.left)), y: Math.max(8, Math.min(window.innerHeight - 240, rect.bottom)) });
       }}>{t('Audio')}</button></dd></div>
-      <div><dt>{t('Track FX')}</dt><dd>{model?.track_fx ? t('Ducker') : '—'}</dd></div>
-      <div data-core><dt>{t('Order')}</dt><dd><select aria-label={`${t('Order')} ${strip.name}`} disabled={strip.locked} value={(model?.order ?? ORDERINGS[0]).join(',')}
+      {strip.kind === 'track' && <div data-section="trackfx"><dt>{t('Track FX')}</dt><dd><button type="button" onClick={() => setDuckerOpen(true)}>{t('Ducker')}</button></dd></div>}
+      <div data-core data-section="order"><dt>{t('Order')}</dt><dd><select aria-label={`${t('Order')} ${strip.name}`} disabled={strip.locked} value={(model?.order ?? ORDERINGS[0]).join(',')}
         onChange={event => onStripSetting('order', event.target.value.split(','), {})}>{ORDERINGS.map(order => <option key={order.join(',')} value={order.join(',')}>{order.map(s => s === 'fx' ? 'FX' : s === 'eq' ? 'EQ' : 'DY').join(' › ')}</option>)}</select></dd></div>
-      <div><dt>{t('Effects')}</dt><dd>{model?.inserts?.length ?? 0} / 6</dd></div>
-      <div data-core><dt>{t('Effects In')}</dt><dd><button type="button" className="effects-in" aria-label={`${t('Effects In')} ${strip.name}`} aria-pressed={model?.inserts_on !== false}
+      <div data-core data-insert-slots data-section="effects"><dt>{t('Effects')}</dt><dd><InsertSlots {...processorContext} /></dd></div>
+      <div data-core data-section="effectsIn"><dt>{t('Effects In')}</dt><dd><button type="button" className="effects-in" aria-label={`${t('Effects In')} ${strip.name}`} aria-pressed={model?.inserts_on !== false}
         disabled={recording||strip.locked||(automation?.enabled!==false&&!processorWritable(strip, 'inserts_on'))} onClick={event => onStripSetting('inserts_on', model?.inserts_on === false, event)}>{t(model?.inserts_on === false ? 'Off' : 'On')}</button></dd></div>
-      <div data-core><dt>{t('Dynamics')}</dt><dd><ProcessorThumbnail name={strip.name} module="dynamics" openOnClick={compact} on={model?.dynamics?.on ?? false} disabled={strip.locked||(!recording&&automation?.enabled!==false&&!processorWritable(strip, 'dynamics'))}
+      <div data-core data-section="dynamics"><dt>{t('Dynamics')}</dt><dd><ProcessorThumbnail name={strip.name} module="dynamics" openOnClick={compact} on={model?.dynamics?.on ?? false} disabled={strip.locked||(!recording&&automation?.enabled!==false&&!processorWritable(strip, 'dynamics'))}
         settings={model?.dynamics ?? defaultDynamics()} onPaste={(settings, modifiers) => onStripSetting('dynamics', settings, modifiers)}
         context={processorContext} showCurve={Boolean(model?.dynamics)} onToggle={modifiers => onStripSetting('dynamics', { on: !model?.dynamics?.on }, modifiers)} onOpen={() => onProcessor('dynamics')} /></dd></div>
-      <div data-core><dt>EQ</dt><dd><ProcessorThumbnail name={strip.name} module="eq" openOnClick={compact} on={model?.eq?.on ?? false} disabled={strip.locked||(!recording&&automation?.enabled!==false&&!processorWritable(strip, 'eq'))}
+      <div data-core data-section="eq"><dt>EQ</dt><dd><ProcessorThumbnail name={strip.name} module="eq" openOnClick={compact} on={model?.eq?.on ?? false} disabled={strip.locked||(!recording&&automation?.enabled!==false&&!processorWritable(strip, 'eq'))}
         settings={model?.eq ?? defaultEq()} onPaste={(settings, modifiers) => onStripSetting('eq', settings, modifiers)}
         context={processorContext} showCurve={Boolean(model?.eq)} onToggle={modifiers => onStripSetting('eq', { on: !model?.eq?.on }, modifiers)} onOpen={() => onProcessor('eq')} /></dd></div>
-      <div><dt>{t('Sends')}</dt><dd><RouteButtons context={processorContext} strip={strip} field="sends" onOpen={() => setSendsOpen(true)} /></dd></div>
-      <div><dt>{t('Pan')}</dt><dd><PanControl context={processorContext} stripKey={strip.key} /></dd></div>
-      <div><dt>{t('Outputs')}</dt><dd><RouteButtons context={processorContext} strip={strip} field="outputs" onOpen={() => {}} /></dd></div>
-      <div><dt>VCA</dt><dd><VcaAssignment context={processorContext} of={of} selected={processorContext.selected} /></dd></div>
+      <div data-section="sends"><dt>{t('Sends')}</dt><dd><RouteButtons context={processorContext} strip={strip} field="sends" onOpen={() => setSendsOpen(true)} /></dd></div>
+      <div data-section="pan"><dt>{t('Pan')}</dt><dd><PanControl context={processorContext} stripKey={strip.key} /></dd></div>
+      <div data-section="outputs"><dt>{t('Outputs')}</dt><dd><RouteButtons context={processorContext} strip={strip} field="outputs" onOpen={() => {}} /></dd></div>
+      <div data-section="vca"><dt>VCA</dt><dd><VcaAssignment context={processorContext} of={of} selected={processorContext.selected} /></dd></div>
     </dl>
     {pathOpen && createPortal(<PathSettings context={processorContext} stripKey={strip.key} anchor={pathOpen} onClose={() => setPathOpen(null)} />, document.body)}
     {sendsOpen && <SendWindow context={processorContext} stripKey={strip.key} onClose={() => setSendsOpen(false)} />}
+    {duckerOpen && createPortal(<aside role="dialog" aria-label={`${t('Ducker')} ${strip.name}`} className="processor-window" style={{ left: 100, top: 100 }}><button type="button" aria-label={t('Close processor')} onClick={() => setDuckerOpen(false)}>×</button><DuckerPanel {...processorContext} /></aside>, document.body)}
     {renaming ? <NameField name={strip.name} onCancel={() => setRenaming(false)} onCommit={onRename} />
-      : <button type="button" className="mixer-name" onClick={event => onSelect(event)} onDoubleClick={() => { if (!strip.locked) setRenaming(true); }}>{strip.name}</button>}
+      : <button type="button" className="mixer-name" draggable onDragStart={event => event.dataTransfer.setData('application/x-columbina-mixer-order', JSON.stringify(selectedKeys.includes(strip.key) ? selectedKeys : [strip.key]))} onClick={event => onSelect(event)} onDoubleClick={() => { if (!strip.locked) setRenaming(true); }}>{strip.name}</button>}
     {automation?.enabled&&<div className="mixer-arm"><button disabled={strip.locked} aria-pressed={strip.arm===true} onClick={e=>onArm?.(strip.arm!==true,e)} onContextMenu={e=>{e.preventDefault();setMenu('arm');}}>{t('Arm')}</button>
       {menu==='arm'&&<div role="menu">{(['safe','off'] as const).map(arm=><button key={arm} onClick={e=>{onArm?.(arm,e);setMenu(null);}}>{t(arm==='safe'?'Safe':'Bypass')}</button>)}<button onClick={()=>setMenu(null)}>{t('Cancel')}</button></div>}</div>}
     <div className="mixer-switches">{(['solo', 'mute'] as const).map(field => <button key={field} type="button" disabled={strip.locked}

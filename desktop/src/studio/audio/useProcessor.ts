@@ -7,9 +7,11 @@ import type { Change } from '../timeline/commands';
 import { useAudioGesture } from '../timeline/useAudioGesture';
 import { mixerStrips, operationTargets, type Modifiers } from './mixerModel';
 import { defaultDynamics, defaultEq, processorChanges, processorPlayback, processorWritable, targetKey, type ProcessorModule, type ProcessorTarget } from './processorModel';
+import type { AudioAutomationAdapter } from './automationAdapter';
 
 export interface ProcessorProps {
-  bridge: Pick<EngineBridge, 'call'>; session: number; revision: number; timeline: Timeline; target: ProcessorTarget; selected?: readonly string[]; seconds?: number;
+  automation?: AudioAutomationAdapter | null;
+  bridge: Pick<EngineBridge, 'call'> & Partial<Pick<EngineBridge, 'onEvent'>>; session: number; revision: number; timeline: Timeline; target: ProcessorTarget; selected?: readonly string[]; seconds?: number;
 }
 export function useProcessor<M extends ProcessorModule>(props: ProcessorProps, module: M) {
   type Settings = M extends 'eq' ? Equalizer : Dynamics;

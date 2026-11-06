@@ -1,3 +1,5 @@
+import { useFxMeters } from './useFxMeters';
+import { FxMeter } from './FxMeter';
 import type { Dynamics, SourceRef } from '../engine';
 import { useFairlightText } from '../fairlight/words';
 import { Knob } from './Knob';
@@ -7,10 +9,12 @@ import { useProcessor, type ProcessorProps } from './useProcessor';
 import { useProcessorCurve } from './useProcessorCurve';
 import { clamp } from './taper';
 import './processors.css';
+import { EffectPresets } from './EffectPresets';
 
 type Section = 'expander' | 'compressor' | 'limiter';
 export function DynamicsPanel(props: ProcessorProps) {
   const t = useFairlightText(), control = useProcessor(props, 'dynamics'), { curve, problem } = useProcessorCurve(props, 'dynamics');
+  const live = useFxMeters(props)?.readings.find(r => r.reading.kind === 'dynamics' && targetKey(r.owner) === targetKey(props.target))?.reading;
   const value = control.value, defaults = defaultDynamics(), sc = value.compressor.sidechain;
   const patch = (section: Section, fields: Record<string, unknown>, base = value): Dynamics => ({ ...base, [section]: { ...base[section], ...fields } });
   const sources = 'clip' in props.target ? [] : sidechainSources(props.timeline, props.target);
@@ -22,6 +26,8 @@ export function DynamicsPanel(props: ProcessorProps) {
   };
   return <section className="processor-panel dynamics-panel" aria-label={t('Dynamics')} data-audio-owner={targetKey(props.target)} onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); control.cancel(); } }}>
     <ProcessorToolbar module="dynamics" value={value} disabled={control.disabled} reset={defaults} commit={control.commit} enable={control.enable} />
+    <EffectPresets context={props} identity="dynamics" value={{ kind: 'dynamics', settings: value }} disabled={control.disabled || Boolean(props.automation?.recording)} apply={payload => { if (payload.kind === 'dynamics') control.commit(payload.settings); }} />
+    <FxMeter context={props} kind="dynamics" drawBall={false} />
     <p className="processor-note">{t('Static model curve')}</p>
     {(control.problem || problem) && <p role="alert">{control.problem ?? problem}</p>}
     {control.disabled && <p>{t('Locked or automated')}</p>}
@@ -29,6 +35,7 @@ export function DynamicsPanel(props: ProcessorProps) {
       {[-60, -40, -20, 0].map(db => <g key={db}><line x1={(db + 60) * 5} x2={(db + 60) * 5} y1="0" y2="300" className="processor-grid" /><line x1="0" x2="300" y1={-db * 5} y2={-db * 5} className="processor-grid" /><text x={(db + 60) * 5} y="318" textAnchor="middle">{db}</text><text x="-5" y={4 - db * 5} textAnchor="end">{db}</text></g>)}
       {(['expander', 'compressor', 'limiter'] as const).filter(s => value[s].on).map(s => <line key={s} x1={(value[s].threshold_db + 60) * 5} x2={(value[s].threshold_db + 60) * 5} y1="0" y2="300" className="dynamics-threshold" />)}
       {curve && <polyline data-testid="dynamics-response" fill="none" className="processor-response" points={curve.x.map((db, i) => `${(db + 60) * 5},${-clamp(curve.y[i], -60, 0) * 5}`).join(' ')} />}
+      {live && <circle aria-label={t('Live dynamics ball')} cx={(clamp(live.input_db ?? -200,-60,0)+60)*5} cy={-clamp(live.output_db ?? -200,-60,0)*5} r="4" className="processor-ball" />}
     </svg>
     <div className="dynamics-modules">{(['expander', 'compressor', 'limiter'] as const).map(section => <fieldset key={section} disabled={control.disabled}>
       <legend>{t(section === 'expander' ? 'Expander / Gate' : section === 'compressor' ? 'Compressor' : 'Limiter')}</legend>

@@ -71,7 +71,7 @@ it('groups successive Q wheel notches into one cancellable gesture', async () =>
 });
 it('patches Dynamics modules, precise values, sidechain and reset through actual requests', async () => {
   const s = setup('dynamics'); await settle();
-  expect(s.requests[0].method).toBe('audio.dynamics_curve');
+  expect(s.requests.some(r => r.method === 'audio.dynamics_curve')).toBe(true);
   fireEvent.click(screen.getByRole('checkbox', { name: 'Enable' })); await settle();
   expect(s.model().dynamics.on).toBe(true); expect((screen.getByRole('checkbox', { name: 'Enable' }) as HTMLInputElement).checked).toBe(true);
   fireEvent.click(screen.getByRole('checkbox', { name: 'Gate' })); await settle();

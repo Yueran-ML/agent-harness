@@ -1,5 +1,76 @@
 # The engine protocol (version 2)
 
+## FX readers and noise learning
+
+`audio.fx_meters {timeline}` is read-only. It returns `{timeline,playing,generation,
+sequence,sample_rate,readings}` from the most recent **active, processed** playback
+graph. Each entry is `{owner:{track|bus|clip:id},insert:id|null,slot:index|null,reading}`.
+Strip insert IDs are stable within their owner; clip inserts also carry their slot.
+No processed graph, stop, or a different timeline yields `playing:false`, null graph/rate,
+and `readings:[]`. Replacing a graph retires its readers; pending graphs are not read.
+`sequence` counts processed blocks in that generation. Clients may poll while visible
+(the desktop shares a 10 Hz poll); this never changes project revision/history.
+
+Typed readings: `dynamics` has `input_db,output_db,expander_db,compressor_db,limiter_db`;
+`ducker` has `input_db,source_db,reduction_db`; `limiter` has
+`input_db,reduction_db,output_db`; `de_esser` has `reduction_db,output_db`.
+Levels are block peak dBFS (Ducker source is end-of-block RMS), reductions are dB;
+silence is -200. These are the actual node readers, not strip pre/post meters.
+`stereo_width` has `scope` (64 evenly spaced L/R sample pairs from the block output,
+linear amplitude) and `input_db,output_db` (peak over the actual L/R sides).
+Mono Width has no reader. `noise_reduction` has `input_spectrum_db,
+noise_spectrum_db` (128 bands each), plus block input/output peak levels. The bands
+divide the 1025 bins of the actual 2048-point FFT uniformly from DC to Nyquist;
+power is averaged across bins and channels, divided by analysis-window power 1024,
+then converted by 10 log10 (floor -200). Noise is the current DSP estimate, or the
+learned profile actually used in Manual mode. Voice mode has no spectral reader.
+Readers use fixed seqlock storage allocated at node construction; block processing
+does no locking or allocation for telemetry.
+
+`audio.soft_clip_curve {timeline,target:{track|bus|clip:id},slot,inputs:[...]}` returns
+`{revision,inputs,outputs}` using the existing DSP `soft_clip::curve`, with Threshold
+input gain and Output gain. Bypass returns inputs unchanged. There must be 1–512
+finite inputs in [-2,2]. This is a model-static curve, not a live waveform.
+
+`audio.noise_learn {timeline,target:{track|bus|clip:id},slot,range:{from,to},revision}`
+starts a job, returning `{job}`. Range is in timeline frames, end exclusive, within
+the timeline (and within the clip for clip targets), at least 2048 samples and at
+most 30 seconds. The storage bound is explicit for multichannel offline PCM.
+The shared `audio.analysis` channel reports running/progress, cancelled, failed, or
+done `{job,state:"done",method:"audio.noise_learn",target,slot,profile,result}`.
+`audio.cancel {job}` cancels it. The profile contains 1025 linear-power bins.
+
+Learn renders a cloned **prefix** graph: the requested NR and all later inserts are
+removed; strip EQ/Dynamics stages after FX and their lanes are removed, while earlier
+stages remain. Clip analysis isolates the clip, keeps its preceding EQ/FX, removes
+later Volume/pan/fades and neutralizes its track processors. It never learns its own
+denoised output or a post-fader signal. The original graph/project is untouched until
+the result is ready. On completion one revision-bound transaction writes profile and
+Manual mode while preserving insert identity. `result` is `{applied:...}` or
+`{applied:null,refused:...}` if the project changed meanwhile. Required revision is
+checked before starting and again on apply; a refused result never writes stale data.
+One undo restores the previous settings. Offline graphs do not publish live meters.
+
+## Audio user presets
+
+`audio_presets.list {}` returns `{presets:[{id,name,payload}]}`. `audio_presets.save
+{name,payload}`, `audio_presets.update {preset,payload}`, and `audio_presets.delete
+{preset}` save, update, or delete this user's audio parameters. Save/update return the
+preset; delete returns `{deleted:id}`. Mutations publish `audio_presets.changed {}`.
+They do not change a project revision or its undo history. Recall uses the existing
+project transaction API, preserving an insert's ID when changing its parameters.
+
+Payload is `{kind:"eq"|"clip_eq"|"dynamics"|"effect",settings:...}`: respectively
+the model's six-band EQ, four-band clip EQ, Dynamics, or tagged Effect. Model validation
+applies; update keeps the same processor kind (including the Effect subtype). Sidechain
+source references are excluded and its On/Listen are reset, so saved parameters never
+refer to another project's track or bus. Other parameters, including a learned noise
+profile, are kept. Names are trimmed, unique, and 1–100 characters without controls.
+The independent library is `%COLUMBINA_AUDIO_PRESETS%`, else
+`%COLUMBINA_HOME%/audio_presets` (the usual user-home fallback applies). It uses the
+same atomic file-replacement and inter-engine directory-lock pattern as Window Presets.
+
+
 `columbina-engine` is the only program that writes a project. The desktop app and the agent
 connect to the same running engine, send it changes, and are told of every change in one order.
 This is what a client is written against.

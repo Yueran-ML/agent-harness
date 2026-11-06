@@ -14,9 +14,10 @@ import { TransitionPanel } from './TransitionPanel';
 import { useCommit } from './useCommit';
 import { refusalOf } from './refusal';
 import { AudioConfig } from './AudioConfig';
+import { InsertSlots } from '../fairlight/InsertSlots';
 import { useFairlightText } from '../fairlight/words';
 
-type Tab = 'source' | 'video' | 'audio' | 'file';
+type Tab = 'source' | 'video' | 'audio' | 'file' | 'effects';
 
 /**
  * The inspector of the Edit page, as DaVinci Resolve's: what is chosen on the timeline, set here.
@@ -68,7 +69,7 @@ export function Inspector({ bridge, session, revision, timeline, media, clips: i
   const tabs: Tab[] = [
     ...(titles.length > 0 || colors.length > 0 ? ['source' as const] : []),
     ...(chosen.video.length > 0 ? ['video' as const] : []),
-    ...(chosen.audio.length > 0 ? ['audio' as const] : []),
+    ...(chosen.audio.length > 0 ? ['audio' as const, 'effects' as const] : []),
     ...(chosen.audio.some(clip => clip.source.kind === 'media') ? ['file' as const] : []),
   ];
   const [tab, setTab] = useState<Tab>('video');
@@ -80,7 +81,7 @@ export function Inspector({ bridge, session, revision, timeline, media, clips: i
   const mediaClips = chosen.all.filter(clip => clip.source.kind === 'media');
   const name = (clip: Clip) => clip.source.kind === 'media' ? media.find(item => item.id === (clip.source as { media: string }).media)?.name ?? clip.source.media
     : clip.source.kind === 'title' ? clip.source.text : words.label.studio.timeline.color;
-  const tabName: Record<Tab, string> = { source: titles.length > 0 ? labels.title : labels.generator, video: labels.video, audio: labels.audio, file: t('File') };
+  const tabName: Record<Tab, string> = { source: titles.length > 0 ? labels.title : labels.generator, video: labels.video, audio: labels.audio, file: t('File'), effects:t('Effects') };
 
   let body;
   if (!timeline) body = <p className="caption">{words.hint.studio.timeline.empty}</p>;
@@ -107,6 +108,7 @@ export function Inspector({ bridge, session, revision, timeline, media, clips: i
         {tabs.map(each => <button key={each} type="button" role="tab" aria-selected={each === shown} onClick={() => setTab(each)}>{tabName[each]}</button>)}
       </div>}
       <FieldsLocked.Provider value={chosen.locked}>
+        {shown === 'effects' && chosen.audio.map(clip => <section key={clip.id} aria-label={clip.id}><strong>{name(clip)}</strong><InsertSlots bridge={bridge} session={session} revision={revision} timeline={timeline} target={{clip:clip.id}} seconds={frame * timeline.rate.den / timeline.rate.num} inline /></section>)}
         {shown === 'file' && <AudioConfig key={JSON.stringify([session, timeline.id, chosen.audio.map(clip => clip.id)])}
           clips={chosen.audio.filter(clip => clip.source.kind === 'media')} timeline={timeline} media={media} commit={commit} />}
         {shown === 'source' && titles.length > 0 && <ClipTitle clips={titles} timeline={timeline} commit={commit} />}

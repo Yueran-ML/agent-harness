@@ -56,3 +56,21 @@
 .automation-lane-header select{width:100%;max-width:100%;font-size:10px}.automation-problem{position:sticky;left:160px;background:#622;pointer-events:auto}
 .automation-bus{position:relative;background:#27242d}.automation-bus>span{padding:10px;display:block}.mixer-strip[data-recording=true] .audio-fader-cap{background:#c44}.mixer-strip[data-trim=true] .audio-fader-cap{background:#d0b33c}
 .audio-knob-cap[data-automation=write]{color:#f66}.audio-knob-cap[data-automation=preview]{color:#69baff}.mixer-strip[data-preview=true] .audio-fader-cap{background:#4387c9}
+.mixer-layout-menu { position:absolute; z-index:110; background:#24282b; border:1px solid #68737a; padding:10px; display:flex; flex-direction:column; gap:5px; }
+.mixer-layout-menu fieldset { display:flex; flex-direction:column; }
+.audio-mixer[data-small] .mixer-strip { flex-basis:90px; padding-inline:4px; }
+.audio-mixer[data-labels=false] .mixer-summary dt { display:none; }
+.mixer-divider { width:6px; background:#525c65; cursor:grab; flex:none; }
+.audio-mixer[data-hidden~="input"] .mixer-summary > [data-section="input"] { display:none; }
+.audio-mixer[data-hidden~="trackfx"] .mixer-summary > [data-section="trackfx"] { display:none; }
+.audio-mixer[data-hidden~="order"] .mixer-summary > [data-section="order"] { display:none; }
+.audio-mixer[data-hidden~="effects"] .mixer-summary > [data-section="effects"] { display:none; }
+.audio-mixer[data-hidden~="effectsIn"] .mixer-summary > [data-section="effectsIn"] { display:none; }
+.audio-mixer[data-hidden~="dynamics"] .mixer-summary > [data-section="dynamics"] { display:none; }
+.audio-mixer[data-hidden~="eq"] .mixer-summary > [data-section="eq"] { display:none; }
+.audio-mixer[data-hidden~="sends"] .mixer-summary > [data-section="sends"] { display:none; }
+.audio-mixer[data-hidden~="pan"] .mixer-summary > [data-section="pan"] { display:none; }
+.audio-mixer[data-hidden~="outputs"] .mixer-summary > [data-section="outputs"] { display:none; }
+.audio-mixer[data-hidden~="vca"] .mixer-summary > [data-section="vca"] { display:none; }
+
+.mixer-selection-box{position:fixed;pointer-events:none;border:1px solid var(--accent);background:#79b5e629;z-index:120}

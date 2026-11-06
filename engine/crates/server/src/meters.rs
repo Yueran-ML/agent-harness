@@ -61,6 +61,7 @@ impl Meters {
         graph: &Graph,
         restart: bool,
     ) {
+        crate::fx_meters::offer(timeline, graph, restart);
         {
             let mut board = self.board();
             if board.0.as_deref() != Some(timeline) {

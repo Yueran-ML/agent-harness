@@ -29,6 +29,7 @@ import { useAudioReadings } from '../fairlight/audioReadings';
 import { useFairlightView } from '../fairlight/viewState';
 import { Mixer } from '../fairlight/Mixer';
 import { analysisStandardId } from '../audio/mixerModel';
+import { mixerOrder, moveMixerItems, useMixerLayout } from '../audio/mixerLayout';
 import '../fairlight/fairlight.css';
 
 interface Props {
@@ -55,6 +56,7 @@ function Separator({ label, vertical = false, direction = 1, value, min, max, on
 function FairlightSession({ bridge, native, session, revision, pool, media, timelines, selected, onSelect, timelineMonitor, noticeOf, onRetry, onProblem, mixer, groups }: Props) {
   const t = useFairlightText();
   const [view, update, reset] = useFairlightView(bridge, session, selected?.id ?? '');
+  const [mixerLayout, setMixerLayout] = useMixerLayout(bridge, session, selected?.id ?? '');
   const timeline = useRef<TimelineHandle>(null);
   const matcher = useRef<LevelMatcherHandle>(null);
   const [clips, setClips] = useState<string[]>([]); const [track, setTrack] = useState<string | null>(null);
@@ -118,13 +120,13 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
     {selected && <AutomationToolbar bridge={bridge} session={session} timeline={selected} view={view} update={update} recording={state?.recording??false} selected={stripSelection} frame={state?timelineMonitor.frame??0:0} onEdit={ops=>void edit(ops as Record<string,unknown>[])} onFailure={e=>setProblem(String(e))} onToggle={()=>update({automation:!view.automation})} marks={()=>timeline.current?.marks()??{in:null,out:null}}/>}
     {(problem || audio.problem) && <p role="alert">{problem ?? audio.problem}<button type="button" onClick={() => setProblem(null)}>{t('Dismiss')}</button></p>}
     {view.meters && selected && <div className="fairlight-monitoring-wrap" style={{ height: view.monitoringHeight }}>
-      <Monitoring timeline={selected} meters={audio.meters} onAction={action => void audio.action(action)} onResetPeaks={() => void audio.resetPeaks()}
+      <Monitoring timeline={selected} meters={audio.meters} layout={mixerLayout} onAction={action => void audio.action(action)} onResetPeaks={() => void audio.resetPeaks()}
         onPatch={patch => void edit([{ op: 'set_timeline_audio', timeline: selected.id, patch }])} viewer={view.viewer && !cinema ? viewer : undefined} />
       <Separator label={t('Monitoring height')} value={view.monitoringHeight} min={150} max={500} onChange={monitoringHeight => update({ monitoringHeight })} />
     </div>}
     <main className="fairlight-workspace">
       {showLeft && <aside className="fairlight-left">{view.pool && pool}{view.effects && <EffectsLibrary />}
-        {view.index && selected && <IndexTracks automation={view.automation} timeline={selected} hidden={view.hidden} onHidden={hidden => update({ hidden })} onSelect={chooseTrack}
+        {view.index && selected && <IndexTracks automation={view.automation} timeline={selected} hidden={view.hidden} onHidden={hidden => update({ hidden })} onSelect={chooseTrack} layout={mixerLayout} onReorder={(keys, before) => setMixerLayout({ order: moveMixerItems(mixerOrder(selected, mixerLayout), keys, before) })}
           selection={stripSelection.filter(key => key.startsWith('track:')).map(key => key.slice(6))} onSelection={ids => chooseStrips(ids.map(id => `track:${id}`))} onEdit={ops => void edit(ops)} />}
         {view.groups && (groups ?? <section aria-label={t('Groups')}><h2>{t('Groups')}</h2><p>{t('Group controls are not available yet.')}</p></section>)}
       </aside>}
@@ -132,12 +134,15 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
       <div className="fairlight-center" onDragOverCapture={event => { if (event.dataTransfer.types.includes(AUDIO_EFFECT_DRAG)) { event.preventDefault(); event.stopPropagation(); } }}
         onDropCapture={event => {
           const effect = event.dataTransfer.getData(AUDIO_EFFECT_DRAG); if (!AUDIO_EFFECTS.some(([id]) => id === effect) || !selected) return;
-          event.preventDefault(); event.stopPropagation(); const target = event.target instanceof Element ? event.target : null;
+          const target = event.target instanceof Element ? event.target : null;
+          if (target?.closest('.audio-mixer')) return;
+          event.preventDefault(); event.stopPropagation();
           const trackId = target?.closest<HTMLElement>('[data-track]')?.dataset.track; const targetTrack = selected.tracks.find(each => each.id === trackId);
           if (targetTrack?.kind !== 'audio' || targetTrack.locked) return;
           const clip = target?.closest<HTMLElement>('[data-clip]')?.dataset.clip;
-          // The engine fills each effect's documented defaults; no second desktop defaults table.
-          void edit([{ op: 'add_insert', timeline: selected.id, of: clip ? { clip } : { track: trackId }, insert: { on: true, effect: { kind: effect } } }]);
+          const targets = clip ? (clips.includes(clip) ? clips : [clip]).filter(id => selected.tracks.some(track => track.kind === 'audio' && !track.locked && track.clips.some(c => c.id === id))).map(clip => ({ clip })) : [{ track: trackId }];
+          if (!clip && (targetTrack.strip?.inserts.length ?? 0) >= 6) return;
+          void edit(targets.map(of => ({ op: 'add_insert', timeline: selected.id, of, insert: { on: true, effect: { kind: effect } } })));
         }}>
         <FairlightTimeline ref={timeline} timeline={selected} bridge={bridge} session={session} revision={revision} media={media}
           frame={state ? timelineMonitor.frame ?? 0 : 0} playing={state?.playing ?? false} onSeek={timelineMonitor.seek}

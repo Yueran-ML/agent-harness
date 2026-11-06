@@ -35,6 +35,10 @@ struct DynamicsRequest {
     inputs_db: Vec<f32>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SoftClipRequest { timeline: String, target: Target, slot: usize, inputs: Vec<f32> }
+
 fn missing(what: &str, id: &str) -> Fault {
     Fault::params(format!(
         "there is no {what} {id} of sound in the requested timeline"
@@ -96,6 +100,19 @@ fn compute(
     params: Option<&RawValue>,
 ) -> Result<Value, Fault> {
     match method {
+        "audio.soft_clip_curve" => {
+            let request: SoftClipRequest = rpc::params(method, r#"{"timeline":"t1","target":{"track":"A1"},"slot":0,"inputs":[-1,0,1]}"#, params)?;
+            let t = timeline_of(project, &request.timeline)?;
+            checked_points(&request.inputs, -2.0, 2.0, "inputs")?;
+            let inserts = match &request.target {
+                Target::Clip(id) => &t.tracks.iter().filter(|t| t.kind == TrackKind::Audio).flat_map(|t| &t.clips).find(|c| c.id == *id).ok_or_else(|| missing("clip", id))?.effects,
+                _ => &strip_of(t, &request.target)?.inserts,
+            };
+            let insert = inserts.get(request.slot).ok_or_else(|| Fault::params("missing insert"))?;
+            let columbina_model::audio::fx::Effect::SoftClipper(fx) = &insert.effect else { return Err(Fault::params("the insert is not Soft Clipper")); };
+            let outputs: Vec<f64> = request.inputs.iter().map(|x| if insert.on { columbina_audio::fx::soft_clip::curve(f64::from(*x) * 10.0_f64.powf(fx.threshold_db / 20.0), fx.shape / 100.0) * 10.0_f64.powf(fx.output_db / 20.0) } else { f64::from(*x) }).collect();
+            Ok(json!({"revision":revision,"inputs":request.inputs,"outputs":outputs}))
+        }
         "audio.eq_response" => {
             let request: EqRequest = rpc::params(
                 method,

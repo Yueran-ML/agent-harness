@@ -5,7 +5,7 @@ import { callEngine, EngineError, type AudioAnalysis, type LoudnessReading, type
 type Bridge = Pick<EngineBridge, 'call' | 'onEvent'>;
 interface JobOwner { live: boolean; waiting: boolean; running: boolean; cancelled: boolean; job: string | null; early: Map<string, AudioAnalysis> }
 /** Analysis events are broadcast; only the job acknowledged to this page belongs to it. */
-export function useAudioAnalysis(bridge: Bridge, session: number, timeline: string | null) {
+export function useAudioAnalysis(bridge: Bridge, session: number, timeline: string | null, identity = timeline) {
   const [analysis, setAnalysis] = useState<AudioAnalysis | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -21,7 +21,7 @@ export function useAudioAnalysis(bridge: Bridge, session: number, timeline: stri
   useEffect(() => {
     const current: JobOwner = { live: true, waiting: false, running: false, cancelled: false, job: null, early: new Map() };
     owner.current = current; setAnalysis(null); setProblem(null); setPending(false);
-    const off = bridge.onEvent(event => {
+    const off = bridge.onEvent?.(event => {
       if (!current.live || event.kind !== 'notification' || event.session !== session || event.method !== 'audio.analysis') return;
       const update = event.params as AudioAnalysis;
       if (current.job === update.job && current.running) {
@@ -30,9 +30,9 @@ export function useAudioAnalysis(bridge: Bridge, session: number, timeline: stri
       }
       else if (current.waiting) current.early.set(update.job, update);
     });
-    return () => { current.live = false; if (current.running && current.job) cancelJob(current.job); current.early.clear(); off(); };
-  }, [bridge, session, timeline]);
-  const start = useCallback(async (method: 'audio.analyze' | 'audio.level_match' | 'audio.normalize', params: Record<string, unknown>) => {
+    return () => { current.live = false; if (current.running && current.job) cancelJob(current.job); current.early.clear(); off?.(); };
+  }, [bridge, session, timeline, identity]);
+  const start = useCallback(async (method: 'audio.analyze' | 'audio.level_match' | 'audio.normalize' | 'audio.noise_learn', params: Record<string, unknown>) => {
     const current = owner.current;
     if (!timeline || !current.live || current.waiting || current.running) return;
     current.waiting = true; current.running = true; current.cancelled = false; current.job = null; current.early.clear(); setPending(true); setProblem(null); setAnalysis(null);

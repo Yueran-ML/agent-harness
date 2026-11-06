@@ -15,6 +15,8 @@
 //! undo), and only where they are asked to (`apply`); a clip that has no level (silence, or too
 //! short for a loudness) is left as it is.
 
+mod noise_learn;
+
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -263,6 +265,11 @@ pub(super) async fn call(
             let audio = settings(engine, &request.timeline).await?;
             meters::hub().shown(&request.timeline, &audio, request.reset)
         }
+        "audio.fx_meters" => {
+            let request: Metering = rpc::params(method, r#"{"timeline":"t1"}"#, params)?;
+            settings(engine, &request.timeline).await?;
+            crate::fx_meters::shown(&request.timeline)
+        }
         "audio.loudness" => {
             let request: Loudness = rpc::params(
                 method,
@@ -295,7 +302,7 @@ pub(super) async fn call(
             stop.store(true, Ordering::Release);
             json!({})
         }
-        "audio.analyze" | "audio.normalize" | "audio.level_match" => {
+        "audio.analyze" | "audio.normalize" | "audio.level_match" | "audio.noise_learn" => {
             let state = engine.state.lock().await;
             let (project, work) = prepare_snapshot(
                 method,
@@ -343,6 +350,7 @@ async fn settings(engine: &Engine, id: &str) -> Result<columbina_model::Timeline
 
 /// An analysis checked, ready to run.
 enum Work {
+    NoiseLearn(noise_learn::Work),
     Analyze {
         timeline: usize,
         targets: Vec<Target>,
@@ -376,6 +384,7 @@ struct Apply(Option<u64>);
 /// the revision again when committing its gains, as another client may edit during analysis.
 fn check_revision(work: &Work, actual: u64) -> Result<(), Fault> {
     let expected = match work {
+        Work::NoiseLearn(work) => Some(work.revision),
         Work::Analyze { revision, .. } => *revision,
         Work::Normalize { apply, .. } | Work::Match { apply, .. } => {
             apply.as_ref().and_then(|Apply(revision)| *revision)
@@ -390,6 +399,7 @@ fn check_revision(work: &Work, actual: u64) -> Result<(), Fault> {
 /// Checks the params of `method` against `project`.
 fn prepare(method: &str, params: Option<&RawValue>, project: &Project) -> Result<Work, Fault> {
     match method {
+        "audio.noise_learn" => noise_learn::prepare(method, params, project).map(Work::NoiseLearn),
         "audio.analyze" => analyze_work(method, params, project),
         "audio.normalize" => normalize_work(method, params, project),
         _ => match_work(method, params, project),
@@ -915,6 +925,7 @@ fn run(
     stop: &AtomicBool,
 ) -> Value {
     let ended = match work {
+        Work::NoiseLearn(work) => noise_learn::run(teller, kind, project, work, stop),
         Work::Analyze {
             timeline,
             targets,

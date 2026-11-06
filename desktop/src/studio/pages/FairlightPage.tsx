@@ -14,6 +14,7 @@ import type { TimelineHandle } from '../timeline/Timeline';
 import { useAudioScrubbing } from '../timeline/scrub';
 import { SpeedDialog } from '../inspector/SpeedDialog';
 import { useNormalizeAudio } from '../inspector/NormalizeDialog';
+import { useClipAttributes } from '../inspector/ClipAttributes';
 import { Toolbar } from '../fairlight/Toolbar';
 import { Monitoring, STANDARDS, reading, standardLabel } from '../fairlight/Monitoring';
 import { FairlightTimeline } from '../fairlight/FairlightTimeline';
@@ -56,6 +57,7 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
   const [clips, setClips] = useState<string[]>([]); const [track, setTrack] = useState<string | null>(null);
   const [transition, setTransition] = useState<string | null>(null);
   const normalize = useNormalizeAudio({ bridge, session, revision, timeline: selected, selection: clips, commands: () => timeline.current });
+  const attributes = useClipAttributes({ bridge, session, revision, timeline: selected, selection: clips });
   const [stripSelection, setStripSelection] = useState<string[]>([]);
   const chooseStrips = (keys: string[]) => { timeline.current?.clearTransition(); setStripSelection(keys); setTrack(keys.find(key => key.startsWith('track:'))?.slice(6) ?? null); };
   const chooseTrack = (id: string) => chooseStrips([`track:${id}`]);
@@ -119,7 +121,7 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
         <FairlightTimeline ref={timeline} timeline={selected} bridge={bridge} session={session} revision={revision} media={media}
           frame={state ? timelineMonitor.frame ?? 0 : 0} playing={state?.playing ?? false} onSeek={timelineMonitor.seek}
           onSelection={setClips} onTransition={setTransition} onTrackSelect={chooseTrack} selectedTracks={stripSelection.filter(key => key.startsWith('track:')).map(key => key.slice(6))} onSpeed={setSpeed} view={view} update={update}
-          onClipContext={(id, x, y) => { if (selected?.tracks.some(track => track.kind === 'audio' && track.clips.some(clip => clip.id === id))) setContext({ clip: id, x, y }); }} />
+          onCopyClips={attributes.copy} onClipContext={(id, x, y) => { if (selected?.tracks.some(track => track.kind === 'audio' && track.clips.some(clip => clip.id === id))) setContext({ clip: id, x, y }); }} />
         {view.mixer && <><Separator label={t('Mixer height')} direction={-1} value={view.mixerHeight} min={180} max={500} onChange={mixerHeight => update({ mixerHeight })} />
           <section className="fairlight-mixer-slot" aria-label={t('Mixer')} style={{ height: view.mixerHeight }}>{mixer ?? (selected && <Mixer bridge={bridge} session={session} revision={revision}
             timeline={selected} frame={state ? timelineMonitor.frame ?? 0 : 0} meters={audio.meters} selected={stripSelection} onSelect={chooseStrips} />)}</section></>}
@@ -134,6 +136,7 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
       {selected && <LevelMatcher ref={matcher} key={`${session}/${selected.id}`} bridge={bridge} session={session} timeline={selected} revision={revision} clips={soundClips} />}
     </footer>
     {context && <CoveringMenu onClose={() => setContext(null)} menu={{ ...context, label: t('Audio clip'), items: [
+      ...attributes.items(context.clip),
       normalize.item(context.clip),
       { id: 'analyze-audio', label: t('Analyze Audio Level'), run: () => setAnalysisClips(soundClips.includes(context.clip) ? soundClips : [context.clip]) },
       { id: 'capture-level', label: t('Capture Level Profile'), run: () => matcher.current?.capture(context.clip) },
@@ -142,6 +145,7 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
       { id: 'close', label: t('Close') },
     ] }} />}
     {normalize.dialog}
+    {attributes.dialog}
     {analysisClips && <Sheet title={t('Analyze Audio Level')} onClose={() => { audio.cancel(); setAnalysisClips(null); }}>
       <div className="fairlight-analysis"><select aria-label={t('Analysis standard')} value={analysisStandard} onChange={event => setAnalysisStandard(event.target.value)}>{STANDARDS.map(([id, label]) => <option key={id} value={id}>{standardLabel(label, t)}</option>)}</select>
       <button type="button" disabled={audio.pending} onClick={() => void audio.analyze(analysisClips, analysisStandardId(analysisStandard))}>{t('Analyze')}</button>

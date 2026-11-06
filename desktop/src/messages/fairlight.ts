@@ -1,5 +1,8 @@
 /** Shared Fairlight catalogue; protocol IDs and media/track names are never translated. */
 const entries = {
+  'Copy Attributes': ['复制属性', '属性をコピー'], 'Paste Attributes': ['粘贴属性', '属性をペースト'], 'Remove Attributes': ['移除属性', '属性を削除'],
+  'Volume': ['音量', '音量'], 'Plugins': ['插件', 'プラグイン'], 'Apply': ['应用', '適用'],
+  'The timeline changed. Reopen this dialog.': ['时间线已更改，请重新打开此对话框。', 'タイムラインが変更されました。このダイアログを開き直してください。'],
   'Equalizer': ['均衡器', 'イコライザー'], 'Audio Configuration': ['音频配置', 'オーディオ設定'],
   'Channel': ['声道', 'チャンネル'], 'Stream': ['流', 'ストリーム'], 'Active': ['启用', '有効'], 'Mute': ['静音', 'ミュート'], 'Level': ['电平', 'レベル'],
   'Multiple Clips': ['多个片段', '複数のクリップ'], 'Automatic mix': ['自动混音', '自動ミックス'], 'Custom mapping': ['自定义映射', 'カスタムマッピング'],

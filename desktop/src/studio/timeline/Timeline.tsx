@@ -33,7 +33,7 @@ export interface TimelineHandle {
 /** What of a timeline a view shows: the pixels of a frame, how far it is scrolled, and how wide it is. */
 export interface TimelineView { scale: number; left: number; width: number }
 export function Timeline({ timeline, media, bridge, session, revision, frame, playing, onSeek, source = null, focus = 'timeline', onSpeed, onSelection, onTransition, onCue, ref,
-  cut = false, overview = false, center = false, trackHeight = 72, indicator = null, detail = null, onView, label, hiddenTracks, drawClip, onClipContext, onTrackSelect, selectedTracks, audioOnlyDrop, gainLine = true }: {
+  cut = false, overview = false, center = false, trackHeight = 72, indicator = null, detail = null, onView, label, hiddenTracks, drawClip, onClipContext, onCopyClips, onTrackSelect, selectedTracks, audioOnlyDrop, gainLine = true }: {
   timeline: TimelineModel | null; media: readonly Media[]; bridge: Pick<EngineBridge, 'call' | 'onEvent'>; session: number;
   revision: number; frame: number; playing: boolean; onSeek: (frame: number, scrubbing: boolean) => void;
   source?: EditContext['source']; focus?: Monitor; onSpeed?: (clips: string[]) => void; onSelection?: (clips: string[]) => void;
@@ -63,6 +63,7 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   hiddenTracks?: readonly string[];
   drawClip?: (props: TrackClipDrawing) => ReactNode;
   onClipContext?: (clip: string, x: number, y: number) => void;
+  onCopyClips?: (clips: readonly string[]) => boolean;
   onTrackSelect?: (track: string) => void;
   /** View-only selection shared with the mixer; it does not change edit destination tracks. */
   selectedTracks?: readonly string[];
@@ -179,7 +180,7 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
     setView(old => { const left = Math.max(0, Math.round(shown * old.scale - old.width / 2)); return old.left === left ? old : { ...old, left }; });
   }, [center, dragging, shown, view.scale, view.width]);
   useEffect(() => { onView?.(view); }, [view, onView]);
-  const editing = useEditing({ timeline, media, bridge, session, revision, frame: shown, focus, source, root, scroll, view, onSeek, fit, zoom, onSpeed, onSelection, onTransition, onCue, cut, audioOnlyDrop });
+  const editing = useEditing({ timeline, media, bridge, session, revision, frame: shown, focus, source, root, scroll, view, onSeek, fit, zoom, onSpeed, onSelection, onTransition, onCue, onCopyClips, cut, audioOnlyDrop });
   useImperativeHandle(ref, () => ({ keyDown: editing.keyDown, perform: editing.perform, canPerform: editing.canPerform, clearTransition: editing.clearTransition, marks: () => editing.marks }));
   useEffect(() => {
     const element = scroll.current;

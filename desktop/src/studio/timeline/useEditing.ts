@@ -22,6 +22,7 @@ interface Options {
   root: RefObject<HTMLElement | null>; scroll: RefObject<HTMLDivElement | null>; view: { scale: number; left: number };
   onSeek: (frame: number, scrubbing: boolean) => void; fit: () => void; zoom: (factor: number) => void;
   onSpeed?: (clips: string[]) => void; onSelection?: (clips: string[]) => void;
+  onCopyClips?: (clips: readonly string[]) => boolean;
   /** The transition chosen on the timeline, for the inspector; null where none is. */
   onTransition?: (transition: string | null) => void;
   /** The subtitle chosen on the timeline, for the inspector; `open` where it was just added or double-clicked, to be written in. */
@@ -230,6 +231,9 @@ export function useEditing(options: Options) {
   };
   const keyDown = (key: Key): boolean => {
     if (overlayOpen() || document.querySelector('dialog[open]')) return false;
+    if ((key.ctrl || key.meta) && !key.alt && !key.shift && !key.composing && !key.repeat && key.key.toLowerCase() === 'c') {
+      return now.current.focus === 'timeline' ? now.current.onCopyClips?.(now.current.selection.ids) ?? false : false;
+    }
     const action = editKey(key);
     if (!action) return false;
     return perform(action);

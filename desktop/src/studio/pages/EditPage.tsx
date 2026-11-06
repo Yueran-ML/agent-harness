@@ -16,6 +16,7 @@ import { useTimelineLoad } from './useTimelineLoad';
 import { Inspector } from '../inspector/Inspector';
 import { SpeedDialog } from '../inspector/SpeedDialog';
 import { useNormalizeAudio } from '../inspector/NormalizeDialog';
+import { useClipAttributes } from '../inspector/ClipAttributes';
 import { CoveringMenu } from '../color/CoveringMenu';
 import { Library } from '../effects/Library';
 import type { Marks } from '../timeline/snap';
@@ -94,6 +95,7 @@ export function EditPage({
   const [chosenClips, setChosenClips] = useState<string[]>([]);
   const [audioContext, setAudioContext] = useState<{ clip: string; x: number; y: number } | null>(null);
   const normalize = useNormalizeAudio({ bridge, session, revision, timeline: selected, selection: chosenClips, commands: () => timeline.current });
+  const attributes = useClipAttributes({ bridge, session, revision, timeline: selected, selection: chosenClips });
   useEffect(() => { setAudioContext(null); setChosenClips([]); setSpeedClips(null); }, [session, selected?.id]);
   const [chosenCue, setChosenCue] = useState<string | null>(null);
   // A subtitle added or double-clicked is to be written in: the inspector opens on it, as DaVinci Resolve's does.
@@ -233,6 +235,7 @@ export function EditPage({
         source={sourceContext}
         focus={focus}
         onSelection={setChosenClips}
+        onCopyClips={attributes.copy}
         onClipContext={(id, x, y) => { if (selected?.tracks.some(track => track.kind === 'audio' && track.clips.some(clip => clip.id === id))) setAudioContext({ clip: id, x, y }); }}
         onTrackSelect={id => setStripSelection([`track:${id}`])}
         selectedTracks={stripSelection.filter(key => key.startsWith('track:')).map(key => key.slice(6))}
@@ -246,8 +249,9 @@ export function EditPage({
     </div>
     {speedClips !== null && selected !== null && <SpeedDialog clips={speedClips} timeline={selected} bridge={bridge} session={session} revision={revision}
       onClose={() => setSpeedClips(null)} />}
-    {audioContext && <CoveringMenu menu={{ ...audioContext, label: audioText('Audio clip'), items: [normalize.item(audioContext.clip)] }} onClose={() => setAudioContext(null)} />}
+    {audioContext && <CoveringMenu menu={{ ...audioContext, label: audioText('Audio clip'), items: [...attributes.items(audioContext.clip), normalize.item(audioContext.clip)] }} onClose={() => setAudioContext(null)} />}
     {normalize.dialog}
+    {attributes.dialog}
     {creating && <NewTimeline media={media} names={timelines.map(each => each.name)} onCreate={create} onClose={() => setCreating(false)} />}
   </div>;
 }

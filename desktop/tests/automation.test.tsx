@@ -217,3 +217,27 @@ it('keeps a point selection across edits while its points are still there, and d
   expect(writes()).toHaveLength(before);
   expect(s.container.querySelector('circle[fill="#fff"]')).toBeNull();
 });
+it('keeps a touch across edits made while recording, and lets it go when its own strip goes away', async () => {
+  const voice = { id: 'a1', kind: 'audio', name: 'Voice', enabled: true, locked: false, clips: [], transitions: [], automation_arm: true };
+  const other = { ...voice, id: 'a2', name: 'Music' };
+  const t = (tracks: unknown[]) => ({ ...timeline([]), tracks, audio: { record: { ...defaultRecord(), touch: 'latch' } } }) as unknown as Timeline;
+  const call = vi.fn(async () => ({ ok: true as const, result: {} })), target = { of: { track: 'a1' }, path: 'fader_db' };
+  function Control() {
+    const a = useAutomationTouch()!;
+    return <><button onClick={() => { a.start(target, 0); a.change(5); }}>Hold</button><output>{String(a.active(target))}</output></>;
+  }
+  const props = { bridge: { call }, session: 1, enabled: true, recording: true, show: () => {}, onFailure: (e: unknown) => { throw e; } };
+  const s = render(<AutomationTouchProvider {...props} timeline={t([voice, other])} revision={7}><Control /></AutomationTouchProvider>);
+  fireEvent.click(screen.getByText('Hold')); await settle();
+  const released = () => call.mock.calls.filter(c => (c as unknown[])[0] === 'automation.touch' && !((c as unknown[])[1] as { touching: boolean }).touching);
+  // Another strip is edited (a new revision, a new timeline): the touch goes on.
+  s.rerender(<AutomationTouchProvider {...props} timeline={t([voice, { ...other, mute: true }])} revision={8}><Control /></AutomationTouchProvider>);
+  await settle();
+  expect(screen.getByRole('status').textContent).toBe('true');
+  expect(released()).toHaveLength(0);
+  // Its own track is taken away: the touch is let go, once.
+  s.rerender(<AutomationTouchProvider {...props} timeline={t([other])} revision={9}><Control /></AutomationTouchProvider>);
+  await settle();
+  expect(screen.getByRole('status').textContent).toBe('false');
+  expect(released()).toHaveLength(1);
+});

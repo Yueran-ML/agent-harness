@@ -81,6 +81,10 @@ export class TouchQueue {
   active() {
     return this.target !== null;
   }
+  /** The control being touched, if one is. */
+  touched() {
+    return this.target;
+  }
   settled() {
     return this.chain;
   }
@@ -170,9 +174,29 @@ export function AutomationTouchProvider({ bridge, session, timeline, revision = 
     if (!enabled || !recording || (!playing && !preview))
       end();
   }, [enabled, recording, playing, preview]);
+  // An edit made while recording (of this or any other control) does not end a touch: only one
+  // whose strip went away, was locked or set safe or bypassed, as a control that is gone is let go.
   useEffect(() => {
-    end();
-  }, [revision, queues]);
+    const writable = (target: AutomationTarget) => {
+      const of = target.of;
+      const owner = 'track' in of ? timeline.tracks.find(track => track.kind === 'audio' && track.id === of.track && !track.locked)
+        : 'bus' in of ? timeline.buses?.find(bus => bus.id === of.bus) : timeline.vcas?.find(vca => vca.id === of.vca);
+      const arm = owner && 'automation_arm' in owner ? owner.automation_arm : undefined;
+      return Boolean(owner) && arm !== 'safe' && arm !== 'off';
+    };
+    let ended = false;
+    for (const [id, queue] of queues) {
+      const target = queue.touched();
+      if (!target || writable(target)) continue;
+      queue.end();
+      ended = true;
+      const value = held.current.get(id);
+      if (value && value.released === null) value.released = performance.now();
+    }
+    if (!ended) return;
+    setLive(old => old && writable(old.target) ? old : null);
+    setLives(old => old.every(each => writable(each.target)) ? old : old.filter(each => writable(each.target)));
+  }, [timeline, queues]);
   useEffect(() => {
     if (!enabled || !recording || read || (!playing && !preview)) {
       held.current.clear();

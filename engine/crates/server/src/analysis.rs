@@ -48,10 +48,14 @@ pub struct WaveformRequest {
     /// One output channel: the sample-wise mean of these native source channels.
     #[serde(default)]
     pub mix: Option<Vec<ChannelSource>>,
+    /// The best stream converted to this many output channels, as automatic clip mapping.
+    #[serde(default)]
+    pub remix: Option<u16>,
 }
 
 /// Told that the waveform of a media, or of one of its streams of sound, is done.
-pub type Notify = Box<dyn Fn(&Media, Option<usize>, Option<&[ChannelSource]>) + Send + Sync>;
+pub type Notify =
+    Box<dyn Fn(&Media, Option<usize>, Option<&[ChannelSource]>, Option<u16>) + Send + Sync>;
 
 pub struct Analysis(Arc<Shared>);
 
@@ -89,6 +93,7 @@ pub struct WaveJob {
     media: Media,
     stream: Option<usize>,
     mix: Option<Vec<ChannelSource>>,
+    remix: Option<u16>,
     key: String,
     /// The size of the waveform; none for a stream whose file could not be opened, which the
     /// job opens again, to make its waveform or to say why it cannot.
@@ -159,13 +164,19 @@ impl Analysis {
         media: Media,
         stream: Option<usize>,
         mix: Option<Vec<ChannelSource>>,
+        remix: Option<u16>,
     ) -> Result<(Value, Option<WaveJob>), Fault> {
         if mix
             .as_ref()
-            .is_some_and(|sources| sources.is_empty() || stream.is_some())
+            .is_some_and(|sources| sources.is_empty() || stream.is_some() || remix.is_some())
         {
             return Err(Fault::params(
-                "mix must contain source channels and cannot be combined with stream",
+                "mix must contain source channels and cannot be combined with stream or remix",
+            ));
+        }
+        if remix.is_some_and(|channels| stream.is_some() || !(1..=24).contains(&channels)) {
+            return Err(Fault::params(
+                "remix takes 1 to 24 channels and cannot be combined with stream",
             ));
         }
         let shared = Arc::clone(&self.0);
@@ -181,7 +192,10 @@ impl Analysis {
                         .join("-")
                 ),
                 None => match stream {
-                    None => format!("{}.bin", stem(&media)),
+                    None => match remix {
+                        Some(channels) => format!("{}-remix-{channels}.bin", stem(&media)),
+                        None => format!("{}.bin", stem(&media)),
+                    },
                     Some(stream) => format!("{}-s{stream}.bin", stem(&media)),
                 },
             };
@@ -193,7 +207,11 @@ impl Analysis {
             let spec = match stream {
                 None => Some(WaveSpec::new(
                     &media,
-                    if mix.is_some() { 1 } else { audio.channels },
+                    if mix.is_some() {
+                        1
+                    } else {
+                        remix.unwrap_or(audio.channels)
+                    },
                 )?),
                 Some(stream) => {
                     // The cache first, by the channels that its header says, so that the file
@@ -228,6 +246,7 @@ impl Analysis {
                 media,
                 stream,
                 mix,
+                remix,
                 key,
                 spec,
             });
@@ -251,6 +270,7 @@ impl WaveJob {
                     None => make_wave(
                         &self.media,
                         self.stream,
+                        self.remix,
                         self.spec.as_ref(),
                         &self.shared.stopped,
                     ),
@@ -278,7 +298,7 @@ impl WaveJob {
                 }
                 drop(jobs);
                 if !self.shared.stopped.load(Ordering::Acquire) {
-                    (self.shared.notify)(&self.media, self.stream, self.mix.as_deref());
+                    (self.shared.notify)(&self.media, self.stream, self.mix.as_deref(), self.remix);
                 }
             })
             .await;
@@ -494,13 +514,20 @@ impl WaveSpec {
 fn make_wave(
     media: &Media,
     stream: Option<usize>,
+    remix: Option<u16>,
     spec: Option<&WaveSpec>,
     stopped: &AtomicBool,
 ) -> Result<Wave, Fault> {
     let path = Path::new(&media.path);
     let cannot = |error: MediaError| cannot_read(&media.path, error.reason(), &error.to_string());
     let decoder = match stream {
-        None => AudioDecoder::open(path, None),
+        None => AudioDecoder::open(
+            path,
+            remix.map(|channels| columbina_media::AudioFormat {
+                channels,
+                rate: media.facts.audio.as_ref().expect("checked audio").rate,
+            }),
+        ),
         Some(stream) => AudioDecoder::open_unmixed(path, stream, None),
     };
     let decoder = match decoder {

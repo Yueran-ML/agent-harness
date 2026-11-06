@@ -90,13 +90,13 @@ const NOTHING = { from: 0, to: 0, scale: 1 };
  * New tiles are worked out after the scroll or the zoom has been drawn (a deferred value): until
  * then the tiles drawn before stay, stretched to the new zoom, so that neither waits for them.
  */
-export const Waveform = memo(function Waveform({ cache, media, clip, rate, from, to, scale, channel, gain, stream, mix }: {
+export const Waveform = memo(function Waveform({ cache, media, clip, rate, from, to, scale, channel, gain, stream, mix, remix }: {
   cache: Waveforms; media: string; clip: Clip; rate: Rate; from: number; to: number; scale: number;
-  channel?: number; gain?: number; stream?: number; mix?: readonly ChannelSource[];
+  channel?: number; gain?: number; stream?: number; mix?: readonly ChannelSource[]; remix?: number;
 }) {
   const words = useWords().label.studio.timeline;
-  const subscribe = useCallback((listener: () => void) => cache.subscribe(media, listener, stream, mix), [cache, media, stream, mix]);
-  const snapshot = useCallback(() => cache.get(media, stream, mix), [cache, media, stream, mix]);
+  const subscribe = useCallback((listener: () => void) => cache.subscribe(media, listener, stream, mix, remix), [cache, media, stream, mix, remix]);
+  const snapshot = useCallback(() => cache.get(media, stream, mix, remix), [cache, media, stream, mix, remix]);
   const state = useSyncExternalStore(subscribe, snapshot, snapshot);
   const wanted = useMemo(() => ({ from, to, scale }), [from, to, scale]);
   // A clip that comes into the window draws its tiles after it is drawn itself.

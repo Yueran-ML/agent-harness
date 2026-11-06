@@ -371,8 +371,8 @@ it('shows the native cinema viewer from every entry when the embedded viewer is 
 });
 
 
-it.each([[en, 'Remixed waveform unavailable'], [zhCN, '重混波形暂不可用'], [ja, 'リミックス波形は未対応']] as const)(
-  'labels automatic remixes instead of showing an unrelated channel or false silence', async (words, unavailable) => {
+it.each([en, zhCN, ja])(
+  'requests automatic remixes and keeps default 5.1 samples for Film display', async words => {
     for (const [channels, format, order] of [[1, 'stereo', 'smpte'], [2, 'mono', 'smpte'], [6, '5.1', 'film']] as const) {
       const bridge = engine(); bridge.call.mockResolvedValue({ ok: true, result: { pending: true } });
       const waves = new Waveforms(bridge, 1); waves.connect();
@@ -381,9 +381,9 @@ it.each([[en, 'Remixed waveform unavailable'], [zhCN, '重混波形暂不可用'
         media={{ ...media, facts: { ...media.facts, audio: { ...media.facts.audio!, channels } } }}
         rate={{ num: 25, den: 1 }} scale={4} from={0} to={100} waves={waves} gain={1} /></Words.Provider>);
       await settle();
-      expect(screen.getAllByText(unavailable)).toHaveLength(format === 'mono' ? 1 : format === 'stereo' ? 2 : 6);
-      expect(bridge.call).not.toHaveBeenCalled();
-      expect(document.querySelector('.timeline-waveform')).toBeNull();
+      expect(bridge.call).toHaveBeenCalledExactlyOnceWith('media.waveform', {
+        media: media.id, ...(format === '5.1' ? {} : { remix: format === 'mono' ? 1 : 2 }),
+      }, { expectedSession: 1 });
       view.unmount(); waves.disconnect();
     }
   });

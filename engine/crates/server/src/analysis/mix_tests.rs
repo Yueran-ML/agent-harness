@@ -45,7 +45,7 @@ fn mixing_samples_preserves_cancellation_that_channel_peak_sums_cannot_recover()
         [value, -value]
     });
     let running = AtomicBool::new(false);
-    let single = make_wave(&media, Some(0), None, &running).unwrap();
+    let single = make_wave(&media, Some(0), None, None, &running).unwrap();
     assert!(single.peaks.iter().any(|value| *value != 0));
     let mixed = make_mix(&media, &stereo(), &running).unwrap();
     assert_eq!(mixed.channels, 1);
@@ -78,6 +78,98 @@ fn the_mean_is_computed_before_quantizing_and_cancellation_stops_analysis() {
     assert!(make_mix(&media, &stereo(), &running).is_err());
 }
 
+#[test]
+fn automatic_remix_uses_playback_layout_weights_instead_of_the_explicit_mix_mean() {
+    let directory = tempfile::tempdir().unwrap();
+    let media = pcm(directory.path(), |_| [24576, -8192]);
+    let running = AtomicBool::new(false);
+    let wave = make_wave(&media, None, Some(1), None, &running).unwrap();
+    assert_eq!(wave.channels, 1);
+    // Stereo to mono has equal-power weights: (.75 - .25) / sqrt(2).
+    assert_eq!(wave.peaks, vec![45; 4]);
+    assert_eq!(
+        make_mix(&media, &stereo(), &running).unwrap().peaks,
+        vec![32; 4]
+    );
+    let native = make_wave(&media, None, None, None, &running).unwrap();
+    assert_eq!(native.channels, 2);
+    assert_eq!(
+        native.peaks,
+        [95_i8, 95, -32, -32, 95, 95, -32, -32].map(i8::cast_unsigned)
+    );
+    running.store(true, Ordering::Release);
+    assert!(make_wave(&media, None, Some(1), None, &running).is_err());
+}
+
+#[tokio::test]
+async fn remix_jobs_validate_layouts_and_keep_distinct_offline_caches_and_notifications() {
+    let directory = tempfile::tempdir().unwrap();
+    let media = pcm(directory.path(), |_| [24576, -8192]);
+    let (sent, mut events) = tokio::sync::mpsc::unbounded_channel();
+    let analysis = Analysis::new(
+        directory.path(),
+        Box::new(move |media, stream, mix, remix| {
+            sent.send((
+                media.id.clone(),
+                stream,
+                mix.map(<[ChannelSource]>::to_vec),
+                remix,
+            ))
+            .unwrap();
+        }),
+    );
+    for channels in [0, 25] {
+        assert!(analysis
+            .waveform(media.clone(), None, None, Some(channels))
+            .await
+            .is_err());
+    }
+    assert!(analysis
+        .waveform(media.clone(), Some(0), None, Some(1))
+        .await
+        .is_err());
+    assert!(analysis
+        .waveform(media.clone(), None, Some(stereo()), Some(1))
+        .await
+        .is_err());
+    for channels in [1, 2] {
+        let (_, job) = analysis
+            .waveform(media.clone(), None, None, Some(channels))
+            .await
+            .unwrap();
+        let (_, shared) = analysis
+            .waveform(media.clone(), None, None, Some(channels))
+            .await
+            .unwrap();
+        assert!(shared.is_none());
+        job.unwrap().start();
+        let notice = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(notice, (media.id.clone(), None, None, Some(channels)));
+    }
+    std::fs::remove_file(&media.path).unwrap();
+    for channels in [1, 2] {
+        let (cached, job) = analysis
+            .waveform(media.clone(), None, None, Some(channels))
+            .await
+            .unwrap();
+        assert!(job.is_none());
+        assert_eq!(cached["channels"], channels);
+        let bytes = STANDARD.decode(cached["peaks"].as_str().unwrap()).unwrap();
+        assert_eq!(bytes.len(), usize::from(channels) * 4);
+    }
+    for (mix, remix) in [(None, None), (Some(stereo()), None), (None, Some(6))] {
+        let (_, job) = analysis
+            .waveform(media.clone(), None, mix, remix)
+            .await
+            .unwrap();
+        assert!(job.is_some());
+    }
+    analysis.stop();
+}
+
 #[tokio::test]
 async fn jobs_deduplicate_mix_requests_notify_the_exact_selection_and_cache_offline() {
     let directory = tempfile::tempdir().unwrap();
@@ -85,26 +177,26 @@ async fn jobs_deduplicate_mix_requests_notify_the_exact_selection_and_cache_offl
     let (sent, mut events) = tokio::sync::mpsc::unbounded_channel();
     let analysis = Analysis::new(
         directory.path(),
-        Box::new(move |media, stream, mix| {
+        Box::new(move |media, stream, mix, _remix| {
             sent.send((media.id.clone(), stream, mix.map(<[ChannelSource]>::to_vec)))
                 .unwrap();
         }),
     );
     assert!(analysis
-        .waveform(media.clone(), Some(0), Some(stereo()))
+        .waveform(media.clone(), Some(0), Some(stereo()), None)
         .await
         .is_err());
     assert!(analysis
-        .waveform(media.clone(), None, Some(vec![]))
+        .waveform(media.clone(), None, Some(vec![]), None)
         .await
         .is_err());
     let (pending, job) = analysis
-        .waveform(media.clone(), None, Some(stereo()))
+        .waveform(media.clone(), None, Some(stereo()), None)
         .await
         .unwrap();
     assert_eq!(pending, json!({"pending":true}));
     let (_, shared) = analysis
-        .waveform(media.clone(), None, Some(stereo()))
+        .waveform(media.clone(), None, Some(stereo()), None)
         .await
         .unwrap();
     assert!(shared.is_none());
@@ -116,7 +208,7 @@ async fn jobs_deduplicate_mix_requests_notify_the_exact_selection_and_cache_offl
     assert_eq!(notice, (media.id.clone(), None, Some(stereo())));
     std::fs::remove_file(&media.path).unwrap();
     let (cached, job) = analysis
-        .waveform(media.clone(), None, Some(stereo()))
+        .waveform(media.clone(), None, Some(stereo()), None)
         .await
         .unwrap();
     assert!(job.is_none());
@@ -126,7 +218,7 @@ async fn jobs_deduplicate_mix_requests_notify_the_exact_selection_and_cache_offl
     );
     // A different mix never consumes the first mix's cache, even while the file is offline.
     let (_, different) = analysis
-        .waveform(media, None, Some(stereo()[..1].to_vec()))
+        .waveform(media, None, Some(stereo()[..1].to_vec()), None)
         .await
         .unwrap();
     assert!(different.is_some());

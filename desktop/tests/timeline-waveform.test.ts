@@ -100,4 +100,22 @@ describe('timeline audio waveforms', () => {
     expect(cache.get('m1', undefined, a)).not.toBe(cache.get('m1', undefined, b));
     cache.disconnect();
   });
+
+  it('deduplicates each remix layout and routes notifications without mixing native or other layouts', async () => {
+    let notify!: (event: EngineEvent) => void;
+    const call = vi.fn().mockResolvedValue({ ok: true, result: { pending: true } });
+    const cache = new Waveforms({ call, onEvent: listener => { notify = listener; return () => {}; } } as Pick<EngineBridge, 'call' | 'onEvent'>, 1);
+    cache.connect();
+    cache.subscribe('m1', () => {});
+    for (const channels of [1, 1, 6]) cache.subscribe('m1', () => {}, undefined, undefined, channels);
+    await settle();
+    expect(call).toHaveBeenCalledTimes(3);
+    notify({ kind: 'notification', session: 1, method: 'media.waveform', params: { media: 'm1', remix: 6 } });
+    await settle();
+    expect(call).toHaveBeenCalledTimes(4);
+    expect(call.mock.calls[3][1]).toEqual({ media: 'm1', remix: 6 });
+    expect(cache.get('m1', undefined, undefined, 1)).not.toBe(cache.get('m1', undefined, undefined, 6));
+    expect(cache.get('m1')).not.toBe(cache.get('m1', undefined, undefined, 6));
+    cache.disconnect();
+  });
 });

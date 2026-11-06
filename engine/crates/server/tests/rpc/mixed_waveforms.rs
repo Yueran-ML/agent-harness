@@ -3,6 +3,10 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 
 async fn mixed(client: &mut Client, sources: Value) -> Value {
     let params = json!({"media":"m1","mix":sources});
+    waveform(client, params).await
+}
+
+async fn waveform(client: &mut Client, params: Value) -> Value {
     let answer = client.result("media.waveform", Some(params.clone())).await;
     if answer["pending"] != true {
         return answer;
@@ -16,6 +20,70 @@ async fn mixed(client: &mut Client, sources: Value) -> Value {
         }
     }
     client.result("media.waveform", Some(params)).await
+}
+
+#[tokio::test]
+async fn automatic_remix_matches_playback_decoder_and_preserves_default_peaks_and_project() {
+    let made = support::media(support::Sample::Mono).expect("local PCM fixture");
+    let directory = project_dir();
+    let path = directory.path().join("source.wav");
+    std::fs::copy(&made.path, &path).unwrap();
+    let engine = engine(directory.path(), &["--headless", "--idle-seconds", "1"]).await;
+    let mut client = engine.client("agent").await;
+    client
+        .result("media.import", Some(json!({"paths":[path]})))
+        .await;
+    let before = client.result("project.get", None).await;
+    let original = waveform(&mut client, json!({"media":"m1"})).await;
+    assert_eq!(original["channels"], 1);
+    let result = waveform(&mut client, json!({"media":"m1","remix":2})).await;
+    assert_eq!(result["channels"], 2);
+    let mut decoder = columbina_media::AudioDecoder::open(
+        &path,
+        Some(columbina_media::AudioFormat {
+            rate: 48000,
+            channels: 2,
+        }),
+    )
+    .unwrap();
+    let mut samples = vec![];
+    while let Some(packet) = decoder.next().unwrap() {
+        samples.extend(packet.data);
+    }
+    drop(decoder);
+    let mut expected = vec![];
+    for bin in samples.chunks(480 * 2) {
+        for channel in 0..2 {
+            let quantized = bin
+                .iter()
+                .skip(channel)
+                .step_by(2)
+                .map(|value| {
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        reason = "rounded to signed byte range"
+                    )]
+                    let sample = (value.clamp(-1.0, 1.0) * 127.0).round() as i8;
+                    sample
+                })
+                .collect::<Vec<_>>();
+            expected.push(quantized.iter().min().unwrap().cast_unsigned());
+            expected.push(quantized.iter().max().unwrap().cast_unsigned());
+        }
+    }
+    assert_eq!(
+        STANDARD.decode(result["peaks"].as_str().unwrap()).unwrap(),
+        expected
+    );
+    assert_eq!(client.result("project.get", None).await, before);
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(waveform(&mut client, json!({"media":"m1"})).await, original);
+    assert_eq!(
+        waveform(&mut client, json!({"media":"m1","remix":2})).await,
+        result
+    );
+    drop(client);
+    assert_eq!(engine.ended().await, 0);
 }
 
 fn native(path: &Path, stream: usize) -> Vec<f32> {

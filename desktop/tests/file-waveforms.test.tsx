@@ -22,7 +22,7 @@ function wire() {
   const off = vi.fn();
   const onEvent: EngineBridge['onEvent'] = listener => { listeners.add(listener); return () => { listeners.delete(listener); off(); }; };
   const call = vi.fn<EngineBridge['call']>(async (_method, params: any) => {
-    const channels = params.mix || params.stream === 3 ? 1 : 2;
+    const channels = params.remix ?? (params.mix || params.stream === 3 ? 1 : 2);
     return { ok: true, result: { rate: 10, channels, peaks: btoa(String.fromCharCode(...Array.from({ length: 50 * channels * 2 }, (_, i) => i % 2 ? 64 : 192))) } };
   });
   return { call, onEvent, listeners, off };
@@ -61,7 +61,30 @@ it('fetches mixed PCM peaks separately and does not fetch silent or disabled cha
   expect(bridge.call).toHaveBeenCalledTimes(1);
   expect(view.container.querySelector('path')?.getAttribute('transform')).toContain(`scale(1,${10 ** (-12 / 20)})`);
   expect(channelWaveform({ ...value, channels: [{ source: null }, { source: { stream: 3, channel: 0 }, enabled: false }] }, track, source, 1).silent).toBe(true);
-  expect(channelWaveform(clip('auto'), { ...track, format: 'mono' }, source, 0).unavailable).toBe('Remixed waveform unavailable');
+  expect(channelWaveform(clip('auto'), { ...track, format: 'mono' }, source, 0).remix).toBe(1);
+});
+
+it('draws automatic remixes and changes the request when the track format changes', async () => {
+  const bridge = wire();
+  const props = { bridge, session: 1, clip: clip('auto'), media: source, timeline: timeline([]), selected: [], onSelect: () => {} };
+  const view = render(<FileWaveforms {...props} track={{ ...track, format: 'mono' }} />);
+  await settle();
+  expect(bridge.call.mock.calls[0][1]).toEqual({ media: media.id, remix: 1 });
+  expect(view.container.querySelectorAll('svg')).toHaveLength(1);
+  view.rerender(<FileWaveforms {...props} track={{ ...track, format: '5.1', order: 'film' }} />);
+  await settle();
+  expect(bridge.call.mock.calls[1][1]).toEqual({ media: media.id, remix: 6 });
+  expect(bridge.call).toHaveBeenCalledTimes(2);
+  expect(view.container.querySelectorAll('svg')).toHaveLength(6);
+});
+
+it('maps automatic SMPTE samples to Film lanes without reordering explicit source selections', () => {
+  const film: ClipTrack = { ...track, format: '5.1', order: 'film' };
+  const six = { ...source, facts: { ...source.facts, audio: { ...source.facts.audio, channels: 6 } } };
+  const lanes = Array.from({ length: 6 }, (_, i) => channelWaveform(clip('auto'), film, six, i));
+  expect(lanes.map(lane => lane.channel)).toEqual([0, 2, 1, 4, 5, 3]);
+  expect(lanes.every(lane => lane.remix === undefined)).toBe(true);
+  expect(channelWaveform(mapped(), film, source, 1)).toMatchObject({ channel: 0, stream: 3, remix: undefined });
 });
 
 it('isolates sessions and shares one default-stream request for automatic stereo lanes', async () => {

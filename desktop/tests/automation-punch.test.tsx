@@ -15,6 +15,8 @@ import { Mixer } from '../src/studio/fairlight/Mixer';
 import { EqPanel } from '../src/studio/audio/EqPanel';
 import { defaultDynamics, defaultEq } from '../src/studio/audio/processorModel';
 import { copyProcessor } from '../src/studio/audio/ProcessorToolbar';
+import { changedFields } from '../src/studio/audio/useEffectEditor';
+import { SendWindow } from '../src/studio/fairlight/SendWindow';
 import { timeline } from './timeline-fixture';
 import { likeABrowser } from './mounted';
 import type { AutomationParameter, EngineAnswer, Lanes, Timeline } from '../src/studio/engine';
@@ -227,4 +229,23 @@ it('writes a preset or a paste as automation only under Write on Preset or Clipb
   expect(calls(call, 'automation.touch').map(message => [message.path, message.value, message.touching]))
     .toEqual([['eq.gain_db', 4, true], ['eq.gain_db', 4, false]]);
   expect(calls(call, 'transaction.apply')).toHaveLength(1);
+});
+
+it('shows a send switch green where a lane plays it, and its automation on a right-click', async () => {
+  const t = song({}, { 'send.B2.on': { kind: 'switch', points: [point(0, 1)] } });
+  const show = vi.fn(), call = engine([parameter('send.B2.on', { kind: 'switch', min: 0, max: 1 })]);
+  render(<AutomationTouchProvider bridge={{ call }} session={1} timeline={t} enabled recording={false} show={show}
+    onFailure={error => { throw error; }}>
+    <SendWindow context={{ bridge: { call }, session: 1, revision: 7, timeline: t, target: { track: 'a1' } }} stripKey="track:a1" onClose={() => {}} />
+  </AutomationTouchProvider>);
+  await settle();
+  const on = screen.getByRole('checkbox', { name: 'On' }).closest('label')!;
+  expect(on.getAttribute('data-automation-state')).toBe('read');
+  fireEvent.contextMenu(on);
+  expect(show).toHaveBeenCalledWith({ of: { track: 'a1' }, path: 'send.B2.on' });
+});
+
+it('writes only the settings that a pasted insert setting changes', () => {
+  expect(changedFields({ kind: 'gain', gain_db: 0, invert: false, band: { q: 1, on: true } },
+    { kind: 'gain', gain_db: 3, invert: false, band: { q: 2, on: false } })).toEqual([['gain_db', 3], ['band.q', 2], ['band.on', 0]]);
 });

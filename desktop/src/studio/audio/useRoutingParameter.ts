@@ -101,6 +101,8 @@ export function useRoutingParameter(context: ProcessorProps, stripKey: string, b
         gesture.commit(routingChanges(routingPlan(context.timeline, strip, bus, Object.keys(values), automation?.enabled !== false), values));
     },
     show: (field: string) => automation?.show({ of, path: path(field) }),
+    /** How the control of `field` shows its automation: written, in Preview or played back. */
+    status: (field: string) => automation?.status?.({ of, path: path(field) }) ?? null,
   };
 }
 export type RoutingParameter = ReturnType<typeof useRoutingParameter>;

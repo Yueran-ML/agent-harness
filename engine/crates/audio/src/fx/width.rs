@@ -213,7 +213,8 @@ impl StereoWidth {
                 .unwrap_or(param.info().default)
         };
         StereoWidth {
-            scope, scope_reader,
+            scope,
+            scope_reader,
             rate: 0,
             on: settings.on,
             wet: Smoothed::new(f32::from(u8::from(settings.on)), Domain::Linear),
@@ -258,7 +259,9 @@ impl StereoWidth {
     }
     /// 64 evenly spaced output L/R samples and block input/output peak dBFS. Fixed-size, off-RT reader.
     #[must_use]
-    pub fn scope(&self) -> crate::rt::SeqReader<[f32; 130]> { self.scope_reader.clone() }
+    pub fn scope(&self) -> crate::rt::SeqReader<[f32; 130]> {
+        self.scope_reader.clone()
+    }
 }
 
 impl Default for StereoWidth {
@@ -361,10 +364,26 @@ impl Node for StereoWidth {
         }
         if ctx.frames > 0 {
             let mut shown = [0.0_f32; 130];
-            for i in 0..64 { let at = i * (ctx.frames - 1) / 63; shown[2*i] = output[left][at]; shown[2*i+1] = output[right][at]; }
-            let level = |sound: &[f32]| sound[..ctx.frames].iter().fold(0.0_f32, |peak, x| peak.max(x.abs()));
-            shown[128] = 20.0 * level(input[left]).max(level(input[right])).max(1e-10).log10();
-            shown[129] = 20.0 * level(output[left]).max(level(output[right])).max(1e-10).log10();
+            for i in 0..64 {
+                let at = i * (ctx.frames - 1) / 63;
+                shown[2 * i] = output[left][at];
+                shown[2 * i + 1] = output[right][at];
+            }
+            let level = |sound: &[f32]| {
+                sound[..ctx.frames]
+                    .iter()
+                    .fold(0.0_f32, |peak, x| peak.max(x.abs()))
+            };
+            shown[128] = 20.0
+                * level(input[left])
+                    .max(level(input[right]))
+                    .max(1e-10)
+                    .log10();
+            shown[129] = 20.0
+                * level(output[left])
+                    .max(level(output[right]))
+                    .max(1e-10)
+                    .log10();
             self.scope.write(shown);
         }
     }

@@ -1094,7 +1094,9 @@ impl Spectral {
             None
         };
         Spectral {
-            spectrum, spectrum_reader, shown: [-200.0; 258],
+            spectrum,
+            spectrum_reader,
+            shown: [-200.0; 258],
             mixer: Mixer::new(&set),
             set,
             learned,
@@ -1115,7 +1117,9 @@ impl Spectral {
     }
     /// 128 linear-frequency mean-power bands of real input and estimated noise, then input/output block peak dBFS.
     #[must_use]
-    pub fn spectrum(&self) -> crate::rt::SeqReader<[f32; 258]> { self.spectrum_reader.clone() }
+    pub fn spectrum(&self) -> crate::rt::SeqReader<[f32; 258]> {
+        self.spectrum_reader.clone()
+    }
 
     /// Whether it follows the noise (Auto Speech, or Manual with nothing learned).
     #[must_use]
@@ -1366,14 +1370,34 @@ impl Node for Spectral {
                 );
                 if frame.complete {
                     for band in 0..128 {
-                        let low = band * BINS / 128; let high = (band + 1) * BINS / 128;
-                        let mut signal = 0.0_f32; let mut noise = 0.0_f32;
-                        for k in low..high { signal += power[k]; noise += if learned.is_some() || tracks[frame.channel].started { learned.as_ref().map_or(tracks[frame.channel].noise[k], |profile| profile[k]).exp() } else { 0.0 }; }
+                        let low = band * BINS / 128;
+                        let high = (band + 1) * BINS / 128;
+                        let mut signal = 0.0_f32;
+                        let mut noise = 0.0_f32;
+                        for k in low..high {
+                            signal += power[k];
+                            noise += if learned.is_some() || tracks[frame.channel].started {
+                                learned
+                                    .as_ref()
+                                    .map_or(tracks[frame.channel].noise[k], |profile| profile[k])
+                                    .exp()
+                            } else {
+                                0.0
+                            };
+                        }
                         let scale = ((high - low) * tracks.len()) as f32;
-                        if frame.channel == 0 { shown[band] = 0.0; shown[128 + band] = 0.0; }
-                        shown[band] += signal / scale; shown[128 + band] += noise / scale;
+                        if frame.channel == 0 {
+                            shown[band] = 0.0;
+                            shown[128 + band] = 0.0;
+                        }
+                        shown[band] += signal / scale;
+                        shown[128 + band] += noise / scale;
                     }
-                    if frame.channel + 1 == tracks.len() { for value in &mut shown[..256] { *value = 10.0 * (*value / WINDOW_POWER as f32).max(1e-20).log10(); } }
+                    if frame.channel + 1 == tracks.len() {
+                        for value in &mut shown[..256] {
+                            *value = 10.0 * (*value / WINDOW_POWER as f32).max(1e-20).log10();
+                        }
+                    }
                 }
             });
         });
@@ -1381,8 +1405,20 @@ impl Node for Spectral {
             mixer.mix(frames, &ctx.automation, dry, output);
         });
         let peak = |x: f32, y: f32| x.max(y.abs());
-        self.shown[256] = 20.0 * input.iter().flat_map(|c| c[..frames].iter().copied()).fold(0.0_f32, peak).max(1e-10).log10();
-        self.shown[257] = 20.0 * output.iter().flat_map(|c| c[..frames].iter().copied()).fold(0.0_f32, peak).max(1e-10).log10();
+        self.shown[256] = 20.0
+            * input
+                .iter()
+                .flat_map(|c| c[..frames].iter().copied())
+                .fold(0.0_f32, peak)
+                .max(1e-10)
+                .log10();
+        self.shown[257] = 20.0
+            * output
+                .iter()
+                .flat_map(|c| c[..frames].iter().copied())
+                .fold(0.0_f32, peak)
+                .max(1e-10)
+                .log10();
         self.spectrum.write(self.shown);
     }
 
@@ -1408,7 +1444,8 @@ impl Node for Spectral {
             track.reset();
         }
         self.mixer.finish();
-        self.shown = [-200.0; 258]; self.spectrum.write(self.shown);
+        self.shown = [-200.0; 258];
+        self.spectrum.write(self.shown);
     }
 
     /// Lays the frames on the timeline: a frame ends where `origin` plus the samples processed,
@@ -1445,7 +1482,12 @@ pub enum NoiseReduction {
 impl NoiseReduction {
     /// Spectral modes expose their actual gate estimator; Voice has no equivalent noise estimate.
     #[must_use]
-    pub fn spectrum(&self) -> Option<crate::rt::SeqReader<[f32; 258]>> { match self { Self::Spectral(node) => Some(node.spectrum()), Self::Voice(_) => None } }
+    pub fn spectrum(&self) -> Option<crate::rt::SeqReader<[f32; 258]>> {
+        match self {
+            Self::Spectral(node) => Some(node.spectrum()),
+            Self::Voice(_) => None,
+        }
+    }
     /// Noise Reduction set as `settings`, in its mode.
     #[must_use]
     pub fn new(settings: &Settings) -> Self {

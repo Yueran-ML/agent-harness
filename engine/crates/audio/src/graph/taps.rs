@@ -154,7 +154,9 @@ impl Graph {
     /// metering from a graph to the next).
     pub fn set_metering(&mut self, on: bool) {
         self.metering = on;
-        if !on { self.fx_blocks = 0; }
+        if !on {
+            self.fx_blocks = 0;
+        }
         self.fx_state.write((on, self.fx_blocks));
         for strip in &mut self.strips {
             strip.pre_tap.on = on;

@@ -1,6 +1,6 @@
 //! Real DSP readings and their reset state, independent of the server/UI.
 use columbina_audio::fx::{denoise, width};
-use columbina_audio::testing::{Run, render};
+use columbina_audio::testing::{render, Run};
 use columbina_audio::{Layout, Node, Spec};
 
 #[test]

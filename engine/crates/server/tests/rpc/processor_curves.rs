@@ -6,7 +6,14 @@ async fn static_processor_curves_follow_model_edits_and_never_add_history() {
     let dir = super::project_dir();
     let engine = super::engine(
         dir.path(),
-        &["--headless", "--no-proxies", "--sound", "null", "--idle-seconds", "1"],
+        &[
+            "--headless",
+            "--no-proxies",
+            "--sound",
+            "null",
+            "--idle-seconds",
+            "1",
+        ],
     )
     .await;
     let mut client = engine.client("agent").await;

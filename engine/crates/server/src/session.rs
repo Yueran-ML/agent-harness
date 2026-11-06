@@ -1540,10 +1540,16 @@ async fn dispatch(
         "audio.eq_response" | "audio.dynamics_curve" | "audio.soft_clip_curve" => {
             sound_curves::call(engine, connection, id, method, params).await
         }
-        "audio.standards" | "audio.meters" | "audio.fx_meters" | "audio.loudness" | "audio.analyze"
-        | "audio.normalize" | "audio.level_match" | "audio.level_profile" | "audio.noise_learn" | "audio.cancel" => {
-            sound::call(engine, connection, kind, id, method, params).await
-        }
+        "audio.standards"
+        | "audio.meters"
+        | "audio.fx_meters"
+        | "audio.loudness"
+        | "audio.analyze"
+        | "audio.normalize"
+        | "audio.level_match"
+        | "audio.level_profile"
+        | "audio.noise_learn"
+        | "audio.cancel" => sound::call(engine, connection, kind, id, method, params).await,
         "track.start" | "track.stop" | "track.edit" => {
             tracker::call(engine, connection, kind, id, method, params).await
         }

@@ -51,7 +51,8 @@ async fn presets_learn_and_live_fx_readings_use_real_engine() {
     );
     client.result("audio_presets.update",Some(json!({"preset":preset["id"],"payload":{"kind":"effect","settings":{"kind":"gain","gain_db":-6}}}))).await;
     assert_eq!(
-        client.result("audio_presets.list", None).await["presets"][0]["payload"]["settings"]["gain_db"],
+        client.result("audio_presets.list", None).await["presets"][0]["payload"]["settings"]
+            ["gain_db"],
         -6.0
     );
     client

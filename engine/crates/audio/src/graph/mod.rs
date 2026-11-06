@@ -43,10 +43,10 @@ mod build_fx;
 mod build_retune;
 mod build_warp;
 mod clip;
+mod fx_readings;
 mod pdc;
 mod process;
 mod response;
-mod fx_readings;
 pub mod route;
 mod strip;
 mod taps;
@@ -61,8 +61,8 @@ pub use build::{
 };
 pub use build_retune::{retune, without_clip_levels};
 pub use clip::{radius, resampled, Reach};
-pub use response::{dynamics_curve, eq_response};
 pub use fx_readings::{FxGraph, FxOwner, FxReader, FxTap};
+pub use response::{dynamics_curve, eq_response};
 pub use taps::{Point, Taps};
 
 /// A clip of a graph as its controls find it: its track, its id, and whether its gain and its

@@ -478,7 +478,14 @@ fn clip_effects(
         if node.prepare(&spec).is_err() {
             continue;
         }
-        if let Some(reader) = made.reading { fx_taps.push(super::FxTap { owner: super::FxOwner::Clip(clip.id.clone()), insert: (!insert.id.is_empty()).then(|| insert.id.clone()), slot: Some(slot), reader }); }
+        if let Some(reader) = made.reading {
+            fx_taps.push(super::FxTap {
+                owner: super::FxOwner::Clip(clip.id.clone()),
+                insert: (!insert.id.is_empty()).then(|| insert.id.clone()),
+                slot: Some(slot),
+                reader,
+            });
+        }
         let node: Box<dyn Node> = if insert.on || made.switched {
             settle += u64::from(made.settle);
             node
@@ -1143,7 +1150,12 @@ impl Graph {
                     let slowest = slowest_ducker(settings, source.lanes);
                     settles[at] += u64::from(ducker::settle_for(&slowest, rate));
                     ducker_meters.push((at, node.meter()));
-                    fx_taps.push(super::FxTap { owner: super::FxOwner::Strip(source.owner.clone()), insert: None, slot: None, reader: super::FxReader::Ducker(node.meter()) });
+                    fx_taps.push(super::FxTap {
+                        owner: super::FxOwner::Strip(source.owner.clone()),
+                        insert: None,
+                        slot: None,
+                        reader: super::FxReader::Ducker(node.meter()),
+                    });
                     list.push((Box::new(node), StageKind::Ducker, keyed.clone()));
                 }
             }
@@ -1184,7 +1196,14 @@ impl Graph {
                                 continue;
                             }
                             if on || made.switched {
-                                if let Some(reader) = made.reading { fx_taps.push(super::FxTap { owner: super::FxOwner::Strip(source.owner.clone()), insert: Some(insert.id.clone()), slot: None, reader }); }
+                                if let Some(reader) = made.reading {
+                                    fx_taps.push(super::FxTap {
+                                        owner: super::FxOwner::Strip(source.owner.clone()),
+                                        insert: Some(insert.id.clone()),
+                                        slot: None,
+                                        reader,
+                                    });
+                                }
                                 meta.inserts.push(insert.id.clone());
                                 settles[at] += u64::from(made.settle);
                                 // Pitch takes each value of a lane where it works out the sound
@@ -1218,7 +1237,12 @@ impl Graph {
                             continue;
                         }
                         let slowest = slowest_dynamics(settings, source.lanes);
-                        fx_taps.push(super::FxTap { owner: super::FxOwner::Strip(source.owner.clone()), insert: None, slot: None, reader: super::FxReader::Dynamics(node.ball()) });
+                        fx_taps.push(super::FxTap {
+                            owner: super::FxOwner::Strip(source.owner.clone()),
+                            insert: None,
+                            slot: None,
+                            reader: super::FxReader::Dynamics(node.ball()),
+                        });
                         settles[at] += u64::from(Dynamics::settle_for(&slowest, rate));
                         let key = key.into_iter().collect();
                         list.push((Box::new(node) as Box<dyn Node>, StageKind::Dynamics, key));
@@ -1419,7 +1443,8 @@ impl Graph {
                 None
             };
             // Its effects after its equalizer (T4c): the path of its track starts with both.
-            let (effects, through) = match clip_effects(clip, &options, rate, layout, &mut fx_taps) {
+            let (effects, through) = match clip_effects(clip, &options, rate, layout, &mut fx_taps)
+            {
                 Some((effects, settle)) => (Some(effects), settle),
                 None => (None, 0),
             };
@@ -1745,7 +1770,9 @@ impl Graph {
             lane.held = Held::new(rate);
         }
         let mut graph = Graph {
-            fx_taps, fx_state: crate::rt::seqlock((false, 0_u64)).0, fx_blocks: 0,
+            fx_taps,
+            fx_state: crate::rt::seqlock((false, 0_u64)).0,
+            fx_blocks: 0,
             id: GRAPHS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             rate,
             max_block,

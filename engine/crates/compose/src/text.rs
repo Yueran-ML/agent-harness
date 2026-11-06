@@ -544,8 +544,13 @@ mod tests {
         assert!(pixels.iter().any(|p| p[3] == 255 && p[0] == 0));
         assert_eq!(pixels[0], [0, 0, 0, 0]);
         // Premultiplied.
-        assert!(pixels.iter().all(|p| p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3]));
-        assert_eq!(label("", 24.0).2.len(), label("", 24.0).0 as usize * label("", 24.0).1 as usize);
+        assert!(pixels
+            .iter()
+            .all(|p| p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3]));
+        assert_eq!(
+            label("", 24.0).2.len(),
+            label("", 24.0).0 as usize * label("", 24.0).1 as usize
+        );
     }
 
     #[test]

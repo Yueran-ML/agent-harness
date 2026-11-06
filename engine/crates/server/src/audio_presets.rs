@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use columbina_model::audio::fx::{Dynamics, Effect, Equalizer};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::log::log;
 use crate::rpc::{self, Fault};
@@ -455,14 +455,12 @@ mod tests {
         };
         assert!(read.compressor.sidechain.source.is_none());
         assert!(!read.compressor.sidechain.on);
-        assert!(
-            update(
-                root.path(),
-                &saved.id,
-                Payload::Effect(Effect::Gain(GainFx::default()))
-            )
-            .is_err()
-        );
+        assert!(update(
+            root.path(),
+            &saved.id,
+            Payload::Effect(Effect::Gain(GainFx::default()))
+        )
+        .is_err());
         let gain = save_new(
             root.path(),
             "Gain",
@@ -476,17 +474,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(list(root.path()).unwrap().len(), 2);
-        assert!(
-            save_new(
-                root.path(),
-                "Invalid",
-                Payload::Effect(Effect::Limiter(LimiterFx {
-                    ceiling_db: 2.0,
-                    ..Default::default()
-                }))
-            )
-            .is_err()
-        );
+        assert!(save_new(
+            root.path(),
+            "Invalid",
+            Payload::Effect(Effect::Limiter(LimiterFx {
+                ceiling_db: 2.0,
+                ..Default::default()
+            }))
+        )
+        .is_err());
         assert_eq!(list(root.path()).unwrap().len(), 2);
         delete(root.path(), &saved.id).unwrap();
         assert_eq!(list(root.path()).unwrap().len(), 1);

@@ -1,6 +1,6 @@
 //! Readers of the currently playing graph. No object here is accessed by the real-time thread.
 use columbina_audio::graph::{FxGraph, FxOwner, FxReader, Graph, Owner};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::sync::{Mutex, OnceLock};
 fn graphs() -> &'static Mutex<Vec<(String, FxGraph)>> {
     static GRAPHS: OnceLock<Mutex<Vec<(String, FxGraph)>>> = OnceLock::new();

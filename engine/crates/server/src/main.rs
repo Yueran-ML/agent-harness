@@ -40,8 +40,10 @@
 mod address;
 mod analysis;
 mod audio;
+mod audio_presets;
 mod compare;
 mod conn;
+mod fx_meters;
 mod gallery;
 mod gpu;
 mod grading;
@@ -64,8 +66,8 @@ mod rpc;
 mod scopes;
 mod session;
 mod srt;
-mod thumbnail;
 mod stills;
+mod thumbnail;
 mod timer;
 mod tracking;
 mod transport;
@@ -73,8 +75,6 @@ mod view;
 mod viewer_preview;
 mod window;
 mod window_presets;
-mod audio_presets;
-mod fx_meters;
 
 #[cfg(test)]
 mod protocol;

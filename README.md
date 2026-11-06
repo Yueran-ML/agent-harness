@@ -245,6 +245,15 @@ same timeline with its video tools, and the person and the agent undo each other
 history. Films that the agent cut before are made timelines when the studio opens.
 [Editing video](docs/video.md) says how to use it, with its keys.
 
+The Fairlight page works on the same audio tracks as Edit. Clip volume and pan have keyframes;
+fade handles, crossfades, channel mapping and Normalize Audio Levels share the same controls
+across the pages. The mixer has track and bus faders, sends, surround panning, EQ, Dynamics and
+insert effects, with user presets and live meters. Automation lanes can be drawn or recorded,
+and follow timeline edits. Loudness analysis and the `video_loudness` and `video_duck` tools
+use the engine's mix and the same undo history. Platform loudness presets such as YouTube and
+Spotify are working targets, not official delivery requirements. Fairlight, like the rest of
+the editing studio, runs on Windows.
+
 The Color page grades as Resolve does. Each clip has a tree of nodes, serial, parallel and layer
 nodes, outside nodes and key mixers among them, and a group of clips and the timeline have
 grades of their own. Its palettes are Primaries (wheels, bars and Log), Curves (custom and the

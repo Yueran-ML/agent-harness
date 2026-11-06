@@ -333,6 +333,19 @@ export async function writeCrateNotices({ crates, out }) {
       await writeFile(path.join(folder, `LICENSE-${chosen}.txt`), head + found.text);
       shipped = [`LICENSE-${chosen}.txt`];
     }
+    if (one.name === 'nnnoiseless') {
+      // Voice mode uses DenoiseState::new and the crate's built-in RnnModel, not a separately
+      // downloaded model. Keep that provenance beside the crate's own COPYING in the package.
+      const notice = 'MODEL-NOTICE.txt';
+      await writeFile(path.join(folder, notice), [
+        `Noise Reduction Voice mode uses the built-in neural-network weights from nnnoiseless ${one.version}.`,
+        'The model is weights.rnn included by src/rnn.rs in that crate. Its source README describes',
+        'this built-in model and the separate option of loading custom models. Columbina uses the',
+        'built-in model; no custom model is bundled. The crate\'s original license and copyright',
+        'notices are included alongside this file.', '',
+      ].join('\n'));
+      shipped = [...shipped, notice];
+    }
     const source = one.repository ?? `https://crates.io/crates/${one.name}`;
     rows.push(`| ${one.name} | ${one.version} | ${license} | ${source} | ${shipped.map((file) => `\`licenses/crates/${named}/${file}\``).join(', ')} |`);
   }

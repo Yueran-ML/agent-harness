@@ -6,6 +6,15 @@ change what was there before.
 
 ## Unreleased
 
+- Windows Studio adds Fairlight alongside the Edit page, sharing clip volume/pan keyframes,
+  fades, audio crossfades, channel mapping, normalization and audio attribute copy/paste.
+  Track and bus mixers expose EQ, Dynamics, sends, surround pan, insert effects and user
+  presets; DSP meters and Noise Reduction Learn read the actual audio graph. Timeline
+  automation supports lane editing, Pencil, Write/Trim recording and Follows Edit.
+- `video_loudness` measures or adjusts clip, track and output loudness, and `video_duck`
+  lowers selected backgrounds around dialogue. Candidate mixes are measured before a
+  single undoable edit. Platform loudness presets are explicitly non-official targets.
+
 - The editing studio has a Color page (phase 2), on Windows, made after DaVinci Resolve's. Each
   clip has a tree of nodes (serial, parallel, layer and outside nodes, key mixers), and groups of
   clips and the timeline have grades of their own; the node editor has Resolve's keys, links

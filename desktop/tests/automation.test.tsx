@@ -91,7 +91,8 @@ it('coalesces delayed touch sends and always releases the latest value, includin
 it('lane keyboard cut cannot escape into clip edits',async()=>{
  const t=timeline([]), call=vi.fn(async(method:string):Promise<EngineAnswer>=>({ok:true,result:method==='automation.parameters'?{revision:7,of:{track:'a1'},parameters:[{path:'fader_db',kind:'continuous',scale:'linear',value:0,min:-100,max:10}]}:{revision:8,done:[]}}));
  const bubbled=vi.fn();render(<div onKeyDown={bubbled}><AutomationLane bridge={{call} as never} session={1} revision={7} timeline={t} of={{track:'a1'}} lanes={{fader_db:{points:[{at:{ticks:0,scale:48000},value:-10},{at:{ticks:48000,scale:48000},value:0}]}}} scale={4} from={0} to={100} height={128} snapping={false} marks={()=>({in:null,out:null})} path="fader_db" pencil={false} onPath={()=>{}} onEdit={()=>{}} name="Voice"/></div>);await settle();
- expect((screen.getByRole('option',{name:'Fader'}) as HTMLOptionElement).value).toBe('fader_db');
+ fireEvent.click(screen.getByRole('button',{name:'Automation parameter Voice'}));
+ fireEvent.click(screen.getByRole('menuitem',{name:'Fader'}));
  const svg=screen.getByLabelText('Voice Fader');fireEvent.keyDown(svg,{key:'a',ctrlKey:true});fireEvent.keyDown(svg,{key:'x',ctrlKey:true});await settle();
  expect(bubbled).not.toHaveBeenCalled();expect(call.mock.calls.filter(c=>c[0]==='transaction.apply')).toHaveLength(1);
  const ops=(call.mock.calls as any[]).find(c=>c[0]==='transaction.apply')[1].ops;

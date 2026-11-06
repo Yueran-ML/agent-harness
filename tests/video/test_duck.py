@@ -400,3 +400,28 @@ async def test_post_pan_silent_dialogue_never_passes_even_with_loud_pre_pan_sign
         for target in call.args[1]["targets"]
     )
     wire.apply.assert_awaited_once()
+
+
+async def test_repeat_with_same_ducker_adds_no_history(tmp_path: Path) -> None:
+    wire = setup(tmp_path)
+    strip = wire.project.return_value[1]["timelines"][0]["tracks"][1]["strip"]
+    strip["track_fx"] = {
+        "on": True,
+        "sources": [{"track": "A1"}],
+        "amount_db": 12.0,
+        "recovery_ms": 600.0,
+        "lookahead_ms": 15.0,
+        "rise_ms": 10.0,
+        "hold_ms": 150.0,
+    }
+    result = await Duck(wire, tmp_path, Path).run(music=["A2"])
+    assert result["status"] == "unchanged"
+    assert result["changed"] is False
+    assert result["applied"] is None
+    assert result["met"] is True
+    wire.apply.assert_not_awaited()
+    strip["track_fx"]["amount_db"] = 9.0
+    result = await Duck(wire, tmp_path, Path).run(music=["A2"])
+    assert result["status"] == "applied"
+    assert result["changed"] is True
+    wire.apply.assert_awaited_once()

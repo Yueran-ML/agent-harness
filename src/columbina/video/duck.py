@@ -4,7 +4,7 @@ import math
 from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from columbina.video import words
 from columbina.video.duck_keys import UnsupportedCurveError, gain_keys
@@ -363,7 +363,26 @@ class Duck:
                 elif id in decrease:
                     amounts[id] = max(0, amounts[id] - 3)
             adjustments += 1
-        applied = await self.engine.apply(ops, revision=revision, session=session)
+        clips = {clip["id"]: clip for track in tracks.values() for clip in track.get("clips", [])}
+
+        def unchanged(op: dict[str, Any]) -> bool:
+            """Whether the merge-patch or Volume replacement leaves the project as it is."""
+            if op["op"] == "set_track_audio":
+                current = tracks[op["track"]].get("strip", {}).get("track_fx")
+                if not isinstance(current, dict):
+                    return False
+                fx = cast(dict[str, Any], current)
+                wanted: dict[str, Any] = op["patch"]["strip"]["track_fx"]
+                return all(fx.get(key) == value for key, value in wanted.items())
+            if op["op"] == "set_clip":
+                return clips[op["id"]].get("gain_db", 0.0) == op["gain_db"]
+            return False
+
+        # A repeat with the same parameters must not add an empty step to undo history.
+        changed = not all(unchanged(op) for op in ops)
+        applied = (
+            await self.engine.apply(ops, revision=revision, session=session) if changed else None
+        )
         track_checks = [row for row in checks if "track" in row]
         overall_checks = [row for row in checks if "sum" in row] if len(ids) > 1 else track_checks
         per_track_complete = bool(intervals and quiet and track_checks) and all(
@@ -373,7 +392,8 @@ class Duck:
             row["met"] is not None for row in overall_checks
         )
         return {
-            "status": "applied",
+            "status": "applied" if changed else "unchanged",
+            "changed": changed,
             "timeline": selected["id"],
             "dialogue": dialogue,
             "music": ids,
@@ -391,7 +411,7 @@ class Duck:
             "measurement_phase": "candidate_before_apply",
             "measurement_point": "stereo_post_pan",
             "ops": ops,
-            "applied": asdict(applied),
+            "applied": asdict(applied) if applied is not None else None,
             "notice": "Dialogue and backgrounds are measured at the same stereo post-strip, "
             "post-pan point. Multiple backgrounds are verified by their actual PCM sum; "
             "per-track results remain diagnostic. Quiet intervals exclude "

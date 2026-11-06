@@ -986,7 +986,8 @@ def tools_of(videos: Videos) -> list[Tool[Any, str]]:
             "preserve existing static/linear Volume; affected easing requires Ducker mode. "
             "Measure candidates with DSP history; check actual stereo background PCM sum "
             "against dialogue and quiet baseline, adjust by 3 dB at most twice, then "
-            "apply once. Inspect met and verification_complete; absent/short words cannot "
+            "apply once (status unchanged, no history, when the project already matches). "
+            "Inspect met and verification_complete; absent/short words cannot "
             "prove the target. No transcription or dialogue guessing is performed.",
             long=True,
         ),

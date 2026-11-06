@@ -276,6 +276,8 @@ export interface EngineCallContext { expectedSession: number }
  * where the viewer lies, and the shell, which holds the handle of the window, makes the view there.
  */
 export interface EngineBridge {
+  /** Answer only a legacy receipt in the current open Studio workspace. */
+  migrationDuck?(asked: {session: number; timeline: string; accept: boolean}): Promise<EngineAnswer<{timeline: string; duck_prompted: boolean; warnings?: string[]}>>;
   /**
    * Open a folder that was chosen in the dialog in the studio: its project is `.columbina/studio`
    * there. The engine is started, or the one that has the project open (an agent's) is reached;

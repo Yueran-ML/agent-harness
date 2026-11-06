@@ -1024,6 +1024,9 @@ export type AudioAnalysis =
  * became and what of it was left out, or why it could not be migrated (`error`).
  */
 export interface MigrationReport {
+  duck_pending?: boolean;
+  duck_prompted?: boolean;
+  existing?: boolean;
   /** The folder of the old project. */
   source: string;
   timeline?: string;

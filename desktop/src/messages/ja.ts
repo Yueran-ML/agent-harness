@@ -781,7 +781,7 @@ export const ja: Messages = {
         exportTo: '書き出し先…', exporting: '書き出し中', cancelling: 'キャンセル中', encoder: 'エンコーダー', reveal: 'フォルダーに表示',
         frames: (done: number, total: number) => `${done} / ${total} フレーム`,
       },
-      migration: { details: '詳細', hideDetails: '詳細を閉じる', timeline: 'タイムライン', dropped: '移行しなかった内容', notes: '注意', failed: '移行できず' },
+      migration: { duckYes: "追加する", duckNo: "追加しない", duckPending: "処理中…", details: '詳細', hideDetails: '詳細を閉じる', timeline: 'タイムライン', dropped: '移行しなかった内容', notes: '注意', failed: '移行できず' },
       cutPage: {
         viewerMode: 'ビューアモード', source: 'ソースクリップ', tape: 'ソーステープ', timeline: 'タイムライン',
         edits: '編集', smartInsert: 'スマート挿入', append: '末尾に追加', rippleOverwrite: 'リップル上書き', placeOnTop: '最上位トラックに配置',
@@ -1572,6 +1572,8 @@ export const ja: Messages = {
         },
       },
       migration: {
+        duck: "この旧プロジェクトでは会話中に音楽を下げていました。復元しますか？",
+        duckFailed: "完了できませんでした。再試行できます。",
         done: (names: readonly string[], count: number) => `古いプロジェクト ${count} 件（${names.join('、')}${count > names.length ? ` ほか ${count - names.length} 件` : ''}）をタイムラインに変換しました。元のファイルはそのまま残しています。`,
         failed: (count: number) => `古いプロジェクト ${count} 件を移行できませんでした。それらのファイルは変更していません。`,
         checkFailed: 'このフォルダーの古いプロジェクトを確認できませんでした。',

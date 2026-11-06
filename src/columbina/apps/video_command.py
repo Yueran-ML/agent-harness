@@ -107,6 +107,11 @@ def arguments(parser: argparse.ArgumentParser) -> None:
     migrating = whats.add_parser("migrate", help="convert old films to Studio timelines")
     migrating.add_argument("--workspace", metavar="DIR", required=True)
     migrating.add_argument("--json", action="store_true")
+    duck = whats.add_parser("migration-duck", help="answer a legacy timeline's duck prompt")
+    duck.add_argument("--workspace", metavar="DIR", required=True)
+    duck.add_argument("--timeline", required=True)
+    duck.add_argument("--answer", choices=["yes", "no"], required=True)
+    duck.add_argument("--json", action="store_true")
 
 
 def _transcriber(args: argparse.Namespace) -> Transcriber | None:
@@ -240,11 +245,47 @@ def _engine(args: argparse.Namespace, say: Callable[[str], None]) -> int:
 
 async def _migrated(workspace: Path, program: str) -> list[dict[str, object]]:
     from columbina.video.migrate import migrate
+    from columbina.video.migration_duck import pending
 
     async with await Engine.attach(
         workspace / ".columbina/studio", program=program, client="cli"
     ) as engine:
-        return await migrate(workspace, engine)
+        reports = await migrate(workspace, engine)
+        prompts = await pending(workspace, engine)
+        by_timeline = {report.get("timeline"): report for report in reports}
+        for prompt in prompts:
+            if prompt["timeline"] in by_timeline:
+                by_timeline[prompt["timeline"]]["duck_pending"] = True
+            else:
+                reports.append(prompt)
+        return reports
+
+
+async def _duck_answer(
+    workspace: Path, program: str, timeline: str, accept: bool
+) -> dict[str, Any]:
+    from columbina.video.migration_duck import answer
+
+    async with await Engine.attach(
+        workspace / ".columbina/studio", program=program, client="cli"
+    ) as engine:
+        return await answer(workspace, engine, timeline, accept)
+
+
+def _migration_duck(args: argparse.Namespace, say: Callable[[str], None]) -> int:
+    workspace = Path(args.workspace).resolve()
+    try:
+        if not workspace.is_dir():
+            raise ProjectError(f"workspace does not exist: {workspace}")
+        program = program_of(None, os.environ.get("PATH", ""), [Path.cwd(), workspace])
+        if program is None:
+            raise ProjectError(not_found(None))
+        result = asyncio.run(_duck_answer(workspace, program, args.timeline, args.answer == "yes"))
+    except _FAILURES as error:
+        say(json.dumps({"error": str(error)}, ensure_ascii=False))
+        return 2
+    say(json.dumps(result, ensure_ascii=False))
+    return 0
 
 
 def _migrate(args: argparse.Namespace, say: Callable[[str], None]) -> int:
@@ -295,6 +336,8 @@ def run(args: argparse.Namespace, say: Callable[[str], None]) -> int:
         return 2
     if args.what == ENGINE:
         return _engine(args, say)
+    if args.what == "migration-duck":
+        return _migration_duck(args, say)
     if args.what == "migrate":
         return _migrate(args, say)
     try:

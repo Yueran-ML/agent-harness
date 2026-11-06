@@ -295,8 +295,13 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
         <X size={14} />
       </button>
     </div>}
-    {migrated !== null && migrated.session === snapshot.session && <MigrationBanner migrated={migrated} timelines={timelines}
-      onDismiss={() => migrations.dismiss()} />}
+    {migrated !== null && migrated.session === snapshot.session && <MigrationBanner key={migrated.session} migrated={migrated} timelines={timelines}
+      onDismiss={() => migrations.dismiss()} onAnswer={async (timeline, accept) => {
+        if (!bridge.migrationDuck) throw new Error('Migration answers are unavailable in this preview.');
+        const answer = await bridge.migrationDuck({session: migrated.session, timeline, accept});
+        if (!answer.ok) throw new Error(answer.error.message);
+        migrations.answered(migrated.session, timeline);
+      }} />}
     <ExportProgress renders={renders} />
     {page === 'media' && <MediaPage pool={pool} monitor={<MonitorPane controls={source} bridge={bridge} native={native} active
       notice={noticeOf('source')} onRetry={again} hint={words.hint.studio.load} />} />}

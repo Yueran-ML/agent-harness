@@ -854,7 +854,7 @@ export const en = {
         frames: (done: number, total: number) => `${done} of ${total} frames`,
       },
       /** The old projects of the folder that became timelines as the studio was opened. */
-      migration: { details: 'Details', hideDetails: 'Hide details', timeline: 'Timeline', dropped: 'Left out', notes: 'Notes', failed: 'Not migrated' },
+      migration: { duckYes: "Add ducking", duckNo: "No thanks", duckPending: "Applying…", details: 'Details', hideDetails: 'Hide details', timeline: 'Timeline', dropped: 'Left out', notes: 'Notes', failed: 'Not migrated' },
       /** The Cut page, in DaVinci Resolve's words. */
       cutPage: {
         viewerMode: 'Viewer mode', source: 'Source clip', tape: 'Source tape', timeline: 'Timeline',
@@ -1709,6 +1709,8 @@ export const en = {
         },
       },
       migration: {
+        duck: "This old project lowered music while someone spoke. Add that back?",
+        duckFailed: "Ducking was not completed. You can try again.",
         /** `names` are those of the first few of `count`; the rest are counted. */
         done: (names: readonly string[], count: number) => (count === 1
           ? `An old project became a timeline: ${names[0]}. Its files are kept as they were.`

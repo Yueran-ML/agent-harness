@@ -37,6 +37,12 @@ export class Migrations {
     this.changed();
   }
 
+  answered(session: number, timeline: string): void {
+    if (this.told?.session !== session) return;
+    this.told = {...this.told, done: this.told.done.map(report => report.timeline === timeline ? {...report, duck_prompted: true, duck_pending: false} : report)};
+    this.changed();
+  }
+
   private heard(event: EngineEvent): void {
     if (event.kind !== 'migrated') return;
     const reports = Array.isArray(event.migrations) ? event.migrations : [];

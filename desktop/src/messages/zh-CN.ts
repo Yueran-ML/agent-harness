@@ -732,7 +732,7 @@ export const zhCN: Messages = {
         exportTo: '导出到…', exporting: '正在导出', cancelling: '正在取消', encoder: '编码器', reveal: '打开所在文件夹',
         frames: (done: number, total: number) => `${done} / ${total} 帧`,
       },
-      migration: { details: '详情', hideDetails: '收起详情', timeline: '时间线', dropped: '没有迁移的部分', notes: '备注', failed: '没能迁移' },
+      migration: { duckYes: "补上", duckNo: "不用了", duckPending: "处理中…", details: '详情', hideDetails: '收起详情', timeline: '时间线', dropped: '没有迁移的部分', notes: '备注', failed: '没能迁移' },
       cutPage: {
         viewerMode: '检视器模式', source: '源片段', tape: '源磁带', timeline: '时间线',
         edits: '编辑', smartInsert: '智能插入', append: '追加', rippleOverwrite: '波纹覆盖', placeOnTop: '放到上层',
@@ -1493,6 +1493,8 @@ export const zhCN: Messages = {
         },
       },
       migration: {
+        duck: "旧工程里有说话时压低音乐，要补上吗？",
+        duckFailed: "未能完成，可重试。",
         done: (names: readonly string[], count: number) => `已把 ${count} 个旧工程转成时间线：${names.join('、')}${count > names.length ? `，以及另外 ${count - names.length} 个` : ''}。旧文件原样保留。`,
         failed: (count: number) => `有 ${count} 个旧工程没能迁移，它们的文件没有改动。`,
         checkFailed: '没能检查这个文件夹里的旧工程。',

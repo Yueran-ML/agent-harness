@@ -230,10 +230,10 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
       });
       return child;
     }
-    if (args.includes('video') && args.includes('migrate')) {
+    if (args.includes('video') && (args.includes('migrate') || args.includes('migration-duck'))) {
       const child = Object.assign(new EventEmitter(), {
         pid: 800 + migrations.length, exitCode: null as number | null, signalCode: null, executable: _executable, args, options,
-        stdout: new EventEmitter(), stderr: new EventEmitter(), killed: false,
+        stdout: new EventEmitter(), stderr: new EventEmitter(), stdin: Object.assign(new EventEmitter(), { end: vi.fn() }), killed: false,
       });
       migrations.push(child);
       return child;
@@ -403,7 +403,7 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
     __dirname: path.dirname(mainPath),
     process: shellProcess,
     // The clock of the tests, so that a test that sets it sets it for the shell too.
-    URL, setTimeout, clearTimeout, Date, AbortSignal, ...clock,
+    URL, setTimeout, clearTimeout, Date, AbortSignal, AbortController, ...clock,
   }, { filename: mainPath });
   await Promise.resolve();
   // A second application of Columbina makes no window, and nothing calls it.
@@ -4061,6 +4061,24 @@ describe('the engine of the studio', () => {
     };
     const migratedOf = (shell: Shell) => told(shell).filter(event => event.kind === 'migrated');
     const film = path.resolve('/film/old-film');
+
+    it('answers migration duck only for the open session without accepting a renderer path', async () => {
+      const shell = await shellHarness(undefined, service); const {cwd} = await openIn(shell);
+      await ended(shell.migrations[0], {migrations: [{source:film,timeline:'t3',dropped:['duck: omitted'],duck_pending:true,existing:true}]});
+      expect(migratedOf(shell).at(-1).migrations[0]).toMatchObject({duck_pending:true,existing:true});
+      await expect(shell.invoke('migration-duck',{session:0,timeline:'t3',accept:true})).rejects.toThrow('no longer open');
+      await expect(shell.invoke('migration-duck',{session:1,timeline:'t3',accept:true,workspace:'/elsewhere'})).rejects.toThrow('only session');
+      await expect(shell.invoke('migration-duck',{session:1,timeline:'../t3',accept:true})).rejects.toThrow('only session');
+      const answer=shell.invoke('migration-duck',{session:1,timeline:'t3',accept:true});await settledAll();
+      const run=shell.migrations[1];expect(run.args).toEqual(['-m','columbina','video','migration-duck','--workspace',cwd,'--timeline','t3','--answer','yes','--json']);
+      expect(run.options.cwd).toBe(cwd);expect(run.options.env.COLUMBINA_ENGINE).toBe(builtEngine());expect(run.options.windowsHide).toBe(true);
+      await expect(shell.invoke('migration-duck',{session:1,timeline:'t3',accept:false})).rejects.toThrow('pending answer');
+      await ended(run,{timeline:'t3',duck_prompted:true,status:'applied'});expect(await answer).toMatchObject({ok:true,result:{duck_prompted:true}});
+      const retry=shell.invoke('migration-duck',{session:1,timeline:'t3',accept:false});await settledAll();await ended(shell.migrations[2],{error:'stale project'},2);
+      expect(await retry).toMatchObject({ok:false,error:{message:'stale project'}});
+      const late=shell.invoke('migration-duck',{session:1,timeline:'t3',accept:true});await settledAll();const running=shell.migrations[3];
+      await shell.invoke('engine-close');expect(running.killed).toBe(true);expect(await late).toMatchObject({ok:false});
+    });
 
     it('are migrated once the engine is open, by the program of the service, beside the studio, and the page is told', async () => {
       const shell = await shellHarness(undefined, service);

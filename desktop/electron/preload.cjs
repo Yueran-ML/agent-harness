@@ -108,6 +108,7 @@ contextBridge.exposeInMainWorld('columbina', {
   // The engine of the studio. The page names no path to it and holds no handle of the window:
   // media comes from the dialog of the system, and the view is made by the shell.
   engine: {
+    migrationDuck: (asked) => ipcRenderer.invoke('columbina:migration-duck', { session: asked?.session, timeline: asked?.timeline, accept: asked?.accept }),
     open: (cwd) => ipcRenderer.invoke('columbina:engine-open', { cwd }),
     call: (method, params, context) => ipcRenderer.invoke('columbina:engine-call', {
       method, params, ...(context?.expectedSession === undefined ? {} : { expectedSession: context.expectedSession }),

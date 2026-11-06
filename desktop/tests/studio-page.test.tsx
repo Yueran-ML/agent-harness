@@ -52,6 +52,7 @@ function shellEngine() {
       : method === 'transport.state'
         ? { ok: true, result: { monitor: 'source', media: 'm1', frame: 0, playing: false, speed: 1, exact: true, shown: 0, last: 249, sound: 'off', source: 'original', proxies: true } }
         : { ok: true, result: {} })),
+    migrationDuck: vi.fn(async (asked: {session:number;timeline:string;accept:boolean}) => ({ok:true as const,result:{timeline:asked.timeline,duck_prompted:true}})),
     importFiles: vi.fn(async () => ({ ok: true, result: null })),
     viewRect: vi.fn(async () => {}),
     viewShow: vi.fn(async () => {}),
@@ -382,6 +383,14 @@ describe('the old projects of the folder, as the studio opens', () => {
     fireEvent.click(one('open-studio'));
     await settle();
   }
+
+  it('answers the per-timeline duck prompt through the current Studio session bridge',async()=>{
+    await opened();engine.tell(migrated([{source:'F:/work/old',timeline:'t3',dropped:['duck: omitted'],existing:true,duck_pending:true}]));
+    const prompt=document.querySelector('[data-duck-timeline="t3"]')!;
+    fireEvent.click(prompt.querySelector('button')!);await settle();
+    expect(engine.migrationDuck).toHaveBeenCalledWith({session:1,timeline:'t3',accept:true});
+    expect(document.querySelector('[data-duck-timeline="t3"]')).toBeNull();
+  });
 
   it('says once which became timelines and that their files are kept, and what each left out in its details', async () => {
     await opened();

@@ -775,7 +775,7 @@ async function openStudio(cwd) {
   // `migration`: the run of `video migrate` for the folder, while it runs.
   // `scopes`: the ids of the scopes that the page subscribed (see `keepScopes`).
   // `previewed`: whether the page asked for a Live Preview since one was last ended (see `endPreview`).
-  studio = { number, project, session, opened, jobs: new Map(), migration: null, scopes: new Set(), windowScopes: new Set(), previewed: false };
+  studio = { number, project, workspace: cwd, session, opened, jobs: new Map(), migration: null, duckAnswers: new Map(), scopes: new Set(), windowScopes: new Set(), previewed: false };
   tellStudio(number, { kind: 'opened', ...opened });
   tellScopesContext();
   // A view is made anew for every engine, where the page has said where the viewer is.
@@ -834,7 +834,7 @@ function migrateIn(cwd, open) {
     const reports = Array.isArray(document?.migrations) ? document.migrations.slice(0, MIGRATIONS_TOLD_MOST).map(migrationOf) : [];
     const error = failure ?? (typeof document?.error === 'string' ? short(document.error, MIGRATION_LINE_MOST) : null);
     // Where something could not be migrated, it is tried again the next time the studio is opened.
-    migrations.set(key, error === null && reports.every((report) => report.error === undefined) ? 'done' : 'again');
+    migrations.set(key, error === null && reports.every((report) => report.error === undefined && report.duck_pending !== true) ? 'done' : 'again');
     if (studio === open && (reports.length > 0 || error !== null)) tellStudio(open.number, { kind: 'migrated', migrations: reports, error });
   };
   timer = setTimeout(() => {
@@ -874,6 +874,8 @@ function migrateIn(cwd, open) {
 }
 /** Stop the migration of a studio that is closed: what the engine took of it is found again by its notes the next time. */
 function stopMigration(open) {
+  for (const controller of open?.duckAnswers?.values() ?? []) controller.abort();
+  open?.duckAnswers?.clear();
   const child = open?.migration;
   if (!child) return;
   open.migration = null;
@@ -891,6 +893,7 @@ function migrationOf(report) {
   if (text(report?.timeline) !== null) told.timeline = text(report.timeline);
   told.dropped = lines(report?.dropped);
   told.warnings = lines(report?.warnings);
+  for (const flag of ['duck_pending', 'duck_prompted', 'existing']) if (report?.[flag] === true) told[flag] = true;
   return told;
 }
 /**
@@ -1333,13 +1336,14 @@ function inTurn(write) {
  * into its environment, not into a file. That is how a key reaches it. Of what it writes, so
  * many characters are read at most.
  */
-async function runProgram(words, input = '', most = SETUP_OUTPUT_MOST) {
+async function runProgram(words, input = '', most = SETUP_OUTPUT_MOST, options = {}) {
   if (askingLoginShell) await askingLoginShell;
+  if (options.signal?.aborted) throw new Error('The Studio project was closed.');
   const command = programCommand(words);
   if (!command) throw new Error(NO_SETUP);
   return new Promise((resolve, reject) => {
     const child = spawn(command.executable, command.args, {
-      cwd: app.getPath('home'), env: command.env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
+      cwd: options.cwd ?? app.getPath('home'), env: { ...command.env, ...options.env }, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
     });
     const decoder = new StringDecoder('utf8');
     let written = '';
@@ -1349,12 +1353,15 @@ async function runProgram(words, input = '', most = SETUP_OUTPUT_MOST) {
       if (done) return;
       done = true;
       clearTimeout(timer);
+      options.signal?.removeEventListener('abort', abort);
       act(value);
     };
+    const abort = () => { killTree(child); settle(reject, new Error('The Studio project was closed.')); };
     const timer = setTimeout(() => {
       killTree(child);
-      settle(reject, new Error('The setup program did not end in time.'));
-    }, SETUP_MS);
+      settle(reject, new Error(options.timeout ? 'The program did not end in time.' : 'The setup program did not end in time.'));
+    }, options.timeout ?? SETUP_MS);
+    options.signal?.addEventListener('abort', abort, { once: true });
     child.stdout.on('data', (chunk) => {
       if (over) return;
       written += decoder.write(chunk);
@@ -2158,6 +2165,28 @@ function installHandlers() {
     // Checked before its turn, so that a request that is refused closes nothing that is open.
     approvedDirectory(asked, 'opening it in the studio');
     return inStudioTurn(() => openStudio(approvedDirectory(asked, 'opening it in the studio')));
+  });
+  ipcMain.handle('columbina:migration-duck', async (event, asked) => {
+    checkSender(event);
+    refuseStudioElsewhere();
+    if (!asked || Object.keys(asked).some(key => !['session', 'timeline', 'accept'].includes(key))
+      || !Number.isSafeInteger(asked.session) || typeof asked.timeline !== 'string' || !/^t[0-9]+$/.test(asked.timeline)
+      || typeof asked.accept !== 'boolean') throw new Error('A migration answer needs only session, timeline and a boolean choice.');
+    const open = studio;
+    if (!open || !open.session.alive || asked.session !== open.number) throw new Error('The project of this request is no longer open in the studio.');
+    if (open.duckAnswers.has(asked.timeline)) throw new Error('This timeline already has a pending answer.');
+    const controller = new AbortController(); open.duckAnswers.set(asked.timeline, controller);
+    try {
+      return await answered((async () => {
+        const result = await runProgram(['video', 'migration-duck', '--workspace', open.workspace, '--timeline', asked.timeline,
+          '--answer', asked.accept ? 'yes' : 'no', '--json'], '', MIGRATE_OUTPUT_MOST,
+          { cwd: open.workspace, env: engineOfTheService(), signal: controller.signal, timeout: MIGRATE_MS });
+        if (studio !== open) throw new Error('The project of this request is no longer open in the studio.');
+        if (typeof result.error === 'string') throw new Error(result.error);
+        if (result.timeline !== asked.timeline || result.duck_prompted !== true) throw new Error('Ducking was not completed; try again.');
+        return result;
+      })());
+    } finally { if (open.duckAnswers.get(asked.timeline) === controller) open.duckAnswers.delete(asked.timeline); }
   });
   ipcMain.handle('columbina:engine-call', async (event, asked) => {
     checkSender(event);

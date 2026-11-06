@@ -511,7 +511,7 @@ async def test_cli_migration_reports_json_and_then_has_nothing_to_do(
     assert len(said["migrations"]) == 1
     assert said["migrations"][0]["source"] == str(workspace / "Old Film")
     assert await asyncio.to_thread(main, args) == 0
-    assert "No legacy projects" in capsys.readouterr().out
+    assert "duck:" in capsys.readouterr().out
     assert (
         await asyncio.to_thread(main, [*args, "--workspace", str(workspace / "missing"), "--json"])
         == 2

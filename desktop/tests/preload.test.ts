@@ -41,7 +41,7 @@ function bridgeOf(file: string, platform = 'win32') {
 /** The calls and the values that an interface declares, by their names. */
 function declared(file: string, name: string): string[] {
   const body = new RegExp(`export interface ${name} \\{\\n([\\s\\S]*?)\\n\\}`).exec(read(file))?.[1] ?? '';
-  return [...body.matchAll(/^  (\w+)(?:\(|: )/gm)].map(found => found[1]);
+  return [...body.matchAll(/^  (\w+)\??(?:\(|: )/gm)].map(found => found[1]);
 }
 
 const shell = read('electron/main.cjs');
@@ -197,7 +197,7 @@ describe('the bridge of the main window', () => {
     const { exposed } = bridgeOf('electron/preload.cjs');
     const engine = exposed.columbina.engine as unknown as Record<string, Call>;
     expect(Object.keys(engine).sort()).toEqual(declared('src/bridge.d.ts', 'EngineBridge').sort());
-    expect(Object.keys(engine)).toHaveLength(14);
+    expect(Object.keys(engine)).toHaveLength(15);
   });
 
   it('hands the engine what a call names, and nothing else that came with it', () => {
@@ -213,6 +213,7 @@ describe('the bridge of the main window', () => {
       .toEqual(['columbina:engine-call', { method: 'transaction.apply', params: { ops: [] } }]);
     expect(handed('call', 'transaction.apply', { ops: [] }, { expectedSession: 7, ...more }))
       .toEqual(['columbina:engine-call', { method: 'transaction.apply', params: { ops: [] }, expectedSession: 7 }]);
+    expect(handed('migrationDuck', {session:7,timeline:'t3',accept:true,path:'C:/secret',workspace:'C:/elsewhere'})).toEqual(['columbina:migration-duck',{session:7,timeline:'t3',accept:true}]);
     expect(handed('importFiles', more)).toEqual(['columbina:engine-import', { language: 'ja' }]);
     expect(handed('importFiles', { ...more, bin: 'b3', paths: ['secret.mp4'] }))
       .toEqual(['columbina:engine-import', { language: 'ja', bin: 'b3' }]);

@@ -264,8 +264,8 @@ _ENGINE = (
     mutant(
         "a revision read from another engine is taken",
         ENGINE,
-        "        if session is not None and session != self._session:",
-        "        if False:",
+        "\n        if session is not None and session != self._session:",
+        "\n        if False:",
     ),
     mutant(
         "a render given up on while its start is answered goes on in the engine",
@@ -276,8 +276,8 @@ _ENGINE = (
     mutant(
         "the answer to a render's start goes with a caller that gives up",
         ENGINE,
-        "await asyncio.shield(asked.answer)",
-        "await asked.answer",
+        "said: object = await asyncio.shield(asked.answer)",
+        "said: object = await asked.answer",
     ),
     mutant(
         "video editing is taken to run on every platform",

@@ -13,8 +13,10 @@ import { TimelineSettings } from './TimelineSettings';
 import { TransitionPanel } from './TransitionPanel';
 import { useCommit } from './useCommit';
 import { refusalOf } from './refusal';
+import { AudioConfig } from './AudioConfig';
+import { useFairlightText } from '../fairlight/words';
 
-type Tab = 'source' | 'video' | 'audio';
+type Tab = 'source' | 'video' | 'audio' | 'file';
 
 /**
  * The inspector of the Edit page, as DaVinci Resolve's: what is chosen on the timeline, set here.
@@ -32,6 +34,7 @@ export function Inspector({ bridge, session, revision, timeline, media, clips: i
   frame?: number; onSeek?: (frame: number, scrubbing: boolean) => void;
 }) {
   const words = useWords();
+  const t = useFairlightText();
   const labels = words.label.studio.inspector;
   const { commit, refusal, setRefusal } = useCommit({ bridge, revision, session, timeline });
   // Clips on locked tracks cannot be changed here (Reference Manual 20, p. 762): where some chosen
@@ -66,6 +69,7 @@ export function Inspector({ bridge, session, revision, timeline, media, clips: i
     ...(titles.length > 0 || colors.length > 0 ? ['source' as const] : []),
     ...(chosen.video.length > 0 ? ['video' as const] : []),
     ...(chosen.audio.length > 0 ? ['audio' as const] : []),
+    ...(chosen.audio.some(clip => clip.source.kind === 'media') ? ['file' as const] : []),
   ];
   const [tab, setTab] = useState<Tab>('video');
   const shown = tabs.includes(tab) ? tab : tabs[0];
@@ -76,7 +80,7 @@ export function Inspector({ bridge, session, revision, timeline, media, clips: i
   const mediaClips = chosen.all.filter(clip => clip.source.kind === 'media');
   const name = (clip: Clip) => clip.source.kind === 'media' ? media.find(item => item.id === (clip.source as { media: string }).media)?.name ?? clip.source.media
     : clip.source.kind === 'title' ? clip.source.text : words.label.studio.timeline.color;
-  const tabName: Record<Tab, string> = { source: titles.length > 0 ? labels.title : labels.generator, video: labels.video, audio: labels.audio };
+  const tabName: Record<Tab, string> = { source: titles.length > 0 ? labels.title : labels.generator, video: labels.video, audio: labels.audio, file: t('File') };
 
   let body;
   if (!timeline) body = <p className="caption">{words.hint.studio.timeline.empty}</p>;
@@ -103,6 +107,8 @@ export function Inspector({ bridge, session, revision, timeline, media, clips: i
         {tabs.map(each => <button key={each} type="button" role="tab" aria-selected={each === shown} onClick={() => setTab(each)}>{tabName[each]}</button>)}
       </div>}
       <FieldsLocked.Provider value={chosen.locked}>
+        {shown === 'file' && <AudioConfig key={JSON.stringify([session, timeline.id, chosen.audio.map(clip => clip.id)])}
+          clips={chosen.audio.filter(clip => clip.source.kind === 'media')} timeline={timeline} media={media} commit={commit} />}
         {shown === 'source' && titles.length > 0 && <ClipTitle clips={titles} timeline={timeline} commit={commit} />}
         {shown === 'source' && colors.length > 0 && <ClipColor clips={colors} commit={commit} />}
         {shown === 'video' && <ClipVideo clips={chosen.video} timeline={timeline} commit={commit} />}

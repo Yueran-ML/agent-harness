@@ -12,6 +12,7 @@ import { Fades } from './ClipVideo';
 import { common, setClips } from './common';
 import { FieldsLocked, NumberField, type NumberFieldProps } from './fields';
 import type { Build, Commit } from './useCommit';
+import { ClipEq } from './ClipEq';
 
 type Param = 'gain_db' | 'pan';
 type Field = Param | 'semitones' | 'cents';
@@ -137,5 +138,6 @@ export function ClipAudio({ clips, timeline, commit, bridge, session, revision, 
     <NumberField name="cents" label={t('Cents')} value={common(clips, clip => clip.pitch?.cents ?? 0)} fallback={0} min={-100} max={100} digits={1} scrub={1} {...input('cents')} />
     <h3 className="inspector-section">{labels.fades}</h3>
     <Fades clips={clips} timeline={timeline} commit={commit} fineModifiers={fineModifiers} />
+    <ClipEq clips={clips} bridge={bridge} session={session} revision={revision} timeline={timeline} />
   </div>;
 }

@@ -1,5 +1,12 @@
 /** Shared Fairlight catalogue; protocol IDs and media/track names are never translated. */
 const entries = {
+  'Equalizer': ['均衡器', 'イコライザー'], 'Audio Configuration': ['音频配置', 'オーディオ設定'],
+  'Channel': ['声道', 'チャンネル'], 'Stream': ['流', 'ストリーム'], 'Active': ['启用', '有効'], 'Mute': ['静音', 'ミュート'], 'Level': ['电平', 'レベル'],
+  'Multiple Clips': ['多个片段', '複数のクリップ'], 'Automatic mix': ['自动混音', '自動ミックス'], 'Custom mapping': ['自定义映射', 'カスタムマッピング'],
+  'Mix to mono': ['合成单声道', 'モノにミックス'], 'Apply channel mapping': ['应用声道映射', 'チャンネルマッピングを適用'], 'Restore automatic mix': ['恢复自动混音', '自動ミックスに戻す'],
+  'Choose a source for each output channel. Unassigned channels are silent.': ['为每个输出声道选择来源。未分配的声道静音。', '各出力チャンネルのソースを選択します。未割り当てのチャンネルは無音です。'],
+  'Select clips with the same channel count to configure them together.': ['选择声道数相同的片段以一起配置。', '同じチャンネル数のクリップを選択して一緒に設定します。'],
+  'Audio stream information is unavailable.': ['音频流信息暂不可用。', 'オーディオストリーム情報を取得できません。'],
   'Previous keyframe': ['上一个关键帧', '前のキーフレーム'], 'Next keyframe': ['下一个关键帧', '次のキーフレーム'],
   'Add keyframe': ['添加关键帧', 'キーフレームを追加'], 'Remove keyframe': ['删除关键帧', 'キーフレームを削除'],
   'Semitones': ['半音', '半音'], 'Cents': ['音分', 'セント'], 'Pitch Correction': ['音调校正', 'ピッチ補正'],

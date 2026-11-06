@@ -9,6 +9,7 @@ import { Inspector as EditInspector } from '../inspector/Inspector';
 import { AUDIO_EFFECTS } from './EffectsLibrary';
 import { useWords } from '../../app/locale';
 import { refusalOf } from '../inspector/refusal';
+import { AudioConfig } from '../inspector/AudioConfig';
 /** Track/clip selection is shared with the timeline. Detailed strip processors plug in with T21. */
 export function Inspector({ bridge, session, revision, timeline, media, clips, track: trackId, transition = null, onEdit, frame = 0, onSeek = () => {}, onSpeed }: {
   bridge: Pick<EngineBridge, 'call'>; session: number; revision: number; timeline: Timeline; media: readonly Media[];
@@ -50,6 +51,8 @@ export function Inspector({ bridge, session, revision, timeline, media, clips, t
       <span>{track.format === '5.1' ? '5.1' : t(track.format === 'mono' ? 'Mono' : track.format === 'adaptive' ? 'Adaptive' : 'Stereo')}</span>
     </>}
     {tab === 'effects' && <ul>{(mode === 'track' && track?.kind === 'audio' ? track.strip?.inserts ?? [] : chosen.flatMap(clip => clip.effects ?? [])).map((insert, index) => <li key={index}>{t(AUDIO_EFFECTS.find(([id]) => id === insert.effect.kind)![1])} · {t(insert.on ? 'On' : 'Off')}</li>)}</ul>}
-    {tab === 'file' && <ul>{chosen.map(clip => <li key={clip.id}>{clip.source.kind === 'media' ? media.find(item => item.id === (clip.source as { media: string }).media)?.path ?? clip.source.media : clip.source.kind}</li>)}</ul>}
+    {tab === 'file' && chosen.some(clip => clip.source.kind === 'media') && <FieldsLocked.Provider value={locked}>
+      <AudioConfig key={JSON.stringify([session, timeline.id, chosen.map(clip => clip.id)])} clips={chosen.filter(clip => clip.source.kind === 'media')} timeline={timeline} media={media} commit={commit} />
+    </FieldsLocked.Provider>}
   </aside>;
 }

@@ -239,7 +239,7 @@ describe('the clips chosen', () => {
     expect(screen.getAllByRole('tab').map(tab => [tab.textContent, tab.getAttribute('aria-selected')])).toEqual([['Title', 'true'], ['Video', 'false']]);
     expect(row('text').querySelector('textarea')!.placeholder).toBe('—');
     rerender({ clips: ['c1', 'a1'] });
-    expect(screen.getAllByRole('tab').map(tab => tab.textContent)).toEqual(['Video', 'Audio']);
+    expect(screen.getAllByRole('tab').map(tab => tab.textContent)).toEqual(['Video', 'Audio', 'File']);
     fireEvent.click(screen.getByRole('tab', { name: 'Audio' }));
     expect(box('volume').value).toBe('-6.0');
     expect(document.querySelector('[data-panel="video"]')).toBeNull();

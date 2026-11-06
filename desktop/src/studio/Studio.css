@@ -780,6 +780,14 @@
 .audio-param-keys { display: flex; align-items: center; gap: 4px; padding: 0 0 8px; }
 .audio-param-keys select { min-width: 0; flex: 1; }
 .audio-param-keys [data-hit] { color: #f49a38; }
+.clip-eq .processor-panel { min-width: 0; padding: 4px 0; }
+.clip-eq .eq-bands { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.clip-eq .processor-toolbar { flex-wrap: wrap; }
+.audio-config fieldset { min-width: 0; margin: 8px 0; padding: 6px; }
+.audio-config label { display: flex; align-items: center; gap: 4px; margin: 5px 0; }
+.audio-config select { min-width: 0; flex: 1; }
+.audio-config input[type=number] { width: 72px; }
+.audio-config > button { margin: 4px 4px 4px 0; }
 
 .cut-bar {
   grid-area: bar;

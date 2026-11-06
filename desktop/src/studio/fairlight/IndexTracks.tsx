@@ -59,7 +59,7 @@ export function IndexTracks({ timeline, hidden, onHidden, onSelect, onEdit, sele
     else patch(track, { [field]: value });
   };
   return <section className="fairlight-index" aria-label={t('Index Tracks')}><h2>{t('Tracks')}</h2><table><thead><tr>
-    {(['Color', 'Visible', '#', 'Name', 'Controls', 'Format', 'ADC', 'Order'] as const).map(label => <th key={label}>{label === '#' || label === 'ADC' ? label : t(label)}</th>)}
+    {(['Color', 'Visible', '#', 'Name', 'Controls', 'Format', 'ADC', 'Order'] as const).map(label => <th key={label}>{label === '#' || label === 'ADC' ? label : t(label)}</th>)}<th>VCA</th>
   </tr></thead><tbody>{timeline.tracks.map((track, index) => <tr key={track.id} data-index-track={track.id} aria-selected={selected.includes(track.id)} draggable
     onDragStart={event => { dragged.current = selected.includes(track.id) ? [...selected] : [track.id]; event.dataTransfer.setData('application/x-fairlight-tracks', dragged.current.join(',')); }}
     onDragOver={event => { if (dragged.current.length) event.preventDefault(); }}
@@ -86,5 +86,6 @@ export function IndexTracks({ timeline, hidden, onHidden, onSelect, onEdit, sele
     <td>{track.kind === 'audio' && <input type="checkbox" aria-label={`ADC ${track.name}`} checked={track.adc ?? true} onChange={event => patch(track, { adc: event.target.checked })} />}</td>
     <td><button type="button" aria-label={t('Move track up').replace('{name}', track.name)} disabled={index === 0} onClick={() => onEdit([{ op: 'move_track', timeline: timeline.id, id: track.id, index: index - 1 }])}>↑</button>
       <button type="button" aria-label={t('Move track down').replace('{name}', track.name)} disabled={index === timeline.tracks.length - 1} onClick={() => onEdit([{ op: 'move_track', timeline: timeline.id, id: track.id, index: index + 1 }])}>↓</button></td>
+    <td>{track.kind==='audio' ? (track.strip?.vcas??[]).join(', ') : ''}</td>
   </tr>)}</tbody></table>{automation&&<fieldset><legend>{t('Buses')}</legend>{timeline.buses?.map(bus=><label key={bus.id}><input type="checkbox" checked={!hidden.includes(`bus:${bus.id}`)} onChange={e=>onHidden(e.target.checked?hidden.filter(id=>id!==`bus:${bus.id}`):[...hidden,`bus:${bus.id}`])}/>{bus.name}</label>)}</fieldset>}</section>;
 }

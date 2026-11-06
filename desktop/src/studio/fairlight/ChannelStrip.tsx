@@ -16,6 +16,8 @@ import { PathSettings } from './PathSettings';
 import { RouteButtons } from './RouteButtons';
 import { PanControl } from '../audio/PanControl';
 import { SendWindow } from './SendWindow';
+import { VcaAssignment } from './VcaAssignment';
+import { useVcaGain } from './VcaStrip';
 
 export function ChannelStrip({ strip, seconds, value, selected, meters, shadow, onSelect, onRename, onStart, onChange, onEnd, onCancel, onCommit, isActive, onToggle, onSweep, onEnter, onArm, processorContext, onProcessor, onStripSetting, compact = false }: {
   strip: MixerStrip; seconds: number; value?: number; selected: boolean; meters?: MeterChannel[]; shadow: boolean;
@@ -37,6 +39,7 @@ export function ChannelStrip({ strip, seconds, value, selected, meters, shadow, 
   const [menu,setMenu]=useState<'arm'|'fader'|null>(null);
   const [sendsOpen, setSendsOpen] = useState(false);
   const reading = faderReading(strip, seconds, automation?.enabled??true), model = strip.strip;
+  const inheritedGain = useVcaGain(processorContext.timeline, model?.vcas ?? [], seconds);
   const baseFader=trim?0:reading.automated?reading.value:value??reading.value;
   const faderValue=automation?.reading(target,baseFader)??baseFader;
   const baseMute=(automation?.enabled??true)&&strip.arm!=='off'?laneValue(strip.lanes?.mute,seconds,strip.mute?1:0)>=.5:strip.mute;
@@ -64,7 +67,7 @@ export function ChannelStrip({ strip, seconds, value, selected, meters, shadow, 
       <div><dt>{t('Sends')}</dt><dd><RouteButtons context={processorContext} strip={strip} field="sends" onOpen={() => setSendsOpen(true)} /></dd></div>
       <div><dt>{t('Pan')}</dt><dd><PanControl context={processorContext} stripKey={strip.key} /></dd></div>
       <div><dt>{t('Outputs')}</dt><dd><RouteButtons context={processorContext} strip={strip} field="outputs" onOpen={() => {}} /></dd></div>
-      <div><dt>VCA</dt><dd>{model?.vcas?.join(', ') || '—'}</dd></div>
+      <div><dt>VCA</dt><dd><VcaAssignment context={processorContext} of={of} selected={processorContext.selected} /></dd></div>
     </dl>
     {pathOpen && createPortal(<PathSettings context={processorContext} stripKey={strip.key} anchor={pathOpen} onClose={() => setPathOpen(null)} />, document.body)}
     {sendsOpen && <SendWindow context={processorContext} stripKey={strip.key} onClose={() => setSendsOpen(false)} />}
@@ -80,7 +83,7 @@ export function ChannelStrip({ strip, seconds, value, selected, meters, shadow, 
       onClick={event => { if(event.detail===0&&field==='mute'&&recording){instantMute();return;} if (event.detail === 0) onToggle(field === 'solo' && event.ctrlKey && event.shiftKey ? 'solo_safe' : field, event); }}>{field === 'solo' ? strip.safe ? 'S·' : 'S' : 'M'}</button>)}</div>
     <div className="mixer-fader-meter" onContextMenu={event=>{if(automation){event.preventDefault();setMenu('fader');}}}>
       {menu==='fader'&&<div role="menu"><button onClick={()=>{automation?.show(target);setMenu(null);}}>{t('Show automation in timeline')}</button><button onClick={()=>setMenu(null)}>{t('Cancel')}</button></div>}
-      <Fader label={`${t('Fader')} ${strip.name}`} valueLabel={`${t('Fader value')} ${strip.name}`} value={faderValue}
+      <Fader label={`${t('Fader')} ${strip.name}`} valueLabel={`${t('Fader value')} ${strip.name}`} value={faderValue} displayOffset={trim ? 0 : inheritedGain}
         disabled={strip.locked} readOnly={reading.automated&&!recording} hasLane={reading.hasLane} onStart={m=>recording?automation!.start(target,faderValue):onStart(m)}
         onChange={v=>{if(recording)automation!.changeBatch([{target,value:v}]);else onChange(v);}}
         onEnd={()=>{if(recording){if(automation!.active(target))automation!.end();}else onEnd();}}

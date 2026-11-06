@@ -16,6 +16,7 @@ import { ProcessorWindow } from './ProcessorWindow';
 import '../audio/processors.css';
 import { BusFormat } from './BusFormat';
 import { BusAssign } from './BusAssign';
+import { VcaStrip } from './VcaStrip';
 import './routing.css';
 
 /** Keep text/local edits here; ordinary transport and global history keep their existing route. */
@@ -147,7 +148,8 @@ export function Mixer({ bridge, session, revision, timeline, frame, meters, sele
       onChange={event => gesture.commit([{ op: 'set_timeline_audio', timeline: timeline.id, patch: { exclusive_solo: event.target.checked } }])} />{t('Exclusive Solo')}</label></header>
     {problem && <p role="alert">{problem}<button type="button" onClick={() => setProblem(null)}>{t('Dismiss')}</button></p>}
     <div className="mixer-regions"><div className="mixer-region mixer-tracks" aria-label={t('Tracks')}>{strips.filter(s => s.kind === 'track').map(draw)}</div>
-      <div className="mixer-region mixer-buses" aria-label={t('Buses')}>{strips.filter(s => s.kind === 'bus').map(draw)}</div></div>
+      <div className="mixer-region mixer-buses" aria-label={t('Buses')}>{strips.filter(s => s.kind === 'bus').map(draw)}
+        {(timeline.vcas??[]).filter(vca=>strips.some(s=>s.strip?.vcas?.includes(vca.id))||timeline.vcas?.some(v=>v.vcas?.includes(vca.id))).map(vca=><VcaStrip key={`vca:${vca.id}`} context={{bridge,session,revision,timeline}} vca={vca} seconds={frame*timeline.rate.den/timeline.rate.num} selected={selected.includes(`vca:${vca.id}`)} onSelect={()=>onSelect([`vca:${vca.id}`])}/>)}</div></div>
     {routing === 'format' && <BusFormat bridge={bridge} session={session} revision={revision} timeline={timeline} onClose={() => setRouting(null)} />}
     {routing === 'assign' && <BusAssign bridge={bridge} session={session} revision={revision} timeline={timeline} onClose={() => setRouting(null)} />}
     {processors.map((p, order) => {

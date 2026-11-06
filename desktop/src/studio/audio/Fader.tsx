@@ -4,6 +4,8 @@ import { formatDb, type Modifiers } from './mixerModel';
 
 interface Props {
   label: string; value: number; disabled?: boolean; readOnly?: boolean; hasLane?: boolean; valueLabel?: string;
+  /** VCA contribution affects the cap/readout, while all changes still address this fader's base. */
+  displayOffset?: number;
   onStart: (modifiers: Modifiers) => boolean; onChange: (value: number) => void; onEnd: () => void; onCancel: () => void;
   onCommit: (value: number, modifiers?: Modifiers) => void;
   /** The owner can reject an old burst after an external revision or session change. */
@@ -12,6 +14,9 @@ interface Props {
 /** RM20 pp.3688,3886: only the cap drags, reset at unity, fine drag and wheel (C-F1–4). */
 export function Fader(props: Props) {
   const { label, value, disabled, readOnly, hasLane, onStart, onChange, onEnd, onCancel, onCommit } = props;
+  const contribution = props.displayOffset ?? 0;
+  const offset = Number.isFinite(contribution) ? contribution : 0;
+  const displayed = value <= -100 || contribution === -Infinity ? -100 : value + offset;
   const now = useRef(props); now.current = props;
   const well = useRef<HTMLDivElement>(null);
   const cap = useRef<HTMLDivElement>(null);
@@ -46,18 +51,19 @@ export function Fader(props: Props) {
   const finish = () => { if (drag.current) { drag.current = null; onEnd(); } };
   const move = (event: PointerEvent<HTMLDivElement>) => {
     const d = drag.current; if (!d) return;
-    const position = dbToPosition(d.db) + (d.y - event.clientY) / d.height * (event.shiftKey ? .1 : 1);
+    const position = dbToPosition(d.db + offset) + (d.y - event.clientY) / d.height * (event.shiftKey ? .1 : 1);
     // Continue the shared taper's endpoint slopes for the requested delta. Each strip clamps
     // independently, so the grabbed cap reaching its stop does not stop the other selected caps.
     const next = position < 0 ? -100 + position * (positionToDb(.001) + 100) / .001
       : position > 1 ? 10 + (position - 1) * (10 - positionToDb(.999)) / .001 : positionToDb(position);
-    const requested = next + d.offset;
+    const requested = next - offset + d.offset;
     onChange(event.shiftKey ? Math.round(requested * 10) / 10 : requested);
   };
   const save = () => {
     const parsed = ['-inf', '-∞', '−∞'].includes(text.trim().toLowerCase()) ? -100 : Number(text);
     if (text.trim() && Number.isFinite(parsed)) {
-      if (inputModifiers.current) onCommit(clamp(parsed, ...FADER_GAIN), inputModifiers.current); else onCommit(clamp(parsed, ...FADER_GAIN));
+      const base = parsed <= -100 ? -100 : parsed - offset;
+      if (inputModifiers.current) onCommit(clamp(base, ...FADER_GAIN), inputModifiers.current); else onCommit(clamp(base, ...FADER_GAIN));
       setEditing(false);
     }
   };
@@ -70,13 +76,13 @@ export function Fader(props: Props) {
       : <button className="audio-fader-value" type="button" aria-label={props.valueLabel ?? `${label} value`} disabled={disabled || readOnly}
         onDoubleClick={event => { if (!disabled && !readOnly) {
           inputModifiers.current = event.altKey || event.ctrlKey || event.shiftKey ? { altKey: event.altKey, ctrlKey: event.ctrlKey, shiftKey: event.shiftKey } : undefined;
-          setText(formatDb(value)); setEditing(true);
-        } }}>{formatDb(value)}</button>}
+          setText(formatDb(displayed)); setEditing(true);
+        } }}>{formatDb(displayed)}</button>}
     <div ref={well} className="audio-fader-well">
       {[10, 0, -10, -20, -40, -60].map(db => <span aria-hidden="true" key={db} className="audio-fader-tick" style={{ bottom: `${dbToPosition(db) * 100}%` }}>{db}</span>)}
-      <div ref={cap} role="slider" aria-label={label} aria-orientation="vertical" aria-valuemin={-100} aria-valuemax={10} aria-valuenow={value} aria-valuetext={`${formatDb(value)} dB`}
+      <div ref={cap} role="slider" aria-label={label} aria-orientation="vertical" aria-valuemin={Math.min(-100,-100+offset)} aria-valuemax={Math.max(10,10+offset)} aria-valuenow={displayed} aria-valuetext={`${formatDb(displayed)} dB`}
         aria-disabled={disabled || undefined} aria-readonly={readOnly || undefined} tabIndex={disabled ? -1 : 0} className="audio-fader-cap"
-        style={{ bottom: `${dbToPosition(value) * 100}%` }}
+        style={{ bottom: `${dbToPosition(displayed) * 100}%` }}
         onPointerDown={event => {
           if (event.button !== 0 || disabled || readOnly) return;
           event.preventDefault(); event.stopPropagation(); event.currentTarget.focus();
@@ -87,7 +93,7 @@ export function Fader(props: Props) {
           // original group snapshot/undo. Do not end the async owner then try to restart it.
           if (!continuing && !onStart(event)) return;
           const db = continuing ? clamp(burst.value, ...FADER_GAIN) : value;
-          drag.current = { y: event.clientY, db, offset: continuing ? burst.value - db : 0, height: well.current?.getBoundingClientRect().height || 160 };
+          drag.current = { y: event.clientY, db, offset: (continuing ? burst.value - db : 0) + (db + offset - clamp(db + offset, ...FADER_GAIN)), height: well.current?.getBoundingClientRect().height || 160 };
           event.currentTarget.setPointerCapture?.(event.pointerId);
         }} onPointerMove={move} onPointerUp={event => { finish(); event.currentTarget.releasePointerCapture?.(event.pointerId); }} onPointerCancel={cancel}
         onLostPointerCapture={() => { if (drag.current) cancel(); }}

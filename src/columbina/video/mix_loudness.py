@@ -179,9 +179,9 @@ async def apply_mix(
         for row in readings
     ]
     # The same tolerances define both success and whether another pass is needed.
-    # Otherwise an already accepted result would still add history on every call.
-    if target == "main" and usable and abs(deltas[0]) <= LOUDNESS_TOLERANCE:
-        deltas[0] = 0.0
+    # Otherwise an already accepted result would still add history on every call;
+    # this holds for every target (a fader track or the main output) alike.
+    deltas = [0.0 if abs(delta) <= LOUDNESS_TOLERANCE else delta for delta in deltas]
     limiter: dict[str, Any] | None = None
     limiter_slot: int | None = None
     clamped: list[bool] = []

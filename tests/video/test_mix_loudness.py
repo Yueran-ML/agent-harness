@@ -308,3 +308,27 @@ async def test_cancelling_candidate_analysis_never_applies_or_rolls_back_live_ch
     with pytest.raises(asyncio.CancelledError):
         await Loudness(wire, Path).run(action="apply", target="main")
     wire.apply.assert_not_awaited()
+
+
+@pytest.mark.parametrize("mode", ["independent", "relative"])
+async def test_track_fader_within_tolerance_is_idempotent(mode: str) -> None:
+    project = mix()
+    tracks = project["timelines"][0]["tracks"]
+    tracks.append({**copy.deepcopy(tracks[0]), "id": "A2"})
+    answer = {
+        "standard": "youtube",
+        "level": -14,
+        "results": [
+            {"target": {"track": "A1"}, "integrated": -14.05, "true_peak": -6},
+            {"target": {"track": "A2"}, "integrated": -13.95, "true_peak": -6},
+        ],
+    }
+    wire = engine(project, [answer])
+    result = await Loudness(wire, Path).run(
+        action="apply", target="track_fader", ids=["A1", "A2"], mode=mode
+    )
+    assert result["status"] == "unchanged"
+    assert result["ops"] == []
+    assert all(row["gain_db"] == 0 for row in result["results"])
+    wire.apply.assert_not_awaited()
+    wire.analyze_sound.assert_awaited_once()

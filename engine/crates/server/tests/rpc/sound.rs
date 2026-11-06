@@ -758,3 +758,139 @@ async fn the_meters_of_a_timeline_that_plays_read_its_levels_and_its_loudness() 
         .result("transport.pause", Some(json!({"monitor": "timeline"})))
         .await;
 }
+#[tokio::test]
+async fn captured_level_profile_survives_edits_deletion_and_timeline_switch_with_one_undo() {
+    let dir = super::project_dir();
+    let sounds = tempfile::tempdir().unwrap();
+    let (_engine, mut client) = two_clips(dir.path(), sounds.path()).await;
+    let before = project(&mut client).await;
+    let revision = before["revision"].as_u64().unwrap();
+    let job = client
+        .result(
+            "audio.level_profile",
+            Some(json!({"timeline":"tl","clip":"c2","revision":revision})),
+        )
+        .await["job"]
+        .clone();
+    let (captured, _) = ended(&mut client, "audio.analysis", &job).await;
+    println!("captured reference: {captured}");
+    assert_eq!(captured["state"], "done");
+    assert_eq!(
+        captured["source"],
+        json!({"timeline":"tl","clip":"c2","revision":revision})
+    );
+    assert_eq!(captured["profile"]["basis"], "integrated");
+    let profile = captured["profile"].clone();
+    close(&profile["level_db"], -20.0, 0.1, "captured level");
+    assert_eq!(project(&mut client).await, before); // capture is not an edit
+    client
+        .apply(json!([{"op":"set_clip","timeline":"tl","id":"c2","gain_db":-12.0}]))
+        .await;
+    let revision = project(&mut client).await["revision"].clone();
+    let job = client.result("audio.level_match", Some(json!({"timeline":"tl","profile":profile,"clips":["c1"],"apply":true,"revision":revision}))).await["job"].clone();
+    let (matched, progress) = ended(&mut client, "audio.analysis", &job).await;
+    println!("after source gain changed: {matched}");
+    assert_eq!(matched["state"], "done");
+    close(
+        &matched["clips"][0]["gain_db"],
+        10.0,
+        0.1,
+        "old capture remains",
+    );
+    assert!(progress.iter().all(|p| p["total"] == 4.0)); // targets only
+    client.result("history.undo", None).await;
+    close(&volume(&mut client, "c1").await, 0.0, 1e-9, "one undo");
+    let p: Project = serde_json::from_value(before["project"].clone()).unwrap();
+    let t = p.timelines.iter().find(|t| t.id == "tl").unwrap();
+    let mut target = t.tracks[0].clips[0].clone();
+    target.id = "matched_one".into();
+    let mut other = target.clone();
+    other.id = "matched_two".into();
+    other.start = 100;
+    let mut short = t.tracks[0].clips[1].clone();
+    short.id = "short".into();
+    short.start = 200;
+    short.length = 5;
+    let silence = sounds.path().join("silence.wav");
+    wav(&silence, 2, RATE, |_, _| 0.0);
+    let silent_media = import(&mut client, &[&silence]).await;
+    let silent = Clip::of_media("silent", silent_media[0].clone(), at(0.0), 225, 25);
+    client.apply(json!([
+        {"op":"add_timeline","timeline":timeline("other", vec![track("A2", vec![target, other, short, silent])])},
+        {"op":"set_clip","timeline":"other","id":"matched_one","gain_db":{"keys":[{"at":{"ticks":0,"scale":48000},"value":0.0},{"at":{"ticks":96000,"scale":48000},"value":0.0}]}}
+    ])).await;
+    let revision = project(&mut client).await["revision"].clone();
+    let job = client
+        .result(
+            "audio.level_profile",
+            Some(json!({"timeline":"other","clip":"short","revision":revision})),
+        )
+        .await["job"]
+        .clone();
+    let (short, _) = ended(&mut client, "audio.analysis", &job).await;
+    println!("short reference: {short}");
+    assert_eq!(short["state"], "done");
+    assert_eq!(short["profile"]["basis"], "mean");
+    assert_eq!(short["seconds"], 0.2);
+    let short_profile = short["profile"].clone();
+    let job = client
+        .result(
+            "audio.level_profile",
+            Some(json!({"timeline":"other","clip":"silent","revision":revision})),
+        )
+        .await["job"]
+        .clone();
+    let (silent, _) = ended(&mut client, "audio.analysis", &job).await;
+    assert_eq!(silent["state"], "done");
+    assert!(silent["profile"]["level_db"].is_null());
+    assert!(silent["profile"]["basis"].is_null());
+    client
+        .apply(json!([
+            {"op":"remove_clip","timeline":"tl","id":"c2"},
+            {"op":"remove_clip","timeline":"other","id":"short"}
+        ]))
+        .await;
+    std::fs::remove_file(sounds.path().join("loud.wav")).unwrap();
+    let before_apply = project(&mut client).await;
+    let revision = before_apply["revision"].clone();
+    for captured in [&profile, &short_profile] {
+        let revision = project(&mut client).await["revision"].clone();
+        let job = client.result("audio.level_match", Some(json!({"timeline":"other","profile":captured,"clips":["matched_one","matched_two"],"apply":true,"revision":revision}))).await["job"].clone();
+        let (matched, _) = ended(&mut client, "audio.analysis", &job).await;
+        println!("deleted source, cross timeline: {matched}");
+        assert_eq!(matched["state"], "done");
+        assert!(!matched["applied"].is_null());
+        assert!(matched.get("reference").is_none());
+        assert_eq!(matched["profile"], *captured);
+        let delta = matched["clips"][0]["gain_db"].as_f64().unwrap();
+        assert!((delta - 10.0).abs() < 0.2);
+        let after = project(&mut client).await;
+        let timeline = after["project"]["timelines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["id"] == "other")
+            .unwrap();
+        let keys = timeline["tracks"][0]["clips"][0]["gain_db"]["keys"]
+            .as_array()
+            .unwrap();
+        assert_eq!(keys.len(), 2);
+        for key in keys {
+            close(&key["value"], delta, 1e-9, "each key moved");
+        }
+        client.result("history.undo", None).await;
+        assert_eq!(
+            project(&mut client).await["project"],
+            before_apply["project"]
+        );
+    }
+    let error = client
+        .error(
+            "audio.level_profile",
+            Some(json!({"timeline":"other","clip":"matched_one","revision":revision})),
+        )
+        .await;
+    assert_eq!(error["data"]["reason"], "stale_revision");
+    let error = client.error("audio.level_match", Some(json!({"timeline":"other","profile":profile,"clips":["matched_one"],"apply":true,"revision":revision}))).await;
+    assert_eq!(error["data"]["reason"], "stale_revision");
+}

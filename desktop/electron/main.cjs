@@ -182,7 +182,7 @@ const PAGE_METHODS = new Set([
   'track.start', 'track.stop', 'track.edit',
   // The meters, the loudness meter and the analyses of sound (phase 3, T9b), which name timelines,
   // clips, tracks and buses by their ids alone.
-  'audio.standards', 'audio.meters', 'audio.loudness', 'audio.analyze', 'audio.normalize', 'audio.level_match', 'audio.cancel',
+  'audio.standards', 'audio.meters', 'audio.loudness', 'audio.analyze', 'audio.normalize', 'audio.level_match', 'audio.level_profile', 'audio.cancel',
   'audio.eq_response', 'audio.dynamics_curve', 'audio.fx_meters', 'audio.soft_clip_curve', 'audio.noise_learn',
   'audio_presets.list', 'audio_presets.save', 'audio_presets.update', 'audio_presets.delete',
   // The recording of automation of the Fairlight page (T16): on and off, a control touched as the

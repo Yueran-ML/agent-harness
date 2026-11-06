@@ -246,7 +246,8 @@ Before `hello`, every other request is refused with `-32600`.
 | `audio.dynamics_curve` | `{"timeline":"t1", "target":{"track":"A1"}, "inputs_db":[-60,-20,0]}`; target is exactly one of `track`, `bus` | `{"revision", "inputs_db", "outputs_db"}`; static Dynamics curve (see Static processor curves) |
 | `audio.analyze` | `{"timeline": "t1", "targets": [{"clip": "c1"} \| {"track": "A1"} \| {"bus": "B1"} \| {"sum": ["A2", "A3"]}, ...], "range"?: {"from": 0, "to": 250}, "standard"?: "ebu-r128", "revision"?: n, "candidate"?: [...]}` | `{"job": "audio-1"}` at once, then `audio.analysis` |
 | `audio.normalize` | `{"timeline": "t1", "clips": ["c1", ...], "level"?: "sample_peak" \| "true_peak" \| "<standard>", "target"?: -9, "mode"?: "relative" \| "independent", "apply"?: false, "revision"?: n}` | `{"job": "audio-2"}` at once, then `audio.analysis` with the gains (Normalize Audio Levels) |
-| `audio.level_match` | `{"timeline": "t1", "reference": "c1", "clips": ["c2", ...], "apply"?: false, "revision"?: n}` | `{"job": "audio-3"}` at once, then `audio.analysis` with the gains (Level Matcher) |
+| `audio.level_profile` | `{"timeline":"t1", "clip":"c1", "revision":n}` | `{"job":"audio-3"}` then `audio.analysis` with an immutable captured level; no edit |
+| `audio.level_match` | `{"timeline":"t1", "reference"?:"c1", "profile"?:{version:1,level_db,basis}, "clips":["c2",...], "apply"?:false, "revision"?:n}` (exactly one of reference/profile; profile requires revision) | `{"job": "audio-3"}` at once, then `audio.analysis` with the gains (Level Matcher) |
 | `audio.cancel` | `{"job": "audio-1"}` | `{}`; the job ends `cancelled` |
 | `transport.frame_digest` | `{"monitor": m}` | test hook only, with `--test-hooks` (see The transport); `-32601` otherwise |
 | `transport.*` | see The transport | |
@@ -4788,6 +4789,29 @@ for all) or `independent` (each clip by its own level). Done: `{job, state: "don
 `null` for a clip that has no level (silence, or shorter than 400 ms for a loudness), which is left as it is;
 `clamped` where the Volume, or a key of it, moved by the gain would go out of −96…24 dB, so that
 the clip does not come to the target.
+
+`audio.level_profile {timeline, clip, revision}` captures one whole visible clip through the same
+post-Volume/pre-pan measurement as Level Matcher. It is a cancellable analysis job, without
+history or project changes. Revision is required and checked under the snapshot lock before
+starting. Later project changes do not change that snapshot. Done:
+`{job, state:"done", method:"audio.level_profile", source:{timeline,clip,revision},
+profile:{version:1,level_db,basis}, seconds}`. `level_db` retains the unrounded finite value of
+gated integrated loudness, falling back to the ungated cell mean for short/below-gate material;
+`basis` is `integrated` or `mean`. Silence yields both fields null. This mean is not the
+400 ms block-based `integrated_ungated`. The profile has no dependency on a surviving source
+clip, file, timeline or revision. The desktop retains successful profiles in its page session
+across timeline changes, but clears them for a new engine session; cancelled/failed/silent
+recapture does not replace a prior usable profile. It is not a project or preset setting.
+
+`audio.level_match {timeline, profile, clips, apply?, revision}` accepts that profile instead of
+`reference` (exactly one). This branch measures only the targets; it never reads the source of
+the capture. Version must be 1, basis `integrated`/`mean`, and level_db finite and non-null
+(`no_level` otherwise); unknown fields and versions are rejected. It has no Normalize target
+range restriction. Revision is required even for dry-run, checked before the job, and again
+at commit for apply=true. Done includes `profile` instead of `reference`, with the same clips,
+applied and refused fields as the legacy branch. Its gains use the unrounded profile minus
+each target's C-C7 level, preserving nulls for silence, clamping and one-transaction Undo.
+Python's `latest_sound` does not cache profile captures as project measurements.
 
 `audio.level_match {timeline, reference, clips, apply?, revision?}` (Level Matcher,
 p. 3804–3805): the gain that brings each clip to the loudness of `reference`, the difference of

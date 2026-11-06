@@ -771,3 +771,47 @@ async def test_latest_analysis_follows_wire_completion_order_not_reader_wake_ord
     assert cached["result"]["results"] == [{"integrated": -21}]
     assert cached["stale"] is False
     await engine.aclose()
+
+
+async def test_level_profile_job_keeps_the_last_project_analysis(
+    studio: tuple[Desk, Fake], ctx: Context
+) -> None:
+    desk, fake = studio
+    editor = await ctx.use(VIDEOS).editor(ToolRun("inspect", desk.work, desk.session), "video_info")
+    await editor.engine.analyze_sound(
+        "audio.analyze", {"timeline": "t1", "targets": [{"bus": "MAIN7"}], "revision": 0}
+    )
+    before = editor.engine.latest_sound("t1", revision=0)
+    fake.sound_found = {
+        "source": {"timeline": "t1", "clip": "c1", "revision": 0},
+        "profile": {"version": 1, "level_db": -21.123456789, "basis": "mean"},
+        "seconds": 0.1,
+    }
+    result = await editor.engine.analyze_sound(
+        "audio.level_profile",
+        {"timeline": "t1", "clip": "c1", "revision": 0},
+        session=editor.engine.session,
+    )
+    assert result["profile"] == fake.sound_found["profile"]
+    assert editor.engine.latest_sound("t1", revision=0) == before
+    assert fake.sounds[-1] == (
+        "audio.level_profile",
+        {"timeline": "t1", "clip": "c1", "revision": 0},
+    )
+    assert fake.revision == 0
+
+
+async def test_profile_match_dry_run_has_a_checked_revision(
+    studio: tuple[Desk, Fake], ctx: Context
+) -> None:
+    desk, fake = studio
+    editor = await ctx.use(VIDEOS).editor(ToolRun("inspect", desk.work, desk.session), "video_info")
+    profile = {"version": 1, "level_db": -23.5, "basis": "integrated"}
+    fake.sound_found = {"profile": profile, "clips": [], "applied": None}
+    await editor.engine.analyze_sound(
+        "audio.level_match", {"timeline": "t1", "profile": profile, "clips": ["c1"], "revision": 0}
+    )
+    cached = editor.engine.latest_sound("t1", revision=0)
+    assert cached is not None
+    assert cached["measured_revision"] == 0
+    assert not cached["stale"]

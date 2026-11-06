@@ -1541,7 +1541,7 @@ async fn dispatch(
             sound_curves::call(engine, connection, id, method, params).await
         }
         "audio.standards" | "audio.meters" | "audio.fx_meters" | "audio.loudness" | "audio.analyze"
-        | "audio.normalize" | "audio.level_match" | "audio.noise_learn" | "audio.cancel" => {
+        | "audio.normalize" | "audio.level_match" | "audio.level_profile" | "audio.noise_learn" | "audio.cancel" => {
             sound::call(engine, connection, kind, id, method, params).await
         }
         "track.start" | "track.stop" | "track.edit" => {

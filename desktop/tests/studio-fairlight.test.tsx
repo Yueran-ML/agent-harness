@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { useState, type ComponentProps } from 'react';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { useAudioReadings } from '../src/studio/fairlight/audioReadings';
@@ -39,6 +40,12 @@ function engine() {
     onEvent: (listener: (event: EngineEvent) => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; } };
   return { ...bridge, listeners, tell: (params: unknown, session = 1) => act(() => listeners.forEach(fn => fn({ kind: 'notification', method: 'audio.analysis', session, params }))) };
 }
+const capturedProfile = { source: { timeline: 't1', clip: 'sound1', revision: 7 }, profile: { version: 1 as const, level_db: -22.123456, basis: 'integrated' as const }, seconds: 2 };
+function Matcher(props: Omit<ComponentProps<typeof LevelMatcher>, 'profile' | 'onCapture'>) {
+  const [profile, setProfile] = useState<ComponentProps<typeof LevelMatcher>['profile']>(null);
+  return <LevelMatcher {...props} profile={profile} onCapture={setProfile} />;
+}
+const captured = (bridge: ReturnType<typeof engine>) => bridge.tell({ job: 'audio-1', state: 'done', method: 'audio.level_profile', ...capturedProfile });
 const settle = () => act(async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); });
 beforeEach(() => { likeABrowser(); vi.useFakeTimers(); vi.stubGlobal('PointerEvent', MouseEvent); });
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
@@ -82,8 +89,8 @@ it('accepts an early analysis terminal only for the acknowledged job and cancels
 });
 
 it('keeps Level Matcher pending until its terminal event, reports refusal, and cancels on leaving', async () => {
-  const bridge = engine(); const view = render(<LevelMatcher bridge={bridge} session={1} timeline={song()} revision={7} clips={['sound1', 'sound2']} />);
-  fireEvent.click(screen.getByText('Capture Level Profile')); fireEvent.click(screen.getByText('Apply Level Profile')); await settle();
+  const bridge = engine(); const view = render(<Matcher bridge={bridge} session={1} timeline={song()} revision={7} clips={['sound1', 'sound2']} />);
+  fireEvent.click(screen.getByText('Capture Level Profile')); await settle(); captured(bridge); await settle(); fireEvent.click(screen.getByText('Apply Level Profile')); await settle();
   expect((screen.getByText('Apply Level Profile') as HTMLButtonElement).disabled).toBe(true);
   bridge.tell({ job: 'audio-1', state: 'done', method: 'audio.level_match', reference: { clip: 'sound1', measured: -22 }, clips: [], applied: null, refused: { code: -32001, message: 'revision changed' } });
   expect(screen.getByRole('alert').textContent).toBe('revision changed');
@@ -250,10 +257,12 @@ it('maps a visible audio track move to the final full track index and uses ADC a
 });
 it('captures a reference in page state and applies Level Matcher through the real method', async () => {
   const bridge = engine();
-  render(<LevelMatcher bridge={bridge} session={1} timeline={song()} revision={7} clips={['sound1', 'sound2']} />);
+  render(<Matcher bridge={bridge} session={1} timeline={song()} revision={7} clips={['sound1', 'sound2']} />);
   fireEvent.click(screen.getByRole('button', { name: 'Capture Level Profile' })); await settle();
+  expect(bridge.call).toHaveBeenCalledWith('audio.level_profile', { timeline: 't1', clip: 'sound1', revision: 7 }, { expectedSession: 1 });
+  captured(bridge); await settle();
   fireEvent.click(screen.getByRole('button', { name: 'Apply Level Profile' })); await settle();
-  expect(bridge.call).toHaveBeenCalledWith('audio.level_match', { timeline: 't1', reference: 'sound1', clips: ['sound2'], apply: true, revision: 7 }, { expectedSession: 1 });
+  expect(bridge.call).toHaveBeenCalledWith('audio.level_match', { timeline: 't1', profile: capturedProfile.profile, clips: ['sound1', 'sound2'], apply: true, revision: 7 }, { expectedSession: 1 });
 });
 
 
@@ -420,4 +429,57 @@ it('keeps cancellation pending until the engine terminal and admits completion w
   expect(bridge.call.mock.calls.filter(([method]) => method === 'audio.analyze')).toHaveLength(1);
   bridge.tell({ job: 'audio-1', state: 'done', method: 'audio.analyze', standard: 'ebu-r128', level: -23, results: [] });
   expect(screen.getByTestId('analysis').textContent).toBe('done');
+});
+it('retains a measured profile across timelines and source deletion, but isolates engine sessions', async () => {
+  const bridge = { ...engine(), viewRect: vi.fn(async () => {}), viewShow: vi.fn(async () => {}) };
+  const first = song(); const second = { ...song(), id: 't2', tracks: song().tracks.filter(track => track.id !== 'a1') };
+  const props = { bridge, native: false, revision: 7, pool: null, media: [media], timelines: [first, second], onSelect: vi.fn(), timelineMonitor: controls(), noticeOf: () => null, onRetry: vi.fn(), onProblem: vi.fn() };
+  const view = render(<FairlightPage {...props} session={1} selected={first} />); await settle();
+  fireEvent.contextMenu(document.querySelector('[data-clip="sound1"]')!, { clientX: 100, clientY: 100 });
+  expect((screen.getByRole('menuitem', { name: 'Apply Level Profile' }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Capture Level Profile' })); await settle();
+  expect(bridge.call).toHaveBeenCalledWith('audio.level_profile', { timeline: 't1', clip: 'sound1', revision: 7 }, { expectedSession: 1 });
+  captured(bridge); await settle();
+  view.rerender(<FairlightPage {...props} session={1} selected={second} revision={8} />); await settle();
+  expect(screen.getByText(/t1 \/ sound1/)).toBeTruthy();
+  fireEvent.contextMenu(document.querySelector('[data-clip="sound2"]')!, { clientX: 100, clientY: 100 });
+  expect((screen.getByRole('menuitem', { name: 'Apply Level Profile' }) as HTMLButtonElement).disabled).not.toBe(true);
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Apply Level Profile' })); await settle();
+  expect(bridge.call).toHaveBeenCalledWith('audio.level_match', { timeline: 't2', profile: capturedProfile.profile, clips: ['sound2'], apply: true, revision: 8 }, { expectedSession: 1 });
+  view.rerender(<FairlightPage {...props} session={2} selected={second} />); await settle();
+  bridge.tell({ job: 'audio-1', state: 'done', method: 'audio.level_profile', ...capturedProfile }, 1); await settle();
+  expect(screen.queryByText(/t1 \/ sound1/)).toBeNull();
+  fireEvent.contextMenu(document.querySelector('[data-clip="sound2"]')!, { clientX: 100, clientY: 100 });
+  expect((screen.getByRole('menuitem', { name: 'Apply Level Profile' }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+it.each(['failed', 'cancelled', 'silent', 'cancel-before-done'] as const)('keeps the old profile when another capture is %s', async failure => {
+  const bridge = engine(); let sequence = 0;
+  bridge.call.mockImplementation(async method => ({ ok: true, result: { job: method === 'audio.cancel' ? 'unused' : `audio-${++sequence}` } }));
+  render(<Matcher bridge={bridge} session={1} timeline={song()} revision={7} clips={['sound1']} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Capture Level Profile' })); await settle(); captured(bridge); await settle();
+  fireEvent.click(screen.getByRole('button', { name: 'Capture Level Profile' })); await settle();
+  expect((screen.getByRole('button', { name: 'Apply Level Profile' }) as HTMLButtonElement).disabled).toBe(true);
+  if (failure === 'cancel-before-done') fireEvent.click(screen.getByRole('button', { name: 'Cancel Level Matcher' }));
+  if (failure === 'silent' || failure === 'cancel-before-done') bridge.tell({ job: 'audio-2', state: 'done', method: 'audio.level_profile', ...capturedProfile, profile: { version: 1, level_db: failure === 'silent' ? null : -10, basis: failure === 'silent' ? null : 'mean' } });
+  else bridge.tell({ job: 'audio-2', state: failure, message: 'missing source' });
+  await settle();
+  fireEvent.click(screen.getByRole('button', { name: 'Apply Level Profile' })); await settle();
+  expect(bridge.call).toHaveBeenCalledWith('audio.level_match', { timeline: 't1', profile: capturedProfile.profile, clips: ['sound1'], apply: true, revision: 7 }, { expectedSession: 1 });
+});
+
+it('does not accept a pending capture after switching timelines, and displays the short-clip mean', async () => {
+  const bridge = { ...engine(), viewRect: vi.fn(async () => {}), viewShow: vi.fn(async () => {}) };
+  const first = song(); const second = { ...song(), id: 't2' };
+  const props = { bridge, native: false, session: 1, revision: 7, pool: null, media: [media], timelines: [first, second], onSelect: vi.fn(), timelineMonitor: controls(), noticeOf: () => null, onRetry: vi.fn(), onProblem: vi.fn() };
+  const view = render(<FairlightPage {...props} selected={first} />); await settle();
+  fireEvent.contextMenu(document.querySelector('[data-clip="sound1"]')!, { clientX: 100, clientY: 100 });
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Capture Level Profile' })); await settle();
+  view.rerender(<FairlightPage {...props} selected={second} />); await settle();
+  expect(bridge.call).toHaveBeenCalledWith('audio.cancel', { job: 'audio-1' }, { expectedSession: 1 });
+  captured(bridge); await settle(); expect(screen.queryByText(/t1 \/ sound1/)).toBeNull();
+  fireEvent.contextMenu(document.querySelector('[data-clip="sound1"]')!, { clientX: 100, clientY: 100 });
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Capture Level Profile' })); await settle();
+  bridge.tell({ job: 'audio-1', state: 'done', method: 'audio.level_profile', ...capturedProfile, source: { timeline: 't2', clip: 'sound1', revision: 7 }, profile: { version: 1, level_db: -24.123, basis: 'mean' } }); await settle();
+  expect(screen.getByText(/Mean level profile/)).toBeTruthy();
 });

@@ -32,7 +32,7 @@ export function useAudioAnalysis(bridge: Bridge, session: number, timeline: stri
     });
     return () => { current.live = false; if (current.running && current.job) cancelJob(current.job); current.early.clear(); off?.(); };
   }, [bridge, session, timeline, identity]);
-  const start = useCallback(async (method: 'audio.analyze' | 'audio.level_match' | 'audio.normalize' | 'audio.noise_learn', params: Record<string, unknown>) => {
+  const start = useCallback(async (method: 'audio.analyze' | 'audio.level_match' | 'audio.level_profile' | 'audio.normalize' | 'audio.noise_learn', params: Record<string, unknown>) => {
     const current = owner.current;
     if (!timeline || !current.live || current.waiting || current.running) return;
     current.waiting = true; current.running = true; current.cancelled = false; current.job = null; current.early.clear(); setPending(true); setProblem(null); setAnalysis(null);

@@ -237,7 +237,11 @@ class Changed:
 
 
 SoundAnalysis = Literal[
-    "audio.analyze", "audio.normalize", "audio.level_match", "audio.noise_learn"
+    "audio.analyze",
+    "audio.normalize",
+    "audio.level_match",
+    "audio.level_profile",
+    "audio.noise_learn",
 ]
 """An analysis of sound that the engine runs as a job (:meth:`Engine.analyze_sound`)."""
 
@@ -1736,7 +1740,7 @@ class Engine:
         """Last successful analysis requested by this client, never an external desktop job.
 
         Measurements describe the requested snapshot, before any normalize/level-match apply.
-        Only analyze, or normalize/level-match with apply=true, checks a requested revision.
+        Analyze, profile-based level-match, and gain jobs with apply=true check revision.
         An unchecked or absent revision cannot establish freshness. No I/O is done here.
         """
         entry = self._sound_cache.get(timeline)
@@ -1753,7 +1757,8 @@ class Engine:
     ) -> dict[str, Any]:
         """Have the engine measure sound, and wait for what it found.
 
-        The engine runs ``audio.analyze``, ``audio.normalize`` or ``audio.level_match`` as a job
+        The engine runs ``audio.analyze``, ``audio.normalize``, ``audio.level_match`` or
+        ``audio.level_profile`` as a job
         off the threads of its sound, as fast as the clips can be read (PROTOCOL.md, "Meters,
         loudness and the analysis of sound"); what it tells of the job is followed from before it
         is asked for. A caller that gives up has the job cancelled.
@@ -1762,7 +1767,8 @@ class Engine:
             method: Which analysis: the loudness and peaks of clips, tracks, buses or actual
                 stereo PCM track sums (one or more tracks, e.g. ``targets: [{"sum": ["A1"]}]``)
                 (``audio.analyze``), the gains of Normalize Audio Levels (``audio.normalize``), or
-                of Level Matcher (``audio.level_match``).
+                of Level Matcher (``audio.level_match``), or capture its immutable level
+                (``audio.level_profile``). Profile jobs do not replace latest_sound.
             params: Its params, as the protocol says (``timeline``, ``targets``, ``clips``,
                 ``apply``, ...).
             session: The connection session in which the params' revision was read; as with
@@ -1816,7 +1822,7 @@ class Engine:
                             self._sound_cache.get(timeline) if isinstance(timeline, str) else None
                         )
                         if (
-                            method != "audio.noise_learn"
+                            method not in {"audio.noise_learn", "audio.level_profile"}
                             and isinstance(timeline, str)
                             and requested.get("candidate") is None
                             and incoming_session == self._session
@@ -1828,9 +1834,14 @@ class Engine:
                                 {
                                     "session": incoming_session,
                                     "timeline": timeline,
-                                    # The server ignores revision for dry-run gain jobs.
+                                    # Legacy reference/normalize dry-runs do not bind revision.
                                     "measured_revision": requested.get("revision")
-                                    if method == "audio.analyze" or requested.get("apply") is True
+                                    if method == "audio.analyze"
+                                    or requested.get("apply") is True
+                                    or (
+                                        method == "audio.level_match"
+                                        and requested.get("profile") is not None
+                                    )
                                     else None,
                                     "method": method,
                                     "request": requested,

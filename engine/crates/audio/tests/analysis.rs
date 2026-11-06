@@ -431,3 +431,40 @@ fn the_verdict_colours_by_the_tolerance_of_each_standard() {
     assert_eq!(bs.verdict(edge, -16.0), Verdict::Within);
     assert_eq!(bs.verdict(edge - 0.1, -16.0), Verdict::Low);
 }
+
+#[test]
+fn captured_level_keeps_full_precision_and_the_short_reference_fallback() {
+    use columbina_audio::analysis::{level_match_level, level_match_to};
+    let reference = of(&program(29, -21.437, 3.0));
+    let target = of(&program(31, -30.0, 3.0));
+    let captured = level_match_level(&reference).unwrap();
+    assert_eq!(
+        level_match_to(captured, &target),
+        level_match(&reference, &target)
+    );
+    let mut changed = reference;
+    changed.integrated = Some(-4.0);
+    assert_ne!(
+        level_match(&changed, &target),
+        level_match_to(captured, &target)
+    );
+    let short: Vec<Vec<f32>> = program(37, -24.0, 1.0)
+        .into_iter()
+        .map(|mut c| {
+            c.truncate(4800);
+            c
+        })
+        .collect();
+    let short = of(&short);
+    assert_eq!(short.integrated, None);
+    assert_eq!(short.integrated_ungated, None);
+    assert_eq!(level_match_level(&short), short.mean);
+    assert_eq!(
+        level_match_to(level_match_level(&short).unwrap(), &target),
+        level_match(&short, &target)
+    );
+    let silence = of(&vec![vec![0.0; 4800]; 2]);
+    assert_eq!(level_match_level(&silence), None);
+    assert_eq!(level_match_to(captured, &silence), None);
+    assert_eq!(level_match_to(f64::INFINITY, &target), None);
+}

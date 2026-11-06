@@ -24,7 +24,8 @@ use std::sync::{Arc, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use columbina_audio::analysis::{
-    alone, level_match, normalize_clips, run_strips, Analysis, Analyzer, Level, SetLevel, Volume,
+    alone, level_match_level, level_match_to, normalize_clips, run_strips, Analysis, Analyzer,
+    Level, SetLevel, Volume,
 };
 use columbina_audio::constants::{CLIP_VOLUME_RANGE, NORMALIZE_PEAK_DEFAULT, NORMALIZE_RANGE};
 use columbina_audio::graph::{Graph, Options, Owner, Point, Purpose};
@@ -169,12 +170,43 @@ struct Normalize {
 #[serde(deny_unknown_fields)]
 struct Match {
     timeline: String,
-    reference: String,
+    #[serde(default)]
+    reference: Option<String>,
+    #[serde(default)]
+    profile: Option<LevelProfile>,
     clips: Vec<String>,
     #[serde(default)]
     apply: bool,
     #[serde(default)]
     revision: Option<u64>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LevelProfile {
+    version: u8,
+    level_db: Option<f64>,
+    basis: Option<ProfileBasis>,
+}
+
+#[derive(Clone, Copy, Debug, serde::Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ProfileBasis {
+    Integrated,
+    Mean,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Capture {
+    timeline: String,
+    clip: String,
+    revision: u64,
+}
+
+enum MatchReference {
+    Clip(String),
+    Profile(LevelProfile),
 }
 
 #[derive(Deserialize)]
@@ -305,7 +337,11 @@ pub(super) async fn call(
             stop.store(true, Ordering::Release);
             json!({})
         }
-        "audio.analyze" | "audio.normalize" | "audio.level_match" | "audio.noise_learn" => {
+        "audio.analyze"
+        | "audio.normalize"
+        | "audio.level_match"
+        | "audio.level_profile"
+        | "audio.noise_learn" => {
             let state = engine.state.lock().await;
             let (project, work) = prepare_snapshot(
                 method,
@@ -354,6 +390,11 @@ async fn settings(engine: &Engine, id: &str) -> Result<columbina_model::Timeline
 /// An analysis checked, ready to run.
 enum Work {
     NoiseLearn(noise_learn::Work),
+    Capture {
+        timeline: usize,
+        clip: String,
+        revision: u64,
+    },
     Analyze {
         timeline: usize,
         targets: Vec<Target>,
@@ -373,9 +414,10 @@ enum Work {
     },
     Match {
         timeline: usize,
-        reference: String,
+        reference: MatchReference,
         clips: Vec<String>,
         apply: Option<Apply>,
+        revision: Option<u64>,
     },
 }
 
@@ -388,10 +430,10 @@ struct Apply(Option<u64>);
 fn check_revision(work: &Work, actual: u64) -> Result<(), Fault> {
     let expected = match work {
         Work::NoiseLearn(work) => Some(work.revision),
+        Work::Capture { revision, .. } => Some(*revision),
         Work::Analyze { revision, .. } => *revision,
-        Work::Normalize { apply, .. } | Work::Match { apply, .. } => {
-            apply.as_ref().and_then(|Apply(revision)| *revision)
-        }
+        Work::Match { revision, .. } => *revision,
+        Work::Normalize { apply, .. } => apply.as_ref().and_then(|Apply(revision)| *revision),
     };
     if let Some(expected) = expected.filter(|expected| *expected != actual) {
         return Err(super::stale_revision(expected, actual));
@@ -403,6 +445,20 @@ fn check_revision(work: &Work, actual: u64) -> Result<(), Fault> {
 fn prepare(method: &str, params: Option<&RawValue>, project: &Project) -> Result<Work, Fault> {
     match method {
         "audio.noise_learn" => noise_learn::prepare(method, params, project).map(Work::NoiseLearn),
+        "audio.level_profile" => {
+            let request: Capture = rpc::params(
+                method,
+                r#"{"timeline":"t1","clip":"c1","revision":n}"#,
+                params,
+            )?;
+            let (timeline, t) = timeline_of(project, &request.timeline)?;
+            clip_of(t, &request.clip)?;
+            Ok(Work::Capture {
+                timeline,
+                clip: request.clip,
+                revision: request.revision,
+            })
+        }
         "audio.analyze" => analyze_work(method, params, project),
         "audio.normalize" => normalize_work(method, params, project),
         _ => match_work(method, params, project),
@@ -619,13 +675,51 @@ fn match_work(method: &str, params: Option<&RawValue>, project: &Project) -> Res
         params,
     )?;
     let (at, timeline) = timeline_of(project, &request.timeline)?;
-    clip_of(timeline, &request.reference)?;
+    let reference = match (request.reference, request.profile) {
+        (Some(clip), None) => {
+            clip_of(timeline, &clip)?;
+            MatchReference::Clip(clip)
+        }
+        (None, Some(profile)) => {
+            if request.revision.is_none() {
+                return Err(refused(
+                    "a captured profile requires revision",
+                    json!({"reason":"revision_required"}),
+                ));
+            }
+            if profile.version != 1 {
+                return Err(refused(
+                    "unsupported level profile version",
+                    json!({"reason":"out_of_range","what":"profile.version"}),
+                ));
+            }
+            if !profile.level_db.is_some_and(f64::is_finite) || profile.basis.is_none() {
+                return Err(refused(
+                    "the profile has no finite level",
+                    json!({"reason":"no_level"}),
+                ));
+            }
+            MatchReference::Profile(profile)
+        }
+        _ => {
+            return Err(refused(
+                "provide either reference or profile",
+                json!({"reason":"reference_required"}),
+            ))
+        }
+    };
+    let revision = if matches!(reference, MatchReference::Profile(_)) || request.apply {
+        request.revision
+    } else {
+        None
+    };
     clips_named(timeline, &request.clips)?;
     Ok(Work::Match {
         timeline: at,
-        reference: request.reference,
+        reference,
         clips: request.clips,
         apply: request.apply.then_some(Apply(request.revision)),
+        revision,
     })
 }
 
@@ -983,6 +1077,11 @@ fn run(
 ) -> Value {
     let ended = match work {
         Work::NoiseLearn(work) => noise_learn::run(teller, kind, project, work, stop),
+        Work::Capture {
+            timeline,
+            clip,
+            revision,
+        } => captured(teller, project, timeline, &clip, revision, stop),
         Work::Analyze {
             timeline,
             targets,
@@ -1027,6 +1126,7 @@ fn run(
             reference,
             clips,
             apply,
+            ..
         } => matched(
             teller,
             kind,
@@ -1326,45 +1426,97 @@ fn gain_of(db: f64) -> Value {
     json!(db)
 }
 
+/// Capture the actual clip snapshot; no project or analysis cache is changed.
+fn captured(
+    teller: &Teller,
+    project: &Arc<Project>,
+    timeline: usize,
+    clip: &str,
+    revision: u64,
+    stop: &AtomicBool,
+) -> Result<Option<Value>, String> {
+    let t = &project.timelines[timeline];
+    let mut told = progress(teller, stop, t.sample_rate, frames(&clip_range(t, clip)));
+    let Some(analyses) = clips_measured(
+        project,
+        timeline,
+        &[clip.to_owned()],
+        (false, None),
+        &mut told,
+    )?
+    else {
+        return Ok(None);
+    };
+    let analysis = &analyses[0];
+    let level_db = level_match_level(analysis);
+    let basis = level_db.map(|_| {
+        if analysis.integrated.is_some() {
+            ProfileBasis::Integrated
+        } else {
+            ProfileBasis::Mean
+        }
+    });
+    Ok(Some(json!({
+        "state":"done", "method":"audio.level_profile",
+        "source":{"timeline":t.id,"clip":clip,"revision":revision},
+        "profile":LevelProfile { version: 1, level_db, basis }, "seconds":analysis.seconds,
+    })))
+}
+
 /// `audio.level_match`.
 fn matched(
     teller: &Teller,
     kind: Kind,
     project: &Arc<Project>,
-    (timeline, reference, clips): (usize, &str, &[String]),
+    (timeline, reference, clips): (usize, &MatchReference, &[String]),
     apply: Option<Apply>,
     stop: &AtomicBool,
 ) -> Result<Option<Value>, String> {
     let t = &project.timelines[timeline];
     let rate = t.sample_rate;
-    let mut all = vec![reference.to_owned()];
+    let mut all = match reference {
+        MatchReference::Clip(clip) => vec![clip.clone()],
+        MatchReference::Profile(_) => vec![],
+    };
     all.extend(clips.iter().cloned());
     let total = all.iter().map(|clip| frames(&clip_range(t, clip))).sum();
     let mut told = progress(teller, stop, rate, total);
     let Some(analyses) = clips_measured(project, timeline, &all, (false, None), &mut told)? else {
         return Ok(None);
     };
-    let (reference_analysis, each) = analyses.split_first().expect("the reference first");
+    let (level, each) = match reference {
+        MatchReference::Clip(_) => (level_match_level(&analyses[0]), &analyses[1..]),
+        MatchReference::Profile(profile) => (profile.level_db, &analyses[..]),
+    };
     let (low, high) = CLIP_VOLUME_RANGE;
     let volumes = volumes(t, clips);
     let gains: Vec<(String, Option<f64>)> = clips
         .iter()
         .zip(each)
-        .map(|(clip, analysis)| (clip.clone(), level_match(reference_analysis, analysis)))
+        .map(|(clip, analysis)| {
+            (
+                clip.clone(),
+                level.and_then(|level| level_match_to(level, analysis)),
+            )
+        })
         .collect();
-    let loudness = |analysis: &Analysis| analysis.integrated.or(analysis.mean);
     let mut done = json!({
         "state": "done",
         "method": "audio.level_match",
-        "reference": {"clip": reference, "measured": loudness(reference_analysis).map_or(Value::Null, decibels)},
         "clips": gains.iter().zip(&volumes).zip(each).map(|(((clip, gain), volume), analysis)| json!({
             "clip": clip,
             "gain_db": gain.map_or(Value::Null, gain_of),
             "clamped": gain.is_some_and(|gain| volume.lowest + gain < low || volume.highest + gain > high),
-            "measured": loudness(analysis).map_or(Value::Null, decibels),
+            "measured": level_match_level(analysis).map_or(Value::Null, decibels),
         })).collect::<Vec<_>>(),
         "applied": null,
     });
+    match reference {
+        MatchReference::Clip(clip) => {
+            done["reference"] = json!({"clip":clip,"measured":level.map_or(Value::Null, decibels)})
+        }
+        MatchReference::Profile(profile) => done["profile"] = json!(profile),
+    }
     applied(teller, kind, &t.id, &gains, apply, &mut done);
     Ok(Some(done))
 }
@@ -1372,6 +1524,65 @@ fn matched(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn captured_level_requests_validate_profiles_and_bind_both_snapshots() {
+        let project = Project::sample();
+        let raw = |value: Value| RawValue::from_string(value.to_string()).unwrap();
+        let capture = raw(json!({"timeline":"t1","clip":"c2","revision":7}));
+        let work = prepare("audio.level_profile", Some(&capture), &project).unwrap();
+        check_revision(&work, 7).unwrap();
+        assert_eq!(
+            check_revision(&work, 8).unwrap_err().data.unwrap()["reason"],
+            "stale_revision"
+        );
+        let profile = json!({"version":1,"level_db":-82.123456789,"basis":"mean"});
+        let matching = json!({"timeline":"t1","clips":["c2"],"profile":profile,"revision":7});
+        let work = prepare("audio.level_match", Some(&raw(matching.clone())), &project).unwrap();
+        check_revision(&work, 7).unwrap();
+        assert!(check_revision(&work, 8).is_err()); // dry-run also binds its snapshot
+        for invalid in [
+            json!({"timeline":"t1","clip":"c2"}),
+            json!({"timeline":"t1","clip":"absent","revision":7}),
+            json!({"timeline":"t1","clip":"c2","revision":7,"candidate":[]}),
+        ] {
+            assert!(prepare("audio.level_profile", Some(&raw(invalid)), &project).is_err());
+        }
+        for (field, value) in [
+            ("version", json!(2)),
+            ("level_db", Value::Null),
+            ("basis", Value::Null),
+            ("basis", json!("rms")),
+            ("extra", json!(true)),
+        ] {
+            let mut invalid = matching.clone();
+            invalid["profile"][field] = value;
+            assert!(
+                prepare("audio.level_match", Some(&raw(invalid)), &project).is_err(),
+                "{field}"
+            );
+        }
+        let mut both = matching.clone();
+        both["reference"] = json!("c2");
+        assert!(prepare("audio.level_match", Some(&raw(both)), &project).is_err());
+        let mut unbound = matching;
+        unbound.as_object_mut().unwrap().remove("revision");
+        assert_eq!(
+            prepare("audio.level_match", Some(&raw(unbound)), &project)
+                .err()
+                .unwrap()
+                .data
+                .unwrap()["reason"],
+            "revision_required"
+        );
+        // Legacy reference dry-run still has its original unbound contract.
+        let legacy = raw(json!({"timeline":"t1","reference":"c2","clips":["c2"],"revision":7}));
+        check_revision(
+            &prepare("audio.level_match", Some(&legacy), &project).unwrap(),
+            99,
+        )
+        .unwrap();
+    }
 
     #[test]
     fn cancellation_between_passes_skips_the_next_graph_construction() {

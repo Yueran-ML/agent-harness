@@ -1004,7 +1004,10 @@ export interface ClipGain { clip: string; gain_db: number | null; clamped: boole
 /** What `audio.analysis` tells of a job of `audio.analyze`, `audio.normalize` or `audio.level_match`. */
 export interface FxReading { kind: 'dynamics' | 'ducker' | 'limiter' | 'de_esser' | 'noise_reduction' | 'stereo_width'; input_db?: number; output_db?: number; source_db?: number; reduction_db?: number; expander_db?: number; compressor_db?: number; limiter_db?: number; input_spectrum_db?: number[]; noise_spectrum_db?: number[]; scope?: number[] }
 export interface FxMeters { timeline: string; playing: boolean; generation: number | null; sequence?: number; sample_rate: number | null; readings: { owner: SourceRef | {clip: string}; insert: string | null; slot: number | null; reading: FxReading }[] }
+export interface LevelProfile { version: 1; level_db: number | null; basis: 'integrated' | 'mean' | null }
+export interface CapturedLevel { source: { timeline: string; clip: string; revision: number }; profile: LevelProfile; seconds: number }
 export type AudioAnalysis =
+  | ({ job: string; state: 'done'; method: 'audio.level_profile' } & CapturedLevel)
   | { job: string; state: 'done'; method: 'audio.noise_learn'; target: SourceRef | {clip:string}; slot:number; profile: number[]; result: {applied: Applied | null; refused?: EngineFailure} }
   | { job: string; state: 'running'; done: number; total: number }
   | { job: string; state: 'done'; method: 'audio.analyze'; standard: string; level: number | null; results: AnalysisResult[]; candidate?: true }
@@ -1013,7 +1016,7 @@ export type AudioAnalysis =
     measured: number | null; clips: ClipGain[]; applied: Applied | null; refused?: EngineFailure;
   }
   | {
-    job: string; state: 'done'; method: 'audio.level_match'; reference: { clip: string; measured: number | null };
+    job: string; state: 'done'; method: 'audio.level_match'; reference?: { clip: string; measured: number | null }; profile?: LevelProfile;
     clips: ClipGain[]; applied: Applied | null; refused?: EngineFailure;
   }
   | { job: string; state: 'failed'; message: string }
@@ -1083,6 +1086,7 @@ export interface PageMethods {
   'audio.analyze': { job: string };
   'audio.normalize': { job: string };
   'audio.level_match': { job: string };
+  'audio.level_profile': { job: string };
   'audio.cancel': Record<string, never>;
   // The Gallery and the comparisons of the viewer (PROTOCOL.md, "The Gallery", "Comparisons in the viewer").
   'viewer.wipe': Compared;

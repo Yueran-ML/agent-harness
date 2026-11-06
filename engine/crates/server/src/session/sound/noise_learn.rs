@@ -22,6 +22,7 @@ pub(super) struct Work {
 
 fn inserts<'a>(t: &'a Timeline, target: &Target) -> Option<&'a [Insert]> {
     match target {
+        Target::Sum(_) => None, // A summed analysis target has no insert chain.
         Target::Clip(id) => t
             .tracks
             .iter()
@@ -124,6 +125,7 @@ fn truncate(strip: &mut Strip, lanes: &mut Lanes, slot: usize) {
 
 fn prefix(project: &Project, work: &Work) -> Result<(Project, Owner), String> {
     match &work.target {
+        Target::Sum(_) => Err("a sum has no Noise Reduction insert".into()),
         Target::Clip(id) => {
             let (mut p, track, _) = alone(project, work.timeline, id).ok_or("missing clip")?;
             let c = p.timelines[work.timeline]
@@ -227,6 +229,7 @@ pub(super) fn run(
     nr.profile = Some(profile.clone());
     nr.mode = NoiseMode::Manual;
     let edit = match &work.target {
+        Target::Sum(_) => return Err("a sum has no Noise Reduction insert".into()),
         Target::Clip(id) => json!({"op":"set_clip","timeline":t.id,"id":id,"effects":chain}),
         Target::Track(id) => {
             json!({"edit":"set_track_audio","timeline":t.id,"track":id,"follow_groups":false,"patch":{"strip":{"inserts":chain}}})
@@ -314,6 +317,20 @@ mod tests {
         .unwrap();
         columbina_audio::fx::denoise::learn(&[&pcm]).unwrap()
     }
+    #[test]
+    fn summed_analysis_targets_cannot_be_learned() {
+        let p = Project::sample();
+        let raw = RawValue::from_string(json!({"timeline":"t1","target":{"sum":["a1"]},"slot":0,"range":{"from":0,"to":25},"revision":0}).to_string()).unwrap();
+        assert_eq!(
+            prepare("audio.noise_learn", Some(&raw), &p)
+                .err()
+                .unwrap()
+                .data
+                .unwrap()["reason"],
+            "missing_insert"
+        );
+    }
+
     #[test]
     fn track_learn_hears_prefix_not_nr_output_or_fader() {
         let (mut p, w) = settings();

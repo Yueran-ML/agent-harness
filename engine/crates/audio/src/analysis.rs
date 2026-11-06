@@ -260,8 +260,22 @@ pub fn normalize_clips(
 /// reference with pauses is not taken lower for a short clip; `None` where either is silent.
 #[must_use]
 pub fn level_match(reference: &Analysis, clip: &Analysis) -> Option<f64> {
-    let loudness = |analysis: &Analysis| analysis.integrated.or(analysis.mean);
-    let difference = loudness(reference).zip(loudness(clip)).map(|(r, c)| r - c);
+    level_match_level(reference).and_then(|reference| level_match_to(reference, clip))
+}
+
+/// The unrounded C-C7 level, including the short-clip fallback; silence has no level.
+#[must_use]
+pub fn level_match_level(analysis: &Analysis) -> Option<f64> {
+    analysis
+        .integrated
+        .or(analysis.mean)
+        .filter(|value| value.is_finite())
+}
+
+/// Match a clip to a previously captured level without reading its source again.
+#[must_use]
+pub fn level_match_to(reference: f64, clip: &Analysis) -> Option<f64> {
+    let difference = level_match_level(clip).map(|clip| reference - clip);
     difference.filter(|difference| difference.is_finite())
 }
 

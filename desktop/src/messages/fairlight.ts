@@ -161,6 +161,8 @@ const entries = {
   'Select audio clips': ['请选择音频片段', 'オーディオクリップを選択'],
   'Remixed waveform unavailable': ['重混波形暂不可用', 'リミックス波形は未対応'],
   'Mixed waveform unavailable': ['暂不提供混合声道波形', 'ミックス波形は未対応'], 'Video': ['视频', 'ビデオ'], 'Subtitles': ['字幕', '字幕'], 'Short Max': ['短时最大值', '短期最大'],
+  'No measurable level; the previous profile is unchanged': ['未测得有效电平；保留先前捕获', '測定可能なレベルがありません。以前のプロファイルを保持します'],
+  'Integrated profile': ['积分响度特征', '積分ラウドネス'], 'Mean level profile': ['平均电平特征', '平均レベル'],
   'Level Matcher': ['电平匹配', 'レベルマッチャー'], 'Capture Level Profile': ['捕获电平特征', 'レベルプロファイルを取得'], 'Apply Level Profile': ['应用电平特征', 'レベルプロファイルを適用'],
   'Reference': ['参照', '参照'], 'Cancel Level Matcher': ['取消电平匹配', 'レベルマッチをキャンセル'], 'Analyzing': ['分析中', '解析中'], 'clamped': ['已限幅', '制限済み'],
   'Video tracks': ['视频轨道', 'ビデオトラック'], 'Waveform height': ['波形高度', '波形の高さ'], 'Reset waveform height': ['复位波形高度', '波形の高さをリセット'],

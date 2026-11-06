@@ -8,7 +8,7 @@ import { keyOf } from '../../app/keys';
 import { Sheet } from '../../app/Sheet';
 import { Separator } from '../fairlight/Separator';
 import { CoveringMenu } from '../color/CoveringMenu';
-import { callEngine, type Media, type Op, type Timeline as TimelineModel } from '../engine';
+import { callEngine, type CapturedLevel, type Media, type Op, type Timeline as TimelineModel } from '../engine';
 import { editingAllowed, inStudio, useStudioKeys } from '../keys';
 import { MonitorPane } from '../MonitorPane';
 import type { MonitorControls } from '../useMonitor';
@@ -42,13 +42,19 @@ interface Props {
   mixer?: ReactNode; groups?: ReactNode;
 }
 /** A new session/timeline owns new async jobs and selection, while its view state survives page switches. */
-export function FairlightPage(props: Props) { return <FairlightSession key={`${props.session}/${props.selected?.id ?? ''}`} {...props} />; }
-function FairlightSession({ bridge, native, session, revision, pool, media, timelines, selected, onSelect, timelineMonitor, noticeOf, onRetry, onProblem, mixer, groups }: Props) {
+export function FairlightPage(props: Props) { return <FairlightProfiles key={props.session} {...props} />; }
+function FairlightProfiles(props: Props) {
+  const [profile, setProfile] = useState<CapturedLevel | null>(null);
+  return <FairlightSession key={props.selected?.id ?? ''} {...props} profile={profile} onCapture={setProfile} />;
+}
+interface ProfileProps { profile: CapturedLevel | null; onCapture: (value: CapturedLevel) => void }
+function FairlightSession({ bridge, native, session, revision, pool, media, timelines, selected, onSelect, timelineMonitor, noticeOf, onRetry, onProblem, mixer, groups, profile, onCapture }: Props & ProfileProps) {
   const t = useFairlightText();
   const [view, update, reset] = useFairlightView(bridge, session, selected?.id ?? '');
   const [mixerLayout, setMixerLayout] = useMixerLayout(bridge, session, selected?.id ?? '');
   const timeline = useRef<TimelineHandle>(null);
   const matcher = useRef<LevelMatcherHandle>(null);
+  const [matching, setMatching] = useState(false);
   const [clips, setClips] = useState<string[]>([]); const [track, setTrack] = useState<string | null>(null);
   const [transition, setTransition] = useState<string | null>(null);
   const normalize = useNormalizeAudio({ bridge, session, revision, timeline: selected, selection: clips, commands: () => timeline.current });
@@ -149,14 +155,14 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
     <footer className="fairlight-footer"><button type="button" aria-pressed={view.viewer} onClick={() => update({ viewer: !view.viewer })}>{t('Viewer')}</button>
       {normalize.menu}
       <button type="button" onClick={() => setCinema(old => !old)}>{t('Cinema viewer')}</button>
-      {selected && <LevelMatcher ref={matcher} key={`${session}/${selected.id}`} bridge={bridge} session={session} timeline={selected} revision={revision} clips={soundClips} />}
+      {selected && <LevelMatcher ref={matcher} key={`${session}/${selected.id}`} bridge={bridge} session={session} timeline={selected} revision={revision} clips={soundClips} profile={profile} onCapture={onCapture} onPending={setMatching} />}
     </footer>
     {context && <CoveringMenu onClose={() => setContext(null)} menu={{ ...context, label: t('Audio clip'), items: [
       ...attributes.items(context.clip),
       normalize.item(context.clip),
       { id: 'analyze-audio', label: t('Analyze Audio Level'), run: () => setAnalysisClips(soundClips.includes(context.clip) ? soundClips : [context.clip]) },
-      { id: 'capture-level', label: t('Capture Level Profile'), run: () => matcher.current?.capture(context.clip) },
-      { id: 'apply-level', label: t('Apply Level Profile'), disabled: !matcher.current?.captured,
+      { id: 'capture-level', label: t('Capture Level Profile'), disabled: matching, run: () => matcher.current?.capture(context.clip) },
+      { id: 'apply-level', label: t('Apply Level Profile'), disabled: !profile || matching,
         run: () => matcher.current?.apply(soundClips.includes(context.clip) ? soundClips : [context.clip]) },
       { id: 'close', label: t('Close') },
     ] }} />}

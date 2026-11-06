@@ -4527,7 +4527,7 @@ describe('the engine of the studio', () => {
       // The Tracker palette and the keys of the Color › Tracker menu (T24).
       'track.start', 'track.stop', 'track.edit',
       // The meters and the analyses of sound (phase 3, T9b).
-      'audio.standards', 'audio.meters', 'audio.loudness', 'audio.analyze', 'audio.normalize', 'audio.level_match', 'audio.cancel',
+      'audio.standards', 'audio.meters', 'audio.loudness', 'audio.analyze', 'audio.normalize', 'audio.level_match', 'audio.level_profile', 'audio.cancel',
       'audio.eq_response', 'audio.dynamics_curve', 'audio.fx_meters', 'audio.soft_clip_curve', 'audio.noise_learn',
       'audio_presets.list', 'audio_presets.save', 'audio_presets.update', 'audio_presets.delete',
       // The recording of automation (T16), and the rest of it (T16b).

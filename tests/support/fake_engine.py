@@ -347,7 +347,9 @@ class Fake:
         self.automation_playback_on = params["on"]
         return {"on": params["on"]}
 
-    def automation_parameters(self, _asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+    def automation_parameters(
+        self, _asking: "Connection", params: dict[str, Any]
+    ) -> dict[str, Any]:
         """Tests can inject a model catalogue through Fake.results; no second catalogue."""
         self.looked.append(("automation.parameters", copy.deepcopy(params)))
         return {"revision": self.revision, "of": copy.deepcopy(params["of"]), "parameters": []}
@@ -610,6 +612,9 @@ class Fake:
 
     def audio_soft_clip_curve(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
         return self._processor_curve("audio.soft_clip_curve", params)
+
+    def audio_level_profile(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        return self._sound("audio.level_profile", params)
 
     def audio_noise_learn(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
         return self._sound("audio.noise_learn", params)

@@ -1,7 +1,7 @@
 import { useFairlightText } from './words';
 import { useEffect, useState } from 'react';
 import type { EngineBridge } from '../../bridge';
-import type { Media, Op, Timeline } from '../engine';
+import type { Media, Timeline } from '../engine';
 import { ClipAudio } from '../inspector/ClipAudio';
 import { FieldsLocked, NumberField } from '../inspector/fields';
 import { useCommit } from '../inspector/useCommit';
@@ -15,10 +15,12 @@ import { useWords } from '../../app/locale';
 import { refusalOf } from '../inspector/refusal';
 import { AudioConfig } from '../inspector/AudioConfig';
 import { clipLocations } from '../timeline/selection';
+import type { Change } from '../timeline/commands';
+import { faderChanges, faderPlan, faderReading, mixerStrips } from '../audio/mixerModel';
 /** Track/clip selection is shared with the timeline. Detailed strip processors plug in with T21. */
 export function Inspector({ bridge, session, revision, timeline, media, clips, track: trackId, transition = null, onEdit, frame = 0, onSeek = () => {}, onSpeed, automation: adapter }: {
   bridge: Pick<EngineBridge, 'call' | 'onEvent'>; session: number; revision: number; timeline: Timeline; media: readonly Media[];
-  clips: string[]; track: string | null; onEdit: (ops: Op[]) => void;
+  clips: string[]; track: string | null; onEdit: (ops: Change[]) => void;
   automation?: AudioAutomationAdapter | null;
   transition?: string | null;
   frame?: number; onSeek?: (frame: number, scrubbing: boolean) => void; onSpeed?: (clips: string[]) => void;
@@ -33,6 +35,17 @@ export function Inspector({ bridge, session, revision, timeline, media, clips, t
   useEffect(() => { if (trackId !== null && !clips.length && transition === null) setMode('track'); }, [trackId, clips, transition]);
   const seconds = frame * timeline.rate.den / timeline.rate.num;
   const track = timeline.tracks.find(each => each.id === trackId);
+  // The fader here is the mixer strip's: it writes the lane while automation is written, shows
+  // (and does not write under) a lane that plays, and moves the track's group with it.
+  const strip = track ? mixerStrips(timeline).find(each => each.key === `track:${track.id}`) : undefined;
+  const fader = strip && faderReading(strip, seconds, automation?.enabled ?? true);
+  const recordingFader = Boolean(automation?.enabled && automation.recording);
+  const commitFader = (value: number) => {
+    if (!strip || !fader) return;
+    if (recordingFader) { automation!.instant({ of: { track: strip.id }, path: 'fader_db' }, value); return; }
+    const plan = faderPlan(timeline, strip.key, [], {}, automation?.enabled ?? true);
+    if (plan.members.length) onEdit(faderChanges(timeline.id, plan, value - Math.max(-100, strip.db)));
+  };
   const byId = clipLocations(timeline);
   const locations = clips.flatMap(id => {
     const found = byId.get(id);
@@ -58,8 +71,9 @@ export function Inspector({ bridge, session, revision, timeline, media, clips, t
         onFailure={error => setRefusal(refusalOf(error, words.hint.studio))} />
     </FieldsLocked.Provider> : <p>{t('Select audio clips')}</p>)}
     {tab === 'audio' && mode === 'track' && track?.kind === 'audio' && <>
-      <NumberField name="track-fader" label={t('Fader')} value={track.strip?.fader_db ?? 0} fallback={0} unit="dB" min={-100} max={10} digits={1} scrub={.1} fineModifiers disabled={track.locked}
-        onCommit={fader_db => onEdit([{ op: 'set_track_audio', timeline: timeline.id, track: track.id, patch: { strip: { fader_db } } }])} />
+      <NumberField name="track-fader" label={t('Fader')} value={fader?.value ?? track.strip?.fader_db ?? 0} fallback={0} unit="dB"
+        min={-100} max={10} digits={1} scrub={.1} fineModifiers
+        disabled={track.locked || Boolean(fader?.automated && !recordingFader)} onCommit={commitFader} />
       <span>{track.format === '5.1' ? '5.1' : t(track.format === 'mono' ? 'Mono' : track.format === 'adaptive' ? 'Adaptive' : 'Stereo')}</span>
       <DuckerPanel seconds={seconds} bridge={bridge} session={session} revision={revision} timeline={timeline} target={{ track: track.id }} automation={automation} />
     </>}

@@ -1,13 +1,12 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
-import { useOverlay } from '../../app/overlay';
+import { useEffect, useRef, useState } from 'react';
+import { PortalMenu } from '../audio/PortalMenu';
 import { callEngine, type LanesOf, type Timeline, type Vca } from '../engine';
 import { mixerStrips, operationTargets, stripChange, type Modifiers } from '../audio/mixerModel';
 import { targetOf } from '../audio/processorModel';
 import { vcaChoices } from '../audio/routingModel';
 import type { Change } from '../timeline/commands';
 import type { RoutingContext } from './BusFormat';
-import { useFairlightText } from './words';
+import { useFailureText, useFairlightText } from './words';
 import './routing.css';
 
 export function vcaAssignments(timeline: Timeline, owners: LanesOf[], vca: Vca | null, action: 'add' | 'remove' = 'add'): Change[] {
@@ -32,24 +31,8 @@ export function vcaAssignments(timeline: Timeline, owners: LanesOf[], vca: Vca |
 
 export function VcaAssignment({ context, of, selected = [] }: { context: RoutingContext; of: LanesOf; selected?: readonly string[] }) {
   const t = useFairlightText(), [open,setOpen] = useState(false), [problem,setProblem] = useState(''), [pending,setPending] = useState(false);
-  const trigger = useRef<HTMLButtonElement>(null), menu = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState({ left: 4, top: 4 });
-  useOverlay(open);
-  useLayoutEffect(() => {
-    if (!open) return;
-    const popup = menu.current, button = trigger.current;
-    if (!popup || !button) return;
-    const anchor = button.getBoundingClientRect(), box = popup.getBoundingClientRect();
-    setPosition({ left: Math.max(4, Math.min(anchor.left, window.innerWidth - box.width - 4)), top: Math.max(4, Math.min(anchor.bottom, window.innerHeight - box.height - 4)) });
-    popup.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
-    return () => { if (document.activeElement === document.body || popup.contains(document.activeElement)) button.focus({ preventScroll: true }); };
-  }, [open]);
-  useEffect(() => {
-    if (!open) return;
-    const away = (event: PointerEvent) => { if (!menu.current?.contains(event.target as Node) && !trigger.current?.contains(event.target as Node)) setOpen(false); };
-    document.addEventListener('pointerdown', away);
-    return () => document.removeEventListener('pointerdown', away);
-  }, [open]);
+  const failure = useFailureText();
+  const trigger = useRef<HTMLButtonElement>(null);
   useEffect(() => setOpen(false), [context.session, context.timeline.id]);
   const { timeline, bridge, session, revision } = context;
   const strip = 'vca' in of ? undefined : mixerStrips(timeline).find(s => s.key === ('track' in of ? `track:${of.track}` : `bus:${of.bus}`));
@@ -65,21 +48,14 @@ export function VcaAssignment({ context, of, selected = [] }: { context: Routing
     const ops=vcaAssignments(timeline,targets,vca,action); if(!ops.length)return;
     setPending(true);setProblem('');
     try { await callEngine(bridge,'transaction.apply',{revision,ops},{expectedSession:session});setOpen(false); }
-    catch(error) { setProblem(String(error)); } finally { setPending(false); }
+    catch(error) { setProblem(failure(error)); } finally { setPending(false); }
   };
   return <span className="vca-assignment"><button ref={trigger} type="button" disabled={strip?.locked || pending} aria-haspopup="menu" aria-expanded={open} aria-label={`VCA ${name ?? ''}`} onClick={()=>setOpen(!open)} onContextMenu={event=>{event.preventDefault();event.currentTarget.focus();setOpen(true);}}
     onKeyDown={event => { if (!event.nativeEvent.isComposing && ['ArrowDown', 'Enter', ' '].includes(event.key)) { event.preventDefault(); event.stopPropagation(); setOpen(true); } }}>
     {owner?.vcas?.map(id=>existing.find(v=>v.id===id)?.name??id).join(', ') || t('No VCA')}</button>
-    {open && createPortal(<div ref={menu} className="route-menu" data-studio-portal="" role="menu" aria-label={t('Assign VCA')} style={{ ...position, maxHeight: 'min(250px, calc(100vh - 8px))', maxWidth: 'calc(100vw - 8px)' }} onKeyDown={event => {
-      if (event.nativeEvent.isComposing) return;
-      const buttons = [...menu.current!.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')], at = buttons.indexOf(document.activeElement as HTMLButtonElement);
-      if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
-        event.preventDefault(); event.stopPropagation(); const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (at + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
-        buttons[next]?.focus();
-      } else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setOpen(false); }
-      else if (['Enter', ' '].includes(event.key) && at >= 0) { event.preventDefault(); event.stopPropagation(); buttons[at].dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: event.ctrlKey, altKey: event.altKey, shiftKey: event.shiftKey })); }
-    }}><button type="button" role="menuitem" disabled={pending} onClick={event=>void apply(null,event)}>{t('No VCA')}</button>
+    {open && <PortalMenu anchor={trigger} label={t('Assign VCA')} onClose={() => setOpen(false)}>
+      <button type="button" role="menuitem" disabled={pending} onClick={event=>void apply(null,event)}>{t('No VCA')}</button>
       {choices.map(vca=>{const trial=existing.includes(vca)?timeline:{...timeline,vcas:[...existing,vca]}, choice=vcaChoices(trial,of).find(c=>c.vca.id===vca.id)!;return <button type="button" role="menuitemcheckbox" key={vca.id} aria-checked={choice.assigned} disabled={pending||Boolean(choice.reason)} title={choice.reason??undefined} onClick={event=>void apply(vca,event)}>{vca.name}</button>;})}
-      <button type="button" onClick={()=>setOpen(false)}>{t('Cancel')}</button></div>, document.body)}{problem&&<span role="alert">{problem}</span>}
+      <button type="button" onClick={()=>setOpen(false)}>{t('Cancel')}</button></PortalMenu>}{problem&&<span role="alert">{problem}</span>}
   </span>;
 }

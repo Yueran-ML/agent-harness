@@ -148,7 +148,8 @@ it('shows cancellation errors without releasing the running job, permits retry, 
   const app = setup(); await app.open(); submit(); await settle();
   app.call.mockResolvedValueOnce({ ok: false, error: { code: -32000, message: 'cancel connection failure', data: null } });
   fireEvent.click(screen.getByRole('button', { name: 'Cancel analysis' })); await settle();
-  expect(screen.getByRole('alert').textContent).toBe('cancel connection failure');
+  // The general sentence in the page's language, with what the engine said.
+  expect(screen.getByRole('alert').textContent).toBe(`${en.hint.studio.edit.failed} cancel connection failure`);
   expect((screen.getByRole('button', { name: 'Normalize' }) as HTMLButtonElement).disabled).toBe(true);
   fireEvent.click(screen.getByRole('button', { name: 'Cancel analysis' })); await settle();
   expect(app.call.mock.calls.filter(([m]) => m === 'audio.cancel')).toHaveLength(2);
@@ -157,7 +158,7 @@ it('shows cancellation errors without releasing the running job, permits retry, 
 it('reports a refused start, permits retry, and cancels an acknowledged running job on close', async () => {
   const app = setup(); await app.open();
   app.call.mockResolvedValueOnce({ ok: false, error: { code: -32001, message: 'stale revision', data: { reason: 'stale_revision' } } });
-  submit(); await settle(); expect(screen.getByRole('alert').textContent).toBe('stale revision');
+  submit(); await settle(); expect(screen.getByRole('alert').textContent).toBe(en.hint.studio.edit.stale_revision);
   expect((screen.getByRole('button', { name: 'Normalize' }) as HTMLButtonElement).disabled).toBe(false);
   submit(); await settle(); fireEvent.click(within(screen.getByRole('dialog')).getAllByRole('button', { name: 'Close' })[0]); await settle();
   expect(app.call).toHaveBeenCalledWith('audio.cancel', { job: 'mine' }, { expectedSession: 1 });

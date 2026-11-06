@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { EngineBridge } from '../../bridge';
+import { useFailureText } from '../fairlight/words';
 
 /** Exact comparison of the small JSON model inputs used by an audio query. */
 function sameInputs(a: unknown, b: unknown): boolean {
@@ -33,6 +34,9 @@ export function useAudioQuery<T extends { revision: number }>(
   if (!sameInputs(stable.current, inputs)) stable.current = structuredClone(inputs);
   const identity = stable.current;
   const [state, setState] = useState<{ bridge: object; identity: unknown; data?: T; problem?: string }>();
+  // Read when the query fails, so that the language of the page is not an input of the query.
+  const failureText = useFailureText(), failure = useRef(failureText);
+  failure.current = failureText;
   useEffect(() => {
     if (!enabled) return;
     let live = true;
@@ -52,7 +56,7 @@ export function useAudioQuery<T extends { revision: number }>(
       if (live) setState({ bridge, identity, data: data as T });
     }).catch(error => {
       cache.delete(used);
-      if (live) setState({ bridge, identity, problem: String(error) });
+      if (live) setState({ bridge, identity, problem: failure.current(error) });
     });
     return () => {
       live = false;

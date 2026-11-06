@@ -4,12 +4,13 @@ import { Sheet } from '../../app/Sheet';
 import { callEngine, type Bus, type BusFormat as Format, type Timeline } from '../engine';
 import type { Change } from '../timeline/commands';
 import { BUS_FORMATS, busChannels, busUsers, nextBus } from '../audio/routingModel';
-import { useFairlightText } from './words';
+import { useFailureText, useFairlightText } from './words';
 
 export interface RoutingContext { bridge: Pick<EngineBridge, 'call'>; session: number; revision: number; timeline: Timeline }
 /** A local draft: opening/typing/cancelling never touches the project's history. */
 export function BusFormat({ bridge, session, revision, timeline, onClose }: RoutingContext & { onClose: () => void }) {
   const t = useFairlightText();
+  const failure = useFailureText();
   const origin = useRef({ session, revision, timeline });
   const current = useRef({ session, timeline: timeline.id }); current.current = { session, timeline: timeline.id };
   const [buses, setBuses] = useState(() => structuredClone(timeline.buses ?? []));
@@ -39,7 +40,7 @@ export function BusFormat({ bridge, session, revision, timeline, onClose }: Rout
     setSaving(true); setProblem('');
     try { await callEngine(bridge, 'transaction.apply', { revision: origin.current.revision, ops }, { expectedSession: origin.current.session });
       if (current.current.session === origin.current.session && current.current.timeline === origin.current.timeline.id) onClose(); }
-    catch (error) { setProblem(error instanceof Error ? error.message : String(error)); setSaving(false); }
+    catch (error) { setProblem(failure(error)); setSaving(false); }
   };
   return <Sheet title={t('Bus Format')} wide onClose={() => { if (!saving) onClose(); }} foot={<>
     <button type="button" data-first disabled={saving} onClick={onClose}>{t('Cancel')}</button><button type="button" disabled={disabled} onClick={() => void save()}>{t('OK')}</button>

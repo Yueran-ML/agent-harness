@@ -199,8 +199,10 @@ describe('a track of subtitles', () => {
     expect((screen.getByRole('menuitem', { name: 'Add subtitle' }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
     expect(screen.queryByRole('menu')).toBeNull();
+    // A track of picture offers its Edit menu (cut, copy, paste), and nothing of subtitles.
     fireEvent.contextMenu(lane('v1'), { clientX: x(400), clientY: 60 });
-    expect(screen.queryByRole('menu')).toBeNull();
+    expect(screen.getByRole('menu', { name: 'Edit' })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: /subtitle/i })).toBeNull();
   });
 
   it('is shown one at a time from its header, as DaVinci Resolve shows subtitle tracks', async () => {

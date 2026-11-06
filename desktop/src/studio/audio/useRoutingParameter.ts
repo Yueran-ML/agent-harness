@@ -1,3 +1,4 @@
+import { useFailureText } from '../fairlight/words';
 import { useEffect, useRef, useState } from 'react';
 import { useAutomationParameters } from './useAutomationParameters';
 import { useAutomationTouch } from '../fairlight/AutomationTouch';
@@ -18,12 +19,13 @@ export function useRoutingParameter(context: ProcessorProps, stripKey: string, b
   const prefix = bus === undefined ? 'pan.' : `send.${bus}.`;
   const path = (field: string) => prefix + field;
   const [problem, setProblem] = useState('');
+  const failure = useFailureText();
   const { parameters, problem: parameterProblem } = useAutomationParameters(context, of, Boolean(automation?.enabled));
   const [preview, setPreview] = useState<Values>({});
   const touched = useRef<string[]>([]), snapshot = useRef<Values>({});
   const owner = useRef<object | undefined>(undefined);
   const gesture = useAudioGesture({
-    ...context, identity, locked: strip.locked || bus !== undefined && !send, onFailure: error => setProblem(String(error))
+    ...context, identity, locked: strip.locked || bus !== undefined && !send, onFailure: error => setProblem(failure(error))
   });
   const parameter = (field: string) => parameters.find(item => item.path === path(field));
   const base = (field: string) => routingBase(strip, bus, field);

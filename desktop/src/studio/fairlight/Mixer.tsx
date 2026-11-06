@@ -1,13 +1,14 @@
 import { useAutomationTouch } from './AutomationTouch';
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import type { EngineBridge } from '../../bridge';
-import { callEngine, type Meters, type Timeline } from '../engine';
+import { callEngine, type Timeline } from '../engine';
+import type { MeterSource } from './audioReadings';
 import type { Change } from '../timeline/commands';
 import { useAudioGesture } from '../timeline/useAudioGesture';
-import { faderChanges, faderPlan, groupMembers, mixerStrips, operationTargets, stripChange, type FaderPlan, type MixerStrip, type Modifiers } from '../audio/mixerModel';
+import { faderChanges, faderPlan, mixerStrips, operationTargets, stripChange, switchChanges, type FaderPlan, type MixerStrip, type Modifiers } from '../audio/mixerModel';
 import { mixerTrackMoves } from './IndexTracks';
 import { ChannelStrip } from './ChannelStrip';
-import { useFairlightText } from './words';
+import { useFailureText, useFairlightText } from './words';
 import './mixer.css';
 import { keyOf } from '../../app/keys';
 import { writing } from '../keys';
@@ -32,13 +33,14 @@ export function isolateMixerKeys(event: KeyboardEvent<HTMLElement>) {
 
 export interface MixerProps {
   automation?: AudioAutomationAdapter | null;
-  bridge: Pick<EngineBridge, 'call'>; session: number; revision: number; timeline: Timeline; frame: number; meters: Meters | null;
+  bridge: Pick<EngineBridge, 'call'>; session: number; revision: number; timeline: Timeline; frame: number; meters: MeterSource;
   selected: readonly string[]; onSelect: (keys: string[]) => void; compact?: boolean;
 }
 export function Mixer({ bridge, session, revision, timeline, frame, meters, selected, onSelect, compact = false }: MixerProps) {
   const automation=useAutomationTouch();
   const [routing, setRouting] = useState<'format' | 'assign' | null>(null);
   const t = useFairlightText(); const [problem, setProblem] = useState<string | null>(null);
+  const failure = useFailureText();
   const [processors, setProcessors] = useState<{ key: string; module: ProcessorModule }[]>([]);
   const box = useRef<{ x:number; y:number; selected:readonly string[] } | null>(null);
   const [boxRect, setBoxRect] = useState<{left:number;top:number;width:number;height:number}|null>(null);
@@ -53,7 +55,7 @@ export function Mixer({ bridge, session, revision, timeline, frame, meters, sele
     setLayout({ order: moveMixerItems(order, keys, before) });
   };
   const [preview, setPreview] = useState<Record<string, number>>({});
-  const gesture = useAudioGesture({ bridge, session, revision, identity: `${timeline.id}/mixer`, locked: false, onFailure: error => setProblem(error instanceof Error ? error.message : String(error)) });
+  const gesture = useAudioGesture({ bridge, session, revision, identity: `${timeline.id}/mixer`, locked: false, onFailure: error => setProblem(failure(error)) });
   const latest = useRef({ timeline, strips, gesture, selected, revision, session }); latest.current = { timeline, strips, gesture, selected, revision, session };
   const anchor = useRef<string | null>(selected[0] ?? null);
   const localSelection = useRef<readonly string[] | null>(null);
@@ -66,16 +68,9 @@ export function Mixer({ bridge, session, revision, timeline, frame, meters, sele
   const cancel = () => { sweep.current = null; plan.current = null; gesture.cancel(); setPreview({}); };
   const switchOps = (keys: string[], field: 'mute' | 'solo' | 'solo_safe', value: boolean, modifiers: Modifiers): Change[] => {
     const state = latest.current;
-    const seeds = keys.flatMap(key => state.strips.filter(s => s.key === key && !s.locked));
-    if (field === 'solo') {
-      // A solo seed and its directly linked group form one exclusive-solo edit. Expanding its
-      // followers into separate edits would make each clear the previous member. Preserve the
-      // actual sweep order, so the last requested solo/group wins under Exclusive Solo.
-      return seeds.map(s => stripChange(state.timeline.id, s, { solo: value }, !(modifiers.ctrlKey && modifiers.shiftKey)));
-    }
-    const members = field === 'solo_safe' ? seeds : groupMembers(state.timeline, state.strips, seeds, field, Boolean(modifiers.ctrlKey && modifiers.shiftKey));
-    // Each member once. Exclusive Solo remains the server's set_* edit policy.
-    return members.filter(s => !s.locked).map(s => stripChange(state.timeline.id, s, { [field]: value }));
+    const seeds = keys.flatMap(key => state.strips.filter(s => s.key === key));
+    // Preserve the actual sweep order, so the last requested solo/group wins under Exclusive Solo.
+    return switchChanges(state.timeline, state.strips, seeds, field, value, Boolean(modifiers.ctrlKey && modifiers.shiftKey));
   };
   useEffect(() => {
     const abandon = () => { sweep.current = null; };
@@ -129,24 +124,23 @@ export function Mixer({ bridge, session, revision, timeline, frame, meters, sele
           });
         }));
         automation.instantBatch(groups.flat());
-      }catch(error){setProblem(String(error));}
+      }catch(error){setProblem(failure(error));}
       return;
     }
     gesture.commit(processorChanges(timeline.id,targets.map(s=>automation?.enabled===false?{...s,arm:'off' as const}:s),path,value));
   };
   const draw = (strip: MixerStrip) => {
-    const reading = meters?.strips.find(m => 'track' in m.owner ? strip.kind === 'track' && m.owner.track === strip.id : strip.kind === 'bus' && m.owner.bus === strip.id);
     return <ChannelStrip onArm={(arm,modifiers)=>{const targets=operationTargets(strips,strip.key,selected,modifiers);gesture.commit(targets.map(s=>stripChange(timeline.id,s,{automation_arm:arm})));}} key={strip.key} strip={strip} compact={compact} seconds={frame * timeline.rate.den / timeline.rate.num} selected={selected.includes(strip.key)}
       onReorder={reorder} selectedKeys={selected}
       processorContext={{ bridge, session, revision, timeline, target: targetOf(strip), selected, seconds: frame * timeline.rate.den / timeline.rate.num, automation }}
       onProcessor={module => setProcessors(old => [...(compact ? [] : old.filter(p => p.key !== strip.key || p.module !== module)), { key: strip.key, module }])}
       onStripSetting={(path, value, modifiers) => void stripSetting(strip,path,value,modifiers)}
-      value={gesture.active() ? preview[strip.key] : undefined} meters={timeline.audio?.prefader_metering ? reading?.pre : reading?.post}
+      value={gesture.active() ? preview[strip.key] : undefined} meters={meters} prefader={Boolean(timeline.audio?.prefader_metering)}
       shadow={Boolean(timeline.audio?.prefader_metering && strips.some(s => s.solo) && !strip.solo && !strip.safe)}
       isActive={gesture.active} onSelect={modifiers => select(strip, modifiers)} onRename={async name => {
         try { await callEngine(bridge, 'transaction.apply', { revision, ops: [strip.kind === 'track' ? { op: 'set_track', timeline: timeline.id, id: strip.id, name }
           : { edit: 'set_bus', timeline: timeline.id, id: strip.id, patch: { name } }] }, { expectedSession: session }); return true; }
-        catch (error) { setProblem(error instanceof Error ? error.message : String(error)); return false; }
+        catch (error) { setProblem(failure(error)); return false; }
       }} onStart={modifiers => start(strip, modifiers)} onChange={change} onEnd={() => { plan.current = null; gesture.end(); setPreview({}); }} onCancel={cancel}
       onCommit={(value, modifiers = {}) => { const p = faderPlan(timeline, strip.key, selected, modifiers, automation?.enabled??true); gesture.commit(faderChanges(timeline.id, p, value - Math.max(-100, strip.db))); }}
       onToggle={(field, modifiers) => single(strip, field, modifiers)}

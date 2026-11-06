@@ -4,11 +4,12 @@ import type { ProcessorProps } from './useProcessor';
 import { copyStripSettings } from './effectModel';
 import { useAudioGesture } from '../timeline/useAudioGesture';
 import { targetKey } from './processorModel';
-import { useFairlightText } from '../fairlight/words';
+import { useFailureText, useFairlightText } from '../fairlight/words';
 
 export function StripCopy({ context, children }: { context: ProcessorProps; children?: ReactNode }) {
   const t = useFairlightText(), [open, setOpen] = useState(false), [problem, setProblem] = useState<string | null>(null);
-  const gesture = useAudioGesture({ ...context, identity: `${context.timeline.id}/${targetKey(context.target)}/copy`, locked: Boolean(context.automation?.recording), onFailure: error => setProblem(String(error)) });
+  const failure = useFailureText();
+  const gesture = useAudioGesture({ ...context, identity: `${context.timeline.id}/${targetKey(context.target)}/copy`, locked: Boolean(context.automation?.recording), onFailure: error => setProblem(failure(error)) });
   const clipboard=stripClipboard.use();
   const source = clipboard?.bridge === context.bridge && clipboard?.session === context.session && clipboard.timeline === context.timeline.id ? clipboard.target : null;
   const changes = source && !('clip' in context.target) ? copyStripSettings(context.timeline, source, context.target) : [];

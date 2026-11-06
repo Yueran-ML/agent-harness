@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { EngineBridge } from '../../bridge';
 import { callEngine, type AutomationTouch as TouchMessage, type AutomationParameter, type Timeline } from '../engine';
-import { categoryOfPath, ownerKey, type AutomationTarget } from './automation';
+import { categoryOfPath, ownerKey, readGlide, type AutomationTarget } from './automation';
 /** One in-flight RPC, 10 ms event sampling, newest movement wins; releases never disappear. */
 export class TouchQueue {
   private target: AutomationTarget | null = null;
@@ -80,6 +80,10 @@ export class TouchQueue {
   }
   active() {
     return this.target !== null;
+  }
+  /** The control being touched, if one is. */
+  touched() {
+    return this.target;
   }
   settled() {
     return this.chain;
@@ -170,9 +174,30 @@ export function AutomationTouchProvider({ bridge, session, timeline, revision = 
     if (!enabled || !recording || (!playing && !preview))
       end();
   }, [enabled, recording, playing, preview]);
+  // An edit made while recording (of this or any other control) does not end a touch: only one
+  // whose strip went away, was locked or set safe or bypassed, as a control that is gone is let go.
   useEffect(() => {
-    end();
-  }, [revision, queues]);
+    const writable = (target: AutomationTarget) => {
+      const of = target.of;
+      const owner = 'track' in of
+        ? timeline.tracks.find(track => track.kind === 'audio' && track.id === of.track && !track.locked)
+        : 'bus' in of ? timeline.buses?.find(bus => bus.id === of.bus) : timeline.vcas?.find(vca => vca.id === of.vca);
+      const arm = owner && 'automation_arm' in owner ? owner.automation_arm : undefined;
+      return Boolean(owner) && arm !== 'safe' && arm !== 'off';
+    };
+    let ended = false;
+    for (const [id, queue] of queues) {
+      const target = queue.touched();
+      if (!target || writable(target)) continue;
+      queue.end();
+      ended = true;
+      const value = held.current.get(id);
+      if (value && value.released === null) value.released = performance.now();
+    }
+    if (!ended) return;
+    setLive(old => old && writable(old.target) ? old : null);
+    setLives(old => old.every(each => writable(each.target)) ? old : old.filter(each => writable(each.target)));
+  }, [timeline, queues]);
   useEffect(() => {
     if (!enabled || !recording || read || (!playing && !preview)) {
       held.current.clear();
@@ -190,8 +215,7 @@ export function AutomationTouchProvider({ bridge, session, timeline, revision = 
     if (![...held.current].some(([id, value]) => returning(id, value)))
       return;
     const timer = setInterval(() => {
-      const configured = Number(localStorage.getItem('fairlight.glide_ms') ?? 250);
-      const duration = Math.max(10, Number.isFinite(configured) ? configured : 250);
+      const duration = Math.max(10, readGlide());
       let changed = false, moving = false;
       for (const [id, value] of held.current) {
         if (!returning(id, value))
@@ -293,7 +317,7 @@ export function AutomationTouchProvider({ bridge, session, timeline, revision = 
         return baseline;
       const record = timeline.audio?.record, snap = record?.touch === 'snap' || record?.touch === 'snap_latch' && target.path === 'fader_db';
       if (!record?.preview && snap && value.released !== null) {
-        const configured = Number(localStorage.getItem('fairlight.glide_ms') ?? 250), duration = Math.max(10, Number.isFinite(configured) ? configured : 250), progress = parameter?.kind === 'switch' ? 1 : Math.min(1, (performance.now() - value.released) / duration);
+        const duration = Math.max(10, readGlide()), progress = parameter?.kind === 'switch' ? 1 : Math.min(1, (performance.now() - value.released) / duration);
         if (progress === 1) {
           held.current.delete(id);
           return baseline;

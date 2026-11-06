@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useRef, useState, type ReactNode 
 import { Sheet } from '../../app/Sheet';
 import { callEngine, type GroupControl, type Op, type Timeline, type TrackGroup } from '../engine';
 import type { RoutingContext } from './BusFormat';
-import { useFairlightText } from './words';
+import { useFailureText, useFairlightText } from './words';
 import { GROUP_CONTROLS, GROUP_DEFAULTS_KEY, allGroup, groupDefaults, groupKey, groupPatch, groupTracks } from './groupModel';
 import { NameField } from '../media/NameField';
 import { TRACK_COLORS } from './IndexTracks';
@@ -23,6 +23,7 @@ export function TrackGroupsProvider({ timeline, bridge, session, revision, selec
   children: ReactNode;
 }) {
   const t = useFairlightText(), [draft, setDraft] = useState<TrackGroup | null>(null), [problem, setProblem] = useState('');
+  const failure = useFailureText();
   const [menu, setMenu] = useState<{
     x: number;
     y: number;
@@ -42,7 +43,7 @@ export function TrackGroupsProvider({ timeline, bridge, session, revision, selec
     }
     catch (error) {
       if (live.current)
-        setProblem(error instanceof Error ? error.message : String(error));
+        setProblem(failure(error));
       return false;
     }
   };
@@ -104,11 +105,21 @@ function GroupDialog({ initial, context, onClose }: {
   onClose: () => void;
 }) {
   const t = useFairlightText(), origin = useRef(context), current = useRef(context);
+  const failure = useFailureText();
   current.current = context;
   const [value, setValue] = useState(initial), [add, setAdd] = useState<string[]>([]), [remove, setRemove] = useState<string[]>([]);
   const [problem, setProblem] = useState(''), [saving, setSaving] = useState(false);
-  const stale = context.session !== origin.current.session || context.revision !== origin.current.revision || context.timeline.id !== origin.current.timeline.id;
-  const disabled = stale || saving, members = groupTracks(origin.current.timeline, value), audio = origin.current.timeline.tracks.filter(track => track.kind === 'audio');
+  // Only a change of what the window edits makes it stale: this group, and the tracks it lists.
+  // Another edit (a fader, another group) leaves it open, and it saves against the latest revision.
+  const edited = (c: RoutingContext) => JSON.stringify([
+    initial.id ? c.timeline.track_groups?.find(group => group.id === initial.id) ?? null
+      : initial.all_tracks ? allGroup(c.timeline) : null,
+    c.timeline.tracks.filter(track => track.kind === 'audio').map(track => [track.id, track.name, track.locked]),
+  ]);
+  const stale = context.session !== origin.current.session || context.timeline.id !== origin.current.timeline.id
+    || (context.revision !== origin.current.revision && edited(context) !== edited(origin.current));
+  const disabled = stale || saving, members = groupTracks(context.timeline, value);
+  const audio = context.timeline.tracks.filter(track => track.kind === 'audio');
   const controls: Record<GroupControl, import('../../messages/fairlight').FairlightText> = {
     editing: 'Editing', fader: 'Fader', solo: 'solo', mute: 'mute', sends: 'Sends', panning: 'Panning', automation: 'Automation'
   };
@@ -117,14 +128,14 @@ function GroupDialog({ initial, context, onClose }: {
       return;
     setSaving(true);
     setProblem('');
-    const { timeline, bridge, session, revision } = origin.current;
+    const { timeline, bridge, session, revision } = current.current;
     try {
       await callEngine(bridge, 'transaction.apply', { revision, ops: [groupPatch(timeline, initial, { ...value, name: value.name.trim() })] }, { expectedSession: session });
       if (current.current.session === session && current.current.timeline.id === timeline.id)
         onClose();
     }
     catch (error) {
-      setProblem(error instanceof Error ? error.message : String(error));
+      setProblem(failure(error));
       setSaving(false);
     }
   };
@@ -145,7 +156,7 @@ function GroupDialog({ initial, context, onClose }: {
             localStorage.setItem(GROUP_DEFAULTS_KEY, JSON.stringify(value.linked ?? GROUP_CONTROLS));
           }
           catch (error) {
-            setProblem(String(error));
+            setProblem(failure(error));
           }
         }}
       >
@@ -358,7 +369,10 @@ export function TrackGroups() {
           onClick={shift => {
             const active = !(count === members.length && group.active !== false);
             select(active ? [...new Set([...(shift ? selected : []), ...members])] : selected.filter(id => !members.includes(id)));
-            if (group.active !== active || !group.id)
+            // As DaVinci Resolve's Selected box (Reference Manual, pp. 3918, 3920), checking it also
+            // enables the group and clearing it disables it. That is an edit (and a step of undo)
+            // only where the group's state changes; a box that only selects writes nothing.
+            if ((group.active !== false) !== active)
               void edit([groupPatch(timeline, group, { active })]);
           }}
         />
@@ -435,7 +449,7 @@ export function GroupLabel({ track }: {
   return <div className="track-group-label">
     <button
       type="button"
-      aria-label={`${t('Groups')} ${track}`}
+      aria-label={`${t('Groups')} ${timeline.tracks.find(each => each.id === track)?.name ?? track}`}
       aria-expanded={Boolean(menu)}
       onClick={event => {
         const box = event.currentTarget.getBoundingClientRect();

@@ -2,7 +2,7 @@
 import { useState, type ComponentProps } from 'react';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { useAudioReadings } from '../src/studio/fairlight/audioReadings';
+import { useAudioReadings, useMeterReading } from '../src/studio/fairlight/audioReadings';
 import { Monitoring } from '../src/studio/fairlight/Monitoring';
 import { IndexTracks } from '../src/studio/fairlight/IndexTracks';
 import { LevelMatcher } from '../src/studio/fairlight/LevelMatcher';
@@ -51,7 +51,8 @@ beforeEach(() => { likeABrowser(); vi.useFakeTimers(); vi.stubGlobal('PointerEve
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 function Readings({ bridge, session = 1, visible = true }: { bridge: ReturnType<typeof engine>; session?: number; visible?: boolean }) {
   const audio = useAudioReadings(bridge, session, 't1', visible);
-  return <><output data-testid="reading">{audio.meters?.strips[0]?.post[0].bar ?? 'none'}</output><button onClick={() => void audio.analyze(['sound1'], 'ebu_r128')}>Analyze</button><button onClick={audio.cancel}>Cancel</button><output data-testid="analysis">{audio.analysis?.state}</output></>;
+  const bar = useMeterReading(audio.readings, value => value?.strips[0]?.post[0].bar);
+  return <><output data-testid="reading">{bar ?? 'none'}</output><button onClick={() => void audio.analyze(['sound1'], 'ebu_r128')}>Analyze</button><button onClick={audio.cancel}>Cancel</button><output data-testid="analysis">{audio.analysis?.state}</output></>;
 }
 it('does not rerender the owning page for identical stopped meters, but publishes peak resets', async () => {
   const bridge = engine();
@@ -61,7 +62,9 @@ it('does not rerender the owning page for identical stopped meters, but publishe
   function Host() {
     renders++;
     const audio = useAudioReadings(bridge, 1, 't1', true);
-    return <button onClick={() => void audio.resetPeaks()}>{audio.meters?.strips[0].post[0].peak ?? 'none'}</button>;
+    // Whatever subscribes to the whole reading is drawn again for each new one, and only then.
+    const meters = useMeterReading(audio.readings, value => value);
+    return <button onClick={() => void audio.resetPeaks()}>{meters?.strips[0].post[0].peak ?? 'none'}</button>;
   }
   render(<Host />); await settle();
   await act(async () => vi.advanceTimersByTimeAsync(200));
@@ -293,7 +296,8 @@ it('commits an Index control sweep once, including the start and repeated crossi
   const first = screen.getByRole('button', { name: 'mute Audio 1' });
   const second = screen.getByRole('button', { name: 'mute Audio 2' });
   const third = screen.getByRole('button', { name: 'mute Audio 3' });
-  const mute = (track: string) => ({ op: 'set_track_audio', timeline: 't1', track, patch: { mute: true } });
+  // The mixer's switch edits: one per member, as a mixer strip's mute writes them.
+  const mute = (track: string) => ({ edit: 'set_track_audio', timeline: 't1', track, patch: { mute: true }, follow_groups: false });
   fireEvent.pointerDown(first, { button: 0, buttons: 1 });
   fireEvent.pointerEnter(second, { buttons: 1 });
   fireEvent.pointerEnter(first, { buttons: 1 });
@@ -462,14 +466,14 @@ it('retains a measured profile across timelines and source deletion, but isolate
   expect(bridge.call).toHaveBeenCalledWith('audio.level_profile', { timeline: 't1', clip: 'sound1', revision: 7 }, { expectedSession: 1 });
   captured(bridge); await settle();
   view.rerender(<FairlightPage {...props} session={1} selected={second} revision={8} />); await settle();
-  expect(screen.getByText(/t1 \/ sound1/)).toBeTruthy();
+  expect(screen.getByText(/Main \/ Interview/)).toBeTruthy();
   fireEvent.contextMenu(document.querySelector('[data-clip="sound2"]')!, { clientX: 100, clientY: 100 });
   expect((screen.getByRole('menuitem', { name: 'Apply Level Profile' }) as HTMLButtonElement).disabled).not.toBe(true);
   fireEvent.click(screen.getByRole('menuitem', { name: 'Apply Level Profile' })); await settle();
   expect(bridge.call).toHaveBeenCalledWith('audio.level_match', { timeline: 't2', profile: capturedProfile.profile, clips: ['sound2'], apply: true, revision: 8 }, { expectedSession: 1 });
   view.rerender(<FairlightPage {...props} session={2} selected={second} />); await settle();
   bridge.tell({ job: 'audio-1', state: 'done', method: 'audio.level_profile', ...capturedProfile }, 1); await settle();
-  expect(screen.queryByText(/t1 \/ sound1/)).toBeNull();
+  expect(screen.queryByText(/Main \/ Interview/)).toBeNull();
   fireEvent.contextMenu(document.querySelector('[data-clip="sound2"]')!, { clientX: 100, clientY: 100 });
   expect((screen.getByRole('menuitem', { name: 'Apply Level Profile' }) as HTMLButtonElement).disabled).toBe(true);
 });
@@ -498,7 +502,7 @@ it('does not accept a pending capture after switching timelines, and displays th
   fireEvent.click(screen.getByRole('menuitem', { name: 'Capture Level Profile' })); await settle();
   view.rerender(<FairlightPage {...props} selected={second} />); await settle();
   expect(bridge.call).toHaveBeenCalledWith('audio.cancel', { job: 'audio-1' }, { expectedSession: 1 });
-  captured(bridge); await settle(); expect(screen.queryByText(/t1 \/ sound1/)).toBeNull();
+  captured(bridge); await settle(); expect(screen.queryByText(/Main \/ Interview/)).toBeNull();
   fireEvent.contextMenu(document.querySelector('[data-clip="sound1"]')!, { clientX: 100, clientY: 100 });
   fireEvent.click(screen.getByRole('menuitem', { name: 'Capture Level Profile' })); await settle();
   bridge.tell({ job: 'audio-1', state: 'done', method: 'audio.level_profile', ...capturedProfile, source: { timeline: 't2', clip: 'sound1', revision: 7 }, profile: { version: 1, level_db: -24.123, basis: 'mean' } }); await settle();

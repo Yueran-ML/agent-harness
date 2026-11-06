@@ -3,7 +3,7 @@ import type { Key } from '../../app/keys';
 import type { EngineBridge } from '../../bridge';
 import { callEngine, type Timeline } from '../engine';
 import { useFairlightText } from '../fairlight/words';
-import { clipboardPlacement, type ClipClipboard } from './clipboard';
+import { clipboardPlacement, type ClipboardPlacement, type ClipClipboard } from './clipboard';
 import type { Targets, Transaction } from './commands';
 import type { Marks } from './snap';
 import type { TrackMenu } from './SubtitleTrack';
@@ -55,6 +55,7 @@ interface Options {
   copied?: (ids: readonly string[]) => boolean;
 }
 type Side = 'head' | 'tail';
+const NO_GHOSTS: ClipboardPlacement[] = [];
 /** Shared by Edit/Cut/Fairlight. Every mutation still goes through the timeline's edit queue. */
 export function useClipClipboard(options: Options) {
   const t = useFairlightText();
@@ -79,7 +80,13 @@ export function useClipClipboard(options: Options) {
       store.write(null);
   }, [store, options.session, options.timeline?.id]);
   const current = saved?.session === options.session ? saved : null;
-  const placement = current && options.timeline ? clipboardPlacement(current.clipboard, options.timeline, options.frame, current.shift) : null;
+  // Where a paste would put the clips, worked out again only when one of its inputs changes, so
+  // that the ghosts shown while the clipboard is visible keep their clips (and are not drawn
+  // again) through renders of anything else.
+  const clipboard = current?.clipboard, shift = current?.shift ?? 0;
+  const placement = useMemo(() => clipboard && options.timeline
+    ? clipboardPlacement(clipboard, options.timeline, options.frame, shift) : null,
+  [clipboard, options.timeline, options.frame, shift]);
   const selection = (context?: string, side?: Side) => {
     const state = now.current;
     const ids = context && !state.selected.includes(context) ? [context] : [...state.selected];
@@ -217,6 +224,6 @@ export function useClipClipboard(options: Options) {
     ];
   };
   return {
-    keyDown, items, reading, ghosts: current?.visible ? placement?.clips ?? [] : []
+    keyDown, items, reading, ghosts: current?.visible && placement ? placement.clips : NO_GHOSTS
   };
 }

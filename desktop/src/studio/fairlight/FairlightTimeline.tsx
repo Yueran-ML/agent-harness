@@ -1,27 +1,33 @@
 import { keyOf, type Key } from '../../app/keys';
 import { editingAllowed } from '../keys';
-import { useFairlightText } from './words';
+import { useFailureText, useFairlightText } from './words';
 import { useTrackGroups } from './TrackGroups';
 import { useCallback, useMemo, useRef, useImperativeHandle, useState, type ComponentProps, type SetStateAction } from 'react';
 import { Timeline, type TimelineHandle, type TimelineViewport, type TimelineScrolling } from '../timeline/Timeline';
 import type { TrackClipDrawing } from '../timeline/TrackRow';
+import type { Track } from '../engine';
 import { Thumbnail, Thumbnails } from '../media/Thumbnails';
 import { ChannelLanes } from './ChannelLanes';
 import { AutomationLane } from './AutomationLanes';
 import { callEngine } from '../engine';
 import type { Change } from '../timeline/commands';
 import type { FairlightView, FairlightViewUpdate } from './viewState';
+type LaneGeometry = { scale: number; from: number; to: number; height: number; snapping: boolean };
 export function FairlightTimeline({ view, update, ...props }: ComponentProps<typeof Timeline> & {
   view: FairlightView; update: FairlightViewUpdate;
 }) {
   const t = useFairlightText(), groups = useTrackGroups();
+  const failure = useFailureText();
   const updateViewport = useCallback((change: SetStateAction<TimelineViewport>) => update(old => ({
     timelineViewport: typeof change === 'function' ? change(old.timelineViewport) : change,
   })), [update]);
   const activeRange=view.automation&&props.timeline?.audio?.record?.active_range;
   const [problem,setProblem]=useState<string|null>(null);
   const commands=useRef(new Map<string,(key:Key)=>boolean>()),active=useRef<string|null>(null);
-  const register=(key:string,command:(key:Key)=>boolean)=>{commands.current.set(key,command);return()=>{if(commands.current.get(key)===command)commands.current.delete(key);};};
+  const register = useCallback((key: string, command: (key: Key) => boolean) => {
+    commands.current.set(key, command);
+    return () => { if (commands.current.get(key) === command) commands.current.delete(key); };
+  }, []);
   const automationKey=(key:Key)=>{
     if(!view.automation)return false;
     const chosen=active.current&&view.lanePaths[active.current]?active.current:(props.selectedTracks??[]).map(id=>`track:${id}`).find(id=>view.lanePaths[id])??Object.keys(view.lanePaths).find(id=>view.lanePaths[id]);
@@ -30,12 +36,41 @@ export function FairlightTimeline({ view, update, ...props }: ComponentProps<typ
   const handle = useRef<TimelineHandle>(null);
   useImperativeHandle(props.ref, () => ({ keyDown: key => automationKey(key) || (handle.current?.keyDown(key) ?? false), perform: action => handle.current?.perform(action) ?? false,
     canPerform: action => handle.current?.canPerform(action) ?? false, clearTransition: () => handle.current?.clearTransition(), marks: () => handle.current?.marks() ?? {in:null,out:null}, clipboardItems: clip => handle.current?.clipboardItems(clip) ?? [] }));
-  const edit = (ops:Change[]) => { void callEngine(props.bridge,'transaction.apply',{revision:props.revision,ops},{expectedSession:props.session}).catch(error=>setProblem(String(error))); };
+  const edit = (ops:Change[]) => { void callEngine(props.bridge,'transaction.apply',{revision:props.revision,ops},{expectedSession:props.session}).catch(error=>setProblem(failure(error))); };
   const choose = (key:string,path:string) => update({lanePaths:{...view.lanePaths,[key]:path},lastLanePaths:path?{...view.lastLanePaths,[key]:path}:view.lastLanePaths});
   const toggle = () => {
     const keys=props.selectedTracks?.length?props.selectedTracks:props.timeline?.tracks.filter(t=>t.kind==='audio').map(t=>t.id)??[];
     update({lanePaths:{...view.lanePaths,...Object.fromEntries(keys.map(id=>{const key=`track:${id}`;return [key,view.lanePaths[key]?'':view.lastLanePaths[key]??'fader_db'];}))}});
   };
+  // The lanes are made again for a change of view, edit or geometry, never for the playhead:
+  // what they call back is read through `latest`, and they read the playhead from AudioPlayhead.
+  const latest = useRef({ choose, edit, onTrackSelect: props.onTrackSelect });
+  latest.current = { choose, edit, onTrackSelect: props.onTrackSelect };
+  const marks = useCallback(() => handle.current?.marks() ?? { in: null, out: null }, []);
+  const { bridge, session, revision, timeline } = props;
+  const { automation, lanePaths, pencil, hidden: hiddenOwners } = view;
+  const trackDecoration = useCallback((track: Track, g: LaneGeometry) => automation && track.kind === 'audio' && timeline
+  ? <AutomationLane
+    register={register}
+    onActive={() => { active.current = `track:${track.id}`; latest.current.onTrackSelect?.(track.id); }}
+    {...g} bridge={bridge} session={session} revision={revision}
+    timeline={timeline} of={{ track: track.id }} lanes={track.lanes}
+    locked={track.locked} arm={track.automation_arm} name={track.name} marks={marks}
+    path={lanePaths[`track:${track.id}`] ?? ''} pencil={pencil}
+    onPath={path => latest.current.choose(`track:${track.id}`, path)}
+    onEdit={ops => latest.current.edit(ops)} /> : null,
+  [automation, timeline, bridge, session, revision, lanePaths, pencil, register, marks]);
+  const afterTracks = useCallback((g: Omit<LaneGeometry, 'height'>) => automation && timeline
+    ? timeline.buses?.filter(bus => !hiddenOwners.includes(`bus:${bus.id}`)).map(bus =>
+      <div key={bus.id} className="timeline-track automation-bus" style={{ height: 128 }}><span>{bus.name}</span>
+        <AutomationLane
+        register={register} onActive={() => { active.current = `bus:${bus.id}`; }} {...g}
+        height={128} bridge={bridge} session={session} revision={revision}
+        timeline={timeline} of={{ bus: bus.id }} lanes={bus.lanes} arm={bus.automation_arm}
+        name={bus.name} marks={marks}
+        path={lanePaths[`bus:${bus.id}`] ?? ''} pencil={pencil}
+        onPath={path => latest.current.choose(`bus:${bus.id}`, path)} onEdit={ops => latest.current.edit(ops)} /></div>)
+    : null, [automation, timeline, bridge, session, revision, lanePaths, pencil, hiddenOwners, register, marks]);
   const thumbnails = useMemo(() => new Thumbnails(props.bridge), [props.bridge, props.session]);
   const hidden = useMemo(() => [...view.hidden, ...(props.timeline?.tracks.filter(track => track.kind === 'subtitle' || (!view.video && track.kind === 'video')).map(track => track.id) ?? [])], [props.timeline, view.hidden, view.video]);
   const draw = useCallback((clip: TrackClipDrawing) => clip.track.kind === 'audio' ? <ChannelLanes {...clip} gain={view.waveform} />
@@ -59,23 +94,7 @@ export function FairlightTimeline({ view, update, ...props }: ComponentProps<typ
     <Timeline {...props} ref={handle} trackMenuItems={id => groups && props.timeline?.tracks.some(track => track.id === id && track.kind === 'audio') ? [{ id: 'create-group', label: t('Create Group'), run: () => groups.open(undefined, groups.selected.includes(id) ? [...groups.selected] : [id]) }] : []} viewport={{ value: view.timelineViewport, update: updateViewport }} scrolling={view.scrolling}
       automationRange={activeRange&&activeRange.on&&props.timeline?{from:activeRange.start.ticks/activeRange.start.scale*props.timeline.rate.num/props.timeline.rate.den,to:activeRange.end.ticks/activeRange.end.scale*props.timeline.rate.num/props.timeline.rate.den}:null}
       gainLineDisabled={id => Boolean(view.automation && view.lanePaths[`track:${id}`])}
-      trackDecoration={(track, g) => view.automation && track.kind === 'audio' ? <AutomationLane
-        register={register}
-        onActive={() => { active.current = `track:${track.id}`; props.onTrackSelect?.(track.id); }}
-        {...g} bridge={props.bridge} session={props.session} revision={props.revision}
-        timeline={props.timeline!} of={{ track: track.id }} lanes={track.lanes}
-        locked={track.locked} arm={track.automation_arm} name={track.name} frame={props.frame}
-        marks={() => handle.current?.marks() ?? { in: null, out: null }}
-        path={view.lanePaths[`track:${track.id}`] ?? ''} pencil={view.pencil}
-        onPath={path => choose(`track:${track.id}`, path)} onEdit={edit} /> : null}
-      afterTracks={g => view.automation && props.timeline?.buses?.filter(bus => !view.hidden.includes(`bus:${bus.id}`)).map(bus =>
-        <div key={bus.id} className="timeline-track automation-bus" style={{ height: 128 }}><span>{bus.name}</span><AutomationLane
-          register={register} onActive={() => { active.current = `bus:${bus.id}`; }} {...g}
-          height={128} bridge={props.bridge} session={props.session} revision={props.revision}
-          timeline={props.timeline!} of={{ bus: bus.id }} lanes={bus.lanes} arm={bus.automation_arm}
-          name={bus.name} frame={props.frame} marks={() => handle.current?.marks() ?? { in: null, out: null }}
-          path={view.lanePaths[`bus:${bus.id}`] ?? ''} pencil={view.pencil}
-          onPath={path => choose(`bus:${bus.id}`, path)} onEdit={edit} /></div>)}
+      trackDecoration={trackDecoration} afterTracks={afterTracks}
       hiddenTracks={hidden} drawClip={draw} gainLine={view.gainLine} trackHeight={128}
       audioOnlyDrop={!view.video} label={t('Fairlight timeline')} />
   </section>;

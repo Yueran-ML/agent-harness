@@ -10,7 +10,7 @@ import { useEffectFavorites } from '../audio/effectFavorites';
 import { targetKey } from '../audio/processorModel';
 import { operationTargets, mixerStrips } from '../audio/mixerModel';
 import { AUDIO_EFFECTS, AUDIO_EFFECT_DRAG } from './EffectsLibrary';
-import { useFairlightText } from './words';
+import { useFailureText, useFairlightText } from './words';
 import type { FairlightText } from '../../messages/fairlight';
 import { chainClipboard as sharedChain } from '../audio/audioClipboard';
 import { EffectWindow } from './EffectWindow';
@@ -24,12 +24,13 @@ export function InsertSlots({ inline = false, ...props }: ProcessorProps & {
   inline?: boolean;
 }) {
   const t = useFairlightText(), text = (key: string) => t(key as FairlightText), [favorites] = useEffectFavorites();
+  const failure = useFailureText();
   const owner = effectOwner(props.timeline, props.target), [open, setOpen] = useState<string | null>(null), [collapsed, setCollapsed] = useState<string[]>([]), [problem, setProblem] = useState<string | null>(null);
   const control = useEffectAutomation(props), { automation, recording } = control;
   const key = targetKey(props.target), chainClipboard = sharedChain.use();
   const [menuOpen, setMenuOpen] = useState(false);
   const gesture = useAudioGesture({
-    ...props, identity: `${props.timeline.id}/${key}/inserts`, locked: owner.locked || recording, onFailure: error => setProblem(String(error))
+    ...props, identity: `${props.timeline.id}/${key}/inserts`, locked: owner.locked || recording, onFailure: error => setProblem(failure(error))
   });
   const writable = !owner.locked && !recording;
   const identity = (i: number) => owner.inserts[i]?.id || `${i}/${owner.inserts[i]?.effect.kind}`;

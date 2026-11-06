@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type { EngineBridge } from '../../bridge';
 import { callEngine, type Timeline } from '../engine';
 import type { Change, CopiedLane } from '../timeline/commands';
-import { categories, defaultRecord, ownerKey, ownerOf, sampleTime } from './automation';
+import { categories, defaultRecord, GLIDE_MAX, glideValue, ownerKey, ownerOf, readGlide, sampleTime, saveGlide } from './automation';
 import type { FairlightView } from './viewState';
 import { useFairlightText } from './words';
 export function AutomationToolbar({ bridge, session, timeline, view, update, recording, selected, frame, onEdit, onFailure, onToggle, marks }: {
@@ -23,7 +23,17 @@ export function AutomationToolbar({ bridge, session, timeline, view, update, rec
   };
 }) {
   const t = useFairlightText(), record = timeline.audio?.record ?? defaultRecord();
-  const [glide, setGlide] = useState(() => Number(localStorage.getItem('fairlight.glide_ms') ?? 250));
+  const [glide, setGlide] = useState(readGlide);
+  // What is typed is a draft: the Glide time is set (and sent while recording) on Enter or on leaving the field.
+  const [glideDraft, setGlideDraft] = useState<string | null>(null);
+  const commitGlide = () => {
+    const value = glideValue(glideDraft);
+    setGlideDraft(null);
+    if (value === null || value === glide) return;
+    setGlide(value);
+    saveGlide(value);
+    if (recording) void run('automation.record', { on: true, glide_ms: value });
+  };
   const [clipboard, setClipboard] = useState<CopiedLane[]>([]), [busy, setBusy] = useState(false);
   const [activeIn, setActiveIn] = useState(record.active_range?.start ?? null), [activeOut, setActiveOut] = useState(record.active_range?.end ?? null);
   // Keep incomplete marks locally, but let committed edits and undo/redo replace them.
@@ -120,14 +130,13 @@ export function AutomationToolbar({ bridge, session, timeline, view, update, rec
         <input
           type="number"
           min={0}
-          max={10000}
-          value={glide}
-          onChange={e => {
-            const value = Math.max(0, Math.min(10000, Number(e.target.value)));
-            setGlide(value);
-            localStorage.setItem('fairlight.glide_ms', String(value));
-            if (recording)
-              void run('automation.record', { on: true, glide_ms: value });
+          max={GLIDE_MAX}
+          value={glideDraft ?? glide}
+          onChange={e => setGlideDraft(e.target.value)}
+          onBlur={commitGlide}
+          onKeyDown={e => {
+            if (e.key === 'Enter') { e.preventDefault(); commitGlide(); }
+            else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setGlideDraft(null); }
           }}
         />ms</label>
 

@@ -196,3 +196,16 @@ it('connects the timeline Edit menu, ghost rendering, playhead updates and guard
   expect(call).toHaveBeenCalledWith('transaction.apply', expect.objectContaining({ ops: [expect.objectContaining({ edit: 'paste_clips', at: 125 })] }), { expectedSession: 1 });
   expect(document.querySelector('[data-clipboard-ghost]')).toBeNull();
 });
+it('keeps the ghost clips it shows through renders that change nothing of where they go', async () => {
+  const app = setup();
+  await app.press('c');
+  const shown = app.result.current.ghosts;
+  expect(shown).toHaveLength(1);
+  app.props.selected = [];
+  app.rerender();
+  expect(app.result.current.ghosts).toBe(shown);
+  app.props.frame = 30;
+  app.rerender();
+  expect(app.result.current.ghosts).not.toBe(shown);
+  expect(app.result.current.ghosts[0].clip.start).toBe(15);
+});

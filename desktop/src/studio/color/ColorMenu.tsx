@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronRight } from 'lucide-react';
 
@@ -20,9 +20,11 @@ export interface Menu { x: number; y: number; label: string; items: MenuItem[] }
 
 const enabledItems = (box: HTMLElement | null) => [...(box?.querySelectorAll<HTMLElement>(':scope > .color-menu-entry > [role="menuitem"]:not([disabled])') ?? [])];
 
-function List({ items, label, onClose, onBack, style, anchor }: {
-  items: MenuItem[]; label: string; onClose: () => void; onBack?: () => void; style: CSSProperties; anchor?: HTMLElement;
+function List({ items, label, onClose, onBack, style, anchor, id }: {
+  items: MenuItem[]; label: string; onClose: () => void; onBack?: () => void; style: CSSProperties; anchor?: HTMLElement; id?: string;
 }) {
+  // A submenu is laid in the shared layer, not inside its item: `aria-controls` ties the two.
+  const owner = useId();
   const box = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<CSSProperties | null>(null);
   useLayoutEffect(() => {
@@ -56,12 +58,13 @@ function List({ items, label, onClose, onBack, style, anchor }: {
   };
   const layer = box.current?.closest('.color-menu-layer');
   const opener = open ? enabledItems(box.current).find(button => button.dataset.item === open) : undefined;
-  return <div ref={box} className="color-menu" role="menu" aria-label={label} style={position ?? style} onKeyDown={key}>
+  return <div ref={box} id={id} className="color-menu" role="menu" aria-label={label} style={position ?? style} onKeyDown={key}>
     {items.map((item) => {
       const sub = item.items;
       return <div key={item.id} className="color-menu-entry" role="none" onPointerEnter={() => setOpen(sub ? item.id : null)}>
         <button type="button" role="menuitem" disabled={item.disabled} data-item={item.id}
           data-test={`menu-${item.id}`} aria-label={item.label} aria-keyshortcuts={item.keys} aria-haspopup={sub ? 'menu' : undefined} aria-expanded={sub ? open === item.id : undefined}
+          aria-controls={sub && open === item.id ? `${owner}-${item.id}` : undefined}
           data-checked={item.checked || undefined}
           onClick={() => { if (sub) { setOpen(item.id); return; } onClose(); item.run?.(); }}>
           <span className="color-menu-check" aria-hidden="true">{item.checked ? '✓' : ''}</span>
@@ -69,7 +72,7 @@ function List({ items, label, onClose, onBack, style, anchor }: {
           {item.keys && <span className="color-menu-keys">{item.keys}</span>}
           {sub && <ChevronRight size={12} aria-hidden="true" />}
         </button>
-        {sub && open === item.id && layer && opener && createPortal(<List items={sub} label={item.label} anchor={opener} onClose={onClose} onBack={() => {
+        {sub && open === item.id && layer && opener && createPortal(<List items={sub} label={item.label} anchor={opener} id={`${owner}-${item.id}`} onClose={onClose} onBack={() => {
           setOpen(null); box.current?.querySelector<HTMLElement>(`[data-item="${item.id}"]`)?.focus();
         }} style={{ left: 0, top: 0 }} />, layer)}
       </div>;

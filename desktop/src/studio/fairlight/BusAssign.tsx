@@ -8,10 +8,10 @@ import { targetOf } from '../audio/processorModel';
 import { busChoices, routingChanges, type Routes } from '../audio/routingModel';
 import { useAudioGesture } from '../timeline/useAudioGesture';
 import type { RoutingContext } from './BusFormat';
-import { useFairlightText } from './words';
+import { useFailureText, useFairlightText } from './words';
 
 export function BusAssign({ onClose, ...context }: RoutingContext & { onClose: () => void }) {
-  useOverlay(); const t = useFairlightText();
+  useOverlay(); const t = useFairlightText(), failure = useFailureText();
   const panel = useRef<HTMLElement>(null);
   useEffect(() => {
     const before = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -23,7 +23,7 @@ export function BusAssign({ onClose, ...context }: RoutingContext & { onClose: (
   const [history, setHistory] = useState<('history.undo' | 'history.redo')[]>([]), [historyBusy, setHistoryBusy] = useState(false);
   const historyPending = useRef(false);
   const strips = mixerStrips(context.timeline);
-  const gesture = useAudioGesture({ ...context, identity: `${context.timeline.id}/bus-assign`, locked: historyBusy, onFailure: e => setProblem(String(e)) });
+  const gesture = useAudioGesture({ ...context, identity: `${context.timeline.id}/bus-assign`, locked: historyBusy, onFailure: e => setProblem(failure(e)) });
   const sweep = useRef<{ keys: Set<string>; add: boolean; revision: number; session: number; timeline: string; bus: string; field: Routes } | null>(null);
   const latest = useRef({ context, strips, gesture }); latest.current = { context, strips, gesture };
   const paint = (keys: string[], add: boolean) => gesture.commit(routingChanges(context.timeline, strips.filter(s => keys.includes(s.key)).map(targetOf), field, bus, add ? 'add' : 'remove'));
@@ -33,7 +33,7 @@ export function BusAssign({ onClose, ...context }: RoutingContext & { onClose: (
     if (!history.length || gesture.busy() || historyPending.current) return;
     historyPending.current = true; setHistoryBusy(true);
     void callEngine(context.bridge, history[0], {}, { expectedSession: context.session })
-      .catch(error => setProblem(String(error)))
+      .catch(error => setProblem(failure(error)))
       .finally(() => { historyPending.current = false; setHistoryBusy(false); setHistory(rows => rows.slice(1)); });
   });
   useEffect(() => {

@@ -303,8 +303,33 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   // An overview is as wide as its view; another goes on half a view past the end.
   const shownSubtitles = timeline?.tracks.find(track => track.kind === 'subtitle' && track.enabled)?.id ?? null;
   const total = HEADER_WIDTH + (overview ? view.width : Math.max(view.width, end * view.scale + view.width / 2));
-  let rowTop = RULER_HEIGHT;
-  const rows = new Map(tracks.map(track => { const height = heights[track.id] ?? trackHeight; const row = { top: rowTop, height }; rowTop += height; return [track.id, row]; }));
+  const rows = useMemo(() => {
+    let rowTop = RULER_HEIGHT;
+    return new Map(tracks.map(track => {
+      const height = heights[track.id] ?? trackHeight, row = { top: rowTop, height };
+      rowTop += height;
+      return [track.id, row];
+    }));
+  }, [tracks, heights, trackHeight]);
+  // Decorations are made once per geometry, not per frame: a new element would draw every
+  // memoized row again as the playhead moves. What follows the playhead reads AudioPlayhead.
+  const decorations = useMemo(() => new Map(tracks.map(track => [track.id, trackDecoration?.(track, {
+    scale: view.scale, from, to, height: heights[track.id] ?? trackHeight, snapping: editing.snapping,
+  })])), [tracks, trackDecoration, view.scale, from, to, heights, trackHeight, editing.snapping]);
+  // The clips a paste would put down, drawn again only when they or the view change.
+  const ghosts = editing.clipboard.ghosts;
+  const ghostViews = useMemo(() => timeline && ghosts.map(({ track, clip }) => {
+    const row = rows.get(track.id);
+    const source = clip.source.kind === 'media' ? byId.get(clip.source.media) : undefined;
+    return row && track.kind !== 'subtitle' && <div key={clip.id} data-clipboard-ghost={track.id} aria-hidden="true"
+      style={{ position: 'absolute', pointerEvents: 'none', opacity: .45, left: HEADER_WIDTH, right: 0, top: row.top, height: row.height }}>
+      <ClipView clip={clip} kind={track.kind} media={source} rate={timeline.rate} scale={view.scale} from={from} to={to} waves={waves}>
+        {drawClip?.({ clip, track, media: source, rate: timeline.rate, scale: view.scale, from, to, waves })}
+      </ClipView>
+    </div>;
+  }), [timeline, ghosts, rows, byId, view.scale, from, to, waves, drawClip]);
+  const afterRows = useMemo(() => afterTracks?.({ scale: view.scale, from, to, snapping: editing.snapping }),
+    [afterTracks, view.scale, from, to, editing.snapping]);
   return <section ref={root} className="timeline" role="region" aria-label={label ?? labels.title} aria-busy={editing.pending} tabIndex={0} data-timeline={timeline?.id} data-scale={view.scale} data-tool={editing.tool}
     data-overview={overview || undefined}
     onKeyDown={event => {
@@ -361,23 +386,14 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
           {editing.marks.in !== null && editing.marks.out !== null && <span className="timeline-mark-range" style={{ left: HEADER_WIDTH + editing.marks.in * view.scale, width: (editing.marks.out - editing.marks.in) * view.scale }} />}
           <div className="timeline-ruler-corner">{!overview && <AddSubtitleTrack onAdd={editing.addSubtitleTrack} disabled={editing.pending} />}</div></div>
         <AudioPlayhead.Provider value={shown}>{tracks.map(track => <TrackRow key={track.id} timeline={timeline.id} track={track} media={byId} rate={timeline.rate} scale={view.scale}
-          from={from} to={to} height={heights[track.id] ?? trackHeight} waves={waves} decoration={trackDecoration?.(track, { scale: view.scale, from, to, height: heights[track.id] ?? trackHeight, snapping: editing.snapping })} onEdit={editing.edit} onHeight={onHeight} drawClip={drawClip}
+          from={from} to={to} height={heights[track.id] ?? trackHeight} waves={waves} decoration={decorations.get(track.id)} onEdit={editing.edit} onHeight={onHeight} drawClip={drawClip}
           audioOverlay={track.kind === 'audio' && !cut && !overview && !gainLineDisabled?.(track.id) ? audioContext : undefined}
           selected={editing.selected} mixerSelected={selectedTracks?.includes(track.id)} targeted={editing.targets.video_track === track.id || editing.targets.audio_track === track.id} onTarget={editing.target}
           chosen={editing.transition !== null && track.kind !== 'subtitle' && track.transitions.some(each => each.id === editing.transition) ? editing.transition : null}
           chosenCue={editing.cue !== null && track.kind === 'subtitle' && track.cues.some(each => each.id === editing.cue) ? editing.cue : null}
-          shownSubtitles={track.kind === 'subtitle' ? shownSubtitles : null} />)}</AudioPlayhead.Provider>
-        {afterTracks?.({ scale: view.scale, from, to, snapping: editing.snapping })}
-        {editing.clipboard.ghosts.map(({ track, clip }) => {
-          const row = rows.get(track.id);
-          const source = clip.source.kind === 'media' ? byId.get(clip.source.media) : undefined;
-          return row && track.kind !== 'subtitle' && <div key={clip.id} data-clipboard-ghost={track.id} aria-hidden="true"
-            style={{ position: 'absolute', pointerEvents: 'none', opacity: .45, left: HEADER_WIDTH, right: 0, top: row.top, height: row.height }}>
-            <ClipView clip={clip} kind={track.kind} media={source} rate={timeline.rate} scale={view.scale} from={from} to={to} waves={waves}>
-              {drawClip?.({ clip, track, media: source, rate: timeline.rate, scale: view.scale, from, to, waves })}
-            </ClipView>
-          </div>;
-        })}
+          shownSubtitles={track.kind === 'subtitle' ? shownSubtitles : null} />)}
+          {afterRows}</AudioPlayhead.Provider>
+        {ghostViews}
         {editing.preview?.preview.map(item => { const row = rows.get(item.track); return row && <div key={item.id} className="timeline-preview" data-preview={item.id} data-clamped={editing.preview!.clamped}
           style={{ left: HEADER_WIDTH + item.start * view.scale, width: item.length * view.scale, top: row.top + 4, height: row.height - 8 }} />; })}
         {editing.preview?.covered.map(item => { const row = rows.get(item.track); return row && <div key={`covered-${item.id}`} className="timeline-covered" data-covered={item.id}

@@ -1,3 +1,4 @@
+import { useFailureText } from '../fairlight/words';
 import { useEffectAutomation } from './useEffectAutomation';
 import { useEffect, useRef, useState } from 'react';
 import type { Insert } from '../engine';
@@ -9,10 +10,11 @@ import { laneValue, mixerStrips, operationTargets, type Modifiers } from './mixe
 
 export function useEffectEditor(props: ProcessorProps, index: number) {
   const { timeline, target, session, revision, bridge } = props;
+  const failure = useFailureText();
   const owner = effectOwner(timeline, target), model = owner.inserts[index];
   const identity = `${timeline.id}/${targetKey(target)}/${model?.id || index}/${model?.effect.kind}`;
   const [problem, setProblem] = useState<string | null>(null), [preview, setPreview] = useState<Insert | null>(null);
-  const gesture = useAudioGesture({ bridge, session, revision, identity, locked: owner.locked, onFailure: error => setProblem(error instanceof Error ? error.message : String(error)) });
+  const gesture = useAudioGesture({ bridge, session, revision, identity, locked: owner.locked, onFailure: error => setProblem(failure(error)) });
   const captured = useRef(model);
   const control = useEffectAutomation(props), {automation, recording} = control;
   const touched = useRef<string | null>(null);

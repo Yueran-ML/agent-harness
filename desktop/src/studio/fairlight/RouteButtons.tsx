@@ -6,7 +6,7 @@ import { mixerStrips, operationTargets, type MixerStrip, type Modifiers } from '
 import { targetOf } from '../audio/processorModel';
 import { busChoices, outputsOf, routingChanges, type Routes } from '../audio/routingModel';
 import { useAudioGesture } from '../timeline/useAudioGesture';
-import { useFairlightText } from './words';
+import { useFailureText, useFairlightText } from './words';
 import { useAutomationTouch } from './AutomationTouch';
 import { laneValue } from './automation';
 export function RouteButtons({ context, strip, field, onOpen }: {
@@ -16,6 +16,7 @@ export function RouteButtons({ context, strip, field, onOpen }: {
   onOpen: () => void;
 }) {
   const t = useFairlightText(), [open, setOpen] = useState(false), [problem, setProblem] = useState('');
+  const failure = useFailureText();
   const automation = useAutomationTouch(), recording = Boolean(automation?.enabled && automation.recording);
   const [anchor, setAnchor] = useState({ x: 0, y: 0 });
   const trigger = useRef<HTMLButtonElement>(null), menu = useRef<HTMLDivElement>(null);
@@ -32,7 +33,7 @@ export function RouteButtons({ context, strip, field, onOpen }: {
   }, [open]);
   useEffect(() => setOpen(false), [context.session, context.timeline.id, strip.key]);
   const gesture = useAudioGesture({
-    ...context, identity: `${context.timeline.id}/${strip.key}/${field}`, locked: strip.locked, onFailure: e => setProblem(String(e))
+    ...context, identity: `${context.timeline.id}/${strip.key}/${field}`, locked: strip.locked, onFailure: e => setProblem(failure(e))
   });
   const choices = busChoices(context.timeline, targetOf(strip), field);
   const routes = field === 'outputs' ? outputsOf(context.timeline, strip) : strip.strip?.sends ?? [];

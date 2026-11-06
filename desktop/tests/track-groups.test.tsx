@@ -41,8 +41,8 @@ it('creates locally with all controls, edits members and defaults, saves once an
   expect(screen.queryByRole('dialog')).toBeNull(); expect(document.activeElement).toBe(create);
   fireEvent.click(create); expect((within(screen.getByRole('dialog')).getByRole('checkbox', { name: 'Panning' }) as HTMLInputElement).checked).toBe(false);
 });
-it('retains a rejected draft, waits for pending save and prevents stale revision writes', async () => {
-  const { ui, call } = setup(); let reject!: (e: Error) => void;
+it('retains a rejected draft, waits for pending save and prevents writes over a changed group', async () => {
+  const { ui, call, song } = setup(); let reject!: (e: Error) => void;
   call.mockImplementationOnce(() => new Promise((_, no) => { reject = no; })); const view = render(ui());
   fireEvent.click(screen.getByRole('button', { name: 'Modify Group Voices' }));
   fireEvent.change(screen.getByRole('textbox', { name: 'Name' }), { target: { value: 'Draft' } });
@@ -50,8 +50,20 @@ it('retains a rejected draft, waits for pending save and prevents stale revision
   fireEvent(screen.getByRole('dialog'), new Event('cancel', { cancelable: true })); expect(screen.getByRole('dialog')).toBeTruthy();
   await act(async () => reject(new Error('revision refused'))); expect((screen.getByRole('textbox', { name: 'Name' }) as HTMLInputElement).value).toBe('Draft');
   expect(screen.getByRole('alert').textContent).toContain('revision refused');
-  view.rerender(ui({ revision: 8 })); expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true);
+  // Another edit (a new revision, the group as it was) leaves the window open for saving.
+  view.rerender(ui({ revision: 8 })); expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(false);
+  // The group itself changed meanwhile: the window is stale, and nothing is written over it.
+  const renamed = { ...song, track_groups: [{ ...song.track_groups![0], name: 'Dialogue' }] };
+  view.rerender(ui({ revision: 9, timeline: renamed })); expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true);
   expect(call).toHaveBeenCalledOnce();
+});
+it('saves against the latest revision after edits that leave the group as it was', async () => {
+  const { ui, call } = setup(); const view = render(ui());
+  fireEvent.click(screen.getByRole('button', { name: 'Modify Group Voices' }));
+  fireEvent.change(screen.getByRole('textbox', { name: 'Name' }), { target: { value: 'Dialogue' } });
+  view.rerender(ui({ revision: 8 }));
+  fireEvent.click(screen.getByRole('button', { name: 'Save' })); await settle();
+  expect(call.mock.calls[0].slice(0, 2)).toMatchObject(['transaction.apply', { revision: 8, ops: [{ op: 'set_track_group', id: 'TG1', patch: { name: 'Dialogue' } }] }]);
 });
 it('shows partial selection, Shift unions tracks, and bypass preserves per-group active flags', async () => {
   const { ui, select, call } = setup(); const view = render(ui({ selected: ['A1', 'A3'] }));
@@ -190,4 +202,13 @@ it('track header adds Create Group without swallowing the existing menu, and str
   fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
   fireEvent.contextMenu(screen.getByRole('button', { name: 'Own fader menu' })); expect(controlMenu).toHaveBeenCalledOnce(); expect(screen.queryByRole('menu')).toBeNull();
   fireEvent.contextMenu(screen.getByText('Strip A1')); expect(screen.getByRole('menuitem', { name: 'Create Group' })).toBeTruthy();
+});
+it('selects the members of an enabled group by its box without writing anything', async () => {
+  const { ui, select, call, song } = setup();
+  // A group whose `active` is left out is enabled (the engine's default).
+  const enabled = { ...song.track_groups![0] }; delete enabled.active;
+  render(ui({ selected: [], timeline: { ...song, track_groups: [enabled] } }));
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Selected Voices' })); await settle();
+  expect(select).toHaveBeenLastCalledWith(['A1', 'A2']);
+  expect(call).not.toHaveBeenCalled();
 });

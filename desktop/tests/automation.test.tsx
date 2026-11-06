@@ -90,7 +90,7 @@ it('coalesces delayed touch sends and always releases the latest value, includin
 });
 it('lane keyboard cut cannot escape into clip edits',async()=>{
  const t=timeline([]), call=vi.fn(async(method:string):Promise<EngineAnswer>=>({ok:true,result:method==='automation.parameters'?{revision:7,of:{track:'a1'},parameters:[{path:'fader_db',kind:'continuous',scale:'linear',value:0,min:-100,max:10}]}:{revision:8,done:[]}}));
- const bubbled=vi.fn();render(<div onKeyDown={bubbled}><AutomationLane bridge={{call} as never} session={1} revision={7} timeline={t} of={{track:'a1'}} lanes={{fader_db:{points:[{at:{ticks:0,scale:48000},value:-10},{at:{ticks:48000,scale:48000},value:0}]}}} scale={4} from={0} to={100} height={128} frame={0} snapping={false} marks={()=>({in:null,out:null})} path="fader_db" pencil={false} onPath={()=>{}} onEdit={()=>{}} name="Voice"/></div>);await settle();
+ const bubbled=vi.fn();render(<div onKeyDown={bubbled}><AutomationLane bridge={{call} as never} session={1} revision={7} timeline={t} of={{track:'a1'}} lanes={{fader_db:{points:[{at:{ticks:0,scale:48000},value:-10},{at:{ticks:48000,scale:48000},value:0}]}}} scale={4} from={0} to={100} height={128} snapping={false} marks={()=>({in:null,out:null})} path="fader_db" pencil={false} onPath={()=>{}} onEdit={()=>{}} name="Voice"/></div>);await settle();
  expect((screen.getByRole('option',{name:'Fader'}) as HTMLOptionElement).value).toBe('fader_db');
  const svg=screen.getByLabelText('Voice Fader');fireEvent.keyDown(svg,{key:'a',ctrlKey:true});fireEvent.keyDown(svg,{key:'x',ctrlKey:true});await settle();
  expect(bubbled).not.toHaveBeenCalled();expect(call.mock.calls.filter(c=>c[0]==='transaction.apply')).toHaveLength(1);
@@ -178,7 +178,7 @@ it('toolbar keeps Active Range marks separate, remaps copied automation to the s
 it('Pencil captures the full lane and delegates sampled points to lane_draw; shifted nudge uses the physical comma key',async()=>{
  let revision=7;
  const t=timeline([]),call=vi.fn(async(method:string):Promise<EngineAnswer>=>({ok:true,result:method==='automation.parameters'?{revision,of:{track:'a1'},parameters:[{path:'fader_db',kind:'continuous',scale:'linear',value:0,min:-100,max:10}]}:{revision:revision+1,done:[]}}));
- const props={bridge:{call} as never,session:1,revision:7,timeline:t,of:{track:'a1'},lanes:{fader_db:{points:[{at:{ticks:48000,scale:48000},value:0}]}},scale:4,from:0,to:100,height:128,frame:0,snapping:false,marks:()=>({in:null,out:null}),path:'fader_db',pencil:true,onPath:()=>{},onEdit:()=>{},name:'Voice'};
+ const props={bridge:{call} as never,session:1,revision:7,timeline:t,of:{track:'a1'},lanes:{fader_db:{points:[{at:{ticks:48000,scale:48000},value:0}]}},scale:4,from:0,to:100,height:128,snapping:false,marks:()=>({in:null,out:null}),path:'fader_db',pencil:true,onPath:()=>{},onEdit:()=>{},name:'Voice'};
  const s=render(<AutomationLane {...props}/>);await settle();
  const svg=screen.getByLabelText('Voice Fader'),area=s.container.querySelector('svg rect')!;expect(area.getAttribute('height')).toBe('128');
  fireEvent.pointerDown(area,{button:0,clientX:0,clientY:110});fireEvent.pointerMove(svg,{clientX:40,clientY:100});fireEvent.pointerUp(svg,{clientX:80,clientY:90});await settle();
@@ -186,4 +186,90 @@ it('Pencil captures the full lane and delegates sampled points to lane_draw; shi
  expect(writes()[0][1].ops[0]).toMatchObject({edit:'lane_draw',of:{track:'a1'},path:'fader_db'});expect(writes()[0][1].ops[0].points.length).toBeGreaterThanOrEqual(2);
  revision=8;s.rerender(<AutomationLane {...props} revision={revision}/>);await settle();
  const next=screen.getByLabelText('Voice Fader');fireEvent.keyDown(next,{key:'a',ctrlKey:true});fireEvent.keyDown(next,{key:'<',code:'Comma',shiftKey:true});await settle();expect(writes().at(-1)[1].ops[0].by.ticks).toBe(-Math.round(t.sample_rate*t.rate.den/t.rate.num)*5);
+});
+it('keeps a point selection across edits while its points are still there, and drops it when they are gone', async () => {
+  const t = timeline([]), frame = Math.round(t.sample_rate * t.rate.den / t.rate.num);
+  const parameters = [{ path: 'fader_db', kind: 'continuous', scale: 'linear', value: 0, min: -100, max: 10 }];
+  const call = vi.fn(async (method: string): Promise<EngineAnswer> => ({ ok: true,
+    result: method === 'automation.parameters' ? { revision: 7, of: { track: 'a1' }, parameters } : { revision: 8, done: [] } }));
+  const lane = (...ticks: number[]) => ({ fader_db: { points: ticks.map(at => ({ at: { ticks: at, scale: 48000 }, value: 0 })) } });
+  const props = { bridge: { call } as never, session: 1, revision: 7, timeline: t, of: { track: 'a1' }, scale: 4, from: 0, to: 100,
+    height: 128, snapping: false, marks: () => ({ in: null, out: null }), path: 'fader_db', pencil: false,
+    onPath: () => {}, onEdit: () => {}, name: 'Voice' };
+  const s = render(<AutomationLane {...props} lanes={lane(48000, 96000)} />); await settle();
+  const writes = () => call.mock.calls.filter(([method]) => method === 'transaction.apply') as unknown as [string, { ops: { at: { ticks: number }[] }[] }][];
+  const key = (options: object) => fireEvent.keyDown(screen.getByLabelText('Voice Fader'), options);
+  // The first point alone, by a click on it.
+  fireEvent.pointerDown(s.container.querySelectorAll('circle')[0], { button: 0 });
+  fireEvent.pointerUp(screen.getByLabelText('Voice Fader')); await settle();
+  // An unrelated edit (a new revision, the same points) keeps it.
+  s.rerender(<AutomationLane {...props} revision={8} lanes={lane(48000, 96000)} />); await settle();
+  key({ key: '.', code: 'Period' }); await settle();
+  expect(writes().at(-1)![1].ops[0].at).toEqual([{ ticks: 48000, scale: 48000 }]);
+  // Its own nudge moved the point: the selection follows it to where it is now.
+  s.rerender(<AutomationLane {...props} revision={9} lanes={lane(48000 + frame, 96000)} />); await settle();
+  key({ key: '.', code: 'Period' }); await settle();
+  expect(writes().at(-1)![1].ops[0].at).toEqual([{ ticks: 48000 + frame, scale: 48000 }]);
+  // The point is deleted elsewhere: nothing is selected, and Delete removes nothing.
+  s.rerender(<AutomationLane {...props} revision={10} lanes={lane(96000)} />); await settle();
+  const before = writes().length;
+  key({ key: 'Delete' }); await settle();
+  expect(writes()).toHaveLength(before);
+  expect(s.container.querySelector('circle[fill="#fff"]')).toBeNull();
+});
+it('keeps a touch across edits made while recording, and lets it go when its own strip goes away', async () => {
+  const voice = { id: 'a1', kind: 'audio', name: 'Voice', enabled: true, locked: false, clips: [], transitions: [], automation_arm: true };
+  const other = { ...voice, id: 'a2', name: 'Music' };
+  const t = (tracks: unknown[]) => ({ ...timeline([]), tracks, audio: { record: { ...defaultRecord(), touch: 'latch' } } }) as unknown as Timeline;
+  const call = vi.fn(async () => ({ ok: true as const, result: {} })), target = { of: { track: 'a1' }, path: 'fader_db' };
+  function Control() {
+    const a = useAutomationTouch()!;
+    return <><button onClick={() => { a.start(target, 0); a.change(5); }}>Hold</button><output>{String(a.active(target))}</output></>;
+  }
+  const props = { bridge: { call }, session: 1, enabled: true, recording: true, show: () => {}, onFailure: (e: unknown) => { throw e; } };
+  const s = render(<AutomationTouchProvider {...props} timeline={t([voice, other])} revision={7}><Control /></AutomationTouchProvider>);
+  fireEvent.click(screen.getByText('Hold')); await settle();
+  const released = () => call.mock.calls.filter(c => (c as unknown[])[0] === 'automation.touch' && !((c as unknown[])[1] as { touching: boolean }).touching);
+  // Another strip is edited (a new revision, a new timeline): the touch goes on.
+  s.rerender(<AutomationTouchProvider {...props} timeline={t([voice, { ...other, mute: true }])} revision={8}><Control /></AutomationTouchProvider>);
+  await settle();
+  expect(screen.getByRole('status').textContent).toBe('true');
+  expect(released()).toHaveLength(0);
+  // Its own track is taken away: the touch is let go, once.
+  s.rerender(<AutomationTouchProvider {...props} timeline={t([other])} revision={9}><Control /></AutomationTouchProvider>);
+  await settle();
+  expect(screen.getByRole('status').textContent).toBe('false');
+  expect(released()).toHaveLength(1);
+});
+it('reads a Glide time that storage holds only when it is a number, and sends a typed one once, on Enter or on leaving', async () => {
+  const base = timeline([]);
+  const call = vi.fn(async () => ({ ok: true as const, result: {} }));
+  const props = { bridge: { call }, session: 1, timeline: base, view: { ...defaultFairlightView(), automation: true, automationControls: true },
+    update: vi.fn(), recording: true, selected: [], frame: 0, onEdit: vi.fn(), onFailure: vi.fn(), onToggle: vi.fn(),
+    marks: () => ({ in: null, out: null }) };
+  localStorage.setItem('fairlight.glide_ms', 'not a number');
+  const s = render(<AutomationToolbar {...props} />);
+  const field = () => screen.getByLabelText(/Glide Time/) as HTMLInputElement;
+  expect(field().value).toBe('250');
+  const records = () => call.mock.calls.filter(c => (c as unknown[])[0] === 'automation.record').map(c => (c as unknown[])[1]);
+  // Typed, a key at a time: nothing is sent until Enter.
+  for (const typed of ['4', '40', '400']) fireEvent.change(field(), { target: { value: typed } });
+  expect(records()).toEqual([]);
+  fireEvent.keyDown(field(), { key: 'Enter' }); await settle();
+  expect(records()).toEqual([{ timeline: 't1', on: true, glide_ms: 400 }]);
+  expect(localStorage.getItem('fairlight.glide_ms')).toBe('400');
+  // Beyond the range it is kept within it, on leaving the field; what is not a number is put back.
+  fireEvent.change(field(), { target: { value: '99999' } }); fireEvent.blur(field()); await settle();
+  expect(records().at(-1)).toEqual({ timeline: 't1', on: true, glide_ms: 10000 });
+  fireEvent.change(field(), { target: { value: '' } }); fireEvent.blur(field()); await settle();
+  expect(field().value).toBe('10000'); expect(records()).toHaveLength(2);
+  // Storage that cannot be used does not stop the field.
+  s.unmount();
+  vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('denied'); });
+  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('denied'); });
+  render(<AutomationToolbar {...props} />);
+  expect(field().value).toBe('250');
+  fireEvent.change(field(), { target: { value: '300' } }); fireEvent.keyDown(field(), { key: 'Enter' }); await settle();
+  expect(records().at(-1)).toEqual({ timeline: 't1', on: true, glide_ms: 300 });
+  localStorage.removeItem('fairlight.glide_ms');
 });

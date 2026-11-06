@@ -991,6 +991,10 @@ export interface AudioAnalyzeParams {
 export interface AnalysisResult {
   target: AnalysisTarget;
   integrated: number | null;
+  /** Ungated K-weighted cell mean; absent in older engines, null before one 10 ms cell. */
+  k_weighted_mean?: number | null;
+  /** A positive measured interval whose PCM peak is exactly zero; never inferred from gated nulls. */
+  silence?: boolean;
   range: number | null;
   momentary_max: number | null;
   short_term_max: number | null;

@@ -4237,7 +4237,7 @@ real ids. For example:
 | `track.progress` | `{job,frame,timeline_frame,done,total,lost,revision}`: to the connection that started the track, each time the track so far is written (see Window tracking) |
 | `track.state` | `{job,phase,reason,frames,lost,frame,revision,tracked,message?}`: how the track ended (`done`, `stopped`, `failed`), to the connection that started it |
 | `automation.written` | `{"timeline", "punch", "lanes", "revision", "failed": [...]}`: a pass of the recording of automation, or a Punch In, written, to every connection (see Recording automation) |
-| `audio.analysis` | `{job, state: "running", done, total}` (seconds of sound measured, at most 4 a second), then `{job, state: "done", method, ...}`, `{job, state: "failed", message}` or `{job, state: "cancelled"}`: how an `audio.analyze`, `audio.normalize` or `audio.level_match` goes and ends, to every connection (see Meters, loudness and the analysis of sound) |
+| `audio.analysis` | `{job, state: "running", done, total}` (seconds of sound measured, at most 4 a second), then `{job, state: "done", method, ...}`, `{job, state: "failed", message}` or `{job, state: "cancelled"}`: how an `audio.analyze`, `audio.normalize`, `audio.level_profile`, `audio.level_match` or `audio.noise_learn` goes and ends, to every connection (see Meters, loudness and the analysis of sound) |
 
 - `by` is the kind of the client that asked (for an undo or a redo, the one that asked for
   that); `made_by` is the kind of the client that made the transaction (for an undo or a redo,
@@ -4831,15 +4831,25 @@ since, nothing is applied and `refused` holds the refusal (`stale_revision`); wi
 gains are applied to the project as it is when they are found. A transaction refused otherwise (a
 clip removed meanwhile) is told in `refused` too.
 
-The classic agent tool `video_loudness` currently exposes `measure` for clip/track/bus/main and
-`apply` for `clip_gain` Normalize only (phase 3 T24a). It waits for the terminal event and reports
-`status: measured | applied | unchanged | refused`, preserving the engine's nulls, clamping,
-transaction receipt and refusal. Its `measured_revision` identifies the checked snapshot;
-`session` identifies the Python connection generation. Main resolves a bus with no outputs;
-multiple main outputs require an explicit bus id. Range is accepted only for track/bus/main,
-since clip analysis currently measures the whole clip. T24 is not complete: track/main apply,
-candidate analysis, clip-range analysis, `video_duck`, audio info and shared range/neutral-value
-validation remain separate increments. No main limiter or ducking guarantee is made by T24a.
+The classic agent tool `video_loudness` exposes `measure` for clip/track/bus/main, including
+timeline-frame ranges, and `apply` for whole-target clip_gain, track_fader and main. Clip gain
+uses Normalize; track/main proposals use disposable candidate analysis before one live apply.
+Main resolves a bus with no outputs; multiple main outputs require an explicit bus id. Main
+optimization keeps an already accepted result unchanged and reuses the last active insert
+when it is a non-automated Limiter, preserving its ID and other settings. It reports the actual
+measured result, clamping and whether the target was met; it never guarantees every input can
+meet the requested loudness and peak together. Fader apply does not accept a partial range.
+`measured_revision` identifies the checked snapshot; `session` identifies the connection.
+`video_duck`, candidate analysis and the audio summary of `video_info` are available as described
+above. They do not imply the phase's full validation gates or hardware checks have passed.
+
+Analysis results also include `k_weighted_mean`, the ungated mean of K-weighted 10 ms cells in
+LUFS, and `silence`, true only after a positive measured duration with exactly zero PCM peak.
+Mean is null before one full cell and for silence. It is distinct from gated Integrated and
+from the 400 ms-block mean of BS.1770-1. Duck compares Integrated when both sides have it;
+otherwise it uses this same cell mean on both sides, explicitly naming the metric. Measured
+silence can establish unchanged quiet or a silent background, but never a speaking voice.
+Intervals without enough data remain unverified; peak differences are not used as LU.
 
 Params that cannot be are `-32602` with `data.reason`: `missing` (`timeline`; or `what`: `clip`,
 `track` or `bus`, and `id`), `disabled` (`track`), `standard` (`standard`), `twice` (`clip`, or `target`),

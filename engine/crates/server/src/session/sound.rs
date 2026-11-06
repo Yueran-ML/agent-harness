@@ -1058,6 +1058,8 @@ fn found(analysis: &Analysis, measure: Measure) -> Value {
     };
     json!({
         "integrated": integrated.map_or(Value::Null, decibels),
+        "k_weighted_mean": analysis.mean.map_or(Value::Null, decibels),
+        "silence": analysis.seconds > 0.0 && analysis.sample_peak == f64::NEG_INFINITY,
         "range": analysis.range.map_or(Value::Null, decibels),
         "momentary_max": decibels(analysis.momentary_max),
         "short_term_max": decibels(analysis.short_term_max),

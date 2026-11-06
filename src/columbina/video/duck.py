@@ -81,6 +81,15 @@ def quiet_ranges(
     return result
 
 
+def paired_levels(a: dict[str, Any], b: dict[str, Any]) -> tuple[float | None, float | None, str]:
+    """Compare like with like; the fallback is K-weighted loudness, never peak or RMS."""
+    for metric in ("integrated", "k_weighted_mean"):
+        first, second = a.get(metric), b.get(metric)
+        if first is not None and second is not None:
+            return first, second, metric
+    return None, None, "unavailable"
+
+
 class Duck:
     """Measure Ducker or source Volume envelopes, preserving unrelated settings."""
 
@@ -278,19 +287,26 @@ class Duck:
             decrease: set[str] = set()
             for frames in intervals:
                 measured = await measure(frames, ops)
-                voice = measured[0].get("integrated")
                 for target, row in zip(check_targets, measured[1:], strict=True):
-                    background = row.get("integrated")
+                    voice, background, metric = paired_levels(measured[0], row)
                     margin = (
                         voice - background if voice is not None and background is not None else None
                     )
                     met = margin >= 10 if margin is not None else None
+                    if row.get("silence") is True and any(
+                        measured[0].get(field) is not None
+                        for field in ("integrated", "k_weighted_mean")
+                    ):
+                        # A finite voice is above a measured zero background, but no finite
+                        # number represents that difference. A silent voice remains unknown.
+                        met, metric = True, "silent_background"
                     checks.append(
                         {
                             "kind": "speech",
                             **target,
                             "range": list(frames),
                             "margin_lu": margin,
+                            "metric": metric,
                             "met": met,
                         }
                     )
@@ -299,14 +315,25 @@ class Duck:
             for frames, old in zip(quiet, baseline, strict=True):
                 measured = await measure(frames, ops)
                 for target, before, after in zip(check_targets, old[1:], measured[1:], strict=True):
-                    a, b = before.get("integrated"), after.get("integrated")
-                    metric = "integrated"
-                    if a is None or b is None:
-                        # Short intervals still have a peak, but do not prove a loudness match.
-                        a, b = before.get("sample_peak"), after.get("sample_peak")
-                        metric = "sample_peak"
+                    a, b, metric = paired_levels(before, after)
                     delta = b - a if a is not None and b is not None else None
-                    met = abs(delta) <= 1 if delta is not None and metric == "integrated" else None
+                    met = abs(delta) <= 1 if delta is not None else None
+                    if before.get("silence") is True and after.get("silence") is True:
+                        met, metric = True, "silence"
+                    elif (
+                        before.get("silence") is True
+                        and any(
+                            after.get(field) is not None
+                            for field in ("integrated", "k_weighted_mean")
+                        )
+                    ) or (
+                        after.get("silence") is True
+                        and any(
+                            before.get(field) is not None
+                            for field in ("integrated", "k_weighted_mean")
+                        )
+                    ):
+                        met, metric = False, "silence_changed"
                     checks.append(
                         {
                             "kind": "quiet",
@@ -369,6 +396,9 @@ class Duck:
             "post-pan point. Multiple backgrounds are verified by their actual PCM sum; "
             "per-track results remain diagnostic. Quiet intervals exclude "
             "lookahead and recovery (plus hold in Ducker mode). Null means the overall target "
-            "could not be verified. Keyframe envelopes hold across overlapping "
+            "could not be verified. Pairs without Integrated use the same ungated K-weighted "
+            "mean on both sides, explicitly reported in metric; intervals shorter than one "
+            "10 ms cell remain unverified. Measured silence is reported separately. "
+            "Keyframe envelopes hold across overlapping "
             "recovery/lookahead windows.",
         }

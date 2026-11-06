@@ -833,6 +833,18 @@ async fn captured_level_profile_survives_edits_deletion_and_timeline_switch_with
     assert_eq!(short["profile"]["basis"], "mean");
     assert_eq!(short["seconds"], 0.2);
     let short_profile = short["profile"].clone();
+    let job = client.result("audio.analyze", Some(json!({"timeline":"other","targets":[{"clip":"short"},{"clip":"silent"}],"revision":revision}))).await["job"].clone();
+    let (measured, _) = ended(&mut client, "audio.analysis", &job).await;
+    assert!(measured["results"][0]["integrated"].is_null());
+    close(
+        &measured["results"][0]["k_weighted_mean"],
+        -20.0,
+        0.1,
+        "short K-weighted mean",
+    );
+    assert_eq!(measured["results"][0]["silence"], false);
+    assert!(measured["results"][1]["k_weighted_mean"].is_null());
+    assert_eq!(measured["results"][1]["silence"], true);
     let job = client
         .result(
             "audio.level_profile",

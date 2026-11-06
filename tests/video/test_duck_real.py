@@ -18,19 +18,22 @@ from support.media import real_engine
 
 
 @pytest.mark.parametrize(
-    ("mode", "background_count", "pan_silences_dialogue"),
+    ("mode", "background_count", "pan_silences_dialogue", "short_tail"),
     [
-        ("ducker", 1, False),
-        ("ducker", 2, False),
-        ("keyframes", 2, False),
-        ("ducker", 2, True),
-        ("keyframes", 2, True),
+        ("ducker", 1, False, False),
+        ("ducker", 2, False, False),
+        ("keyframes", 2, False, False),
+        ("ducker", 2, True, False),
+        ("keyframes", 2, True, False),
+        ("ducker", 1, False, True),
+        ("keyframes", 2, False, True),
     ],
 )
 async def test_duck_verifies_margin_recovery_and_undoes_once(
-    tmp_path: Path, mode: str, background_count: int, pan_silences_dialogue: bool
+    tmp_path: Path, mode: str, background_count: int, pan_silences_dialogue: bool, short_tail: bool
 ) -> None:
     rate, seconds = 48000, 8
+    length = (125 if mode == "ducker" else 120) if short_tail else 200
     sources: list[Path] = []
     for name in ("voice", "music"):
         path = tmp_path / f"{name}.wav"
@@ -76,9 +79,11 @@ async def test_duck_verifies_margin_recovery_and_undoes_once(
         backgrounds = [track["id"] for track in tracks[1:]]
         await wire.apply(
             [
-                edits.append(timeline, edits.of_media(media[0], length=200), audio_track=voice),
+                edits.append(timeline, edits.of_media(media[0], length=length), audio_track=voice),
                 *[
-                    edits.append(timeline, edits.of_media(media[1], length=200), audio_track=track)
+                    edits.append(
+                        timeline, edits.of_media(media[1], length=length), audio_track=track
+                    )
                     for track in backgrounds
                 ],
             ]
@@ -174,6 +179,13 @@ async def test_duck_verifies_margin_recovery_and_undoes_once(
         assert result["met"] is (None if pan_silences_dialogue else True)
         assert result["verification_complete"] is (not pan_silences_dialogue)
         assert result["measurement_point"] == "stereo_post_pan"
+        if short_tail:
+            assert any(
+                row["kind"] == "quiet"
+                and row["metric"] == "k_weighted_mean"
+                and row["range"][1] - row["range"][0] < 10
+                for row in result["checks"]
+            )
         if pan_silences_dialogue:
             assert all(
                 row["margin_lu"] is None for row in result["checks"] if row["kind"] == "speech"

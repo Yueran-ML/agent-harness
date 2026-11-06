@@ -130,6 +130,72 @@ async def test_candidate_verifies_speech_and_quiet_with_history_before_one_apply
     assert calls[-1].args[1]["candidate"] == ops
 
 
+@pytest.mark.parametrize(
+    ("kind", "first", "second", "metric", "met"),
+    [
+        ("quiet", {"k_weighted_mean": -30}, {"k_weighted_mean": -30.5}, "k_weighted_mean", True),
+        (
+            "quiet",
+            {"integrated": -28, "k_weighted_mean": -30},
+            {"k_weighted_mean": -30.5},
+            "k_weighted_mean",
+            True,
+        ),
+        ("quiet", {"silence": True}, {"silence": True}, "silence", True),
+        ("quiet", {"silence": True}, {"k_weighted_mean": -30}, "silence_changed", False),
+        (
+            "quiet",
+            {"sample_peak": -12, "seconds": 0},
+            {"sample_peak": -12, "seconds": 0},
+            "unavailable",
+            None,
+        ),
+        (
+            "speech",
+            {"integrated": -18, "k_weighted_mean": -20},
+            {"k_weighted_mean": -32},
+            "k_weighted_mean",
+            True,
+        ),
+        ("speech", {"k_weighted_mean": -80}, {"k_weighted_mean": -92}, "k_weighted_mean", True),
+        ("speech", {"silence": True}, {"k_weighted_mean": -32}, "unavailable", None),
+        ("speech", {"integrated": -18}, {"silence": True}, "silent_background", True),
+    ],
+)
+async def test_short_and_silent_intervals_use_matching_loudness_metrics(
+    tmp_path: Path,
+    kind: str,
+    first: dict[str, Any],
+    second: dict[str, Any],
+    metric: str,
+    met: bool | None,
+) -> None:
+    wire = setup(tmp_path)
+
+    async def measure(_method: str, params: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
+        speaking = params.get("range") == {"from": 50, "to": 100}
+        voice, background = {"integrated": -18}, {"integrated": -30}
+        if speaking and kind == "speech":
+            voice, background = first, second
+        elif not speaking and kind == "quiet":
+            background = second if "candidate" in params else first
+        return {
+            "results": [
+                {"target": {"sum": ["A1"]}, **voice},
+                {"target": {"sum": ["A2"]}, **background},
+            ]
+        }
+
+    wire.analyze_sound.side_effect = measure
+    result = await Duck(wire, tmp_path, Path).run(music=["A2"])
+    checks = [row for row in result["checks"] if row["kind"] == kind]
+    assert checks
+    assert all(row["metric"] == metric and row["met"] is met for row in checks)
+    assert result["met"] is met
+    assert result["verification_complete"] is (met is not None)
+    wire.apply.assert_awaited_once()
+
+
 async def test_unmet_margin_stops_after_exactly_two_three_db_adjustments(tmp_path: Path) -> None:
     wire = setup(tmp_path, margin=4)
     result = await Duck(wire, tmp_path, Path).run(music=["A2"])

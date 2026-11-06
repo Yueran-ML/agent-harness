@@ -56,6 +56,11 @@ async def test_main_optimization_meets_loudness_and_peak_and_undoes_once(tmp_pat
         assert row["true_peak"] <= -0.8
         revision, _ = await wire.project()
         assert revision == before_revision + 1
+        repeated = await Loudness(wire, Path).run(action="apply", target="main", standard="youtube")
+        assert repeated["status"] == "unchanged"
+        assert repeated["met"] is True
+        assert repeated["ops"] == []
+        assert (await wire.project())[0] == revision
         assert await wire.undo() is not None
         _, undone = await wire.project()
         assert undone["timelines"] == before["timelines"]

@@ -51,7 +51,7 @@ export function AutomationLane(props: Props) {
   const t = useFairlightText(), touch = useAutomationTouch(), key = ownerKey(of);
   const { parameters, problem: parameterProblem } = useAutomationParameters(props, of);
   const [problem, setProblem] = useState<string | null>(null);
-  const [selected, setSelected] = useState<number[]>([]), [range, setRange] = useState<[
+  const [selectedAt, setSelectedAt] = useState<number[]>([]), [range, setRange] = useState<[
     number,
     number
   ] | null>(null), [preview, setPreview] = useState<Lane | null>(null), [clear, setClear] = useState(false), [pointMenu, setPointMenu] = useState<number | null>(null), [hint, setHint] = useState<string | null>(null), [temporaryPencil, setTemporaryPencil] = useState(false);
@@ -71,12 +71,24 @@ export function AutomationLane(props: Props) {
     bridge, session, revision, identity: `${timeline.id}/${key}/${path}`, locked: Boolean(locked), onFailure: e => setProblem(String(e))
   });
   useEffect(() => {
+    setSelectedAt([]);
+    setRange(null);
+  }, [session, timeline.id, key, path]);
+  useEffect(() => {
     drag.current = null;
     setPreview(null);
-    setSelected([]);
-    setRange(null);
   }, [session, timeline.id, key, path, revision]);
   const parameter = parameters.find(p => p.path === path), lane = lanes?.[path], drawn = preview ?? lane;
+  // Points are selected by where they are, so that the selection outlasts an edit (of another
+  // lane, or its own nudge) for as long as the points it holds are still there.
+  const tickAt = (index: number) => tickOf(lane!.points[index].at, timeline.sample_rate);
+  const selected = selectedAt.map(at => lane?.points.findIndex(p => tickOf(p.at, timeline.sample_rate) === at) ?? -1)
+    .filter(index => index >= 0);
+  const setSelected = (indices: number[]) => setSelectedAt(indices.filter(i => lane?.points[i]).map(tickAt));
+  useEffect(() => {
+    const present = new Set((lane?.points ?? []).map(p => tickOf(p.at, timeline.sample_rate)));
+    setSelectedAt(old => old.every(at => present.has(at)) ? old : old.filter(at => present.has(at)));
+  }, [lane, timeline.sample_rate]);
   const top = 22, bottom = height - 8, h = bottom - top;
   const x = (sample: number) => pixelAtSample(sample, scale, timeline) - from * scale;
   const y = (value: number) => top + (1 - valuePosition(value, parameter!)) * h;
@@ -235,10 +247,12 @@ export function AutomationLane(props: Props) {
       run({
         edit: 'lane_range', from: sampleTime(range[0], timeline.sample_rate), to: sampleTime(range[1], timeline.sample_rate), action: 'shift_value', delta: d.delta
       });
-    else if (d.points.length)
+    else if (d.points.length) {
       run({
         edit: 'lane_points', action: 'move', at: d.points.map(i => d.lane!.points[i].at), by: { ticks: d.by, scale: timeline.sample_rate }, delta: d.delta
       });
+      setSelectedAt(d.points.map(i => tickOf(d.lane!.points[i].at, timeline.sample_rate) + d.by));
+    }
     else
       onEdit([
         {
@@ -282,10 +296,12 @@ export function AutomationLane(props: Props) {
         return true;
       }
       if ([',', '.'].includes(char)) {
-        if (chosen.length)
-          run({
-            edit: 'lane_points', action: 'move', at: chosen.map(p => p.at), by: { ticks: Math.round(timeline.sample_rate * timeline.rate.den / timeline.rate.num) * (char === ',' ? -1 : 1) * (key.shift ? 5 : 1), scale: timeline.sample_rate }
-          });
+        const step = Math.round(timeline.sample_rate * timeline.rate.den / timeline.rate.num);
+        const by = step * (char === ',' ? -1 : 1) * (key.shift ? 5 : 1);
+        if (chosen.length) {
+          run({ edit: 'lane_points', action: 'move', at: chosen.map(p => p.at), by: { ticks: by, scale: timeline.sample_rate } });
+          setSelectedAt(old => old.map(at => at + by));
+        }
         return true;
       }
       if (range && a !== null && b !== null && b > a)

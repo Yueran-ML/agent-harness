@@ -187,3 +187,33 @@ it('Pencil captures the full lane and delegates sampled points to lane_draw; shi
  revision=8;s.rerender(<AutomationLane {...props} revision={revision}/>);await settle();
  const next=screen.getByLabelText('Voice Fader');fireEvent.keyDown(next,{key:'a',ctrlKey:true});fireEvent.keyDown(next,{key:'<',code:'Comma',shiftKey:true});await settle();expect(writes().at(-1)[1].ops[0].by.ticks).toBe(-Math.round(t.sample_rate*t.rate.den/t.rate.num)*5);
 });
+it('keeps a point selection across edits while its points are still there, and drops it when they are gone', async () => {
+  const t = timeline([]), frame = Math.round(t.sample_rate * t.rate.den / t.rate.num);
+  const parameters = [{ path: 'fader_db', kind: 'continuous', scale: 'linear', value: 0, min: -100, max: 10 }];
+  const call = vi.fn(async (method: string): Promise<EngineAnswer> => ({ ok: true,
+    result: method === 'automation.parameters' ? { revision: 7, of: { track: 'a1' }, parameters } : { revision: 8, done: [] } }));
+  const lane = (...ticks: number[]) => ({ fader_db: { points: ticks.map(at => ({ at: { ticks: at, scale: 48000 }, value: 0 })) } });
+  const props = { bridge: { call } as never, session: 1, revision: 7, timeline: t, of: { track: 'a1' }, scale: 4, from: 0, to: 100,
+    height: 128, snapping: false, marks: () => ({ in: null, out: null }), path: 'fader_db', pencil: false,
+    onPath: () => {}, onEdit: () => {}, name: 'Voice' };
+  const s = render(<AutomationLane {...props} lanes={lane(48000, 96000)} />); await settle();
+  const writes = () => call.mock.calls.filter(([method]) => method === 'transaction.apply') as unknown as [string, { ops: { at: { ticks: number }[] }[] }][];
+  const key = (options: object) => fireEvent.keyDown(screen.getByLabelText('Voice Fader'), options);
+  // The first point alone, by a click on it.
+  fireEvent.pointerDown(s.container.querySelectorAll('circle')[0], { button: 0 });
+  fireEvent.pointerUp(screen.getByLabelText('Voice Fader')); await settle();
+  // An unrelated edit (a new revision, the same points) keeps it.
+  s.rerender(<AutomationLane {...props} revision={8} lanes={lane(48000, 96000)} />); await settle();
+  key({ key: '.', code: 'Period' }); await settle();
+  expect(writes().at(-1)![1].ops[0].at).toEqual([{ ticks: 48000, scale: 48000 }]);
+  // Its own nudge moved the point: the selection follows it to where it is now.
+  s.rerender(<AutomationLane {...props} revision={9} lanes={lane(48000 + frame, 96000)} />); await settle();
+  key({ key: '.', code: 'Period' }); await settle();
+  expect(writes().at(-1)![1].ops[0].at).toEqual([{ ticks: 48000 + frame, scale: 48000 }]);
+  // The point is deleted elsewhere: nothing is selected, and Delete removes nothing.
+  s.rerender(<AutomationLane {...props} revision={10} lanes={lane(96000)} />); await settle();
+  const before = writes().length;
+  key({ key: 'Delete' }); await settle();
+  expect(writes()).toHaveLength(before);
+  expect(s.container.querySelector('circle[fill="#fff"]')).toBeNull();
+});

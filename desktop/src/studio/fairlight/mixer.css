@@ -74,3 +74,22 @@
 .audio-mixer[data-hidden~="vca"] .mixer-summary > [data-section="vca"] { display:none; }
 
 .mixer-selection-box{position:fixed;pointer-events:none;border:1px solid var(--accent);background:#79b5e629;z-index:120}
+
+/* Automation states (p. 3901, 3907, 3915): red while written, blue in Preview, green while a lane plays it back. */
+.mixer-strip button[data-writing="write"] { background: #c44; color: white; }
+.mixer-strip button[data-writing="preview"] { background: #4387c9; color: white; }
+.mixer-strip[data-automated=true] .audio-fader-cap { box-shadow: 0 0 0 2px #6ddd92; }
+.audio-knob-cap[data-automation=read] { outline: 1px solid #6ddd92; outline-offset: 1px; }
+.mixer-switches button[data-automation-state="write"] { box-shadow: inset 0 0 0 2px #f66; }
+.mixer-switches button[data-automation-state="preview"] { box-shadow: inset 0 0 0 2px #69baff; }
+.mixer-switches button[data-automation-state="read"] { box-shadow: inset 0 0 0 2px #6ddd92; }
+[data-automation-state="read"] > input[type="checkbox"] { accent-color: #6ddd92; }
+[data-automation-state="write"] > input[type="checkbox"] { accent-color: #f66; }
+[data-automation-state="preview"] > input[type="checkbox"] { accent-color: #69baff; }
+.automation-lane-header .automation-parameter { width: 100%; max-width: 100%; font-size: 10px; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.automation-lane-header .automation-arm { font-size: 10px; }
+.automation-lane-header .automation-arm[aria-pressed=true] { background: #842d35; color: white; }
+.automation-lane-header .automation-arm[data-arm="safe"] { color: #d0b33c; }
+.automation-lane-header .automation-arm[data-arm="off"] { color: #999; text-decoration: line-through; }
+.automation-lane-header .automation-arm[data-writing="write"] { background: #c44; color: white; }
+.automation-lane-header .automation-arm[data-writing="preview"] { background: #4387c9; color: white; }

@@ -9,5 +9,5 @@ export interface AudioAutomationAdapter {
   lives?: readonly { target: { of: LanesOf; path: string }; value: number }[];
   live: { target: { of: LanesOf; path: string }; value: number } | null;
   reading?: (target: {of:LanesOf;path:string}, baseline:number, parameter?:Pick<AutomationParameter,'kind'|'scale'>) => number;
-  status?: (target: {of:LanesOf;path:string}) => 'write'|'preview'|null;
+  status?: (target: {of:LanesOf;path:string}) => 'write'|'preview'|'read'|null;
 }

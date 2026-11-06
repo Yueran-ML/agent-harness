@@ -2,7 +2,12 @@ import { useEffect, useState } from 'react';
 import type { EngineBridge } from '../../bridge';
 import { callEngine, type Timeline } from '../engine';
 import type { Change, CopiedLane } from '../timeline/commands';
-import { categories, defaultRecord, GLIDE_MAX, glideValue, ownerKey, ownerOf, readGlide, sampleTime, saveGlide } from './automation';
+import {
+  categories, defaultRecord, GLIDE_MAX, glideValue, NUDGE_UNITS, ownerKey, ownerOf, readGlide, readNudge, sampleTime, saveGlide,
+  saveNudge, type NudgeUnit,
+} from './automation';
+import { useAutomationTouch } from './AutomationTouch';
+import { levelPathsOf, pastedLanes } from './automationPaste';
 import type { FairlightView } from './viewState';
 import { useFairlightText } from './words';
 export function AutomationToolbar({ bridge, session, timeline, view, update, recording, selected, frame, onEdit, onFailure, onToggle, marks }: {
@@ -48,17 +53,51 @@ export function AutomationToolbar({ bridge, session, timeline, view, update, rec
     return m.in !== null && m.out !== null && m.out > m.in ? { from: sampleTime(m.in * timeline.rate.den / timeline.rate.num * timeline.sample_rate, timeline.sample_rate), to: sampleTime(m.out * timeline.rate.den / timeline.rate.num * timeline.sample_rate, timeline.sample_rate) } : null;
   };
   const at = () => sampleTime(frame * timeline.rate.den / timeline.rate.num * timeline.sample_rate, timeline.sample_rate);
-  const run = async (method: 'automation.record' | 'automation.all_read' | 'automation.join' | 'automation.punch' | 'automation.fill', args: Record<string, unknown> = {}) => {
+  const touch = useAutomationTouch();
+  const [nudge, setNudge] = useState<NudgeUnit>(readNudge);
+  // The level that a level is pasted to (p. 3914): the same parameter, or a fader or send level.
+  const [pasteLevel, setPasteLevel] = useState('');
+  const run = async (
+    method: 'automation.record' | 'automation.all_read' | 'automation.join' | 'automation.punch' | 'automation.punch_out'
+      | 'automation.fill',
+    args: Record<string, unknown> = {},
+  ) => {
     setBusy(true);
     try {
-      await callEngine(bridge, method, { timeline: timeline.id, ...args }, { expectedSession: session });
+      return await callEngine(bridge, method, { timeline: timeline.id, ...args }, { expectedSession: session });
     }
     catch (e) {
       onFailure(e);
+      return null;
     }
     finally {
       setBusy(false);
     }
+  };
+  // Punch In (p. 3913): under Preview, what Preview holds is written; without it, the enabled
+  // settings of the selected tracks go into Write until the next stop.
+  const punchIn = async () => {
+    if (record.preview) {
+      await run('automation.punch');
+      return;
+    }
+    if (!selected.length) {
+      onFailure(new Error(t('Select the tracks to punch in first.')));
+      return;
+    }
+    const of = selected.map(ownerOf);
+    // Shown in Write only where the engine put settings of them into Write.
+    const punched = await run('automation.punch', { of });
+    if (punched && 'lanes' in punched && punched.lanes > 0)
+      touch?.punchIn(of);
+  };
+  // Punch Out (p. 3913): under Preview, every setting in Write, Trim or Preview goes back to Read;
+  // without it, those of the selected tracks (of all, where none are selected). What is held is
+  // let go of here first, so that no release of it follows the Punch Out.
+  const punchOut = async () => {
+    const of = record.preview || !selected.length ? null : selected.map(ownerOf);
+    touch?.punchOut(of);
+    await run('automation.punch_out', of ? { of } : {});
   };
   const patch = (next: Partial<typeof record>) => onEdit([{ op: 'set_timeline_audio', timeline: timeline.id, patch: { record: { ...record, ...next } } }]);
   const paste = () => {
@@ -67,7 +106,11 @@ export function AutomationToolbar({ bridge, session, timeline, view, update, rec
       onFailure(new Error(t('Clipboard tracks must match the destination selection.')));
       return;
     }
-    const lanes = selected.length ? selected.flatMap((key, index) => clipboard.filter(l => ownerKey(l.of) === sources[sources.length === 1 ? 0 : index]).map(l => ({ ...l, of: ownerOf(key) }))) : clipboard;
+    const lanes = pastedLanes(clipboard, selected, pasteLevel);
+    if (!lanes.length) {
+      onFailure(new Error(t('The clipboard has no level to paste there.')));
+      return;
+    }
     const r = range();
     onEdit([{
       edit: 'automation_paste', timeline: timeline.id, at: r?.from ?? at(), ...(r ? { to: r.to } : {}), lanes
@@ -193,7 +236,13 @@ export function AutomationToolbar({ bridge, session, timeline, view, update, rec
         {t('Active Range')}
       </label>
 
-      {([['automation.all_read', 'All Read'], ['automation.punch', 'Punch In'], ['automation.join', 'Join Mix']] as const).map(([method, label]) => <button key={method} onClick={() => void run(method)}>{t(label)}</button>)}
+      <button onClick={() => void run('automation.all_read')}>{t('All Read')}</button>
+
+      <button onClick={() => void punchIn()}>{t('Punch In')}</button>
+
+      <button onClick={() => void punchOut()}>{t('Punch Out')}</button>
+
+      <button onClick={() => void run('automation.join')}>{t('Join Mix')}</button>
 
       {([false, true] as const).map(glide => <button key={String(glide)} onClick={() => {
         const r = range();
@@ -212,6 +261,16 @@ export function AutomationToolbar({ bridge, session, timeline, view, update, rec
         {t('Copy automation')}
       </button>
 
+      <label>
+        {t('Paste level to')}
+        <select value={pasteLevel} onChange={e => setPasteLevel(e.target.value)}>
+          <option value="">{t('Same parameter')}</option>
+          {levelPathsOf(timeline, selected).map(path => <option key={path} value={path}>
+            {path === 'fader_db' ? t('fader') : `${t('Send Level')} ${path.split('.')[1]}`}
+          </option>)}
+        </select>
+      </label>
+
       <button disabled={!clipboard.length} onClick={paste}>{t('Paste automation')}</button>
 
       <button onClick={() => {
@@ -225,6 +284,27 @@ export function AutomationToolbar({ bridge, session, timeline, view, update, rec
       }}>
         {t('Erase automation')}
       </button>
+
+      <label>
+        <input
+          type="checkbox"
+          checked={touch?.writeOnPaste ?? false}
+          disabled={!touch}
+          onChange={e => touch?.setWriteOnPaste(e.target.checked)}
+        />
+        {t('Write on Preset or Clipboard Paste')}
+      </label>
+
+      <label>
+        {t('Nudge automation by')}
+        <select value={nudge} onChange={e => {
+          const unit = e.target.value as NudgeUnit;
+          saveNudge(unit);
+          setNudge(unit);
+        }}>
+          {NUDGE_UNITS.map(unit => <option key={unit} value={unit}>{t(unit)}</option>)}
+        </select>
+      </label>
     </fieldset>}
   </section>;
 }

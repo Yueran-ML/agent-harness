@@ -85,7 +85,9 @@ export function PanFields({ control, prefix = '', formats }: { control: RoutingP
     <PanSurface control={control} prefix={prefix} rear={rear} lfe={lfe} />
     <div className="pan-fields">{(['on', 'lfe_on', 'lfe_pre'] as const).map((name, index) => {
       const field = prefix + name;
-      return <label key={name}><input type="checkbox" checked={control.reading(field) >= .5} disabled={(index > 0 && !lfe) || !control.writable(field)} onChange={event => control.commit({ [field]: Number(event.target.checked) })} />{t(index === 0 ? 'Pan Enable' : index === 1 ? 'Boom On' : 'Boom Pre')}</label>;
+      // A right-click shows the switch's automation on the timeline (p. 3896), as the pan's does.
+      return <label key={name} data-automation-state={control.status(field) ?? undefined}
+        onContextMenu={event => { event.preventDefault(); control.show(field); }}><input type="checkbox" checked={control.reading(field) >= .5} disabled={(index > 0 && !lfe) || !control.writable(field)} onChange={event => control.commit({ [field]: Number(event.target.checked) })} />{t(index === 0 ? 'Pan Enable' : index === 1 ? 'Boom On' : 'Boom Pre')}</label>;
     })}{knobs.map(([name, label, min, max, scale, disabled]) => {
       const field = prefix + name, parameter = control.parameter(field);
       if (!owners.current.has(field)) owners.current.set(field, {});

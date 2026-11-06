@@ -1,6 +1,8 @@
 import { useContext, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type RefObject } from 'react';
 import type { EngineBridge } from '../../bridge';
-import { callEngine, type AutomationArm, type Lane, type Lanes, type LanesOf, type Timeline } from '../engine';
+import {
+  callEngine, type AutomationArm, type AutomationParameter, type Lane, type LanePoint, type Lanes, type LanesOf, type Timeline,
+} from '../engine';
 import { useAutomationParameters } from '../audio/useAutomationParameters';
 import type { Change } from '../timeline/commands';
 import { useAudioGesture } from '../timeline/useAudioGesture';
@@ -9,8 +11,15 @@ import { AudioPlayhead } from '../timeline/AudioOverlay';
 import { snap, snapCandidates, type Marks } from '../timeline/snap';
 import { editingAllowed } from '../keys';
 import { keyOf, type Key } from '../../app/keys';
-import { categories, categoryOfPath, laneValue, ownerKey, Pencil, pixelAtSample, positionValue, sampleAtPixel, sampleTime, tickOf, valuePosition } from './automation';
+import {
+  categories, categoryOfPath, laneValue, nudgeSamples, ownerKey, Pencil, pixelAtSample, positionValue, readNudge, sampleAtPixel,
+  sampleTime, tickOf, valuePosition, type AutomationTarget,
+} from './automation';
 import { useAutomationTouch, sameTarget } from './AutomationTouch';
+import { isLevelPath } from './automationPaste';
+import { CoveringMenu } from '../color/CoveringMenu';
+import type { Menu, MenuItem } from '../color/ColorMenu';
+import { mixerStrips, operationTargets, stripChange, type Modifiers } from '../audio/mixerModel';
 import { useFailureText, useFairlightText } from './words';
 import { parameterLabel } from './parameterLabel';
 import { PortalMenu } from '../audio/PortalMenu';
@@ -32,11 +41,145 @@ interface Props {
   path: string;
   pencil: boolean;
   register?: (owner: string, command: (key: Key) => boolean) => () => void;
+  /** The keys of the selected tracks and buses (`track:A1`), which Alt+click on Arm arms too. */
+  selection?: () => readonly string[];
   onActive?: () => void;
   onPath: (path: string) => void;
   onEdit: (ops: Change[]) => void;
   name: string;
 }
+/**
+ * The keyboard clipboard of automation (X, C, V on a lane, p. 3898): one for every lane, so that
+ * what is cut or copied on one lane is pasted on another. Its points are from 0, in samples at
+ * `rate`; `parameter` is of the lane it was taken from.
+ */
+let laneClipboard: { points: LanePoint[]; rate: number; path: string; parameter: AutomationParameter } | null = null;
+
+/**
+ * The value of `source` at `value` as it is pasted on a lane of `path` (`parameter`): the same
+ * value on a lane of the same setting, or from one level to another (a fader's and a send's, p.
+ * 3914); else the same height on the lane.
+ */
+function pastedValue(value: number, source: NonNullable<typeof laneClipboard>, path: string, parameter: AutomationParameter) {
+  if (source.path === path || (isLevelPath(source.path) && isLevelPath(path)))
+    return value;
+  return positionValue(valuePosition(value, source.parameter), parameter);
+}
+
+/**
+ * The parameters of a lane as nested menus (p. 3896, 3904, 3909): the categories of recording,
+ * then the groups that their names give (Pan ▸, Sends ▸ Bus 2 ▸, EQ ▸ Band 1 ▸, Dynamics ▸
+ * Compressor ▸, Plugins ▸ Insert 1 ▸), a group of one taken into its parent.
+ */
+export function parameterMenu(
+  parameters: readonly AutomationParameter[], label: (path: string) => string,
+  category: (name: typeof categories[number]) => string,
+  path: string, choose: (path: string) => void, none: string,
+): MenuItem[] {
+  interface Node { label: string; path?: string; children: Node[] }
+  const items = (node: Node, id: string): MenuItem[] => node.children.map((child, index) => {
+    let group = child;
+    while (!group.path && group.children.length === 1)
+      group = { ...group.children[0], label: `${group.label} · ${group.children[0].label}` };
+    if (group.path) {
+      const chosen = group.path;
+      return { id: chosen, label: group.label, checked: chosen === path, run: () => choose(chosen) };
+    }
+    return { id: `${id}/${index}`, label: group.label, items: items(group, `${id}/${index}`) };
+  });
+  const menu: MenuItem[] = [{ id: 'none', label: none, checked: !path, run: () => choose('') }];
+  for (const name of categories) {
+    const root: Node = { label: category(name), children: [] };
+    for (const parameter of parameters.filter(each => categoryOfPath(each.path) === name)) {
+      const segments = label(parameter.path).split(' · ');
+      let node = root;
+      for (const segment of segments.slice(0, -1)) {
+        let next = node.children.find(each => !each.path && each.label === segment);
+        if (!next) {
+          next = { label: segment, children: [] };
+          node.children.push(next);
+        }
+        node = next;
+      }
+      node.children.push({ label: segments.at(-1)!, path: parameter.path, children: [] });
+    }
+    // A category whose names all begin alike (Equalizer · …, Dynamics · …) does not repeat it.
+    const top = root.children.length === 1 && !root.children[0].path ? { ...root.children[0], label: root.label } : root;
+    if (!top.children.length)
+      continue;
+    if (top.children.length === 1 && top.children[0].path) {
+      const only = top.children[0].path;
+      menu.push({ id: only, label: top.label, checked: only === path, run: () => choose(only) });
+    }
+    else
+      menu.push({ id: name, label: top.label, items: items(top, name) });
+  }
+  return menu;
+}
+
+/**
+ * The VCAs whose fader lanes a track's Fader lane shows, read only (p. 3909): those it is
+ * assigned to, and the VCAs those are assigned to in turn, each once (§11.6, nested VCAs).
+ */
+export function vcaAncestors(timeline: Timeline, of: LanesOf): string[] {
+  if (!('track' in of))
+    return [];
+  const track = timeline.tracks.find(row => row.kind === 'audio' && row.id === of.track) as { strip?: { vcas?: string[] } } | undefined;
+  const seen: string[] = [], next = [...(track?.strip?.vcas ?? [])];
+  while (next.length) {
+    const id = next.shift()!;
+    if (seen.includes(id))
+      continue;
+    seen.push(id);
+    next.push(...(timeline.vcas?.find(vca => vca.id === id)?.vcas ?? []));
+  }
+  return seen;
+}
+
+/**
+ * The new curve of a lane while it is written (p. 3907, 3910): red from where the control
+ * began to be written to the playhead, at the values heard; blue under Preview. It follows the
+ * playhead, so it is drawn again as the playhead moves, and the rest of the lane is not.
+ */
+function RecordingTrail({ target, lane, parameter, timeline, x, y }: {
+  target: AutomationTarget; lane: Lane | undefined; parameter: AutomationParameter; timeline: Timeline;
+  x: (sample: number) => number; y: (value: number) => number;
+}) {
+  const frame = useContext(AudioPlayhead), touch = useAutomationTouch();
+  const trail = useRef<{ sample: number; value: number }[]>([]);
+  const state = touch?.status(target), writing = Boolean(touch?.playing && (state === 'write' || state === 'preview'));
+  const sample = Math.round(frame * timeline.rate.den / timeline.rate.num * timeline.sample_rate);
+  const current = writing && touch
+    ? { sample, value: touch.reading(target, laneValue(lane, sample / timeline.sample_rate, parameter.value), parameter) }
+    : null;
+  useLayoutEffect(() => {
+    if (!current) {
+      trail.current = [];
+      return;
+    }
+    const last = trail.current.at(-1);
+    if (last && current.sample < last.sample)
+      trail.current = [];
+    if (!last || last.sample !== current.sample || last.value !== current.value)
+      trail.current.push(current);
+  });
+  if (!current)
+    return null;
+  const points = [...trail.current.filter(point => point.sample <= current.sample), current];
+  const drawn = points.map((point, index) => {
+    const step = parameter.kind === 'switch' && index ? `${x(point.sample)},${y(points[index - 1].value)} ` : '';
+    return `${step}${x(point.sample)},${y(point.value)}`;
+  }).join(' ');
+  return <polyline
+    className="automation-trail"
+    points={drawn}
+    fill="none"
+    stroke={state === 'preview' ? '#69baff' : '#f66'}
+    strokeWidth={2}
+    pointerEvents="none"
+  />;
+}
+
 /**
  * The lane needs the playhead only when it is used (snapping, paste, clear), so the playhead is
  * kept in a ref by this empty leaf: it is the only part drawn again as the playhead moves.
@@ -57,7 +200,20 @@ export function AutomationLane(props: Props) {
     number,
     number
   ] | null>(null), [preview, setPreview] = useState<Lane | null>(null), [clear, setClear] = useState(false), [pointMenu, setPointMenu] = useState<{ index: number; x: number; y: number } | null>(null), [hint, setHint] = useState<string | null>(null), [temporaryPencil, setTemporaryPencil] = useState(false);
-  const svg = useRef<SVGSVGElement>(null), clip = useRef<Lane['points']>([]);
+  const svg = useRef<SVGSVGElement>(null);
+  const [parameterMenuAt, setParameterMenuAt] = useState<Menu | null>(null);
+  const [armMenu, setArmMenu] = useState<{ x: number; y: number } | null>(null);
+  // Arm as on the Mixer (p. 3901, 3907): a click arms this track or bus, Alt+click the selected
+  // ones too, Ctrl+Alt+click every one; Safe and Off from the right-click menu, the same way.
+  const setArm = (automation_arm: AutomationArm, modifiers: Modifiers) => {
+    if ('vca' in of) {
+      onEdit([{ op: 'set_vca', timeline: timeline.id, id: of.vca, patch: { automation_arm } }]);
+      return;
+    }
+    const targets = operationTargets(mixerStrips(timeline), key, props.selection?.() ?? [], modifiers);
+    if (targets.length)
+      onEdit(targets.map(strip => stripChange(timeline.id, strip, { automation_arm })));
+  };
   const drag = useRef<{
     kind: 'point' | 'range' | 'line' | 'pencil';
     sample: number;
@@ -280,15 +436,24 @@ export function AutomationLane(props: Props) {
         if (a === null || b === null)
           return true;
         const picked = a === b ? chosen : [{ at: sampleTime(a, timeline.sample_rate), value: laneValue(lane, a / timeline.sample_rate, parameter?.value ?? 0) }, ...points.filter(p => tickOf(p.at, timeline.sample_rate) > a && tickOf(p.at, timeline.sample_rate) < b), { at: sampleTime(b, timeline.sample_rate), value: laneValue(lane, b / timeline.sample_rate, parameter?.value ?? 0) }];
-        clip.current = picked.map(p => ({ ...p, at: sampleTime(tickOf(p.at, timeline.sample_rate) - a, timeline.sample_rate) }));
+        if (parameter)
+          laneClipboard = {
+            points: picked.map(p => ({ ...p, at: sampleTime(tickOf(p.at, timeline.sample_rate) - a, timeline.sample_rate) })),
+            rate: timeline.sample_rate, path, parameter,
+          };
         if (char === 'c')
           return true;
       }
       if (command && char === 'v') {
-        if (!clip.current.length)
+        const source = laneClipboard;
+        if (!source?.points.length || !parameter)
           return true;
         const at = range?.[0] ?? Math.round(playhead.current * timeline.rate.den / timeline.rate.num * timeline.sample_rate);
-        const pasted = clip.current.map(p => ({ ...p, at: sampleTime(p.at.ticks + at, timeline.sample_rate) }));
+        // Pasted on this lane, from another lane too: its times in this timeline's samples.
+        const pasted = source.points.map(p => ({
+          at: sampleTime(p.at.ticks * timeline.sample_rate / source.rate + at, timeline.sample_rate),
+          value: pastedValue(p.value, source, path, parameter),
+        }));
         if (pasted.length === 1)
           run({ edit: 'lane_points', action: 'add', points: pasted });
         else
@@ -298,7 +463,8 @@ export function AutomationLane(props: Props) {
         return true;
       }
       if ([',', '.'].includes(char)) {
-        const step = Math.round(timeline.sample_rate * timeline.rate.den / timeline.rate.num);
+        // A frame, or the subframe or millisecond chosen in the Automation Controls (p. 3797).
+        const step = nudgeSamples(readNudge(), timeline);
         const by = step * (char === ',' ? -1 : 1) * (key.shift ? 5 : 1);
         if (chosen.length) {
           run({
@@ -361,35 +527,59 @@ export function AutomationLane(props: Props) {
       }}
     >
 
-      <select
+      <button
+        type="button"
+        className="automation-parameter"
         aria-label={`${t('Automation parameter')} ${name}`}
-        value={path}
-        onChange={e => onPath(e.target.value)}
-      >
-        <option value="">{t('None')}</option>
-        {categories.map(category => <optgroup key={category} label={t(category)}>
-          {parameters.filter(p => categoryOfPath(p.path) === category).map(p => <option value={p.path} key={p.path}>{parameterLabel(timeline, of, p.path, t)}</option>)}
-        </optgroup>)}
-      </select>
-
-      <select
-        aria-label={`${t('Arm')} ${name}`}
-        disabled={locked}
-        value={arm === true ? 'armed' : arm === false || arm === undefined ? 'unarmed' : arm}
-        onChange={e => {
-          const v = e.target.value;
-          const automation_arm = v === 'armed' ? true : v === 'unarmed' ? false : v;
-          onEdit(['track' in of ? {
-            edit: 'set_track_audio', timeline: timeline.id, track: of.track, patch: { automation_arm }
-          } : 'bus' in of ? {
-            op: 'set_bus', timeline: timeline.id, id: of.bus, patch: { automation_arm }
-          } : {
-            op: 'set_vca', timeline: timeline.id, id: of.vca, patch: { automation_arm }
-          }]);
+        aria-haspopup="menu"
+        aria-expanded={Boolean(parameterMenuAt)}
+        onClick={event => {
+          const box = event.currentTarget.getBoundingClientRect();
+          setParameterMenuAt({
+            x: box.left, y: box.bottom, label: `${t('Automation parameter')} ${name}`,
+            items: parameterMenu(parameters, each => parameterLabel(timeline, of, each, t), category => t(category), path, onPath, t('None')),
+          });
         }}
       >
-        {([['unarmed', 'Unarmed'], ['armed', 'Arm'], ['safe', 'Safe'], ['off', 'Bypass']] as const).map(([v, label]) => <option key={v} value={v}>{t(label)}</option>)}
-      </select>
+        {path ? parameterLabel(timeline, of, path, t) : t('None')} ▾
+      </button>
+
+      {parameterMenuAt && <CoveringMenu menu={parameterMenuAt} onClose={() => setParameterMenuAt(null)} />}
+
+      <button
+        type="button"
+        className="automation-arm"
+        aria-label={`${t('Arm')} ${name}`}
+        aria-pressed={arm === true}
+        data-arm={arm === 'safe' || arm === 'off' ? arm : undefined}
+        data-writing={touch?.writing(of) ?? undefined}
+        disabled={locked}
+        title={`${t('Arm')}: Alt, Ctrl+Alt`}
+        onClick={event => setArm(arm !== true, event)}
+        onContextMenu={event => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (!locked)
+            setArmMenu({ x: event.clientX, y: event.clientY });
+        }}
+      >
+        {t(arm === 'safe' ? 'Safe' : arm === 'off' ? 'Bypass' : 'Arm')}
+      </button>
+
+      {armMenu && <PortalMenu anchor={armMenu} label={`${t('Arm')} ${name}`} onClose={() => setArmMenu(null)}>
+        {([['safe', 'Safe'], ['off', 'Bypass'], [false, 'Unarmed']] as const).map(([value, label]) => <button
+          key={String(value)}
+          type="button"
+          role="menuitem"
+          onClick={event => {
+            setArm(value, event);
+            setArmMenu(null);
+          }}
+        >
+          {t(label)}
+        </button>)}
+        <button type="button" role="menuitem" onClick={() => setArmMenu(null)}>{t('Cancel')}</button>
+      </PortalMenu>}
 
       {clear && <div role="dialog" aria-label={t('Clear Track Automation')}>
         {(['reset', 'hold'] as const).map(then => <button
@@ -487,10 +677,11 @@ export function AutomationLane(props: Props) {
         }}
       />)}
 
-      {path === 'fader_db' && 'track' in of && (timeline.tracks.find(tr => 'track' in of && tr.id === of.track && tr.kind === 'audio') as import('../engine').ClipTrack | undefined)?.strip?.vcas?.map(id => {
+      {path === 'fader_db' && vcaAncestors(timeline, of).map(id => {
         const v = timeline.vcas?.find(v => v.id === id);
         return v?.lanes?.fader_db && <polyline
           key={id}
+          className="automation-vca-line"
           points={poly(v.lanes.fader_db)}
           stroke="#daa9ff"
           fill="none"
@@ -498,6 +689,8 @@ export function AutomationLane(props: Props) {
           pointerEvents="none"
         />;
       })}
+
+      <RecordingTrail target={{ of, path }} lane={lane} parameter={parameter} timeline={timeline} x={x} y={y} />
 
       {live && <line
         x1={0}

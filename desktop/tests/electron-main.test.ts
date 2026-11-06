@@ -4531,7 +4531,7 @@ describe('the engine of the studio', () => {
       'audio.eq_response', 'audio.dynamics_curve', 'audio.fx_meters', 'audio.soft_clip_curve', 'audio.noise_learn',
       'audio_presets.list', 'audio_presets.save', 'audio_presets.update', 'audio_presets.delete',
       // The recording of automation (T16), and the rest of it (T16b).
-      'automation.record', 'automation.touch', 'automation.punch',
+      'automation.record', 'automation.touch', 'automation.punch', 'automation.punch_out',
       'automation.all_read', 'automation.join', 'automation.fill', 'automation.copy', 'clips.copy',
     ];
     for (const method of allowed) {

@@ -1265,6 +1265,16 @@ impl Playback {
         }
     }
 
+    /// The settings of which a value is held live, of an owner that `named` names (a Punch Out of
+    /// those owners lets them go).
+    pub(crate) fn held_of(&self, named: &dyn Fn(&Owner) -> bool) -> Vec<(Owner, String)> {
+        self.held
+            .iter()
+            .filter(|held| named(&held.owner))
+            .map(|held| (held.owner.clone(), held.path.clone()))
+            .collect()
+    }
+
     /// Whether a value is held live in place of the lane of `owner` at `path`.
     #[cfg(test)]
     pub(crate) fn holds(&self, owner: &Owner, path: &str) -> bool {

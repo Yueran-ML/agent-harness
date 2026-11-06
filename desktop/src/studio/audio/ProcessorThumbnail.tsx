@@ -9,6 +9,7 @@ import { useProcessorCurve } from './useProcessorCurve';
 import type { ProcessorProps } from './useProcessor';
 import { clamp } from './taper';
 import { copyProcessor, pastedProcessor } from './ProcessorToolbar';
+import { useAutomationTouch } from '../fairlight/AutomationTouch';
 
 export function ProcessorThumbnail({ name, module, on, disabled, context, settings, onToggle, onOpen, onPaste, openOnClick = false, showCurve = true }: {
   name: string; module: ProcessorModule; on: boolean; disabled: boolean; context: ProcessorProps;
@@ -19,7 +20,9 @@ export function ProcessorThumbnail({ name, module, on, disabled, context, settin
   showCurve?: boolean;
 }) {
   const t = useFairlightText(), timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [menu, setMenu] = useState<Menu | null>(null);
+  const [menu, setMenu] = useState<Menu | null>(null), automation = useAutomationTouch();
+  // The module's enable of a track or bus (not a clip's): its automation shows on the timeline.
+  const enableTarget = automation && !('clip' in context.target) ? { of: context.target, path: `${module}.on` } : null;
   const session = context.session, timeline = context.timeline.id, owner = targetKey(context.target);
   const current = useRef({ session, timeline, owner, module, disabled, openOnClick, onToggle });
   current.current = { session, timeline, owner, module, disabled, openOnClick, onToggle };
@@ -28,11 +31,13 @@ export function ProcessorThumbnail({ name, module, on, disabled, context, settin
     timer.current = null;
   }, [session, timeline, owner, module]);
   return <><button type="button" className="processor-thumbnail" aria-label={`${module === 'eq' ? 'EQ' : t('Dynamics')} ${name}`} aria-pressed={openOnClick ? undefined : on}
+    data-automation-state={enableTarget ? automation?.status(enableTarget) ?? undefined : undefined}
     onContextMenu={event => { event.preventDefault(); event.stopPropagation(); if (timer.current) clearTimeout(timer.current); timer.current = null;
       const saved = pastedProcessor(module, settings), modifiers = { altKey: event.altKey, ctrlKey: event.ctrlKey, shiftKey: event.shiftKey };
       setMenu({ x: event.clientX, y: event.clientY, label: `${module === 'eq' ? 'EQ' : t('Dynamics')} ${name}`, items: [
         { id: 'copy-processor', label: t('Copy'), run: () => copyProcessor(module, settings) },
         { id: 'paste-processor', label: t('Paste'), disabled: disabled || !saved, run: () => { if (saved) onPaste(saved, modifiers); } },
+        ...(enableTarget ? [{ id: 'show-automation', label: t('Show automation in timeline'), run: () => automation?.show(enableTarget) }] : []),
       ] });
     }}
     onClick={event => {

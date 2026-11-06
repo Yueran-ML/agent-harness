@@ -7,6 +7,21 @@ import type { ProcessorProps } from './useProcessor';
 import { effectOwner, insertParameters } from './effectModel';
 import { targetKey } from './processorModel';
 import { laneValue, mixerStrips, operationTargets, type Modifiers } from './mixerModel';
+import { useAutomationTouch } from '../fairlight/AutomationTouch';
+
+/** The numbers and switches of `next` that differ from `base`, by their dotted fields (`kind` aside). */
+export function changedFields(base: object, next: object, prefix = ''): [string, number][] {
+  const changed: [string, number][] = [];
+  for (const [key, value] of Object.entries(next)) {
+    const field = prefix + key, before = (base as Record<string, unknown>)[key];
+    if (key === 'kind' && !prefix) continue;
+    if ((typeof value === 'number' || typeof value === 'boolean') && value !== before)
+      changed.push([field, Number(value)]);
+    else if (value && typeof value === 'object' && !Array.isArray(value) && before && typeof before === 'object')
+      changed.push(...changedFields(before, value, `${field}.`));
+  }
+  return changed;
+}
 
 export function useEffectEditor(props: ProcessorProps, index: number) {
   const { timeline, target, session, revision, bridge } = props;
@@ -16,7 +31,7 @@ export function useEffectEditor(props: ProcessorProps, index: number) {
   const [problem, setProblem] = useState<string | null>(null), [preview, setPreview] = useState<Insert | null>(null);
   const gesture = useAudioGesture({ bridge, session, revision, identity, locked: owner.locked, onFailure: error => setProblem(failure(error)) });
   const captured = useRef(model);
-  const control = useEffectAutomation(props), {automation, recording} = control;
+  const control = useEffectAutomation(props), {automation, recording} = control, touch = useAutomationTouch();
   const touched = useRef<string | null>(null);
   const activeField = useRef<string | null>(null);
   const touchEnd=useRef<(()=>void)|null>(null);
@@ -71,7 +86,9 @@ export function useEffectEditor(props: ProcessorProps, index: number) {
   }
   const numeric = (field: string) => { const parts = field.split('.'); let value: any = field === 'on' ? current : current?.effect; for (const p of parts) value = value?.[p]; return typeof value === 'boolean' ? Number(value) : value; };
   const active = (field?: string) => (field === undefined || activeField.current === field) && (touched.current ? touchActive() : gesture.active());
-  return { value: current, model, problem: problem ?? control.problem, path, writable, owner, gesture, active, automation, recording,
+  // A preset or a paste may be written as automation while recording (Write on Preset or Clipboard Paste).
+  const pastesWritten = Boolean(recording && touch?.writeOnPaste && !('clip' in target));
+  return { value: current, model, problem: problem ?? control.problem, path, writable, owner, gesture, active, automation, recording, pastesWritten,
     status: (field:string) => control.status(path(field)), supported:(field:string)=>control.supported(path(field)),
     show: (field: string) => { if (!('clip' in target)) automation?.show({ of: target, path: path(field) }); },
     start: (field: string) => {
@@ -93,6 +110,17 @@ export function useEffectEditor(props: ProcessorProps, index: number) {
       if (recording) { if (!('clip' in target) && (typeof value === 'number' || typeof value === 'boolean')) automation?.instant({ of: target, path: path(field) }, Number(value)); return; }
       gesture.commit(batchOps(field, value, modifiers));
     },
-    replace: (effect: Insert['effect'], modifiers: Modifiers = {}) => { if (model && writable() && model.effect.kind === effect.kind) gesture.commit(batchOps(undefined, effect, modifiers)); },
+    replace: (effect: Insert['effect'], modifiers: Modifiers = {}) => {
+      if (!model || model.effect.kind !== effect.kind) return;
+      // Write on Preset or Clipboard Paste (p. 121): while recording, the settings that a preset
+      // or a paste changes are written as automation, of the categories that are on.
+      if (recording && touch?.writeOnPaste && !('clip' in target)) {
+        const values = changedFields(model.effect, effect).filter(([field]) => control.supported(path(field)))
+          .map(([field, value]) => ({ target: { of: target, path: path(field) }, value }));
+        if (values.length) touch.instantBatch(values);
+        return;
+      }
+      if (writable()) gesture.commit(batchOps(undefined, effect, modifiers));
+    },
   };
 }

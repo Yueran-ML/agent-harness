@@ -65,6 +65,37 @@ export function readGlide(): number {
 export function saveGlide(value: number): void {
   try { localStorage.setItem(GLIDE_KEY, String(value)); } catch { /* Not kept where storage is unavailable; the value still applies now. */ }
 }
+/** Write on Preset or Clipboard Paste (Preferences › User › Fairlight › Automation, p. 121): off by default. */
+const WRITE_ON_PASTE_KEY = 'fairlight.write_on_paste';
+export function readWriteOnPaste(): boolean {
+  try { return localStorage.getItem(WRITE_ON_PASTE_KEY) === 'true'; } catch { return false; }
+}
+export function saveWriteOnPaste(on: boolean): void {
+  try { localStorage.setItem(WRITE_ON_PASTE_KEY, String(on)); } catch { /* Not kept where storage is unavailable; it still applies now. */ }
+}
+/**
+ * How far , and . nudge automation (Preferences › User › Editing, p. 3797): a frame (the
+ * default), a subframe (a tenth of a frame) or a millisecond; Shift nudges five times as far.
+ */
+export const NUDGE_UNITS = ['frame', 'subframe', 'millisecond'] as const;
+export type NudgeUnit = typeof NUDGE_UNITS[number];
+const NUDGE_KEY = 'fairlight.automation_nudge';
+export function readNudge(): NudgeUnit {
+  try {
+    const kept = localStorage.getItem(NUDGE_KEY);
+    return NUDGE_UNITS.find(unit => unit === kept) ?? 'frame';
+  } catch { return 'frame'; }
+}
+export function saveNudge(unit: NudgeUnit): void {
+  try { localStorage.setItem(NUDGE_KEY, unit); } catch { /* Not kept where storage is unavailable; it still applies now. */ }
+}
+/** The samples that one nudge of `unit` moves by on `timeline`. */
+export function nudgeSamples(unit: NudgeUnit, timeline: Pick<Timeline, 'rate' | 'sample_rate'>): number {
+  const frame = timeline.sample_rate * timeline.rate.den / timeline.rate.num;
+  if (unit === 'millisecond')
+    return Math.max(1, Math.round(timeline.sample_rate / 1000));
+  return Math.max(1, Math.round(unit === 'subframe' ? frame / 10 : frame));
+}
 export const categories = ['fader','mute','pan','eq','comp','gate','lim','sends','plugins','misc'] as const;
 export const defaultRecord = (): NonNullable<Timeline['audio']>['record'] => ({ mode: 'write', touch: 'off', on_stop: 'return', categories: Object.fromEntries(categories.map(c => [c,true])) as NonNullable<Timeline['audio']>['record']['categories'], preview: false, active_range: null });
 

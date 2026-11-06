@@ -60,7 +60,14 @@ export function useProcessor<M extends ProcessorModule>(props: ProcessorProps, m
     if(recording){const paths=changed(value);if(paths.length)automation!.instantBatch(values(value,paths));return;}
     gesture.commit(changes(value,modifiers));
   };
-  return { value: recording&&ownsTouch()?preview??playback():gesture.active()?preview??model:playback(), model, disabled, recording, problem: problem ?? parameterProblem,
+  // A preset or a pasted setting (p. 121): written as automation while recording only under Write
+  // on Preset or Clipboard Paste (off by default); otherwise set, as when not recording.
+  const paste=(value:Settings,modifiers:Modifiers={})=>{
+    if(disabled)return;
+    if(recording&&automation?.writeOnPaste){commit(value,modifiers);return;}
+    gesture.commit(changes(value,modifiers));
+  };
+  return { paste, value: recording&&ownsTouch()?preview??playback():gesture.active()?preview??model:playback(), model, disabled, recording, problem: problem ?? parameterProblem,
     gesture:{...gesture,active:()=>recording?ownsTouch():gesture.active()},
     start,snapshot:()=>snapshot.current,
     change:(value:Settings)=>{if(recording){if(!ownsTouch())return;setPreview(value);automation!.changeBatch(values(value,touched.current));}else if(gesture.active()){setPreview(value);gesture.preview(changes(value));}},

@@ -8,11 +8,12 @@ import { processorChanges, processorWritable } from '../audio/processorModel';
 import { mixerStrips } from '../audio/mixerModel';
 import { useAudioGesture } from '../timeline/useAudioGesture';
 import { useFailureText, useFairlightText } from './words';
+import { useShowAutomation } from './ShowAutomationMenu';
 
 export function PathSettings({ context, stripKey, anchor, onClose }: { context: ProcessorProps; stripKey: string; anchor: { x: number; y: number }; onClose: () => void }) {
   useOverlay();
   const t = useFairlightText(), strip = mixerStrips(context.timeline).find(s => s.key === stripKey)!;
-  const failure = useFailureText();
+  const failure = useFailureText(), showMenu = useShowAutomation();
   const [problem, setProblem] = useState(''), [preview, setPreview] = useState<number | null>(null);
   const automation=useAutomationTouch(), recording=Boolean(automation?.enabled&&automation.recording), of=ownerOf(stripKey), target={of,path:'trim_db'};
   const baseTrim=strip.strip?.trim_db??0;
@@ -35,7 +36,9 @@ export function PathSettings({ context, stripKey, anchor, onClose }: { context: 
       onEnd={()=>{if(recording){if(automation!.active(target))automation!.end();}else gesture.end();setPreview(null);}}
       onCancel={()=>{if(automation?.active(target))automation.end();gesture.cancel();setPreview(null);}}
       onCommit={value=>{if(recording)automation!.instant(target,value);else gesture.commit(changes('trim_db',value));}} />
-    <label><input type="checkbox" checked={switched('invert')} disabled={!writable('invert')} onChange={event=>{if(recording)automation!.instant({of,path:'invert'},Number(event.target.checked));else gesture.commit(changes('invert',event.target.checked));}} />{t('Polarity')}</label>
+    {showMenu.menu}
+    <label data-automation-state={automation?.status({of,path:'invert'})??undefined} onContextMenu={showMenu.open({of,path:'invert'})}>
+      <input type="checkbox" checked={switched('invert')} disabled={!writable('invert')} onChange={event=>{if(recording)automation!.instant({of,path:'invert'},Number(event.target.checked));else gesture.commit(changes('invert',event.target.checked));}} />{t('Polarity')}</label>
     <label><input type="checkbox" checked={switched('inserts_on')} disabled={recording||!writable('inserts_on')} onChange={event=>gesture.commit(changes('inserts_on',event.target.checked))} />{t('Insert')}</label>
   </section>;
 }

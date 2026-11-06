@@ -323,7 +323,7 @@ class _AudioRange(BaseModel):
 
 class _Loudness(_Timeline):
     action: Literal["measure", "apply"]
-    target: Literal["clip", "track", "bus", "main", "clip_gain"]
+    target: Literal["clip", "track", "bus", "main", "clip_gain", "track_fader"]
     ids: list[str] = Field(
         default_factory=list,
         max_length=256,
@@ -337,7 +337,7 @@ class _Loudness(_Timeline):
         default=None,
         description=(
             "Engine loudness standard id; apply also accepts sample_peak or true_peak. "
-            "Omitted: timeline standard for measure, sample_peak for apply."
+            "Omitted: sample_peak for clip_gain; timeline standard for measure and fader apply."
         ),
     )
     level: float | None = Field(
@@ -346,11 +346,12 @@ class _Loudness(_Timeline):
         le=0,
         description="Apply target in LUFS or dBFS; omitted uses the engine preset target.",
     )
-    mode: Literal["relative", "independent"] | None = Field(
+    mode: Literal["relative", "independent", "optimize"] | None = Field(
         default=None,
         description=(
-            "Apply clip_gain only: relative (default) moves all clips together; "
-            "independent normalizes each."
+            "clip_gain defaults to relative; track_fader defaults to independent. "
+            "Relative preserves level differences. Main uses optimize (default), "
+            "measuring a candidate with a limiter if needed before one final transaction."
         ),
     )
 
@@ -949,12 +950,15 @@ def tools_of(videos: Videos) -> list[Tool[Any, str]]:
         tool(
             "video_loudness",
             _Loudness,
-            "Measure clip, track, bus or main loudness and peaks; ranges only for track/bus/main. "
+            "Measure clip, track, bus or main loudness and peaks, optionally over a frame range. "
             "Apply supports clip_gain Normalize Audio Levels (relative or independent), moving "
             "existing gain keys in one undo step. Main means a bus with no outputs; select ids "
             "when there are multiple. Null means no measurable level; "
             "clamped/refused are reported. Standards and official status come from the engine. "
-            "Track/main apply is not supported.",
+            "Apply track_fader preserves automation keys. Main optimize measures candidate "
+            "gain and, when needed, a last insert limiter with post-fader compensation; "
+            "at most one gain correction, then one revision-bound transaction. Read met "
+            "and before/after values; a target may remain unmet. Apply uses whole targets.",
             long=True,
         ),
         tool(

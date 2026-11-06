@@ -321,7 +321,7 @@ async def test_tool_cancellation_stops_the_job(
 @pytest.mark.parametrize(
     "params",
     [
-        {"action": "apply", "target": "main"},
+        {"action": "apply", "target": "main", "mode": "relative"},
         {"action": "apply", "target": "track_fader"},
         {"action": "apply", "target": "clip_gain", "ids": ["c1"], "mode": "optimize"},
         {"action": "measure", "target": "main", "mode": "relative"},
@@ -391,6 +391,38 @@ async def test_standards_and_project_are_bound_to_the_same_session(
     assert failed.error is not None
     assert failed.error.code == "VIDEO_STALE_REVISION"
     assert not fake.sounds
+
+
+async def test_track_fader_tool_registration_uses_candidates_then_one_real_request(
+    studio: tuple[Desk, Fake], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    desk, fake = studio
+    sound = fake._sound  # pyright: ignore[reportPrivateUsage]
+
+    def measured(method: str, params: dict[str, Any]) -> dict[str, Any]:
+        fake.sound_found = {
+            "standard": "bilibili",
+            "level": -17.5,
+            "results": [
+                {
+                    "target": {"track": "A1"},
+                    "integrated": -17.5 if "candidate" in params else -23.5,
+                    "true_peak": -8,
+                }
+            ],
+        }
+        return sound(method, params)
+
+    monkeypatch.setattr(fake, "_sound", measured)
+    told = result(
+        await desk.call("video_loudness", action="apply", target="track_fader", ids=["A1"])
+    )
+    assert told["met"]
+    assert told["status"] == "applied"
+    assert len(fake.steps) == 1
+    assert fake.project["timelines"][0]["tracks"][0]["strip"]["fader_db"] == 6
+    assert fake.sounds[0][1].get("candidate") is None
+    assert fake.sounds[1][1]["candidate"] == told["ops"]
 
 
 async def test_audio_info_is_a_compact_snapshot_without_analysis_or_asset_io(

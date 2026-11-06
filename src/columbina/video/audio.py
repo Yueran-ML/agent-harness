@@ -23,26 +23,45 @@ class Loudness:
         self,
         *,
         action: Literal["measure", "apply"],
-        target: Literal["clip", "track", "bus", "main", "clip_gain"],
+        target: Literal["clip", "track", "bus", "main", "clip_gain", "track_fader"],
         timeline: str | None = None,
         ids: Sequence[str] = (),
         frames: tuple[int, int] | None = None,
         standard: str | None = None,
         level: float | None = None,
-        mode: Literal["relative", "independent"] | None = None,
+        mode: Literal["relative", "independent", "optimize"] | None = None,
     ) -> dict[str, Any]:
         """Wait for the analysis, retaining null readings, clamping and apply refusals.
 
         Ranges are timeline frames, intersected with clips when measuring them. Clip normalization
         moves the existing Volume curve; it never substitutes a fixed gain for its keys.
         """
+        if action == "apply" and (target == "track_fader" or target == "main"):
+            if frames is not None:
+                raise _invalid(
+                    "fader apply measures whole targets; use measure for a selected range"
+                )
+            from columbina.video.mix_loudness import apply_mix
+
+            return await apply_mix(
+                self.engine,
+                self._check,
+                target=target,
+                timeline=timeline,
+                ids=ids,
+                standard=standard,
+                level=level,
+                mode=mode,
+            )
         if action == "measure":
-            if target == "clip_gain" or mode is not None or level is not None:
+            if target in {"clip_gain", "track_fader"} or mode is not None or level is not None:
                 raise _invalid(
                     "measure takes clip, track, bus or main; mode and level are for apply"
                 )
         elif target != "clip_gain" or frames is not None:
             raise _invalid("apply supports clip_gain only, over whole clips without a range")
+        elif mode == "optimize":
+            raise _invalid("clip_gain uses relative or independent mode; optimize is for main")
         if frames is not None and not 0 <= frames[0] < frames[1]:
             raise _invalid("range must have 0 <= from < to in timeline frames", "out_of_range")
         if target != "main" and not ids:

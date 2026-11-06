@@ -1,4 +1,4 @@
-"""Ducker proposals reuse word mapping and commit only the last measured candidate."""
+"""Ducker proposals reuse word mapping and commit only the best measured candidate."""
 
 import asyncio
 import copy
@@ -196,8 +196,27 @@ async def test_short_and_silent_intervals_use_matching_loudness_metrics(
     wire.apply.assert_awaited_once()
 
 
+def amount(params: dict[str, Any]) -> float:
+    """The candidate's Ducker amount, or 0 for a measurement without a candidate."""
+    ops = params.get("candidate") or []
+    return ops[0]["patch"]["strip"]["track_fx"]["amount_db"] if ops else 0
+
+
 async def test_unmet_margin_stops_after_exactly_two_three_db_adjustments(tmp_path: Path) -> None:
-    wire = setup(tmp_path, margin=4)
+    wire = setup(tmp_path)
+
+    async def measure(_method: str, params: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
+        # During speech each 3 dB of duck gains 1 LU of margin, never reaching 10 LU.
+        speaking = params.get("range") == {"from": 50, "to": 100}
+        margin = 4 + (amount(params) - 12) / 3 if speaking else 4
+        return {
+            "results": [
+                {"target": {"sum": ["A1"]}, "integrated": -18},
+                {"target": {"sum": ["A2"]}, "integrated": -18 - margin},
+            ]
+        }
+
+    wire.analyze_sound.side_effect = measure
     result = await Duck(wire, tmp_path, Path).run(music=["A2"])
     assert result["met"] is False
     assert result["adjustments"] == 2
@@ -254,13 +273,16 @@ async def test_two_backgrounds_each_twelve_lu_lower_are_judged_by_real_sum(tmp_p
     tracks.append({**copy.deepcopy(tracks[1]), "id": "A3"})
 
     async def measure(_method: str, params: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
+        # Each 3 dB of duck lowers the sum 1 LU; it stays above the 10 LU margin.
+        speaking = params.get("range") == {"from": 50, "to": 100}
+        gained = (amount(params) - 12) / 3 if speaking else 0
         return {
             "results": [
                 {
                     "target": target,
                     "integrated": -18
                     if target == {"sum": ["A1"]}
-                    else -24
+                    else -24 - gained
                     if len(target["sum"]) > 1
                     else -30,
                     "sample_peak": -12,
@@ -280,7 +302,7 @@ async def test_two_backgrounds_each_twelve_lu_lower_are_judged_by_real_sum(tmp_p
         next(row for row in result["checks"] if row["kind"] == "speech" and "sum" in row)[
             "margin_lu"
         ]
-        == 6
+        == 8
     )
     wire.apply.assert_awaited_once()
 
@@ -425,3 +447,45 @@ async def test_repeat_with_same_ducker_adds_no_history(tmp_path: Path) -> None:
     assert result["status"] == "applied"
     assert result["changed"] is True
     wire.apply.assert_awaited_once()
+
+
+async def test_oscillating_adjustment_applies_the_best_measured_candidate(tmp_path: Path) -> None:
+    """12 dB misses speech by 2 LU; 15 dB meets speech but moves one quiet range by 2 dB."""
+    wire = setup(tmp_path)
+
+    async def measure(_method: str, params: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
+        duck = amount(params)
+        frames = params.get("range")
+        background = (
+            -18 - (8 + duck - 12)
+            if frames == {"from": 50, "to": 100}
+            else -32
+            if frames == {"from": 119, "to": 200} and duck > 12
+            else -30
+        )
+        return {
+            "results": [
+                {"target": {"sum": ["A1"]}, "integrated": -18},
+                {"target": {"sum": ["A2"]}, "integrated": background},
+            ]
+        }
+
+    wire.analyze_sound.side_effect = measure
+    result = await Duck(wire, tmp_path, Path).run(music=["A2"])
+    assert result["amount_db"] == {"A2": 15}
+    assert result["adjustments"] == 1
+    assert [row["amount_db"] for row in result["candidates"]] == [{"A2": 12}, {"A2": 15}]
+    assert [(row["failed"], row["shortfall_db"]) for row in result["candidates"]] == [
+        (1, 2),
+        (1, 1),
+    ]
+    assert result["met"] is False
+    candidates = [
+        call.args[1]["candidate"]
+        for call in wire.analyze_sound.call_args_list
+        if "candidate" in call.args[1]
+    ]
+    # The return to 12 dB is not measured twice.
+    assert {ops[0]["patch"]["strip"]["track_fx"]["amount_db"] for ops in candidates} == {12, 15}
+    wire.apply.assert_awaited_once_with(result["ops"], revision=7, session=3)
+    assert result["ops"][0]["patch"]["strip"]["track_fx"]["amount_db"] == 15

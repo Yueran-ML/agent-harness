@@ -3,7 +3,7 @@ import type { AutomationArm, LanesOf } from '../engine';
 import { laneValue } from './automation';
 import { useState, type PointerEvent } from 'react';
 import { createPortal } from 'react-dom';
-import type { MeterChannel } from '../engine';
+import { sameChannels, stripChannels, useMeterReading, type MeterSource } from './audioReadings';
 import { NameField } from '../media/NameField';
 import { Fader } from '../audio/Fader';
 import { Meter } from '../audio/Meter';
@@ -24,9 +24,15 @@ import { InsertSlots } from './InsertSlots';
 import { DuckerPanel } from '../audio/DuckerPanel';
 import { StripCopy } from '../audio/StripCopy';
 
-export function ChannelStrip({ strip, seconds, value, selected, meters, shadow, onSelect, onRename, onStart, onChange, onEnd, onCancel, onCommit, isActive, onToggle, onSweep, onEnter, onArm, processorContext, onProcessor, onStripSetting, onReorder, selectedKeys = [], compact = false }: {
+/** The strip's meter: the only part of a strip drawn again at each reading. */
+function StripMeter({ strip, source, prefader, shadow }: { strip: MixerStrip; source: MeterSource; prefader: boolean; shadow: boolean }) {
+  const owner = strip.kind === 'track' ? { track: strip.id } : { bus: strip.id };
+  const values = useMeterReading(source, meters => stripChannels(meters, owner, prefader), sameChannels);
+  return <Meter label={strip.name} channels={strip.channels} values={values} disabled={!strip.enabled} shadow={shadow} />;
+}
+export function ChannelStrip({ strip, seconds, value, selected, meters, prefader = false, shadow, onSelect, onRename, onStart, onChange, onEnd, onCancel, onCommit, isActive, onToggle, onSweep, onEnter, onArm, processorContext, onProcessor, onStripSetting, onReorder, selectedKeys = [], compact = false }: {
   onReorder?: (keys: string[], before: string) => void; selectedKeys?: readonly string[];
-  strip: MixerStrip; seconds: number; value?: number; selected: boolean; meters?: MeterChannel[]; shadow: boolean;
+  strip: MixerStrip; seconds: number; value?: number; selected: boolean; meters?: MeterSource; prefader?: boolean; shadow: boolean;
   onSelect: (modifiers: Modifiers) => void; onRename: (name: string) => Promise<boolean>;
   onStart: (modifiers: Modifiers) => boolean; onChange: (value: number) => void; onEnd: () => void; onCancel: () => void;
   onCommit: (value: number, modifiers?: Modifiers) => void;
@@ -100,7 +106,7 @@ export function ChannelStrip({ strip, seconds, value, selected, meters, shadow, 
         onEnd={()=>{if(recording){if(automation!.active(target))automation!.end();}else onEnd();}}
         onCancel={()=>{if(automation?.active(target))automation.end();onCancel();}}
         onCommit={(v,m)=>{if(recording)automation!.instant(target,v);else onCommit(v,m);}} isActive={()=>recording?automation!.active(target):isActive()} />
-      <Meter label={strip.name} channels={strip.channels} values={meters} disabled={!strip.enabled} shadow={shadow} />
+      <StripMeter strip={strip} source={meters} prefader={prefader} shadow={shadow} />
     </div>
     {reading.automated && <small className="mixer-automation" title={t('Automation controls playback. Static settings do not replace the lane.')}>{t('Automation controls playback')}<br />{t('Base value')}: {formatDb(strip.db)} dB</small>}
   </article>;

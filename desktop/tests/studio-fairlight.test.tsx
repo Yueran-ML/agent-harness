@@ -2,7 +2,7 @@
 import { useState, type ComponentProps } from 'react';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { useAudioReadings } from '../src/studio/fairlight/audioReadings';
+import { useAudioReadings, useMeterReading } from '../src/studio/fairlight/audioReadings';
 import { Monitoring } from '../src/studio/fairlight/Monitoring';
 import { IndexTracks } from '../src/studio/fairlight/IndexTracks';
 import { LevelMatcher } from '../src/studio/fairlight/LevelMatcher';
@@ -51,7 +51,8 @@ beforeEach(() => { likeABrowser(); vi.useFakeTimers(); vi.stubGlobal('PointerEve
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 function Readings({ bridge, session = 1, visible = true }: { bridge: ReturnType<typeof engine>; session?: number; visible?: boolean }) {
   const audio = useAudioReadings(bridge, session, 't1', visible);
-  return <><output data-testid="reading">{audio.meters?.strips[0]?.post[0].bar ?? 'none'}</output><button onClick={() => void audio.analyze(['sound1'], 'ebu_r128')}>Analyze</button><button onClick={audio.cancel}>Cancel</button><output data-testid="analysis">{audio.analysis?.state}</output></>;
+  const bar = useMeterReading(audio.readings, value => value?.strips[0]?.post[0].bar);
+  return <><output data-testid="reading">{bar ?? 'none'}</output><button onClick={() => void audio.analyze(['sound1'], 'ebu_r128')}>Analyze</button><button onClick={audio.cancel}>Cancel</button><output data-testid="analysis">{audio.analysis?.state}</output></>;
 }
 it('does not rerender the owning page for identical stopped meters, but publishes peak resets', async () => {
   const bridge = engine();
@@ -61,7 +62,9 @@ it('does not rerender the owning page for identical stopped meters, but publishe
   function Host() {
     renders++;
     const audio = useAudioReadings(bridge, 1, 't1', true);
-    return <button onClick={() => void audio.resetPeaks()}>{audio.meters?.strips[0].post[0].peak ?? 'none'}</button>;
+    // Whatever subscribes to the whole reading is drawn again for each new one, and only then.
+    const meters = useMeterReading(audio.readings, value => value);
+    return <button onClick={() => void audio.resetPeaks()}>{meters?.strips[0].post[0].peak ?? 'none'}</button>;
   }
   render(<Host />); await settle();
   await act(async () => vi.advanceTimersByTimeAsync(200));

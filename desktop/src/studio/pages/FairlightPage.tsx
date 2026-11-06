@@ -119,7 +119,7 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
     {selected && <AutomationToolbar bridge={bridge} session={session} timeline={selected} view={view} update={update} recording={state?.recording??false} selected={stripSelection} frame={state?timelineMonitor.frame??0:0} onEdit={ops=>void edit(ops as Record<string,unknown>[])} onFailure={e=>setProblem(String(e))} onToggle={()=>update({automation:!view.automation})} marks={()=>timeline.current?.marks()??{in:null,out:null}}/>}
     {(problem || audio.problem) && <p role="alert">{problem ?? audio.problem}<button type="button" onClick={() => setProblem(null)}>{t('Dismiss')}</button></p>}
     {view.meters && selected && <div className="fairlight-monitoring-wrap" style={{ height: view.monitoringHeight }}>
-      <Monitoring timeline={selected} meters={audio.meters} layout={mixerLayout} view={view.monitoring} onView={monitoring=>update({monitoring})} onAction={action => void audio.action(action)} onResetPeaks={() => void audio.resetPeaks()}
+      <Monitoring timeline={selected} meters={audio.readings} layout={mixerLayout} view={view.monitoring} onView={monitoring=>update({monitoring})} onAction={action => void audio.action(action)} onResetPeaks={() => void audio.resetPeaks()}
         onPatch={patch => void edit([{ op: 'set_timeline_audio', timeline: selected.id, patch }])} viewer={view.viewer && !cinema ? viewer : undefined} />
       <Separator label={t('Monitoring height')} value={view.monitoringHeight} min={150} max={500} onChange={monitoringHeight => update({ monitoringHeight })} />
     </div>}
@@ -149,7 +149,7 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
           onCopyClips={attributes.copy} onClipContext={(id, x, y, channel) => { if (selected?.tracks.some(track => track.kind === 'audio' && track.clips.some(clip => clip.id === id))) setContext({ clip: id, x, y, ...channel }); }} />
         {view.mixer && <><Separator label={t('Mixer height')} direction={-1} value={view.mixerHeight} min={180} max={500} onChange={mixerHeight => update({ mixerHeight })} />
           <section className="fairlight-mixer-slot" aria-label={t('Mixer')} style={{ height: view.mixerHeight }}>{mixer ?? (selected && <Mixer bridge={bridge} session={session} revision={revision}
-            timeline={selected} frame={state ? timelineMonitor.frame ?? 0 : 0} meters={audio.meters} selected={stripSelection} onSelect={chooseStrips} />)}</section></>}
+            timeline={selected} frame={state ? timelineMonitor.frame ?? 0 : 0} meters={audio.readings} selected={stripSelection} onSelect={chooseStrips} />)}</section></>}
       </div>
       {view.inspector && selected && <><Separator label={t('Inspector width')} vertical direction={-1} value={view.rightWidth} min={240} max={600} onChange={rightWidth => update({ rightWidth })} />
         <Inspector bridge={bridge} session={session} revision={revision} timeline={selected} media={media} clips={clips} track={track} transition={transition} onEdit={ops => void edit(ops)}

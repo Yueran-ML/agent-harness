@@ -1,7 +1,8 @@
 import { useAutomationTouch } from './AutomationTouch';
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import type { EngineBridge } from '../../bridge';
-import { callEngine, type Meters, type Timeline } from '../engine';
+import { callEngine, type Timeline } from '../engine';
+import type { MeterSource } from './audioReadings';
 import type { Change } from '../timeline/commands';
 import { useAudioGesture } from '../timeline/useAudioGesture';
 import { faderChanges, faderPlan, groupMembers, mixerStrips, operationTargets, stripChange, type FaderPlan, type MixerStrip, type Modifiers } from '../audio/mixerModel';
@@ -32,7 +33,7 @@ export function isolateMixerKeys(event: KeyboardEvent<HTMLElement>) {
 
 export interface MixerProps {
   automation?: AudioAutomationAdapter | null;
-  bridge: Pick<EngineBridge, 'call'>; session: number; revision: number; timeline: Timeline; frame: number; meters: Meters | null;
+  bridge: Pick<EngineBridge, 'call'>; session: number; revision: number; timeline: Timeline; frame: number; meters: MeterSource;
   selected: readonly string[]; onSelect: (keys: string[]) => void; compact?: boolean;
 }
 export function Mixer({ bridge, session, revision, timeline, frame, meters, selected, onSelect, compact = false }: MixerProps) {
@@ -135,13 +136,12 @@ export function Mixer({ bridge, session, revision, timeline, frame, meters, sele
     gesture.commit(processorChanges(timeline.id,targets.map(s=>automation?.enabled===false?{...s,arm:'off' as const}:s),path,value));
   };
   const draw = (strip: MixerStrip) => {
-    const reading = meters?.strips.find(m => 'track' in m.owner ? strip.kind === 'track' && m.owner.track === strip.id : strip.kind === 'bus' && m.owner.bus === strip.id);
     return <ChannelStrip onArm={(arm,modifiers)=>{const targets=operationTargets(strips,strip.key,selected,modifiers);gesture.commit(targets.map(s=>stripChange(timeline.id,s,{automation_arm:arm})));}} key={strip.key} strip={strip} compact={compact} seconds={frame * timeline.rate.den / timeline.rate.num} selected={selected.includes(strip.key)}
       onReorder={reorder} selectedKeys={selected}
       processorContext={{ bridge, session, revision, timeline, target: targetOf(strip), selected, seconds: frame * timeline.rate.den / timeline.rate.num, automation }}
       onProcessor={module => setProcessors(old => [...(compact ? [] : old.filter(p => p.key !== strip.key || p.module !== module)), { key: strip.key, module }])}
       onStripSetting={(path, value, modifiers) => void stripSetting(strip,path,value,modifiers)}
-      value={gesture.active() ? preview[strip.key] : undefined} meters={timeline.audio?.prefader_metering ? reading?.pre : reading?.post}
+      value={gesture.active() ? preview[strip.key] : undefined} meters={meters} prefader={Boolean(timeline.audio?.prefader_metering)}
       shadow={Boolean(timeline.audio?.prefader_metering && strips.some(s => s.solo) && !strip.solo && !strip.safe)}
       isActive={gesture.active} onSelect={modifiers => select(strip, modifiers)} onRename={async name => {
         try { await callEngine(bridge, 'transaction.apply', { revision, ops: [strip.kind === 'track' ? { op: 'set_track', timeline: timeline.id, id: strip.id, name }

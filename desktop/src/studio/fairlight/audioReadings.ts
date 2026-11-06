@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { EngineBridge } from '../../bridge';
 import { callEngine, EngineError, type AudioAnalysis, type LoudnessReading, type MeterChannel, type Meters } from '../engine';
 
 type Bridge = Pick<EngineBridge, 'call' | 'onEvent'>;
 interface JobOwner { live: boolean; waiting: boolean; running: boolean; cancelled: boolean; job: string | null; early: Map<string, AudioAnalysis> }
-const sameChannel = (a: MeterChannel | null, b: MeterChannel | null) => a === b || Boolean(a && b
+export const sameChannel = (a: MeterChannel | null, b: MeterChannel | null) => a === b || Boolean(a && b
   && a.bar === b.bar && a.peak === b.peak && a.bar_position === b.bar_position && a.peak_position === b.peak_position);
 function sameMeters(a: Meters | null, b: Meters): boolean {
   return a !== null && a.timeline === b.timeline && a.playing === b.playing && a.rate === b.rate
@@ -18,6 +18,53 @@ function sameMeters(a: Meters | null, b: Meters): boolean {
         && strip[point].every((channel, i) => sameChannel(channel, next[point][i])));
     });
 }
+/** The latest meter reading, held outside React state so that only the meters that show it draw again. */
+export interface MeterReadings {
+  subscribe: (listener: () => void) => () => void;
+  current: () => Meters | null;
+}
+/** What a meter reads from: the readings of a page, a fixed reading (as in tests), or none. */
+export type MeterSource = MeterReadings | Meters | null | undefined;
+function meterStore(): MeterReadings & { set: (next: Meters | null) => void } {
+  let value: Meters | null = null;
+  const listeners = new Set<() => void>();
+  return {
+    subscribe: listener => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+    current: () => value,
+    set: next => { if (next === value) return; value = next; listeners.forEach(listener => listener()); },
+  };
+}
+const isStore = (source: MeterSource): source is MeterReadings => Boolean(source && 'subscribe' in source);
+const unsubscribed = () => () => {};
+/**
+ * The part of the readings a meter shows. The component that calls it draws again only when
+ * `same` says the part has changed, not at every reading of every other meter.
+ */
+export function useMeterReading<T>(source: MeterSource, select: (meters: Meters | null) => T,
+  same: (a: T, b: T) => boolean = Object.is): T {
+  const store = isStore(source) ? source : null;
+  const cache = useRef<{ meters: Meters | null; select: unknown; value: T } | null>(null);
+  const snapshot = () => {
+    const meters = store ? store.current() : (source as Meters | null | undefined) ?? null;
+    const was = cache.current;
+    if (was && was.meters === meters && was.select === select) return was.value;
+    const next = select(meters);
+    const value = was && same(was.value, next) ? was.value : next;
+    cache.current = { meters, select, value };
+    return value;
+  };
+  return useSyncExternalStore(store ? store.subscribe : unsubscribed, snapshot);
+}
+export const sameChannels = (a: readonly MeterChannel[] | undefined, b: readonly MeterChannel[] | undefined) =>
+  a === b || Boolean(a && b && a.length === b.length && a.every((channel, i) => sameChannel(channel, b[i])));
+/** The channels a strip's meter shows, before or after its fader. */
+export function stripChannels(meters: Meters | null, owner: { track: string } | { bus: string }, pre: boolean) {
+  const strip = meters?.strips.find(each => 'track' in owner
+    ? 'track' in each.owner && each.owner.track === owner.track
+    : 'bus' in each.owner && each.owner.bus === owner.bus);
+  return pre ? strip?.pre : strip?.post;
+}
+
 /** Analysis events are broadcast; only the job acknowledged to this page belongs to it. */
 export function useAudioAnalysis(bridge: Bridge, session: number, timeline: string | null, identity = timeline) {
   const [analysis, setAnalysis] = useState<AudioAnalysis | null>(null);
@@ -74,12 +121,12 @@ export function useAudioAnalysis(bridge: Bridge, session: number, timeline: stri
 
 /** The protocol polls meters; no subscribe RPC exists. One in-flight read, at most 30Hz. */
 export function useAudioReadings(bridge: Bridge, session: number, timeline: string | null, visible: boolean) {
-  const [meters, setMeters] = useState<Meters | null>(null);
-  const latestMeters = useRef<Meters | null>(null);
+  // Readings change up to 30 times a second while playing: they are published to the meters that
+  // subscribe to them, and the page that owns them is not drawn again for each.
+  const readings = useMemo(meterStore, []);
   const publish = (next: Meters) => {
-    if (sameMeters(latestMeters.current, next)) return false;
-    latestMeters.current = next;
-    setMeters(next);
+    if (sameMeters(readings.current(), next)) return false;
+    readings.set(next);
     return true;
   };
   const [problem, setProblem] = useState<string | null>(null);
@@ -89,7 +136,7 @@ export function useAudioReadings(bridge: Bridge, session: number, timeline: stri
     const current = { live: true, action: 0 }; lifecycle.current = current;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let polling = false;
-    latestMeters.current = null; setMeters(null); setProblem(null);
+    readings.set(null); setProblem(null);
     const read = async () => {
       if (!current.live || !visible || !timeline || document.hidden || polling) return;
       polling = true;
@@ -118,7 +165,8 @@ export function useAudioReadings(bridge: Bridge, session: number, timeline: stri
     const sequence = ++current.action;
     try {
       const loudness: LoudnessReading = await callEngine(bridge, 'audio.loudness', { timeline, action: which }, { expectedSession: session });
-      if (current.live && sequence === current.action && latestMeters.current) publish({ ...latestMeters.current, loudness });
+      const latest = readings.current();
+      if (current.live && sequence === current.action && latest) publish({ ...latest, loudness });
     } catch (error) { if (current.live) setProblem(error instanceof Error ? error.message : String(error)); }
   };
   const resetPeaks = async () => {
@@ -130,6 +178,6 @@ export function useAudioReadings(bridge: Bridge, session: number, timeline: stri
       if (current.live && sequence === current.action && next.timeline === timeline) publish(next);
     } catch (error) { if (current.live) setProblem(error instanceof Error ? error.message : String(error)); }
   };
-  return { meters, problem: problem ?? jobs.problem, analysis: jobs.analysis, pending: jobs.pending, action, resetPeaks,
+  return { readings, problem: problem ?? jobs.problem, analysis: jobs.analysis, pending: jobs.pending, action, resetPeaks,
     cancel: jobs.cancel, analyze: (clips: string[], standard: string) => jobs.start('audio.analyze', { targets: clips.map(clip => ({ clip })), standard }) };
 }

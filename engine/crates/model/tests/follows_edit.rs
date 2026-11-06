@@ -1358,3 +1358,92 @@ fn a_clip_moved_where_its_frame_is_a_tick_shorter_keeps_its_lane_to_its_last_tic
         assert!((was - is).abs() < 1e-9, "+{k}: {was} then {is}");
     }
 }
+
+/// V1 c1 [0, 25) linked to A1's e [100, 150), whose sound starts long after its picture ends,
+/// with c2 [50, 100) between them on A1.
+fn split_far_apart() -> Project {
+    let mut project = project();
+    op(
+        &mut project,
+        json!({"op": "remove_clip", "timeline": "t1", "id": "d"}),
+    );
+    let mut picture = Clip::of_media(
+        "c1",
+        "m1",
+        Time {
+            ticks: 0,
+            scale: 15360,
+        },
+        0,
+        25,
+    );
+    picture.link = Some("g1".into());
+    op(
+        &mut project,
+        json!({"op": "insert_clip", "timeline": "t1", "track": "V1", "clip": picture}),
+    );
+    op(
+        &mut project,
+        json!({"op": "set_clip", "timeline": "t1", "id": "e", "link": "g1"}),
+    );
+    project
+}
+
+#[test]
+fn a_ripple_trim_of_a_start_moves_the_lanes_of_what_it_moves_before_a_later_clip_of_its_group() {
+    // A ripple trim of c1's start by 5 pulls what follows its end, 25, back 5 frames: c2 goes to
+    // [45, 95) with its automation, while e stays where it starts and plays from 5 frames later.
+    let mut project = split_far_apart();
+    let before = project.clone();
+    edit(
+        &mut project,
+        json!({"edit": "trim", "timeline": "t1", "clip": "c1", "edge": "in", "delta": 5,
+            "ripple": true}),
+    );
+    assert_eq!(spans(&project, "A1"), vec![(45, 95), (100, 145)]);
+    let frame = 1920;
+    let same = |was: i64, is: i64| {
+        let (a, b) = (
+            value_at(&before, "A1", "fader_db", was),
+            value_at(&project, "A1", "fader_db", is),
+        );
+        assert!((a - b).abs() < 1e-9, "{was} then {is}: {a} then {b}");
+    };
+    for k in [0, 1000, 25 * frame, 49 * frame, 50 * frame - 1] {
+        same(50 * frame + k, 45 * frame + k);
+    }
+    for k in [0, 1000, 20 * frame, 44 * frame, 45 * frame - 1] {
+        same(105 * frame + k, 100 * frame + k);
+    }
+    for t in [0, 10 * frame, 20 * frame - 1] {
+        same(t, t);
+    }
+}
+
+#[test]
+fn a_ripple_trim_of_an_end_keeps_the_lanes_of_a_later_clip_of_its_group_where_it_starts() {
+    // A ripple trim of c1's end by −5: c2 goes back 5 frames with its automation, and e, made 5
+    // frames shorter where it starts, keeps its own over what it still plays.
+    let mut project = split_far_apart();
+    let before = project.clone();
+    edit(
+        &mut project,
+        json!({"edit": "trim", "timeline": "t1", "clip": "c1", "edge": "out", "delta": -5,
+            "ripple": true}),
+    );
+    assert_eq!(spans(&project, "A1"), vec![(45, 95), (100, 145)]);
+    let frame = 1920;
+    let same = |was: i64, is: i64| {
+        let (a, b) = (
+            value_at(&before, "A1", "fader_db", was),
+            value_at(&project, "A1", "fader_db", is),
+        );
+        assert!((a - b).abs() < 1e-9, "{was} then {is}: {a} then {b}");
+    };
+    for k in [0, 1000, 25 * frame, 49 * frame, 50 * frame - 1] {
+        same(50 * frame + k, 45 * frame + k);
+    }
+    for k in [0, 1000, 20 * frame, 44 * frame, 45 * frame - 1] {
+        same(100 * frame + k, 100 * frame + k);
+    }
+}

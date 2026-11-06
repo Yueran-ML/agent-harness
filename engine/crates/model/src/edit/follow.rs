@@ -20,7 +20,10 @@
 //!   that puts frames in goes straight across them from the value that came to the place to the
 //!   value that was there. Where a clip that stays lies across the place, or starts after it, the
 //!   cut is made at its end instead, so that its lanes stay with it. A clip trimmed at its start
-//!   with a ripple has its lanes rippled from its start (see [`Follow::ripple_with`]).
+//!   with a ripple has its lanes rippled from its start (see [`Follow::ripple_with`]). A clip of
+//!   the group of a ripple trim that starts after the place of the ripple stays where it starts
+//!   while what is between the place and it moves: the lanes there move with that, as far as the
+//!   clip only (see [`Follow::ripple_before`]), and the clip's own go as the trim changes it.
 //! - A clip that is trimmed (without a ripple), rolled, slipped or cut in two changes no lane, nor
 //!   does one that is put on the timeline from its media. The lanes of buses and VCAs, which
 //!   have no clips, stay where they are.
@@ -421,7 +424,20 @@ impl Follow {
         let Some(found) = sound(timeline, track) else {
             return;
         };
-        let moves = |c: &&Clip| c.start >= from && !skip.contains(&c.id);
+        let (place, spans) = Self::ripple_place(found, (from, by), i64::MAX, skip);
+        self.ripple_lanes(timeline, track, (place, by), &spans, None);
+    }
+
+    /// Where [`Follow::ripple`] cuts the lanes of `track` for what starts from frame `from` on
+    /// and before frame `until`, but for `skip`, moving by `by` frames; and the spans of what
+    /// moves, in order.
+    fn ripple_place(
+        found: &Track,
+        (from, by): (i64, i64),
+        until: i64,
+        skip: &HashSet<Id>,
+    ) -> (i64, Vec<(i64, i64)>) {
+        let moves = |c: &&Clip| c.start >= from && c.start < until && !skip.contains(&c.id);
         let mut spans: Vec<(i64, i64)> = found
             .clips
             .iter()
@@ -429,13 +445,40 @@ impl Follow {
             .map(|c| (c.start, c.end()))
             .collect();
         spans.sort_unstable();
-        let first = spans.first().map_or(i64::MAX, |&(start, _)| start);
+        let first = spans.first().map_or(until, |&(start, _)| start);
         let stays = found.clips.iter().filter(|c| !moves(c) && c.start < first);
         let place = stays
             .map(|c| if by > 0 { c.end() } else { c.end() - by })
             .fold(from, i64::max)
             .min(first);
-        self.ripple_with(timeline, track, (place, by), &spans);
+        (place, spans)
+    }
+
+    /// What is on `track` from frame `from` on and before frame `until`, but for `skip`, moves
+    /// by `by` frames, while what is after it is where the edit has put it (a clip of a group
+    /// that a ripple trim changes, which starts after the place of the ripple): the lanes before
+    /// `until` move with it as [`Follow::ripple`] moves them, as far as frame `resume`, where the
+    /// lanes as the edit left them go on; from where they come to, they go straight to the value
+    /// there, or, moved past it, are cut there. This is done whether the track is held or not.
+    pub fn ripple_before(
+        &mut self,
+        timeline: &Timeline,
+        track: &str,
+        (from, by): (i64, i64),
+        (until, resume): (i64, i64),
+        skip: &HashSet<Id>,
+    ) {
+        if !self.on || by == 0 || from >= until {
+            return;
+        }
+        let Some(found) = sound(timeline, track) else {
+            return;
+        };
+        let (place, spans) = Self::ripple_place(found, (from, by), until, skip);
+        if place < until {
+            let bound = Some((until, resume.max(until)));
+            self.ripple_lanes(timeline, track, (place, by), &spans, bound);
+        }
     }
 
     /// The lanes of `track` rippled at frame `place` by `by` frames, `spans` (in order) moving
@@ -447,6 +490,20 @@ impl Follow {
         track: &str,
         (place, by): (i64, i64),
         spans: &[(i64, i64)],
+    ) {
+        self.ripple_lanes(timeline, track, (place, by), spans, None);
+    }
+
+    /// [`Follow::ripple_with`], and, with `(until, resume)`, only for what is before frame
+    /// `until`: what the lanes are from frame `resume` on stays, and what moved goes straight
+    /// from where it ends to the value there (a jump, where it moved as far or past it).
+    fn ripple_lanes(
+        &mut self,
+        timeline: &Timeline,
+        track: &str,
+        (place, by): (i64, i64),
+        spans: &[(i64, i64)],
+        bound: Option<(i64, i64)>,
     ) {
         if !self.on || by == 0 {
             return;
@@ -495,6 +552,23 @@ impl Follow {
             if let Some(done) = rippled(&points, (shape, fixed, scale), (p, to), tick_after) {
                 let mut added: Vec<i64> = held.iter().map(|&t| tick_after(t)).collect();
                 added.extend([p, to]);
+                let done = match bound {
+                    None => done,
+                    Some((until, resume)) => {
+                        // What moved ends where the tick of `until` went, or at `resume`; from
+                        // `resume` on the lane is as it was.
+                        let r = ticks(resume);
+                        let a = tick_after(ticks(until)).min(r);
+                        added.extend([a, r]);
+                        let ends = [
+                            point(a, scale, before(&done, shape, fixed, a)),
+                            point(r, scale, at(&lane.points, shape, fixed, r)),
+                        ];
+                        let moved = done.iter().filter(|q| q.at.ticks < a).cloned();
+                        let kept = lane.points.iter().filter(|q| q.at.ticks > r).cloned();
+                        without_twins(moved.chain(ends).chain(kept).collect())
+                    }
+                };
                 lane.points = pruned(done, shape, &added);
             }
         }

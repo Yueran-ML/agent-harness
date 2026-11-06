@@ -2,7 +2,7 @@
 //! rolling the cut between two clips, slipping a clip in its source and sliding it between its
 //! neighbours.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use super::work::{beyond, covered, edged, reach, set_source_in, Limit, Work};
 use super::{Edge, EditError};
@@ -41,6 +41,24 @@ fn neighbours(track: &Track, clip: &Clip) -> (i64, Option<i64>) {
     (before, after)
 }
 
+/// The spans of the clips of `track` from the end of `clip` on, but for `skip`, in order.
+fn after_on(
+    work: &Work,
+    track: &str,
+    clip: &Clip,
+    skip: &HashSet<Id>,
+) -> Result<Vec<(i64, i64)>, EditError> {
+    let mut spans: Vec<(i64, i64)> = work
+        .track(track)?
+        .clips
+        .iter()
+        .filter(|o| o.start >= clip.end() && !skip.contains(&o.id))
+        .map(|o| (o.start, o.end()))
+        .collect();
+    spans.sort_unstable();
+    Ok(spans)
+}
+
 fn no_room(track: &Track) -> impl FnOnce() -> EditError + '_ {
     || EditError::NoRoom {
         track: track.id.clone(),
@@ -61,6 +79,64 @@ fn all_fit(work: &Work, changed: &[Changed], make: impl Fn(&Clip) -> Clip) -> Re
         if !work.fits(&make(&c.clip), c.before, c.after) {
             return Err(c.clip.id.clone());
         }
+    }
+    Ok(())
+}
+
+/// The lanes of the tracks of the clips `changed` that a trim with a ripple from frame `place`
+/// changes, which the rest of the trim leaves alone.
+fn ripple_trimmed_lanes(
+    work: &mut Work,
+    changed: &[Changed],
+    (edge, delta, shift): (Edge, i64, i64),
+    place: i64,
+    skip: &HashSet<Id>,
+) -> Result<(), EditError> {
+    // A clip of the group that starts after the place of the ripple (the sound of a split edit
+    // that starts later than the picture ends) stays where it starts, while what is between the
+    // place and it on its track moves with the ripple: its lanes are rippled there, and up to it
+    // only, and from it on as the trim changes it.
+    let mut later: BTreeMap<Id, i64> = BTreeMap::new();
+    for c in changed {
+        let (track, _) = work.owned(&c.clip.id)?;
+        if c.clip.start > place {
+            let first = later.entry(track).or_insert(c.clip.start);
+            *first = (*first).min(c.clip.start);
+        }
+    }
+    if edge == Edge::In {
+        // A clip trimmed at its start with a ripple plays what it played `delta` frames later from
+        // where it starts: its lanes ripple from there with it, as frames taken away from (or put
+        // in at) its start, and with them what follows it on its track.
+        for c in changed {
+            let (track, _) = work.owned(&c.clip.id)?;
+            let at = c.clip.start + delta.max(0);
+            let mut spans = vec![(at, c.clip.end())];
+            spans.extend(after_on(work, &track, &c.clip, skip)?);
+            spans.sort_unstable();
+            work.ripple_lanes(&track, (at, shift), &spans);
+        }
+    } else {
+        // Trimmed at its end, such a clip keeps its lanes where it starts: they ripple from its
+        // end, with what follows it.
+        for c in changed {
+            let (track, _) = work.owned(&c.clip.id)?;
+            if c.clip.start > place {
+                let spans = after_on(work, &track, &c.clip, skip)?;
+                work.ripple_lanes(&track, (c.clip.end(), shift), &spans);
+            }
+        }
+    }
+    // Trimmed at its start, the clip's own lanes have rippled with what is before it: where
+    // frames are put in, what moves before it goes on over them (the lane moves on as one). At
+    // its end, what is over the clip stays, and what moves before it is cut at its start.
+    for (track, until) in later {
+        let resume = if edge == Edge::In {
+            until + shift.max(0)
+        } else {
+            until
+        };
+        work.ripple_lanes_before(&track, (place, shift), (until, resume), skip);
     }
     Ok(())
 }
@@ -133,23 +209,8 @@ pub(super) fn trim(
     for id in &all {
         work.detach(id)?;
     }
-    if ripple && edge == Edge::In {
-        // A clip trimmed at its start with a ripple plays what it played `delta` frames later from
-        // where it starts: its lanes ripple from there with it, as frames taken away from (or put
-        // in at) its start, and with them what follows it on its track.
-        for c in &changed {
-            let (track, _) = work.owned(&c.clip.id)?;
-            let place = c.clip.start + delta.max(0);
-            let mut spans = vec![(place, c.clip.end())];
-            let after = work.track(&track)?.clips.iter();
-            spans.extend(
-                after
-                    .filter(|o| o.start >= c.clip.end() && !skip.contains(&o.id))
-                    .map(|o| (o.start, o.end())),
-            );
-            spans.sort_unstable();
-            work.ripple_lanes(&track, (place, shift), &spans);
-        }
+    if ripple {
+        ripple_trimmed_lanes(work, &changed, (edge, delta, shift), place, &skip)?;
     }
     if ripple && shift > 0 {
         work.shift(&tracks, place, shift, &skip)?;

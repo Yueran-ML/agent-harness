@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import type { EngineBridge } from '../../bridge';
 import type { MenuItem } from '../color/ColorMenu';
-import { callEngine, type ChannelMap, type ChannelSource, type Media, type Timeline } from '../engine';
+import { callEngine, type ChannelMap, type ChannelSource, type Clip, type Media, type Timeline, type Track } from '../engine';
 import { useFairlightText } from '../fairlight/words';
 import { automaticChannels, channelSources } from '../media/audioLayout';
 import { clipLocations } from '../timeline/selection';
 
+/** What a choice of the menu was made from: the clip's source and channels, and its track's layout. */
+const menuSnapshot = (clip: Clip, track: Track) => [clip.source, clip.channels ?? null, automaticChannels(track)];
 export interface ChannelContext { channel?: number; sourcesOnly?: boolean }
 export interface AudioClipContext extends ChannelContext { clip: string; x: number; y: number }
 
@@ -32,10 +34,14 @@ export function useChannelSourceMenu(props: {
     const change = async (index: number, source: ChannelSource | null, remix?: ChannelMap['remix']) => {
       if (busy.current || !live.current) return;
       const current = now.current;
-      if (current.session !== captured.session || current.timeline?.id !== captured.timeline?.id || current.revision !== captured.revision) {
+      const latest = current.timeline && clipLocations(current.timeline).get(context.clip);
+      // An edit elsewhere since the menu opened does not refuse the choice: only one of this clip
+      // (its source or channels) or of what its automatic layout comes from (its track's format).
+      const same = latest && latest.track.kind === 'audio' && latest.clip.source.kind === 'media'
+        && JSON.stringify(menuSnapshot(latest.clip, latest.track)) === JSON.stringify(menuSnapshot(clip, track));
+      if (current.session !== captured.session || current.timeline?.id !== captured.timeline?.id || !same) {
         setProblem(t('The clip changed. Reopen the channel source menu.')); return;
       }
-      const latest = current.timeline && clipLocations(current.timeline).get(context.clip);
       if (!latest || latest.track.locked) return;
       const before = latest.clip.channels ?? automaticChannels(latest.track), previous = before[index];
       if (!previous) return;
@@ -43,7 +49,7 @@ export function useChannelSourceMenu(props: {
       const channels = before.map((channel, at) => at === index ? { ...channel, source, remix } : channel);
       busy.current = true; setPending(true); setProblem(null);
       try {
-        await callEngine(current.bridge, 'transaction.apply', { revision: captured.revision,
+        await callEngine(current.bridge, 'transaction.apply', { revision: current.revision,
           ops: [{ op: 'set_clip', timeline: current.timeline!.id, id: clip.id, channels }],
         }, { expectedSession: captured.session });
       } catch (error) {

@@ -7,7 +7,7 @@ import { useChannelSourceMenu } from '../src/studio/inspector/ChannelSourceMenu'
 import { ColorMenu, type MenuItem } from '../src/studio/color/ColorMenu';
 import type { EngineBridge } from '../src/bridge';
 import type { MonitorControls } from '../src/studio/useMonitor';
-import type { Timeline } from '../src/studio/engine';
+import type { ClipTrack, Timeline } from '../src/studio/engine';
 import { clip, media, timeline } from './timeline-fixture';
 import { likeABrowser } from './mounted';
 
@@ -88,13 +88,24 @@ function hook() {
   return { bridge, selected, Host, view, choices, value: () => value };
 }
 
-it('refuses old revisions, sessions and removed controls without overwriting current clip maps', async () => {
+it('applies a choice across edits of other clips, and refuses changed clips, old sessions and removed controls', async () => {
   const s = hook(), old = s.choices()[0];
-  s.view.rerender(<s.Host revision={8} />);
+  // Another clip is edited (a new revision): the choice still applies, against the latest revision.
+  const elsewhere = model();
+  (elsewhere.tracks[1] as ClipTrack).clips[1].gain_db = -3;
+  s.view.rerender(<s.Host revision={8} timeline={elsewhere} />);
   act(() => old.run?.()); await settle();
+  expect(s.bridge.call).toHaveBeenCalledOnce();
+  expect((s.bridge.call.mock.calls[0] as unknown[])[1]).toMatchObject({ revision: 8 });
+  // This clip's channels change while the menu is open: its choice is refused.
+  s.bridge.call.mockClear();
+  const open = s.choices()[0], changed = model();
+  (changed.tracks[1] as ClipTrack).clips[0].channels![0].source = { stream: 3, channel: 1 };
+  s.view.rerender(<s.Host revision={9} timeline={changed} />);
+  act(() => open.run?.()); await settle();
   expect(s.bridge.call).not.toHaveBeenCalled();
   expect(screen.getByRole('alert').textContent).toContain('Reopen');
-  const previousSession = s.choices()[0]; s.view.rerender(<s.Host revision={8} session={2} />);
+  const previousSession = s.choices()[0]; s.view.rerender(<s.Host revision={9} timeline={changed} session={2} />);
   act(() => previousSession.run?.()); await settle(); expect(s.bridge.call).not.toHaveBeenCalled();
   const unmounted = s.choices()[0]; s.view.unmount(); unmounted.run?.();
   expect(s.bridge.call).not.toHaveBeenCalled();

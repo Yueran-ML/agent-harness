@@ -109,8 +109,17 @@ function GroupDialog({ initial, context, onClose }: {
   current.current = context;
   const [value, setValue] = useState(initial), [add, setAdd] = useState<string[]>([]), [remove, setRemove] = useState<string[]>([]);
   const [problem, setProblem] = useState(''), [saving, setSaving] = useState(false);
-  const stale = context.session !== origin.current.session || context.revision !== origin.current.revision || context.timeline.id !== origin.current.timeline.id;
-  const disabled = stale || saving, members = groupTracks(origin.current.timeline, value), audio = origin.current.timeline.tracks.filter(track => track.kind === 'audio');
+  // Only a change of what the window edits makes it stale: this group, and the tracks it lists.
+  // Another edit (a fader, another group) leaves it open, and it saves against the latest revision.
+  const edited = (c: RoutingContext) => JSON.stringify([
+    initial.id ? c.timeline.track_groups?.find(group => group.id === initial.id) ?? null
+      : initial.all_tracks ? allGroup(c.timeline) : null,
+    c.timeline.tracks.filter(track => track.kind === 'audio').map(track => [track.id, track.name, track.locked]),
+  ]);
+  const stale = context.session !== origin.current.session || context.timeline.id !== origin.current.timeline.id
+    || (context.revision !== origin.current.revision && edited(context) !== edited(origin.current));
+  const disabled = stale || saving, members = groupTracks(context.timeline, value);
+  const audio = context.timeline.tracks.filter(track => track.kind === 'audio');
   const controls: Record<GroupControl, import('../../messages/fairlight').FairlightText> = {
     editing: 'Editing', fader: 'Fader', solo: 'solo', mute: 'mute', sends: 'Sends', panning: 'Panning', automation: 'Automation'
   };
@@ -119,7 +128,7 @@ function GroupDialog({ initial, context, onClose }: {
       return;
     setSaving(true);
     setProblem('');
-    const { timeline, bridge, session, revision } = origin.current;
+    const { timeline, bridge, session, revision } = current.current;
     try {
       await callEngine(bridge, 'transaction.apply', { revision, ops: [groupPatch(timeline, initial, { ...value, name: value.name.trim() })] }, { expectedSession: session });
       if (current.current.session === session && current.current.timeline.id === timeline.id)

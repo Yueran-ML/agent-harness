@@ -20,7 +20,7 @@ function setup(fairlight = false, clips = [clip('sound')], locked = false) {
   const before: Project[] = [];
   const requests: { method: string; params: any; context: any }[] = [];
   let publish: (value: { project: Project; revision: number }) => void;
-  const bridge = { call: async (method: string, params: any, context: any) => {
+  const bridge = { onEvent: vi.fn(() => () => {}), call: async (method: string, params: any, context: any) => {
     requests.push({ method, params, context });
     if (method === 'audio.eq_response') return { ok: true, result: { revision, sample_rate: 48000, frequencies: params.frequencies, gain_db: params.frequencies.map(() => 0) } };
     if (method === 'transaction.apply') {
@@ -30,7 +30,7 @@ function setup(fairlight = false, clips = [clip('sound')], locked = false) {
       return { ok: true, result: { revision, done: params.ops } };
     }
     throw new Error(method);
-  } } as Pick<EngineBridge, 'call'>;
+  } } as Pick<EngineBridge, 'call' | 'onEvent'>;
   function Host({ session = 1, selected = clips.map(c => c.id) }) {
     const [state, set] = useState({ project, revision }); publish = set;
     const props = { bridge, session, revision: state.revision, timeline: state.project.timelines[0], media: state.project.media, clips: selected, transition: null, onSpeed: vi.fn(), frame: 0, onSeek: vi.fn() };
@@ -141,4 +141,50 @@ it('uses Alt on Mute to keep only the chosen channel unmuted', async () => {
   fireEvent.click(screen.getByRole('checkbox', { name: 'Channel 2 Mute' }), { altKey: true });
   fireEvent.click(screen.getByRole('button', { name: 'Apply channel mapping' })); await settle();
   expect(s.model()[0].channels?.map(channel => channel.mute)).toEqual([true, false]);
+});
+
+it.each([false, true])('sets one absolute level on selected channels across clips in one undo step (Fairlight=%s)', async fairlight => {
+  const channels = [{ source: { stream: 1, channel: 0 }, level_db: -2 }, { source: { stream: 1, channel: 1 }, level_db: -6 }];
+  const s = setup(fairlight, [clip('a', 0, 100, { channels, gain_db: 4 }), clip('b', 100, 100, { channels, gain_db: -3 })]);
+  fireEvent.click(screen.getByRole('tab', { name: 'File' }));
+  const level = screen.getByRole('spinbutton', { name: 'Selected channel level' }) as HTMLInputElement;
+  expect(level.closest('fieldset')!.disabled).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: 'Channel 1' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Channel 2' }), { ctrlKey: true });
+  expect(level.value).toBe('');
+  expect(screen.getByRole('slider', { name: 'Selected channel level' }).getAttribute('aria-valuetext')).toBe('Mixed values');
+  fireEvent.change(level, { target: { value: '-9' } });
+  expect(s.writes()).toHaveLength(0);
+  fireEvent.click(screen.getByRole('button', { name: 'Apply channel mapping' })); await settle();
+  expect(s.writes()).toHaveLength(1);
+  expect(s.model().map(item => item.channels?.map(channel => channel.level_db))).toEqual([[-9, -9], [-9, -9]]);
+  expect(s.model().map(item => item.gain_db)).toEqual([4, -3]);
+  s.restoredSnapshot(); await settle();
+  expect(s.model().map(item => item.channels?.map(channel => channel.level_db))).toEqual([[-2, -6], [-2, -6]]);
+});
+
+it('uses Shift to toggle channel selection and drops it on session changes', async () => {
+  const s = setup(false, [clip('a', 0, 100, { channels: [{ source: { stream: 1, channel: 0 } }, { source: { stream: 1, channel: 1 } }] })]);
+  fireEvent.click(screen.getByRole('tab', { name: 'File' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Channel 1' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Channel 2' }), { shiftKey: true });
+  fireEvent.click(screen.getByRole('button', { name: 'Channel 1' }), { shiftKey: true });
+  fireEvent.change(screen.getByRole('slider', { name: 'Selected channel level' }), { target: { value: '-5' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Apply channel mapping' })); await settle();
+  expect(s.model()[0].channels?.map(channel => channel.level_db)).toEqual([0, -5]);
+  s.session(); await settle();
+  expect(screen.getByRole('button', { name: 'Channel 2' }).getAttribute('aria-pressed')).toBe('false');
+});
+
+it.each([false, true])('shows the last selected clip rather than the last clip on its track (Fairlight=%s)', async fairlight => {
+  vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(400);
+  const s = setup(fairlight, [
+    clip('a', 0, 100, { channels: [{ source: [{ stream: 1, channel: 0 }, { stream: 1, channel: 1 }] }, { source: null }] }),
+    clip('b', 100, 100, { channels: [{ source: null }, { source: null }] }),
+  ]);
+  fireEvent.click(screen.getByRole('tab', { name: 'File' })); await settle();
+  expect(screen.queryByText('Mixed waveform unavailable')).toBeNull();
+  s.selection(['b', 'a']); await settle();
+  expect(screen.getByText('Mixed waveform unavailable')).toBeTruthy();
+  expect(s.writes()).toHaveLength(0);
 });

@@ -25,7 +25,7 @@ const song=():Timeline=>({...timeline([]),tracks:[{id:'a',kind:'audio',name:'Voi
   strip:{inserts:[{id:'fx',on:true,effect:{...defaultEffect('limiter'),input_db:-6}}],track_fx:defaultDucker()} as any}],audio:{record:{...defaultRecord(),touch:'latch'}} as Timeline['audio']});
 function wire(catalogue=parameters){
   const call=vi.fn(async(method:string,params:any)=>({ok:true as const,result:method==='automation.parameters'?{revision:7,of:params.of,parameters:catalogue}:method==='audio.fx_meters'?{timeline:'t1',playing:false,generation:0,readings:[]}:method==='audio.eq_response'?{revision:7,sample_rate:48000,frequencies:params.frequencies,gain_db:params.frequencies.map(()=>0)}:{revision:8,done:[]}}));
-  return {call};
+  return {call, onEvent: vi.fn(() => () => {})};
 }
 const writes=(bridge:ReturnType<typeof wire>,method='automation.touch')=>bridge.call.mock.calls.filter(c=>c[0]===method).map(c=>c[1]);
 function processor(ducker=false,mode:'preview'|'latch'|'snap'='latch',enabled=true,model=song()){

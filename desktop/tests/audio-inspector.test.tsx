@@ -23,7 +23,7 @@ function mount(clips: Clip[] = [clip('a', 0, 25, { gain_db: curve(), pan: curve(
   let revision = 17;
   const call = vi.fn(async () => ({ ok: true as const, result: { revision: ++revision, done: [] } }));
   const t = { ...timeline(), rate: { num: 25, den: 1 }, tracks: [{ id: 'audio', kind: 'audio', name: 'Audio', enabled: true, locked: false, clips, transitions: [] } as ClipTrack] };
-  const props = { bridge: { call }, session: 1, revision: 17, timeline: t, clips: clips.map(c => c.id), media: [media], transition: null, frame: 12.5, onSeek: vi.fn(), onSpeed: vi.fn() };
+  const props = { bridge: { call, onEvent: vi.fn(() => () => {}) }, session: 1, revision: 17, timeline: t, clips: clips.map(c => c.id), media: [media], transition: null, frame: 12.5, onSeek: vi.fn(), onSpeed: vi.fn() };
   const element = (extra = {}) => fairlight ? <FairlightInspector {...props} track={null} onEdit={() => {}} {...extra} /> : <Inspector {...props} {...extra} />;
   const view = render(element());
   return { ...view, props, call, update: (extra: object) => view.rerender(element(extra)), requests: () => call.mock.calls.map(args => (args as unknown[])[1] as any) };

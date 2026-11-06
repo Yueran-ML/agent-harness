@@ -32,7 +32,7 @@ type Call = ReturnType<typeof vi.fn>;
 function mount(options: { timeline?: Timeline; clips?: string[]; transition?: string | null; call?: Call } = {}) {
   const call = options.call ?? vi.fn().mockResolvedValue({ ok: true, result: {} });
   const onSpeed = vi.fn();
-  const props = { bridge: { call } as Pick<EngineBridge, 'call'>, session: 1, revision: 17, timeline: options.timeline ?? basic(), media: [media],
+  const props = { bridge: { call, onEvent: vi.fn(() => () => {}) } as Pick<EngineBridge, 'call' | 'onEvent'>, session: 1, revision: 17, timeline: options.timeline ?? basic(), media: [media],
     clips: options.clips ?? [], transition: options.transition ?? null, onSpeed };
   const view = render(<Inspector {...props} />);
   const rerender = (changed: Partial<typeof props>) => view.rerender(<Inspector {...props} {...changed} />);

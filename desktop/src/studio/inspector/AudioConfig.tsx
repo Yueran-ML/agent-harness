@@ -1,4 +1,5 @@
-import { useContext, useEffect, useState } from 'react';
+import { useContext, useEffect, useMemo, useState } from 'react';
+import type { EngineBridge } from '../../bridge';
 import type { AudioStream, ChannelMap, Clip, Media, Timeline } from '../engine';
 import { channelSources as sources, sourceKey as keyOf, sourceChoice } from '../media/audioLayout';
 import { useFairlightText } from '../fairlight/words';
@@ -6,6 +7,7 @@ import { clipLocations } from '../timeline/selection';
 import { common, setClips } from './common';
 import { FieldsLocked } from './fields';
 import type { Commit } from './useCommit';
+import { FileWaveforms } from './FileWaveforms';
 
 const streamOf = (clip: Clip, media: readonly Media[]) => clip.source.kind === 'media' ? media.find(item => item.id === (clip.source as { media: string }).media) : undefined;
 const countOf = (timeline: Timeline, id: string) => {
@@ -15,8 +17,9 @@ const countOf = (timeline: Timeline, id: string) => {
 const empty = (): ChannelMap => ({ source: null, enabled: true, mute: false, level_db: 0 });
 
 /** Timeline output channels. Custom mapping is explicit; null remains the engine's automatic mix. */
-export function AudioConfig({ clips, timeline, media, commit }: {
+export function AudioConfig({ clips, timeline, media, commit, bridge, session }: {
   clips: readonly Clip[]; timeline: Timeline; media: readonly Media[]; commit: Commit;
+  bridge: Pick<EngineBridge, 'call' | 'onEvent'>; session: number;
 }) {
   const t = useFairlightText(), locked = useContext(FieldsLocked), last = clips.at(-1)!;
   const medium = streamOf(last, media), facts = medium?.facts.audio, count = countOf(timeline, last.id);
@@ -25,6 +28,8 @@ export function AudioConfig({ clips, timeline, media, commit }: {
   const [draft, setDraft] = useState<Record<string, ChannelMap[]>>(() => Object.fromEntries(clips.map(clip => [clip.id,
     Array.from({ length: countOf(timeline, clip.id) }, (_, i) => ({ ...empty(), ...clip.channels?.[i] }))])));
   const [pending, setPending] = useState(false);
+  const [selectedChannels, setSelectedChannels] = useState<number[]>([]);
+  useEffect(() => setSelectedChannels(old => old.filter(index => index < count)), [count]);
   const modelKey = JSON.stringify(clips.map(clip => [clip.id, countOf(timeline, clip.id), clip.channels]));
   useEffect(() => {
     setCustom(clips.some(clip => clip.channels != null));
@@ -49,15 +54,35 @@ export function AudioConfig({ clips, timeline, media, commit }: {
   };
   const sourceValue = (value: string): ChannelMap['source'] => sourceChoice(value, streams);
   const streamName = (stream: AudioStream) => `${t('Stream')} ${stream.index}`;
+  const track = clipLocations(timeline).get(last.id)?.track;
+  const preview = useMemo(() => custom ? { ...last, channels: draft[last.id] } : last, [custom, last, draft]);
+  const selectedRows = clips.flatMap(clip => selectedChannels.flatMap(index => draft[clip.id]?.[index] ?? []));
+  const selectedLevel = common(selectedRows, channel => channel.level_db ?? 0);
+  const setSelectedLevel = (value: number) => setDraft(old => Object.fromEntries(clips.map(clip => [clip.id,
+    old[clip.id].map((channel, i) => selectedChannels.includes(i) ? { ...channel, level_db: value } : channel)])));
   return <section className="audio-config" aria-label={t('Audio Configuration')}>
     <h3>{t('Audio Configuration')}</h3>
     <p>{clips.length > 1 ? t('Multiple Clips') : medium?.name ?? last.id}</p>
     {facts && <p className="caption">{facts.codec} · {facts.rate} Hz · {facts.channels} {t('Channels')} · {(medium!.facts.duration.ticks / medium!.facts.duration.scale).toFixed(2)} s</p>}
     <p>{t('Format')}: {count === 1 ? t('Mono') : count === 2 ? t('Stereo') : count === 6 ? '5.1' : t('Adaptive')} ({count})</p>
+    {track && <FileWaveforms bridge={bridge} session={session} clip={preview} track={track} media={medium} timeline={timeline}
+      selected={selectedChannels} onSelect={(index, extend) => setSelectedChannels(old => !extend ? [index]
+        : old.includes(index) ? old.filter(item => item !== index) : [...old, index])} />}
     {!custom ? <><p>{t('Automatic mix')}</p><button type="button" disabled={disabled} onClick={() => setCustom(true)}>{t('Custom mapping')}</button></> : <>
       <p className="caption">{t('Choose a source for each output channel. Unassigned channels are silent.')}</p>
       {!compatible && <p role="status">{t('Select clips with the same channel count to configure them together.')}</p>}
       {!streams.length && <p role="status">{t('Audio stream information is unavailable.')}</p>}
+      <fieldset disabled={disabled || selectedChannels.length === 0}>
+        <legend>{t('Channel Level')}</legend>
+        <p className="caption">{t('Ctrl or Shift-click channels to set their level together.')}</p>
+        <label>{t('Level')}<input type="range" aria-label={t('Selected channel level')} min={-100} max={24} step={.1}
+          value={selectedLevel !== null && Number.isFinite(selectedLevel) ? selectedLevel : 0}
+          aria-valuetext={selectedLevel === null ? t('Mixed values') : Number.isFinite(selectedLevel) ? `${selectedLevel} dB` : '—'}
+          onChange={event => setSelectedLevel(Number(event.target.value))} /></label>
+        <label>{t('Level')}<input type="number" aria-label={t('Selected channel level')} min={-100} max={24} step={.1}
+          value={selectedLevel !== null && Number.isFinite(selectedLevel) ? selectedLevel : ''} placeholder="—"
+          onChange={event => setSelectedLevel(event.target.value === '' ? NaN : Number(event.target.value))} /> dB</label>
+      </fieldset>
       {Array.from({ length: count }, (_, index) => {
         const channels = clips.map(clip => draft[clip.id]?.[index] ?? empty()), row = draft[last.id]?.[index] ?? empty();
         const name = `${t('Channel')} ${index + 1}`;

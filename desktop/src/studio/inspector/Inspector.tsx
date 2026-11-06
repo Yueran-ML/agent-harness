@@ -30,7 +30,7 @@ type Tab = 'source' | 'video' | 'audio' | 'file' | 'effects';
  * with its revision; what the engine refuses is said in a sentence at the top.
  */
 export function Inspector({ bridge, session, revision, timeline, media, clips: ids, transition: transitionId, cue: cueId = null, onSpeed, frame = 0, onSeek = () => {} }: {
-  bridge: Pick<EngineBridge, 'call'>; session: number; revision: number; timeline: Timeline | null; media: readonly Media[];
+  bridge: Pick<EngineBridge, 'call' | 'onEvent'>; session: number; revision: number; timeline: Timeline | null; media: readonly Media[];
   clips: readonly string[]; transition: string | null; cue?: string | null; onSpeed: (clips: string[]) => void;
   frame?: number; onSeek?: (frame: number, scrubbing: boolean) => void;
 }) {
@@ -110,7 +110,7 @@ export function Inspector({ bridge, session, revision, timeline, media, clips: i
       <FieldsLocked.Provider value={chosen.locked}>
         {shown === 'effects' && chosen.audio.map(clip => <section key={clip.id} aria-label={clip.id}><strong>{name(clip)}</strong><InsertSlots bridge={bridge} session={session} revision={revision} timeline={timeline} target={{clip:clip.id}} seconds={frame * timeline.rate.den / timeline.rate.num} inline /></section>)}
         {shown === 'file' && <AudioConfig key={JSON.stringify([session, timeline.id, chosen.audio.map(clip => clip.id)])}
-          clips={chosen.audio.filter(clip => clip.source.kind === 'media')} timeline={timeline} media={media} commit={commit} />}
+          clips={chosen.audio.filter(clip => clip.source.kind === 'media')} timeline={timeline} media={media} commit={commit} bridge={bridge} session={session} />}
         {shown === 'source' && titles.length > 0 && <ClipTitle clips={titles} timeline={timeline} commit={commit} />}
         {shown === 'source' && colors.length > 0 && <ClipColor clips={colors} commit={commit} />}
         {shown === 'video' && <ClipVideo clips={chosen.video} timeline={timeline} commit={commit} />}

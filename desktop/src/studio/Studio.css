@@ -788,6 +788,13 @@
 .audio-config select { min-width: 0; flex: 1; }
 .audio-config input[type=number] { width: 72px; }
 .audio-config > button { margin: 4px 4px 4px 0; }
+.file-waveforms { display: grid; gap: 4px; min-width: 0; }
+.file-channel-waveform { position: relative; display: block; width: 100%; height: 54px; overflow: hidden; border: 1px solid var(--line); background: var(--bg); padding: 0; }
+.file-channel-waveform[aria-pressed=true] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.file-channel-waveform:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.file-channel-name { position: absolute; z-index: 1; top: 2px; left: 4px; font-size: 11px; pointer-events: none; }
+.file-channel-waveform .timeline-waveform { top: 0; height: 100%; }
+.file-channel-waveform .timeline-wave-tiles { position: absolute; inset: 0; }
 
 .cut-bar {
   grid-area: bar;

@@ -14,9 +14,10 @@ import { Inspector as EditInspector } from '../inspector/Inspector';
 import { useWords } from '../../app/locale';
 import { refusalOf } from '../inspector/refusal';
 import { AudioConfig } from '../inspector/AudioConfig';
+import { clipLocations } from '../timeline/selection';
 /** Track/clip selection is shared with the timeline. Detailed strip processors plug in with T21. */
 export function Inspector({ bridge, session, revision, timeline, media, clips, track: trackId, transition = null, onEdit, frame = 0, onSeek = () => {}, onSpeed, automation: adapter }: {
-  bridge: Pick<EngineBridge, 'call'>; session: number; revision: number; timeline: Timeline; media: readonly Media[];
+  bridge: Pick<EngineBridge, 'call' | 'onEvent'>; session: number; revision: number; timeline: Timeline; media: readonly Media[];
   clips: string[]; track: string | null; onEdit: (ops: Op[]) => void;
   automation?: AudioAutomationAdapter | null;
   transition?: string | null;
@@ -32,7 +33,11 @@ export function Inspector({ bridge, session, revision, timeline, media, clips, t
   useEffect(() => { if (trackId !== null && !clips.length && transition === null) setMode('track'); }, [trackId, clips, transition]);
   const seconds = frame * timeline.rate.den / timeline.rate.num;
   const track = timeline.tracks.find(each => each.id === trackId);
-  const locations = timeline.tracks.flatMap(each => each.kind !== 'audio' ? [] : each.clips.filter(clip => clips.includes(clip.id)).map(clip => ({ clip, locked: each.locked })));
+  const byId = clipLocations(timeline);
+  const locations = clips.flatMap(id => {
+    const found = byId.get(id);
+    return found?.track.kind === 'audio' ? [{ clip: found.clip, locked: found.track.locked }] : [];
+  });
   const unlocked = locations.filter(each => !each.locked);
   const locked = locations.length > 0 && unlocked.length === 0;
   const chosen = (locked ? locations : unlocked).map(each => each.clip);
@@ -60,7 +65,7 @@ export function Inspector({ bridge, session, revision, timeline, media, clips, t
     </>}
     {tab === 'effects' && (mode === 'track' && track?.kind === 'audio' ? <InsertSlots seconds={seconds} bridge={bridge} session={session} revision={revision} timeline={timeline} target={{ track: track.id }} automation={automation} inline /> : chosen.map(clip => <div key={clip.id}><strong>{clip.id}</strong><InsertSlots seconds={seconds} bridge={bridge} session={session} revision={revision} timeline={timeline} target={{ clip: clip.id }} inline /></div>))}
     {tab === 'file' && chosen.some(clip => clip.source.kind === 'media') && <FieldsLocked.Provider value={locked}>
-      <AudioConfig key={JSON.stringify([session, timeline.id, chosen.map(clip => clip.id)])} clips={chosen.filter(clip => clip.source.kind === 'media')} timeline={timeline} media={media} commit={commit} />
+      <AudioConfig key={JSON.stringify([session, timeline.id, chosen.map(clip => clip.id)])} clips={chosen.filter(clip => clip.source.kind === 'media')} timeline={timeline} media={media} commit={commit} bridge={bridge} session={session} />
     </FieldsLocked.Provider>}
   </aside>;
 }

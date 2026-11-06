@@ -47,6 +47,17 @@ pub enum Action {
     ScrubAudio {
         on: bool,
     },
+    /// Whether playing goes round: at the end, or the end of a range, back to its start (Loop,
+    /// Ctrl+/, Fairlight, Reference Manual 20, p. 3744).
+    Loop {
+        on: bool,
+    },
+    /// Play from `from` forward at speed 1 and stop at `to`, or go round there where Loop is on
+    /// (Play In to Out, Alt+/, p. 3745).
+    PlayRange {
+        from: i64,
+        to: i64,
+    },
 }
 
 #[derive(Deserialize)]
@@ -81,6 +92,12 @@ struct Step {
 #[serde(deny_unknown_fields)]
 struct Proxies {
     on: bool,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlayRange {
+    from: i64,
+    to: i64,
 }
 
 /// Removing the required monitor leaves the strict method-specific parameter parser intact.
@@ -137,6 +154,21 @@ fn action(method: &str, params: &RawValue) -> Result<Option<Action>, Fault> {
         "transport.scrub_audio" => {
             let Proxies { on } = rpc::params(method, r#"{"on":true}"#, Some(params))?;
             Action::ScrubAudio { on }
+        }
+        "transport.loop" => {
+            let Proxies { on } = rpc::params(method, r#"{"on":true}"#, Some(params))?;
+            Action::Loop { on }
+        }
+        "transport.play_range" => {
+            let PlayRange { from, to } =
+                rpc::params(method, r#"{"from":0,"to":100}"#, Some(params))?;
+            if from < 0 || to <= from {
+                return Err(Fault::params(
+                    "the range of transport.play_range begins at 0 or later and ends after it begins",
+                )
+                .with_data(json!({"reason":"range"})));
+            }
+            Action::PlayRange { from, to }
         }
         _ => {
             return Err(Fault::new(
@@ -264,8 +296,11 @@ impl Transport {
     pub fn check(&self, method: &str) -> Result<(), Fault> {
         if method == "transport.frame_digest" && self.test_hooks && self.timeline.is_some() {
             Ok(())
-        } else if method == "transport.scrub_audio" {
-            // A method of the timeline monitor (T18), where there is one.
+        } else if matches!(
+            method,
+            "transport.scrub_audio" | "transport.loop" | "transport.play_range"
+        ) {
+            // A method of the timeline monitor (T18, T20b), where there is one.
             self.source.check("transport.state")
         } else {
             self.source.check(method)
@@ -326,10 +361,18 @@ impl Transport {
         self.check(method)?;
         let (monitor, params) = monitor_params(method, params)?;
         let action = action(method, &params)?;
-        let playing = matches!(action, Some(Action::Play { .. }));
+        let playing = matches!(
+            action,
+            Some(Action::Play { .. } | Action::PlayRange { .. })
+        );
         let audible = matches!(
             action,
-            Some(Action::Play { .. } | Action::Seek { .. } | Action::Step { .. })
+            Some(
+                Action::Play { .. }
+                    | Action::PlayRange { .. }
+                    | Action::Seek { .. }
+                    | Action::Step { .. }
+            )
         );
         let (result, target) = match monitor {
             Monitor::Source if matches!(action, Some(Action::ScrubAudio { .. })) => {
@@ -337,6 +380,17 @@ impl Transport {
                     "transport.scrub_audio is of the timeline monitor: the source monitor plays no sound \
                      while its playhead is dragged",
                 )
+                .with_data(json!({"reason":"monitor"})));
+            }
+            Monitor::Source
+                if matches!(
+                    action,
+                    Some(Action::Loop { .. } | Action::PlayRange { .. })
+                ) =>
+            {
+                return Err(Fault::params(format!(
+                    "{method} is of the timeline monitor: the source monitor neither loops nor                      plays a range"
+                ))
                 .with_data(json!({"reason":"monitor"})));
             }
             Monitor::Source => {
@@ -349,7 +403,10 @@ impl Transport {
             Monitor::Timeline => {
                 let timeline = self.timeline.as_ref().expect("not headless");
                 if action.as_ref().is_some_and(|action| {
-                    !matches!(action, Action::Proxies { .. } | Action::ScrubAudio { .. })
+                    !matches!(
+                        action,
+                        Action::Proxies { .. } | Action::ScrubAudio { .. } | Action::Loop { .. }
+                    )
                 }) {
                     timeline.check_loaded()?;
                 }

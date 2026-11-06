@@ -64,6 +64,7 @@ describe('the TS mirror of the protocol', () => {
   it('reads the tables of PROTOCOL.md', () => {
     expect(methods).toContain('automation.punch');
     expect(methods).toContain('transport.scrub_audio');
+    expect(methods).toEqual(expect.arrayContaining(['transport.loop', 'transport.play_range']));
     expect(methods).not.toContain('transport.*');
     expect(notifications).toContain('automation.written');
     expect(cells('| `trim` | `edge:in\\|out` |')).toEqual(['`trim`', '`edge:in\\|out`']);

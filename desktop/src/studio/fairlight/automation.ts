@@ -49,6 +49,22 @@ export class Pencil {
   }
   finish() { return [...new Map(this.points.map(p => [p.at.ticks, p])).values()].sort((a,b) => a.at.ticks-b.at.ticks); }
 }
+/** The Glide time of Snap touches, in ms, kept for this computer (it is not a setting of the project). */
+const GLIDE_KEY = 'fairlight.glide_ms', GLIDE_DEFAULT = 250;
+export const GLIDE_MAX = 10000;
+/** A Glide time as typed or stored, kept within 0–10000 ms; `null` where it is not a number. */
+export function glideValue(raw: string | null | undefined): number | null {
+  if (raw === null || raw === undefined || raw.trim() === '') return null;
+  const value = Number(raw);
+  return Number.isFinite(value) ? Math.max(0, Math.min(GLIDE_MAX, Math.round(value))) : null;
+}
+/** The stored Glide time; where storage cannot be read or holds no number, the default. */
+export function readGlide(): number {
+  try { return glideValue(localStorage.getItem(GLIDE_KEY)) ?? GLIDE_DEFAULT; } catch { return GLIDE_DEFAULT; }
+}
+export function saveGlide(value: number): void {
+  try { localStorage.setItem(GLIDE_KEY, String(value)); } catch { /* Not kept where storage is unavailable; the value still applies now. */ }
+}
 export const categories = ['fader','mute','pan','eq','comp','gate','lim','sends','plugins','misc'] as const;
 export const defaultRecord = (): NonNullable<Timeline['audio']>['record'] => ({ mode: 'write', touch: 'off', on_stop: 'return', categories: Object.fromEntries(categories.map(c => [c,true])) as NonNullable<Timeline['audio']>['record']['categories'], preview: false, active_range: null });
 

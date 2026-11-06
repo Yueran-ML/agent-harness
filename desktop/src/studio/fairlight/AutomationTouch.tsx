@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { EngineBridge } from '../../bridge';
 import { callEngine, type AutomationTouch as TouchMessage, type AutomationParameter, type Timeline } from '../engine';
-import { categoryOfPath, ownerKey, type AutomationTarget } from './automation';
+import { categoryOfPath, ownerKey, readGlide, type AutomationTarget } from './automation';
 /** One in-flight RPC, 10 ms event sampling, newest movement wins; releases never disappear. */
 export class TouchQueue {
   private target: AutomationTarget | null = null;
@@ -214,8 +214,7 @@ export function AutomationTouchProvider({ bridge, session, timeline, revision = 
     if (![...held.current].some(([id, value]) => returning(id, value)))
       return;
     const timer = setInterval(() => {
-      const configured = Number(localStorage.getItem('fairlight.glide_ms') ?? 250);
-      const duration = Math.max(10, Number.isFinite(configured) ? configured : 250);
+      const duration = Math.max(10, readGlide());
       let changed = false, moving = false;
       for (const [id, value] of held.current) {
         if (!returning(id, value))
@@ -317,7 +316,7 @@ export function AutomationTouchProvider({ bridge, session, timeline, revision = 
         return baseline;
       const record = timeline.audio?.record, snap = record?.touch === 'snap' || record?.touch === 'snap_latch' && target.path === 'fader_db';
       if (!record?.preview && snap && value.released !== null) {
-        const configured = Number(localStorage.getItem('fairlight.glide_ms') ?? 250), duration = Math.max(10, Number.isFinite(configured) ? configured : 250), progress = parameter?.kind === 'switch' ? 1 : Math.min(1, (performance.now() - value.released) / duration);
+        const duration = Math.max(10, readGlide()), progress = parameter?.kind === 'switch' ? 1 : Math.min(1, (performance.now() - value.released) / duration);
         if (progress === 1) {
           held.current.delete(id);
           return baseline;

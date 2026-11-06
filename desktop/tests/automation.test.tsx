@@ -241,3 +241,35 @@ it('keeps a touch across edits made while recording, and lets it go when its own
   expect(screen.getByRole('status').textContent).toBe('false');
   expect(released()).toHaveLength(1);
 });
+it('reads a Glide time that storage holds only when it is a number, and sends a typed one once, on Enter or on leaving', async () => {
+  const base = timeline([]);
+  const call = vi.fn(async () => ({ ok: true as const, result: {} }));
+  const props = { bridge: { call }, session: 1, timeline: base, view: { ...defaultFairlightView(), automation: true, automationControls: true },
+    update: vi.fn(), recording: true, selected: [], frame: 0, onEdit: vi.fn(), onFailure: vi.fn(), onToggle: vi.fn(),
+    marks: () => ({ in: null, out: null }) };
+  localStorage.setItem('fairlight.glide_ms', 'not a number');
+  const s = render(<AutomationToolbar {...props} />);
+  const field = () => screen.getByLabelText(/Glide Time/) as HTMLInputElement;
+  expect(field().value).toBe('250');
+  const records = () => call.mock.calls.filter(c => (c as unknown[])[0] === 'automation.record').map(c => (c as unknown[])[1]);
+  // Typed, a key at a time: nothing is sent until Enter.
+  for (const typed of ['4', '40', '400']) fireEvent.change(field(), { target: { value: typed } });
+  expect(records()).toEqual([]);
+  fireEvent.keyDown(field(), { key: 'Enter' }); await settle();
+  expect(records()).toEqual([{ timeline: 't1', on: true, glide_ms: 400 }]);
+  expect(localStorage.getItem('fairlight.glide_ms')).toBe('400');
+  // Beyond the range it is kept within it, on leaving the field; what is not a number is put back.
+  fireEvent.change(field(), { target: { value: '99999' } }); fireEvent.blur(field()); await settle();
+  expect(records().at(-1)).toEqual({ timeline: 't1', on: true, glide_ms: 10000 });
+  fireEvent.change(field(), { target: { value: '' } }); fireEvent.blur(field()); await settle();
+  expect(field().value).toBe('10000'); expect(records()).toHaveLength(2);
+  // Storage that cannot be used does not stop the field.
+  s.unmount();
+  vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('denied'); });
+  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('denied'); });
+  render(<AutomationToolbar {...props} />);
+  expect(field().value).toBe('250');
+  fireEvent.change(field(), { target: { value: '300' } }); fireEvent.keyDown(field(), { key: 'Enter' }); await settle();
+  expect(records().at(-1)).toEqual({ timeline: 't1', on: true, glide_ms: 300 });
+  localStorage.removeItem('fairlight.glide_ms');
+});

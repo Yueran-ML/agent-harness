@@ -798,6 +798,9 @@
 .file-channel-waveform:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .file-channel-name { position: absolute; z-index: 1; top: 2px; left: 4px; font-size: 11px; pointer-events: none; }
 .file-channel-waveform .timeline-waveform { top: 0; height: 100%; }
+.file-audition-cursor { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--accent); pointer-events: none; z-index: 2; }
+.file-audition > [role=group] { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-block: 6px; }
+.file-audition output { font-variant-numeric: tabular-nums; }
 .file-channel-waveform .timeline-wave-tiles { position: absolute; inset: 0; }
 
 .cut-bar {

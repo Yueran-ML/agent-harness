@@ -1,5 +1,13 @@
 /** Shared Fairlight catalogue; protocol IDs and media/track names are never translated. */
 const entries = {
+  'Source audition': ['源声道试听', 'ソース試聴'],
+  'Apply channel changes before auditioning them.': ['请先应用声道修改，再试听修改后的声音。', 'チャンネルの変更を適用してから試聴してください。'],
+  'The channels were changed elsewhere, so the changes you had not applied were reset.': ['声道设置在别处被修改，你未应用的修改已重置。', 'チャンネル設定が別の場所で変更されたため、未適用の変更をリセットしました。'],
+  'Play source': ['播放源声道', 'ソースを再生'],
+  'Stop source': ['停止试听', '試聴を停止'],
+  'Source position': ['源时间位置', 'ソース位置'],
+  'Audition uses source channels and channel levels only.': ['试听只使用源声道及声道电平。', '試聴にはソースチャンネルとチャンネルレベルのみを使用します。'],
+  'Could not play source audio. Try again.': ['无法试听源音频，请重试。', 'ソース音声を試聴できませんでした。もう一度お試しください。'],
   'Composite waveform': ['合成波形', '合成波形'],
   'Audio Channel': ['音频声道', 'オーディオチャンネル'],
   'The clip changed. Reopen the channel source menu.': ['片段已更改，请重新打开声道来源菜单。', 'クリップが変更されました。チャンネルソースメニューを開き直してください。'],

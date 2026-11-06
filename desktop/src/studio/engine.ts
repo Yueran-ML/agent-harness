@@ -1054,6 +1054,7 @@ export interface MigrationReport {
 
 /** The methods of the engine that the page may call, and what each answers. */
 export interface PageMethods {
+  'audio.audition': { audition: number | null; playing: boolean; position: Time | null; error: string | null };
   'clips.copy': { revision: number; clipboard: import('./timeline/clipboard').ClipClipboard };
   'project.get': ProjectGot;
   'transaction.apply': Applied;

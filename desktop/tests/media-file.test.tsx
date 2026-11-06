@@ -53,7 +53,7 @@ it('draws the last selected source with shared native peaks and releases its sub
   const s = setup([source('m1', 1), source('m2', 3)]); await settle();
   expect(s.bridge.call).toHaveBeenCalledExactlyOnceWith('media.waveform', { media: 'm2', stream: 3 }, { expectedSession: 1 });
   expect(s.container.querySelectorAll('svg')).toHaveLength(4);
-  expect(screen.getByRole('img', { name: 'Multiple Clips' }).querySelectorAll('svg')).toHaveLength(2);
+  expect(screen.getByRole('button', { name: 'Multiple Clips' }).querySelectorAll('svg')).toHaveLength(2);
   expect(screen.getByRole('heading', { name: 'Multiple Clips' })).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Channel 2' }).querySelector('path')!.getAttribute('transform')).toContain(`scale(1,${10 ** (-3 / 20)})`);
   s.unmount(); expect(s.off).toHaveBeenCalledOnce();
@@ -162,7 +162,7 @@ it('overlays opposite-phase channel envelopes without cancelling them or request
   const off = vi.fn();
   const view = render(<MediaFile media={[item]} bridge={{ call, onEvent: () => off }} session={3} onApply={apply} />);
   await settle();
-  const composite = screen.getByRole('img', { name: 'Composite waveform' });
+  const composite = screen.getByRole('button', { name: 'Composite waveform' });
   expect(composite.parentElement?.firstElementChild).toBe(composite);
   const envelopes = [...composite.querySelectorAll('path')];
   expect(envelopes).toHaveLength(2);
@@ -184,7 +184,7 @@ it('keeps every original file channel in the composite when configured outputs a
   item.audio_config![0].channels[0] = { source: { stream: 1, channel: 1 }, enabled: false };
   item.audio_config![1].channels[0].mute = true;
   const s = setup([item]); await settle();
-  const composite = screen.getByRole('img', { name: 'Composite waveform' });
+  const composite = screen.getByRole('button', { name: 'Composite waveform' });
   expect(composite.querySelectorAll('path')).toHaveLength(2);
   expect(screen.getByRole('button', { name: 'Channel 1' }).querySelector('path')).toBeNull();
   expect(screen.getByRole('button', { name: 'Channel 2' }).querySelector('path')).toBeNull();
@@ -192,7 +192,7 @@ it('keeps every original file channel in the composite when configured outputs a
   expect(s.apply).not.toHaveBeenCalled();
   s.unmount();
   const noOutputs = setup([{ ...item, audio_config: [] }]); await settle();
-  expect(screen.getByRole('img', { name: 'Composite waveform' }).querySelectorAll('path')).toHaveLength(2);
+  expect(screen.getByRole('button', { name: 'Composite waveform' }).querySelectorAll('path')).toHaveLength(2);
   expect(screen.queryByRole('button', { name: 'Channel 1' })).toBeNull();
   expect(noOutputs.apply).not.toHaveBeenCalled();
 });

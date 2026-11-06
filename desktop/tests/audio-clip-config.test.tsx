@@ -66,6 +66,23 @@ it('configures a native multi-stream channel map with one real transaction and k
   expect(s.model()[0].channels).toEqual([{ source: { stream: 1, channel: 1 }, enabled: true, mute: false, level_db: -3 }, { source: { stream: 3, channel: 0 }, enabled: true, mute: true, level_db: 0 }]);
   expect(s.model()[0].gain_db).toBe(-7);
 });
+it('says so when a change elsewhere resets channel edits that were not applied', async () => {
+  const s = setup(false);
+  const notice = 'The channels were changed elsewhere, so the changes you had not applied were reset.';
+  fireEvent.click(screen.getByRole('tab', { name: 'File' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Custom mapping' }));
+  fireEvent.change(screen.getByRole('spinbutton', { name: 'Channel 1 Level' }), { target: { value: '-3' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Apply channel mapping' })); await settle();
+  // Its own apply resets nothing that was pending.
+  expect(screen.queryByText(notice)).toBeNull();
+  const level = screen.getByRole('spinbutton', { name: 'Channel 1 Level' });
+  fireEvent.change(level, { target: { value: '-9' } }); fireEvent.blur(level);
+  s.restoredSnapshot(); await settle();
+  expect(screen.getByText(notice)).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Custom mapping' }));
+  fireEvent.change(screen.getByRole('spinbutton', { name: 'Channel 1 Level' }), { target: { value: '-6' } });
+  expect(screen.queryByText(notice)).toBeNull();
+});
 it('maps an averaged stereo pair explicitly and restores automatic mixing without changing track format', async () => {
   const s = setup(true); fireEvent.click(screen.getByRole('tab', { name: 'File' })); fireEvent.click(screen.getByRole('button', { name: 'Custom mapping' }));
   fireEvent.change(screen.getByRole('combobox', { name: 'Channel 1 Source' }), { target: { value: 'mix:1' } });

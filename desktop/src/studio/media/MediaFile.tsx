@@ -8,6 +8,7 @@ import { useFileWaveforms } from '../inspector/FileWaveforms';
 import { mappedWaveform } from '../timeline/ChannelWaveform';
 import { Waveform, type WaveClip } from '../timeline/Waveform';
 import { audioSources, sourceLayout } from './audioLayout';
+import { AuditionCursor, FileTransport, pointerFraction, useFileAudition } from '../inspector/FileAudition';
 
 /** Pool channel edits retain each selected file's layout and unrelated channel settings. */
 export function MediaFile({ media, bridge, session, onApply }: {
@@ -19,6 +20,9 @@ export function MediaFile({ media, bridge, session, onApply }: {
   const layouts = media.map(sourceLayout), shown = layouts.at(-1)!.flatMap(row => row.channels);
   const compatible = layouts.every(layout => layout.flatMap(row => row.channels).length === shown.length);
   const available = media.every(item => audioSources(item).length > 0);
+  const canAudition = audioSources(last).length > 0;
+  const duration = last.facts.duration.ticks / last.facts.duration.scale;
+  const audition = useFileAudition(bridge, session, { kind: 'media', media: last.id }, 0, duration, !canAudition);
   const [selected, setSelected] = useState<number[]>([]);
   const [pending, setPending] = useState(false), [failed, setFailed] = useState(false);
   const sending = useRef(false), live = useRef(true);
@@ -65,16 +69,28 @@ export function MediaFile({ media, bridge, session, onApply }: {
       channel={drawing.channel} stream={drawing.stream} mix={drawing.mix} remix={drawing.remix} gain={drawing.gain} /> : null;
   };
   const compositeLabel = media.length > 1 ? t('Multiple Clips') : t('Composite waveform');
-  return <section className="media-file" aria-label={t('File')}>
+  return <section className="media-file" aria-label={t('File')} onKeyDown={audition.keyDown}>
     <h3>{media.length > 1 ? t('Multiple Clips') : last.name}</h3>
     {!compatible && <p role="status">{t('Select clips with the same channel count to configure them together.')}</p>}
     {!available && <p role="status">{t('Audio stream information is unavailable.')}</p>}
     {failed && <p role="alert">{t('Could not update audio channels. Try again.')}</p>}
     <div ref={box} className="file-waveforms" role="group" aria-label={t('Channels')}>
-      <div className="media-file-composite file-channel-waveform" role="img" aria-label={compositeLabel}>
+      <button type="button" className="media-file-composite file-channel-waveform" aria-label={compositeLabel}
+        disabled={!canAudition} onClick={event => {
+          if (event.ctrlKey || event.metaKey || event.shiftKey) return;
+          // Enter or Space has no pointer position: keep the current one.
+          if (event.detail === 0) { audition.locate(audition.position, null); return; }
+          const fraction = pointerFraction(event);
+          if (fraction !== null) audition.locate(fraction * duration, null);
+        }} onPointerMove={event => {
+          if (event.buttons || event.ctrlKey || event.metaKey || event.shiftKey || event.pointerType === 'touch') return;
+          const fraction = pointerFraction(event);
+          if (fraction !== null) audition.skim(fraction * duration, null);
+        }} onPointerLeave={audition.leave}>
         <span className="file-channel-name">{compositeLabel}</span>
         {sources.map((source, index) => waveform({ source }, index))}
-      </div>
+        <AuditionCursor position={audition.position} start={0} end={duration} />
+      </button>
       {shown.map((channel, index) => {
         const label = `${t('Channel')} ${index + 1}`;
         const all = layouts.map(layout => layout.flatMap(row => row.channels)[index]);
@@ -83,10 +99,22 @@ export function MediaFile({ media, bridge, session, onApply }: {
         const selectedSource = channel.remix ? 'custom' : channel.source == null ? 'none' : sourceIndex >= 0 ? String(sourceIndex) : 'custom';
         return <div key={index} className="media-file-channel">
           <button type="button" className="file-channel-waveform" aria-label={label} aria-pressed={selected.includes(index)}
-            onClick={event => setSelected(old => !(event.ctrlKey || event.metaKey || event.shiftKey) ? [index]
-              : old.includes(index) ? old.filter(item => item !== index) : [...old, index])}>
+            onClick={event => {
+              const extend = event.ctrlKey || event.metaKey || event.shiftKey;
+              setSelected(old => !extend ? [index] : old.includes(index) ? old.filter(item => item !== index) : [...old, index]);
+              if (!extend && canAudition) {
+                if (event.detail === 0) { audition.locate(audition.position, index); return; }
+                const fraction = pointerFraction(event);
+                if (fraction !== null) audition.locate(fraction * duration, index);
+              }
+            }} onPointerMove={event => {
+              if (!canAudition || event.buttons || event.ctrlKey || event.metaKey || event.shiftKey || event.pointerType === 'touch') return;
+              const fraction = pointerFraction(event);
+              if (fraction !== null) audition.skim(fraction * duration, index);
+            }} onPointerLeave={audition.leave}>
             <span className="file-channel-name">{label}</span>
             {waveform(channel)}
+            <AuditionCursor position={audition.position} start={0} end={duration} />
           </button>
           <fieldset disabled={disabled} className="media-file-controls">
             <label><input type="checkbox" aria-label={`${label} ${t('Active')}`} checked={channel.enabled !== false}
@@ -110,6 +138,7 @@ export function MediaFile({ media, bridge, session, onApply }: {
         </div>;
       })}
     </div>
+    <FileTransport audition={audition} disabled={!canAudition || duration <= 0} />
     <NumberField label={t('Channel Level')} name="media-channel-level" value={level} fallback={0} min={-100} max={24} digits={1}
       scrub={.1} slider={{ min: -100, max: 24, step: .1 }} unit="dB" disabled={disabled || selected.length === 0}
       onCommit={value => void save((row, index) => selected.includes(index) ? { ...row, level_db: value } : row)} />

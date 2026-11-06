@@ -1,4 +1,4 @@
-import { useContext, useEffect, useMemo, useState } from 'react';
+import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { EngineBridge } from '../../bridge';
 import type { AudioStream, ChannelMap, Clip, Media, Timeline } from '../engine';
 import { automaticChannels, channelChoice, channelKey, channelSources as sources } from '../media/audioLayout';
@@ -36,10 +36,17 @@ export function AudioConfig({ clips, timeline, media, commit, bridge, session }:
   const [selectedChannels, setSelectedChannels] = useState<number[]>([]);
   useEffect(() => setSelectedChannels(old => old.filter(index => index < count)), [count]);
   const modelKey = JSON.stringify(clips.map(clip => [clip.id, autoOf(timeline, clip), clip.channels]));
+  // The model the draft started from; a draft that differs from it holds unapplied changes.
+  const baseline = useRef(JSON.stringify(draft));
+  const [discarded, setDiscarded] = useState(false);
   useEffect(() => {
+    const next = Object.fromEntries(clips.map(clip => [clip.id, mapsOf(timeline, clip)]));
+    const was = JSON.stringify(draft), now = JSON.stringify(next);
+    // Changed elsewhere (another page, undo) while this panel held unapplied edits: say so.
+    setDiscarded(was !== baseline.current && was !== now);
+    baseline.current = now;
     setCustom(clips.some(clip => clip.channels != null));
-    setDraft(Object.fromEntries(clips.map(clip => [clip.id,
-      mapsOf(timeline, clip)])));
+    setDraft(next);
   }, [modelKey]);
   const compatible = clips.every(clip => countOf(timeline, clip.id) === count);
   const streams = facts?.streams ?? [];
@@ -47,10 +54,11 @@ export function AudioConfig({ clips, timeline, media, commit, bridge, session }:
   const valid = compatible && clips.every(clip => draft[clip.id]?.length === countOf(timeline, clip.id)
     && draft[clip.id].every(channel => Number.isFinite(channel.level_db) && channel.level_db! >= -100 && channel.level_db! <= 24 && validSource(channel.source, clip)));
   const disabled = locked || pending || !compatible;
-  const update = (index: number, patch: Partial<ChannelMap> | ((clip: Clip) => Partial<ChannelMap>)) => setDraft(old => Object.fromEntries(clips.map(clip => [clip.id,
-    old[clip.id].map((channel, i) => i === index ? { ...channel, ...(typeof patch === 'function' ? patch(clip) : patch) } : channel)])));
+  const update = (index: number, patch: Partial<ChannelMap> | ((clip: Clip) => Partial<ChannelMap>)) => (setDiscarded(false), setDraft(old => Object.fromEntries(clips.map(clip => [clip.id,
+    old[clip.id].map((channel, i) => i === index ? { ...channel, ...(typeof patch === 'function' ? patch(clip) : patch) } : channel)]))));
   const apply = async (automatic = false) => {
     if (locked || pending || (!automatic && !valid)) return;
+    setDiscarded(false);
     setPending(true);
     const sent = await commit(setClips(ids, (clip, now) => automatic ? { channels: null }
       : draft[clip.id]?.length === countOf(now, clip.id) && draft[clip.id].every(channel => validSource(channel.source, clip)) ? { channels: draft[clip.id] } : null));
@@ -70,6 +78,7 @@ export function AudioConfig({ clips, timeline, media, commit, bridge, session }:
     {facts && <p className="caption">{facts.codec} · {facts.rate} Hz · {facts.channels} {t('Channels')} · {(medium!.facts.duration.ticks / medium!.facts.duration.scale).toFixed(2)} s</p>}
     <p>{t('Format')}: {count === 1 ? t('Mono') : count === 2 ? t('Stereo') : count === 6 ? '5.1' : t('Adaptive')} ({count})</p>
     {track && <FileWaveforms bridge={bridge} session={session} clip={preview} track={track} media={medium} timeline={timeline}
+      unapplied={pending || JSON.stringify(preview.channels) !== JSON.stringify(last.channels)}
       selected={selectedChannels} onSelect={(index, extend) => setSelectedChannels(old => !extend ? [index]
         : old.includes(index) ? old.filter(item => item !== index) : [...old, index])} />}
     <fieldset disabled={disabled || selectedChannels.length === 0}>
@@ -83,6 +92,7 @@ export function AudioConfig({ clips, timeline, media, commit, bridge, session }:
         value={selectedLevel !== null && Number.isFinite(selectedLevel) ? selectedLevel : ''} placeholder="—"
         onChange={event => setSelectedLevel(event.target.value === '' ? NaN : Number(event.target.value))} /> dB</label>
     </fieldset>
+    {discarded && <p role="status">{t('The channels were changed elsewhere, so the changes you had not applied were reset.')}</p>}
     {!custom ? <><p>{t('Automatic mix')}</p><button type="button" disabled={disabled} onClick={() => setCustom(true)}>{t('Custom mapping')}</button></> : <>
       <p className="caption">{t('Choose a source for each output channel. Unassigned channels are silent.')}</p>
       {!compatible && <p role="status">{t('Select clips with the same channel count to configure them together.')}</p>}

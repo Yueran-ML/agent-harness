@@ -30,6 +30,8 @@ import { EffectsLibrary, AUDIO_EFFECT_DRAG, AUDIO_EFFECTS } from '../fairlight/E
 import { LevelMatcher, type CapturedProfile, type LevelMatcherHandle } from '../fairlight/LevelMatcher';
 import { useAudioReadings } from '../fairlight/audioReadings';
 import { useFairlightView } from '../fairlight/viewState';
+import { FairlightTransport } from '../fairlight/FairlightTransport';
+import type { Marks } from '../timeline/snap';
 import { Mixer } from '../fairlight/Mixer';
 import { analysisStandardId } from '../audio/mixerModel';
 import { mixerOrder, moveMixerItems, useMixerLayout } from '../audio/mixerLayout';
@@ -59,6 +61,8 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
   const [matching, setMatching] = useState(false);
   const [clips, setClips] = useState<string[]>([]); const [track, setTrack] = useState<string | null>(null);
   const [transition, setTransition] = useState<string | null>(null);
+  // The In and Out of the timeline, which Range In and Range Out set and show.
+  const [marks, setMarks] = useState<Marks>({ in: null, out: null });
   const normalize = useNormalizeAudio({ bridge, session, revision, timeline: selected, selection: clips, commands: () => timeline.current });
   const attributes = useClipAttributes({ bridge, session, revision, timeline: selected, selection: clips });
   const channelSources = useChannelSourceMenu({ bridge, session, revision, timeline: selected, media });
@@ -159,7 +163,9 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
           if (!clip && (targetTrack.strip?.inserts.length ?? 0) >= 6) return;
           void edit(targets.map(of => ({ op: 'add_insert', timeline: selected.id, of, insert: { on: true, effect: { kind: effect } } })));
         }}>
-        <FairlightTimeline ref={timeline} timeline={selected} bridge={bridge} session={session} revision={revision} media={media}
+        {selected && <FairlightTransport bridge={bridge} session={session} monitor={timelineMonitor} marks={marks}
+          onMark={edge => { timeline.current?.perform({ kind: 'mark', edge }); }} onFailure={error => setProblem(failure(error))} />}
+        <FairlightTimeline ref={timeline} onMarks={setMarks} timeline={selected} bridge={bridge} session={session} revision={revision} media={media}
           frame={state ? timelineMonitor.frame ?? 0 : 0} playing={state?.playing ?? false} onSeek={timelineMonitor.seek}
           onSelection={setClips} onTransition={setTransition} onTrackSelect={chooseTrack} onTracksSelect={ids => chooseStrips(ids.map(id => `track:${id}`))} meters={audio.readings} selectedTracks={stripSelection.filter(key => key.startsWith('track:')).map(key => key.slice(6))} onSpeed={setSpeed} view={view} update={update}
           onCopyClips={attributes.copy} onClipContext={(id, x, y, channel) => { if (selected?.tracks.some(track => track.kind === 'audio' && track.clips.some(clip => clip.id === id))) setContext({ clip: id, x, y, ...channel }); }} />

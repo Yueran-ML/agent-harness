@@ -230,6 +230,10 @@ const entries = {
   'Jump to': ['跳转到', 'ジャンプ先'], 'Fade': ['淡变', 'フェード'],
   'Track Waveform Zoom': ['轨道波形缩放', 'トラック波形ズーム'], 'Zoom Increase Height': ['增大波形高度', '波形の高さを拡大'],
   'Zoom Decrease Height': ['减小波形高度', '波形の高さを縮小'],
+  'Fairlight transport': ['Fairlight 走带', 'Fairlight トランスポート'], 'Playhead timecode': ['播放头时码', '再生ヘッドのタイムコード'],
+  'Go To Timecode': ['跳转到时码', 'タイムコードへ移動'], 'Range In': ['范围入点', '範囲イン'], 'Range Out': ['范围出点', '範囲アウト'],
+  'Range Duration': ['范围时长', '範囲の長さ'], 'Fast Reverse': ['快速倒放', '早戻し'], 'Fast Forward': ['快速正放', '早送り'],
+  'Stop': ['停止', '停止'], 'Play': ['播放', '再生'], 'Loop': ['循环', 'ループ'], 'Play In to Out': ['播放入点到出点', 'インからアウトまで再生'],
   'Reset true peak': ['清零真峰值', 'トゥルーピークをリセット'],
 } as const;
 export type FairlightText = keyof typeof entries;

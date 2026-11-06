@@ -81,3 +81,9 @@
 .fairlight-timeline[data-full-waveforms] .timeline-clip-name { display: none; }
 .fairlight-timeline[data-full-waveforms] .fairlight-channel-lanes { top: 0; }
 .fairlight-timeline[data-waveform-borders] .timeline-waveform { filter: drop-shadow(0 0 .6px #e8fff4) drop-shadow(0 0 .6px #0c2219); }
+/* The transport above the timeline: timecode, Range In and Out, and the transport buttons (p. 3667). */
+.fairlight-transport { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 6px; flex-wrap: wrap; border-bottom: 1px solid var(--border, #40454e); font-size: 11px; }
+.fairlight-timecodes, .fairlight-transport-buttons { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.fairlight-big-timecode { font-size: 18px; min-width: 9.5em; text-align: left; font-variant-numeric: tabular-nums; }
+.fairlight-timecodes output { font-variant-numeric: tabular-nums; opacity: .85; }
+.fairlight-shuttle { min-width: 3.5em; color: #e2c758; }

@@ -59,3 +59,21 @@ export function fileName(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
   return parts.at(-1) ?? path;
 }
+
+/**
+ * The frame that a timecode typed into Go To Timecode asks for (Reference Manual 20, pp. 3746–3747):
+ * digits fill the timecode from its frames up (`1000` is 00:00:10:00), a `.` stands for two zeros,
+ * and a leading `+` or `-` moves from `frame` by that much. Colons may be typed or left out. Null
+ * where the text is not one.
+ */
+export function enteredFrame(text: string, frame: number, rate: Rate): number | null {
+  const entry = /^([+-]?)([0-9.:;]+)$/.exec(text.replace(/\s+/g, ''));
+  if (!entry) return null;
+  const digits = entry[2].replace(/[:;]/g, '').replace(/\./g, '00');
+  if (!digits || digits.length > 8) return null;
+  const [hours, minutes, seconds, frames] = digits.padStart(8, '0').match(/../g)!.map(Number);
+  const fps = nominalFps(rate);
+  const count = ((hours * 60 + minutes) * 60 + seconds) * fps + frames;
+  const to = entry[1] === '+' ? frame + count : entry[1] === '-' ? frame - count : count;
+  return Math.max(0, to);
+}

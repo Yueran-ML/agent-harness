@@ -11,6 +11,7 @@ import { defaultRecord } from '../src/studio/fairlight/automation';
 import type { Timeline } from '../src/studio/engine';
 import { timeline } from './timeline-fixture';
 import { likeABrowser } from './mounted';
+import { overlayOpen } from '../src/app/overlay';
 beforeEach(() => { likeABrowser(); vi.stubGlobal('PointerEvent', MouseEvent); });
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 const settle = () => act(async () => { for (let i = 0; i < 15; i++) await Promise.resolve(); });
@@ -47,6 +48,50 @@ it('applies the source VCA menu action uniformly to a mixed selection', async ()
   expect(ops).toEqual([{edit:'set_track_audio',timeline:c.timeline.id,track:'A1',patch:{strip:{vcas:['VCA1']}},follow_groups:false}]);
   const remove=vcaAssignments(c.timeline,[{track:'A1'},{track:'A2'}],c.timeline.vcas![0],'remove');
   expect(remove).toHaveLength(1);expect(remove[0]).toMatchObject({track:'A2',patch:{strip:{vcas:[]}}});
+});
+it('portals the assignment menu outside the clipped mixer, keeps it inside the viewport and restores keyboard focus', async () => {
+  const c = context();
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function(this: HTMLElement) {
+    const popup = this.getAttribute('role') === 'menu';
+    return { x: popup ? 0 : 990, y: popup ? 0 : 740, left: popup ? 0 : 990, top: popup ? 0 : 740, width: popup ? 180 : 30, height: popup ? 250 : 20, right: popup ? 180 : 1020, bottom: popup ? 250 : 760, toJSON() {} };
+  });
+  const { container } = render(<div className="mixer-region" style={{ overflow: 'auto', height: 60 }}><VcaAssignment context={c} of={{ track: 'A1' }} /></div>);
+  const trigger = screen.getByRole('button', { name: 'VCA A1' }); trigger.focus(); fireEvent.keyDown(trigger, { key: 'Enter' });
+  const menu = screen.getByRole('menu'); expect(container.contains(menu)).toBe(false); expect(menu.parentElement).toBe(document.body); expect(overlayOpen()).toBe(true);
+  expect(menu.classList.contains('route-menu')).toBe(true); expect(menu.style.maxHeight).toContain('100vh');
+  expect(Number.parseFloat(menu.style.left) + 180).toBeLessThanOrEqual(window.innerWidth - 4);
+  expect(Number.parseFloat(menu.style.top) + 250).toBeLessThanOrEqual(window.innerHeight - 4);
+  expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: 'No VCA' }));
+  fireEvent.keyDown(document.activeElement!, { key: 'ArrowDown' }); expect(document.activeElement).toBe(screen.getByRole('menuitemcheckbox', { name: 'Music' }));
+  fireEvent.keyDown(document.activeElement!, { key: 'Escape' }); expect(screen.queryByRole('menu')).toBeNull(); expect(document.activeElement).toBe(trigger); expect(overlayOpen()).toBe(false);
+  fireEvent.keyDown(trigger, { key: 'ArrowDown' }); fireEvent.keyDown(document.activeElement!, { key: 'ArrowDown' }); fireEvent.keyDown(document.activeElement!, { key: 'Enter' }); await settle();
+  expect((c.bridge.call.mock.calls as any[])[0][1].ops[0]).toMatchObject({ track: 'A1', patch: { strip: { vcas: [] } } });
+  expect(document.activeElement).toBe(trigger);
+});
+it('keyboard VCA fader changes the base by .5 dB or Shift .1, and numeric Enter returns focus', async () => {
+  const c = context(); const ui = () => <VcaStrip context={c} vca={c.timeline.vcas![0]} seconds={0} selected={false} onSelect={()=>{}}/>; const view = render(ui());
+  const cap = screen.getByRole('slider', { name: 'Fader Music' }); cap.focus(); expect(document.activeElement).toBe(cap);
+  fireEvent.keyDown(cap, { key: 'ArrowUp' }); fireEvent.keyUp(cap, { key: 'ArrowUp' }); await settle();
+  let writes = (c.bridge.call.mock.calls as any[]).filter(([method]) => method === 'transaction.apply');
+  expect(writes[0][1].ops).toEqual([{ op: 'set_vca', timeline: c.timeline.id, id: 'VCA1', patch: { fader_db: 3.5 } }]);
+  expect(writes.at(-1)[1].gesture.end).toBe(true);
+  c.revision = 8; c.timeline = { ...c.timeline, vcas: c.timeline.vcas!.map(v => v.id === 'VCA1' ? { ...v, fader_db: 3.5 } : v) }; view.rerender(ui());
+  fireEvent.keyDown(cap, { key: 'ArrowDown', shiftKey: true }); fireEvent.keyUp(cap, { key: 'ArrowDown' }); await settle();
+  writes = (c.bridge.call.mock.calls as any[]).filter(([method]) => method === 'transaction.apply'); expect(writes.some(([, p]) => p.ops.some((op: any) => op.patch?.fader_db === 3.4))).toBe(true);
+  fireEvent.keyDown(cap, { key: 'Enter' }); const input = screen.getByRole('textbox'); expect(document.activeElement).toBe(input);
+  fireEvent.change(input, { target: { value: '6' } }); fireEvent.keyDown(input, { key: 'Enter' }); await settle();
+  writes = (c.bridge.call.mock.calls as any[]).filter(([method]) => method === 'transaction.apply'); expect(writes.at(-1)[1].ops).toEqual([{ op: 'set_vca', timeline: c.timeline.id, id: 'VCA1', patch: { fader_db: 4 } }]);
+  expect(document.activeElement).toBe(cap); expect(c.timeline.vcas![0].fader_db).toBe(3.5);
+});
+it('keyboard VCA automation uses touch only and refuses safe or read-only faders', async () => {
+  const c = context(); c.timeline.vcas![0].automation_arm = true;
+  const ui = (recording: boolean) => <AutomationTouchProvider {...c} enabled recording={recording} playing show={()=>{}} onFailure={()=>{}}><VcaStrip context={c} vca={c.timeline.vcas![0]} seconds={0} selected={false} onSelect={()=>{}}/></AutomationTouchProvider>;
+  const view = render(ui(true)); let cap = screen.getByRole('slider', { name: 'Fader Music' }); cap.focus(); fireEvent.keyDown(cap, { key: 'ArrowUp', shiftKey: true }); fireEvent.keyUp(cap, { key: 'ArrowUp' }); await settle();
+  expect(c.bridge.call.mock.calls.length).toBeGreaterThan(0); expect((c.bridge.call.mock.calls as any[]).every(([method]) => method === 'automation.touch')).toBe(true);
+  expect((c.bridge.call.mock.calls as any[]).at(-1)[1]).toMatchObject({ touching: false, path: 'fader_db', value: 3.1 });
+  c.bridge.call.mockClear(); c.timeline.vcas![0].automation_arm = 'safe'; view.rerender(ui(true)); cap = screen.getByRole('slider'); fireEvent.keyDown(cap, { key: 'ArrowUp' }); fireEvent.keyUp(cap, { key: 'ArrowUp' }); await settle(); expect(c.bridge.call).not.toHaveBeenCalled();
+  c.timeline.vcas![0].lanes = { fader_db: { kind: 'continuous', scale: 'linear', points: [{ at: { ticks: 0, scale: 48000 }, value: -4 }] } }; view.rerender(ui(false));
+  fireEvent.keyDown(cap, { key: 'ArrowDown' }); fireEvent.keyUp(cap, { key: 'ArrowDown' }); fireEvent.keyDown(cap, { key: 'Enter' }); await settle(); expect(screen.queryByRole('textbox')).toBeNull(); expect(c.bridge.call).not.toHaveBeenCalled();
 });
 it('shows inherited gain but numeric input writes only the member base', () => {
   const commit = vi.fn(); render(<Fader label="Member" value={-8} displayOffset={5} onStart={()=>true} onChange={()=>{}} onEnd={()=>{}} onCancel={()=>{}} onCommit={commit}/>);

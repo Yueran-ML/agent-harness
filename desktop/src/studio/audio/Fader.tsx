@@ -24,6 +24,7 @@ export function Fader(props: Props) {
   const wheel = useRef<{ value: number; timer: ReturnType<typeof setTimeout> } | null>(null);
   const [editing, setEditing] = useState(false), [text, setText] = useState('');
   const input = useRef<HTMLInputElement>(null);
+  const valueButton = useRef<HTMLButtonElement>(null), editorOpener = useRef<HTMLElement | null>(null), wasEditing = useRef(false);
   const inputModifiers = useRef<Modifiers | undefined>(undefined);
   const cancel = () => { drag.current = null; if (wheel.current) clearTimeout(wheel.current.timer); wheel.current = null; now.current.onCancel(); };
   useEffect(() => { window.addEventListener('blur', cancel); return () => { window.removeEventListener('blur', cancel); cancel(); }; }, []);
@@ -47,7 +48,17 @@ export function Fader(props: Props) {
     element.addEventListener('wheel', turn, { passive: false });
     return () => element.removeEventListener('wheel', turn);
   }, []);
-  useEffect(() => { if (editing) { input.current?.focus(); input.current?.select(); } }, [editing]);
+  useEffect(() => {
+    if (editing) { input.current?.focus(); input.current?.select(); }
+    else if (wasEditing.current) (editorOpener.current?.isConnected ? editorOpener.current : valueButton.current)?.focus();
+    wasEditing.current = editing;
+  }, [editing]);
+  const editValue = (opener: HTMLElement, modifiers: Modifiers) => {
+    if (disabled || readOnly) return;
+    editorOpener.current = opener;
+    inputModifiers.current = modifiers.altKey || modifiers.ctrlKey || modifiers.shiftKey ? { altKey: modifiers.altKey, ctrlKey: modifiers.ctrlKey, shiftKey: modifiers.shiftKey } : undefined;
+    setText(formatDb(displayed)); setEditing(true);
+  };
   const finish = () => { if (drag.current) { drag.current = null; onEnd(); } };
   const move = (event: PointerEvent<HTMLDivElement>) => {
     const d = drag.current; if (!d) return;
@@ -73,16 +84,28 @@ export function Fader(props: Props) {
   }}>
     {editing ? <input ref={input} aria-label={props.valueLabel ?? `${label} value`} value={text} onChange={event => setText(event.target.value)}
       onBlur={() => setEditing(false)} onKeyDown={event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); save(); } }} />
-      : <button className="audio-fader-value" type="button" aria-label={props.valueLabel ?? `${label} value`} disabled={disabled || readOnly}
-        onDoubleClick={event => { if (!disabled && !readOnly) {
-          inputModifiers.current = event.altKey || event.ctrlKey || event.shiftKey ? { altKey: event.altKey, ctrlKey: event.ctrlKey, shiftKey: event.shiftKey } : undefined;
-          setText(formatDb(displayed)); setEditing(true);
-        } }}>{formatDb(displayed)}</button>}
+      : <button ref={valueButton} className="audio-fader-value" type="button" aria-label={props.valueLabel ?? `${label} value`} disabled={disabled || readOnly}
+        onDoubleClick={event => editValue(event.currentTarget, event)}
+        onKeyDown={event => { if (!event.nativeEvent.isComposing && ['Enter', 'F2'].includes(event.key)) { event.preventDefault(); event.stopPropagation(); editValue(event.currentTarget, event); } }}>{formatDb(displayed)}</button>}
     <div ref={well} className="audio-fader-well">
       {[10, 0, -10, -20, -40, -60].map(db => <span aria-hidden="true" key={db} className="audio-fader-tick" style={{ bottom: `${dbToPosition(db) * 100}%` }}>{db}</span>)}
       <div ref={cap} role="slider" aria-label={label} aria-orientation="vertical" aria-valuemin={Math.min(-100,-100+offset)} aria-valuemax={Math.max(10,10+offset)} aria-valuenow={displayed} aria-valuetext={`${formatDb(displayed)} dB`}
         aria-disabled={disabled || undefined} aria-readonly={readOnly || undefined} tabIndex={disabled ? -1 : 0} className="audio-fader-cap"
         style={{ bottom: `${dbToPosition(displayed) * 100}%` }}
+        onKeyDown={event => {
+          if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+          if (['Enter', 'F2'].includes(event.key)) { event.preventDefault(); event.stopPropagation(); editValue(event.currentTarget, event); return; }
+          if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+          event.preventDefault(); event.stopPropagation(); if (disabled || readOnly || drag.current) return;
+          if (wheel.current && now.current.isActive?.() === false) { clearTimeout(wheel.current.timer); wheel.current = null; }
+          if (!wheel.current && !onStart(event)) return;
+          const previous = wheel.current?.value ?? value;
+          if (wheel.current) clearTimeout(wheel.current.timer);
+          const next = event.key === 'Home' ? -100 : event.key === 'End' ? 10 : previous + (event.key === 'ArrowUp' ? 1 : -1) * (event.shiftKey ? .1 : .5);
+          onChange(next); wheel.current = { value: next, timer: setTimeout(() => { wheel.current = null; now.current.onEnd(); }, 500) };
+        }} onKeyUp={event => {
+          if (['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key) && wheel.current) { event.preventDefault(); event.stopPropagation(); clearTimeout(wheel.current.timer); wheel.current = null; onEnd(); }
+        }}
         onPointerDown={event => {
           if (event.button !== 0 || disabled || readOnly) return;
           event.preventDefault(); event.stopPropagation(); event.currentTarget.focus();

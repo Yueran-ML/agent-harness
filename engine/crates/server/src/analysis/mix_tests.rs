@@ -224,3 +224,31 @@ async fn jobs_deduplicate_mix_requests_notify_the_exact_selection_and_cache_offl
     assert!(different.is_some());
     analysis.stop();
 }
+
+#[test]
+fn long_mix_lists_are_hashed_into_a_short_distinct_cache_name() {
+    let media = columbina_model::Project::sample().media.remove(0);
+    let list = |count: u32| -> Vec<ChannelSource> {
+        (0..count)
+            .map(|channel| ChannelSource {
+                stream: 0,
+                channel: channel % 10,
+            })
+            .collect()
+    };
+    // 16 sources of "0.c" joined by "-" are 63 characters, written as they are.
+    let short = mix_key(&media, &list(16));
+    assert!(
+        short.ends_with("-mix-0.0-0.1-0.2-0.3-0.4-0.5-0.6-0.7-0.8-0.9-0.0-0.1-0.2-0.3-0.4-0.5.bin")
+    );
+    let long = mix_key(&media, &list(17));
+    let huge = mix_key(&media, &list(5000));
+    assert!(
+        long.contains("-mix-h") && huge.contains("-mix-h"),
+        "{long} {huge}"
+    );
+    assert_ne!(long, huge);
+    assert_eq!(long.len(), huge.len());
+    assert!(huge.len() < 100, "{huge}");
+    assert_eq!(huge, mix_key(&media, &list(5000)));
+}

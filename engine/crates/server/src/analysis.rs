@@ -182,15 +182,7 @@ impl Analysis {
         let shared = Arc::clone(&self.0);
         tokio::task::spawn_blocking(move || {
             let key = match &mix {
-                Some(sources) => format!(
-                    "{}-mix-{}.bin",
-                    stem(&media),
-                    sources
-                        .iter()
-                        .map(|source| format!("{}.{}", source.stream, source.channel))
-                        .collect::<Vec<_>>()
-                        .join("-")
-                ),
+                Some(sources) => mix_key(&media, sources),
                 None => match stream {
                     None => match remix {
                         Some(channels) => format!("{}-remix-{channels}.bin", stem(&media)),
@@ -228,6 +220,13 @@ impl Analysis {
             if let (None, Some(spec), Some(path)) = (stream, &spec, &cache) {
                 if let Some(wave) = cached_wave(path, spec) {
                     return Ok((wave.value(), None));
+                }
+            }
+            // Without a cache, an absent source channel is refused now, before any job. A file
+            // that cannot be opened is left to the job, which says why, as for the media.
+            if let Some(sources) = &mix {
+                if let Ok(sounds) = columbina_media::sounds(Path::new(&media.path)) {
+                    mix_picks(&sounds, sources)?;
                 }
             }
             let mut jobs = shared
@@ -598,30 +597,73 @@ fn make_wave(
     read(decoder).map_err(cannot)
 }
 
-/// Mix actual samples before reducing them: peaks cannot recover phase cancellation.
-/// The playback reader keeps bounded PCM windows and aligns all streams to the video origin.
-fn make_mix(media: &Media, sources: &[ChannelSource], stopped: &AtomicBool) -> Result<Wave, Fault> {
-    use crate::play::mix::reader::{Lane, Layout, Pick, Reader};
-    let cannot = |message: &str| cannot_read(&media.path, "decode", message);
-    let sounds = columbina_media::sounds(Path::new(&media.path))
-        .map_err(|error| cannot_read(&media.path, error.reason(), &error.to_string()))?;
+/// The longest source list written into a cache name as it is. A longer one is hashed, so
+/// that the name stays far below the 260 characters of a Windows path.
+const MOST_MIX_NAME: usize = 64;
+
+/// The job and cache name of a mix: its exact ordered source list, or a hash of a long one.
+/// A hashed name starts with `h`, which a written list (digits, `.` and `-`) never does.
+fn mix_key(media: &Media, sources: &[ChannelSource]) -> String {
+    use sha2::{Digest as _, Sha256};
+    let list = sources
+        .iter()
+        .map(|source| format!("{}.{}", source.stream, source.channel))
+        .collect::<Vec<_>>()
+        .join("-");
+    if list.len() <= MOST_MIX_NAME {
+        return format!("{}-mix-{list}.bin", stem(media));
+    }
+    let hash = Sha256::digest(list.as_bytes());
+    let short = hash[..16].iter().fold(String::new(), |mut short, b| {
+        use std::fmt::Write as _;
+        let _ = write!(short, "{b:02x}");
+        short
+    });
+    format!("{}-mix-h{short}.bin", stem(media))
+}
+
+/// The native channels of a mix, and the highest sample rate among their streams; a source
+/// that is not a channel of a stream of sound of the file is refused as `-32602`.
+fn mix_picks(
+    sounds: &columbina_media::Sounds,
+    sources: &[ChannelSource],
+) -> Result<(Vec<crate::play::mix::reader::Pick>, u32), Fault> {
     let mut rate = 0;
     let mut picks = Vec::with_capacity(sources.len());
     for source in sources {
         let sound = sounds
             .streams
             .iter()
-            .find(|sound| {
-                u32::try_from(sound.index) == Ok(source.stream)
-                    && source.channel < u32::from(sound.channels)
-            })
-            .ok_or_else(|| Fault::params("mix names a channel absent from the source"))?;
+            .find(|sound| u32::try_from(sound.index) == Ok(source.stream))
+            .ok_or_else(|| {
+                Fault::params("mix names a stream that is not a stream of sound of the media")
+                    .with_data(json!({"reason":"stream", "stream":source.stream}))
+            })?;
+        let channel = u16::try_from(source.channel)
+            .ok()
+            .filter(|channel| *channel < sound.channels)
+            .ok_or_else(|| {
+                Fault::params("mix names a channel absent from the source").with_data(
+                    json!({"reason":"channel", "stream":source.stream, "channel":source.channel}),
+                )
+            })?;
         rate = rate.max(sound.rate);
-        picks.push(Pick {
+        picks.push(crate::play::mix::reader::Pick {
             stream: sound.index,
-            channel: u16::try_from(source.channel).expect("checked channel"),
+            channel,
         });
     }
+    Ok((picks, rate))
+}
+
+/// Mix actual samples before reducing them: peaks cannot recover phase cancellation.
+/// The playback reader keeps bounded PCM windows and aligns all streams to the video origin.
+fn make_mix(media: &Media, sources: &[ChannelSource], stopped: &AtomicBool) -> Result<Wave, Fault> {
+    use crate::play::mix::reader::{Lane, Layout, Reader};
+    let cannot = |message: &str| cannot_read(&media.path, "decode", message);
+    let sounds = columbina_media::sounds(Path::new(&media.path))
+        .map_err(|error| cannot_read(&media.path, error.reason(), &error.to_string()))?;
+    let (picks, rate) = mix_picks(&sounds, sources)?;
     if rate == 0 {
         return Err(cannot("the mix has no sample rate"));
     }

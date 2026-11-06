@@ -141,3 +141,79 @@ async fn mixed_waveforms_match_real_cross_stream_pcm_and_leave_the_project_uncha
     drop(client);
     assert_eq!(engine.ended().await, 0);
 }
+
+#[tokio::test]
+async fn bad_mixes_are_refused_before_a_job_and_long_lists_get_short_cache_names() {
+    let made = support::media(support::Sample::TwoMonoStreams).expect("local PCM fixture");
+    let directory = project_dir();
+    let path = directory.path().join("source.mov");
+    std::fs::copy(&made.path, &path).unwrap();
+    let engine = engine(directory.path(), &["--headless", "--idle-seconds", "1"]).await;
+    let mut client = engine.client("agent").await;
+    client
+        .result("media.import", Some(json!({"paths":[path]})))
+        .await;
+    // Refused at once, as the protocol says: no pending answer and no job notification.
+    let absent = [
+        (
+            json!([{"stream":0,"channel":1}]),
+            json!({"reason":"channel","stream":0,"channel":1}),
+        ),
+        (
+            json!([{"stream":0,"channel":0},{"stream":7,"channel":0}]),
+            json!({"reason":"stream","stream":7}),
+        ),
+        (
+            json!([{"stream":1,"channel":70000}]),
+            json!({"reason":"channel","stream":1,"channel":70000}),
+        ),
+    ];
+    for (sources, data) in absent {
+        for _ in 0..2 {
+            let error = client
+                .error("media.waveform", Some(json!({"media":"m1","mix":sources})))
+                .await;
+            assert_eq!(error["code"], -32602, "{error}");
+            assert_eq!(error["data"], data, "{error}");
+        }
+    }
+    for params in [
+        json!({"media":"m1","mix":[]}),
+        json!({"media":"m1","mix":[{"stream":0,"channel":0}],"stream":0}),
+        json!({"media":"m1","mix":[{"stream":0,"channel":0}],"remix":2}),
+        json!({"media":"m1","remix":0}),
+        json!({"media":"m1","remix":25}),
+        json!({"media":"m1","remix":2,"stream":0}),
+    ] {
+        assert_eq!(
+            client.error("media.waveform", Some(params.clone())).await["code"],
+            -32602,
+            "{params}"
+        );
+    }
+    assert!(!client
+        .take_notifications()
+        .iter()
+        .any(|note| note["method"] == "media.waveform"));
+    // The mean of one channel named 40 times is that channel; its list is hashed in the name.
+    let long = Value::Array(vec![json!({"stream":1,"channel":0}); 40]);
+    let one = mixed(&mut client, json!([{"stream":1,"channel":0}])).await;
+    let result = mixed(&mut client, long.clone()).await;
+    assert_eq!(result, one);
+    let names: Vec<String> = std::fs::read_dir(directory.path().join("cache").join("waveforms"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    let hashed: Vec<_> = names
+        .iter()
+        .filter(|name| name.contains("-mix-h"))
+        .collect();
+    assert_eq!(hashed.len(), 1, "{names:?}");
+    assert!(hashed[0].len() < 80, "{names:?}");
+    assert!(names.iter().all(|name| name.len() < 100), "{names:?}");
+    // The hashed cache is read while the original is offline, like any other.
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(mixed(&mut client, long).await, result);
+    drop(client);
+    assert_eq!(engine.ended().await, 0);
+}

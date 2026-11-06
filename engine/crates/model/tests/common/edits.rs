@@ -1027,6 +1027,7 @@ pub fn edit_of(project: &Project, making: &Making) -> Edit {
         },
         PLACE_COPIES => Edit::PlaceCopies {
             timeline,
+            grouped: false,
             copies: clips
                 .iter()
                 .enumerate()

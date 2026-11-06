@@ -1,0 +1,19 @@
+.track-groups-context { display: contents; }
+.track-groups { padding: 8px; }
+.track-groups header, .track-group-row, .track-group-dialog footer { display: flex; gap: 6px; align-items: center; }
+.track-groups h2 { flex: 1; font-size: 12px; }
+.track-group-row { margin-top: 5px; }
+.track-group-row > button:first-of-type { flex: 1; text-align: left; }
+.track-group-row > button[aria-label] { opacity: 0; }
+.track-group-row:is(:hover, :focus-within) > button[aria-label] { opacity: 1; }
+@media (hover: none) {
+  .track-group-row > button[aria-label] { opacity: 1; }
+}
+.track-group-row[data-active] { background: var(--surface-2, #30343a); }
+.track-group-dialog { width: 100%; display: grid; gap: 14px; }
+.track-group-dialog fieldset { display: flex; flex-wrap: wrap; gap: 12px; }
+.track-group-members { display: flex; gap: 12px; }
+.track-group-members label { flex: 1; display: grid; }
+.track-group-members select { min-height: 140px; }
+.track-group-members > div { display: grid; align-content: center; gap: 10px; }
+.track-group-label { position: relative; }

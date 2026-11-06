@@ -37,7 +37,7 @@ export interface TimelineView { scale: number; left: number; width: number }
 export interface TimelineViewport { scale: number; left: number; top: number; heights: Record<string, number> }
 export type TimelineScrolling = 'fixed' | 'page' | 'none';
 export function Timeline({ timeline, media, bridge, session, revision, frame, playing, onSeek, source = null, focus = 'timeline', onSpeed, onSelection, onTransition, onCue, ref,
-  cut = false, overview = false, center = false, trackHeight = 72, indicator = null, detail = null, onView, label, hiddenTracks, drawClip, onClipContext, onCopyClips, onTrackSelect, selectedTracks, audioOnlyDrop, gainLine = true, trackDecoration, afterTracks, gainLineDisabled, automationRange, viewport, scrolling }: {
+  cut = false, overview = false, center = false, trackHeight = 72, indicator = null, detail = null, onView, label, hiddenTracks, drawClip, onClipContext, onCopyClips, onTrackSelect, selectedTracks, audioOnlyDrop, gainLine = true, trackDecoration, afterTracks, gainLineDisabled, automationRange, viewport, scrolling, trackMenuItems }: {
   timeline: TimelineModel | null; media: readonly Media[]; bridge: Pick<EngineBridge, 'call' | 'onEvent'>; session: number;
   revision: number; frame: number; playing: boolean; onSeek: (frame: number, scrubbing: boolean) => void;
   source?: EditContext['source']; focus?: Monitor; onSpeed?: (clips: string[]) => void; onSelection?: (clips: string[]) => void;
@@ -72,6 +72,7 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
   drawClip?: (props: TrackClipDrawing) => ReactNode;
   onClipContext?: (clip: string, x: number, y: number) => void;
   onCopyClips?: (clips: readonly string[]) => boolean;
+  trackMenuItems?: (track: string) => TrackMenu['items'];
   onTrackSelect?: (track: string) => void;
   /** View-only selection shared with the mixer; it does not change edit destination tracks. */
   selectedTracks?: readonly string[];
@@ -317,7 +318,7 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
       if (!track || !(event.target instanceof Element)) return;
       const clicked = under(event);
       const items: TrackMenu['items'] = event.target.closest('.timeline-track-header')
-        ? [{ id: 'add-subtitle-track', label: labels.addSubtitleTrack, disabled: editing.pending, run: () => editing.addSubtitleTrack(pageLanguage()) }]
+        ? [{ id: 'add-subtitle-track', label: labels.addSubtitleTrack, disabled: editing.pending, run: () => editing.addSubtitleTrack(pageLanguage()) }, ...(trackMenuItems?.(track.dataset.track!) ?? [])]
         : track.dataset.kind === 'subtitle' ? [{ id: 'add-subtitle', label: labels.addCue, disabled: track.dataset.locked === 'true' || editing.pending, run: () => editing.addCue(track.dataset.track!, clicked) }] : [];
       if (items.length === 0) return;
       event.preventDefault();

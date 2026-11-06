@@ -1,6 +1,7 @@
 import { keyOf, type Key } from '../../app/keys';
 import { editingAllowed } from '../keys';
 import { useFairlightText } from './words';
+import { useTrackGroups } from './TrackGroups';
 import { useCallback, useMemo, useRef, useImperativeHandle, useState, type ComponentProps, type SetStateAction } from 'react';
 import { Timeline, type TimelineHandle, type TimelineViewport, type TimelineScrolling } from '../timeline/Timeline';
 import type { TrackClipDrawing } from '../timeline/TrackRow';
@@ -13,7 +14,7 @@ import type { FairlightView, FairlightViewUpdate } from './viewState';
 export function FairlightTimeline({ view, update, ...props }: ComponentProps<typeof Timeline> & {
   view: FairlightView; update: FairlightViewUpdate;
 }) {
-  const t = useFairlightText();
+  const t = useFairlightText(), groups = useTrackGroups();
   const updateViewport = useCallback((change: SetStateAction<TimelineViewport>) => update(old => ({
     timelineViewport: typeof change === 'function' ? change(old.timelineViewport) : change,
   })), [update]);
@@ -55,7 +56,7 @@ export function FairlightTimeline({ view, update, ...props }: ComponentProps<typ
       <button type="button" aria-pressed={view.automation} disabled={!view.automation} onClick={toggle}>{t('Automation view (F4)')}</button>
     </div>
     {problem&&<p role="alert">{problem}</p>}
-    <Timeline {...props} ref={handle} viewport={{ value: view.timelineViewport, update: updateViewport }} scrolling={view.scrolling}
+    <Timeline {...props} ref={handle} trackMenuItems={id => groups && props.timeline?.tracks.some(track => track.id === id && track.kind === 'audio') ? [{ id: 'create-group', label: t('Create Group'), run: () => groups.open(undefined, groups.selected.includes(id) ? [...groups.selected] : [id]) }] : []} viewport={{ value: view.timelineViewport, update: updateViewport }} scrolling={view.scrolling}
       automationRange={activeRange&&activeRange.on&&props.timeline?{from:activeRange.start.ticks/activeRange.start.scale*props.timeline.rate.num/props.timeline.rate.den,to:activeRange.end.ticks/activeRange.end.scale*props.timeline.rate.num/props.timeline.rate.den}:null}
       gainLineDisabled={id => Boolean(view.automation && view.lanePaths[`track:${id}`])}
       trackDecoration={(track, g) => view.automation && track.kind === 'audio' ? <AutomationLane

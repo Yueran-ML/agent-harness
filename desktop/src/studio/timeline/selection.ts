@@ -73,3 +73,24 @@ export function selectClips(timeline: Timeline, before: Selection, id: string, o
     : group;
   return { ids, anchor: options.range ? before.anchor ?? id : id };
 }
+
+/** Direct active Editing groups only: membership is not transitively expanded. */
+export function editingPeers(timeline: Timeline, track: string): string[] {
+  if (timeline.audio?.groups_bypassed) return [];
+  const contains = (group: NonNullable<Timeline['track_groups']>[number], id: string) => group.all_tracks
+    ? timeline.tracks.some(row => row.id === id && row.kind === 'audio') : group.members.includes(id);
+  const groups = timeline.track_groups?.filter(group => group.active !== false && (group.linked ?? ['editing']).includes('editing') && contains(group, track)) ?? [];
+  return timeline.tracks.filter(row => row.id !== track && row.kind === 'audio' && !row.locked && groups.some(group => contains(group, row.id))).map(row => row.id);
+}
+/** Visual companions keep the explicit seeds separate, so a long bed is edited only over the seed's range. */
+export function editingSelection(timeline: Timeline, ids: readonly string[]): string[] {
+  const result = new Set(ids), locations = clipLocations(timeline);
+  for (const id of ids) {
+    const source = locations.get(id); if (!source) continue;
+    for (const track of editingPeers(timeline, source.track.id)) {
+      const row = timeline.tracks.find(row => row.id === track)!;
+      if (row.kind !== 'subtitle') for (const clip of row.clips) if (clip.start < source.clip.start + source.clip.length && clip.start + clip.length > source.clip.start) result.add(clip.id);
+    }
+  }
+  return [...result];
+}

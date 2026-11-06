@@ -407,12 +407,23 @@ fn lift_cues(work: &mut Work, spans: &[(i64, i64)]) -> Result<Vec<(Id, Cue, i64)
     Ok(carried)
 }
 
-pub(super) fn place_copies(work: &mut Work, copies: &[CopyOf]) -> Result<(), EditError> {
+struct CopySpans {
+    track: Id,
+    delta: i64,
+    spans: Vec<(i64, i64)>,
+}
+
+pub(super) fn place_copies(
+    work: &mut Work,
+    copies: &[CopyOf],
+    grouped: bool,
+) -> Result<(), EditError> {
     if copies.is_empty() {
         return Err(EditError::EmptyRange);
     }
-    // Every copy as its clip is now, before anything is cleared: a copy may go over its clip.
-    let mut made: Vec<(Id, Id, Clip)> = vec![];
+    // Capture every source before clearing any destination, including overlapping copies.
+    let mut made: Vec<(Id, i64, Id, Clip)> = vec![];
+    let mut ranges: Vec<CopySpans> = vec![];
     for copy in copies {
         let (from, clip) = work.owned(&copy.clip)?;
         let to = work.open(&copy.track)?;
@@ -426,38 +437,84 @@ pub(super) fn place_copies(work: &mut Work, copies: &[CopyOf]) -> Result<(), Edi
         if copy.start < 0 {
             return Err(EditError::Op(OpError::OutOfTimeline { start: copy.start }));
         }
-        work.keep_lanes(&from, &clip);
-        made.push((copy.track.clone(), from, clip));
+        // Like a grouped move, a copy across tracks changes only the explicitly named clips.
+        if grouped && from == copy.track {
+            for peer in work.edited_with(&from) {
+                let delta = copy.start - clip.start;
+                if let Some(range) = ranges
+                    .iter_mut()
+                    .find(|range| range.track == peer && range.delta == delta)
+                {
+                    range.spans.push((clip.start, clip.end()));
+                } else {
+                    ranges.push(CopySpans {
+                        track: peer,
+                        delta,
+                        spans: vec![(clip.start, clip.end())],
+                    });
+                }
+            }
+        }
+        made.push((copy.track.clone(), copy.start, from, clip));
     }
-    for (copy, (track, _, clip)) in copies.iter().zip(&made) {
-        work.clear_clips(
-            std::slice::from_ref(track),
-            copy.start,
-            copy.start + clip.length,
-        )?;
+    for CopySpans {
+        track,
+        delta,
+        spans,
+    } in ranges
+    {
+        for (from, to) in union(&spans) {
+            for source in work.track(&track)?.clips.clone() {
+                // Explicit copies already carry their whole source. Do not copy them twice.
+                if copies.iter().any(|copy| copy.clip == source.id)
+                    || source.end() <= from
+                    || source.start >= to
+                {
+                    continue;
+                }
+                let mut piece = source.clone();
+                if piece.end() > to {
+                    piece = super::work::halves_of(&piece, to, work.rate()).0;
+                }
+                if piece.start < from {
+                    piece = super::work::halves_of(&piece, from, work.rate()).1;
+                }
+                made.push((track.clone(), piece.start + delta, track.clone(), piece));
+            }
+        }
     }
-    // Copies of two or more clips of a group are put in a new group together.
+    // Internal keys distinguish several slices of the same source in the lane-copy cache.
+    // They never become project IDs or operations.
+    for (index, (_, _, from, clip)) in made.iter_mut().enumerate() {
+        clip.id = format!("copy:{index}");
+        work.keep_lanes(from, clip);
+    }
+    for (track, start, _, clip) in &made {
+        if *start < 0 {
+            return Err(EditError::Op(OpError::OutOfTimeline { start: *start }));
+        }
+        work.clear_clips(std::slice::from_ref(track), *start, *start + clip.length)?;
+    }
     let mut linked: HashMap<Id, usize> = HashMap::new();
-    for (_, _, clip) in &made {
+    for (_, _, _, clip) in &made {
         if let Some(link) = &clip.link {
             *linked.entry(link.clone()).or_default() += 1;
         }
     }
     let mut groups: HashMap<Id, Id> = HashMap::new();
-    for (copy, (track, _, clip)) in copies.iter().zip(made) {
+    for (track, start, _, clip) in made {
         let link = clip
             .link
             .as_ref()
             .filter(|link| linked[*link] > 1)
             .map(|link| groups.get(link).cloned().unwrap_or_default());
-        let source = clip.id.clone();
         let new = Clip {
             id: String::new(),
-            start: copy.start,
+            start,
             link,
             ..clip.clone()
         };
-        let put = work.insert_copy(&track, new, &source)?;
+        let put = work.insert_copy(&track, new, &clip.id)?;
         if let (Some(old), Some(new)) = (&clip.link, put.link) {
             groups.insert(old.clone(), new);
         }

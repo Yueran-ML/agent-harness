@@ -271,7 +271,7 @@ export interface Bus { id: string; name: string; color: string; format: BusForma
 /** A VCA; `automation_arm` as a bus's. */
 export interface Vca { id: string; name: string; fader_db?: number; mute?: boolean; solo?: boolean; vcas?: string[]; automation_arm?: AutomationArm; lanes?: Lanes }
 export type GroupControl = 'editing' | 'fader' | 'solo' | 'mute' | 'sends' | 'panning' | 'automation';
-export interface TrackGroup { id: string; name: string; color?: string; members: string[]; linked?: GroupControl[]; active?: boolean }
+export interface TrackGroup { id: string; name: string; color?: string; members: string[]; all_tracks?: boolean; linked?: GroupControl[]; active?: boolean }
 /** The chain of inserts that an operation on inserts works on: the strip of a track of sound or a bus, or the effects of a clip. */
 export type InsertsOf = { track: string } | { bus: string } | { clip: string };
 /** What the lanes of an operation on automation belong to: a track of sound, a bus or a VCA. */
@@ -287,6 +287,7 @@ export interface TimelineAudio {
   loudness: { standard: LoudnessStandard; target: number; scale: 'ebu9' | 'ebu18'; relative: boolean; lock_to_transport: boolean };
   exclusive_solo: boolean;
   follows_edit: boolean;
+  groups_bypassed?: boolean;
   record: {
     mode: 'write' | 'trim'; touch: 'off' | 'latch' | 'snap' | 'snap_latch'; on_stop: 'event' | 'hold' | 'return';
     categories: Record<'fader' | 'mute' | 'pan' | 'eq' | 'comp' | 'gate' | 'lim' | 'sends' | 'plugins' | 'misc', boolean>;
@@ -300,7 +301,7 @@ export const SOUND_FIELDS = {
   track: ['format', 'channels', 'order', 'mute', 'solo', 'solo_safe', 'adc', 'automation_arm', 'strip', 'lanes'] satisfies (keyof TrackSound)[],
   timeline: ['buses', 'vcas', 'track_groups', 'audio'] satisfies (keyof Timeline)[],
   strip: ['trim_db', 'invert', 'track_fx', 'order', 'inserts', 'inserts_on', 'dynamics', 'eq', 'fader_db', 'pan', 'sends', 'outputs', 'vcas'] satisfies (keyof Strip)[],
-  timelineAudio: ['monitor', 'meter', 'custom_meter', 'prefader_metering', 'loudness', 'exclusive_solo', 'follows_edit', 'record'] satisfies (keyof TimelineAudio)[],
+  timelineAudio: ['monitor', 'meter', 'custom_meter', 'prefader_metering', 'loudness', 'exclusive_solo', 'follows_edit', 'groups_bypassed', 'record'] satisfies (keyof TimelineAudio)[],
 };
 
 // Colour management (PROTOCOL.md, "Colour management"; engine/crates/model/src/color_management.rs),

@@ -8,7 +8,7 @@ import { editCommand, editKey, shortened, type EditAction, type EditContext } fr
 import type { Targets, Transaction } from './commands';
 import { frameAt, HEADER_WIDTH } from './geometry';
 import { beginDrag, dragTo, finishDrag, hitClip, type Dragged, type Gesture, type Hit, type Preview, type Tool } from './interact';
-import { clipLocations, EMPTY_SELECTION, primaryTrack, selectClips, type Selection } from './selection';
+import { editingSelection, clipLocations, EMPTY_SELECTION, primaryTrack, selectClips, type Selection } from './selection';
 import { snap, snapCandidates, type Marks } from './snap';
 import { draggedMedia, MEDIA_DRAG } from '../media/drag';
 import { dropMedia, dropMode } from './drop';
@@ -95,7 +95,7 @@ export function useEditing(options: Options) {
   const cueText = all.label.studio.timeline.newCue;
   const now = useRef({ ...options, words, studioWords, titleText, cueText, tool, snapping, linked, selection, transition, cue, targets, marks });
   now.current = { ...options, words, studioWords, titleText, cueText, tool, snapping, linked, selection, transition, cue, targets, marks };
-  const selected = useMemo(() => new Set(selection.ids), [selection]);
+  const selected = useMemo(() => new Set(options.timeline ? editingSelection(options.timeline, selection.ids) : selection.ids), [selection, options.timeline]);
   const cancel = useCallback(() => {
     const pointer = active.current?.pointer ?? cueDrag.current?.pointer;
     active.current = null; cueDrag.current = null; setPreview(null); setCuePreview(null); setDropAt(null); setEffectDrop(null);
@@ -330,7 +330,7 @@ export function useEditing(options: Options) {
       // With snapping on, the blade cuts at the playhead where it is near it, as in DaVinci Resolve.
       const pointed = at(event.clientX);
       const cut = context.snapping ? snap(pointed, [0], [context.frame], context.view.scale).delta : pointed;
-      void apply({ revision: context.revision, ops: [{ edit: 'blade', timeline: context.timeline.id, at: cut, ...(event.shiftKey ? {} : { tracks: [track.dataset.track!] }), linked: context.linked }] });
+      void apply({ revision: context.revision, ops: [{ edit: 'blade', timeline: context.timeline.id, at: cut, ...(event.shiftKey ? {} : { tracks: [track.dataset.track!] }), linked: context.linked, ...(context.timeline.track_groups?.length ? { grouped: true } : {}) }] });
       return;
     }
     let selection = !event.ctrlKey && !event.metaKey && !event.shiftKey && context.selection.ids.includes(id) ? context.selection

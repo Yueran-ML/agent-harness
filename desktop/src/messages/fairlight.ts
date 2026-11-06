@@ -187,6 +187,12 @@ const entries = {
   'Track meters width': ['轨道表宽度', 'トラックメーター幅'], 'Bus meters width': ['总线表宽度', 'バスメーター幅'],
   'Loudness width': ['响度表宽度', 'ラウドネスメーター幅'], 'Viewer width': ['检视器宽度', 'ビューア幅'],
   'Momentary sum': ['瞬时响度', '瞬時ラウドネス'], 'Momentary maximum': ['最大瞬时响度', '最大瞬時ラウドネス'], 'Loudness ruler': ['响度刻度', 'ラウドネス目盛'],
+  'All Group': ['全部轨道组', '全トラックグループ'], 'Create Group': ['创建轨道组', 'グループを作成'], 'Modify Group': ['修改轨道组', 'グループを変更'],
+  'Delete Group': ['删除轨道组', 'グループを削除'], 'New Group': ['新轨道组', '新しいグループ'], 'Groups Switch': ['启用轨道组', 'グループ有効'],
+  'Selected': ['选中', '選択'], 'Editing': ['剪辑', '編集'], 'Panning': ['声像', 'パン'], 'Linked controls': ['联动控件', 'リンクするコントロール'],
+  'Available tracks': ['可选轨道', '使用可能なトラック'], 'Group members': ['组内轨道', 'グループのトラック'], 'Add members': ['加入轨道', 'トラックを追加'],
+  'Remove members': ['移出轨道', 'トラックを除外'], 'Set as Default': ['设为默认', 'デフォルトに設定'],
+  'Save': ['保存', '保存'], 'Automation': ['自动化', 'オートメーション'],
 } as const;
 export type FairlightText = keyof typeof entries;
 const english: Partial<Record<FairlightText, string>> = {

@@ -876,6 +876,7 @@ fn the_ids_of_the_engine_skip_none_and_a_bus_vca_or_group_given_one_keeps_it() {
         name: "g".into(),
         color: columbina_model::Rgba([0, 0, 0, 255]),
         members: vec!["A1".into()],
+        all_tracks: false,
         linked: vec![],
         active: true,
     };

@@ -1182,7 +1182,9 @@ mute/solo alike) unless follow_groups:false. Ops:
 add_bus/set_bus/remove_bus (bus {id:"",name,color:"#rrggbbaa",format,strip:{outputs:[{bus}]}};
 a bus that outputs to no bus is a main output; give a new bus an explicit id such as "B2" to
 route to it in the same batch, as buses have no $names), add_vca/set_vca/remove_vca,
-add_track_group/set_track_group/remove_track_group (group {id:"",name,members,linked});
+add_track_group/set_track_group/remove_track_group (group {id:"",name,members,linked,
+all_tracks:false}); one all_tracks:true group dynamically contains all audio tracks.
+audio.groups_bypassed:true suspends all group following, preserving each active flag;
 set_bus/set_vca/set_track_group/set_timeline_audio take a patch; add_insert
 {of:{track|bus|clip:id},insert:{effect:{kind:"gain",gain_db:-3}},index?}, set_insert
 {of,slot,insert|null}, move_insert {of,from,to} (prefer the edits set_insert/move_insert of the
@@ -1223,7 +1225,9 @@ Automation follows clip edits while the timeline's audio follows_edit is true (t
 set_timeline_audio patch {follows_edit:false} turns it off): a moved clip takes the lane points
 over it along (to another track too), a lifted or deleted one leaves a straight line between the
 values at its ends, a ripple (ripple trims included) moves later points; a plain trim, roll,
-slip, blade or speed change leaves the lane over the clip alone. place_copies
+slip, blade or speed change leaves the lane over the clip alone. place_copies (optional
+grouped: true also copies the timeline spans on active Editing group peers when staying on
+the same tracks; groups_bypassed suspends this)
 {copies:[{clip,track,start}]} duplicates clips (overwriting where they go) with a copy of their
 automation. When you delete, move or cut clips for the user as they would by hand, pass
 grouped:true to lift/ripple_delete/move/insert_move/blade/ripple_delete_range: then an active

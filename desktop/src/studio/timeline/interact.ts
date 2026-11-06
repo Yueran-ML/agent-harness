@@ -1,6 +1,6 @@
 import type { Clip, Media, Timeline } from '../engine';
 import type { Change, Edit, Transaction } from './commands';
-import { clipLocations, movableClips, type Located } from './selection';
+import { clipLocations, movableClips, editingPeers, type Located } from './selection';
 import { snap } from './snap';
 
 export type Tool = 'select' | 'trim' | 'blade';
@@ -120,7 +120,7 @@ export function dragTo(gesture: Gesture, frame: number, options: {
       const first = Math.min(...moving.map(({ clip }) => clip.start));
       const preview = moving.map(({ clip, track }) => ({ id: clip.id, track: track.id, start: clip.start - first + cut, length: clip.length }));
       return { gesture, delta: cut - first, point: cut, clamped: false, preview, covered: [],
-        command: { edit: 'insert_move', timeline: timeline.id, clips: ids, at: cut, linked } };
+        command: { edit: 'insert_move', timeline: timeline.id, clips: ids, at: cut, linked, ...(timeline.track_groups?.length ? { grouped: true } : {}) } };
     }
   }
   const upright = options.vertical === true && action === 'move' && !options.ripple;
@@ -176,8 +176,8 @@ export function dragTo(gesture: Gesture, frame: number, options: {
       const to = peers(original.track.kind)[place(original.track) + shift];
       if (to) item.track = to.id; else trackless = true;
     }
-    command = options.ripple ? { edit: 'insert_move', timeline: timeline.id, clips: ids, at: Math.max(0, Math.min(...moving.map(({ clip }) => clip.start)) + delta), linked }
-      : { edit: 'move', ...common, clips: ids, ...(destination && destination.id !== here.track.id ? { to_track: destination.id } : {}), overwrite: options.overwrite ?? true };
+    command = options.ripple ? { edit: 'insert_move', timeline: timeline.id, clips: ids, at: Math.max(0, Math.min(...moving.map(({ clip }) => clip.start)) + delta), linked, ...(timeline.track_groups?.length ? { grouped: true } : {}) }
+      : { edit: 'move', ...common, ...(timeline.track_groups?.length ? { grouped: true } : {}), clips: ids, ...(destination && destination.id !== here.track.id ? { to_track: destination.id } : {}), overwrite: options.overwrite ?? true };
   } else if (action === 'trim_in' || action === 'trim_out') {
     for (const item of preview) {
       if (action === 'trim_in') { if (!gesture.rippleTrim) item.start += delta; item.length -= delta; }
@@ -309,6 +309,10 @@ function overwritten(timeline: Timeline, preview: readonly Preview[], moving: Re
  * copy would go on a track that is locked (or one of subtitles), why nothing is copied.
  */
 function duplicated(timeline: Timeline, locations: ReadonlyMap<string, Located>, preview: readonly Preview[]): Change[] | 'copy_locked' {
+  if (preview.some(item => editingPeers(timeline, locations.get(item.id)!.track.id).length > 0)) {
+    for (const item of preview) if (timeline.tracks.find(track => track.id === item.track)?.locked) return 'copy_locked';
+    return [{ edit: 'place_copies', timeline: timeline.id, ...(timeline.track_groups?.length ? { grouped: true } : {}), copies: preview.map(item => ({ clip: item.id, track: item.track, start: item.start })) }];
+  }
   const byTrack = new Map<string, [number, number][]>();
   for (const item of preview) byTrack.set(item.track, [...byTrack.get(item.track) ?? [], [item.start, item.start + item.length]]);
   const ops: Change[] = [];

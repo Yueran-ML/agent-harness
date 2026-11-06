@@ -369,15 +369,15 @@ export function editCommand(action: EditAction | null, context: EditContext): Ed
     if (first.length > 0) {
       const rest = selected.filter(id => !first.includes(id));
       return transaction([
-        ...(rest.length > 0 ? [{ edit: 'lift' as const, timeline: timeline.id, clips: rest, linked: false }] : []),
-        { edit: 'ripple_delete', timeline: timeline.id, clips: first, linked },
+        ...(rest.length > 0 ? [{ edit: 'lift' as const, timeline: timeline.id, clips: rest, linked: false, ...(timeline.track_groups?.length ? { grouped: true } : {}) }] : []),
+        { edit: 'ripple_delete', timeline: timeline.id, clips: first, linked, ...(timeline.track_groups?.length ? { grouped: true } : {}) },
       ]);
     }
-    return transaction([{ edit: action.ripple ? 'ripple_delete' : 'lift', timeline: timeline.id, clips: selected, linked }]);
+    return transaction([{ edit: action.ripple ? 'ripple_delete' : 'lift', timeline: timeline.id, clips: selected, linked, ...(timeline.track_groups?.length ? { grouped: true } : {}) }]);
   }
   if (action.kind === 'blade') {
     const tracks = chosenTracks.length ? chosenTracks : activeTracks;
-    return tracks.length ? transaction([{ edit: 'blade', timeline: timeline.id, at: frame, tracks, linked }]) : null;
+    return tracks.length ? transaction([{ edit: 'blade', timeline: timeline.id, at: frame, tracks, linked, ...(timeline.track_groups?.length ? { grouped: true } : {}) }]) : null;
   }
   if (action.kind === 'cut') {
     const points = snapPoints(timeline);

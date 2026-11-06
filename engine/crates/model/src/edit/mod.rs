@@ -363,6 +363,9 @@ pub enum Edit {
         timeline: Id,
         /// The copies.
         copies: Vec<CopyOf>,
+        /// Copy the source spans on active Editing group peers, when staying on the same tracks.
+        #[serde(default, skip_serializing_if = "is_false")]
+        grouped: bool,
     },
     /// Move an edge of a clip by `delta` frames, later if it is above 0. Without `ripple`, the
     /// clip's start or end moves and nothing else does; with it, the clip's start stays where
@@ -1499,7 +1502,9 @@ pub(crate) fn run(project: &mut Project, edit: Edit) -> Result<Expansion, EditEr
             grouped,
             ..
         } => cut::insert_move(&mut work, &clips, at, (linked, grouped)),
-        Edit::PlaceCopies { copies, .. } => cut::place_copies(&mut work, &copies),
+        Edit::PlaceCopies {
+            copies, grouped, ..
+        } => cut::place_copies(&mut work, &copies, grouped),
         Edit::Trim {
             clip,
             edge,

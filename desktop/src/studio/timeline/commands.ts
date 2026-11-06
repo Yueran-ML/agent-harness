@@ -31,7 +31,7 @@ export type Edit = { timeline: string } & (
    * is cleared as an overwrite clears it, and with Automation Follows Edit each copy takes a copy
    * of the lanes over its clip. The desktop still sends its own clearing and `insert_clip`s (T19).
    */
-  | { edit: 'place_copies'; copies: { clip: string; track: string; start: number }[] }
+  | { edit: 'place_copies'; grouped?: boolean; copies: { clip: string; track: string; start: number }[] }
   | { edit: 'trim'; clip: string; edge: 'in' | 'out'; delta: number; ripple: boolean; linked: boolean }
   | { edit: 'roll'; left: string; right: string; delta: number; linked: boolean }
   | { edit: 'slip' | 'slide'; clip: string; delta: number; linked: boolean }

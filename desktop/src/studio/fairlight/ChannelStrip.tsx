@@ -18,6 +18,7 @@ import { PanControl } from '../audio/PanControl';
 import { SendWindow } from './SendWindow';
 import { VcaAssignment } from './VcaAssignment';
 import { useVcaGain } from './VcaStrip';
+import { GroupLabel } from './TrackGroups';
 
 import { InsertSlots } from './InsertSlots';
 import { DuckerPanel } from '../audio/DuckerPanel';
@@ -77,6 +78,7 @@ export function ChannelStrip({ strip, seconds, value, selected, meters, shadow, 
       <div data-section="outputs"><dt>{t('Outputs')}</dt><dd><RouteButtons context={processorContext} strip={strip} field="outputs" onOpen={() => {}} /></dd></div>
       <div data-section="vca"><dt>VCA</dt><dd><VcaAssignment context={processorContext} of={of} selected={processorContext.selected} /></dd></div>
     </dl>
+    {strip.kind==='track'&&<GroupLabel track={strip.id}/>}
     {pathOpen && createPortal(<PathSettings context={processorContext} stripKey={strip.key} anchor={pathOpen} onClose={() => setPathOpen(null)} />, document.body)}
     {sendsOpen && <SendWindow context={processorContext} stripKey={strip.key} onClose={() => setSendsOpen(false)} />}
     {duckerOpen && createPortal(<aside role="dialog" aria-label={`${t('Ducker')} ${strip.name}`} className="processor-window" style={{ left: 100, top: 100 }}><button type="button" aria-label={t('Close processor')} onClick={() => setDuckerOpen(false)}>×</button><DuckerPanel {...processorContext} /></aside>, document.body)}

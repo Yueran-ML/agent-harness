@@ -981,6 +981,10 @@ pub struct Record {
 }
 
 /// The settings of the sound of a timeline that are not of a track or a bus.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent persisted switches for metering, solo, automation and groups"
+)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TimelineAudio {
@@ -998,6 +1002,8 @@ pub struct TimelineAudio {
     pub exclusive_solo: bool,
     /// Whether automation moves with the clips that it is under (p. 3910): so it does.
     pub follows_edit: bool,
+    /// Temporarily bypass all track groups without changing their individual active states.
+    pub groups_bypassed: bool,
     /// The recording of automation.
     pub record: Record,
 }
@@ -1012,6 +1018,7 @@ impl Default for TimelineAudio {
             loudness: Loudness::default(),
             exclusive_solo: false,
             follows_edit: true,
+            groups_bypassed: false,
             record: Record::default(),
         }
     }

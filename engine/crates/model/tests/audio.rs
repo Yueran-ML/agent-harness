@@ -281,6 +281,7 @@ fn a_track_that_a_ducker_names_is_not_taken_away_and_one_that_ducks_is_added_bac
         name: "Dialogue".into(),
         color: columbina_model::Rgba([0, 0, 0, 255]),
         members: vec!["A1".into()],
+        all_tracks: false,
         linked: vec![],
         active: true,
     }];

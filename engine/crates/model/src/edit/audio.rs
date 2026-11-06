@@ -134,13 +134,16 @@ fn followers(
     track: &str,
     changed: &HashSet<GroupControl>,
 ) -> Vec<(Id, HashSet<GroupControl>)> {
+    if timeline.audio.groups_bypassed {
+        return vec![];
+    }
     let mut found: Vec<(Id, HashSet<GroupControl>)> = vec![];
     for other in timeline.tracks.iter().filter(|r| r.id != track) {
         let mut linked = HashSet::new();
         for group in &timeline.track_groups {
             let together = group.active
-                && group.members.iter().any(|m| m == track)
-                && group.members.contains(&other.id);
+                && group.contains(timeline, track)
+                && group.contains(timeline, &other.id);
             if together {
                 linked.extend(group.linked.iter().filter(|c| changed.contains(c)));
             }

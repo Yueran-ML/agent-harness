@@ -253,12 +253,30 @@ pub struct TrackGroup {
     pub color: Rgba,
     /// Its tracks of sound.
     pub members: Vec<Id>,
+    /// All sound tracks, including tracks added later; the built-in All Group.
+    #[serde(default)]
+    pub all_tracks: bool,
     /// What its tracks do together: all of it, where it is left out.
     #[serde(default = "all_controls")]
     pub linked: Vec<GroupControl>,
     /// Whether it is active: active, where it is left out.
     #[serde(default = "yes")]
     pub active: bool,
+}
+
+impl TrackGroup {
+    /// Whether this group includes an existing sound track of the timeline.
+    #[must_use]
+    pub fn contains(&self, timeline: &Timeline, id: &str) -> bool {
+        if self.all_tracks {
+            timeline
+                .tracks
+                .iter()
+                .any(|track| track.id == id && track.kind == TrackKind::Audio)
+        } else {
+            self.members.iter().any(|member| member == id)
+        }
+    }
 }
 
 fn group_colour() -> Rgba {
@@ -521,6 +539,15 @@ pub fn check_routing(timeline: &Timeline) -> Result<(), Wrong> {
         }
     }
     check_vca_lists(timeline)?;
+    if timeline
+        .track_groups
+        .iter()
+        .filter(|g| g.all_tracks)
+        .count()
+        > 1
+    {
+        return Err(whole(OpError::OutOfRange { what: "all_groups" }));
+    }
     for group in &timeline.track_groups {
         let wrong = |error| ("track_group", group.id.clone(), error);
         let mut seen = HashSet::new();

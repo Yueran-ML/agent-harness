@@ -1123,6 +1123,9 @@ pub fn group_control(path: &str) -> Option<GroupControl> {
 /// setting, once, in the order of the tracks. None for a bus or a VCA.
 #[must_use]
 pub fn grouped_with(timeline: &Timeline, of: &LanesOf, path: &str) -> Vec<Id> {
+    if timeline.audio.groups_bypassed {
+        return Vec::new();
+    }
     let (LanesOf::Track(track), Some(control)) = (of, group_control(path)) else {
         return Vec::new();
     };
@@ -1135,8 +1138,8 @@ pub fn grouped_with(timeline: &Timeline, of: &LanesOf, path: &str) -> Vec<Id> {
                 group.active
                     && group.linked.contains(&GroupControl::Automation)
                     && group.linked.contains(&control)
-                    && group.members.contains(track)
-                    && group.members.contains(&other.id)
+                    && group.contains(timeline, track)
+                    && group.contains(timeline, &other.id)
             })
         })
         .map(|other| other.id.clone())

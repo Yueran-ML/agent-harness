@@ -9,6 +9,7 @@ import { Sheet } from '../../app/Sheet';
 import { Separator } from '../fairlight/Separator';
 import { CoveringMenu } from '../color/CoveringMenu';
 import { callEngine, type CapturedLevel, type Media, type Op, type Timeline as TimelineModel } from '../engine';
+import { TrackGroups, TrackGroupsProvider } from '../fairlight/TrackGroups';
 import { editingAllowed, inStudio, useStudioKeys } from '../keys';
 import { MonitorPane } from '../MonitorPane';
 import type { MonitorControls } from '../useMonitor';
@@ -124,7 +125,7 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
       {showLeft && <aside className="fairlight-left">{view.pool && pool}{view.effects && <EffectsLibrary />}
         {view.index && selected && <IndexTracks automation={view.automation} timeline={selected} hidden={view.hidden} onHidden={hidden => update({ hidden })} onSelect={chooseTrack} layout={mixerLayout} onReorder={(keys, before) => setMixerLayout({ order: moveMixerItems(mixerOrder(selected, mixerLayout), keys, before) })}
           selection={stripSelection.filter(key => key.startsWith('track:')).map(key => key.slice(6))} onSelection={ids => chooseStrips(ids.map(id => `track:${id}`))} onEdit={ops => void edit(ops)} />}
-        {view.groups && (groups ?? <section aria-label={t('Groups')}><h2>{t('Groups')}</h2><p>{t('Group controls are not available yet.')}</p></section>)}
+        {view.groups && (groups ?? <TrackGroups />)}
       </aside>}
       {showLeft && <Separator label={t('Left panel width')} vertical value={view.leftWidth} min={220} max={700} onChange={leftWidth => update({ leftWidth })} />}
       <div className="fairlight-center" onDragOverCapture={event => { if (event.dataTransfer.types.includes(AUDIO_EFFECT_DRAG)) { event.preventDefault(); event.stopPropagation(); } }}
@@ -184,5 +185,5 @@ function FairlightSession({ bridge, native, session, revision, pool, media, time
     {cinema && <div className="fairlight-cinema">{viewer}<button type="button" onClick={() => setCinema(false)}>{t('Exit cinema')}</button></div>}
     {speed && selected && <SpeedDialog bridge={bridge} session={session} revision={revision} timeline={selected} clips={speed} onClose={() => setSpeed(null)} />}
   </div>;
-  return selected ? <AutomationTouchProvider bridge={bridge} session={session} revision={revision} timeline={selected} enabled={view.automation} recording={state?.recording??false} playing={state?.playing??false} read={state?.all_read??false} show={showAutomation} onFailure={e=>setProblem(String(e))}>{content}</AutomationTouchProvider> : content;
+  return selected ? <TrackGroupsProvider bridge={bridge} session={session} revision={revision} timeline={selected} selected={stripSelection.filter(key=>key.startsWith('track:')).map(key=>key.slice(6))} select={ids=>chooseStrips(ids.map(id=>`track:${id}`))}><AutomationTouchProvider bridge={bridge} session={session} revision={revision} timeline={selected} enabled={view.automation} recording={state?.recording??false} playing={state?.playing??false} read={state?.all_read??false} show={showAutomation} onFailure={e=>setProblem(String(e))}>{content}</AutomationTouchProvider></TrackGroupsProvider> : content;
 }

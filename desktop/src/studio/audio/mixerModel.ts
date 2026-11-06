@@ -46,11 +46,11 @@ export function stripChange(timeline: string, strip: MixerStrip, patch: Record<s
   return strip.kind === 'track' ? { edit: 'set_track_audio', timeline, track: strip.id, patch, follow_groups: follow }
     : { edit: 'set_bus', timeline, id: strip.id, patch };
 }
-export function groupMembers(timeline: Timeline, strips: MixerStrip[], seeds: MixerStrip[], control: 'fader' | 'mute' | 'solo', clutch: boolean): MixerStrip[] {
+export function groupMembers(timeline: Timeline, strips: MixerStrip[], seeds: MixerStrip[], control: 'fader' | 'mute' | 'solo' | 'panning' | 'sends', clutch: boolean): MixerStrip[] {
   const ids = new Set(seeds.map(s => s.key));
-  if (!clutch) for (const seed of seeds.filter(s => s.kind === 'track')) for (const group of timeline.track_groups ?? []) {
-    if (group.active === false || (group.linked && !group.linked.includes(control)) || !group.members.includes(seed.id)) continue;
-    for (const id of group.members) ids.add(`track:${id}`);
+  if (!clutch && !timeline.audio?.groups_bypassed) for (const seed of seeds.filter(s => s.kind === 'track')) for (const group of timeline.track_groups ?? []) {
+    if (group.active === false || (group.linked && !group.linked.includes(control)) || !group.all_tracks && !group.members.includes(seed.id)) continue;
+    for (const id of group.all_tracks ? timeline.tracks.filter(t => t.kind === 'audio').map(t => t.id) : group.members) ids.add(`track:${id}`);
   }
   return strips.filter(s => ids.has(s.key) && !s.locked);
 }

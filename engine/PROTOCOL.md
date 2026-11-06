@@ -749,10 +749,15 @@ are at most +10; −100 or below is −∞.
   another). `automation_arm` of a bus or a VCA is as a track's (armed, it is recorded under
   Touch Off, p. 3906; `"safe"`, `"off"`); `false` where it is left out, and so left out where
   it is `false`. A track group is `{id, name, color, members (tracks of sound), linked
-  (editing|fader|solo|mute|sends|panning|automation; all), active (true)}`. `audio` is
+  (editing|fader|solo|mute|sends|panning|automation; all), active (true), all_tracks (false)}`.
+  At most one group has `all_tracks: true`; it dynamically includes every audio track, including
+  tracks added later, regardless of its stored members. `audio.groups_bypassed` (false) suspends
+  Editing, mixer and automation group following without changing any group's `active` or `linked`.
+  Both flags default to false when absent and are serialized as booleans; the schema version
+  stays unchanged. Removing a group never removes its tracks. `audio` is
   `{monitor ("B1"), meter (ppm|vu|custom), custom_meter, prefader_metering (false), loudness:
   {standard (ebu_r128), target (−23, −36…−10), scale (ebu9), relative (true), lock_to_transport
-  (true)}, exclusive_solo (false), follows_edit (true; see Edits), record: {mode, touch, on_stop,
+  (true)}, exclusive_solo (false), follows_edit (true; see Edits), groups_bypassed (false), record: {mode, touch, on_stop,
   categories, preview, active_range}}`. At most 64 buses and 64 VCAs; no path of buses longer
   than 6, nor chain of VCAs; no loop through outputs, sends, sidechains and duckers.
 - **Lane** (automation of a track, bus or VCA, by the path of its setting): `{points: [{at:
@@ -2115,7 +2120,7 @@ id targets that track. Both picture and sound placed together get a new link gro
 | `blade` | `at`, `tracks?`, `linked?`, `grouped?` | Split crossing clips; original ids stay with first halves, second halves get new ids and link groups. |
 | `move` | `clips`, `delta`, `to_track?`, `overwrite?`, `linked?`, `grouped?` | Move clips; default refuses occupied destinations, `overwrite:true` clears them. With `to_track`, every clip that moves, the linked ones too, goes as many tracks up or down among the tracks of its own kind as `to_track` is from the track of the first clip (see below). |
 | `insert_move` | `clips`, `at`, `linked?`, `grouped?` | Lift and close original ranges, then insert at the original timeline coordinate. Noncontiguous selections pack their occupied interval union, not the gaps between it. Subtitles on unlocked tracks within a moved range go with it, keeping their ids and their place on the clips; one across an end of a range is cut there, and only its part inside goes along. |
-| `place_copies` | `copies: [{clip, track, start}]` | Put a copy of each clip on `track` from frame `start` (a track of its kind, not locked: `wrong_kind`, `locked`), as an Alt-drag duplicate (p. 811) or a paste does: what is there is cleared as an overwrite clears it, after every copy is made of its clip as it was; each copy has all the settings of its clip but its id and transitions, copies of two or more clips of one link group are linked in a new group, and with Automation Follows Edit each takes a copy of the lanes over its clip (see below). |
+| `place_copies` | `copies: [{clip, track, start}]`, `grouped?` | Put a copy of each clip on `track` from frame `start` (a track of its kind, not locked: `wrong_kind`, `locked`), as an Alt-drag duplicate (p. 811) or a paste does: what is there is cleared as an overwrite clears it, after every copy is made of its clip as it was; each copy has all the settings of its clip but its id and transitions, copies of two or more clips of one link group are linked in a new group, and with Automation Follows Edit each takes a copy of the lanes over its clip (see below). |
 | `trim` | `clip`, `edge:in\|out`, `delta`, `ripple?`, `linked?` | Move one edge; ripple defaults false. |
 | `roll` | `left`, `right`, `delta`, `linked?` | Move a shared cut, keeping outer endpoints. |
 | `slip` | `clip`, `delta`, `linked?` | Change source in/out while keeping timeline position and length. |
@@ -2165,7 +2170,7 @@ is locked with `locked` (`track`). `to_track` must be of the kind of the first c
 (`wrong_kind`). Without `to_track`, clips stay on their tracks.
 
 **Groups of tracks that link Editing** (Reference Manual 20, p. 3917). `lift`, `ripple_delete`,
-`move`, `insert_move`, `blade` and `ripple_delete_range` take `grouped` (false where it is left
+`move`, `insert_move`, `place_copies`, `blade` and `ripple_delete_range` take `grouped` (false where it is left
 out, and not written then). An editor's own action (a selection deleted, moved or cut by the
 user, or by the agent for the user) passes `grouped: true`; edits that a client puts together to
 do something else (clearing where copies go, the blades of Backspace over marks) leave it out.
@@ -2177,9 +2182,13 @@ is taken, as `ripple_delete_range` takes a range, and nothing outside them (a mu
 of dialogue lifted loses those 2 s only). A `move` with `to_track` takes no other track along.
 `blade` and `ripple_delete_range` given `tracks` also cut the other tracks, not locked, of the
 groups of the tracks given. It is one edit, so one step of undo. A locked member is left alone
-and refuses nothing. Trims, rolls, slips, slides, changes of speed and the placing edits are not
-taken along: the manual names jumping to cuts as what follows each track's own boundaries; the
-rest is our choice.
+and refuses nothing. `place_copies` staying on its source track also copies the overlapping
+timeline spans on those peers, without cutting the source. Overlapping spans with the same
+destination offset are united; separate slices retain their own Automation Follows Edit lanes.
+Explicit copies are not duplicated by group expansion; copies across tracks stay explicit.
+Trims, rolls, slips, slides, changes of speed and the other placing edits are not taken along:
+the manual names jumping to cuts as what follows each track's own boundaries; the rest is our
+choice.
 
 **Automation Follows Edit** (pp. 3910–3911; while the timeline's `audio.follows_edit` is true,
 as it is for a new one; `set_timeline_audio` sets it). The lanes of a track of sound go with

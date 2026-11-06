@@ -162,16 +162,22 @@ impl<'a> Work<'a> {
     /// groups of tracks that link Editing and that it is in (Ch. 179, p. 3917).
     pub fn edited_with(&self, track: &str) -> Vec<Id> {
         let timeline = self.timeline();
+        if timeline.audio.groups_bypassed {
+            return vec![];
+        }
         let mut along: Vec<Id> = vec![];
         let groups = timeline.track_groups.iter().filter(|g| {
-            g.active
-                && g.linked.contains(&GroupControl::Editing)
-                && g.members.iter().any(|m| m == track)
+            g.active && g.linked.contains(&GroupControl::Editing) && g.contains(timeline, track)
         });
-        for member in groups.flat_map(|g| &g.members) {
-            let open = timeline.tracks.iter().any(|r| r.id == *member && !r.locked);
-            if member != track && open && !along.contains(member) {
-                along.push(member.clone());
+        for group in groups {
+            for member in timeline
+                .tracks
+                .iter()
+                .filter(|r| !r.locked && group.contains(timeline, &r.id))
+            {
+                if member.id != track && !along.contains(&member.id) {
+                    along.push(member.id.clone());
+                }
             }
         }
         along

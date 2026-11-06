@@ -2,16 +2,20 @@
 /**
  * Fairlight's transport and timecode area (Reference Manual 20, pp. 3667–3668, 3675, 3744–3747):
  * Range In and Out with the range's duration, Loop (Ctrl+/), Play In to Out (Alt+/), Fast Forward
- * and Fast Reverse through 8, 24, 60, 150 and 360 times, and Go To Timecode (=, keypad digits).
+ * and Fast Reverse through 8, 24, 60, 150 and 360 times, Go To Timecode (=, keypad digits), and
+ * the Razor command.
  */
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EngineBridge } from '../src/bridge';
-import type { TimelineTransportState } from '../src/studio/engine';
+import type { TimelineTransportState, Timeline } from '../src/studio/engine';
 import { FairlightTransport, nextShuttle } from '../src/studio/fairlight/FairlightTransport';
+import { FairlightTimeline } from '../src/studio/fairlight/FairlightTimeline';
+import { defaultFairlightView } from '../src/studio/fairlight/viewState';
 import { commandOf } from '../src/studio/keys';
 import { enteredFrame } from '../src/studio/timecode';
 import type { MonitorControls } from '../src/studio/useMonitor';
+import { clip, media, timeline } from './timeline-fixture';
 import { likeABrowser } from './mounted';
 
 const rate = { num: 25, den: 1 };
@@ -120,3 +124,17 @@ it('goes to a timecode typed after = or a keypad digit, and not for one that is 
   expect(monitor.seek).toHaveBeenCalledTimes(1);
 });
 
+it('cuts with Razor every unlocked track that a clip crosses at the playhead, in one transaction', async () => {
+  const bridge = engine();
+  const song: Timeline = { ...timeline(), tracks: [
+    { id: 'A1', kind: 'audio', name: 'Audio 1', enabled: true, locked: false, clips: [clip('a', 0, 100)], transitions: [] },
+    { id: 'A2', kind: 'audio', name: 'Audio 2', enabled: true, locked: true, clips: [clip('b', 0, 100)], transitions: [] },
+    { id: 'A3', kind: 'audio', name: 'Audio 3', enabled: true, locked: false, clips: [clip('c', 60, 100)], transitions: [] },
+    { id: 'V1', kind: 'video', name: 'Video 1', enabled: true, locked: false, clips: [clip('d', 0, 100)], transitions: [] },
+  ] as Timeline['tracks'] };
+  vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(956);
+  render(<FairlightTimeline view={defaultFairlightView()} update={() => {}} bridge={bridge} session={1} timeline={song} media={[media]}
+    revision={6} frame={50} playing={false} onSeek={() => {}} />);
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Razor' })); });
+  expect(calls(bridge, 'transaction.apply')).toEqual([{ revision: 6, ops: [{ edit: 'blade', timeline: 't1', at: 50, tracks: ['A1', 'V1'], linked: false }] }]);
+});

@@ -235,6 +235,8 @@ const entries = {
   'Range Duration': ['范围时长', '範囲の長さ'], 'Fast Reverse': ['快速倒放', '早戻し'], 'Fast Forward': ['快速正放', '早送り'],
   'Stop': ['停止', '停止'], 'Play': ['播放', '再生'], 'Loop': ['循环', 'ループ'], 'Play In to Out': ['播放入点到出点', 'インからアウトまで再生'],
   'Reset true peak': ['清零真峰值', 'トゥルーピークをリセット'],
+  'Razor': ['剃刀', 'レイザー'], 'Favorites': ['收藏', 'お気に入り'],
+  'Track heights': ['轨道高度', 'トラックの高さ'], 'Playhead out of view': ['播放头不在视图内', '再生ヘッドは表示範囲外'],
 } as const;
 export type FairlightText = keyof typeof entries;
 const english: Partial<Record<FairlightText, string>> = {

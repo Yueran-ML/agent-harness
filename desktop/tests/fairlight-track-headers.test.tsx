@@ -156,3 +156,46 @@ it('hides clip names for Full Waveforms and outlines waveforms for Waveform Bord
   expect(section.hasAttribute('data-full-waveforms')).toBe(true);
   expect(section.hasAttribute('data-waveform-borders')).toBe(true);
 });
+
+it('sizes every unlocked track from the vertical slider, keeping the top chosen track in place', () => {
+  render(<Page bridge={engine()} />);
+  press(header('A3'));
+  const scroller = document.querySelector<HTMLElement>('.timeline-scroll')!;
+  scroller.scrollTop = 300; fireEvent.scroll(scroller);
+  // A3's middle is 128 * 2 + 64 - 300 = 20 pixels down the view; at 64 pixels a track it stays there.
+  fireEvent.change(screen.getByLabelText('Track heights'), { target: { value: '64' } });
+  expect(['A1', 'A2', 'A3', 'A4'].map(id => row(id).style.height)).toEqual(['64px', '64px', '64px', '64px']);
+  expect(scroller.scrollTop).toBe(64 * 2 + 32 - 20);
+  expect((screen.getByLabelText('Track heights') as HTMLInputElement).value).toBe('64');
+});
+
+it('marks the playhead on the scroll bar while it is off the view, and brings it back as playing starts without scrolling', () => {
+  const bridge = engine();
+  function Playing({ frame, playing }: { frame: number; playing: boolean }) {
+    const [view, update] = useFairlightView(bridge, 1, 't1');
+    return <FairlightTimeline view={view} update={update} bridge={bridge} session={1} timeline={song()} media={[media]} revision={4}
+      frame={frame} playing={playing} onSeek={() => {}} />;
+  }
+  const mounted = render(<Playing frame={0} playing={false} />);
+  fireEvent.change(screen.getByLabelText('Timeline Scrolling'), { target: { value: 'none' } });
+  mounted.rerender(<Playing frame={1} playing={false} />);
+  expect(screen.queryByRole('img', { name: 'Playhead out of view' })).toBeNull();
+  // 800 pixels of view at 4 a frame: frame 300 is off it.
+  mounted.rerender(<Playing frame={300} playing={false} />);
+  expect(screen.getByRole('img', { name: 'Playhead out of view' })).toBeTruthy();
+  expect(document.querySelector<HTMLElement>('.timeline-scroll')!.scrollLeft).toBe(0);
+  mounted.rerender(<Playing frame={300} playing />);
+  expect(document.querySelector<HTMLElement>('.timeline-scroll')!.scrollLeft).toBe(1200 - 80);
+  mounted.rerender(<Playing frame={301} playing />);
+  expect(screen.queryByRole('img', { name: 'Playhead out of view' })).toBeNull();
+});
+
+it('chooses the clips at the playhead of the tracks chosen by their headers, as Pointer mode does', () => {
+  render(<Page bridge={engine()} frame={20} />);
+  const chosenClips = () => [...document.querySelectorAll<HTMLElement>('[data-clip][aria-selected="true"]')].map(each => each.dataset.clip);
+  press(header('A2')); expect(chosenClips()).toEqual(['c1']);
+  press(header('A3'), { ctrlKey: true }); expect(chosenClips()).toEqual(['c1', 'c2']);
+  // A track whose clip starts after the playhead has none chosen.
+  press(header('A4')); expect(chosenClips()).toEqual([]);
+  timelineKey({ key: 'ArrowUp', ctrlKey: true, altKey: true }); expect(chosenClips()).toEqual(['c2']);
+});

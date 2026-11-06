@@ -37,6 +37,8 @@ export interface TimelineHandle {
   marks: () => Marks;
   /** Clip commands shared with the page-owned context menu. */
   clipboardItems: (clip?: string) => TrackMenu['items'];
+  /** Choose these clips, as a page's own gesture asks. */
+  selectClips: (clips: string[]) => void;
 }
 /** What of a timeline a view shows: the pixels of a frame, how far it is scrolled, and how wide it is. */
 export interface TimelineView { scale: number; left: number; width: number }
@@ -254,7 +256,8 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
     bridge, timeline: timeline.id, revision, session, sampleRate: timeline.sample_rate,
     snapping: editing.snapping, marks: editing.marks, clipboard: audioClipboard.current, gainLine, onSeek, onFailure: audioFailure,
   } : undefined, [bridge, timeline?.id, timeline?.sample_rate, revision, session, editing.snapping, editing.marks, gainLine, onSeek, audioFailure]);
-  useImperativeHandle(ref, () => ({ keyDown: editing.keyDown, perform: editing.perform, canPerform: editing.canPerform, clearTransition: editing.clearTransition, marks: () => editing.marks, clipboardItems: editing.clipboard.items }));
+  useImperativeHandle(ref, () => ({ keyDown: editing.keyDown, perform: editing.perform, canPerform: editing.canPerform, clearTransition: editing.clearTransition, marks: () => editing.marks, clipboardItems: editing.clipboard.items,
+    selectClips: editing.chooseClips }));
   useEffect(() => {
     const element = scroll.current;
     if (!element) return;

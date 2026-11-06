@@ -98,11 +98,14 @@ const onControl = (target: EventTarget) => target instanceof Element
  * track's background chooses it; Ctrl+click adds or takes away one; Shift+click chooses those
  * between; a drag down the headers chooses the tracks it passes. The order is the order shown.
  */
-export function useTrackChoice({ selected, onTracks, onTrack }: {
+export function useTrackChoice({ selected, onTracks, onTrack, onChosen }: {
   selected: readonly string[]; onTracks?: (ids: string[]) => void; onTrack?: (id: string) => void;
+  /** Told of the tracks a header gesture or Ctrl+Alt+Up/Down chose, for Pointer mode to choose their clips. */
+  onChosen?: (ids: string[]) => void;
 }) {
-  const now = useRef({ selected, onTracks, onTrack });
-  now.current = { selected, onTracks, onTrack };
+  const now = useRef({ selected, onTracks, onTrack, onChosen });
+  now.current = { selected, onTracks, onTrack, onChosen };
+  const choose = (ids: string[]) => { now.current.onTracks?.(ids); now.current.onChosen?.(ids); };
   // The track a Shift+click goes from, a sweep in progress, and a press the timeline should not take again.
   const anchor = useRef<string | null>(null);
   const sweep = useRef<string | null>(null);
@@ -119,17 +122,21 @@ export function useTrackChoice({ selected, onTracks, onTrack }: {
     const row = event.target.closest<HTMLElement>('.timeline-track[data-track]');
     if (!row || !now.current.onTracks) return;
     const id = row.dataset.track!;
-    const { selected: chosen, onTracks } = now.current;
+    const { selected: chosen } = now.current;
     if (event.ctrlKey || event.metaKey) {
       taken.current = true;
       anchor.current = id;
-      onTracks(chosen.includes(id) ? chosen.filter(each => each !== id) : [...chosen, id]);
+      choose(chosen.includes(id) ? chosen.filter(each => each !== id) : [...chosen, id]);
     } else if (event.shiftKey && anchor.current) {
       taken.current = true;
-      onTracks(between(event.target, anchor.current, id));
+      choose(between(event.target, anchor.current, id));
     } else {
       anchor.current = id;
-      if (event.target.closest('.timeline-track-header')) sweep.current = id;
+      if (event.target.closest('.timeline-track-header')) {
+        sweep.current = id;
+        // The timeline itself tells the page of the track; its clips at the playhead are chosen here.
+        now.current.onChosen?.([id]);
+      }
     }
   }, []);
   const pointerOver = useCallback((event: ReactPointerEvent) => {
@@ -137,7 +144,7 @@ export function useTrackChoice({ selected, onTracks, onTrack }: {
     if (start === null || !(event.target instanceof Element)) return;
     if ((event.buttons & 1) === 0) { sweep.current = null; return; }
     const id = event.target.closest('.timeline-track-header')?.closest<HTMLElement>('.timeline-track[data-track]')?.dataset.track;
-    if (id) now.current.onTracks?.(between(event.target, start, id));
+    if (id) choose(between(event.target, start, id));
   }, []);
   const pointerUp = useCallback(() => { sweep.current = null; }, []);
   /** What the timeline is told of a press: passed on unless the press was taken here. */
@@ -154,7 +161,7 @@ export function useTrackChoice({ selected, onTracks, onTrack }: {
     if (!places.length) return false;
     const edge = direction < 0 ? Math.min(...places) : Math.max(...places);
     if (ids[edge + direction] === undefined) return true;
-    onTracks(places.map(at => ids[at + direction]).filter((id): id is string => id !== undefined));
+    choose(places.map(at => ids[at + direction]).filter((id): id is string => id !== undefined));
     return true;
   }, []);
   return { pointerDown, pointerOver, pointerUp, trackSelect, move };

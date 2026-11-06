@@ -528,6 +528,10 @@ export function useEditing(options: Options) {
   const dragLeave = (event: DragEvent) => {
     if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) { setDropAt(null); setEffectDrop(null); }
   };
+  /** Choose these clips, as a page's own gesture asks (Fairlight's track headers); not a transition or subtitle. */
+  const chooseClips = (ids: string[]) => {
+    setSelection(ids.length ? { ids, anchor: ids[0] } : EMPTY_SELECTION); setTransition(null); setCue(null);
+  };
   return { tool, chooseTool, snapping, setSnapping, linked, setLinked, selected, transition, targets, target, marks, preview, dropAt, effectDrop, cue, cuePreview, chooseCue, addSubtitleTrack, addCue, doubleClick, problem, setProblem, pending: pending || clipboard.reading, clipboard,
-    edit, apply, keyDown, perform, canPerform, clearTransition, pointerDown, pointerMove, pointerUp, cancel, dragOver, drop, dragLeave };
+    edit, apply, keyDown, perform, canPerform, clearTransition, chooseClips, pointerDown, pointerMove, pointerUp, cancel, dragOver, drop, dragLeave };
 }

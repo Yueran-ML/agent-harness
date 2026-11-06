@@ -87,3 +87,6 @@
 .fairlight-big-timecode { font-size: 18px; min-width: 9.5em; text-align: left; font-variant-numeric: tabular-nums; }
 .fairlight-timecodes output { font-variant-numeric: tabular-nums; opacity: .85; }
 .fairlight-shuttle { min-width: 3.5em; color: #e2c758; }
+/* The playhead off the view: an orange mark on the scroll bar where it is (p. 3670). */
+.fairlight-timeline { position: relative; }
+.fairlight-playhead-tick { position: absolute; bottom: 0; width: 2px; height: 10px; background: #e8892b; z-index: 6; pointer-events: none; }

@@ -2,8 +2,8 @@ import { keyOf, type Key } from '../../app/keys';
 import { editingAllowed } from '../keys';
 import { useFailureText, useFairlightText } from './words';
 import { useTrackGroups } from './TrackGroups';
-import { useCallback, useMemo, useRef, useImperativeHandle, useState, type ComponentProps, type SetStateAction } from 'react';
-import { RULER_HEIGHT } from '../timeline/geometry';
+import { useCallback, useEffect, useMemo, useRef, useImperativeHandle, useState, type ComponentProps, type SetStateAction } from 'react';
+import { duration, HEADER_WIDTH, RULER_HEIGHT } from '../timeline/geometry';
 import { Timeline, type TimelineHandle, type TimelineViewport, type TimelineScrolling } from '../timeline/Timeline';
 import type { TrackClipDrawing } from '../timeline/TrackRow';
 import type { Track } from '../engine';
@@ -42,7 +42,18 @@ export function FairlightTimeline({ view, update, meters, onTracksSelect, ...pro
     const chosen=active.current&&view.lanePaths[active.current]?active.current:(props.selectedTracks??[]).map(id=>`track:${id}`).find(id=>view.lanePaths[id])??Object.keys(view.lanePaths).find(id=>view.lanePaths[id]);
     return chosen?commands.current.get(chosen)?.(key)??false:false;
   };
-  const choice = useTrackChoice({ selected: props.selectedTracks ?? [], onTracks: onTracksSelect, onTrack: props.onTrackSelect });
+  /**
+   * Pointer mode (Reference Manual 20, p. 3675): tracks chosen by their headers have their clips at
+   * the playhead chosen, unless on a locked track; other tools leave the clips as they are.
+   */
+  const chooseClipsOf = (ids: string[]) => {
+    const timeline = props.timeline, at = props.frame;
+    if (!timeline || section.current?.querySelector('.timeline')?.getAttribute('data-tool') !== 'select') return;
+    handle.current?.selectClips(timeline.tracks.filter(track => ids.includes(track.id) && track.kind !== 'subtitle' && !track.locked)
+      .flatMap(track => track.kind === 'subtitle' ? [] : track.clips.filter(clip => clip.start <= at && at < clip.start + clip.length).map(clip => clip.id)));
+  };
+  const choice = useTrackChoice({ selected: props.selectedTracks ?? [], onTracks: onTracksSelect, onTrack: props.onTrackSelect,
+    onChosen: ids => chooseClipsOf(ids) });
   const headerDetail = useCallback((track: Track) => <HeaderDetail track={track} meters={meters} />, [meters]);
   const lockedHeights = useMemo(() => Object.keys(view.heightLocks), [view.heightLocks]);
   const section = useRef<HTMLElement>(null);
@@ -88,10 +99,60 @@ export function FairlightTimeline({ view, update, meters, onTracksSelect, ...pro
     return false;
   };
   const pageKey = (key: Key) => automationKey(key) || viewKey(key);
+  // The tracks as shown, and the one that vertical zoom keeps in place: the top chosen, else the first.
+  const shownOrder = () => [...(section.current?.querySelectorAll<HTMLElement>('.timeline-track[data-track]') ?? [])].map(row => row.dataset.track!);
+  const anchorOf = (order: readonly string[]) => order.find(id => (props.selectedTracks ?? []).includes(id)) ?? order[0];
+  /**
+   * The vertical zoom slider (Reference Manual 20, pp. 3676, 3749): every track not locked takes the
+   * height, and the top chosen track (else the first) keeps its middle where it was in the view.
+   */
+  const sizeAll = (height: number) => {
+    const order = shownOrder(), anchor = anchorOf(order);
+    if (anchor === undefined) return;
+    update(old => {
+      const viewport = old.timelineViewport;
+      const heightOf = (heights: Record<string, number>, id: string) => heights[id] ?? FAIRLIGHT_TRACK_HEIGHT;
+      const middleOf = (heights: Record<string, number>) =>
+        order.slice(0, order.indexOf(anchor)).reduce((sum, id) => sum + heightOf(heights, id), 0) + heightOf(heights, anchor) / 2;
+      const heights = { ...viewport.heights, ...Object.fromEntries(order.filter(id => !lockedHeights.includes(id)).map(id => [id, height])) };
+      const top = Math.max(0, Math.round(middleOf(heights) - (middleOf(viewport.heights) - viewport.top)));
+      return { timelineViewport: { ...viewport, heights, top } };
+    });
+  };
+  const anchorHeight = (() => {
+    const anchor = props.selectedTracks?.find(id => props.timeline?.tracks.some(track => track.id === id && !view.hidden.includes(id)))
+      ?? props.timeline?.tracks.find(track => track.kind === 'audio')?.id;
+    return anchor === undefined ? FAIRLIGHT_TRACK_HEIGHT : view.timelineViewport.heights[anchor] ?? FAIRLIGHT_TRACK_HEIGHT;
+  })();
+  // Where the playhead is against the view: off it, an orange mark on the scroll bar shows where;
+  // with No Scrolling, playing brings it back into the view (p. 3670).
+  const viewWidth = Math.max(0, (section.current?.querySelector<HTMLElement>('.timeline-scroll')?.clientWidth ?? 0) - HEADER_WIDTH);
+  const playheadX = props.frame * view.timelineViewport.scale;
+  const outOfView = viewWidth > 0 && (playheadX < view.timelineViewport.left || playheadX > view.timelineViewport.left + viewWidth);
+  const contentWidth = props.timeline ? Math.max(viewWidth, duration(props.timeline) * view.timelineViewport.scale + viewWidth / 2) : 0;
+  const wasPlaying = useRef(props.playing);
+  useEffect(() => {
+    const started = props.playing && !wasPlaying.current;
+    wasPlaying.current = props.playing;
+    if (!started || view.scrolling !== 'none' || !outOfView) return;
+    updateViewport(old => ({ ...old, left: Math.max(0, Math.round(playheadX - viewWidth * 0.1)) }));
+  }, [props.playing]);
   const handle = useRef<TimelineHandle>(null);
   useImperativeHandle(props.ref, () => ({ keyDown: key => pageKey(key) || (handle.current?.keyDown(key) ?? false), perform: action => handle.current?.perform(action) ?? false,
-    canPerform: action => handle.current?.canPerform(action) ?? false, clearTransition: () => handle.current?.clearTransition(), marks: () => handle.current?.marks() ?? {in:null,out:null}, clipboardItems: clip => handle.current?.clipboardItems(clip) ?? [] }));
+    canPerform: action => handle.current?.canPerform(action) ?? false, clearTransition: () => handle.current?.clearTransition(), marks: () => handle.current?.marks() ?? {in:null,out:null}, clipboardItems: clip => handle.current?.clipboardItems(clip) ?? [],
+    selectClips: clips => handle.current?.selectClips(clips) }));
   const edit = (ops:Change[]) => { void callEngine(props.bridge,'transaction.apply',{revision:props.revision,ops},{expectedSession:props.session}).catch(error=>setProblem(failure(error))); };
+  /**
+   * Razor (Reference Manual 20, p. 3675): a command, not a tool, that cuts every unlocked track that
+   * a clip crosses at the playhead, whatever is chosen, in one step to undo.
+   */
+  const razor = () => {
+    const timeline = props.timeline, at = props.frame;
+    if (!timeline) return;
+    const tracks = timeline.tracks.filter(track => track.kind !== 'subtitle' && !track.locked
+      && track.clips.some(clip => clip.start < at && at < clip.start + clip.length)).map(track => track.id);
+    if (tracks.length) edit([{ edit: 'blade', timeline: timeline.id, at, tracks, linked: false }]);
+  };
   const choose = (key:string,path:string) => update({lanePaths:{...view.lanePaths,[key]:path},lastLanePaths:path?{...view.lastLanePaths,[key]:path}:view.lastLanePaths});
   const toggle = () => {
     const keys=props.selectedTracks?.length?props.selectedTracks:props.timeline?.tracks.filter(t=>t.kind==='audio').map(t=>t.id)??[];
@@ -149,12 +210,17 @@ export function FairlightTimeline({ view, update, meters, onTracksSelect, ...pro
       </select></label>
       <label>{t('Waveform height')}<input aria-label={t('Waveform height')} type="range" min={1} max={16} step={.25} value={view.waveform} onChange={event => update({ waveform: Number(event.target.value) })} /></label>
       <button type="button" onClick={() => update({ waveform: 1 })}>{t('Reset waveform height')}</button>
+      <label>{t('Track heights')}<input aria-label={t('Track heights')} type="range" min={24} max={240} step={4} value={anchorHeight}
+        onChange={event => sizeAll(Number(event.target.value))} /></label>
       <label>{t('Timeline Scrolling')}<select aria-label={t('Timeline Scrolling')} value={view.scrolling} onChange={event => update({ scrolling: event.target.value as TimelineScrolling })}>
         <option value="fixed">{t('Fixed Playhead')}</option><option value="page">{t('Page Scrolling')}</option><option value="none">{t('No Scrolling')}</option>
       </select></label>
+      <button type="button" title={`${t('Razor')} (Ctrl+B)`} disabled={!props.timeline} onClick={razor}>{t('Razor')}</button>
       <button type="button" aria-pressed={view.automation} disabled={!view.automation} onClick={toggle}>{t('Automation view (F4)')}</button>
     </div>
     {problem&&<p role="alert">{problem}</p>}
+    {outOfView && contentWidth > 0 && <span className="fairlight-playhead-tick" role="img" aria-label={t('Playhead out of view')}
+      style={{ left: `calc(${HEADER_WIDTH}px + (100% - ${HEADER_WIDTH}px) * ${Math.min(1, playheadX / contentWidth)})` }} />}
     <Timeline {...props} ref={handle} onTrackSelect={choice.trackSelect} trackMenuItems={id => [
       ...(props.timeline ? headerMenuItems({ id, timeline: props.timeline, selected: props.selectedTracks ?? [], view, update, onEdit: edit, t }) : []),
       ...(groups && props.timeline?.tracks.some(track => track.id === id && track.kind === 'audio')

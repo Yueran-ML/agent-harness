@@ -92,17 +92,6 @@ export class TouchQueue {
   settled() {
     return this.chain;
   }
-  /**
-   * Lets go of the control without telling the engine (a Punch Out let go of it there already):
-   * what was not sent yet is dropped, and what is moved of it afterwards is not sent.
-   */
-  abandon() {
-    if (this.timer)
-      clearTimeout(this.timer);
-    this.timer = null;
-    this.pending = null;
-    this.target = null;
-  }
 }
 export interface AutomationTouchControl {
   enabled: boolean;
@@ -150,8 +139,8 @@ export interface AutomationTouchControl {
   writing: (of: LanesOf) => 'write' | 'preview' | null;
   /** Whether the timeline plays. */
   playing: boolean;
-  /** Punch In without Preview: the enabled settings of these owners are in Write until the next stop. */
-  punchIn: (owners: readonly LanesOf[]) => void;
+  /** Punch In without Preview: these settings (those the engine put into Write) are in Write until the next stop. */
+  punchIn: (settings: readonly AutomationTarget[]) => void;
   /** Punch Out: what these owners (all, where `null`) hold or write goes back to Read. */
   punchOut: (owners: readonly LanesOf[] | null) => void;
   /** Write on Preset or Clipboard Paste (Preferences › User › Fairlight › Automation), off by default. */
@@ -190,10 +179,10 @@ export function AutomationTouchProvider({ bridge, session, timeline, revision = 
   const queues = useMemo(() => new Map<string, TouchQueue>(), [bridge, session, timeline.id]);
   const primary = useRef<string | null>(null);
   const targetId = (target: AutomationTarget) => `${ownerKey(target.of)}/${target.path}`;
-  // Punch In without Preview (p. 3913): the owners whose enabled settings are in Write, each until
-  // the timeline has played and stopped (Write is entered again for each pass, p. 3908). Each
-  // setting shows the value it had where the pass began to write it, as the engine holds it.
-  const punched = useRef(new Map<string, { played: boolean; values: Map<string, number> }>());
+  // Punch In without Preview (p. 3913): of each owner, the settings that the engine put into
+  // Write, each until the timeline has played and stopped (Write is entered again for each pass,
+  // p. 3908). Each shows the value it had where the pass began to write it, as the engine holds it.
+  const punched = useRef(new Map<string, { played: boolean; paths: Set<string>; values: Map<string, number> }>());
   const [writeOnPaste, setWriteOnPaste] = useState(readWriteOnPaste);
   useEffect(() => {
     let changed = false;
@@ -359,14 +348,15 @@ export function AutomationTouchProvider({ bridge, session, timeline, revision = 
     return enabled && owner?.automation_arm !== 'off' && Boolean(owner?.lanes?.[target.path]?.points.length);
   };
   const inWrite = (target: AutomationTarget) => enabled && recording && !read
-    && punched.current.has(ownerKey(target.of))
+    && Boolean(punched.current.get(ownerKey(target.of))?.paths.has(target.path))
     && timeline.audio?.record?.categories?.[categoryOfPath(target.path)] !== false;
+  // Once the engine has punched out: what is held is let go of (the engine passes over the release).
   const punchOut = (owners: readonly LanesOf[] | null) => {
     const keys = owners?.map(ownerKey) ?? null;
     const named = (id: string) => keys === null || keys.some(key => id.startsWith(`${key}/`));
     for (const [id, queue] of queues)
       if (named(id))
-        queue.abandon();
+        queue.end();
     for (const id of [...held.current.keys()])
       if (named(id))
         held.current.delete(id);
@@ -409,9 +399,13 @@ export function AutomationTouchProvider({ bridge, session, timeline, revision = 
       saveWriteOnPaste(on);
       setWriteOnPaste(on);
     },
-    punchIn: owners => {
-      for (const of of owners)
-        punched.current.set(ownerKey(of), { played: now.current.playing, values: new Map() });
+    punchIn: settings => {
+      for (const { of, path } of settings) {
+        const key = ownerKey(of), entry = punched.current.get(key)
+          ?? { played: now.current.playing, paths: new Set<string>(), values: new Map<string, number>() };
+        entry.paths.add(path);
+        punched.current.set(key, entry);
+      }
       redraw(n => n + 1);
     },
     punchOut,

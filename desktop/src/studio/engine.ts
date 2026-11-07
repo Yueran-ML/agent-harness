@@ -284,6 +284,8 @@ export interface TrackGroup { id: string; name: string; color?: string; members:
 export type InsertsOf = { track: string } | { bus: string } | { clip: string };
 /** What the lanes of an operation on automation belong to: a track of sound, a bus or a VCA. */
 export type LanesOf = { track: string } | { bus: string } | { vca: string };
+/** A setting of a track of sound, bus or VCA as the engine names it: its owner and its path. */
+export type AutomationSetting = ({ track: string } | { bus: string } | { vca: string }) & { path: string };
 export type LoudnessStandard =
   | 'bs1770_1' | 'bs1770_4' | 'atsc_a85' | 'ebu_r128' | 'op_59' | 'tr_b32' | 'agcom_219' | 'netflix' | 'youtube'
   | 'disney_2_0' | 'disney_5_1' | 'apple_podcasts' | 'spotify' | 'aes_streaming' | 'web_video';
@@ -1160,7 +1162,7 @@ export interface PageMethods {
   'automation.parameters': { revision: number; of: LanesOf; parameters: AutomationParameter[] };
   'automation.record': AutomationRecording;
   'automation.touch': Record<string, never>;
-  'automation.punch': { lanes: number };
+  'automation.punch': { lanes: number; settings: AutomationSetting[] };
   'automation.punch_out': { lanes: number };
   'automation.all_read': { read: boolean };
   'automation.join': { lanes: number; at: Time | null };

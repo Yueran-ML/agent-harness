@@ -1395,13 +1395,17 @@ impl Worker {
                     let project = Arc::clone(self.project.as_ref().expect("loaded"));
                     let index = self.timeline.unwrap_or(0);
                     let at = self.heard_sample();
-                    let lanes = self.automation.punch(
+                    let settings = self.automation.punch(
                         (&project, index),
                         of.as_deref(),
                         at,
                         &mut self.playback,
                     );
-                    Ok(json!({ "lanes": lanes }))
+                    let named: Vec<Value> = settings
+                        .iter()
+                        .map(|(owner, path)| super::record::setting_json(owner, path))
+                        .collect();
+                    Ok(json!({ "lanes": settings.len(), "settings": named }))
                 } else {
                     Err(not_loaded())
                 };
@@ -2928,6 +2932,103 @@ mod tests {
         assert!(!worker
             .playback
             .holds(&Owner::Track("A1".into()), "fader_db"));
+    }
+
+    #[test]
+    fn a_punch_in_of_a_track_answers_its_settings_and_its_pass_is_one_step_of_undo() {
+        use super::super::record::Order;
+        use columbina_audio::graph::Owner;
+        use columbina_model::{Lane, LaneKind, LanePoint, Time};
+        let a1 = || Owner::Track("A1".into());
+        let mut worker = worker();
+        worker.status.timeline = Some("t1".into());
+        let mut project = Project::sample();
+        // A1's fader on a lane, so that what the Punch In writes changes it.
+        let track = project.timelines[0]
+            .tracks
+            .iter_mut()
+            .find(|track| track.id == "A1")
+            .unwrap();
+        let point = |ticks: i64, value: f64| LanePoint {
+            at: Time {
+                ticks,
+                scale: 48_000,
+            },
+            value,
+        };
+        track.audio.lanes.insert(
+            "fader_db".into(),
+            Lane {
+                points: vec![point(0, -10.0), point(480_000, 0.0)],
+                kind: LaneKind::Continuous,
+                scale: None,
+            },
+        );
+        worker.replace(0, Arc::new(project.clone()));
+        let written: Arc<Mutex<Vec<columbina_model::Edit>>> = Arc::default();
+        worker.automate(Order::Hook(Arc::new({
+            let written = Arc::clone(&written);
+            move |commit: super::super::record::Commit| lock(&written).push(commit.edit)
+        })));
+        let (reply, _answer) = oneshot::channel();
+        worker.automate(Order::Record {
+            timeline: "t1".into(),
+            on: true,
+            glide: None,
+            by: crate::session::Kind::Desktop,
+            reply,
+        });
+        let rate = project.timelines[0].rate;
+        worker.clock = Some(Clock::starting(0, 1, rate, worker.now()));
+        worker.status.playing = true;
+        worker.restart_sound();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while worker.heard_sample().unwrap_or(0) < 4_800 {
+            worker.check_sound();
+            assert!(Instant::now() < deadline, "nothing heard");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let (reply, mut answer) = oneshot::channel();
+        worker.automate(Order::Punch {
+            timeline: "t1".into(),
+            of: Some(vec![a1()]),
+            reply,
+        });
+        let answered = answer.try_recv().unwrap().unwrap();
+        let settings = answered["settings"]
+            .as_array()
+            .expect("the settings in Write");
+        assert_eq!(answered["lanes"].as_u64(), Some(settings.len() as u64));
+        assert!(
+            settings
+                .iter()
+                .any(|setting| setting["track"] == "A1" && setting["path"] == "fader_db"),
+            "{answered}"
+        );
+        assert!(worker.playback.holds(&a1(), "fader_db"), "held as written");
+        std::thread::sleep(Duration::from_millis(100));
+        let (reply, mut answer) = oneshot::channel();
+        worker.automate(Order::PunchOut {
+            timeline: "t1".into(),
+            of: Some(vec![a1()]),
+            reply,
+        });
+        let answered = answer.try_recv().unwrap().unwrap();
+        assert!(answered["lanes"].as_u64().unwrap() >= 1, "{answered}");
+        assert!(!worker.playback.holds(&a1(), "fader_db"), "let go");
+        worker.pause();
+        let edits = lock(&written).clone();
+        let [columbina_model::Edit::RecordPass { lanes, .. }] = &edits[..] else {
+            panic!("one pass, one step of undo: {edits:?}");
+        };
+        assert_eq!(
+            lanes
+                .iter()
+                .map(|lane| lane.path.as_str())
+                .collect::<Vec<_>>(),
+            ["fader_db"],
+            "only what changes"
+        );
     }
 
     /// How long the next feed that [`stalls_once`] opens waits first.

@@ -62,7 +62,8 @@ function engine(parameters: AutomationParameter[] = [parameter('fader_db')]) {
   return vi.fn(async (method: string, params?: any): Promise<EngineAnswer> => ({
     ok: true,
     result: method === 'automation.parameters' ? { revision: 7, of: params.of, parameters }
-      : method === 'automation.punch' || method === 'automation.punch_out' ? { lanes: 3 }
+      : method === 'automation.punch' ? { lanes: 3, settings: (params?.of ?? []).flatMap((of: object) => parameters.map(p => ({ ...of, path: p.path }))) }
+        : method === 'automation.punch_out' ? { lanes: 3 }
         : method === 'audio.eq_response' ? { revision: 7, sample_rate: 48000, frequencies: params.frequencies, gain_db: params.frequencies.map(() => 0) }
           : method === 'audio.dynamics_curve' ? { revision: 7, inputs_db: params.inputs_db, outputs_db: params.inputs_db }
             : { revision: 8, done: [] },
@@ -127,7 +128,7 @@ it('asks for a selection without Preview, and punches in what Preview holds with
   expect(calls(preview.call, 'automation.punch')).toEqual([{ timeline: 't1' }]);
 });
 
-it('punches out the selected track: what it holds is let go of here, and no release follows', async () => {
+it('punches out the selected track once the engine has, its touch then let go', async () => {
   const s = toolbar(song({ touch: 'latch' }), ['track:a1']);
   fireEvent.click(screen.getByText('touch'));
   await settle();
@@ -135,7 +136,10 @@ it('punches out the selected track: what it holds is let go of here, and no rele
   fireEvent.click(screen.getByText('Punch Out'));
   await settle();
   expect(calls(s.call, 'automation.punch_out')).toEqual([{ timeline: 't1', of: [{ track: 'a1' }] }]);
-  expect(calls(s.call, 'automation.touch').map(message => message.touching)).toEqual([true]);
+  // The engine passes over the release of a control it punched out while held.
+  expect(calls(s.call, 'automation.touch').map(message => message.touching)).toEqual([true, false]);
+  expect(s.call.mock.calls.map(([method]) => method).filter(method => method !== 'automation.parameters'))
+    .toEqual(['automation.touch', 'automation.punch_out', 'automation.touch']);
   expect(screen.getByLabelText('fader state').textContent).toBe('none');
   cleanup();
   // Under Preview, or with nothing selected, every track.
@@ -251,9 +255,46 @@ it('writes only the settings that a pasted insert setting changes', () => {
 });
 
 it('shows nothing in Write where the engine put nothing into Write', async () => {
-  const call = vi.fn(async (method: string): Promise<EngineAnswer> => ({ ok: true, result: method === 'automation.punch' ? { lanes: 0 } : {} }));
+  const call = vi.fn(async (method: string): Promise<EngineAnswer> => ({ ok: true, result: method === 'automation.punch' ? { lanes: 0, settings: [] } : {} }));
   toolbar(song(), ['track:a1'], { call });
   fireEvent.click(screen.getByText('Punch In'));
   await settle();
   expect(screen.getByLabelText('owner state').textContent).toBe('none');
+});
+
+it('keeps what is written as it was where the engine refuses a Punch Out', async () => {
+  const call = vi.fn(async (method: string): Promise<EngineAnswer> => method === 'automation.punch_out'
+    ? { ok: false, error: { code: -32004, message: 'not loaded', data: { reason: 'not_loaded' } } }
+    : { ok: true, result: {} });
+  const s = toolbar(song({ touch: 'latch' }), ['track:a1'], { call });
+  fireEvent.click(screen.getByText('touch'));
+  await settle();
+  fireEvent.click(screen.getByText('Punch Out'));
+  await settle();
+  expect(s.onFailure).toHaveBeenCalledTimes(1);
+  expect(screen.getByLabelText('fader state').textContent).toBe('write');
+  expect(calls(call, 'automation.touch').map(message => message.touching)).toEqual([true]);
+});
+
+it('shows in Write only the settings that the engine put into Write', async () => {
+  const call = vi.fn(async (method: string): Promise<EngineAnswer> => ({
+    ok: true, result: method === 'automation.punch' ? { lanes: 1, settings: [{ track: 'a1', path: 'mute' }] } : {},
+  }));
+  toolbar(song(), ['track:a1', 'track:a2'], { call });
+  fireEvent.click(screen.getByText('Punch In'));
+  await settle();
+  expect(screen.getByLabelText('fader state').textContent).toBe('none');
+  expect(screen.getByLabelText('owner state').textContent).toBe('write');
+});
+
+it('offers only the levels that every destination has, and forgets a level no longer offered', async () => {
+  expect(levelPathsOf(song(), ['track:a1', 'track:a2'])).toEqual(['fader_db']);
+  const s = toolbar(song(), ['track:a1']);
+  fireEvent.change(screen.getByLabelText('Paste level to'), { target: { value: 'send.B2.level_db' } });
+  expect((screen.getByLabelText('Paste level to') as HTMLSelectElement).value).toBe('send.B2.level_db');
+  s.rerender(<AutomationTouchProvider bridge={{ call: s.call }} session={1} timeline={song()} enabled recording playing
+    show={() => {}} onFailure={error => { throw error; }}>
+    <AutomationToolbar {...s.props} selected={['track:a2']} />
+  </AutomationTouchProvider>);
+  expect((screen.getByLabelText('Paste level to') as HTMLSelectElement).value).toBe('');
 });

@@ -4,7 +4,7 @@ import { callEngine, type Timeline } from '../engine';
 import type { Change, CopiedLane } from '../timeline/commands';
 import {
   categories, defaultRecord, GLIDE_MAX, glideValue, NUDGE_UNITS, ownerKey, ownerOf, readGlide, readNudge, sampleTime, saveGlide,
-  saveNudge, type NudgeUnit,
+  saveNudge, settingTarget, type NudgeUnit,
 } from './automation';
 import { useAutomationTouch } from './AutomationTouch';
 import { levelPathsOf, pastedLanes } from './automationPaste';
@@ -57,9 +57,15 @@ export function AutomationToolbar({ bridge, session, timeline, view, update, rec
   const [nudge, setNudge] = useState<NudgeUnit>(readNudge);
   // The level that a level is pasted to (p. 3914): the same parameter, or a fader or send level.
   const [pasteLevel, setPasteLevel] = useState('');
-  const run = async (
-    method: 'automation.record' | 'automation.all_read' | 'automation.join' | 'automation.punch' | 'automation.punch_out'
-      | 'automation.fill',
+  const levels = levelPathsOf(timeline, selected), levelOffered = levels.includes(pasteLevel);
+  // A level no longer offered (the selection changed) is forgotten.
+  useEffect(() => {
+    if (pasteLevel && !levelOffered)
+      setPasteLevel('');
+  }, [pasteLevel, levelOffered]);
+  const run = async <M extends 'automation.record' | 'automation.all_read' | 'automation.join' | 'automation.punch'
+    | 'automation.punch_out' | 'automation.fill'>(
+    method: M,
     args: Record<string, unknown> = {},
   ) => {
     setBusy(true);
@@ -86,18 +92,19 @@ export function AutomationToolbar({ bridge, session, timeline, view, update, rec
       return;
     }
     const of = selected.map(ownerOf);
-    // Shown in Write only where the engine put settings of them into Write.
+    // Shown in Write only as the engine put settings of them into Write.
     const punched = await run('automation.punch', { of });
-    if (punched && 'lanes' in punched && punched.lanes > 0)
-      touch?.punchIn(of);
+    if (punched?.settings.length)
+      touch?.punchIn(punched.settings.map(settingTarget));
   };
   // Punch Out (p. 3913): under Preview, every setting in Write, Trim or Preview goes back to Read;
-  // without it, those of the selected tracks (of all, where none are selected). What is held is
-  // let go of here first, so that no release of it follows the Punch Out.
+  // without it, those of the selected tracks (of all, where none are selected). Once the engine
+  // has, what is held of them is let go of: the engine passes over that release. Where it
+  // refuses, what is written stays as it was.
   const punchOut = async () => {
     const of = record.preview || !selected.length ? null : selected.map(ownerOf);
-    touch?.punchOut(of);
-    await run('automation.punch_out', of ? { of } : {});
+    if (await run('automation.punch_out', of ? { of } : {}))
+      touch?.punchOut(of);
   };
   const patch = (next: Partial<typeof record>) => onEdit([{ op: 'set_timeline_audio', timeline: timeline.id, patch: { record: { ...record, ...next } } }]);
   const paste = () => {
@@ -106,7 +113,7 @@ export function AutomationToolbar({ bridge, session, timeline, view, update, rec
       onFailure(new Error(t('Clipboard tracks must match the destination selection.')));
       return;
     }
-    const lanes = pastedLanes(clipboard, selected, pasteLevel);
+    const lanes = pastedLanes(clipboard, selected, levelOffered ? pasteLevel : '');
     if (!lanes.length) {
       onFailure(new Error(t('The clipboard has no level to paste there.')));
       return;
@@ -263,9 +270,9 @@ export function AutomationToolbar({ bridge, session, timeline, view, update, rec
 
       <label>
         {t('Paste level to')}
-        <select value={pasteLevel} onChange={e => setPasteLevel(e.target.value)}>
+        <select value={levelOffered ? pasteLevel : ''} onChange={e => setPasteLevel(e.target.value)}>
           <option value="">{t('Same parameter')}</option>
-          {levelPathsOf(timeline, selected).map(path => <option key={path} value={path}>
+          {levels.map(path => <option key={path} value={path}>
             {path === 'fader_db' ? t('fader') : `${t('Send Level')} ${path.split('.')[1]}`}
           </option>)}
         </select>

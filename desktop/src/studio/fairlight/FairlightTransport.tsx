@@ -147,10 +147,13 @@ export function FairlightTransport({ bridge, session, monitor, marks, onMark, on
 
   useEffect(() => {
     const down = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || !inStudio(event.target)) return;
+      if (!inStudio(event.target)) return;
       const key = keyOf(event);
       if (!editingAllowed(event.target, key)) return;
+      // Any key ends a shuttle of the clock, one that the studio's keys took (K, Space) too.
       if (now.current.shuttle !== null) setShuttle(null);
+      // A key held down toggles or opens once.
+      if (event.defaultPrevented || event.repeat) return;
       const slash = event.code === 'Slash' || event.key === '/';
       const bare = !key.ctrl && !key.alt && !key.meta;
       if (slash && (key.ctrl || key.meta) && !key.alt && !key.shift) { event.preventDefault(); toggleLoop(); }
@@ -183,12 +186,12 @@ export function FairlightTransport({ bridge, session, monitor, marks, onMark, on
         {marks.in !== null && marks.out !== null && marks.out > marks.in ? timecode(marks.out - marks.in, rate) : '--:--:--:--'}</output>
     </div>
     <div className="fairlight-transport-buttons">
-      <button type="button" className="icon-btn" disabled={!loaded} aria-label={t('Fast Reverse')} title={`${t('Fast Reverse')} (Shift+J)`}
+      <button type="button" className="icon-btn" disabled={!loaded} aria-label={t('Fast Reverse')} title={`${t('Fast Reverse')} (Shift+J: −8×)`}
         aria-pressed={shownSpeed !== null && shownSpeed < 0} onClick={() => fast(-1)}><Rewind size={15} /></button>
       <button type="button" className="icon-btn" disabled={!loaded} aria-label={t('Stop')} title={`${t('Stop')} (K)`} onClick={stop}><Square size={14} /></button>
       <button type="button" className="icon-btn" disabled={!loaded} aria-label={t('Play')} title={`${t('Play')} (L)`}
         aria-pressed={state?.playing === true && state.speed === 1 && shuttle === null} onClick={play}><Play size={15} /></button>
-      <button type="button" className="icon-btn" disabled={!loaded} aria-label={t('Fast Forward')} title={`${t('Fast Forward')} (Shift+L)`}
+      <button type="button" className="icon-btn" disabled={!loaded} aria-label={t('Fast Forward')} title={`${t('Fast Forward')} (Shift+L: 8×)`}
         aria-pressed={shownSpeed !== null && shownSpeed > 1} onClick={() => fast(1)}><FastForward size={15} /></button>
       <button type="button" className="icon-btn" disabled={!loaded} aria-label={t('Loop')} title={`${t('Loop')} (Ctrl+/)`} aria-pressed={looping}
         onClick={toggleLoop}><Repeat size={15} /></button>

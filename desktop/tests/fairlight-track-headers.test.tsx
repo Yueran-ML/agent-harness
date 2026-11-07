@@ -11,6 +11,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { EngineBridge } from '../src/bridge';
 import type { Meters, Timeline } from '../src/studio/engine';
 import { FairlightTimeline } from '../src/studio/fairlight/FairlightTimeline';
+import { useTrackChoice } from '../src/studio/fairlight/trackHeaders';
 import { useFairlightView } from '../src/studio/fairlight/viewState';
 import { clip, media, timeline } from './timeline-fixture';
 import { likeABrowser } from './mounted';
@@ -167,6 +168,35 @@ it('sizes every unlocked track from the vertical slider, keeping the top chosen 
   expect(['A1', 'A2', 'A3', 'A4'].map(id => row(id).style.height)).toEqual(['64px', '64px', '64px', '64px']);
   expect(scroller.scrollTop).toBe(64 * 2 + 32 - 20);
   expect((screen.getByLabelText('Track heights') as HTMLInputElement).value).toBe('64');
+});
+
+it('shows on the slider the height of a track it sizes, not of one whose height is locked', () => {
+  render(<Page bridge={engine()} />);
+  fireEvent.contextMenu(header('A1'));
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Lock Track Height To' }));
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Micro' }));
+  fireEvent.change(screen.getByLabelText('Track heights'), { target: { value: '64' } });
+  expect(['A1', 'A2'].map(id => row(id).style.height)).toEqual(['24px', '64px']);
+  expect((screen.getByLabelText('Track heights') as HTMLInputElement).value).toBe('64');
+});
+
+it('forgets a Ctrl+click that a lane kept from the timeline, so the next click chooses', () => {
+  const onTrack = vi.fn();
+  function Rows() {
+    const choice = useTrackChoice({ selected: [], onTracks: () => {}, onTrack });
+    return <div className="fairlight-timeline" onPointerDownCapture={choice.pointerDown} onPointerUpCapture={choice.pointerUp}>
+      {['A1', 'A2'].map(id => <div key={id} className="timeline-track" data-track={id}>
+        <div className="timeline-track-header" onPointerDown={() => choice.trackSelect(id)}>
+          <span data-test={`lane-${id}`} onPointerDown={event => event.stopPropagation()} />
+        </div>
+      </div>)}
+    </div>;
+  }
+  render(<Rows />);
+  press(document.querySelector('[data-test="lane-A1"]')!, { ctrlKey: true });
+  expect(onTrack).not.toHaveBeenCalled();
+  press(header('A2'));
+  expect(onTrack).toHaveBeenCalledWith('A2');
 });
 
 it('marks the playhead on the scroll bar while it is off the view, and brings it back as playing starts without scrolling', () => {

@@ -361,10 +361,7 @@ impl Transport {
         self.check(method)?;
         let (monitor, params) = monitor_params(method, params)?;
         let action = action(method, &params)?;
-        let playing = matches!(
-            action,
-            Some(Action::Play { .. } | Action::PlayRange { .. })
-        );
+        let playing = matches!(action, Some(Action::Play { .. } | Action::PlayRange { .. }));
         let audible = matches!(
             action,
             Some(
@@ -383,10 +380,7 @@ impl Transport {
                 .with_data(json!({"reason":"monitor"})));
             }
             Monitor::Source
-                if matches!(
-                    action,
-                    Some(Action::Loop { .. } | Action::PlayRange { .. })
-                ) =>
+                if matches!(action, Some(Action::Loop { .. } | Action::PlayRange { .. })) =>
             {
                 return Err(Fault::params(format!(
                     "{method} is of the timeline monitor: the source monitor neither loops nor                      plays a range"

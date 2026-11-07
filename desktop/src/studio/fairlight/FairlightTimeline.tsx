@@ -108,9 +108,11 @@ export function FairlightTimeline({ view, update, meters, onTracksSelect, ...pro
       return { timelineViewport: { ...viewport, heights, top } };
     });
   };
+  // The slider shows the height of the track that it sizes and keeps in place: not one locked.
   const anchorHeight = (() => {
-    const anchor = props.selectedTracks?.find(id => props.timeline?.tracks.some(track => track.id === id && !view.hidden.includes(id)))
-      ?? props.timeline?.tracks.find(track => track.kind === 'audio')?.id;
+    const sized = (id: string) => !view.hidden.includes(id) && !lockedHeights.includes(id);
+    const anchor = props.selectedTracks?.find(id => sized(id) && props.timeline?.tracks.some(track => track.id === id))
+      ?? props.timeline?.tracks.find(track => track.kind === 'audio' && sized(track.id))?.id;
     return anchor === undefined ? FAIRLIGHT_TRACK_HEIGHT : view.timelineViewport.heights[anchor] ?? FAIRLIGHT_TRACK_HEIGHT;
   })();
   // Where the playhead is against the view: off it, an orange mark on the scroll bar shows where;

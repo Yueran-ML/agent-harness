@@ -168,12 +168,20 @@ pub const MONITOR_RAMP_SECONDS: f32 = 0.010;
 
 /// The frames of `samples` (of `channels` channels at `rate`) at the monitor's gain `gain`,
 /// `level` the gain of the frame before, moved towards it frame by frame.
-fn monitor_gain(gain: Option<&AtomicU32>, level: &mut f32, (rate, channels): (u32, usize), samples: &mut [f32]) {
+fn monitor_gain(
+    gain: Option<&AtomicU32>,
+    level: &mut f32,
+    (rate, channels): (u32, usize),
+    samples: &mut [f32],
+) {
     let Some(gain) = gain else {
         return;
     };
     let target = f32::from_bits(gain.load(Ordering::Relaxed));
-    #[allow(clippy::float_cmp, reason = "exactly unity: the sound is given as it is")]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exactly unity: the sound is given as it is"
+    )]
     if target == 1.0 && *level == 1.0 {
         return;
     }
@@ -285,16 +293,9 @@ impl Player {
         }
     }
 
-    /// Fills a run of the device, asked for at `asked` and heard from `heard` (nanoseconds from
-    /// the caller's instant), with the sound of the session, `convert`ed, and `silence` after it;
-    /// marks what was sound and when it is heard.
-    pub fn fill<T: Copy>(
-        &mut self,
-        data: &mut [T],
-        (asked, heard): (i64, i64),
-        silence: T,
-        convert: impl Fn(f32) -> T,
-    ) {
+    /// Takes the orders sent since the last run: a session to play in place of the one playing
+    /// (given back to be dropped), or none.
+    fn take_orders(&mut self) {
         if let Some(feeding) = self.stranded.take() {
             self.give_back(feeding);
         }
@@ -317,6 +318,19 @@ impl Player {
                 }
             }
         }
+    }
+
+    /// Fills a run of the device, asked for at `asked` and heard from `heard` (nanoseconds from
+    /// the caller's instant), with the sound of the session, `convert`ed, and `silence` after it;
+    /// marks what was sound and when it is heard.
+    pub fn fill<T: Copy>(
+        &mut self,
+        data: &mut [T],
+        (asked, heard): (i64, i64),
+        silence: T,
+        convert: impl Fn(f32) -> T,
+    ) {
+        self.take_orders();
         let channels = self.channels;
         let frames = data.len() / channels;
         self.shared.period.store(frames, Ordering::Relaxed);
@@ -418,7 +432,13 @@ mod tests {
         let mut player = player.monitored(Arc::clone(&gain));
         let (mut producer, consumer) = samples(64, 1);
         assert_eq!(producer.push(&[0.5; 16]), 16);
-        control.orders.push(Order::Play(Feeding { generation: 1, ring: consumer })).unwrap();
+        control
+            .orders
+            .push(Order::Play(Feeding {
+                generation: 1,
+                ring: consumer,
+            }))
+            .unwrap();
         let mut heard = [0.0_f32; 4];
         player.fill(&mut heard, (0, 0), 0.0, |sample| sample);
         assert_eq!(heard, [0.5; 4], "at unity the sound is given as it is");
@@ -433,7 +453,10 @@ mod tests {
         gain.store(0.0_f32.to_bits(), Ordering::Relaxed);
         let mut heard = [1.0_f32; 4];
         player.fill(&mut heard, (0, 0), 0.0, |sample| sample);
-        for (heard, expected) in heard.iter().zip([0.4_f32, 0.3, 0.2, 0.1].map(|gain| gain * 0.5)) {
+        for (heard, expected) in heard
+            .iter()
+            .zip([0.4_f32, 0.3, 0.2, 0.1].map(|gain| gain * 0.5))
+        {
             assert!((heard - expected).abs() < 1e-6, "{heard} {expected}");
         }
     }

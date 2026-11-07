@@ -366,8 +366,20 @@ fn a_reset_of_the_peaks_clears_the_true_and_sample_peaks_and_keeps_the_loudness(
     let after = loudness.reading();
     assert!(after.true_peak < before.true_peak && after.sample_peak < before.sample_peak);
     assert_eq!(
-        (after.momentary, after.short_term, after.integrated, after.range, after.seconds),
-        (before.momentary, before.short_term, before.integrated, before.range, before.seconds)
+        (
+            after.momentary,
+            after.short_term,
+            after.integrated,
+            after.range,
+            after.seconds
+        ),
+        (
+            before.momentary,
+            before.short_term,
+            before.integrated,
+            before.range,
+            before.seconds
+        )
     );
     loudness.push(Cell {
         energy: 1.0,

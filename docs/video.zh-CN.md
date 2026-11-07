@@ -430,6 +430,7 @@ Agent 的源文件读取和输出写入遵守会话文件权限，包括 `add_me
 
 ## 本版本还没有的
 
-剪辑页的关键帧和曲线变速、调色页的关键帧编辑器、Fairlight 式混音（变速时保持音调、音乐自动压低）、标记、适配填充（Fit to Fill）、
+剪辑页的关键帧和曲线变速、调色页的关键帧编辑器、标记、适配填充（Fit to Fill）、
 Close Up、多机位以及按时间码对齐素材，都在之后的阶段加入。桌面端导出只用硬件编码器，没有时改写 ProRes。
 调色页的稳定器、调色版本、3D 限定器、Magic Mask、Color Warper、Sizing 和其他 Motion Effects、DCTL、Dolby Vision 和 HDR10+，本版本都还没有。
+Fairlight 页的 Range 选区模式、浮动检视器和 Loop Jog 本版本也还没有。

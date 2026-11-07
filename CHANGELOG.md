@@ -6,11 +6,31 @@ change what was there before.
 
 ## Unreleased
 
-- Windows Studio adds Fairlight alongside the Edit page, sharing clip volume/pan keyframes,
-  fades, audio crossfades, channel mapping, normalization and audio attribute copy/paste.
-  Track and bus mixers expose EQ, Dynamics, sends, surround pan, insert effects and user
-  presets; DSP meters and Noise Reduction Learn read the actual audio graph. Timeline
-  automation supports lane editing, Pencil, Write/Trim recording and Follows Edit.
+- The editing studio has a Fairlight page (phase 3), on Windows, made after DaVinci Resolve's,
+  on the same audio tracks as the Edit page. Clip volume and pan have keyframes; fade handles,
+  crossfades, channel mapping, Normalize Audio Levels and the copy and paste of audio
+  attributes are shared by the pages. Track headers have their number, format, meter, colour,
+  height lock, arm, mute and solo; the timeline has Razor, a vertical zoom, a mark for a playhead
+  out of view, and a transport and timecode area with Go To Timecode, Range In and Out, Loop,
+  Play Range, shuttle speeds, and the monitor's mute, level and DIM.
+- The mixer: track and bus faders, sends (pre or post fader), surround panning, buses of any
+  format feeding other buses (FlexBus), VCAs, and Track Groups that link editing, faders, solo,
+  mute, sends, panning and automation. A strip has a 6-band EQ and Dynamics (Expander/Gate,
+  Compressor with a sidechain, Limiter) with their curves, and inserts: Gain, Limiter, Soft
+  Clipper, Stereo Width, De-Esser, De-Hummer, Ducker, Noise Reduction (with Learn) and Pitch,
+  with user presets and a favourites list. Pitch Correction keeps the pitch of a clip at another
+  speed. Delay is made up across the graph, and the meters and loudness readings are those of
+  the graph that plays.
+- Automation: lanes of any setting of a track, bus or VCA, drawn with the Pencil or edited point
+  by point; recording in Write or Trim under Off, Latch, Snap or Snap Latch, with Preview, the
+  Active Range, Fill and Glide Range, Join Mix, Punch In and Punch Out, All Read and the
+  Automation Arm (Safe, Off); copy and paste, also of one level to another; and Automation
+  Follows Edit, so that lanes move with the clips over them.
+- Media: the channels of each stream of sound are read as they are, and a clip of media is set
+  to a layout, its channels mapped or split into linked mono clips. The File page shows the
+  waveform of each channel, and auditions a channel with its level.
+- Playback: the timeline's sound plays at any speed and while its playhead is dragged (Audio
+  Scrubbing), and an export runs the same graph, so that what is heard is what is written.
 - `video_loudness` measures or adjusts clip, track and output loudness, and `video_duck`
   lowers selected backgrounds around dialogue. Candidate mixes are measured before a
   single undoable edit. Platform loudness presets are explicitly non-official targets.

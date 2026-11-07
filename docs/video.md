@@ -603,9 +603,8 @@ client has been absent for a while.
 
 ## Not in this version
 
-Keyframes and speed curves on the Edit page, the Keyframe Editor of the Color page,
-Fairlight-style mixing (pitch kept at another speed, music
-ducking), markers, Fit to Fill, Close Up, multicam and lining clips up by timecode come in later
-phases. The desktop's export writes with hardware encoders only, with ProRes as the fallback.
+Keyframes and speed curves on the Edit page, the Keyframe Editor of the Color page, markers, Fit
+to Fill, Close Up, multicam and lining clips up by timecode come in later phases. The desktop's export writes with hardware encoders only, with ProRes as the fallback.
 Of the Color page, the stabilizer, versions of grades, the 3D qualifier, Magic Mask, Color Warper,
-Sizing and the other Motion Effects, DCTL, Dolby Vision and HDR10+ are not in this version.
+Sizing and the other Motion Effects, DCTL, Dolby Vision and HDR10+ are not in this version, nor,
+of the Fairlight page, the Range selection mode, the floating viewer and Loop Jog.

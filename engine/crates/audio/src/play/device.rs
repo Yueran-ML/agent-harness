@@ -427,7 +427,7 @@ mod tests {
     #[test]
     fn the_monitor_gain_ramps_to_its_value_and_leaves_unity_as_it_is() {
         // At 1000 frames a second the ramp of 10 ms is 0.1 a frame.
-        let gain = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
+        let gain = Arc::new(AtomicU32::new(1.0_f32.to_bits())); // rt-ok: a test
         let (player, mut control) = player((1, 1000), false, false, None);
         let mut player = player.monitored(Arc::clone(&gain));
         let (mut producer, consumer) = samples(64, 1);

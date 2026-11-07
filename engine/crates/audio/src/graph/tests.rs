@@ -488,3 +488,69 @@ fn a_value_held_on_a_lane_of_logarithms_comes_in_and_goes_on_its_scale() {
     held.apply(LaneKind::Continuous, false, &mut values);
     assert!((values[239] - 5_050.0).abs() < 1.0, "{}", values[239]);
 }
+
+/// The line that delays (PDC): T26's mutation testing.
+#[allow(clippy::cast_precision_loss, reason = "the samples of a test")]
+mod delayer {
+    use super::super::pdc::Delayer;
+    use crate::node::{Block, Layout, Node, Spec};
+
+    /// What a stereo `delayer` makes of `frames` samples of a ramp on each channel
+    /// (1, 2, … on the left, 101, 102, … on the right), fed in blocks of `block`.
+    fn delayed(delayer: &mut Delayer, frames: usize, block: usize) -> [Vec<f32>; 2] {
+        let mut out = [Vec::new(), Vec::new()];
+        let mut at = 0;
+        while at < frames {
+            let n = block.min(frames - at);
+            let left: Vec<f32> = (at..at + n).map(|i| (i + 1) as f32).collect();
+            let right: Vec<f32> = (at..at + n).map(|i| (i + 101) as f32).collect();
+            let (mut a, mut b) = (vec![0.0; n], vec![0.0; n]);
+            delayer.process(
+                &Block::new(at as u64, 48_000, n),
+                &[&left, &right],
+                &mut [&mut a, &mut b],
+            );
+            out[0].extend(a);
+            out[1].extend(b);
+            at += n;
+        }
+        out
+    }
+
+    fn expected(length: usize, frames: usize, offset: f32) -> Vec<f32> {
+        (0..frames)
+            .map(|i| {
+                if i < length {
+                    0.0
+                } else {
+                    (i - length) as f32 + offset
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn each_channel_is_delayed_by_its_length_across_blocks_that_do_not_divide_it() {
+        // Blocks of 2 through a line of 3: where the line stands after each block is not 0.
+        let mut delayer = Delayer::new(3);
+        delayer
+            .prepare(&Spec::new(48_000, 2, Layout::Stereo))
+            .expect("a delayer takes stereo");
+        let [left, right] = delayed(&mut delayer, 11, 2);
+        assert_eq!(left, expected(3, 11, 1.0));
+        assert_eq!(right, expected(3, 11, 101.0));
+    }
+
+    #[test]
+    fn a_reset_brings_the_line_back_to_silence() {
+        let mut delayer = Delayer::new(3);
+        delayer
+            .prepare(&Spec::new(48_000, 2, Layout::Stereo))
+            .expect("a delayer takes stereo");
+        delayed(&mut delayer, 5, 2);
+        delayer.reset();
+        let [left, right] = delayed(&mut delayer, 7, 2);
+        assert_eq!(left, expected(3, 7, 1.0));
+        assert_eq!(right, expected(3, 7, 101.0));
+    }
+}

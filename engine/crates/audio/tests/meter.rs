@@ -362,3 +362,59 @@ fn two_hundred_taps_cost_little() {
     );
     assert_eq!(cells, 200 * 16);
 }
+
+#[test]
+fn a_custom_type_keeps_its_scale_and_a_decay_that_is_not_finite_is_the_default() {
+    let custom = |scale, decay| MeterType::Custom {
+        detector: Detector::SamplePeak,
+        scale,
+        decay,
+        peak: PeakIndicator::MediumHoldFall,
+    };
+    assert_eq!(custom(Scale::QuasiLinear, 1.7).scale(), Scale::QuasiLinear);
+    assert_eq!(MeterType::DigitalVu.scale(), Scale::Iec);
+    let default = MeterType::Iec60268_18.bar_fall();
+    for decay in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert_eq!(custom(Scale::Iec, decay).bar_fall(), default, "{decay}");
+        assert_eq!(custom(Scale::Iec, decay).peak_fall(), default, "{decay}");
+    }
+}
+
+#[test]
+fn a_tap_hears_its_channels_and_a_reset_clears_the_cell_under_way() {
+    assert_eq!(level_tap(RATE, 2).0.channels(), 2);
+    let (mut tap, mut reader) = level_tap(RATE, 1);
+    tap.take(&[&[0.5; 240]]);
+    tap.reset();
+    tap.take(&[&[0.0; 480]]);
+    let mut peaks = Vec::new();
+    reader.drain(|cell| peaks.push(cell.peaks[0]));
+    assert_eq!(peaks, [0.0], "the half cell before the reset is not heard");
+}
+
+#[test]
+fn a_cell_is_a_whole_count_of_samples_at_a_rate_that_does_not_divide_10_ms() {
+    // 1.5 samples in 10 ms at 150 Hz: a cell is 2 samples, and its seconds say so.
+    let (tap, reader) = level_tap(150, 1);
+    for seconds in [reader.cell_seconds(), tap.reader(150).cell_seconds()] {
+        let samples = seconds * 150.0;
+        assert!((samples - samples.round()).abs() < 1e-9, "{seconds} s");
+    }
+}
+
+#[test]
+fn a_meter_type_is_taken_in_place_and_a_reset_brings_the_meter_back_to_silence() {
+    let mut ballistics = Ballistics::new(MeterType::Iec60268_18, 1, 0.01);
+    ballistics.set_meter(MeterType::DigitalVu);
+    assert_eq!(ballistics.meter(), MeterType::DigitalVu);
+    ballistics.set_meter(MeterType::Iec60268_18);
+    let mut tone = LevelCell::default();
+    tone.peaks[0] = 0.5;
+    tone.squares[0] = 0.125;
+    ballistics.push(&tone);
+    assert!(ballistics.shown(0).bar > -7.0);
+    ballistics.reset();
+    let shown = ballistics.shown(0);
+    assert_eq!(shown.bar, f64::NEG_INFINITY);
+    assert_eq!(shown.peak, Some(f64::NEG_INFINITY));
+}

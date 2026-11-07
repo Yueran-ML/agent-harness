@@ -388,6 +388,15 @@ fn the_table_holds_the_eleven_of_resolve_then_the_presets() {
         numbers("aes-streaming-dialogue"),
         (Some(-18.0), None, Some(-1.0))
     );
+    assert_eq!(numbers("youtube"), (Some(-14.0), None, Some(-1.0)));
+    assert_eq!(numbers("web-video"), (Some(-14.0), None, Some(-1.0)));
+    for disney in ["disney-2.0", "disney-5.1"] {
+        assert_eq!(
+            numbers(disney),
+            (Some(-24.0), Some(2.0), Some(-2.0)),
+            "{disney}"
+        );
+    }
     assert_eq!(numbers("bs1770-4"), (None, None, None));
     assert_eq!(by_id("bs1770-1").unwrap().measure, Measure::Ungated);
     assert!(STANDARDS

@@ -1,5 +1,10 @@
-import type { AutomationParameter, Lane, LanePoint, LanesOf, Time, Timeline } from '../engine';
+import type { AutomationParameter, AutomationSetting, Lane, LanePoint, LanesOf, Time, Timeline } from '../engine';
 export interface AutomationTarget { of: LanesOf; path: string }
+/** A setting as the engine names it, as a target of automation. */
+export const settingTarget = (setting: AutomationSetting): AutomationTarget => ({
+  of: 'track' in setting ? { track: setting.track } : 'bus' in setting ? { bus: setting.bus } : { vca: setting.vca },
+  path: setting.path,
+});
 export const ownerKey = (of: LanesOf): string => 'track' in of ? `track:${of.track}` : 'bus' in of ? `bus:${of.bus}` : `vca:${of.vca}`;
 export function ownerOf(key: string): LanesOf { const [kind, ...id] = key.split(':'); return { [kind]: id.join(':') } as LanesOf; }
 export const sampleTime = (sample: number, rate: number): Time => ({ ticks: Math.max(0, Math.round(sample)), scale: rate });

@@ -56,7 +56,8 @@ function engine(parameters: AutomationParameter[] = [parameter('fader_db')]) {
   return vi.fn(async (method: string, params?: any): Promise<EngineAnswer> => ({
     ok: true,
     result: method === 'automation.parameters' ? { revision: 7, of: params.of, parameters }
-      : method === 'automation.punch' || method === 'automation.punch_out' ? { lanes: 3 }
+      : method === 'automation.punch' ? { lanes: 3, settings: (params?.of ?? []).flatMap((of: object) => parameters.map(p => ({ ...of, path: p.path }))) }
+        : method === 'automation.punch_out' ? { lanes: 3 }
         : method === 'audio.eq_response' ? { revision: 7, sample_rate: 48000, frequencies: params.frequencies, gain_db: params.frequencies.map(() => 0) }
           : method === 'audio.dynamics_curve' ? { revision: 7, inputs_db: params.inputs_db, outputs_db: params.inputs_db }
             : { revision: 8, done: [] },
@@ -191,4 +192,31 @@ it('overlays the fader lanes of the VCAs of a track and of their VCAs, each once
   lanes(t, [{ of: { track: 'a1' }, path: 'fader_db', lanes: {} }]);
   await settle();
   expect(document.querySelectorAll('.automation-vca-line')).toHaveLength(2);
+});
+
+it('keeps one point of the new curve for each column of pixels', async () => {
+  const t = song({ touch: 'latch' });
+  const call = engine(), bridge = { call };
+  function Touch() {
+    const touch = useAutomationTouch()!;
+    return <button onClick={() => touch.start({ of: { track: 'a1' }, path: 'fader_db' }, -20)}>touch</button>;
+  }
+  // A hundredth of a pixel for each frame: 300 frames in three columns.
+  const ui = (frame: number) => <AutomationTouchProvider bridge={bridge} session={1} timeline={t} enabled recording playing
+    show={() => {}} onFailure={error => { throw error; }}>
+    <Touch />
+    <AudioPlayhead.Provider value={frame}>
+      <AutomationLane bridge={bridge as never} session={1} revision={7} timeline={t} of={{ track: 'a1' }} lanes={{}} scale={0.01}
+        from={0} to={10000} height={128} snapping={false} marks={() => ({ in: null, out: null })} path="fader_db" pencil={false}
+        onPath={() => {}} onEdit={() => {}} name="a1" />
+    </AudioPlayhead.Provider>
+  </AutomationTouchProvider>;
+  const s = render(ui(0));
+  await settle();
+  fireEvent.click(screen.getByText('touch'));
+  await settle();
+  for (let frame = 1; frame <= 300; frame++)
+    s.rerender(ui(frame));
+  const points = document.querySelector('.automation-trail')!.getAttribute('points')!.split(' ');
+  expect(points.length).toBeLessThanOrEqual(5);
 });

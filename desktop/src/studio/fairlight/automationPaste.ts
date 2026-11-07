@@ -6,24 +6,27 @@ import { ownerKey, ownerOf } from './automation';
 export const isLevelPath = (path: string) => path === 'fader_db' || /^send\.[^.]+\.level_db$/.test(path);
 
 /**
- * The levels that the automation clipboard may be pasted to on the selected tracks and buses
- * (those of the first, or of every audio track and bus where none is selected): the fader, and
- * each send's level.
+ * The levels that the automation clipboard may be pasted to on the selected tracks and buses:
+ * the fader, and the level of each send that all of them have (of any audio track or bus, where
+ * none is selected).
  */
 export function levelPathsOf(timeline: Timeline, selected: readonly string[]): string[] {
   const owners = selected.length ? selected.map(ownerOf) : [
     ...timeline.tracks.filter(track => track.kind === 'audio').map(track => ({ track: track.id })),
     ...(timeline.buses ?? []).map(bus => ({ bus: bus.id })),
   ];
-  const sends = new Set<string>();
-  for (const of of owners) {
+  const levels = owners.map(of => {
     const strip = 'track' in of
       ? (timeline.tracks.find(track => track.kind === 'audio' && track.id === of.track) as ClipTrack | undefined)?.strip
       : 'bus' in of ? timeline.buses?.find(bus => bus.id === of.bus)?.strip : undefined;
-    for (const send of strip?.sends ?? [])
-      sends.add(`send.${send.bus}.level_db`);
-  }
-  return ['fader_db', ...[...sends].sort()];
+    return new Set((strip?.sends ?? []).map(send => `send.${send.bus}.level_db`));
+  });
+  // Pasted to the selected tracks, a send level only where every one of them has it; with
+  // nothing selected, each lane goes back to its own track, so any send level is offered.
+  const sends = selected.length
+    ? [...(levels[0] ?? [])].filter(path => levels.every(set => set.has(path)))
+    : [...new Set(levels.flatMap(set => [...set]))];
+  return ['fader_db', ...sends.sort()];
 }
 
 /**

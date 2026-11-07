@@ -259,7 +259,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `transport.*` | see The transport | |
 | `automation.record` | `{"timeline": "t1", "on": true, "glide_ms"?: 250}` | `{"on": true, "glide_ms": 250, "pending": 0, "read": false}` (see Recording automation) |
 | `automation.touch` | `{"timeline": "t1", "track" \| "bus" \| "vca": "A1", "path": "fader_db", "value": -6.0, "touching": true}` | `{}`, at once (see Recording automation) |
-| `automation.punch` | `{"timeline": "t1", "of"?: [{"track" \| "bus" \| "vca": id}]}` | `{"lanes": n}` (Punch In; see Recording automation) |
+| `automation.punch` | `{"timeline": "t1", "of"?: [{"track" \| "bus" \| "vca": id}]}` | `{"lanes": n, "settings": [{"track" \| "bus" \| "vca": id, "path": path}]}` (Punch In; see Recording automation) |
 | `automation.punch_out` | `{"timeline": "t1", "of"?: [{"track" \| "bus" \| "vca": id}]}` | `{"lanes": n}` (Punch Out, T23; see Recording automation) |
 | `automation.all_read` | `{"timeline": "t1"}` | `{"read": bool}` (All Read, T16b; see Recording automation) |
 | `automation.join` | `{"timeline": "t1"}` | `{"lanes": n, "at": time \| null}` (Join Mix, T16b; see Recording automation) |
@@ -2563,7 +2563,7 @@ under way and what Preview kept unwritten, and lets go of what is held.
     under Preview writes all that is kept of `timeline` (of the tracks, buses and VCAs `of`
     only, where they are named: what is kept of the others stays kept) as one transaction (Punch
     In, p. 3908) and answers how many lanes it gave to be written (0 where none of that timeline
-    were kept); turning recording off, loading a timeline, or a pass of another timeline, lets
+    were kept) and their settings; turning recording off, loading a timeline, or a pass of another timeline, lets
     go of what was kept. The
     offsets of a Trim kept by several passes are each of the lane as it was before all of them
     (as they were heard, nothing being written in between), the later taking the place of the
@@ -2572,19 +2572,24 @@ under way and what Preview kept unwritten, and lets go of what is held.
   Write every setting that a lane may be of of each track, bus and VCA of `of` (`[{track|bus|vca:
   id}]`), of a category that is on (not one of an owner that is not there, Safe or Off, nor of
   a track that is locked): from the sample heard where a pass is under way, or else from where
-  the next pass begins, each is touched at its value there (its lane's where it plays one, or as
-  it is set; a fader under Trim by 0 dB) and written on as `latch` writes, whatever the `touch`
-  and the Automation Arm, to the stop of that pass (by its `on_stop`), once: Write is asked for
-  again for the next pass. A setting being written already is left as it is. One that is not
-  moved after it was put into Write, and has no lane (or is a fader under Trim), changes nothing
-  and is not written. Answers how many settings it put into Write (0 where recording is off).
-  Without `of` and without Preview, it writes what was kept, as above. A Punch In turns All Read
-  off.
+  the next pass begins, to the stop of that pass (by its `on_stop`), once (Write is asked for
+  again for the next pass), what is touched of each is written as `latch` writes, whatever the
+  `touch` and the Automation Arm, and each is touched at its value there as it is heard (where a
+  touch holds it, its last value; else its lane's where it plays one with points; else as it is
+  set) and written on. Under `trim`, only the fader is (by 0 dB): the rest is written only where
+  it is touched (to be confirmed by the author). A setting being written already is left as it
+  is, and what was written of it before the Punch In stays written. One that is not moved after
+  it was put into Write, and has no lane (or is a fader under Trim), changes nothing and is not
+  written. Answers how many settings it put into Write, and which (`settings`, each `{track|bus|
+  vca: id, path}`; none where recording is off). Without `of` and without Preview, it writes
+  what was kept, as above. A Punch In turns All Read off; All Read cancels one that has not
+  begun.
 - **`automation.punch_out`** `{timeline, of?}` (Punch Out, p. 3913; T23) puts back to Read each
   setting of the tracks, buses and VCAs `of` (of every one where it is not given), at the sample
   heard where the timeline plays: what is written of them ends there, as at the end of the
-  Active Range (the lane given back over 10 ms; each is let go of, so that a client sends no
-  release for it, and what is touched of it next is written again as the `touch` says), what a
+  Active Range (the lane given back over 10 ms; each is let go of: what a client that held it
+  sends of that touch, its release included, is passed over, and what is touched of it next is
+  written again as the `touch` and the Automation Arm say, as before the Punch In), what a
   Punch In put into Write of them and has not begun to write is dropped, what Preview kept of them to be punched in, and what it holds of them, is
   let go of unwritten, and every value held live of them is let go of over 10 ms. Answers how many
   settings it put back to Read. Unlike All Read, it does not stop what is touched afterwards

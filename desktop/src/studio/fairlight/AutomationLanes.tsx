@@ -157,15 +157,23 @@ function RecordingTrail({ target, lane, parameter, timeline, x, y }: {
       trail.current = [];
       return;
     }
-    const last = trail.current.at(-1);
-    if (last && current.sample < last.sample)
+    let last = trail.current.at(-1);
+    if (last && current.sample < last.sample) {
       trail.current = [];
-    if (!last || last.sample !== current.sample || last.value !== current.value)
+      last = undefined;
+    }
+    if (last && last.sample === current.sample && last.value === current.value)
+      return;
+    // One point for each column of pixels after the first: the last heard there.
+    if (last && trail.current.length > 1 && Math.floor(x(last.sample)) === Math.floor(x(current.sample)))
+      trail.current[trail.current.length - 1] = current;
+    else
       trail.current.push(current);
   });
   if (!current)
     return null;
-  const points = [...trail.current.filter(point => point.sample <= current.sample), current];
+  const kept = trail.current.filter(point => point.sample <= current.sample), end = kept.at(-1);
+  const points = end && end.sample === current.sample && end.value === current.value ? kept : [...kept, current];
   const drawn = points.map((point, index) => {
     const step = parameter.kind === 'switch' && index ? `${x(point.sample)},${y(points[index - 1].value)} ` : '';
     return `${step}${x(point.sample)},${y(point.value)}`;

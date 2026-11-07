@@ -140,7 +140,8 @@ export function useTrackChoice({ selected, onTracks, onTrack }: {
     const id = event.target.closest('.timeline-track-header')?.closest<HTMLElement>('.timeline-track[data-track]')?.dataset.track;
     if (id) choose(between(event.target, start, id));
   }, []);
-  const pointerUp = useCallback(() => { sweep.current = null; }, []);
+  // A press taken here that the timeline did not see (a lane stopped it) is forgotten as it ends.
+  const pointerUp = useCallback(() => { sweep.current = null; taken.current = false; }, []);
   /** What the timeline is told of a press: passed on unless the press was taken here. */
   const trackSelect = useCallback((id: string) => {
     if (taken.current) { taken.current = false; return; }

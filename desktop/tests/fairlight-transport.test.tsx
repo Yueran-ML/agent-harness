@@ -108,6 +108,30 @@ it('goes through the shuttle speeds, past 8 by moving the playhead silently, unt
   expect(playing.run).toHaveBeenLastCalledWith({ method: 'transport.play', params: { speed: -8 } });
 });
 
+it('ends a shuttle on a key that another listener took, and toggles Loop once for a held Ctrl+/', async () => {
+  vi.useFakeTimers();
+  const bridge = engine(), playing = controls({ playing: true, speed: 8 });
+  const mounted = render(<FairlightTransport bridge={bridge} session={1} monitor={controls()} marks={{ in: null, out: null }} onMark={() => {}} onFailure={() => {}} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Fast Forward' }));
+  mounted.rerender(<FairlightTransport bridge={bridge} session={1} monitor={playing} marks={{ in: null, out: null }} onMark={() => {}} onFailure={() => {}} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Fast Forward' }));
+  expect(screen.getByText('24×')).toBeTruthy();
+  // K taken (and prevented) by the studio's keys first: the shuttle ends all the same.
+  const taken = (event: KeyboardEvent) => event.preventDefault();
+  window.addEventListener('keydown', taken, { capture: true });
+  fireEvent.keyDown(document.body, { key: 'k', code: 'KeyK' });
+  window.removeEventListener('keydown', taken, { capture: true });
+  act(() => { vi.advanceTimersByTime(1000); });
+  expect(vi.mocked(playing.seek)).not.toHaveBeenCalled();
+  expect(screen.queryByText('24×')).toBeNull();
+  // Held, Ctrl+/ repeats: Loop is toggled once.
+  fireEvent.keyDown(document.body, { key: '/', code: 'Slash', ctrlKey: true });
+  fireEvent.keyDown(document.body, { key: '/', code: 'Slash', ctrlKey: true, repeat: true });
+  fireEvent.keyDown(document.body, { key: '/', code: 'Slash', ctrlKey: true, repeat: true });
+  await act(async () => { await Promise.resolve(); });
+  expect(calls(bridge, 'transport.loop')).toEqual([{ monitor: 'timeline', on: true }]);
+});
+
 it('goes to a timecode typed after = or a keypad digit, and not for one that is not', () => {
   const monitor = controls();
   render(<FairlightTransport bridge={engine()} session={1} monitor={monitor} marks={{ in: null, out: null }} onMark={() => {}} onFailure={() => {}} />);

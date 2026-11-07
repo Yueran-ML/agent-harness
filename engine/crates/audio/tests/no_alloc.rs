@@ -211,7 +211,9 @@ fn ten_seconds_of_a_session_of_sixteen_tracks_take_no_memory_on_the_threads_of_t
         hz: 440.0,
         amplitude: 0.3,
     };
-    let mut sim = Sim::of(&project, 4800, tone);
+    // Heard through the monitor's level, mute and DIM, which move over 10 ms (T20b).
+    let gain = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0.5_f32.to_bits()));
+    let mut sim = Sim::of(&project, 4800, tone).monitored(std::sync::Arc::clone(&gain));
     let (a5, a3, a7, vca) = (
         Owner::Track("A5".into()),
         Owner::Track("A3".into()),
@@ -269,6 +271,11 @@ fn ten_seconds_of_a_session_of_sixteen_tracks_take_no_memory_on_the_threads_of_t
                     sim.glide(&vca, "fader_db", value, 2_400);
                 }
                 _ => {}
+            }
+            // The monitor muted, dimmed and brought back.
+            if tick % 50 == 0 {
+                let level: f32 = [0.0, 0.1, 1.0, 0.5][tick / 50 % 4];
+                gain.store(level.to_bits(), std::sync::atomic::Ordering::Relaxed);
             }
             sim.device_run();
         });

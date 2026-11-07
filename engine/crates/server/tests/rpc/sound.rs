@@ -925,11 +925,17 @@ async fn the_monitor_keeps_what_is_left_out_and_refuses_a_level_over_0() {
         .result("audio.monitor", Some(json!({"level": -12, "dim": true})))
         .await;
     assert_eq!(dimmed, json!({"mute": false, "level": -12.0, "dim": true}));
-    let muted = client.result("audio.monitor", Some(json!({"mute": true}))).await;
+    let muted = client
+        .result("audio.monitor", Some(json!({"mute": true})))
+        .await;
     assert_eq!(muted, json!({"mute": true, "level": -12.0, "dim": true}));
-    let silent = client.result("audio.monitor", Some(json!({"level": null}))).await;
+    let silent = client
+        .result("audio.monitor", Some(json!({"level": null})))
+        .await;
     assert_eq!(silent["level"], Value::Null);
-    let refused = client.error("audio.monitor", Some(json!({"level": 3}))).await;
+    let refused = client
+        .error("audio.monitor", Some(json!({"level": 3})))
+        .await;
     assert_eq!(refused["code"], -32602, "{refused}");
     assert_eq!(refused["data"]["reason"], "level", "{refused}");
     // Not of the project: nothing to undo.

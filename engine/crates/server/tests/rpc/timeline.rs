@@ -487,14 +487,24 @@ async fn timeline_plays_a_range_to_its_end_and_round_again_where_it_loops() {
         assert_eq!(refused["data"]["reason"], reason, "{refused}");
     }
     let refused = client
-        .error("transport.loop", Some(json!({"monitor":"source", "on":true})))
+        .error(
+            "transport.loop",
+            Some(json!({"monitor":"source", "on":true})),
+        )
         .await;
     assert_eq!(refused["data"]["reason"], "monitor", "{refused}");
     client.take_notifications();
-    action(&mut client, "transport.play_range", json!({"from":10, "to":16})).await;
+    action(
+        &mut client,
+        "transport.play_range",
+        json!({"from":10, "to":16}),
+    )
+    .await;
     client
         .until_state("the range plays", |s| {
-            s["monitor"] == "timeline" && s["playing"] == true && s["range"] == json!({"from":10, "to":16})
+            s["monitor"] == "timeline"
+                && s["playing"] == true
+                && s["range"] == json!({"from":10, "to":16})
         })
         .await;
     let (stopped, _) = client
@@ -506,9 +516,16 @@ async fn timeline_plays_a_range_to_its_end_and_round_again_where_it_loops() {
     assert!(stopped.get("range").is_none(), "{stopped}");
     action(&mut client, "transport.loop", json!({"on":true})).await;
     client
-        .until_state("loop on", |s| s["monitor"] == "timeline" && s["loop"] == true)
+        .until_state("loop on", |s| {
+            s["monitor"] == "timeline" && s["loop"] == true
+        })
         .await;
-    action(&mut client, "transport.play_range", json!({"from":10, "to":16})).await;
+    action(
+        &mut client,
+        "transport.play_range",
+        json!({"from":10, "to":16}),
+    )
+    .await;
     client
         .until_state("near its end", |s| {
             s["monitor"] == "timeline" && s["playing"] == true && s["frame"].as_i64() >= Some(14)
@@ -523,7 +540,9 @@ async fn timeline_plays_a_range_to_its_end_and_round_again_where_it_loops() {
     assert_eq!(round["range"], json!({"from":10, "to":16}), "{round}");
     action(&mut client, "transport.pause", json!({})).await;
     let (paused, _) = client
-        .until_state("paused", |s| s["monitor"] == "timeline" && s["playing"] == false)
+        .until_state("paused", |s| {
+            s["monitor"] == "timeline" && s["playing"] == false
+        })
         .await;
     assert!(paused.get("range").is_none(), "{paused}");
     assert_eq!(paused["loop"], true, "{paused}");

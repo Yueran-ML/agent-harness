@@ -1693,20 +1693,7 @@ impl Worker {
         }
         match action {
             Action::Loop { on } => self.status.looping = on,
-            Action::PlayRange { from, to } => {
-                let from = clock::clamped(from, last);
-                let to = clock::clamped(to, last);
-                if to <= from {
-                    self.tell(true);
-                    return;
-                }
-                self.action(Action::Seek {
-                    frame: from,
-                    scrubbing: false,
-                });
-                self.action(Action::Play { speed: 1 });
-                self.status.range = Some(PlayRange { from, to });
-            }
+            Action::PlayRange { from, to } => self.play_range(from, to, last),
             Action::Play { speed } => {
                 if self.status.playing && self.status.speed == speed {
                     self.tell(true);
@@ -1758,33 +1745,7 @@ impl Worker {
             // A grain of scrubbing is faded out (T18's review).
             Action::Pause if self.playback.scrubbing() => self.end_scrub(true),
             Action::Pause => self.pause(),
-            Action::Seek { frame, scrubbing } => {
-                let resume = self.clock.filter(|_| !scrubbing);
-                // A session of grains of scrubbing plays on through a seek while still: the
-                // grain of the last drag ends as it is (T18).
-                if self.clock.is_some() {
-                    self.pause();
-                }
-                let frame = clock::clamped(frame, last);
-                self.status.frame = Some(frame);
-                self.settle = scrubbing.then(|| Instant::now() + SETTLE);
-                let _ = self.draw(true, scrubbing);
-                if scrubbing {
-                    self.scrub_sound(frame);
-                }
-                if let Some(clock) = resume {
-                    self.prime(frame.saturating_add(i64::from(clock.speed().signum())));
-                    self.clock = Some(Clock::starting(
-                        frame,
-                        clock.speed(),
-                        clock.rate(),
-                        self.now(),
-                    ));
-                    self.fine = Some(crate::timer::Fine::new());
-                    self.status.playing = true;
-                    self.restart_sound();
-                }
-            }
+            Action::Seek { frame, scrubbing } => self.seek(frame, scrubbing, last),
             Action::Step { frames } => {
                 self.pause();
                 self.settle = None;
@@ -1836,8 +1797,10 @@ impl Worker {
                 let _ = self.draw(false, false);
                 self.tell(false);
             }
+            // Each end is a frame played whole: playing goes past it before it stops there, or
+            // goes round.
             let forward = clock.speed() > 0;
-            if (forward && target >= end) || (!forward && target <= start) {
+            if (forward && target > end) || (!forward && target < start) {
                 if self.status.looping && end > start {
                     self.go_round(if forward { start } else { end }, clock);
                 } else {
@@ -1861,6 +1824,53 @@ impl Worker {
             // The pipelines of the grades of the frame shown are made: it is drawn again.
             let _ = self.draw(true, false);
         }
+    }
+
+    /// The playhead put at `frame` (clamped to `last`), as it is dragged where `scrubbing`;
+    /// playing goes on from there where it played and is not scrubbing.
+    fn seek(&mut self, frame: i64, scrubbing: bool, last: i64) {
+        let resume = self.clock.filter(|_| !scrubbing);
+        // A session of grains of scrubbing plays on through a seek while still: the grain of the
+        // last drag ends as it is (T18).
+        if self.clock.is_some() {
+            self.pause();
+        }
+        let frame = clock::clamped(frame, last);
+        self.status.frame = Some(frame);
+        self.settle = scrubbing.then(|| Instant::now() + SETTLE);
+        let _ = self.draw(true, scrubbing);
+        if scrubbing {
+            self.scrub_sound(frame);
+        }
+        if let Some(clock) = resume {
+            self.prime(frame.saturating_add(i64::from(clock.speed().signum())));
+            self.clock = Some(Clock::starting(
+                frame,
+                clock.speed(),
+                clock.rate(),
+                self.now(),
+            ));
+            self.fine = Some(crate::timer::Fine::new());
+            self.status.playing = true;
+            self.restart_sound();
+        }
+    }
+
+    /// Play In to Out: frames `from` to `to` played forward at speed 1, both clamped to `last`;
+    /// nothing where they are then empty.
+    fn play_range(&mut self, from: i64, to: i64, last: i64) {
+        let from = clock::clamped(from, last);
+        let to = clock::clamped(to, last);
+        if to <= from {
+            self.tell(true);
+            return;
+        }
+        self.action(Action::Seek {
+            frame: from,
+            scrubbing: false,
+        });
+        self.action(Action::Play { speed: 1 });
+        self.status.range = Some(PlayRange { from, to });
     }
 
     /// Loop: playing goes on from `frame`, the other end of what it plays, at the same speed;
@@ -3225,6 +3235,46 @@ mod tests {
         ));
     }
 
+    /// Playing at speed 1 from `frame`, started `frames` frames and a half ago.
+    fn played_frames(worker: &mut Worker, frame: i64, frames: i128) {
+        worker.playback.stop();
+        worker.sound.stop();
+        worker.status.sound = Sound::Off;
+        let rate = worker.clock.expect("playing").rate();
+        let nanos =
+            (2 * frames + 1) * clock::NANOS * i128::from(rate.den) / (2 * i128::from(rate.num));
+        worker.clock = Some(Clock::starting(frame, 1, rate, worker.now() - nanos));
+    }
+
+    #[test]
+    fn the_out_frame_of_a_range_is_played_for_as_long_as_the_others() {
+        let mut worker = worker();
+        worker.status.timeline = Some("t1".into());
+        worker.replace(0, Arc::new(Project::sample()));
+        worker.readers.clear();
+        worker.action(Action::PlayRange { from: 10, to: 20 });
+        // Half way through the Out frame: it is shown, and playing goes on.
+        played_frames(&mut worker, 10, 10);
+        worker.tick();
+        assert!(worker.status.playing, "the Out frame is played");
+        assert_eq!(worker.status.frame, Some(20));
+        // Past it: playing stops on it.
+        played_frames(&mut worker, 10, 11);
+        worker.tick();
+        assert!(!worker.status.playing);
+        assert_eq!(worker.status.frame, Some(20));
+        // Looped, each round is as long as the range: 11 frames.
+        worker.action(Action::Loop { on: true });
+        worker.action(Action::PlayRange { from: 10, to: 20 });
+        played_frames(&mut worker, 10, 10);
+        worker.tick();
+        assert_eq!(worker.status.frame, Some(20), "not gone round yet");
+        played_frames(&mut worker, 10, 11);
+        worker.tick();
+        assert!(worker.status.playing);
+        assert_eq!(worker.status.frame, Some(10));
+    }
+
     #[test]
     fn play_in_to_out_stops_at_the_out_point_and_loop_goes_round_to_the_in_point() {
         let mut worker = worker();
@@ -3273,7 +3323,10 @@ mod tests {
         worker.action(Action::PlayRange { from: 5, to: 5 });
         assert!(!worker.status.playing);
         worker.action(Action::Loop { on: false });
-        assert!(serde_json::to_value(&worker.status).unwrap().get("loop").is_none());
+        assert!(serde_json::to_value(&worker.status)
+            .unwrap()
+            .get("loop")
+            .is_none());
     }
 
     #[test]

@@ -1737,12 +1737,15 @@ notification `transport.state`):
 - `loop` (phase 3, T20b): whether playing goes round (Fairlight's Loop, Ctrl+/, p. 3744), as
   `transport.loop` sets it; left out where it does not. Forward, playing that reaches the last
   frame (or the end of the range played) goes on from frame 0 (or the start of the range) at the
-  same speed; backward, from the end to the start. The sound starts again there. It is kept when
-  another timeline is loaded.
+  same speed; backward, from the end to the start. The sound starts again there. While
+  automation is recorded, going round stops the pass as a stop does (what it wrote is one step of
+  undo, and what is held is let go of as at a stop), and the next round is a pass of its own. It
+  is kept when another timeline is loaded.
 - `range` (phase 3, T20b): `{"from":n, "to":n}`, the frames that `transport.play_range` plays
   (Play In to Out, Alt+/, p. 3745), while it plays them; left out otherwise. `transport.play_range`
-  seeks to `from` and plays forward at speed 1; the playhead stays within the range, and playing
-  stops at `to` exactly, or goes round to `from` where `loop` is on. Both ends are clamped to the
+  seeks to `from` and plays forward at speed 1; the playhead stays within the range, and `to`
+  is its last frame, played whole: playing stops on it once past it, or goes round to `from`
+  where `loop` is on. The last frame of the timeline is played whole likewise. Both ends are clamped to the
   timeline; a range that is then empty plays nothing. `transport.play`, `.pause`, `.seek` and
   `.step` end the range. `transport.loop` and `transport.play_range` are of the timeline monitor
   only: with `"monitor":"source"` they are refused with `-32602 {reason:"monitor"}`, and a range
@@ -4837,7 +4840,7 @@ buses go of their peaks (a click on the meters: the only end of Infinite hold).
 (p. 3668): what every output of the engine plays at, never a render, the project or its undo.
 `level` is in dB from −∞ (`null`) to 0 (C-M2; 0 at first), `dim` takes 20 dB more off it while it
 is on (C-M1), and `mute` silences it; the gain moves to a new value over 10 ms. What is left out
-stays; without params it only reads. A level over 0 is `-32602 {reason:"level"}`. It answers the
+stays; with `{}` it only reads. A level over 0 is `-32602 {reason:"level"}`. It answers the
 monitor after the change, `{"mute": false, "level": 0, "dim": false}` at first.
 
 `audio.loudness {timeline, action?}`: `start` (or resume), `pause` (what plays is not heard, what

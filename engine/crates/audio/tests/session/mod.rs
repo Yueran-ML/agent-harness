@@ -428,6 +428,12 @@ impl Sim {
         self.now += 10_000_000;
     }
 
+    /// The session, its device heard at the monitor's gain held in `gain` ([`Player::monitored`]).
+    pub fn monitored(mut self, gain: Arc<std::sync::atomic::AtomicU32>) -> Sim {
+        self.player = self.player.monitored(gain);
+        self
+    }
+
     /// [`Sim::pump`], then [`Sim::device_run`].
     pub fn tick(&mut self) {
         self.pump();

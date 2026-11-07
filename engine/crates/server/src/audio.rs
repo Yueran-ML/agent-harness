@@ -724,14 +724,22 @@ impl Monitor {
         match (self.mute, self.level) {
             (true, _) | (_, None) => 0.0,
             (false, Some(level)) => {
-                let dim = if self.dim { f64::from(columbina_audio::constants::DIM_DB) } else { 0.0 };
+                let dim = if self.dim {
+                    f64::from(columbina_audio::constants::DIM_DB)
+                } else {
+                    0.0
+                };
                 10.0_f64.powf((level + dim) / 20.0) as f32
             }
         }
     }
 }
 
-static MONITOR: Mutex<Monitor> = Mutex::new(Monitor { mute: false, level: Some(0.0), dim: false });
+static MONITOR: Mutex<Monitor> = Mutex::new(Monitor {
+    mute: false,
+    level: Some(0.0),
+    dim: false,
+});
 
 /// The monitor after `change`, which every output then plays at.
 pub fn monitor(change: impl FnOnce(&mut Monitor)) -> Monitor {
@@ -974,7 +982,10 @@ mod tests {
         let at = |mute, level, dim| Monitor { mute, level, dim }.gain();
         assert!((at(false, Some(0.0), false) - 1.0).abs() < 1e-6);
         assert!((at(false, Some(-6.0), false) - 0.501_187).abs() < 1e-6);
-        assert!((at(false, Some(0.0), true) - 0.1).abs() < 1e-6, "C-M1: 20 dB less");
+        assert!(
+            (at(false, Some(0.0), true) - 0.1).abs() < 1e-6,
+            "C-M1: 20 dB less"
+        );
         assert_eq!(at(true, Some(0.0), false), 0.0);
         assert_eq!(at(false, None, false), 0.0);
     }

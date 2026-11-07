@@ -131,6 +131,7 @@ fn read() -> Action {
 /// −∞ (`null`) to 0 (C-M2).
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+#[allow(clippy::option_option, reason = "left out and null are told apart")]
 struct MonitorChange {
     mute: Option<bool>,
     #[serde(default, deserialize_with = "level")]
@@ -139,7 +140,10 @@ struct MonitorChange {
 }
 
 /// A level given, `null` (−∞) among them, apart from one left out.
-fn level<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<Option<f64>>, D::Error> {
+#[allow(clippy::option_option, reason = "left out and null are told apart")]
+fn level<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Option<f64>>, D::Error> {
     Option::<f64>::deserialize(deserializer).map(Some)
 }
 
@@ -348,7 +352,7 @@ pub(super) async fn call(
                 params,
             )?;
             if let Some(Some(level)) = change.level {
-                if !(level <= 0.0) {
+                if level.is_nan() || level > 0.0 {
                     return Err(Fault::params(
                         "the level of the monitor is in dB from -inf (null) to 0",
                     )

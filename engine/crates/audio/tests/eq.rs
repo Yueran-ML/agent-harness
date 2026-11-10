@@ -1423,3 +1423,309 @@ fn the_eq_takes_no_sidechain() {
         .prepare(&Spec::new(RATE, 512, Layout::Stereo).with_sidechain(2))
         .is_err());
 }
+
+// --- What mutation testing found (T26) -------------------------------------------------------
+
+#[test]
+fn a_bell_of_another_q_is_that_of_the_cookbook() {
+    for q in [0.4_f32, 3.0, 8.0] {
+        for gain_db in [12.0_f32, -9.0] {
+            let settings = strip(|s| {
+                s.bands[3].freq = 1_000.0;
+                s.bands[3].gain_db = gain_db;
+                s.bands[3].q = q;
+            });
+            let h = impulse_response(&settings, RATE, 1 << 15);
+            for freq in log_frequencies(50) {
+                let expected = cookbook_peaking_db(
+                    f64::from(RATE),
+                    1_000.0,
+                    f64::from(q),
+                    f64::from(gain_db),
+                    freq,
+                );
+                let measured = gain_at(&h, RATE, freq);
+                assert!(
+                    (measured - expected).abs() <= 0.01,
+                    "Q {q}, {gain_db} dB: {freq} Hz: {measured}, the cookbook {expected}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_shelf_of_another_slope_is_that_of_the_cookbook() {
+    // The EQ makes its shelves of S = 1 only, where the slope falls out of the formula.
+    let rate = f64::from(RATE);
+    for slope in [0.5, 0.8, 1.2] {
+        for gain_db in [12.0, -9.0_f64] {
+            let gain = 10_f64.powf(gain_db / 20.0);
+            let shelves = [
+                (Coefficients::low_shelf(rate, 1_000.0, gain, slope), false),
+                (Coefficients::high_shelf(rate, 1_000.0, gain, slope), true),
+            ];
+            for (shelf, high) in shelves {
+                for freq in log_frequencies(50) {
+                    let expected = cookbook_shelf_db(rate, 1_000.0, gain_db, slope, high, freq);
+                    let measured = 20.0 * shelf.magnitude(rate, freq).log10();
+                    assert!(
+                        (measured - expected).abs() <= 1e-9,
+                        "S {slope}, {gain_db} dB, high {high}: {freq} Hz: {measured}, the cookbook {expected}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The largest difference, over the last 4000 samples of the tone, between the output of an EQ
+/// of `before` under the changes and the lanes of `edit` and that of a new EQ of `after`.
+fn far_from(before: &Settings, after: &Settings, edit: impl FnOnce(Run) -> Run) -> f32 {
+    let input = tone();
+    let expected = process(after, RATE, input.clone());
+    let run = edit(Run::new(vec![input]));
+    let spec = Spec::new(RATE, 512, Layout::Mono);
+    let mut eq = Eq::new(before);
+    eq.prepare(&spec).unwrap();
+    let output = render(&mut eq, &spec, &run, |_| 480).remove(0);
+    let tail = TONE_FRAMES - 4_000;
+    output[tail..]
+        .iter()
+        .zip(&expected[tail..])
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0, f32::max)
+}
+
+/// Checks that `edit` takes an EQ of `before` to the sound of `after`, which is another sound.
+fn reaches(before: &Settings, after: &Settings, edit: impl FnOnce(Run) -> Run) {
+    let apart = far_from(before, after, |run| run);
+    assert!(apart > 0.01, "the two sound the same: {apart}");
+    let left = far_from(before, after, edit);
+    assert!(left <= 1e-4, "{left} from the sound of {after:?}");
+}
+
+/// A strip whose band 3 is a bell of `gain_db` at `freq` of `q`.
+fn bell_of(freq: f32, gain_db: f32, q: f32) -> Settings {
+    strip(|s| {
+        s.bands[3].freq = freq;
+        s.bands[3].gain_db = gain_db;
+        s.bands[3].q = q;
+    })
+}
+
+#[test]
+fn a_gain_a_q_or_a_frequency_set_alone_is_reached() {
+    reaches(
+        &bell_of(1_000.0, 0.0, 1.0),
+        &bell_of(1_000.0, 12.0, 1.0),
+        |run| run.with_change(CHANGE, param(3, Field::Gain), 12.0),
+    );
+    reaches(
+        &bell_of(2_000.0, 12.0, 1.0),
+        &bell_of(2_000.0, 12.0, 8.0),
+        |run| run.with_change(CHANGE, param(3, Field::Q), 8.0),
+    );
+    reaches(
+        &bell_of(2_000.0, 12.0, 1.0),
+        &bell_of(1_000.0, 12.0, 1.0),
+        |run| run.with_change(CHANGE, param(3, Field::Freq), 1_000.0),
+    );
+}
+
+#[test]
+fn the_lanes_of_a_band_and_of_the_gain_are_heard() {
+    let lane = |value: f32| vec![value; TONE_FRAMES];
+    reaches(
+        &bell_of(1_000.0, 0.0, 1.0),
+        &bell_of(1_000.0, 12.0, 1.0),
+        |run| run.with_automation(param(3, Field::Gain), lane(12.0)),
+    );
+    reaches(
+        &bell_of(2_000.0, 12.0, 1.0),
+        &bell_of(1_000.0, 12.0, 1.0),
+        |run| run.with_automation(param(3, Field::Freq), lane(1_000.0)),
+    );
+    reaches(
+        &bell_of(2_000.0, 12.0, 1.0),
+        &bell_of(2_000.0, 12.0, 8.0),
+        |run| run.with_automation(param(3, Field::Q), lane(8.0)),
+    );
+    let mut quieter = bell_of(1_000.0, 12.0, 1.0);
+    quieter.gain_db = -6.0;
+    reaches(&bell_of(1_000.0, 12.0, 1.0), &quieter, |run| {
+        run.with_automation(GAIN, lane(-6.0))
+    });
+}
+
+#[test]
+fn a_lane_of_a_switch_of_the_eq_is_on_from_a_half_up() {
+    let lane = |value: f32| vec![value; TONE_FRAMES];
+    let on = bell_of(1_000.0, 12.0, 1.0);
+    // The EQ.
+    let mut off = on;
+    off.on = false;
+    reaches(&on, &off, |run| run.with_automation(ON, lane(0.49)));
+    reaches(&off, &on, |run| run.with_automation(ON, lane(0.5)));
+    // A band.
+    let mut without = on;
+    without.bands[3].on = false;
+    reaches(&on, &without, |run| {
+        run.with_automation(param(3, Field::On), lane(0.49))
+    });
+    reaches(&without, &on, |run| {
+        run.with_automation(param(3, Field::On), lane(0.5))
+    });
+}
+
+#[test]
+fn a_band_switched_back_in_the_middle_of_its_crossfade_turns_back_at_once() {
+    // Off, and on again half a crossfade later: it is back a crossfade after that, not after
+    // the end of the first crossfade and a whole second one.
+    let settings = bell_of(1_000.0, 12.0, 1.0);
+    let fade = samples(EQ_CROSSFADE, RATE);
+    let input = tone();
+    let steady = process(&settings, RATE, input.clone());
+    let run = Run::new(vec![input])
+        .with_change(CHANGE, param(3, Field::On), 0.0)
+        .with_change(CHANGE + fade / 2, param(3, Field::On), 1.0);
+    let spec = Spec::new(RATE, 512, Layout::Mono);
+    let mut eq = Eq::new(&settings);
+    eq.prepare(&spec).unwrap();
+    let output = render(&mut eq, &spec, &run, |_| 480).remove(0);
+    let middle = CHANGE + fade / 2;
+    assert!(
+        (output[middle] - steady[middle]).abs() > 0.01,
+        "it did not start to fade: {} for {}",
+        output[middle],
+        steady[middle]
+    );
+    for n in CHANGE + 3 * fade / 2 + 2..CHANGE + 2 * fade {
+        assert!(
+            (output[n] - steady[n]).abs() <= 1e-4,
+            "sample {n}: {} for {}",
+            output[n],
+            steady[n]
+        );
+    }
+}
+
+#[test]
+fn the_kinds_say_what_they_have_and_the_bands_what_they_may_be() {
+    use Kind::{Bell, HighPass, HighShelf, LowPass, LowShelf, Notch};
+    for kind in Kind::ALL {
+        assert_eq!(
+            kind.has_gain(),
+            matches!(kind, LowShelf | Bell | HighShelf),
+            "{kind:?}"
+        );
+        assert_eq!(kind.has_q(), matches!(kind, Bell | Notch), "{kind:?}");
+        assert_eq!(
+            kind.has_slope(),
+            matches!(kind, HighPass | LowPass),
+            "{kind:?}"
+        );
+    }
+    let middle = [LowShelf, Bell, Notch, HighShelf];
+    assert_eq!(
+        Variant::Strip.kinds(0),
+        [LowShelf, Bell, HighShelf, HighPass]
+    );
+    assert_eq!(
+        Variant::Strip.kinds(5),
+        [LowPass, LowShelf, Bell, HighShelf]
+    );
+    for band in 1..=4 {
+        assert_eq!(Variant::Strip.kinds(band), middle, "band {band}");
+    }
+    let ends = [HighShelf, HighPass, Bell, Notch, LowPass, LowShelf];
+    assert_eq!(Variant::Clip.kinds(0), ends);
+    assert_eq!(Variant::Clip.kinds(3), ends);
+    assert_eq!(Variant::Clip.kinds(1), middle);
+    assert_eq!(Variant::Clip.kinds(2), middle);
+}
+
+#[test]
+fn the_bands_that_a_clip_does_not_use_are_those_of_a_new_clip_and_no_zone_is_minus_one() {
+    let mut settings = clip(|_| {});
+    for band in 4..MAX_BANDS {
+        settings.bands[band] = Band {
+            gain_db: 9.0,
+            ..Band::new(true, Kind::Notch, 5_000.0, None)
+        };
+    }
+    let sanitized = settings.sanitized();
+    assert_eq!(sanitized.bands[4..], Settings::clip().bands[4..]);
+    assert_eq!(sanitized.bands[..4], settings.bands[..4]);
+    let params = settings.params();
+    for band in 0..4 {
+        let zone = params
+            .iter()
+            .find(|(id, _)| *id == param(band, Field::Zone))
+            .map(|(_, value)| *value);
+        assert_eq!(zone, Some(-1.0), "band {band}");
+    }
+}
+
+#[test]
+fn the_settling_is_two_crossfades_the_ramps_of_a_lane_and_the_decay_of_each_band() {
+    let settings = clip(|s| {
+        s.bands[0].kind = Kind::Bell;
+        s.bands[3].kind = Kind::Bell;
+    });
+    let rate = f64::from(RATE);
+    let ramp = samples(columbina_audio::constants::SMOOTHING, RATE);
+    let mut expected = 2 * samples(EQ_CROSSFADE, RATE) as u64 + LANE_SETTLE * ramp as u64;
+    for band in settings.bands() {
+        let bell = Coefficients::peaking(rate, f64::from(band.freq), f64::from(band.q), 1.0);
+        expected += u64::from(bell.decay(1e-6));
+    }
+    assert_eq!(u64::from(settle_for(&settings, RATE)), expected);
+}
+
+/// A filter of the real poles `first` and `second`.
+fn of_poles(first: f64, second: f64) -> Coefficients {
+    Coefficients {
+        b0: 1.0,
+        b1: 0.0,
+        b2: 0.0,
+        a1: -(first + second),
+        a2: first * second,
+    }
+}
+
+#[test]
+fn the_radius_is_that_of_the_larger_pole_and_a_filter_that_does_not_decay_says_so() {
+    let cases = [
+        (0.9, 0.5, 0.9),
+        (-0.9, -0.5, 0.9),
+        (0.9, -0.5, 0.9),
+        (-0.9, 0.5, 0.9),
+        (0.7, 0.0, 0.7),
+        (-0.7, 0.0, 0.7),
+    ];
+    for (first, second, larger) in cases {
+        let radius = of_poles(first, second).pole_radius();
+        assert!(
+            (radius - larger).abs() < 1e-12,
+            "{first} and {second}: {radius}"
+        );
+    }
+    // A pair of poles of size 0.8 at a quarter of the rate.
+    let pair = Coefficients {
+        a1: 0.0,
+        a2: 0.64,
+        ..of_poles(0.0, 0.0)
+    };
+    assert!((pair.pole_radius() - 0.8).abs() < 1e-12);
+    assert_eq!(of_poles(0.5, 0.25).decay(1e-6), 20);
+    assert_eq!(of_poles(1e-7, 0.0).decay(1e-6), 1);
+    // On the circle, outside it, and not a number.
+    let on_the_circle = Coefficients {
+        a2: 1.0,
+        ..of_poles(0.0, 0.0)
+    };
+    assert_eq!(on_the_circle.decay(1e-6), u32::MAX);
+    assert_eq!(of_poles(1.1, 0.5).decay(1e-6), u32::MAX);
+    assert_eq!(of_poles(f64::NAN, 0.5).decay(1e-6), u32::MAX);
+}

@@ -11,7 +11,9 @@
     reason = "the numbers of tests"
 )]
 
-use columbina_audio::constants::{DYNAMICS_HOLD_BIN, DYNAMICS_TIME_CONSTANT_FRACTION};
+use columbina_audio::constants::{
+    DYNAMICS_HOLD_BIN, DYNAMICS_TIME_CONSTANT_FRACTION, MAX_CHANNELS,
+};
 use columbina_audio::fx::dynamics::{
     compressor_gain_db, curve, expander_gain_db, gate_gain_db, limiter_gain_db, mixed_gain_db,
     Dynamics, Param, Settings, PARAMS,
@@ -1302,7 +1304,8 @@ fn a_release_changed_while_it_plays_is_the_new_one() {
         s.compressor.hold_ms = 0.0;
         s.compressor.release_ms = 1000.0;
     });
-    let input = steps(&[(-40.0, 0.5), (-5.0, 1.0), (-40.0, 1.0)]);
+    // A first release before the change, so that the time of the release is already in use.
+    let input = steps(&[(-5.0, 0.3), (-40.0, 0.4), (-5.0, 0.8), (-40.0, 1.0)]);
     let spec = Spec::new(RATE, 512, Layout::Mono);
     let run = Run::new(vec![input.clone()]).with_change(
         ms(1000.0),
@@ -1322,4 +1325,466 @@ fn a_release_changed_while_it_plays_is_the_new_one() {
         release.abs_diff(ms(100.0)) <= ms(100.0) / 20,
         "release {release}"
     );
+}
+
+// --- What mutation testing found, the second round (T26) --------------------------------------
+
+fn mono_spec() -> Spec {
+    Spec::new(RATE, 512, Layout::Mono)
+}
+
+/// The gain, dB, of the first channel of `run`, `after` ms after `param` is set to `value` before
+/// the sample `at`.
+fn gain_after(
+    settings: &Settings,
+    spec: &Spec,
+    run: &Run,
+    at: usize,
+    (param, value): (Param, f32),
+    after: f64,
+) -> f64 {
+    let run = run.clone().with_change(at, param.id(), value);
+    let output = process(settings, spec, &run).remove(0);
+    gains(&run.input[0], &output)[at + ms(after) - 1]
+}
+
+#[test]
+fn a_module_switched_off_fades_out_over_10_ms() {
+    // 2 ms after the switch its weight is 0.8: of the dB of a module, of the gain of the whole.
+    let at = ms(500.0);
+    let spec = mono_spec();
+    let loud = Run::new(vec![level(-5.0, ms(600.0))]);
+    let quiet = Run::new(vec![level(-45.0, ms(600.0))]);
+    let compressor = on(|s| s.compressor.on = true);
+    let gain = gain_after(
+        &compressor,
+        &spec,
+        &loud,
+        at,
+        (Param::CompressorOn, 0.0),
+        2.0,
+    );
+    assert!((gain - 0.8 * -5.0).abs() < 0.05, "the compressor: {gain}");
+    let expander = on(|s| {
+        s.expander.on = true;
+        s.expander.ratio = 2.0;
+    });
+    let gain = gain_after(&expander, &spec, &quiet, at, (Param::ExpanderOn, 0.0), 2.0);
+    assert!((gain - 0.8 * -10.0).abs() < 0.05, "the expander: {gain}");
+    let limiter = on(|s| s.limiter.on = true);
+    let gain = gain_after(&limiter, &spec, &loud, at, (Param::LimiterOn, 0.0), 2.0);
+    assert!((gain - 0.8 * -16.0).abs() < 0.05, "the limiter: {gain}");
+    let gain = gain_after(&compressor, &spec, &loud, at, (Param::On, 0.0), 2.0);
+    let faded = 20.0 * (0.2 + 0.8 * f64::from(amplitude(-5.0))).log10();
+    assert!((gain - faded).abs() < 0.05, "dynamics: {gain}, not {faded}");
+}
+
+/// A loud level for 0.3 s, then `quiet` dBFS: the gain 20 ms after `param` is switched on at
+/// 0.8 s. With a `lane`, that parameter is automated at the value set, so that the block is
+/// worked through while Dynamics is off.
+fn woken_after_loud(settings: &Settings, quiet: f64, param: Param, lane: Option<Param>) -> f64 {
+    let mut run = Run::new(vec![steps(&[(-6.0, 0.3), (quiet, 0.7)])]);
+    if let Some(lane) = lane {
+        let values = vec![settings.value(lane); run.frames];
+        run = run.with_automation(lane.id(), values);
+    }
+    gain_after(settings, &mono_spec(), &run, ms(800.0), (param, 1.0), 20.0)
+}
+
+#[test]
+fn a_module_switched_on_does_not_remember_what_it_did_not_hear() {
+    // The loud level went by half a second before, while the module was off: with the slowest
+    // release a module that had heard it would still hold most of its gain.
+    let compressor = on(|s| s.compressor.release_ms = 4000.0);
+    let gain = woken_after_loud(&compressor, -40.0, Param::CompressorOn, None);
+    assert!(gain.abs() < 0.05, "the compressor: {gain}");
+    let limiter = on(|s| s.limiter.release_ms = 4000.0);
+    let gain = woken_after_loud(&limiter, -40.0, Param::LimiterOn, None);
+    assert!(gain.abs() < 0.05, "the limiter: {gain}");
+    // The Expander is at once where the quiet level puts it: 10 dB under a threshold of −35.
+    let expander = on(|s| {
+        s.expander.ratio = 2.0;
+        s.expander.release_ms = 4000.0;
+    });
+    let gain = woken_after_loud(&expander, -45.0, Param::ExpanderOn, None);
+    assert!((gain - -10.0).abs() < 0.05, "the expander: {gain}");
+    // Dynamics itself, off while a lane moves through it.
+    let mut whole = compressor;
+    whole.on = false;
+    whole.compressor.on = true;
+    let gain = woken_after_loud(&whole, -40.0, Param::On, Some(Param::CompressorRatio));
+    assert!(gain.abs() < 0.05, "dynamics: {gain}");
+}
+
+#[test]
+fn a_module_woken_in_the_dip_of_a_wave_starts_from_the_gain_of_its_peaks() {
+    // 100 Hz at −6 dBFS, the Compressor switched on where the wave crosses zero, attacking in
+    // 100 ms: it starts from the 4 dB of the peak that has fallen 1 dB, not from none.
+    let input = sine(RATE, 100.0, amplitude(-6.0), ms(600.0));
+    let settings = on(|s| {
+        s.compressor.attack_ms = 100.0;
+        s.compressor.release_ms = 4000.0;
+    });
+    let at = ms(500.0);
+    assert!(input[at].abs() < 1e-6);
+    let run = Run::new(vec![input.clone()]).with_change(at, Param::CompressorOn.id(), 1.0);
+    let output = process(&settings, &mono_spec(), &run).remove(0);
+    // A peak of the wave, 22.5 ms later.
+    let peak = at + 1080;
+    assert!((input[peak].abs() - amplitude(-6.0)).abs() < 1e-6);
+    let gain = gains(&input, &output)[peak];
+    assert!(gain < -3.5 && gain > -4.6, "{gain}");
+}
+
+#[test]
+fn a_module_woken_by_a_level_over_full_scale_starts_from_its_gain() {
+    // +12 dBFS: 13.5 dB at once, not the 7.5 dB of 0 dBFS attacked from.
+    let settings = on(|s| s.compressor.attack_ms = 100.0);
+    let run = Run::new(vec![level(12.0, ms(600.0))]);
+    let switched = (Param::CompressorOn, 1.0);
+    let gain = gain_after(&settings, &mono_spec(), &run, ms(500.0), switched, 20.0);
+    assert!((gain - -13.5).abs() < 0.05, "{gain}");
+}
+
+#[test]
+fn an_infinite_sample_is_forgotten_by_what_wakes_a_module() {
+    // It is heard as +200 dBFS and falls 400 dB a second: 1.2 s later a quiet level is all that
+    // a module switched on hears.
+    let mut input = level(-40.0, ms(1500.0));
+    input[ms(100.0)] = f32::INFINITY;
+    let settings = on(|s| s.compressor.release_ms = 4000.0);
+    let run = Run::new(vec![input]);
+    let switched = (Param::CompressorOn, 1.0);
+    let gain = gain_after(&settings, &mono_spec(), &run, ms(1300.0), switched, 20.0);
+    assert!(gain.abs() < 0.05, "{gain}");
+}
+
+/// An Expander/Gate over −40 dBFS, 5 dB under its threshold: expanding it gives −5 dB, gating
+/// −40.
+fn under_the_threshold(gate: bool) -> Settings {
+    on(move |s| {
+        s.expander.on = true;
+        s.expander.gate = gate;
+        s.expander.ratio = 2.0;
+        s.expander.range_db = 40.0;
+        s.expander.attack_ms = 100.0;
+        s.expander.release_ms = 1000.0;
+    })
+}
+
+#[test]
+fn the_gate_and_the_expander_start_from_each_other_and_cross_fade() {
+    let at = ms(500.0);
+    let spec = mono_spec();
+    let run = Run::new(vec![level(-40.0, ms(600.0))]);
+    // Expander to Gate: the gate starts at the −5 dB of the expander and shuts in its release,
+    // 0.7 dB in 20 ms; one that had run all along would be far down.
+    let to_gate = (Param::ExpanderMode, 1.0);
+    let gain = gain_after(&under_the_threshold(false), &spec, &run, at, to_gate, 20.0);
+    assert!(gain < -5.0 && gain > -6.5, "to the gate: {gain}");
+    // Gate to Expander: the expander starts at the −40 dB of the gate and opens in its attack;
+    // 2 ms later, a weight of 0.8 of the gate and 0.2 of the expander, both are still there.
+    let to_expander = (Param::ExpanderMode, 0.0);
+    let gain = gain_after(
+        &under_the_threshold(true),
+        &spec,
+        &run,
+        at,
+        to_expander,
+        2.0,
+    );
+    assert!(gain < -39.0 && gain > -40.5, "to the expander: {gain}");
+}
+
+/// [`keyed`], releasing in a second, the sidechain on or off.
+fn keying(sidechain: bool) -> Settings {
+    let mut settings = keyed();
+    settings.compressor.sidechain = sidechain;
+    settings.compressor.release_ms = 1000.0;
+    settings
+}
+
+#[test]
+fn the_compressor_of_its_own_sound_and_the_keyed_one_start_from_each_other_and_cross_fade() {
+    let at = ms(500.0);
+    let frames = ms(600.0);
+    let spec = mono_spec().with_sidechain(1);
+    // A loud sound and a silent key: the sidechain switched on, the keyed compressor starts at
+    // the 18.75 dB of the other and releases, 0.4 dB in 20 ms.
+    let run = Run::new(vec![level(-5.0, frames)]).with_sidechain(vec![vec![0.0; frames]]);
+    let gain = gain_after(
+        &keying(false),
+        &spec,
+        &run,
+        at,
+        (Param::SidechainOn, 1.0),
+        20.0,
+    );
+    assert!(gain < -18.0 && gain > -18.75, "keyed: {gain}");
+    // A quiet sound and a loud key: the sidechain switched off, the compressor of its own sound
+    // starts at the 18.75 dB of the keyed one; 2 ms later both are there, 20 ms later it alone.
+    let run = Run::new(vec![level(-40.0, frames)]).with_sidechain(vec![level(-5.0, frames)]);
+    let off = (Param::SidechainOn, 0.0);
+    let gain = gain_after(&keying(true), &spec, &run, at, off, 2.0);
+    assert!(gain < -18.6 && gain > -18.8, "both: {gain}");
+    let gain = gain_after(&keying(true), &spec, &run, at, off, 20.0);
+    assert!(gain < -18.0 && gain > -18.6, "its own: {gain}");
+}
+
+#[test]
+fn a_keyed_compressor_switched_on_starts_from_the_gain_of_its_key() {
+    let frames = ms(600.0);
+    let mut settings = keyed();
+    settings.compressor.on = false;
+    settings.compressor.attack_ms = 100.0;
+    let spec = mono_spec().with_sidechain(1);
+    let run = Run::new(vec![level(-20.0, frames)]).with_sidechain(vec![level(-5.0, frames)]);
+    let switched = (Param::CompressorOn, 1.0);
+    let gain = gain_after(&settings, &spec, &run, ms(500.0), switched, 20.0);
+    assert!((gain - -18.75).abs() < 0.05, "{gain}");
+}
+
+#[test]
+fn the_keyed_compressor_holds_after_its_key_stops() {
+    let frames = ms(1000.0);
+    let mut settings = keyed();
+    settings.compressor.hold_ms = 200.0;
+    settings.compressor.release_ms = 50.0;
+    let input = level(-20.0, frames);
+    let mut key = level(-5.0, frames);
+    key[ms(300.0)..].fill(0.0);
+    let spec = mono_spec().with_sidechain(1);
+    let run = Run::new(vec![input.clone()]).with_sidechain(vec![key]);
+    let output = process(&settings, &spec, &run).remove(0);
+    let gains = gains(&input, &output);
+    // 100 ms into the hold, all of the gain; long after it, none.
+    assert!(
+        (gains[ms(400.0)] - -18.75).abs() < 0.05,
+        "{}",
+        gains[ms(400.0)]
+    );
+    assert!(gains[ms(950.0)].abs() < 0.05, "{}", gains[ms(950.0)]);
+}
+
+#[test]
+fn the_compressor_woken_hears_what_the_expander_has_lowered() {
+    // −25 dBFS: the Expander takes 5 dB, and the Compressor 5 of the −30 that it hears.
+    let mut settings = expanded_into_compressed();
+    settings.compressor.on = false;
+    settings.compressor.attack_ms = 100.0;
+    settings.compressor.release_ms = 1000.0;
+    let run = Run::new(vec![level(-25.0, ms(600.0))]);
+    let switched = (Param::CompressorOn, 1.0);
+    let gain = gain_after(&settings, &mono_spec(), &run, ms(500.0), switched, 20.0);
+    assert!((gain - -10.0).abs() < 0.1, "{gain}");
+}
+
+#[test]
+fn the_limiter_hears_what_the_modules_before_it_have_lowered() {
+    // −5 dBFS: the Expander takes 3 dB, the Compressor 6 of the −8 that it hears, and the
+    // Limiter, woken or steady, the 16 over −30 of the −14 that it hears.
+    let settings = on(|s| {
+        s.expander.on = true;
+        s.expander.threshold_db = -2.0;
+        s.expander.ratio = 2.0;
+        s.expander.range_db = 60.0;
+        s.compressor.on = true;
+        s.compressor.threshold_db = -20.0;
+        s.limiter.threshold_db = -30.0;
+        s.limiter.attack_ms = 100.0;
+        s.limiter.release_ms = 1000.0;
+    });
+    let at = ms(500.0);
+    let input = level(-5.0, ms(1500.0));
+    let run = Run::new(vec![input.clone()]).with_change(at, Param::LimiterOn.id(), 1.0);
+    let output = process(&settings, &mono_spec(), &run).remove(0);
+    let gains = gains(&input, &output);
+    assert!((gains[at - 1] - -9.0).abs() < 0.01, "{}", gains[at - 1]);
+    let woken = gains[at + ms(20.0)];
+    assert!((woken - -25.0).abs() < 0.1, "{woken}");
+    let last = gains[input.len() - 1];
+    assert!((last - -25.0).abs() < 0.01, "{last}");
+}
+
+#[test]
+fn settle_for_is_the_ramp_the_wake_and_the_times_of_each_module_on() {
+    // At 48 kHz: the ramp of 10 ms, 480; the wake, 400 dB at 400 dB a second, 48 000; a module,
+    // 18 times its attack and release, its hold, and a bin of 32.
+    let compressor = on(|s| {
+        s.compressor.on = true;
+        s.compressor.attack_ms = 10.0;
+        s.compressor.hold_ms = 30.0;
+        s.compressor.release_ms = 100.0;
+    });
+    let its = (18 * 110 + 30) * 48 + 32;
+    assert_eq!(Dynamics::settle_for(&compressor, RATE), 480 + 48_000 + its);
+    let mut all = compressor;
+    all.expander.on = true;
+    all.expander.attack_ms = 1.0;
+    all.expander.hold_ms = 100.0;
+    all.expander.release_ms = 50.0;
+    all.limiter.on = true;
+    all.limiter.attack_ms = 0.0;
+    all.limiter.hold_ms = 0.0;
+    all.limiter.release_ms = 200.0;
+    let expander = (18 * 51 + 100) * 48 + 32;
+    let limiter = 18 * 200 * 48 + 32;
+    assert_eq!(
+        Dynamics::settle_for(&all, RATE),
+        480 + 48_000 + expander + its + limiter
+    );
+}
+
+#[test]
+fn the_settling_reported_is_that_of_the_settings_and_counts_a_module_while_it_fades() {
+    let spec = mono_spec();
+    let set = on(|s| {
+        s.compressor.on = true;
+        s.compressor.hold_ms = 500.0;
+        s.compressor.release_ms = 4000.0;
+        s.makeup_db = 6.0;
+    });
+    let whole = Dynamics::settle_for(&set, RATE);
+    let mut node = Dynamics::new(&set);
+    node.prepare(&spec).unwrap();
+    assert_eq!(node.settle(), whole);
+    // Switched off, it is counted until it has faded out.
+    node.set(Param::CompressorOn.id(), 0.0);
+    assert_eq!(node.settle(), whole);
+    // Switched on, it is counted before it has come in.
+    let mut off = set;
+    off.compressor.on = false;
+    let mut node = Dynamics::new(&off);
+    node.prepare(&spec).unwrap();
+    assert!(node.settle() < whole);
+    node.set(Param::CompressorOn.id(), 1.0);
+    assert_eq!(node.settle(), whole);
+}
+
+#[test]
+fn a_lane_of_a_switch_is_on_from_a_half_up() {
+    let frames = ms(500.0);
+    let input = level(-5.0, frames);
+    let lane = |settings: &Settings, value: f32| {
+        let run = Run::new(vec![input.clone()])
+            .with_automation(Param::CompressorOn.id(), vec![value; frames]);
+        let output = process(settings, &mono_spec(), &run).remove(0);
+        gains(&input, &output)[frames - 1]
+    };
+    let gain = lane(&on(|_| {}), 0.5);
+    assert!((gain - -5.0).abs() < 0.005, "{gain}");
+    let gain = lane(&on(|s| s.compressor.on = true), 0.49);
+    assert!(gain.abs() < 1e-6, "{gain}");
+}
+
+#[test]
+fn a_lane_of_the_makeup_is_in_db_and_a_lane_of_another_number_is_the_number() {
+    let frames = ms(500.0);
+    let input = level(-5.0, frames);
+    let lane = |settings: &Settings, param: Param, value: f32| {
+        let run = Run::new(vec![input.clone()]).with_automation(param.id(), vec![value; frames]);
+        let output = process(settings, &mono_spec(), &run).remove(0);
+        gains(&input, &output)[frames - 1]
+    };
+    let gain = lane(&on(|_| {}), Param::MakeupDb, 6.0);
+    assert!((gain - 6.0).abs() < 1e-4, "{gain}");
+    // A threshold of −25 by its lane: 10 dB off −5 dBFS at 2:1.
+    let compressor = on(|s| s.compressor.on = true);
+    let gain = lane(&compressor, Param::CompressorThresholdDb, -25.0);
+    assert!((gain - -10.0).abs() < 0.005, "{gain}");
+}
+
+#[test]
+fn switched_off_the_ball_shows_the_level_in_and_out() {
+    let spec = mono_spec();
+    let mut node = Dynamics::default();
+    node.prepare(&spec).unwrap();
+    let ball = node.ball();
+    let run = Run::new(vec![level(-5.0, ms(100.0))]);
+    render(&mut node, &spec, &run, |_| 480);
+    let seen = ball.read();
+    assert!((seen.input_db - -5.0).abs() < 1e-4, "{seen:?}");
+    assert_eq!(seen.output_db, seen.input_db);
+    assert_eq!(
+        (seen.expander_db, seen.compressor_db, seen.limiter_db),
+        (0.0, 0.0, 0.0)
+    );
+}
+
+#[test]
+fn of_samples_as_loud_the_ball_shows_the_first_of_the_block() {
+    // A block of a quiet level, then one of a loud one: the Compressor, attacking in 100 ms, has
+    // taken next to nothing at the first sample of the second and half a dB at its last.
+    let settings = on(|s| {
+        s.compressor.on = true;
+        s.compressor.attack_ms = 100.0;
+    });
+    let spec = mono_spec();
+    let mut node = Dynamics::new(&settings);
+    node.prepare(&spec).unwrap();
+    let ball = node.ball();
+    let mut input = level(-40.0, 480);
+    input.extend(level(-5.0, 480));
+    render(&mut node, &spec, &Run::new(vec![input]), |_| 480);
+    let seen = ball.read();
+    assert!((seen.input_db - -5.0).abs() < 1e-4, "{seen:?}");
+    assert!(seen.compressor_db > -0.01, "{seen:?}");
+}
+
+#[test]
+fn listen_lets_the_sidechain_out_of_dynamics_switched_off() {
+    let frames = ms(200.0);
+    let target = sine(RATE, 1000.0, 0.5, frames);
+    let source = noise(3, 0.25, frames);
+    let mut settings = keyed();
+    settings.on = false;
+    settings.compressor.listen = true;
+    let spec = mono_spec().with_sidechain(1);
+    let run = Run::new(vec![target]).with_sidechain(vec![source.clone()]);
+    assert_eq!(process(&settings, &spec, &run)[0], source);
+}
+
+#[test]
+fn a_sidechain_of_other_channels_is_listened_to_as_their_mean() {
+    let frames = 960;
+    let mut settings = keyed();
+    settings.compressor.listen = true;
+    let spec = mono_spec().with_sidechain(2);
+    let run = Run::new(vec![level(-20.0, frames)])
+        .with_sidechain(vec![vec![0.5; frames], vec![0.25; frames]]);
+    let output = process(&settings, &spec, &run).remove(0);
+    assert!(output.iter().all(|&y| y == 0.375), "{:?}", &output[..4]);
+}
+
+#[test]
+fn every_switch_put_off_at_once_still_fades() {
+    // Everything on and the sidechain listened to; then every switch off before one sample.
+    let frames = ms(300.0);
+    let at = ms(200.0);
+    let mut settings = everything_on();
+    settings.compressor.sidechain = true;
+    settings.compressor.listen = true;
+    let input = level(-20.0, frames);
+    let spec = mono_spec().with_sidechain(1);
+    let mut run = Run::new(vec![input.clone()]).with_sidechain(vec![level(-6.0, frames)]);
+    for param in Param::ALL {
+        if param.is_switch() {
+            run = run.with_change(at, param.id(), 0.0);
+        }
+    }
+    let output = process(&settings, &spec, &run).remove(0);
+    // Five samples on, the sidechain is still nearly all that is heard; at the end, the input.
+    assert!(output[at + 4].abs() > 0.45, "{}", output[at + 4]);
+    assert_eq!(output[frames - 1], input[frames - 1]);
+}
+
+#[test]
+fn it_takes_a_sidechain_of_up_to_24_channels_and_no_rate_of_zero() {
+    let mut node = Dynamics::default();
+    let stereo = Spec::new(RATE, 64, Layout::Stereo);
+    assert!(node.prepare(&stereo.with_sidechain(MAX_CHANNELS)).is_ok());
+    assert!(node
+        .prepare(&stereo.with_sidechain(MAX_CHANNELS + 1))
+        .is_err());
+    assert!(node.prepare(&Spec::new(0, 64, Layout::Stereo)).is_err());
 }

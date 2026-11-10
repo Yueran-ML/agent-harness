@@ -366,8 +366,10 @@ fn costly(effect: &Effect, _: &Context) -> Option<Made> {
 }
 
 /// Sixteen stereo tracks, each with a costly node, out to B1 and sending to B2, which goes out
-/// to B1 (plan T5: 16 tracks and 2 buses).
-fn sixteen_costly_tracks() -> Project {
+/// to B1 (plan T5: 16 tracks and 2 buses). The clips last half a minute more than `seconds` (a
+/// minute at least), so that a longer run reads its sound to its end.
+fn sixteen_costly_tracks(seconds: i64) -> Project {
+    let length = seconds.max(30) + 30;
     let mut project = one_track();
     let timeline = &mut project.timelines[0];
     let mut b2 = columbina_model::Bus::first();
@@ -383,7 +385,7 @@ fn sixteen_costly_tracks() -> Project {
             let mut track = first.clone();
             track.id = format!("A{n}");
             track.clips[0].id = format!("c{n}");
-            track.clips[0].length = 60 * 25;
+            track.clips[0].length = length * 25;
             let strip = &mut track.audio.strip;
             strip.inserts.push(Insert {
                 id: "fx1".into(),
@@ -402,7 +404,7 @@ fn sixteen_costly_tracks() -> Project {
         })
         .collect();
     project.media[0].facts.duration = columbina_model::Time {
-        ticks: 120 * 48_000,
+        ticks: (length + 60) * 48_000,
         scale: 48_000,
     };
     project
@@ -415,7 +417,7 @@ fn sixteen_tracks_play_thirty_seconds_on_threads_with_nothing_short() {
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(30);
-    let project = sixteen_costly_tracks();
+    let project = sixteen_costly_tracks(i64::try_from(seconds).unwrap());
     let counters = Arc::new(Counters::default());
     let (mut commands, taken) = messages(64);
     let (gone, mut retired) = messages(64);

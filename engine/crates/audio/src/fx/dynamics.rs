@@ -1543,3 +1543,75 @@ impl Node for Dynamics {
         }
     }
 }
+
+/// The window of the hold against the loudest of its samples counted one by one (T26's mutation
+/// testing). The levels are whole numbers of dB, which the f32 of a bin keeps exactly; there is
+/// no allocation here, for the audit of the threads of the sound reads this file.
+#[cfg(test)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::float_cmp,
+    reason = "indices of a test far within a u32; whole numbers of dB"
+)]
+mod window {
+    use super::Window;
+    use crate::constants::DYNAMICS_HOLD_BIN;
+
+    const FRAMES: usize = 2000;
+    const LONGEST: u32 = 200;
+
+    /// Steps of levels 97 samples long, each sample a few dB under its step.
+    fn levels() -> [f64; FRAMES] {
+        let mut seed: u32 = 12_345;
+        let mut next = move || {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            seed >> 16
+        };
+        let mut levels = [0.0; FRAMES];
+        let mut step = 0.0;
+        for (k, level) in levels.iter_mut().enumerate() {
+            if k % 97 == 0 {
+                step = -f64::from(next() % 61);
+            }
+            *level = step - f64::from(next() % 6);
+        }
+        levels
+    }
+
+    /// The loudest of the samples up to `k` in the bins the window spans: the bin under way and
+    /// as many whole bins before it as make `hold + 1` samples, none before the first, `start`
+    /// being where the first falls on the timeline.
+    fn counted(levels: &[f64], k: usize, hold: u32, start: u32) -> f64 {
+        if hold == 0 {
+            return levels[k];
+        }
+        let at = start + k as u32;
+        let filled = at % DYNAMICS_HOLD_BIN + 1;
+        let whole = (hold + 1)
+            .saturating_sub(filled)
+            .div_ceil(DYNAMICS_HOLD_BIN);
+        let first = (at / DYNAMICS_HOLD_BIN).saturating_sub(whole) * DYNAMICS_HOLD_BIN;
+        let from = first.saturating_sub(start) as usize;
+        levels[from..=k]
+            .iter()
+            .fold(f64::NEG_INFINITY, |a, &b| a.max(b))
+    }
+
+    #[test]
+    fn the_window_holds_the_loudest_of_its_bins() {
+        let levels = levels();
+        let mut window = Window::default();
+        window.prepare(LONGEST as usize);
+        for hold in [0, 1, 31, 32, 33, 100, 199, LONGEST] {
+            for start in [0, 7, 31] {
+                window.clear();
+                for (k, &level) in levels.iter().enumerate() {
+                    let phase = (start + k as u32) % DYNAMICS_HOLD_BIN;
+                    let loudest = window.push(level, hold, phase);
+                    let expected = counted(&levels, k, hold, start);
+                    assert_eq!(loudest, expected, "hold {hold}, start {start}, sample {k}");
+                }
+            }
+        }
+    }
+}

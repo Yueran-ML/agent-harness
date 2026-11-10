@@ -1219,3 +1219,107 @@ fn a_gate_shutting_in_its_hold_settles_whatever_the_phase_of_the_bins() {
         assert_settle(|| Dynamics::new(&gate), &spec, &run, from);
     }
 }
+
+// --- What mutation testing found (T26) -------------------------------------------------------
+
+/// The curves at a ratio other than 2, where multiplying by `ratio − 1` and dividing by it part,
+/// and on either side of a knee's edge, where twice the distance from the threshold is what is
+/// weighed against the knee.
+#[test]
+fn the_static_curves_hold_at_other_ratios_and_on_both_sides_of_a_knee() {
+    // 1:3, 10 dB under the threshold: 20 dB down.
+    assert_eq!(expander_gain_db(-45.0, -35.0, 3.0, 30.0), -20.0);
+    // 4:1 with a knee 10 dB wide, 7 dB over the threshold: past the knee, on the straight line.
+    let straight = compressor_gain_db(-8.0, -15.0, 4.0, 10.0);
+    assert!((straight - 7.0 * -0.75).abs() < 1e-12, "{straight}");
+    // A knee 1 dB wide, 0.25 dB over the threshold: inside it, on the quadratic.
+    let into: f64 = 0.25 + 0.5;
+    let curved = compressor_gain_db(-14.75, -15.0, 4.0, 1.0);
+    assert!(
+        (curved - -0.75 * into * into / 2.0).abs() < 1e-12,
+        "{curved}"
+    );
+}
+
+/// An Expander whose threshold is above the Compressor's: the Compressor hears the sound the
+/// Expander has already lowered, in the curve of the window and in the node.
+fn expanded_into_compressed() -> Settings {
+    on(|s| {
+        s.expander.on = true;
+        s.expander.threshold_db = -20.0;
+        s.expander.ratio = 2.0;
+        s.expander.range_db = 60.0;
+        s.compressor.on = true;
+        s.compressor.threshold_db = -40.0;
+        s.compressor.ratio = 2.0;
+        s.compressor.knee_db = 0.0;
+    })
+}
+
+#[test]
+fn the_compressor_hears_what_the_expander_has_lowered() {
+    let settings = expanded_into_compressed();
+    // −30: the Expander takes it to −40, the Compressor's threshold. −25: to −30, then halfway
+    // back down to −40 over the threshold, −35.
+    assert_eq!(curve(&settings, &[-30.0, -25.0]), [-40.0, -35.0]);
+    for db in [-30.0, -25.0] {
+        let input = level(db, ms(2000.0));
+        let output = mono(&settings, input.clone());
+        let n = input.len() - 1;
+        let measured = 20.0 * f64::from(output[n] / input[n]).abs().log10();
+        let drawn = f64::from(curve(&settings, &[db as f32])[0]) - db;
+        assert!(
+            (measured - drawn).abs() < 0.005,
+            "{db} dBFS: gain {measured}, the curve's {drawn}"
+        );
+    }
+}
+
+#[test]
+fn a_module_switched_on_while_it_plays_comes_in() {
+    let input = level(-5.0, ms(1500.0));
+    let spec = Spec::new(RATE, 512, Layout::Mono);
+    let run = Run::new(vec![input.clone()]).with_change(ms(500.0), Param::CompressorOn.id(), 1.0);
+    let output = process(&on(|_| {}), &spec, &run).remove(0);
+    let gains = gains(&input, &output);
+    assert!(
+        gains[ms(500.0) - 1].abs() < 1e-6,
+        "{}",
+        gains[ms(500.0) - 1]
+    );
+    // The compressor at −15 and 2:1 takes −5 to −10.
+    let last = gains[input.len() - 1];
+    assert!((last - -5.0).abs() < 0.005, "{last}");
+}
+
+#[test]
+fn a_release_changed_while_it_plays_is_the_new_one() {
+    let settings = on(|s| {
+        s.compressor.on = true;
+        s.compressor.threshold_db = -30.0;
+        s.compressor.ratio = 10.0;
+        s.compressor.attack_ms = 10.0;
+        s.compressor.hold_ms = 0.0;
+        s.compressor.release_ms = 1000.0;
+    });
+    let input = steps(&[(-40.0, 0.5), (-5.0, 1.0), (-40.0, 1.0)]);
+    let spec = Spec::new(RATE, 512, Layout::Mono);
+    let run = Run::new(vec![input.clone()]).with_change(
+        ms(1000.0),
+        Param::CompressorReleaseMs.id(),
+        100.0,
+    );
+    let output = process(&settings, &spec, &run).remove(0);
+    let gains = gains(&input, &output);
+    let down = ms(1500.0);
+    let held = gains[down - 1];
+    let starts = gains[down..]
+        .iter()
+        .position(|g| (g - held).abs() >= 1e-4)
+        .unwrap();
+    let release = time_to_63(&gains, down + starts, held, 0.0);
+    assert!(
+        release.abs_diff(ms(100.0)) <= ms(100.0) / 20,
+        "release {release}"
+    );
+}

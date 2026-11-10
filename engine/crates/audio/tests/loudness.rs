@@ -191,6 +191,10 @@ fn beside_ffmpeg(
         return;
     };
     eprintln!("{name}: ffmpeg {theirs:?}");
+    eprintln!(
+        "{name}: ours I {:?}, LRA {:?}, max M {}, max S {}, TP {}",
+        ours.integrated, ours.range, ours.momentary_max, ours.short_term_max, ours.true_peak
+    );
     let close = |what: &str, a: f64, b: f64, within: f64| {
         assert!(
             (a - b).abs() <= within,

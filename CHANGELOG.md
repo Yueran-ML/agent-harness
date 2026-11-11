@@ -6,6 +6,12 @@ change what was there before.
 
 ## Unreleased
 
+- OpenAI is spoken to in its Responses protocol (`/v1/responses`). Its newer models, such as
+  GPT-6 Astra, call a tool and reason in one reply only there, and refused a turn of the agent
+  in Chat Completions. The conversation is sent whole with each request and is not stored at
+  the service; what the model thought goes back to it sealed, and its summary is what is shown.
+  The pictures of a tool's result go in the result. An address of one's own under the name
+  `openai`, such as one that passes requests on, is still asked in Chat Completions.
 - The editing studio has a Fairlight page (phase 3), on Windows, made after DaVinci Resolve's,
   on the same audio tracks as the Edit page. Clip volume and pan have keyframes; fade handles,
   crossfades, channel mapping, Normalize Audio Levels and the copy and paste of audio

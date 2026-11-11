@@ -483,6 +483,40 @@ async def test_claude_is_asked_for_its_models_in_the_protocol_of_anthropic(
     assert service.heard[0]["anthropic-version"] == "2023-06-01"
 
 
+async def test_openai_is_asked_for_its_models_by_the_adapter_of_its_responses(
+    service: Service, work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service.answers(200, listing("gpt-tiny"))
+    made: list[str] = []
+    real = doctor.OpenAIResponses
+
+    def responses(config: Any) -> Any:
+        made.append(config.base_url)
+        return real(config)
+
+    monkeypatch.setattr(doctor, "OpenAIResponses", responses)
+    model = {"provider": "openai", "model": "gpt-tiny"}
+    adapter = {
+        "provider": "openai",
+        "base_url": service.address,
+        "api_key_required": False,
+        "summary": "concise",
+    }
+    session = [
+        Entry(id="frontend", plugin="columbina.apps.headless", config={"model": model}),
+        Entry(id="model", plugin="columbina.llm.adapters.openai_responses", config=adapter),
+    ]
+
+    findings = await looked(session, {}, work)
+
+    assert findings[0] == Finding("ok", "model", f"gpt-tiny of openai, at {service.address}")
+    assert re.fullmatch(
+        r"answered in \d+\.\d s without a key, and lists gpt-tiny", findings[1].said
+    )
+    assert service.asked == [("/v1/models", None)]
+    assert made == [service.address]
+
+
 async def test_claude_without_a_list_of_models_is_worth_a_look(
     service: Service, work: Path
 ) -> None:

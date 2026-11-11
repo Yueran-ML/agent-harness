@@ -315,7 +315,8 @@ def test_a_model_that_no_adapter_of_a_service_is_for_is_not_asked_for(
     state, said = found(lines)["model"]
     assert state == "warn"
     assert said.endswith(
-        ", which no entry that loads columbina.llm.adapters.openai_chat or "
+        ", which no entry that loads columbina.llm.adapters.openai_chat, "
+        "columbina.llm.adapters.openai_responses or "
         "columbina.llm.adapters.anthropic_messages is for, so no service is asked"
     )
     assert "service" not in found(lines)

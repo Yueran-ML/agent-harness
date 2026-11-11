@@ -1,6 +1,7 @@
 """The services that a model can come from, by name."""
 
 import re
+from dataclasses import replace
 from urllib.parse import urlsplit
 
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from columbina.kernel import Entry, Insert, interpolate
 from columbina.llm.adapters.anthropic_messages import Config as AnthropicConfig
 from columbina.llm.adapters.openai_chat import Config
+from columbina.llm.adapters.openai_responses import Config as ResponsesConfig
 from columbina.llm.services import (
     KEY_OF_ONES_OWN,
     PRESETS,
@@ -15,6 +17,7 @@ from columbina.llm.services import (
     adapter_config,
     of_ones_own,
     preset,
+    protocol_at,
 )
 from support.launch import bundle
 
@@ -132,6 +135,24 @@ def test_anthropic_alone_is_spoken_to_in_its_own_protocol() -> None:
     assert of_ones_own("mine", "https://api.anthropic.com").protocol == "openai-chat"
 
 
+def test_openai_alone_is_spoken_to_in_its_responses_and_only_at_its_own_address() -> None:
+    openai = known("openai")
+
+    assert {s.name for s in PRESETS if s.protocol == "openai-responses"} == {"openai"}
+    assert protocol_at(openai, {}) == "openai-responses"
+    # An address that passes requests on is taken to speak what nearly all speak.
+    relay = replace(openai, base_url="https://relay.example.test/v1")
+    assert protocol_at(relay, {}) == "openai-chat"
+    assert adapter_config(relay, KEYS, {})["max_tokens_field"] == "max_completion_tokens"
+    # A service of one's own that takes the name of none is asked in Chat Completions.
+    unknown = replace(openai, name="mine")
+    assert protocol_at(unknown, {}) == "openai-chat"
+    # The others speak what they speak wherever they are, a variable or not.
+    elsewhere = {"ANTHROPIC_BASE_URL": "https://claude.example.test"}
+    assert protocol_at(known("anthropic"), elsewhere) == "anthropic"
+    assert protocol_at(known("deepseek"), {}) == "openai-chat"
+
+
 def test_no_two_services_share_a_name_or_a_variable() -> None:
     names = [service.name for service in PRESETS]
     variables = [service.key_env for service in PRESETS if service.key_env is not None]
@@ -164,7 +185,11 @@ def test_what_is_written_of_a_service_makes_sense(service: Service) -> None:
     assert (service.key_page is not None) == service.key_required
     assert service.key_page is None or urlsplit(service.key_page).scheme == "https"
     # And the adapter of its protocol takes the config that is made of it.
-    taken = AnthropicConfig if service.protocol == "anthropic" else Config
+    taken = {
+        "anthropic": AnthropicConfig,
+        "openai-responses": ResponsesConfig,
+        "openai-chat": Config,
+    }[protocol_at(service, ENV)]
     taken.model_validate(interpolate(adapter_config(service, KEYS, ENV), ENV))
 
 
@@ -175,7 +200,6 @@ def test_the_config_of_an_adapter_says_what_is_known_of_its_service() -> None:
         "api_key_env": "OPENAI_API_KEY",
         "api_key_file": KEYS,
         "reasoning_style": "openai",
-        "max_tokens_field": "max_completion_tokens",
         "pictures": True,
     }
     assert adapter_config(known("moonshot"), KEYS, {}) == {

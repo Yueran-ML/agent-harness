@@ -52,8 +52,8 @@ need, see :mod:`columbina.llm.services`. The service that
 ``columbina setup`` wrote down is put into the profile before the patches
 are applied, so a patch still has the last word. ``--provider`` and the
 variable ``COLUMBINA_PROVIDER`` are what the command line asks for, and are
-put in last. Either way only a profile whose entry ``model`` loads the
-adapter for the OpenAI Chat Completions protocol is changed.
+put in last. Either way only a profile whose entry ``model`` loads an
+adapter of a model service is changed.
 """
 
 import argparse
@@ -107,7 +107,7 @@ from columbina.kernel import (
     mount,
     parse_layer,
 )
-from columbina.llm.services import PRESETS, Service, adapter_config
+from columbina.llm.services import PRESETS, Service, adapter_config, protocol_at
 from columbina.permissions import Preset
 from columbina.qq import memory as qq_memory
 from columbina.qq import setup as qq_setup
@@ -165,7 +165,13 @@ _SPEAKS_OPENAI = "columbina.llm.adapters.openai_chat"
 """The plugin that talks to every service that has a name, but Anthropic."""
 _SPEAKS_ANTHROPIC = "columbina.llm.adapters.anthropic_messages"
 """The plugin that talks to Anthropic."""
-_ADAPTERS = {"openai-chat": _SPEAKS_OPENAI, "anthropic": _SPEAKS_ANTHROPIC}
+_SPEAKS_RESPONSES = "columbina.llm.adapters.openai_responses"
+"""The plugin that talks to OpenAI itself."""
+_ADAPTERS = {
+    "openai-chat": _SPEAKS_OPENAI,
+    "openai-responses": _SPEAKS_RESPONSES,
+    "anthropic": _SPEAKS_ANTHROPIC,
+}
 """The plugin that talks to a service, by the protocol that the service speaks."""
 _STORED_KEYS = "${COLUMBINA_HOME}/" + chosen_service.KEYS
 """Where the keys lie that the user stored, as a config says it."""
@@ -282,7 +288,7 @@ def _served(
             "by default. Name one with --model, or choose one with 'columbina setup'"
         )
     config = adapter_config(service, _STORED_KEYS, env)
-    plugin = _ADAPTERS[service.protocol]
+    plugin = _ADAPTERS[protocol_at(service, env)]
     entries[at] = entries[at].model_copy(update={"plugin": plugin, "config": config})
     for position, entry in enumerate(entries):
         if entry.id == _FRONTEND and not entry.disabled:
@@ -470,9 +476,9 @@ def _entries(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> li
         service = chosen_service.service_named(named, stored)
         if not _served(entries, service, env, args.model, thinks=args.command != _QQ):
             raise _UsageError(
-                f"the profile has no entry {_MODEL!r} that loads {_SPEAKS_OPENAI} or "
-                f"{_SPEAKS_ANTHROPIC}, or it is disabled, so there is nothing to point at the "
-                f"service {named}"
+                f"the profile has no entry {_MODEL!r} that loads {_SPEAKS_OPENAI}, "
+                f"{_SPEAKS_RESPONSES} or {_SPEAKS_ANTHROPIC}, or it is disabled, so there is "
+                f"nothing to point at the service {named}"
             )
     for position, entry in enumerate(entries):
         if entry.id == _FRONTEND:

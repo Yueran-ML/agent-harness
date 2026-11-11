@@ -42,6 +42,8 @@ from columbina.llm.adapters.anthropic_messages import AnthropicMessages
 from columbina.llm.adapters.anthropic_messages import Config as AnthropicConfig
 from columbina.llm.adapters.openai_chat import Config as AdapterConfig
 from columbina.llm.adapters.openai_chat import OpenAIChat
+from columbina.llm.adapters.openai_responses import Config as ResponsesConfig
+from columbina.llm.adapters.openai_responses import OpenAIResponses
 from columbina.llm.credentials import CredentialsError, stored, trimmed
 from columbina.sandbox import Config as SandboxConfig
 from columbina.sandbox import SandboxUnavailableError
@@ -54,6 +56,13 @@ State = Literal["ok", "warn", "fail"]
 _FRONTEND = "frontend"
 _SPEAKS_OPENAI = "columbina.llm.adapters.openai_chat"
 _SPEAKS_ANTHROPIC = "columbina.llm.adapters.anthropic_messages"
+_SPEAKS_RESPONSES = "columbina.llm.adapters.openai_responses"
+_CONFIGS: dict[str, type[AdapterConfig | ResponsesConfig | AnthropicConfig]] = {
+    _SPEAKS_OPENAI: AdapterConfig,
+    _SPEAKS_RESPONSES: ResponsesConfig,
+    _SPEAKS_ANTHROPIC: AnthropicConfig,
+}
+"""What the config of an adapter is read as, by the plugin that the adapter is."""
 _SANDBOX = "columbina.sandbox"
 _COLUMNS = (6, 9)
 """How wide the state and the subject of a line are."""
@@ -130,12 +139,10 @@ async def _served(entries: Sequence[Entry], env: Mapping[str, str]) -> list[Find
         why = _why(error)
         return [Finding("fail", "model", f"the frontend names no model that can be read: {why}")]
     try:
-        adapters: list[AdapterConfig | AnthropicConfig] = [
-            _config(entry, AdapterConfig, env)
-            if entry.plugin == _SPEAKS_OPENAI
-            else _config(entry, AnthropicConfig, env)
+        adapters: list[AdapterConfig | ResponsesConfig | AnthropicConfig] = [
+            _config(entry, _CONFIGS[entry.plugin], env)
             for entry in entries
-            if entry.plugin in (_SPEAKS_OPENAI, _SPEAKS_ANTHROPIC) and not entry.disabled
+            if entry.plugin in _CONFIGS and not entry.disabled
         ]
     except _ConfigError as error:
         return [Finding("fail", "model", str(error))]
@@ -145,8 +152,8 @@ async def _served(entries: Sequence[Entry], env: Mapping[str, str]) -> list[Find
             Finding(
                 "warn",
                 "model",
-                f"{call.model} of {call.provider}, which no entry that loads {_SPEAKS_OPENAI} "
-                f"or {_SPEAKS_ANTHROPIC} is for, so no service is asked",
+                f"{call.model} of {call.provider}, which no entry that loads {_SPEAKS_OPENAI}, "
+                f"{_SPEAKS_RESPONSES} or {_SPEAKS_ANTHROPIC} is for, so no service is asked",
             )
         ]
     model = Finding("ok", "model", f"{call.model} of {call.provider}, at {config.base_url}")
@@ -154,12 +161,16 @@ async def _served(entries: Sequence[Entry], env: Mapping[str, str]) -> list[Find
 
 
 async def _answered(
-    config: AdapterConfig | AnthropicConfig, model: str, env: Mapping[str, str]
+    config: AdapterConfig | ResponsesConfig | AnthropicConfig, model: str, env: Mapping[str, str]
 ) -> Finding:
     """Ask the service for its models, and say how that went."""
-    adapter = (
-        AnthropicMessages(config) if isinstance(config, AnthropicConfig) else OpenAIChat(config)
-    )
+    adapter: OpenAIChat | OpenAIResponses | AnthropicMessages
+    if isinstance(config, AnthropicConfig):
+        adapter = AnthropicMessages(config)
+    elif isinstance(config, ResponsesConfig):
+        adapter = OpenAIResponses(config)
+    else:
+        adapter = OpenAIChat(config)
     began = time.monotonic()
     try:
         ids = await adapter.models()
@@ -189,7 +200,7 @@ async def _answered(
     )
 
 
-def _key(config: AdapterConfig | AnthropicConfig, env: Mapping[str, str]) -> str:
+def _key(config: AdapterConfig | ResponsesConfig | AnthropicConfig, env: Mapping[str, str]) -> str:
     """Say which key the adapter sent: the one of the variable, the stored one, or none."""
     variable, file = config.api_key_env, config.api_key_file
     if variable is not None and trimmed(env.get(variable, "")):

@@ -719,4 +719,45 @@ mod tests {
         // 50 is on the slope; 150 is on the flat; 100 has a point.
         assert_eq!(pins(&lane, LINE, &[50, 150, 100]), vec![49, 50, 99]);
     }
+
+    /// A piece that a snapshot may hold: from 0 to 100 in ticks of 10, twins and a point within.
+    fn piece() -> Piece {
+        Piece {
+            path: "fader_db".into(),
+            shape: LINE,
+            scale: 10,
+            from: 0,
+            to: 100,
+            first: 0.0,
+            inner: pts(&[(40, 1.0), (40, 2.0), (60, 3.0)]),
+            last: 4.0,
+            near_end: Some(3.5),
+        }
+    }
+
+    #[test]
+    fn a_snapshot_of_a_lane_is_refused_for_each_thing_that_it_may_not_be() {
+        assert!(piece().check_snapshot().is_ok());
+        let refused = |edit: fn(&mut Piece)| {
+            let mut piece = piece();
+            edit(&mut piece);
+            piece.check_snapshot().is_err()
+        };
+        assert!(refused(|p| p.scale = 0));
+        assert!(refused(|p| p.from = -1));
+        // No longer than nothing, with no point that would be out of it.
+        assert!(refused(|p| {
+            p.to = 0;
+            p.inner.clear();
+        }));
+        assert!(refused(|p| p.first = f64::NAN));
+        assert!(refused(|p| p.last = f64::INFINITY));
+        assert!(refused(|p| p.near_end = Some(f64::NAN)));
+        // A point in other ticks, at the start, at the end, before the one before it, of no value.
+        assert!(refused(|p| p.inner[0].at.scale = 25));
+        assert!(refused(|p| p.inner[0].at.ticks = 0));
+        assert!(refused(|p| p.inner[2].at.ticks = 100));
+        assert!(refused(|p| p.inner[2].at.ticks = 39));
+        assert!(refused(|p| p.inner[1].value = f64::NAN));
+    }
 }

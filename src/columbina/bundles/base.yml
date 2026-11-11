@@ -155,3 +155,10 @@ patch:
           enabled: ${COLUMBINA_VIDEO:-0}
           whisper_model: ${COLUMBINA_WHISPER_MODEL:-}
           engine: ${COLUMBINA_ENGINE:-}
+      # The tool computer, with which the model sees the screen of this machine and uses
+      # its pointer and its keyboard: given where COLUMBINA_COMPUTER is 1, and where the
+      # desktop can be reached. Elsewhere the model is told why not. See docs/computer.md.
+      - id: computer
+        plugin: columbina.computer
+        config:
+          enabled: ${COLUMBINA_COMPUTER:-0}

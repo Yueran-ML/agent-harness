@@ -6,6 +6,13 @@ change what was there before.
 
 ## Unreleased
 
+- A tool `computer`, with which the agent sees the screen of the machine and uses its
+  pointer and its keyboard: screenshots and a zoom, clicks, drags, the wheel, typing and
+  chords. It is off unless `COLUMBINA_COMPUTER=1` switches it on, is asked about as a
+  command of the shell is, and stops when the pointer is put into the upper left corner
+  of the screen. It works on Windows, on macOS and on Linux under X11, with nothing to
+  install; under Wayland the model is told that the screen is not reached. See
+  `docs/computer.md`.
 - OpenAI is spoken to in its Responses protocol (`/v1/responses`). Its newer models, such as
   GPT-6 Astra, call a tool and reason in one reply only there, and refused a turn of the agent
   in Chat Completions. The conversation is sent whole with each request and is not stored at

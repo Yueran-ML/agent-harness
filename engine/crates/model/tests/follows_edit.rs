@@ -1535,3 +1535,86 @@ fn a_ripple_trim_leaves_the_lanes_before_a_later_clip_of_its_group_that_nothing_
         vec![(1.0, 1.3), (5.0, -3.1)]
     );
 }
+
+#[test]
+fn a_ripple_before_a_later_clip_of_its_group_keeps_one_side_of_a_jump_at_each_end_of_the_join() {
+    // A ripple trim of c1's end by -5 takes c2 back 5 frames with what the lane is over it, up
+    // to e, which stays at 4 s. The lane jumps there from -2 to -6: the -2 that came to the jump
+    // goes back with c2 to 3.8 s, the -6 that held from it stays with e, and the lane goes
+    // straight from the one to the other, with one point at each.
+    let mut project = split_far_apart();
+    lane(
+        &mut project,
+        "A1",
+        "fader_db",
+        &[(1, 0.0), (4, -2.0), (4, -6.0), (7, 0.0)],
+    );
+    edit(
+        &mut project,
+        json!({"edit": "trim", "timeline": "t1", "clip": "c1", "edge": "out", "delta": -5,
+            "ripple": true}),
+    );
+    assert_eq!(spans(&project, "A1"), vec![(45, 95), (100, 145)]);
+    let about: Vec<(f64, f64)> = points(&project, "A1", "fader_db")
+        .unwrap()
+        .into_iter()
+        .filter(|&(at, _)| 3.5 < at && at < 4.5)
+        .collect();
+    assert_eq!(about, vec![(3.8, -2.0), (4.0, -6.0)]);
+}
+
+#[test]
+fn an_edit_that_leaves_a_lane_as_it_is_writes_nothing_of_it() {
+    // c2 is lifted from under a slope with no point over it: the lane is looked at, and left.
+    let mut project = project();
+    lane(&mut project, "A1", "fader_db", &[(1, 0.1), (6, -7.3)]);
+    let lift: Edit =
+        serde_json::from_value(json!({"edit": "lift", "timeline": "t1", "clips": ["c2"]})).unwrap();
+    let done = columbina_model::expand(&mut project, lift).unwrap().done;
+    let of_lanes = done
+        .iter()
+        .map(|op| serde_json::to_value(op).unwrap())
+        .filter(|op| op["op"] == "splice_lane" || op["op"] == "set_lane")
+        .count();
+    assert_eq!(of_lanes, 0);
+}
+
+#[test]
+fn a_ripple_of_a_lane_in_ticks_longer_than_frames_holds_nothing_at_a_clip_on_the_tick_of_the_place()
+{
+    // A lane in tenths of a second, at 25 frames a second: frames 8 and 9 are both in tick 3.
+    // Four frames put in at frame 8 move the lane at the place by one tick (to frame 12, in tick
+    // 4) and the clip that starts at frame 9 by two (to frame 13, in tick 5). The clip starts on
+    // the tick of the place, where the ripple cuts the lane anyway: no point is put before it.
+    let mut project = project();
+    let timeline = &mut project.timelines[0];
+    timeline.tracks[1].clips = vec![Clip::of_media(
+        "c2",
+        "m1",
+        Time {
+            ticks: 0,
+            scale: 15360,
+        },
+        9,
+        50,
+    )];
+    project.validate().unwrap();
+    op(
+        &mut project,
+        json!({"op": "set_lane", "timeline": "t1", "of": {"track": "A1"}, "path": "fader_db",
+            "lane": {"points": [{"at": {"ticks": 0, "scale": 10}, "value": 0},
+                {"at": {"ticks": 10, "scale": 10}, "value": -5}]}}),
+    );
+    edit(
+        &mut project,
+        json!({"edit": "insert", "timeline": "t1", "at": 8, "video_track": null,
+            "source": {"kind": "media", "media": "m1", "length": 4}}),
+    );
+    assert_eq!(start_of(&project, "c2"), Some(("A1".into(), 13)));
+    let times: Vec<f64> = points(&project, "A1", "fader_db")
+        .unwrap()
+        .iter()
+        .map(|&(at, _)| at)
+        .collect();
+    assert_eq!(times, vec![0.0, 0.3, 0.4, 1.2]);
+}

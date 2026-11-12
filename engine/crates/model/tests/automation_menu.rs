@@ -163,6 +163,37 @@ fn an_arm_written_true_or_false_before_reads_as_armed_or_not_and_safe_and_off_ar
         .is_none());
 }
 
+#[test]
+fn the_arm_of_a_bus_or_of_a_vca_is_its_own_among_several() {
+    let mut project = project(&[]);
+    for op in [
+        json!({"op": "add_bus", "timeline": "t1", "bus": {"id": "B2", "name": "Bus 2",
+            "color": "#336699ff", "format": "stereo", "strip": {"outputs": [{"bus": "B1"}]}}}),
+        json!({"op": "add_vca", "timeline": "t1", "vca": {"id": "VCA1", "name": "VCA 1"}}),
+        json!({"op": "add_vca", "timeline": "t1", "vca": {"id": "VCA2", "name": "VCA 2"}}),
+    ] {
+        apply(&mut project, serde_json::from_value(op).unwrap()).unwrap();
+    }
+    let t = &mut project.timelines[0];
+    t.buses
+        .iter_mut()
+        .find(|b| b.id == "B2")
+        .unwrap()
+        .automation_arm = AutomationArm::Safe;
+    t.vcas[0].automation_arm = AutomationArm::Safe;
+    t.vcas[1].automation_arm = AutomationArm::Off;
+    let t = &project.timelines[0];
+    for (of, arm) in [
+        (LanesOf::Bus("B1".into()), AutomationArm::default()),
+        (LanesOf::Bus("B2".into()), AutomationArm::Safe),
+        (LanesOf::Vca("VCA1".into()), AutomationArm::Safe),
+        (LanesOf::Vca("VCA2".into()), AutomationArm::Off),
+    ] {
+        assert_eq!(arm_of(t, &of).unwrap(), arm, "{of:?}");
+    }
+    assert!(arm_of(t, &LanesOf::Bus("B9".into())).is_err());
+}
+
 // Fill Range and Glide Range.
 
 fn fill(lanes: Value, from: i64, to: i64, glide: bool) -> Value {
@@ -267,6 +298,17 @@ fn fill_range_leaves_a_safe_track_alone() {
     );
 }
 
+#[test]
+fn a_range_filled_again_with_the_value_that_it_has_changes_nothing() {
+    let mut project = project(&[(0, -10.0)]);
+    let lanes = json!([{"of": {"track": "A1"}, "path": "fader_db", "value": -4.0}]);
+    edit(&mut project, fill(lanes.clone(), 1000, 2000, false));
+    assert_eq!(
+        refused(&mut project, fill(lanes, 1000, 2000, false)),
+        "empty_range"
+    );
+}
+
 // Copy, Paste and Erase.
 
 #[test]
@@ -346,6 +388,22 @@ fn copy_takes_the_points_of_a_range_from_its_start_with_its_values_at_both_ends(
         reason(copy_lanes(t, &of, Some((far, time(2000))), None).unwrap_err()),
         "from"
     );
+}
+
+#[test]
+fn a_range_copied_from_one_point_to_another_has_each_of_them_once() {
+    let project = project(&[(0, -10.0), (1500, -4.0), (2500, -8.0)]);
+    let of = [LanesOf::Track("A1".into())];
+    let range = Some((time(1500), time(2500)));
+    let copied = copy_lanes(&project.timelines[0], &of, range, None).unwrap();
+    let points: Vec<(i64, f64)> = copied[0]
+        .points
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|p| (p.at.ticks / 48, p.value))
+        .collect();
+    assert_eq!(points, vec![(0, -4.0), (1000, -8.0)]);
 }
 
 fn paste(lanes: Value, at: i64, to: Option<i64>) -> Value {
@@ -669,6 +727,44 @@ fn paste_leaves_a_safe_track_and_a_category_that_is_off_alone() {
     project.timelines[0].audio.record.categories.fader = true;
     edit(&mut project, paste(snapshot, 1000, Some(2000)));
     check(&mut project, "A1", "fader_db", &[(1500.0, -3.0)]);
+}
+
+#[test]
+fn a_paste_is_at_a_time_from_0_on_to_a_later_one_and_of_points_from_0_on_in_order() {
+    let mut project = project(&[(0, -10.0), (3000, -10.0)]);
+    let snapshot = json!([{"of": {"track": "A1"}, "path": "fader_db", "value": -3.0}]);
+    let odd = |at: Value, to: Value| {
+        json!({"edit": "automation_paste", "timeline": "t1", "lanes": snapshot.clone(),
+            "at": at, "to": to})
+    };
+    // Before the start of the timeline, by however little.
+    let before = json!({"ticks": -1, "scale": 144_000});
+    assert_eq!(refused(&mut project, odd(before, ms(2000))), "out_of_range");
+    let before = json!({"ticks": -1, "scale": 48000});
+    assert_eq!(refused(&mut project, odd(ms(0), before)), "out_of_range");
+    // To the time that it is at, or to an earlier one: no range, said before a lane is looked at.
+    assert_eq!(refused(&mut project, odd(ms(0), ms(0))), "empty_range");
+    let nowhere = json!([{"of": {"track": "A9"}, "path": "fader_db", "value": -3.0}]);
+    assert_eq!(
+        refused(&mut project, paste(nowhere, 2000, Some(1000))),
+        "empty_range"
+    );
+    // Points before 0, or out of order.
+    let points = |a: i64, b: i64| {
+        json!([{"of": {"track": "A1"}, "path": "fader_db", "points": [
+            {"at": ms(a), "value": -3.0}, {"at": ms(b), "value": -6.0}]}])
+    };
+    assert_eq!(
+        refused(&mut project, paste(points(-100, 500), 1000, Some(2000))),
+        "out_of_range"
+    );
+    assert_eq!(
+        refused(&mut project, paste(points(500, 200), 1000, None)),
+        "out_of_range"
+    );
+    // From 0.
+    edit(&mut project, paste(snapshot.clone(), 0, Some(1000)));
+    check(&mut project, "A1", "fader_db", &[(500.0, -3.0)]);
 }
 
 fn erase(of: Value, from: i64, to: i64) -> Value {

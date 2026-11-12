@@ -268,6 +268,60 @@ fn a_trim_adds_its_offset_to_the_lane_as_it_was_and_returns_to_it() {
 }
 
 #[test]
+fn a_trim_moves_the_points_that_the_lane_has_within_its_ramps_in_and_back() {
+    // +3 dB from 1 s to 2 s, back over 1 s. The lane dips to -20 dB half way through the 10 ms
+    // in and half way through the second back: each dip is moved by half of the offset.
+    let lane = [
+        (0, -10.0),
+        (1000, -10.0),
+        (1005, -20.0),
+        (1010, -10.0),
+        (2000, -10.0),
+        (2500, -20.0),
+        (3000, -10.0),
+        (4000, -10.0),
+    ];
+    let mut project = project(&lane);
+    record(
+        &mut project,
+        pass(
+            "fader_db",
+            true,
+            vec![run(&[(1000, 3.0)], 2000, "return", Some(1000))],
+        ),
+    );
+    for (ms, want) in [
+        (1000.0, -10.0),
+        (1005.0, -18.5),
+        (1010.0, -7.0),
+        (2000.0, -7.0),
+        (2250.0, -12.75),
+        (2500.0, -18.5),
+        (3000.0, -10.0),
+    ] {
+        let got = at(&mut project, "fader_db", ms);
+        assert!((got - want).abs() < 1e-6, "{ms} ms: {got}, not {want}");
+    }
+}
+
+#[test]
+fn event_at_a_point_of_the_lane_holds_to_the_next_after_it() {
+    let mut project = project(&[(0, -10.0), (3000, -10.0), (5000, -20.0)]);
+    record(
+        &mut project,
+        pass(
+            "fader_db",
+            false,
+            vec![run(&[(1000, -6.0)], 3000, "event", None)],
+        ),
+    );
+    for (ms, want) in [(3000.0, -6.0), (4000.0, -6.0), (5000.0, -20.0)] {
+        let got = at(&mut project, "fader_db", ms);
+        assert!(near(got, want), "{ms} ms: {got}, not {want}");
+    }
+}
+
+#[test]
 fn a_trim_leaves_minus_infinity_and_keeps_to_plus_10_db() {
     let mut project = project(&[(0, -100.0), (1000, -100.0), (1001, 8.0)]);
     record(

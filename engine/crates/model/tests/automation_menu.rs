@@ -806,6 +806,23 @@ fn erase_takes_the_points_of_a_range_away_keeping_the_values_at_its_ends() {
 
 // Groups that link Automation.
 
+#[test]
+fn the_control_of_a_group_that_links_a_setting_is_that_of_its_path() {
+    use columbina_model::edit::group_control;
+    use columbina_model::GroupControl;
+    for (path, control) in [
+        ("fader_db", Some(GroupControl::Fader)),
+        ("mute", Some(GroupControl::Mute)),
+        ("pan.x", Some(GroupControl::Panning)),
+        ("send.B2.level_db", Some(GroupControl::Sends)),
+        ("send.B2.pan.x", Some(GroupControl::Sends)),
+        ("eq.0.freq", None),
+        ("trim_db", None),
+    ] {
+        assert_eq!(group_control(path), control, "{path}");
+    }
+}
+
 fn draw(grouped: bool) -> Value {
     json!({"edit": "lane_draw", "timeline": "t1", "of": {"track": "A1"}, "path": "fader_db",
         "from": ms(1000), "to": ms(2000),
@@ -879,6 +896,46 @@ fn a_lane_drawn_is_drawn_alone_without_grouped_a_group_linking_automation_or_its
         .audio
         .lanes
         .contains_key("fader_db"));
+}
+
+#[test]
+fn a_pan_follows_a_group_by_the_same_amount_however_far() {
+    // A1's divergence is at 10 %, A2's at 20 %: A1's set to 50 % moves A2's by 40, to 60.
+    let mut project = project(&[]);
+    grouped(&mut project, &["panning", "automation"]);
+    track(&mut project, "A1").audio.strip.pan.divergence = 10.0;
+    track(&mut project, "A2").audio.strip.pan.divergence = 20.0;
+    edit(
+        &mut project,
+        json!({"edit": "lane_points", "timeline": "t1", "of": {"track": "A1"},
+            "path": "pan.divergence", "action": "add",
+            "points": [{"at": ms(1000), "value": 50.0}], "grouped": true}),
+    );
+    check(&mut project, "A1", "pan.divergence", &[(1000.0, 50.0)]);
+    check(&mut project, "A2", "pan.divergence", &[(1000.0, 60.0)]);
+}
+
+#[test]
+fn the_level_of_a_send_follows_a_group_as_a_fader_does_from_minus_infinity() {
+    // A1's send at -120 dB (-inf), A2's at -110: A1's set to -6 moves A2's by 94 dB, to -16.
+    let mut project = project(&[]);
+    let bus = json!({"op": "add_bus", "timeline": "t1", "bus": {"id": "B2", "name": "Bus 2",
+        "color": "#336699ff", "format": "stereo", "strip": {"outputs": [{"bus": "B1"}]}}});
+    apply(&mut project, serde_json::from_value(bus).unwrap()).unwrap();
+    for (id, level) in [("A1", -120.0), ("A2", -110.0)] {
+        let send = json!({"op": "set_track_audio", "timeline": "t1", "track": id,
+            "patch": {"strip": {"sends": [{"bus": "B2", "level_db": level}]}}});
+        apply(&mut project, serde_json::from_value(send).unwrap()).unwrap();
+    }
+    grouped(&mut project, &["sends", "automation"]);
+    edit(
+        &mut project,
+        json!({"edit": "lane_points", "timeline": "t1", "of": {"track": "A1"},
+            "path": "send.B2.level_db", "action": "add",
+            "points": [{"at": ms(1000), "value": -6.0}], "grouped": true}),
+    );
+    check(&mut project, "A1", "send.B2.level_db", &[(1000.0, -6.0)]);
+    check(&mut project, "A2", "send.B2.level_db", &[(1000.0, -16.0)]);
 }
 
 #[test]

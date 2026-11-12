@@ -1683,6 +1683,124 @@ fn an_insert_that_keeps_its_id_with_another_effect_leaves_no_lane_to_it() {
         ),
         json!({"reason": "out_of_range", "what": "lane"})
     );
+    // The edit takes it away, and no other lane of the strip with it.
+    op(
+        &mut project,
+        set_lane(
+            json!({"track": "A1"}),
+            "fader_db",
+            lane(&[(0, -2.0)], "continuous"),
+        ),
+    );
+    edit(
+        &mut project,
+        json!({"edit": "set_track_audio", "timeline": "t1", "track": "A1", "patch": patch}),
+    );
+    assert_eq!(paths(&project), ["fader_db"]);
+}
+
+#[test]
+fn an_insert_of_a_bus_taken_away_by_a_patch_takes_its_lanes_with_it() {
+    let mut project = project();
+    op(
+        &mut project,
+        json!({"op": "add_insert", "timeline": "t1", "of": {"bus": "B2"},
+            "insert": {"effect": {"kind": "gain", "gain_db": 0}}}),
+    );
+    for (path, value) in [("insert.fx1.gain_db", 6.0), ("fader_db", -2.0)] {
+        op(
+            &mut project,
+            set_lane(
+                json!({"bus": "B2"}),
+                path,
+                lane(&[(0, value)], "continuous"),
+            ),
+        );
+    }
+    let patch = json!({"strip": {"inserts": []}});
+    assert_eq!(
+        refused_op(
+            &mut project,
+            json!({"op": "set_bus", "timeline": "t1", "id": "B2", "patch": patch}),
+        ),
+        json!({"reason": "out_of_range", "what": "lane"})
+    );
+    edit(
+        &mut project,
+        json!({"edit": "set_bus", "timeline": "t1", "id": "B2", "patch": patch}),
+    );
+    let lanes: Vec<&String> = project.timelines[0].buses[1].lanes.keys().collect();
+    assert_eq!(lanes, ["fader_db"]);
+}
+
+#[test]
+fn the_lanes_of_a_bus_cleared_and_held_leave_its_fader_at_their_value() {
+    let mut project = project();
+    op(
+        &mut project,
+        set_lane(
+            json!({"bus": "B2"}),
+            "fader_db",
+            lane(&[(0, -10.0)], "continuous"),
+        ),
+    );
+    edit(
+        &mut project,
+        json!({"edit": "clear_lanes", "timeline": "t1", "of": {"bus": "B2"}, "then": "hold",
+            "at": ms(250)}),
+    );
+    let bus = &project.timelines[0].buses[1];
+    assert!(bus.lanes.is_empty());
+    assert_eq!(bus.strip.fader_db, -10.0);
+}
+
+#[test]
+fn the_inserts_of_a_locked_track_are_not_changed() {
+    let mut project = with_insert_lanes();
+    op(
+        &mut project,
+        json!({"op": "add_insert", "timeline": "t1", "of": {"bus": "B2"},
+            "insert": {"effect": {"kind": "soft_clipper"}}}),
+    );
+    project.timelines[0].tracks[1].locked = true;
+    let gain = json!({"effect": {"kind": "gain", "gain_db": 1}});
+    for change in [
+        json!({"edit": "set_insert", "timeline": "t1", "of": {"track": "A1"}, "slot": 0,
+            "insert": gain}),
+        json!({"edit": "move_insert", "timeline": "t1", "of": {"track": "A1"}, "from": 0,
+            "to": 1}),
+        json!({"edit": "move_insert", "timeline": "t1", "of": {"bus": "B2"}, "from": 0, "to": 0,
+            "to_of": {"track": "A1"}}),
+    ] {
+        assert_eq!(
+            refused(&mut project, change.clone())["reason"],
+            "locked",
+            "{change}"
+        );
+    }
+}
+
+#[test]
+fn an_insert_moved_to_a_strip_that_has_one_of_its_id_is_given_the_next_of_that_strip() {
+    let mut project = with_insert_lanes();
+    op(
+        &mut project,
+        json!({"op": "add_insert", "timeline": "t1", "of": {"bus": "B2"},
+            "insert": {"effect": {"kind": "soft_clipper"}}}),
+    );
+    edit(
+        &mut project,
+        json!({"edit": "move_insert", "timeline": "t1", "of": {"track": "A1"}, "from": 0, "to": 1,
+            "to_of": {"bus": "B2"}}),
+    );
+    let bus: Vec<&str> = project.timelines[0].buses[1]
+        .strip
+        .inserts
+        .iter()
+        .map(|i| i.id.as_str())
+        .collect();
+    assert_eq!(bus, ["fx1", "fx2"]);
+    assert_eq!(ids(&project), ["fx2"]);
 }
 
 #[test]

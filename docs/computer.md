@@ -76,8 +76,9 @@ system through what Python brings.
 
 ## Which models
 
-The model has to take pictures. Claude and the models of OpenAI do; DeepSeek does not, and is
-told that a picture was there. Each picture of the screen costs tokens and stays in the
+The model has to take pictures. Claude and the models of OpenAI do, and so does the Flash of
+DeepSeek (`deepseek-flash`); its Pro (`deepseek-v4-pro`) takes none, and is told that a picture
+was there. Each picture of the screen costs tokens and stays in the
 conversation, so a long piece of work with this tool fills the window of the model sooner than
 one with commands.
 

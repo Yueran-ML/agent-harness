@@ -48,6 +48,8 @@ DEEPSEEK = {
     "api_key_env": "DEEPSEEK_API_KEY",
     "api_key_file": KEYS,
     "reasoning_style": "deepseek",
+    "pictures": True,
+    "pictures_only": ["deepseek-flash", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"],
 }
 NO_ADAPTER = (
     "columbina: the profile has no entry 'model' that loads "

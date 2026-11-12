@@ -70,25 +70,30 @@ async def test_claude_is_asked_for_its_models_in_the_protocol_of_anthropic(
 
 
 async def test_openai_is_asked_for_its_models_by_the_adapter_of_its_responses(
-    home: Path, service: Service, monkeypatch: pytest.MonkeyPatch
+    home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    made: list[str] = []
-    real = setup.OpenAIResponses
+    made: list[tuple[str, str | None]] = []
+    closed: list[bool] = []
 
-    def responses(config: Any, *, secret: str | None = None) -> Any:
-        made.append(config.base_url)
-        return real(config, secret=secret)
+    class Responses:
+        """Stands in for the adapter, so that nothing is asked of OpenAI."""
 
-    monkeypatch.setattr(setup, "OpenAIResponses", responses)
-    # OpenAI speaks its Responses at its own address, which no test asks. So what it speaks
-    # is said here of the address of this machine.
-    monkeypatch.setattr(setup, "protocol_at", lambda service, env: "openai-responses")
+        def __init__(self, config: Any, *, secret: str | None = None) -> None:
+            made.append((config.base_url, secret))
 
-    answer = await check(home, service="openai", base_url=service.address, api_key=KEY)
+        async def models(self) -> list[str]:
+            return ["gpt-a", "gpt-b"]
 
-    assert answer == {"models": list(MODELS)}
-    assert service.asked == [("/v1/models", f"Bearer {KEY}")]
-    assert made == [service.address]
+        async def aclose(self) -> None:
+            closed.append(True)
+
+    monkeypatch.setattr(setup, "OpenAIResponses", Responses)
+
+    answer = await check(home, service="openai", api_key=KEY)
+
+    assert answer == {"models": ["gpt-a", "gpt-b"]}
+    assert made == [("https://api.openai.com/v1", KEY)]
+    assert closed == [True]
 
 
 async def test_the_blanks_around_a_key_that_is_checked_are_not_sent(

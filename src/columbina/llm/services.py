@@ -83,6 +83,8 @@ class Service:
             the request.
         pictures: Whether its models take pictures, over the protocol of
             OpenAI. Those of Anthropic all do.
+        pictures_only: Which of its models take pictures, where not all of
+            them do. Empty where ``pictures`` says it of all.
     """
 
     name: str
@@ -101,6 +103,7 @@ class Service:
     balance: Literal["deepseek"] | None = None
     drops_unbound_thinking: bool = False
     pictures: bool = False
+    pictures_only: tuple[str, ...] = ()
 
 
 PRESETS: tuple[Service, ...] = (
@@ -115,6 +118,10 @@ PRESETS: tuple[Service, ...] = (
         base_url_env="DEEPSEEK_BASE_URL",
         key_page="https://platform.deepseek.com/api_keys",
         balance="deepseek",
+        # Its Flash takes pictures, under its name and under the two older ones that the
+        # service still reads as that model. Its Pro takes none.
+        pictures=True,
+        pictures_only=("deepseek-flash", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"),
     ),
     Service(
         name="openai",
@@ -266,6 +273,8 @@ def adapter_config(service: Service, keys: str, env: Mapping[str, str]) -> dict[
         config["max_tokens_field"] = service.max_tokens_field
     if service.pictures:
         config["pictures"] = True
+    if service.pictures_only:
+        config["pictures_only"] = list(service.pictures_only)
     # What another address takes, such as one that answers as Anthropic does, is not known.
     if service.drops_unbound_thinking and base_url == service.base_url:
         config["drop_unbound_thinking"] = True

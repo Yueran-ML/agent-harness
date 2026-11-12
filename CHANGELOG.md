@@ -6,6 +6,9 @@ change what was there before.
 
 ## Unreleased
 
+- DeepSeek's Flash is shown the pictures that a tool gives back, such as a picture that was
+  read or one of the screen: it takes them now, and its Pro, which takes none, is told that a
+  picture was there. Which models of a service take pictures is said model by model.
 - A tool `computer`, with which the agent sees the screen of the machine and uses its
   pointer and its keyboard: screenshots and a zoom, clicks, drags, the wheel, typing and
   chords. It is off unless `COLUMBINA_COMPUTER=1` switches it on, is asked about as a

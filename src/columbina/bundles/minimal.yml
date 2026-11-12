@@ -16,6 +16,9 @@
         # The keys that the user stored with `columbina setup`. The variable goes first.
         api_key_file: ${COLUMBINA_HOME}/credentials.json
         reasoning_style: deepseek
+        # Its Flash takes pictures, its Pro takes none.
+        pictures: true
+        pictures_only: [deepseek-flash, deepseek-v4-flash, deepseek-v4-flash-vision-exp]
     - id: tools
       plugin: columbina.tools
       config:

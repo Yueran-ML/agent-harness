@@ -153,6 +153,25 @@ def test_openai_alone_is_spoken_to_in_its_responses_and_only_at_its_own_address(
     assert protocol_at(known("deepseek"), {}) == "openai-chat"
 
 
+def test_of_deepseek_only_its_flash_takes_pictures() -> None:
+    # As its documents say on 2026-11-12: Flash takes pictures, Pro does not.
+    deepseek = known("deepseek")
+
+    assert deepseek.pictures
+    assert deepseek.model in deepseek.pictures_only
+    assert "deepseek-v4-pro" not in deepseek.pictures_only
+    config = adapter_config(deepseek, KEYS, {})
+    assert config["pictures"] is True
+    assert config["pictures_only"] == [
+        "deepseek-flash",
+        "deepseek-v4-flash",
+        "deepseek-v4-flash-vision-exp",
+    ]
+    # Where all the models of a service take pictures, or none, nothing is said of which.
+    assert "pictures_only" not in adapter_config(known("openai"), KEYS, {})
+    assert "pictures_only" not in adapter_config(known("moonshot"), KEYS, {})
+
+
 def test_no_two_services_share_a_name_or_a_variable() -> None:
     names = [service.name for service in PRESETS]
     variables = [service.key_env for service in PRESETS if service.key_env is not None]

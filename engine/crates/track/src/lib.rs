@@ -28,7 +28,10 @@
 //!   interpolation over a range, keyframes of Frame mode, Copy and Paste Track Data
 //!   ([`TrackData::paste`], p. 3233), and the change of scale from a proxy to the original.
 //!
-//! `IntelliTrack` (Studio, an AI) is not made, nor the stabilizer, which is to share this core.
+//! `IntelliTrack` (Studio, an AI) is not made. Of the stabilizer, which shares this core, the
+//! mathematics is here ([`stabilize`]): the path of the camera from the motion between frames,
+//! its smoothing, and where each frame is put. Finding that motion in the frames of a clip is
+//! yet to be made.
 //!
 //! # Determinism
 //!
@@ -57,6 +60,7 @@ mod motion;
 mod point;
 mod region;
 mod run;
+pub mod stabilize;
 
 pub use cloud::{CloudOptions, CloudTracker};
 pub use data::{Adjusted, Mode, TrackData};

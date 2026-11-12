@@ -1,9 +1,10 @@
 import { useContext, useEffect, useRef, useState, type MouseEvent, type PointerEvent } from 'react';
 import { Link2, Pipette, RotateCcw } from 'lucide-react';
 import { useWords } from '../../app/locale';
-import type { CurvePoint } from '../engine';
+import type { CurveKnot, CurvePoint } from '../engine';
 import {
-  BOUNDS, HSL_CURVES, SETTING_FEEL, VECTORS, addPoint, addVector, curveAt, defaultAnchors, isHueCurve, movePoint, outRange, removePoint,
+  BOUNDS, HSL_CURVES, SETTING_FEEL, VECTORS, addPoint, addVector, curveAt, defaultAnchors, editedPoints, isHueCurve, movePoint, outRange, removePoint,
+  shownPoints,
   type HslCurve, type Vector,
 } from './corrector';
 import { NumberControl } from './controls';
@@ -220,18 +221,21 @@ export function CurvesPalette({ edit, mode, onMode }: { edit: NodeEdit; mode: Cu
   const drags = usePickerDrags(disabled ? null : hub?.sample ?? null, (samples, ended) => {
     if (mode === 'custom') {
       if (!ended) return;
-      const added = customPickPoints(curves[editing].points, samples[samples.length - 1], editing);
+      const added = customPickPoints(shown(curves[editing].points), samples[samples.length - 1], editing);
       if (added) edit.commit(customEdits(added));
       return;
     }
-    const next = hslPickPoints(mode, edit.base.hsl[mode], samples);
+    const next = hslPickPoints(mode, shown(edit.base.hsl[mode]), samples);
     if (ended) edit.commit(hslEdits(mode, next)); else edit.preview(hslEdits(mode, next));
   }, () => edit.cancel(), failure => { edit.cancel(); hub?.onFailure(failure); });
   usePalettePicker(!disabled, drags);
 
   // Ganged, the four curves are edited as one (pp. 3115–3116): each gets the same points.
-  const customEdits = (points: CurvePoint[]): Edits => (ganged ? CHANNELS : [editing]).map(ch => [`curves.${ch}.points`, { whole: points }] as const);
-  const hslEdits = (curve: HslCurve, points: CurvePoint[]): Edits => [[`hsl.${curve}`, { whole: points }]];
+  // The editor shows the points where the keys of the playhead have them, and an edit goes into those keys.
+  const shown = (knots: readonly CurveKnot[]) => shownPoints(knots, edit.frame);
+  const customEdits = (points: CurvePoint[]): Edits => (ganged ? CHANNELS : [editing]).map(ch =>
+    [`curves.${ch}.points`, { whole: editedPoints(curves[ch].points, edit.frame, points) }] as const);
+  const hslEdits = (curve: HslCurve, points: CurvePoint[]): Edits => [[`hsl.${curve}`, { whole: editedPoints(edit.corrector.hsl[curve], edit.frame, points) }]];
   const reset = () => {
     if (mode === 'custom') {
       // Reset Custom Curve (p. 3109): every channel's curve and intensity, as new.
@@ -245,8 +249,9 @@ export function CurvesPalette({ edit, mode, onMode }: { edit: NodeEdit; mode: Cu
     edit.commit(channels.flatMap(each => [[`curves.${each}.points`, { whole: [[0, 0], [1, 1]] }], [`curves.${each}.intensity`, BOUNDS.intensity.neutral]] as const));
   };
   const option = (value: string) => {
+    // A curve is copied to another channel as it is, with its keys.
     const points = curves[editing].points;
-    if (value === 'anchors') edit.commit(customEdits(defaultAnchors(points)));
+    if (value === 'anchors') edit.commit(customEdits(defaultAnchors(shown(points))));
     else if (value === 'r' || value === 'g' || value === 'b') edit.commit([[`curves.${value}.points`, { whole: points }]]);
   };
 
@@ -275,8 +280,8 @@ export function CurvesPalette({ edit, mode, onMode }: { edit: NodeEdit; mode: Cu
   </div>;
 
   if (mode === 'custom') {
-    const drawn: Drawn[] = ganged ? [{ id: 'y', points: curves.y.points, active: true }]
-      : CHANNELS.map(ch => ({ id: ch, points: curves[ch].points, active: ch === editing }));
+    const drawn: Drawn[] = ganged ? [{ id: 'y', points: shown(curves.y.points), active: true }]
+      : CHANNELS.map(ch => ({ id: ch, points: shown(curves[ch].points), active: ch === editing }));
     return <div className="color-curves" data-mode="custom" data-test="curves">
       {head}
       <div className="color-curves-body">
@@ -314,7 +319,7 @@ export function CurvesPalette({ edit, mode, onMode }: { edit: NodeEdit; mode: Cu
   }
 
   const curve = mode;
-  const points = edit.corrector.hsl[curve];
+  const points = shown(edit.corrector.hsl[curve]);
   const hue = isHueCurve(curve);
   const point = chosen !== null && chosen < points.length ? points[chosen] : null;
   const input = inputShown(curve);

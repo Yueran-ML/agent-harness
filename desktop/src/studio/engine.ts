@@ -428,12 +428,18 @@ export interface Primaries {
 }
 export interface LogWheels { shadow: Rgb; midtone: Rgb; highlight: Rgb; low_range: Param; high_range: Param }
 /** A curve point: `[in, out]`. */
+/** A point of a curve as numbers, `[in, out]`: where it is at a frame, or where a control shows it. */
 export type CurvePoint = [number, number];
-export interface Curve { points: CurvePoint[]; intensity: Param }
+/**
+ * A point of a curve as the engine keeps it, `[in, out]`: each of the two is a setting, a number
+ * or keyframes, so that a curve changes its shape through a clip (PROTOCOL.md, "Grades").
+ */
+export type CurveKnot = [Param, Param];
+export interface Curve { points: CurveKnot[]; intensity: Param }
 export interface Curves { ganged: boolean; y: Curve; r: Curve; g: Curve; b: Curve }
 export interface HslCurves {
-  hue_vs_hue: CurvePoint[]; hue_vs_sat: CurvePoint[]; hue_vs_lum: CurvePoint[];
-  lum_vs_sat: CurvePoint[]; sat_vs_sat: CurvePoint[]; sat_vs_lum: CurvePoint[];
+  hue_vs_hue: CurveKnot[]; hue_vs_sat: CurveKnot[]; hue_vs_lum: CurveKnot[];
+  lum_vs_sat: CurveKnot[]; sat_vs_sat: CurveKnot[]; sat_vs_lum: CurveKnot[];
 }
 export interface SoftClip { low: Rgb; high: Rgb; low_soft: Rgb; high_soft: Rgb }
 export interface KeyInput { invert: boolean; matte: boolean; gain: Param; offset: Param }

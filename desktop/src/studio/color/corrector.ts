@@ -6,7 +6,7 @@
  * maths of the wheels and of the curves as the engine draws them, and Auto Color. Pure, so that
  * the palettes and their tests work from the same rules.
  */
-import { mergePatch, type Corrector, type CurvePoint, type HslCurves, type Keyframe, type Param } from '../engine';
+import { mergePatch, type Corrector, type CurveKnot, type CurvePoint, type HslCurves, type Keyframe, type Param } from '../engine';
 
 /** The value that changes nothing, which a new node has, and the values a setting may take. */
 export interface Bounds { neutral: number; low: number; high: number }
@@ -143,6 +143,41 @@ export function isNeutral(param: Param | undefined, neutral: number): boolean {
   return isKeyed(param) ? param.keys.every(key => key.value === neutral) : param === neutral;
 }
 
+/**
+ * The points of a curve as its editor shows them at `frame`: each of the two numbers of a point
+ * as a control shows a setting (`shownValue`), the value of its key at or before the playhead.
+ */
+export function shownPoints(knots: readonly CurveKnot[], frame: number): CurvePoint[] {
+  return knots.map(([x, y]): CurvePoint => [shownValue(x, frame), shownValue(y, frame)]);
+}
+
+/** Whether a number of a point of a curve has keyframes. */
+export const pointsKeyed = (knots: readonly CurveKnot[]) => knots.some(([x, y]) => isKeyed(x) || isKeyed(y));
+
+/**
+ * The points of a curve after an edit at `frame` that left its editor showing `next`. A curve
+ * without keys becomes those points. In one with keys, a point that is still there keeps its
+ * keys, its new numbers put where an edit at `frame` puts them (`withValue`, p. 3391); a point
+ * that the edit added is two numbers, and one that it took away is gone with its keys. An edit
+ * that changes how many points there are by more than one (a reset, the default anchors) puts
+ * the points there whole, without keys.
+ */
+export function editedPoints(knots: readonly CurveKnot[], frame: number, next: readonly CurvePoint[]): CurveKnot[] {
+  const plain = (): CurveKnot[] => next.map((point): CurveKnot => [point[0], point[1]]);
+  if (!pointsKeyed(knots)) return plain();
+  const shown = shownPoints(knots, frame);
+  const moved = (knot: CurveKnot, point: CurvePoint): CurveKnot => [withValue(knot[0], frame, point[0]), withValue(knot[1], frame, point[1])];
+  if (next.length === knots.length) return next.map((point, i) => moved(knots[i], point));
+  // Where the two rows first differ is where a point was added, or one was taken away.
+  let at = 0;
+  while (at < next.length && at < shown.length && next[at][0] === shown[at][0] && next[at][1] === shown[at][1]) at += 1;
+  if (next.length === knots.length + 1) {
+    return next.map((point, i): CurveKnot => (i < at ? moved(knots[i], point) : i === at ? [point[0], point[1]] : moved(knots[i - 1], point)));
+  }
+  if (next.length === knots.length - 1) return next.map((point, i) => moved(knots[i < at ? i : i + 1], point));
+  return plain();
+}
+
 const sameCurve = (a: readonly CurvePoint[], c: readonly CurvePoint[]) => a.length === c.length && a.every((point, i) => point[0] === c[i][0] && point[1] === c[i][1]);
 
 /** Whether the Primaries palette, in any of its modes (Wheels, Bars, Log), has changed the node. */
@@ -161,7 +196,8 @@ export function primariesChanged(corrector: Corrector): boolean {
 /** Whether the Curves palette, its custom curves (and Soft Clip) or its HSL curves, has changed the node. */
 export function curvesChanged(corrector: Corrector): boolean {
   const c = corrector.curves;
-  const custom = ([c.y, c.r, c.g, c.b]).some(curve => !sameCurve(curve.points, diagonal()) || !isNeutral(curve.intensity, BOUNDS.intensity.neutral));
+  const custom = ([c.y, c.r, c.g, c.b]).some(curve => pointsKeyed(curve.points) || !sameCurve(shownPoints(curve.points, 0), diagonal())
+    || !isNeutral(curve.intensity, BOUNDS.intensity.neutral));
   const hsl = Object.values(corrector.hsl).some(points => points.length > 0);
   const s = corrector.soft_clip;
   const clip = (['r', 'g', 'b'] as const).some(ch => !isNeutral(s.low[ch], BOUNDS.clip_low.neutral) || !isNeutral(s.high[ch], BOUNDS.clip_high.neutral)

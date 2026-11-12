@@ -5,7 +5,7 @@
 use columbina_model::grade::{
     Interp, Key, Kind, Link, Node, Param, Qualifier, Window, WindowShape,
 };
-use columbina_model::{apply, apply_done, Grade, History, Op, OpError, Project, Target};
+use columbina_model::{apply, apply_done, Change, Grade, History, Op, OpError, Project, Target};
 
 fn c1() -> Target {
     Target::Clip {
@@ -418,6 +418,49 @@ fn the_operations_are_given_back_as_they_were_done_and_are_undone_and_redone() {
     history.redo("a test").unwrap().unwrap();
     history.redo("a test").unwrap().unwrap();
     assert_eq!(*history.project(), after);
+}
+
+#[test]
+fn a_key_that_is_dragged_in_one_gesture_is_one_step() {
+    let (project, id) = with_node(Kind::Corrector);
+    let mut history = History::new(project);
+    let three = vec![key(0, 50.0), key(24, 80.0), key(48, 20.0)];
+    history
+        .apply(
+            vec![set(&id, SATURATION, Param::Keys(three.clone()))],
+            "a test",
+        )
+        .unwrap();
+    let before = history.revision();
+
+    // The middle key goes up and to the right, a little with each move of the pointer.
+    for (frame, value, last) in [(25, 81.0, false), (26, 82.0, false), (27, 83.0, true)] {
+        let moved = key(frame, value);
+        history
+            .change_in_gesture(
+                vec![Change::Op(splice(&id, SATURATION, 1, 1, vec![moved]))],
+                "a test",
+                &mut |change, _: &[Op]| change,
+                "1:drag",
+                last,
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        setting(history.project(), SATURATION),
+        Param::Keys(vec![key(0, 50.0), key(27, 83.0), key(48, 20.0)])
+    );
+    assert_eq!(history.gesture(), None);
+
+    // One undo takes the whole drag back, and one redo does it again.
+    history.undo("a test").unwrap().unwrap();
+    assert_eq!(setting(history.project(), SATURATION), Param::Keys(three));
+    history.redo("a test").unwrap().unwrap();
+    assert_eq!(
+        setting(history.project(), SATURATION),
+        Param::Keys(vec![key(0, 50.0), key(27, 83.0), key(48, 20.0)])
+    );
+    assert!(history.revision() > before);
 }
 
 #[test]

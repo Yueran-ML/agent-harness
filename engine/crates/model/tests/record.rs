@@ -433,6 +433,72 @@ fn a_pass_that_is_not_what_it_should_be_is_refused() {
 }
 
 #[test]
+fn each_lane_of_a_pass_is_held_to_its_own_next_point_and_not_to_that_of_another() {
+    // The fader has a point at 5 s. The pan has no lane, so its Event holds to the end as Hold
+    // does, and is not given back at the point of the fader.
+    let mut project = project(&[(0, -10.0), (5000, -10.0)]);
+    let edit = json!({"edit": "record_pass", "timeline": "t1", "lanes": [
+        {"of": {"track": "A1"}, "path": "fader_db",
+            "runs": [run(&[(1000, -6.0)], 2000, "return", Some(250))]},
+        {"of": {"track": "A1"}, "path": "pan.x",
+            "runs": [run(&[(1000, 0.5)], 2000, "event", None)]},
+    ]});
+    record(&mut project, edit);
+    assert!(near(at(&mut project, "pan.x", 9000.0), 0.5));
+    let points = &a1(&mut project).audio.lanes["pan.x"].points;
+    assert!(points.iter().all(|p| p.at.ticks <= 2000 * 48), "{points:?}");
+}
+
+#[test]
+fn a_trim_of_a_pan_or_of_a_frequency_is_refused() {
+    let mut project = project(&[(0, -10.0)]);
+    let eq = json!({"op": "set_track_audio", "timeline": "t1", "track": "A1",
+        "patch": {"strip": {"eq": {"on": true}}}});
+    apply(&mut project, serde_json::from_value(eq).unwrap()).unwrap();
+    for (path, value) in [("pan.x", 0.5), ("eq.0.freq", 1000.0)] {
+        assert_eq!(
+            refused(
+                &mut project,
+                pass(path, true, vec![run(&[(1000, value)], 2000, "cut", None)])
+            ),
+            json!({"reason": "out_of_range", "what": "trim"}),
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn a_run_may_jump_and_two_runs_may_start_at_one_time() {
+    // Two points at one time are a jump: the fader is at -6 dB before it and at -3 dB after.
+    let mut jump = project(&[(0, -10.0)]);
+    let points = [(1000, -6.0), (1500, -6.0), (1500, -3.0)];
+    record(
+        &mut jump,
+        pass("fader_db", false, vec![run(&points, 2000, "hold", None)]),
+    );
+    assert!(near(at(&mut jump, "fader_db", 1400.0), -6.0));
+    assert!(near(at(&mut jump, "fader_db", 1600.0), -3.0));
+    // Two runs from one time: the later takes the place of the earlier where it writes, and
+    // gives the lane back to it.
+    let mut twice = project(&[(0, -10.0)]);
+    record(
+        &mut twice,
+        pass(
+            "fader_db",
+            false,
+            vec![
+                run(&[(1000, -6.0)], 2000, "cut", None),
+                run(&[(1000, -3.0)], 1500, "cut", None),
+            ],
+        ),
+    );
+    for (ms, want) in [(1200.0, -3.0), (1700.0, -6.0), (2100.0, -10.0)] {
+        let got = at(&mut twice, "fader_db", ms);
+        assert!(near(got, want), "{ms} ms: {got}, not {want}");
+    }
+}
+
+#[test]
 fn a_switch_jumps_where_a_number_ramps() {
     let mut project = project(&[]);
     record(

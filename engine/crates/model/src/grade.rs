@@ -328,6 +328,12 @@ pub mod bounds {
     pub const HIGH_RANGE: Bounds = Bounds::new(0.55, 0.0, 1.0);
     /// The intensity of a custom curve: 100 gives all of it and 0 none (p. 3116).
     pub const CURVE_INTENSITY: Bounds = Bounds::new(100.0, 0.0, 100.0);
+    /// The `in` and the `out` of a point of a custom curve, and the `in` of a point of an HSL
+    /// curve, from 0 to 1. A point is where it is put: it has no value that it is at first,
+    /// and the one here is of no point.
+    pub const CURVE_POINT: Bounds = Bounds::new(0.0, 0.0, 1.0);
+    /// The `out` of a point of an HSL curve: 0 changes nothing.
+    pub const HSL_OUT: Bounds = Bounds::new(0.0, -1.0, 1.0);
     /// The level below which Soft Clip clips, as a share of 100 of the 10-bit scale: 0, level
     /// 0, by default (p. 3120).
     pub const CLIP_LOW: Bounds = Bounds::new(0.0, 0.0, 100.0);
@@ -1267,6 +1273,49 @@ impl Default for Curves {
     }
 }
 
+/// A point of a curve, `[in, out]`. Each of the two is a setting that takes keys, so that a
+/// curve changes its shape through a clip as its points move (p. 3384). A point is written as
+/// two numbers where it does not move, as it always was.
+pub type CurvePoint = [Param; 2];
+
+/// The least that the `in` of a point of a curve is beyond that of the point before it, where
+/// keys have brought two points together or past each other between their frames.
+const CURVE_STEP: f64 = 1e-6;
+
+/// Points of a curve that do not move, from their numbers.
+#[must_use]
+pub fn fixed_points(points: &[[f64; 2]]) -> Vec<CurvePoint> {
+    points
+        .iter()
+        .map(|[x, y]| [Param::Fixed(*x), Param::Fixed(*y)])
+        .collect()
+}
+
+/// The points of a curve at a frame, as numbers. They are in the order of their `in` at
+/// every frame that has a key ([`Corrector`] is checked so). Between two keys the points go
+/// each their own way, and where one would pass another there it is held a hair beyond it,
+/// so that a curve has its points in their order at every frame.
+#[must_use]
+pub fn points_at(points: &[CurvePoint], frame: f64) -> Vec<[f64; 2]> {
+    let mut found: Vec<[f64; 2]> = points
+        .iter()
+        .map(|[x, y]| [x.value_at(frame), y.value_at(frame)])
+        .collect();
+    if points.iter().flatten().all(|param| !param.is_animated()) {
+        return found;
+    }
+    for at in 1..found.len() {
+        found[at][0] = found[at][0].max(found[at - 1][0] + CURVE_STEP);
+    }
+    // And none beyond the end of the scale, for the ones before it to make room.
+    let mut most = 1.0_f64;
+    for point in found.iter_mut().rev() {
+        point[0] = point[0].min(most);
+        most = point[0] - CURVE_STEP;
+    }
+    found
+}
+
 /// A custom curve: its points, from the black point to the white point, each `[in, out]` from 0
 /// to 1, in the order of `in`, two at least; and its intensity. At first it is the diagonal
 /// from `[0, 0]` to `[1, 1]` (p. 3112).
@@ -1274,15 +1323,29 @@ impl Default for Curves {
 #[serde(deny_unknown_fields)]
 pub struct Curve {
     /// Its points.
-    pub points: Vec<[f64; 2]>,
+    pub points: Vec<CurvePoint>,
     /// Its intensity.
     pub intensity: Param,
+}
+
+impl Curve {
+    /// Its points at a frame ([`points_at`]).
+    #[must_use]
+    pub fn at(&self, frame: f64) -> Vec<[f64; 2]> {
+        points_at(&self.points, frame)
+    }
+
+    /// Whether it is the diagonal that changes nothing, at every frame.
+    #[must_use]
+    pub fn is_diagonal(&self) -> bool {
+        self.points == fixed_points(&[[0.0, 0.0], [1.0, 1.0]])
+    }
 }
 
 impl Default for Curve {
     fn default() -> Self {
         Self {
-            points: vec![[0.0, 0.0], [1.0, 1.0]],
+            points: fixed_points(&[[0.0, 0.0], [1.0, 1.0]]),
             intensity: bounds::CURVE_INTENSITY.param(),
         }
     }
@@ -1302,17 +1365,17 @@ impl Default for Curve {
 #[serde(deny_unknown_fields)]
 pub struct HslCurves {
     /// Hue vs Hue.
-    pub hue_vs_hue: Vec<[f64; 2]>,
+    pub hue_vs_hue: Vec<CurvePoint>,
     /// Hue vs Sat.
-    pub hue_vs_sat: Vec<[f64; 2]>,
+    pub hue_vs_sat: Vec<CurvePoint>,
     /// Hue vs Lum.
-    pub hue_vs_lum: Vec<[f64; 2]>,
+    pub hue_vs_lum: Vec<CurvePoint>,
     /// Lum vs Sat.
-    pub lum_vs_sat: Vec<[f64; 2]>,
+    pub lum_vs_sat: Vec<CurvePoint>,
     /// Sat vs Sat.
-    pub sat_vs_sat: Vec<[f64; 2]>,
+    pub sat_vs_sat: Vec<CurvePoint>,
     /// Sat vs Lum.
-    pub sat_vs_lum: Vec<[f64; 2]>,
+    pub sat_vs_lum: Vec<CurvePoint>,
 }
 
 /// Soft Clip, each channel apart: where it clips low and high, and how softly (pp. 3117–3121).
@@ -1564,9 +1627,10 @@ impl Corrector {
             (&curves.g, "curves.g.points", "curves.g.intensity"),
             (&curves.b, "curves.b.points", "curves.b.intensity"),
         ] {
-            if curve.points.len() < 2 || !in_order(&curve.points, 0.0, 1.0) {
+            if curve.points.len() < 2 {
                 return Err(OpError::OutOfRange { what });
             }
+            in_order(what, &curve.points, 0.0, 1.0)?;
             CURVE_INTENSITY.check(intensity, &curve.intensity)?;
         }
         let hsl = &self.hsl;
@@ -1578,9 +1642,7 @@ impl Corrector {
             (&hsl.sat_vs_sat, "hsl.sat_vs_sat"),
             (&hsl.sat_vs_lum, "hsl.sat_vs_lum"),
         ] {
-            if !in_order(points, -1.0, 1.0) {
-                return Err(OpError::OutOfRange { what });
-            }
+            in_order(what, points, -1.0, 1.0)?;
         }
         if let Some(path) = &self.lut {
             if path.is_empty() || path.chars().count() > LONGEST_PATH || path.contains('\0') {
@@ -1626,13 +1688,41 @@ impl Corrector {
     }
 }
 
-/// Whether the points of a curve have their `in` from 0 to 1, rising, and their `out` from
-/// `low` to `high`.
-fn in_order(points: &[[f64; 2]], low: f64, high: f64) -> bool {
-    points
+/// Check that the points of a curve have their `in` from 0 to 1 and their `out` from `low` to
+/// `high`, as numbers or as keys of such values, and that their `in` rises from each point to
+/// the next: where the points do not move, and else at every frame at which one of them has
+/// a key, as they are there.
+fn in_order(what: &'static str, points: &[CurvePoint], low: f64, high: f64) -> Result<(), OpError> {
+    for [x, y] in points {
+        x.check(what, 0.0, 1.0)?;
+        y.check(what, low, high)?;
+    }
+    let mut frames: Vec<i64> = points
         .iter()
-        .all(|[x, y]| (0.0..=1.0).contains(x) && (low..=high).contains(y))
-        && points.windows(2).all(|pair| pair[0][0] < pair[1][0])
+        .flatten()
+        .filter_map(|param| match param {
+            Param::Keys(keys) => Some(keys.iter().map(|key| key.frame)),
+            Param::Fixed(_) => None,
+        })
+        .flatten()
+        .collect();
+    frames.sort_unstable();
+    frames.dedup();
+    if frames.is_empty() {
+        frames.push(0);
+    }
+    #[allow(clippy::cast_precision_loss, reason = "frames are within 2^53")]
+    let rising = frames.iter().all(|frame| {
+        let at = *frame as f64;
+        points
+            .windows(2)
+            .all(|pair| pair[0][0].value_at(at) < pair[1][0].value_at(at))
+    });
+    if rising {
+        Ok(())
+    } else {
+        Err(OpError::OutOfRange { what })
+    }
 }
 
 /// The settings of a parallel mixer: how many inputs it has (pp. 3334–3335).
@@ -2468,7 +2558,10 @@ mod tests {
         assert_eq!(p.hue, Param::Fixed(50.0));
         assert_eq!(p.lum_mix, Param::Fixed(100.0));
         assert_eq!(p.temperature, Param::Fixed(0.0));
-        assert_eq!(corrector.curves.y.points, vec![[0.0, 0.0], [1.0, 1.0]]);
+        assert_eq!(
+            corrector.curves.y.points,
+            fixed_points(&[[0.0, 0.0], [1.0, 1.0]])
+        );
         assert_eq!(corrector.curves.b.intensity, Param::Fixed(100.0));
         assert!(corrector.curves.ganged);
         assert_eq!(corrector.soft_clip.high.r, Param::Fixed(100.0));

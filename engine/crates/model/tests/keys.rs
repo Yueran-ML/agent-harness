@@ -238,9 +238,10 @@ fn what_is_no_setting_that_takes_keys_is_refused_and_nothing_changes() {
         id: path.into(),
     };
     for path in [
-        // A number that takes no keys, a list, a palette, a word, and nothing.
-        "curves.y.points.0.0",
+        // A list, a point without which of its two numbers, a palette, a word, and nothing.
         "curves.y.points",
+        "curves.y.points.0",
+        "curves.ganged",
         "primaries",
         "lut",
         "primaries.lift.w",

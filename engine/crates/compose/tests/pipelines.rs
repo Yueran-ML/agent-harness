@@ -45,7 +45,8 @@ fn serial(gains: &[f64]) -> Grade {
         .map(|(id, &gain)| {
             corrector(id, |c| {
                 c.primaries.gain.y = Param::Fixed(gain);
-                c.curves.y.points = vec![[0.0, 0.0], [0.4, 0.38], [1.0, 1.0]];
+                c.curves.y.points =
+                    columbina_model::grade::fixed_points(&[[0.0, 0.0], [0.4, 0.38], [1.0, 1.0]]);
             })
         })
         .collect();
@@ -80,11 +81,17 @@ fn six_nodes() -> Grade {
         nodes: vec![
             corrector("n1", |c| {
                 c.primaries.contrast = Param::Fixed(1.2);
-                c.curves.y.points = vec![[0.0, 0.0], [0.3, 0.25], [0.7, 0.75], [1.0, 1.0]];
+                c.curves.y.points = columbina_model::grade::fixed_points(&[
+                    [0.0, 0.0],
+                    [0.3, 0.25],
+                    [0.7, 0.75],
+                    [1.0, 1.0],
+                ]);
             }),
             corrector("n2", |c| {
                 c.primaries.saturation = Param::Fixed(60.0);
-                c.hsl.hue_vs_sat = vec![[0.0, 0.2], [0.3, 0.0], [0.6, -0.2]];
+                c.hsl.hue_vs_sat =
+                    columbina_model::grade::fixed_points(&[[0.0, 0.2], [0.3, 0.0], [0.6, -0.2]]);
                 c.soft_clip.high_soft.r = Param::Fixed(20.0);
             }),
             corrector("n3", |c| c.log.shadow.b = Param::Fixed(0.1)),
@@ -93,7 +100,9 @@ fn six_nodes() -> Grade {
                 c.key.output.gain = Param::Fixed(0.7);
             }),
             mixer,
-            corrector("n6", |c| c.hsl.sat_vs_lum = vec![[0.0, 0.0], [1.0, 0.1]]),
+            corrector("n6", |c| {
+                c.hsl.sat_vs_lum = columbina_model::grade::fixed_points(&[[0.0, 0.0], [1.0, 0.1]]);
+            }),
         ],
         links: vec![
             link(SOURCE, "n1", 0),

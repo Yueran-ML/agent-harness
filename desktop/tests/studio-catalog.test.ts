@@ -21,7 +21,8 @@ function keptAs(path: string): { table: Record<string, Bounds>; name: string } |
   switch (palette) {
     case 'primaries': return { table: primaries, name };
     case 'log': return { table: primaries, name: name.endsWith('_range') ? name : 'log_wheel' };
-    case 'curves': return { table: primaries, name: 'intensity' };
+    // The points of a curve are where they are put: only the intensity has bounds of its own.
+    case 'curves': return path.endsWith('.intensity') ? { table: primaries, name: 'intensity' } : undefined;
     case 'soft_clip': return { table: primaries, name: name.endsWith('_soft') ? 'clip_soft' : `clip_${name}` };
     case 'blur': return { table: blur, name };
     default: return undefined;
@@ -46,12 +47,16 @@ describe('the bounds of the settings of a corrector', () => {
     const paths = catalog.corrector.map(entry => entry.path);
     expect(new Set(paths).size).toBe(paths.length);
     expect(new Set(catalog.corrector.map(entry => entry.palette))).toEqual(
-      new Set(['primaries', 'log', 'curves', 'soft_clip', 'key', 'blur', 'shot_match', 'qualifier', 'window']),
+      new Set(['primaries', 'log', 'curves', 'hsl_curves', 'soft_clip', 'key', 'blur', 'shot_match', 'qualifier', 'window']),
     );
     expect(catalog.corrector.every(entry => entry.page === 'color' && entry.clock === 'source_frame')).toBe(true);
     // A place in a list is a star: the settings of every window are those of one.
     const pan = catalog.corrector.find(entry => entry.path === 'windows.*.transform.pan')!;
     expect([pan.default, pan.low, pan.high, pan.unit]).toEqual([50, -1000, 1000, 'number']);
     expect(catalog.corrector.find(entry => entry.path === 'windows.*.transform.rotate')!.unit).toBe('degrees');
+    // A number that the catalog writes out is itself: the two numbers of a point of a curve, `in` and `out`.
+    const out = catalog.corrector.find(entry => entry.path === 'hsl.hue_vs_sat.*.1')!;
+    expect([out.low, out.high]).toEqual([-1, 1]);
+    expect(catalog.corrector.some(entry => entry.path === 'curves.y.points.*.0')).toBe(true);
   });
 });

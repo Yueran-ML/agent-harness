@@ -522,7 +522,10 @@ fn the_settings_of_a_node_are_changed_where_they_are_given_and_taken_back_exactl
     assert_eq!(corrector.primaries.lift.r, Param::Fixed(-0.05));
     assert_eq!(corrector.primaries.lift.g, Param::Fixed(0.0));
     assert_eq!(corrector.lut.as_deref(), Some("LUTs/film.cube"));
-    assert_eq!(corrector.curves.y.points[1], [0.5, 0.6]);
+    assert_eq!(
+        corrector.curves.y.points[1],
+        [Param::Fixed(0.5), Param::Fixed(0.6)]
+    );
     assert_eq!(corrector.curves.r.points.len(), 2);
     // What was done names the values as they were read, and the inverse as they were.
     assert_eq!(

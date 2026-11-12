@@ -580,7 +580,8 @@ fn a_blur_palette_that_does_nothing_draws_the_frame_as_before_to_the_bit() {
         serial(vec![
             corrector("n1", |c| {
                 c.primaries.contrast = fixed(1.2);
-                c.curves.y.points = vec![[0.0, 0.0], [0.3, 0.25], [1.0, 1.0]];
+                c.curves.y.points =
+                    columbina_model::grade::fixed_points(&[[0.0, 0.0], [0.3, 0.25], [1.0, 1.0]]);
                 if quiet {
                     c.blur.mode = BlurMode::Mist;
                     c.blur.linked.ratio = false;

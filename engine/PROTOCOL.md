@@ -2822,8 +2822,8 @@ without them as `false` and `null`:
 | `log.shadow` / `midtone` / `highlight` `{r,g,b}` | 0 | −1…1 |
 | `log.low_range`, `log.high_range` | 0.333, 0.55 | 0…1 (p. 3073) |
 | `curves.ganged` | `true` | |
-| `curves.y` / `r` / `g` / `b` | `{"points": [[0,0],[1,1]], "intensity": 100}` | points `[in, out]` in 0…1, `in` rising, ≥ 2; intensity 0…100 (p. 3116) |
-| `hsl.hue_vs_hue`, `hue_vs_sat`, `hue_vs_lum`, `lum_vs_sat`, `sat_vs_sat`, `sat_vs_lum` | `[]` (flat) | points `[in, out]`, `in` 0…1 rising, `out` −1…1, 0 changes nothing |
+| `curves.y` / `r` / `g` / `b` | `{"points": [[0,0],[1,1]], "intensity": 100}` | points `[in, out]` in 0…1, `in` rising, ≥ 2, each of the two a parameter (below); intensity 0…100 (p. 3116) |
+| `hsl.hue_vs_hue`, `hue_vs_sat`, `hue_vs_lum`, `lum_vs_sat`, `sat_vs_sat`, `sat_vs_lum` | `[]` (flat) | points `[in, out]`, `in` 0…1 rising, `out` −1…1, 0 changes nothing, each of the two a parameter |
 | `lut` | `null` | a path or library name, 1…4096 characters, no NUL |
 | `soft_clip.low` / `high` / `low_soft` / `high_soft` `{r,g,b}` | 0 / 100 / 0 / 0 | 0…100, a share of the 10-bit scale (pp. 3119–3121) |
 | `blur` | at rest | the Blur palette, below (pp. 3454–3456) |
@@ -3119,6 +3119,17 @@ first's, after the last the last's. `interp` says how the value goes to the next
 curve whose handles are each a share `t` (0…1) of the frames between the keys and a change of
 value `dv` (any finite number): `out` from this key forward, `in` from the next key back
 (`[0.33, 0]` for both eases out and in, p. 3385). `Param::value_at(frame)` evaluates it.
+
+The `in` and the `out` of a **point of a curve** are parameters too, so that a curve changes its
+shape through a clip (p. 3384): `[0.5, {"keys": [...]}]` is a point that goes up or down where it
+is. A point that does not move is two numbers, as it always was, and a curve has the same points
+at every frame. The points are checked to have their `in` rising where they do not move, and
+else at every frame at which any number of a point of the curve has a key (`out_of_range` with
+`curves.y.points` or `hsl.hue_vs_sat`). Between two keys each point goes its own way, and where
+one would pass another there the engine holds it a millionth beyond it, so the curve that is
+drawn has its points in their order at every frame. The paths of the two numbers of a point are
+`curves.y.points.1.0` and `curves.y.points.1.1`, `hsl.hue_vs_sat.0.1`: the place of the point, then
+0 for `in` or 1 for `out`.
 
 The four ways of the Edit page to come to a key and leave it (Linear, Ease In, Ease Out, Ease In
 and Out; pp. 1105 and 1117) are no kinds of key: they are handles (`crates/model/src/grade/ease.rs`).

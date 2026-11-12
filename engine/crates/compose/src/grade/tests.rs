@@ -12,8 +12,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use columbina_model::grade::{
-    Composite, Corrector, Grade, Interp, Key, KeyInput, KeyMixer, LayerMixer, Link, Node, NodeKind,
-    ParallelMixer, Param, Port, ShotMatch, OUTPUT, SOURCE,
+    fixed_points, Composite, Corrector, Grade, Interp, Key, KeyInput, KeyMixer, LayerMixer, Link,
+    Node, NodeKind, ParallelMixer, Param, Port, ShotMatch, OUTPUT, SOURCE,
 };
 
 use super::maths::{self, Constants};
@@ -379,16 +379,18 @@ fn shadows_and_highlights_reach_a_quarter_at_black_and_white() {
 fn the_curves_of_a_node_after_another_are_its_own() {
     let curved = |id: &str| {
         corrector(id, |c| {
-            c.curves.y.points = vec![[0.0, 0.0], [0.5, 0.8], [1.0, 1.0]];
+            c.curves.y.points = fixed_points(&[[0.0, 0.0], [0.5, 0.8], [1.0, 1.0]]);
         })
     };
     let alone = serial(vec![curved("b")]);
     let after = serial(vec![
-        corrector("a", |c| c.curves.r.points = vec![[0.0, 0.1], [1.0, 1.0]]),
+        corrector("a", |c| {
+            c.curves.r.points = fixed_points(&[[0.0, 0.1], [1.0, 1.0]]);
+        }),
         curved("b"),
     ]);
     let first = serial(vec![corrector("a", |c| {
-        c.curves.r.points = vec![[0.0, 0.1], [1.0, 1.0]];
+        c.curves.r.points = fixed_points(&[[0.0, 0.1], [1.0, 1.0]]);
     })]);
     for x in [[0.25; 3], [0.6, 0.4, 0.2]] {
         near(eval(&after, x), eval(&alone, eval(&first, x)), 1e-6);
@@ -399,7 +401,7 @@ fn the_curves_of_a_node_after_another_are_its_own() {
 fn a_custom_curve_between_two_inner_points_is_the_cubic_of_hermite_through_them() {
     // On (0.3, 0.5) to (0.6, 0.6): slopes 1 and 5/7, the lines through their neighbours.
     let curve = one(|c| {
-        c.curves.y.points = vec![[0.0, 0.0], [0.3, 0.5], [0.6, 0.6], [1.0, 1.0]];
+        c.curves.y.points = fixed_points(&[[0.0, 0.0], [0.3, 0.5], [0.6, 0.6], [1.0, 1.0]]);
     });
     let (t, dx, dy) = (0.5_f32, 0.3_f32, 0.1_f32);
     let (h10, h11) = (t * t * t - 2.0 * t * t + t, t * t * t - t * t);
@@ -411,7 +413,7 @@ fn a_custom_curve_between_two_inner_points_is_the_cubic_of_hermite_through_them(
 fn a_custom_curve_takes_the_slope_of_its_neighbours_at_a_point() {
     // At (0.5, 0.8) the slope is that of the line from (0, 0) to (1, 1); at (0, 0), that of its
     // segment.
-    let curve = one(|c| c.curves.y.points = vec![[0.0, 0.0], [0.5, 0.8], [1.0, 1.0]]);
+    let curve = one(|c| c.curves.y.points = fixed_points(&[[0.0, 0.0], [0.5, 0.8], [1.0, 1.0]]));
     near(eval(&curve, [0.25; 3]), [0.4375; 3], 1e-6);
 }
 
@@ -448,7 +450,7 @@ fn a_quarter_turn_of_hue_turns_about_the_grey_axis() {
 #[test]
 fn hue_vs_hue_turns_by_its_value_as_a_share_of_half_a_turn() {
     // 0.5 everywhere: a quarter turn, as Hue does at 75.
-    let curve = one(|c| c.hsl.hue_vs_hue = vec![[0.0, 0.5]]);
+    let curve = one(|c| c.hsl.hue_vs_hue = fixed_points(&[[0.0, 0.5]]));
     let hue = one(|c| c.primaries.hue = fixed(75.0));
     near(
         eval(&curve, [1.0, 0.0, 0.0]),
@@ -466,10 +468,10 @@ fn the_s_curve_of_contrast_bends_each_side_of_its_pivot_its_own_way() {
 #[test]
 fn a_curve_goes_on_along_its_slope_below_its_first_point_or_flat_where_it_is_held() {
     // A custom curve from (0.2, 0.3) to (1, 1): below 0.2 along its slope of 0.875.
-    let custom = one(|c| c.curves.y.points = vec![[0.2, 0.3], [1.0, 1.0]]);
+    let custom = one(|c| c.curves.y.points = fixed_points(&[[0.2, 0.3], [1.0, 1.0]]));
     near(eval(&custom, [0.1; 3]), [0.2125; 3], 1e-6);
     // Lum vs Sat held at its first point below it: all the colour taken away under 0.3.
-    let held = one(|c| c.hsl.lum_vs_sat = vec![[0.3, -1.0], [0.8, 0.0]]);
+    let held = one(|c| c.hsl.lum_vs_sat = fixed_points(&[[0.3, -1.0], [0.8, 0.0]]));
     let dark = [0.2, 0.1, 0.05];
     near(eval(&held, dark), [luma(dark); 3], 1e-6);
 }
@@ -480,7 +482,7 @@ fn unganged_curves_at_lum_mix_100_keep_the_luma_of_their_channels_mixed() {
     // luma of what the channel curves make is that of the curve on all three, weighed.
     let red = one(|c| {
         c.curves.ganged = false;
-        c.curves.r.points = vec![[0.0, 0.0], [0.5, 0.7], [1.0, 1.0]];
+        c.curves.r.points = fixed_points(&[[0.0, 0.0], [0.5, 0.7], [1.0, 1.0]]);
     });
     near(eval(&red, [0.5; 3]), [0.7, 0.5, 0.5], 1e-6);
 }
@@ -952,7 +954,7 @@ fn log_wheels_move_their_own_zones() {
 fn custom_curves_pass_through_their_points_and_mix_by_intensity() {
     let lifted = |intensity: f64| {
         one(|c| {
-            c.curves.y.points = vec![[0.0, 0.0], [0.5, 0.7], [1.0, 1.0]];
+            c.curves.y.points = fixed_points(&[[0.0, 0.0], [0.5, 0.7], [1.0, 1.0]]);
             c.curves.y.intensity = fixed(100.0);
             c.curves.r.intensity = fixed(intensity);
             c.curves.g.intensity = fixed(intensity);
@@ -972,13 +974,13 @@ fn custom_curves_pass_through_their_points_and_mix_by_intensity() {
     // Not ganged: the red curve on red alone at Lum Mix 0, and the Y curve on luma.
     let apart = one(|c| {
         c.curves.ganged = false;
-        c.curves.r.points = vec![[0.0, 0.0], [0.5, 0.7], [1.0, 1.0]];
+        c.curves.r.points = fixed_points(&[[0.0, 0.0], [0.5, 0.7], [1.0, 1.0]]);
         c.primaries.lum_mix = fixed(0.0);
     });
     near(eval(&apart, [0.5, 0.5, 0.5]), [0.7, 0.5, 0.5], 1e-6);
     let y = one(|c| {
         c.curves.ganged = false;
-        c.curves.y.points = vec![[0.0, 0.0], [0.5, 0.7], [1.0, 1.0]];
+        c.curves.y.points = fixed_points(&[[0.0, 0.0], [0.5, 0.7], [1.0, 1.0]]);
     });
     let out = eval(&y, [0.6, 0.5, 0.3]);
     assert!((out[0] - out[2] - 0.3).abs() < 1e-6);
@@ -988,7 +990,7 @@ fn custom_curves_pass_through_their_points_and_mix_by_intensity() {
 #[test]
 fn a_curve_may_overshoot_its_points_as_the_curves_of_davinci_do() {
     let steep = one(|c| {
-        c.curves.y.points = vec![[0.0, 0.0], [0.4, 0.1], [0.5, 0.9], [1.0, 1.0]];
+        c.curves.y.points = fixed_points(&[[0.0, 0.0], [0.4, 0.1], [0.5, 0.9], [1.0, 1.0]]);
     });
     let mut highest: f32 = 0.0;
     for i in 0..=100 {
@@ -1004,33 +1006,34 @@ fn hsl_curves_work_on_the_hue_saturation_and_luma_of_the_input() {
     let red = [0.8, 0.2, 0.2];
     let blue = [0.2, 0.2, 0.8];
     // Hue vs Sat: reds less saturated, blues alone.
-    let cut = one(|c| c.hsl.hue_vs_sat = vec![[0.0, -0.5]]);
+    let cut = one(|c| c.hsl.hue_vs_sat = fixed_points(&[[0.0, -0.5]]));
     let s = |x: [f32; 3]| maths::sat(x);
     assert!(s(eval(&cut, red)) < s(red) - 0.1);
     let out = eval(&cut, red);
     assert!((luma(out) - luma(red)).abs() < 1e-6);
     let around = one(|c| {
-        c.hsl.hue_vs_sat = vec![[0.0, -0.5], [0.3, 0.0], [0.5, 0.0], [0.8, 0.0], [0.9, 0.0]];
+        c.hsl.hue_vs_sat =
+            fixed_points(&[[0.0, -0.5], [0.3, 0.0], [0.5, 0.0], [0.8, 0.0], [0.9, 0.0]]);
     });
     near(eval(&around, blue), blue, 1e-6);
     // The curves of hue go round: a point near the end works near red from the other side.
-    let wrapped = one(|c| c.hsl.hue_vs_sat = vec![[0.3, 0.0], [0.6, 0.0], [0.98, -0.5]]);
+    let wrapped = one(|c| c.hsl.hue_vs_sat = fixed_points(&[[0.3, 0.0], [0.6, 0.0], [0.98, -0.5]]));
     let magenta_red = [0.8, 0.2, 0.25];
     assert!(s(eval(&wrapped, magenta_red)) < s(magenta_red) - 0.1);
     // Hue vs Hue: half a turn at red.
-    let turn = one(|c| c.hsl.hue_vs_hue = vec![[0.0, 1.0]]);
+    let turn = one(|c| c.hsl.hue_vs_hue = fixed_points(&[[0.0, 1.0]]));
     let out = eval(&turn, red);
     assert!(out[0] < out[1], "{out:?}");
     // Hue vs Lum darkens the reds, and leaves a grey (it has no hue).
-    let dark = one(|c| c.hsl.hue_vs_lum = vec![[0.0, -0.5]]);
+    let dark = one(|c| c.hsl.hue_vs_lum = fixed_points(&[[0.0, -0.5]]));
     assert!(luma(eval(&dark, red)) < luma(red) - 0.05);
     near(eval(&dark, [0.4; 3]), [0.4; 3], 1e-6);
     // Lum vs Sat and Sat vs Sat scale saturation; Sat vs Lum brightens by saturation.
-    let lum_sat = one(|c| c.hsl.lum_vs_sat = vec![[0.0, 0.0], [1.0, -1.0]]);
+    let lum_sat = one(|c| c.hsl.lum_vs_sat = fixed_points(&[[0.0, 0.0], [1.0, -1.0]]));
     assert!(s(eval(&lum_sat, [1.0, 0.9, 0.9])) < 0.01);
-    let sat_sat = one(|c| c.hsl.sat_vs_sat = vec![[0.0, 0.0], [1.0, 1.0]]);
+    let sat_sat = one(|c| c.hsl.sat_vs_sat = fixed_points(&[[0.0, 0.0], [1.0, 1.0]]));
     assert!(s(eval(&sat_sat, red)) > s(red));
-    let sat_lum = one(|c| c.hsl.sat_vs_lum = vec![[0.0, 0.5]]);
+    let sat_lum = one(|c| c.hsl.sat_vs_lum = fixed_points(&[[0.0, 0.5]]));
     near(eval(&sat_lum, [0.4; 3]), [0.6; 3], 1e-6);
     near(eval(&sat_lum, [0.0; 3]), [0.0; 3], 0.0);
 }
@@ -1040,8 +1043,8 @@ fn hsl_curves_of_lightness_multiply_luma_by_one_and_their_output() {
     // Flat curves, each of one point: Sat vs Lum lowers every colour's luma by 40 %, and Hue vs
     // Lum raises it by half, times its saturation; the differences of R, G and B from luma
     // stay, black stays black.
-    let sat_lum = one(|c| c.hsl.sat_vs_lum = vec![[0.5, -0.4]]);
-    let hue_lum = one(|c| c.hsl.hue_vs_lum = vec![[0.5, 0.5]]);
+    let sat_lum = one(|c| c.hsl.sat_vs_lum = fixed_points(&[[0.5, -0.4]]));
+    let hue_lum = one(|c| c.hsl.hue_vs_lum = fixed_points(&[[0.5, 0.5]]));
     for rgb in [
         [0.8, 0.2, 0.2],
         [0.3, 0.6, 0.9],
@@ -1068,7 +1071,7 @@ fn hsl_curves_read_the_picture_that_came_into_the_node() {
     // red (p. 3122).
     let grade = one(|c| {
         c.primaries.hue = fixed(100.0);
-        c.hsl.hue_vs_sat = vec![[0.0, -1.0], [0.2, 0.0], [0.8, 0.0]];
+        c.hsl.hue_vs_sat = fixed_points(&[[0.0, -1.0], [0.2, 0.0], [0.8, 0.0]]);
     });
     let out = eval(&grade, [0.8, 0.2, 0.2]);
     assert!(maths::sat(out) < 1e-6, "{out:?}");
@@ -1123,10 +1126,10 @@ fn soft_clip_low_or_low_soft_alone_on_every_channel_clips() {
 fn hsl_curves_of_hue_and_luma_alone_change_the_colour() {
     // Every curve of hue and of luma has points, and Lum vs Sat takes all the colour away.
     let grey = one(|c| {
-        c.hsl.hue_vs_hue = vec![[0.5, 0.0]];
-        c.hsl.hue_vs_sat = vec![[0.5, 0.0]];
-        c.hsl.hue_vs_lum = vec![[0.5, 0.0]];
-        c.hsl.lum_vs_sat = vec![[0.0, -1.0], [1.0, -1.0]];
+        c.hsl.hue_vs_hue = fixed_points(&[[0.5, 0.0]]);
+        c.hsl.hue_vs_sat = fixed_points(&[[0.5, 0.0]]);
+        c.hsl.hue_vs_lum = fixed_points(&[[0.5, 0.0]]);
+        c.hsl.lum_vs_sat = fixed_points(&[[0.0, -1.0], [1.0, -1.0]]);
     });
     let red = [0.8, 0.2, 0.2];
     near(eval(&grey, red), [luma(red); 3], 1e-6);
@@ -1727,6 +1730,49 @@ fn keyframes_are_taken_at_the_frame() {
 }
 
 #[test]
+fn the_points_of_a_curve_are_taken_where_their_keys_put_them_at_the_frame() {
+    let key = |frame: i64, value: f64| Key {
+        frame,
+        value,
+        interp: Interp::Linear,
+    };
+    // The middle point of the curve of Y goes down, and that of Hue vs Sat goes to the right.
+    let moving = one(|c| {
+        c.curves.y.points = fixed_points(&[[0.0, 0.0], [0.5, 0.75], [1.0, 1.0]]);
+        c.curves.y.points[1][1] = Param::Keys(vec![key(0, 0.75), key(8, 0.25)]);
+        c.hsl.hue_vs_sat = fixed_points(&[[0.0, 0.0], [0.25, -0.5], [0.75, 0.0]]);
+        c.hsl.hue_vs_sat[1][0] = Param::Keys(vec![key(0, 0.25), key(8, 0.5)]);
+    });
+    let still = |out: f64, hue: f64| {
+        one(|c| {
+            c.curves.y.points = fixed_points(&[[0.0, 0.0], [0.5, out], [1.0, 1.0]]);
+            c.hsl.hue_vs_sat = fixed_points(&[[0.0, 0.0], [hue, -0.5], [0.75, 0.0]]);
+        })
+    };
+    for (frame, out, hue) in [
+        (-4.0, 0.75, 0.25),
+        (0.0, 0.75, 0.25),
+        (4.0, 0.5, 0.375),
+        (8.0, 0.25, 0.5),
+        (30.0, 0.25, 0.5),
+    ] {
+        let fixed = still(out, hue);
+        for colour in colours() {
+            near(
+                evaluate(&moving, frame, &options(), colour),
+                evaluate(&fixed, 0.0, &options(), colour),
+                1e-6,
+            );
+        }
+    }
+    // The curve has as many points at every frame: the same shader, with other parameters.
+    let ops = |frame| grade_ops(&moving, frame, &options(), &NoLuts);
+    let (a, b) = (ops(0.0), ops(8.0));
+    assert_eq!((&a[0].body, &a[0].library), (&b[0].body, &b[0].library));
+    assert_ne!(a[0].params, b[0].params);
+}
+
+#[test]
 fn only_the_shape_of_a_graph_makes_its_code() {
     let code = |grade: &Grade| {
         let ops = grade_ops(grade, 0.0, &options(), &NoLuts);
@@ -1738,8 +1784,8 @@ fn only_the_shape_of_a_graph_makes_its_code() {
     let mut settings = base.clone();
     if let NodeKind::Corrector(c) = &mut settings.nodes[1].kind {
         c.primaries.saturation = fixed(80.0);
-        c.curves.y.points = vec![[0.0, 0.1], [0.3, 0.5], [0.7, 0.6], [1.0, 0.9]];
-        c.hsl.hue_vs_hue = vec![[0.2, 0.1], [0.5, -0.3]];
+        c.curves.y.points = fixed_points(&[[0.0, 0.1], [0.3, 0.5], [0.7, 0.6], [1.0, 0.9]]);
+        c.hsl.hue_vs_hue = fixed_points(&[[0.2, 0.1], [0.5, -0.3]]);
         c.key.output.gain = fixed(0.4);
         c.key.input.invert = true;
         c.curves.ganged = false;
@@ -2056,17 +2102,17 @@ fn random_corrector(rng: &mut Rng, id: &str) -> Node {
         curve.intensity = r(0.0, 100.0);
     }
     curves.ganged = rng.chance(0.5);
-    curves.y.points = points(rng, 2, false);
-    curves.r.points = points(rng, 2, false);
-    curves.g.points = points(rng, 2, false);
-    curves.b.points = points(rng, 2, false);
+    curves.y.points = fixed_points(&points(rng, 2, false));
+    curves.r.points = fixed_points(&points(rng, 2, false));
+    curves.g.points = fixed_points(&points(rng, 2, false));
+    curves.b.points = fixed_points(&points(rng, 2, false));
     let hsl = &mut c.hsl;
-    hsl.hue_vs_hue = points(rng, 0, true);
-    hsl.hue_vs_sat = points(rng, 0, true);
-    hsl.hue_vs_lum = points(rng, 0, true);
-    hsl.lum_vs_sat = points(rng, 0, false);
-    hsl.sat_vs_sat = points(rng, 0, false);
-    hsl.sat_vs_lum = points(rng, 0, false);
+    hsl.hue_vs_hue = fixed_points(&points(rng, 0, true));
+    hsl.hue_vs_sat = fixed_points(&points(rng, 0, true));
+    hsl.hue_vs_lum = fixed_points(&points(rng, 0, true));
+    hsl.lum_vs_sat = fixed_points(&points(rng, 0, false));
+    hsl.sat_vs_sat = fixed_points(&points(rng, 0, false));
+    hsl.sat_vs_lum = fixed_points(&points(rng, 0, false));
     // Some settings at their neutral values, as most are in a grade.
     if rng.chance(0.3) {
         c.hsl = columbina_model::grade::HslCurves::default();
@@ -2392,7 +2438,7 @@ fn a_change_of_settings_makes_no_pipeline_and_a_change_of_shape_does() {
     let first = card.run(&stage_of(&grade, 0.0, &options(), &NoLuts), &x);
     if let NodeKind::Corrector(c) = &mut grade.nodes[0].kind {
         c.primaries.gain.r = fixed(0.5);
-        c.curves.y.points = vec![[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]];
+        c.curves.y.points = fixed_points(&[[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]]);
     }
     let second = card.run(&stage_of(&grade, 0.0, &options(), &NoLuts), &x);
     assert_ne!(first, second);
@@ -2462,7 +2508,7 @@ fn luts_named_by_nodes_are_read_and_put_on_the_card() {
             corrector("n1", |c| {
                 c.primaries.saturation = fixed(80.0);
                 c.lut = Some(first.into());
-                c.hsl.hue_vs_sat = vec![[0.0, -0.3]];
+                c.hsl.hue_vs_sat = fixed_points(&[[0.0, -0.3]]);
             }),
             corrector("n2", |c| {
                 c.primaries.gain.g = fixed(1.2);

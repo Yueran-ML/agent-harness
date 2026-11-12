@@ -216,11 +216,17 @@ fn six_nodes() -> Grade {
             corrector("n1", |c| {
                 c.primaries.contrast = fixed(1.2);
                 c.primaries.lift.y = fixed(0.03);
-                c.curves.y.points = vec![[0.0, 0.0], [0.3, 0.25], [0.7, 0.78], [1.0, 1.0]];
+                c.curves.y.points = columbina_model::grade::fixed_points(&[
+                    [0.0, 0.0],
+                    [0.3, 0.25],
+                    [0.7, 0.78],
+                    [1.0, 1.0],
+                ]);
             }),
             corrector("n2", |c| {
                 c.primaries.saturation = fixed(65.0);
-                c.hsl.hue_vs_lum = vec![[0.0, -0.3], [0.3, 0.0], [0.6, 0.2]];
+                c.hsl.hue_vs_lum =
+                    columbina_model::grade::fixed_points(&[[0.0, -0.3], [0.3, 0.0], [0.6, 0.2]]);
                 c.soft_clip.high_soft.r = fixed(20.0);
             }),
             corrector("n3", |c| c.log.shadow.b = fixed(0.1)),
@@ -235,7 +241,9 @@ fn six_nodes() -> Grade {
                     composite: Composite::Overlay,
                 }),
             ),
-            corrector("n6", |c| c.hsl.sat_vs_lum = vec![[0.0, 0.0], [1.0, 0.15]]),
+            corrector("n6", |c| {
+                c.hsl.sat_vs_lum = columbina_model::grade::fixed_points(&[[0.0, 0.0], [1.0, 0.15]]);
+            }),
         ],
         vec![
             link(SOURCE, "n1", 0),
@@ -638,7 +646,7 @@ fn detailed_grades() -> Vec<(&'static str, Grade)> {
         }),
         corrector("n2", |c| {
             c.primaries.saturation = fixed(70.0);
-            c.hsl.hue_vs_sat = vec![[0.0, -0.3], [0.5, 0.2]];
+            c.hsl.hue_vs_sat = columbina_model::grade::fixed_points(&[[0.0, -0.3], [0.5, 0.2]]);
         }),
         corrector("n3", |c| {
             c.primaries.gain.r = fixed(1.1);
@@ -656,7 +664,8 @@ fn detailed_grades() -> Vec<(&'static str, Grade)> {
             corrector("n3", |c| c.primaries.saturation = fixed(30.0)),
             mixer("pm", NodeKind::ParallelMixer(ParallelMixer { inputs: 2 })),
             corrector("n5", |c| {
-                c.curves.y.points = vec![[0.0, 0.02], [0.5, 0.55], [1.0, 0.97]];
+                c.curves.y.points =
+                    columbina_model::grade::fixed_points(&[[0.0, 0.02], [0.5, 0.55], [1.0, 0.97]]);
             }),
         ],
         vec![
@@ -697,7 +706,8 @@ fn detailed_grades() -> Vec<(&'static str, Grade)> {
     let late = serial(vec![
         corrector("n1", |c| {
             c.primaries.contrast = fixed(1.3);
-            c.curves.y.points = vec![[0.0, 0.0], [0.4, 0.35], [1.0, 1.0]];
+            c.curves.y.points =
+                columbina_model::grade::fixed_points(&[[0.0, 0.0], [0.4, 0.35], [1.0, 1.0]]);
         }),
         corrector("n2", |c| c.log.midtone.r = fixed(0.08)),
         corrector("n3", |c| {

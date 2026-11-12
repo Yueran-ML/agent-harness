@@ -62,7 +62,8 @@ fn primary_and_parallel() -> Grade {
                 c.primaries.contrast = fixed(1.3);
                 c.primaries.temperature = fixed(1200.0);
                 c.primaries.gamma.y = fixed(0.1);
-                c.curves.y.points = vec![[0.0, 0.05], [0.5, 0.55], [1.0, 0.95]];
+                c.curves.y.points =
+                    columbina_model::grade::fixed_points(&[[0.0, 0.05], [0.5, 0.55], [1.0, 0.95]]);
             }),
             corrector("n2", |c| c.primaries.offset.b = fixed(30.0)),
             corrector("n3", |c| {
@@ -87,7 +88,8 @@ fn layered() -> Grade {
     graph(
         vec![
             corrector("a", |c| {
-                c.hsl.hue_vs_sat = vec![[0.0, -0.6], [0.2, 0.0], [0.8, 0.0]];
+                c.hsl.hue_vs_sat =
+                    columbina_model::grade::fixed_points(&[[0.0, -0.6], [0.2, 0.0], [0.8, 0.0]]);
                 c.primaries.lift.r = fixed(0.05);
             }),
             corrector("b", |c| {
@@ -271,11 +273,17 @@ fn six_nodes(seed: f64) -> Grade {
             corrector("n1", |c| {
                 c.primaries.contrast = fixed(1.1 + seed * 0.1);
                 c.primaries.lift.y = fixed(0.02);
-                c.curves.y.points = vec![[0.0, 0.0], [0.3, 0.25], [0.7, 0.75], [1.0, 1.0]];
+                c.curves.y.points = columbina_model::grade::fixed_points(&[
+                    [0.0, 0.0],
+                    [0.3, 0.25],
+                    [0.7, 0.75],
+                    [1.0, 1.0],
+                ]);
             }),
             corrector("n2", |c| {
                 c.primaries.saturation = fixed(60.0);
-                c.hsl.hue_vs_sat = vec![[0.0, 0.2], [0.3, 0.0], [0.6, -0.2]];
+                c.hsl.hue_vs_sat =
+                    columbina_model::grade::fixed_points(&[[0.0, 0.2], [0.3, 0.0], [0.6, -0.2]]);
                 c.soft_clip.high_soft.r = fixed(20.0);
             }),
             corrector("n3", |c| c.log.shadow.b = fixed(0.1)),
@@ -290,7 +298,9 @@ fn six_nodes(seed: f64) -> Grade {
                     composite: Composite::Overlay,
                 }),
             ),
-            corrector("n6", |c| c.hsl.sat_vs_lum = vec![[0.0, 0.0], [1.0, 0.1]]),
+            corrector("n6", |c| {
+                c.hsl.sat_vs_lum = columbina_model::grade::fixed_points(&[[0.0, 0.0], [1.0, 0.1]]);
+            }),
         ],
         vec![
             link(SOURCE, "n1", 0),

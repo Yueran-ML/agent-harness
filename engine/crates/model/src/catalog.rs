@@ -61,6 +61,8 @@ pub enum Palette {
     Log,
     /// The custom curves.
     Curves,
+    /// The HSL curves.
+    HslCurves,
     /// Soft Clip.
     SoftClip,
     /// The Key palette.
@@ -133,7 +135,7 @@ const YRGB: [&str; 4] = ["y", "r", "g", "b"];
 const RGB: [&str; 3] = ["r", "g", "b"];
 
 fn gathered() -> Vec<Entry> {
-    use Palette::{Blur, Curves, Key, Log, Primaries, ShotMatch, SoftClip};
+    use Palette::{Blur, Curves, HslCurves, Key, Log, Primaries, ShotMatch, SoftClip};
     use Unit::{Number, Percent};
     let mut all = Gathered(Vec::new());
 
@@ -166,6 +168,29 @@ fn gathered() -> Vec<Entry> {
     for curve in YRGB {
         let path = format!("curves.{curve}.intensity");
         all.one(&path, b::CURVE_INTENSITY, Percent, Curves);
+        // A point of a curve is where it is, `in` and `out`, and has no value that it is at first.
+        all.each(
+            &format!("curves.{curve}.points.*"),
+            &["0", "1"],
+            b::CURVE_POINT,
+            Curves,
+        );
+    }
+    for curve in [
+        "hue_vs_hue",
+        "hue_vs_sat",
+        "hue_vs_lum",
+        "lum_vs_sat",
+        "sat_vs_sat",
+        "sat_vs_lum",
+    ] {
+        all.one(
+            &format!("hsl.{curve}.*.0"),
+            b::CURVE_POINT,
+            Number,
+            HslCurves,
+        );
+        all.one(&format!("hsl.{curve}.*.1"), b::HSL_OUT, Number, HslCurves);
     }
 
     all.each("soft_clip.low", &RGB, b::CLIP_LOW, SoftClip);
@@ -298,25 +323,25 @@ pub fn of_kind(kind: Kind) -> &'static [Entry] {
 /// The entry of a setting of a node of a kind, by its path, or none if it takes no keys.
 #[must_use]
 pub fn of_node(kind: Kind, path: &str) -> Option<&'static Entry> {
-    let listed = listed_as(path);
-    of_kind(kind).iter().find(|entry| entry.path == listed)
+    of_kind(kind).iter().find(|entry| lists(&entry.path, path))
 }
 
-/// The path of the catalog that a path of a setting is listed under: with `*` in the stead of
-/// each place in a list.
+/// Whether a path of the catalog lists a path of a setting: part by part, a `*` of the catalog
+/// standing for a place in a list, a number of any length, and every other part for itself. A
+/// number that the catalog writes out is itself too: the `0` and the `1` of a point of a curve
+/// are its `in` and its `out`, and not places in a list.
 #[must_use]
-pub fn listed_as(path: &str) -> String {
-    let parts: Vec<&str> = path
-        .split('.')
-        .map(|part| {
-            if !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()) {
-                "*"
-            } else {
-                part
-            }
-        })
-        .collect();
-    parts.join(".")
+pub fn lists(listed: &str, path: &str) -> bool {
+    let (mut listed, mut parts) = (listed.split('.'), path.split('.'));
+    loop {
+        match (listed.next(), parts.next()) {
+            (None, None) => return true,
+            (Some("*"), Some(part))
+                if !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()) => {}
+            (Some(named), Some(part)) if named == part => {}
+            _ => return false,
+        }
+    }
 }
 
 /// The entry of a setting of a corrector, by its path, or none if it takes no keys.
@@ -333,7 +358,10 @@ mod tests {
 
     use super::*;
     use crate::grade::window::{WindowBezierPoint, WindowPoint};
-    use crate::grade::{Corrector, KeyMixer, NodeKind, Qualifier, ShotMatch, Window, WindowShape};
+    use crate::grade::{
+        fixed_points, Corrector, HslCurves, KeyMixer, NodeKind, Qualifier, ShotMatch, Window,
+        WindowShape,
+    };
 
     /// A corrector with every palette and a window of every shape.
     fn full() -> Corrector {
@@ -363,6 +391,14 @@ mod tests {
                 Window::new("w4", curve),
                 Window::new("w5", WindowShape::gradient()),
             ],
+            hsl: HslCurves {
+                hue_vs_hue: fixed_points(&[[0.1, 0.5]]),
+                hue_vs_sat: fixed_points(&[[0.2, -0.5]]),
+                hue_vs_lum: fixed_points(&[[0.3, 0.25]]),
+                lum_vs_sat: fixed_points(&[[0.4, -0.25]]),
+                sat_vs_sat: fixed_points(&[[0.5, 0.75]]),
+                sat_vs_lum: fixed_points(&[[0.6, -0.75]]),
+            },
             ..Corrector::default()
         }
     }
@@ -423,7 +459,7 @@ mod tests {
                 "{path} takes keys: {takes_keys}"
             );
             if takes_keys {
-                keyed.insert(listed_as(path));
+                keyed.insert(of_corrector(path).unwrap().path.clone());
             }
         }
         let listed: BTreeSet<String> = corrector().iter().map(|e| e.path.clone()).collect();
@@ -446,8 +482,9 @@ mod tests {
                 "{path}"
             );
             assert!(entry.low <= value && value <= entry.high, "{path}: {value}");
-            // The corners and the handles of a window are where its shape puts them.
-            if !entry.path.contains("points") {
+            // The corners and the handles of a window are where its shape puts them, and the
+            // points of a curve where somebody put them.
+            if !entry.path.contains("points") && !entry.path.starts_with("hsl.") {
                 assert_eq!(value, entry.default, "{path}");
             }
         }
@@ -463,6 +500,8 @@ mod tests {
                 continue;
             };
             let step = (entry.high - entry.low) * 1e-9;
+            // The `in` of a point of a custom curve is also held between its neighbours.
+            let between = entry.path.starts_with("curves.") && entry.path.ends_with("points.*.0");
             for (value, taken) in [
                 (entry.low, true),
                 (entry.high, true),
@@ -470,6 +509,9 @@ mod tests {
                 (entry.high + step, false),
             ] {
                 let corrector = with(&whole, &path, json!(value)).unwrap();
+                if taken && between {
+                    continue;
+                }
                 assert_eq!(corrector.check().is_ok(), taken, "{path} at {value}");
             }
         }
@@ -492,7 +534,7 @@ mod tests {
                 "{path}"
             );
             if takes_keys {
-                keyed.insert(listed_as(path));
+                keyed.insert(of_node(Kind::KeyMixer, path).unwrap().path.clone());
             }
         }
         let listed: BTreeSet<String> = key_mixer().iter().map(|e| e.path.clone()).collect();
@@ -510,18 +552,34 @@ mod tests {
 
     #[test]
     fn a_path_is_listed_with_a_star_for_each_place_in_a_list() {
-        assert_eq!(listed_as("primaries.lift.r"), "primaries.lift.r");
         assert_eq!(
-            listed_as("windows.12.shape.points.3.in.x"),
+            of_corrector("primaries.lift.r").unwrap().path,
+            "primaries.lift.r"
+        );
+        assert_eq!(
+            of_corrector("windows.12.shape.points.3.in.x").unwrap().path,
             "windows.*.shape.points.*.in.x"
         );
+        assert!(lists("windows.*.opacity", "windows.007.opacity"));
+        assert!(!lists("windows.*.opacity", "windows.first.opacity"));
+        assert!(!lists("windows.*.opacity", "windows..opacity"));
+        assert!(!lists("windows.*.opacity", "windows.0.opacity.more"));
+        assert!(!lists("windows.*.opacity", "windows.0"));
         let pan = of_corrector("windows.0.transform.pan").unwrap();
         assert_eq!((pan.default, pan.low, pan.high), (50.0, -1000.0, 1000.0));
         assert_eq!(
             of_corrector("windows.0.transform.rotate").unwrap().unit,
             Unit::Degrees
         );
-        assert!(of_corrector("curves.y.points.0.0").is_none());
+        // A point of a curve has two numbers, and what is no number takes no keys.
+        assert!(of_corrector("curves.y.points.0.0").is_some());
+        assert!(of_corrector("curves.y.points.0.2").is_none());
+        assert!(of_corrector("curves.ganged").is_none());
+        let out = of_corrector("hsl.sat_vs_lum.3.1").unwrap();
+        assert_eq!(
+            (out.low, out.high, out.palette),
+            (-1.0, 1.0, Palette::HslCurves)
+        );
         assert!(of_corrector("windows..pan").is_none());
         assert!(of_corrector("").is_none());
     }

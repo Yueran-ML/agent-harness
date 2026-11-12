@@ -16,8 +16,8 @@
 use std::f64::consts::PI;
 
 use columbina_model::grade::{
-    Composite, Corrector, Curve, KeyInput, KeyOutput, Morph, Param, Qualifier, QualifierMode,
-    Range, ShotMatch, Wheel,
+    points_at, Composite, Corrector, Curve, CurvePoint, KeyInput, KeyOutput, Morph, Param,
+    Qualifier, QualifierMode, Range, ShotMatch, Wheel,
 };
 
 use crate::color::Filter;
@@ -411,14 +411,15 @@ pub fn corrector(
     let mut offsets = [0.0; 4];
     let mut counts = [0.0; 4];
     for (i, curve) in custom.iter().enumerate() {
-        (offsets[i], counts[i]) = put(&curve.points, false);
+        // Where the points of the curve are at this frame.
+        (offsets[i], counts[i]) = put(&curve.at(frame), false);
     }
     out[CURVE_INTENSITY as usize] = custom.map(|curve| f(at(&curve.intensity, frame) / 100.0));
     out[CURVE_OFFSETS as usize] = offsets;
     out[CURVE_COUNTS as usize] = counts;
     out[CURVE_GANGED as usize] = [flag(curves.ganged), 0.0, 0.0, 0.0];
     let hsl = &corrector.hsl;
-    let lists: [(&[[f64; 2]], bool); 6] = [
+    let lists: [(&[CurvePoint], bool); 6] = [
         (&hsl.hue_vs_hue, true),
         (&hsl.hue_vs_sat, true),
         (&hsl.hue_vs_lum, true),
@@ -429,7 +430,7 @@ pub fn corrector(
     let mut offsets = [0.0; 8];
     let mut counts = [0.0; 8];
     for (i, (list, round)) in lists.iter().enumerate() {
-        (offsets[i], counts[i]) = put(list, *round);
+        (offsets[i], counts[i]) = put(&points_at(list, frame), *round);
     }
     out[HSL_OFFSETS as usize] = [offsets[0], offsets[1], offsets[2], offsets[3]];
     out[HSL_OFFSETS_2 as usize] = [offsets[4], offsets[5], 0.0, 0.0];
@@ -475,7 +476,7 @@ pub fn corrector(
         qualifier_block(qualifier, frame, &mut out);
     }
     out[KEY_QUALIFIER as usize] = key_input(&corrector.key.qualifier, frame);
-    let diagonal = |curve: &Curve| curve.points == [[0.0, 0.0], [1.0, 1.0]];
+    let diagonal = |curve: &Curve| curve.is_diagonal();
     let curved = if curves.ganged {
         !diagonal(&curves.y)
     } else {

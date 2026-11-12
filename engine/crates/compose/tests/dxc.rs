@@ -60,8 +60,9 @@ fn serial(count: usize) -> Grade {
 
 fn set(corrector: &mut Corrector) {
     corrector.primaries.gain.y = Param::Fixed(1.05);
-    corrector.curves.y.points = vec![[0.0, 0.0], [0.4, 0.38], [1.0, 1.0]];
-    corrector.hsl.hue_vs_sat = vec![[0.0, 0.1], [0.5, -0.1]];
+    corrector.curves.y.points =
+        columbina_model::grade::fixed_points(&[[0.0, 0.0], [0.4, 0.38], [1.0, 1.0]]);
+    corrector.hsl.hue_vs_sat = columbina_model::grade::fixed_points(&[[0.0, 0.1], [0.5, -0.1]]);
 }
 
 #[test]

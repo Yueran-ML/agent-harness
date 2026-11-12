@@ -80,6 +80,17 @@ fn refused(project: &mut Project, edit: Value) -> Value {
     value
 }
 
+/// An edit refused that cannot be written, a number of it being none; the project left as it
+/// was.
+fn refused_as_given(project: &mut Project, edit: Edit) -> Value {
+    let before = project.clone();
+    let error = columbina_model::expand(project, edit).unwrap_err();
+    assert_eq!(*project, before);
+    let mut value = serde_json::to_value(&error).unwrap();
+    value.as_object_mut().unwrap().remove("message");
+    value
+}
+
 /// A time of the timeline, in milliseconds, at 48 kHz.
 fn ms(ms: i64) -> Value {
     json!({"ticks": ms * 48, "scale": 48000})
@@ -573,6 +584,119 @@ fn points_move_as_far_as_their_neighbours_and_the_range_of_their_setting_let_the
     );
 }
 
+#[test]
+fn points_move_in_time_alone_or_in_value_alone_between_the_points_beside_each_run_of_them() {
+    let mut project = project();
+    let set = |project: &mut Project| {
+        let points = [
+            (0, -10.0),
+            (200, -8.0),
+            (500, -5.0),
+            (600, -4.0),
+            (1000, 0.0),
+        ];
+        op(
+            project,
+            set_lane(
+                json!({"track": "A1"}),
+                "fader_db",
+                lane(&points, "continuous"),
+            ),
+        );
+    };
+    let points = |project: &Project| -> Vec<(i64, f64)> {
+        lane_of(project, "A1", "fader_db")
+            .unwrap()
+            .points
+            .iter()
+            .map(|p| (p.at.ticks / 48, p.value))
+            .collect()
+    };
+    let by = |ms: i64| json!({"ticks": ms * 48, "scale": 48000});
+    // In time alone, within the points beside it: as it is asked.
+    set(&mut project);
+    let (_, clamped) = edit(
+        &mut project,
+        points_edit("fader_db", "move", json!({"at": [ms(500)], "by": by(-100)})),
+    );
+    assert!(!clamped);
+    assert_eq!(points(&project)[2], (400, -5.0));
+    // Earlier than the point before it: as far as that point.
+    set(&mut project);
+    let (_, clamped) = edit(
+        &mut project,
+        points_edit("fader_db", "move", json!({"at": [ms(500)], "by": by(-400)})),
+    );
+    assert!(clamped);
+    assert_eq!(
+        points(&project),
+        vec![
+            (0, -10.0),
+            (200, -8.0),
+            (200, -5.0),
+            (600, -4.0),
+            (1000, 0.0)
+        ]
+    );
+    // Two together: the first of them as far as the point before it, the second as far with it.
+    set(&mut project);
+    let (_, clamped) = edit(
+        &mut project,
+        points_edit(
+            "fader_db",
+            "move",
+            json!({"at": [ms(500), ms(600)], "by": by(-400)}),
+        ),
+    );
+    assert!(clamped);
+    assert_eq!(
+        points(&project),
+        vec![
+            (0, -10.0),
+            (200, -8.0),
+            (200, -5.0),
+            (300, -4.0),
+            (1000, 0.0)
+        ]
+    );
+    // The last has no point after it to stop at.
+    set(&mut project);
+    let (_, clamped) = edit(
+        &mut project,
+        points_edit("fader_db", "move", json!({"at": [ms(1000)], "by": by(500)})),
+    );
+    assert!(!clamped);
+    assert_eq!(points(&project)[4], (1500, 0.0));
+    // In value alone.
+    set(&mut project);
+    let (_, clamped) = edit(
+        &mut project,
+        points_edit("fader_db", "move", json!({"at": [ms(200)], "delta": 3.0})),
+    );
+    assert!(!clamped);
+    assert_eq!(points(&project)[1], (200, -5.0));
+}
+
+#[test]
+fn a_point_added_with_a_value_that_is_no_number_is_refused() {
+    let mut project = project();
+    for path in ["fader_db", "mute"] {
+        let added = json!({"points": [{"at": ms(0), "value": 0}]});
+        let mut add: Edit = serde_json::from_value(points_edit(path, "add", added)).unwrap();
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let Edit::LanePoints { points, .. } = &mut add else {
+                panic!("{add:?}");
+            };
+            points[0].value = Some(bad);
+            assert_eq!(
+                refused_as_given(&mut project, add.clone()),
+                json!({"reason": "out_of_range", "what": "value"}),
+                "{path} {bad}"
+            );
+        }
+    }
+}
+
 // The edits of ranges.
 
 fn range_edit(path: &str, action: &str, from: i64, to: i64, extra: Value) -> Value {
@@ -857,6 +981,98 @@ fn a_lane_drawn_is_thinned_and_takes_the_place_of_what_was_there() {
         refused(&mut project, back),
         json!({"reason": "out_of_range", "what": "points"})
     );
+}
+
+#[test]
+fn a_lane_is_thinned_within_a_tolerance_given_that_is_0_or_more() {
+    let mut project = project();
+    op(
+        &mut project,
+        set_lane(
+            json!({"track": "A1"}),
+            "fader_db",
+            lane(&[(0, -10.0), (500, -9.0), (1000, -10.0)], "continuous"),
+        ),
+    );
+    // The point in the middle is 1 dB off the line between the others: it stays at no tolerance
+    // and goes at 2 dB.
+    assert_eq!(
+        refused(
+            &mut project,
+            range_edit("fader_db", "thin", 0, 1000, json!({"tolerance": 0.0}))
+        ),
+        json!({"reason": "empty_range"})
+    );
+    let thin = range_edit("fader_db", "thin", 0, 1000, json!({"tolerance": -0.5}));
+    assert_eq!(
+        refused(&mut project, thin.clone()),
+        json!({"reason": "out_of_range", "what": "tolerance"})
+    );
+    let mut thin: Edit = serde_json::from_value(thin).unwrap();
+    for bad in [f64::NAN, f64::INFINITY] {
+        let Edit::LaneRange { tolerance, .. } = &mut thin else {
+            panic!("{thin:?}");
+        };
+        *tolerance = Some(bad);
+        assert_eq!(
+            refused_as_given(&mut project, thin.clone()),
+            json!({"reason": "out_of_range", "what": "tolerance"}),
+            "{bad}"
+        );
+    }
+    edit(
+        &mut project,
+        range_edit("fader_db", "thin", 0, 1000, json!({"tolerance": 2.0})),
+    );
+    assert_eq!(lane_of(&project, "A1", "fader_db").unwrap().points.len(), 2);
+}
+
+#[test]
+fn a_lane_drawn_may_jump_and_has_no_point_out_of_its_range_nor_a_tolerance_under_0() {
+    let mut project = project();
+    let draw = |points: Value, tolerance: f64| {
+        json!({"edit": "lane_draw", "timeline": "t1", "of": {"track": "A1"}, "path": "fader_db",
+            "from": ms(100), "to": ms(900), "points": points, "tolerance": tolerance})
+    };
+    let jump = json!([{"at": ms(100), "value": -6.0}, {"at": ms(500), "value": -6.0},
+        {"at": ms(500), "value": -1.0}, {"at": ms(900), "value": -1.0}]);
+    // A point before the range, or after it.
+    for out in [50, 950] {
+        let (first, last) = (out.min(100), out.max(900));
+        let points = json!([{"at": ms(first), "value": 0.0}, {"at": ms(last), "value": 0.0}]);
+        assert_eq!(
+            refused(&mut project, draw(points, 0.0)),
+            json!({"reason": "out_of_range", "what": "points"}),
+            "{out}"
+        );
+    }
+    // A tolerance that is under 0 or no number.
+    assert_eq!(
+        refused(&mut project, draw(jump.clone(), -0.5)),
+        json!({"reason": "out_of_range", "what": "tolerance"})
+    );
+    let mut bad: Edit = serde_json::from_value(draw(jump.clone(), 0.0)).unwrap();
+    for none in [f64::NAN, f64::INFINITY] {
+        let Edit::LaneDraw { tolerance, .. } = &mut bad else {
+            panic!("{bad:?}");
+        };
+        *tolerance = Some(none);
+        assert_eq!(
+            refused_as_given(&mut project, bad.clone()),
+            json!({"reason": "out_of_range", "what": "tolerance"}),
+            "{none}"
+        );
+    }
+    // Two points at one time are a jump, and both are kept.
+    edit(&mut project, draw(jump, 0.0));
+    let at_jump: Vec<f64> = lane_of(&project, "A1", "fader_db")
+        .unwrap()
+        .points
+        .iter()
+        .filter(|p| p.at.ticks == 500 * 48)
+        .map(|p| p.value)
+        .collect();
+    assert_eq!(at_jump, vec![-6.0, -1.0]);
 }
 
 // Clearing.

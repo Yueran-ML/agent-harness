@@ -1171,6 +1171,11 @@ mod tests {
         assert!((tolerance_of("eq.1.gain_db", (-20.0, 20.0)) - 0.04).abs() < 1e-12);
         let decade = 10f64.ln() * 3.0 * 0.001;
         assert!((tolerance_of("eq.1.freq", (20.0, 20_000.0)) - decade).abs() < 1e-12);
+        // A range without an end, as wide as half of all the doubles or wider, has 0.001, and so
+        // has one with nothing between its ends.
+        assert_eq!(tolerance_of("trim_db", (-f64::MAX, 10.0)), 0.001);
+        assert_eq!(tolerance_of("trim_db", (0.0, f64::MAX / 2.0)), 0.001);
+        assert_eq!(tolerance_of("trim_db", (5.0, 5.0)), 0.001);
     }
 
     #[test]

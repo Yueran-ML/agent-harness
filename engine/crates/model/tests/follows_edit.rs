@@ -1473,3 +1473,65 @@ fn a_lift_changes_a_lane_only_where_it_has_a_point_over_the_clip() {
         vec![(4.0, -6.0), (6.0, -7.0), (7.0, -8.0)]
     );
 }
+
+#[test]
+fn a_ripple_holds_no_slope_where_the_first_clip_that_moves_goes_as_far_as_the_place() {
+    // With c2 gone, e, at 4 s, is the first clip to move when 25 frames are put in at frame 60.
+    // It goes as far as the lane does at the place, so the slope across its start needs no
+    // point there: the lane has its two ends, the place and where it goes on.
+    let mut project = project();
+    op(
+        &mut project,
+        json!({"op": "remove_clip", "timeline": "t1", "id": "c2"}),
+    );
+    lane(&mut project, "A1", "fader_db", &[(1, 0.1), (9, -7.3)]);
+    edit(
+        &mut project,
+        json!({"edit": "insert", "timeline": "t1", "at": 60, "video_track": null,
+            "source": {"kind": "media", "media": "m1", "length": 25}}),
+    );
+    assert_eq!(start_of(&project, "e"), Some(("A1".into(), 125)));
+    let times: Vec<f64> = points(&project, "A1", "fader_db")
+        .unwrap()
+        .iter()
+        .map(|&(at, _)| at)
+        .collect();
+    assert_eq!(times, vec![1.0, 2.4, 3.4, 10.0]);
+}
+
+#[test]
+fn a_ripple_trim_leaves_the_lanes_before_a_later_clip_of_its_group_that_nothing_moves_up_to() {
+    // A1 has a clip from frame 10 to e, at 100: it starts before the place of the ripple, 25,
+    // and stays, so nothing between the place and e moves and the lane before e is left as it
+    // is. Its value at 4 s, -2, comes to other bits when it is taken there from 1.3 again.
+    let mut project = split_far_apart();
+    op(
+        &mut project,
+        json!({"op": "remove_clip", "timeline": "t1", "id": "c2"}),
+    );
+    let long = Clip::of_media(
+        "c2",
+        "m1",
+        Time {
+            ticks: 0,
+            scale: 15360,
+        },
+        10,
+        90,
+    );
+    op(
+        &mut project,
+        json!({"op": "insert_clip", "timeline": "t1", "track": "A1", "clip": long}),
+    );
+    lane(&mut project, "A1", "fader_db", &[(1, 1.3), (5, -3.1)]);
+    edit(
+        &mut project,
+        json!({"edit": "trim", "timeline": "t1", "clip": "c1", "edge": "out", "delta": 5,
+            "ripple": true}),
+    );
+    assert_eq!(spans(&project, "A1"), vec![(10, 100), (100, 155)]);
+    assert_eq!(
+        points(&project, "A1", "fader_db").unwrap(),
+        vec![(1.0, 1.3), (5.0, -3.1)]
+    );
+}

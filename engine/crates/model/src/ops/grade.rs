@@ -10,9 +10,10 @@
 use std::collections::HashSet;
 
 use super::{clip_at, missing, place, range, taken, timeline_at, Counter, Op, OpError};
+use crate::catalog;
 use crate::grade::{
-    changed, check_label, check_node, check_node_id, merge, Grade, Group, Link, Node, NodeKind,
-    Port, Pos, Target,
+    changed, check_label, check_node, check_node_id, merge, Grade, Group, Key, Link, Node,
+    NodeKind, Param, Port, Pos, Target,
 };
 use crate::project::{Id, Project};
 
@@ -343,6 +344,123 @@ pub(super) fn set_node(
     };
     *grade_mut(project, target)? = new;
     Ok(inverse)
+}
+
+/// The value at a path of dotted names in the `params` of a node: each name a field of an
+/// object, or a place in a list.
+fn slot<'v>(params: &'v mut serde_json::Value, path: &str) -> Option<&'v mut serde_json::Value> {
+    let mut at = params;
+    for part in path.split('.') {
+        at = match at {
+            serde_json::Value::Object(fields) => fields.get_mut(part)?,
+            serde_json::Value::Array(items) => items.get_mut(part.parse::<usize>().ok()?)?,
+            _ => return None,
+        };
+    }
+    Some(at)
+}
+
+/// Put a setting in place of the one at `path` of a node: `change` is given the setting as
+/// it is and gives what it is to be. The node is checked as any change of it is, and what
+/// the setting was is given back.
+fn with_keys(
+    project: &mut Project,
+    target: &Target,
+    id: &str,
+    path: &str,
+    change: impl FnOnce(&Param) -> Result<Param, OpError>,
+) -> Result<Param, OpError> {
+    let refused = |error: serde_json::Error| OpError::Params {
+        node: id.into(),
+        why: error.to_string(),
+    };
+    let grade = grade_at(project, target)?;
+    let at = grade.position(id).ok_or_else(|| missing("node", id))?;
+    let old = &grade.nodes[at];
+    if old.locked {
+        return Err(OpError::NodeLocked { node: id.into() });
+    }
+    let kind = old.kind.kind();
+    // A path that is not listed may lead to a number all the same, one that takes no keys.
+    if catalog::of_node(kind, path).is_none() {
+        return Err(missing("setting", path));
+    }
+    let mut params = old.kind.params();
+    // Nor is there a setting of a palette that the node has not, or of a window beyond its last.
+    let held = slot(&mut params, path).ok_or_else(|| missing("setting", path))?;
+    let before: Param = serde_json::from_value(held.clone()).map_err(refused)?;
+    let after = change(&before)?;
+    *held = serde_json::to_value(&after).map_err(refused)?;
+    let new = NodeKind::from_params(kind, params).map_err(refused)?;
+    new.check()?;
+    grade_mut(project, target)?.nodes[at].kind = new;
+    Ok(before)
+}
+
+pub(super) fn set_keys(
+    project: &mut Project,
+    target: &Target,
+    id: &str,
+    path: String,
+    param: Param,
+) -> Result<Op, OpError> {
+    let before = with_keys(project, target, id, &path, |_| Ok(param))?;
+    Ok(Op::SetKeys {
+        grade: target.clone(),
+        id: id.into(),
+        path,
+        param: before,
+    })
+}
+
+pub(super) fn splice_keys(
+    project: &mut Project,
+    target: &Target,
+    id: &str,
+    path: String,
+    (at, remove): (usize, usize),
+    keys: Vec<Key>,
+) -> Result<Op, OpError> {
+    let put = keys.len();
+    let mut removed = Vec::new();
+    let before = with_keys(project, target, id, &path, |before| {
+        let mut all = match before {
+            Param::Fixed(_) => Vec::new(),
+            Param::Keys(keys) => keys.clone(),
+        };
+        let len = all.len();
+        let Some(end) = at.checked_add(remove).filter(|&end| end <= len) else {
+            return Err(OpError::OutOfList {
+                at: at.saturating_add(remove),
+                len,
+            });
+        };
+        removed = all.splice(at..end, keys).collect();
+        if all.is_empty() {
+            return Err(OpError::Params {
+                node: id.into(),
+                why: format!("{path} would have no key left: set_keys puts a number there"),
+            });
+        }
+        Ok(Param::Keys(all))
+    })?;
+    Ok(match before {
+        // A setting that had no keys has its number back.
+        Param::Fixed(_) => Op::SetKeys {
+            grade: target.clone(),
+            id: id.into(),
+            path,
+            param: before,
+        },
+        Param::Keys(_) => Op::SpliceKeys {
+            grade: target.clone(),
+            id: id.into(),
+            path,
+            at,
+            remove: put,
+            keys: removed,
+        },
+    })
 }
 
 pub(super) fn set_grade(

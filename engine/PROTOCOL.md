@@ -3193,6 +3193,8 @@ Keyframe Editor's ruler only "mirrors the record timecode" of the clip (p. 3382)
 | `connect` | `grade`, `link` | `connect` of the link the input had, or `disconnect` |
 | `disconnect` | `grade`, `to`, `kind`, `input` | `connect` |
 | `set_node` | `grade`, `id`, `label?`, `enabled?`, `locked?`, `pos?` (`{x, y}` or `null`), `params?` | `set_node` with the values as they were |
+| `set_keys` | `grade`, `id`, `path`, `param` (a number, or `{"keys": [...]}`) | `set_keys` of the setting as it was |
+| `splice_keys` | `grade`, `id`, `path`, `at`, `remove`, `keys` | `splice_keys` of the keys taken away, or `set_keys` of the number |
 | `set_grade` | `grade`, `value` (a grade, its nodes with ids) | `set_grade` of the grade as it was |
 | `add_group` | `group` (empty `id` for `k` + `next_id`), `index?` | `remove_group` |
 | `remove_group` | `id` (no clip in it) | `add_group` |
@@ -3209,6 +3211,22 @@ Keyframe Editor's ruler only "mirrors the record timecode" of the clip (p. 3382)
   of a deleted node (p. 3318). With `links`, those are put instead: each must go into an input the
   node fed, and not touch the node (`out_of_range` `links`). Its `done` always carries the
   `links` it put.
+- `set_keys` and `splice_keys` change one setting of a node that takes keys, named by its
+  `path` in the node's `params` as the errors name it: `primaries.lift.r`, `key.output.gain`,
+  `windows.0.transform.pan`, `inputs.1.gain` of a Key Mixer; a place in a list is its number
+  from 0. The settings that take keys, with their bounds, are listed by the engine
+  (`crates/model/src/catalog.rs`, written out in `crates/model/tests/data/catalog.json`, where a
+  place in a list is `*`). A path that is listed for no setting of the node's kind, or that leads
+  to a palette that the node has not (no qualifier, no such window), is `missing` with `what`
+  `setting`; a node that is locked is `node_locked`. `set_keys` puts a number or keys in the
+  place of the setting, whole. `splice_keys` puts `keys` in the place of the `remove` keys from
+  key `at` on, as `splice_lane` does with the points of a lane, so that a key is added, moved or
+  taken away without the others being sent: `at + remove` beyond the keys that there are is
+  `out_of_list`. A setting that is a number has no keys, and becomes the keys that are put: its
+  `done` is then the `set_keys` of those keys, and its inverse the `set_keys` of the number. A
+  setting keeps one key at least (`params`): `set_keys` of a number takes its keys away. What
+  either makes is checked as any change of the node is (`out_of_range` with the path): values
+  within the range, frames rising strictly, handles within their shares.
 - `set_node` `params` is a patch of the node's `params`: each object in it is put into the
   object of that name, and any other value (a number, a `{"keys"}` parameter put where a number
   was, an array, a string, `null`) takes the place of the one there, whole. What it makes must

@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 9a0303664841afd6a36b627e38b52c0d241fefecaa8a71336d39974161009775 # shrinks to start_messy = false, makings = [Grade([18267282335064542523, 13949523675896878766, 2196714357109880120, 7465599113280500169])]

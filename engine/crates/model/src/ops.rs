@@ -120,7 +120,8 @@ use crate::audio::{
 };
 use crate::color_management::{Levels, LutPair};
 use crate::grade::{
-    Grade, Group, Link, Node, Port, Pos, Target, LONGEST_LABEL, LONGEST_PATH, MOST_INPUTS,
+    Grade, Group, Key, Link, Node, Param, Port, Pos, Target, LONGEST_LABEL, LONGEST_PATH,
+    MOST_INPUTS,
 };
 use crate::project::{
     Alignment, AudioStream, Bin, Clip, Cue, Id, Media, Project, Proxy, Source, Timeline, Track,
@@ -623,6 +624,40 @@ pub enum Op {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         params: Option<serde_json::Value>,
     },
+    /// Put a number, or keys, in place of the setting at `path` of a node of a grade: one of
+    /// the settings that take keys ([`crate::catalog`]), named as the errors of a node name
+    /// it, `primaries.lift.r` or `windows.0.transform.pan`. Its inverse puts back what the
+    /// setting was. A node that is locked is not set.
+    SetKeys {
+        /// The grade.
+        grade: Target,
+        /// The node.
+        id: Id,
+        /// The path of the setting in the `params` of the node.
+        path: String,
+        /// What the setting becomes.
+        param: Param,
+    },
+    /// Put `keys` in place of the `remove` keys of a setting of a node from its key `at` on,
+    /// as [`Op::SpliceLane`] does with the points of a lane: a key is added, moved, changed or
+    /// taken away without the others being sent. A setting that is a number has no keys, and
+    /// becomes the keys that are put; a setting keeps one key at least. Its inverse puts back
+    /// the keys that it took away in place of those that it put, or the number: and where it
+    /// put the first keys of a number, it is given back as the [`Op::SetKeys`] of those keys.
+    SpliceKeys {
+        /// The grade.
+        grade: Target,
+        /// The node.
+        id: Id,
+        /// The path of the setting in the `params` of the node.
+        path: String,
+        /// The place of the first key that is put in place of, from 0.
+        at: usize,
+        /// How many keys are taken away.
+        remove: usize,
+        /// The keys that are put there.
+        keys: Vec<Key>,
+    },
     /// Put a grade in place of a grade, whole, as copying a grade does.
     SetGrade {
         /// The grade that is replaced.
@@ -907,7 +942,8 @@ fn nullable<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum OpError {
     /// A thing that the operation names is not there. `what` is `bin`, `media`, `timeline`,
-    /// `track`, `clip`, `transition`, `cue`, `group`, `node` or `link`.
+    /// `track`, `clip`, `transition`, `cue`, `group`, `node`, `link`, or `setting` for a path
+    /// that is of no setting of the node that takes keys.
     #[error("there is no {what} {id}")]
     Missing {
         /// The kind of the thing.
@@ -1874,6 +1910,20 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
                 params: params.as_ref(),
             },
         ),
+        Op::SetKeys {
+            grade,
+            id,
+            path,
+            param,
+        } => grade::set_keys(project, &grade, &id, path, param),
+        Op::SpliceKeys {
+            grade,
+            id,
+            path,
+            at,
+            remove,
+            keys,
+        } => grade::splice_keys(project, &grade, &id, path, (at, remove), keys),
         Op::SetGrade { grade, value } => grade::set_grade(project, &grade, value),
         Op::AddGroup { group, index } => grade::add_group(project, group, index),
         Op::RemoveGroup { id } => grade::remove_group(project, &id),
@@ -2080,6 +2130,21 @@ pub fn apply_done(project: &mut Project, op: Op) -> Result<(Op, Op), OpError> {
                 source,
             }
         }
+        // The first keys of a setting that was a number take the place of the number: so
+        // the operation is given back as the one that puts them there whole, which is the
+        // one that its inverse is taken back by.
+        Some(Op::SpliceKeys {
+            grade,
+            id,
+            path,
+            keys,
+            ..
+        }) if matches!(inverse, Op::SetKeys { .. }) => Op::SetKeys {
+            grade,
+            id,
+            path,
+            param: Param::Keys(keys),
+        },
         Some(op) => op,
         None => added(project, &inverse)
             .expect("an operation that adds a thing leaves it in the project"),

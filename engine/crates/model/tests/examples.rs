@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use columbina_model::grade::{Interp, Key, Kind, Link, Node, Port, Pos, Target};
+use columbina_model::grade::{Interp, Key, Kind, Link, Node, Param, Port, Pos, Target};
 use columbina_model::{
     apply, apply_done, Alignment, Bin, Clip, Cue, Grade, Group, Op, Project, Proxy, Rate, Rgba,
     Source, Speed, TextAlign, Time, TitleStyle, Track, TrackKind, Transform, Transition,
@@ -1041,6 +1041,33 @@ fn set_shot_match(value: serde_json::Value) -> Op {
     }
 }
 
+/// Three keys on the saturation of n9, the node of `first_node`: the second eased out and in.
+fn saturation_keys() -> Op {
+    let third = 1.0 / 3.0;
+    let key = |frame: i64, value: f64, interp: Interp| Key {
+        frame,
+        value,
+        interp,
+    };
+    Op::SetKeys {
+        grade: c1(),
+        id: "n9".into(),
+        path: "primaries.saturation".into(),
+        param: Param::Keys(vec![
+            key(0, 50.0, Interp::Linear),
+            key(
+                24,
+                80.0,
+                Interp::Bezier {
+                    out: [third, 0.0],
+                    into: [third, 10.0],
+                },
+            ),
+            key(48, 50.0, Interp::Linear),
+        ]),
+    }
+}
+
 /// Set n9, the node of `first_node`, by `params`.
 fn set_n9(params: serde_json::Value) -> Op {
     Op::SetNode {
@@ -1218,6 +1245,56 @@ fn grade_examples() -> Vec<(&'static str, Vec<Op>, Op)> {
                     "primaries": {"saturation": 60, "lift": {"r": -0.05}},
                     "lut": "LUTs/film.cube",
                 })),
+            },
+        ),
+        ("set_keys", vec![first_node()], saturation_keys()),
+        (
+            "set_keys of a number in place of keys",
+            vec![first_node(), saturation_keys()],
+            Op::SetKeys {
+                grade: c1(),
+                id: "n9".into(),
+                path: "primaries.saturation".into(),
+                param: Param::Fixed(62.5),
+            },
+        ),
+        (
+            "splice_keys",
+            vec![first_node(), saturation_keys()],
+            Op::SpliceKeys {
+                grade: c1(),
+                id: "n9".into(),
+                path: "primaries.saturation".into(),
+                at: 1,
+                remove: 1,
+                keys: vec![
+                    Key {
+                        frame: 12,
+                        value: 70.0,
+                        interp: Interp::Hold,
+                    },
+                    Key {
+                        frame: 36,
+                        value: 55.5,
+                        interp: Interp::Linear,
+                    },
+                ],
+            },
+        ),
+        (
+            "splice_keys of the first keys of a setting, done as set_keys",
+            vec![first_node()],
+            Op::SpliceKeys {
+                grade: c1(),
+                id: "n9".into(),
+                path: "primaries.lift.r".into(),
+                at: 0,
+                remove: 0,
+                keys: vec![Key {
+                    frame: -4,
+                    value: 0.125,
+                    interp: Interp::Linear,
+                }],
             },
         ),
         (
@@ -1496,6 +1573,8 @@ fn the_examples_of_the_operations_are_as_the_engine_applies_them() {
         "connect",
         "disconnect",
         "set_node",
+        "set_keys",
+        "splice_keys",
         "set_grade",
         "add_group",
         "remove_group",

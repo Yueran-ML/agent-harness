@@ -1078,7 +1078,9 @@ fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> 
             visit_target(grade, f)?;
             f(to, Role::Names)
         }
-        Op::SetNode { grade, id, .. } => {
+        Op::SetNode { grade, id, .. }
+        | Op::SetKeys { grade, id, .. }
+        | Op::SpliceKeys { grade, id, .. } => {
             visit_target(grade, f)?;
             f(id, Role::Names)
         }

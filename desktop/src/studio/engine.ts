@@ -673,6 +673,8 @@ export type Op =
   | { op: 'disconnect'; grade: Target; to: string; kind: LinkKind; input: number }
   /** `params` is a patch: each object is merged into the object of that name, any other value (null too) takes its place. */
   | { op: 'set_node'; grade: Target; id: string; label?: string | null; enabled?: boolean | null; locked?: boolean | null; pos?: NodePos | null; params?: Record<string, unknown> | null }
+  | { op: 'set_keys'; grade: Target; id: string; path: string; param: Param }
+  | { op: 'splice_keys'; grade: Target; id: string; path: string; at: number; remove: number; keys: Keyframe[] }
   | { op: 'set_grade'; grade: Target; value: Grade }
   | { op: 'add_group'; group: Group; index?: number | null }
   | { op: 'remove_group'; id: string }
@@ -1867,6 +1869,32 @@ function setNode(node: GradeNode, op: Extract<Op, { op: 'set_node' }>): GradeNod
   return op.params == null ? changed : { ...changed, params: mergePatch(changed.params, op.params) } as GradeNode;
 }
 
+/**
+ * A node with the setting at a path of its `params` changed (`set_keys`, `splice_keys`): a path of
+ * dotted names, each a field of an object or a place in a list, to a number or to keys. Every
+ * object on the way is copied, and nothing beside it.
+ */
+function withSetting(node: GradeNode, path: string, change: (before: Param) => Param): GradeNode {
+  const parts = path.split('.');
+  const missing = () => new CopyMismatch(`there is no setting ${path} of node ${node.id} in the copy`);
+  const put = (value: unknown, depth: number): unknown => {
+    if (depth === parts.length) {
+      const keyed = typeof value === 'object' && value !== null && Array.isArray((value as { keys?: unknown }).keys);
+      if (typeof value !== 'number' && !keyed) throw missing();
+      return change(value as Param);
+    }
+    const part = parts[depth];
+    if (Array.isArray(value)) {
+      const at = Number(part);
+      if (!/^\d+$/.test(part) || at >= value.length) throw missing();
+      return value.map((item: unknown, place) => (place === at ? put(item, depth + 1) : item));
+    }
+    if (typeof value !== 'object' || value === null || !(part in value)) throw missing();
+    return { ...value, [part]: put((value as Record<string, unknown>)[part], depth + 1) };
+  };
+  return { ...node, params: put(node.params, 0) } as GradeNode;
+}
+
 /** Mirror only accepted basic operations, preserving all objects outside the changed branch. */
 export function applyOp(project: Project, op: Op): Project {
   switch (op.op) {
@@ -1993,6 +2021,22 @@ export function applyOp(project: Project, op: Op): Project {
     case 'set_node': return inGrade(project, op.grade, grade => {
       const at = nodeAt(grade, op.id);
       return { ...grade, nodes: replaced(grade.nodes, at, setNode(grade.nodes[at], op)) };
+    });
+    case 'set_keys': return inGrade(project, op.grade, grade => {
+      const at = nodeAt(grade, op.id);
+      return { ...grade, nodes: replaced(grade.nodes, at, withSetting(grade.nodes[at], op.path, () => op.param)) };
+    });
+    case 'splice_keys': return inGrade(project, op.grade, grade => {
+      const at = nodeAt(grade, op.id);
+      const spliced = withSetting(grade.nodes[at], op.path, before => {
+        // A setting that is a number has no keys, and becomes the keys that are put.
+        const keys = typeof before === 'number' ? [] : before.keys;
+        if (!Number.isInteger(op.at) || !Number.isInteger(op.remove) || op.at < 0 || op.remove < 0 || op.at + op.remove > keys.length) {
+          throw new CopyMismatch(`there are no keys ${op.at}–${op.at + op.remove} of ${op.path} in the copy`);
+        }
+        return { keys: [...keys.slice(0, op.at), ...op.keys, ...keys.slice(op.at + op.remove)] };
+      });
+      return { ...grade, nodes: replaced(grade.nodes, at, spliced) };
     });
     case 'set_grade': return inGrade(project, op.grade, () => op.value);
     case 'add_group': return { ...project, groups: inserted(project.groups, { ...op.group, pre: kept(op.group.pre), post: kept(op.group.post) }, op.index) };

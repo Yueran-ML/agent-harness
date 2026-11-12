@@ -4,7 +4,7 @@
 //! bounds.
 
 use columbina_model::grade::{
-    Grade, Group, Interp, Key, Kind, Link, Node, Port, Pos, Qualifier, Target,
+    Grade, Group, Interp, Key, Kind, Link, Node, Param, Port, Pos, Qualifier, Target,
 };
 use columbina_model::{Op, Project};
 
@@ -236,6 +236,67 @@ fn grade_made_of(n: usize, next: u64) -> Grade {
     Grade { nodes, links }
 }
 
+/// An operation on the keys of a setting of `node`, made of `n`: of a corrector or of a Key
+/// Mixer, of a palette that the node may not have, or of nothing that takes keys.
+fn keys_op_of(grade: Target, node: String, n: [usize; 4]) -> Op {
+    let paths = [
+        "primaries.lift.r",
+        "primaries.saturation",
+        "key.output.gain",
+        "blur.radius.g",
+        "inputs.0.gain",
+        "output.offset",
+        "qualifier.hue.center",
+        "windows.0.opacity",
+        "curves.y.points.0.0",
+        "nothing.here",
+    ];
+    let path = paths[n[2] % paths.len()].to_owned();
+    #[allow(clippy::cast_possible_wrap, reason = "small numbers")]
+    let first = (n[1] % 40) as i64 - 10;
+    let key = |frame: i64, value: f64, held: bool| Key {
+        frame,
+        value,
+        interp: if held {
+            Interp::Hold
+        } else {
+            Interp::Bezier {
+                out: [0.25, 0.125],
+                into: [0.5, -0.25],
+            }
+        },
+    };
+    // Values that most of the settings take, one that few do, and frames out of order.
+    let value = [0.5, 0.25, 0.75, 250.0][n[3] / 4 % 4];
+    let step = [12, 1, 30, -3][n[3] / 16 % 4];
+    let keys = vec![
+        key(first, value, n[3].is_multiple_of(3)),
+        key(first + step, 0.5, n[3].is_multiple_of(5)),
+    ];
+    match n[1] % 4 {
+        0 => Op::SetKeys {
+            grade,
+            id: node,
+            path,
+            param: Param::Fixed(value),
+        },
+        1 => Op::SetKeys {
+            grade,
+            id: node,
+            path,
+            param: Param::Keys(keys),
+        },
+        _ => Op::SpliceKeys {
+            grade,
+            id: node,
+            path,
+            at: n[3] / 64 % 3,
+            remove: n[3] / 192 % 3,
+            keys: keys[..n[3] / 576 % 3].to_vec(),
+        },
+    }
+}
+
 /// An operation on the grades or the groups of `project`, made of `n`.
 #[allow(clippy::too_many_lines, reason = "an arm for each operation")]
 pub fn grade_op_of(project: &Project, n: [usize; 4]) -> Op {
@@ -253,6 +314,10 @@ pub fn grade_op_of(project: &Project, n: [usize; 4]) -> Op {
     let node = pick(&nodes, n[2], "n999".into());
     let groups: Vec<String> = project.groups.iter().map(|k| k.id.clone()).collect();
     let group = pick(&groups, n[2], "k999".into());
+    // Some of the changes of a node are those of the keys of one of its settings.
+    if n[0] % 14 == 9 && n[3] % 4 == 1 {
+        return keys_op_of(target, node, n);
+    }
     match n[0] % 14 {
         0..=2 => {
             let mut new = Node::new("", kind_of(n[3]));

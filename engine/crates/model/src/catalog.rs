@@ -13,8 +13,10 @@
 //! and nothing else, is what the tests of this module see to, on a corrector that has every
 //! palette and a window of every shape.
 //!
-//! So far the catalog lists what a corrector of the Color page holds. Its keys are counted in
-//! the frames of the source of the clip ([`crate::keyframes`]).
+//! So far the catalog lists what the nodes of the Color page hold: a corrector, and a Key
+//! Mixer, whose inputs and output each have a gain and an offset. Their keys are counted in
+//! the frames of the source of the clip ([`crate::keyframes`]). The operations that set the
+//! keys of a setting by its path ([`crate::ops::Op::SetKeys`]) take the paths that are listed.
 
 use std::sync::OnceLock;
 
@@ -23,7 +25,7 @@ use serde::Serialize;
 use crate::grade::blur;
 use crate::grade::bounds as b;
 use crate::grade::window::bounds as w;
-use crate::grade::Bounds;
+use crate::grade::{Bounds, Kind};
 
 /// What the number of a setting counts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -267,6 +269,39 @@ pub fn corrector() -> &'static [Entry] {
     ENTRIES.get_or_init(gathered)
 }
 
+/// The settings of a Key Mixer that take keys.
+#[must_use]
+pub fn key_mixer() -> &'static [Entry] {
+    static ENTRIES: OnceLock<Vec<Entry>> = OnceLock::new();
+    ENTRIES.get_or_init(|| {
+        let mut all = Gathered(Vec::new());
+        for of in ["inputs.*", "output"] {
+            let gain = format!("{of}.gain");
+            all.one(&gain, b::KEY_GAIN, Unit::Number, Palette::Key);
+            let offset = format!("{of}.offset");
+            all.one(&offset, b::KEY_OFFSET, Unit::Number, Palette::Key);
+        }
+        all.0
+    })
+}
+
+/// The settings of a node of a kind that take keys: none for a mixer that has only inputs.
+#[must_use]
+pub fn of_kind(kind: Kind) -> &'static [Entry] {
+    match kind {
+        Kind::Corrector => corrector(),
+        Kind::KeyMixer => key_mixer(),
+        Kind::ParallelMixer | Kind::LayerMixer => &[],
+    }
+}
+
+/// The entry of a setting of a node of a kind, by its path, or none if it takes no keys.
+#[must_use]
+pub fn of_node(kind: Kind, path: &str) -> Option<&'static Entry> {
+    let listed = listed_as(path);
+    of_kind(kind).iter().find(|entry| entry.path == listed)
+}
+
 /// The path of the catalog that a path of a setting is listed under: with `*` in the stead of
 /// each place in a list.
 #[must_use]
@@ -287,8 +322,7 @@ pub fn listed_as(path: &str) -> String {
 /// The entry of a setting of a corrector, by its path, or none if it takes no keys.
 #[must_use]
 pub fn of_corrector(path: &str) -> Option<&'static Entry> {
-    let listed = listed_as(path);
-    corrector().iter().find(|entry| entry.path == listed)
+    of_node(Kind::Corrector, path)
 }
 
 #[cfg(test)]
@@ -299,7 +333,7 @@ mod tests {
 
     use super::*;
     use crate::grade::window::{WindowBezierPoint, WindowPoint};
-    use crate::grade::{Corrector, Qualifier, ShotMatch, Window, WindowShape};
+    use crate::grade::{Corrector, KeyMixer, NodeKind, Qualifier, ShotMatch, Window, WindowShape};
 
     /// A corrector with every palette and a window of every shape.
     fn full() -> Corrector {
@@ -438,6 +472,39 @@ mod tests {
                 let corrector = with(&whole, &path, json!(value)).unwrap();
                 assert_eq!(corrector.check().is_ok(), taken, "{path} at {value}");
             }
+        }
+    }
+
+    #[test]
+    fn every_setting_of_a_key_mixer_that_takes_keys_is_listed_and_a_mixer_of_pictures_has_none() {
+        let whole = NodeKind::KeyMixer(KeyMixer::default()).params();
+        let mut found = Vec::new();
+        numbers(&whole, "", &mut found);
+        let mut keyed = BTreeSet::new();
+        for (path, value) in &found {
+            let keys = json!({"keys": [{"frame": 0, "value": value, "interp": "linear"}]});
+            let mut changed = whole.clone();
+            put(&mut changed, path, keys);
+            let takes_keys = NodeKind::from_params(Kind::KeyMixer, changed).is_ok();
+            assert_eq!(
+                of_node(Kind::KeyMixer, path).is_some(),
+                takes_keys,
+                "{path}"
+            );
+            if takes_keys {
+                keyed.insert(listed_as(path));
+            }
+        }
+        let listed: BTreeSet<String> = key_mixer().iter().map(|e| e.path.clone()).collect();
+        assert_eq!(listed, keyed);
+        assert_eq!(listed.len(), 4);
+        // A setting is listed for the kind of node that has it.
+        assert!(of_node(Kind::KeyMixer, "inputs.7.gain").is_some());
+        assert!(of_node(Kind::Corrector, "inputs.7.gain").is_none());
+        assert!(of_node(Kind::KeyMixer, "primaries.lift.r").is_none());
+        for kind in [Kind::ParallelMixer, Kind::LayerMixer] {
+            assert_eq!(of_kind(kind), &[] as &[Entry]);
+            assert!(of_node(kind, "inputs").is_none());
         }
     }
 

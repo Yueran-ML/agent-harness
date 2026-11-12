@@ -41,6 +41,13 @@ The picture of the screen is made smaller, so that its longer side is at most 12
 every position that the model names is one in that picture. After anything that it did with
 the pointer or the keyboard the tool waits half a second and gives back a new picture.
 
+`type` types the characters themselves, so it does not matter which layout or which input
+method the window has: Chinese, accents and emoji arrive as they are. A line break in the text
+is the Enter key and a tab is the Tab key, which in many windows goes to the next field. `key`
+presses keys as a keyboard does. So a letter that is pressed alone goes through the input
+method of the window, and where that is composing Chinese it takes the letter, as it would
+from your keyboard; chords such as `ctrl+c` are not touched by that.
+
 A key is one character, or one of: `ctrl`, `alt`, `shift`, `super` (Command, or the key of
 Windows), `enter`, `tab`, `space`, `backspace`, `delete`, `escape`, `insert`, `home`, `end`,
 `pageup`, `pagedown`, `up`, `down`, `left`, `right`, `capslock`, `f1` to `f12`. The names that

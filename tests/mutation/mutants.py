@@ -18641,8 +18641,8 @@ _SERVICES = (
     mutant(
         "a variable that is set to nothing names an address of nothing",
         SERVICES,
-        "        base_url = env.get(service.base_url_env) or base_url\n",
-        "        base_url = env.get(service.base_url_env, base_url)\n",
+        "        return env.get(service.base_url_env) or service.base_url\n",
+        "        return env.get(service.base_url_env, service.base_url)\n",
     ),
     mutant(
         "an adapter is told of a variable that its service has not",
@@ -18689,13 +18689,17 @@ _SERVICES = (
     mutant(
         "every adapter is told the name of the limit of a reply",
         SERVICES,
-        '    if service.max_tokens_field != "max_tokens":\n',
+        '    if service.max_tokens_field != "max_tokens" and (\n'
+        '        protocol_at(service, env) != "openai-responses"\n'
+        "    ):\n",
         "    if True:\n",
     ),
     mutant(
         "no adapter is told the name of the limit of a reply",
         SERVICES,
-        '    if service.max_tokens_field != "max_tokens":\n',
+        '    if service.max_tokens_field != "max_tokens" and (\n'
+        '        protocol_at(service, env) != "openai-responses"\n'
+        "    ):\n",
         "    if False:\n",
     ),
     # What was chosen, read and written
@@ -23420,8 +23424,8 @@ _DOCTOR = (
     mutant(
         "an adapter that is disabled is asked",
         DOCTOR,
-        "            if entry.plugin in (_SPEAKS_OPENAI, _SPEAKS_ANTHROPIC) and not entry.disabled\n",
-        "            if entry.plugin in (_SPEAKS_OPENAI, _SPEAKS_ANTHROPIC)\n",
+        "            if entry.plugin in _CONFIGS and not entry.disabled\n",
+        "            if entry.plugin in _CONFIGS\n",
     ),
     mutant(
         "the adapter of another provider is asked",
@@ -27114,8 +27118,8 @@ _ANTHROPIC_APPS = (
     mutant(
         "Claude is loaded with the adapter of OpenAI",
         LAUNCHER,
-        '_ADAPTERS = {"openai-chat": _SPEAKS_OPENAI, "anthropic": _SPEAKS_ANTHROPIC}\n',
-        '_ADAPTERS = {"openai-chat": _SPEAKS_OPENAI, "anthropic": _SPEAKS_OPENAI}\n',
+        '    "anthropic": _SPEAKS_ANTHROPIC,\n}\n',
+        '    "anthropic": _SPEAKS_OPENAI,\n}\n',
     ),
     mutant(
         "the adapter of the profile talks to every service",
@@ -27150,14 +27154,15 @@ _ANTHROPIC_APPS = (
     mutant(
         "the doctor reads every entry as one for OpenAI",
         DOCTOR,
-        "            if entry.plugin == _SPEAKS_OPENAI\n            else _config(entry, AnthropicConfig, env)\n",
-        "            if entry.plugin\n            else _config(entry, AnthropicConfig, env)\n",
+        "            _config(entry, _CONFIGS[entry.plugin], env)\n",
+        "            _config(entry, AdapterConfig, env)\n",
     ),
     mutant(
         "the doctor asks Claude as it asks OpenAI",
         DOCTOR,
-        "        AnthropicMessages(config) if isinstance(config, AnthropicConfig) else OpenAIChat(config)\n",
-        "        OpenAIChat(config)\n",
+        "    if isinstance(config, AnthropicConfig):\n        adapter = AnthropicMessages(config)\n"
+        "    elif isinstance(config, ResponsesConfig):\n",
+        "    if isinstance(config, ResponsesConfig):\n",
     ),
     mutant(
         "the doctor says that Claude keeps its list where OpenAI does",
@@ -27168,14 +27173,14 @@ _ANTHROPIC_APPS = (
     mutant(
         "the doctor passes over the entries for Claude",
         DOCTOR,
-        "            if entry.plugin in (_SPEAKS_OPENAI, _SPEAKS_ANTHROPIC) and not entry.disabled\n",
-        "            if entry.plugin in (_SPEAKS_OPENAI,) and not entry.disabled\n",
+        "            if entry.plugin in _CONFIGS and not entry.disabled\n",
+        "            if entry.plugin in (_SPEAKS_OPENAI, _SPEAKS_RESPONSES) and not entry.disabled\n",
     ),
     mutant(
         "a key for Claude is checked as one for OpenAI",
         SETUP_APP,
-        '    if service.protocol == "anthropic":\n        adapter = AnthropicMessages(',
-        '    if service.protocol == "openai":\n        adapter = AnthropicMessages(',
+        '    if protocol == "anthropic":\n        adapter = AnthropicMessages(',
+        '    if protocol == "openai":\n        adapter = AnthropicMessages(',
     ),
 )
 

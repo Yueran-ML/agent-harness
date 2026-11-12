@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import threading
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -10,6 +11,7 @@ from pydantic import ValidationError
 
 import columbina.tools
 from columbina import computer, pictures
+from columbina.agent import RUNTIME_FACTS, Agent, Facts
 from columbina.computer import Computer, ComputerArgs, Config, Seen, computer_tool
 from columbina.computer.desktop import Button, DesktopError
 from columbina.kernel import Context
@@ -417,6 +419,17 @@ async def test_closing_lets_go_of_the_desktop() -> None:
     assert desktop.closed
 
 
+async def test_a_desktop_that_is_gone_is_a_failure_of_the_call() -> None:
+    class Gone(Fake):
+        def pointer(self) -> tuple[int, int]:
+            raise OSError("the display went away")
+
+    failure = await refused(Gone(), action="type", text="a")
+
+    assert failure.code == "DESKTOP"
+    assert str(failure) == "The desktop could not be reached: the display went away"
+
+
 # The arguments and the plugin
 
 
@@ -466,3 +479,22 @@ async def test_the_plugin_offers_the_tool_where_the_desktop_is_reached(
 
     assert ctx.use(TOOLS).registry.get("computer") is not None
     assert (computer.name, computer.inject) == ("computer", (TOOLS,))
+
+
+async def test_where_no_desktop_is_reached_there_is_no_tool_and_the_model_is_told_why(
+    ctx: Context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(computer, "find", lambda: "there is no display")
+    await ctx.plugin(columbina.tools)
+
+    await ctx.plugin(computer, {"enabled": True})
+
+    assert ctx.use(TOOLS).registry.get("computer") is None
+    gathered = Facts(agent=cast("Agent", SimpleNamespace()))
+    ctx.emit(RUNTIME_FACTS, gathered)
+    assert gathered.lines == {
+        "computer use": (
+            "not here: there is no display; there is no tool to see the screen or to use the "
+            "pointer and the keyboard"
+        )
+    }

@@ -160,8 +160,12 @@ def keys_of(said: str) -> tuple[str, ...]:
     return tuple(keys)
 
 
-def find() -> Desktop | str:
-    """Return the desktop of this machine, or why it cannot be reached, in words for the model."""
+def find() -> Desktop | str:  # pragma: no cover
+    """Return the desktop of this machine, or why it cannot be reached, in words for the model.
+
+    No test calls this: it reaches for the desktop of the machine that it runs on, and the
+    tests give the tool a desktop of their own.
+    """
     if sys.platform == "win32":  # pragma: windows only
         from columbina.computer import windows
 
@@ -183,9 +187,10 @@ def _on_linux(env: Mapping[str, str]) -> Desktop | str:  # pragma: posix only
         )
     if not env.get("DISPLAY"):
         return "there is no display: the variable DISPLAY names none"
-    from columbina.computer import x11
+    # From here on a display is opened, which the machines of the tests have not.
+    from columbina.computer import x11  # pragma: no cover
 
-    try:
+    try:  # pragma: no cover
         return x11.X11(env["DISPLAY"])
-    except DesktopError as error:
+    except DesktopError as error:  # pragma: no cover
         return str(error)

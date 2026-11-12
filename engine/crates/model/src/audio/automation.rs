@@ -1144,6 +1144,24 @@ mod tests {
     }
 
     #[test]
+    fn thinning_keeps_both_points_of_a_jump_however_small_it_is() {
+        let jump = points(&[(0, 0.0), (10, 0.0), (10, 0.05), (20, 0.05)]);
+        assert_eq!(thinned(&jump, LINE, 0.1), jump);
+    }
+
+    #[test]
+    fn thinning_keeps_the_earlier_of_two_points_as_far_off_and_none_that_is_at_its_tolerance() {
+        // Both points between are 1 off the line from the first to the last: the earlier is
+        // kept, and the later is then 0.5 off the line from it to the last, which is the
+        // tolerance and no further.
+        let bent = points(&[(0, 0.0), (10, 1.0), (20, 1.0), (30, 0.0)]);
+        assert_eq!(
+            thinned(&bent, LINE, 0.5),
+            points(&[(0, 0.0), (10, 1.0), (30, 0.0)])
+        );
+    }
+
+    #[test]
     fn the_tolerances_of_thinning_are_those_of_c_a4() {
         assert_eq!(tolerance_of("fader_db", (-f64::MAX, 10.0)), 0.1);
         assert_eq!(tolerance_of("send.B2.level_db", (-f64::MAX, 10.0)), 0.1);

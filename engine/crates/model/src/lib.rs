@@ -4,6 +4,7 @@
 //! every integer in it stays within 2^53.
 
 pub mod audio;
+pub mod catalog;
 pub mod color;
 pub mod color_management;
 pub mod edit;

@@ -112,7 +112,8 @@ fn drop_whole_numbers(view: &mut Value) {
 
 /// The setting at `path` of `view` (see [`view`]): a number or a switch, or none where there is
 /// no such setting that a lane may be of. A key that holds a `.` (a bus or an insert named so)
-/// is found as a whole.
+/// is found as a whole. A path names a setting only as a whole: one that goes on beyond it, be
+/// it by no more than a `.`, names none.
 #[must_use]
 pub fn setting<'v>(view: &'v Value, path: &str) -> Option<&'v Value> {
     match view {
@@ -121,7 +122,9 @@ pub fn setting<'v>(view: &'v Value, path: &str) -> Option<&'v Value> {
             if path == key {
                 setting(inner, "")
             } else {
-                setting(inner, path.strip_prefix(key.as_str())?.strip_prefix('.')?)
+                // A path that ends in a `.` names nothing: not the setting before it.
+                let rest = path.strip_prefix(key.as_str())?.strip_prefix('.')?;
+                setting(inner, rest).filter(|_| !rest.is_empty())
             }
         }),
         _ => None,
@@ -1153,12 +1156,165 @@ mod tests {
     }
 
     #[test]
+    fn a_path_that_goes_on_beyond_a_setting_or_stops_short_of_one_names_none() {
+        let strip = Strip::to_first_bus();
+        let owner = Owner::Strip {
+            strip: &strip,
+            mute: false,
+            bus: false,
+        };
+        let view = view(owner);
+        for path in [
+            "fader_db.more",
+            "fader_db.",
+            "mute.on",
+            "mute.",
+            "output.B1.on.",
+            "output.B1",
+            "pan.",
+            "pan",
+            "",
+        ] {
+            assert_eq!(setting(&view, path), None, "{path:?}");
+            assert_eq!(kind_of(&view, path), None, "{path:?}");
+            assert_eq!(no_lane(owner, path), "lane", "{path:?}");
+        }
+        // No path is not the path of a setting whose key is empty.
+        assert_eq!(setting(&serde_json::json!({ "": 1.0 }), ""), None);
+    }
+
+    #[test]
+    fn a_switch_of_a_strip_or_of_a_vca_is_set_on_at_a_half_and_above() {
+        let strip = Strip::to_first_bus();
+        let owner = Owner::Strip {
+            strip: &strip,
+            mute: false,
+            bus: false,
+        };
+        let vca: Vca =
+            serde_json::from_value(serde_json::json!({ "id": "VCA1", "name": "VCA" })).unwrap();
+        for (value, on) in [(0.0, false), (0.49, false), (0.5, true), (1.0, true)] {
+            let Some(Set::Strip(set, mute)) = with_value(owner, "output.B1.on", value) else {
+                panic!("the output is there");
+            };
+            assert_eq!((set.outputs[0].on, mute), (on, false), "{value}");
+            let muted = Vca {
+                mute: on,
+                ..vca.clone()
+            };
+            assert_eq!(
+                with_value(Owner::Vca(&vca), "mute", value),
+                Some(Set::Vca(muted)),
+                "{value}"
+            );
+        }
+        assert_eq!(with_value(owner, "output.B2.on", 1.0), None);
+        assert_eq!(with_value(Owner::Vca(&vca), "solo", 1.0), None);
+    }
+
+    #[test]
+    fn the_least_value_of_a_setting_that_starts_at_0_is_0_and_not_minus_0() {
+        let strip = Strip::to_first_bus();
+        let owner = Owner::Strip {
+            strip: &strip,
+            mute: false,
+            bus: false,
+        };
+        let (least, most) = range_of(owner, "pan.divergence", 50.0);
+        assert_eq!((least.to_bits(), most), (0f64.to_bits(), 100.0));
+        let (kept, moved) = kept_within(owner, "pan.divergence", -5.0, 50.0);
+        assert_eq!((kept.to_bits(), moved), (0f64.to_bits(), true));
+    }
+
+    #[test]
+    fn only_an_insert_whose_own_effect_is_of_another_kind_has_its_lanes_named() {
+        let insert = |id: &str, kind: &str| Insert {
+            id: id.into(),
+            on: true,
+            effect: serde_json::from_value(serde_json::json!({ "kind": kind })).unwrap(),
+        };
+        let strip = |first: &str, second: &str| Strip {
+            inserts: vec![insert("fx1", first), insert("fx2", second)],
+            ..Strip::to_first_bus()
+        };
+        let lanes: Lanes = [
+            "fader_db",
+            "insert.fx1.on",
+            "insert.fx2.on",
+            "insert.fx20.on",
+        ]
+        .into_iter()
+        .map(|path| {
+            let lane = Lane {
+                points: vec![],
+                kind: LaneKind::Switch,
+                scale: None,
+            };
+            (path.to_string(), lane)
+        })
+        .collect();
+        // Two inserts of two kinds, as they were: no lane of either.
+        let before = strip("soft_clipper", "limiter");
+        assert_eq!(
+            lanes_of_changed_inserts(&before, &before, &lanes),
+            Vec::<String>::new()
+        );
+        // The second is now of the kind of the first: its lanes alone, and none of an insert
+        // whose id only starts with its id.
+        let after = strip("soft_clipper", "soft_clipper");
+        assert_eq!(
+            lanes_of_changed_inserts(&before, &after, &lanes),
+            ["insert.fx2.on"]
+        );
+    }
+
+    #[test]
+    fn a_range_taken_away_that_ends_on_a_jump_keeps_the_side_that_leaves_it() {
+        let lane = points(&[(0, 0.0), (800, 3.0), (800, 5.0), (1000, 5.0)]);
+        assert_eq!(
+            replaced(&lane, LINE, 0.0, 1000, (500, 800), &[]),
+            points(&[(0, 0.0), (500, 1.875), (800, 5.0), (1000, 5.0)])
+        );
+    }
+
+    #[test]
+    fn a_curve_pasted_with_a_jump_where_a_ramp_ends_keeps_one_side_of_it_there() {
+        // A range of 400 ticks with ramps of 10: what is pasted jumps at 210 and at 590, where
+        // the ramps end. The ramp in ends at the value that leaves 210, the ramp out starts from
+        // the value that comes to 590, and neither jump is there twice.
+        let lane = points(&[(0, 0.0), (1000, 0.0)]);
+        let new = points(&[
+            (200, 1.0),
+            (210, 1.0),
+            (210, 2.0),
+            (590, 2.0),
+            (590, 3.0),
+            (600, 3.0),
+        ]);
+        assert_eq!(
+            pasted(&lane, LINE, 0.0, 1000, (200, 600), &new),
+            points(&[
+                (0, 0.0),
+                (200, 0.0),
+                (210, 2.0),
+                (590, 2.0),
+                (600, 0.0),
+                (1000, 0.0)
+            ])
+        );
+    }
+
+    #[test]
     fn a_time_is_put_on_the_nearest_tick_of_a_scale() {
         let at = |ticks, scale| Time { ticks, scale };
         assert_eq!(ticks_in(at(1, 3), 48000), Some(16000));
         assert_eq!(ticks_in(at(1, 7), 48000), Some(6857));
         assert_eq!(ticks_in(at(3, 7), 48000), Some(20571));
         assert_eq!(ticks_in(at(-1, 1), 48000), None);
+        // Before 0, a half goes away from 0 and is no tick of the lane; less than a half is
+        // tick 0.
+        assert_eq!(ticks_in(at(-1, 2), 1), None);
+        assert_eq!(ticks_in(at(-1, 3), 1), Some(0));
         assert_eq!(ticks_in(at(1, 0), 48000), None);
     }
 }

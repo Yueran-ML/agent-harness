@@ -934,6 +934,83 @@ fn lanes_cleared_leave_their_settings_as_set_reset_or_held() {
 }
 
 #[test]
+fn lanes_reset_leave_what_a_new_send_output_insert_and_ducker_have_where_the_strip_has_them() {
+    let mut project = project();
+    op(
+        &mut project,
+        json!({"op": "set_track_audio", "timeline": "t1", "track": "A1",
+            "patch": {"strip": {"track_fx": {"on": true}}}}),
+    );
+    let lanes = |project: &mut Project| {
+        for path in ["send.B2.on", "output.B1.on", "insert.fx1.on"] {
+            op(
+                project,
+                set_lane(json!({"track": "A1"}), path, lane(&[(0, 0.0)], "switch")),
+            );
+        }
+        op(
+            project,
+            set_lane(
+                json!({"track": "A1"}),
+                "track_fx.amount_db",
+                lane(&[(0, 12.0)], "continuous"),
+            ),
+        );
+    };
+    let clear = |then: &str| json!({"edit": "clear_lanes", "timeline": "t1", "of": {"track": "A1"}, "then": then, "at": ms(0)});
+    let strip = |p: &Project| p.timelines[0].tracks[1].audio.strip.clone();
+    // Held: each switch is left off and the Ducker at 12 dB, as their lanes had them.
+    lanes(&mut project);
+    edit(&mut project, clear("hold"));
+    let held = strip(&project);
+    assert_eq!(
+        (held.sends[0].on, held.outputs[0].on, held.inserts[0].on),
+        (false, false, false)
+    );
+    assert_eq!(held.track_fx.as_ref().unwrap().amount_db, 12.0);
+    // Reset: each is on, as a new send, a new output and a new insert are, and the Ducker lowers
+    // by the 2.7 dB of a new one; what had no lane stays as it was set.
+    lanes(&mut project);
+    edit(&mut project, clear("reset"));
+    let reset = strip(&project);
+    assert_eq!(
+        (reset.sends[0].on, reset.outputs[0].on, reset.inserts[0].on),
+        (true, true, true)
+    );
+    let ducker = reset.track_fx.as_ref().unwrap();
+    assert_eq!((ducker.amount_db, ducker.on), (2.7, true));
+    assert_eq!(reset.sends[0].level_db, -6.0);
+    assert!(project.timelines[0].tracks[1].audio.lanes.is_empty());
+}
+
+#[test]
+fn a_path_that_goes_on_beyond_its_setting_has_no_lane() {
+    let mut project = project();
+    for (path, kind, value) in [
+        ("mute.", "switch", 1.0),
+        ("output.B1.on.", "switch", 0.0),
+        ("fader_db.", "continuous", -3.0),
+        ("fader_db.more", "continuous", -3.0),
+    ] {
+        assert_eq!(
+            refused_op(
+                &mut project,
+                set_lane(json!({"track": "A1"}), path, lane(&[(0, value)], kind)),
+            ),
+            json!({"reason": "out_of_range", "what": "lane"}),
+            "{path}"
+        );
+    }
+    assert_eq!(
+        refused_op(
+            &mut project,
+            set_lane(json!({"vca": "VCA1"}), "mute.", lane(&[(0, 1.0)], "switch")),
+        ),
+        json!({"reason": "out_of_range", "what": "lane"})
+    );
+}
+
+#[test]
 fn a_lane_of_a_locked_track_is_not_edited() {
     let mut project = project();
     op(

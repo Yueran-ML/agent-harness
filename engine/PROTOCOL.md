@@ -3120,6 +3120,18 @@ curve whose handles are each a share `t` (0…1) of the frames between the keys 
 value `dv` (any finite number): `out` from this key forward, `in` from the next key back
 (`[0.33, 0]` for both eases out and in, p. 3385). `Param::value_at(frame)` evaluates it.
 
+The four ways of the Edit page to come to a key and leave it (Linear, Ease In, Ease Out, Ease In
+and Out; pp. 1105 and 1117) are no kinds of key: they are handles (`crates/model/src/grade/ease.rs`).
+A handle reaches over a third of the frames between its two keys. An ease is a handle that lies
+flat at the key, `[1/3, 0]`: Ease In in the `in` of the key before, Ease Out in the `out` of the key
+itself. The side that is not eased points straight at the other key, `out` `[1/3, rise/3]` and `in`
+`[1/3, −rise/3]` with `rise` the value of the next key less that of this one, and a stretch whose
+two handles are both those of the line is written `"linear"`. A stretch that holds is not eased.
+The time of a curve is found by halving 64 times, and a client that draws a curve does its sums in
+the same order: `crates/model/tests/data/param-values.json` holds settings with the values that the
+engine finds at frames between their keys, and keys with what each ease makes of them, for a client
+to check its copy against, to the last bit (`desktop/src/studio/keyframes/value.ts`).
+
 **Frames of keys.** DaVinci ties the keys of the Color page to the source of a clip: a grade is
 linked to "a default one on the first frame of the master clip" (p. 3383), and a copied grade's
 keys are "placed at matching frames that correspond to the source timecode" (p. 3393); the

@@ -32,6 +32,7 @@ use crate::ops::{OpError, LARGEST};
 use crate::project::Id;
 
 pub mod blur;
+pub mod ease;
 pub use blur::{Blur, BlurLinks, BlurMode};
 pub mod window;
 pub use window::{

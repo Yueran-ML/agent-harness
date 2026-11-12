@@ -1305,6 +1305,101 @@ mod tests {
     }
 
     #[test]
+    fn a_lane_held_keeps_what_was_before_and_the_value_that_came_to_its_start() {
+        // What is before 200 stays, the lane comes to 200 at 3 as it did, and nothing of it is
+        // left from there on.
+        let lane = points(&[(0, 1.0), (100, 2.0), (300, 4.0)]);
+        assert_eq!(
+            held(&lane, LINE, 0.0, 1000, 200, &points(&[(250, 5.0)])),
+            points(&[(0, 1.0), (100, 2.0), (200, 3.0), (250, 5.0)])
+        );
+        // A jump at the start: the side that came to it alone.
+        let jump = points(&[(0, 1.0), (200, 3.0), (200, 7.0), (300, 4.0)]);
+        assert_eq!(
+            held(&jump, LINE, 0.0, 1000, 200, &points(&[(250, 5.0)])),
+            points(&[(0, 1.0), (200, 3.0), (250, 5.0)])
+        );
+    }
+
+    #[test]
+    fn a_lane_moved_by_an_offset_has_both_sides_of_a_jump_after_its_start_and_one_at_it() {
+        // An offset from 0 dB at 80 to 2 dB at 240, over a lane that jumps at 80 (from 2 to 3) and
+        // at 160 (from 4 to 6), before 400. At 80, where the offset starts, the lane has the side
+        // that leaves it; at 160 both sides, each moved by the 1 dB of the offset there; at 240
+        // one point, the lane and the offset both going straight through; and none at 400.
+        let lane = points(&[
+            (0, 0.0),
+            (80, 2.0),
+            (80, 3.0),
+            (160, 4.0),
+            (160, 6.0),
+            (400, 6.0),
+            (500, 6.0),
+        ]);
+        let offset = points(&[(80, 0.0), (240, 2.0)]);
+        assert_eq!(
+            offset_by(&lane, LINE, 0.0, 1000, &offset, Some(400)),
+            points(&[(80, 3.0), (160, 5.0), (160, 7.0), (240, 8.0)])
+        );
+        // With no end, the points of the lane after the offset are moved by what it ends at.
+        assert_eq!(
+            offset_by(&lane, LINE, 0.0, 1000, &offset, None),
+            points(&[
+                (80, 3.0),
+                (160, 5.0),
+                (160, 7.0),
+                (240, 8.0),
+                (400, 8.0),
+                (500, 8.0)
+            ])
+        );
+    }
+
+    #[test]
+    fn a_range_moved_that_is_shorter_than_two_ramps_ramps_over_half_of_it_each_way() {
+        let lane = points(&[(0, -10.0), (1000, -10.0)]);
+        assert_eq!(
+            shifted(&lane, LINE, 0.0, 1000, (200, 210), 10, &|v| v - 6.0),
+            points(&[
+                (0, -10.0),
+                (200, -10.0),
+                (205, -16.0),
+                (210, -10.0),
+                (1000, -10.0)
+            ])
+        );
+    }
+
+    #[test]
+    fn a_range_moved_moves_the_points_within_its_ramps_and_one_side_of_a_jump_where_one_ends() {
+        // The lane jumps at 210 and at 590, where the ramps of a range from 200 to 600 end, and
+        // has a point between them. The ramp in ends at the value that leaves 210 and the ramp
+        // out starts from the one that comes to 590, both moved; the point between moves; and
+        // neither jump is there twice.
+        let lane = points(&[
+            (0, 1.0),
+            (210, 1.0),
+            (210, 2.0),
+            (400, 3.0),
+            (590, 2.0),
+            (590, 5.0),
+            (1000, 5.0),
+        ]);
+        assert_eq!(
+            shifted(&lane, LINE, 0.0, 1000, (200, 600), 10, &|v| v + 10.0),
+            points(&[
+                (0, 1.0),
+                (200, 1.0),
+                (210, 12.0),
+                (400, 13.0),
+                (590, 12.0),
+                (600, 5.0),
+                (1000, 5.0)
+            ])
+        );
+    }
+
+    #[test]
     fn a_time_is_put_on_the_nearest_tick_of_a_scale() {
         let at = |ticks, scale| Time { ticks, scale };
         assert_eq!(ticks_in(at(1, 3), 48000), Some(16000));

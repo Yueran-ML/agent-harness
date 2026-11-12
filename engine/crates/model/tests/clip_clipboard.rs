@@ -432,3 +432,31 @@ fn transition_duration_converts_to_destination_rate_and_invalid_indices_are_atom
     assert!(columbina_model::expand(&mut p, paste(invalid, 100, BTreeMap::new())).is_err());
     assert_eq!(p, before);
 }
+
+#[test]
+fn a_snapshot_of_a_lane_holds_the_points_within_the_clip_and_its_last_tick_where_it_has_two() {
+    // The fader of A1: 0 dB at frame 0, -3 at frame 60 and -12 at frame 150, in ticks of a frame.
+    let mut p = project();
+    apply(&mut p, serde_json::from_value(json!({"op":"set_lane","timeline":"t1","of":{"track":"A1"},"path":"fader_db",
+        "lane":{"points":[{"at":{"ticks":0,"scale":25},"value":0},{"at":{"ticks":60,"scale":25},"value":-3},
+            {"at":{"ticks":150,"scale":25},"value":-12}]}})).unwrap()).unwrap();
+    let piece = |range: (i64, i64)| {
+        serde_json::to_value(&copy(&p, Some(range), false).clips[0].lanes[0]).unwrap()
+    };
+    let near = |value: &serde_json::Value, wanted: f64| {
+        assert!(
+            (value.as_f64().unwrap() - wanted).abs() < 1e-12,
+            "{value} for {wanted}"
+        );
+    };
+    // A point where the clip starts is its first value, and none of those within it.
+    let whole = piece((60, 70));
+    assert_eq!((&whole["from"], &whole["to"]), (&json!(60), &json!(70)));
+    assert_eq!(whole["first"], json!(-3.0));
+    assert_eq!(whole["inner"], json!([]));
+    near(&whole["last"], -4.0);
+    near(&whole["near_end"], -3.9);
+    // A clip of one tick has no last tick apart from its first; one of two has.
+    assert_eq!(piece((60, 61))["near_end"], json!(null));
+    near(&piece((60, 62))["near_end"], -3.1);
+}

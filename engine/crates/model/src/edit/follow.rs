@@ -720,6 +720,43 @@ mod tests {
         assert_eq!(pins(&lane, LINE, &[50, 150, 100]), vec![49, 50, 99]);
     }
 
+    #[test]
+    fn a_point_that_is_not_alone_at_its_tick_stays_though_it_is_on_the_line() {
+        // Two of one value at tick 10: neither is alone there, whichever side of it is looked at.
+        let lane = pts(&[(0, 0.0), (10, 5.0), (10, 5.0), (20, 10.0)]);
+        assert_eq!(pruned(lane.clone(), LINE, &[10]), lane);
+        // A switch that goes on at tick 10: the point of the value before it is one of two there.
+        let switch = Shape {
+            kind: LaneKind::Switch,
+            scale: LaneScale::Linear,
+        };
+        let lane = pts(&[(0, 0.0), (10, 0.0), (10, 1.0), (20, 1.0)]);
+        assert_eq!(pruned(lane.clone(), switch, &[10]), lane);
+    }
+
+    #[test]
+    fn a_ripple_keeps_one_side_of_a_jump_at_each_of_its_ends() {
+        // A jump where the ticks taken away start: the value that came to it stays, and the one
+        // that held from it goes with the ticks.
+        let lane = pts(&[(0, 0.0), (10, 4.0), (10, 8.0), (30, 0.0)]);
+        let done = rippled(&lane, (LINE, 0.0, 10), (20, 10), |t| t - 10).unwrap();
+        assert_eq!(plain(&done), vec![(0, 0.0), (10, 4.0), (20, 0.0)]);
+        // A jump at the place: the value that holds from it comes to where the two sides meet,
+        // and the one that came to it goes with the ticks.
+        let lane = pts(&[(0, 0.0), (20, 4.0), (20, 8.0), (40, 0.0)]);
+        let done = rippled(&lane, (LINE, 0.0, 10), (20, 10), |t| t - 10).unwrap();
+        assert_eq!(
+            plain(&done),
+            vec![(0, 0.0), (10, 2.0), (10, 8.0), (30, 0.0)]
+        );
+    }
+
+    #[test]
+    fn a_lane_with_a_point_a_tick_before_a_boundary_is_held_at_the_boundary_alone() {
+        let lane = pts(&[(0, 0.0), (49, 4.9), (100, 10.0)]);
+        assert_eq!(pins(&lane, LINE, &[50]), vec![50]);
+    }
+
     /// A piece that a snapshot may hold: from 0 to 100 in ticks of 10, twins and a point within.
     fn piece() -> Piece {
         Piece {

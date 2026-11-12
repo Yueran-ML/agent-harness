@@ -1447,3 +1447,29 @@ fn a_ripple_trim_of_an_end_keeps_the_lanes_of_a_later_clip_of_its_group_where_it
         same(100 * frame + k, 100 * frame + k);
     }
 }
+
+#[test]
+fn a_lift_changes_a_lane_only_where_it_has_a_point_over_the_clip() {
+    // A slope from 1 s to 6 s with no point from 2 s to 4 s, where c2 is: nothing is put there,
+    // though the values at its ends would not come to the same bits again.
+    let mut project = project();
+    lane(&mut project, "A1", "fader_db", &[(1, 0.1), (6, -7.3)]);
+    edit(
+        &mut project,
+        json!({"edit": "lift", "timeline": "t1", "clips": ["c2"]}),
+    );
+    assert_eq!(
+        points(&project, "A1", "fader_db").unwrap(),
+        vec![(1.0, 0.1), (6.0, -7.3)]
+    );
+    // A lane whose first point is within the clip: it is held at the values of the clip's ends.
+    lane(&mut project, "A1", "fader_db", &[(5, -6.0), (7, -8.0)]);
+    edit(
+        &mut project,
+        json!({"edit": "lift", "timeline": "t1", "clips": ["e"]}),
+    );
+    assert_eq!(
+        points(&project, "A1", "fader_db").unwrap(),
+        vec![(4.0, -6.0), (6.0, -7.0), (7.0, -8.0)]
+    );
+}

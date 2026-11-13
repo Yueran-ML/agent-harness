@@ -920,3 +920,320 @@ fn an_automation_arm_of_a_group_is_set_on_the_others_and_left_where_another_sett
     assert_eq!(a2.automation_arm, AutomationArm::Off);
     assert!(!a2.mute);
 }
+
+#[test]
+fn a_pan_of_a_group_leaves_what_did_not_change_of_the_others_and_sets_their_switches_alike() {
+    let mut project = grouped(json!(["panning"]), true);
+    op(
+        &mut project,
+        json!({"op": "set_track_audio", "timeline": "t1", "track": "A2", "patch": {"strip": {"pan":
+            {"on": false, "y": 0.25, "rotate": 30, "lfe_on": true, "lfe_pre": true}}}}),
+    );
+    let pan = |project: &Project| {
+        let pan = &track(project, "A2").audio.strip.pan;
+        (
+            (pan.on, pan.lfe_on, pan.lfe_pre),
+            (pan.x, pan.y, pan.rotate),
+        )
+    };
+    let set = |project: &mut Project, patch: Value| {
+        edit(
+            project,
+            json!({"edit": "set_track_audio", "timeline": "t1", "track": "A1",
+                "patch": {"strip": {"pan": patch}}}),
+        )
+        .len()
+    };
+    // A1 goes right by 0.5: A2 too, and nothing else of its pan changes.
+    set(&mut project, json!({"x": 0.5}));
+    assert_eq!(pan(&project), ((false, true, true), (0.5, 0.25, 30.0)));
+    // A1's switches set as A2's are: nothing of A2 changes, and no operation is on it.
+    let done = set(
+        &mut project,
+        json!({"on": false, "lfe_on": true, "lfe_pre": true}),
+    );
+    assert_eq!(done, 1);
+    // And set the other way: A2's follow.
+    set(
+        &mut project,
+        json!({"on": true, "lfe_on": false, "lfe_pre": false}),
+    );
+    assert_eq!(pan(&project), ((true, false, false), (0.5, 0.25, 30.0)));
+}
+
+#[test]
+fn a_send_of_a_group_keeps_its_own_switch_until_that_of_the_other_changes() {
+    let mut project = grouped(json!(["sends"]), true);
+    op(
+        &mut project,
+        json!({"op": "add_bus", "timeline": "t1", "bus": {"id": "", "name": "Verb", "color": "#ffffffff", "format": "stereo"}}),
+    );
+    for (track, level, on) in [("A1", -10, true), ("A2", -20, false)] {
+        op(
+            &mut project,
+            json!({"op": "set_track_audio", "timeline": "t1", "track": track,
+                "patch": {"strip": {"sends": [{"bus": "B2", "level_db": level, "on": on}]}}}),
+        );
+    }
+    let send = |project: &Project| {
+        let send = &track(project, "A2").audio.strip.sends[0];
+        (send.level_db, send.on)
+    };
+    for (level, on, follows) in [
+        // The level alone: A2's send stays off.
+        (-4, true, (-14.0, false)),
+        (-4, false, (-14.0, false)),
+        // Switched on again, A2's is too.
+        (-4, true, (-14.0, true)),
+    ] {
+        edit(
+            &mut project,
+            json!({"edit": "set_track_audio", "timeline": "t1", "track": "A1",
+                "patch": {"strip": {"sends": [{"bus": "B2", "level_db": level, "on": on}]}}}),
+        );
+        assert_eq!(send(&project), follows, "{level} {on}");
+    }
+}
+
+#[test]
+fn a_group_sets_on_the_others_only_what_it_links_and_only_where_they_differ() {
+    use columbina_model::AutomationArm;
+    let both = json!({"edit": "set_track_audio", "timeline": "t1", "track": "A1",
+        "patch": {"mute": true, "solo": true, "automation_arm": true}});
+    let of_a2 = |project: &Project| {
+        let a2 = &track(project, "A2").audio;
+        (a2.mute, a2.solo, a2.automation_arm)
+    };
+    // A group that links the arm alone, and one that links the mute and the solo alone.
+    let mut project = grouped(json!(["automation"]), true);
+    edit(&mut project, both.clone());
+    assert_eq!(of_a2(&project), (false, false, AutomationArm::Armed));
+    let mut project = grouped(json!(["mute", "solo"]), true);
+    edit(&mut project, both);
+    assert_eq!(of_a2(&project), (true, true, AutomationArm::Unarmed));
+    // A2 is muted, soloed and armed already: no operation is on it.
+    let mut project = grouped(json!(["mute", "solo", "automation"]), true);
+    op(
+        &mut project,
+        json!({"op": "set_track_audio", "timeline": "t1", "track": "A2",
+            "patch": {"mute": true, "solo": true, "automation_arm": true}}),
+    );
+    for patch in [
+        json!({"mute": true}),
+        json!({"solo": true}),
+        json!({"automation_arm": true}),
+    ] {
+        let done = edit(
+            &mut project,
+            json!({"edit": "set_track_audio", "timeline": "t1", "track": "A1", "patch": patch}),
+        );
+        assert_eq!(done.len(), 1, "{patch}");
+    }
+}
+
+#[test]
+fn a_solo_that_is_not_newly_set_takes_none_off_and_a_locked_track_keeps_its_solo() {
+    let mut project = project();
+    op(
+        &mut project,
+        json!({"op": "set_timeline_audio", "timeline": "t1", "patch": {"exclusive_solo": true}}),
+    );
+    let solo = |project: &mut Project, track: &str, solo: bool| {
+        op(
+            project,
+            json!({"op": "set_track_audio", "timeline": "t1", "track": track, "patch": {"solo": solo}}),
+        );
+    };
+    let set = |project: &mut Project, patch: Value| {
+        edit(
+            project,
+            json!({"edit": "set_track_audio", "timeline": "t1", "track": "A1", "patch": patch}),
+        )
+        .len()
+    };
+    solo(&mut project, "A2", true);
+    // A mute of A1, which is not soloed, and then one of A1 soloed already: A2 stays soloed.
+    assert_eq!(set(&mut project, json!({"mute": true})), 1);
+    assert!(track(&project, "A2").audio.solo);
+    solo(&mut project, "A1", true);
+    assert_eq!(set(&mut project, json!({"mute": false})), 1);
+    assert!(track(&project, "A2").audio.solo);
+    // A2 locked: A1 soloed anew leaves it as it is, and sets no other track.
+    solo(&mut project, "A1", false);
+    op(
+        &mut project,
+        json!({"op": "set_track", "timeline": "t1", "id": "A2", "locked": true}),
+    );
+    assert_eq!(set(&mut project, json!({"solo": true})), 1);
+    assert!(track(&project, "A1").audio.solo && track(&project, "A2").audio.solo);
+}
+
+#[test]
+fn a_bus_takes_the_solo_off_the_others_only_as_it_is_newly_soloed_itself() {
+    let mut project = project();
+    for one in [
+        json!({"op": "set_timeline_audio", "timeline": "t1", "patch": {"exclusive_solo": true}}),
+        json!({"op": "add_bus", "timeline": "t1", "bus": {"id": "", "name": "Verb", "color": "#ffffffff", "format": "stereo"}}),
+        json!({"op": "set_track_audio", "timeline": "t1", "track": "A1", "patch": {"solo": true}}),
+    ] {
+        op(&mut project, one);
+    }
+    let set = |project: &mut Project, patch: Value| {
+        edit(
+            project,
+            json!({"edit": "set_bus", "timeline": "t1", "id": "B2", "patch": patch}),
+        )
+        .len()
+    };
+    let solos = |project: &Project| {
+        let buses = &project.timelines[0].buses;
+        (
+            track(project, "A1").audio.solo,
+            buses[0].solo,
+            buses[1].solo,
+        )
+    };
+    // B2 muted is not soloed: A1 stays.
+    assert_eq!(set(&mut project, json!({"mute": true})), 1);
+    assert_eq!(solos(&project), (true, false, false));
+    // B2 soloed while B1 is: the solo of A1 and of B1 goes.
+    op(
+        &mut project,
+        json!({"op": "set_bus", "timeline": "t1", "id": "B1", "patch": {"solo": true}}),
+    );
+    assert_eq!(set(&mut project, json!({"solo": true})), 3);
+    assert_eq!(solos(&project), (false, false, true));
+    // B2 soloed already: B1, soloed again, stays as B2 is set.
+    op(
+        &mut project,
+        json!({"op": "set_bus", "timeline": "t1", "id": "B1", "patch": {"solo": true}}),
+    );
+    assert_eq!(set(&mut project, json!({"mute": false})), 1);
+    assert_eq!(solos(&project), (false, true, true));
+}
+
+#[test]
+fn a_key_or_a_range_at_a_time_of_no_scale_is_refused_as_such() {
+    let mut project = project();
+    edit(
+        &mut project,
+        json!({"edit": "clip_gain_keys", "timeline": "t1", "clip": "s5", "action": "add",
+            "at": time(1, 1), "value": -6}),
+    );
+    for one in [
+        json!({"edit": "clip_gain_keys", "timeline": "t1", "clip": "s5", "action": "remove",
+            "at": time(1, 0)}),
+        json!({"edit": "clip_gain_keys", "timeline": "t1", "clip": "s5", "action": "move",
+            "at": time(1, 1), "to": time(2, 0)}),
+        json!({"edit": "clip_gain_range", "timeline": "t1", "clip": "s5",
+            "from": time(1, 0), "to": time(2, 1), "delta_db": -6}),
+        json!({"edit": "clip_gain_range", "timeline": "t1", "clip": "s5",
+            "from": time(1, 1), "to": time(2, 0), "delta_db": -6}),
+    ] {
+        assert_eq!(
+            refused(&mut project, one.clone()),
+            json!({"reason": "out_of_range", "what": "at"}),
+            "{one}"
+        );
+    }
+}
+
+#[test]
+fn the_keys_before_and_after_a_range_of_the_volume_stay_as_they_are() {
+    let mut project = project();
+    // Keys at 0.5 s and at 3.5 s, and [1 s, 2 s) between them 6 dB down.
+    for (at, value) in [(time(1, 2), -3), (time(7, 2), -9)] {
+        edit(
+            &mut project,
+            json!({"edit": "clip_gain_keys", "timeline": "t1", "clip": "s5", "action": "add",
+                "at": at, "value": value}),
+        );
+    }
+    edit(
+        &mut project,
+        json!({"edit": "clip_gain_range", "timeline": "t1", "clip": "s5",
+            "from": time(1, 1), "to": time(2, 1), "delta_db": -6}),
+    );
+    let gain = &clip(&project, "s5").gain_db;
+    let AudioParam::Keys(keys) = gain else {
+        panic!("{gain:?}")
+    };
+    let at: Vec<(i64, u32)> = keys.iter().map(|k| (k.at.ticks, k.at.scale)).collect();
+    assert_eq!(
+        at,
+        [
+            (1, 2),
+            (47999, 48000),
+            (48000, 48000),
+            (95999, 48000),
+            (96000, 48000),
+            (7, 2)
+        ]
+    );
+    assert_eq!(gain.value_at(seconds(0.25)), -3.0);
+    assert_eq!(gain.value_at(seconds(3.75)), -9.0);
+}
+
+#[test]
+fn an_equalizer_is_put_back_only_where_it_is_asked_and_is_not_as_a_new_one() {
+    let mut project = project();
+    let mut eq = columbina_model::Equalizer::clip();
+    eq.on = true;
+    op(
+        &mut project,
+        json!({"op": "set_clip", "timeline": "t1", "id": "s5", "eq": eq}),
+    );
+    edit(
+        &mut project,
+        json!({"edit": "nudge_clip_gain", "timeline": "t1", "clips": ["s5"], "delta_db": -3}),
+    );
+    // The volume alone: the equalizer stays.
+    let done = edit(
+        &mut project,
+        json!({"edit": "remove_attributes", "timeline": "t1", "clips": ["s5"], "items": ["volume"]}),
+    );
+    assert_eq!(done.len(), 1);
+    assert_eq!(clip(&project, "s5").gain_db, AudioParam::Fixed(0.0));
+    assert_eq!(clip(&project, "s5").eq, eq);
+    let done = edit(
+        &mut project,
+        json!({"edit": "remove_attributes", "timeline": "t1", "clips": ["s5"], "items": ["equalizer"]}),
+    );
+    assert_eq!(done.len(), 1);
+    assert_eq!(clip(&project, "s5").eq, columbina_model::Equalizer::clip());
+}
+
+#[test]
+fn a_fade_in_to_the_playhead_is_from_the_start_of_its_clip_and_lasts_frames_of_the_rate() {
+    // c3, of picture, and c5, of sound, begin at frame 50.
+    let mut project = project();
+    edit(
+        &mut project,
+        json!({"edit": "fade_to_playhead", "timeline": "t1", "clips": ["c3", "c5"], "side": "in", "at": 60}),
+    );
+    assert_eq!(clip(&project, "c3").fade_in, 10);
+    assert_eq!(
+        clip(&project, "c5").audio_fade_in.unwrap().length,
+        Time {
+            ticks: 10,
+            scale: 25
+        }
+    );
+    // At 30000/1001 frames a second, 30 frames last 30030 ticks of 30000.
+    let mut project = self::project();
+    project.timelines[0].rate = columbina_model::Rate {
+        num: 30000,
+        den: 1001,
+    };
+    edit(
+        &mut project,
+        json!({"edit": "fade_to_playhead", "timeline": "t1", "clips": ["s5"], "side": "in", "at": 30}),
+    );
+    assert_eq!(
+        clip(&project, "s5").audio_fade_in.unwrap().length,
+        Time {
+            ticks: 30030,
+            scale: 30000
+        }
+    );
+}

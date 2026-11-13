@@ -1056,3 +1056,39 @@ pub(super) fn copy_effects(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn time(ticks: i64, scale: u32) -> Time {
+        Time { ticks, scale }
+    }
+
+    #[test]
+    fn a_time_is_shifted_exactly_between_scales_that_differ() {
+        // 1/2 - 1/4 + 1/3 is 7/12, and 1/4 + 1/3 - 1/2 is 1/12.
+        assert_eq!(
+            shifted(time(1, 2), time(1, 4), time(1, 3)),
+            Some(time(7, 12))
+        );
+        assert_eq!(
+            mirrored(time(1, 2), time(1, 4), time(1, 3)),
+            Some(time(1, 12))
+        );
+        // In the smallest scale that holds it: 3/4 - 1/4 + 1/2 is 1.
+        assert_eq!(
+            shifted(time(3, 4), time(1, 4), time(1, 2)),
+            Some(time(1, 1))
+        );
+    }
+
+    #[test]
+    fn a_time_is_shifted_between_scales_of_31_bits() {
+        let scale = 1 << 31;
+        assert_eq!(
+            shifted(time(3, scale), time(1, scale), time(5, scale)),
+            Some(time(7, scale))
+        );
+    }
+}

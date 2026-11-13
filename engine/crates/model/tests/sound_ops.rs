@@ -943,3 +943,63 @@ fn a_strip_sends_to_a_bus_once_and_a_bus_made_by_the_engine_takes_no_id_of_a_tra
         json!("B4")
     );
 }
+
+#[test]
+fn a_strip_whose_insert_would_keep_its_id_with_another_effect_is_refused_while_a_lane_is_of_it() {
+    let mut project = project();
+    for one in [
+        json!({"op": "add_insert", "timeline": "t1", "of": {"track": "A1"},
+            "insert": {"effect": {"kind": "gain", "gain_db": 0}}}),
+        json!({"op": "set_lane", "timeline": "t1", "of": {"track": "A1"}, "path": "insert.fx1.on",
+            "lane": {"kind": "switch", "points": [{"at": {"ticks": 0, "scale": 48000}, "value": 0.0}]}}),
+    ] {
+        apply(&mut project, op(one)).unwrap();
+    }
+    let with = |effect: Effect| {
+        let insert = Insert {
+            id: "fx1".into(),
+            on: true,
+            effect,
+        };
+        op(
+            json!({"op": "set_track_audio", "timeline": "t1", "track": "A1",
+            "patch": {"strip": {"inserts": [insert]}}}),
+        )
+    };
+    // A Limiter has a switch too, but the lane was of the Gain's.
+    assert_eq!(
+        refused(&mut project, with(Effect::Limiter(LimiterFx::default()))),
+        json!({"reason": "out_of_range", "what": "lane"})
+    );
+    // Another Gain under the id keeps the lane.
+    apply(&mut project, with(Effect::Gain(GainFx { gain_db: 3.0 }))).unwrap();
+    assert!(track(&project, "A1")
+        .audio
+        .lanes
+        .contains_key("insert.fx1.on"));
+}
+
+#[test]
+fn a_bus_after_the_largest_number_is_given_no_id() {
+    let mut project = project();
+    let bus = |id: &str| Op::AddBus {
+        timeline: "t1".into(),
+        bus: Bus {
+            id: id.into(),
+            name: "Bus".into(),
+            ..Bus::first()
+        },
+        index: None,
+    };
+    let last = columbina_model::LARGEST;
+    applied(&mut project, bus(&format!("B{}", last - 1)));
+    let (done, _) = applied(&mut project, bus(""));
+    let Op::AddBus { bus: made, .. } = done else {
+        panic!()
+    };
+    assert_eq!(made.id, format!("B{last}"));
+    assert_eq!(
+        refused(&mut project, bus("")),
+        json!({"reason": "ids_exhausted"})
+    );
+}

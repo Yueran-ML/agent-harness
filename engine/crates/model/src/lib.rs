@@ -15,6 +15,7 @@ pub mod media_audio;
 pub mod ops;
 pub mod project;
 pub mod resolve;
+pub mod retime;
 #[cfg(any(test, feature = "sample"))]
 pub mod samples;
 pub mod span;

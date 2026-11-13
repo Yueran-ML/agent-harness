@@ -527,4 +527,48 @@ mod tests {
         let keys = AudioParam::Keys(vec![key(0, -3.0, KeyInterp::Linear)]);
         assert_eq!(keys.fixed(), None);
     }
+
+    #[test]
+    fn keys_ease_towards_a_value_that_is_not_0_as_they_do_towards_0() {
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-12;
+        // Half way from -10 at 1 s to -4 at 3 s: the share of the rise that each easing has there.
+        for (first, second, share) in [
+            (KeyInterp::EaseOut, KeyInterp::Linear, 0.375),
+            (KeyInterp::Linear, KeyInterp::EaseIn, 0.625),
+            (KeyInterp::EaseOut, KeyInterp::EaseIn, 0.5),
+        ] {
+            let keys = AudioParam::Keys(vec![key(1, -10.0, first), key(3, -4.0, second)]);
+            let value = keys.value_at(2.0);
+            assert!(
+                near(value, -10.0 + 6.0 * share),
+                "{first:?} {second:?}: {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_key_at_a_time_of_no_scale_is_not_valid_though_it_is_alone() {
+        let alone = |scale: u32| {
+            AudioParam::Keys(vec![AudioKey {
+                at: Time { ticks: 0, scale },
+                value: -3.0,
+                interp: KeyInterp::Linear,
+            }])
+        };
+        assert!(alone(1).is_valid(|_| true));
+        assert!(!alone(0).is_valid(|_| true));
+    }
+
+    #[test]
+    fn the_values_of_a_parameter_are_its_one_value_or_those_of_its_keys_in_order() {
+        let fixed: Vec<f64> = AudioParam::Fixed(-3.0).values().collect();
+        assert_eq!(fixed, [-3.0]);
+        let keys = AudioParam::Keys(vec![
+            key(0, -6.0, KeyInterp::Linear),
+            key(1, 2.5, KeyInterp::EaseIn),
+            key(2, -6.0, KeyInterp::Linear),
+        ]);
+        let keys: Vec<f64> = keys.values().collect();
+        assert_eq!(keys, [-6.0, 2.5, -6.0]);
+    }
 }

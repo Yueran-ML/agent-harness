@@ -27,6 +27,8 @@ pub mod geometry;
 mod gpu;
 pub mod grade;
 pub mod keyer;
+pub mod mask;
+pub mod merge;
 pub mod mosaic;
 pub mod neighbourhood;
 pub mod ocio;

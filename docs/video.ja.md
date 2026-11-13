@@ -301,8 +301,8 @@ Rec.709 で書き出します。
 
 編集のツールは `video_import`、`video_info`、`video_edit`、`video_transcribe`、`video_story`、`video_apply`、
 `video_correct`、`video_render`、`video_undo` の 9 個です。グレーディングのツールは `video_grade_info`、`video_grade_set`、
-`video_grade_node`、`video_grade_copy`、`video_grade_lut`、`video_grade_group`、`video_grade_scopes`、`video_color_settings`、
-`video_media_color`、`video_shot_match` の 10 個で、後述の「グレード」で説明します。既定のプロジェクトは作業ディレクトリの `.columbina/studio`、
+`video_grade_keys`、`video_grade_node`、`video_grade_copy`、`video_grade_lut`、`video_grade_group`、`video_grade_scopes`、`video_color_settings`、
+`video_media_color`、`video_shot_match` の 11 個で、後述の「グレード」で説明します。既定のプロジェクトは作業ディレクトリの `.columbina/studio`、
 つまりスタジオのプロジェクトで、`project` で別の場所を指定できます。プロジェクトにタイムラインが複数ある場合、
 タイムラインを扱うツールにはその ID が必要です。
 
@@ -360,6 +360,8 @@ DaVinci Resolve と同じく、1 本のタイムラインで同時に表示で�
   トリム・スリップ・速度変更の後もキーは同じ画に残ります。タイトル・単色・静止画はクリップの最初のフレームから数え、
   タイムラインのグレードはタイムラインのフレームです。設定できるのはプライマリー、カーブ、クオリファイアー、ブラー、キーの
   各パレットの値と、ソフトクリップ、ノードの LUT です。ウィンドウとそのトラッキングはカラーページで描きます。
+- `video_grade_keys` は、ノードの数値設定 1 つのキーフレームをパス（`primaries.gain.r` など）で指定して追加・削除・消去します。ほかのキーは送りません。
+  `put` は指定フレームにキーを置き（すでにあれば置き換え）、`remove` は指定フレームのキーを削除し（最後の 1 つを削除すると設定はそのキーの数値に戻ります）、`clear` はすべて消します。
 - `video_grade_node` は `append`（ノードを追加）、`add_serial`、`add_serial_before`、`add_parallel`、`add_layer`、
   `add_outside`（アウトサイドノードを追加。キーは現在のノードのキーを反転したもの）でコレクターを追加し、
   同じ手順でラベルと設定も与えられます。ノードの削除、リセット、取り出しもできます。

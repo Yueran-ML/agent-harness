@@ -6,6 +6,8 @@ change what was there before.
 
 ## Unreleased
 
+- A tool `video_grade_keys`, with which the agent puts, removes or clears the keyframes of
+  one setting of a node of a grade without sending its other keys.
 - DeepSeek's Flash is shown the pictures that a tool gives back, such as a picture that was
   read or one of the screen: it takes them now, and its Pro, which takes none, is told that a
   picture was there. Which models of a service take pictures is said model by model.

@@ -65,6 +65,7 @@ CopyAction = Literal["copy", "append", "paste_node", "paste_value"]
 # Where the keys of a grade copied to another go (Apply Grades Using, pp. 3264, 3287).
 KeyAlign = Literal["source_timecode", "start_frame"]
 GroupAction = Literal["create", "add", "remove", "rename", "delete", "grade", "collapse"]
+KeyAction = Literal["put", "remove", "clear"]
 
 EMPTY_GRADE: dict[str, Any] = {
     "nodes": [],
@@ -1058,6 +1059,114 @@ def _set_node(
     return op
 
 
+def _keyed_setting(node: Mapping[str, Any], path: str) -> tuple[Number, Any]:
+    """The setting at ``path`` of a node, which takes keys, and what it is now.
+
+    The path is written as the engine writes it: with dots, and an item of a list by its
+    number from 0, ``inputs.0.gain``.
+
+    Raises:
+        GradeError: The node has no such setting, or it is not a number.
+    """
+    kind = str(node.get("kind"))
+    known = _SPECS.get(kind)
+    if known is None:
+        raise GradeError(f"node {node.get('id')} is a {kind}, which this tool cannot set")
+    spec: Spec = known
+    parts = path.split(".")
+    if not all(parts):
+        raise GradeError(f"{path!r} is not a path of a setting, such as primaries.gain.r")
+    now: Any = node.get("params")
+    where = ""
+    for part in parts:
+        if isinstance(spec, Whole):
+            if now is None:
+                raise GradeError(
+                    f"the node has no {where} ({spec.name}): give it with video_grade_set first"
+                )
+            spec = spec.fields
+        if isinstance(spec, Items):
+            items = _items(now)
+            if not part.isdecimal() or int(part) >= len(items):
+                raise GradeError(
+                    f"{where} has {len(items)} items, named by their numbers from 0: "
+                    f"{where}.0.{next(iter(spec.item))}"
+                )
+            spec, now = spec.item, items[int(part)]
+        elif isinstance(spec, dict):
+            if part not in spec:
+                close = difflib.get_close_matches(part, list(spec), n=1)
+                maybe = f" (did you mean {close[0]}?)" if close else ""
+                raise GradeError(
+                    f"{where or 'the node'} has no setting {part!r}{maybe}; it has {_listed(spec)}"
+                )
+            spec, now = spec[part], _object(now).get(part)
+        else:
+            raise GradeError(f"{where} ({spec.name}) holds no setting {part!r}")
+        where = f"{where}.{part}" if where else part
+    if isinstance(spec, Number):
+        return spec, now
+    if isinstance(spec, dict):
+        raise GradeError(f"{path} holds the settings {_listed(spec)}: name one that is a number")
+    raise GradeError(
+        f"{path} ({spec.name}) takes no keys: only a setting that is a number does; "
+        "video_grade_set sets it"
+    )
+
+
+def _key_op(
+    target: Mapping[str, Any],
+    id: str,
+    path: str,
+    setting: tuple[Number, Any],
+    action: KeyAction,
+    *,
+    frame: int | None,
+    value: float | None,
+    interp: Any,
+) -> dict[str, Any]:
+    """The operation that puts, takes away or clears the keys of a setting.
+
+    Raises:
+        GradeError: What the action needs is not given, or there is no such key.
+    """
+    spec, now = setting
+    keys = _items(_object(now).get("keys")) if _is_map(now) else []
+    op: dict[str, Any] = {"grade": dict(target), "id": id, "path": path}
+    at_frames = ", ".join(str(key["frame"]) for key in keys)
+    if action == "clear":
+        if not keys:
+            raise GradeError(f"{path} has no keys to clear")
+        if value is None:
+            left = keys[0]["value"]
+        elif _real(value):
+            left = _checked_number(spec, value, path)
+        else:
+            raise GradeError(f"{path}: value is the number that the setting is left at")
+        return {"op": "set_keys", **op, "param": left}
+    if type(frame) is not int:
+        raise GradeError(f"{action} needs frame, the frame that the key is at")
+    at = next((n for n, key in enumerate(keys) if key["frame"] >= frame), len(keys))
+    there = at < len(keys) and keys[at]["frame"] == frame
+    if action == "remove":
+        if not there:
+            has = f"its keys are at {at_frames}" if keys else "it has no keys"
+            raise GradeError(f"{path} has no key at frame {frame}: {has}")
+        if len(keys) == 1:
+            # A setting keeps one key at least: without its last it is the number of that key.
+            return {"op": "set_keys", **op, "param": keys[0]["value"]}
+        return {"op": "splice_keys", **op, "at": at, "remove": 1, "keys": []}
+    if value is None:
+        raise GradeError(f"put needs value, what {path} is at the key ({spec.told()})")
+    given: dict[str, Any] = {"frame": frame, "value": value}
+    if interp is not None:
+        given["interp"] = interp
+    elif there:
+        given["interp"] = keys[at]["interp"]
+    (key,) = _checked_keys(spec, {"keys": [given]}, path)["keys"]
+    return {"op": "splice_keys", **op, "at": at, "remove": int(there), "keys": [key]}
+
+
 def _picture_clips(
     project: Mapping[str, Any], timeline: str | None, clips: Sequence[str]
 ) -> tuple[str, list[str]]:
@@ -1200,6 +1309,38 @@ class Grader:
             patch = checked_patch(settings, _node(grade, id)) if settings else None
             targets[:] = [target]
             return [_set_node(target, id, params=patch, label=label, enabled=enabled)]
+
+        done, project = await self._applied(build)
+        return await self._receipt(done, project, targets)
+
+    async def keys(
+        self,
+        timeline: str | None,
+        given: str | Mapping[str, Any],
+        node: str | int,
+        path: str,
+        action: KeyAction,
+        *,
+        frame: int | None = None,
+        value: float | None = None,
+        interp: Any = None,
+    ) -> dict[str, Any]:
+        """Put a key of one setting of a node, take one away, or clear them all.
+
+        The other keys of the setting are not sent: a key put at a frame that has one takes its
+        place, and keeps its interpolation where none is given.
+        """
+        targets: list[dict[str, Any]] = []
+
+        def build(project: Mapping[str, Any]) -> list[dict[str, Any]]:
+            target = target_of(given, project, timeline)
+            grade = grade_at(project, target)
+            id = node_of(grade, target, node)
+            setting = _keyed_setting(_node(grade, id), path)
+            targets[:] = [target]
+            return [
+                _key_op(target, id, path, setting, action, frame=frame, value=value, interp=interp)
+            ]
 
         done, project = await self._applied(build)
         return await self._receipt(done, project, targets)

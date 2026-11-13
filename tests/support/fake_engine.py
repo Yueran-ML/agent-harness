@@ -127,6 +127,8 @@ _GRADE_OPS = {
     "connect",
     "disconnect",
     "set_node",
+    "set_keys",
+    "splice_keys",
     "set_grade",
     "add_group",
     "remove_group",
@@ -986,6 +988,27 @@ class Fake:
             found[0].update({k: op[k] for k in ("label", "enabled") if k in op})
             if "params" in op:
                 found[0]["params"] = _patched(found[0].get("params", {}), op["params"])
+            return
+        if name in ("set_keys", "splice_keys"):
+            place: Any = found[0]["params"]
+            *heads, last = (
+                int(part) if part.isdecimal() else part for part in op["path"].split(".")
+            )
+            for head in heads:
+                place = place[head]
+            if name == "set_keys":
+                place[last] = op["param"]
+                return
+            now = place[last]
+            keys: list[Any] = (
+                list(cast("dict[str, Any]", now)["keys"]) if isinstance(now, dict) else []
+            )
+            keys[op["at"] : op["at"] + op["remove"]] = op["keys"]
+            if not keys:
+                raise self._refused(
+                    index, "out_of_range", "a setting keeps one key at least", what="params"
+                )
+            place[last] = {"keys": keys}
             return
         # remove_node: what came into it goes where it went, unless links are given.
         up = next((one["from"] for one in grade["links"] if _into(one, {"to": id})), None)

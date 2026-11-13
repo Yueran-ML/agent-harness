@@ -360,7 +360,8 @@ These are the Color page's own keys; playback, In and Out and undo are those of 
 
 The editing tools are `video_import`, `video_info`, `video_edit`, `video_transcribe`,
 `video_story`, `video_apply`, `video_correct`, `video_render` and `video_undo`; the grading
-tools, `video_grade_info`, `video_grade_set`, `video_grade_node`, `video_grade_copy`,
+tools, `video_grade_info`, `video_grade_set`, `video_grade_keys`, `video_grade_node`,
+`video_grade_copy`,
 `video_grade_lut`, `video_grade_group`, `video_grade_scopes`, `video_color_settings`,
 `video_media_color` and `video_shot_match`, are described under Grades below. By default they
 connect to `.columbina/studio` under the session workspace, the studio's project; an explicit
@@ -433,6 +434,10 @@ grade's summary.
   grade, the timeline's frame. The settings are those of the Primaries, Curves, Qualifier, Blur
   and Key palettes, Soft Clip and a node's LUT; Power Windows and their tracking are drawn on the
   Color page.
+- `video_grade_keys` puts, removes or clears the keyframes of one number setting of a node,
+  named by its path (`primaries.gain.r`), without sending its other keys: `put` sets a key at
+  a frame, in place of one that is there; `remove` takes the key at a frame away, and the
+  last one leaves its value as a number; `clear` takes them all.
 - `video_grade_node` adds a corrector as `append` (Append Node), `add_serial`,
   `add_serial_before`, `add_parallel`, `add_layer` or `add_outside` (Add Outside Node, whose key
   is the current node's inverted) add one, with its label and settings in the same step if

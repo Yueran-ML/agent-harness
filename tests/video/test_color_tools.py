@@ -406,12 +406,14 @@ def test_the_tools_of_grades_cost_few_characters_on_every_request() -> None:
         for tool in tools_of(Videos(Config(), None))
         if tool.name.startswith(("video_grade", "video_color", "video_media", "video_shot"))
     }
-    assert len(sizes) == 10
+    assert len(sizes) == 11
     # The six tools of T14 were 15,745 characters, a reference table of the settings within;
     # it is now told by video_grade_info with reference true.
     six = ("info", "set", "node", "copy", "lut", "group")
     assert sum(sizes[f"video_grade_{name}"] for name in six) < 9000
-    assert sum(sizes.values()) < 13000
+    # Ten tools were under 13,000; the eleventh, video_grade_keys of phase 4, is under 1,300.
+    assert sizes["video_grade_keys"] < 1300
+    assert sum(sizes.values()) < 14300
     assert max(sizes.values()) < 1800
 
 

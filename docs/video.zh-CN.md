@@ -250,8 +250,8 @@ Rec.709、Rec.2020、P3 等显示空间配各种 gamma，Rec.2100 HLG 和 ST2084
 ## Agent 的视频工具
 
 剪辑工具有九个：`video_import`、`video_info`、`video_edit`、`video_transcribe`、`video_story`、
-`video_apply`、`video_correct`、`video_render`、`video_undo`。调色工具有十个：`video_grade_info`、
-`video_grade_set`、`video_grade_node`、`video_grade_copy`、`video_grade_lut`、`video_grade_group`、`video_grade_scopes`、
+`video_apply`、`video_correct`、`video_render`、`video_undo`。调色工具有十一个：`video_grade_info`、
+`video_grade_set`、`video_grade_keys`、`video_grade_node`、`video_grade_copy`、`video_grade_lut`、`video_grade_group`、`video_grade_scopes`、
 `video_color_settings`、`video_media_color`、`video_shot_match`，见下文“调色”一节。默认工程是工作目录下的 `.columbina/studio`，即工作室的工程；
 也可用 `project` 指定其他目录。工程里有多条时间线时，作用于时间线的工具需要指定时间线 ID。
 
@@ -299,6 +299,9 @@ Rec.709、Rec.2020、P3 等显示空间配各种 gamma，Rec.2100 HLG 和 ST2084
   `hold` 是静态关键帧，`bezier` 是缓入缓出。帧号的含义：素材片段是它显示的那张画面在素材里的帧号（按素材自己的帧率，从 0 起），
   所以修剪、滑移、变速之后关键帧仍在原来的画面上；标题、纯色、静帧从片段第一帧算起；时间线调色按时间线的帧。
   可设的参数是一级校色、曲线、限定器、模糊、键各调板的参数，以及柔化裁切和节点的 LUT；窗口及其跟踪在调色页上绘制。
+- `video_grade_keys` 按路径（如 `primaries.gain.r`）给节点的一个数值参数加、删、清关键帧，不必重发其余的键：
+  `put` 在某一帧放一个键，该帧已有键就替换；`remove` 删掉某一帧的键，删到最后一个时参数变回那个键的数值；
+  `clear` 清掉全部键。
 - `video_grade_node` 用 `append`（追加节点）、`add_serial`、`add_serial_before`、`add_parallel`、`add_layer`、
   `add_outside`（添加外部节点，它的键是当前节点的键取反）添加校色节点，
   可以在同一步里给出标签和参数；也可以删除、重置或取出一个节点。

@@ -210,6 +210,120 @@ async def test_a_node_is_named_by_its_number_and_keyframes_are_checked_and_fille
     assert "has 2 nodes" in missing.text
 
 
+def _sent(fake: Fake) -> dict[str, Any]:
+    """The one operation of the last transaction, without the grade that it names."""
+    (op,) = fake.transactions[-1]
+    assert op["grade"] == {"level": "clip", "timeline": "t1", "clip": "c2"}
+    return {name: value for name, value in op.items() if name != "grade"}
+
+
+async def test_a_key_is_put_replaced_and_taken_away_without_the_others_being_sent(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    gain = {"grade": "c2", "node": 1, "path": "primaries.gain.y"}
+    spliced = {"op": "splice_keys", "id": "n3", "path": "primaries.gain.y"}
+
+    async def put(frame: int, value: float, **more: Any) -> dict[str, Any]:
+        asked = desk.call(
+            "video_grade_keys", **gain, action="put", frame=frame, value=value, **more
+        )
+        return result(await asked)
+
+    # A number takes its first key; later keys go where their frames are.
+    await put(10, 1.2)
+    assert _sent(fake) == {
+        **spliced,
+        "at": 0,
+        "remove": 0,
+        "keys": [{"frame": 10, "value": 1.2, "interp": "linear"}],
+    }
+    await put(0, 1.0, interp="hold")
+    assert _sent(fake) == {
+        **spliced,
+        "at": 0,
+        "remove": 0,
+        "keys": [{"frame": 0, "value": 1.0, "interp": "hold"}],
+    }
+    told = await put(24, 1.5)
+    assert (_sent(fake)["at"], _sent(fake)["remove"]) == (2, 0)
+    keys = told["grades"][0]["nodes"][0]["settings"]["primaries.gain.y"]["keys"]
+    assert [key["frame"] for key in keys] == [0, 10, 24]
+    # A key put where there is one takes its place, and keeps its interpolation unless one is given.
+    await put(0, 0.9)
+    assert _sent(fake) == {
+        **spliced,
+        "at": 0,
+        "remove": 1,
+        "keys": [{"frame": 0, "value": 0.9, "interp": "hold"}],
+    }
+    bezier = {"bezier": {"out": [0.3, 0.0], "in": [0.7, 0.0]}}
+    await put(10, 1.3, interp=bezier)
+    assert _sent(fake) == {
+        **spliced,
+        "at": 1,
+        "remove": 1,
+        "keys": [{"frame": 10, "value": 1.3, "interp": bezier}],
+    }
+    # A key is taken away by its frame; the last leaves the number that it had.
+    none = await desk.call("video_grade_keys", **gain, action="remove", frame=11)
+    assert none.error is not None
+    assert "its keys are at 0, 10, 24" in none.text
+    result(await desk.call("video_grade_keys", **gain, action="remove", frame=10))
+    assert _sent(fake) == {**spliced, "at": 1, "remove": 1, "keys": []}
+    result(await desk.call("video_grade_keys", **gain, action="remove", frame=24))
+    result(await desk.call("video_grade_keys", **gain, action="remove", frame=0))
+    assert _sent(fake) == {
+        "op": "set_keys",
+        "id": "n3",
+        "path": "primaries.gain.y",
+        "param": 0.9,
+    }
+    assert clip_grade(fake, "c2")["nodes"][0]["params"]["primaries"]["gain"]["y"] == 0.9
+    # Every key is cleared at once, to a value given or to that of the first.
+    await put(5, 1.1)
+    await put(9, 1.4)
+    result(await desk.call("video_grade_keys", **gain, action="clear"))
+    assert _sent(fake)["param"] == 1.1
+    await put(5, 1.1)
+    result(await desk.call("video_grade_keys", **gain, action="clear", value=1))
+    assert _sent(fake) == {"op": "set_keys", "id": "n3", "path": "primaries.gain.y", "param": 1}
+
+
+async def test_keys_are_of_a_number_setting_and_what_an_action_needs_is_asked_for(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    for asked, why in [
+        ({"path": "primaries.gain", "action": "put", "frame": 0, "value": 1}, "name one that is"),
+        ({"path": "curves.y.points", "action": "put", "frame": 0, "value": 1}, "takes no keys"),
+        ({"path": "lut", "action": "put", "frame": 0, "value": 1}, "takes no keys"),
+        (
+            {"path": "primaries.gian.y", "action": "put", "frame": 0, "value": 1},
+            "did you mean gain",
+        ),
+        ({"path": "primaries..y", "action": "put", "frame": 0, "value": 1}, "not a path"),
+        ({"path": "primaries.gain.y.z", "action": "put", "frame": 0, "value": 1}, "holds no"),
+        (
+            {"path": "qualifier.hue.center", "action": "put", "frame": 0, "value": 1},
+            "has no qualifier",
+        ),
+        ({"path": "primaries.gain.y", "action": "put", "frame": 0, "value": 99}, "out of range"),
+        ({"path": "primaries.gain.y", "action": "put", "frame": 0}, "put needs value"),
+        ({"path": "primaries.gain.y", "action": "put", "value": 1}, "put needs frame"),
+        ({"path": "primaries.gain.y", "action": "remove", "frame": 0}, "it has no keys"),
+        ({"path": "primaries.gain.y", "action": "clear"}, "no keys to clear"),
+        (
+            {"path": "primaries.gain.y", "action": "put", "frame": 0, "value": 1, "interp": "ease"},
+            "interp is",
+        ),
+    ]:
+        refused = await desk.call("video_grade_keys", grade="c2", node=1, **asked)
+        assert refused.error is not None, asked
+        assert why in refused.text, (asked, refused.text)
+    assert fake.transactions == []
+
+
 async def test_a_shot_match_given_in_part_where_there_is_none_is_made_whole(
     studio: tuple[Desk, Fake],
 ) -> None:

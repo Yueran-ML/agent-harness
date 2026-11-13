@@ -454,6 +454,26 @@ class _GradeSet(_Graded):
     enabled: bool | None = None
 
 
+class _GradeKeys(_Graded):
+    grade: _Grade = Field(description="As video_grade_set.")
+    node: int | str = Field(description="As video_grade_set.")
+    path: str = Field(
+        description="A number setting by its path: primaries.gain.r, inputs.0.gain (from 0)."
+    )
+    action: grading.KeyAction = Field(
+        description=(
+            "put: a key at frame with value, replacing one there. remove: the key at frame. "
+            "clear: every key, leaving value or the first key's."
+        )
+    )
+    frame: int | None = Field(default=None, description="Counted as keyframes are.")
+    value: float | None = None
+    interp: str | dict[str, Any] | None = Field(
+        default=None,
+        description='"linear", "hold" or {"bezier": ...}; left out: linear, or as the key replaced',
+    )
+
+
 class _GradeNode(_Graded):
     grade: _Grade = Field(description=_TARGET)
     action: grading.NodeAction = Field(
@@ -615,6 +635,7 @@ class _ShotMatch(_Graded):
 _GRADING = (
     _GradeInfo,
     _GradeSet,
+    _GradeKeys,
     _GradeNode,
     _GradeCopy,
     _GradeLut,
@@ -667,6 +688,17 @@ async def _graded(args: _Project, grader: grading.Grader) -> dict[str, Any]:
     if isinstance(args, _GradeSet):
         return await grader.set(
             on, _target(args.grade), args.node, args.settings, args.label, args.enabled
+        )
+    if isinstance(args, _GradeKeys):
+        return await grader.keys(
+            on,
+            _target(args.grade),
+            args.node,
+            args.path,
+            args.action,
+            frame=args.frame,
+            value=args.value,
+            interp=args.interp,
         )
     if isinstance(args, _GradeNode):
         return await grader.node(
@@ -1059,6 +1091,11 @@ def tools_of(videos: Videos) -> list[Tool[Any, str]]:
                 "Patch one node's settings (objects merge), label or enabled. Grades go: group "
                 "pre-clip, clip, group post-clip, timeline. One undo step."
             ),
+        ),
+        tool(
+            "video_grade_keys",
+            _GradeKeys,
+            "Put, remove or clear one keyframe of a node's number setting; one undo step.",
         ),
         tool(
             "video_grade_node",

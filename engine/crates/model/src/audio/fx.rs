@@ -997,4 +997,84 @@ mod tests {
         });
         assert_eq!(noise.check(), out("noise_reduction"));
     }
+
+    #[test]
+    fn a_new_equalizer_has_the_bands_of_the_manual_and_only_its_middle_ones_on() {
+        let bands = |eq: &Equalizer| -> Vec<(bool, EqKind, f64, Option<EqRange>)> {
+            eq.bands
+                .iter()
+                .map(|band| (band.on, band.kind, band.freq, band.range))
+                .collect()
+        };
+        assert_eq!(
+            bands(&Equalizer::clip()),
+            [
+                (false, EqKind::HighPass, 80.0, None),
+                (true, EqKind::Bell, 300.0, None),
+                (true, EqKind::Bell, 3000.0, None),
+                (false, EqKind::LowPass, 16000.0, None),
+            ]
+        );
+        assert_eq!(
+            bands(&Equalizer::strip()),
+            [
+                (false, EqKind::HighPass, 80.0, None),
+                (true, EqKind::Bell, 100.0, Some(EqRange::Low)),
+                (true, EqKind::Bell, 500.0, Some(EqRange::MediumLow)),
+                (true, EqKind::Bell, 2000.0, Some(EqRange::MediumHigh)),
+                (true, EqKind::Bell, 8000.0, Some(EqRange::High)),
+                (false, EqKind::LowPass, 16000.0, None),
+            ]
+        );
+    }
+
+    #[test]
+    fn each_time_of_dynamics_is_within_its_own_range() {
+        // The attack is up to 100 ms, the hold up to 4 s, and the release from 50 ms to 4 s.
+        let with = |module: usize, time: usize, value: f64| {
+            let mut dynamics = Dynamics::default();
+            let times = match module {
+                0 => {
+                    let e = &mut dynamics.expander;
+                    [&mut e.attack_ms, &mut e.hold_ms, &mut e.release_ms]
+                }
+                1 => {
+                    let c = &mut dynamics.compressor;
+                    [&mut c.attack_ms, &mut c.hold_ms, &mut c.release_ms]
+                }
+                _ => {
+                    let l = &mut dynamics.limiter;
+                    [&mut l.attack_ms, &mut l.hold_ms, &mut l.release_ms]
+                }
+            };
+            *times[time] = value;
+            dynamics.check()
+        };
+        for module in 0..3 {
+            for (time, value) in [
+                (0, 0.0),
+                (0, 100.0),
+                (1, 0.0),
+                (1, 4000.0),
+                (2, 50.0),
+                (2, 4000.0),
+            ] {
+                assert_eq!(with(module, time, value), Ok(()), "{module} {time} {value}");
+            }
+            for (time, value) in [
+                (0, -0.5),
+                (0, 100.5),
+                (1, -0.5),
+                (1, 4000.5),
+                (2, 49.5),
+                (2, 4000.5),
+            ] {
+                assert_eq!(
+                    with(module, time, value),
+                    Err(OpError::OutOfRange { what: "dynamics" }),
+                    "{module} {time} {value}"
+                );
+            }
+        }
+    }
 }

@@ -519,4 +519,12 @@ mod tests {
         assert_eq!(LaneScale::of_path("eq.2.gain_db"), LaneScale::Linear);
         assert_eq!(LaneScale::of_path("pan.x"), LaneScale::Linear);
     }
+
+    #[test]
+    fn a_parameter_of_one_value_is_fixed_at_it_and_one_of_keys_is_not() {
+        assert_eq!(AudioParam::Fixed(-3.0).fixed(), Some(-3.0));
+        assert_eq!(AudioParam::Fixed(0.0).fixed(), Some(0.0));
+        let keys = AudioParam::Keys(vec![key(0, -3.0, KeyInterp::Linear)]);
+        assert_eq!(keys.fixed(), None);
+    }
 }

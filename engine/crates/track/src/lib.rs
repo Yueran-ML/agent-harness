@@ -56,6 +56,7 @@ mod fit;
 mod image;
 mod linalg;
 mod lk;
+pub mod matchmove;
 mod motion;
 mod point;
 mod region;

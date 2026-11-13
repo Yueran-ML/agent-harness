@@ -1541,4 +1541,308 @@ mod tests {
         loud.fader_db = -1000.0;
         loud.check(false).unwrap();
     }
+
+    #[test]
+    fn a_strip_has_as_many_inserts_sends_and_outputs_as_the_plan_allows() {
+        let mut full = Strip::default();
+        full.inserts = (1..=routing::MOST_INSERTS)
+            .map(|n| Insert {
+                id: format!("fx{n}"),
+                on: true,
+                effect: Effect::Gain(fx::GainFx { gain_db: 0.0 }),
+            })
+            .collect();
+        full.sends = (1..=routing::MOST_SENDS)
+            .map(|n| Send {
+                bus: format!("B{n}"),
+                on: true,
+                pre: false,
+                level_db: 0.0,
+                pan: Pan::default(),
+            })
+            .collect();
+        full.outputs = (1..=routing::MOST_OUTPUTS)
+            .map(|n| Output {
+                bus: format!("B{n}"),
+                on: true,
+            })
+            .collect();
+        assert_eq!(
+            (full.inserts.len(), full.sends.len(), full.outputs.len()),
+            (6, 10, 10)
+        );
+        full.check(false).unwrap();
+    }
+
+    #[test]
+    fn an_automation_arm_says_what_it_lets_be_done() {
+        use AutomationArm::{Armed, Off, Safe, Unarmed};
+        // The arm, then: left out where written, armed, recorded, played back, pasted over.
+        for (arm, left_out, armed, records, plays, pastes) in [
+            (Unarmed, true, false, true, true, true),
+            (Armed, false, true, true, true, true),
+            (Safe, false, false, false, true, false),
+            (Off, false, false, false, false, true),
+        ] {
+            assert_eq!(unarmed(&arm), left_out, "{arm:?}");
+            assert_eq!(arm.armed(), armed, "{arm:?}");
+            assert_eq!(arm.records(), records, "{arm:?}");
+            assert_eq!(arm.plays(), plays, "{arm:?}");
+            assert_eq!(arm.pastes(), pastes, "{arm:?}");
+        }
+    }
+
+    #[test]
+    fn an_automation_arm_is_read_as_a_switch_or_by_its_name_and_written_as_it_was() {
+        use serde_json::json;
+        use AutomationArm::{Armed, Off, Safe, Unarmed};
+        for (written, arm) in [
+            (json!(true), Armed),
+            (json!(false), Unarmed),
+            (json!("armed"), Armed),
+            (json!("unarmed"), Unarmed),
+            (json!("safe"), Safe),
+            (json!("off"), Off),
+        ] {
+            let read: AutomationArm = serde_json::from_value(written.clone()).unwrap();
+            assert_eq!(read, arm, "{written}");
+        }
+        for (arm, written) in [
+            (Unarmed, json!(false)),
+            (Armed, json!(true)),
+            (Safe, json!("safe")),
+            (Off, json!("off")),
+        ] {
+            assert_eq!(serde_json::to_value(arm).unwrap(), written);
+        }
+        // Another name is refused, and the error says what an arm is.
+        let error = serde_json::from_value::<AutomationArm>(json!("on"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("an Automation Arm: true, false, \"safe\" or \"off\""),
+            "{error}"
+        );
+        assert!(serde_json::from_value::<AutomationArm>(json!(1)).is_err());
+    }
+
+    #[test]
+    fn a_fade_rises_along_its_own_curve_and_skew() {
+        let fade = AudioFade {
+            length: Time { ticks: 1, scale: 1 },
+            curve: 0.5,
+            skew: 0.25,
+        };
+        for t in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            assert_eq!(fade.rise(t).to_bits(), fade_curve(t, 0.5, 0.25).to_bits());
+        }
+        // Above a straight line and below its end: none of 0, 1 or -1.
+        let quarter = fade.rise(0.25);
+        assert!(quarter > 0.25 && quarter < 1.0, "{quarter}");
+    }
+
+    #[test]
+    fn each_setting_is_of_one_category_of_automation() {
+        let none = Categories {
+            fader: false,
+            mute: false,
+            pan: false,
+            eq: false,
+            comp: false,
+            gate: false,
+            lim: false,
+            sends: false,
+            plugins: false,
+            misc: false,
+        };
+        let only = [
+            (
+                "fader",
+                Categories {
+                    fader: true,
+                    ..none
+                },
+            ),
+            ("mute", Categories { mute: true, ..none }),
+            ("pan", Categories { pan: true, ..none }),
+            ("eq", Categories { eq: true, ..none }),
+            ("comp", Categories { comp: true, ..none }),
+            ("gate", Categories { gate: true, ..none }),
+            ("lim", Categories { lim: true, ..none }),
+            (
+                "sends",
+                Categories {
+                    sends: true,
+                    ..none
+                },
+            ),
+            (
+                "plugins",
+                Categories {
+                    plugins: true,
+                    ..none
+                },
+            ),
+            ("misc", Categories { misc: true, ..none }),
+        ];
+        let settings = [
+            ("fader_db", "fader"),
+            ("mute", "mute"),
+            ("pan.left_right", "pan"),
+            ("pan.divergence", "pan"),
+            ("eq.on", "eq"),
+            ("eq.2.gain_db", "eq"),
+            ("dynamics.expander.threshold_db", "gate"),
+            ("dynamics.limiter.threshold_db", "lim"),
+            ("dynamics.compressor.ratio", "comp"),
+            ("dynamics.makeup_db", "comp"),
+            ("send.B2.level_db", "sends"),
+            ("send.B2.on", "sends"),
+            ("insert.fx1.on", "misc"),
+            ("insert.fx1.gain_db", "plugins"),
+            ("track_fx.amount_db", "plugins"),
+            ("output.B1.on", "misc"),
+            ("trim_db", "misc"),
+            ("polarity", "misc"),
+        ];
+        for (name, categories) in &only {
+            for (path, of) in settings {
+                assert_eq!(categories.covers(path), of == *name, "{path} under {name}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_fade_of_sound_is_of_a_length_from_0_on_a_scale_and_of_a_curve_and_a_skew_within_1() {
+        let project = crate::project::Project::sample();
+        let timeline = &project.timelines[0];
+        let clip = &timeline.tracks[1].clips[0];
+        check_clip(clip, timeline.rate).unwrap();
+        let with = |ticks: i64, scale: u32, curve: f64, skew: f64| {
+            let mut clip = clip.clone();
+            clip.audio_fade_in = Some(AudioFade {
+                length: Time { ticks, scale },
+                curve,
+                skew,
+            });
+            check_clip(&clip, timeline.rate)
+        };
+        with(0, 48_000, 1.0, -1.0).unwrap();
+        with(1, 48_000, -1.0, 1.0).unwrap();
+        for (ticks, scale, curve, skew) in [
+            (0, 0, 0.0, 0.0),
+            (-1, 48_000, 0.0, 0.0),
+            (1, 48_000, 1.5, 0.0),
+            (1, 48_000, 0.0, -1.5),
+        ] {
+            assert_eq!(
+                with(ticks, scale, curve, skew),
+                Err(out("fade")),
+                "{ticks}/{scale}, a curve of {curve}, a skew of {skew}"
+            );
+        }
+        // A clip with no fade of sound fades with its picture, over frames of the rate: at
+        // 30000/1001 the fades of the whole of the clip fit, and those of a frame more do not.
+        let ntsc = Rate {
+            num: 30_000,
+            den: 1001,
+        };
+        let mut faded = clip.clone();
+        (faded.audio_fade_in, faded.audio_fade_out) = (None, None);
+        (faded.fade_in, faded.fade_out) = (faded.length, 0);
+        check_clip(&faded, ntsc).unwrap();
+        faded.fade_out = 1;
+        assert_eq!(check_clip(&faded, ntsc), Err(out("fade")));
+    }
+
+    #[test]
+    fn the_level_of_a_channel_is_a_number_of_at_most_24_db() {
+        let map = |level_db: f64| ChannelMap {
+            source: ChannelSources::default(),
+            remix: None,
+            enabled: true,
+            mute: false,
+            level_db,
+        };
+        for level in [24.0, 0.0, -1000.0] {
+            check_channel_maps(&[map(level)]).unwrap();
+        }
+        for level in [24.5, f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+            assert_eq!(
+                check_channel_maps(&[map(0.0), map(level)]),
+                Err(out("channels")),
+                "{level}"
+            );
+        }
+    }
+
+    /// The timeline of the sample, with a group of its track of sound and a VCA.
+    fn with_a_group_and_a_vca() -> Timeline {
+        use serde_json::json;
+        let mut timeline = crate::project::Project::sample().timelines.remove(0);
+        let track = timeline.tracks[1].id.clone();
+        timeline.track_groups =
+            vec![
+                serde_json::from_value(json!({"id": "TG1", "name": "Group", "members": [track]}))
+                    .unwrap(),
+            ];
+        timeline.vcas =
+            vec![serde_json::from_value(json!({"id": "VCA1", "name": "VCA 1"})).unwrap()];
+        check_timeline(&timeline).unwrap();
+        timeline
+    }
+
+    #[test]
+    fn a_name_of_a_bus_a_group_or_a_vca_is_of_at_most_100_characters() {
+        // 100 characters, of two bytes each.
+        let long = "é".repeat(crate::grade::LONGEST_LABEL);
+        let mut timeline = with_a_group_and_a_vca();
+        timeline.buses[0].name.clone_from(&long);
+        timeline.track_groups[0].name.clone_from(&long);
+        timeline.vcas[0].name.clone_from(&long);
+        check_timeline(&timeline).unwrap();
+        for which in ["bus", "track_group", "vca"] {
+            let mut timeline = timeline.clone();
+            match which {
+                "bus" => timeline.buses[0].name.push('é'),
+                "track_group" => timeline.track_groups[0].name.push('é'),
+                _ => timeline.vcas[0].name.push('é'),
+            }
+            let (what, _, error) = check_timeline(&timeline).unwrap_err();
+            assert_eq!((what, error), (which, out("label")));
+        }
+    }
+
+    #[test]
+    fn an_active_range_is_from_0_on_to_a_later_time_each_on_a_scale() {
+        let mut timeline = with_a_group_and_a_vca();
+        let range = |start: (i64, u32), end: (i64, u32)| ActiveRange {
+            start: Time {
+                ticks: start.0,
+                scale: start.1,
+            },
+            end: Time {
+                ticks: end.0,
+                scale: end.1,
+            },
+            on: true,
+        };
+        timeline.audio.record.active_range = Some(range((0, 48_000), (1, 24)));
+        check_timeline(&timeline).unwrap();
+        for (start, end) in [
+            ((0, 48_000), (5, 0)),
+            ((0, 0), (5, 24)),
+            ((-1, 48_000), (5, 24)),
+            ((5, 24), (5, 24)),
+            ((48_000, 48_000), (23, 24)),
+        ] {
+            timeline.audio.record.active_range = Some(range(start, end));
+            let (what, _, error) = check_timeline(&timeline).unwrap_err();
+            assert_eq!(
+                (what, error),
+                ("timeline", out("audio")),
+                "{start:?} to {end:?}"
+            );
+        }
+    }
 }

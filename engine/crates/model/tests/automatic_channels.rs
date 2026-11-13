@@ -12,6 +12,15 @@ fn omitted_remix_keeps_old_serialization_and_an_explicit_output_round_trips() {
 }
 
 #[test]
+fn a_channel_that_does_not_say_whether_it_is_enabled_is_and_is_neither_muted_nor_turned() {
+    let map: ChannelMap =
+        serde_json::from_value(json!({"source": {"stream": 0, "channel": 1}})).unwrap();
+    assert!(map.enabled);
+    assert!(!map.mute);
+    assert_eq!(map.level_db.to_bits(), 0f64.to_bits());
+}
+
+#[test]
 fn automatic_outputs_validate_ranges_and_cannot_also_pick_native_sources() {
     for (count, channel, valid) in [
         (1, 0, true),

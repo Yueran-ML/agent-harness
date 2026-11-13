@@ -1006,3 +1006,128 @@ fn a_new_crossfade_is_on_straight_lines_and_one_of_3_db_at_equal_power() {
         (&json!(3), &json!(-3))
     );
 }
+
+#[test]
+fn a_lane_that_jumps_at_its_first_point_has_there_the_value_that_it_leaves_with() {
+    let lane: columbina_model::audio::Lane = serde_json::from_value(json!({
+        "kind": "continuous",
+        "points": [
+            {"at": {"ticks": 0, "scale": 48000}, "value": -10.0},
+            {"at": {"ticks": 0, "scale": 48000}, "value": -4.0},
+            {"at": {"ticks": 48000, "scale": 48000}, "value": -4.0},
+        ],
+    }))
+    .unwrap();
+    assert!(lane.is_valid());
+    let at = |ticks: i64| Time {
+        ticks,
+        scale: 48000,
+    };
+    assert_eq!(lane.value_at(at(-1)), -10.0);
+    assert_eq!(lane.value_at(at(0)), -4.0);
+    // Points at times of no scale are not a lane, though they are all of one scale.
+    let mut none = lane.clone();
+    for point in &mut none.points {
+        point.at.scale = 0;
+    }
+    assert!(!none.is_valid());
+}
+
+#[test]
+fn a_bus_has_the_channels_of_its_format() {
+    for (name, channels) in [
+        ("mono", 1),
+        ("stereo", 2),
+        ("3.0", 3),
+        ("4.0", 4),
+        ("5.0", 5),
+        ("5.1", 6),
+        ("7.0", 7),
+        ("7.1", 8),
+    ] {
+        let format: columbina_model::audio::BusFormat =
+            serde_json::from_value(json!(name)).unwrap();
+        assert_eq!(format.channels(), channels, "{name}");
+    }
+}
+
+#[test]
+fn a_group_holds_its_members_or_every_track_of_sound_that_there_is() {
+    let project = Project::sample();
+    let timeline = &project.timelines[0];
+    let (picture, sound) = (&timeline.tracks[0], &timeline.tracks[1]);
+    assert_eq!(
+        (picture.kind, sound.kind),
+        (TrackKind::Video, TrackKind::Audio)
+    );
+    let group = |all: bool, members: &[&str]| -> columbina_model::audio::TrackGroup {
+        serde_json::from_value(json!({
+            "id": "TG1", "name": "Group", "members": members, "all_tracks": all,
+        }))
+        .unwrap()
+    };
+    for (group, of_sound) in [
+        (group(true, &[]), true),
+        (group(false, &[sound.id.as_str()]), true),
+        (group(false, &[]), false),
+    ] {
+        assert_eq!(group.contains(timeline, &sound.id), of_sound);
+        assert!(!group.contains(timeline, &picture.id));
+        assert!(!group.contains(timeline, "A9"));
+    }
+}
+
+fn vca(n: u32, of: Option<u32>) -> Vca {
+    Vca {
+        id: format!("VCA{n}"),
+        name: format!("VCA {n}"),
+        fader_db: 0.0,
+        mute: false,
+        solo: false,
+        vcas: of
+            .map(|master| format!("VCA{master}"))
+            .into_iter()
+            .collect(),
+        automation_arm: columbina_model::AutomationArm::Unarmed,
+        lanes: columbina_model::Lanes::default(),
+    }
+}
+
+#[test]
+fn a_timeline_has_up_to_64_buses_and_64_vcas_and_vcas_up_to_6_deep() {
+    let mut project = Project::sample();
+    project.timelines[0].buses = (1..=64).map(bus).collect();
+    project.timelines[0].vcas = (1..=64).map(|n| vca(n, None)).collect();
+    project.validate().unwrap();
+    // Each VCA a member of the next: six of them are 6 deep, seven are 7.
+    let chain = |count: u32| -> Vec<Vca> {
+        (1..=count)
+            .map(|n| vca(n, (n < count).then_some(n + 1)))
+            .collect()
+    };
+    project.timelines[0].vcas = chain(6);
+    project.validate().unwrap();
+    project.timelines[0].vcas = chain(7);
+    let error = project.validate().unwrap_err();
+    assert_eq!(reason(&error.error), "vca_depth");
+}
+
+#[test]
+fn a_sidechain_from_a_track_that_is_not_there_is_refused() {
+    let mut project = Project::sample();
+    let mut limiter = columbina_model::audio::fx::LimiterFx::default();
+    limiter.sidechain.source = Some(SourceRef::Track("A9".into()));
+    project.timelines[0].tracks[1].audio.strip.inserts = vec![Insert {
+        id: "fx1".into(),
+        on: true,
+        effect: Effect::Limiter(limiter),
+    }];
+    let error = project.validate().unwrap_err();
+    assert_eq!(
+        error.error,
+        OpError::Missing {
+            what: "track",
+            id: "A9".into()
+        }
+    );
+}

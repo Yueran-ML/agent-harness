@@ -869,3 +869,54 @@ fn the_edit_of_a_transition_sets_the_levels_of_a_crossfade() {
         )
     );
 }
+
+#[test]
+fn a_pan_of_a_group_moves_the_others_by_as_much_where_they_stay_within_their_range() {
+    let mut project = grouped(json!(["panning"]), true);
+    for (track, x) in [("A1", 0.2), ("A2", 0.5)] {
+        op(
+            &mut project,
+            json!({"op": "set_track_audio", "timeline": "t1", "track": track,
+                "patch": {"strip": {"pan": {"x": x}}}}),
+        );
+    }
+    // A1 from 0.2 to 0.3, then to -0.4: A2 goes from 0.5 to 0.6, then to -0.1.
+    for (x, follows) in [(0.3, 0.6), (-0.4, -0.1)] {
+        edit(
+            &mut project,
+            json!({"edit": "set_track_audio", "timeline": "t1", "track": "A1",
+                "patch": {"strip": {"pan": {"x": x}}}}),
+        );
+        let got = track(&project, "A2").audio.strip.pan.x;
+        assert!((got - follows).abs() < 1e-12, "{got}, not {follows}");
+    }
+}
+
+#[test]
+fn an_automation_arm_of_a_group_is_set_on_the_others_and_left_where_another_setting_changes() {
+    use columbina_model::AutomationArm;
+    let mut project = grouped(json!(["automation"]), true);
+    edit(
+        &mut project,
+        json!({"edit": "set_track_audio", "timeline": "t1", "track": "A1",
+            "patch": {"automation_arm": true}}),
+    );
+    assert_eq!(
+        track(&project, "A2").audio.automation_arm,
+        AutomationArm::Armed
+    );
+    // A2 set off on its own, by an operation: a mute of A1 does not bring A1's arm to it.
+    op(
+        &mut project,
+        json!({"op": "set_track_audio", "timeline": "t1", "track": "A2",
+            "patch": {"automation_arm": "off"}}),
+    );
+    edit(
+        &mut project,
+        json!({"edit": "set_track_audio", "timeline": "t1", "track": "A1",
+            "patch": {"mute": true}}),
+    );
+    let a2 = &track(&project, "A2").audio;
+    assert_eq!(a2.automation_arm, AutomationArm::Off);
+    assert!(!a2.mute);
+}

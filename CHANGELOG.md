@@ -6,12 +6,26 @@ change what was there before.
 
 ## Unreleased
 
+- The Color page has its Keyframe Editor (studio, phase 4), at the right of the palettes: a
+  track for each node of the grade under a master track, with dynamic keyframes (diamonds,
+  Ctrl+[) and static ones (circles, Ctrl+]), put on every node in the All mode or on the
+  current node in the Color mode. Alt+] deletes the keyframe at the playhead, [ and ] go to
+  the keyframe before and after, a mark is dragged to another frame as one step to undo, and
+  its menu changes it to static or dynamic or opens Change Dynamic Attributes, which eases
+  the change out of a keyframe and into the next. With Auto-Keyframe on for a track, a change
+  made in a palette puts a keyframe at the playhead first. A node that has keyframes carries
+  a badge in the node editor.
 - The zoom, position, rotation and opacity of a clip take keyframes (studio, phase 4). In the
   Inspector of the Edit page each has a diamond that puts a key at the playhead or takes away
   the one there, and arrows to the key before and after; once a setting has keys, a value
   given at another frame puts a key there. The keys stay on their pictures where the clip is
   trimmed, slipped or played at another speed, as the keys of its grade do. The agent sets
   them with the operations `set_clip_keys` and `splice_clip_keys` of `video_edit`.
+- A clip of the Edit page's timeline shows its keyframes (studio, phase 4): diamonds along
+  its lower edge, which take the playhead to their frame, and a Keyframe button that opens a
+  keyframe track under the clip, with a row for all its keys and one for each setting that
+  has keys. There the keys are chosen, dragged in time as one step to undo, deleted, and
+  copied, cut and pasted at the playhead.
 - The Edit page has a Curve Editor under its timeline (studio, phase 4), opened from the
   toolbar of the timeline or from the Video tab of the Inspector: the curves of the keyframes
   of the clip that is chosen, whose keys are dragged in time and in value, added with a

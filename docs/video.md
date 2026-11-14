@@ -83,7 +83,13 @@ size and frame rate, by default those of the first video in the pool) and opens 
   timeline with the curves of the chosen clip: drag keys in time and value, double-click a
   curve to add one, Delete to take the chosen ones away, set them to Linear, Ease In, Ease
   Out, Ease In and Out or Hold, drag the handles of a Bezier key, copy and paste keys, and
-  zoom with the wheel (Full Extent Zoom fits all). A composite mode lays the clip over the
+  zoom with the wheel (Full Extent Zoom fits all). A clip that has keys shows them in the
+  timeline as diamonds along its lower edge, and a press on one takes the playhead there.
+  The Keyframe button beside the clip's name opens its **keyframe track** under the clip: a
+  row for all its keys and a row for each setting that has keys. A click chooses a key (Ctrl
+  and Shift choose more), a drag moves the chosen keys in time as one step to undo, Delete
+  takes them away, and Ctrl+C, Ctrl+X and Ctrl+V copy, cut and paste them at the playhead.
+  A composite mode lays the clip over the
   tracks below it; with nothing below, the clip is shown as it is. On an
   audio track: volume, pan and fades; for a title: text, size, colour, position and alignment;
   for a solid colour: its colour. A number is typed, or dragged sideways (with Shift ten times
@@ -288,6 +294,20 @@ two, four or nine at a time, each with its own settings (scale in 10-bit, percen
 channels, brightness, reference levels). They measure the frame as the timeline viewer shows it,
 before the Color Viewer LUT.
 
+**Keyframes.** The Keyframe Editor shares the right of the palettes with the scopes: a track for
+each node of the grade shown, under a master track that shows the keyframes of them all, over the
+frames of the clip. A keyframe of a node holds every setting of that node. A dynamic keyframe (a
+diamond, Ctrl+[) changes into the next one; a static one (a circle, Ctrl+]) stays as it is until
+the next and jumps there. In the All mode a keyframe goes on the track of every node, in the Color
+mode on the current node's alone. Alt+] deletes the keyframe at the playhead, [ and ] go to the
+keyframe before and after, and a mark dragged along its track moves its keyframe, no further than
+the keyframes beside it. The right-click menu of a mark changes it to static or dynamic, deletes
+it, or opens *Change Dynamic Attributes*, whose Start and End ease the change out of the keyframe
+and into the next. With Auto-Keyframe on in the head of a track, a change made in a palette at a
+frame without a keyframe puts one there first. A node that has keyframes shows a small diamond in
+the node editor. The keyframes stay on their pictures where the clip is trimmed, slipped or
+played at another speed.
+
 **The viewer.** Alt+F enlarges the viewer, Shift+F shows it full screen and P as cinema (Esc
 leaves it). Ctrl+= and Ctrl+- zoom, Shift+Z fits and Alt+Shift+Z shows it at 100%; the wheel and
 the middle button zoom and pan. Shift+D turns Bypass Color on and off: the picture without its
@@ -352,6 +372,9 @@ These are the Color page's own keys; playback, In and Out and undo are those of 
 | Alt+Shift+; / Alt+Shift+' | The node before or after | 3314 |
 | Ctrl+C / Ctrl+V | Copies and pastes a node in the node editor, a whole grade in the thumbnails | 3286, 3318 |
 | = / - | Applies the grade of the clip one or two before | 3288 |
+| Ctrl+[ / Ctrl+] | Adds a dynamic or a static keyframe at the playhead | 3384–3385 |
+| Alt+] | Deletes the keyframe at the playhead | 3392 |
+| [ / ] | The keyframe before or after | 1114 |
 | Alt+Z | Primaries: between the wheels and Log | 3068 |
 | Alt+Shift+C | Auto Color | 3045 |
 | Shift+H / Alt+Shift+H | Highlight, Highlight in black and white | 3170–3171 |
@@ -629,7 +652,7 @@ client has been absent for a while.
 
 ## Not in this version
 
-Keyframes and speed curves on the Edit page, the Keyframe Editor of the Color page, markers, Fit
+Speed curves on the Edit page, markers, Fit
 to Fill, Close Up, multicam and lining clips up by timecode come in later phases. The desktop's export writes with hardware encoders only, with ProRes as the fallback.
 Of the Color page, the stabilizer, versions of grades, the 3D qualifier, Magic Mask, Color Warper,
 Sizing and the other Motion Effects, DCTL, Dolby Vision and HDR10+ are not in this version, nor,

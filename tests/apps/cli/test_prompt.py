@@ -21,6 +21,19 @@ async def typed(prompt: Prompt, at: Desk, text: str) -> None:
     await until(lambda: prompt.typed.endswith(text))
 
 
+async def alone(seconds: float = 0.4) -> None:
+    """Give the prompt the time in which a key that was typed is taken to stand alone.
+
+    A key that follows Escape at once is taken together with it, as a terminal sends the
+    keys that are pressed with Alt, and a person is slower than that. The time is given in
+    many short turns: one sleep of all of it is over at once on a machine that was held up
+    before the prompt read the key, when the prompt has had none of the time, and the key
+    that follows is taken with Escape (a runner of macOS did so).
+    """
+    for _ in range(round(seconds / 0.02)):
+        await asyncio.sleep(0.02)
+
+
 async def offered(at: Desk, mark: str) -> None:
     """Wait until something stands where the prompt is, as the keys of a question do.
 
@@ -232,9 +245,7 @@ async def test_escape_stops_what_is_running_and_does_nothing_when_nothing_is() -
         await typed(prompt, at, "a")
 
         at.type(ESCAPE)
-        # A key that follows Escape at once is taken together with it, as a terminal sends
-        # the keys that are pressed with Alt. A person is slower than that.
-        await asyncio.sleep(0.4)
+        await alone()
         await typed(prompt, at, "b")
         idle = list(stopped)
         prompt.busy = True
@@ -338,7 +349,7 @@ async def test_escape_does_nothing_when_nobody_said_what_it_stops() -> None:
         await typed(prompt, at, "a")
 
         at.type(ESCAPE)
-        await asyncio.sleep(0.4)
+        await alone()
         at.enter("b")
 
         assert await asyncio.wait_for(waiting, 5) == "ab"

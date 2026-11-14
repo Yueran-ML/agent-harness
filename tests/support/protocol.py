@@ -6,6 +6,7 @@ happen in a session happens in it once.
 
 import importlib
 import pkgutil
+import sys
 
 import columbina
 from columbina.session import EventData, UnknownEvent
@@ -13,6 +14,10 @@ from columbina.session import EventData, UnknownEvent
 __all__ = ["event_kinds"]
 
 _NOT_A_MODULE_TO_LOAD = "__main__"
+
+_OF_ONE_SYSTEM = {"columbina.computer.windows": "win32"}
+"""The modules that only one system can load, and the system: they speak to its own libraries
+as they are loaded, and declare no type of event."""
 
 
 def event_kinds() -> dict[str, type[EventData]]:
@@ -24,8 +29,11 @@ def event_kinds() -> dict[str, type[EventData]]:
     knows.
     """
     for module in pkgutil.walk_packages(columbina.__path__, "columbina."):
-        if not module.name.endswith(_NOT_A_MODULE_TO_LOAD):
-            importlib.import_module(module.name)
+        if module.name.endswith(_NOT_A_MODULE_TO_LOAD):
+            continue
+        if _OF_ONE_SYSTEM.get(module.name, sys.platform) != sys.platform:
+            continue
+        importlib.import_module(module.name)
     found: dict[str, type[EventData]] = {}
     pending = list(EventData.__subclasses__())
     while pending:

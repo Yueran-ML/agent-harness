@@ -2,6 +2,7 @@
 
 import copy
 import json
+import os
 from collections.abc import AsyncIterator
 from itertools import pairwise
 from pathlib import Path
@@ -625,9 +626,18 @@ async def test_a_lut_that_does_not_parse_is_listed_with_why_and_not_set(
         {"name": "Broken.cube", "kind": "3d", "error": "line 3"},
         {"name": "Old.cube"},
     ]
-    refused = await desk.call("video_grade_lut", grade="c1", lut="broken.cube")
+    refused = await desk.call("video_grade_lut", grade="c1", lut="Broken.cube")
     assert refused.error is not None
     assert "the LUT Broken.cube cannot be used: line 3" in refused.text
+    # A name is compared as the system compares names of files: without case on Windows, where
+    # it is the same LUT, and with it elsewhere, where there is none of that name.
+    refused = await desk.call("video_grade_lut", grade="c1", lut="broken.cube")
+    assert refused.error is not None
+    if os.name == "nt":
+        assert "the LUT Broken.cube cannot be used: line 3" in refused.text
+    else:
+        assert "there is no LUT broken.cube" in refused.text
+        assert "the closest are Broken.cube" in refused.text
     assert fake.transactions == []
     result(await desk.call("video_grade_lut", grade="c1", lut="Log.cube"))
     result(await desk.call("video_grade_lut", grade="c1", lut="Old.cube"))

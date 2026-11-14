@@ -137,6 +137,8 @@ _TIMELINE_OPERATIONS = frozenset(
         "set_insert", "move_insert", "set_timeline_audio",
         # The operations of automation (T14).
         "set_lane", "splice_lane",
+        # The keys of a clip's settings (phase 4).
+        "set_clip_keys", "splice_clip_keys",
     }
 )  # fmt: skip
 """The basic operations whose ``timeline`` the tool's fills where it is left out."""

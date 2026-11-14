@@ -206,10 +206,45 @@ impl Param {
         matches!(self, Self::Keys(_))
     }
 
+    /// It with each of its keys at the frame `to` of its frame, within [`LARGEST`] of 0. Of
+    /// keys that come to one frame, or past one another, the last is kept, as
+    /// [`Grade::with_key_frames`] keeps it.
+    #[must_use]
+    pub fn with_key_frames(&self, to: &impl Fn(i64) -> i64) -> Param {
+        match self {
+            Self::Fixed(value) => Self::Fixed(*value),
+            Self::Keys(keys) => {
+                let mut moved: Vec<Key> = Vec::with_capacity(keys.len());
+                for key in keys {
+                    let frame = to(key.frame).clamp(-LARGEST, LARGEST);
+                    let key = Key {
+                        frame,
+                        ..key.clone()
+                    };
+                    match moved.last_mut() {
+                        Some(last) if last.frame >= frame => *last = key,
+                        _ => moved.push(key),
+                    }
+                }
+                Self::Keys(moved)
+            }
+        }
+    }
+
     /// Check that it is a value from `low` to `high`, or keys of such values at frames in order
     /// within [`LARGEST`] of 0, with handles that are finite shares from 0 to 1.
     pub(crate) fn check(&self, what: &'static str, low: f64, high: f64) -> Result<(), OpError> {
-        let fits = |value: f64| value.is_finite() && (low..=high).contains(&value);
+        self.check_with(what, |value| (low..=high).contains(&value))
+    }
+
+    /// Check that it is a finite value that `within` takes, or keys of such values at frames in
+    /// order within [`LARGEST`] of 0, with handles that are finite shares from 0 to 1.
+    pub(crate) fn check_with(
+        &self,
+        what: &'static str,
+        within: impl Fn(f64) -> bool,
+    ) -> Result<(), OpError> {
+        let fits = |value: f64| value.is_finite() && within(value);
         let ok = match self {
             Self::Fixed(value) => fits(*value),
             Self::Keys(keys) => {

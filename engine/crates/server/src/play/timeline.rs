@@ -2763,7 +2763,7 @@ mod tests {
         assert!(worker.replace(0, Arc::new(proxied(louder.clone()))));
         assert_eq!(worker.generation, read_ahead + 1);
         let mut moved = proxied(louder);
-        moved.timelines[0].tracks[0].clips[0].transform.x = 0.25;
+        moved.timelines[0].tracks[0].clips[0].transform.x = 0.25.into();
         assert!(worker.replace(0, Arc::new(moved)));
         assert_eq!(worker.generation, read_ahead + 2);
     }
@@ -3123,7 +3123,7 @@ mod tests {
         };
         assert!(check(&before, 0));
         let mut seen = before.clone();
-        seen.timelines[0].tracks[0].clips[0].transform.scale = 0.5;
+        seen.timelines[0].tracks[0].clips[0].transform.scale = 0.5.into();
         assert!(check(&seen, 0), "only the picture changed");
         assert!(
             check(&proxied(before.clone()), 0),

@@ -13,10 +13,16 @@
 //! and nothing else, is what the tests of this module see to, on a corrector that has every
 //! palette and a window of every shape.
 //!
-//! So far the catalog lists what the nodes of the Color page hold: a corrector, and a Key
-//! Mixer, whose inputs and output each have a gain and an offset. Their keys are counted in
-//! the frames of the source of the clip ([`crate::keyframes`]). The operations that set the
-//! keys of a setting by its path ([`crate::ops::Op::SetKeys`]) take the paths that are listed.
+//! The catalog lists what the nodes of the Color page hold: a corrector, and a Key Mixer,
+//! whose inputs and output each have a gain and an offset; and what a clip holds of the Edit
+//! page: the settings of its transform ([`clip`]). The keys of all of them are counted in the
+//! frames of the source of the clip ([`crate::keyframes`]). The operations that set the keys of
+//! a setting by its path take the paths that are listed: [`crate::ops::Op::SetKeys`] those of a
+//! node, [`crate::ops::Op::SetClipKeys`] those of a clip.
+//!
+//! The place and the turn of a clip may be any finite numbers in the model, as they were before
+//! they took keys; for them the catalog gives the values that the editors show, 16 pictures
+//! either way and ten turns, and for the scale the least that the Inspector sets, a hundredth.
 
 use std::sync::OnceLock;
 
@@ -41,6 +47,8 @@ pub enum Unit {
     Pixels1080,
     /// Heights of the picture.
     Heights,
+    /// Widths of the picture.
+    Widths,
 }
 
 /// The page that shows a setting.
@@ -49,9 +57,12 @@ pub enum Unit {
 pub enum Page {
     /// The Color page.
     Color,
+    /// The Edit page, and the Cut page with it.
+    Edit,
 }
 
-/// The palette of the Color page that shows a setting.
+/// The palette of the Color page, or the group of the Inspector of the Edit page, that shows a
+/// setting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Palette {
@@ -75,6 +86,10 @@ pub enum Palette {
     Qualifier,
     /// The Power Window palette.
     Window,
+    /// The Transform of the Inspector.
+    Transform,
+    /// The Composite of the Inspector.
+    Composite,
 }
 
 /// What the keys of a setting are counted in.
@@ -308,6 +323,76 @@ pub fn key_mixer() -> &'static [Entry] {
         }
         all.0
     })
+}
+
+/// The settings of a clip that take keys: those of its transform, named as the clip holds
+/// them, `transform.x`.
+#[must_use]
+pub fn clip() -> &'static [Entry] {
+    static ENTRIES: OnceLock<Vec<Entry>> = OnceLock::new();
+    ENTRIES.get_or_init(|| {
+        let most = crate::project::Transform::MOST_SCALE;
+        [
+            (
+                "transform.x",
+                0.0,
+                -16.0,
+                16.0,
+                Unit::Widths,
+                Palette::Transform,
+            ),
+            (
+                "transform.y",
+                0.0,
+                -16.0,
+                16.0,
+                Unit::Heights,
+                Palette::Transform,
+            ),
+            (
+                "transform.scale",
+                1.0,
+                0.01,
+                most,
+                Unit::Number,
+                Palette::Transform,
+            ),
+            (
+                "transform.rotation",
+                0.0,
+                -3600.0,
+                3600.0,
+                Unit::Degrees,
+                Palette::Transform,
+            ),
+            (
+                "transform.opacity",
+                1.0,
+                0.0,
+                1.0,
+                Unit::Number,
+                Palette::Composite,
+            ),
+        ]
+        .into_iter()
+        .map(|(path, default, low, high, unit, palette)| Entry {
+            path: path.to_owned(),
+            default,
+            low,
+            high,
+            unit,
+            page: Page::Edit,
+            palette,
+            clock: Clock::SourceFrame,
+        })
+        .collect()
+    })
+}
+
+/// The entry of a setting of a clip, by its path, or none if it takes no keys.
+#[must_use]
+pub fn of_clip(path: &str) -> Option<&'static Entry> {
+    clip().iter().find(|entry| entry.path == path)
 }
 
 /// The settings of a node of a kind that take keys: none for a mixer that has only inputs.

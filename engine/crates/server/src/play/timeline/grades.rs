@@ -623,7 +623,7 @@ fn the_timeline_grade_is_over_every_layer_and_under_the_subtitles() {
     let dir = tempfile::tempdir().unwrap();
     let mut monitor = monitor(dir.path());
     let mut small = colour("c2", TEAL, 0, 50);
-    small.transform.scale = 0.5;
+    small.transform.scale = 0.5.into();
     let mut project = timeline_of(vec![colour("c1", ORANGE, 0, 50)], 640, 360);
     let timeline = &mut project.timelines[0];
     timeline

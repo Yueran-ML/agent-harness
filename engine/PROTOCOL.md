@@ -690,7 +690,13 @@ clients; a client must not write `project.json` itself.
 - Colors accept exactly eight hexadecimal digits after `#`, with either letter case; returned
   operations and saved projects normalize them to lowercase `#rrggbbaa` (alpha last).
 - `transform` is `{x,y,scale,rotation,opacity}`: offsets as shares of timeline width/height,
-  scale in (0,16], clockwise degrees, opacity in [0,1]. Gain is −96…24 dB; pan is −1…1.
+  scale in (0,16], clockwise degrees, opacity in [0,1]. Each of the five is a number, or
+  `{"keys": [{frame, value, interp}, ...]}` as a setting of a grade is (see Grades): the keys are
+  at the frames that the keys of the clip's grade count (see Frames of keys), their frames rise
+  strictly and each value is within the setting's range. A setting with no keys is written as a
+  number, so a project without keys reads and writes as it did. `set_clip` puts a transform
+  whole, keys and all; `set_clip_keys` and `splice_clip_keys` set one setting.
+  Gain is −96…24 dB; pan is −1…1.
   Fades count timeline frames from the respective ends. A fade and transition at the same end
   are refused; clear the fade explicitly to replace it with a transition.
 - A transition is `{id,kind,left,right,length,align}`. Kind is `dissolve|dip_black|dip_white`
@@ -1980,6 +1986,8 @@ An operation is an object that names itself in `op` (unknown fields are refused,
 | `set_track` | `timeline`, `id`, `name?`, `color?` (`#rrggbbaa`, null restores the unspecified default), `enabled?`, `locked?`, `language?`, `mute?`, `solo?`, `solo_safe?` (the last three of a track of sound only; on another `wrong_track` with `what` of the setting) |
 | `move_track` | `timeline`, `id`, `index`: zero-based index in the final complete track list, including video, audio and subtitle tracks; preserves the existing object and every ID/reference. Out-of-range or unchanged indexes are refused as `out_of_range` (`what: "track index"`). Like other basic track operations it can be undone while locked. |
 | `set_clip` | `timeline`, `id`, `enabled?`, `speed?`, `reverse?`, `link?`, `transform?`, `gain_db?`, `pan?`, `fade_in?`, `fade_out?`, `audio_fade_in?`, `audio_fade_out?` (an `AudioFade` or `null` for a straight fade over the frames), `eq?`, `effects?`, `pitch_correction?`, `pitch?`, `channels?` (see Operations of sound), `source?` |
+| `set_clip_keys` | `timeline`, `id`, `path`, `param` (a number, or `{"keys": [...]}`): one setting of a clip that takes keys, by its path in the clip: `transform.x`, `transform.y`, `transform.scale`, `transform.rotation`, `transform.opacity` (listed with their bounds under `clip` in `crates/model/tests/data/catalog.json`). Any other path is `missing` with `what` `setting`. Its inverse is the `set_clip_keys` of the setting as it was. |
+| `splice_clip_keys` | `timeline`, `id`, `path`, `at`, `remove`, `keys`: puts `keys` in the place of the `remove` keys of the setting from key `at` on, as `splice_keys` does for a node. `at + remove` beyond the keys is `out_of_list`; a setting keeps one key at least (`out_of_range`, `keys`); a number becomes the keys that are put, and its `done` is then the `set_clip_keys` of those keys, its inverse the `set_clip_keys` of the number. What either makes is checked as the clip is (`out_of_range`, `transform`). |
 | `add_bin` | `bin`, `index?` |
 | `remove_bin` | `id` |
 | `set_bin` | `id`, `name?`, `parent?` |
@@ -3170,6 +3178,10 @@ Keyframe Editor's ruler only "mirrors the record timecode" of the clip (p. 3382)
   frames (slower than the media) has one setting on them all. The speed dialog's Maintain
   Timing / Stretch Keyframes is for the keys of the Edit page's Composite, Transform and
   Cropping only (p. 1073).
+- The keys of a clip's **transform** count the same frames as the keys of its grade, and so stay
+  on their pictures through the same edits; through a change of speed they come sooner or
+  later with their pictures, which is what Stretch Keyframes does. (Maintain Timing, which
+  would keep them at their frames of the timeline, is not offered.)
 - A **title**, a **colour** and a **still** (one picture held) have no frames of their own: the
   keys of their grades count the frames of the clip from its first (0), and move with its head.
 - The keys of a **timeline's grade** count the frames of the timeline; they are apart from those
@@ -4563,7 +4575,7 @@ refused only through a bug of the engine. The refusals that are not of a transac
 | `wrong_track` | `what`, `kind` | content or settings on an incompatible track kind |
 | `cue_overlap` | `with` | subtitles overlap on one track |
 | `subtitle_shown` | `track` | a subtitle track would be enabled (by `set_track`, `add_track` or `add_timeline`) while subtitle track `track` of its timeline is enabled; a timeline shows one at a time |
-| `out_of_range` | `what` | an invalid setting: `width`, `height`, `sample_rate`, `start`, `length`, `speed`, `transform`, `gain_db`, `pan`, `fade`, `text`, `size`, `position`, `language`, `still`; `rotation` for media whose `facts.video.rotation` is not 0, 90, 180 or 270; `digest` for media whose `identity.digest` is not 64 lowercase hex digits; `by`, `clips` or `cues` for a shift that would change nothing |
+| `out_of_range` | `what` | an invalid setting: `width`, `height`, `sample_rate`, `start`, `length`, `speed`, `transform`, `gain_db`, `pan`, `fade`, `keys` (a `splice_clip_keys` that would leave a setting no key), `text`, `size`, `position`, `language`, `still`; `rotation` for media whose `facts.video.rotation` is not 0, 90, 180 or 270; `digest` for media whose `identity.digest` is not 64 lowercase hex digits; `by`, `clips` or `cues` for a shift that would change nothing |
 | `has_transition` | `transition` | `remove_clip`, `move_clip` or `trim_clip` of a clip that has a transition (remove it first), a `set_clip` that its transition cannot follow, or a `shift_clips` that moves just one end of a transition |
 | `not_adjacent` | `left`, `right` | transition endpoints do not meet |
 | `cut_taken` | `with` | a transition is already at this cut |

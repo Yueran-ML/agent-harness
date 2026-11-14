@@ -68,7 +68,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::grade::{Grade, Target};
 use crate::ops::LARGEST;
-use crate::project::{Clip, Project, Source, Timeline};
+use crate::project::{Clip, Project, Source, Timeline, Transform};
 use crate::span::{self, Reading};
 use crate::time::{Rate, Time};
 
@@ -238,19 +238,69 @@ pub fn aligned(grade: &Grade, from: Option<KeyBase>, to: Option<KeyBase>, align:
     if !grade.has_keys() {
         return grade.clone();
     }
-    if align == Align::SourceTimecode && overlap(&from, &to) {
-        if from.rate == to.rate {
-            return grade.clone();
+    match Moved::of(from, to, align) {
+        Some(moved) => grade.with_key_frames(|frame| moved.at(frame)),
+        None => grade.clone(),
+    }
+}
+
+/// `transform`, whose keys count the frames of `from`, with its keys put on the frames of `to`
+/// as `align` puts them: as [`aligned`] puts the keys of the grade of the same clip.
+#[must_use]
+pub fn aligned_transform(
+    transform: &Transform,
+    from: KeyBase,
+    to: KeyBase,
+    align: Align,
+) -> Transform {
+    match Moved::of(from, to, align) {
+        Some(moved) if transform.is_animated() => {
+            transform.with_key_frames(&|frame| moved.at(frame))
         }
-        return grade.with_key_frames(|frame| at_rate(frame, from.rate, to.rate));
+        _ => transform.clone(),
     }
-    if from.rate == to.rate && from.first == to.first {
-        return grade.clone();
+}
+
+/// Where the keys that count the frames of one clip go on the frames of another.
+#[derive(Clone, Copy)]
+struct Moved {
+    from: KeyBase,
+    to: KeyBase,
+    /// Whether they are aligned with the start frames, and not by the time of the source.
+    start: bool,
+}
+
+impl Moved {
+    /// How keys go from the frames of `from` to those of `to` as `align` puts them, or none
+    /// where every key stays at its frame.
+    fn of(from: KeyBase, to: KeyBase, align: Align) -> Option<Moved> {
+        if align == Align::SourceTimecode && overlap(&from, &to) {
+            return (from.rate != to.rate).then_some(Moved {
+                from,
+                to,
+                start: false,
+            });
+        }
+        (from.rate != to.rate || from.first != to.first).then_some(Moved {
+            from,
+            to,
+            start: true,
+        })
     }
-    grade.with_key_frames(|frame| {
-        let along = at_rate(frame.saturating_sub(from.first), from.rate, to.rate);
-        to.first.saturating_add(along)
-    })
+
+    /// The frame that the key at `frame` goes to.
+    fn at(&self, frame: i64) -> i64 {
+        if self.start {
+            let along = at_rate(
+                frame.saturating_sub(self.from.first),
+                self.from.rate,
+                self.to.rate,
+            );
+            self.to.first.saturating_add(along)
+        } else {
+            at_rate(frame, self.from.rate, self.to.rate)
+        }
+    }
 }
 
 /// Whether two clips show some time of their sources alike: both count the frames of their

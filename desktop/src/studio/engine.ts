@@ -104,7 +104,11 @@ export type TrackKind = 'video' | 'audio' | 'subtitle';
 export type Monitor = 'source' | 'timeline';
 export interface Bin { id: string; name: string; parent: string | null }
 export interface Speed { num: number; den: number }
-export interface Transform { x: number; y: number; scale: number; rotation: number; opacity: number }
+/**
+ * Where the picture of a clip is put. Each setting is a number or keys, at the frames that the keys
+ * of the clip's grade count (`keyClockOf`); the engine writes a setting with no keys as a number.
+ */
+export interface Transform { x: Param; y: Param; scale: Param; rotation: Param; opacity: Param }
 export interface TitleStyle { font: string; size: number; color: string; x: number; y: number; align: 'left' | 'center' | 'right' }
 export type ClipSource =
   | { kind: 'media'; media: string; in: Time }
@@ -681,6 +685,9 @@ export type Op =
   | { op: 'set_node'; grade: Target; id: string; label?: string | null; enabled?: boolean | null; locked?: boolean | null; pos?: NodePos | null; params?: Record<string, unknown> | null }
   | { op: 'set_keys'; grade: Target; id: string; path: string; param: Param }
   | { op: 'splice_keys'; grade: Target; id: string; path: string; at: number; remove: number; keys: Keyframe[] }
+  /** A setting of a clip that takes keys, by its path in the clip: `transform.x`. */
+  | { op: 'set_clip_keys'; timeline: string; id: string; path: string; param: Param }
+  | { op: 'splice_clip_keys'; timeline: string; id: string; path: string; at: number; remove: number; keys: Keyframe[] }
   | { op: 'set_grade'; grade: Target; value: Grade }
   | { op: 'add_group'; group: Group; index?: number | null }
   | { op: 'remove_group'; id: string }
@@ -1881,8 +1888,13 @@ function setNode(node: GradeNode, op: Extract<Op, { op: 'set_node' }>): GradeNod
  * object on the way is copied, and nothing beside it.
  */
 function withSetting(node: GradeNode, path: string, change: (before: Param) => Param): GradeNode {
+  return { ...node, params: settingPut(node.params, path, change, `node ${node.id}`) } as GradeNode;
+}
+
+/** What holds settings, with the one at `path` changed: see `withSetting`. `of` names the holder where the path leads nowhere. */
+function settingPut(holder: unknown, path: string, change: (before: Param) => Param, of: string): unknown {
   const parts = path.split('.');
-  const missing = () => new CopyMismatch(`there is no setting ${path} of node ${node.id} in the copy`);
+  const missing = () => new CopyMismatch(`there is no setting ${path} of ${of} in the copy`);
   const put = (value: unknown, depth: number): unknown => {
     if (depth === parts.length) {
       const keyed = typeof value === 'object' && value !== null && Array.isArray((value as { keys?: unknown }).keys);
@@ -1898,7 +1910,26 @@ function withSetting(node: GradeNode, path: string, change: (before: Param) => P
     if (typeof value !== 'object' || value === null || !(part in value)) throw missing();
     return { ...value, [part]: put((value as Record<string, unknown>)[part], depth + 1) };
   };
-  return { ...node, params: put(node.params, 0) } as GradeNode;
+  return put(holder, 0);
+}
+
+/** The keys of a setting with `keys` in place of `remove` of them from `at`, as `splice_keys` puts them. */
+function splicedKeys(before: Param, op: { path: string; at: number; remove: number; keys: Keyframe[] }): Param {
+  // A setting that is a number has no keys, and becomes the keys that are put.
+  const keys = typeof before === 'number' ? [] : before.keys;
+  if (!Number.isInteger(op.at) || !Number.isInteger(op.remove) || op.at < 0 || op.remove < 0 || op.at + op.remove > keys.length) {
+    throw new CopyMismatch(`there are no keys ${op.at}–${op.at + op.remove} of ${op.path} in the copy`);
+  }
+  return { keys: [...keys.slice(0, op.at), ...op.keys, ...keys.slice(op.at + op.remove)] };
+}
+
+/** The settings of a clip that take keys: the paths of the engine's catalog (`catalog.json`, `clip`). */
+export const CLIP_KEYED = ['transform.x', 'transform.y', 'transform.scale', 'transform.rotation', 'transform.opacity'] as const;
+
+/** A clip with the setting at one of the paths of `CLIP_KEYED` changed (`set_clip_keys`, `splice_clip_keys`). */
+function withClipSetting(clip: Clip, path: string, change: (before: Param) => Param): Clip {
+  if (!(CLIP_KEYED as readonly string[]).includes(path)) throw new CopyMismatch(`there is no setting ${path} of clip ${clip.id} in the copy`);
+  return settingPut(clip, path, change, `clip ${clip.id}`) as Clip;
 }
 
 /** Mirror only accepted basic operations, preserving all objects outside the changed branch. */
@@ -2034,15 +2065,16 @@ export function applyOp(project: Project, op: Op): Project {
     });
     case 'splice_keys': return inGrade(project, op.grade, grade => {
       const at = nodeAt(grade, op.id);
-      const spliced = withSetting(grade.nodes[at], op.path, before => {
-        // A setting that is a number has no keys, and becomes the keys that are put.
-        const keys = typeof before === 'number' ? [] : before.keys;
-        if (!Number.isInteger(op.at) || !Number.isInteger(op.remove) || op.at < 0 || op.remove < 0 || op.at + op.remove > keys.length) {
-          throw new CopyMismatch(`there are no keys ${op.at}–${op.at + op.remove} of ${op.path} in the copy`);
-        }
-        return { keys: [...keys.slice(0, op.at), ...op.keys, ...keys.slice(op.at + op.remove)] };
-      });
+      const spliced = withSetting(grade.nodes[at], op.path, before => splicedKeys(before, op));
       return { ...grade, nodes: replaced(grade.nodes, at, spliced) };
+    });
+    case 'set_clip_keys': return inTimeline(project, op.timeline, timeline => {
+      const [track, at] = clipAt(timeline, op.id);
+      return inClips(timeline, track, clips => replaced(clips, at, withClipSetting(clips[at], op.path, () => op.param)));
+    });
+    case 'splice_clip_keys': return inTimeline(project, op.timeline, timeline => {
+      const [track, at] = clipAt(timeline, op.id);
+      return inClips(timeline, track, clips => replaced(clips, at, withClipSetting(clips[at], op.path, before => splicedKeys(before, op))));
     });
     case 'set_grade': return inGrade(project, op.grade, () => op.value);
     case 'add_group': return { ...project, groups: inserted(project.groups, { ...op.group, pre: kept(op.group.pre), post: kept(op.group.post) }, op.index) };

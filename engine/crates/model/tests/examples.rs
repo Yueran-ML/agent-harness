@@ -10,9 +10,8 @@ use std::path::Path;
 
 use columbina_model::grade::{Interp, Key, Kind, Link, Node, Param, Port, Pos, Target};
 use columbina_model::{
-    apply, apply_done, Alignment, Bin, Clip, Cue, Grade, Group, Op, Project, Proxy, Rate, Rgba,
-    Source, Speed, TextAlign, Time, TitleStyle, Track, TrackKind, Transform, Transition,
-    TransitionKind,
+    apply, apply_done, Alignment, Bin, Clip, Cue, Grade, Group, Op, Placed, Project, Proxy, Rate,
+    Rgba, Source, Speed, TextAlign, Time, TitleStyle, Track, TrackKind, Transition, TransitionKind,
 };
 
 const FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/ops-examples.json");
@@ -235,13 +234,16 @@ fn examples() -> Vec<(&'static str, Vec<Op>, Op)> {
         *enabled = Some(false);
         *speed = Some(Speed { num: 3, den: 2 });
         *reverse = Some(true);
-        *transform = Some(Transform {
-            x: 0.25,
-            y: -0.125,
-            scale: 1.5,
-            rotation: 90.0,
-            opacity: 0.5,
-        });
+        *transform = Some(
+            Placed {
+                x: 0.25,
+                y: -0.125,
+                scale: 1.5,
+                rotation: 90.0,
+                opacity: 0.5,
+            }
+            .into(),
+        );
         *gain_db = Some((-6.0).into());
         *pan = Some((-0.5).into());
         (*fade_in, *fade_out) = (Some(10), Some(5));
@@ -1068,6 +1070,31 @@ fn saturation_keys() -> Op {
     }
 }
 
+/// Keys of how far c1 is moved right: it eases from the left edge to where it is fitted.
+fn position_keys() -> Op {
+    let third = 1.0 / 3.0;
+    Op::SetClipKeys {
+        timeline: "t1".into(),
+        id: "c1".into(),
+        path: "transform.x".into(),
+        param: Param::Keys(vec![
+            Key {
+                frame: 0,
+                value: -0.5,
+                interp: Interp::Bezier {
+                    out: [third, 0.0],
+                    into: [third, 0.0],
+                },
+            },
+            Key {
+                frame: 24,
+                value: 0.0,
+                interp: Interp::Linear,
+            },
+        ]),
+    }
+}
+
 /// Set n9, the node of `first_node`, by `params`.
 fn set_n9(params: serde_json::Value) -> Op {
     Op::SetNode {
@@ -1293,6 +1320,56 @@ fn grade_examples() -> Vec<(&'static str, Vec<Op>, Op)> {
                 keys: vec![Key {
                     frame: -4,
                     value: 0.125,
+                    interp: Interp::Linear,
+                }],
+            },
+        ),
+        ("set_clip_keys", vec![], position_keys()),
+        (
+            "set_clip_keys of a number in place of keys",
+            vec![position_keys()],
+            Op::SetClipKeys {
+                timeline: "t1".into(),
+                id: "c1".into(),
+                path: "transform.x".into(),
+                param: Param::Fixed(0.25),
+            },
+        ),
+        (
+            "splice_clip_keys",
+            vec![position_keys()],
+            Op::SpliceClipKeys {
+                timeline: "t1".into(),
+                id: "c1".into(),
+                path: "transform.x".into(),
+                at: 1,
+                remove: 1,
+                keys: vec![
+                    Key {
+                        frame: 12,
+                        value: -0.125,
+                        interp: Interp::Hold,
+                    },
+                    Key {
+                        frame: 36,
+                        value: 0.0,
+                        interp: Interp::Linear,
+                    },
+                ],
+            },
+        ),
+        (
+            "splice_clip_keys of the first keys of a setting, done as set_clip_keys",
+            vec![],
+            Op::SpliceClipKeys {
+                timeline: "t1".into(),
+                id: "c1".into(),
+                path: "transform.opacity".into(),
+                at: 0,
+                remove: 0,
+                keys: vec![Key {
+                    frame: 10,
+                    value: 0.5,
                     interp: Interp::Linear,
                 }],
             },
@@ -1575,6 +1652,8 @@ fn the_examples_of_the_operations_are_as_the_engine_applies_them() {
         "set_node",
         "set_keys",
         "splice_keys",
+        "set_clip_keys",
+        "splice_clip_keys",
         "set_grade",
         "add_group",
         "remove_group",

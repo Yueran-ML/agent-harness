@@ -1160,7 +1160,10 @@ class Fake:
             if track["kind"] == "subtitle" and op.get("enabled") is True:
                 _one_shown(self._timeline(str(op["timeline"]), index), track, index)
             track.update({k: v for k, v in op.items() if k not in ("op", "id", "timeline")})
-        elif name in ("remove_clip", "move_clip", "trim_clip", "set_clip"):
+        elif name in (
+            "remove_clip", "move_clip", "trim_clip", "set_clip", "set_clip_keys",
+            "splice_clip_keys",
+        ):  # fmt: skip
             self._clip_changed(op, index)
         elif name == "set_track_audio":
             # Only the patch is put in: the engine's checks of sound are not copied here.
@@ -1208,6 +1211,8 @@ class Fake:
                     clip.update(start=op["start"], length=op["length"])
                     if op.get("source_in") is not None:
                         clip["source"]["in"] = op["source_in"]
+                elif op["op"] in ("set_clip_keys", "splice_clip_keys"):
+                    self._clip_keys(clip, op, index)
                 else:
                     clip.update({k: v for k, v in op.items() if k not in ("op", "id", "timeline")})
                 for one in timeline["tracks"]:
@@ -1216,6 +1221,30 @@ class Fake:
         message = f"there is no clip {op['id']}"
         data = {"index": index, "reason": "missing", "what": "clip", "id": op["id"]}
         raise RefusedError(-32001, message, {**data, "message": message})
+
+    def _clip_keys(self, clip: dict[str, Any], op: dict[str, Any], index: int) -> None:
+        """Set the keys of a setting of a clip; the engine's checks of values are not copied."""
+        path = str(op["path"])
+        if path not in _CLIP_KEYED:
+            message = f"there is no setting {path}"
+            data = {"index": index, "reason": "missing", "what": "setting", "id": path}
+            raise RefusedError(-32001, message, {**data, "message": message})
+        of, name = path.split(".")
+        if op["op"] == "set_clip_keys":
+            clip[of][name] = op["param"]
+            return
+        now = clip[of][name]
+        keys: list[Any] = list(cast("dict[str, Any]", now)["keys"]) if isinstance(now, dict) else []
+        keys[op["at"] : op["at"] + op["remove"]] = op["keys"]
+        if not keys:
+            message = "a setting keeps one key at least"
+            data = {"index": index, "reason": "out_of_range", "what": "keys"}
+            raise RefusedError(-32001, message, {**data, "message": message})
+        clip[of][name] = {"keys": keys}
+
+
+_CLIP_KEYED = frozenset(f"transform.{name}" for name in ("x", "y", "scale", "rotation", "opacity"))
+"""The settings of a clip that take keys, as the engine's catalog lists them."""
 
 
 def _clip(source: dict[str, Any], start: int, length: int) -> dict[str, Any]:

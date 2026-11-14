@@ -41,7 +41,9 @@ __all__ = [
     "CrossfadeLevel",
     "CueItem",
     "Edge",
+    "Key",
     "KeyInterp",
+    "Keys",
     "LaneThen",
     "MediaSource",
     "Rate",
@@ -104,6 +106,7 @@ __all__ = [
     "set_bin",
     "set_bus",
     "set_clip",
+    "set_clip_keys",
     "set_cue",
     "set_insert",
     "set_lane",
@@ -119,6 +122,7 @@ __all__ = [
     "slide",
     "slip",
     "smart_insert",
+    "splice_clip_keys",
     "track",
     "trim",
     "untangled",
@@ -236,8 +240,33 @@ class TitleStyle(Data):
     align: Literal["left", "center", "right"] = "center"
 
 
+class Key(Data):
+    """A keyframe of a setting of a clip's picture.
+
+    Attributes:
+        frame: The frame of the clip's media whose picture it is at, numbered at the media's
+            own rate from 0; of a title, a colour or a still, the frame of the clip from its
+            first, 0. The keys of the clip's grade count the same frames.
+        value: What the setting is there.
+        interp: How it goes on to the next key: ``"linear"``, ``"hold"``, or
+            ``{"bezier": {"out": [t, dv], "in": [t, dv]}}``.
+    """
+
+    frame: int
+    value: float
+    interp: Literal["linear", "hold"] | dict[str, Any] = "linear"
+
+
+class Keys(Data):
+    """A setting with keyframes, in the order of their frames, one at least."""
+
+    keys: list[Key]
+
+
 class Transform(Data):
     """Where the picture of a clip is put on the picture of its timeline.
+
+    Each setting is a number, or :class:`Keys`.
 
     Attributes:
         x: How far it is moved right, as a share of the width of the timeline.
@@ -247,11 +276,11 @@ class Transform(Data):
         opacity: How opaque it is: from 0, not seen, to 1.
     """
 
-    x: float = 0.0
-    y: float = 0.0
-    scale: float = 1.0
-    rotation: float = 0.0
-    opacity: float = 1.0
+    x: float | Keys = 0.0
+    y: float | Keys = 0.0
+    scale: float | Keys = 1.0
+    rotation: float | Keys = 0.0
+    opacity: float | Keys = 1.0
 
 
 class MediaSource(Data):
@@ -953,6 +982,35 @@ def set_clip(
         elif value is None:
             written[key] = None
     return _given(written, link=link)
+
+
+def set_clip_keys(timeline: str, id: str, path: str, param: float | Keys) -> dict[str, Any]:
+    """A number, or keys, in place of a setting of a clip that takes keys.
+
+    ``path`` names the setting in the clip: ``transform.x``, ``transform.y``,
+    ``transform.scale``, ``transform.rotation`` or ``transform.opacity``.
+    """
+    written = _json(param) if isinstance(param, Keys) else param
+    return {"op": "set_clip_keys", "timeline": timeline, "id": id, "path": path, "param": written}
+
+
+def splice_clip_keys(
+    timeline: str, id: str, path: str, at: int, remove: int, keys: Sequence[Key]
+) -> dict[str, Any]:
+    """``keys`` in place of ``remove`` keys of a setting of a clip, from its key ``at`` on.
+
+    A key is added, moved, changed or taken away without the others being sent. A setting that
+    is a number becomes the keys that are put; a setting keeps one key at least.
+    """
+    return {
+        "op": "splice_clip_keys",
+        "timeline": timeline,
+        "id": id,
+        "path": path,
+        "at": at,
+        "remove": remove,
+        "keys": [_json(key) for key in keys],
+    }
 
 
 def add_bin(name: str, *, id: str = "", parent: str | None = None) -> dict[str, Any]:

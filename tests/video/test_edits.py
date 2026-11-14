@@ -11,6 +11,8 @@ from columbina.video import edits
 from columbina.video.edits import (
     LEFT_OUT,
     CueItem,
+    Key,
+    Keys,
     Rate,
     Speed,
     Time,
@@ -419,3 +421,73 @@ def test_the_sound_of_a_clip_and_the_lanes_are_written_as_the_engine_reads_them(
         ]
         is True
     )
+
+
+def test_a_setting_of_a_transform_takes_keys_and_two_operations_set_them() -> None:
+    keys = Keys(keys=[Key(frame=0, value=-0.5), Key(frame=24, value=0.0, interp="hold")])
+    written = [
+        {"frame": 0, "value": -0.5, "interp": "linear"},
+        {"frame": 24, "value": 0.0, "interp": "hold"},
+    ]
+
+    clip = edits.set_clip("t1", "c2", transform=Transform(x=keys, scale=2))
+
+    assert clip["transform"] == {
+        "x": {"keys": written},
+        "y": 0.0,
+        "scale": 2.0,
+        "rotation": 0.0,
+        "opacity": 1.0,
+    }
+    assert edits.set_clip_keys("t1", "c2", "transform.opacity", 0.5) == {
+        "op": "set_clip_keys",
+        "timeline": "t1",
+        "id": "c2",
+        "path": "transform.opacity",
+        "param": 0.5,
+    }
+    assert edits.set_clip_keys("t1", "c2", "transform.x", keys)["param"] == {"keys": written}
+    eased = Key(frame=30, value=1.0, interp={"bezier": {"out": [0.3, 0.0], "in": [0.3, 0.0]}})
+    assert edits.splice_clip_keys("t1", "c2", "transform.x", 1, 1, [eased]) == {
+        "op": "splice_clip_keys",
+        "timeline": "t1",
+        "id": "c2",
+        "path": "transform.x",
+        "at": 1,
+        "remove": 1,
+        "keys": [
+            {
+                "frame": 30,
+                "value": 1.0,
+                "interp": {"bezier": {"out": [0.3, 0.0], "in": [0.3, 0.0]}},
+            }
+        ],
+    }
+
+
+async def test_the_keys_of_a_setting_of_a_clip_are_set_by_its_path(tmp_path: Path) -> None:
+    def opacity(fake: fake_engine.Fake) -> Any:
+        return fake.project["timelines"][0]["tracks"][0]["clips"][0]["transform"]["opacity"]
+
+    first, last = Key(frame=0, value=0.0), Key(frame=24, value=1.0)
+    async with served(tmp_path / "film") as fake:
+        async with await Engine.attach(tmp_path / "film", program=fake_engine.__file__) as one:
+            await one.apply(
+                [edits.add_timeline("Cut", Rate(num=25, den=1), tracks=[edits.track("video")])]
+            )
+            await one.apply([edits.insert("t1", of_color("#000000ff", 50), 0)])
+            id = fake.project["timelines"][0]["tracks"][0]["clips"][0]["id"]
+            path = "transform.opacity"
+
+            await one.apply([edits.splice_clip_keys("t1", id, path, 0, 0, [first, last])])
+            assert opacity(fake) == {
+                "keys": [
+                    {"frame": 0, "value": 0.0, "interp": "linear"},
+                    {"frame": 24, "value": 1.0, "interp": "linear"},
+                ]
+            }
+            await one.apply([edits.splice_clip_keys("t1", id, path, 0, 1, [])])
+            assert opacity(fake) == {"keys": [{"frame": 24, "value": 1.0, "interp": "linear"}]}
+            await one.apply([edits.set_clip_keys("t1", id, path, 0.5)])
+
+        assert opacity(fake) == 0.5

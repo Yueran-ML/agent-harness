@@ -6,6 +6,12 @@ change what was there before.
 
 ## Unreleased
 
+- The zoom, position, rotation and opacity of a clip take keyframes (studio, phase 4). In the
+  Inspector of the Edit page each has a diamond that puts a key at the playhead or takes away
+  the one there, and arrows to the key before and after; once a setting has keys, a value
+  given at another frame puts a key there. The keys stay on their pictures where the clip is
+  trimmed, slipped or played at another speed, as the keys of its grade do. The agent sets
+  them with the operations `set_clip_keys` and `splice_clip_keys` of `video_edit`.
 - A tool `video_grade_keys`, with which the agent puts, removes or clears the keyframes of
   one setting of a node of a grade without sending its other keys.
 - DeepSeek's Flash is shown the pictures that a tool gives back, such as a picture that was

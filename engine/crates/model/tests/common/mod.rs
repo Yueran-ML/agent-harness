@@ -437,17 +437,18 @@ fn set_clip_of(
     };
     let transform = if spec.a.is_multiple_of(8) {
         Transform {
-            scale: 0.0,
+            scale: 0.0.into(),
             ..Transform::NONE
         }
     } else {
-        Transform {
+        columbina_model::Placed {
             x: 0.125,
             y: -0.25,
             scale: 1.5,
             rotation: 45.0,
             opacity: 0.75,
         }
+        .into()
     };
     // A title or a colour is set anew; a clip of media is not given one, but now and then is
     // told to.

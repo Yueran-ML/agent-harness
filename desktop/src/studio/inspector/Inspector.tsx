@@ -113,7 +113,7 @@ export function Inspector({ bridge, session, revision, timeline, media, clips: i
           clips={chosen.audio.filter(clip => clip.source.kind === 'media')} timeline={timeline} media={media} commit={commit} bridge={bridge} session={session} />}
         {shown === 'source' && titles.length > 0 && <ClipTitle clips={titles} timeline={timeline} commit={commit} />}
         {shown === 'source' && colors.length > 0 && <ClipColor clips={colors} commit={commit} />}
-        {shown === 'video' && <ClipVideo clips={chosen.video} timeline={timeline} commit={commit} />}
+        {shown === 'video' && <ClipVideo clips={chosen.video} timeline={timeline} commit={commit} media={media} frame={frame} onSeek={onSeek} />}
         {shown === 'audio' && <ClipAudio key={JSON.stringify([session, timeline.id, chosen.audio.map(clip => clip.id)])} clips={chosen.audio} timeline={timeline} commit={commit}
           bridge={bridge} session={session} revision={revision} media={media} frame={frame} onSeek={onSeek} onFailure={error => setRefusal(refusalOf(error, words.hint.studio))} />}
       </FieldsLocked.Provider>

@@ -1177,9 +1177,12 @@ its neighbors. add_transition/set_transition/remove_transition manage dissolve, 
 dip_white and audio crossfade; set_speed retimes. add_track/remove_track and
 add_cue/set_cue/remove_cue/cues_from manage tracks/subtitles. Basic add_timeline/add_bin and
 set_timeline/set_track/set_clip/set_media edit settings. set_clip includes transform, gain_db,
-pan and fade_in/out. Existing ids come from video_info; $names refer to new objects in this
-batch. Receipts include done operations, created names and clamped input indices. Locked
-tracks and unavailable source handles are enforced by the engine.
+pan and fade_in/out. A transform setting (x, y, scale, rotation, opacity) may be {keys:[{frame,
+value,interp}]}, frames counted as grade keyframes are; set_clip_keys {id,path:"transform.x",
+param} and splice_clip_keys {id,path,at,remove,keys} set one setting's keys. Existing ids come
+from video_info; $names refer to new objects in this batch. Receipts include done operations,
+created names and clamped input indices. Locked tracks and unavailable source handles are
+enforced by the engine.
 
 Command fields (in addition to edit and timeline):
 insert/overwrite/replace/smart_insert/ripple_overwrite: source, at, video_track?, audio_track?;

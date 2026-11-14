@@ -62,7 +62,8 @@
 //! A clip lasts at least one frame, from a frame of the timeline no earlier than 0, and on its
 //! track it covers no frame that another clip covers. It plays at a speed from 1/100 to 100. Its
 //! transform is of finite numbers, with a scale above 0 and at most 16 and an opacity from 0 to
-//! 1; its gain is from -96 to 24 decibels and its pan from -1 to 1; and it fades in and out over
+//! 1, each a number or keys of such numbers at frames in order ([`crate::grade::Param`]); its
+//! gain is from -96 to 24 decibels and its pan from -1 to 1; and it fades in and out over
 //! no more frames than it lasts. A clip of a title or a colour is on a track of picture, and its
 //! title has at most 1000 characters, a size from 1 to 4096 and a finite place. A clip of media
 //! names media that is in the project and has a stream for the kind of its track, which is not
@@ -131,6 +132,7 @@ use crate::span;
 use crate::time::{Rate, Speed, Time};
 
 mod automation;
+mod clip_keys;
 mod color;
 mod grade;
 mod sound;
@@ -658,6 +660,40 @@ pub enum Op {
         /// The keys that are put there.
         keys: Vec<Key>,
     },
+    /// Put a number, or keys, in place of a setting of a clip that takes keys
+    /// ([`crate::catalog::clip`]), named by its path: `transform.x`. Its inverse puts back
+    /// what the setting was. The keys are at the frames that the keys of the clip's grade are
+    /// at ([`crate::keyframes`]).
+    SetClipKeys {
+        /// The timeline.
+        timeline: Id,
+        /// The clip.
+        id: Id,
+        /// The path of the setting in the clip.
+        path: String,
+        /// What the setting becomes.
+        param: Param,
+    },
+    /// Put `keys` in place of the `remove` keys of a setting of a clip from its key `at` on,
+    /// as [`Op::SpliceKeys`] does with the keys of a setting of a node: a setting that is a
+    /// number becomes the keys that are put, and a setting keeps one key at least
+    /// (`out_of_range`, `keys`). Its inverse puts back the keys that it took away in place of
+    /// those that it put, or the number: and where it put the first keys of a number, it is
+    /// given back as the [`Op::SetClipKeys`] of those keys.
+    SpliceClipKeys {
+        /// The timeline.
+        timeline: Id,
+        /// The clip.
+        id: Id,
+        /// The path of the setting in the clip.
+        path: String,
+        /// The place of the first key that is put in place of, from 0.
+        at: usize,
+        /// How many keys are taken away.
+        remove: usize,
+        /// The keys that are put there.
+        keys: Vec<Key>,
+    },
     /// Put a grade in place of a grade, whole, as copying a grade does.
     SetGrade {
         /// The grade that is replaced.
@@ -1061,7 +1097,8 @@ pub enum OpError {
         what: &'static str,
     },
     /// A setting is not one that it may be. `what` is `width`, `height`, `sample_rate`,
-    /// `start`, `length`, `speed`, `transform`, `gain_db`, `pan`, `fade`, `text`, `size`,
+    /// `start`, `length`, `speed`, `transform`, `gain_db`, `pan`, `fade`, `keys` (a setting of
+    /// a clip left with no key), `text`, `size`,
     /// `position`, `language`, `still`, `digest` (of the identity of media: not 64 lowercase
     /// hexadecimal digits), `by` (a shift by 0), `clips` or `cues` (a shift of none); and of
     /// colour management, `custom_luminance`, `graphics_white`, `input_sat_rolloff`,
@@ -1618,6 +1655,7 @@ fn range_message(what: &str) -> String {
         "gain_db" => "the gain is not from -96 to 24 decibels".into(),
         "pan" => "the pan is not from -1 to 1".into(),
         "fade" => "the fades are not of frames that the clip has".into(),
+        "keys" => "a setting keeps one key at least: set_clip_keys puts a number there".into(),
         "text" => format!("the text is empty or longer than {LONGEST_TEXT} characters"),
         "size" => "the size of the title is not from 1 to 4096".into(),
         "position" => "the place of the title is not of finite numbers".into(),
@@ -1924,6 +1962,20 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
             remove,
             keys,
         } => grade::splice_keys(project, &grade, &id, path, (at, remove), keys),
+        Op::SetClipKeys {
+            timeline,
+            id,
+            path,
+            param,
+        } => clip_keys::set_clip_keys(project, &timeline, &id, path, param),
+        Op::SpliceClipKeys {
+            timeline,
+            id,
+            path,
+            at,
+            remove,
+            keys,
+        } => clip_keys::splice_clip_keys(project, &timeline, &id, path, (at, remove), keys),
         Op::SetGrade { grade, value } => grade::set_grade(project, &grade, value),
         Op::AddGroup { group, index } => grade::add_group(project, group, index),
         Op::RemoveGroup { id } => grade::remove_group(project, &id),
@@ -2130,22 +2182,7 @@ pub fn apply_done(project: &mut Project, op: Op) -> Result<(Op, Op), OpError> {
                 source,
             }
         }
-        // The first keys of a setting that was a number take the place of the number: so
-        // the operation is given back as the one that puts them there whole, which is the
-        // one that its inverse is taken back by.
-        Some(Op::SpliceKeys {
-            grade,
-            id,
-            path,
-            keys,
-            ..
-        }) if matches!(inverse, Op::SetKeys { .. }) => Op::SetKeys {
-            grade,
-            id,
-            path,
-            param: Param::Keys(keys),
-        },
-        Some(op) => op,
+        Some(op) => first_keys(op, &inverse),
         None => added(project, &inverse)
             .expect("an operation that adds a thing leaves it in the project"),
     };
@@ -2834,7 +2871,7 @@ fn set_clip(
     swap(&mut new.enabled, set.enabled);
     swap(&mut new.speed, set.speed);
     swap(&mut new.reverse, set.reverse);
-    swap(&mut new.transform, set.transform);
+    swap(&mut new.transform, set.transform.clone());
     swap(&mut new.gain_db, set.gain_db.clone());
     swap(&mut new.pan, set.pan.clone());
     swap(&mut new.fade_in, set.fade_in);
@@ -2876,7 +2913,7 @@ fn set_clip(
         speed: set.speed.map(|_| old.speed),
         reverse: set.reverse.map(|_| old.reverse),
         link: set.link.map(|_| old.link.clone()),
-        transform: set.transform.map(|_| old.transform),
+        transform: set.transform.map(|_| old.transform.clone()),
         gain_db: set.gain_db.map(|_| old.gain_db.clone()),
         pan: set.pan.map(|_| old.pan.clone()),
         fade_in: set.fade_in.map(|_| old.fade_in),
@@ -2893,6 +2930,40 @@ fn set_clip(
     project.timelines[t].tracks[r].clips[at] = new;
     project.next_id = counter.next;
     Ok(inverse)
+}
+
+/// A splice of keys as it was done. The first keys of a setting that was a number take the
+/// place of the number: so the operation is given back as the one that puts them there whole,
+/// which is the one that its inverse, the number set, is taken back by. Any other operation is
+/// as it was given.
+fn first_keys(op: Op, inverse: &Op) -> Op {
+    match op {
+        Op::SpliceKeys {
+            grade,
+            id,
+            path,
+            keys,
+            ..
+        } if matches!(inverse, Op::SetKeys { .. }) => Op::SetKeys {
+            grade,
+            id,
+            path,
+            param: Param::Keys(keys),
+        },
+        Op::SpliceClipKeys {
+            timeline,
+            id,
+            path,
+            keys,
+            ..
+        } if matches!(inverse, Op::SetClipKeys { .. }) => Op::SetClipKeys {
+            timeline,
+            id,
+            path,
+            param: Param::Keys(keys),
+        },
+        op => op,
+    }
 }
 
 /// Put `value` in `field` where there is one.
@@ -3663,13 +3734,7 @@ fn check_settings_of(clip: &Clip) -> Result<(), OpError> {
     if num * 100 < den || num > den * 100 {
         return Err(range("speed"));
     }
-    let t = clip.transform;
-    let finite = [t.x, t.y, t.scale, t.rotation, t.opacity]
-        .iter()
-        .all(|v| v.is_finite());
-    if !(finite && t.scale > 0.0 && t.scale <= 16.0 && (0.0..=1.0).contains(&t.opacity)) {
-        return Err(range("transform"));
-    }
+    clip.transform.check()?;
     if !clip.gain_db.is_valid(|v| (-96.0..=24.0).contains(&v)) {
         return Err(range("gain_db"));
     }
@@ -4376,7 +4441,7 @@ fn named<'a>(what: &'static str, id: &'a str, ids: &mut HashSet<&'a str>) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::{Alignment, ReadError, Rgba, TextAlign, TitleStyle, Transform};
+    use crate::project::{Alignment, Placed, ReadError, Rgba, TextAlign, TitleStyle, Transform};
     use crate::time::Speed;
 
     /// The scale of the media of the sample: m1 lasts 153600 ticks of it, 250 frames at 25/1.
@@ -6283,13 +6348,19 @@ mod tests {
                 &|c: &mut Clip| c.speed = Speed { num: 101, den: 1 },
                 "speed",
             ),
-            (&|c: &mut Clip| c.transform.scale = 0.0, "transform"),
-            (&|c: &mut Clip| c.transform.scale = 16.5, "transform"),
-            (&|c: &mut Clip| c.transform.opacity = 1.5, "transform"),
-            (&|c: &mut Clip| c.transform.opacity = -0.1, "transform"),
-            (&|c: &mut Clip| c.transform.x = f64::NAN, "transform"),
+            (&|c: &mut Clip| c.transform.scale = 0.0.into(), "transform"),
+            (&|c: &mut Clip| c.transform.scale = 16.5.into(), "transform"),
             (
-                &|c: &mut Clip| c.transform.rotation = f64::INFINITY,
+                &|c: &mut Clip| c.transform.opacity = 1.5.into(),
+                "transform",
+            ),
+            (
+                &|c: &mut Clip| c.transform.opacity = (-0.1).into(),
+                "transform",
+            ),
+            (&|c: &mut Clip| c.transform.x = f64::NAN.into(), "transform"),
+            (
+                &|c: &mut Clip| c.transform.rotation = f64::INFINITY.into(),
                 "transform",
             ),
             (
@@ -6312,13 +6383,14 @@ mod tests {
             &|c: &mut Clip| c.speed = Speed { num: 1, den: 100 },
             &|c: &mut Clip| c.speed = Speed { num: 20, den: 1 },
             &|c: &mut Clip| {
-                c.transform = Transform {
+                c.transform = Placed {
                     x: -2.0,
                     y: 0.25,
                     scale: 16.0,
                     rotation: 720.0,
                     opacity: 0.0,
-                };
+                }
+                .into();
             },
             &|c: &mut Clip| (c.gain_db, c.pan) = ((-96.0).into(), (-1.0).into()),
             &|c: &mut Clip| (c.gain_db, c.pan) = (24.0.into(), 1.0.into()),
@@ -7000,13 +7072,16 @@ mod tests {
                 *enabled = Some(false);
                 *speed = Some(Speed { num: 5, den: 2 });
                 *reverse = Some(true);
-                *transform = Some(Transform {
-                    x: 0.25,
-                    y: -0.125,
-                    scale: 2.0,
-                    rotation: 90.0,
-                    opacity: 0.5,
-                });
+                *transform = Some(
+                    Placed {
+                        x: 0.25,
+                        y: -0.125,
+                        scale: 2.0,
+                        rotation: 90.0,
+                        opacity: 0.5,
+                    }
+                    .into(),
+                );
                 *gain_db = Some((-6.0).into());
                 *pan = Some(0.5.into());
                 (*fade_in, *fade_out) = (Some(10), Some(20));
@@ -7049,7 +7124,7 @@ mod tests {
         let opaque = setting("c1", |op| {
             if let Op::SetClip { transform, .. } = op {
                 *transform = Some(Transform {
-                    opacity: 2.0,
+                    opacity: 2.0.into(),
                     ..Transform::NONE
                 });
             }

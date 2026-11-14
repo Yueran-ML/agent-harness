@@ -38,10 +38,10 @@ impl Default for Transform {
     }
 }
 
-impl From<columbina_model::project::Transform> for Transform {
-    /// The transform of a clip, whose opacity is left out: [`columbina_model::resolve::Layer`]
-    /// has it already, in its own.
-    fn from(transform: columbina_model::project::Transform) -> Self {
+impl From<columbina_model::project::Placed> for Transform {
+    /// The transform of a clip as it is at a frame, whose opacity is left out:
+    /// [`columbina_model::resolve::Layer`] has it already, in its own.
+    fn from(transform: columbina_model::project::Placed) -> Self {
         Transform {
             x: transform.x,
             y: transform.y,
@@ -400,7 +400,7 @@ mod tests {
 
     #[test]
     fn a_transform_is_that_of_a_clip_without_its_opacity() {
-        let clip = columbina_model::project::Transform {
+        let clip = columbina_model::project::Placed {
             x: 0.1,
             y: 0.2,
             scale: 1.5,

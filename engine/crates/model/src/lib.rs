@@ -45,8 +45,8 @@ pub use history::{Applied, Changed, History, Step, TransactionError, HISTORY_MOS
 pub use media_audio::MediaAudioTrack;
 pub use ops::{apply, apply_done, InsertsOf, Invalid, LanesOf, Op, OpError, LARGEST};
 pub use project::{
-    Alignment, AudioFacts, AudioStream, Bin, Clip, Cue, Facts, Id, Identity, Media, Project, Proxy,
-    ReadError, Rgba, Source, TextAlign, Timeline, TitleStyle, Track, TrackKind, Transform,
-    Transition, TransitionKind, VideoFacts, SCHEMA,
+    Alignment, AudioFacts, AudioStream, Bin, Clip, Cue, Facts, Id, Identity, Media, Placed,
+    Project, Proxy, ReadError, Rgba, Source, TextAlign, Timeline, TitleStyle, Track, TrackKind,
+    Transform, Transition, TransitionKind, VideoFacts, SCHEMA,
 };
 pub use time::{Rate, Speed, Time};

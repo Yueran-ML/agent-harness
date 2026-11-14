@@ -36,7 +36,7 @@ use crate::audio::{
 };
 use crate::color::ColorFacts;
 use crate::color_management::{ColorOverride, ColorSettings};
-use crate::grade::{Grade, Group};
+use crate::grade::{Grade, Group, Param};
 use crate::ops::Invalid;
 use crate::time::{Rate, Speed, Time};
 
@@ -694,14 +694,118 @@ impl From<Rgba> for String {
 }
 
 /// Where the picture of a clip is put on the picture of its timeline, once it is fitted to it.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+///
+/// Each of its settings is a number, or keys ([`Param`]), and is written as a number where it
+/// has no keys, as it was before it could have them. The keys are at the frames that the keys
+/// of the clip's grade are at ([`crate::keyframes::KeyClock`]): those of its media, or its own
+/// from its first for a title, a colour and a still. So a key stays on its picture where the
+/// clip is trimmed, slipped or moved, and comes sooner or later where its speed changes, as
+/// the Stretch Keyframes of `DaVinci`'s speed dialog has the keys of the Edit page do (p. 1073).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Transform {
+    /// How far it is moved right, as a share of the width of the timeline.
+    pub x: Param,
+    /// How far it is moved down, as a share of the height of the timeline.
+    pub y: Param,
+    /// How much larger it is made, about the middle of the picture: above 0, and at most 16.
+    pub scale: Param,
+    /// How far it is turned clockwise, in degrees.
+    pub rotation: Param,
+    /// How opaque it is: from 0, not seen, to 1.
+    pub opacity: Param,
+}
+
+impl Transform {
+    /// The picture as it is fitted to the timeline: not moved, not made larger, not turned, and
+    /// opaque.
+    pub const NONE: Transform = Transform {
+        x: Param::Fixed(0.0),
+        y: Param::Fixed(0.0),
+        scale: Param::Fixed(1.0),
+        rotation: Param::Fixed(0.0),
+        opacity: Param::Fixed(1.0),
+    };
+
+    /// The most that a picture is made larger.
+    pub const MOST_SCALE: f64 = 16.0;
+
+    /// The names of its settings, as a path names them after `transform.`.
+    pub const SETTINGS: [&'static str; 5] = ["x", "y", "scale", "rotation", "opacity"];
+
+    /// Where the picture is at a frame of its keys.
+    #[must_use]
+    pub fn at(&self, frame: f64) -> Placed {
+        Placed {
+            x: self.x.value_at(frame),
+            y: self.y.value_at(frame),
+            scale: self.scale.value_at(frame),
+            rotation: self.rotation.value_at(frame),
+            opacity: self.opacity.value_at(frame),
+        }
+    }
+
+    /// Whether any of its settings has keys.
+    #[must_use]
+    pub fn is_animated(&self) -> bool {
+        [&self.x, &self.y, &self.scale, &self.rotation, &self.opacity]
+            .iter()
+            .any(|setting| setting.is_animated())
+    }
+
+    /// It with each key of its settings at the frame `to` of its frame
+    /// ([`Param::with_key_frames`]).
+    #[must_use]
+    pub fn with_key_frames(&self, to: &impl Fn(i64) -> i64) -> Transform {
+        Transform {
+            x: self.x.with_key_frames(to),
+            y: self.y.with_key_frames(to),
+            scale: self.scale.with_key_frames(to),
+            rotation: self.rotation.with_key_frames(to),
+            opacity: self.opacity.with_key_frames(to),
+        }
+    }
+
+    /// The setting of a name, one of [`Transform::SETTINGS`].
+    pub(crate) fn setting_mut(&mut self, name: &str) -> Option<&mut Param> {
+        match name {
+            "x" => Some(&mut self.x),
+            "y" => Some(&mut self.y),
+            "scale" => Some(&mut self.scale),
+            "rotation" => Some(&mut self.rotation),
+            "opacity" => Some(&mut self.opacity),
+            _ => None,
+        }
+    }
+
+    /// Check its settings, each a number or keys: finite, the scale above 0 and at most
+    /// [`Transform::MOST_SCALE`], and the opacity from 0 to 1.
+    pub(crate) fn check(&self) -> Result<(), crate::ops::OpError> {
+        let what = "transform";
+        self.x.check_with(what, |_| true)?;
+        self.y.check_with(what, |_| true)?;
+        self.rotation.check_with(what, |_| true)?;
+        self.scale
+            .check_with(what, |scale| scale > 0.0 && scale <= Self::MOST_SCALE)?;
+        self.opacity.check(what, 0.0, 1.0)
+    }
+}
+
+impl Default for Transform {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+/// Where a picture is put at one moment: the settings of a [`Transform`], each as the number
+/// that it is there.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Placed {
     /// How far it is moved right, as a share of the width of the timeline.
     pub x: f64,
     /// How far it is moved down, as a share of the height of the timeline.
     pub y: f64,
-    /// How much larger it is made, about the middle of the picture: above 0, and at most 16.
+    /// How much larger it is made, about the middle of the picture.
     pub scale: f64,
     /// How far it is turned clockwise, in degrees.
     pub rotation: f64,
@@ -709,10 +813,10 @@ pub struct Transform {
     pub opacity: f64,
 }
 
-impl Transform {
+impl Placed {
     /// The picture as it is fitted to the timeline: not moved, not made larger, not turned, and
     /// opaque.
-    pub const NONE: Transform = Transform {
+    pub const NONE: Placed = Placed {
         x: 0.0,
         y: 0.0,
         scale: 1.0,
@@ -721,9 +825,22 @@ impl Transform {
     };
 }
 
-impl Default for Transform {
+impl Default for Placed {
     fn default() -> Self {
         Self::NONE
+    }
+}
+
+impl From<Placed> for Transform {
+    /// A transform with no keys, of these numbers.
+    fn from(placed: Placed) -> Self {
+        Transform {
+            x: placed.x.into(),
+            y: placed.y.into(),
+            scale: placed.scale.into(),
+            rotation: placed.rotation.into(),
+            opacity: placed.opacity.into(),
+        }
     }
 }
 

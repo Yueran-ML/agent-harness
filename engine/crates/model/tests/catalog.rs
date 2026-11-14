@@ -4,11 +4,12 @@
 //!
 //! The file `tests/data/catalog.json` is written anew when `COLUMBINA_WRITE_EXAMPLES=1` is set;
 //! otherwise it is checked to be as the catalog is now. It holds the entries of each kind of
-//! node that has any, under the name of the kind, one to a line, in the order of the catalog.
+//! node that has any, under the name of the kind, and those of a clip under `clip`, one to a
+//! line, in the order of the catalog.
 
 use std::path::Path;
 
-use columbina_model::catalog::{corrector, key_mixer, Entry};
+use columbina_model::catalog::{clip, corrector, key_mixer, Entry};
 
 const FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/catalog.json");
 
@@ -22,9 +23,10 @@ fn listed(entries: &[Entry]) -> String {
 
 fn written() -> String {
     format!(
-        "{{\"corrector\":[\n{}\n],\n\"key_mixer\":[\n{}\n]}}\n",
+        "{{\"corrector\":[\n{}\n],\n\"key_mixer\":[\n{}\n],\n\"clip\":[\n{}\n]}}\n",
         listed(corrector()),
-        listed(key_mixer())
+        listed(key_mixer()),
+        listed(clip())
     )
 }
 
@@ -47,7 +49,11 @@ fn the_catalog_is_written_as_it_is() {
 #[test]
 fn what_is_written_names_every_entry_once_and_in_plain_numbers() {
     let read: serde_json::Value = serde_json::from_str(&written()).unwrap();
-    for (kind, catalog) in [("corrector", corrector()), ("key_mixer", key_mixer())] {
+    for (kind, catalog) in [
+        ("corrector", corrector()),
+        ("key_mixer", key_mixer()),
+        ("clip", clip()),
+    ] {
         let entries = read[kind].as_array().unwrap();
         assert_eq!(entries.len(), catalog.len(), "{kind}");
         let mut paths: Vec<&str> = entries

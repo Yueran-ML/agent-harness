@@ -142,7 +142,7 @@ fn graded_timeline(color: ColorSettings) -> Project {
         .map(|(at, (id, rgba))| {
             let mut clip = Clip::new(id, ClipSource::Color { color: Rgba(rgba) }, 0, 400);
             clip.grade = grade.clone();
-            clip.transform.scale = if at == 0 { 1.0 } else { 0.5 };
+            clip.transform.scale = if at == 0 { 1.0 } else { 0.5 }.into();
             clip
         })
         .collect();

@@ -38,8 +38,9 @@
 //! The strips, buses and automation of the timeline are not here: they are the mixer's.
 
 use crate::audio::{gain_of_db, AudioFade, AudioParam, CrossfadeLevel};
+use crate::keyframes::KeyClock;
 use crate::project::{
-    Clip, Cue, Id, Project, Rgba, Source, Timeline, TitleStyle, Track, TrackKind, Transform,
+    Clip, Cue, Id, Placed, Project, Rgba, Source, Timeline, TitleStyle, Track, TrackKind,
     Transition, TransitionKind,
 };
 use crate::span;
@@ -79,7 +80,7 @@ pub struct Layer {
     /// What it shows.
     pub content: Content,
     /// Where it is put: the transform of the clip.
-    pub transform: Transform,
+    pub transform: Placed,
     /// How opaque it is, from 0 to 1: the opacity of the clip times its fades and the
     /// transition that it is in.
     pub opacity: f32,
@@ -140,7 +141,7 @@ fn track_at(t: &Timeline, project: &Project, track: &Track, frame: i64, layers: 
             clip: transition.id.clone(),
             track: track.id.clone(),
             content: Content::Color { rgba: colour },
-            transform: Transform::NONE,
+            transform: Placed::NONE,
             opacity: unit(dipped),
         });
         return;
@@ -182,12 +183,23 @@ fn layer(
         },
         Source::Color { color } => Content::Color { rgba: *color },
     };
+    // A transform with no keys is the same at every frame: its clock is not asked.
+    let at = if clip.transform.is_animated() {
+        KeyClock::of(clip, project, t.rate).at(frame)
+    } else {
+        0
+    };
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a frame of keys is within 2^53 of 0"
+    )]
+    let placed = clip.transform.at(at as f64);
     Some(Layer {
         clip: clip.id.clone(),
         track: track.id.clone(),
         content,
-        transform: clip.transform,
-        opacity: unit(clip.transform.opacity * faded(clip, k) * share),
+        transform: placed,
+        opacity: unit(placed.opacity * faded(clip, k) * share),
     })
 }
 
@@ -1030,7 +1042,7 @@ mod tests {
             100,
             50,
         );
-        title.transform.opacity = 0.5;
+        title.transform.opacity = 0.5.into();
         timeline.tracks.insert(
             1,
             Track::new("V3", TrackKind::Video).with_clips(vec![title]),

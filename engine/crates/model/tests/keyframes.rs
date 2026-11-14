@@ -563,6 +563,17 @@ fn append_node_graph_aligns_the_keys_of_the_nodes_it_adds() {
 #[test]
 fn a_replacing_source_takes_the_grade_with_its_keys_on_its_frames() {
     let mut project = project();
+    // The transform has keys at the frames of the grade's.
+    let opacity = Param::Keys(
+        FADE.iter()
+            .map(|&(frame, value)| Key {
+                frame,
+                value,
+                interp: Interp::Linear,
+            })
+            .collect(),
+    );
+    project.timelines[0].tracks[0].clips[0].transform.opacity = opacity;
     edited(
         &mut project,
         Edit::Replace {
@@ -585,6 +596,12 @@ fn a_replacing_source_takes_the_grade_with_its_keys_on_its_frames() {
     assert_eq!(media, "m2");
     // m2 from its start shows 0 s to 2 s, as c1 showed 0.8 s to 2.8 s: by source timecode.
     assert_eq!(keys(&replaced.grade), [(60, 1.0), (100, 0.0)]);
+    // And the keys of its transform went with them.
+    let Param::Keys(opacity) = &replaced.transform.opacity else {
+        panic!("keys")
+    };
+    let frames: Vec<(i64, f64)> = opacity.iter().map(|k| (k.frame, k.value)).collect();
+    assert_eq!(frames, [(60, 1.0), (100, 0.0)]);
 }
 
 proptest! {

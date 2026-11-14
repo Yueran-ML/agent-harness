@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use super::misc::new_track;
 use super::work::{beyond, missing, set_source_in, Work};
 use super::{Created, EditError, Material};
-use crate::keyframes::{aligned, Align, KeyBase};
+use crate::keyframes::{aligned, aligned_transform, Align, KeyBase};
 use crate::ops::OpError;
 use crate::project::{Clip, Id, Source, TrackKind};
 use crate::span::{frames_for_span, source_tick};
@@ -335,6 +335,8 @@ pub(super) fn replace(
             KeyBase::of_clip(&new, project, timeline),
         );
         new.grade = aligned(&old.grade, Some(from), Some(to), Align::default());
+        // And the keys of its transform go with those of its grade.
+        new.transform = aligned_transform(&old.transform, from, to, Align::default());
         let (before, after) = beyond(work.track(track)?, &old.id);
         if !work.fits(&new, before, after) {
             let have = if new.source_in().is_some_and(|t| t.ticks >= 0) {

@@ -17,7 +17,7 @@
 //! a touch to its release, then back to the lane over the glide; Snap Latch: a fader as Snap, the
 //! rest as Latch); On Stop, what is written after the last value at the stop (Event, Hold,
 //! Return); the categories that are written; Preview, under which a pass is heard and kept, and
-//! written only when it is punched in ([`Recorder::punch`]); and the Active Range, out of which
+//! written only when it is punched in ([`Recorder::punch_of`]); and the Active Range, out of which
 //! nothing is written, and at whose end the controls let go of the lanes (Punch Out, p. 3908).
 
 use std::sync::Arc;
@@ -776,8 +776,10 @@ impl Recorder {
         self.punch_of(timeline, None)
     }
 
-    /// [`Recorder::punch`] of the tracks, buses and VCAs `of` alone, where they are named: what
-    /// was kept of the others stays kept, to be punched in later.
+    /// Punch In under Preview (p. 3908) of timeline `timeline`, of the tracks, buses and VCAs `of`
+    /// alone where they are named: what the passes kept of them, as the edit that writes it; none
+    /// where nothing of them is kept. What was kept of the others stays kept, to be punched in
+    /// later.
     pub(crate) fn punch_of(&mut self, timeline: &str, of: Option<&[Owner]>) -> Option<Edit> {
         self.read = false;
         if self.pending_of.as_deref() != Some(timeline) {

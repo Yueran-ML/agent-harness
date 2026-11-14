@@ -16,8 +16,8 @@ use columbina_compose::ocio::{self, CardOps};
 use columbina_compose::tone::{self, Drt, Kind};
 use columbina_compose::yuv::native_of;
 use columbina_compose::{
-    gpu_for_tests, Compositor, Gpu, LayerColor, Scene, SceneLayer, Source, Stage, Target,
-    Transform, YuvCoding, YuvMatrix,
+    card_for_tests, gpu_for_tests, Compositor, Gpu, LayerColor, Scene, SceneLayer, Source, Stage,
+    Target, Transform, YuvCoding, YuvMatrix,
 };
 use columbina_lut::half;
 use columbina_media::{ColorRange, NativePicture, Picture, PictureFormat};
@@ -167,7 +167,7 @@ fn near(got: [f32; 3], wanted: [f32; 3], relative: f32) -> bool {
 
 #[test]
 fn an_input_transform_of_ocio_is_drawn_as_its_processor_computes_it_and_made_once() {
-    let Some(gpu) = gpu_for_tests() else {
+    let Some(gpu) = card_for_tests() else {
         return;
     };
     let config = ocio::config().unwrap();
@@ -230,7 +230,7 @@ fn an_input_transform_of_ocio_is_drawn_as_its_processor_computes_it_and_made_onc
 
 #[test]
 fn the_output_transforms_of_aces_1_3_and_2_0_are_drawn_as_ocio_computes_them() {
-    let Some(gpu) = gpu_for_tests() else {
+    let Some(gpu) = card_for_tests() else {
         return;
     };
     let ops = CardOps::new(Arc::clone(&gpu));
@@ -313,7 +313,7 @@ fn the_output_transforms_of_aces_1_3_and_2_0_are_drawn_as_ocio_computes_them() {
 
 #[test]
 fn every_drt_is_drawn_as_its_reference_computes_it() {
-    let Some(gpu) = gpu_for_tests() else {
+    let Some(gpu) = card_for_tests() else {
         return;
     };
     let mut compositor = Compositor::new(Arc::clone(&gpu));

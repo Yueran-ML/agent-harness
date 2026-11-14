@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use super::*;
-use crate::gpu_for_tests;
+use crate::{card_for_tests, gpu_for_tests};
 
 /// The bits of a half float nearest `value` (ties to even), for values of pictures (no NaN).
 fn half_bits(value: f32) -> u16 {
@@ -483,7 +483,7 @@ fn the_card_draws_each_style_as_the_reference_does_at_several_places_and_softnes
 
 #[test]
 fn the_difference_of_a_picture_and_itself_is_black() {
-    let Some(gpu) = gpu_for_tests() else { return };
+    let Some(gpu) = card_for_tests() else { return };
     let wiper = Wiper::new(Arc::clone(&gpu));
     let (width, height) = (64, 36);
     let (a, _) = gradients(width, height);

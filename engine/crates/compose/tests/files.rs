@@ -13,8 +13,8 @@ use std::sync::Arc;
 
 use columbina_compose::yuv;
 use columbina_compose::{
-    gpu_for_tests, Compositor, Gpu, LayerColor, Scene, SceneLayer, Source, Target, Transform,
-    YuvCoding,
+    card_for_tests, gpu_for_tests, Compositor, Gpu, LayerColor, Scene, SceneLayer, Source, Target,
+    Transform, YuvCoding,
 };
 use columbina_media::{Alpha, Converter, Hardware, NativePicture, PictureFormat, VideoDecoder};
 use support::{media, Sample};
@@ -239,7 +239,8 @@ fn open_exr_beyond_1_is_kept_on_the_canvas() {
     let Some(hot) = picture_of(Sample::HotExr) else {
         return;
     };
-    let gpu = gpu_for_tests().unwrap();
+    // Held to the numbers of the file: on a card, not on the software adapter.
+    let Some(gpu) = card_for_tests() else { return };
     let mut compositor = Compositor::new(Arc::clone(&gpu));
     assert_eq!(hot.format, PictureFormat::RgbaF16);
     let canvas = canvas(&gpu, &mut compositor, &scene(hot.clone(), None));

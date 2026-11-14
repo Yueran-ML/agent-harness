@@ -302,6 +302,11 @@ async fn esc_restores_entire_keyed_windows_without_a_new_undo_step() {
 
 #[tokio::test]
 async fn native_outline_is_interpolated_while_numeric_movement_writes_the_left_key() {
+    // The pixels of the outline are looked at: on a card, not on the software adapter, which
+    // draws its edge otherwise.
+    if columbina_compose::card_for_tests().is_none() {
+        return;
+    }
     let dir = project_dir();
     let engine = engine(dir.path(), &[]).await;
     let parent = parent::Parent::shown();

@@ -641,7 +641,7 @@ mod tests {
     fn project() -> Arc<Project> {
         Arc::new(
             Project::from_value(
-                json!({"schema":4,"next_id":1,"bins":[],"media":[],"timelines":[]}),
+                json!({"schema":5,"next_id":1,"bins":[],"media":[],"timelines":[]}),
             )
             .unwrap(),
         )

@@ -36,12 +36,12 @@ use crate::audio::{
 };
 use crate::color::ColorFacts;
 use crate::color_management::{ColorOverride, ColorSettings};
-use crate::grade::{Grade, Group, Param};
+use crate::grade::{Composite, Grade, Group, Param};
 use crate::ops::Invalid;
 use crate::time::{Rate, Speed, Time};
 
 /// The schema of a project that this engine reads and writes.
-pub const SCHEMA: u32 = 4;
+pub const SCHEMA: u32 = 5;
 
 /// What a thing of a project is known by. It never changes.
 ///
@@ -560,6 +560,14 @@ pub struct Clip {
     pub link: Option<Id>,
     /// Where its picture is put on the picture of the timeline.
     pub transform: Transform,
+    /// How much of its picture is cut away at each side. It may be left out, as none, as it
+    /// was before schema 5.
+    #[serde(default)]
+    pub crop: Crop,
+    /// How its picture is laid over the pictures of the tracks below it: its composite mode
+    /// (pp. 1055–1058). It may be left out, as normal, as it was before schema 5.
+    #[serde(default)]
+    pub composite: Composite,
     /// How much louder its sound is played, in decibels: from -96 to 24. One number, or keyframes
     /// at times of its source (see [`AudioParam`]).
     pub gain_db: AudioParam,
@@ -844,6 +852,142 @@ impl From<Placed> for Transform {
     }
 }
 
+/// How much of the picture of a clip is cut away at each of its sides, before it is put on the
+/// picture of its timeline (the Cropping of the Inspector): the picture stays where it is, and
+/// what is cut away shows what is below it.
+///
+/// Each of its settings is a number, or keys, as those of a [`Transform`] are, at the same
+/// frames. The sides are shares of the picture, and so cut as much of it at any size; the
+/// softness is ours in its unit, a share of the height of the picture over which each cut edge
+/// fades, inward from where it is cut.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Crop {
+    /// How much is cut away at the left, as a share of the width of the picture: from 0 to 1.
+    pub left: Param,
+    /// How much is cut away at the right, as a share of the width.
+    pub right: Param,
+    /// How much is cut away at the top, as a share of the height.
+    pub top: Param,
+    /// How much is cut away at the bottom, as a share of the height.
+    pub bottom: Param,
+    /// How far each cut edge fades, as a share of the height: from 0, a sharp edge, to 1.
+    pub softness: Param,
+}
+
+impl Crop {
+    /// The picture whole.
+    pub const NONE: Crop = Crop {
+        left: Param::Fixed(0.0),
+        right: Param::Fixed(0.0),
+        top: Param::Fixed(0.0),
+        bottom: Param::Fixed(0.0),
+        softness: Param::Fixed(0.0),
+    };
+
+    /// The names of its settings, as a path names them after `crop.`.
+    pub const SETTINGS: [&'static str; 5] = ["left", "right", "top", "bottom", "softness"];
+
+    /// What is cut away at a frame of its keys.
+    #[must_use]
+    pub fn at(&self, frame: f64) -> Cropped {
+        Cropped {
+            left: self.left.value_at(frame),
+            right: self.right.value_at(frame),
+            top: self.top.value_at(frame),
+            bottom: self.bottom.value_at(frame),
+            softness: self.softness.value_at(frame),
+        }
+    }
+
+    fn settings(&self) -> [&Param; 5] {
+        [
+            &self.left,
+            &self.right,
+            &self.top,
+            &self.bottom,
+            &self.softness,
+        ]
+    }
+
+    /// Whether any of its settings has keys.
+    #[must_use]
+    pub fn is_animated(&self) -> bool {
+        self.settings().iter().any(|setting| setting.is_animated())
+    }
+
+    /// It with each key of its settings at the frame `to` of its frame
+    /// ([`Param::with_key_frames`]).
+    #[must_use]
+    pub fn with_key_frames(&self, to: &impl Fn(i64) -> i64) -> Crop {
+        Crop {
+            left: self.left.with_key_frames(to),
+            right: self.right.with_key_frames(to),
+            top: self.top.with_key_frames(to),
+            bottom: self.bottom.with_key_frames(to),
+            softness: self.softness.with_key_frames(to),
+        }
+    }
+
+    /// The setting of a name, one of [`Crop::SETTINGS`].
+    pub(crate) fn setting_mut(&mut self, name: &str) -> Option<&mut Param> {
+        match name {
+            "left" => Some(&mut self.left),
+            "right" => Some(&mut self.right),
+            "top" => Some(&mut self.top),
+            "bottom" => Some(&mut self.bottom),
+            "softness" => Some(&mut self.softness),
+            _ => None,
+        }
+    }
+
+    /// Check its settings, each a number or keys: from 0 to 1.
+    pub(crate) fn check(&self) -> Result<(), crate::ops::OpError> {
+        self.settings()
+            .iter()
+            .try_for_each(|setting| setting.check("crop", 0.0, 1.0))
+    }
+}
+
+impl Default for Crop {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+/// What is cut away of a picture at one moment: the settings of a [`Crop`], each as the number
+/// that it is there.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Cropped {
+    /// The share of the width cut away at the left.
+    pub left: f64,
+    /// The share of the width cut away at the right.
+    pub right: f64,
+    /// The share of the height cut away at the top.
+    pub top: f64,
+    /// The share of the height cut away at the bottom.
+    pub bottom: f64,
+    /// The share of the height over which each cut edge fades.
+    pub softness: f64,
+}
+
+impl Cropped {
+    /// The picture whole.
+    pub const NONE: Cropped = Cropped {
+        left: 0.0,
+        right: 0.0,
+        top: 0.0,
+        bottom: 0.0,
+        softness: 0.0,
+    };
+}
+
+impl Default for Cropped {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
 /// A transition between two clips of a track that meet, the one that ends where the other
 /// starts.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -980,8 +1124,8 @@ impl Project {
     }
 
     /// Read a project of this schema, as [`Project::from_value`] does, or one of an earlier
-    /// schema, as [`crate::upgrade::from_schema_1`], [`crate::upgrade::from_schema_2`] and
-    /// [`crate::upgrade::from_schema_3`] do.
+    /// schema, as [`crate::upgrade::from_schema_1`], [`crate::upgrade::from_schema_2`],
+    /// [`crate::upgrade::from_schema_3`] and [`crate::upgrade::from_schema_4`] do.
     /// Gives back the schema that it was upgraded from, if it was.
     ///
     /// # Errors
@@ -994,6 +1138,7 @@ impl Project {
             1 => Ok((crate::upgrade::from_schema_1(value)?, Some(1))),
             2 => Ok((crate::upgrade::from_schema_2(value)?, Some(2))),
             3 => Ok((crate::upgrade::from_schema_3(value)?, Some(3))),
+            4 => Ok((crate::upgrade::from_schema_4(value)?, Some(4))),
             _ => Ok((Self::from_value(value)?, None)),
         }
     }
@@ -1081,6 +1226,8 @@ impl Clip {
             reverse: false,
             link: None,
             transform: Transform::NONE,
+            crop: Crop::NONE,
+            composite: Composite::Normal,
             gain_db: AudioParam::Fixed(0.0),
             pan: AudioParam::Fixed(0.0),
             fade_in: 0,
@@ -1240,6 +1387,8 @@ mod tests {
                 "reverse": false,
                 "link": null,
                 "transform": { "x": 0.0, "y": 0.0, "scale": 1.0, "rotation": 0.0, "opacity": 1.0 },
+                "crop": { "left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0, "softness": 0.0 },
+                "composite": "normal",
                 "gain_db": 0.0,
                 "pan": 0.0,
                 "fade_in": 0,
@@ -1249,7 +1398,7 @@ mod tests {
             })
         };
         let expected = serde_json::json!({
-            "schema": 4,
+            "schema": 5,
             "next_id": 3,
             "bins": [],
             "media": [{
@@ -1368,9 +1517,14 @@ mod tests {
 
         // One of another schema.
         let mut value = serde_json::to_value(Project::sample()).unwrap();
-        value["schema"] = 5.into();
+        value["schema"] = 6.into();
         let error = serde_json::from_value::<Project>(value).unwrap_err();
-        assert!(error.to_string().contains("schema 5"), "{error}");
+        assert!(error.to_string().contains("schema 6"), "{error}");
+        // And one of an earlier schema, which is read only where it is upgraded.
+        let mut value = serde_json::to_value(Project::sample()).unwrap();
+        value["schema"] = 4.into();
+        let error = serde_json::from_value::<Project>(value).unwrap_err();
+        assert!(error.to_string().contains("schema 4"), "{error}");
 
         // One that validate puts right.
         let mut value = serde_json::to_value(Project::sample()).unwrap();

@@ -37,50 +37,63 @@ describe('the keys of a transform', () => {
 
   it('set a setting of one number with its transform whole, and one with keys by the key at the frame', () => {
     const plain = clip('c1', 10, 60);
-    expect(putValue('t1', plain, 'x', 0.25, 20)).toEqual([{ op: 'set_clip', timeline: 't1', id: 'c1', transform: { ...NONE, x: 0.25 } }]);
-    expect(putValue('t1', plain, 'x', 0, 20)).toEqual([]);
+    expect(putValue('t1', plain, 'transform.x', 0.25, 20)).toEqual([{ op: 'set_clip', timeline: 't1', id: 'c1', transform: { ...NONE, x: 0.25 } }]);
+    expect(putValue('t1', plain, 'transform.x', 0, 20)).toEqual([]);
     const moved = keyed([key(0, 0), key(40, 1)]);
     // The key there is changed, and keeps how it goes on.
     const held = keyed([key(0, 0), { frame: 40, value: 1, interp: 'hold' }]);
-    expect(putValue('t1', held, 'x', 0.5, 40)).toEqual([splice(1, 1, [{ frame: 40, value: 0.5, interp: 'hold' }])]);
-    expect(putValue('t1', moved, 'x', 1, 40)).toEqual([]);
+    expect(putValue('t1', held, 'transform.x', 0.5, 40)).toEqual([splice(1, 1, [{ frame: 40, value: 0.5, interp: 'hold' }])]);
+    expect(putValue('t1', moved, 'transform.x', 1, 40)).toEqual([]);
     // Between keys, before the first and after the last: a key is put in its place among them.
-    expect(putValue('t1', moved, 'x', 0.5, 20)).toEqual([splice(1, 0, [key(20, 0.5)])]);
-    expect(putValue('t1', keyed([key(10, 0), key(40, 1)]), 'x', 0.5, 5)).toEqual([splice(0, 0, [key(5, 0.5)])]);
-    expect(putValue('t1', moved, 'x', 0.5, 50)).toEqual([splice(2, 0, [key(50, 0.5)])]);
+    expect(putValue('t1', moved, 'transform.x', 0.5, 20)).toEqual([splice(1, 0, [key(20, 0.5)])]);
+    expect(putValue('t1', keyed([key(10, 0), key(40, 1)]), 'transform.x', 0.5, 5)).toEqual([splice(0, 0, [key(5, 0.5)])]);
+    expect(putValue('t1', moved, 'transform.x', 0.5, 50)).toEqual([splice(2, 0, [key(50, 0.5)])]);
     // The other settings of a keyed transform go along whole where a number of it is set.
-    expect(putValue('t1', moved, 'scale', 2, 20)).toEqual([{ op: 'set_clip', timeline: 't1', id: 'c1', transform: { ...moved.transform, scale: 2 } }]);
+    expect(putValue('t1', moved, 'transform.scale', 2, 20)).toEqual([{ op: 'set_clip', timeline: 't1', id: 'c1', transform: { ...moved.transform, scale: 2 } }]);
   });
 
   it('add a key of the value that the setting has there, and take one away: the last leaves its value', () => {
     const plain = clip('c1', 10, 60, { transform: { ...NONE, x: 0.3 } });
-    expect(addKey('t1', plain, 'x', 20)).toEqual([splice(0, 0, [key(20, 0.3)])]);
+    expect(addKey('t1', plain, 'transform.x', 20)).toEqual([splice(0, 0, [key(20, 0.3)])]);
     const moved = keyed([key(0, 0), key(40, 1)]);
-    expect(addKey('t1', moved, 'x', 20)).toEqual([splice(1, 0, [key(20, 0.5)])]);
-    expect(addKey('t1', moved, 'x', 40)).toEqual([]);
-    expect(removeKey('t1', moved, 'x', 40)).toEqual([splice(1, 1, [])]);
-    expect(removeKey('t1', moved, 'x', 20)).toEqual([]);
-    expect(removeKey('t1', keyed([key(40, 0.75)]), 'x', 40)).toEqual([{ op: 'set_clip_keys', timeline: 't1', id: 'c1', path: 'transform.x', param: 0.75 }]);
-    expect(removeKey('t1', plain, 'x', 20)).toEqual([]);
-    expect(settingAt(moved, 'x', 30)).toBe(0.75);
+    expect(addKey('t1', moved, 'transform.x', 20)).toEqual([splice(1, 0, [key(20, 0.5)])]);
+    expect(addKey('t1', moved, 'transform.x', 40)).toEqual([]);
+    expect(removeKey('t1', moved, 'transform.x', 40)).toEqual([splice(1, 1, [])]);
+    expect(removeKey('t1', moved, 'transform.x', 20)).toEqual([]);
+    expect(removeKey('t1', keyed([key(40, 0.75)]), 'transform.x', 40)).toEqual([{ op: 'set_clip_keys', timeline: 't1', id: 'c1', path: 'transform.x', param: 0.75 }]);
+    expect(removeKey('t1', plain, 'transform.x', 20)).toEqual([]);
+    expect(settingAt(moved, 'transform.x', 30)).toBe(0.75);
   });
 
   it('are found on the timeline where their pictures are shown, through speed and direction', () => {
     // Pictures 0 to 59 are shown: the key at 80 is of none of them.
-    expect(keyTimes(keyed([key(0, 0), key(40, 1), key(80, 0)]), { rate }, [media], 'x')).toEqual([10, 50]);
-    expect(keyTimes(clip('c1', 10, 60), { rate }, [media], 'x')).toEqual([]);
+    expect(keyTimes(keyed([key(0, 0), key(40, 1), key(80, 0)]), { rate }, [media], 'transform.x')).toEqual([10, 50]);
+    expect(keyTimes(clip('c1', 10, 60), { rate }, [media], 'transform.x')).toEqual([]);
     // Twice as fast, the picture 40 comes at frame 30, and 41, which is not shown, with the one after it.
     const fast = keyed([key(0, 0), key(40, 1), key(41, 0)], { length: 30, speed: { num: 2, den: 1 } });
-    expect(keyTimes(fast, { rate }, [media], 'x')).toEqual([10, 30, 31]);
+    expect(keyTimes(fast, { rate }, [media], 'transform.x')).toEqual([10, 30, 31]);
     // Backward, the first picture is shown last.
     const back = keyed([key(0, 0), key(40, 1)], { reverse: true });
-    expect(keyTimes(back, { rate }, [media], 'x')).toEqual([29, 69]);
+    expect(keyTimes(back, { rate }, [media], 'transform.x')).toEqual([29, 69]);
+  });
+
+  it('set a side of the crop with the crop whole, and by its keys once it has them', () => {
+    const none = { left: 0, right: 0, top: 0, bottom: 0, softness: 0 };
+    // A clip that says nothing of its crop has none.
+    const plain = clip('c1', 10, 60);
+    expect(putValue('t1', plain, 'crop.left', 0.25, 20)).toEqual([{ op: 'set_clip', timeline: 't1', id: 'c1', crop: { ...none, left: 0.25 } }]);
+    expect(putValue('t1', plain, 'crop.softness', 0, 20)).toEqual([]);
+    const opened = clip('c1', 10, 60, { crop: { ...none, top: 0.1, left: { keys: [key(0, 1), key(20, 0)] } } });
+    expect(settingAt(opened, 'crop.left', 10)).toBe(0.5);
+    expect(putValue('t1', opened, 'crop.left', 0.25, 10)).toEqual([{ op: 'splice_clip_keys', timeline: 't1', id: 'c1', path: 'crop.left', at: 1, remove: 0, keys: [key(10, 0.25)] }]);
+    expect(putValue('t1', opened, 'crop.right', 0.5, 10)).toEqual([{ op: 'set_clip', timeline: 't1', id: 'c1', crop: { ...opened.crop, right: 0.5 } }]);
+    expect(keyTimes(opened, { rate }, [media], 'crop.left')).toEqual([10, 30]);
   });
 
   it('are applied to the copy of the project as the engine applies them', () => {
     const timeline: Timeline = { id: 't1', name: 'Main', rate, width: 1920, height: 1080, sample_rate: 48000, grade: emptyGrade(),
       tracks: [{ id: 'v1', kind: 'video', name: 'V1', enabled: true, locked: false, clips: [clip('c1', 10, 60)], transitions: [] }] };
-    const project = { schema: 4, next_id: 9, bins: [], media: [media], timelines: [timeline], groups: [] } as unknown as Project;
+    const project = { schema: 5, next_id: 9, bins: [], media: [media], timelines: [timeline], groups: [] } as unknown as Project;
     const x = (now: Project) => (now.timelines[0].tracks[0] as { clips: Clip[] }).clips[0].transform.x;
     const first = applyOp(project, { op: 'splice_clip_keys', timeline: 't1', id: 'c1', path: 'transform.x', at: 0, remove: 0, keys: [key(20, 0.3)] });
     expect(x(first)).toEqual({ keys: [key(20, 0.3)] });
@@ -88,6 +101,11 @@ describe('the keys of a transform', () => {
     expect(x(second)).toEqual({ keys: [key(5, 0), key(30, 1)] });
     expect(x(applyOp(second, { op: 'set_clip_keys', timeline: 't1', id: 'c1', path: 'transform.x', param: 0.5 }))).toBe(0.5);
     expect(x(project)).toBe(0);
+    // The first keys of a side of the crop, of a clip that said nothing of its crop.
+    const cropped = applyOp(project, { op: 'splice_clip_keys', timeline: 't1', id: 'c1', path: 'crop.left', at: 0, remove: 0, keys: [key(0, 1)] });
+    expect((cropped.timelines[0].tracks[0] as { clips: Clip[] }).clips[0].crop).toEqual({ left: { keys: [key(0, 1)] }, right: 0, top: 0, bottom: 0, softness: 0 });
+    const laid = applyOp(project, { op: 'set_clip', timeline: 't1', id: 'c1', composite: 'screen', crop: { left: 0.5, right: 0, top: 0, bottom: 0, softness: 0.1 } });
+    expect((laid.timelines[0].tracks[0] as { clips: Clip[] }).clips[0]).toMatchObject({ composite: 'screen', crop: { left: 0.5, softness: 0.1 } });
     // A path that is none of a clip's keyed settings, or keys that are not there, is a copy gone astray.
     expect(() => applyOp(project, { op: 'set_clip_keys', timeline: 't1', id: 'c1', path: 'gain_db', param: 0.5 })).toThrow();
     expect(() => applyOp(project, { op: 'splice_clip_keys', timeline: 't1', id: 'c1', path: 'transform.x', at: 0, remove: 1, keys: [] })).toThrow();
@@ -122,24 +140,51 @@ describe('the Video tab of a clip whose transform has keys', () => {
 
   it('puts a key at the playhead with the diamond, takes away the one there, and goes from key to key', async () => {
     const between = mount(keyed([key(0, 0), key(40, 0.25)]), 30);
-    const [before, diamond, after] = buttons('x');
+    const [before, diamond, after] = buttons('transform.x');
     expect(diamond.getAttribute('aria-pressed')).toBe('false');
     fireEvent.click(diamond); await settle();
     expect(applied(between.call)).toEqual([{ revision: 17, ops: [splice(1, 0, [key(20, 0.125)])] }]);
     fireEvent.click(before); fireEvent.click(after);
     expect(between.onSeek.mock.calls).toEqual([[10, false], [50, false]]);
     // A setting with no keys has nowhere to go; its diamond puts its first key.
-    const [none, first] = buttons('rotation');
+    const [none, first] = buttons('transform.rotation');
     expect(none.disabled).toBe(true);
     fireEvent.click(first); await settle();
     expect(applied(between.call)[1]).toEqual({ revision: 17, ops: [{ op: 'splice_clip_keys', timeline: 't1', id: 'c1', path: 'transform.rotation', at: 0, remove: 0, keys: [key(20, 0)] }] });
     cleanup();
     // On a key, the diamond is lit and takes it away; there is no key after the last.
     const on = mount(keyed([key(0, 0), key(40, 0.25)]), 50);
-    const [, lit, next] = buttons('x');
+    const [, lit, next] = buttons('transform.x');
     expect(lit.getAttribute('aria-pressed')).toBe('true');
     expect(next.disabled).toBe(true);
     fireEvent.click(lit); await settle();
     expect(applied(on.call)).toEqual([{ revision: 17, ops: [splice(1, 1, [])] }]);
+  });
+});
+
+describe('the cropping and the composite mode of the Video tab', () => {
+  it('sets a side of the crop in percent of the picture, and the composite mode as it is chosen', async () => {
+    const { call } = mount(clip('c1', 10, 60), 30);
+    expect(box('crop-left').value).toBe('0.0');
+    fireEvent.change(box('crop-left'), { target: { value: '25' } });
+    fireEvent.keyDown(box('crop-left'), { key: 'Enter' });
+    await settle();
+    expect(applied(call)).toEqual([{ revision: 17, ops: [{ op: 'set_clip', timeline: 't1', id: 'c1', crop: { left: 0.25, right: 0, top: 0, bottom: 0, softness: 0 } }] }]);
+    const mode = document.querySelector<HTMLSelectElement>('[data-field="composite"] select')!;
+    expect(mode.value).toBe('normal');
+    expect(mode.options).toHaveLength(27);
+    fireEvent.change(mode, { target: { value: 'screen' } });
+    await settle();
+    expect(applied(call)[1]).toEqual({ revision: 17, ops: [{ op: 'set_clip', timeline: 't1', id: 'c1', composite: 'screen' }] });
+  });
+
+  it('shows a side that has keys as it is at the playhead, with its diamond lit on a key', () => {
+    const none = { left: 0, right: 0, top: 0, bottom: 0, softness: 0 };
+    mount(clip('c1', 10, 60, { composite: 'multiply', crop: { ...none, left: { keys: [key(0, 1), key(20, 0)] } } }), 30);
+    // Picture 20 is under the playhead: the last key.
+    expect(box('crop-left').value).toBe('0.0');
+    expect(buttons('crop.left')[1].getAttribute('aria-pressed')).toBe('true');
+    expect(buttons('crop.right')[1].getAttribute('aria-pressed')).toBe('false');
+    expect(document.querySelector<HTMLSelectElement>('[data-field="composite"] select')!.value).toBe('multiply');
   });
 });

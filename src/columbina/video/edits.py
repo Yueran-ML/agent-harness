@@ -38,6 +38,8 @@ __all__ = [
     "AudioParamName",
     "ChainOf",
     "ColorSource",
+    "Composite",
+    "Crop",
     "CrossfadeLevel",
     "CueItem",
     "Edge",
@@ -281,6 +283,35 @@ class Transform(Data):
     scale: float | Keys = 1.0
     rotation: float | Keys = 0.0
     opacity: float | Keys = 1.0
+
+
+class Crop(Data):
+    """How much of the picture of a clip is cut away at each side.
+
+    Each setting is a number from 0 to 1, or :class:`Keys`.
+
+    Attributes:
+        left: The share of the width of the picture cut away at the left.
+        right: The share of the width cut away at the right.
+        top: The share of the height cut away at the top.
+        bottom: The share of the height cut away at the bottom.
+        softness: The share of the height over which each cut edge fades.
+    """
+
+    left: float | Keys = 0.0
+    right: float | Keys = 0.0
+    top: float | Keys = 0.0
+    bottom: float | Keys = 0.0
+    softness: float | Keys = 0.0
+
+
+Composite = Literal[
+    "normal", "add", "color", "color_burn", "color_dodge", "darken", "darker_color",
+    "difference", "divide", "exclusion", "hard_mix", "hardlight", "hue", "lighten",
+    "lighter_color", "linear_burn", "linear_dodge", "linear_light", "luminosity", "multiply",
+    "overlay", "pin_light", "saturation", "screen", "softlight", "subtract", "vivid_light",
+]  # fmt: skip
+"""How the picture of a clip is laid over the tracks below it: DaVinci's composite modes."""
 
 
 class MediaSource(Data):
@@ -932,6 +963,8 @@ def set_clip(
     enabled: bool | None = None,
     link: str | _Kept | None = LEFT_OUT,
     transform: Transform | None = None,
+    crop: Crop | None = None,
+    composite: Composite | None = None,
     gain_db: float | None = None,
     pan: float | None = None,
     fade_in: int | None = None,
@@ -950,7 +983,8 @@ def set_clip(
     ``link`` is the group of linked clips that it is in: ``None`` takes it out of its group, and
     an empty id puts it in a new one. A clip of a title or a colour may be given another
     ``source`` of its kind; its length is the clip's, and that of the source is not used. Its
-    speed is set with :func:`set_speed`, which keeps the stretch of its source.
+    speed is set with :func:`set_speed`, which keeps the stretch of its source. Its
+    ``transform`` and its ``crop`` are each given whole; ``composite`` is its composite mode.
 
     Of its sound (schema 4): ``audio_fade_in`` and ``audio_fade_out`` (an ``AudioFade``
     ``{"length", "curve", "skew"}``, or ``None`` for a straight fade over the frames), ``eq``
@@ -962,6 +996,8 @@ def set_clip(
         {"op": "set_clip", "timeline": timeline, "id": id},
         enabled=enabled,
         transform=transform,
+        crop=crop,
+        composite=composite,
         gain_db=gain_db,
         pan=pan,
         fade_in=fade_in,
@@ -988,7 +1024,8 @@ def set_clip_keys(timeline: str, id: str, path: str, param: float | Keys) -> dic
     """A number, or keys, in place of a setting of a clip that takes keys.
 
     ``path`` names the setting in the clip: ``transform.x``, ``transform.y``,
-    ``transform.scale``, ``transform.rotation`` or ``transform.opacity``.
+    ``transform.scale``, ``transform.rotation`` or ``transform.opacity``, and ``crop.left``,
+    ``crop.right``, ``crop.top``, ``crop.bottom`` or ``crop.softness``.
     """
     written = _json(param) if isinstance(param, Keys) else param
     return {"op": "set_clip_keys", "timeline": timeline, "id": id, "path": path, "param": written}

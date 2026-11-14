@@ -6,7 +6,7 @@ import {
 } from '../src/studio/engine';
 
 const SCALE = 15360;
-const empty = (): Project => ({ schema: 4, groups: [], bins: [], next_id: 1, media: [], timelines: [] });
+const empty = (): Project => ({ schema: 5, groups: [], bins: [], next_id: 1, media: [], timelines: [] });
 const media = (id: string, audio = true): Media => ({
   id, name: `${id}.mp4`, bin: null, mark_in: null, mark_out: null, path: `C:\\media\\${id}.mp4`,
   identity: { size: 1000, modified_us: 1_790_000_000_000_000, digest: '0'.repeat(64) },
@@ -110,7 +110,7 @@ describe('the copy of the project', () => {
     ];
     for (const each of script) engine.changed(each);
     const expected: Project = {
-      schema: 4, groups: [], bins: [], next_id: 10,
+      schema: 5, groups: [], bins: [], next_id: 10,
       media: [media('m1'), media('m2', false)],
       timelines: [{
         id: 't3', name: 'Cut', rate: { num: 25, den: 1 }, width: 1920, height: 1080, sample_rate: 48000, grade: emptyGrade(), tracks: [

@@ -952,7 +952,8 @@ export const ja: Messages = {
       },
       inspector: {
         video: 'ビデオ', audio: 'オーディオ', title: 'タイトル', generator: 'ジェネレーター', transition: 'トランジション', settings: 'タイムライン設定',
-        transform: 'トランスフォーム', composite: 'コンポジット', fades: 'フェード',
+        transform: 'トランスフォーム', composite: 'コンポジット', fades: 'フェード', compositeMode: 'コンポジットモード',
+        cropping: 'クロップ', cropLeft: '左をクロップ', cropRight: '右をクロップ', cropTop: '上をクロップ', cropBottom: '下をクロップ', softness: 'ソフトネス',
         zoom: 'ズーム', positionX: '位置 X', positionY: '位置 Y', rotation: '回転角度', opacity: '不透明度',
         fadeIn: 'フェードイン（フレーム）', fadeOut: 'フェードアウト（フレーム）', volume: 'ボリューム', pan: 'パン',
         text: 'テキスト', size: 'サイズ', color: 'カラー', align: '揃え', alignLeft: '左揃え', alignCenter: '中央揃え', alignRight: '右揃え',

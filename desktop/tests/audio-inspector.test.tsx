@@ -107,7 +107,7 @@ it('does not mark an out-of-clip clamped endpoint as an actual keyframe hit', ()
 it('keeps pan key times/interpolation during relative drag, clamps each independently and reads the model back', async () => {
   const pan: AudioParam = { keys: [{ at: { ticks: 0, scale: 25 }, value: -.7, interp: 'ease_out' }, { at: { ticks: 25, scale: 25 }, value: .9, interp: 'ease_in' }] };
   const v = mount([clip('a', 0, 25, { pan }), clip('b', 0, 25, { pan: .8 })]);
-  let project: Project = { schema: 4, next_id: 3, bins: [], media: [media], groups: [], timelines: [v.props.timeline] };
+  let project: Project = { schema: 5, next_id: 3, bins: [], media: [media], groups: [], timelines: [v.props.timeline] };
   fireEvent.pointerDown(label('pan'), pointer(0)); fireEvent.pointerMove(label('pan'), pointer(80)); await settle();
   const ops = v.requests()[0].ops as Op[];
   for (const op of ops) project = applyOp(project, op);
@@ -130,7 +130,7 @@ it('types a uniform absolute value into mixed static/animated clips, preserving 
   // The server expands the edit to this set_clip; exercise the real project copy's readback.
   const old = curve() as Exclude<AudioParam, number>;
   const accepted: Op = { op: 'set_clip', timeline: 't1', id: 'a', gain_db: { keys: [old.keys[0], { at: { ticks: 24000, scale: 48000 }, value: -3, interp: 'linear' }, old.keys[1]] } };
-  let project: Project = { schema: 4, next_id: 3, bins: [], media: [media], groups: [], timelines: [v.props.timeline] };
+  let project: Project = { schema: 5, next_id: 3, bins: [], media: [media], groups: [], timelines: [v.props.timeline] };
   project = applyOp(applyOp(project, accepted), v.requests()[0].ops[1]);
   v.update({ timeline: project.timelines[0], revision: 18 });
   expect(box('volume').value).toBe('-3.0');

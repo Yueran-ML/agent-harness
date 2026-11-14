@@ -1,4 +1,4 @@
-//! The keys of the settings of a clip, set by their paths: `transform.x`.
+//! The keys of the settings of a clip, set by their paths: `transform.x`, `crop.left`.
 //!
 //! The settings of a clip that take keys are those that the catalog lists
 //! ([`crate::catalog::clip`]). They are set as the keys of a node of a grade are
@@ -16,6 +16,7 @@ fn setting<'c>(clip: &'c mut Clip, path: &str) -> Option<&'c mut Param> {
     let (of, name) = path.split_once('.')?;
     match of {
         "transform" => clip.transform.setting_mut(name),
+        "crop" => clip.crop.setting_mut(name),
         _ => None,
     }
 }

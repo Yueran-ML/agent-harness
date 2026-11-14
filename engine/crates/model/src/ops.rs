@@ -63,6 +63,7 @@
 //! track it covers no frame that another clip covers. It plays at a speed from 1/100 to 100. Its
 //! transform is of finite numbers, with a scale above 0 and at most 16 and an opacity from 0 to
 //! 1, each a number or keys of such numbers at frames in order ([`crate::grade::Param`]); its
+//! crop is of shares from 0 to 1, each a number or keys too; its
 //! gain is from -96 to 24 decibels and its pan from -1 to 1; and it fades in and out over
 //! no more frames than it lasts. A clip of a title or a colour is on a track of picture, and its
 //! title has at most 1000 characters, a size from 1 to 4096 and a finite place. A clip of media
@@ -121,12 +122,12 @@ use crate::audio::{
 };
 use crate::color_management::{Levels, LutPair};
 use crate::grade::{
-    Grade, Group, Key, Link, Node, Param, Port, Pos, Target, LONGEST_LABEL, LONGEST_PATH,
-    MOST_INPUTS,
+    Composite, Grade, Group, Key, Link, Node, Param, Port, Pos, Target, LONGEST_LABEL,
+    LONGEST_PATH, MOST_INPUTS,
 };
 use crate::project::{
-    Alignment, AudioStream, Bin, Clip, Cue, Id, Media, Project, Proxy, Source, Timeline, Track,
-    TrackKind, Transform, Transition, TransitionKind,
+    Alignment, AudioStream, Bin, Clip, Crop, Cue, Id, Media, Project, Proxy, Source, Timeline,
+    Track, TrackKind, Transform, Transition, TransitionKind,
 };
 use crate::span;
 use crate::time::{Rate, Speed, Time};
@@ -370,6 +371,12 @@ pub enum Op {
         /// Its transform, whole.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         transform: Option<Transform>,
+        /// Its crop, whole.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        crop: Option<Crop>,
+        /// Its composite mode: how its picture is laid over those below it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        composite: Option<Composite>,
         /// Its gain: one number, or keyframes.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         gain_db: Option<AudioParam>,
@@ -1097,7 +1104,7 @@ pub enum OpError {
         what: &'static str,
     },
     /// A setting is not one that it may be. `what` is `width`, `height`, `sample_rate`,
-    /// `start`, `length`, `speed`, `transform`, `gain_db`, `pan`, `fade`, `keys` (a setting of
+    /// `start`, `length`, `speed`, `transform`, `crop`, `gain_db`, `pan`, `fade`, `keys` (a setting of
     /// a clip left with no key), `text`, `size`,
     /// `position`, `language`, `still`, `digest` (of the identity of media: not 64 lowercase
     /// hexadecimal digits), `by` (a shift by 0), `clips` or `cues` (a shift of none); and of
@@ -1656,6 +1663,7 @@ fn range_message(what: &str) -> String {
         "pan" => "the pan is not from -1 to 1".into(),
         "fade" => "the fades are not of frames that the clip has".into(),
         "keys" => "a setting keeps one key at least: set_clip_keys puts a number there".into(),
+        "crop" => "the crop is not of shares from 0 to 1".into(),
         "text" => format!("the text is empty or longer than {LONGEST_TEXT} characters"),
         "size" => "the size of the title is not from 1 to 4096".into(),
         "position" => "the place of the title is not of finite numbers".into(),
@@ -1828,6 +1836,8 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
             reverse,
             link,
             transform,
+            crop,
+            composite,
             gain_db,
             pan,
             fade_in,
@@ -1850,6 +1860,8 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
                 reverse,
                 link,
                 transform,
+                crop,
+                composite,
                 gain_db,
                 pan,
                 fade_in,
@@ -2143,6 +2155,8 @@ pub fn apply_done(project: &mut Project, op: Op) -> Result<(Op, Op), OpError> {
             speed,
             reverse,
             transform,
+            crop,
+            composite,
             gain_db,
             pan,
             fade_in,
@@ -2168,6 +2182,8 @@ pub fn apply_done(project: &mut Project, op: Op) -> Result<(Op, Op), OpError> {
                 reverse,
                 link,
                 transform,
+                crop,
+                composite,
                 gain_db,
                 pan,
                 fade_in,
@@ -2842,6 +2858,8 @@ struct ClipSettings {
     reverse: Option<bool>,
     link: Option<Option<Id>>,
     transform: Option<Transform>,
+    crop: Option<Crop>,
+    composite: Option<Composite>,
     gain_db: Option<AudioParam>,
     pan: Option<AudioParam>,
     fade_in: Option<i64>,
@@ -2872,6 +2890,8 @@ fn set_clip(
     swap(&mut new.speed, set.speed);
     swap(&mut new.reverse, set.reverse);
     swap(&mut new.transform, set.transform.clone());
+    swap(&mut new.crop, set.crop.clone());
+    swap(&mut new.composite, set.composite);
     swap(&mut new.gain_db, set.gain_db.clone());
     swap(&mut new.pan, set.pan.clone());
     swap(&mut new.fade_in, set.fade_in);
@@ -2914,6 +2934,8 @@ fn set_clip(
         reverse: set.reverse.map(|_| old.reverse),
         link: set.link.map(|_| old.link.clone()),
         transform: set.transform.map(|_| old.transform.clone()),
+        crop: set.crop.map(|_| old.crop.clone()),
+        composite: set.composite.map(|_| old.composite),
         gain_db: set.gain_db.map(|_| old.gain_db.clone()),
         pan: set.pan.map(|_| old.pan.clone()),
         fade_in: set.fade_in.map(|_| old.fade_in),
@@ -3735,6 +3757,7 @@ fn check_settings_of(clip: &Clip) -> Result<(), OpError> {
         return Err(range("speed"));
     }
     clip.transform.check()?;
+    clip.crop.check()?;
     if !clip.gain_db.is_valid(|v| (-96.0..=24.0).contains(&v)) {
         return Err(range("gain_db"));
     }
@@ -5592,6 +5615,10 @@ mod tests {
             &mut expected["timeline"]["tracks"][0]["clips"][0],
             crate::audio::written::clip(),
         );
+        // And what schema 5 adds to a clip: no crop, and the normal composite mode.
+        let clip = &mut expected["timeline"]["tracks"][0]["clips"][0];
+        clip["crop"] = serde_json::to_value(Crop::NONE).unwrap();
+        clip["composite"] = "normal".into();
         assert_eq!(value, expected);
     }
 
@@ -6896,6 +6923,8 @@ mod tests {
             reverse: None,
             link: None,
             transform: None,
+            crop: None,
+            composite: None,
             gain_db: None,
             pan: None,
             fade_in: None,

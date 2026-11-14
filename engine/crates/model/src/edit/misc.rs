@@ -423,6 +423,8 @@ pub(super) fn set_speed(
             reverse: Some(new.reverse),
             link: None,
             transform: None,
+            crop: None,
+            composite: None,
             gain_db: None,
             pan: None,
             fade_in: None,

@@ -1,11 +1,12 @@
 import { useWords } from '../../app/locale';
 import { useContext } from 'react';
-import type { Clip, Media, Op, Timeline } from '../engine';
+import { COMPOSITES } from '../color/nodeEdits';
+import type { Clip, ClipKeyed, Media, Op, Timeline } from '../engine';
 import { useFairlightText } from '../fairlight/words';
 import { clipLocations } from '../timeline/selection';
-import { addKey, keyAt, keyFrameOf, keyTimes, putValue, removeKey, settingAt, type TransformSetting } from './clipKeys';
+import { addKey, keyAt, keyFrameOf, keyTimes, paramOf, putValue, removeKey, settingAt } from './clipKeys';
 import { common, setClips, transitionEdges } from './common';
-import { FieldsLocked, NumberField } from './fields';
+import { ChoiceField, FieldsLocked, NumberField } from './fields';
 import type { Build, Commit } from './useCommit';
 
 /**
@@ -34,19 +35,21 @@ export function Fades({ clips, timeline, commit, fineModifiers = false }: { clip
 
 /**
  * The picture of clips on video tracks, as DaVinci Resolve's Video tab: zoom, position (in pixels
- * of the timeline, kept as a share of its size), rotation and opacity (in percent, kept from 0 to 1),
- * and the fades. Each change sets every clip chosen, in one transaction.
+ * of the timeline, kept as a share of its size), rotation, the composite mode and opacity (in
+ * percent, kept from 0 to 1), the cropping (in percent of the picture, kept as shares of it) and the
+ * fades. Each change sets every clip chosen, in one transaction.
  *
- * Each setting of the transform takes keys (Reference Manual 20, Ch. 53). A field shows what its
- * setting is at the playhead; the diamond beside it puts a key there, or takes away the one there,
- * and the arrows go to the key before and after. A setting that has keys takes a value typed or
- * dragged as a key at the playhead; one without is one number, as before.
+ * Each setting of the transform and of the crop takes keys (Reference Manual 20, Ch. 53). A field
+ * shows what its setting is at the playhead; the diamond beside it puts a key there, or takes away
+ * the one there, and the arrows go to the key before and after. A setting that has keys takes a
+ * value typed or dragged as a key at the playhead; one without is one number, as before.
  */
 export function ClipVideo({ clips, timeline, commit, media = [], frame = 0, onSeek = () => {} }: {
   clips: readonly Clip[]; timeline: Timeline; commit: Commit; media?: readonly Media[]; frame?: number;
   onSeek?: (frame: number, scrubbing: boolean) => void;
 }) {
-  const labels = useWords().label.studio.inspector;
+  const words = useWords().label.studio;
+  const labels = words.inspector;
   const t = useFairlightText();
   const locked = useContext(FieldsLocked);
   const ids = clips.map(clip => clip.id);
@@ -59,41 +62,56 @@ export function ClipVideo({ clips, timeline, commit, media = [], frame = 0, onSe
       return !located || located.track.locked ? [] : ops(located.clip, now);
     });
   };
-  const value = (name: TransformSetting, shown: (kept: number) => number) => common(clips, clip => shown(settingAt(clip, name, at(clip))));
-  const set = (name: TransformSetting, kept: (now: Timeline) => number) => void commit(each((clip, now) => putValue(now.id, clip, name, kept(now), at(clip, now))));
-  const keys = (name: TransformSetting, label: string) => {
-    const hits = clips.map(clip => keyAt(clip.transform[name], at(clip)));
+  const value = (path: ClipKeyed, shown: (kept: number) => number) => common(clips, clip => shown(settingAt(clip, path, at(clip))));
+  const set = (path: ClipKeyed, kept: number) => void commit(each((clip, now) => putValue(now.id, clip, path, kept, at(clip, now))));
+  const keys = (path: ClipKeyed, label: string) => {
+    const hits = clips.map(clip => keyAt(paramOf(clip, path), at(clip)));
     const all = hits.length > 0 && hits.every(Boolean);
-    const times = [...new Set(clips.flatMap(clip => keyTimes(clip, timeline, media, name)))].sort((a, b) => a - b);
+    const times = [...new Set(clips.flatMap(clip => keyTimes(clip, timeline, media, path)))].sort((a, b) => a - b);
     const go = (direction: -1 | 1) => {
       const target = direction < 0 ? times.filter(time => time < frame).at(-1) : times.find(time => time > frame);
       if (target !== undefined) onSeek(target, false);
     };
-    return <div className="audio-param-keys" role="group" aria-label={label} data-keys={name}>
+    return <div className="audio-param-keys" role="group" aria-label={label} data-keys={path}>
       <button type="button" className="icon-btn" aria-label={label + ': ' + t('Previous keyframe')} disabled={!times.some(time => time < frame)} onClick={() => go(-1)}>‹</button>
       <button type="button" className="icon-btn" aria-label={label + ': ' + t(all ? 'Remove keyframe' : 'Add keyframe')} aria-pressed={all} data-hit={hits.some(Boolean) || undefined}
-        disabled={locked} onClick={() => void commit(each((clip, now) => all ? removeKey(now.id, clip, name, at(clip, now)) : addKey(now.id, clip, name, at(clip, now))))}>◆</button>
+        disabled={locked} onClick={() => void commit(each((clip, now) => all ? removeKey(now.id, clip, path, at(clip, now)) : addKey(now.id, clip, path, at(clip, now))))}>◆</button>
       <button type="button" className="icon-btn" aria-label={label + ': ' + t('Next keyframe')} disabled={!times.some(time => time > frame)} onClick={() => go(1)}>›</button>
     </div>;
   };
+  /** A side of the crop or its softness, shown in percent of the picture. */
+  const cropped = (name: string, path: ClipKeyed, label: string) => <>
+    <NumberField name={name} label={label} value={value(path, kept => kept * 100)} fallback={0} unit="%"
+      min={0} max={100} digits={1} scrub={0.25} slider={{ min: 0, max: 100, step: 0.1 }} onCommit={percent => set(path, percent / 100)} />
+    {keys(path, label)}
+  </>;
+  const mode = common(clips, clip => clip.composite ?? 'normal');
   return <div className="inspector-panel" data-panel="video">
     <h3 className="inspector-section">{labels.transform}</h3>
-    <NumberField name="zoom" label={labels.zoom} value={value('scale', kept => kept)} fallback={1} min={0.01} max={16} digits={3} scrub={0.005}
-      slider={{ min: 0.01, max: 4, step: 0.01 }} onCommit={scale => set('scale', () => scale)} />
-    {keys('scale', labels.zoom)}
-    <NumberField name="x" label={labels.positionX} value={value('x', kept => kept * timeline.width)} fallback={0} unit="px"
-      min={-timeline.width * 16} max={timeline.width * 16} digits={1} scrub={1} onCommit={x => set('x', () => x / timeline.width)} />
-    {keys('x', labels.positionX)}
-    <NumberField name="y" label={labels.positionY} value={value('y', kept => kept * timeline.height)} fallback={0} unit="px"
-      min={-timeline.height * 16} max={timeline.height * 16} digits={1} scrub={1} onCommit={y => set('y', () => y / timeline.height)} />
-    {keys('y', labels.positionY)}
-    <NumberField name="rotation" label={labels.rotation} value={value('rotation', kept => kept)} fallback={0} unit="°"
-      min={-3600} max={3600} digits={1} scrub={0.5} slider={{ min: -180, max: 180, step: 0.1 }} onCommit={rotation => set('rotation', () => rotation)} />
-    {keys('rotation', labels.rotation)}
+    <NumberField name="zoom" label={labels.zoom} value={value('transform.scale', kept => kept)} fallback={1} min={0.01} max={16} digits={3} scrub={0.005}
+      slider={{ min: 0.01, max: 4, step: 0.01 }} onCommit={scale => set('transform.scale', scale)} />
+    {keys('transform.scale', labels.zoom)}
+    <NumberField name="x" label={labels.positionX} value={value('transform.x', kept => kept * timeline.width)} fallback={0} unit="px"
+      min={-timeline.width * 16} max={timeline.width * 16} digits={1} scrub={1} onCommit={x => set('transform.x', x / timeline.width)} />
+    {keys('transform.x', labels.positionX)}
+    <NumberField name="y" label={labels.positionY} value={value('transform.y', kept => kept * timeline.height)} fallback={0} unit="px"
+      min={-timeline.height * 16} max={timeline.height * 16} digits={1} scrub={1} onCommit={y => set('transform.y', y / timeline.height)} />
+    {keys('transform.y', labels.positionY)}
+    <NumberField name="rotation" label={labels.rotation} value={value('transform.rotation', kept => kept)} fallback={0} unit="°"
+      min={-3600} max={3600} digits={1} scrub={0.5} slider={{ min: -180, max: 180, step: 0.1 }} onCommit={rotation => set('transform.rotation', rotation)} />
+    {keys('transform.rotation', labels.rotation)}
     <h3 className="inspector-section">{labels.composite}</h3>
-    <NumberField name="opacity" label={labels.opacity} value={value('opacity', kept => kept * 100)} fallback={100} unit="%"
-      min={0} max={100} digits={1} scrub={0.5} slider={{ min: 0, max: 100, step: 0.1 }} onCommit={opacity => set('opacity', () => opacity / 100)} />
-    {keys('opacity', labels.opacity)}
+    <ChoiceField name="composite" label={labels.compositeMode} value={mode} options={COMPOSITES.map(each => ({ value: each, label: words.colorPage.composites[each] }))}
+      onCommit={composite => void commit(setClips(ids, () => ({ composite })))} />
+    <NumberField name="opacity" label={labels.opacity} value={value('transform.opacity', kept => kept * 100)} fallback={100} unit="%"
+      min={0} max={100} digits={1} scrub={0.5} slider={{ min: 0, max: 100, step: 0.1 }} onCommit={opacity => set('transform.opacity', opacity / 100)} />
+    {keys('transform.opacity', labels.opacity)}
+    <h3 className="inspector-section">{labels.cropping}</h3>
+    {cropped('crop-left', 'crop.left', labels.cropLeft)}
+    {cropped('crop-right', 'crop.right', labels.cropRight)}
+    {cropped('crop-top', 'crop.top', labels.cropTop)}
+    {cropped('crop-bottom', 'crop.bottom', labels.cropBottom)}
+    {cropped('crop-softness', 'crop.softness', labels.softness)}
     <h3 className="inspector-section">{labels.fades}</h3>
     <Fades clips={clips} timeline={timeline} commit={commit} />
   </div>;

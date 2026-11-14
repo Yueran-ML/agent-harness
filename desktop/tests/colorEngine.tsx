@@ -120,7 +120,7 @@ export function fakeEngine(project: Project, luts: LutLibrary = library()) {
 
 /** A project of two media and a timeline of two clips, the first graded with `lutGrade`. */
 export const projectOf = (fields: Partial<Project> = {}, grade: Grade = lutGrade()): Project => ({
-  schema: 4, next_id: 10, bins: [], groups: [],
+  schema: 5, next_id: 10, bins: [], groups: [],
   media: [media, { ...media, id: 'm2', name: 'Street' }, { ...media, id: 'm3', name: 'Music', facts: { ...media.facts, video: null } }],
   timelines: [timeline([clip('c1', 0, 100, { grade }), clip('c2', 100)])],
   ...fields,

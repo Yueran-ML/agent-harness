@@ -75,7 +75,7 @@ const C1: Target = { level: 'clip', timeline: 't1', clip: 'c1' };
  * as the real one does, and refuses what a test tells it to, as the real one refuses.
  */
 function fakeEngine(timeline: Timeline = timelineOf()) {
-  let project: Project = { schema: 4, next_id: 10, bins: [], media: [media, m2], timelines: [timeline], groups: [{ id: 'g1', name: 'Day', pre: groupGrade('pre'), post: groupGrade('post') }] };
+  let project: Project = { schema: 5, next_id: 10, bins: [], media: [media, m2], timelines: [timeline], groups: [{ id: 'g1', name: 'Day', pre: groupGrade('pre'), post: groupGrade('post') }] };
   let revision = 0;
   let refusal: Record<string, unknown> | null = null;
   let frozen = false;

@@ -68,7 +68,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::grade::{Grade, Target};
 use crate::ops::LARGEST;
-use crate::project::{Clip, Project, Source, Timeline, Transform};
+use crate::project::{Clip, Crop, Project, Source, Timeline, Transform};
 use crate::span::{self, Reading};
 use crate::time::{Rate, Time};
 
@@ -258,6 +258,16 @@ pub fn aligned_transform(
             transform.with_key_frames(&|frame| moved.at(frame))
         }
         _ => transform.clone(),
+    }
+}
+
+/// `crop`, whose keys count the frames of `from`, with its keys put on the frames of `to` as
+/// `align` puts them, as [`aligned_transform`] puts those of the transform of the same clip.
+#[must_use]
+pub fn aligned_crop(crop: &Crop, from: KeyBase, to: KeyBase, align: Align) -> Crop {
+    match Moved::of(from, to, align) {
+        Some(moved) if crop.is_animated() => crop.with_key_frames(&|frame| moved.at(frame)),
+        _ => crop.clone(),
     }
 }
 

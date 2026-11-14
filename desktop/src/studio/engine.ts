@@ -109,6 +109,14 @@ export interface Speed { num: number; den: number }
  * of the clip's grade count (`keyClockOf`); the engine writes a setting with no keys as a number.
  */
 export interface Transform { x: Param; y: Param; scale: Param; rotation: Param; opacity: Param }
+/**
+ * How much of the picture of a clip is cut away at each side (schema 5): the sides as shares of its
+ * width and height, from 0 to 1, and the softness as the share of its height over which each cut
+ * edge fades. Each is a number or keys, as the settings of a transform are.
+ */
+export interface Crop { left: Param; right: Param; top: Param; bottom: Param; softness: Param }
+/** The picture whole: the crop of a clip that says nothing of it. */
+export const NO_CROP: Crop = { left: 0, right: 0, top: 0, bottom: 0, softness: 0 };
 export interface TitleStyle { font: string; size: number; color: string; x: number; y: number; align: 'left' | 'center' | 'right' }
 export type ClipSource =
   | { kind: 'media'; media: string; in: Time }
@@ -124,6 +132,10 @@ export interface Clip {
   reverse: boolean;
   link: string | null;
   transform: Transform;
+  /** How much of its picture is cut away (schema 5). The engine always writes it; left out, none. */
+  crop?: Crop;
+  /** How its picture is laid over the tracks below it (schema 5). Left out, normal. */
+  composite?: Composite;
   /** Decibels from -96 to 24: one number, or keyframes at times of the source (schema 4). */
   gain_db: AudioParam;
   /** From -1 (left) to 1 (right): one number, or keyframes. */
@@ -208,7 +220,7 @@ export interface Timeline {
  * A project. `color` is always written by the engine; a project that a client builds may leave it
  * out, and it is read as not colour managed (`keptColor`).
  */
-export interface Project { schema: 4; next_id: number; bins: Bin[]; media: Media[]; timelines: Timeline[]; groups: Group[]; color?: ColorSettings }
+export interface Project { schema: 5; next_id: number; bins: Bin[]; media: Media[]; timelines: Timeline[]; groups: Group[]; color?: ColorSettings }
 
 // The sound of schema 4 (PROTOCOL.md, "Sound"; engine/crates/model/src/audio.rs and audio/), as
 // DaVinci Resolve's Fairlight page has it (Reference Manual 20, Ch. 170-182).
@@ -668,7 +680,7 @@ export type Op =
   | { op: 'shift_clips'; timeline: string; track: string; clips: string[]; by: number }
   | { op: 'shift_cues'; timeline: string; track: string; cues: string[]; by: number }
   | { op: 'trim_clip'; timeline: string; id: string; source_in?: Time | null; start: number; length: number }
-  | ({ op: 'set_clip'; timeline: string; id: string } & Settings<Clip, 'enabled' | 'speed' | 'reverse' | 'link' | 'transform' | 'gain_db' | 'pan' | 'fade_in' | 'fade_out' | 'audio_fade_in' | 'audio_fade_out' | 'eq' | 'effects' | 'pitch_correction' | 'pitch' | 'channels' | 'source'>)
+  | ({ op: 'set_clip'; timeline: string; id: string } & Settings<Clip, 'enabled' | 'speed' | 'reverse' | 'link' | 'transform' | 'crop' | 'composite' | 'gain_db' | 'pan' | 'fade_in' | 'fade_out' | 'audio_fade_in' | 'audio_fade_out' | 'eq' | 'effects' | 'pitch_correction' | 'pitch' | 'channels' | 'source'>)
   | { op: 'add_transition'; timeline: string; track: string; transition: Transition }
   | { op: 'remove_transition'; timeline: string; id: string }
   | ({ op: 'set_transition'; timeline: string; id: string } & Settings<Transition, 'kind' | 'length' | 'align' | 'fade_in_level_db' | 'fade_out_level_db'>)
@@ -1924,12 +1936,17 @@ function splicedKeys(before: Param, op: { path: string; at: number; remove: numb
 }
 
 /** The settings of a clip that take keys: the paths of the engine's catalog (`catalog.json`, `clip`). */
-export const CLIP_KEYED = ['transform.x', 'transform.y', 'transform.scale', 'transform.rotation', 'transform.opacity'] as const;
+export const CLIP_KEYED = [
+  'transform.x', 'transform.y', 'transform.scale', 'transform.rotation', 'transform.opacity',
+  'crop.left', 'crop.right', 'crop.top', 'crop.bottom', 'crop.softness',
+] as const;
+export type ClipKeyed = (typeof CLIP_KEYED)[number];
 
 /** A clip with the setting at one of the paths of `CLIP_KEYED` changed (`set_clip_keys`, `splice_clip_keys`). */
 function withClipSetting(clip: Clip, path: string, change: (before: Param) => Param): Clip {
   if (!(CLIP_KEYED as readonly string[]).includes(path)) throw new CopyMismatch(`there is no setting ${path} of clip ${clip.id} in the copy`);
-  return settingPut(clip, path, change, `clip ${clip.id}`) as Clip;
+  // A clip that a client built may say nothing of its crop: it has none.
+  return settingPut({ ...clip, crop: clip.crop ?? NO_CROP }, path, change, `clip ${clip.id}`) as Clip;
 }
 
 /** Mirror only accepted basic operations, preserving all objects outside the changed branch. */
@@ -2019,7 +2036,7 @@ export function applyOp(project: Project, op: Op): Project {
     case 'set_clip': return inTimeline(project, op.timeline, timeline => {
       const [track, at] = clipAt(timeline, op.id);
       return inClips(timeline, track, clips => replaced(clips, at, patched(clips[at], op,
-        ['enabled', 'speed', 'reverse', 'link', 'transform', 'gain_db', 'pan', 'fade_in', 'fade_out', 'audio_fade_in', 'audio_fade_out', 'eq', 'effects', 'pitch_correction', 'pitch', 'channels', 'source'],
+        ['enabled', 'speed', 'reverse', 'link', 'transform', 'crop', 'composite', 'gain_db', 'pan', 'fade_in', 'fade_out', 'audio_fade_in', 'audio_fade_out', 'eq', 'effects', 'pitch_correction', 'pitch', 'channels', 'source'],
         ['link', 'audio_fade_in', 'audio_fade_out', 'channels'])));
     });
     case 'add_transition': return inTimeline(project, op.timeline, timeline => inTrack(timeline, placeOf(timeline.tracks, op.track, 'track'), track => {

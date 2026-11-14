@@ -26,8 +26,13 @@
 //! not heard either. A project of schema 3 that has any field of schema 4 is refused, as one of
 //! schema 2 with a field of schema 3 is.
 //!
-//! A project is upgraded a schema at a time: one of schema 2 is read into schema 3 and then into
-//! schema 4, so that what each schema adds is given its value.
+//! What schema 5 adds leaves the picture as it was: the settings of a clip's transform may have
+//! keys, which a project of schema 4 has none of, and a clip has a crop, of nothing, and a
+//! composite mode, normal. Both are left out of a project of schema 4 as it is read, and one
+//! that has either is refused.
+//!
+//! A project is upgraded a schema at a time: one of schema 2 is read into schema 3, then into
+//! schema 4 and then into schema 5, so that what each schema adds is given its value.
 //!
 //! The project is then checked as one that is read is.
 
@@ -254,7 +259,7 @@ pub fn from_schema_3(mut value: serde_json::Value) -> Result<Project, ReadError>
         return Err(ReadError::Schema(schema));
     }
     let project = value.as_object_mut().ok_or(ReadError::NotAnObject)?;
-    project.insert("schema".into(), SCHEMA.into());
+    project.insert("schema".into(), 4.into());
     let timelines = project
         .get_mut("timelines")
         .and_then(serde_json::Value::as_array_mut);
@@ -262,7 +267,7 @@ pub fn from_schema_3(mut value: serde_json::Value) -> Result<Project, ReadError>
         let Some(timeline) = timeline.as_object_mut() else {
             continue;
         };
-        fresh(timeline, &TIMELINE_4)?;
+        fresh(3, timeline, &TIMELINE_4)?;
         let tracks = timeline
             .get_mut("tracks")
             .and_then(serde_json::Value::as_array_mut);
@@ -273,7 +278,7 @@ pub fn from_schema_3(mut value: serde_json::Value) -> Result<Project, ReadError>
         {
             let sound = track.get("kind").and_then(serde_json::Value::as_str) == Some("audio");
             if sound {
-                fresh(track, &TRACK_4)?;
+                fresh(3, track, &TRACK_4)?;
                 if track.get("enabled") == Some(&serde_json::Value::Bool(false)) {
                     track.insert("enabled".into(), true.into());
                     track.insert("mute".into(), true.into());
@@ -287,7 +292,7 @@ pub fn from_schema_3(mut value: serde_json::Value) -> Result<Project, ReadError>
                 .flatten()
                 .filter_map(|c| c.as_object_mut())
             {
-                fresh(clip, &CLIP_4)?;
+                fresh(3, clip, &CLIP_4)?;
             }
             let transitions = track
                 .get_mut("transitions")
@@ -297,7 +302,7 @@ pub fn from_schema_3(mut value: serde_json::Value) -> Result<Project, ReadError>
                 .flatten()
                 .filter_map(|x| x.as_object_mut())
             {
-                fresh(transition, &TRANSITION_4)?;
+                fresh(3, transition, &TRANSITION_4)?;
                 let crossfade =
                     transition.get("kind").and_then(serde_json::Value::as_str) == Some("crossfade");
                 if crossfade {
@@ -307,17 +312,59 @@ pub fn from_schema_3(mut value: serde_json::Value) -> Result<Project, ReadError>
             }
         }
     }
+    from_schema_4(value)
+}
+
+/// The fields that schema 5 adds to a clip.
+pub(crate) const CLIP_5: [&str; 2] = ["crop", "composite"];
+
+/// Read a project of schema 4 into this schema, and check it as a project that is read is
+/// checked. Schema 5 lets the settings of a clip's transform have keys, which a project of
+/// schema 4 has none of, and adds a crop and a composite mode to a clip, which are left out, and
+/// so read as none and as normal: the picture is as it was.
+///
+/// # Errors
+/// It is not an object, it names no schema or another one than 4, it has a field of schema 5
+/// already, or what it becomes is not a valid project.
+pub fn from_schema_4(mut value: serde_json::Value) -> Result<Project, ReadError> {
+    let schema = schema_of(&value)?;
+    if schema != 4 {
+        return Err(ReadError::Schema(schema));
+    }
+    let project = value.as_object_mut().ok_or(ReadError::NotAnObject)?;
+    project.insert("schema".into(), SCHEMA.into());
+    let timelines = project
+        .get_mut("timelines")
+        .and_then(serde_json::Value::as_array_mut);
+    for timeline in timelines.into_iter().flatten() {
+        let tracks = timeline
+            .get_mut("tracks")
+            .and_then(serde_json::Value::as_array_mut);
+        for track in tracks.into_iter().flatten() {
+            let clips = track
+                .get_mut("clips")
+                .and_then(serde_json::Value::as_array_mut);
+            for clip in clips
+                .into_iter()
+                .flatten()
+                .filter_map(|c| c.as_object_mut())
+            {
+                fresh(4, clip, &CLIP_5)?;
+            }
+        }
+    }
     Project::from_value(value)
 }
 
-/// Refuse an object of a project of schema 3 that has a field of schema 4.
+/// Refuse an object of a project of `schema` that has a field of the schema after it.
 fn fresh(
+    schema: u32,
     object: &serde_json::Map<String, serde_json::Value>,
     names: &[&str],
 ) -> Result<(), ReadError> {
     match names.iter().find(|name| object.contains_key(**name)) {
         Some(name) => {
-            let error = format!("unknown field `{name}` in a project of schema 3");
+            let error = format!("unknown field `{name}` in a project of schema {schema}");
             Err(ReadError::Json(serde::de::Error::custom(error)))
         }
         None => Ok(()),
@@ -510,7 +557,7 @@ mod tests {
     }
 
     #[test]
-    fn a_project_is_upgraded_only_from_schema_1_2_and_3() {
+    fn a_project_is_upgraded_only_from_schema_1_2_3_and_4() {
         let (project, upgraded) = Project::from_value_upgrading(written()).unwrap();
         assert_eq!(upgraded, Some(1));
         let again = serde_json::to_value(&project).unwrap();
@@ -524,16 +571,24 @@ mod tests {
         assert_eq!(upgraded, Some(3));
         assert_eq!(read, from_schema_3(written_3()).unwrap());
 
+        let (read, upgraded) = Project::from_value_upgrading(written_4()).unwrap();
+        assert_eq!(upgraded, Some(4));
+        assert_eq!(read, from_schema_4(written_4()).unwrap());
+
         let mut later = written();
-        later["schema"] = 5.into();
+        later["schema"] = 6.into();
         let error = Project::from_value_upgrading(later.clone()).unwrap_err();
-        assert!(matches!(error, ReadError::Schema(5)), "{error}");
+        assert!(matches!(error, ReadError::Schema(6)), "{error}");
         let error = from_schema_1(later.clone()).unwrap_err();
-        assert!(matches!(error, ReadError::Schema(5)), "{error}");
+        assert!(matches!(error, ReadError::Schema(6)), "{error}");
         let error = from_schema_2(later.clone()).unwrap_err();
-        assert!(matches!(error, ReadError::Schema(5)), "{error}");
-        let error = from_schema_3(later).unwrap_err();
-        assert!(matches!(error, ReadError::Schema(5)), "{error}");
+        assert!(matches!(error, ReadError::Schema(6)), "{error}");
+        let error = from_schema_3(later.clone()).unwrap_err();
+        assert!(matches!(error, ReadError::Schema(6)), "{error}");
+        let error = from_schema_4(later).unwrap_err();
+        assert!(matches!(error, ReadError::Schema(6)), "{error}");
+        let error = from_schema_4(written_3()).unwrap_err();
+        assert!(matches!(error, ReadError::Schema(3)), "{error}");
         let error = from_schema_2(written()).unwrap_err();
         assert!(matches!(error, ReadError::Schema(1)), "{error}");
         let error = from_schema_3(written_2()).unwrap_err();
@@ -542,11 +597,12 @@ mod tests {
         assert!(matches!(error, ReadError::NoSchema), "{error}");
     }
 
-    /// What schema 4 writes of a project of schema 3 that was upgraded: its fields at their
-    /// defaults, the tracks of sound that were off on and muted, and the crossfades at +3 dB.
+    /// What this schema writes of a project of schema 3 that was upgraded: the fields of
+    /// schema 4 at their defaults, the tracks of sound that were off on and muted, the
+    /// crossfades at +3 dB, and of schema 5 no crop and the normal composite mode of each clip.
     fn as_schema_4(project: &mut serde_json::Value) {
         use crate::audio::written;
-        project["schema"] = 4.into();
+        project["schema"] = SCHEMA.into();
         for timeline in project["timelines"].as_array_mut().unwrap() {
             written::with(timeline, written::timeline());
             for track in timeline["tracks"].as_array_mut().unwrap() {
@@ -563,6 +619,8 @@ mod tests {
                     .flat_map(|c| c.as_array_mut().unwrap())
                 {
                     written::with(clip, written::clip());
+                    clip["crop"] = serde_json::to_value(crate::project::Crop::NONE).unwrap();
+                    clip["composite"] = "normal".into();
                 }
                 for transition in track
                     .get_mut("transitions")
@@ -681,6 +739,61 @@ mod tests {
         value["timelines"][0]["tracks"][0]["enabled"] = false.into();
         let project = from_schema_3(value).unwrap();
         assert!(!project.timelines[0].tracks[0].enabled);
+    }
+
+    const WRITTEN_4: &str = include_str!("../tests/data/schema4.json");
+
+    fn written_4() -> serde_json::Value {
+        serde_json::from_str(WRITTEN_4).unwrap()
+    }
+
+    #[test]
+    fn a_project_of_schema_4_is_read_with_no_crop_and_nothing_else_changed() {
+        let old = written_4();
+        let project = from_schema_4(old.clone()).unwrap();
+        assert_eq!(project.schema, SCHEMA);
+        let clips: Vec<&Clip> = project
+            .timelines
+            .iter()
+            .flat_map(|t| &t.tracks)
+            .flat_map(|track| &track.clips)
+            .collect();
+        assert_eq!(clips.len(), 5);
+        for clip in clips {
+            assert_eq!(clip.crop, crate::project::Crop::NONE);
+            assert_eq!(clip.composite, crate::grade::Composite::Normal);
+            assert!(!clip.transform.is_animated());
+        }
+        // What it is written as is what it was, with only the fields of schema 5 added.
+        let mut expected = old;
+        expected["schema"] = SCHEMA.into();
+        for timeline in expected["timelines"].as_array_mut().unwrap() {
+            for track in timeline["tracks"].as_array_mut().unwrap() {
+                for clip in track
+                    .get_mut("clips")
+                    .into_iter()
+                    .flat_map(|c| c.as_array_mut().unwrap())
+                {
+                    clip["crop"] = serde_json::json!(
+                        {"left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0, "softness": 0.0}
+                    );
+                    clip["composite"] = "normal".into();
+                }
+            }
+        }
+        assert_eq!(serde_json::to_value(&project).unwrap(), expected);
+    }
+
+    #[test]
+    fn a_project_of_schema_4_with_a_field_of_schema_5_is_refused() {
+        for field in CLIP_5 {
+            let mut value = written_4();
+            value["timelines"][0]["tracks"][0]["clips"][0][field] = serde_json::json!(null);
+            let error = from_schema_4(value).unwrap_err();
+            assert!(matches!(error, ReadError::Json(_)), "{error}");
+            assert!(error.to_string().contains(field), "{error}");
+            assert!(error.to_string().contains("schema 4"), "{error}");
+        }
     }
 
     const WRITTEN_2: &str = include_str!("../tests/data/schema2.json");

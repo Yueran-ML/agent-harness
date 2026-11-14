@@ -140,7 +140,7 @@ function refusalOf(project: Project, ops: readonly Record<string, unknown>[]): R
 
 /** An engine that keeps a project and the two transports, and tells what changed as the real one does. */
 function fakeEngine(timelines: Timeline[] = [cuts()], pool: { media: Media[]; bins: Project['bins'] } = { media: [m1, m2, m3], bins: [{ id: 'b1', name: 'B-roll', parent: null }] }) {
-  let project: Project = { schema: 4, groups: [], next_id: 10, bins: pool.bins, media: pool.media, timelines };
+  let project: Project = { schema: 5, groups: [], next_id: 10, bins: pool.bins, media: pool.media, timelines };
   let revision = 0;
   const listeners = new Set<(event: EngineEvent) => void>();
   const tell = (method: string, params: unknown) => listeners.forEach(listener => listener({ kind: 'notification', session: 1, method, params }));

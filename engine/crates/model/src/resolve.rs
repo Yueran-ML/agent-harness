@@ -38,9 +38,10 @@
 //! The strips, buses and automation of the timeline are not here: they are the mixer's.
 
 use crate::audio::{gain_of_db, AudioFade, AudioParam, CrossfadeLevel};
+use crate::grade::Composite;
 use crate::keyframes::KeyClock;
 use crate::project::{
-    Clip, Cue, Id, Placed, Project, Rgba, Source, Timeline, TitleStyle, Track, TrackKind,
+    Clip, Cropped, Cue, Id, Placed, Project, Rgba, Source, Timeline, TitleStyle, Track, TrackKind,
     Transition, TransitionKind,
 };
 use crate::span;
@@ -81,6 +82,10 @@ pub struct Layer {
     pub content: Content,
     /// Where it is put: the transform of the clip.
     pub transform: Placed,
+    /// How much of it is cut away at each side, at the frame.
+    pub crop: Cropped,
+    /// How it is laid over the layers below it.
+    pub composite: Composite,
     /// How opaque it is, from 0 to 1: the opacity of the clip times its fades and the
     /// transition that it is in.
     pub opacity: f32,
@@ -142,6 +147,8 @@ fn track_at(t: &Timeline, project: &Project, track: &Track, frame: i64, layers: 
             track: track.id.clone(),
             content: Content::Color { rgba: colour },
             transform: Placed::NONE,
+            crop: Cropped::NONE,
+            composite: Composite::Normal,
             opacity: unit(dipped),
         });
         return;
@@ -183,8 +190,8 @@ fn layer(
         },
         Source::Color { color } => Content::Color { rgba: *color },
     };
-    // A transform with no keys is the same at every frame: its clock is not asked.
-    let at = if clip.transform.is_animated() {
+    // A transform and a crop with no keys are the same at every frame: the clock is not asked.
+    let at = if clip.transform.is_animated() || clip.crop.is_animated() {
         KeyClock::of(clip, project, t.rate).at(frame)
     } else {
         0
@@ -193,12 +200,14 @@ fn layer(
         clippy::cast_precision_loss,
         reason = "a frame of keys is within 2^53 of 0"
     )]
-    let placed = clip.transform.at(at as f64);
+    let (placed, cropped) = (clip.transform.at(at as f64), clip.crop.at(at as f64));
     Some(Layer {
         clip: clip.id.clone(),
         track: track.id.clone(),
         content,
         transform: placed,
+        crop: cropped,
+        composite: clip.composite,
         opacity: unit(placed.opacity * faded(clip, k) * share),
     })
 }

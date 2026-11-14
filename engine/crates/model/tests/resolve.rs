@@ -203,6 +203,8 @@ fn project_of(plan: &Plan) -> Project {
                 reverse: None,
                 link: None,
                 transform: None,
+                crop: None,
+                composite: None,
                 gain_db: None,
                 pan: None,
                 fade_in,

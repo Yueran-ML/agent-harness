@@ -162,7 +162,7 @@ it('opens from the pool, guards session changes, and applies standard formats to
 });
 
 it('mirrors media settings without mutating old state, clip maps or the operation payload', () => {
-  const before = { schema: 4 as const, next_id: 1, bins: [], groups: [], media: [source()], timelines: [] };
+  const before = { schema: 5 as const, next_id: 1, bins: [], groups: [], media: [source()], timelines: [] };
   const config = sourceLayout(before.media[0]);
   const after = applyOp(before, { op: 'set_media_audio', id: 'm1', config });
   expect(before.media[0].audio_config).toBeUndefined();

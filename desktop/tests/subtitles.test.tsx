@@ -53,7 +53,7 @@ const overlapping = (track: SubtitleTrack, id: string | null, start: number, len
  * `cue_overlap`, a stale revision with `stale_revision`. It tells what changed as the real one does.
  */
 function fakeEngine(tracks: SubtitleTrack[]) {
-  let project: Project = { schema: 4, groups: [], next_id: 10, bins: [], media: [media], timelines: [{ ...timeline([]), tracks: [...timeline([]).tracks, ...tracks] }] };
+  let project: Project = { schema: 5, groups: [], next_id: 10, bins: [], media: [media], timelines: [{ ...timeline([]), tracks: [...timeline([]).tracks, ...tracks] }] };
   let revision = 0;
   let made = 0;
   const listeners = new Set<(event: EngineEvent) => void>();
@@ -386,7 +386,7 @@ describe('a subtitle', () => {
 describe('the copy of the project', () => {
   it('follows a subtitle cut in two and shifted by a ripple, as the engine expands it', () => {
     const t = { ...timeline([]), tracks: [...timeline([]).tracks, subtitles('S1', [cue('q1', 100, 100, 'Both halves'), cue('q2', 300, 20)])] };
-    const project: Project = { schema: 4, groups: [], next_id: 10, bins: [], media: [media], timelines: [t] };
+    const project: Project = { schema: 5, groups: [], next_id: 10, bins: [], media: [media], timelines: [t] };
     // An insert of 40 frames at 150: the subtitle across it is cut there, and what follows moves on.
     const done: Op[] = [
       { op: 'set_cue', timeline: 't1', id: 'q1', length: 50 },

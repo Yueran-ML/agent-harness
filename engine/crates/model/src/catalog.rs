@@ -15,7 +15,8 @@
 //!
 //! The catalog lists what the nodes of the Color page hold: a corrector, and a Key Mixer,
 //! whose inputs and output each have a gain and an offset; and what a clip holds of the Edit
-//! page: the settings of its transform ([`clip`]). The keys of all of them are counted in the
+//! page: the settings of its transform and of its crop ([`clip`]). The keys of all of them are
+//! counted in the
 //! frames of the source of the clip ([`crate::keyframes`]). The operations that set the keys of
 //! a setting by its path take the paths that are listed: [`crate::ops::Op::SetKeys`] those of a
 //! node, [`crate::ops::Op::SetClipKeys`] those of a clip.
@@ -90,6 +91,8 @@ pub enum Palette {
     Transform,
     /// The Composite of the Inspector.
     Composite,
+    /// The Cropping of the Inspector.
+    Cropping,
 }
 
 /// What the keys of a setting are counted in.
@@ -325,67 +328,51 @@ pub fn key_mixer() -> &'static [Entry] {
     })
 }
 
-/// The settings of a clip that take keys: those of its transform, named as the clip holds
-/// them, `transform.x`.
+/// The settings of a clip that take keys: those of its transform and of its crop, named as the
+/// clip holds them, `transform.x`, `crop.left`.
 #[must_use]
 pub fn clip() -> &'static [Entry] {
     static ENTRIES: OnceLock<Vec<Entry>> = OnceLock::new();
     ENTRIES.get_or_init(|| {
-        let most = crate::project::Transform::MOST_SCALE;
-        [
-            (
-                "transform.x",
-                0.0,
-                -16.0,
-                16.0,
-                Unit::Widths,
-                Palette::Transform,
-            ),
-            (
-                "transform.y",
-                0.0,
-                -16.0,
-                16.0,
-                Unit::Heights,
-                Palette::Transform,
-            ),
-            (
-                "transform.scale",
-                1.0,
-                0.01,
-                most,
-                Unit::Number,
-                Palette::Transform,
-            ),
-            (
-                "transform.rotation",
-                0.0,
-                -3600.0,
-                3600.0,
-                Unit::Degrees,
-                Palette::Transform,
-            ),
-            (
-                "transform.opacity",
-                1.0,
-                0.0,
-                1.0,
-                Unit::Number,
-                Palette::Composite,
-            ),
-        ]
-        .into_iter()
-        .map(|(path, default, low, high, unit, palette)| Entry {
+        let one = |path: &str, bounds: [f64; 3], unit, palette| Entry {
             path: path.to_owned(),
-            default,
-            low,
-            high,
+            default: bounds[0],
+            low: bounds[1],
+            high: bounds[2],
             unit,
             page: Page::Edit,
             palette,
             clock: Clock::SourceFrame,
-        })
-        .collect()
+        };
+        let most = crate::project::Transform::MOST_SCALE;
+        let (place, share) = ([0.0, -16.0, 16.0], [0.0, 0.0, 1.0]);
+        vec![
+            one("transform.x", place, Unit::Widths, Palette::Transform),
+            one("transform.y", place, Unit::Heights, Palette::Transform),
+            one(
+                "transform.scale",
+                [1.0, 0.01, most],
+                Unit::Number,
+                Palette::Transform,
+            ),
+            one(
+                "transform.rotation",
+                [0.0, -3600.0, 3600.0],
+                Unit::Degrees,
+                Palette::Transform,
+            ),
+            one(
+                "transform.opacity",
+                [1.0, 0.0, 1.0],
+                Unit::Number,
+                Palette::Composite,
+            ),
+            one("crop.left", share, Unit::Widths, Palette::Cropping),
+            one("crop.right", share, Unit::Widths, Palette::Cropping),
+            one("crop.top", share, Unit::Heights, Palette::Cropping),
+            one("crop.bottom", share, Unit::Heights, Palette::Cropping),
+            one("crop.softness", share, Unit::Heights, Palette::Cropping),
+        ]
     })
 }
 

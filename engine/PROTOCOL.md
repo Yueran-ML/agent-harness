@@ -644,14 +644,17 @@ rest of the project is read as it is. So is a proxy whose `path` is not absolute
 away before the project is checked, so the project is read without it and the engine starts.
 (Such a proxy in an operation, `set_proxy` or `add_media`, is still refused as `not_absolute`.)
 
-### Schema 4
+### Schema 5
 
-The top level is `{schema: 4, next_id, bins: [...], media: [...], timelines: [...], groups: [...], color: {...}}`.
+The top level is `{schema: 5, next_id, bins: [...], media: [...], timelines: [...], groups: [...], color: {...}}`.
 Schema 3 differs from schema 2 by the grades (see Grades below) and by colour management: the
 project's `color` and each media item's `color_override` (see Colour management below). Schema 4
-adds the sound of the Fairlight page (see Sound below). A schema 1, 2 or 3 project is upgraded
-on open, a schema at a time (1→2→3→4); its original bytes are kept once in
-`project.schema1.json`, `project.schema2.json` or `project.schema3.json`.
+adds the sound of the Fairlight page (see Sound below). Schema 5 lets the settings of a clip's
+`transform` have keys, and adds a clip's `crop` and `composite`; a project of schema 4 has
+neither, and is read with no crop and the normal composite mode, its picture as it was.
+A schema 1, 2, 3 or 4 project is upgraded on open, a schema at a time (1→2→3→4→5); its original
+bytes are kept once in `project.schema1.json`, `project.schema2.json`, `project.schema3.json` or
+`project.schema4.json`.
 Unknown fields are refused. `project.get` and `project.changed` are the source of truth for
 clients; a client must not write `project.json` itself.
 
@@ -674,8 +677,8 @@ clients; a client must not write `project.json` itself.
   A timeline shows one subtitle track at a time, as DaVinci Resolve does: at most one of its
   subtitle tracks is `enabled` (shown in the timeline monitor). A project with two is refused
   when it is read, and so is an operation that would make two (`subtitle_shown`, below).
-- A clip is `{id, start, length, source, enabled, speed, reverse, link, transform, gain_db, pan,
-  fade_in, fade_out, grade, group}`. `grade` is the clip's graph and `group` a group id or `null`
+- A clip is `{id, start, length, source, enabled, speed, reverse, link, transform, crop,
+  composite, gain_db, pan, fade_in, fade_out, grade, group}`. `grade` is the clip's graph and `group` a group id or `null`
   (see Grades). `start >= 0`, `length > 0`; same-track clips cannot overlap.
   `speed: {num, den}` is a positive rational from 1/100 to 100; direction is the separate `reverse`
   flag. `link` is a group id or `null`. Time conversion uses integer ticks, rounded down, so a
@@ -696,6 +699,16 @@ clients; a client must not write `project.json` itself.
   strictly and each value is within the setting's range. A setting with no keys is written as a
   number, so a project without keys reads and writes as it did. `set_clip` puts a transform
   whole, keys and all; `set_clip_keys` and `splice_clip_keys` set one setting.
+- `crop` is `{left, right, top, bottom, softness}`: how much of the clip's picture is cut away at
+  each side, as shares of its width (`left`, `right`) and of its height (`top`, `bottom`) from 0
+  to 1, before it is placed by its `transform`; the picture stays where it is, and what is cut
+  away shows the tracks below. `softness`, from 0 to 1, is the share of the picture's height
+  over which each cut edge fades, inward from the cut (the unit is ours; DaVinci's Softness
+  has none in the manual). Each of the five is a number or keys, as the settings of
+  `transform` are, and is refused out of its range as `out_of_range` with `what` `crop`.
+  It may be left out, as no crop. `composite` is the clip's composite mode, how its picture is
+  laid over the tracks below it: one of the modes of a Layer Mixer (see Grades: `normal`,
+  `add`, `multiply`, `screen`, `overlay`, ...), `normal` where it is left out. It takes no keys.
   Gain is −96…24 dB; pan is −1…1.
   Fades count timeline frames from the respective ends. A fade and transition at the same end
   are refused; clear the fade explicitly to replace it with a transition.
@@ -1985,9 +1998,9 @@ An operation is an object that names itself in `op` (unknown fields are refused,
 | `set_timeline` | `id`, `name?`, `rate?`, `width?`, `height?`, `sample_rate?` |
 | `set_track` | `timeline`, `id`, `name?`, `color?` (`#rrggbbaa`, null restores the unspecified default), `enabled?`, `locked?`, `language?`, `mute?`, `solo?`, `solo_safe?` (the last three of a track of sound only; on another `wrong_track` with `what` of the setting) |
 | `move_track` | `timeline`, `id`, `index`: zero-based index in the final complete track list, including video, audio and subtitle tracks; preserves the existing object and every ID/reference. Out-of-range or unchanged indexes are refused as `out_of_range` (`what: "track index"`). Like other basic track operations it can be undone while locked. |
-| `set_clip` | `timeline`, `id`, `enabled?`, `speed?`, `reverse?`, `link?`, `transform?`, `gain_db?`, `pan?`, `fade_in?`, `fade_out?`, `audio_fade_in?`, `audio_fade_out?` (an `AudioFade` or `null` for a straight fade over the frames), `eq?`, `effects?`, `pitch_correction?`, `pitch?`, `channels?` (see Operations of sound), `source?` |
-| `set_clip_keys` | `timeline`, `id`, `path`, `param` (a number, or `{"keys": [...]}`): one setting of a clip that takes keys, by its path in the clip: `transform.x`, `transform.y`, `transform.scale`, `transform.rotation`, `transform.opacity` (listed with their bounds under `clip` in `crates/model/tests/data/catalog.json`). Any other path is `missing` with `what` `setting`. Its inverse is the `set_clip_keys` of the setting as it was. |
-| `splice_clip_keys` | `timeline`, `id`, `path`, `at`, `remove`, `keys`: puts `keys` in the place of the `remove` keys of the setting from key `at` on, as `splice_keys` does for a node. `at + remove` beyond the keys is `out_of_list`; a setting keeps one key at least (`out_of_range`, `keys`); a number becomes the keys that are put, and its `done` is then the `set_clip_keys` of those keys, its inverse the `set_clip_keys` of the number. What either makes is checked as the clip is (`out_of_range`, `transform`). |
+| `set_clip` | `timeline`, `id`, `enabled?`, `speed?`, `reverse?`, `link?`, `transform?`, `crop?` (whole), `composite?`, `gain_db?`, `pan?`, `fade_in?`, `fade_out?`, `audio_fade_in?`, `audio_fade_out?` (an `AudioFade` or `null` for a straight fade over the frames), `eq?`, `effects?`, `pitch_correction?`, `pitch?`, `channels?` (see Operations of sound), `source?` |
+| `set_clip_keys` | `timeline`, `id`, `path`, `param` (a number, or `{"keys": [...]}`): one setting of a clip that takes keys, by its path in the clip: `transform.x`, `transform.y`, `transform.scale`, `transform.rotation`, `transform.opacity`, and `crop.left`, `crop.right`, `crop.top`, `crop.bottom`, `crop.softness` (listed with their bounds under `clip` in `crates/model/tests/data/catalog.json`). Any other path is `missing` with `what` `setting`. Its inverse is the `set_clip_keys` of the setting as it was. |
+| `splice_clip_keys` | `timeline`, `id`, `path`, `at`, `remove`, `keys`: puts `keys` in the place of the `remove` keys of the setting from key `at` on, as `splice_keys` does for a node. `at + remove` beyond the keys is `out_of_list`; a setting keeps one key at least (`out_of_range`, `keys`); a number becomes the keys that are put, and its `done` is then the `set_clip_keys` of those keys, its inverse the `set_clip_keys` of the number. What either makes is checked as the clip is (`out_of_range`, `transform` or `crop`). |
 | `add_bin` | `bin`, `index?` |
 | `remove_bin` | `id` |
 | `set_bin` | `id`, `name?`, `parent?` |
@@ -3178,7 +3191,7 @@ Keyframe Editor's ruler only "mirrors the record timecode" of the clip (p. 3382)
   frames (slower than the media) has one setting on them all. The speed dialog's Maintain
   Timing / Stretch Keyframes is for the keys of the Edit page's Composite, Transform and
   Cropping only (p. 1073).
-- The keys of a clip's **transform** count the same frames as the keys of its grade, and so stay
+- The keys of a clip's **transform** and **crop** count the same frames as the keys of its grade, and so stay
   on their pictures through the same edits; through a change of speed they come sooner or
   later with their pictures, which is what Stretch Keyframes does. (Maintain Timing, which
   would keep them at their frames of the timeline, is not offered.)
@@ -4575,7 +4588,7 @@ refused only through a bug of the engine. The refusals that are not of a transac
 | `wrong_track` | `what`, `kind` | content or settings on an incompatible track kind |
 | `cue_overlap` | `with` | subtitles overlap on one track |
 | `subtitle_shown` | `track` | a subtitle track would be enabled (by `set_track`, `add_track` or `add_timeline`) while subtitle track `track` of its timeline is enabled; a timeline shows one at a time |
-| `out_of_range` | `what` | an invalid setting: `width`, `height`, `sample_rate`, `start`, `length`, `speed`, `transform`, `gain_db`, `pan`, `fade`, `keys` (a `splice_clip_keys` that would leave a setting no key), `text`, `size`, `position`, `language`, `still`; `rotation` for media whose `facts.video.rotation` is not 0, 90, 180 or 270; `digest` for media whose `identity.digest` is not 64 lowercase hex digits; `by`, `clips` or `cues` for a shift that would change nothing |
+| `out_of_range` | `what` | an invalid setting: `width`, `height`, `sample_rate`, `start`, `length`, `speed`, `transform`, `crop`, `gain_db`, `pan`, `fade`, `keys` (a `splice_clip_keys` that would leave a setting no key), `text`, `size`, `position`, `language`, `still`; `rotation` for media whose `facts.video.rotation` is not 0, 90, 180 or 270; `digest` for media whose `identity.digest` is not 64 lowercase hex digits; `by`, `clips` or `cues` for a shift that would change nothing |
 | `has_transition` | `transition` | `remove_clip`, `move_clip` or `trim_clip` of a clip that has a transition (remove it first), a `set_clip` that its transition cannot follow, or a `shift_clips` that moves just one end of a transition |
 | `not_adjacent` | `left`, `right` | transition endpoints do not meet |
 | `cut_taken` | `with` | a transition is already at this cut |

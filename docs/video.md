@@ -73,7 +73,12 @@ size and frame rate, by default those of the first video in the pool) and opens 
   first and last frame where none is set), the timeline In and Out, or the playhead, with
   backtiming where only an Out is set. The track headers choose the destination tracks of
   picture and sound, and lock, mute or hide a track.
-- **Inspector.** For a clip on a video track: zoom, position, rotation, opacity and fades; on an
+- **Inspector.** For a clip on a video track: zoom, position, rotation, composite mode, opacity,
+  cropping (each side and its softness, in percent of the picture) and fades. Zoom, position,
+  rotation, opacity and the cropping take keyframes: the diamond beside a field puts a key at
+  the playhead or takes away the one there, the arrows go to the key before and after, and a
+  setting that has keys takes a new value as a key at the playhead. The keys stay on their
+  pictures when the clip is trimmed, slipped or played at another speed. On an
   audio track: volume, pan and fades; for a title: text, size, colour, position and alignment;
   for a solid colour: its colour. A number is typed, or dragged sideways (with Shift ten times
   as fast), and is sent once when it is let go; Escape takes it back and a double-click on its
@@ -388,7 +393,9 @@ The edit commands of `video_edit` are DaVinci Resolve's: `insert`, `overwrite`, 
 shot), `blade`, `move`, `insert_move`, `trim`, `roll`, `slip`, `slide`, `set_speed`,
 `add_transition`, `set_transition`, `remove_transition`, `add_track`, `remove_track`, `add_cue`,
 `set_cue`, `remove_cue` and `cues_from`. A batch may mix them with the basic operations of the
-protocol, such as `add_timeline`, `add_bin`, `set_clip` (transform, gain, pan, fades),
+protocol, such as `add_timeline`, `add_bin`, `set_clip` (transform, crop, composite mode, gain,
+pan, fades), `set_clip_keys` and `splice_clip_keys` (the keyframes of one setting of a clip's
+transform or crop),
 `set_track`, `set_media` and `set_timeline`. The engine decides track locks, links and available
 handles. Timeline positions are integer frames; source times use ticks and their scale. `null`
 means an explicitly cleared field or disabled destination, while an omitted field keeps its

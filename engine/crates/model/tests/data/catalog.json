@@ -165,5 +165,10 @@
 {"path":"transform.y","default":0.0,"low":-16.0,"high":16.0,"unit":"heights","page":"edit","palette":"transform","clock":"source_frame"},
 {"path":"transform.scale","default":1.0,"low":0.01,"high":16.0,"unit":"number","page":"edit","palette":"transform","clock":"source_frame"},
 {"path":"transform.rotation","default":0.0,"low":-3600.0,"high":3600.0,"unit":"degrees","page":"edit","palette":"transform","clock":"source_frame"},
-{"path":"transform.opacity","default":1.0,"low":0.0,"high":1.0,"unit":"number","page":"edit","palette":"composite","clock":"source_frame"}
+{"path":"transform.opacity","default":1.0,"low":0.0,"high":1.0,"unit":"number","page":"edit","palette":"composite","clock":"source_frame"},
+{"path":"crop.left","default":0.0,"low":0.0,"high":1.0,"unit":"widths","page":"edit","palette":"cropping","clock":"source_frame"},
+{"path":"crop.right","default":0.0,"low":0.0,"high":1.0,"unit":"widths","page":"edit","palette":"cropping","clock":"source_frame"},
+{"path":"crop.top","default":0.0,"low":0.0,"high":1.0,"unit":"heights","page":"edit","palette":"cropping","clock":"source_frame"},
+{"path":"crop.bottom","default":0.0,"low":0.0,"high":1.0,"unit":"heights","page":"edit","palette":"cropping","clock":"source_frame"},
+{"path":"crop.softness","default":0.0,"low":0.0,"high":1.0,"unit":"heights","page":"edit","palette":"cropping","clock":"source_frame"}
 ]}

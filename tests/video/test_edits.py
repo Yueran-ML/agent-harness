@@ -491,3 +491,29 @@ async def test_the_keys_of_a_setting_of_a_clip_are_set_by_its_path(tmp_path: Pat
             await one.apply([edits.set_clip_keys("t1", id, path, 0.5)])
 
         assert opacity(fake) == 0.5
+
+
+def test_a_crop_and_a_composite_mode_are_written_as_the_engine_reads_them() -> None:
+    opening = Keys(keys=[Key(frame=0, value=1.0), Key(frame=20, value=0.0)])
+
+    clip = edits.set_clip("t1", "c2", crop=edits.Crop(left=opening, top=0.1), composite="screen")
+
+    assert clip == {
+        "op": "set_clip",
+        "timeline": "t1",
+        "id": "c2",
+        "crop": {
+            "left": {
+                "keys": [
+                    {"frame": 0, "value": 1.0, "interp": "linear"},
+                    {"frame": 20, "value": 0.0, "interp": "linear"},
+                ]
+            },
+            "right": 0.0,
+            "top": 0.1,
+            "bottom": 0.0,
+            "softness": 0.0,
+        },
+        "composite": "screen",
+    }
+    assert edits.set_clip_keys("t1", "c2", "crop.softness", 0.25)["path"] == "crop.softness"

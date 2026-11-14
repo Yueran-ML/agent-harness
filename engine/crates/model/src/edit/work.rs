@@ -1002,6 +1002,8 @@ pub(super) fn set_fades(timeline: &str, clip: &str, fade_in: i64, fade_out: i64)
         reverse: None,
         link: None,
         transform: None,
+        crop: None,
+        composite: None,
         gain_db: None,
         pan: None,
         fade_in: Some(fade_in),

@@ -166,7 +166,7 @@ it('mounts the full Fairlight page with channel lanes, shared editing, view-only
 
 it('Studio opens Fairlight on Windows and stops polling when switching back to Edit', async () => {
   const listeners = new Set<(event: EngineEvent) => void>();
-  const project: Project = { schema: 4, next_id: 20, groups: [], media: [media], bins: [], timelines: [song()] };
+  const project: Project = { schema: 5, next_id: 20, groups: [], media: [media], bins: [], timelines: [song()] };
   const bridge = { open: vi.fn(async () => { const opened = { session: 1, project: 'F:/film', owned: true, pid: 1, revision: 0 }; listeners.forEach(fn => fn({ kind: 'opened', ...opened })); return opened; }),
     call: vi.fn(async (method: string) => ({ ok: true, result: method === 'project.get' ? { project, revision: 0, next_id: 20 } : method === 'audio.meters' ? meters : method === 'transport.state' || method === 'transport.load' ? controls().state : {} })),
     onEvent: (fn: (event: EngineEvent) => void) => { listeners.add(fn); return () => { listeners.delete(fn); }; },
@@ -224,7 +224,7 @@ it('requests an explicit non-default stream and never draws an unrelated wavefor
 });
 
 it('replays moves and color without replacing any track contents', () => {
-  const project: Project = { schema: 4, next_id: 20, groups: [], media: [media], bins: [], timelines: [song()] };
+  const project: Project = { schema: 5, next_id: 20, groups: [], media: [media], bins: [], timelines: [song()] };
   const original = project.timelines[0].tracks[3];
   const moved = applyOp(project, { op: 'move_track', timeline: 't1', id: 'a3', index: 1 });
   expect(moved.timelines[0].tracks[1]).toBe(original);

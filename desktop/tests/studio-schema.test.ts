@@ -8,7 +8,7 @@ import {
 interface Example { name: string; before: Project; after: Project; done: Op; inverse: Op }
 const examples: Example[] = JSON.parse(readFileSync(new URL('../../engine/crates/model/tests/data/ops-examples.json', import.meta.url), 'utf8'));
 
-describe('the schema 4 project copy agrees with the Rust model', () => {
+describe('the schema 5 project copy agrees with the Rust model', () => {
   for (const example of examples) {
     it(example.name, () => {
       const before = structuredClone(example.before);
@@ -33,7 +33,7 @@ describe('the sound of schema 4 in the copy is what the engine writes, field by 
     expect(keys(track.clips[0]).filter(key => (SOUND_FIELDS.clip as string[]).includes(key))).toEqual([...SOUND_FIELDS.clip].sort());
     expect(keys(timeline).filter(key => (SOUND_FIELDS.timeline as string[]).includes(key))).toEqual([...SOUND_FIELDS.timeline].sort());
     expect(keys(timeline.audio!)).toEqual([...SOUND_FIELDS.timelineAudio].sort());
-    expect(example.after.schema).toBe(4);
+    expect(example.after.schema).toBe(5);
     // A track of picture writes none of it.
     const picture = timeline.tracks.find(each => each.kind === 'video')!;
     expect(keys(picture).filter(key => (SOUND_FIELDS.track as string[]).includes(key))).toEqual([]);

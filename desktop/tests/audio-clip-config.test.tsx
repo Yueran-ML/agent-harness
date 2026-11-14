@@ -15,7 +15,7 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 const settle = () => act(async () => { for (let i = 0; i < 25; i++) await Promise.resolve(); });
 function setup(fairlight = false, clips = [clip('sound')], locked = false) {
   const source = { ...media, facts: { ...media.facts, audio: { rate: 48000, channels: 2, codec: 'pcm', streams: [{ index: 1, channels: 2, layout: 'stereo' }, { index: 3, channels: 1, layout: 'mono' }] } } };
-  let project: Project = { schema: 4, next_id: 10, bins: [], groups: [], media: [source], timelines: [{ ...timeline([]), tracks: [{ id: 'a', name: 'Voice', kind: 'audio', format: 'stereo', channels: 2, enabled: true, locked, clips, transitions: [] }] }] };
+  let project: Project = { schema: 5, next_id: 10, bins: [], groups: [], media: [source], timelines: [{ ...timeline([]), tracks: [{ id: 'a', name: 'Voice', kind: 'audio', format: 'stereo', channels: 2, enabled: true, locked, clips, transitions: [] }] }] };
   let revision = 10;
   const before: Project[] = [];
   const requests: { method: string; params: any; context: any }[] = [];

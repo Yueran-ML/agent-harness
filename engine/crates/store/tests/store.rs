@@ -170,10 +170,10 @@ fn a_file_that_is_not_text_is_refused_and_left_as_it_was() {
 #[test]
 fn a_project_of_another_schema_is_refused_and_left_as_it_was() {
     let mut value = serde_json::to_value(Project::sample()).unwrap();
-    value["schema"] = 5.into();
+    value["schema"] = 6.into();
     let error = refused(
         &serde_json::to_vec_pretty(&value).unwrap(),
-        "the project is of schema 5",
+        "the project is of schema 6",
     );
     assert!(matches!(error, StoreError::NotAProject { .. }), "{error}");
 }
@@ -294,6 +294,34 @@ fn a_project_of_schema_2_is_upgraded_and_its_file_is_kept_once_beside_it() {
     assert_eq!(fs::read_to_string(beside).unwrap(), other);
 }
 
+/// A project as the engine of the Fairlight page wrote it, of schema 4.
+const SCHEMA_4: &str = include_str!("../../model/tests/data/schema4.json");
+
+#[test]
+fn a_project_of_schema_4_is_upgraded_and_its_file_is_kept_once_beside_it() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join(PROJECT_FILE), SCHEMA_4).unwrap();
+
+    let (store, project) = Store::open(dir.path()).unwrap();
+
+    assert_eq!(project.schema, columbina_model::SCHEMA);
+    let kept = dir.path().join(old_schema_file(4));
+    assert_eq!(kept.file_name().unwrap(), "project.schema4.json");
+    assert_eq!(fs::read_to_string(&kept).unwrap(), SCHEMA_4);
+    // The file of the project is written in the schema of the engine only when it is saved.
+    assert_eq!(
+        fs::read_to_string(dir.path().join(PROJECT_FILE)).unwrap(),
+        SCHEMA_4
+    );
+    store.save(&project).unwrap();
+    assert_eq!(
+        fs::read_to_string(dir.path().join(PROJECT_FILE)).unwrap(),
+        pretty(&project)
+    );
+    let (_, again) = Store::open(dir.path()).unwrap();
+    assert_eq!(again, project);
+}
+
 /// A project as the engine of the Color page wrote it, of schema 3.
 const SCHEMA_3: &str = include_str!("../../model/tests/data/schema3.json");
 
@@ -312,7 +340,7 @@ fn a_project_of_schema_3_is_upgraded_and_its_file_is_kept_once_beside_it() {
     let kept = dir.path().join(old_schema_file(3));
     assert_eq!(kept.file_name().unwrap(), "project.schema3.json");
     assert_eq!(fs::read_to_string(&kept).unwrap(), SCHEMA_3);
-    // The file of the project is written in schema 4 only when it is saved.
+    // The file of the project is written in the schema of the engine only when it is saved.
     assert_eq!(
         fs::read_to_string(dir.path().join(PROJECT_FILE)).unwrap(),
         SCHEMA_3

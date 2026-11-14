@@ -47,6 +47,8 @@ fn set_clip(id: &str) -> Op {
         reverse: None,
         link: None,
         transform: None,
+        crop: None,
+        composite: None,
         gain_db: None,
         pan: None,
         fade_in: None,
@@ -1322,6 +1324,36 @@ fn grade_examples() -> Vec<(&'static str, Vec<Op>, Op)> {
                     value: 0.125,
                     interp: Interp::Linear,
                 }],
+            },
+        ),
+        (
+            "set_clip of a crop and a composite mode",
+            vec![],
+            serde_json::from_value(serde_json::json!({
+                "op": "set_clip", "timeline": "t1", "id": "c1", "composite": "multiply",
+                "crop": {"left": 0.125, "right": 0.25, "top": 0, "bottom": 0.5, "softness": 0.0625},
+            }))
+            .unwrap(),
+        ),
+        (
+            "set_clip_keys of a side of a crop",
+            vec![],
+            Op::SetClipKeys {
+                timeline: "t1".into(),
+                id: "c1".into(),
+                path: "crop.left".into(),
+                param: Param::Keys(vec![
+                    Key {
+                        frame: 0,
+                        value: 1.0,
+                        interp: Interp::Linear,
+                    },
+                    Key {
+                        frame: 20,
+                        value: 0.0,
+                        interp: Interp::Hold,
+                    },
+                ]),
             },
         ),
         ("set_clip_keys", vec![], position_keys()),

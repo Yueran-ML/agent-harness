@@ -12,6 +12,10 @@ change what was there before.
   given at another frame puts a key there. The keys stay on their pictures where the clip is
   trimmed, slipped or played at another speed, as the keys of its grade do. The agent sets
   them with the operations `set_clip_keys` and `splice_clip_keys` of `video_edit`.
+- A clip has a crop, with a softness, and a composite mode (studio, phase 4): the Cropping and
+  the Composite Mode of the Inspector. The sides of the crop and its softness take keyframes
+  too. Projects are of schema 5; one of schema 4 is read with no crop and the normal mode,
+  and its file is kept beside it as `project.schema4.json`.
 - A tool `video_grade_keys`, with which the agent puts, removes or clears the keyframes of
   one setting of a node of a grade without sending its other keys.
 - DeepSeek's Flash is shown the pictures that a tool gives back, such as a picture that was

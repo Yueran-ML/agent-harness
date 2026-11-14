@@ -149,7 +149,12 @@ fn the_settings_that_take_keys_are_those_of_the_catalog_and_are_checked_as_the_c
             "transform.y",
             "transform.scale",
             "transform.rotation",
-            "transform.opacity"
+            "transform.opacity",
+            "crop.left",
+            "crop.right",
+            "crop.top",
+            "crop.bottom",
+            "crop.softness"
         ]
     );
     for entry in catalog::clip() {
@@ -166,6 +171,9 @@ fn the_settings_that_take_keys_are_those_of_the_catalog_and_are_checked_as_the_c
         "gain_db",
         "transform.x.0",
         "",
+        "crop",
+        "crop.x",
+        "composite",
     ] {
         assert_eq!(
             refused(&mut project, set(path, Param::Fixed(0.5))),
@@ -196,6 +204,18 @@ fn the_settings_that_take_keys_are_those_of_the_catalog_and_are_checked_as_the_c
                 },
             }]),
         ),
+    ] {
+        assert_eq!(
+            refused(&mut project, set(path, param.clone())),
+            out,
+            "{path} {param:?}"
+        );
+    }
+    let out = json!({"reason": "out_of_range", "what": "crop"});
+    for (path, param) in [
+        ("crop.left", Param::Fixed(-0.1)),
+        ("crop.softness", Param::Fixed(1.5)),
+        ("crop.top", Param::Keys(vec![key(0, 0.5), key(9, f64::NAN)])),
     ] {
         assert_eq!(
             refused(&mut project, set(path, param.clone())),
@@ -338,4 +358,59 @@ fn the_keys_of_a_clip_of_no_source_count_its_own_frames_from_its_first() {
         assert_eq!(layers.len(), 1);
         assert!((layers[0].transform.y - y).abs() < 1e-12, "{frame}");
     }
+}
+
+#[test]
+fn a_crop_and_a_composite_mode_are_set_whole_and_a_crop_is_keyed_and_read_at_the_frame() {
+    use columbina_model::grade::Composite;
+    use columbina_model::{Crop, Cropped};
+    let mut project = Project::sample();
+    assert_eq!(
+        (c1(&project).crop.clone(), c1(&project).composite),
+        (Crop::NONE, Composite::Normal)
+    );
+    let op: Op = serde_json::from_value(json!({
+        "op": "set_clip", "timeline": "t1", "id": "c1", "composite": "screen",
+        "crop": {"left": 0.25, "right": 0, "top": 0.1, "bottom": 0, "softness": 0.05},
+    }))
+    .unwrap();
+    let (done, inverse) = applied(&mut project, op);
+    assert_eq!(
+        serde_json::to_value(&done).unwrap()["composite"],
+        json!("screen")
+    );
+    let Op::SetClip {
+        crop, composite, ..
+    } = inverse
+    else {
+        panic!("a set_clip")
+    };
+    assert_eq!(
+        (crop, composite),
+        (Some(Crop::NONE), Some(Composite::Normal))
+    );
+    // The left side opens over the first 20 pictures.
+    applied(
+        &mut project,
+        set("crop.left", Param::Keys(vec![key(0, 1.0), key(20, 0.0)])),
+    );
+    let layers = video_at(&project.timelines[0], &project, 10);
+    assert_eq!(layers[0].composite, Composite::Screen);
+    assert_eq!(
+        layers[0].crop,
+        Cropped {
+            left: 0.5,
+            right: 0.0,
+            top: 0.1,
+            bottom: 0.0,
+            softness: 0.05
+        }
+    );
+    // The sound of the same media is not cropped: a clip of sound keeps the settings all the same.
+    let written = serde_json::to_value(&project).unwrap();
+    assert_eq!(
+        written["timelines"][0]["tracks"][1]["clips"][0]["crop"],
+        json!({"left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0, "softness": 0.0})
+    );
+    assert_eq!(Project::from_value(written).unwrap(), project);
 }

@@ -1816,10 +1816,11 @@ impl Default for KeyMixer {
 
 /// How a layer mixer lays its inputs over one another: the composite modes of the timeline
 /// (pp. 1055–1058), which the Layer Mixer uses too (p. 3337).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[allow(missing_docs, reason = "each is named as DaVinci names it")]
 pub enum Composite {
+    #[default]
     Normal,
     Add,
     Color,

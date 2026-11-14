@@ -1243,7 +1243,10 @@ class Fake:
         clip[of][name] = {"keys": keys}
 
 
-_CLIP_KEYED = frozenset(f"transform.{name}" for name in ("x", "y", "scale", "rotation", "opacity"))
+_CLIP_KEYED = frozenset(
+    [f"transform.{name}" for name in ("x", "y", "scale", "rotation", "opacity")]
+    + [f"crop.{name}" for name in ("left", "right", "top", "bottom", "softness")]
+)
 """The settings of a clip that take keys, as the engine's catalog lists them."""
 
 
@@ -1259,6 +1262,8 @@ def _clip(source: dict[str, Any], start: int, length: int) -> dict[str, Any]:
         "reverse": False,
         "link": None,
         "transform": {"x": 0.0, "y": 0.0, "scale": 1.0, "rotation": 0.0, "opacity": 1.0},
+        "crop": {"left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0, "softness": 0.0},
+        "composite": "normal",
         "gain_db": 0.0,
         "pan": 0.0,
         "fade_in": 0,

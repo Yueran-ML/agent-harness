@@ -286,7 +286,7 @@ const DETAIL_STEPS: f32 = 3.0;
 
 /// The detail of `x`, a channel sharpened, about `near`, its neighbourhood: `x` in half floats
 /// less `near` in half floats, as the textures of neighbourhoods keep them, less three steps of
-/// half floats either way ([`DETAIL_STEPS`]). Where the picture is flat, or a gradient is too slow
+/// half floats either way (`DETAIL_STEPS`). Where the picture is flat, or a gradient is too slow
 /// for half floats to tell, it is none, rather than what half floats round off (up to 12 times
 /// that, sharpened, a banding), however the card rounds what it writes into those textures.
 #[must_use]

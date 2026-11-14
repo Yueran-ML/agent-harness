@@ -23,8 +23,8 @@ use columbina_compose::grade::{
 };
 use columbina_compose::neighbourhood::half;
 use columbina_compose::{
-    gpu_for_tests, ColorRange, Compositor, Gpu, LayerColor, Scene, SceneLayer, Source, Stage,
-    Target, Transform,
+    card_for_tests, gpu_for_tests, ColorRange, Compositor, Gpu, LayerColor, Scene, SceneLayer,
+    Source, Stage, Target, Transform,
 };
 use columbina_media::{NativePicture, PictureFormat};
 use columbina_model::grade::{
@@ -364,7 +364,7 @@ fn shown_node(what: &str) -> &'static str {
 
 #[test]
 fn keys_on_the_card_are_those_of_the_processor_wherever_they_are_in_a_graph() {
-    let Some(gpu) = gpu_for_tests() else { return };
+    let Some(gpu) = card_for_tests() else { return };
     let mut compositor = Compositor::new(Arc::clone(&gpu));
     let options = GradeOptions::default();
     let (width, height) = (432, 324);

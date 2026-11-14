@@ -17,8 +17,8 @@ use columbina_compose::grade::{evaluate_picture, stage_of, GradeOptions, NoLuts}
 use columbina_compose::neighbourhood::{self, half, Image};
 use columbina_compose::yuv::native_of;
 use columbina_compose::{
-    gpu_for_tests, ColorOp, ColorRange, Compositor, Filter, Gpu, LayerColor, Neighbourhood, Scene,
-    SceneLayer, Source, Stage, Target, Transform,
+    card_for_tests, gpu_for_tests, ColorOp, ColorRange, Compositor, Filter, Gpu, LayerColor,
+    Neighbourhood, Scene, SceneLayer, Source, Stage, Target, Transform,
 };
 use columbina_media::{NativePicture, Picture, PictureFormat};
 use columbina_model::grade::{
@@ -338,7 +338,7 @@ fn graded_scene() -> Scene {
 /// master ring as one move of Y, R, G and B, which its Y-only Lift changes).
 #[test]
 fn a_frame_graded_without_neighbourhoods_is_drawn_as_it_was_to_the_bit() {
-    let Some(gpu) = gpu_for_tests() else { return };
+    let Some(gpu) = card_for_tests() else { return };
     let mut compositor = Compositor::new(Arc::clone(&gpu));
     let scene = graded_scene();
     let target = Target::preview(&gpu, scene.width, scene.height).unwrap();
@@ -745,7 +745,7 @@ fn without_detail(grade: &Grade) -> Grade {
 
 #[test]
 fn midtone_detail_on_the_card_is_that_of_the_processor_wherever_it_is_in_a_graph() {
-    let Some(gpu) = gpu_for_tests() else { return };
+    let Some(gpu) = card_for_tests() else { return };
     let mut compositor = Compositor::new(Arc::clone(&gpu));
     let options = GradeOptions::default();
     // 324 rows: Midtone Detail at 3 pixels of the picture, taken at every pixel; 540: at 5,
@@ -820,7 +820,7 @@ fn midtone_detail_on_the_card_is_that_of_the_processor_wherever_it_is_in_a_graph
 
 #[test]
 fn keyframed_midtone_detail_makes_no_shader_from_frame_to_frame() {
-    let Some(gpu) = gpu_for_tests() else { return };
+    let Some(gpu) = card_for_tests() else { return };
     let mut compositor = Compositor::new(Arc::clone(&gpu));
     let options = GradeOptions::default();
     let (width, height) = (432, 324);

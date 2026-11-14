@@ -16,8 +16,8 @@ use columbina_compose::grade::{evaluate_picture, stage_of, GradeOptions, NoLuts}
 use columbina_compose::neighbourhood::half;
 use columbina_compose::yuv::native_of;
 use columbina_compose::{
-    gpu_for_tests, ColorRange, Compositor, Gpu, LayerColor, Scene, SceneLayer, Source, Stage,
-    Target, Transform,
+    card_for_tests, gpu_for_tests, ColorRange, Compositor, Gpu, LayerColor, Scene, SceneLayer,
+    Source, Stage, Target, Transform,
 };
 use columbina_media::{NativePicture, Picture, PictureFormat};
 use columbina_model::grade::{
@@ -388,7 +388,7 @@ fn without_blur(grade: &Grade) -> Grade {
 
 #[test]
 fn blur_sharpen_and_mist_on_the_card_are_those_of_the_processor() {
-    let Some(gpu) = gpu_for_tests() else { return };
+    let Some(gpu) = card_for_tests() else { return };
     eprintln!("on {} ({})", gpu.name(), gpu.backend());
     let mut compositor = Compositor::new(Arc::clone(&gpu));
     let options = GradeOptions::default();
@@ -649,7 +649,7 @@ fn a_blur_palette_that_does_nothing_draws_the_frame_as_before_to_the_bit() {
 
 #[test]
 fn a_blur_palette_keyframed_makes_no_shader_from_frame_to_frame() {
-    let Some(gpu) = gpu_for_tests() else { return };
+    let Some(gpu) = card_for_tests() else { return };
     let mut compositor = Compositor::new(Arc::clone(&gpu));
     let options = GradeOptions::default();
     let (width, height) = (432, 324);

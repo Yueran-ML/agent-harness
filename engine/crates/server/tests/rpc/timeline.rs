@@ -1336,7 +1336,15 @@ async fn timeline_scrubbing_plays_a_grain_of_60_ms_for_each_seek_and_none_once_t
     eight_seconds_of_sound(&mut client).await;
     let state = action(&mut client, "transport.state", json!({})).await;
     assert_eq!(state["scrub_audio"], true, "{state}");
-    // Ten seeks of a drag, 150 ms apart, and the one that ends it.
+    // Ten seeks of a drag, 150 ms apart, and the one that ends it. On a runner of CI the first
+    // grain, for which the session is made, was heard 100 ms late, and the second took its place
+    // while it still sounded: there the seeks are 500 ms apart, which is still one session (it is
+    // kept a second after its last grain).
+    let apart = if std::env::var_os("CI").is_some() {
+        500
+    } else {
+        150
+    };
     for n in 1..=10 {
         action(
             &mut client,
@@ -1344,7 +1352,7 @@ async fn timeline_scrubbing_plays_a_grain_of_60_ms_for_each_seek_and_none_once_t
             json!({"frame": n * 17, "scrubbing": true}),
         )
         .await;
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        tokio::time::sleep(Duration::from_millis(apart)).await;
     }
     action(
         &mut client,

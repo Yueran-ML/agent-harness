@@ -80,9 +80,12 @@ jobs:
   # The engine of video (engine/), in Rust, against FFmpeg 8.1: see .github/scripts/ffmpeg.sh for
   # where it comes from. The studio is made for Windows first, and its engine is built and tested
   # only there for now. cargo runs in engine/, so that its rust-toolchain.toml holds. There
-  # is no graphics card: the tests that draw with one pass themselves over without an adapter
-  # (COLUMBINA_REQUIRE_GPU is not set), and those that need a desktop or a device of sound are
-  # ignored, and not run.
+  # is no graphics card, only the software adapter of the system (WARP): the tests that draw
+  # run on it, but for those that hold a card to the numbers of the processor or to the bit,
+  # which pass themselves over there (card_for_tests; COLUMBINA_REQUIRE_GPU is not set). Those
+  # that need a desktop or a device of sound are ignored, and not run. The runner shares its
+  # processor: the test of sixteen tracks at eight times measures there and does not judge.
+  # On a machine with a card, COLUMBINA_TEST_ADAPTER=software has the tests draw as they do here.
   engine:
     name: Engine / Windows
     runs-on: windows-latest

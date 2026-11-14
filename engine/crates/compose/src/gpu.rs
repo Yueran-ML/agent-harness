@@ -605,15 +605,28 @@ fn wanted_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
     }
 }
 
+/// What `COLUMBINA_TEST_ADAPTER` asks of the tests: `software` has them draw on the software
+/// adapter though the machine has a card, as they do on a runner of CI; `software-as-card`
+/// does too, and has [`card_for_tests`] give that adapter as if it were a card, to see what
+/// the tests of a card say of it.
+fn test_adapter() -> (Preference, bool) {
+    match std::env::var("COLUMBINA_TEST_ADAPTER").as_deref() {
+        Ok("software") => (Preference::Software, false),
+        Ok("software-as-card") => (Preference::Software, true),
+        _ => (Preference::HighPerformance, false),
+    }
+}
+
 /// A [`Gpu`] for the tests that draw: none where there is no backend or adapter, unless
-/// `COLUMBINA_REQUIRE_GPU` is 1, when there must be one.
+/// `COLUMBINA_REQUIRE_GPU` is 1, when there must be one. `COLUMBINA_TEST_ADAPTER=software`
+/// gives the software adapter of the system where there is a card too.
 ///
 /// # Panics
 /// `COLUMBINA_REQUIRE_GPU` is 1, and there is no backend or adapter.
 #[doc(hidden)]
 #[must_use]
 pub fn gpu_for_tests() -> Option<Arc<Gpu>> {
-    match Gpu::new(Preference::HighPerformance) {
+    match Gpu::new(test_adapter().0) {
         Ok(gpu) => Some(gpu),
         Err(error) => {
             assert!(
@@ -624,6 +637,30 @@ pub fn gpu_for_tests() -> Option<Arc<Gpu>> {
             None
         }
     }
+}
+
+/// A [`Gpu`] of a graphics card for the tests that hold what is drawn to the numbers that the
+/// processor computes, or to the bit: none where [`gpu_for_tests`] gives none, and none on the
+/// software adapter of the system (WARP on Windows), which is all that a runner of CI has. That
+/// adapter draws, and the tests that only ask for a picture run on it; but it rounds and
+/// interpolates otherwise than the cards whose error these tests bound, so that they would
+/// fail there for what is no fault of the engine.
+///
+/// # Panics
+/// `COLUMBINA_REQUIRE_GPU` is 1, and there is no card: no adapter, or only the software one.
+#[doc(hidden)]
+#[must_use]
+pub fn card_for_tests() -> Option<Arc<Gpu>> {
+    let gpu = gpu_for_tests()?;
+    if gpu.is_software() && !test_adapter().1 {
+        assert!(
+            std::env::var("COLUMBINA_REQUIRE_GPU").as_deref() != Ok("1"),
+            "COLUMBINA_REQUIRE_GPU is 1, and there is only the software adapter"
+        );
+        eprintln!("skipped: no graphics card, only the software adapter");
+        return None;
+    }
+    Some(gpu)
 }
 
 #[cfg(test)]

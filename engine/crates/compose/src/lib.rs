@@ -53,7 +53,7 @@ pub use columbina_model::grade::Composite;
 pub use compose::{ComposeError, Compositor, Scene, SceneLayer, Source, Target, WORKING_FORMAT};
 pub use geometry::{quarter_turns, Crop, Transform};
 #[doc(hidden)]
-pub use gpu::gpu_for_tests;
+pub use gpu::{card_for_tests, gpu_for_tests};
 pub use gpu::{
     ChosenBy, CompilerKind, Gpu, GpuError, Preference, ShaderCompiler, Watch, COMPILER_VARIABLE,
 };
